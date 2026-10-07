@@ -15,6 +15,7 @@
 
 pub mod actor;
 pub mod address;
+pub mod api;
 pub mod contract;
 pub mod message;
 pub mod plugin;
