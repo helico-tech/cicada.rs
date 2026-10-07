@@ -174,6 +174,7 @@ impl Actor for SyncActor {
 | `cicada-extras` | Timer, schedules (interval, daily), crash-loop guard, failure watcher, dead letters | `actors-extras` |
 | `examples` | Worked examples with tests | `examples` |
 | `sample-service` | A runnable node (binary) with the examples, used by end-to-end tests | `sample-service` |
+| `e2e` (`cicada-e2e`) | End-to-end and fault tests: sample nodes in Docker on PostgreSQL and SQLite, driven over HTTP (`CICADA_E2E=1`) | `e2e`, `e2e-tests` |
 
 ## HTTP contract
 

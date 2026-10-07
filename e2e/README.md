@@ -24,8 +24,8 @@ The test builds the image (`docker build -f sample-service/Dockerfile -t cicada-
 an aborted run, starts the compose stack once, runs the classes in the Kotlin order (API, examples, ordering under
 load, kill / pause / stop a node mid-turn, outcomes while a node is killed, PostgreSQL stopped and started again, full
 cluster restart, SQLite node), and always removes every container and volume afterwards: at the end of the run, while
-unwinding from a panic, and on Ctrl-C. Every test is bounded by 4 minutes. A run takes about 5 minutes (plus the first
-image build, which compiles the workspace in Docker). `--nocapture` shows progress (`E2E: PASS …` per test); without it
+unwinding from a panic, and on Ctrl-C. Every test is bounded by 4 minutes. A run takes about 3 minutes (170–180 s; plus the
+first image build, which compiles the workspace in Docker). `--nocapture` shows progress (`E2E: PASS …` per test); without it
 the output appears only when the suite fails.
 
 Container logs of every run are saved to `target/e2e-logs/` before teardown (`compose-<time>.log`,
