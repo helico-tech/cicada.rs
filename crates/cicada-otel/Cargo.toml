@@ -1,0 +1,19 @@
+[package]
+name = "cicada-otel"
+description = "OpenTelemetry plugin for Cicada turns."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+cicada.workspace = true
+opentelemetry.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

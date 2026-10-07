@@ -3,6 +3,16 @@ resolver = "3"
 members = [
     "crates/cicada",
     "crates/cicada-test",
+    "crates/cicada-store-conformance",
+    "crates/cicada-store-sqlite",
+    "crates/cicada-store-postgres",
+    "crates/cicada-axum",
+    "crates/cicada-client",
+    "crates/cicada-ui",
+    "crates/cicada-otel",
+    "crates/cicada-extras",
+    "examples",
+    "sample-service",
 ]
 
 [workspace.package]

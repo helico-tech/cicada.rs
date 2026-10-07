@@ -1,0 +1,22 @@
+[package]
+name = "cicada-store-conformance"
+description = "The S1–S10 store conformance suite every Cicada store backend runs."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+cicada.workspace = true
+cicada-test.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

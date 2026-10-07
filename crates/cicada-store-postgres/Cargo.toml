@@ -1,0 +1,24 @@
+[package]
+name = "cicada-store-postgres"
+description = "PostgreSQL store for Cicada: SKIP LOCKED claims and LISTEN/NOTIFY wake-ups."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+cicada.workspace = true
+tokio.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+futures.workspace = true
+sqlx = { workspace = true, features = ["postgres"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true
