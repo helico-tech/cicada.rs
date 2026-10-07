@@ -1,4 +1,4 @@
-use cicada::time::{Timestamp, serde_instant};
+use cicada::time::Timestamp;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -69,8 +69,7 @@ pub struct Timer {
     #[serde(default)]
     generation: u32,
     /// When the armed timeout is due; null while disarmed.
-    #[serde(default, with = "serde_instant::option")]
-    #[schemars(with = "Option<String>")]
+    #[serde(default)]
     deadline: Option<Timestamp>,
 }
 

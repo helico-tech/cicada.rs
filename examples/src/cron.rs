@@ -18,7 +18,7 @@ use std::future::Future;
 use std::time::Duration;
 
 use cicada::prelude::*;
-use cicada::time::{Timestamp, serde_instant};
+use cicada::time::Timestamp;
 use cicada_extras::Schedule;
 use serde::{Deserialize, Serialize};
 
@@ -43,8 +43,6 @@ pub enum CronMsg {
     /// One scheduled run, due at `scheduled_for`.
     Tick {
         /// The slot.
-        #[serde(with = "serde_instant")]
-        #[schemars(with = "String")]
         scheduled_for: Timestamp,
     },
     /// Runs the job now, outside the schedule, and re-arms the schedule from now on.
@@ -60,15 +58,13 @@ pub struct CronState {
     /// When the job runs.
     pub schedule: Schedule,
     /// The tick currently armed; `None` until `Start`.
-    #[serde(default, with = "serde_instant::option")]
-    #[schemars(with = "Option<String>")]
+    #[serde(default)]
     pub next_run: Option<Timestamp>,
     /// Ticks handled, also those whose task failed.
     #[serde(default)]
     pub runs: i32,
     /// The slot of the most recent run.
-    #[serde(default, with = "serde_instant::option")]
-    #[schemars(with = "Option<String>")]
+    #[serde(default)]
     pub last_run: Option<Timestamp>,
     /// Ticks whose task failed.
     #[serde(default)]
@@ -78,7 +74,6 @@ pub struct CronState {
     pub last_error: Option<String>,
     /// The id of the armed tick, which `RunNow` cancels when it re-arms.
     #[serde(default)]
-    #[schemars(with = "Option<String>")]
     pub armed_tick: Option<MessageId>,
 }
 

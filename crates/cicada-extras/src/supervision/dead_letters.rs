@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use cicada::prelude::*;
-use cicada::time::{Timestamp, serde_instant};
+use cicada::time::Timestamp;
 use cicada::turn::TurnError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -59,8 +59,6 @@ pub struct DeadLetter {
     #[serde(default)]
     pub error: Option<String>,
     /// When it failed (store time).
-    #[serde(with = "serde_instant")]
-    #[schemars(with = "String")]
     pub failed_at: Timestamp,
     /// Id of the message sent by `Redrive`, once redriven.
     #[serde(default)]

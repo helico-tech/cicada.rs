@@ -242,6 +242,20 @@ impl TestActors {
         }
     }
 
+    /// All instance URIs starting with `prefix` (a URI prefix such as `actor://sync/`), in URI order.
+    pub async fn list(&self, prefix: &str) -> Vec<ActorAddress> {
+        let mut out = Vec::new();
+        let mut cursor: Option<PageCursor> = None;
+        loop {
+            let page = self.store.list(prefix, cursor.as_ref(), 100).await.expect("store failed");
+            out.extend(page.items);
+            match page.next {
+                Some(next) => cursor = Some(next),
+                None => return out,
+            }
+        }
+    }
+
     /// True when `r` exists.
     pub async fn exists<R: ActorRef>(&self, r: &R) -> bool {
         self.store.get(&r.address().expect("a valid ref")).await.expect("store failed").is_some()

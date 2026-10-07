@@ -397,6 +397,15 @@ mod tests {
     }
 
     #[test]
+    fn chrono_serde_writes_the_contract_format() {
+        // States may hold plain `Timestamp` fields: chrono's serde form equals `format_instant`.
+        for micros in [0, 1_000, 1, 1_767_225_600_000_000, 1_767_225_600_123_456] {
+            let t = from_micros(micros);
+            assert_eq!(serde_json::to_value(t).unwrap(), serde_json::Value::String(format_instant(t)));
+        }
+    }
+
+    #[test]
     fn truncates_and_ceils() {
         let t = DateTime::from_timestamp(10, 1_500).unwrap();
         assert_eq!(truncate(t), DateTime::from_timestamp(10, 1_000).unwrap());

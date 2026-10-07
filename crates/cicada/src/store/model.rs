@@ -64,6 +64,20 @@ macro_rules! string_id {
                 &self.0
             }
         }
+
+        impl schemars::JsonSchema for $name {
+            fn schema_name() -> std::borrow::Cow<'static, str> {
+                stringify!($name).into()
+            }
+
+            fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+                schemars::json_schema!({ "type": "string", "minLength": 1 })
+            }
+
+            fn inline_schema() -> bool {
+                true
+            }
+        }
     };
 }
 

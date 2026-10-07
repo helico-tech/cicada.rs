@@ -83,8 +83,6 @@ pub struct DeviceState {
     /// The model.
     pub model: String,
     /// When the registry created it.
-    #[serde(with = "cicada::time::serde_instant")]
-    #[schemars(with = "String")]
     pub registered_at: Timestamp,
     /// The installed firmware.
     #[serde(default)]
