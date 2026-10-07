@@ -169,7 +169,7 @@ impl Actor for SyncActor {
 | `cicada-client` | Typed HTTP client (reqwest) | `actors-client` |
 | `cicada-ui` | The actor console (the React app of the Kotlin repo), embedded and served by `actor_ui()` | `actors-ui` |
 | `cicada-otel` | OpenTelemetry plugin | `actors-otel` |
-| `cicada-extras` | Timer, cron schedule, crash-loop guard, failure watcher, dead letters | `actors-extras` |
+| `cicada-extras` | Timer, schedules (interval, daily), crash-loop guard, failure watcher, dead letters | `actors-extras` |
 | `examples` | Worked examples with tests | `examples` |
 | `sample-service` | A runnable node (binary) with the examples, used by end-to-end tests | `sample-service` |
 
