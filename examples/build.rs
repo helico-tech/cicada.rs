@@ -66,7 +66,7 @@ fn expand(text: &str) -> Result<String, String> {
             }
         }
         if visible.next().is_some() {
-            return Err(format!("the block has more lines than its @@ markers place, near:\n{}", &template_preview(after)));
+            return Err(format!("the block has more lines than its @@ markers place, near:\n{}", template_preview(after)));
         }
         out.push_str("```");
         rest = &body_and_rest[close + 3..];
