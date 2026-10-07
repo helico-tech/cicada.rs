@@ -16,6 +16,7 @@ tracing.workspace = true
 sqlx = { workspace = true, features = ["sqlite"] }
 
 [dev-dependencies]
+cicada-store-conformance.workspace = true
 cicada-test.workspace = true
 schemars.workspace = true
 serde.workspace = true

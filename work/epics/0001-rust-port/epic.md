@@ -23,7 +23,7 @@ All stories are done, `cargo test --workspace` passes (PostgreSQL tests included
 - [02 Runtime](02-runtime.md) — done
 - [03 Test harness](03-test-harness.md) — done
 - [04 Store conformance suite S1–S10 as a reusable crate, run against InMemoryStore](04-conformance-suite.md) — todo
-- [05 SQLite store on sqlx with the Kotlin schema](05-sqlite-store.md) — todo
+- [05 SQLite store on sqlx with the Kotlin schema](05-sqlite-store.md) — done
 - [06 PostgreSQL store on sqlx with LISTEN/NOTIFY wake-ups](06-postgres-store.md) — todo
 - [07 Port the runtime test suite of `actors-test` (dispatch, leases, retry, hooks, outcomes, timeouts, shutdown)](07-runtime-tests.md) — todo
 - [08 HTTP API as axum routers with the Kotlin wire model and problem+json](08-http-api.md) — todo

@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 created: 2026-10-07
 ---
 
@@ -53,11 +53,14 @@ Port `actors-store-sqlite` (`SqliteStore.kt`, `Schema.kt`, `Jdbc.kt`) to `crates
   with the Rust store; `CICADA_WRITE_DB=<file>` writes a database with every kind of row, which the Kotlin
   `SqliteStore` (a throw-away test in a scratch copy of the Kotlin repo, `gradle --offline`) read, claimed from and
   committed to, after which the Rust store read the result again.
-- `cargo test -p cicada-store-sqlite` and `cargo clippy -p cicada-store-sqlite --all-targets` are clean. Not done yet:
-  the conformance suite (story 04, written in parallel) is not wired in; this story stays `in-progress` until it is.
+- Merged `main` (conformance suite of story 04). `tests/conformance.rs` runs `store_conformance_tests!` twice: on a
+  virtual clock that can step back, with peers as separate `SqliteStore` instances on the same file and reopen (the
+  Kotlin `SqliteStoreConformanceTest`; all 102 cases run), and on the system clock with a 150 ms tick (the Kotlin
+  `SqliteStoreRealTimeConformanceTest`; 11 time-exact, step-back and durability cases skip, as in Kotlin). All 204
+  pass without changes to the store or the suite.
+- Done: `cargo test -p cicada-store-sqlite` (224 tests plus a doctest) and
+  `cargo clippy -p cicada-store-sqlite --all-targets` are clean; `cargo build --workspace --all-targets` builds.
 
 ## Follow-ups
 
-- Wire `cicada-store-conformance` in (`tests/conformance.rs`, a fixture with a step-back clock, peers as extra
-  `SqliteStore` instances on the same file, reopen), and port `SqliteStoreRealTimeConformanceTest`.
 - [0400 No rustfmt configuration](../../issues/0400-no-rustfmt-config.md).
