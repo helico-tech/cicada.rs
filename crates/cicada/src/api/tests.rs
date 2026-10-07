@@ -143,7 +143,10 @@ fn policy_errors_name_their_field() {
     .unwrap()
     .retention
     .unwrap();
-    assert_eq!(policy.to_json(), json!({"done": {"kind": "last", "count": 10}, "failed": {"kind": "for", "age": "PT1M"}}));
+    assert_eq!(
+        policy.to_json(),
+        json!({"done": {"kind": "last", "count": 10}, "failed": {"kind": "for", "age": "PT1M"}})
+    );
 }
 
 #[test]

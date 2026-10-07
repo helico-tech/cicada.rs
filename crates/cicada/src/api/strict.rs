@@ -29,9 +29,9 @@ pub(super) fn delay<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option
     if signed.is_negative() {
         return Ok(Some(Duration::ZERO));
     }
-    to_duration(signed).map(Some).ok_or_else(|| {
-        serde::de::Error::custom(format!("A delay must not exceed {}", format_duration(MAX_DELAY)))
-    })
+    to_duration(signed)
+        .map(Some)
+        .ok_or_else(|| serde::de::Error::custom(format!("A delay must not exceed {}", format_duration(MAX_DELAY))))
 }
 
 pub(super) fn retry<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<RetryPolicy>, D::Error> {
@@ -59,8 +59,9 @@ pub(super) fn lenient_retention<'de, D: Deserializer<'de>>(deserializer: D) -> R
 /// A duration field named `field` (in errors): an ISO-8601 or short-form duration string, or whole milliseconds.
 fn duration_field(field: &str, value: &Value) -> Result<SignedNanos, String> {
     match value {
-        Value::String(text) => parse_duration(text)
-            .map_err(|_| format!("{field} '{text}' is not an ISO-8601 duration such as PT5S")),
+        Value::String(text) => {
+            parse_duration(text).map_err(|_| format!("{field} '{text}' is not an ISO-8601 duration such as PT5S"))
+        }
         Value::Number(n) => {
             let millis = n.as_i64().map(i128::from).or_else(|| n.as_u64().map(i128::from));
             millis
