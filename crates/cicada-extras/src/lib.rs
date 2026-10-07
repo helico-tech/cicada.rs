@@ -11,5 +11,8 @@ pub mod supervision;
 pub mod time;
 
 pub use guard::{CrashLoopError, CrashLoopGuard};
-pub use supervision::{DeadLetter, DeadLetters, DeadLettersActor, DeadLettersMsg, DeadLettersState, FailureWatcher};
+pub use supervision::{
+    ActorOperations, DeadLetter, DeadLetters, DeadLettersActor, DeadLettersMsg, DeadLettersState, Failure, FailureWatcher,
+    OperationError, Sent,
+};
 pub use time::{Schedule, ScheduleError, Timer};

@@ -316,8 +316,12 @@ name = "cicada-extras"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "axum",
  "chrono",
  "cicada",
+ "cicada-axum",
+ "cicada-client",
+ "cicada-extras",
  "cicada-test",
  "md-5",
  "schemars",

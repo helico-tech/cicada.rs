@@ -1,19 +1,23 @@
+use std::fmt;
+use std::sync::Arc;
 use std::time::Duration;
 
+use cicada::ActorAddress;
 use cicada::address::ActorRef;
-use cicada::runtime::{OpError, SendResult};
-use cicada::store::{MessageId, OutcomeRecord, Page, PageCursor};
+use cicada::message;
+use cicada::store::MessageId;
 use cicada::time::{self, Timestamp};
-use cicada::{ActorAddress, ActorSystem, SendOptions};
 use md5::{Digest, Md5};
 use tokio::task::JoinHandle;
 
 use super::dead_letters::{DeadLetter, DeadLetters, DeadLettersMsg, DeadLettersState};
+use super::operations::{ActorOperations, Failure, OperationError, Sent};
 
 /// Copies failed messages from the failures list (`GET /failures`) into the [`DeadLetters`] actor.
 ///
-/// It runs in the service, next to the node, and talks to the actors through the node's operations (the same as the
-/// HTTP API). Every node may run it at the same time: each failure is forwarded with an id derived from the failed
+/// It talks to the actors through [`ActorOperations`]: in the service, next to the node, through the node itself
+/// (`FailureWatcher::new(system)`), or in a process of its own through the HTTP client (`FailureWatcher::new(client)`,
+/// with the `client` feature). Every node may run it at the same time: each failure is forwarded with an id derived from the failed
 /// message's id ([`Self::dead_letter_id`]), and the store deduplicates sends by id, so a failure reaches the
 /// dead-letter actor once however many watchers see it.
 ///
@@ -27,9 +31,8 @@ use super::dead_letters::{DeadLetter, DeadLetters, DeadLettersMsg, DeadLettersSt
 /// watcher.abort();
 /// # }
 /// ```
-#[derive(Debug)]
 pub struct FailureWatcher {
-    system: ActorSystem,
+    ops: Arc<dyn ActorOperations>,
     prefix: String,
     overlap: Duration,
     dead_letters: ActorAddress,
@@ -41,10 +44,11 @@ impl FailureWatcher {
     /// The default look-back of each poll.
     pub const DEFAULT_OVERLAP: Duration = Duration::from_secs(60);
 
-    /// A watcher of every failure on `system`'s store.
-    pub fn new(system: ActorSystem) -> Self {
+    /// A watcher of every failure reachable through `ops` (an `ActorSystem`, or an `ActorClient` with the `client`
+    /// feature).
+    pub fn new(ops: impl ActorOperations) -> Self {
         Self {
-            system,
+            ops: Arc::new(ops),
             prefix: String::new(),
             overlap: Self::DEFAULT_OVERLAP,
             dead_letters: DeadLetters.address().expect("the dead-letter address is valid"),
@@ -68,33 +72,34 @@ impl FailureWatcher {
 
     /// Reads the failures since the last poll and forwards the new ones. Returns how many failures were forwarded for
     /// the first time.
-    pub async fn poll(&mut self) -> Result<usize, OpError> {
+    pub async fn poll(&mut self) -> Result<usize, OperationError> {
         if !self.created {
-            self.system.create(&DeadLetters, &DeadLettersState::default()).await?; // idempotent
+            let state = serde_json::to_value(DeadLettersState::default())?;
+            self.ops.create(&self.dead_letters, state).await?; // idempotent
             self.created = true;
         }
         let mut newest = self.since;
         let mut forwarded = 0;
-        let mut cursor: Option<PageCursor> = None;
+        let mut cursor: Option<String> = None;
         loop {
-            let page = self.system.failures(&self.prefix, self.since, cursor.as_ref(), Page::<()>::DEFAULT_SIZE).await?;
-            for failure in page.items {
+            let (failures, next) = self.ops.failures(&self.prefix, self.since, cursor.take()).await?;
+            for failure in failures {
                 if failure.actor == self.dead_letters {
                     continue; // a failed Redrive is not itself a dead letter
                 }
                 let finished_at = failure.finished_at;
-                let options = SendOptions::new().id(Self::dead_letter_id(&failure.message_id));
-                let record = DeadLettersMsg::RecordFailure { letter: to_dead_letter(failure) };
-                match self.system.send_with(&DeadLetters, record, options).await? {
-                    SendResult::Accepted(_) => forwarded += 1,
-                    SendResult::NoSuchInstance => self.created = false, // deleted meanwhile: re-create next time
-                    _ => {} // a duplicate: already forwarded, by this or another watcher
+                let id = Self::dead_letter_id(&failure.message_id);
+                let record = message::encode(&DeadLettersMsg::RecordFailure { letter: to_dead_letter(failure) })?;
+                match self.ops.send(&self.dead_letters, &record.message_type, record.payload, id).await? {
+                    Sent::Accepted => forwarded += 1,
+                    Sent::NoSuchInstance => self.created = false, // deleted meanwhile: re-create next time
+                    Sent::Duplicate => {} // already forwarded, by this or another watcher
                 }
                 if newest.is_none_or(|n| finished_at > n) {
                     newest = Some(finished_at);
                 }
             }
-            match page.next {
+            match next {
                 Some(next) => cursor = Some(next),
                 None => break,
             }
@@ -130,13 +135,19 @@ impl FailureWatcher {
     }
 }
 
-fn to_dead_letter(failure: OutcomeRecord) -> DeadLetter {
+impl fmt::Debug for FailureWatcher {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FailureWatcher").field("prefix", &self.prefix).field("since", &self.since).finish()
+    }
+}
+
+fn to_dead_letter(failure: Failure) -> DeadLetter {
     DeadLetter {
         failed_message_id: failure.message_id.to_string(),
         actor: failure.actor.to_string(),
-        message_type: failure.envelope.message_type,
-        payload: failure.envelope.payload,
-        correlation_id: failure.envelope.correlation_id,
+        message_type: failure.message_type,
+        payload: failure.payload,
+        correlation_id: failure.correlation_id,
         error: failure.error,
         failed_at: failure.finished_at,
         redriven_as: None,

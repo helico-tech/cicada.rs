@@ -1,5 +1,5 @@
 ---
-status: todo
+status: done
 type: idea
 created: 2026-10-07
 ---

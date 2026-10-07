@@ -11,6 +11,7 @@ publish.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 cicada.workspace = true
+cicada-client = { workspace = true, optional = true }
 md-5 = "0.11"
 schemars.workspace = true
 serde.workspace = true
@@ -20,7 +21,15 @@ tokio.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 
+[features]
+# ActorOperations for the HTTP client, so a FailureWatcher can run in a process of its own.
+client = ["dep:cicada-client"]
+
 [dev-dependencies]
+axum.workspace = true
+cicada-axum.workspace = true
+cicada-client.workspace = true
+cicada-extras = { path = ".", features = ["client"] }
 cicada-test.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 
