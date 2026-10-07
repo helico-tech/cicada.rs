@@ -9,10 +9,10 @@
 //! `cicada.sent` (messages the commit enqueued). A failed turn has status `ERROR` with the failure reason; a handler
 //! error is recorded as an `exception` event, also when the message is retried. Its parent is the trace context in the
 //! message's headers (W3C `traceparent`/`tracestate`, or whatever the configured propagator reads), so a sender puts
-//! it there: a handler with [`trace_headers`], code outside an actor with [`current_trace_headers`]. A turn whose lease
-//! was lost before the commit has no outcome, so its span gets no `cicada.outcome`; the OpenTelemetry SDK for Rust ends
-//! (and exports) a span when it is dropped, so that span is exported when the turn is dropped, with status unset. (The
-//! Kotlin plugin never ends it, so it is not exported there.) The re-run gets its own span.
+//! it there: a handler with [`trace_headers`], code outside an actor with [`current_trace_headers`]. A turn that never
+//! commits (its lease was lost, or its node stopped mid-turn) has no outcome; the OpenTelemetry SDK for Rust exports
+//! every span it drops, so its span is ended when the turn ends, with `cicada.outcome` `abandoned` and status unset.
+//! (The Kotlin plugin never ends such a span, so it is not exported there.) The re-run gets its own span.
 //!
 //! **Metrics.** `cicada.turn.duration` (histogram, seconds, claim to commit) and `cicada.message.lag` (histogram,
 //! seconds, from the message's due time to its claim), both with `cicada.actor.type` (the template) and
@@ -31,6 +31,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use async_trait::async_trait;
@@ -149,7 +150,7 @@ impl ActorTelemetry {
             .start_with_context(&self.tracer, &parent);
         let cx = Context::new().with_span(span);
         let headers = self.inject(&cx);
-        TurnSpan { cx, started: Instant::now(), headers }
+        TurnSpan { cx, started: Instant::now(), headers, ended: Arc::new(AtomicBool::new(false)) }
     }
 }
 
@@ -168,7 +169,9 @@ impl Plugin for ActorTelemetry {
 
     async fn on_claim(&self, ctx: &mut ClaimContext<'_>) -> HookResult {
         let info = ctx.info();
-        info.attributes().insert(self.start_span(info));
+        let turn = self.start_span(info);
+        info.attributes().insert(Abandoned { cx: turn.cx.clone(), ended: turn.ended.clone() });
+        info.attributes().insert(turn);
         let message = info.message();
         let lag = (info.now() - message.deliver_at).to_std().unwrap_or_default();
         self.lag.record(
@@ -203,6 +206,7 @@ impl Plugin for ActorTelemetry {
         };
         span.set_attribute(KeyValue::new(OUTCOME, name));
         span.set_attribute(KeyValue::new(SENT, ctx.sent().len() as i64));
+        turn.ended.store(true, Ordering::SeqCst);
         span.end();
         self.duration.record(
             turn.started.elapsed().as_secs_f64(),
@@ -241,6 +245,32 @@ struct TurnSpan {
     cx: Context,
     started: Instant,
     headers: BTreeMap<String, String>,
+    ended: Arc<AtomicBool>,
+}
+
+/// Ends the span of a turn that never reached `on_outcome` (its lease was lost, or the node stopped mid-turn) with
+/// `cicada.outcome = abandoned`, when the turn's attributes are dropped. The Kotlin plugin never ends such a span, so it
+/// is not exported there; the Rust SDK exports every span it drops, so here it is exported and marked.
+struct Abandoned {
+    cx: Context,
+    ended: Arc<AtomicBool>,
+}
+
+impl Clone for Abandoned {
+    fn clone(&self) -> Self {
+        // Attributes hand out copies; only the copy in the bag marks the span (copies never outlive the turn's end).
+        Self { cx: self.cx.clone(), ended: Arc::new(AtomicBool::new(true)) }
+    }
+}
+
+impl Drop for Abandoned {
+    fn drop(&mut self) {
+        if !self.ended.swap(true, Ordering::SeqCst) {
+            let span = self.cx.span();
+            span.set_attribute(KeyValue::new(OUTCOME, "abandoned"));
+            span.end();
+        }
+    }
 }
 
 /// Reads message headers; names are case-insensitive on the wire, and senders may well write `Traceparent`.

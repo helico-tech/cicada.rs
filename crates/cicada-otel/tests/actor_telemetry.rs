@@ -254,3 +254,66 @@ async fn trace_headers_hold_the_turns_traceparent_and_are_empty_without_the_plug
     test.run_until_idle().await;
     assert_eq!(*seen.lock().unwrap(), vec![BTreeMap::new()]);
 }
+
+struct Stuck;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StuckRef {
+    id: String,
+}
+
+impl ActorRef for StuckRef {
+    const TEMPLATE: &'static str = "actor://stuck/{id}";
+    type Message = StuckMsg;
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type")]
+enum StuckMsg {
+    Wait,
+}
+
+impl Actor for Stuck {
+    type Ref = StuckRef;
+    type State = cicada::Stateless;
+    type Message = StuckMsg;
+    const UNHANDLED: Unhandled = Unhandled::Fail;
+
+    async fn handle(&self, _: &mut Turn<Self>, _: StuckMsg) -> HandlerResult {
+        tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn the_span_of_a_turn_that_never_commits_is_marked_abandoned() {
+    let spans = InMemorySpanExporter::default();
+    let tracer_provider = SdkTracerProvider::builder().with_simple_exporter(spans.clone()).build();
+    let meter_provider = SdkMeterProvider::builder().build();
+    let plugin = ActorTelemetry::new(&tracer_provider, &meter_provider);
+    let store = std::sync::Arc::new(cicada_test::InMemoryStore::default());
+    let system = ActorSystem::builder(store)
+        .host(Stuck)
+        .install(plugin)
+        .poll_interval(std::time::Duration::from_millis(10))
+        .shutdown_cancel_timeout(std::time::Duration::from_secs(2))
+        .build();
+    system.start().await.unwrap();
+    let stuck = StuckRef { id: "s".into() };
+    system.create_stateless(&stuck).await.unwrap();
+    system.send(&stuck, StuckMsg::Wait).await.unwrap();
+    while system.running_turns() == 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    // The node stops at once: the turn is cancelled and its lease released; it never commits.
+    system.stop_with_grace(std::time::Duration::ZERO).await;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let span = loop {
+        if let Some(span) = spans.get_finished_spans().unwrap().into_iter().next() {
+            break span;
+        }
+        assert!(std::time::Instant::now() < deadline, "no span exported");
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    };
+    assert_eq!(str_attr(&span, "cicada.outcome").as_deref(), Some("abandoned"));
+}

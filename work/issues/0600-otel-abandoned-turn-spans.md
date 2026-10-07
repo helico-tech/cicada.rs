@@ -1,5 +1,5 @@
 ---
-status: todo
+status: done
 type: question
 created: 2026-10-07
 ---
@@ -23,3 +23,5 @@ handler that outlives the lease TTL), and look at the exported spans: one has no
   a `Drop` guard in the plugin's turn attribute; (c) build the span only in `on_outcome` with a recorded start time
   and pre-generated span/trace ids, which complicates sampling. (a) is the current state; (b) is cheap if dashboards
   need to tell abandoned turns apart.
+
+- 2026-10-07: option (b) implemented: a drop guard ends the span with `cicada.outcome` `abandoned`; tested with a node that stops mid-turn.
