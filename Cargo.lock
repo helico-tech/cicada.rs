@@ -406,9 +406,11 @@ dependencies = [
 name = "cicada-test"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "chrono",
  "cicada",
+ "futures",
  "schemars",
  "serde",
  "serde_json",

@@ -540,8 +540,12 @@ impl ActorSystem {
         self.inner.wake.notify_one();
     }
 
-    /// Claims up to `limit` due turns of the hosted types and runs them concurrently in the caller's task. For tests
-    /// and manual scheduling; a started node does this in its dispatch loop. Returns the number of turns run.
+    /// Claims up to `limit` due turns of the hosted types and runs them concurrently, returning when they ended. For
+    /// tests and manual scheduling; a started node does this in its dispatch loop. Returns the number of turns run.
+    ///
+    /// Dropping the returned future cancels the turns, like a node stopping after its grace period: a turn whose
+    /// handler has not ended releases its lease (in the background, once the handler stopped), one whose handler
+    /// ended leaves it to expire (G6); claims still in flight are released when they arrive.
     pub async fn run_due_turns(&self, limit: usize) -> Result<usize, OpError> {
         let init = self.initialized().await?.clone();
         if init.templates.is_empty() {
@@ -549,33 +553,49 @@ impl ActorSystem {
         }
         let claims = self.claim(&init, limit).await?;
         let count = claims.len();
-        let never = CancellationToken::new();
-        let turns = claims.into_iter().map(|(claim, sent)| {
-            let executor = init.executor.clone();
-            let never = never.clone();
-            let running = self.inner.running.clone();
-            async move {
-                let _guard = RunningGuard::new(running);
-                executor.execute(claim, sent, never).await
+        let cancel = CancellationToken::new();
+        let _cancel_on_drop = cancel.clone().drop_guard();
+        // Every turn is a task of its own, started at once, so a turn cancelled right away still releases its lease.
+        let turns: Vec<JoinHandle<()>> = claims
+            .into_iter()
+            .map(|(claim, sent)| {
+                let executor = init.executor.clone();
+                let cancel = cancel.clone();
+                let guard = RunningGuard::new(self.inner.running.clone());
+                tokio::spawn(async move {
+                    executor.execute(claim, sent, cancel).await;
+                    drop(guard);
+                })
+            })
+            .collect();
+        for turn in turns {
+            if let Err(e) = turn.await {
+                tracing::error!("A turn task failed: {e}");
             }
-        });
-        futures::future::join_all(turns).await;
+        }
         Ok(count)
     }
 
     /// Claims up to `limit` turns, paired with the local time the claim was sent (the start of their local lease
     /// deadline).
+    ///
+    /// The store call itself is not cancellable: it runs in a task of its own, and claims the store granted are never
+    /// dropped on the floor. When the caller is gone by the time they arrive (cancelled, or the node stopped and left
+    /// its dispatch loop behind), they are released.
     async fn claim(&self, init: &Initialized, limit: usize) -> Result<Vec<(Claim, Instant)>, StoreError> {
         let sent = Instant::now();
-        // Not cancellable: claims the store granted are never dropped on the floor (see dispatch_loop).
         let store = self.inner.store.clone();
         let templates = init.templates.clone();
         let node = self.inner.config.node_id.clone();
         let ttl = self.inner.config.lease_ttl;
-        let claims = tokio::spawn(async move { store.claim_due(&templates, &node, ttl, limit).await })
-            .await
-            .map_err(|e| StoreError::unavailable(format!("claiming failed: {e}")))??;
-        Ok(claims.into_iter().map(|c| (c, sent)).collect())
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let result = store.claim_due(&templates, &node, ttl, limit).await;
+            // Unsent or never received, the batch releases its claims when dropped.
+            let _ = tx.send(result.map(|claims| ClaimBatch { store, claims }));
+        });
+        let mut batch = rx.await.map_err(|_| StoreError::unavailable("claiming failed: the claim task ended"))??;
+        Ok(std::mem::take(&mut batch.claims).into_iter().map(|c| (c, sent)).collect())
     }
 
     async fn dispatch_loop(&self, init: Arc<Initialized>, tracker: TaskTracker, cancel: CancellationToken) {
@@ -975,6 +995,33 @@ fn duplicate_of(existing: Option<Message>, to: &ActorAddress, message_type: &str
     match existing {
         Some(m) if &m.to != to || m.message_type != message_type => SendResult::IdConflict(m),
         other => SendResult::Duplicate(other),
+    }
+}
+
+/// Claims on their way from the store to the caller. Claims still in the batch when it is dropped (the caller was gone
+/// when they arrived) are released in the background, so their messages are claimable again at once.
+struct ClaimBatch {
+    store: Arc<dyn Store>,
+    claims: Vec<Claim>,
+}
+
+impl Drop for ClaimBatch {
+    fn drop(&mut self) {
+        let claims = std::mem::take(&mut self.claims);
+        if claims.is_empty() {
+            return;
+        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            tracing::warn!("{} claims dropped outside a runtime; their leases expire", claims.len());
+            return;
+        };
+        let store = self.store.clone();
+        runtime.spawn(async move {
+            for c in claims {
+                tracing::info!("Releasing the claim of {} for {}: nobody takes it any more", c.actor, c.message.id);
+                let _ = store.release(&c.actor, c.epoch).await;
+            }
+        });
     }
 }
 
