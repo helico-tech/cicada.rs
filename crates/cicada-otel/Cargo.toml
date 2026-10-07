@@ -13,6 +13,11 @@ opentelemetry.workspace = true
 async-trait.workspace = true
 
 [dev-dependencies]
+cicada-test.workspace = true
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
