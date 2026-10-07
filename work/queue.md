@@ -2,7 +2,6 @@
 
 Top = next. Details live in the linked files.
 
-1. [04 Store conformance suite S1–S10 as a reusable crate, run against InMemoryStore](epics/0001-rust-port/04-conformance-suite.md)
 1. [05 SQLite store on sqlx with the Kotlin schema](epics/0001-rust-port/05-sqlite-store.md)
 1. [06 PostgreSQL store on sqlx with LISTEN/NOTIFY wake-ups](epics/0001-rust-port/06-postgres-store.md)
 1. [07 Port the runtime test suite of `actors-test` (dispatch, leases, retry, hooks, outcomes, timeouts, shutdown)](epics/0001-rust-port/07-runtime-tests.md)
