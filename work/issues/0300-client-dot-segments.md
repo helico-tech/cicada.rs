@@ -1,5 +1,5 @@
 ---
-status: todo
+status: wontfix
 type: debt
 created: 2026-10-07
 ---
@@ -35,3 +35,5 @@ Options:
   the contract; a second HTTP stack in the client.
 - Add an alternative escape to the HTTP contract that URL parsers leave alone. A contract change: needs an ADR and the
   same change in the Kotlin implementation.
+
+- 2026-10-07: decided to keep the refusal. The server and the in-process API serve these addresses; only the Rust HTTP client cannot, and it fails loudly instead of misaddressing. A second HTTP stack or a contract change costs more than addresses whose segment is literally `.` or `..` are worth. Reopen if a user needs them over HTTP from Rust.
