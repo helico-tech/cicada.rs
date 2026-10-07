@@ -1,0 +1,53 @@
+# Telemetry overlay for the E2E stack: Grafana's all-in-one OpenTelemetry image (collector, Tempo for traces,
+# Prometheus for metrics, Grafana) and every node exporting to it over OTLP (ActorTelemetry in the sample service).
+#
+#   docker compose -f e2e/docker-compose.yml -f e2e/docker-compose.otel.yml up -d --build --wait
+#   open http://localhost:3001            # Grafana (no login): Explore → Tempo / Prometheus
+#   docker compose -f e2e/docker-compose.yml -f e2e/docker-compose.otel.yml down -v
+#
+# Ports on the host besides the E2E ones: Grafana 3001, OTLP HTTP 4328 (for a node run with
+# `cargo run -p cicada-sample-service` and OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4328). They differ from the
+# Kotlin overlay's (3000, 4318), so both stacks can run side by side. The sample service exports over HTTP/protobuf only.
+x-otel-env: &otel-env
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4318
+  OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+  OTEL_SERVICE_NAME: cicada-rs-sample
+  OTEL_METRIC_EXPORT_INTERVAL: "5000"
+  OTEL_BSP_SCHEDULE_DELAY: "1000"
+
+x-otel-node: &otel-node
+  depends_on:
+    postgres:
+      condition: service_healthy
+    lgtm:
+      condition: service_started
+
+services:
+  lgtm:
+    image: grafana/otel-lgtm:0.35.0
+    ports:
+      - "3001:3000"
+      - "4328:4318"
+
+  node-1:
+    <<: *otel-node
+    environment:
+      <<: *otel-env
+      OTEL_RESOURCE_ATTRIBUTES: service.instance.id=node-1
+
+  node-2:
+    <<: *otel-node
+    environment:
+      <<: *otel-env
+      OTEL_RESOURCE_ATTRIBUTES: service.instance.id=node-2
+
+  node-3:
+    <<: *otel-node
+    environment:
+      <<: *otel-env
+      OTEL_RESOURCE_ATTRIBUTES: service.instance.id=node-3
+
+  send-only:
+    environment:
+      <<: *otel-env
+      OTEL_RESOURCE_ATTRIBUTES: service.instance.id=send-only

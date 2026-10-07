@@ -61,6 +61,17 @@ docker compose -f e2e/docker-compose.yml up -d --wait                      # bri
 
 Shorter or longer timings: `LEASE_TTL=10s docker compose -f e2e/docker-compose.yml up -d --wait`.
 
+## Telemetry
+
+`docker-compose.otel.yml` adds Grafana's all-in-one OpenTelemetry image and makes every node export traces and
+metrics to it:
+
+```sh
+docker compose -f e2e/docker-compose.yml -f e2e/docker-compose.otel.yml up -d --build --wait
+open http://localhost:3001     # Grafana: Explore → Tempo (traces) or Prometheus (cicada_turn_duration, cicada_message_lag)
+docker compose -f e2e/docker-compose.yml -f e2e/docker-compose.otel.yml down -v
+```
+
 ## Clean up
 
 After an aborted run, or when done driving by hand:
