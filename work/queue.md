@@ -15,4 +15,3 @@ Top = next. Details live in the linked files.
 1. [16 README and operations guide for the Rust port](epics/0001-rust-port/16-docs.md)
 1. [0600 Spans of abandoned turns are exported (OTel)](issues/0600-otel-abandoned-turn-spans.md)
 1. [0601 An operations trait shared by ActorSystem and the HTTP client](issues/0601-operations-trait.md)
-1. [0602 `croner` is unused](issues/0602-croner-unused.md)
