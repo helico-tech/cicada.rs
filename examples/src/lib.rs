@@ -27,3 +27,13 @@ pub mod steps;
 pub mod supervision;
 pub mod sync;
 pub mod timer;
+
+/// The Rust code blocks of the README, compiled (and, unless `no_run`, run) by `cargo test -p cicada-examples --doc`.
+#[cfg(doctest)]
+#[doc = include_str!("../../README.md")]
+pub struct ReadmeDoctests;
+
+/// The Rust code blocks of the operations guide, compiled and run like the README's.
+#[cfg(doctest)]
+#[doc = include_str!("../../docs/operations.md")]
+pub struct OperationsDoctests;
