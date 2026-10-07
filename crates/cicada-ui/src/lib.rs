@@ -15,8 +15,8 @@
 //! the token on the first `401` and keeps it in the tab's session storage. Wrap the console in the host's auth layer
 //! too if the page itself should not be public.
 //!
-//! The page is the React + TypeScript app of the Kotlin implementation, built with Vite at compile time (see
-//! `build.rs`) and embedded in the binary.
+//! The page is the React + TypeScript app of the Kotlin implementation in the Sensus BPM Online design (ADR 0006),
+//! built with Vite at compile time (see `build.rs`) and embedded in the binary.
 
 use axum::Router;
 use axum::body::Body;

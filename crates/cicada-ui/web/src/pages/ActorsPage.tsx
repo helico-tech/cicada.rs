@@ -7,12 +7,11 @@ import { combinePrefixes, matchTemplate, normalizePrefix, templatePrefix, withou
 import { addedKeys, removedKeys } from '../lib/diff';
 import { href, replaceHash, type Query } from '../lib/routes';
 import { useDebounced } from '../lib/hooks';
-import { Badge, Button, Card, EmptyState, Icon, SearchInput, Select, SrOnly, Tabs } from '../halo';
+import { Badge, Button, EmptyState, Field, LinkButton, SearchInput, Select, SrOnly } from '../sx';
 import { CreateActorDialog } from '../dialogs/CreateActor';
 import { ChangeNote, Loading, Mono, PageHead } from '../ui/layout';
 
 const PAGE_SIZE = 100;
-const MAX_TYPE_TABS = 7;
 
 interface Loaded {
   rows: string[];
@@ -84,27 +83,24 @@ export function ActorsPage({ query }: { query: Query }) {
 
   const shownPrefix = normalizePrefix(prefix);
   return (
-    <div>
+    <div className="cc-page">
       <PageHead
         title="Actors"
         description="Browse actor instances by type template or URI prefix. Select an actor to inspect its state and mailbox."
-        actions={<Button variant="primary" icon="plus" disabled={ctx.types.length === 0} onClick={() => setCreating(true)}>Create Actor</Button>}
+        actions={<Button variant="primary" icon="plus" disabled={ctx.types.length === 0} onClick={() => setCreating(true)}>Create actor…</Button>}
       />
-      <Card title="Actor Instances" subtitle="Sorted by URI · cursor pagination" flush>
-        <div className="cc-filterbar">
-          <span className="cc-label cc-muted">Type</span>
-          <div className="cc-scroll-x">
-            {/* Tabs as in the design while they fit; a node with many types gets a select. */}
-            {typeItems.length <= MAX_TYPE_TABS
-              ? <Tabs label="Filter by type template" value={type} items={typeItems} onChange={chooseType} />
-              : <Select label="Filter by type template" value={type} options={typeItems} onChange={chooseType} />}
-          </div>
-          <div className="cc-filter-search">
-            <SearchInput size="sm" placeholder="URI prefix, e.g. actor://sync/ac" label="Filter by URI prefix" defaultValue={prefixText}
-              onInput={(v) => { setPrefixText(v); setPages(1); }} />
-          </div>
-        </div>
+      <div className="cc-filters">
+        <Field id="actors-type" label="Type" className="cc-filter-type">
+          <Select id="actors-type" value={type} options={typeItems} onChange={chooseType} />
+        </Field>
+        <Field id="actors-prefix" label="URI prefix" className="cc-filter-prefix">
+          <SearchInput id="actors-prefix" icon="filter" mono placeholder="actor://sync/ac" defaultValue={prefixText}
+            onInput={(v) => { setPrefixText(v); setPages(1); }} />
+        </Field>
+        <span className="sx-spacer" />
         {loaded ? <ChangeNote added={loaded.added.size} addedWord="new actor" removed={loaded.removed} removedWord="removed" /> : null}
+      </div>
+      <div className="cc-tablebox">
         {!loaded ? (
           <Loading>Loading actors…</Loading>
         ) : loaded.rows.length === 0 ? (
@@ -114,29 +110,28 @@ export function ActorsPage({ query }: { query: Query }) {
               ? <EmptyState title="No actors match these filters" caption={<>Nothing starts with <Mono>{shownPrefix || templatePrefix(type)}</Mono>{type ? ' for the selected type' : ''}. Check the prefix, or create the actor.</>} />
               : <EmptyState title="No actors yet" caption="Create one here, over HTTP or from a handler." />
         ) : (
-          <div className="cc-scroll-x">
-            <table className="ha-table cc-table cc-table-actors">
+          <div className="sx-tablewrap">
+            <table className="sx-table cc-table-actors">
+              <colgroup><col /><col className="cc-w-240" /><col className="cc-w-200" /><col className="cc-w-40" /></colgroup>
               <thead>
-                <tr>
-                  <th className="cc-col-uri">Actor URI</th><th>Type template</th><th>Parameters</th>
-                  <th className="cc-col-icon"><SrOnly>Open</SrOnly></th>
-                </tr>
+                <tr><th>Actor URI</th><th>Type template</th><th>Parameters</th><th className="is-actions"><SrOnly>Open</SrOnly></th></tr>
               </thead>
               <tbody>
                 {loaded.rows.map((uri) => {
                   const resolved = ctx.typeOf(uri);
                   const isNew = loaded.added.has(uri);
+                  const params = resolved ? Object.entries(resolved.params) : [];
                   return (
                     <tr key={uri} className={isNew ? 'cc-new' : undefined}>
                       <td>
-                        <div className="cc-row cc-nowrap-cell">
-                          <a className="cc-link mono cc-uri-link" href={href.actor(uri)}>{uri}</a>
-                          {isNew ? <Badge tone="primary">New</Badge> : null}
+                        <div className="sx-cell">
+                          <a className="mono" href={href.actor(uri)} title={uri}>{uri}</a>
+                          {isNew ? <Badge tone="info" size="sm">New</Badge> : null}
                         </div>
                       </td>
-                      <td><span className="mono cc-muted">{resolved ? resolved.type.template : 'no registered type'}</span></td>
-                      <td><span className="cc-caption mono">{resolved ? Object.entries(resolved.params).map(([k, v]) => `${k}=${v}`).join('  ') : ''}</span></td>
-                      <td className="cc-col-icon"><a href={href.actor(uri)} className="cc-icon-link" aria-label={'Open ' + uri}><Icon name="chevron-right" size={16} /></a></td>
+                      <td className="mono-sm cc-muted">{resolved ? resolved.type.template : 'no registered type'}</td>
+                      <td className="caption">{params.length ? params.map(([k, v]) => `${k} = ${v}`).join(', ') : <span className="cc-subtle">none</span>}</td>
+                      <td className="is-actions"><LinkButton href={href.actor(uri)} variant="ghost" size="xs" icon="chevron-right" label={'Open ' + uri} /></td>
                     </tr>
                   );
                 })}
@@ -145,15 +140,16 @@ export function ActorsPage({ query }: { query: Query }) {
           </div>
         )}
         {loaded ? (
-          <div className="cc-card-foot">
-            <span className="cc-caption">
+          <div className="sx-table-foot">
+            <span className="caption sx-num cc-trunc">
               {type && loaded.rows.length !== loaded.loadedCount ? `${loaded.rows.length} shown of ${loaded.loadedCount} loaded` : `${loaded.loadedCount} loaded`}
               {loaded.next ? ` · next page starts after ${loaded.lastLoaded}` : ' · no more pages'}
             </span>
-            {loaded.next ? <Button size="sm" icon="chevron-down" onClick={loadMore}>Load More</Button> : <span className="cc-caption">End of list</span>}
+            <span className="sx-spacer" />
+            {loaded.next ? <Button size="sm" variant="ghost" icon="chevron-down" onClick={loadMore}>Load more</Button> : <span className="caption">End of list</span>}
           </div>
         ) : null}
-      </Card>
+      </div>
       {creating ? <CreateActorDialog template={type} onClose={() => setCreating(false)} /> : null}
     </div>
   );

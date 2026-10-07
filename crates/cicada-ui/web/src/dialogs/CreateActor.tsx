@@ -5,8 +5,8 @@ import { useRef, useState, type ReactNode } from 'react';
 import { useConsole } from '../app/context';
 import { buildUri, templateParams } from '../lib/address';
 import { href } from '../lib/routes';
-import { Badge, Button, Callout, ProblemCallout, Select } from '../halo';
-import { Dialog, DialogHeader } from '../ui/Dialog';
+import { Badge, Button, Callout, Field, LinkButton, ProblemCallout, Select } from '../sx';
+import { Dialog, DialogBody, DialogFoot, DialogHeader, DialogResult } from '../ui/Dialog';
 import { Mono } from '../ui/layout';
 import { ValueEditor, type ValueEditorHandle } from '../ui/ValueEditor';
 
@@ -44,10 +44,10 @@ export function CreateActorDialog({ template, onClose }: { template?: string; on
     setCreating(true);
     try {
       const { status } = await ctx.api.createActor(built.uri, state);
-      const open = <a className="cc-link cc-nowrap" href={href.actor(built.uri)}>Open Actor</a>;
+      const open = <LinkButton size="sm" href={href.actor(built.uri)}>Open actor</LinkButton>;
       setResult(status === 201
-        ? <Callout kind="ok" title="Created" detail={<Mono className="cc-small">{built.uri}</Mono>} action={open} />
-        : <Callout kind="info" title="Already exists" detail={<><Mono className="cc-small">{built.uri}</Mono> already existed. Nothing was changed.</>} action={open} />);
+        ? <Callout kind="ok" title="Created" detail={<Mono>{built.uri}</Mono>} action={open} />
+        : <Callout kind="info" title="Already exists" detail={<><Mono>{built.uri}</Mono> already existed. Nothing was changed.</>} action={open} />);
       ctx.refresh();
     } catch (e) {
       setResult(<ProblemCallout error={e} retry={() => void create()} />);
@@ -58,28 +58,25 @@ export function CreateActorDialog({ template, onClose }: { template?: string; on
 
   return (
     <Dialog labelledBy="create-title" onClose={onClose}>
-      <DialogHeader id="create-title" title="Create Actor" caption="Pick a type, fill its template parameters and, for stateful types, an initial state." onClose={onClose} />
-      <div className="cc-dialog-body">
-        <div className="cc-field">
-          <label className="cc-label" htmlFor="create-type">Type template</label>
-          <Select id="create-type" size="md" value={type.template} onChange={(v) => { setChosen(v); setValues({}); setResult(null); }}
+      <DialogHeader id="create-title" title="Create actor" caption="Pick a type, fill its template parameters and, for stateful types, an initial state." onClose={onClose} />
+      <DialogBody>
+        <Field id="create-type" label="Type template" required>
+          <Select id="create-type" mono value={type.template} onChange={(v) => { setChosen(v); setValues({}); setResult(null); }}
             options={types.map((t) => ({ value: t.template, label: t.template + (t.state === null ? ' (stateless)' : '') }))} />
-        </div>
+        </Field>
         <div className="cc-form-grid">
           {params.length === 0 ? (
-            <div className="cc-hint cc-span-all">This template has no parameters: it names exactly one actor.</div>
+            <p className="sx-help cc-span-all cc-flat">This template has no parameters: it names exactly one actor.</p>
           ) : params.map((name) => (
-            <div key={type.template + name} className="cc-field">
-              <label className="cc-label mono" htmlFor={'param-' + name}>{'{' + name + '}'}</label>
-              <input id={'param-' + name} className="cc-input mono" placeholder={name} spellCheck={false} autoComplete="off"
+            <Field key={type.template + name} id={'param-' + name} label={<span className="mono">{'{' + name + '}'}</span>} required hint="Any text; it is percent-encoded in the URI.">
+              <input id={'param-' + name} className="sx-input sx-mono" placeholder={name} spellCheck={false} autoComplete="off"
                 value={values[name] ?? ''} onChange={(e) => setValues((v) => ({ ...v, [name]: e.target.value }))} />
-              <span className="cc-hint">Any text; it is percent-encoded in the URI.</span>
-            </div>
+            </Field>
           ))}
         </div>
         <div className="cc-uri-box">
-          <div className="cc-overline">Resulting URI</div>
-          <div className="mono cc-uri-preview">
+          <div className="overline cc-subtle">Resulting URI</div>
+          <div className="cc-uri-preview">
             <span className="cc-uri-literal">actor://</span>
             {built.parts.map((p, i) => (
               <span key={i}>
@@ -91,18 +88,18 @@ export function CreateActorDialog({ template, onClose }: { template?: string; on
         </div>
         {type.state === null ? (
           <section className="cc-section">
-            <div className="cc-section-head"><h3 className="cc-section-title">Initial state</h3></div>
-            <div className="cc-dashed cc-row"><Badge>Stateless</Badge>This type keeps no state; the actor is created with a mailbox only.</div>
+            <h3 className="heading cc-section-title">Initial state</h3>
+            <div className="cc-dashed"><Badge tone="outline">Stateless</Badge><span>This type keeps no state; the actor is created with a mailbox only.</span></div>
           </section>
         ) : (
           <ValueEditor key={type.template} title="Initial state" schema={type.state} blank={undefined} label="Initial state" handle={editor} />
         )}
-        <div className="cc-result">{result}</div>
-      </div>
-      <footer className="cc-dialog-foot">
-        <Button variant="ghost" onClick={onClose}>Cancel</Button>
-        <Button variant="primary" icon="plus" disabled={creating} onClick={() => void create()}>Create Actor</Button>
-      </footer>
+      </DialogBody>
+      <DialogResult>{result}</DialogResult>
+      <DialogFoot>
+        <Button onClick={onClose}>Cancel</Button>
+        <Button variant="primary" icon="plus" disabled={creating} onClick={() => void create()}>Create actor</Button>
+      </DialogFoot>
     </Dialog>
   );
 }

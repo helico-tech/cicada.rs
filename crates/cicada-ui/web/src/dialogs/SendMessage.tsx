@@ -1,15 +1,15 @@
-// Send Message drawer: POST /actors/{path}/messages with a payload from the message type's schema, a delivery time,
+// Send Message dialog: POST /actors/{path}/messages with a payload from the message type's schema, a delivery time,
 // and optionally an id, correlation id, headers, a retry policy and a persistence (retention) policy.
 
 import { useRef, useState, type ReactNode } from 'react';
 import { ApiError } from '../api/client';
 import type { RetryPolicy, SendRequest, TypeView } from '../api/generated';
 import { useConsole } from '../app/context';
-import { clock, dateTime, localInputValue, relative, timeZone } from '../lib/format';
+import { clock, count, dateTime, localInputValue, relative, timeZone } from '../lib/format';
 import { blankKeep, readRetention, type KeepDraft, type KeepKind } from '../lib/retention';
 import { href } from '../lib/routes';
-import { Button, Callout, Icon, ProblemCallout, Select, Tabs } from '../halo';
-import { Dialog, DialogHeader } from '../ui/Dialog';
+import { Button, Callout, Field, IconButton, LinkButton, ProblemCallout, Segmented, Select } from '../sx';
+import { Dialog, DialogBody, DialogFoot, DialogHeader, DialogResult } from '../ui/Dialog';
 import { Mono } from '../ui/layout';
 import { ValueEditor, type ValueEditorHandle } from '../ui/ValueEditor';
 
@@ -24,16 +24,6 @@ interface Header {
   value: string;
 }
 
-function Field({ id, label, hint, children }: { id?: string; label: ReactNode; hint?: ReactNode; children: ReactNode }) {
-  return (
-    <div className="cc-field">
-      {id ? <label className="cc-label" htmlFor={id}>{label}</label> : <span className="cc-label">{label}</span>}
-      {children}
-      {hint ? <span className="cc-hint">{hint}</span> : null}
-    </div>
-  );
-}
-
 const KEEP_OPTIONS: Array<{ value: KeepKind; label: string }> = [
   { value: 'default', label: 'Store default' },
   { value: 'remove', label: 'Remove at once' },
@@ -43,24 +33,24 @@ const KEEP_OPTIONS: Array<{ value: KeepKind; label: string }> = [
 
 function KeepFields({ id, outcome, draft, onChange }: { id: string; outcome: string; draft: KeepDraft; onChange: (draft: KeepDraft) => void }) {
   return (
-    <div className="cc-keep-row">
+    <div className="cc-keep">
       <Field id={id} label={`When ${outcome}`}>
-        <Select id={id} size="md" value={draft.kind} options={KEEP_OPTIONS} onChange={(v) => onChange({ ...draft, kind: v as KeepKind })} />
+        <Select id={id} value={draft.kind} options={KEEP_OPTIONS} onChange={(v) => onChange({ ...draft, kind: v as KeepKind })} />
       </Field>
       {draft.kind === 'for' ? (
         <Field id={id + '-age'} label="Keep for" hint="e.g. 30d, 12h, PT30M">
-          <input id={id + '-age'} className="cc-input mono" value={draft.age} onChange={(e) => onChange({ ...draft, age: e.target.value })} />
+          <input id={id + '-age'} className="sx-input sx-mono" value={draft.age} onChange={(e) => onChange({ ...draft, age: e.target.value })} />
         </Field>
       ) : draft.kind === 'last' ? (
         <Field id={id + '-count'} label="Keep the last" hint="Of this actor, with this outcome">
-          <input id={id + '-count'} className="cc-input ha-num" inputMode="numeric" value={draft.count} onChange={(e) => onChange({ ...draft, count: e.target.value })} />
+          <input id={id + '-count'} className="sx-input sx-num" inputMode="numeric" value={draft.count} onChange={(e) => onChange({ ...draft, count: e.target.value })} />
         </Field>
-      ) : <div />}
+      ) : null}
     </div>
   );
 }
 
-/** The drawer for the actor [uri] of [type]. */
+/** The dialog for the actor [uri] of [type]. */
 export function SendMessageDialog({ uri, type, onClose }: { uri: string; type: TypeView; onClose: () => void }) {
   const ctx = useConsole();
   const names = Object.keys(type.messages).sort();
@@ -70,7 +60,6 @@ export function SendMessageDialog({ uri, type, onClose }: { uri: string; type: T
   const [delayAmount, setDelayAmount] = useState('5');
   const [delayUnit, setDelayUnit] = useState<Unit>('minutes');
   const [at, setAt] = useState(() => localInputValue(Date.now() + 3600_000));
-  const [advanced, setAdvanced] = useState(false);
   const [id, setId] = useState('');
   const [correlation, setCorrelation] = useState('');
   const [headers, setHeaders] = useState<Header[]>([]);
@@ -81,7 +70,7 @@ export function SendMessageDialog({ uri, type, onClose }: { uri: string; type: T
   const [keepFailed, setKeepFailed] = useState<KeepDraft>(blankKeep);
   const [result, setResult] = useState<ReactNode>(null);
   const [sending, setSending] = useState(false);
-  // A generated id is kept until the node gives a definite answer, so Retry Now cannot send twice.
+  // A generated id is kept until the node gives a definite answer, so Retry now cannot send twice.
   const pendingId = useRef<string | null>(null);
 
   function deliveryTime(): { at: Date; body: Partial<SendRequest> } | { error: string } {
@@ -142,13 +131,13 @@ export function SendMessageDialog({ uri, type, onClose }: { uri: string; type: T
     try {
       const { status, body } = await ctx.api.send(uri, message);
       pendingId.current = null;
-      const open = (label: string) => <a className="cc-link cc-nowrap" href={href.message(body.id)}>{label}</a>;
+      const open = (label: string) => <LinkButton size="sm" href={href.message(body.id)}>{label}</LinkButton>;
       setResult(status === 202 ? (
-        <Callout kind="ok" title="Accepted" action={open('Open Message')}
-          detail={<><Mono className="cc-small">{body.id}</Mono> · delivers <span className="ha-num">{body.deliverAt ? `${dateTime(body.deliverAt)} (${relative(body.deliverAt)})` : '—'}</span></>} />
+        <Callout kind="ok" title="Accepted" action={open('Open message')}
+          detail={<><Mono>{body.id}</Mono> · delivers <span className="sx-num">{body.deliverAt ? `${dateTime(body.deliverAt)} (${relative(body.deliverAt)})` : '—'}</span></>} />
       ) : (
-        <Callout kind="info" title="Duplicate — nothing was sent" action={open('Open Existing')}
-          detail={<>A message with id <Mono className="cc-small">{body.id}</Mono> was already accepted for this actor.</>} />
+        <Callout kind="info" title="Duplicate — nothing was sent" action={open('Open existing')}
+          detail={<>A message with id <Mono>{body.id}</Mono> was already accepted for this actor.</>} />
       ));
       ctx.refresh();
     } catch (e) {
@@ -162,103 +151,92 @@ export function SendMessageDialog({ uri, type, onClose }: { uri: string; type: T
   const time = deliveryTime();
   const deliverText = 'error' in time ? '—' : delivery === 'now' ? `now (${clock(time.at)})` : `${dateTime(time.at)} (${relative(time.at)})`;
   const field = (key: keyof typeof retry) => (e: React.ChangeEvent<HTMLInputElement>) => setRetry((r) => ({ ...r, [key]: e.target.value }));
+  const shortHash = type.hash.slice(0, 13) + '…' + type.hash.slice(-4);
 
   return (
-    <Dialog kind="drawer" labelledBy="send-title" onClose={onClose}>
-      <DialogHeader id="send-title" title="Send Message" caption="Enqueue a message in an actor’s mailbox." onClose={onClose} />
-      <div className="cc-dialog-body">
-        <Field id="send-target" label="Target actor" hint={<>Type <Mono>{type.template}</Mono>.</>}>
-          <input id="send-target" className="cc-input mono" readOnly value={uri} />
-        </Field>
-        <Field id="send-type" label="Message type"
-          hint={<>Types accepted by <Mono>{type.template}</Mono> · contract <span className="mono" title={type.hash}>{type.hash.slice(0, 13) + '…' + type.hash.slice(-4)}</span></>}>
-          <Select id="send-type" options={names} value={messageType} size="md" onChange={(v) => { setMessageType(v); setResult(null); }} />
+    <Dialog size="l" labelledBy="send-title" onClose={onClose}>
+      <DialogHeader id="send-title" title="Send message" caption={<>To <span className="mono-sm">{uri}</span></>} onClose={onClose} />
+      <DialogBody>
+        <Field id="send-type" label="Message type" required
+          hint={<>{count(names.length, 'type')} accepted by <Mono>{type.template}</Mono> · contract <span className="mono" title={type.hash}>{shortHash}</span></>}>
+          <Select id="send-type" options={names} value={messageType} onChange={(v) => { setMessageType(v); setResult(null); }} />
         </Field>
         <ValueEditor key={messageType} title="Payload" schema={type.messages[messageType]} blank={{}} label={messageType} handle={editor} />
-        <section className="cc-section">
-          <h3 className="cc-section-title">Delivery</h3>
-          <Tabs variant="segmented" label="Delivery" value={delivery} onChange={setDelivery}
-            items={[{ value: 'now', label: 'Now' }, { value: 'delay', label: 'After Delay' }, { value: 'at', label: 'At Time' }]} />
-          {delivery === 'delay' ? (
-            <div className="cc-row">
-              <input className="cc-input ha-num cc-delay" inputMode="decimal" aria-label="Delay amount" value={delayAmount} onChange={(e) => setDelayAmount(e.target.value)} />
-              <Select options={Object.keys(UNITS)} value={delayUnit} label="Delay unit" size="md" onChange={(v) => setDelayUnit(v as Unit)} />
-            </div>
-          ) : delivery === 'at' ? (
-            <input className="cc-input cc-at" type="datetime-local" aria-label="Deliver at" value={at} onChange={(e) => setAt(e.target.value)} />
-          ) : null}
-          <span className="cc-hint">Delivers <b className="ha-num cc-ink">{deliverText}</b>{timeZone() ? ' · ' + timeZone() : ''}</span>
-        </section>
-        <section className="cc-advanced">
-          <button type="button" className="cc-row-btn cc-advanced-toggle" aria-expanded={advanced} onClick={() => setAdvanced((v) => !v)}>
-            <Icon name={advanced ? 'chevron-down' : 'chevron-right'} size={16} />
-            Advanced
-            <span className="cc-caption">Message id, correlation, headers, retry and persistence</span>
-          </button>
-          {advanced ? (
-            <div className="cc-advanced-body">
-              <Field id="send-id" label="Message ID" hint="Set it to deduplicate: a second send with the same id is accepted once, not delivered twice.">
-                <input id="send-id" className="cc-input mono" placeholder="Generated when empty" spellCheck={false} autoComplete="off" value={id} onChange={(e) => setId(e.target.value)} />
-              </Field>
-              <Field id="send-corr" label="Correlation ID">
-                <input id="send-corr" className="cc-input mono" spellCheck={false} autoComplete="off" value={correlation} onChange={(e) => setCorrelation(e.target.value)} />
-              </Field>
-              <Field label="Headers" hint="Passed through to plugins. Names starting with cicada- are reserved.">
-                <div className="cc-header-rows">
-                  {headers.map((h, i) => (
-                    <div key={h.key} className="cc-header-row">
-                      <input className="cc-input mono" placeholder="name" aria-label={`Header ${i + 1} name`} value={h.name}
-                        onChange={(e) => setHeaders((hs) => hs.map((x) => (x.key === h.key ? { ...x, name: e.target.value } : x)))} />
-                      <input className="cc-input mono" placeholder="value" aria-label={`Header ${i + 1} value`} value={h.value}
-                        onChange={(e) => setHeaders((hs) => hs.map((x) => (x.key === h.key ? { ...x, value: e.target.value } : x)))} />
-                      <button type="button" className="ha-iconbtn ha-iconbtn-ghost ha-iconbtn-sm" aria-label={`Remove header ${h.name || i + 1}`}
-                        onClick={() => setHeaders((hs) => hs.filter((x) => x.key !== h.key))}>
-                        <Icon name="x" size={16} />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-                <div><Button variant="ghost" size="sm" icon="plus" onClick={() => setHeaders((hs) => [...hs, { key: nextHeader.current++, name: '', value: '' }])}>Add Header</Button></div>
-              </Field>
-              <Field id="send-retry" label="Retry policy" hint="Without a policy a failed handler run ends the message as failed.">
-                <Select id="send-retry" size="md" value={retryKind} onChange={(v) => setRetryKind(v as RetryKind)}
-                  options={[{ value: 'none', label: 'No retries' }, { value: 'fixed', label: 'Fixed delay' }, { value: 'exponential', label: 'Exponential backoff' }]} />
-              </Field>
-              {retryKind !== 'none' ? (
-                <div className="cc-form-grid">
-                  <Field id="retry-max" label="Max attempts" hint="Handler runs, including the first (1–100)">
-                    <input id="retry-max" className="cc-input ha-num" inputMode="numeric" value={retry.maxAttempts} onChange={field('maxAttempts')} />
-                  </Field>
-                  {retryKind === 'fixed' ? (
-                    <Field id="retry-delay" label="Delay" hint="Before each retry, e.g. 30s, 2m, PT30S">
-                      <input id="retry-delay" className="cc-input mono" value={retry.delay} onChange={field('delay')} />
-                    </Field>
-                  ) : (
-                    <>
-                      <Field id="retry-initial" label="Initial delay" hint="e.g. 1s"><input id="retry-initial" className="cc-input mono" value={retry.initial} onChange={field('initial')} /></Field>
-                      <Field id="retry-maxdelay" label="Max delay" hint="e.g. 1m"><input id="retry-maxdelay" className="cc-input mono" value={retry.max} onChange={field('max')} /></Field>
-                      <Field id="retry-factor" label="Factor" hint="≥ 1"><input id="retry-factor" className="cc-input ha-num" inputMode="decimal" value={retry.factor} onChange={field('factor')} /></Field>
-                    </>
-                  )}
-                </div>
-              ) : null}
-              <div className="cc-field">
-                <span className="cc-label">Persistence</span>
-                <span className="cc-hint">How long the message’s record stays readable once it finished. A removed message stays a duplicate for its id and keeps its place in message chains.</span>
-              </div>
-              <KeepFields id="keep-done" outcome="done" draft={keepDone} onChange={setKeepDone} />
-              <KeepFields id="keep-failed" outcome="failed" draft={keepFailed} onChange={setKeepFailed} />
-            </div>
-          ) : null}
-        </section>
-      </div>
-      <footer className="cc-drawer-foot">
-        <div className="cc-result">{result}</div>
-        <div className="cc-dialog-actions">
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button variant="primary" icon="arrow-right" disabled={sending} onClick={() => void send()}>Send Message</Button>
+        <div className="sx-field">
+          <span className="sx-label" id="send-delivery"><span>Delivery</span></span>
+          <div className="cc-row cc-row-wrap">
+            <Segmented label="Delivery" value={delivery} onChange={setDelivery}
+              items={[{ value: 'now', label: 'Now' }, { value: 'delay', label: 'After a delay' }, { value: 'at', label: 'At a time' }]} />
+            {delivery === 'delay' ? (
+              <>
+                <input className="sx-input sx-num cc-delay" inputMode="decimal" aria-label="Delay amount" value={delayAmount} onChange={(e) => setDelayAmount(e.target.value)} />
+                <span className="cc-unit"><Select options={Object.keys(UNITS)} value={delayUnit} label="Delay unit" onChange={(v) => setDelayUnit(v as Unit)} /></span>
+              </>
+            ) : delivery === 'at' ? (
+              <input className="sx-input sx-num cc-at" type="datetime-local" aria-label="Deliver at" value={at} onChange={(e) => setAt(e.target.value)} />
+            ) : null}
+          </div>
+          <span className="sx-help">Delivers <b className="sx-num cc-ink">{deliverText}</b>{timeZone() ? ' · ' + timeZone() : ''}</span>
         </div>
-      </footer>
+        <div className="cc-grid-2-tight">
+          <Field id="send-id" label="Message id" hint="Set it to deduplicate: a second send with the same id is accepted once, not delivered twice.">
+            <input id="send-id" className="sx-input sx-mono" placeholder="Generated when empty" spellCheck={false} autoComplete="off" value={id} onChange={(e) => setId(e.target.value)} />
+          </Field>
+          <Field id="send-corr" label="Correlation id">
+            <input id="send-corr" className="sx-input sx-mono" spellCheck={false} autoComplete="off" value={correlation} onChange={(e) => setCorrelation(e.target.value)} />
+          </Field>
+        </div>
+        <Field label="Headers" hint="Passed through to plugins. Names starting with cicada- are reserved.">
+          {headers.map((h, i) => (
+            <div key={h.key} className="cc-header-row">
+              <input className="sx-input sx-mono" placeholder="name" aria-label={`Header ${i + 1} name`} value={h.name}
+                onChange={(e) => setHeaders((hs) => hs.map((x) => (x.key === h.key ? { ...x, name: e.target.value } : x)))} />
+              <input className="sx-input sx-mono" placeholder="value" aria-label={`Header ${i + 1} value`} value={h.value}
+                onChange={(e) => setHeaders((hs) => hs.map((x) => (x.key === h.key ? { ...x, value: e.target.value } : x)))} />
+              <IconButton icon="trash" size="sm" label={`Remove header ${h.name || i + 1}`} onClick={() => setHeaders((hs) => hs.filter((x) => x.key !== h.key))} />
+            </div>
+          ))}
+          <div><Button variant="ghost" size="sm" icon="plus" onClick={() => setHeaders((hs) => [...hs, { key: nextHeader.current++, name: '', value: '' }])}>Add header</Button></div>
+        </Field>
+        <fieldset className="cc-fieldset">
+          <legend className="overline">Retry policy</legend>
+          <div className="cc-form-grid">
+            <Field id="send-retry" label="Backoff" hint={retryKind === 'none' ? 'Without a policy a failed handler run ends the message as failed.' : undefined}>
+              <Select id="send-retry" value={retryKind} onChange={(v) => setRetryKind(v as RetryKind)}
+                options={[{ value: 'none', label: 'No retries' }, { value: 'fixed', label: 'Fixed delay' }, { value: 'exponential', label: 'Exponential backoff' }]} />
+            </Field>
+            {retryKind !== 'none' ? (
+              <Field id="retry-max" label="Max attempts" hint="Handler runs, including the first (1–100)">
+                <input id="retry-max" className="sx-input sx-num" inputMode="numeric" value={retry.maxAttempts} onChange={field('maxAttempts')} />
+              </Field>
+            ) : null}
+            {retryKind === 'fixed' ? (
+              <Field id="retry-delay" label="Delay" hint="Before each retry, e.g. 30s, 2m, PT30S">
+                <input id="retry-delay" className="sx-input sx-mono" value={retry.delay} onChange={field('delay')} />
+              </Field>
+            ) : retryKind === 'exponential' ? (
+              <>
+                <Field id="retry-initial" label="Initial delay" hint="e.g. 1s"><input id="retry-initial" className="sx-input sx-mono" value={retry.initial} onChange={field('initial')} /></Field>
+                <Field id="retry-maxdelay" label="Max delay" hint="e.g. 1m"><input id="retry-maxdelay" className="sx-input sx-mono" value={retry.max} onChange={field('max')} /></Field>
+                <Field id="retry-factor" label="Factor" hint="≥ 1"><input id="retry-factor" className="sx-input sx-num" inputMode="decimal" value={retry.factor} onChange={field('factor')} /></Field>
+              </>
+            ) : null}
+          </div>
+        </fieldset>
+        <fieldset className="cc-fieldset">
+          <legend className="overline">Keep the record</legend>
+          <p className="sx-help cc-flat">How long the message’s record stays readable once it finished. A removed message stays a duplicate for its id and keeps its place in message chains.</p>
+          <div className="cc-grid-2-tight">
+            <KeepFields id="keep-done" outcome="done" draft={keepDone} onChange={setKeepDone} />
+            <KeepFields id="keep-failed" outcome="failed" draft={keepFailed} onChange={setKeepFailed} />
+          </div>
+        </fieldset>
+      </DialogBody>
+      <DialogResult>{result}</DialogResult>
+      <DialogFoot note="The node checks the payload when it is sent">
+        <Button onClick={onClose}>Cancel</Button>
+        <Button variant="primary" icon="send" disabled={sending} onClick={() => void send()}>Send message</Button>
+      </DialogFoot>
     </Dialog>
   );
 }

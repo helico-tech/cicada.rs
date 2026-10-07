@@ -4,7 +4,7 @@ Date: 2026-10-07
 
 ## Status
 
-Accepted
+Accepted. Superseded in part by 0006
 
 ## Context
 

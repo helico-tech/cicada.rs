@@ -1,4 +1,4 @@
-// The console shell: the sidebar and top bar, routing of the URL fragment to a page, polling, sign-in and the
+// The console shell: the app bar and the left navigation, routing of the URL fragment to a page, polling, sign-in and the
 // refresh notices.
 
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
@@ -10,7 +10,7 @@ import { Poller } from '../lib/poller';
 import { href, parseRoute, type Route } from '../lib/routes';
 import { session } from '../lib/storage';
 import { useTheme } from '../lib/theme';
-import { Button, Callout, ProblemCallout, Sidebar } from '../halo';
+import { Button, Callout, ProblemCallout } from '../sx';
 import { SignInDialog } from '../dialogs/SignIn';
 import { ActorPage } from '../pages/ActorPage';
 import { ActorsPage } from '../pages/ActorsPage';
@@ -19,6 +19,7 @@ import { MessagePage } from '../pages/MessagePage';
 import { PendingPage } from '../pages/PendingPage';
 import { TypesPage } from '../pages/TypesPage';
 import { Context, type ConsoleContext } from './context';
+import { Nav } from './Nav';
 import { TopBar, type Health } from './TopBar';
 
 const TOKEN_KEY = 'cicada-console-token';
@@ -81,7 +82,7 @@ export function App({ apiPath }: { apiPath: string }) {
     }
     const error: unknown = result.reason;
     if (error instanceof ApiError && error.status === 401) {
-      setNotice(<Callout kind="user" title="Sign in required" detail="This node’s API needs credentials." action={<Button size="sm" onClick={() => setSigningIn(true)}>Sign In</Button>} />);
+      setNotice(<Callout kind="user" title="Sign in required" detail="This node’s API needs credentials." action={<Button size="sm" onClick={() => setSigningIn(true)}>Sign in…</Button>} />);
       setSigningIn(true);
     } else if (error instanceof ApiError && error.temporary) {
       const last = poller.lastAt ? `Showing data from ${clock(poller.lastAt)}; ` : '';
@@ -168,29 +169,28 @@ export function App({ apiPath }: { apiPath: string }) {
 
   return (
     <Context.Provider value={ctx}>
-      <div className="cc-app">
-        <Sidebar
-          brand={{ name: 'Cicada', subtitle: 'Actor console', letter: 'C' }}
-          active={NAV[route.name]}
-          sections={[
-            { title: 'Runtime', items: [
-              { key: 'actors', icon: 'grid', label: 'Actors', href: href.actors() },
-              { key: 'pending', icon: 'clock', label: 'Pending', href: href.pending() },
-              { key: 'failures', icon: 'alert', label: 'Failures', href: href.failures(), count: failureCount },
-            ] },
-            { title: 'Reference', items: [{ key: 'types', icon: 'tag', label: 'Types', href: href.types() }] },
-          ]}
+      <div className="cc-shell">
+        <TopBar
+          poller={poller} health={health} dark={theme.dark} onToggleTheme={theme.toggle} searchRef={searchRef}
+          onSearch={(text) => {
+            location.hash = isActorUri(text) ? href.actor(text) : href.message(text);
+          }}
         />
-        <main className="cc-main">
-          <TopBar
-            poller={poller} health={health} dark={theme.dark} onToggleTheme={theme.toggle} searchRef={searchRef}
-            onSearch={(text) => {
-              location.hash = isActorUri(text) ? href.actor(text) : href.message(text);
-            }}
+        <div className="cc-body">
+          <Nav
+            active={NAV[route.name]}
+            items={[
+              { key: 'actors', icon: 'users', label: 'Actors', href: href.actors() },
+              { key: 'pending', icon: 'hourglass', label: 'Pending', href: href.pending() },
+              { key: 'failures', icon: 'error', label: 'Failures', href: href.failures(), count: failureCount, danger: true },
+              { key: 'types', icon: 'template', label: 'Types', href: href.types(), count: types.length ? String(types.length) : '' },
+            ]}
           />
-          <div className="cc-page-notice">{notice}</div>
-          <div className="cc-page">{page}</div>
-        </main>
+          <main className="cc-main">
+            {notice ? <div className="cc-page-notice">{notice}</div> : null}
+            {page}
+          </main>
+        </div>
       </div>
       {signingIn ? (
         <SignInDialog

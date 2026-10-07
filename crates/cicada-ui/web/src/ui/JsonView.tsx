@@ -2,7 +2,7 @@
 
 import type { ReactNode } from 'react';
 import { pointer, type Change } from '../lib/diff';
-import { Icon } from '../halo';
+import { Icon } from '../sx';
 
 export interface JsonViewOptions {
   /** Whether the container at [path] is expanded. */

@@ -169,7 +169,7 @@ impl Actor for SyncActor {
 | `cicada-store-postgres` | `PostgresStore` (sqlx): `FOR UPDATE SKIP LOCKED` claims, `LISTEN/NOTIFY` wake-ups | `actors-store-postgres` |
 | `cicada-axum` | `actor_api()` (the fourteen endpoints) and `actor_health()` as axum routers | `actors-ktor` |
 | `cicada-client` | Typed HTTP client (reqwest) | `actors-client` |
-| `cicada-ui` | The actor console (the React app of the Kotlin repo), embedded and served by `actor_ui()` | `actors-ui` |
+| `cicada-ui` | The actor console (the React app of the Kotlin repo, restyled to the Sensus BPM Online design system, ADR 0006), embedded and served by `actor_ui()` | `actors-ui` |
 | `cicada-otel` | OpenTelemetry plugin | `actors-otel` |
 | `cicada-extras` | Timer, schedules (interval, daily), crash-loop guard, failure watcher, dead letters | `actors-extras` |
 | `examples` | Worked examples with tests | `examples` |

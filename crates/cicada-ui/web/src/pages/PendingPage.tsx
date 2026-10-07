@@ -10,7 +10,7 @@ import { addedKeys, removedKeys } from '../lib/diff';
 import { relative, shortDateTime } from '../lib/format';
 import { useDebounced } from '../lib/hooks';
 import { href, replaceHash, type Query } from '../lib/routes';
-import { Badge, Button, Card, cx, EmptyState, Icon, SearchInput, Select, SrOnly } from '../halo';
+import { Badge, Button, cx, EmptyState, Failures, Field, LinkButton, SearchInput, Select, SrOnly } from '../sx';
 import { ChangeNote, Loading, PageHead } from '../ui/layout';
 
 const PAGE_SIZE = 100;
@@ -79,24 +79,22 @@ export function PendingPage({ query }: { query: Query }) {
   const rows = loaded ? (messageType === 'all' ? loaded.messages : loaded.messages.filter((m) => m.type === messageType)) : [];
   const filtered = Boolean(loaded?.impossible || type || normalizePrefix(prefix) || messageType !== 'all');
   return (
-    <div>
+    <div className="cc-page">
       <PageHead title="Pending" description="Messages waiting in any mailbox, actor by actor, each in delivery order. Open a message to see whether it is running, or to cancel it." />
-      <Card title="Pending Messages" subtitle="Sorted by actor URI, then deliver at · cursor pagination" flush>
-        <div className="cc-filterbar cc-filterbar-fields">
-          <div className="cc-field">
-            <span className="cc-label cc-muted">Type</span>
-            <Select label="Filter by type template" value={type} options={typeOptions} onChange={(v) => { setType(v); setMessageType('all'); setPages(1); }} />
-          </div>
-          <div className="cc-field cc-filter-prefix">
-            <span className="cc-label cc-muted">Actor URI prefix</span>
-            <SearchInput size="sm" placeholder="actor://sync/" label="Actor URI prefix" defaultValue={prefixText} onInput={(v) => { setPrefixText(v); setPages(1); }} />
-          </div>
-          <div className="cc-field">
-            <span className="cc-label cc-muted">Message type</span>
-            <Select label="Message type" value={messageType} options={messageTypeOptions} onChange={setMessageType} />
-          </div>
-        </div>
+      <div className="cc-filters">
+        <Field id="pending-type" label="Type" className="cc-filter-type">
+          <Select id="pending-type" value={type} options={typeOptions} onChange={(v) => { setType(v); setMessageType('all'); setPages(1); }} />
+        </Field>
+        <Field id="pending-prefix" label="Actor URI prefix" className="cc-filter-prefix">
+          <SearchInput id="pending-prefix" icon="filter" mono placeholder="actor://sync/" defaultValue={prefixText} onInput={(v) => { setPrefixText(v); setPages(1); }} />
+        </Field>
+        <Field id="pending-message-type" label="Message type" className="cc-filter-type">
+          <Select id="pending-message-type" value={messageType} options={messageTypeOptions} onChange={setMessageType} />
+        </Field>
+        <span className="sx-spacer" />
         {loaded ? <ChangeNote added={loaded.added.size} addedWord="new message" removed={loaded.removed} removedWord="left" /> : null}
+      </div>
+      <div className="cc-tablebox">
         {!loaded ? (
           <Loading>Loading pending messages…</Loading>
         ) : rows.length === 0 ? (
@@ -106,13 +104,17 @@ export function PendingPage({ query }: { query: Query }) {
               ? <EmptyState title="No pending messages match these filters" caption={loaded.next ? 'Load more to look further.' : 'Widen the filters to look further.'} />
               : <EmptyState title="No pending messages" caption="Every mailbox is empty. Finished messages are found by id or under Failures." />
         ) : (
-          <div className="cc-scroll-x">
-            <table className="ha-table cc-table cc-table-pending">
+          <div className="sx-tablewrap">
+            <table className="sx-table cc-table-pending">
+              <colgroup>
+                <col /><col className="cc-w-160" /><col className="cc-w-150" /><col className="cc-w-72" /><col className="cc-w-80" />
+                <col className="cc-w-200" /><col className="cc-w-140" /><col className="cc-w-40" />
+              </colgroup>
               <thead>
                 <tr>
-                  <th className="cc-col-actor">Actor URI</th><th>Type</th><th>Deliver at</th><th className="cc-num">Attempt</th>
-                  <th className="cc-num">Failures</th><th className="cc-col-error">Last error</th><th>Correlation</th>
-                  <th className="cc-col-icon"><SrOnly>Open</SrOnly></th>
+                  <th>Actor URI</th><th>Type</th><th>Deliver at</th><th className="is-num">Attempt</th>
+                  <th className="is-num">Failures</th><th>Last error</th><th>Correlation</th>
+                  <th className="is-actions"><SrOnly>Open</SrOnly></th>
                 </tr>
               </thead>
               <tbody>
@@ -120,23 +122,25 @@ export function PendingPage({ query }: { query: Query }) {
                   const isNew = loaded.added.has(m.id);
                   const due = Date.parse(m.deliverAt) <= Date.now();
                   return (
-                    <tr key={m.id} className={isNew ? 'cc-new' : undefined}>
+                    <tr key={m.id} className={cx('cc-tall', isNew && 'cc-new')}>
                       <td>
-                        <div className="cc-row cc-nowrap-cell">
-                          <a className="cc-link mono cc-small" href={href.actor(m.to)}>{m.to}</a>
-                          {isNew ? <Badge tone="primary">New</Badge> : null}
+                        <div className="sx-cell">
+                          <a className="mono" href={href.actor(m.to)} title={m.to}>{m.to}</a>
+                          {isNew ? <Badge tone="info" size="sm">New</Badge> : null}
                         </div>
                       </td>
-                      <td><a className="cc-link mono cc-strong" href={href.message(m.id)}>{m.type}</a></td>
+                      <td><a className="label" href={href.message(m.id)} title={m.type}>{m.type}</a></td>
                       <td>
-                        <div className="ha-num cc-nowrap">{shortDateTime(m.deliverAt)}</div>
-                        <div className={cx('cc-caption cc-nowrap', !due && 'cc-ink')}>{due ? `due ${relative(m.deliverAt)}` : relative(m.deliverAt)}</div>
+                        <div className="cc-stack">
+                          <span className="sx-num">{shortDateTime(m.deliverAt)}</span>
+                          <span className={cx('caption', due ? 'cc-subtle' : 'cc-ink')}>{due ? `due ${relative(m.deliverAt)}` : relative(m.deliverAt)}</span>
+                        </div>
                       </td>
-                      <td className="ha-num cc-num">{String(m.attempt)}</td>
-                      <td className={cx('ha-num cc-num', m.failures > 0 && 'cc-critical cc-strong')}>{String(m.failures)}</td>
-                      <td className="cc-col-error">{m.lastError ? <span className="cc-trunc mono" title={m.lastError}>{m.lastError}</span> : <span className="cc-faint">—</span>}</td>
-                      <td><span className="mono cc-muted">{m.correlationId ?? '—'}</span></td>
-                      <td className="cc-col-icon"><a href={href.message(m.id)} className="cc-icon-link" aria-label={`Open ${m.type} message`}><Icon name="chevron-right" size={16} /></a></td>
+                      <td className="is-num sx-num">{String(m.attempt)}</td>
+                      <td className="is-num"><Failures n={m.failures} /></td>
+                      <td>{m.lastError ? <span className="mono-sm cc-danger-text" title={m.lastError}>{m.lastError}</span> : <span className="cc-subtle">—</span>}</td>
+                      <td className="mono-sm cc-muted">{m.correlationId ?? '—'}</td>
+                      <td className="is-actions"><LinkButton href={href.message(m.id)} variant="ghost" size="xs" icon="chevron-right" label={`Open ${m.type} message`} /></td>
                     </tr>
                   );
                 })}
@@ -145,17 +149,18 @@ export function PendingPage({ query }: { query: Query }) {
           </div>
         )}
         {loaded ? (
-          <div className="cc-card-foot">
-            <span className="cc-caption">
+          <div className="sx-table-foot">
+            <span className="caption sx-num cc-trunc">
               {rows.length !== loaded.messages.length ? `${rows.length} shown of ${loaded.messages.length} loaded` : `${loaded.messages.length} loaded`}
               {loaded.next ? ` · next page starts after ${loaded.messages.at(-1)?.to ?? ''}` : ' · no more pages'}
             </span>
+            <span className="sx-spacer" />
             {loaded.next
-              ? <Button size="sm" icon="chevron-down" onClick={() => { known.current = null; setPages((p) => p + 1); }}>Load More</Button>
-              : <span className="cc-caption">End of list</span>}
+              ? <Button size="sm" variant="ghost" icon="chevron-down" onClick={() => { known.current = null; setPages((p) => p + 1); }}>Load more</Button>
+              : <span className="caption">End of list</span>}
           </div>
         ) : null}
-      </Card>
+      </div>
     </div>
   );
 }

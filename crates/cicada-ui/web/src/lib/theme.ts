@@ -1,4 +1,4 @@
-// Light and dark mode: Halo's `halo-light` / `halo-dark` classes on the root element. The console follows the system
+// Light and dark mode: the design system's `data-theme="light|dark"` on the root element. The console follows the system
 // setting until the viewer picks one with the top bar's switch; that choice is remembered in this browser.
 
 import { useEffect, useState } from 'react';
@@ -11,8 +11,7 @@ function systemDark(): boolean {
 }
 
 function apply(dark: boolean): void {
-  document.documentElement.classList.toggle('halo-dark', dark);
-  document.documentElement.classList.toggle('halo-light', !dark);
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
 }
 
 /** The current theme and a toggle; applies it to the document. */

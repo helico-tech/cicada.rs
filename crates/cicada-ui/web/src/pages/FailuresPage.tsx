@@ -9,7 +9,7 @@ import { normalizePrefix } from '../lib/address';
 import { count, dateTime, localInputValue, relative, shortDateTime } from '../lib/format';
 import { useDebounced } from '../lib/hooks';
 import { href, replaceHash, type Query } from '../lib/routes';
-import { Button, Callout, Card, cx, EmptyState, Icon, OkMark, SearchInput, Select, SrOnly, StatusBadge, Tabs } from '../halo';
+import { Badge, Button, Callout, cx, EmptyState, Field, Icon, LinkButton, OkMark, SearchInput, Segmented, Select, SrOnly, StatusBadge } from '../sx';
 import { ChangeNote, Loading, PageHead } from '../ui/layout';
 
 type Since = '1h' | '24h' | '7d' | 'custom';
@@ -95,39 +95,45 @@ export function FailuresPage({ query }: { query: Query }) {
   const visible = rows.slice(0, shown);
 
   return (
-    <div>
+    <div className="cc-page">
       <PageHead title="Failures" description="Messages that finished as failed, newest first. Open a row for the full envelope and retry history." />
-      <Card title="Failed Messages" subtitle={`Since ${rangeLabel} · ${prefix || 'all actors'} · ${type === 'all' ? 'all types' : type}`} flush>
-        <div className="cc-filterbar cc-filterbar-fields">
-          <div className="cc-field cc-filter-prefix">
-            <span className="cc-label cc-muted">Actor URI prefix</span>
-            <SearchInput size="sm" placeholder="actor://sync/" label="Actor URI prefix" defaultValue={prefixText} onInput={setPrefixText} />
-          </div>
-          <div className="cc-field">
-            <span className="cc-label cc-muted">Message type</span>
-            <Select label="Message type" value={type} options={typeOptions} onChange={(v) => { setType(v); setShown(SHOW_STEP); }} />
-          </div>
-          <div className="cc-field">
-            <span className="cc-label cc-muted">Since</span>
-            <Tabs variant="segmented" label="Since" value={since} onChange={setSince}
-              items={[{ value: '1h', label: '1h' }, { value: '24h', label: '24h' }, { value: '7d', label: '7d' }, { value: 'custom', label: 'Custom' }]} />
-          </div>
-          {since === 'custom' ? (
-            <div className="cc-row cc-row-bottom">
-              <label className="cc-field"><span className="cc-label cc-muted">From</span>
-                <input className="cc-input cc-input-sm" type="datetime-local" value={from} onChange={(e) => setFrom(e.target.value)} /></label>
-              <label className="cc-field"><span className="cc-label cc-muted">To</span>
-                <input className="cc-input cc-input-sm" type="datetime-local" value={to} onChange={(e) => setTo(e.target.value)} /></label>
-            </div>
+      <div className="cc-filters">
+        <Field id="failures-prefix" label="Actor URI prefix" className="cc-filter-prefix">
+          <SearchInput id="failures-prefix" icon="filter" mono placeholder="actor://sync/" defaultValue={prefixText} onInput={setPrefixText} />
+        </Field>
+        <Field id="failures-type" label="Message type" className="cc-filter-type">
+          <Select id="failures-type" value={type} options={typeOptions} onChange={(v) => { setType(v); setShown(SHOW_STEP); }} />
+        </Field>
+        <Field label="Since">
+          <Segmented label="Since" value={since} onChange={setSince}
+            items={[{ value: '1h', label: '1 hour' }, { value: '24h', label: '24 hours' }, { value: '7d', label: '7 days' }, { value: 'custom', label: 'Custom' }]} />
+        </Field>
+        {since === 'custom' ? (
+          <>
+            <Field id="failures-from" label="From">
+              <input id="failures-from" className="sx-input sx-num cc-at" type="datetime-local" value={from} onChange={(e) => setFrom(e.target.value)} />
+            </Field>
+            <Field id="failures-to" label="To">
+              <input id="failures-to" className="sx-input sx-num cc-at" type="datetime-local" value={to} onChange={(e) => setTo(e.target.value)} />
+            </Field>
+          </>
+        ) : null}
+        <span className="sx-spacer" />
+        <div className="cc-filters-end">
+          <ChangeNote added={added.size} addedWord="new failure" />
+          {byId ? (
+            rows.length
+              ? <Badge tone="danger" solid icon="error">{count(rows.length, 'failure')}</Badge>
+              : <Badge tone="success" icon="success">No failures</Badge>
           ) : null}
         </div>
-        {truncated ? (
-          <div className="cc-note">
-            <Callout kind="info" title={`More than ${(PAGE_LIMIT * MAX_PAGES).toLocaleString('en')} failures in this range`}
-              detail="Only the oldest ones are loaded, so the newest may be missing. Narrow the range or the prefix." />
-          </div>
-        ) : null}
-        <ChangeNote added={added.size} addedWord="new failure" />
+      </div>
+      <p className="caption cc-muted cc-flat">{`Since ${rangeLabel} · ${prefix || 'all actors'} · ${type === 'all' ? 'all types' : type}`}</p>
+      {truncated ? (
+        <Callout kind="info" title={`More than ${(PAGE_LIMIT * MAX_PAGES).toLocaleString('en')} failures in this range`}
+          detail="Only the oldest ones are loaded, so the newest may be missing. Narrow the range or the prefix." />
+      ) : null}
+      <div className="cc-tablebox">
         {!byId ? (
           <Loading>Loading failures…</Loading>
         ) : rows.length === 0 ? (
@@ -135,12 +141,15 @@ export function FailuresPage({ query }: { query: Query }) {
             caption={prefix || type !== 'all' ? 'For these filters. Widen them to look further.' : 'Widen the range to look further back.'} />
         ) : (
           <>
-            <div className="cc-scroll-x">
-              <table className="ha-table cc-table cc-table-failures">
+            <div className="sx-tablewrap">
+              <table className="sx-table cc-table-failures">
+                <colgroup>
+                  <col className="cc-w-150" /><col className="cc-w-240" /><col className="cc-w-150" /><col className="cc-w-100" /><col /><col className="cc-w-80" />
+                </colgroup>
                 <thead>
                   <tr>
-                    <th className="cc-col-time">Finished at</th><th className="cc-col-actor">Actor URI</th><th className="cc-col-type">Message type</th>
-                    <th className="cc-col-status">Status</th><th>Error</th><th className="cc-col-icon"><SrOnly>Open</SrOnly></th>
+                    <th>Finished at</th><th>Actor URI</th><th>Message type</th><th>Status</th><th>Error</th>
+                    <th className="is-actions"><SrOnly>Open</SrOnly></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -154,35 +163,36 @@ export function FailuresPage({ query }: { query: Query }) {
                       return next;
                     });
                     return (
-                      <tr key={f.id} className={cx('cc-top', added.has(f.id) && 'cc-new')}>
-                        <td><div className="ha-num cc-nowrap">{shortDateTime(f.finishedAt)}</div><div className="cc-caption">{relative(f.finishedAt)}</div></td>
-                        <td><a className="cc-link mono cc-trunc cc-small" href={href.actor(f.actor)} title={f.actor}>{f.actor}</a></td>
-                        <td><span className="mono">{f.message.type}</span></td>
-                        <td><StatusBadge status={f.status} /></td>
-                        <td>
+                      <tr key={f.id} className={cx('cc-tall cc-top', added.has(f.id) && 'cc-new')}>
+                        <td><div className="cc-stack"><span className="sx-num">{shortDateTime(f.finishedAt)}</span><span className="caption cc-subtle">{relative(f.finishedAt)}</span></div></td>
+                        <td><a className="mono-sm" href={href.actor(f.actor)} title={f.actor}>{f.actor}</a></td>
+                        <td className="label" title={f.message.type}>{f.message.type}</td>
+                        <td><StatusBadge status={f.status} size="sm" /></td>
+                        <td className={isOpen ? 'cc-wrap' : undefined}>
                           <button type="button" className="cc-row-btn cc-error-toggle" aria-expanded={isOpen} onClick={toggle}>
-                            <span className="cc-faint cc-toggle-icon"><Icon name={isOpen ? 'chevron-down' : 'chevron-right'} size={14} /></span>
+                            <span className="cc-toggle-icon"><Icon name={isOpen ? 'chevron-down' : 'chevron-right'} size={14} /></span>
                             {isOpen
-                              ? <pre className="mono cc-error-full">{`${error}\n\nFinished ${dateTime(f.finishedAt)} · attempt ${f.message.attempt} · ${count(f.message.failures, 'earlier failure')}`}</pre>
-                              : <span className="mono cc-trunc cc-small">{error}</span>}
+                              ? <pre className="mono-sm cc-error-full">{`${error}\n\nFinished ${dateTime(f.finishedAt)} · attempt ${f.message.attempt} · ${count(f.message.failures, 'earlier failure')}`}</pre>
+                              : <span className="mono-sm cc-danger-text cc-trunc">{error}</span>}
                           </button>
                         </td>
-                        <td className="cc-col-icon"><a href={href.message(f.id)} className="cc-icon-link" aria-label="Open message"><Icon name="chevron-right" size={16} /></a></td>
+                        <td className="is-actions"><LinkButton href={href.message(f.id)} size="sm" label={`Open ${f.message.type} message`}>Open</LinkButton></td>
                       </tr>
                     );
                   })}
                 </tbody>
               </table>
             </div>
-            <div className="cc-card-foot">
-              <span className="cc-caption">{`${visible.length} of ${rows.length} shown`}</span>
+            <div className="sx-table-foot">
+              <span className="caption sx-num">{`${visible.length} of ${rows.length} shown`}</span>
+              <span className="sx-spacer" />
               {visible.length < rows.length
-                ? <Button size="sm" icon="chevron-down" onClick={() => setShown((n) => n + SHOW_STEP)}>Load More</Button>
-                : <span className="cc-caption">End of list</span>}
+                ? <Button size="sm" variant="ghost" icon="chevron-down" onClick={() => setShown((n) => n + SHOW_STEP)}>Load more</Button>
+                : <span className="caption">End of list</span>}
             </div>
           </>
         )}
-      </Card>
+      </div>
     </div>
   );
 }

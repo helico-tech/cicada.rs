@@ -1,9 +1,11 @@
-// The top bar: open an actor or message by URI or id, the node's health, the live/updating/paused state and the theme.
+// The app bar: the console's name, open an actor or message by URI or id, the node's health, the live/updating/paused
+// state, the Live switch, refresh and the theme. While paused, an alert bar under it says the data may be stale.
 
 import type { Ref } from 'react';
 import { clock, relative } from '../lib/format';
 import { POLL_INTERVAL_MS, type Poller } from '../lib/poller';
-import { Badge, Button, Icon, IconButton, SearchInput } from '../halo';
+import { href } from '../lib/routes';
+import { Badge, Button, Icon, IconButton, SearchInput } from '../sx';
 
 export interface Health {
   up: boolean;
@@ -16,9 +18,14 @@ export function TopBar({ poller, health, dark, onToggleTheme, onSearch, searchRe
   const { paused, busy, lastAt } = poller;
   const last = lastAt ? clock(lastAt) : null;
   return (
-    <div className="cc-topbar">
-      <div className="cc-topbar-row">
-        <div className="cc-topbar-search">
+    <>
+      <header className="sx-appbar cc-appbar">
+        <a className="sx-appbar-logo cc-logo" href={href.actors()} aria-label="Cicada actor console, start">
+          <span className="cc-logo-name">Cicada</span>
+          <span className="caption cc-muted">Actor console</span>
+        </a>
+        <span className="sx-vr cc-vr" aria-hidden="true" />
+        <div className="sx-globalsearch cc-search">
           <SearchInput
             placeholder="Paste an actor URI or message id" label="Open actor or message" shortcut="⌘K" inputRef={searchRef}
             onKeyDown={(e) => {
@@ -31,69 +38,70 @@ export function TopBar({ poller, health, dark, onToggleTheme, onSearch, searchRe
             }}
           />
         </div>
-        <div className="cc-grow" />
-        <div className="cc-health">
+        <span className="sx-spacer" />
+        <div className="cc-appbar-group cc-health">
           {!health ? (
-            <Badge tone="neutral" dot>Checking…</Badge>
+            <Badge icon="clock">Checking…</Badge>
           ) : (
             <>
-              {health.up ? <Badge tone="success" dot>Up</Badge> : <Badge tone="critical" dot>Unhealthy</Badge>}
+              {health.up ? <Badge tone="success" icon="success">Up</Badge> : <Badge tone="danger" icon="error">Unhealthy</Badge>}
               <div className="cc-stack">
-                <span className="mono cc-node">{health.node ?? 'unknown node'}</span>
-                <span className="cc-caption" title={health.detail ?? ''}>{health.up ? 'Lifecycle: ' + health.state : health.detail || 'Stopping, or its store is unreachable'}</span>
+                <span className="mono-sm">{health.node ?? 'unknown node'}</span>
+                <span className="caption cc-muted cc-health-detail" title={health.detail ?? ''}>{health.up ? 'Lifecycle: ' + health.state : health.detail || 'Stopping, or its store is unreachable'}</span>
               </div>
             </>
           )}
         </div>
-        <div className="cc-divider" aria-hidden="true" />
+        <span className="sx-vr cc-vr" aria-hidden="true" />
         {/* Not a live region: it re-renders every second for "2 s ago". */}
-        <div className="cc-live-status">
+        <div className="cc-appbar-group cc-live-status">
           {busy ? (
             <>
-              <span className="cc-spin" aria-hidden="true" />
+              <span className="sx-spinner" aria-hidden="true" />
               <div className="cc-stack">
-                <span className="cc-status-title">Updating…</span>
-                <span className="cc-caption ha-num">{last ? 'Last ' + last : 'First load'}</span>
+                <span className="label">Updating…</span>
+                <span className="caption sx-num cc-muted">{last ? 'Last ' + last : 'First load'}</span>
               </div>
             </>
           ) : paused ? (
             <>
-              <span className="cc-paused-icon"><Icon name="pause" size={16} /></span>
+              <span className="sx-tone-warning"><Icon name="pause" /></span>
               <div className="cc-stack">
-                <span className="cc-status-title cc-warning">Paused</span>
-                <span className="cc-caption ha-num">{last ? `Data from ${last} · ${relative(lastAt)}` : 'No data yet'}</span>
+                <span className="label cc-warning">Paused</span>
+                <span className="caption sx-num cc-muted">{last ? `Data from ${last} · ${relative(lastAt)}` : 'No data yet'}</span>
               </div>
             </>
           ) : (
             <>
-              <span className="cc-pulse" aria-hidden="true" />
+              <span className="sx-dot sx-dot--success" aria-hidden="true" />
               <div className="cc-stack">
-                <span className="cc-status-title">{last ? 'Refreshed ' + last : 'Loading…'}</span>
-                <span className="cc-caption ha-num">{`${last ? relative(lastAt) + ' · ' : ''}every ${POLL_INTERVAL_MS / 1000}s`}</span>
+                <span className="label">{last ? 'Refreshed ' + last : 'Loading…'}</span>
+                <span className="caption sx-num cc-muted">{`${last ? relative(lastAt) + ' · ' : ''}every ${POLL_INTERVAL_MS / 1000} s`}</span>
               </div>
             </>
           )}
         </div>
-        <button type="button" className="cc-switch" aria-pressed={!paused} onClick={() => poller.setPaused(!paused)}>
-          <span className="cc-switch-track"><span className="cc-switch-knob" /></span>
-          <span>Live</span>
+        <button type="button" className="sx-switch cc-live-switch" role="switch" aria-checked={!paused} onClick={() => poller.setPaused(!paused)}>
+          <span className="sx-switch-track" />
+          <span className="sx-switch-state">Live</span>
         </button>
-        <IconButton icon="refresh" label="Refresh now" size="sm" onClick={() => void poller.refresh()} />
-        <div className="cc-theme">
-          <IconButton icon={dark ? 'sun' : 'moon'} label={dark ? 'Switch to light mode' : 'Switch to dark mode'} size="sm" onClick={onToggleTheme} />
+        <div className="sx-appbar-end">
+          <IconButton icon="refresh" label="Refresh now" onClick={() => void poller.refresh()} />
+          <IconButton icon={dark ? 'sun' : 'moon'} label={dark ? 'Switch to light mode' : 'Switch to dark mode'} onClick={onToggleTheme} />
         </div>
-      </div>
+        {busy ? <div className="sx-progress is-indeterminate cc-progress" role="progressbar" aria-label="Refreshing data"><i /></div> : null}
+      </header>
       {paused ? (
-        <div className="cc-paused-banner">
-          <span className="cc-grow">
+        <div className="sx-alertbar sx-alertbar--warning" role="status">
+          <span className="sx-tone-warning"><Icon name="warning" /></span>
+          <span className="sx-alertbar-text">
             <b>Live updates paused. </b>
             {last ? `The data below is from ${last} and may be stale. ` : ''}
             Highlights for changes resume with the next refresh.
           </span>
-          <Button size="sm" onClick={() => poller.setPaused(false)}>Resume Live</Button>
+          <Button size="sm" icon="play" onClick={() => poller.setPaused(false)}>Resume live</Button>
         </div>
       ) : null}
-      {busy ? <div className="cc-progress" role="progressbar" aria-label="Refreshing data" /> : null}
-    </div>
+    </>
   );
 }

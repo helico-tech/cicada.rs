@@ -6,7 +6,7 @@ import { matchTemplate, templateParams, templatePrefix } from '../lib/address';
 import { count } from '../lib/format';
 import { href, replaceHash, type Query } from '../lib/routes';
 import { summary } from '../lib/schema';
-import { Badge, Card, cx, EmptyState, Icon } from '../halo';
+import { Badge, Count, EmptyState, Icon, Widget } from '../sx';
 import { Definitions, PageHead } from '../ui/layout';
 
 const shortHash = (hash: string): string => (hash.length > 20 ? hash.slice(0, 13) + '…' + hash.slice(-4) : hash);
@@ -50,50 +50,48 @@ export function TypesPage({ query }: { query: Query }) {
   const params = sel ? templateParams(sel.template) : [];
   const example = sel ? examples.get(sel.template) : undefined;
   return (
-    <div>
+    <div className="cc-page">
       <PageHead title="Types" description="Actor types registered in the store: their URI template, contract hash and schemas. Any node can create, send to and query them; only nodes hosting a type run its turns." />
       <div className="cc-types">
-        <div className="cc-types-list">
-          <Card title="Registered Types" subtitle={count(types.length, 'type')} flush>
-            {types.length === 0 ? (
-              <EmptyState title="No types registered" caption="A node registers the types it hosts when it starts." />
-            ) : (
-              <ul className="cc-plain-list">
-                {types.map((t) => (
-                  <li key={t.template}>
-                    <button type="button" className={cx('cc-row-btn cc-type-item', t === sel && 'cc-selected')} aria-current={t === sel} onClick={() => choose(t.template)}>
-                      <span className="mono cc-strong cc-small cc-break">{t.template}</span>
-                      <span className="cc-row">
-                        {t.state === null ? <Badge>Stateless</Badge> : <Badge tone="info">Stateful</Badge>}
-                        <span className="cc-caption">{count(Object.keys(t.messages).length, 'message type')}</span>
-                        <span className="cc-caption mono cc-push">{shortHash(t.hash)}</span>
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Card>
-        </div>
+        <Widget title="Registered types" count={<Count>{String(types.length)}</Count>} className="cc-types-list" flush>
+          {types.length === 0 ? (
+            <EmptyState title="No types registered" caption="A node registers the types it hosts when it starts." />
+          ) : (
+            <ul className="cc-plain-list">
+              {types.map((t) => (
+                <li key={t.template}>
+                  <button type="button" className="cc-row-btn cc-type-item" aria-current={t === sel} onClick={() => choose(t.template)}>
+                    <span className="mono cc-break">{t.template}</span>
+                    <span className="cc-row cc-gap-8">
+                      {t.state === null ? <Badge tone="outline" size="sm">Stateless</Badge> : <Badge tone="info" size="sm">Stateful</Badge>}
+                      <span className="caption cc-muted">{count(Object.keys(t.messages).length, 'message type')}</span>
+                      <span className="mono-sm cc-subtle cc-push">{shortHash(t.hash)}</span>
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Widget>
         <div className="cc-types-detail">
           {sel ? (
             <>
-              <Card title={sel.template} subtitle={`${sel.state === null ? 'Stateless' : 'Stateful'} · ${count(messages.length, 'message type')}`}>
+              <Widget title={<span className="mono cc-widget-mono">{sel.template}</span>} subtitle={`${sel.state === null ? 'Stateless' : 'Stateful'} · ${count(messages.length, 'message type')}`} flush>
                 <Definitions rows={[
-                  ['Contract hash', sel.hash, 'mono cc-small'],
-                  ['Parameters', params.length ? params.join(', ') : 'none — one fixed address', 'mono cc-small'],
+                  ['Contract hash', sel.hash, 'mono-sm'],
+                  ['Parameters', params.length ? params.join(', ') : 'none — one fixed address', 'mono-sm'],
                   ['Example', example === undefined ? 'Looking…' : example === null ? 'No instances yet'
-                    : <a className="cc-link mono cc-small" href={href.actor(example)}>{example}</a>, example ? null : 'cc-muted'],
-                  ['Instances', <a className="cc-link cc-small" href={href.actors({ type: sel.template })}>List all of this type</a>],
+                    : <a className="mono-sm" href={href.actor(example)}>{example}</a>, example ? null : 'cc-muted'],
+                  ['Instances', <a href={href.actors({ type: sel.template })}>List all of this type</a>],
                 ]} />
                 <div className="cc-schema-block">
-                  <div className="cc-overline">State schema</div>
+                  <div className="overline cc-subtle">State schema</div>
                   {sel.state === null
                     ? <div className="cc-dashed">Stateless — instances of this type have no state.</div>
                     : <pre className="cc-json cc-json-pre">{JSON.stringify(sel.state, null, 2)}</pre>}
                 </div>
-              </Card>
-              <Card title="Message Types" subtitle={count(messages.length, 'message type')} flush>
+              </Widget>
+              <Widget title="Message types" count={<Count>{String(messages.length)}</Count>} flush>
                 <ul className="cc-plain-list">
                   {messages.map((name) => {
                     const isOpen = open.has(name);
@@ -105,16 +103,16 @@ export function TypesPage({ query }: { query: Query }) {
                           else next.add(name);
                           return next;
                         })}>
-                          <span className="cc-faint"><Icon name={isOpen ? 'chevron-down' : 'chevron-right'} size={16} /></span>
-                          <span className="mono cc-strong cc-small">{name}</span>
-                          <span className="cc-caption mono cc-trunc cc-grow">{summary(sel.messages[name])}</span>
+                          <span className="cc-toggle-icon"><Icon name={isOpen ? 'chevron-down' : 'chevron-right'} /></span>
+                          <span className="label">{name}</span>
+                          <span className="mono-sm cc-muted cc-trunc cc-grow">{summary(sel.messages[name])}</span>
                         </button>
                         {isOpen ? <pre className="cc-json cc-json-pre cc-message-schema">{JSON.stringify(sel.messages[name], null, 2)}</pre> : null}
                       </li>
                     );
                   })}
                 </ul>
-              </Card>
+              </Widget>
             </>
           ) : null}
         </div>

@@ -32,7 +32,7 @@ known differences from Kotlin are summarised [below](#decisions-and-deviations).
 | `cicada-store-postgres` | `PostgresStore` (sqlx): `FOR UPDATE SKIP LOCKED` claims, `LISTEN/NOTIFY` wake-ups. For many nodes. | `actors-store-postgres` |
 | `cicada-store-conformance` | The shared suite (S1–S10 and robustness cases) every store must pass, as a macro. | `actors-store-conformance` |
 | `cicada-axum` | `actor_api()` (the fourteen endpoints) and `actor_health()` (a public readiness check) as axum routers. | `actors-ktor` |
-| `cicada-ui` | The actor console: the React app of the Kotlin repo, embedded and served by `actor_ui()`. | `actors-ui` |
+| `cicada-ui` | The actor console: the React app of the Kotlin repo in the Sensus BPM Online design, embedded and served by `actor_ui()`. | `actors-ui` |
 | `cicada-client` | `ActorClient`: typed HTTP client (reqwest) for remote callers, idempotent sends. | `actors-client` |
 | `cicada-test` | `TestActors`, `InMemoryStore`, virtual time, contract snapshots and state samples. | `actors-test` |
 | `cicada-extras` | Building blocks on the public API, no core changes: `CrashLoopGuard`, dead letters (`DeadLettersActor`, `FailureWatcher`), `Timer`, `Schedule`. | `actors-extras` |
@@ -388,9 +388,10 @@ Router::new()
 
 `actor_ui(mount_path, api_path)` takes where the console is served and where `actor_api()` is mounted on the same
 origin (`try_actor_ui` returns an error instead of panicking on an invalid path). The console is the React +
-TypeScript single-page app of the Kotlin repo (ADR 0005), built with Vite when `cicada-ui` compiles (Node.js 22+ and
-npm; `CICADA_UI_SKIP_BUILD` embeds an empty console) and embedded in the binary with `config.json`; it calls only the
-API, from the browser. What it does:
+TypeScript single-page app of the Kotlin repo (ADR 0005), restyled to the Sensus BPM Online design system with the same
+behaviour (ADR 0006; its tokens and fonts are vendored, nothing loads from outside the origin). It is built with Vite
+when `cicada-ui` compiles (Node.js 22+ and npm; `CICADA_UI_SKIP_BUILD` embeds an empty console) and embedded in the
+binary with `config.json`; it calls only the API, from the browser. What it does:
 
 - **Actors** — list by type template or URI prefix, cursor pages; create (form from the state's JSON Schema, or raw
   JSON) and delete (type the URI to confirm).
@@ -1028,6 +1029,7 @@ Decisions of the port, as ADRs in [docs/adr/](docs/adr/):
 | [0003](docs/adr/0003-actor-definition-api.md) | Actor definitions: a ref struct implementing `ActorRef`, a tagged serde enum, and the `Actor` trait with a required `UNHANDLED` and one `handle`; no proc macro. |
 | [0004](docs/adr/0004-shared-store-schema.md) | The SQL schema is shared with Kotlin; contract hashes differ, so one template is hosted by one implementation. |
 | [0005](docs/adr/0005-reuse-the-console.md) | The React console is reused unchanged; a fixtures test checks the Rust API against its zod schemas. |
+| [0006](docs/adr/0006-console-in-sensus-design.md) | The Rust console is restyled to the Sensus BPM Online design system; behaviour, routes and wire types stay as in the Kotlin copy. |
 
 Open questions of the original design, resolved there and kept here:
 

@@ -1,17 +1,18 @@
-// Dialogs over the page: a centered modal or a drawer on the right. Escape and the backdrop close the topmost one;
-// focus stays inside while it is open and returns to where it was afterwards. A page owns its dialogs, so leaving
-// the page closes them.
+// Modal dialogs over the page (the system's scrim and dialog). Escape and the scrim close the topmost one; focus stays
+// inside while it is open and returns to where it was afterwards. A page owns its dialogs, so leaving the page closes
+// them.
 
 import { useEffect, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { cx, IconButton } from '../halo';
+import { cx, Icon, IconButton, type IconName } from '../sx';
 
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 /** Open dialogs, topmost last: keys go to the topmost one only. */
 const stack: HTMLElement[] = [];
 
-export function Dialog({ kind = 'modal', labelledBy, onClose, children }: { kind?: 'modal' | 'drawer'; labelledBy: string; onClose: () => void; children: ReactNode }) {
+/** [size]: s 400 px (confirmations), m 600 px, l 640 px wide here (the send form). */
+export function Dialog({ size = 'm', labelledBy, onClose, children }: { size?: 's' | 'm' | 'l'; labelledBy: string; onClose: () => void; children: ReactNode }) {
   const overlay = useRef<HTMLDivElement>(null);
   const panel = useRef<HTMLDivElement>(null);
   const close = useRef(onClose);
@@ -56,12 +57,12 @@ export function Dialog({ kind = 'modal', labelledBy, onClose, children }: { kind
   return createPortal(
     <div
       ref={overlay}
-      className={cx('cc-overlay', kind === 'drawer' && 'cc-overlay-drawer')}
+      className="sx-scrim cc-scrim"
       onMouseDown={(e) => {
         if (e.target === overlay.current) close.current();
       }}
     >
-      <div ref={panel} role="dialog" aria-modal="true" aria-labelledby={labelledBy} className={kind === 'drawer' ? 'cc-drawer' : 'cc-dialog'}>
+      <div ref={panel} role="dialog" aria-modal="true" aria-labelledby={labelledBy} className={cx('sx-dialog', size === 's' && 'sx-dialog--s', size === 'l' && 'cc-dialog-l')}>
         {children}
       </div>
     </div>,
@@ -69,15 +70,37 @@ export function Dialog({ kind = 'modal', labelledBy, onClose, children }: { kind
   );
 }
 
-/** A dialog header with title, caption and a close button. */
-export function DialogHeader({ id, title, caption, onClose }: { id: string; title: ReactNode; caption?: ReactNode; onClose: () => void }) {
+/** A dialog head with title (Poppins), caption, an optional status icon and a close button. */
+export function DialogHeader({ id, title, caption, icon, onClose }: { id: string; title: ReactNode; caption?: ReactNode; icon?: { name: IconName; tone: 'danger' | 'warning' | 'info' }; onClose: () => void }) {
   return (
-    <header className="cc-dialog-head">
+    <header className="sx-dialog-head">
+      {icon ? <span className={cx('sx-dialog-icon', 'sx-dialog-icon--' + icon.tone)}><Icon name={icon.name} size={20} /></span> : null}
       <div className="cc-grow">
-        <h2 id={id} className="cc-dialog-title">{title}</h2>
-        {caption ? <div className="cc-caption">{caption}</div> : null}
+        <h2 id={id}>{title}</h2>
+        {caption ? <p>{caption}</p> : null}
       </div>
-      <IconButton icon="x" label="Close" variant="ghost" size="sm" onClick={onClose} />
+      <IconButton icon="close" label="Close" onClick={onClose} />
     </header>
+  );
+}
+
+/** The scrolling body of a dialog. */
+export function DialogBody({ children }: { children: ReactNode }) {
+  return <div className="sx-dialog-body cc-dialog-body">{children}</div>;
+}
+
+/** The result of the dialog's action, between body and foot so it stays in view. */
+export function DialogResult({ children }: { children: ReactNode }) {
+  return children ? <div className="cc-dialog-result">{children}</div> : null;
+}
+
+/** The dialog's foot: an optional note on the left, the actions on the right. */
+export function DialogFoot({ note, children }: { note?: ReactNode; children: ReactNode }) {
+  return (
+    <footer className="sx-dialog-foot">
+      {note ? <span className="caption cc-subtle">{note}</span> : null}
+      <span className="sx-spacer" />
+      {children}
+    </footer>
   );
 }

@@ -1,11 +1,11 @@
 // Entry point of index.html: reads config.json (where the API is) and starts the console.
 
 import { createRoot } from 'react-dom/client';
-import './styles/theme.css';
-import './styles/halo.css';
+import './styles/sensus/tokens.css';
+import './styles/sensus/bundle.css';
 import './styles/app.css';
 import { App } from './app/App';
-import { Callout } from './halo';
+import { Callout } from './sx';
 
 async function start(): Promise<void> {
   const root = createRoot(document.getElementById('app')!);

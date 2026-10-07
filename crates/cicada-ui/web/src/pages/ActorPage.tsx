@@ -10,7 +10,7 @@ import { withoutScheme } from '../lib/address';
 import { addedKeys, jsonChanges, removedKeys, type JsonChanges } from '../lib/diff';
 import { bytes, clock, count, dateTime, relative, shortDateTime, utf8Length } from '../lib/format';
 import { href } from '../lib/routes';
-import { Badge, Button, Callout, Card, CopyButton, cx, EmptyState, Icon, OkMark, ProblemCallout, StatusBadge } from '../halo';
+import { Badge, Button, Callout, CopyButton, Count, cx, EmptyState, Failures, Icon, LinkButton, OkMark, ProblemCallout, SrOnly, StatusBadge, Widget } from '../sx';
 import { DeleteActorDialog } from '../dialogs/DeleteActor';
 import { SendMessageDialog } from '../dialogs/SendMessage';
 import { JsonView } from '../ui/JsonView';
@@ -137,8 +137,8 @@ export function ActorPage({ uri }: { uri: string }) {
   const crumbs = [{ label: 'Actors', href: href.actors() }];
   if (notFound) {
     return (
-      <div>
-        <PageHead crumbs={[...crumbs, { label: 'Not found' }]} title={uri} titleClass="mono cc-title-uri" />
+      <div className="cc-page">
+        <PageHead crumbs={[...crumbs, { label: 'Not found' }]} title={uri} mono />
         <Callout kind="user" title="No such actor" code="404 Not Found"
           detail={<><Mono>{uri}</Mono> does not exist: it was deleted, stopped itself, or was never created. This page keeps checking.</>} />
       </div>
@@ -146,54 +146,53 @@ export function ActorPage({ uri }: { uri: string }) {
   }
   if (!loaded) {
     return (
-      <div>
-        <PageHead crumbs={[...crumbs, { label: '…' }]} title={uri} titleClass="mono cc-title-uri" />
+      <div className="cc-page">
+        <PageHead crumbs={[...crumbs, { label: '…' }]} title={uri} mono />
         <Loading>Loading actor…</Loading>
       </div>
     );
   }
 
   const a = loaded.actor;
+  const params = Object.entries(a.params);
   return (
-    <div>
+    <div className="cc-page">
       <PageHead
-        crumbs={[...crumbs, { label: withoutScheme(a.type) }]}
+        crumbs={[...crumbs, { label: withoutScheme(a.type), href: href.actors({ type: a.type }), mono: true, title: a.type }, { label: withoutScheme(a.uri), mono: true, title: a.uri }]}
         title={a.uri}
-        titleClass="mono cc-title-uri"
+        mono
         titleAfter={<CopyButton text={a.uri} label="Copy actor URI" />}
         after={
           <div className="cc-meta">
-            <div><span className="cc-muted">Type </span><a className="cc-link mono cc-small" href={href.types({ template: a.type })}>{a.type}</a></div>
-            {Object.keys(a.params).length ? (
-              <div className="cc-row cc-gap-6">
-                <span className="cc-muted">Params</span>
-                {Object.entries(a.params).map(([k, v]) => <span key={k} className="cc-chip cc-chip-static">{`${k} = ${v}`}</span>)}
-              </div>
-            ) : null}
-            <div className="cc-row cc-gap-6">
-              <span className="cc-muted">Version</span>
-              <span className={cx('mono cc-version', loaded.versionFrom !== null && 'cc-changed')}>{String(a.version)}</span>
-              {loaded.versionFrom !== null ? <span className="cc-version-delta"><Icon name="arrow-up" size={12} />{`from ${loaded.versionFrom} at last refresh`}</span> : null}
-            </div>
-            <div><span className="cc-muted">Created </span><span className="ha-num">{dateTime(a.createdAt)}</span></div>
+            <a className="cc-type-link" href={href.types({ template: a.type })} title="Open this type">
+              <Badge tone="outline" icon="template"><span className="mono-sm">{a.type}</span></Badge>
+            </a>
+            <span className="caption cc-muted">{params.length ? params.map(([k, v]) => `${k} = ${v}`).join(', ') : 'no parameters'}</span>
+            <span className="sx-vr cc-vr-sm" aria-hidden="true" />
+            <span className="caption cc-muted sx-num">
+              Version <b className={cx('cc-ink', loaded.versionFrom !== null && 'cc-changed')}>{String(a.version)}</b>
+            </span>
+            {loaded.versionFrom !== null ? <span className="caption cc-version-delta"><Icon name="arrow-up" size={12} />{`from ${loaded.versionFrom} at last refresh`}</span> : null}
+            <span className="sx-vr cc-vr-sm" aria-hidden="true" />
+            <span className="caption cc-muted sx-num">Created {dateTime(a.createdAt)}</span>
           </div>
         }
         actions={
           <>
-            <Button className="cc-danger" icon="trash" onClick={() => setDeleting(true)}>Delete Actor</Button>
-            <Button variant="primary" icon="arrow-right" onClick={() => void openSend()}>Send Message</Button>
+            <Button variant="danger-ghost" icon="trash" onClick={() => setDeleting(true)}>Delete actor…</Button>
+            <Button variant="primary" icon="send" onClick={() => void openSend()}>Send message…</Button>
           </>
         }
       />
       {notice ? <ProblemCallout error={notice} title="Cannot load the type of this actor" /> : null}
-      <Mailbox loaded={loaded} cancelled={cancelled} cancelProblems={cancelProblems} onCancel={(id) => void cancel(id)} onSend={() => void openSend()}
-        onDismiss={(id) => setCancelProblems((m) => new Map([...m].filter(([k]) => k !== id)))} />
-      <div className="cc-grid-2">
+      <div className="cc-actor-grid">
         <StateCard actor={a} stateless={ctx.typeOf(uri)?.type.state === null} changes={loaded.changes} mode={jsonMode} overrides={overrides}
           onMode={(mode) => { setJsonMode(mode); setOverrides(new Map()); }}
           onToggle={(path, open) => setOverrides((m) => new Map(m).set(path, open))} />
-        <FailuresCard uri={uri} failures={loaded.failures} />
+        <Mailbox loaded={loaded} cancelled={cancelled} cancelProblems={cancelProblems} onCancel={(id) => void cancel(id)} onSend={() => void openSend()}
+          onDismiss={(id) => setCancelProblems((m) => new Map([...m].filter(([k]) => k !== id)))} />
       </div>
+      <FailuresCard uri={uri} failures={loaded.failures} />
       {sending ? <SendMessageDialog uri={uri} type={sending} onClose={() => setSending(null)} /> : null}
       {deleting ? (
         <DeleteActorDialog uri={uri} version={a.version} pending={loaded.mailbox.length} morePending={loaded.mailboxMore}
@@ -213,18 +212,16 @@ function Mailbox({ loaded, cancelled, cancelProblems, onCancel, onSend, onDismis
     ...loaded.leaving.map((l) => ({ m: l.message, running: null, leaving: l })),
   ];
   return (
-    <Card title="Mailbox" subtitle={parts.join(' · ')} flush>
+    <Widget title="Mailbox" count={<Count>{loaded.mailboxMore ? `${total}+` : String(total)}</Count>} subtitle={parts.join(' · ')} flush>
       {rows.length === 0 ? (
         <EmptyState title="Mailbox is empty" caption="No pending messages. Finished messages aren’t listed — find them by id or under Failures."
-          action={<Button size="sm" onClick={onSend}>Send Message</Button>} />
+          action={<Button size="sm" icon="send" onClick={onSend}>Send message…</Button>} />
       ) : (
-        <div className="cc-scroll-x">
-          <table className="ha-table cc-table cc-table-mailbox">
+        <div className="sx-tablewrap">
+          <table className="sx-table cc-table-mailbox">
+            <colgroup><col /><col className="cc-w-240" /><col className="cc-w-80" /><col className="cc-w-160" /><col className="cc-w-100" /></colgroup>
             <thead>
-              <tr>
-                <th>Type</th><th>Status</th><th>Deliver at</th><th className="cc-num">Attempt</th><th className="cc-num">Failures</th>
-                <th className="cc-col-error">Last error</th><th>From</th><th>Correlation</th><th className="cc-num">Action</th>
-              </tr>
+              <tr><th>Message</th><th>Deliver at</th><th className="is-num">Attempt</th><th>Last error</th><th className="is-actions cc-actions-wide"><SrOnly>Action</SrOnly></th></tr>
             </thead>
             <tbody>
               {rows.map(({ m, running, leaving }) => (
@@ -235,7 +232,7 @@ function Mailbox({ loaded, cancelled, cancelProblems, onCancel, onSend, onDismis
           </table>
         </div>
       )}
-    </Card>
+    </Widget>
   );
 }
 
@@ -249,36 +246,49 @@ function MailboxRow({ m, running, leaving, isNew, cancelledAt, problem, onCancel
   else when = due ? `due ${relative(m.deliverAt)}` : relative(m.deliverAt);
   const finished = Boolean(leaving || cancelledAt);
   const error = problem instanceof ApiError ? problem : null;
+  const origin = (m.from ?? 'external') + (m.correlationId ? ' · ' + m.correlationId : '');
+  const originTitle = 'From ' + (m.from ?? 'outside an actor') + (m.correlationId ? ' · correlation ' + m.correlationId : '');
   return (
     <>
-      <tr className={finished ? 'cc-leaving' : isNew ? 'cc-new' : undefined}>
-        <td><a className="cc-link mono cc-strong" href={href.message(m.id)}>{m.type}</a></td>
-        <td><StatusBadge status={status} /></td>
+      <tr className={cx('cc-tall', finished ? 'cc-leaving' : isNew && 'cc-new')}>
         <td>
-          <div className="ha-num cc-nowrap">{shortDateTime(m.deliverAt)}</div>
-          <div className={cx('cc-caption cc-nowrap', !finished && !due && 'cc-ink')}>{when}</div>
+          <div className="cc-stack">
+            <a className="label cc-trunc" href={href.message(m.id)} title={m.type}>{m.type}</a>
+            <span className="mono-sm cc-subtle cc-trunc" title={originTitle}>{origin}</span>
+          </div>
         </td>
-        <td className="ha-num cc-num">{String(m.attempt)}</td>
-        <td className={cx('ha-num cc-num', m.failures > 0 && 'cc-critical cc-strong')}>{String(m.failures)}</td>
-        <td className="cc-col-error">{m.lastError ? <span className="cc-trunc mono" title={m.lastError}>{m.lastError}</span> : <span className="cc-faint">—</span>}</td>
-        <td><span className="mono cc-trunc cc-muted cc-from" title={m.from ?? 'outside an actor'}>{m.from ?? 'external'}</span></td>
-        <td><span className="mono cc-muted">{m.correlationId ?? '—'}</span></td>
-        <td className="cc-num cc-nowrap">
+        <td>
+          <div className="cc-stack">
+            <span className="sx-num">{shortDateTime(m.deliverAt)}</span>
+            <span className="cc-row cc-gap-4">
+              <StatusBadge status={status} size="sm" />
+              <span className={cx('caption cc-trunc', !finished && !due ? 'cc-ink' : 'cc-subtle')} title={when}>{when}</span>
+            </span>
+          </div>
+        </td>
+        <td className="is-num">
+          <div className="cc-stack cc-end">
+            <span className="sx-num">{String(m.attempt)}</span>
+            {m.failures > 0 ? <Failures n={m.failures} suffix="failed" /> : null}
+          </div>
+        </td>
+        <td>{m.lastError ? <span className="mono-sm cc-danger-text" title={m.lastError}>{m.lastError}</span> : <span className="cc-subtle">—</span>}</td>
+        <td className="is-actions cc-actions-wide">
           {finished
-            ? <span className="cc-caption">{status === 'cancelled' ? 'Cancelled' : 'Finished'}</span>
+            ? <span className="caption cc-muted">{status === 'cancelled' ? 'Cancelled' : 'Finished'}</span>
             : running
-              ? <span className="cc-caption">Running — can’t cancel</span>
-              : <Button variant="ghost" size="sm" label={`Cancel ${m.type} message`} onClick={() => onCancel(m.id)}>Cancel</Button>}
+              ? <Button size="sm" disabled title="A running message can’t be cancelled">Cancel</Button>
+              : <Button size="sm" label={`Cancel ${m.type} message`} onClick={() => onCancel(m.id)}>Cancel</Button>}
         </td>
       </tr>
       {problem ? (
         <tr className="cc-problem-row">
-          <td colSpan={9}>
+          <td colSpan={5} className="cc-wrap">
             <ProblemCallout
               error={problem}
               title={error?.type === ProblemTypes.MESSAGE_RUNNING ? 'Cancel failed — Message is running.' : error?.temporary ? undefined : 'Cancel failed — ' + (error?.title ?? 'error') + '.'}
               retry={() => onCancel(m.id)}
-              action={error?.temporary ? undefined : <button type="button" className="cc-btn-reset cc-caption cc-underline" onClick={() => onDismiss(m.id)}>Dismiss</button>}
+              action={error?.temporary ? undefined : <Button size="sm" variant="ghost" onClick={() => onDismiss(m.id)}>Dismiss</Button>}
             />
           </td>
         </tr>
@@ -290,11 +300,11 @@ function MailboxRow({ m, running, leaving, isNew, cancelledAt, problem, onCancel
 function StateCard({ actor: a, stateless, changes, mode, overrides, onMode, onToggle }: { actor: ActorView; stateless: boolean; changes: JsonChanges | null; mode: 'auto' | 'expanded' | 'collapsed'; overrides: ReadonlyMap<string, boolean>; onMode: (mode: 'expanded' | 'collapsed') => void; onToggle: (path: string, open: boolean) => void }) {
   if (a.state === null) {
     return (
-      <Card title="State" subtitle={`v${a.version}`}>
+      <Widget title="State" subtitle={`v${a.version}`}>
         {stateless
-          ? <EmptyState badge={<Badge>Stateless</Badge>} title="This actor has no state" caption={<>Its type <Mono>{a.type}</Mono> is stateless. Version stays 0.</>} />
+          ? <EmptyState badge={<Badge tone="outline">Stateless</Badge>} title="This actor has no state" caption={<>Its type <Mono>{a.type}</Mono> is stateless. Version stays 0.</>} />
           : <EmptyState title="State is null" caption="The actor was created without a state, or its handler set none." />}
-      </Card>
+      </Widget>
     );
   }
   const text = JSON.stringify(a.state);
@@ -307,52 +317,49 @@ function StateCard({ actor: a, stateless, changes, mode, overrides, onMode, onTo
     return depth < 2 || size <= 20;
   };
   return (
-    <Card title="State" subtitle={`v${a.version} · ${bytes(utf8Length(text))}${changed ? ` · ${count(changed, 'field')} changed since last refresh` : ''}`}>
-      <div className="cc-toolbar">
-        <Button size="sm" onClick={() => onMode('expanded')}>Expand All</Button>
-        <Button size="sm" onClick={() => onMode('collapsed')}>Collapse All</Button>
-        <span className="cc-grow" />
-        <CopyJsonButton text={() => JSON.stringify(a.state, null, 2)} />
-      </div>
+    <Widget
+      title="State"
+      subtitle={`v${a.version} · ${bytes(utf8Length(text))}${changed ? ` · ${count(changed, 'field')} changed since last refresh` : ''}`}
+      actions={
+        <span className="cc-row cc-gap-2">
+          <Button variant="ghost" size="sm" onClick={() => onMode('expanded')}>Expand all</Button>
+          <Button variant="ghost" size="sm" onClick={() => onMode('collapsed')}>Collapse all</Button>
+          <CopyButton text={() => JSON.stringify(a.state, null, 2)} label="Copy state as JSON" />
+        </span>
+      }
+      flush
+    >
       <JsonView value={a.state} isOpen={isOpen} onToggle={onToggle} changes={changes?.changed ?? null} />
-    </Card>
-  );
-}
-
-function CopyJsonButton({ text }: { text: () => string }) {
-  const [label, setLabel] = useState('Copy JSON');
-  return (
-    <Button variant="ghost" size="sm" onClick={() => {
-      navigator.clipboard.writeText(text()).then(() => setLabel('Copied'), () => setLabel('Copy failed'));
-      setTimeout(() => setLabel('Copy JSON'), 1500);
-    }}>{label}</Button>
+    </Widget>
   );
 }
 
 function FailuresCard({ uri, failures }: { uri: string; failures: OutcomeView[] }) {
   const recent = failures.slice(0, RECENT_FAILURES);
   return (
-    <Card title="Recent Failures" subtitle={`This actor · last 24 h${failures.length > RECENT_FAILURES ? ` · ${failures.length} in all` : ''}`} flush>
+    <Widget
+      title="Recent failures"
+      count={failures.length ? <Count tone="danger">{String(failures.length)}</Count> : undefined}
+      subtitle={`This actor · last 24 h${failures.length > RECENT_FAILURES ? ` · ${failures.length} in all` : ''}`}
+      actions={<LinkButton variant="ghost" size="sm" href={href.failures({ prefix: uri })}>All failures for this actor</LinkButton>}
+    >
       {recent.length === 0 ? (
         <EmptyState mark={<OkMark />} title="No failures in the last 24 h" caption="Widen the range on the Failures page to look further back." />
       ) : (
-        <div>
+        <div className="cc-stack cc-gap-8">
           {recent.map((f) => (
-            <a key={f.id} className="cc-failure-item" href={href.message(f.id)}>
-              <div className="cc-row">
-                <span className="mono cc-strong cc-small">{f.message.type}</span>
-                <StatusBadge status={f.status} />
-                <span className="cc-grow" />
-                <span className="cc-caption ha-num">{shortDateTime(f.finishedAt)}</span>
+            <div key={f.id} className="sx-alert sx-alert--danger">
+              <span className="sx-tone-danger"><Icon name="error" size={20} /></span>
+              <div className="cc-alert-text">
+                <div className="sx-alert-title cc-row cc-gap-4"><span>{f.message.type}</span><StatusBadge status={f.status} size="sm" /></div>
+                <p className="mono-sm cc-break">{f.error ?? '—'}</p>
+                <p className="caption sx-num">{`${dateTime(f.finishedAt)} · attempt ${f.message.attempt}`}</p>
               </div>
-              <span className="mono cc-trunc cc-muted cc-xsmall">{f.error ?? '—'}</span>
-            </a>
+              <LinkButton size="sm" href={href.message(f.id)} label={`Open ${f.message.type} message`}>Open message</LinkButton>
+            </div>
           ))}
         </div>
       )}
-      <div className="cc-card-foot cc-card-foot-plain">
-        <a className="cc-link cc-small cc-strong" href={href.failures({ prefix: uri })}>View all failures for this actor</a>
-      </div>
-    </Card>
+    </Widget>
   );
 }
