@@ -4,6 +4,7 @@ use cicada::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use super::order::{Order, OrderMsg};
+use super::traced;
 
 /// Stock of one sku. A saga participant: it answers [`InventoryMsg::Reserve`] and [`InventoryMsg::Release`] to the
 /// order that asked.
@@ -65,14 +66,14 @@ impl Actor for InventoryActor {
             InventoryMsg::Reserve { reply_to, quantity } => {
                 let available = turn.state().available;
                 if turn.state().reservations.contains_key(&reply_to.id) {
-                    turn.send(&reply_to, OrderMsg::Reserved)?; // asked again: same answer
+                    turn.send_with(&reply_to, OrderMsg::Reserved, traced(turn))?; // asked again: same answer
                 } else if quantity > available {
-                    turn.send(&reply_to, OrderMsg::OutOfStock { available })?;
+                    turn.send_with(&reply_to, OrderMsg::OutOfStock { available }, traced(turn))?;
                 } else {
                     let state = turn.state_mut();
                     state.available -= quantity;
                     state.reservations.insert(reply_to.id.clone(), quantity);
-                    turn.send(&reply_to, OrderMsg::Reserved)?;
+                    turn.send_with(&reply_to, OrderMsg::Reserved, traced(turn))?;
                 }
             }
             InventoryMsg::Release { reply_to } => {
@@ -81,7 +82,7 @@ impl Actor for InventoryActor {
                     state.available += reserved;
                     state.reservations.remove(&reply_to.id);
                 }
-                turn.send(&reply_to, OrderMsg::Released)?;
+                turn.send_with(&reply_to, OrderMsg::Released, traced(turn))?;
             }
             InventoryMsg::Restock { quantity } => turn.state_mut().available += quantity,
         }

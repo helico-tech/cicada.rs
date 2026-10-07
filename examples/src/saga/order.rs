@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use super::inventory::{Inventory, InventoryMsg};
 use super::payments::{Payments, PaymentsMsg, charge_retry};
+use super::traced;
 
 /// One order, orchestrating inventory and payment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -112,7 +113,7 @@ impl Actor for OrderActor {
                     amount_cents,
                     ..OrderState::default()
                 });
-                turn.send(&Inventory { sku }, InventoryMsg::Reserve { reply_to: me, quantity })?;
+                turn.send_with(&Inventory { sku }, InventoryMsg::Reserve { reply_to: me, quantity }, traced(turn))?;
             }
             OrderMsg::Reserved => {
                 if status != OrderStatus::Reserving {
@@ -124,7 +125,7 @@ impl Actor for OrderActor {
                 turn.send_with(
                     &Payments,
                     PaymentsMsg::Charge { reply_to: me, amount_cents },
-                    SendOptions::new().retry(charge_retry()),
+                    traced(turn).retry(charge_retry()),
                 )?;
             }
             OrderMsg::OutOfStock { available } => {
@@ -153,7 +154,7 @@ impl Actor for OrderActor {
                 state.status = OrderStatus::Compensating;
                 state.failure = Some(format!("payment declined: {reason}"));
                 let sku = state.sku.clone().ok_or_else(|| HandlerError::msg("a charging order has a sku"))?;
-                turn.send(&Inventory { sku }, InventoryMsg::Release { reply_to: me })?;
+                turn.send_with(&Inventory { sku }, InventoryMsg::Release { reply_to: me }, traced(turn))?;
             }
             OrderMsg::Released => {
                 if status != OrderStatus::Compensating {
