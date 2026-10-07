@@ -1,0 +1,61 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/cicada",
+    "crates/cicada-test",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+license = "MIT OR Apache-2.0"
+publish = false
+repository = "https://github.com/helico-tech/cicada.rs"
+
+[workspace.dependencies]
+cicada = { path = "crates/cicada" }
+cicada-test = { path = "crates/cicada-test" }
+cicada-store-conformance = { path = "crates/cicada-store-conformance" }
+cicada-store-sqlite = { path = "crates/cicada-store-sqlite" }
+cicada-store-postgres = { path = "crates/cicada-store-postgres" }
+cicada-axum = { path = "crates/cicada-axum" }
+cicada-client = { path = "crates/cicada-client" }
+cicada-ui = { path = "crates/cicada-ui" }
+cicada-otel = { path = "crates/cicada-otel" }
+cicada-extras = { path = "crates/cicada-extras" }
+cicada-examples = { path = "examples" }
+
+anyhow = "1.0.104"
+async-trait = "0.1.92"
+axum = "0.8.9"
+chrono = { version = "0.4.42", default-features = false, features = ["std", "clock", "serde"] }
+croner = "4.0.1"
+futures = "0.3.34"
+http = "1"
+mime_guess = "2.0.5"
+opentelemetry = "0.33.0"
+opentelemetry_sdk = "0.33.0"
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls"] }
+rust-embed = "8.12.0"
+schemars = { version = "1.2.2", features = ["preserve_order"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1.0.151", features = ["preserve_order"] }
+sha2 = "0.11.0"
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "json", "chrono"] }
+tempfile = "3"
+thiserror = "2.0.21"
+tokio = { version = "1.53.2", features = ["full"] }
+tokio-util = { version = "0.7.19", features = ["rt"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = "0.7.1"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+uuid = { version = "1.27.0", features = ["v4"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
