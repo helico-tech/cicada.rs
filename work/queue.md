@@ -7,4 +7,3 @@ Top = next. Details live in the linked files.
 1. [16. README and operations guide for the Rust port](epics/0001-rust-port/16-docs.md)
 1. [0300. The Rust client cannot address instances with a `.` or `..` segment](issues/0300-client-dot-segments.md)
 1. [0400. No rustfmt configuration; crates are formatted inconsistently](issues/0400-no-rustfmt-config.md)
-1. [0501. `PostgresStoreConfig` has no map of extra connection properties](issues/0501-postgres-extra-connection-properties.md)

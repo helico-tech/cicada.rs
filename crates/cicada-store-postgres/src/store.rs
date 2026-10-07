@@ -23,6 +23,7 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use serde_json::Value;
 use sqlx::pool::PoolConnection;
+use sqlx::postgres::PgConnectOptions;
 use sqlx::postgres::{PgPoolOptions, PgRow};
 use sqlx::{AssertSqlSafe, PgPool, Postgres, Row};
 use tokio::sync::broadcast::error::RecvError;
@@ -140,8 +141,15 @@ impl PostgresStore {
         password: Option<&str>,
         config: PostgresStoreConfig,
     ) -> StoreResult<Self> {
-        config.validate()?;
         let base = PostgresConnection::parse(url, user, password)?.connect_options()?;
+        Self::connect_with(base, config).await
+    }
+
+    /// Opens a store with sqlx connect options built by the caller, for settings no URL parameter covers (TLS client
+    /// certificates and keys, statement cache, extra startup parameters): the equivalent of the Kotlin config's
+    /// `properties`. The store still sets `search_path` (from `config.schema`) and, when unset, the application name.
+    pub async fn connect_with(base: PgConnectOptions, config: PostgresStoreConfig) -> StoreResult<Self> {
+        config.validate()?;
         let mut options = base.clone();
         if options.get_application_name().is_none() {
             options = options.application_name("cicada");

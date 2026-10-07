@@ -114,6 +114,23 @@ async fn invalid_settings_are_refused_before_connecting() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn connect_with_takes_sqlx_options_built_by_the_caller() {
+    let db = test_db!("w");
+    let options: cicada_store_postgres::PgConnectOptions = db.url.parse().unwrap();
+    let store = PostgresStore::connect_with(options.application_name("custom-app"), db.config()).await.unwrap();
+    store.now().await.unwrap();
+    let mut c = db.connect().await;
+    let names: Vec<String> =
+        sqlx::query_scalar("SELECT application_name FROM pg_stat_activity WHERE application_name = 'custom-app'")
+            .fetch_all(&mut c)
+            .await
+            .unwrap();
+    assert!(!names.is_empty(), "the caller's option reaches the connections");
+    store.close().await;
+    db.cleanup().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_store_clock_is_the_database_clock() {
     let db = test_db!("s");
     let store = db.open().await;

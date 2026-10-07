@@ -1,5 +1,5 @@
 ---
-status: todo
+status: done
 type: idea
 created: 2026-10-07
 ---
@@ -20,3 +20,5 @@ closed), not every single read as pgjdbc's `socketTimeout` does, because sqlx ha
 
 If needed, add `PostgresStore::connect_with(options: PgConnectOptions, config)` that takes sqlx options directly; the
 store still adds `search_path` and the application names.
+
+- 2026-10-07: `PostgresStore::connect_with(PgConnectOptions, config)` added (sqlx options re-exported); the socket-timeout difference stays as documented.
