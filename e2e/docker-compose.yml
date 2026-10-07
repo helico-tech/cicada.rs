@@ -1,0 +1,86 @@
+# Multi-node E2E stack: PostgreSQL 18, three sample nodes hosting every example group, one send-only node.
+#
+#   docker compose -f e2e/docker-compose.yml up -d --build --wait
+#   docker compose -f e2e/docker-compose.yml down -v
+#
+# Ports on the host (apart from the Kotlin stack's): node-1 9081, node-2 9082, node-3 9083, send-only node 9084,
+# PostgreSQL 25432. Fault-test timings are short and can be overridden from the shell: LEASE_TTL (default 5s;
+# heartbeat = TTL/3), POLL_INTERVAL (200ms), SHUTDOWN_GRACE_PERIOD (5s), API_TOKEN (unset = no auth). How to drive
+# fault scenarios by hand: e2e/README.md.
+name: cicada-rs-e2e
+
+x-node: &node
+  build:
+    context: ..
+    dockerfile: sample-service/Dockerfile
+  image: cicada-rs-sample:e2e
+  restart: "no"
+  stop_grace_period: 15s
+  depends_on:
+    postgres:
+      condition: service_healthy
+  environment: &node-env
+    DATABASE_URL: postgres://actors:actors@postgres:5432/actors
+    HOSTED_TYPES: all
+    LEASE_TTL: ${LEASE_TTL:-5s}
+    POLL_INTERVAL: ${POLL_INTERVAL:-200ms}
+    SHUTDOWN_GRACE_PERIOD: ${SHUTDOWN_GRACE_PERIOD:-5s}
+    FAILURE_WATCHER_INTERVAL: 2s
+    API_TOKEN: ${API_TOKEN:-}
+
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: actors
+      POSTGRES_USER: actors
+      POSTGRES_PASSWORD: actors
+    ports:
+      - "25432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U actors -d actors"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    volumes:
+      - pgdata:/var/lib/postgresql
+
+  node-1:
+    <<: *node
+    environment:
+      <<: *node-env
+      NODE_ID: node-1
+    ports:
+      - "9081:8080"
+
+  node-2:
+    <<: *node
+    environment:
+      <<: *node-env
+      NODE_ID: node-2
+    ports:
+      - "9082:8080"
+
+  node-3:
+    <<: *node
+    environment:
+      <<: *node-env
+      NODE_ID: node-3
+    ports:
+      - "9083:8080"
+
+  # Hosts no types: serves the HTTP API (create, send, query) only. Starts after node-1 registered the types.
+  send-only:
+    <<: *node
+    environment:
+      <<: *node-env
+      NODE_ID: send-only
+      HOSTED_TYPES: none
+    depends_on:
+      node-1:
+        condition: service_healthy
+    ports:
+      - "9084:8080"
+
+volumes:
+  pgdata:

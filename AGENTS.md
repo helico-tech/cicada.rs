@@ -13,6 +13,7 @@ cargo test --workspace                 # unit, runtime, SQLite, HTTP and README 
 cargo test -p cicada-examples --doc    # only the Rust blocks of README.md and docs/operations.md
 cargo clippy --workspace --all-targets
 CICADA_PG_URL=postgres://cicada:cicada@localhost:55432/cicada cargo test -p cicada-store-postgres   # needs PostgreSQL
+CICADA_E2E=1 cargo test -p cicada-e2e -- --nocapture   # E2E and fault tests in Docker, ~3 min; see e2e/README.md
 ```
 
 PostgreSQL for tests: `docker compose up -d postgres` (port 55432). Tests that need it are skipped when
@@ -30,7 +31,12 @@ PostgreSQL for tests: `docker compose up -d postgres` (port 55432). Tests that n
 | `crates/cicada-ui` | The embedded console |
 | `crates/cicada-otel`, `crates/cicada-extras` | Plugins and building blocks |
 | `examples/`, `sample-service/` | Worked examples; a runnable node |
+<<<<<<< HEAD
 | `docs/` | Architecture, ADRs and the operations guide |
+=======
+| `e2e/` | End-to-end and fault tests against sample nodes in Docker |
+| `docs/` | Architecture and ADRs |
+>>>>>>> worktree-agent-a7052fa90b5764cdf
 | `work/` | Queue, epics and stories, issues |
 
 ## Rules

@@ -300,6 +300,16 @@ dependencies = [
 name = "cicada-e2e"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "chrono",
+ "cicada",
+ "cicada-client",
+ "cicada-examples",
+ "cicada-sample-service",
+ "futures",
+ "reqwest",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 

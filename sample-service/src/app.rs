@@ -189,6 +189,9 @@ pub async fn serve(node: SampleNode, listener: TcpListener, shutdown: impl Futur
     Ok(served?)
 }
 
+/// How long a node retries an unavailable PostgreSQL store at start before it gives up.
+const STORE_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 async fn open_store(config: &SampleConfig) -> anyhow::Result<Arc<dyn Store>> {
     Ok(match &config.database_url {
         Some(url) => {
@@ -196,14 +199,22 @@ async fn open_store(config: &SampleConfig) -> anyhow::Result<Arc<dyn Store>> {
             if let Some(size) = config.effective_pool_size() {
                 store_config.max_pool_size = size;
             }
-            let store = PostgresStore::connect_as(
-                url,
-                config.database_user.as_deref(),
-                config.database_password.as_deref(),
-                store_config,
-            )
-            .await
-            .context("Opening the PostgreSQL store")?;
+            // The database may still be starting when the node starts (a whole stack started or restarted at once,
+            // where even its host name may not resolve yet): an unavailable store is retried for a while instead of
+            // ending the process.
+            let deadline = tokio::time::Instant::now() + STORE_STARTUP_TIMEOUT;
+            let store = loop {
+                let user = config.database_user.as_deref();
+                match PostgresStore::connect_as(url, user, config.database_password.as_deref(), store_config.clone())
+                    .await
+                {
+                    Err(e) if e.is_unavailable() && tokio::time::Instant::now() < deadline => {
+                        tracing::warn!("PostgreSQL unavailable, retrying in 1 s: {e}");
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    }
+                    opened => break opened.context("Opening the PostgreSQL store")?,
+                }
+            };
             Arc::new(store)
         }
         None => {
