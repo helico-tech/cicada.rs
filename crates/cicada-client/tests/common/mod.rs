@@ -1,0 +1,169 @@
+//! Actor types and a real HTTP server for the client tests (the Kotlin `Fixtures.kt` of `actors-client`).
+#![allow(dead_code)]
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
+
+use axum::Router;
+use cicada::prelude::*;
+use cicada::runtime::ActorSystemBuilder;
+use cicada_axum::actor_api;
+use cicada_client::ActorClient;
+use cicada_test::InMemoryStore;
+use serde::{Deserialize, Serialize};
+use tokio::sync::watch;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Account {
+    pub tenant: String,
+    pub id: i32,
+}
+
+impl ActorRef for Account {
+    const TEMPLATE: &'static str = "actor://account/{tenant}/{id}";
+    type Message = AccountMsg;
+}
+
+pub fn account(tenant: &str, id: i32) -> Account {
+    Account { tenant: tenant.to_owned(), id }
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type")]
+pub enum AccountMsg {
+    Deposit {
+        amount: i64,
+    },
+    Hold {
+        gate: String,
+    },
+    Explode,
+    /// Deposits `amount` into the account `to` of the same tenant.
+    Transfer {
+        to: i32,
+        amount: i64,
+    },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AccountState {
+    #[serde(default)]
+    pub balance: i64,
+    #[serde(default)]
+    pub owner: String,
+}
+
+pub fn owned_by(owner: &str) -> AccountState {
+    AccountState { balance: 0, owner: owner.to_owned() }
+}
+
+pub struct AccountActor;
+
+impl Actor for AccountActor {
+    type Ref = Account;
+    type State = AccountState;
+    type Message = AccountMsg;
+    const UNHANDLED: Unhandled = Unhandled::Fail;
+
+    async fn handle(&self, turn: &mut Turn<Self>, message: AccountMsg) -> HandlerResult {
+        match message {
+            AccountMsg::Deposit { amount } => turn.state_mut().balance += amount,
+            AccountMsg::Hold { gate } => gates::wait(&gate).await,
+            AccountMsg::Explode => return Err(HandlerError::msg("boom")),
+            AccountMsg::Transfer { to, amount } => {
+                let tenant = turn.self_ref().tenant.clone();
+                turn.send(&Account { tenant, id: to }, AccountMsg::Deposit { amount })?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Beacon {
+    pub name: String,
+}
+
+impl ActorRef for Beacon {
+    const TEMPLATE: &'static str = "actor://beacon/{name}";
+    type Message = BeaconMsg;
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type")]
+pub enum BeaconMsg {
+    Blink,
+}
+
+pub struct BeaconActor;
+
+impl Actor for BeaconActor {
+    type Ref = Beacon;
+    type State = Stateless;
+    type Message = BeaconMsg;
+    const UNHANDLED: Unhandled = Unhandled::Drop;
+
+    async fn handle(&self, _turn: &mut Turn<Self>, _message: BeaconMsg) -> HandlerResult {
+        Ok(())
+    }
+}
+
+/// Named latches that `Hold` handlers wait on.
+pub mod gates {
+    use super::*;
+
+    fn gate(name: &str) -> Arc<watch::Sender<bool>> {
+        static GATES: OnceLock<Mutex<HashMap<String, Arc<watch::Sender<bool>>>>> = OnceLock::new();
+        let mut gates = GATES.get_or_init(Default::default).lock().unwrap();
+        gates.entry(name.to_owned()).or_insert_with(|| Arc::new(watch::channel(false).0)).clone()
+    }
+
+    pub async fn wait(name: &str) {
+        let mut open = gate(name).subscribe();
+        let _ = open.wait_for(|o| *o).await;
+    }
+
+    pub fn open(name: &str) {
+        gate(name).send_replace(true);
+    }
+}
+
+/// A started node on an in-memory store (real time), hosting the account and beacon types.
+pub async fn node() -> ActorSystem {
+    node_with(|b| b.host(AccountActor).host(BeaconActor)).await
+}
+
+pub async fn node_with(configure: impl FnOnce(ActorSystemBuilder) -> ActorSystemBuilder) -> ActorSystem {
+    let store = Arc::new(InMemoryStore::default());
+    let system = configure(ActorSystem::builder(store).poll_interval(Duration::from_millis(50))).build();
+    system.start().await.expect("the node starts");
+    system
+}
+
+/// Serves `app` on a random local port; returns its base URL.
+pub async fn serve(app: Router) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a free port");
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.expect("the server runs") });
+    format!("http://{address}")
+}
+
+/// A node serving the API, `wrap`ped by the host (middleware), and a client for it.
+pub async fn client_test(wrap: impl FnOnce(Router) -> Router) -> (ActorClient, String, ActorSystem) {
+    let system = node().await;
+    let base = serve(wrap(actor_api(system.clone()))).await;
+    let client = ActorClient::new(&base).retry_delay(Duration::from_millis(10));
+    (client, base, system)
+}
+
+/// Polls `condition` every 20 ms until it holds, for at most 10 s.
+pub async fn eventually(mut condition: impl AsyncFnMut() -> bool) {
+    for _ in 0..500 {
+        if condition().await {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("Condition not met within 10 s");
+}

@@ -16,6 +16,11 @@ tokio.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+axum.workspace = true
+cicada-axum.workspace = true
+cicada-test.workspace = true
+futures.workspace = true
+schemars.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 
 [lints]

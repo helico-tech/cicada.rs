@@ -266,11 +266,16 @@ dependencies = [
 name = "cicada-axum"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum",
  "cicada",
+ "cicada-test",
+ "futures",
+ "schemars",
  "serde",
  "serde_json",
  "tokio",
+ "tower",
  "tracing",
 ]
 
@@ -278,8 +283,13 @@ dependencies = [
 name = "cicada-client"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "cicada",
+ "cicada-axum",
+ "cicada-test",
+ "futures",
  "reqwest",
+ "schemars",
  "serde",
  "serde_json",
  "thiserror",

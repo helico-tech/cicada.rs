@@ -20,10 +20,10 @@ PostgreSQL for tests: `docker compose up -d postgres` (port 55432). Tests that n
 
 | Path | What |
 | --- | --- |
-| `crates/cicada` | Core: `address`, `message`, `actor` (the `Actor` trait), `turn`, `plugin`, `runtime` (node, executor), `store` (trait, model, support), `contract`, `schema`, `retry`, `retention`, `time` |
+| `crates/cicada` | Core: `address`, `message`, `actor` (the `Actor` trait), `turn`, `plugin`, `runtime` (node, executor), `store` (trait, model, support), `contract`, `schema`, `retry`, `retention`, `time`, `api` (HTTP wire model) |
 | `crates/cicada-test` | `InMemoryStore`, `TokioClock`, `TestActors` harness |
 | `crates/cicada-store-*` | Store backends and the conformance suite |
-| `crates/cicada-axum` | HTTP API routers and wire model |
+| `crates/cicada-axum` | HTTP API routers |
 | `crates/cicada-client` | Typed HTTP client |
 | `crates/cicada-ui` | The embedded console |
 | `crates/cicada-otel`, `crates/cicada-extras` | Plugins and building blocks |

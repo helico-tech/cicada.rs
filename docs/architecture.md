@@ -160,12 +160,12 @@ impl Actor for SyncActor {
 
 | Crate | Contents | Kotlin module |
 | --- | --- | --- |
-| `cicada` | Addressing, definition API, runtime and dispatch loop, store trait and model, contracts and schemas, retry and retention policies | `actors-core` |
+| `cicada` | Addressing, definition API, runtime and dispatch loop, store trait and model, contracts and schemas, retry and retention policies, the HTTP wire model (`api`, shared by server and client) | `actors-core` |
 | `cicada-test` | `InMemoryStore`, clocks, `TestActors`, contract snapshots and state samples | `actors-test` |
 | `cicada-store-conformance` | The S1–S10 suite every store runs | `actors-store-conformance` |
 | `cicada-store-sqlite` | `SqliteStore` (sqlx): one file, WAL, one writer | `actors-store-sqlite` |
 | `cicada-store-postgres` | `PostgresStore` (sqlx): `FOR UPDATE SKIP LOCKED` claims, `LISTEN/NOTIFY` wake-ups | `actors-store-postgres` |
-| `cicada-axum` | `actor_api()` (the fourteen endpoints) and `actor_health()` as axum routers; the HTTP wire model | `actors-ktor` |
+| `cicada-axum` | `actor_api()` (the fourteen endpoints) and `actor_health()` as axum routers | `actors-ktor` |
 | `cicada-client` | Typed HTTP client (reqwest) | `actors-client` |
 | `cicada-ui` | The actor console (the React app of the Kotlin repo), embedded and served by `actor_ui()` | `actors-ui` |
 | `cicada-otel` | OpenTelemetry plugin | `actors-otel` |
@@ -177,4 +177,6 @@ impl Actor for SyncActor {
 
 Fourteen endpoints, identical to the Kotlin implementation (paths, bodies, status codes, problem types); see the
 README. Errors are `application/problem+json` (RFC 9457) with `type` `urn:cicada:problem:<slug>`. The routes are an
-axum `Router` that the host nests into its own router and wraps in its own authentication layers.
+axum `Router` that the host nests into its own router and wraps in its own authentication layers. The bodies are the
+types of `cicada::api`, used by both `cicada-axum` and `cicada-client`; request envelopes decode strictly (an unknown
+key is `400`), payloads and states leniently.
