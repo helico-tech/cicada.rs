@@ -11,12 +11,15 @@ publish.workspace = true
 cicada.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
-chrono.workspace = true
 async-trait.workspace = true
 tracing.workspace = true
 sqlx = { workspace = true, features = ["sqlite"] }
 
 [dev-dependencies]
+cicada-test.workspace = true
+schemars.workspace = true
+serde.workspace = true
+tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
