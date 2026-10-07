@@ -1,0 +1,18 @@
+//! Example 5 — orchestrator / saga with compensation.
+//!
+//! One actor per workflow id. Its state is the step machine; every step is a message: a command to a participant
+//! ([`Inventory`], [`Payments`]) and the participant's reply back to the order. When a later step fails, the order runs
+//! the compensations of the steps that succeeded (here: release the reserved stock). Each transition is one turn, so
+//! the saga's state and the next command commit together and a crash never loses or repeats a step.
+//!
+//! Participants reply to a typed ref carried in the command (`reply_to: Order`), so the compiler checks the replies.
+//!
+//! [`Payments`] shows per-message retry: the *sender* decides how a charge is retried (see [`charge_retry`]).
+
+mod inventory;
+mod order;
+mod payments;
+
+pub use inventory::*;
+pub use order::*;
+pub use payments::*;
