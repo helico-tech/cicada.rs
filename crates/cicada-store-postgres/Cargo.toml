@@ -18,6 +18,9 @@ futures.workspace = true
 sqlx = { workspace = true, features = ["postgres"] }
 
 [dev-dependencies]
+cicada-test.workspace = true
+schemars.workspace = true
+serde.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
