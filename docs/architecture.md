@@ -106,7 +106,9 @@ hooks, checks), *keeper* (heartbeat at a third of the TTL, plus a watchdog on th
 *work* when the lease is lost) and *overtime* (warns about handlers that do not yield). The turn task awaits *work* and
 then commits while the keeper keeps renewing. Cancellation is tokio's: an aborted future stops at its next `.await`, so
 a handler blocked in synchronous code keeps its turn until it returns, exactly like a Kotlin handler that ignores
-coroutine cancellation. Blocking work belongs in `spawn_blocking`.
+coroutine cancellation. Blocking work belongs in `spawn_blocking`. A cancelled turn (node stop after the grace period,
+or a dropped `run_due_turns` future) aborts *work*, waits for it to stop, and releases its lease only if the handler
+had not ended. A claim the store answers after its caller is gone is released, never left to expire.
 
 All local timing uses `tokio::time`, so tests on a paused runtime (`start_paused = true`) run on virtual time: the
 in-memory store reads its clock from `tokio::time::Instant` (`TokioClock`).
