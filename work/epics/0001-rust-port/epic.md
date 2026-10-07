@@ -32,6 +32,6 @@ All stories are done, `cargo test --workspace` passes (PostgreSQL tests included
 - [11 OpenTelemetry plugin](11-otel.md) — todo
 - [12 Extras](12-extras.md) — todo
 - [13 Worked examples with tests](13-examples.md) — done
-- [14 Runnable sample node, README snippets test, contract snapshots and state samples](14-sample-service.md) — todo
+- [14 Runnable sample node, README snippets test, contract snapshots and state samples](14-sample-service.md) — done
 - [15 Multi-node end-to-end tests against PostgreSQL](15-e2e.md) — todo
 - [16 README and operations guide for the Rust port](16-docs.md) — todo

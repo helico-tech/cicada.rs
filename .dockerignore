@@ -1,0 +1,9 @@
+# Build context of sample-service/Dockerfile: the sources only.
+**/target/
+**/node_modules/
+.claude/
+.git/
+**/*.db
+**/*.db-shm
+**/*.db-wal
+**/.DS_Store
