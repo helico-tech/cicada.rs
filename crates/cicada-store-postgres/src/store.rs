@@ -379,6 +379,16 @@ fn random_below(bound: u64) -> u64 {
     RandomState::new().build_hasher().finish() % bound
 }
 
+/// `instant` as a lower bound PostgreSQL can hold: `timestamptz` starts in 4713 BC, so earlier instants (such as
+/// `DateTime::MIN_UTC` for "since ever") become 0001-01-01, before which no store time lies.
+fn lower_bound(instant: Timestamp) -> Timestamp {
+    const EARLIEST: Timestamp = match chrono::DateTime::from_timestamp(-62_135_596_800, 0) {
+        Some(t) => t,
+        None => panic!("0001-01-01 is representable"),
+    };
+    instant.max(EARLIEST)
+}
+
 /// An exclusive upper bound for strings starting with `prefix` under the `"C"` collation, so prefix filters can use a
 /// B-tree range. Exact for canonical URIs, which are ASCII; `starts_with` keeps the filter exact anyway.
 fn upper_bound(prefix: &str) -> String {
@@ -1009,7 +1019,7 @@ impl Store for PostgresStore {
                          ORDER BY deliver_at, seq LIMIT $4",
                     )
                     .bind(address.as_str())
-                    .bind(time::from_micros(at))
+                    .bind(lower_bound(time::from_micros(at)))
                     .bind(seq)
                     .bind(limit as i64 + 1)
                     .fetch_all(&mut *tx.c)
@@ -1051,7 +1061,7 @@ impl Store for PostgresStore {
                     .bind(upper_bound(prefix))
                     .bind(prefix)
                     .bind(uri)
-                    .bind(time::from_micros(*at))
+                    .bind(lower_bound(time::from_micros(*at)))
                     .bind(*seq)
                     .bind(limit as i64 + 1)
                     .fetch_all(&mut *tx.c)
@@ -1127,7 +1137,7 @@ impl Store for PostgresStore {
     ) -> StoreResult<Page<OutcomeRecord>> {
         check_limit(limit)?;
         let after = cursor.map(support::decode_failure_cursor).transpose()?;
-        let since = time::truncate(since);
+        let since = lower_bound(time::truncate(since));
         transaction!(self, true, |tx| -> Page<OutcomeRecord> {
             let (cutoff, now) = (tx.cutoff().await?, tx.now().await?);
             let base = concat!(
@@ -1151,7 +1161,7 @@ impl Store for PostgresStore {
                 .bind(upper_bound(prefix))
                 .bind(prefix);
             if let Some((at, id)) = &after {
-                query = query.bind(time::from_micros(*at)).bind(id.clone());
+                query = query.bind(lower_bound(time::from_micros(*at))).bind(id.clone());
             }
             let rows = query.bind(limit as i64 + 1).fetch_all(&mut *tx.c).await?;
             let outcomes = rows.iter().map(outcome).collect::<Result<Vec<_>, _>>()?;

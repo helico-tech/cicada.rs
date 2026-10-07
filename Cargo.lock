@@ -364,6 +364,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "cicada",
+ "cicada-store-conformance",
  "cicada-test",
  "futures",
  "schemars",

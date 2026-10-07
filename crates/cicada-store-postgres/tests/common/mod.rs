@@ -5,7 +5,7 @@
 use std::collections::hash_map::RandomState;
 use std::future::Future;
 use std::hash::{BuildHasher, Hasher};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -38,11 +38,12 @@ macro_rules! test_db {
 static SCHEMAS: AtomicU32 = AtomicU32::new(0);
 
 /// A fresh schema in the test database. Stores opened through it are closed and the schema is dropped by
-/// [`Self::cleanup`]; when a test panics first, `Drop` still drops the schema.
+/// [`Self::cleanup`]; when that never ran (a failed test), `Drop` still drops the schema.
 pub struct TestDb {
     pub url: String,
     pub schema: String,
     stores: Mutex<Vec<Arc<PostgresStore>>>,
+    cleaned: AtomicBool,
 }
 
 impl TestDb {
@@ -51,7 +52,7 @@ impl TestDb {
         let random = RandomState::new().build_hasher().finish() & 0xFF_FFFF;
         let schema =
             format!("{prefix}_{}_{}_{random:06x}", std::process::id(), SCHEMAS.fetch_add(1, Ordering::SeqCst) + 1);
-        Some(Self { url, schema, stores: Mutex::new(Vec::new()) })
+        Some(Self { url, schema, stores: Mutex::new(Vec::new()), cleaned: AtomicBool::new(false) })
     }
 
     /// The settings tests use: this schema, a small pool.
@@ -96,6 +97,7 @@ impl TestDb {
         self.close_stores().await;
         let mut c = self.connect().await;
         drop_schema(&mut c, &self.schema).await;
+        self.cleaned.store(true, Ordering::SeqCst);
     }
 }
 
@@ -108,8 +110,8 @@ async fn drop_schema(c: &mut PgConnection, schema: &str) {
 
 impl Drop for TestDb {
     fn drop(&mut self) {
-        if !std::thread::panicking() {
-            return; // cleaned up by the test
+        if self.cleaned.load(Ordering::SeqCst) {
+            return;
         }
         let (url, schema) = (self.url.clone(), self.schema.clone());
         let _ = std::thread::spawn(move || {
