@@ -372,3 +372,18 @@ pub(crate) fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
         "unknown panic".to_owned()
     }
 }
+
+/// The contract of actor type `A`, as a node hosting it registers it: template, state schema and message schemas.
+/// Fails with the type's problems when it is invalid (see [`crate::runtime::StartError`]).
+pub fn contract_of<A: Actor>() -> Result<Contract, Vec<String>> {
+    let mut problems = RefBinding::<A::Ref>::problems().into_iter().map(|p| format!("Ref: {p}")).collect::<Vec<_>>();
+    let binding = RefBinding::<A::Ref>::new().ok();
+    let family = FamilyInfo::of::<A::Message>().map_err(|e| problems.push(format!("Messages: {e}"))).ok();
+    let state = A::State::schema().map_err(|e| problems.push(format!("State schema: {e}"))).ok();
+    match (binding, family, state) {
+        (Some(binding), Some(family), Some(state)) if problems.is_empty() => {
+            Ok(Contract::new(binding.template().clone(), state, family.schemas))
+        }
+        _ => Err(problems),
+    }
+}
