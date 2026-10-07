@@ -178,6 +178,15 @@ on until it returns and holds a runtime worker thread meanwhile. Run it with `to
 The host owns the store and the node's life cycle; the HTTP API is a `Router` it mounts with its own
 authentication:
 
+<!-- doctest
+@@13
+# use cicada_examples::sync::{Page, ReportsActor, Sync, SyncActor, SyncApi, SyncMsg};
+# struct HttpSyncApi;
+# impl SyncApi for HttpSyncApi {
+#     async fn fetch(&self, _: &str, _: Option<&str>, _: &str) -> Page { Page { size: 0, next: None } }
+# }
+@@58
+-->
 ```rust,no_run
 use std::sync::Arc;
 
@@ -192,11 +201,6 @@ use cicada::{ActorSystem, SendResult};
 use cicada_axum::{actor_api, actor_health};
 use cicada_store_postgres::{PostgresStore, PostgresStoreConfig};
 use cicada_store_sqlite::{SqliteOptions, SqliteStore};
-# use cicada_examples::sync::{Page, ReportsActor, Sync, SyncActor, SyncApi, SyncMsg};
-# struct HttpSyncApi;
-# impl SyncApi for HttpSyncApi {
-#     async fn fetch(&self, _: &str, _: Option<&str>, _: &str) -> Page { Page { size: 0, next: None } }
-# }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -291,10 +295,15 @@ curl -X POST localhost:8080/actors/sync/acme/messages -H "Authorization: Bearer 
 
 or with the typed client (`cicada-client`):
 
-```rust,no_run
-use cicada_client::ActorClient;
+<!-- doctest
+@@1
 # use cicada_examples::sync::{Reports, ReportsState, Sync, SyncMsg, SyncState};
 # async fn example() -> Result<(), cicada_client::ClientError> {
+@@8
+# Ok(()) }
+-->
+```rust,no_run
+use cicada_client::ActorClient;
 
 let client = ActorClient::new("http://localhost:8080"); // or ActorClient::with_client(url, reqwest_client)
 client.create(&Reports { tenant: "acme".into() }, &ReportsState::default()).await?;
@@ -303,7 +312,6 @@ client.create(&Sync { tenant: "acme".into() }, &state).await?;
 let receipt = client.send(&Sync { tenant: "acme".into() }, SyncMsg::Run).await?; // client-generated id, retried with it
 let status = client.status(&receipt.id).await?; // Pending, Running, Done, Failed, Cancelled, Purged
 println!("{:?}", status.map(|s| s.status));
-# Ok(()) }
 ```
 
 The client takes the same ref and message types as the actor definitions. Authentication is the `reqwest::Client`'s:
@@ -363,8 +371,12 @@ instance whose last segment is `messages` is addressed as `%6Dessages` (`ActorAd
 
 `cicada-ui` is a web console over the HTTP API, for developers and on-call engineers. Merge it next to the API:
 
-```rust
+<!-- doctest
 # fn app(system: cicada::ActorSystem) -> axum::Router {
+@@7
+# }
+-->
+```rust
 use axum::Router;
 use cicada_axum::actor_api;
 use cicada_ui::actor_ui;
@@ -372,7 +384,6 @@ use cicada_ui::actor_ui;
 Router::new()
     .merge(actor_api(system))         // the API, at the root (behind your authentication layer)
     .merge(actor_ui("/console", "/")) // the console, at /console/
-# }
 ```
 
 `actor_ui(mount_path, api_path)` takes where the console is served and where `actor_api()` is mounted on the same
@@ -416,6 +427,13 @@ runs the console's fixture test over them, so a Rust response the console does n
 heartbeats and turn timeouts are deterministic and instant. Run each test with `#[tokio::test(start_paused = true)]`
 (tokio's `test-util` feature):
 
+<!-- doctest
+@@17
+# #[tokio::main(flavor = "current_thread", start_paused = true)]
+# async fn main() {
+@@16
+# }
+-->
 ```rust
 use std::time::Duration;
 
@@ -434,8 +452,6 @@ impl SyncApi for FakeApi {
     }
 }
 
-# #[tokio::main(flavor = "current_thread", start_paused = true)]
-# async fn main() {
 let test = TestActors::builder()
     .with(|node| node.host(SyncActor { api: FakeApi }).host(ReportsActor))
     .build()
@@ -452,7 +468,6 @@ assert_eq!(cicada::time::between(test.now(), next[0].deliver_at), Duration::from
 test.advance_time_by(Duration::from_secs(2 * 3600)).await; // handles every message at its due time on the way
 assert_eq!(test.state::<_, ReportsState>(&reports).await.runs, vec![25, 25, 25]);
 assert!(test.failures().await.is_empty());
-# }
 ```
 
 `TestActors` also offers `create_stateless`, `send_with`, `send_raw` (the raw result, refusals included),
@@ -472,14 +487,18 @@ deploy shows up in production. `assert_contracts_match` moves that failure into 
 as a JSON file and fails, naming what changed (state schema, message types added, removed or changed), when the code
 no longer matches. In a test:
 
-```rust,no_run
-use cicada::actor::contract_of;
-use cicada_test::assert_contracts_match;
+<!-- doctest
+@@2
 # use cicada_examples::sync::{Page, ReportsActor, SyncActor, SyncApi};
 # struct FakeApi;
 # impl SyncApi for FakeApi {
 #     async fn fetch(&self, _: &str, _: Option<&str>, _: &str) -> Page { Page { size: 0, next: None } }
 # }
+@@5
+-->
+```rust,no_run
+use cicada::actor::contract_of;
+use cicada_test::assert_contracts_match;
 
 assert_contracts_match("tests/contracts", &[
     contract_of::<SyncActor<FakeApi>>().unwrap(), // fails with the type's problems when it is invalid
@@ -496,9 +515,13 @@ A missing file is written (commit it). To accept a change, delete the file or ru
 State that no longer decodes fails every turn of its instance. Keep samples of the shapes a state ever had and check
 them with the runtime's own decoder (serde: unknown keys are ignored, missing fields need `#[serde(default)]`):
 
+<!-- doctest
+@@1
+# use cicada_examples::sync::SyncState;
+@@5
+-->
 ```rust,no_run
 use cicada_test::{assert_state_decodes, record_state_sample};
-# use cicada_examples::sync::SyncState;
 
 let dir = "tests/states/sync";
 let first_run = SyncState { source: "https://api.acme.test/items".into(), imported: 0 };
@@ -514,32 +537,38 @@ Retry is part of a message's **delivery**, set by its **sender** next to the del
 caller choosing the retry policy of an activity. Actor types and plugins do not configure it, and a message sent
 without a policy is never retried: a handler that fails ends it `failed`.
 
-```rust
+<!-- doctest
 # use std::time::Duration;
 # use cicada::prelude::*;
 # use cicada_examples::saga::{Order, OrderActor, PaymentGateway, Payments, PaymentsActor, PaymentsMsg};
-// Sender (the Order saga, examples/src/saga/order.rs): this delivery gets up to 4 handler runs.
+@@1
 # fn on_reserved(turn: &mut Turn<OrderActor>, me: Order, amount_cents: i64) -> HandlerResult {
+@@4
+# Ok(())
+# }
+@@2
+# async fn on_charge<G: PaymentGateway>(
+#     turn: &mut Turn<PaymentsActor<G>>, gateway: &G, reply_to: Order, amount_cents: i64,
+# ) -> HandlerResult {
+@@5
+# let _ = result;
+# Ok(())
+# }
+# fn main() {}
+-->
+```rust
+// Sender (the Order saga, examples/src/saga/order.rs): this delivery gets up to 4 handler runs.
 let backoff = Backoff::exponential(Duration::from_secs(1), 2.0, Duration::from_secs(30)) // 1 s, 2 s, 4 s, … or Backoff::fixed
     .expect("a valid backoff");
 let retry = RetryPolicy::new(4, backoff).expect("a valid policy"); // handler runs, including the first
 turn.send_with(&Payments, PaymentsMsg::Charge { reply_to: me, amount_cents }, SendOptions::new().retry(retry))?;
-# Ok(())
-# }
 
 // Receiver (Payments): an error is retried under the sender's policy; turn.fail(..) is a veto.
-# async fn on_charge<G: PaymentGateway>(
-#     turn: &mut Turn<PaymentsActor<G>>, gateway: &G, reply_to: Order, amount_cents: i64,
-# ) -> HandlerResult {
 if amount_cents <= 0 {
     return Err(turn.fail(format!("invalid amount {amount_cents}"))); // permanent: failed now, never retried
 }
 // A retry runs the same message again, so its id is stable across attempts: the right idempotency key.
 let result = gateway.charge(&reply_to.id, amount_cents, turn.message().id.as_str()).await?; // Err: retried
-# let _ = result;
-# Ok(())
-# }
-# fn main() {}
 ```
 
 Every send takes `retry` through `SendOptions::retry`: `send_with` in a handler (typed and raw), the `ActorSystem`
@@ -604,11 +633,16 @@ How long a finished message stays readable is also part of its delivery, chosen 
 `Retention` policy with one rule for a message that ends `done` and one for a message that ends `failed`. A missing
 rule, and the outcomes `cancelled` and `purged`, keep the store default (the store's retention, 7 days by default).
 
-```rust
+<!-- doctest
 # use std::time::Duration;
 # use cicada::prelude::*;
 # use cicada_examples::saga::{Order, Payments, PaymentsMsg};
 # async fn example(system: &ActorSystem, order: Order) -> anyhow::Result<()> {
+@@9
+# Ok(())
+# }
+-->
+```rust
 let charge = || PaymentsMsg::Charge { reply_to: order.clone(), amount_cents: 900 };
 let gone_when_done = SendOptions::new().retention(Retention::REMOVE_ON_DONE); // gone once it succeeded
 system.send_with(&Payments, charge(), gone_when_done).await?;
@@ -618,8 +652,6 @@ let retention = Retention {
     failed: Some(Keep::keep_for(Duration::from_secs(90 * 24 * 3600)).expect("a valid rule")), // 90 days
 };
 system.send_with(&Payments, charge(), SendOptions::new().retention(retention)).await?;
-# Ok(())
-# }
 ```
 
 ```sh
@@ -662,11 +694,18 @@ Effects a hook adds join the turn's single commit, so the guarantees hold with o
 is its configuration; the turn's `Attributes` (a bag keyed by type) carry data from one hook to the next and to the
 handler.
 
-```rust
-use cicada::plugin::{HookResult, OutcomeContext, Plugin};
+<!-- doctest
+@@1
 # use std::sync::Arc;
 # use cicada::{ActorSystem, ActorType};
 # use cicada_examples::sync::ReportsActor;
+@@17
+# fn node(store: Arc<dyn cicada::store::Store>) {
+@@4
+# }
+-->
+```rust
+use cicada::plugin::{HookResult, OutcomeContext, Plugin};
 
 struct Audit {
     prefix: String,
@@ -684,12 +723,10 @@ impl Plugin for Audit {
     }
 }
 
-# fn node(store: Arc<dyn cicada::store::Store>) {
 let system = ActorSystem::builder(store)
     .install(Audit { prefix: "node".into() }) // every hosted type
     .host(ActorType::new(ReportsActor).install(Audit { prefix: "reports".into() })) // this type; wins over the node's
     .build();
-# }
 ```
 
 Node plugins run before type plugins, each in installation order. A plugin installed on both the node and a type runs
@@ -703,19 +740,23 @@ senders may not. The table of which hook runs in which situation is in the `cica
 service brings the SDK and exporters (`opentelemetry_sdk`, `opentelemetry-otlp`) and installs them as the global
 providers, or passes them to `ActorTelemetry::new(&tracer_provider, &meter_provider)`:
 
-```rust
+<!-- doctest
 # use std::sync::Arc;
 # use cicada::{ActorSystem, SendOptions};
 # use cicada_examples::sync::{Sync, SyncMsg};
-use cicada_otel::{ActorTelemetry, current_trace_headers};
+@@1
 # async fn node(store: Arc<dyn cicada::store::Store>) -> anyhow::Result<()> {
+@@5
+# Ok(())
+# }
+-->
+```rust
+use cicada_otel::{ActorTelemetry, current_trace_headers};
 
 let system = ActorSystem::builder(store).install(ActorTelemetry::global()).build(); // the global providers
 // Outside an actor, the caller's trace context goes into the message's headers:
 let options = SendOptions { headers: current_trace_headers(), ..SendOptions::new() };
 system.send_with(&Sync { tenant: "acme".into() }, SyncMsg::Run, options).await?;
-# Ok(())
-# }
 ```
 
 - **A span per turn**, `process <template>` (kind `CONSUMER`), with `messaging.*` and `cicada.*` attributes (actor,
@@ -738,17 +779,21 @@ system.send_with(&Sync { tenant: "acme".into() }, SyncMsg::Run, options).await?;
 claimed again forever. `CrashLoopGuard` counts the claims of a message that ended without a commit
 (`attempt - failures - 1`) and, at the limit, fails the message in `on_claim` before the handler runs:
 
-```rust
+<!-- doctest
 # use std::sync::Arc;
 # use cicada::ActorSystem;
-use cicada_extras::CrashLoopGuard;
+@@1
 # fn node(store: Arc<dyn cicada::store::Store>) -> Result<(), String> {
+@@4
+# Ok(())
+# }
+-->
+```rust
+use cicada_extras::CrashLoopGuard;
 
 let system = ActorSystem::builder(store)
     .install(CrashLoopGuard::new(5)?) // CrashLoopGuard::default() is 5; on the node or on one type
     .build();
-# Ok(())
-# }
 ```
 
 The message ends `failed` (`onClaim of plugin CrashLoopGuard failed: crash loop: 5 claims without a commit`), is never
@@ -760,19 +805,23 @@ an actor: handlers cannot read `/failures`) copies each failure into the `DeadLe
 (`actor://cicada/dead-letters`, hosted as `DeadLettersActor`), which keeps them past the retention, at most `capacity`
 (oldest dropped first):
 
-```rust
+<!-- doctest
 # use std::sync::Arc;
 # use std::time::Duration;
+@@2
+# async fn node(store: Arc<dyn cicada::store::Store>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+@@5
+# Ok(())
+# }
+-->
+```rust
 use cicada::ActorSystem;
 use cicada_extras::{DeadLettersActor, FailureWatcher};
-# async fn node(store: Arc<dyn cicada::store::Store>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
 let system = ActorSystem::builder(store).host(DeadLettersActor::with_capacity(1_000)? /* , … */).build();
 system.start().await?;
 let watcher = FailureWatcher::new(system.clone()).prefix("actor://orders/").start(Duration::from_secs(10));
 // … on shutdown: watcher.abort();
-# Ok(())
-# }
 ```
 
 The watcher reads through the `ActorOperations` trait, which `ActorSystem` implements and, with the `client` feature
@@ -786,7 +835,7 @@ type, payload, correlation id; once), `Discard { failed_message_id }` forgets it
 state, gets a new generation on every `arm(at)` and `disarm()`; the timeout carries the generation it was armed with,
 and only one for which `timer.is_current(generation)` is true counts. The handler still sends:
 
-```rust
+<!-- doctest
 # use std::time::Duration;
 # use cicada::prelude::*;
 # use cicada_extras::Timer;
@@ -806,6 +855,12 @@ and only one for which `timer.is_current(generation)` is true counts. The handle
 #     type Message = CheckoutMsg;
 #     const UNHANDLED: Unhandled = Unhandled::Fail;
 #     async fn handle(&self, turn: &mut Turn<Self>, msg: CheckoutMsg) -> HandlerResult {
+@@15
+#         Ok(())
+#     }
+# }
+-->
+```rust
 match msg {
     CheckoutMsg::Begin => {
         let deadline = turn.now() + Duration::from_secs(15 * 60);
@@ -821,9 +876,6 @@ match msg {
         state.expired = true;
     }
 }
-#         Ok(())
-#     }
-# }
 ```
 
 `Schedule` (`Schedule::every(seconds)`, aligned to the epoch, and `Schedule::daily(hour, minute)`, UTC) gives a cron
@@ -889,8 +941,9 @@ message enum with `#[serde(tag = "type")]`, a state struct, and an actor struct 
 
 ## Sample service
 
-`sample-service` is a runnable node hosting the examples, with the API, the console and the readiness check; see
-[sample-service/](sample-service/). It is configured by environment variables, the same as the Kotlin sample:
+`sample-service` is a runnable node (binary `cicada-sample-service`, Docker image from `sample-service/Dockerfile`) hosting
+the examples and the end-to-end actors, with the API, the console and the readiness check; see
+[sample-service/](sample-service/). It stops gracefully on SIGTERM and SIGINT. It is configured by environment variables, the same as the Kotlin sample:
 
 | Variable | Meaning | Default |
 | --- | --- | --- |
@@ -906,7 +959,7 @@ message enum with `#[serde(tag = "type")]`, a state struct, and an actor struct 
 | `LEASE_TTL`, `HEARTBEAT_INTERVAL`, `POLL_INTERVAL`, `SHUTDOWN_GRACE_PERIOD`, `MAX_TURN` | node timings, as short (`5s`, `250ms`) or ISO-8601 (`PT5S`) durations | library defaults |
 | `CONCURRENCY` | maximum concurrent turns | 16 |
 | `FAILURE_WATCHER_INTERVAL` | poll interval of the dead-letter watcher (group `supervision`) | `10s` |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | when set, traces and metrics go there over OTLP (`ActorTelemetry`) | — |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | when set, traces and metrics go there over OTLP (`ActorTelemetry`); only HTTP/protobuf, so `OTEL_EXPORTER_OTLP_PROTOCOL` must be unset or `http/protobuf` | — |
 | `CRASH_LOOP_LIMIT` | when set, `CrashLoopGuard` fails a message after this many claims without a commit | — |
 
 The root `docker-compose.yml` starts a PostgreSQL for development and tests

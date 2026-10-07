@@ -30,10 +30,10 @@ pub mod timer;
 
 /// The Rust code blocks of the README, compiled (and, unless `no_run`, run) by `cargo test -p cicada-examples --doc`.
 #[cfg(doctest)]
-#[doc = include_str!("../../README.md")]
+#[doc = include_str!(concat!(env!("OUT_DIR"), "/README.md"))]
 pub struct ReadmeDoctests;
 
 /// The Rust code blocks of the operations guide, compiled and run like the README's.
 #[cfg(doctest)]
-#[doc = include_str!("../../docs/operations.md")]
+#[doc = include_str!(concat!(env!("OUT_DIR"), "/operations.md"))]
 pub struct OperationsDoctests;
