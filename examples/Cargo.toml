@@ -9,11 +9,15 @@ publish.workspace = true
 
 [dependencies]
 cicada.workspace = true
+cicada-extras.workspace = true
+cicada-otel.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
+cicada-test.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
