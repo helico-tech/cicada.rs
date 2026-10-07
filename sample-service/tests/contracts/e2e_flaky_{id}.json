@@ -1,0 +1,42 @@
+{
+  "messages": {
+    "Attempt": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Fails the first `times` attempts, then succeeds. Only a message sent with a retry policy is run again: with\n[`flaky_retry`] (3 attempts, 1 s apart, so the pending message with its `failures` is easy to observe in\nbetween) `times >= 3` ends `failed`; without a policy any `times >= 1` ends `failed` at once.",
+      "properties": {
+        "times": {
+          "description": "How many attempts fail.",
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "times"
+      ],
+      "title": "Attempt",
+      "type": "object"
+    }
+  },
+  "state": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "State of a [`Flaky`].",
+    "properties": {
+      "lastAttempt": {
+        "default": 0,
+        "description": "The attempt that succeeded last.",
+        "format": "uint32",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "succeeded": {
+        "default": 0,
+        "description": "Messages that succeeded.",
+        "format": "int32",
+        "type": "integer"
+      }
+    },
+    "title": "FlakyState",
+    "type": "object"
+  },
+  "template": "actor://e2e/flaky/{id}"
+}

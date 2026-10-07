@@ -1,0 +1,15 @@
+{
+    "letters": {
+        "m-1": {
+            "failedMessageId": "m-1",
+            "actor": "actor://mailers/m",
+            "type": "SendMail",
+            "payload": "x",
+            "correlationId": null,
+            "error": "smtp down",
+            "failedAt": "2026-10-03T12:00:00Z",
+            "redrivenAs": null,
+            "redriveError": null
+        }
+    }
+}

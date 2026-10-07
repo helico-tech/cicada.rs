@@ -1,0 +1,150 @@
+{
+  "messages": {
+    "RunNow": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Runs the job now, outside the schedule, and re-arms the schedule from now on.",
+      "properties": {},
+      "title": "RunNow",
+      "type": "object"
+    },
+    "Start": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Arms the schedule, unless it is already armed.",
+      "properties": {},
+      "title": "Start",
+      "type": "object"
+    },
+    "StopJob": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Ends the job: the instance is deleted and its pending tick purged.",
+      "properties": {},
+      "title": "StopJob",
+      "type": "object"
+    },
+    "Tick": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "One scheduled run, due at `scheduled_for`.",
+      "properties": {
+        "scheduledFor": {
+          "description": "The slot.",
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "scheduledFor"
+      ],
+      "title": "Tick",
+      "type": "object"
+    }
+  },
+  "state": {
+    "$defs": {
+      "Schedule": {
+        "description": "The wire form, unchecked.",
+        "oneOf": [
+          {
+            "description": "Every `seconds`, aligned to multiples of the interval since the epoch.",
+            "properties": {
+              "seconds": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "type": {
+                "const": "every",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "seconds"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Once a day at `hour`:`minute` UTC.",
+            "properties": {
+              "hour": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "minute": {
+                "default": 0,
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "daily",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "hour"
+            ],
+            "type": "object"
+          }
+        ]
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "State of a [`CronJob`].",
+    "properties": {
+      "armedTick": {
+        "description": "The id of the armed tick, which `RunNow` cancels when it re-arms.",
+        "minLength": 1,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "failedRuns": {
+        "default": 0,
+        "description": "Ticks whose task failed.",
+        "format": "int32",
+        "type": "integer"
+      },
+      "lastError": {
+        "description": "The error of the most recent failed task, or `None` when the last task succeeded.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "lastRun": {
+        "description": "The slot of the most recent run.",
+        "format": "date-time",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "nextRun": {
+        "description": "The tick currently armed; `None` until `Start`.",
+        "format": "date-time",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "runs": {
+        "default": 0,
+        "description": "Ticks handled, also those whose task failed.",
+        "format": "int32",
+        "type": "integer"
+      },
+      "schedule": {
+        "$ref": "#/$defs/Schedule",
+        "description": "When the job runs."
+      }
+    },
+    "required": [
+      "schedule"
+    ],
+    "title": "CronState",
+    "type": "object"
+  },
+  "template": "actor://cron/{name}"
+}

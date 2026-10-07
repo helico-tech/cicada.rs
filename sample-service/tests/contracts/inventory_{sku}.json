@@ -1,0 +1,110 @@
+{
+  "messages": {
+    "Release": {
+      "$defs": {
+        "Order": {
+          "description": "One order, orchestrating inventory and payment.",
+          "properties": {
+            "id": {
+              "description": "The order id.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Releases `reply_to`'s reservation; answered with [`OrderMsg::Released`]. Idempotent.",
+      "properties": {
+        "replyTo": {
+          "$ref": "#/$defs/Order",
+          "description": "The order that asks."
+        }
+      },
+      "required": [
+        "replyTo"
+      ],
+      "title": "Release",
+      "type": "object"
+    },
+    "Reserve": {
+      "$defs": {
+        "Order": {
+          "description": "One order, orchestrating inventory and payment.",
+          "properties": {
+            "id": {
+              "description": "The order id.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Reserves `quantity` for `reply_to`; answered with [`OrderMsg::Reserved`] or [`OrderMsg::OutOfStock`].",
+      "properties": {
+        "quantity": {
+          "description": "How many.",
+          "format": "int32",
+          "type": "integer"
+        },
+        "replyTo": {
+          "$ref": "#/$defs/Order",
+          "description": "The order that asks."
+        }
+      },
+      "required": [
+        "replyTo",
+        "quantity"
+      ],
+      "title": "Reserve",
+      "type": "object"
+    },
+    "Restock": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Adds stock.",
+      "properties": {
+        "quantity": {
+          "description": "How many.",
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "quantity"
+      ],
+      "title": "Restock",
+      "type": "object"
+    }
+  },
+  "state": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "State of an [`Inventory`].",
+    "properties": {
+      "available": {
+        "default": 0,
+        "description": "Stock that is not reserved.",
+        "format": "int32",
+        "type": "integer"
+      },
+      "reservations": {
+        "additionalProperties": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "default": {},
+        "description": "Reserved quantity per order id; reserving is idempotent per order.",
+        "type": "object"
+      }
+    },
+    "title": "InventoryState",
+    "type": "object"
+  },
+  "template": "actor://inventory/{sku}"
+}
