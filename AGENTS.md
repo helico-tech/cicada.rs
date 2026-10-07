@@ -31,12 +31,8 @@ PostgreSQL for tests: `docker compose up -d postgres` (port 55432). Tests that n
 | `crates/cicada-ui` | The embedded console |
 | `crates/cicada-otel`, `crates/cicada-extras` | Plugins and building blocks |
 | `examples/`, `sample-service/` | Worked examples; a runnable node |
-<<<<<<< HEAD
-| `docs/` | Architecture, ADRs and the operations guide |
-=======
 | `e2e/` | End-to-end and fault tests against sample nodes in Docker |
-| `docs/` | Architecture and ADRs |
->>>>>>> worktree-agent-a7052fa90b5764cdf
+| `docs/` | Architecture, ADRs and the operations guide |
 | `work/` | Queue, epics and stories, issues |
 
 ## Rules
