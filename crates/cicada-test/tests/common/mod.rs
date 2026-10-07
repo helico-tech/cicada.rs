@@ -309,6 +309,12 @@ where
     .expect("condition not met in time");
 }
 
+/// Lets background work run to idle: a turn whose `run_due_turns` future was dropped releases its lease in the
+/// background (Kotlin's `job.join()` waits for that release).
+pub async fn settle() {
+    tokio::time::sleep(Duration::from_millis(1)).await;
+}
+
 /// The state of `address` decoded as `S`.
 pub async fn state_of<S: serde::de::DeserializeOwned>(store: &dyn Store, address: &ActorAddress) -> S {
     let record = store.get(address).await.unwrap().unwrap_or_else(|| panic!("{address} does not exist"));

@@ -176,8 +176,8 @@ pub(crate) struct TurnExecutor {
 
 impl TurnExecutor {
     /// Executes one claimed turn to its end. `claim_sent` is the local time at which the claim request was sent.
-    /// `cancel` is the node stopping after its grace period: the turn is abandoned and, unless its handler already
-    /// ended, its lease released.
+    /// `cancel` is the node stopping after its grace period (or a dropped `run_due_turns`): the worker is aborted and
+    /// waited for; then, unless the handler already ended or the lease was lost, the lease is released.
     pub async fn execute(self: Arc<Self>, claim: Claim, claim_sent: Instant, cancel: CancellationToken) {
         let Some(hosted) = self.hosted.get(&claim.template).cloned() else {
             tracing::warn!("Claimed {} of type {}, which this node does not host", claim.actor, claim.template);
@@ -209,6 +209,9 @@ impl TurnExecutor {
         let decision = tokio::select! {
             biased;
             result = &mut work => match result {
+                // The lease was lost while the work ended (it did not yield in time to be cancelled): by now another
+                // node may run the turn, so nothing is committed (as a cancelled worker).
+                Ok(_) if guard.is_lost() => None,
                 Ok(decision) => Some(decision),
                 Err(e) if e.is_cancelled() => None,
                 Err(e) => {
@@ -219,9 +222,13 @@ impl TurnExecutor {
                 }
             },
             _ = cancel.cancelled() => {
-                work.abort();
                 keeper.abort();
                 overtime.abort();
+                work.abort();
+                // Wait for the worker to stop (at its next `.await`; code that does not yield runs on until it
+                // returns): only then is it known whether the handler ended, and a release cannot let another node
+                // run the turn while this one still does.
+                let _ = (&mut work).await;
                 if guard.is_lost() {
                 } else if handler_ended.load(Ordering::SeqCst) {
                     tracing::info!(
