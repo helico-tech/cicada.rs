@@ -283,8 +283,13 @@ dependencies = [
 name = "cicada-client"
 version = "0.1.0"
 dependencies = [
+ "axum",
  "cicada",
+ "cicada-axum",
+ "cicada-test",
+ "futures",
  "reqwest",
+ "schemars",
  "serde",
  "serde_json",
  "thiserror",
