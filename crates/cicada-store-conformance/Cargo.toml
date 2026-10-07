@@ -8,15 +8,14 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-cicada.workspace = true
-cicada-test.workspace = true
-tokio.workspace = true
-serde_json.workspace = true
-chrono.workspace = true
 async-trait.workspace = true
+chrono.workspace = true
+cicada.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["test-util"] }
+cicada-test.workspace = true
 
 [lints]
 workspace = true
