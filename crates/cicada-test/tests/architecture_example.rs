@@ -130,6 +130,26 @@ async fn reschedules_itself() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn runs_hourly_and_reports() {
+    let test = harness().await;
+    let sync = Sync { tenant: "acme".into() };
+    let reports = Reports { tenant: "acme".into() };
+    test.create(&reports, &ReportsState::default()).await;
+    test.create(&sync, &SyncState { source: "https://api.acme.test/items".into(), imported: 0 }).await;
+    test.send(&sync, SyncMsg::Run).await;
+    test.run_until_idle().await;
+    assert_eq!(test.state::<_, SyncState>(&sync).await.imported, 6);
+    assert_eq!(test.state::<_, ReportsState>(&reports).await.runs, vec![6]);
+
+    test.advance_time_by(Duration::from_secs(7200)).await;
+    assert_eq!(test.state::<_, ReportsState>(&reports).await.runs, vec![6, 6, 6]);
+    let next = test.pending(&sync).await;
+    assert_eq!(next.len(), 1);
+    assert_eq!(cicada::time::between(test.now(), next[0].deliver_at), Duration::from_secs(3600));
+    assert!(test.failures().await.is_empty());
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_send_to_an_absent_instance_fails_the_turn() {
     let test = harness().await;
     let sync = Sync { tenant: "acme".into() };
