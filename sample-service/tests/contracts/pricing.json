@@ -1,0 +1,27 @@
+{
+  "messages": {
+    "QuoteRequest": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Asks for the price of `quantity` × `sku`. Answered with [`PricingReply::Quote`] or\n[`PricingReply::QuoteRejected`] to the sender.",
+      "properties": {
+        "quantity": {
+          "description": "How many.",
+          "format": "int32",
+          "type": "integer"
+        },
+        "sku": {
+          "description": "The article.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sku",
+        "quantity"
+      ],
+      "title": "QuoteRequest",
+      "type": "object"
+    }
+  },
+  "state": null,
+  "template": "actor://pricing"
+}

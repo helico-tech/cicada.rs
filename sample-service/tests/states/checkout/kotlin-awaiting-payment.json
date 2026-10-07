@@ -1,0 +1,9 @@
+{
+    "status": "AWAITING_PAYMENT",
+    "timer": {
+        "generation": 1,
+        "deadline": "2026-10-03T12:00:00Z"
+    },
+    "paidCents": null,
+    "staleTimeouts": 0
+}

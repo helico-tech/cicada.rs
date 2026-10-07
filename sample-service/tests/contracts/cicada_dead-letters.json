@@ -1,0 +1,192 @@
+{
+  "messages": {
+    "Discard": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Forgets a dead letter.",
+      "properties": {
+        "failedMessageId": {
+          "description": "The failed message's id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "failedMessageId"
+      ],
+      "title": "Discard",
+      "type": "object"
+    },
+    "RecordFailure": {
+      "$defs": {
+        "DeadLetter": {
+          "description": "One failed message.",
+          "properties": {
+            "actor": {
+              "description": "Its target.",
+              "type": "string"
+            },
+            "correlationId": {
+              "description": "Its correlation id.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "error": {
+              "description": "Why it failed.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "failedAt": {
+              "description": "When it failed (store time).",
+              "format": "date-time",
+              "type": "string"
+            },
+            "failedMessageId": {
+              "description": "The failed message's id.",
+              "type": "string"
+            },
+            "payload": {
+              "description": "Its payload."
+            },
+            "redriveError": {
+              "description": "Why the last `Redrive` could not send.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "redrivenAs": {
+              "description": "Id of the message sent by `Redrive`, once redriven.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "description": "Its type name.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "failedMessageId",
+            "actor",
+            "type",
+            "payload",
+            "failedAt"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Records one failed message; sent by the [`super::FailureWatcher`] with an id derived from the failed message's\nid.",
+      "properties": {
+        "letter": {
+          "$ref": "#/$defs/DeadLetter",
+          "description": "The failed message."
+        }
+      },
+      "required": [
+        "letter"
+      ],
+      "title": "RecordFailure",
+      "type": "object"
+    },
+    "Redrive": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Sends the failed message `failed_message_id` again: same target, type, payload and correlation id. Its sender\nis the dead-letter actor, not the original one.",
+      "properties": {
+        "failedMessageId": {
+          "description": "The failed message's id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "failedMessageId"
+      ],
+      "title": "Redrive",
+      "type": "object"
+    }
+  },
+  "state": {
+    "$defs": {
+      "DeadLetter": {
+        "description": "One failed message.",
+        "properties": {
+          "actor": {
+            "description": "Its target.",
+            "type": "string"
+          },
+          "correlationId": {
+            "description": "Its correlation id.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "description": "Why it failed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "failedAt": {
+            "description": "When it failed (store time).",
+            "format": "date-time",
+            "type": "string"
+          },
+          "failedMessageId": {
+            "description": "The failed message's id.",
+            "type": "string"
+          },
+          "payload": {
+            "description": "Its payload."
+          },
+          "redriveError": {
+            "description": "Why the last `Redrive` could not send.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "redrivenAs": {
+            "description": "Id of the message sent by `Redrive`, once redriven.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "description": "Its type name.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "failedMessageId",
+          "actor",
+          "type",
+          "payload",
+          "failedAt"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "State of [`DeadLetters`]: the dead letters by failed message id. The map's key order carries no meaning: a store may\nnot keep it (PostgreSQL's `jsonb` sorts object keys), so age is judged by [`DeadLetter::failed_at`] alone.",
+    "properties": {
+      "letters": {
+        "additionalProperties": {
+          "$ref": "#/$defs/DeadLetter"
+        },
+        "default": {},
+        "description": "The dead letters by failed message id.",
+        "type": "object"
+      }
+    },
+    "title": "DeadLettersState",
+    "type": "object"
+  },
+  "template": "actor://cicada/dead-letters"
+}

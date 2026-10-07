@@ -1,0 +1,42 @@
+{
+  "messages": {
+    "Charge": {
+      "$defs": {
+        "Order": {
+          "description": "One order, orchestrating inventory and payment.",
+          "properties": {
+            "id": {
+              "description": "The order id.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Charges `amount_cents` for `reply_to`; answered with [`OrderMsg::Charged`] or [`OrderMsg::ChargeDeclined`].",
+      "properties": {
+        "amountCents": {
+          "description": "What to charge.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "replyTo": {
+          "$ref": "#/$defs/Order",
+          "description": "The order that asks."
+        }
+      },
+      "required": [
+        "replyTo",
+        "amountCents"
+      ],
+      "title": "Charge",
+      "type": "object"
+    }
+  },
+  "state": null,
+  "template": "actor://payments"
+}
