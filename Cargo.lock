@@ -300,15 +300,24 @@ dependencies = [
 name = "cicada-examples"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
  "cicada",
+ "cicada-axum",
+ "cicada-client",
  "cicada-extras",
  "cicada-otel",
+ "cicada-store-postgres",
+ "cicada-store-sqlite",
  "cicada-test",
+ "cicada-ui",
  "schemars",
  "serde",
  "serde_json",
  "thiserror",
  "tokio",
+ "tracing-subscriber",
 ]
 
 [[package]]

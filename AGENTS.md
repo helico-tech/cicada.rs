@@ -2,13 +2,15 @@
 
 Durable actors on a shared SQL store: a Rust port of [Cicada for Kotlin](https://github.com/helico-tech/cicada)
 that keeps its contract (guarantees, store schema, HTTP API). Read [docs/architecture.md](docs/architecture.md) first,
-then the ADRs in [docs/adr/](docs/adr/).
+then the ADRs in [docs/adr/](docs/adr/). [README.md](README.md) is the user guide; [docs/operations.md](docs/operations.md)
+covers sizing, deploying, upgrading and watching nodes.
 
 ## Build and test
 
 ```sh
 cargo build --workspace
-cargo test --workspace                 # unit, runtime, SQLite and HTTP tests
+cargo test --workspace                 # unit, runtime, SQLite, HTTP and README tests
+cargo test -p cicada-examples --doc    # only the Rust blocks of README.md and docs/operations.md
 cargo clippy --workspace --all-targets
 CICADA_PG_URL=postgres://cicada:cicada@localhost:55432/cicada cargo test -p cicada-store-postgres   # needs PostgreSQL
 ```
@@ -28,7 +30,7 @@ PostgreSQL for tests: `docker compose up -d postgres` (port 55432). Tests that n
 | `crates/cicada-ui` | The embedded console |
 | `crates/cicada-otel`, `crates/cicada-extras` | Plugins and building blocks |
 | `examples/`, `sample-service/` | Worked examples; a runnable node |
-| `docs/` | Architecture and ADRs |
+| `docs/` | Architecture, ADRs and the operations guide |
 | `work/` | Queue, epics and stories, issues |
 
 ## Rules
@@ -38,5 +40,8 @@ PostgreSQL for tests: `docker compose up -d postgres` (port 55432). Tests that n
 - Tests for runtime behaviour run on virtual time: `#[tokio::test(start_paused = true)]` with `TestActors`.
 - Store backends must pass `cicada-store-conformance`.
 - Public items have doc comments (`missing_docs` warns). Keep comments as dense as the surrounding code.
+- The Rust blocks of `README.md` and `docs/operations.md` are doctests of `cicada-examples` (`ReadmeDoctests`,
+  `OperationsDoctests` in `examples/src/lib.rs`): a change to a public API must keep them compiling. Use `no_run` for
+  blocks that start a server or need a database.
 - Work tracking: take the top item of [work/queue.md](work/queue.md), set it `in-progress`, write the plan in the story,
   log progress there, set `done` when tests pass. Out-of-scope findings become issues in `work/issues/`.

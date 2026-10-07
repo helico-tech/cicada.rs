@@ -17,8 +17,18 @@ schemars.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+# The README's code blocks run as doctests of this crate (`ReadmeDoctests` in src/lib.rs).
+anyhow.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+cicada-axum.workspace = true
+cicada-client.workspace = true
+cicada-store-postgres.workspace = true
+cicada-store-sqlite.workspace = true
 cicada-test.workspace = true
+cicada-ui.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true
