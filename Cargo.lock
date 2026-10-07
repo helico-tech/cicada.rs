@@ -417,10 +417,16 @@ name = "cicada-ui"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "cicada",
+ "cicada-axum",
+ "cicada-test",
  "http-body-util",
  "mime_guess",
  "regex",
  "rust-embed",
+ "schemars",
+ "serde",
+ "serde_json",
  "tokio",
  "tower",
 ]

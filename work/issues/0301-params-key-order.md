@@ -1,5 +1,5 @@
 ---
-status: todo
+status: done
 type: question
 created: 2026-10-07
 ---

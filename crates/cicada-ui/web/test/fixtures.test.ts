@@ -1,5 +1,6 @@
-// Real responses of every actorApi() endpoint, recorded by ApiFixturesTest (actors-ui, Kotlin) from a running node,
-// parsed with the validators generated from the Kotlin wire classes: the console can read whatever the node sends.
+// Real responses of every endpoint, recorded from a running node by crates/cicada-ui/tests/api_fixtures.rs (which then
+// runs this file), parsed with the validators generated from the wire classes: the console can read whatever the node
+// sends.
 
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
@@ -11,8 +12,8 @@ import * as generated from '../src/api/generated';
 const dir = process.env.CICADA_API_FIXTURES;
 
 test('every recorded response matches its generated validator', () => {
-  assert.ok(dir, 'CICADA_API_FIXTURES is not set: run through ./gradlew :actors-ui:webTest, which records the fixtures first');
-  assert.ok(existsSync(join(dir, 'manifest.json')), `No fixtures in ${dir}: run ./gradlew :actors-ui:test first`);
+  assert.ok(dir, 'CICADA_API_FIXTURES is not set: run `cargo test -p cicada-ui --test api_fixtures`, which records the fixtures first');
+  assert.ok(existsSync(join(dir, 'manifest.json')), `No fixtures in ${dir}: run cargo test -p cicada-ui --test api_fixtures`);
   const manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')) as Record<string, string>;
   assert.ok(Object.keys(manifest).length >= 20, 'every endpoint is recorded');
   const schemas = generated as unknown as Record<string, z.ZodType | undefined>;

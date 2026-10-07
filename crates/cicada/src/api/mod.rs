@@ -52,8 +52,8 @@ pub struct ActorView {
     /// The template of the instance's type, e.g. `actor://sync/{tenant}`.
     #[serde(rename = "type")]
     pub template: String,
-    /// Decoded template parameters.
-    pub params: BTreeMap<String, String>,
+    /// Decoded template parameters, in template order.
+    pub params: Params,
     /// Current state, or null.
     pub state: Option<Value>,
     /// Number of commits that wrote state.
@@ -350,8 +350,8 @@ pub struct TypeMatchView {
     /// The type.
     #[serde(rename = "type")]
     pub actor_type: TypeView,
-    /// The address's decoded template parameters.
-    pub params: BTreeMap<String, String>,
+    /// The address's decoded template parameters, in template order.
+    pub params: Params,
 }
 
 /// Response of `GET /health` when healthy (`200`).
@@ -426,3 +426,82 @@ pub mod problem_types {
 
 #[cfg(test)]
 mod tests;
+
+/// An address's decoded template parameters, in template order (`actor://account/{tenant}/{id}` serves
+/// `{"tenant": …, "id": …}`), as a JSON object.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Params(Vec<(String, String)>);
+
+impl Params {
+    /// `values` in the order of `template`'s parameters.
+    pub fn in_template_order(template: &crate::address::UriTemplate, values: &BTreeMap<String, String>) -> Self {
+        let mut ordered: Vec<(String, String)> = template
+            .param_names()
+            .into_iter()
+            .filter_map(|n| values.get(n).map(|v| (n.to_owned(), v.clone())))
+            .collect();
+        let rest: Vec<(String, String)> = values
+            .iter()
+            .filter(|(k, _)| !ordered.iter().any(|(o, _)| o == *k))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        ordered.extend(rest);
+        Self(ordered)
+    }
+
+    /// The value of parameter `name`.
+    pub fn get(&self, name: &str) -> Option<&str> {
+        self.0.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
+    }
+
+    /// The parameters in order.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.0.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+    }
+
+    /// The parameters as a sorted map.
+    pub fn to_map(&self) -> BTreeMap<String, String> {
+        self.0.iter().cloned().collect()
+    }
+}
+
+impl std::ops::Index<&str> for Params {
+    type Output = str;
+
+    fn index(&self, name: &str) -> &str {
+        self.get(name).unwrap_or_else(|| panic!("no parameter {name}"))
+    }
+}
+
+impl Serialize for Params {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
+        for (k, v) in &self.0 {
+            map.serialize_entry(k, v)?;
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for Params {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = Params;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("an object of parameter values")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, mut access: A) -> Result<Params, A::Error> {
+                let mut out = Vec::new();
+                while let Some((k, v)) = access.next_entry::<String, String>()? {
+                    out.push((k, v));
+                }
+                Ok(Params(out))
+            }
+        }
+        deserializer.deserialize_map(V)
+    }
+}

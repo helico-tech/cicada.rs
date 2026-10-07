@@ -60,7 +60,7 @@ async fn typed_create_send_state_and_status() {
 
     let view = actors.get(&acme()).await.unwrap().unwrap();
     assert_eq!(view.template, "actor://account/{tenant}/{id}");
-    assert_eq!(view.params, [("id".to_owned(), "7".to_owned()), ("tenant".to_owned(), "acme".to_owned())].into());
+    assert_eq!(view.params.iter().collect::<Vec<_>>(), vec![("tenant", "acme"), ("id", "7")]);
     assert_eq!(view.version, 1);
 
     assert!(actors.get(&account("acme", 8)).await.unwrap().is_none());
@@ -113,7 +113,7 @@ async fn stateless_types_and_percent_encoded_parameters() {
     let (actors, _, _) = client_test(|r| r).await;
     let odd = account("a b/c é", 1);
     assert!(actors.create(&odd, &AccountState::default()).await.unwrap().created);
-    assert_eq!(actors.get(&odd).await.unwrap().unwrap().params["tenant"], "a b/c é");
+    assert_eq!(actors.get(&odd).await.unwrap().unwrap().params.get("tenant"), Some("a b/c é"));
     assert_eq!(actors.list_actors("actor://account/", None, None).await.unwrap().items, [odd.address().unwrap()]);
 
     let beacon = Beacon { name: "b".into() };
@@ -432,7 +432,7 @@ async fn failures_types_and_type_of() {
     assert!(types[1].state.is_none());
 
     let found = actors.type_of(&acme().address().unwrap()).await.unwrap().unwrap();
-    assert_eq!(found.params, [("id".to_owned(), "7".to_owned()), ("tenant".to_owned(), "acme".to_owned())].into());
+    assert_eq!(found.params.iter().collect::<Vec<_>>(), vec![("tenant", "acme"), ("id", "7")]);
     assert_eq!(found.actor_type, types[0]);
     assert!(actors.type_of(&ActorAddress::parse("actor://nope/x").unwrap()).await.unwrap().is_none());
 }

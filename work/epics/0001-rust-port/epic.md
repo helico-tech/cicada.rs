@@ -28,7 +28,7 @@ All stories are done, `cargo test --workspace` passes (PostgreSQL tests included
 - [07 Port the runtime test suite of `actors-test` (dispatch, leases, retry, hooks, outcomes, timeouts, shutdown)](07-runtime-tests.md) — todo
 - [08 HTTP API as axum routers with the Kotlin wire model and problem+json](08-http-api.md) — done
 - [09 Typed HTTP client on reqwest](09-client.md) — done
-- [10 Embed the React console and serve it with `actor_ui()`](10-console.md) — todo
+- [10 Embed the React console and serve it with `actor_ui()`](10-console.md) — done
 - [11 OpenTelemetry plugin](11-otel.md) — todo
 - [12 Extras](12-extras.md) — todo
 - [13 Worked examples with tests](13-examples.md) — done

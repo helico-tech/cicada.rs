@@ -1,6 +1,7 @@
 //! Conversions between the runtime model and the HTTP bodies.
 
 use super::{
+    Params,
     ActorView, ChainNodeView, MessageChainView, MessageState, MessageStatusView, MessageView, OutcomeView, PageView,
     SendRequest, TypeMatchView, TypeView,
 };
@@ -169,8 +170,8 @@ impl From<ActorSnapshot> for ActorView {
     fn from(s: ActorSnapshot) -> Self {
         Self {
             uri: s.address,
+            params: Params::in_template_order(&s.template, &s.params),
             template: s.template.as_str().to_owned(),
-            params: s.params,
             state: s.state,
             version: s.version,
             created_at: s.created_at,
@@ -191,7 +192,7 @@ impl From<&RegisteredType> for TypeView {
 
 impl From<&ResolvedActorType> for TypeMatchView {
     fn from(r: &ResolvedActorType) -> Self {
-        Self { actor_type: (&r.registered).into(), params: r.params.clone() }
+        Self { actor_type: (&r.registered).into(), params: Params::in_template_order(r.registered.template(), &r.params) }
     }
 }
 
