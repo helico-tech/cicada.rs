@@ -234,6 +234,58 @@ impl Backoff {
     }
 }
 
+/// The JSON Schema of a duration field: an ISO-8601 or short-form string, or whole milliseconds.
+pub(crate) fn duration_schema() -> serde_json::Value {
+    serde_json::json!({ "anyOf": [{ "type": "string" }, { "type": "integer" }] })
+}
+
+impl schemars::JsonSchema for RetryPolicy {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "RetryPolicy".into()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let backoff = generator.subschema_for::<Backoff>();
+        schemars::json_schema!({
+            "type": "object",
+            "properties": {
+                "maxAttempts": { "type": "integer", "minimum": 1, "maximum": RetryPolicy::MAX_ATTEMPTS },
+                "backoff": backoff,
+            },
+            "required": ["maxAttempts", "backoff"],
+        })
+    }
+}
+
+impl schemars::JsonSchema for Backoff {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Backoff".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let duration = duration_schema();
+        schemars::json_schema!({
+            "oneOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "kind": { "type": "string", "const": "exponential" },
+                        "initial": duration,
+                        "factor": { "type": "number", "minimum": 1, "default": 2.0 },
+                        "max": duration,
+                    },
+                    "required": ["kind", "initial", "max"],
+                },
+                {
+                    "type": "object",
+                    "properties": { "kind": { "type": "string", "const": "fixed" }, "delay": duration },
+                    "required": ["kind", "delay"],
+                },
+            ],
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -274,6 +326,17 @@ mod tests {
         ] {
             assert!(serde_json::from_value::<RetryPolicy>(bad.clone()).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn policies_have_schemas() {
+        #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+        struct Request {
+            retry: Option<RetryPolicy>,
+        }
+        let schema = crate::schema::root_schema::<Request>();
+        assert_eq!(schema["$defs"]["RetryPolicy"]["properties"]["maxAttempts"]["maximum"], 100);
+        assert_eq!(schema["$defs"]["Backoff"]["oneOf"][1]["properties"]["kind"]["const"], "fixed");
     }
 
     #[test]

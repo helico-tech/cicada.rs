@@ -27,8 +27,6 @@ fn keeper() -> Keeper {
 enum KeeperMsg {
     /// Sends a `Note` to itself with the policy given, so the turn's own send carries it.
     Pass {
-        // `Retention` has no JSON Schema (issue 0200): published as any JSON.
-        #[schemars(with = "Option<serde_json::Value>")]
         retention: Option<Retention>,
     },
     Note {

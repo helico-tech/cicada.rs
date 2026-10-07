@@ -156,6 +156,52 @@ impl Keep {
     }
 }
 
+impl schemars::JsonSchema for Retention {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Retention".into()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let keep = generator.subschema_for::<Option<Keep>>();
+        schemars::json_schema!({
+            "type": "object",
+            "properties": { "done": keep, "failed": keep },
+        })
+    }
+}
+
+impl schemars::JsonSchema for Keep {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Keep".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let duration = crate::retry::duration_schema();
+        schemars::json_schema!({
+            "oneOf": [
+                {
+                    "type": "object",
+                    "properties": { "kind": { "type": "string", "const": "remove" } },
+                    "required": ["kind"],
+                },
+                {
+                    "type": "object",
+                    "properties": { "kind": { "type": "string", "const": "for" }, "age": duration },
+                    "required": ["kind", "age"],
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "kind": { "type": "string", "const": "last" },
+                        "count": { "type": "integer", "minimum": 1, "maximum": Keep::MAX_COUNT },
+                    },
+                    "required": ["kind", "count"],
+                },
+            ],
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;

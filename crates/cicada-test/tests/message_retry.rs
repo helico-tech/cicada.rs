@@ -68,8 +68,6 @@ enum ChoreMsg {
     Request {
         worker: String,
         attempt: AttemptSpec,
-        // `RetryPolicy` has no JSON Schema (issue 0200): published as any JSON.
-        #[schemars(with = "Option<serde_json::Value>")]
         retry: Option<RetryPolicy>,
     },
     /// Makes the receiver forward `attempt` to `worker`, passing on the incoming message's own retry policy.
