@@ -89,7 +89,8 @@ impl SampleNode {
             builder = builder.install(t.plugin());
         }
         if let Some(limit) = config.crash_loop_limit {
-            builder = builder.install(CrashLoopGuard::new(limit).map_err(|e| anyhow::anyhow!("CRASH_LOOP_LIMIT: {e}"))?);
+            builder =
+                builder.install(CrashLoopGuard::new(limit).map_err(|e| anyhow::anyhow!("CRASH_LOOP_LIMIT: {e}"))?);
         }
         let system = builder.build();
         let started = async {
@@ -183,7 +184,11 @@ impl SampleNode {
 
 /// Serves `node` on `listener` until `shutdown` completes, then stops accepting requests, lets the open ones finish,
 /// and stops the node ([`SampleNode::shutdown`]).
-pub async fn serve(node: SampleNode, listener: TcpListener, shutdown: impl Future<Output = ()> + Send + 'static) -> anyhow::Result<()> {
+pub async fn serve(
+    node: SampleNode,
+    listener: TcpListener,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> anyhow::Result<()> {
     let served = axum::serve(listener, node.router()).with_graceful_shutdown(shutdown).await;
     node.shutdown().await;
     Ok(served?)

@@ -56,7 +56,8 @@ fn expand(text: &str) -> Result<String, String> {
             if let Some(count) = line.strip_prefix("@@") {
                 let count: usize = count.parse().map_err(|_| format!("a bad marker {line}"))?;
                 for _ in 0..count {
-                    let l = visible.next().ok_or(format!("@@ markers ask for more lines than the block has: {fence}"))?;
+                    let l =
+                        visible.next().ok_or(format!("@@ markers ask for more lines than the block has: {fence}"))?;
                     out.push_str(l);
                     out.push('\n');
                 }
@@ -66,7 +67,10 @@ fn expand(text: &str) -> Result<String, String> {
             }
         }
         if visible.next().is_some() {
-            return Err(format!("the block has more lines than its @@ markers place, near:\n{}", template_preview(after)));
+            return Err(format!(
+                "the block has more lines than its @@ markers place, near:\n{}",
+                template_preview(after)
+            ));
         }
         out.push_str("```");
         rest = &body_and_rest[close + 3..];

@@ -108,7 +108,11 @@ pub async fn reschedule_the_message_queues_again_behind_due_messages_and_is_not_
         let behind = t.send(&a).await; // due now, enqueued while m was running
         t.commit_ok(ending(&c, rescheduled("first", Delivery::Now))).await;
         let pending = t.all_pending(&a, 3).await;
-        assert_eq!(ids(&pending), vec![behind.id.clone(), m.id.clone()], "rescheduled at the same time: new seq, so behind");
+        assert_eq!(
+            ids(&pending),
+            vec![behind.id.clone(), m.id.clone()],
+            "rescheduled at the same time: new seq, so behind"
+        );
         assert_delivery_order(&pending);
 
         let c2 = t.claim_one().await;
@@ -355,7 +359,10 @@ pub async fn retry_policy_stored_with_the_message_and_returned_everywhere_retain
         let plain = t.send(&a).await;
         assert_eq!(plain.retry, None, "no policy: null");
         assert_eq!(pending_message(&*store, &sent.id).await.retry.as_ref(), Some(&policy));
-        assert_eq!(t.pending(&a).await.into_iter().map(|m| m.retry).collect::<Vec<_>>(), vec![Some(policy.clone()), None]);
+        assert_eq!(
+            t.pending(&a).await.into_iter().map(|m| m.retry).collect::<Vec<_>>(),
+            vec![Some(policy.clone()), None]
+        );
 
         let c = t.claim_one().await;
         assert_eq!(c.message.id, sent.id);

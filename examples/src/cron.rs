@@ -80,15 +80,7 @@ pub struct CronState {
 impl CronState {
     /// A job on `schedule` that is not armed yet.
     pub fn new(schedule: Schedule) -> Self {
-        Self {
-            schedule,
-            next_run: None,
-            runs: 0,
-            last_run: None,
-            failed_runs: 0,
-            last_error: None,
-            armed_tick: None,
-        }
+        Self { schedule, next_run: None, runs: 0, last_run: None, failed_runs: 0, last_error: None, armed_tick: None }
     }
 }
 

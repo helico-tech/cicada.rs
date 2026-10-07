@@ -32,8 +32,12 @@ fn checkout() {
     let mut disarmed = Timer::new();
     disarmed.arm(t());
     disarmed.disarm();
-    let paid =
-        CheckoutState { status: CheckoutStatus::Paid, timer: disarmed, paid_cents: Some(1250), ..CheckoutState::default() };
+    let paid = CheckoutState {
+        status: CheckoutStatus::Paid,
+        timer: disarmed,
+        paid_cents: Some(1250),
+        ..CheckoutState::default()
+    };
     record_state_sample(&dir, "paid", &paid);
     assert_state_decodes::<CheckoutState>(&dir);
 }

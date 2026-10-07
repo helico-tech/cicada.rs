@@ -39,7 +39,8 @@ async fn no_lost_or_duplicated_outcomes_while_a_node_is_killed_and_restarted() {
 
     let senders = c.nodes().into_iter().enumerate().map(|(index, first)| {
         // Each sender prefers its own node and fails over (same id) to the others.
-        let order: Vec<&Node> = std::iter::once(first).chain(c.nodes().into_iter().filter(|n| n.id != first.id)).collect();
+        let order: Vec<&Node> =
+            std::iter::once(first).chain(c.nodes().into_iter().filter(|n| n.id != first.id)).collect();
         let (counters, sent_count) = (&counters, &sent_count);
         async move {
             let mut sent = Vec::new();
@@ -77,7 +78,11 @@ async fn no_lost_or_duplicated_outcomes_while_a_node_is_killed_and_restarted() {
     for status in statuses.values() {
         *by_status.entry(format!("{:?}", status.status)).or_insert(0) += 1;
     }
-    assert_eq!(by_status, BTreeMap::from([(format!("{:?}", MessageState::Done), sent.len())]), "every accepted message is done exactly once");
+    assert_eq!(
+        by_status,
+        BTreeMap::from([(format!("{:?}", MessageState::Done), sent.len())]),
+        "every accepted message is done exactly once"
+    );
     let mut total = 0;
     for counter in &counters {
         let state: CounterState = c.send_only.state(counter).await;

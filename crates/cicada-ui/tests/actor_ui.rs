@@ -32,7 +32,10 @@ async fn the_page_is_served_at_the_mount_path_with_a_trailing_slash_with_a_stric
         "{page}"
     );
     // Nothing inline: the policy allows only the console's own files.
-    assert!(!Regex::new(r"<script(\s[^>]*)?>").unwrap().find_iter(&page).any(|m| !m.as_str().contains(" src=")), "an inline script");
+    assert!(
+        !Regex::new(r"<script(\s[^>]*)?>").unwrap().find_iter(&page).any(|m| !m.as_str().contains(" src=")),
+        "an inline script"
+    );
     assert!(!page.contains("<style") && !page.contains(" style="), "an inline style");
     let csp = headers[header::CONTENT_SECURITY_POLICY].to_str().unwrap();
     assert!(csp.contains("default-src 'self'") && csp.contains("frame-ancestors 'none'"), "{csp}");
@@ -89,11 +92,8 @@ fn api_path_must_be_a_plain_absolute_path() {
 #[test]
 fn every_file_the_page_links_and_every_chunk_a_script_loads_exists() {
     let index = file_text("index.html").expect("index.html is embedded");
-    let linked: Vec<String> = Regex::new(r#"(?:src|href)="\./([^"]+)""#)
-        .unwrap()
-        .captures_iter(&index)
-        .map(|c| c[1].to_owned())
-        .collect();
+    let linked: Vec<String> =
+        Regex::new(r#"(?:src|href)="\./([^"]+)""#).unwrap().captures_iter(&index).map(|c| c[1].to_owned()).collect();
     assert!(linked.len() >= 3, "favicon, script and style: {linked:?}");
     for path in &linked {
         assert!(file_text(path).is_some(), "index.html links {path}");

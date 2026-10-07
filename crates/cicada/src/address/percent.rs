@@ -59,9 +59,7 @@ pub fn decode(encoded: &str) -> Result<String, AddressError> {
             i += 1;
         } else {
             let ch = encoded[i..].chars().next().unwrap_or('?');
-            return Err(AddressError::new(format!(
-                "Character '{ch}' must be percent-encoded in segment '{encoded}'"
-            )));
+            return Err(AddressError::new(format!("Character '{ch}' must be percent-encoded in segment '{encoded}'")));
         }
     }
     String::from_utf8(bytes)

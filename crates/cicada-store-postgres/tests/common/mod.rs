@@ -81,7 +81,10 @@ impl TestDb {
     /// Runs `statement` on a plain connection.
     pub async fn sql(&self, statement: &str) {
         let mut c = self.connect().await;
-        sqlx::raw_sql(AssertSqlSafe(statement.to_owned())).execute(&mut c).await.unwrap_or_else(|e| panic!("{statement}: {e}"));
+        sqlx::raw_sql(AssertSqlSafe(statement.to_owned()))
+            .execute(&mut c)
+            .await
+            .unwrap_or_else(|e| panic!("{statement}: {e}"));
     }
 
     /// Closes every store opened through this and forgets them.

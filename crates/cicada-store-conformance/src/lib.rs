@@ -78,11 +78,7 @@ pub mod cases {
 pub mod __private {
     /// The runtime of one generated test.
     pub fn runtime() -> tokio::runtime::Runtime {
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(4)
-            .enable_all()
-            .build()
-            .expect("a tokio runtime")
+        tokio::runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build().expect("a tokio runtime")
     }
 }
 

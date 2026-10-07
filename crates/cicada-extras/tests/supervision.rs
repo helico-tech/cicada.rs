@@ -82,7 +82,11 @@ async fn the_watcher_copies_each_failure_once_into_the_dead_letters() {
     let mut other_node = FailureWatcher::new(test.system().clone()); // a second node's watcher: same ids, so no duplicates
     test.create(&mailer("m"), &MailerState::default()).await;
     let failed = test
-        .send_with(&mailer("m"), MailerMsg::SendMail { to: "a@example.test".into() }, SendOptions::new().correlation_id("c-1"))
+        .send_with(
+            &mailer("m"),
+            MailerMsg::SendMail { to: "a@example.test".into() },
+            SendOptions::new().correlation_id("c-1"),
+        )
         .await;
     test.send(&mailer("m"), MailerMsg::SendMail { to: "b@example.test".into() }).await;
     test.run_until_idle().await;
@@ -198,7 +202,9 @@ async fn the_oldest_letter_is_evicted_by_failure_time_whatever_the_order_of_the_
         redrive_error: None,
     };
     // "a" sorts first by key but is the newest.
-    let state = DeadLettersState { letters: BTreeMap::from([("a".to_owned(), letter("a", 2)), ("b".to_owned(), letter("b", 1))]) };
+    let state = DeadLettersState {
+        letters: BTreeMap::from([("a".to_owned(), letter("a", 2)), ("b".to_owned(), letter("b", 1))]),
+    };
     test.create(&DeadLetters, &state).await;
     test.send(&DeadLetters, DeadLettersMsg::RecordFailure { letter: letter("c", 3) }).await;
     test.run_until_idle().await;

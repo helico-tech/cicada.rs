@@ -27,6 +27,6 @@ mod store;
 
 pub use config::PostgresStoreConfig;
 pub use connection::PostgresConnection;
-pub use store::PostgresStore;
 /// sqlx connect options, for [`PostgresStore::connect_with`].
 pub use sqlx::postgres::{PgConnectOptions, PgSslMode};
+pub use store::PostgresStore;

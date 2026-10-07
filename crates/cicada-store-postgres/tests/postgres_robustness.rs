@@ -9,8 +9,8 @@ use std::time::Duration;
 use cicada::address::{ActorAddress, UriTemplate};
 use cicada::retry::{Backoff, RetryPolicy};
 use cicada::store::{
-    ActorCreate, CommitRequest, CommitResult, Delivery, EnqueueResult, MessageId, MessageStatus, NodeId,
-    OutcomeStatus, OutgoingMessage, StateChange, Store, StoreError, TurnOutcome,
+    ActorCreate, CommitRequest, CommitResult, Delivery, EnqueueResult, MessageId, MessageStatus, NodeId, OutcomeStatus,
+    OutgoingMessage, StateChange, Store, StoreError, TurnOutcome,
 };
 use cicada_store_postgres::PostgresStore;
 use serde_json::json;
@@ -93,14 +93,19 @@ async fn s2_a_commit_failing_half_way_applies_nothing() {
     let mut commit = CommitRequest::new(a(), claim.epoch, claim.message.id, TurnOutcome::Done);
     commit.state = StateChange::NewState(Some(json!(1)));
     commit.creates = vec![ActorCreate { address: child.clone(), template: template(), state: None }];
-    commit.sends =
-        vec![OutgoingMessage::new(target.clone(), "Good", json!(1)), OutgoingMessage::new(target.clone(), "Poison", json!(2))];
+    commit.sends = vec![
+        OutgoingMessage::new(target.clone(), "Good", json!(1)),
+        OutgoingMessage::new(target.clone(), "Poison", json!(2)),
+    ];
     match store.commit(commit).await {
         Err(e @ StoreError::Unavailable(_)) => assert!(format!("{e:?}").contains("injected fault"), "{e:?}"),
         other => panic!("expected the injected fault, got {other:?}"),
     }
     assert!(store.outcome(&m.id).await.unwrap().is_none(), "no outcome");
-    assert!(matches!(store.status(&m.id).await.unwrap(), Some(MessageStatus::Running { .. })), "the lease is still held");
+    assert!(
+        matches!(store.status(&m.id).await.unwrap(), Some(MessageStatus::Running { .. })),
+        "the lease is still held"
+    );
     assert!(store.pending(&target, None, 100).await.unwrap().items.is_empty(), "no send");
     assert!(store.get(&child).await.unwrap().is_none(), "no create");
     assert_eq!(store.get(&a()).await.unwrap().unwrap().version, 0, "state untouched");
@@ -157,7 +162,8 @@ async fn a_stored_retry_policy_this_version_cannot_decode_reads_as_no_policy_and
     let claim = store.claim_due(&types(), &node(), TTL, 1).await.unwrap().remove(0);
     assert_eq!(claim.message.id, bad.id);
     assert!(claim.message.retry.is_none());
-    let committed = store.commit(CommitRequest::new(a(), claim.epoch, bad.id.clone(), TurnOutcome::Done)).await.unwrap();
+    let committed =
+        store.commit(CommitRequest::new(a(), claim.epoch, bad.id.clone(), TurnOutcome::Done)).await.unwrap();
     assert!(matches!(committed, CommitResult::Committed { .. }));
     let outcome = store.outcome(&bad.id).await.unwrap().unwrap();
     assert_eq!(outcome.status, OutcomeStatus::Done);
@@ -167,14 +173,16 @@ async fn a_stored_retry_policy_this_version_cannot_decode_reads_as_no_policy_and
 
 async fn columns(db: &common::TestDb, table: &str) -> BTreeSet<String> {
     let mut c = db.connect().await;
-    sqlx::query_scalar("SELECT column_name::text FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2")
-        .bind(&db.schema)
-        .bind(table)
-        .fetch_all(&mut c)
-        .await
-        .unwrap()
-        .into_iter()
-        .collect()
+    sqlx::query_scalar(
+        "SELECT column_name::text FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2",
+    )
+    .bind(&db.schema)
+    .bind(table)
+    .fetch_all(&mut c)
+    .await
+    .unwrap()
+    .into_iter()
+    .collect()
 }
 
 /// Removes what schema versions 5 (causation) and 6 (retention) added.
@@ -204,7 +212,8 @@ async fn version_1_to_4_schemas_are_migrated_and_keep_their_data() {
         m.id = done.clone();
         store.enqueue(m).await.unwrap();
         let claim = store.claim_due(&types(), &node(), TTL, 1).await.unwrap().remove(0);
-        let committed = store.commit(CommitRequest::new(a(), claim.epoch, done.clone(), TurnOutcome::Done)).await.unwrap();
+        let committed =
+            store.commit(CommitRequest::new(a(), claim.epoch, done.clone(), TurnOutcome::Done)).await.unwrap();
         assert!(matches!(committed, CommitResult::Committed { .. }));
         store.enqueue(OutgoingMessage::new(a(), "T", json!(2))).await.unwrap();
         db.close_stores().await;
@@ -242,7 +251,8 @@ async fn version_1_to_4_schemas_are_migrated_and_keep_their_data() {
         assert!(claim.message.last_error.is_none() && claim.message.retry.is_none());
         assert!(claim.message.caused_by.is_none(), "older messages have no known cause");
         let rescheduled = TurnOutcome::Rescheduled { delivery: Delivery::Now, error: "boom".into() };
-        let committed = store.commit(CommitRequest::new(a(), claim.epoch, claim.message.id.clone(), rescheduled)).await.unwrap();
+        let committed =
+            store.commit(CommitRequest::new(a(), claim.epoch, claim.message.id.clone(), rescheduled)).await.unwrap();
         assert!(matches!(committed, CommitResult::Committed { .. }));
         let pending = store.pending(&a(), None, 100).await.unwrap().items.remove(0);
         assert_eq!(pending.failures, 1);
@@ -309,7 +319,8 @@ async fn version_2_to_4_nodes_can_still_write_and_read_after_the_latest_migratio
 #[tokio::test(flavor = "multi_thread")]
 async fn a_transaction_past_the_socket_timeout_fails_as_unavailable_and_the_store_recovers() {
     let db = test_db!("r");
-    let config = cicada_store_postgres::PostgresStoreConfig { socket_timeout: Duration::from_millis(500), ..db.config() };
+    let config =
+        cicada_store_postgres::PostgresStoreConfig { socket_timeout: Duration::from_millis(500), ..db.config() };
     let store = db.open_with(config).await;
     store.create(&a(), &template(), None).await.unwrap();
     // Hold the instance's row lock from another connection: the enqueue waits for it beyond the timeout.

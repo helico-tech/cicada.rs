@@ -155,7 +155,9 @@ impl Actor for DeadLettersActor {
                 // this whole turn, which then shows up in the failures itself).
                 let updated = match turn.send_raw(&to, &letter.message_type, letter.payload.clone(), options).await {
                     Ok(id) => DeadLetter { redriven_as: Some(id.to_string()), redrive_error: None, ..letter },
-                    Err(e @ TurnError::SendRejected { .. }) => DeadLetter { redrive_error: Some(e.to_string()), ..letter },
+                    Err(e @ TurnError::SendRejected { .. }) => {
+                        DeadLetter { redrive_error: Some(e.to_string()), ..letter }
+                    }
                     Err(e) => return Err(e.into()),
                 };
                 turn.state_mut().letters.insert(failed_message_id, updated);

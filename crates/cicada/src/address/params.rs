@@ -118,7 +118,11 @@ impl ser::Serializer for RefSerializer {
         Err(ParamsError("a ref must be a struct, not an enum".into()))
     }
 
-    fn serialize_newtype_struct<T: Serialize + ?Sized>(self, _: &'static str, value: &T) -> Result<Self::Ok, Self::Error> {
+    fn serialize_newtype_struct<T: Serialize + ?Sized>(
+        self,
+        _: &'static str,
+        value: &T,
+    ) -> Result<Self::Ok, Self::Error> {
         value.serialize(self)
     }
 
@@ -180,9 +184,7 @@ impl ser::SerializeStruct for FieldCollector {
     type Error = ParamsError;
 
     fn serialize_field<T: Serialize + ?Sized>(&mut self, key: &'static str, value: &T) -> Result<(), Self::Error> {
-        let text = value
-            .serialize(ScalarSerializer)
-            .map_err(|e| ParamsError(format!("Parameter '{key}': {}", e.0)))?;
+        let text = value.serialize(ScalarSerializer).map_err(|e| ParamsError(format!("Parameter '{key}': {}", e.0)))?;
         self.0.insert(key.to_owned(), text);
         Ok(())
     }
@@ -244,7 +246,11 @@ impl ser::Serializer for ScalarSerializer {
         Ok(variant.to_owned())
     }
 
-    fn serialize_newtype_struct<T: Serialize + ?Sized>(self, _: &'static str, value: &T) -> Result<String, ParamsError> {
+    fn serialize_newtype_struct<T: Serialize + ?Sized>(
+        self,
+        _: &'static str,
+        value: &T,
+    ) -> Result<String, ParamsError> {
         value.serialize(self)
     }
 

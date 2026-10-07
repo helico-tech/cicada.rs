@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use cicada::ActorSystem;
 use cicada::address::ActorAddress;
 use cicada::contract::Contract;
 use cicada::runtime::{CreateActorResult, SendResult};
@@ -13,7 +14,6 @@ use cicada::schema;
 use cicada::store::{CancelResult, DeleteResult, Delivery, MessageId, MessageStatus, OutcomeStatus, Store};
 use cicada::time;
 use cicada::turn::SendOptions;
-use cicada::ActorSystem;
 use cicada_test::{InMemoryStore, TestActors, VirtualClock};
 use common::*;
 use serde_json::{Value, json};
@@ -65,7 +65,8 @@ async fn get_list_delete() {
         system.list_actors("actor://counter/", None, 100).await.unwrap().items,
         vec![a().address(), Counter::new("b").address()]
     );
-    let pending = test.send_with(&a(), CounterMsg::Add { n: 1 }, SendOptions::new().delay(Duration::from_secs(300))).await;
+    let pending =
+        test.send_with(&a(), CounterMsg::Add { n: 1 }, SendOptions::new().delay(Duration::from_secs(300))).await;
     assert_eq!(system.delete_actor(&a().address()).await.unwrap(), DeleteResult::Deleted { purged: 1 });
     assert_eq!(test.outcome(&pending).await.unwrap().status, OutcomeStatus::Purged);
     assert_eq!(system.delete_actor(&a().address()).await.unwrap(), DeleteResult::Absent);

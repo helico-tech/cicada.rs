@@ -62,22 +62,19 @@ impl TypeResolver {
     /// The type the TypeRegistry resolves `address` to.
     pub async fn resolve(&self, address: &ActorAddress) -> StoreResult<Option<ResolvedActorType>> {
         match self.store.resolve(address).await? {
-            Some(resolved) => Ok(Some(ResolvedActorType {
-                registered: self.registered(resolved.type_def)?,
-                params: resolved.params,
-            })),
+            Some(resolved) => {
+                Ok(Some(ResolvedActorType { registered: self.registered(resolved.type_def)?, params: resolved.params }))
+            }
             None => Ok(None),
         }
     }
 
     /// Checks a raw-address send at call time, against the type `to` resolves to.
     pub async fn check_send(&self, to: &ActorAddress, message_type: &str) -> Result<(), TurnError> {
-        let rejected = |reason: String| TurnError::SendRejected {
-            to: to.clone(),
-            message_type: message_type.to_owned(),
-            reason,
-        };
-        let resolved = self.resolve(to).await?.ok_or_else(|| rejected(format!("No registered actor type matches {to}")))?;
+        let rejected =
+            |reason: String| TurnError::SendRejected { to: to.clone(), message_type: message_type.to_owned(), reason };
+        let resolved =
+            self.resolve(to).await?.ok_or_else(|| rejected(format!("No registered actor type matches {to}")))?;
         if !resolved.registered.contract.accepts(message_type) {
             return Err(rejected(format!(
                 "{} does not accept message type '{message_type}'",

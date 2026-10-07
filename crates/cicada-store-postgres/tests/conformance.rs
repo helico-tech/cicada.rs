@@ -23,7 +23,8 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 const PARALLEL_CASES: usize = 4;
 
-static RUNNING: std::sync::LazyLock<Arc<Semaphore>> = std::sync::LazyLock::new(|| Arc::new(Semaphore::new(PARALLEL_CASES)));
+static RUNNING: std::sync::LazyLock<Arc<Semaphore>> =
+    std::sync::LazyLock::new(|| Arc::new(Semaphore::new(PARALLEL_CASES)));
 
 struct Postgres;
 

@@ -130,11 +130,9 @@ impl HandlerFailure {
 impl fmt::Display for HandlerFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            HandlerFailure::Timeout { max_turn, .. } => write!(
-                f,
-                "timeout: the turn exceeded its maximum duration of {}",
-                time::format_duration(*max_turn)
-            ),
+            HandlerFailure::Timeout { max_turn, .. } => {
+                write!(f, "timeout: the turn exceeded its maximum duration of {}", time::format_duration(*max_turn))
+            }
             other => f.write_str(&other.reason()),
         }
     }
@@ -471,8 +469,14 @@ impl<A: Actor> Turn<A> {
         check_delivery(&options.delivery)?;
         let encoded = message::encode(msg).map_err(TurnError::Invalid)?;
         let id = options.id.unwrap_or_else(MessageId::random);
-        limits::check_envelope(&id, &encoded.message_type, &encoded.payload, options.correlation_id.as_deref(), &options.headers)
-            .map_err(TurnError::Invalid)?;
+        limits::check_envelope(
+            &id,
+            &encoded.message_type,
+            &encoded.payload,
+            options.correlation_id.as_deref(),
+            &options.headers,
+        )
+        .map_err(TurnError::Invalid)?;
         self.effects.sends.push(OutgoingMessage {
             to,
             message_type: encoded.message_type,

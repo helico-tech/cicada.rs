@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use cicada::address::ActorAddress;
 use cicada::retention::{Keep, Retention};
 use cicada::store::{
-    CancelResult, ChainEntry, CommitResult, CommitRequest, Delivery, EnqueueResult, Message, MessageStatus,
+    CancelResult, ChainEntry, CommitRequest, CommitResult, Delivery, EnqueueResult, Message, MessageStatus,
     OutcomeStatus, OutgoingMessage, Page, Store, TurnOutcome,
 };
 use cicada::time::Timestamp;
@@ -39,7 +39,8 @@ async fn finish<F: StoreFixture>(t: &Env<F>, message: &Message, outcome: TurnOut
 }
 
 async fn is_duplicate(store: &dyn Store, message: &Message) -> bool {
-    let again = OutgoingMessage { id: message.id.clone(), ..OutgoingMessage::new(message.to.clone(), "Msg", json!({"x": 2})) };
+    let again =
+        OutgoingMessage { id: message.id.clone(), ..OutgoingMessage::new(message.to.clone(), "Msg", json!({"x": 2})) };
     store.enqueue(again).await.unwrap() == EnqueueResult::Duplicate(message.id.clone())
 }
 
@@ -110,7 +111,8 @@ pub async fn retention_a_removed_id_cannot_be_reused_by_a_commits_send<B: Fixtur
         finish(t, &removed, TurnOutcome::Done).await;
         t.send(&a).await;
         let c = t.claim_one().await;
-        let reuse = OutgoingMessage { id: removed.id.clone(), ..OutgoingMessage::new(a.clone(), "Msg", json!({"x": 1})) };
+        let reuse =
+            OutgoingMessage { id: removed.id.clone(), ..OutgoingMessage::new(a.clone(), "Msg", json!({"x": 1})) };
         assert_matches!(t.commit(CommitRequest { sends: vec![reuse], ..done(&c) }).await, CommitResult::Rejected(_));
     })
     .await
@@ -167,8 +169,13 @@ pub async fn retention_keep_for_a_time_shorter_than_the_store_retention<B: Fixtu
         }
         let store = t.store();
         let a = t.new_actor(&TYPE, None).await;
-        let m = send_kept(t, &a, Some(Retention { done: Some(Keep::For { age: t.ticks(5) }), failed: None }), Delivery::Now)
-            .await;
+        let m = send_kept(
+            t,
+            &a,
+            Some(Retention { done: Some(Keep::For { age: t.ticks(5) }), failed: None }),
+            Delivery::Now,
+        )
+        .await;
         finish(t, &m, TurnOutcome::Done).await;
         t.advance_ticks(4).await;
         assert_eq!(
@@ -199,8 +206,13 @@ pub async fn retention_keep_for_longer_than_the_store_retention<B: FixtureFactor
         }
         let store = t.store();
         let a = t.new_actor(&TYPE, None).await;
-        let m = send_kept(t, &a, Some(Retention { done: None, failed: Some(Keep::For { age: t.ticks(20) }) }), Delivery::Now)
-            .await;
+        let m = send_kept(
+            t,
+            &a,
+            Some(Retention { done: None, failed: Some(Keep::For { age: t.ticks(20) }) }),
+            Delivery::Now,
+        )
+        .await;
         let plain = send_kept(t, &a, None, Delivery::Now).await;
         let since = store.now().await.unwrap();
         finish(t, &m, TurnOutcome::Failed("boom".into())).await;
@@ -269,7 +281,9 @@ pub async fn retention_keep_last_n_per_instance_and_outcome_leaving_other_polici
 }
 
 /// retention - the sweep drops the content of hidden records and keeps visible ones intact
-pub async fn retention_the_sweep_drops_the_content_of_hidden_records_and_keeps_visible_ones_intact<B: FixtureFactory>(
+pub async fn retention_the_sweep_drops_the_content_of_hidden_records_and_keeps_visible_ones_intact<
+    B: FixtureFactory,
+>(
     backend: &B,
 ) {
     store_test_with(backend, backend.tick() * 20, DEFAULT_TIMEOUT, async |t| {
@@ -278,8 +292,9 @@ pub async fn retention_the_sweep_drops_the_content_of_hidden_records_and_keeps_v
         }
         let store = t.store();
         let a = t.new_actor(&TYPE, None).await;
-        let short = send_kept(t, &a, Some(Retention { done: Some(Keep::For { age: t.tick }), failed: None }), Delivery::Now)
-            .await;
+        let short =
+            send_kept(t, &a, Some(Retention { done: Some(Keep::For { age: t.tick }), failed: None }), Delivery::Now)
+                .await;
         let plain = send_kept(t, &a, None, Delivery::Now).await;
         finish(t, &short, TurnOutcome::Done).await;
         finish(t, &plain, TurnOutcome::Done).await;

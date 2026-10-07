@@ -455,7 +455,8 @@ impl ActorSystem {
             let tracker = lifecycle.tracker.clone();
             let cancel = lifecycle.cancel_turns.clone();
             let loop_init = init.clone();
-            lifecycle.dispatch = Some(tokio::spawn(async move { this.dispatch_loop(loop_init, tracker, cancel).await }));
+            lifecycle.dispatch =
+                Some(tokio::spawn(async move { this.dispatch_loop(loop_init, tracker, cancel).await }));
             if let Some(mut wake_ups) = self.inner.store.wake_ups(&init.templates) {
                 let wake = self.inner.wake.clone();
                 lifecycle.background.push(tokio::spawn(async move {
@@ -673,7 +674,11 @@ impl ActorSystem {
     ///
     /// The type is resolved through the TypeRegistry. A node that hosts the type decodes `state` with the state type
     /// and refuses it when that fails; any node refuses a state for a stateless type.
-    pub async fn create_actor(&self, address: &ActorAddress, state: Option<Value>) -> Result<CreateActorResult, OpError> {
+    pub async fn create_actor(
+        &self,
+        address: &ActorAddress,
+        state: Option<Value>,
+    ) -> Result<CreateActorResult, OpError> {
         let init = self.initialized().await?.clone();
         let Some(resolved) = self.inner.resolver.resolve(address).await? else {
             return Ok(CreateActorResult::NoSuchType);
@@ -741,7 +746,8 @@ impl ActorSystem {
     ) -> Result<SendResult, OpError> {
         let init = self.initialized().await?.clone();
         let id = options.id.clone().unwrap_or_else(MessageId::random);
-        limits::check(&id, message_type, options.correlation_id.as_deref(), &options.headers).map_err(OpError::Invalid)?;
+        limits::check(&id, message_type, options.correlation_id.as_deref(), &options.headers)
+            .map_err(OpError::Invalid)?;
         limits::check_json("payload", Some(&payload)).map_err(OpError::Invalid)?;
         crate::turn::check_delivery(&options.delivery).map_err(|e| OpError::Invalid(e.to_string()))?;
         // Idempotency first: a send repeating an accepted id gets the same answer even when it would be refused now.

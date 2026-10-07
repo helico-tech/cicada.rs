@@ -138,7 +138,13 @@ mod tests {
             serde_json::from_str::<Schedule>(r#"{"type":"daily","hour":2,"minute":30}"#).unwrap(),
             Schedule::daily(2, 30).unwrap()
         );
-        assert_eq!(serde_json::from_str::<Schedule>(r#"{"type":"daily","hour":2}"#).unwrap(), Schedule::daily(2, 0).unwrap());
-        assert_eq!(serde_json::to_string(&Schedule::daily(2, 0).unwrap()).unwrap(), r#"{"type":"daily","hour":2,"minute":0}"#);
+        assert_eq!(
+            serde_json::from_str::<Schedule>(r#"{"type":"daily","hour":2}"#).unwrap(),
+            Schedule::daily(2, 0).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_string(&Schedule::daily(2, 0).unwrap()).unwrap(),
+            r#"{"type":"daily","hour":2,"minute":0}"#
+        );
     }
 }

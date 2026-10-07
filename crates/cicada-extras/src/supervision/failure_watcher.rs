@@ -93,7 +93,7 @@ impl FailureWatcher {
                 match self.ops.send(&self.dead_letters, &record.message_type, record.payload, id).await? {
                     Sent::Accepted => forwarded += 1,
                     Sent::NoSuchInstance => self.created = false, // deleted meanwhile: re-create next time
-                    Sent::Duplicate => {} // already forwarded, by this or another watcher
+                    Sent::Duplicate => {}                         // already forwarded, by this or another watcher
                 }
                 if newest.is_none_or(|n| finished_at > n) {
                     newest = Some(finished_at);

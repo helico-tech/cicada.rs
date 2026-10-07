@@ -74,7 +74,9 @@ impl<P: PriceList> Actor for PricingActor<P> {
                 // Sent from outside an actor (HTTP, SDK): there is nobody to reply to.
                 let Some(requester) = turn.message().from.clone() else { return Ok(()) };
                 let reply = match self.prices.unit_price_cents(&sku) {
-                    _ if quantity <= 0 => PricingReply::QuoteRejected { sku, reason: "quantity must be positive".into() },
+                    _ if quantity <= 0 => {
+                        PricingReply::QuoteRejected { sku, reason: "quantity must be positive".into() }
+                    }
                     None => PricingReply::QuoteRejected { sku, reason: "unknown sku".into() },
                     Some(unit) => PricingReply::Quote {
                         sku,
@@ -83,7 +85,8 @@ impl<P: PriceList> Actor for PricingActor<P> {
                         total_cents: unit * i64::from(quantity),
                     },
                 };
-                let options = SendOptions { correlation_id: turn.message().correlation_id.clone(), ..SendOptions::new() };
+                let options =
+                    SendOptions { correlation_id: turn.message().correlation_id.clone(), ..SendOptions::new() };
                 turn.send_to(&requester, &reply, options).await?;
             }
         }

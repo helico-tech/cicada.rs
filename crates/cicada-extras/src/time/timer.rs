@@ -160,6 +160,9 @@ mod tests {
         timer.arm(t("2026-10-03T12:00:00Z"));
         assert_eq!(serde_json::to_string(&timer).unwrap(), r#"{"generation":1,"deadline":"2026-10-03T12:00:00Z"}"#);
         assert_eq!(serde_json::from_str::<Timer>("{}").unwrap(), Timer::new());
-        assert_eq!(serde_json::from_str::<Timer>(r#"{"generation":1,"deadline":"2026-10-03T12:00:00Z"}"#).unwrap(), timer);
+        assert_eq!(
+            serde_json::from_str::<Timer>(r#"{"generation":1,"deadline":"2026-10-03T12:00:00Z"}"#).unwrap(),
+            timer
+        );
     }
 }

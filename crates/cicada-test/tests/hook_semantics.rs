@@ -7,7 +7,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use cicada::plugin::{BeforeCommitContext, ClaimContext, HandlerErrorContext, HookResult, HookSend, OutcomeContext, Plugin};
+use cicada::plugin::{
+    BeforeCommitContext, ClaimContext, HandlerErrorContext, HookResult, HookSend, OutcomeContext, Plugin,
+};
 use cicada::prelude::*;
 use cicada::runtime::ActorSystemBuilder;
 use cicada::store::{Delivery, OutcomeStatus, OutgoingMessage, Store, TurnOutcome};
@@ -212,7 +214,11 @@ async fn a_turn_timeout_fires_on_handler_error_with_a_timeout_and_ends_failed_ti
     assert_eq!(test.outcome(&m).await.unwrap().error.as_deref(), Some("timeout"));
     assert_eq!(test.state::<_, ProbeState>(&p("p")).await, ProbeState::default()); // handler effects discarded
     assert!(test.pending(&p("p")).await.is_empty());
-    assert!(events.all().contains(&"error:TurnTimeoutException:Failed(error=timeout):stamp=true".to_owned()), "{:?}", events.all());
+    assert!(
+        events.all().contains(&"error:TurnTimeoutException:Failed(error=timeout):stamp=true".to_owned()),
+        "{:?}",
+        events.all()
+    );
     assert_eq!(events.last(), "outcome:Do:Failed(error=timeout):sent=0:stamp=true");
 }
 
@@ -238,7 +244,8 @@ impl Plugin for Catcher {
 #[tokio::test(start_paused = true)]
 async fn an_error_hook_can_replace_a_timeout_and_sees_the_exceeded_max_turn() {
     let seen = Arc::new(Mutex::new(None));
-    let test = probe_test(ProbeActor(Events::default()), Duration::from_secs(30), vec![Arc::new(Catcher(seen.clone()))]).await;
+    let test =
+        probe_test(ProbeActor(Events::default()), Duration::from_secs(30), vec![Arc::new(Catcher(seen.clone()))]).await;
     test.create(&p("p"), &ProbeState::default()).await;
     let m = test.send(&p("p"), ProbeMsg::Do { fail: false, sleep_seconds: 60 }).await;
     test.run_until_idle().await;
@@ -252,7 +259,8 @@ async fn an_undecodable_payload_with_policy_fail_on_claim_sees_it_as_unhandled_n
     let events = Events::default();
     let test = probe_test(ProbeActor(events.clone()), MINUTE, vec![Arc::new(Recorder(events.clone()))]).await;
     test.create(&p("p"), &ProbeState::default()).await;
-    let bad = enqueue(&**test.store(), OutgoingMessage::new(addr(&p("p")), "Do", json!({"fail": "not a boolean"}))).await;
+    let bad =
+        enqueue(&**test.store(), OutgoingMessage::new(addr(&p("p")), "Do", json!({"fail": "not a boolean"}))).await;
     test.run_until_idle().await;
     assert_eq!(test.outcome(&bad).await.unwrap().status, OutcomeStatus::Failed);
     let all = events.all();
@@ -300,7 +308,10 @@ async fn a_custom_unhandled_policy_is_a_handler_for_the_hooks() {
     events.clear();
     enqueue(&**test.store(), OutgoingMessage::new(addr(&p("p")), "Keep", json!({}))).await;
     test.run_until_idle().await;
-    assert_eq!(events.all(), vec!["claim:Keep:unhandled=true", "beforeCommit:Keep", "outcome:Keep:Done:sent=0:stamp=true"]);
+    assert_eq!(
+        events.all(),
+        vec!["claim:Keep:unhandled=true", "beforeCommit:Keep", "outcome:Keep:Done:sent=0:stamp=true"]
+    );
     assert_eq!(test.state::<_, ProbeState>(&p("p")).await.log, vec!["kept"]);
 }
 
@@ -351,7 +362,8 @@ impl Plugin for Later {
 #[tokio::test(start_paused = true)]
 async fn a_failing_on_handler_error_hook_is_rolled_back_and_later_hooks_still_run() {
     let seen = Arc::new(Mutex::new(None));
-    let test = probe_test(ProbeActor(Events::default()), MINUTE, vec![Arc::new(Broken), Arc::new(Later(seen.clone()))]).await;
+    let test =
+        probe_test(ProbeActor(Events::default()), MINUTE, vec![Arc::new(Broken), Arc::new(Later(seen.clone()))]).await;
     test.create(&p("p"), &ProbeState::default()).await;
     let m = test.send(&p("p"), ProbeMsg::Do { fail: true, sleep_seconds: 0 }).await;
     test.run_until_idle().await;
@@ -382,12 +394,9 @@ impl Plugin for Misdirected {
 #[tokio::test(start_paused = true)]
 async fn error_hook_effects_are_atomic_with_the_commit_a_rejected_commit_applies_none() {
     let events = Events::default();
-    let test = probe_test(
-        ProbeActor(events.clone()),
-        MINUTE,
-        vec![Arc::new(Misdirected), Arc::new(Recorder(events.clone()))],
-    )
-    .await;
+    let test =
+        probe_test(ProbeActor(events.clone()), MINUTE, vec![Arc::new(Misdirected), Arc::new(Recorder(events.clone()))])
+            .await;
     test.create(&p("p"), &ProbeState::default()).await;
     let m = test.send(&p("p"), ProbeMsg::Do { fail: true, sleep_seconds: 0 }).await;
     test.run_until_idle().await;
@@ -474,12 +483,9 @@ impl Plugin for LogRetry {
 #[tokio::test(start_paused = true)]
 async fn a_retry_puts_the_same_message_back_in_place_atomically_with_the_error_hooks_effects() {
     let events = Events::default();
-    let test = probe_test(
-        ProbeActor(events.clone()),
-        MINUTE,
-        vec![Arc::new(LogRetry), Arc::new(Recorder(events.clone()))],
-    )
-    .await;
+    let test =
+        probe_test(ProbeActor(events.clone()), MINUTE, vec![Arc::new(LogRetry), Arc::new(Recorder(events.clone()))])
+            .await;
     test.create(&p("a"), &ProbeState::default()).await;
     test.create(&p("b"), &ProbeState::default()).await;
     test.send(&p("a"), ProbeMsg::Kick { target: "b".into() }).await; // a failing Do with the kick retry: 2 attempts, 5 s apart
@@ -500,8 +506,14 @@ async fn a_retry_puts_the_same_message_back_in_place_atomically_with_the_error_h
     // The handler's effects are discarded, the hook's are committed with the retry.
     assert_eq!(test.state::<_, ProbeState>(&p("b")).await.log, vec!["hook 1 after 5s"]);
     let all = events.all();
-    assert!(all.contains(&"error:Error:Rescheduled(delivery=After(delay=5s), error=boom):stamp=true".to_owned()), "{all:?}");
-    assert!(all.contains(&"outcome:Do:Rescheduled(delivery=After(delay=5s), error=boom):sent=1:stamp=true".to_owned()), "{all:?}");
+    assert!(
+        all.contains(&"error:Error:Rescheduled(delivery=After(delay=5s), error=boom):stamp=true".to_owned()),
+        "{all:?}"
+    );
+    assert!(
+        all.contains(&"outcome:Do:Rescheduled(delivery=After(delay=5s), error=boom):sent=1:stamp=true".to_owned()),
+        "{all:?}"
+    );
 
     test.advance_time_by(Duration::from_secs(5)).await;
     let handlers: Vec<String> = events.all().into_iter().filter(|e| e.starts_with("handler")).collect();
@@ -523,9 +535,8 @@ async fn a_timeout_is_retried_under_the_messages_policy_and_records_timeout_as_i
         probe_test(ProbeActor(events.clone()), Duration::from_secs(30), vec![Arc::new(Recorder(events.clone()))]).await;
     test.create(&p("p"), &ProbeState::default()).await;
     let retry = RetryPolicy::new(2, Backoff::fixed(Duration::from_millis(1)).unwrap()).unwrap();
-    let m = test
-        .send_with(&p("p"), ProbeMsg::Do { fail: false, sleep_seconds: 60 }, SendOptions::new().retry(retry))
-        .await;
+    let m =
+        test.send_with(&p("p"), ProbeMsg::Do { fail: false, sleep_seconds: 60 }, SendOptions::new().retry(retry)).await;
     test.advance_time_by(Duration::from_secs(300)).await;
     let record = test.outcome(&m).await.unwrap();
     assert_eq!(record.error.as_deref(), Some("timeout"));
@@ -537,7 +548,11 @@ async fn a_timeout_is_retried_under_the_messages_policy_and_records_timeout_as_i
         Duration::from_secs(30),
         "retried 1 ms after the first timeout, timed out again"
     );
-    assert!(events.all().iter().any(|e| e.starts_with("error:TurnTimeoutException:Rescheduled(")), "{:?}", events.all());
+    assert!(
+        events.all().iter().any(|e| e.starts_with("error:TurnTimeoutException:Rescheduled(")),
+        "{:?}",
+        events.all()
+    );
 }
 
 /// A plugin with a configuration: installed on the node and on a type under the same name.

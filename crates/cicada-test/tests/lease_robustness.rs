@@ -48,7 +48,13 @@ impl Faults for Pausing {
         Ok(result)
     }
 
-    async fn renew(&self, inner: &dyn Store, address: &ActorAddress, epoch: i64, ttl: Duration) -> StoreResult<RenewResult> {
+    async fn renew(
+        &self,
+        inner: &dyn Store,
+        address: &ActorAddress,
+        epoch: i64,
+        ttl: Duration,
+    ) -> StoreResult<RenewResult> {
         if self.paused.load(Ordering::SeqCst) {
             sleep(Duration::from_secs(40)).await;
         }
@@ -106,7 +112,8 @@ impl Faults for FlakyCommit {
 #[tokio::test(start_paused = true)]
 async fn a_commit_that_fails_is_retried_and_the_handler_is_not_run_again() {
     let memory = virtual_store();
-    let system = slow_node(Faulty::new(memory.clone(), FlakyCommit { failures: AtomicI32::new(2), after: false }), "n1");
+    let system =
+        slow_node(Faulty::new(memory.clone(), FlakyCommit { failures: AtomicI32::new(2), after: false }), "n1");
     system.create(&a(), &CounterState::default()).await.unwrap();
     let m = accepted(system.send(&a(), CounterMsg::Add { n: 1 }).await.unwrap());
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1);
@@ -209,7 +216,9 @@ async fn cancelling_run_due_turns_while_it_claims_releases_what_was_claimed() {
     let _ = job.await;
     sleep(Duration::from_secs(1)).await; // the claim answers; nobody takes it
     match memory.status(&m.id).await.unwrap() {
-        Some(MessageStatus::Pending(message)) => assert_eq!(message.attempt, 1, "the claim was released, not left to expire"),
+        Some(MessageStatus::Pending(message)) => {
+            assert_eq!(message.attempt, 1, "the claim was released, not left to expire")
+        }
         other => panic!("not pending: {other:?}"),
     }
 }

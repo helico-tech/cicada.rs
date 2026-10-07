@@ -182,10 +182,7 @@ mod tests {
     #[test]
     fn splits_a_family() {
         let schemas = message_schemas::<Msg>().unwrap();
-        assert_eq!(
-            schemas["Run"],
-            json!({"$schema": DRAFT, "title": "Run", "type": "object", "properties": {}})
-        );
+        assert_eq!(schemas["Run"], json!({"$schema": DRAFT, "title": "Run", "type": "object", "properties": {}}));
         let paint = &schemas["Paint"];
         assert_eq!(paint["required"], json!(["color"]));
         assert!(paint["$defs"]["Color"].is_object());

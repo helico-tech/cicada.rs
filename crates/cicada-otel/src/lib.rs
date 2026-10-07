@@ -127,7 +127,8 @@ impl ActorTelemetry {
 
     fn start_span(&self, info: &TurnInfo) -> TurnSpan {
         let message = info.message();
-        let parent = self.with_propagator_do(|p| p.extract_with_context(&Context::new(), &HeaderReader(&message.headers)));
+        let parent =
+            self.with_propagator_do(|p| p.extract_with_context(&Context::new(), &HeaderReader(&message.headers)));
         let template = info.template().as_str().to_owned();
         let mut attributes = vec![
             KeyValue::new(MESSAGING_SYSTEM, "cicada"),

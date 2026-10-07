@@ -50,8 +50,13 @@ pub trait ActorOperations: Send + Sync + 'static {
     async fn create(&self, address: &ActorAddress, state: Value) -> Result<(), OperationError>;
 
     /// Sends `payload` as `message_type` to `to` with the dedup id `id`.
-    async fn send(&self, to: &ActorAddress, message_type: &str, payload: Value, id: MessageId)
-    -> Result<Sent, OperationError>;
+    async fn send(
+        &self,
+        to: &ActorAddress,
+        message_type: &str,
+        payload: Value,
+        id: MessageId,
+    ) -> Result<Sent, OperationError>;
 
     /// One page of the failures of instances under `prefix` that finished at or after `since`, oldest first, and the
     /// cursor of the next page.

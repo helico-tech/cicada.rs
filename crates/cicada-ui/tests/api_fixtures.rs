@@ -125,7 +125,15 @@ impl Recorder {
         (status, String::from_utf8_lossy(&bytes).into_owned())
     }
 
-    async fn record(&mut self, name: &str, schema: &str, method: Method, path: &str, body: &str, status: StatusCode) -> Value {
+    async fn record(
+        &mut self,
+        name: &str,
+        schema: &str,
+        method: Method,
+        path: &str,
+        body: &str,
+        status: StatusCode,
+    ) -> Value {
         let (actual, text) = self.call(method, path, body).await;
         assert_eq!(actual, status, "{name}: {text}");
         std::fs::write(self.dir.join(format!("{name}.json")), &text).unwrap();
@@ -162,13 +170,23 @@ async fn record_a_response_of_every_endpoint_and_parse_them_with_the_console_typ
     use Method as M;
     use StatusCode as S;
 
-    r.record("create-created", "CreateActorResponse", M::PUT, "/actors/fixture/a", r#"{"state": {"tags": ["x"]}}"#, S::CREATED).await;
+    r.record(
+        "create-created",
+        "CreateActorResponse",
+        M::PUT,
+        "/actors/fixture/a",
+        r#"{"state": {"tags": ["x"]}}"#,
+        S::CREATED,
+    )
+    .await;
     r.record("create-existing", "CreateActorResponse", M::PUT, "/actors/fixture/a", r#"{"state": {}}"#, S::OK).await;
     r.call(M::PUT, "/actors/fixture/b", r#"{"state": {}}"#).await;
     r.call(M::PUT, "/actors/beacon/one", "").await;
 
     let forward_body = r#"{"id": "m-forward", "type": "Forward", "payload": {"to": ["b"], "n": 2}}"#;
-    let sent = r.record("send-accepted", "SendResponse", M::POST, "/actors/fixture/a/messages", forward_body, S::ACCEPTED).await;
+    let sent = r
+        .record("send-accepted", "SendResponse", M::POST, "/actors/fixture/a/messages", forward_body, S::ACCEPTED)
+        .await;
     r.record("send-duplicate", "SendResponse", M::POST, "/actors/fixture/a/messages", forward_body, S::OK).await;
     let forward = sent["id"].as_str().unwrap().to_owned();
     r.eventually("forward done", async |r| r.status(&forward).await["status"] == "done").await;
@@ -202,8 +220,10 @@ async fn record_a_response_of_every_endpoint_and_parse_them_with_the_console_typ
         r#"{"id": "m-removed", "type": "Forward", "payload": {"to": ["b"], "n": 1}, "retention": {"done": {"kind": "remove"}}}"#,
     )
     .await;
-    r.eventually("m-removed gone", async |r| r.call(Method::GET, "/messages/m-removed", "").await.0 == StatusCode::NOT_FOUND)
-        .await;
+    r.eventually("m-removed gone", async |r| {
+        r.call(Method::GET, "/messages/m-removed", "").await.0 == StatusCode::NOT_FOUND
+    })
+    .await;
     r.record("chain", "MessageChainView", M::GET, &format!("/messages/{forward}/chain"), "", S::OK).await;
     let removed = r.record("chain-removed", "MessageChainView", M::GET, "/messages/m-removed/chain", "", S::OK).await;
     let focus = removed["nodes"].as_array().unwrap().iter().find(|n| n["id"] == removed["focus"]).unwrap();
@@ -222,9 +242,18 @@ async fn record_a_response_of_every_endpoint_and_parse_them_with_the_console_typ
     r.record("problem-no-such-instance", "Problem", M::GET, "/actors/fixture/nope", "", S::NOT_FOUND).await;
     r.record("problem-no-such-message", "Problem", M::GET, "/messages/nope", "", S::NOT_FOUND).await;
     let bad_payload = r#"{"type": "Add", "payload": {"n": "x"}}"#;
-    r.record("problem-invalid-payload", "Problem", M::POST, "/actors/fixture/a/messages", bad_payload, S::UNPROCESSABLE_ENTITY).await;
+    r.record(
+        "problem-invalid-payload",
+        "Problem",
+        M::POST,
+        "/actors/fixture/a/messages",
+        bad_payload,
+        S::UNPROCESSABLE_ENTITY,
+    )
+    .await;
     let bad_retention = r#"{"type": "Add", "retention": {"done": {"kind": "never"}}}"#;
-    r.record("problem-bad-request", "Problem", M::POST, "/actors/fixture/a/messages", bad_retention, S::BAD_REQUEST).await;
+    r.record("problem-bad-request", "Problem", M::POST, "/actors/fixture/a/messages", bad_retention, S::BAD_REQUEST)
+        .await;
     r.record("problem-finished", "Problem", M::DELETE, &format!("/messages/{forward}"), "", S::CONFLICT).await;
 
     let manifest: serde_json::Map<String, Value> =

@@ -39,7 +39,10 @@ pub type Step = fn() -> Pin<Box<dyn Future<Output = ()>>>;
 #[macro_export]
 macro_rules! step {
     ($f:path) => {
-        (stringify!($f), (|| Box::pin($f()) as ::std::pin::Pin<Box<dyn ::std::future::Future<Output = ()>>>) as $crate::Step)
+        (
+            stringify!($f),
+            (|| Box::pin($f()) as ::std::pin::Pin<Box<dyn ::std::future::Future<Output = ()>>>) as $crate::Step,
+        )
     };
 }
 
@@ -111,12 +114,7 @@ pub fn run_suite(classes: Vec<Class>) {
     drop(stack);
 
     let failed: Vec<&(String, Result<(), String>)> = results.iter().filter(|(_, r)| r.is_err()).collect();
-    println!(
-        "E2E: {} passed, {} failed in {:.1?}",
-        results.len() - failed.len(),
-        failed.len(),
-        started.elapsed()
-    );
+    println!("E2E: {} passed, {} failed in {:.1?}", results.len() - failed.len(), failed.len(), started.elapsed());
     for (name, result) in &failed {
         println!("  FAILED {name}: {}", result.as_ref().unwrap_err());
     }
@@ -211,7 +209,8 @@ fn teardown(final_run: bool) {
 
 /// `target/e2e-logs` (under `CARGO_TARGET_DIR` when set).
 pub fn logs_dir() -> PathBuf {
-    let target = std::env::var_os("CARGO_TARGET_DIR").map(PathBuf::from).unwrap_or_else(|| docker::root().join("target"));
+    let target =
+        std::env::var_os("CARGO_TARGET_DIR").map(PathBuf::from).unwrap_or_else(|| docker::root().join("target"));
     target.join("e2e-logs")
 }
 

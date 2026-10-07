@@ -63,7 +63,9 @@ fn fail_until(n: u32) -> AttemptSpec {
 enum ChoreMsg {
     Attempt(AttemptSpec),
     /// A reply.
-    Reply { by: String },
+    Reply {
+        by: String,
+    },
     /// Makes the receiver ask `worker` for `attempt`, with a correlation id, a header and `retry`.
     Request {
         worker: String,
@@ -71,7 +73,10 @@ enum ChoreMsg {
         retry: Option<RetryPolicy>,
     },
     /// Makes the receiver forward `attempt` to `worker`, passing on the incoming message's own retry policy.
-    Relay { worker: String, attempt: AttemptSpec },
+    Relay {
+        worker: String,
+        attempt: AttemptSpec,
+    },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -280,7 +285,10 @@ async fn between_attempts_the_message_is_pending_with_its_failures_and_policy_an
     assert_eq!(first.retry, original.retry);
     assert_eq!(time::between(h.test.now(), first.deliver_at), secs(1));
     assert!(first.seq > original.seq, "queued again");
-    assert_eq!(h.test.pending(&chore("j")).await.into_iter().map(|m| m.id).collect::<Vec<_>>(), vec![original.id.clone()]);
+    assert_eq!(
+        h.test.pending(&chore("j")).await.into_iter().map(|m| m.id).collect::<Vec<_>>(),
+        vec![original.id.clone()]
+    );
     assert!(h.test.outcome(&original).await.is_none());
     assert!(h.test.failures().await.is_empty(), "a retried failure is not a failure");
 
@@ -315,7 +323,11 @@ async fn permanent_failures_end_the_message_failed_at_once_whatever_the_policy()
     assert_eq!(record.status, OutcomeStatus::Failed);
     assert_eq!(record.error.as_deref(), Some("declined by subclass 1"));
     assert_eq!(record.envelope.failures, 0);
-    assert_eq!(h.test.state::<_, ChoreState>(&chore("j")).await, ChoreState::default(), "effects discarded as for any failure");
+    assert_eq!(
+        h.test.state::<_, ChoreState>(&chore("j")).await,
+        ChoreState::default(),
+        "effects discarded as for any failure"
+    );
 }
 
 /// Fails transiently on the first run and permanently afterwards.
@@ -330,7 +342,11 @@ impl Actor for TurningPermanent {
     async fn handle(&self, turn: &mut Turn<Self>, message: ChoreMsg) -> HandlerResult {
         if let ChoreMsg::Attempt(_) = message {
             self.0.lock().unwrap().push((turn.message().failures + 1, turn.now()));
-            return Err(if turn.message().failures == 0 { HandlerError::msg("transient") } else { turn.fail("now permanent") });
+            return Err(if turn.message().failures == 0 {
+                HandlerError::msg("transient")
+            } else {
+                turn.fail("now permanent")
+            });
         }
         Ok(())
     }
@@ -342,7 +358,8 @@ async fn a_permanent_failure_on_a_later_attempt_stops_the_retries() {
     let actor = TurningPermanent(runs.clone());
     let test = TestActors::builder().with(move |n| n.host(actor)).build().await.unwrap();
     test.create(&chore("j"), &ChoreState::default()).await;
-    let original = test.send_with(&chore("j"), ChoreMsg::Attempt(fail_until(99)), SendOptions::new().retry(exponential4())).await;
+    let original =
+        test.send_with(&chore("j"), ChoreMsg::Attempt(fail_until(99)), SendOptions::new().retry(exponential4())).await;
     test.advance_time_by(secs(60)).await;
     assert_eq!(runs.lock().unwrap().iter().map(|r| r.0).collect::<Vec<_>>(), vec![1, 2]);
     let record = test.outcome(&original).await.unwrap();
@@ -399,8 +416,11 @@ async fn a_retry_is_the_same_message_so_replies_still_reach_the_requester() {
     test.create(&chore("requester"), &ChoreState::default()).await;
     test.create(&chore("worker"), &ChoreState::default()).await;
     let policy = fixed(3, secs(2));
-    test.send(&chore("requester"), ChoreMsg::Request { worker: "worker".into(), attempt: fail_until(1), retry: Some(policy.clone()) })
-        .await;
+    test.send(
+        &chore("requester"),
+        ChoreMsg::Request { worker: "worker".into(), attempt: fail_until(1), retry: Some(policy.clone()) },
+    )
+    .await;
     test.run_until_idle().await;
     let asked = test.pending(&chore("worker")).await.remove(0);
     assert_eq!(asked.failures, 1);
@@ -658,12 +678,20 @@ async fn a_duplicate_send_with_a_different_policy_is_accepted_and_ignored() {
     let h = Harness::new(vec![]).await;
     let first = h
         .test
-        .send_with(&chore("j"), ChoreMsg::Attempt(fail_until(1)), SendOptions::new().delay(secs(60)).retry(exponential4()))
+        .send_with(
+            &chore("j"),
+            ChoreMsg::Attempt(fail_until(1)),
+            SendOptions::new().delay(secs(60)).retry(exponential4()),
+        )
         .await;
     let again = h
         .test
         .system()
-        .send_with(&chore("j"), ChoreMsg::Attempt(fail_until(1)), SendOptions::new().id(first.id.clone()).retry(fixed(1, secs(1))))
+        .send_with(
+            &chore("j"),
+            ChoreMsg::Attempt(fail_until(1)),
+            SendOptions::new().id(first.id.clone()).retry(fixed(1, secs(1))),
+        )
         .await
         .unwrap();
     assert!(matches!(again, SendResult::Duplicate(_)), "{again:?}");

@@ -8,7 +8,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use cicada::address::ActorAddress;
-use cicada::store::{CommitRequest, CommitResult, MessageStatus, OutcomeStatus, RenewResult, Store, StoreError, StoreResult};
+use cicada::store::{
+    CommitRequest, CommitResult, MessageStatus, OutcomeStatus, RenewResult, Store, StoreError, StoreResult,
+};
 use cicada::{ActorSystem, ActorType};
 use common::*;
 use tokio::time::Instant;
@@ -31,7 +33,13 @@ struct CountRenewals(AtomicUsize);
 
 #[async_trait]
 impl Faults for CountRenewals {
-    async fn renew(&self, inner: &dyn Store, address: &ActorAddress, epoch: i64, ttl: Duration) -> StoreResult<RenewResult> {
+    async fn renew(
+        &self,
+        inner: &dyn Store,
+        address: &ActorAddress,
+        epoch: i64,
+        ttl: Duration,
+    ) -> StoreResult<RenewResult> {
         self.0.fetch_add(1, Ordering::SeqCst);
         inner.renew(address, epoch, ttl).await
     }

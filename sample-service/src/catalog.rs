@@ -146,11 +146,7 @@ impl Catalog {
 
     /// The types of the `selected` groups, in catalog order.
     pub fn types(&self, selected: &[String]) -> Vec<&CatalogType> {
-        self.groups
-            .iter()
-            .filter(|(name, _)| selected.iter().any(|s| s == name))
-            .flat_map(|(_, types)| types)
-            .collect()
+        self.groups.iter().filter(|(name, _)| selected.iter().any(|s| s == name)).flat_map(|(_, types)| types).collect()
     }
 
     /// The singletons of the `selected` groups, in the order of `selected`.

@@ -90,8 +90,13 @@ async fn saga_completes_through_a_retried_payment_and_compensates_a_declined_one
     })
     .await;
     assert_eq!(settled.available, 8, "2 reserved by the completed order, the declined order's 3 released");
-    let failed: Vec<_> =
-        c.node1.failures("actor://orders/").await.into_iter().filter(|f| f.actor.as_str().ends_with(run_id())).collect();
+    let failed: Vec<_> = c
+        .node1
+        .failures("actor://orders/")
+        .await
+        .into_iter()
+        .filter(|f| f.actor.as_str().ends_with(run_id()))
+        .collect();
     assert!(failed.is_empty(), "{failed:?}");
 }
 

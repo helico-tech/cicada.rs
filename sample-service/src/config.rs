@@ -141,7 +141,8 @@ impl SampleConfig {
             shutdown_grace_period: duration("SHUTDOWN_GRACE_PERIOD")?,
             default_max_turn: duration("MAX_TURN")?,
             concurrency: number("CONCURRENCY", get("CONCURRENCY"))?,
-            failure_watcher_interval: duration("FAILURE_WATCHER_INTERVAL")?.unwrap_or(defaults.failure_watcher_interval),
+            failure_watcher_interval: duration("FAILURE_WATCHER_INTERVAL")?
+                .unwrap_or(defaults.failure_watcher_interval),
             telemetry: get("OTEL_EXPORTER_OTLP_ENDPOINT").is_some(),
             crash_loop_limit: number("CRASH_LOOP_LIMIT", get("CRASH_LOOP_LIMIT"))?,
         })

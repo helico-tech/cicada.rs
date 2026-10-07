@@ -55,7 +55,12 @@ fn bounds_are_validated() {
     assert!(Backoff::exponential(secs(1), 2.0, MAX_DELAY + DAY).is_err());
     // Negative and infinite durations cannot be written: `Duration` is unsigned and finite. From JSON, a negative one
     // is refused like zero.
-    assert!(serde_json::from_value::<RetryPolicy>(json!({"maxAttempts": 2, "backoff": {"kind": "fixed", "delay": "-PT1S"}})).is_err());
+    assert!(
+        serde_json::from_value::<RetryPolicy>(
+            json!({"maxAttempts": 2, "backoff": {"kind": "fixed", "delay": "-PT1S"}})
+        )
+        .is_err()
+    );
     RetryPolicy::new(RetryPolicy::MAX_ATTEMPTS, fixed(MAX_DELAY)).unwrap(); // the bounds themselves are fine
 }
 

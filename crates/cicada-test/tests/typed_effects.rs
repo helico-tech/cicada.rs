@@ -187,11 +187,8 @@ async fn a_handler_cannot_send_through_a_ref_whose_address_belongs_to_another_ty
 
 #[tokio::test(start_paused = true)]
 async fn a_handler_create_checks_the_initial_state_against_the_created_type() {
-    let test = TestActors::builder()
-        .with(|n| n.host(MakerActor).host(EchoActor).host(CounterActor))
-        .build()
-        .await
-        .unwrap();
+    let test =
+        TestActors::builder().with(|n| n.host(MakerActor).host(EchoActor).host(CounterActor)).build().await.unwrap();
     test.create_stateless(&m()).await;
     let stateless = test.send(&m(), MakerMsg::MakeEcho).await;
     let undecodable = test.send(&m(), MakerMsg::MakeBadCounter).await;

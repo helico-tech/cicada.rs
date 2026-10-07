@@ -108,7 +108,10 @@ pub async fn turn_cancel_a_rejected_or_fenced_commit_cancels_nothing<B: FixtureF
         assert_matches!(store.status(&keep.id).await.unwrap(), Some(MessageStatus::Pending(_)));
         t.expire_lease().await;
         t.claim_one_node(&NODE_B).await;
-        assert_eq!(t.commit(CommitRequest { cancels: vec![keep.id.clone()], ..done(&c) }).await, CommitResult::LeaseLost);
+        assert_eq!(
+            t.commit(CommitRequest { cancels: vec![keep.id.clone()], ..done(&c) }).await,
+            CommitResult::LeaseLost
+        );
         assert_matches!(store.status(&keep.id).await.unwrap(), Some(MessageStatus::Pending(_)));
     })
     .await

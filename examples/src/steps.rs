@@ -109,11 +109,15 @@ pub struct ServiceError(pub String);
 /// The external services the steps call. Each call is at least once (G4) and receives an idempotency key.
 pub trait OnboardingServices: Send + Sync + 'static {
     /// Creates the account and returns its id.
-    fn create_account(&self, email: &str, idempotency_key: &str)
-    -> impl Future<Output = Result<String, ServiceError>> + Send;
+    fn create_account(
+        &self,
+        email: &str,
+        idempotency_key: &str,
+    ) -> impl Future<Output = Result<String, ServiceError>> + Send;
 
     /// Sends the welcome mail.
-    fn send_welcome(&self, email: &str, idempotency_key: &str) -> impl Future<Output = Result<(), ServiceError>> + Send;
+    fn send_welcome(&self, email: &str, idempotency_key: &str)
+    -> impl Future<Output = Result<(), ServiceError>> + Send;
 
     /// Provisions a workspace for `account_id` and returns its id.
     fn provision_workspace(

@@ -13,10 +13,9 @@ use cicada::retention::Retention;
 use cicada::retry::RetryPolicy;
 use cicada::store::support::{self, check_limit};
 use cicada::store::{
-    ActorCreate, ActorRecord, CancelResult, ChainEntry, Claim, CommitRequest, CommitResult, CreateResult,
-    DeleteResult, EnqueueResult, Message, MessageId, MessageStatus, NodeId, OutcomeRecord, OutcomeStatus,
-    OutgoingMessage, Page, PageCursor, RegisterResult, RenewResult, StateChange, Store, StoreError, StoreResult,
-    TurnOutcome, TypeDef,
+    ActorCreate, ActorRecord, CancelResult, ChainEntry, Claim, CommitRequest, CommitResult, CreateResult, DeleteResult,
+    EnqueueResult, Message, MessageId, MessageStatus, NodeId, OutcomeRecord, OutcomeStatus, OutgoingMessage, Page,
+    PageCursor, RegisterResult, RenewResult, StateChange, Store, StoreError, StoreResult, TurnOutcome, TypeDef,
 };
 use cicada::time::{self, Timestamp};
 use futures::StreamExt;
@@ -350,9 +349,9 @@ impl TxError {
         match self {
             TxError::Sql(e) => map_error(e),
             TxError::Store(e) => e,
-            TxError::TimedOut => {
-                StoreError::unavailable(format!("A transaction took longer than the socket timeout of {socket_timeout:?}"))
-            }
+            TxError::TimedOut => StoreError::unavailable(format!(
+                "A transaction took longer than the socket timeout of {socket_timeout:?}"
+            )),
         }
     }
 }
@@ -409,7 +408,13 @@ fn upper_bound(prefix: &str) -> String {
 
 macro_rules! visible {
     ($cutoff:literal, $now:literal) => {
-        concat!("(CASE WHEN visible_until IS NULL THEN finished_at > $", $cutoff, " ELSE visible_until > $", $now, " END)")
+        concat!(
+            "(CASE WHEN visible_until IS NULL THEN finished_at > $",
+            $cutoff,
+            " ELSE visible_until > $",
+            $now,
+            " END)"
+        )
     };
 }
 
@@ -471,7 +476,8 @@ fn outcome(row: &PgRow) -> Result<OutcomeRecord, TxError> {
     Ok(OutcomeRecord {
         message_id: message_id(row.try_get("message_id")?)?,
         actor: address(row.try_get("actor_uri")?)?,
-        status: OutcomeStatus::from_wire_name(&status).ok_or_else(|| corrupt(format!("unknown outcome status '{status}'")))?,
+        status: OutcomeStatus::from_wire_name(&status)
+            .ok_or_else(|| corrupt(format!("unknown outcome status '{status}'")))?,
         error: row.try_get("error")?,
         finished_at: row.try_get("finished_at")?,
         envelope: support::envelope_from_json(&row.try_get::<Value, _>("envelope")?)?,
@@ -515,10 +521,18 @@ async fn get_in(tx: &mut Tx, address: &str) -> Result<Option<ActorRecord>, TxErr
 
 /// Locks the instance's row for the rest of the transaction and returns its type, or `None` when absent.
 async fn lock_actor(tx: &mut Tx, uri: &str) -> Result<Option<String>, TxError> {
-    Ok(sqlx::query_scalar("SELECT type FROM actors WHERE uri = $1 FOR UPDATE").bind(uri).fetch_optional(&mut *tx.c).await?)
+    Ok(sqlx::query_scalar("SELECT type FROM actors WHERE uri = $1 FOR UPDATE")
+        .bind(uri)
+        .fetch_optional(&mut *tx.c)
+        .await?)
 }
 
-async fn create_in(tx: &mut Tx, address: &ActorAddress, t: &UriTemplate, state: &Option<Value>) -> Result<CreateResult, TxError> {
+async fn create_in(
+    tx: &mut Tx,
+    address: &ActorAddress,
+    t: &UriTemplate,
+    state: &Option<Value>,
+) -> Result<CreateResult, TxError> {
     loop {
         let now = tx.now().await?;
         let inserted = sqlx::query(
@@ -568,12 +582,13 @@ async fn is_id_in_use(tx: &mut Tx, id: &MessageId) -> Result<bool, TxError> {
         return Ok(true);
     }
     let (cutoff, now) = (tx.cutoff().await?, tx.now().await?);
-    let finished: Option<i32> = sqlx::query_scalar(concat!("SELECT 1 FROM outcomes WHERE message_id = $1 AND ", retained!(2, 3)))
-        .bind(id.as_str())
-        .bind(cutoff)
-        .bind(now)
-        .fetch_optional(&mut *tx.c)
-        .await?;
+    let finished: Option<i32> =
+        sqlx::query_scalar(concat!("SELECT 1 FROM outcomes WHERE message_id = $1 AND ", retained!(2, 3)))
+            .bind(id.as_str())
+            .bind(cutoff)
+            .bind(now)
+            .fetch_optional(&mut *tx.c)
+            .await?;
     Ok(finished.is_some())
 }
 
@@ -645,20 +660,31 @@ async fn insert(tx: &mut Tx, message: &OutgoingMessage) -> Result<Option<Message
 }
 
 async fn refresh_next_due(tx: &mut Tx, uri: &str) -> Result<(), TxError> {
-    sqlx::query("UPDATE actors SET next_due_at = (SELECT min(deliver_at) FROM messages WHERE actor_uri = $1) WHERE uri = $1")
-        .bind(uri)
-        .execute(&mut *tx.c)
-        .await?;
+    sqlx::query(
+        "UPDATE actors SET next_due_at = (SELECT min(deliver_at) FROM messages WHERE actor_uri = $1) WHERE uri = $1",
+    )
+    .bind(uri)
+    .execute(&mut *tx.c)
+    .await?;
     Ok(())
 }
 
-async fn finish(tx: &mut Tx, message: &Message, status: OutcomeStatus, error: Option<&str>) -> Result<OutcomeRecord, TxError> {
+async fn finish(
+    tx: &mut Tx,
+    message: &Message,
+    status: OutcomeStatus,
+    error: Option<&str>,
+) -> Result<OutcomeRecord, TxError> {
     let now = tx.now().await?;
     let cutoff = tx.cutoff().await?;
     sqlx::query("DELETE FROM messages WHERE id = $1").bind(message.id.as_str()).execute(&mut *tx.c).await?;
     let removed = support::removed_at_once(message, status);
     let keep_last = support::keep_last(message, status);
-    let envelope = if removed { support::envelope_to_json(&support::stripped(message)) } else { support::envelope_to_json(message) };
+    let envelope = if removed {
+        support::envelope_to_json(&support::stripped(message))
+    } else {
+        support::envelope_to_json(message)
+    };
     sqlx::query(
         "INSERT INTO outcomes
             (message_id, actor_uri, status, error, finished_at, envelope, caused_by, visible_until, keep_last, keep_seq,
@@ -712,8 +738,10 @@ async fn finish(tx: &mut Tx, message: &Message, status: OutcomeStatus, error: Op
 }
 
 async fn purge_mailbox(tx: &mut Tx, uri: &str) -> Result<usize, TxError> {
-    let rows =
-        sqlx::query("SELECT * FROM messages WHERE actor_uri = $1 ORDER BY deliver_at, seq").bind(uri).fetch_all(&mut *tx.c).await?;
+    let rows = sqlx::query("SELECT * FROM messages WHERE actor_uri = $1 ORDER BY deliver_at, seq")
+        .bind(uri)
+        .fetch_all(&mut *tx.c)
+        .await?;
     let pending = rows.iter().map(message).collect::<Result<Vec<_>, _>>()?;
     for m in &pending {
         finish(tx, m, OutcomeStatus::Purged, None).await?;
@@ -818,7 +846,12 @@ impl Store for PostgresStore {
 
     // ---- state store ----
 
-    async fn create(&self, address: &ActorAddress, template: &UriTemplate, state: Option<Value>) -> StoreResult<CreateResult> {
+    async fn create(
+        &self,
+        address: &ActorAddress,
+        template: &UriTemplate,
+        state: Option<Value>,
+    ) -> StoreResult<CreateResult> {
         transaction!(self, false, |tx| -> CreateResult { commit(create_in(tx, address, template, &state).await?) })
     }
 
@@ -952,12 +985,13 @@ impl Store for PostgresStore {
 
     async fn renew(&self, address: &ActorAddress, epoch: i64, ttl: Duration) -> StoreResult<RenewResult> {
         transaction!(self, false, |tx| -> RenewResult {
-            let held: Option<i32> =
-                sqlx::query_scalar("SELECT 1 FROM actors WHERE uri = $1 AND epoch = $2 AND lease_owner IS NOT NULL FOR UPDATE")
-                    .bind(address.as_str())
-                    .bind(epoch)
-                    .fetch_optional(&mut *tx.c)
-                    .await?;
+            let held: Option<i32> = sqlx::query_scalar(
+                "SELECT 1 FROM actors WHERE uri = $1 AND epoch = $2 AND lease_owner IS NOT NULL FOR UPDATE",
+            )
+            .bind(address.as_str())
+            .bind(epoch)
+            .fetch_optional(&mut *tx.c)
+            .await?;
             if held.is_none() {
                 return commit(RenewResult::LeaseLost);
             }
@@ -1009,7 +1043,12 @@ impl Store for PostgresStore {
         })
     }
 
-    async fn pending(&self, address: &ActorAddress, cursor: Option<&PageCursor>, limit: usize) -> StoreResult<Page<Message>> {
+    async fn pending(
+        &self,
+        address: &ActorAddress,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> StoreResult<Page<Message>> {
         check_limit(limit)?;
         let after = cursor.map(support::decode_mailbox_cursor).transpose()?;
         transaction!(self, true, |tx| -> Page<Message> {
@@ -1039,7 +1078,12 @@ impl Store for PostgresStore {
         })
     }
 
-    async fn list_pending(&self, prefix: &str, cursor: Option<&PageCursor>, limit: usize) -> StoreResult<Page<Message>> {
+    async fn list_pending(
+        &self,
+        prefix: &str,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> StoreResult<Page<Message>> {
         check_limit(limit)?;
         let after = cursor.map(support::decode_pending_cursor).transpose()?;
         transaction!(self, true, |tx| -> Page<Message> {
@@ -1083,15 +1127,22 @@ impl Store for PostgresStore {
 
     async fn cancel(&self, id: &MessageId) -> StoreResult<CancelResult> {
         transaction!(self, false, |tx| -> CancelResult {
-            let uri: Option<String> =
-                sqlx::query_scalar("SELECT actor_uri FROM messages WHERE id = $1").bind(id.as_str()).fetch_optional(&mut *tx.c).await?;
+            let uri: Option<String> = sqlx::query_scalar("SELECT actor_uri FROM messages WHERE id = $1")
+                .bind(id.as_str())
+                .fetch_optional(&mut *tx.c)
+                .await?;
             let t = match &uri {
                 Some(uri) => lock_actor(tx, uri).await?,
                 None => None,
             };
             // Read again under the instance lock: the message may have left the mailbox in the meantime.
             let row = match t {
-                Some(_) => sqlx::query("SELECT * FROM messages WHERE id = $1").bind(id.as_str()).fetch_optional(&mut *tx.c).await?,
+                Some(_) => {
+                    sqlx::query("SELECT * FROM messages WHERE id = $1")
+                        .bind(id.as_str())
+                        .fetch_optional(&mut *tx.c)
+                        .await?
+                }
                 None => None,
             };
             let (Some(t), Some(row)) = (t, row) else {
@@ -1114,10 +1165,12 @@ impl Store for PostgresStore {
                     return commit(CancelResult::Running);
                 }
                 // Void the expired lease so that the stale turn cannot commit.
-                sqlx::query("UPDATE actors SET lease_owner = NULL, lease_until = NULL, lease_message = NULL WHERE uri = $1")
-                    .bind(message.to.as_str())
-                    .execute(&mut *tx.c)
-                    .await?;
+                sqlx::query(
+                    "UPDATE actors SET lease_owner = NULL, lease_until = NULL, lease_message = NULL WHERE uri = $1",
+                )
+                .bind(message.to.as_str())
+                .execute(&mut *tx.c)
+                .await?;
             }
             let outcome = finish(tx, &message, OutcomeStatus::Cancelled, None).await?;
             refresh_next_due(tx, message.to.as_str()).await?;
@@ -1236,11 +1289,13 @@ impl Store for PostgresStore {
             .bind(now)
             .execute(&mut *tx.c)
             .await?;
-            let removed = sqlx::query("DELETE FROM outcomes WHERE finished_at <= $1 AND (visible_until IS NULL OR visible_until <= $2)")
-                .bind(cutoff)
-                .bind(now)
-                .execute(&mut *tx.c)
-                .await?;
+            let removed = sqlx::query(
+                "DELETE FROM outcomes WHERE finished_at <= $1 AND (visible_until IS NULL OR visible_until <= $2)",
+            )
+            .bind(cutoff)
+            .bind(now)
+            .execute(&mut *tx.c)
+            .await?;
             commit(removed.rows_affected())
         })
     }
@@ -1300,7 +1355,10 @@ impl Store for PostgresStore {
                     return Ok(Done::Rollback(CommitResult::Rejected(format!("Send to absent instance {}", send.to))));
                 }
                 if !send_ids.insert(&send.id) || send.id == r.message_id || is_id_in_use(tx, &send.id).await? {
-                    return Ok(Done::Rollback(CommitResult::Rejected(format!("Message id {} is already in use", send.id))));
+                    return Ok(Done::Rollback(CommitResult::Rejected(format!(
+                        "Message id {} is already in use",
+                        send.id
+                    ))));
                 }
             }
 
@@ -1349,7 +1407,10 @@ impl Store for PostgresStore {
             for send in &r.sends {
                 // A concurrent enqueue may have taken the id since the check above: undo everything.
                 let Some(stored) = insert(tx, send).await? else {
-                    return Ok(Done::Rollback(CommitResult::Rejected(format!("Message id {} is already in use", send.id))));
+                    return Ok(Done::Rollback(CommitResult::Rejected(format!(
+                        "Message id {} is already in use",
+                        send.id
+                    ))));
                 };
                 tx.notify(types[send.to.as_str()].clone());
                 sent.push(stored);
@@ -1402,7 +1463,9 @@ impl Store for PostgresStore {
                 async move {
                     loop {
                         match receiver.recv().await {
-                            Ok(payload) if payload.is_empty() || names.contains(&payload) => return Some(((), receiver)),
+                            Ok(payload) if payload.is_empty() || names.contains(&payload) => {
+                                return Some(((), receiver));
+                            }
                             Ok(_) => continue,
                             // Missed some: one of them may have been ours.
                             Err(RecvError::Lagged(_)) => return Some(((), receiver)),

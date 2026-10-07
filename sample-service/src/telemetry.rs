@@ -36,7 +36,8 @@ impl Telemetry {
         let metrics = MetricExporter::builder().with_http().with_protocol(Protocol::HttpBinary).build()?;
         let tracer_provider =
             SdkTracerProvider::builder().with_resource(resource.clone()).with_batch_exporter(spans).build();
-        let meter_provider = SdkMeterProvider::builder().with_resource(resource).with_periodic_exporter(metrics).build();
+        let meter_provider =
+            SdkMeterProvider::builder().with_resource(resource).with_periodic_exporter(metrics).build();
         opentelemetry::global::set_text_map_propagator(TextMapCompositePropagator::new(vec![
             Box::new(TraceContextPropagator::new()),
             Box::new(BaggagePropagator::new()),

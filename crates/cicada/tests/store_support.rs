@@ -22,7 +22,8 @@ fn a(s: &str) -> ActorAddress {
 
 #[test]
 fn an_address_resolves_to_the_one_template_that_matches_it() {
-    let types = vec![type_def("actor://jobs/{id}"), type_def("actor://jobs/{id}/steps/{n}"), type_def("actor://pricing")];
+    let types =
+        vec![type_def("actor://jobs/{id}"), type_def("actor://jobs/{id}/steps/{n}"), type_def("actor://pricing")];
     let r = support::resolve(&types, &a("actor://jobs/42/steps/1")).unwrap().unwrap();
     assert_eq!(r.type_def, types[1]);
     assert_eq!(r.params, BTreeMap::from([("id".to_owned(), "42".to_owned()), ("n".to_owned(), "1".to_owned())]));

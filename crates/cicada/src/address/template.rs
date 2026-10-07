@@ -56,9 +56,7 @@ impl UriTemplate {
                 segments.push(SegmentKey::Param(name.to_owned()));
             } else {
                 if raw.contains('{') || raw.contains('}') {
-                    return Err(AddressError::new(format!(
-                        "Malformed parameter segment '{raw}' in '{template}'"
-                    )));
+                    return Err(AddressError::new(format!("Malformed parameter segment '{raw}' in '{template}'")));
                 }
                 segments.push(SegmentKey::Literal(percent::decode(raw)?));
             }
@@ -199,10 +197,7 @@ impl UriTemplate {
                 SegmentKey::Param(n) => match params.get(n) {
                     Some(v) => segments.push(v.clone()),
                     None => {
-                        return Err(AddressError::new(format!(
-                            "Missing parameter '{n}' for {}",
-                            self.value
-                        )));
+                        return Err(AddressError::new(format!("Missing parameter '{n}' for {}", self.value)));
                     }
                 },
             }

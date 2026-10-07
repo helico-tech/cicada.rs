@@ -60,7 +60,8 @@ impl Actor for AlarmActor {
                 if let Some(armed) = turn.state().armed.clone() {
                     turn.cancel(&MessageId::new(armed).map_err(HandlerError::msg)?)?;
                 }
-                let id = turn.send_self_with(AlarmMsg::Ring, SendOptions::new().delay(Duration::from_secs(minutes * 60)))?;
+                let id =
+                    turn.send_self_with(AlarmMsg::Ring, SendOptions::new().delay(Duration::from_secs(minutes * 60)))?;
                 turn.state_mut().armed = Some(id.to_string());
                 if fail {
                     return Err(HandlerError::msg("arming failed"));

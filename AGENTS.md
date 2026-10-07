@@ -12,6 +12,7 @@ cargo build --workspace
 cargo test --workspace                 # unit, runtime, SQLite, HTTP and README tests
 cargo test -p cicada-examples --doc    # only the Rust blocks of README.md and docs/operations.md
 cargo clippy --workspace --all-targets
+cargo fmt --all                        # rustfmt.toml: 120 columns; CI checks it
 CICADA_PG_URL=postgres://cicada:cicada@localhost:55432/cicada cargo test -p cicada-store-postgres   # needs PostgreSQL
 CICADA_E2E=1 cargo test -p cicada-e2e -- --nocapture   # E2E and fault tests in Docker, ~3 min; see e2e/README.md
 ```

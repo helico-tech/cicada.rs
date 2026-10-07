@@ -80,8 +80,10 @@ impl Telemetry {
         let spans = InMemorySpanExporter::default();
         let tracer_provider = SdkTracerProvider::builder().with_simple_exporter(spans.clone()).build();
         let metrics = InMemoryMetricExporter::default();
-        let meter_provider = SdkMeterProvider::builder().with_reader(PeriodicReader::builder(metrics.clone()).build()).build();
-        let plugin = ActorTelemetry::new(&tracer_provider, &meter_provider).with_propagator(TraceContextPropagator::new());
+        let meter_provider =
+            SdkMeterProvider::builder().with_reader(PeriodicReader::builder(metrics.clone()).build()).build();
+        let plugin =
+            ActorTelemetry::new(&tracer_provider, &meter_provider).with_propagator(TraceContextPropagator::new());
         let seen = Seen::default();
         let actor = TracedActor { seen: seen.clone() };
         let test = TestActors::builder().with(move |node| node.host(actor).install(plugin)).build().await.unwrap();

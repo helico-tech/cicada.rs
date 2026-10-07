@@ -89,9 +89,8 @@ impl Node {
     /// The node `id` on host port `port`.
     pub fn new(id: &str, port: u16, hosting: bool, token: Option<&str>) -> Self {
         let base_url = format!("http://localhost:{port}");
-        let client = ActorClient::with_client(&base_url, client(token))
-            .send_attempts(3)
-            .retry_delay(Duration::from_millis(200));
+        let client =
+            ActorClient::with_client(&base_url, client(token)).send_attempts(3).retry_delay(Duration::from_millis(200));
         Self { id: id.to_owned(), port, hosting, token: token.map(str::to_owned), base_url, client }
     }
 
@@ -180,7 +179,11 @@ impl Node {
     /// When the call fails or the instance does not exist.
     pub async fn state<S: DeserializeOwned, R: ActorRef>(&self, r: &R) -> S {
         let address = address(r);
-        self.client.state(r).await.unwrap_or_else(|e| panic!("state of {address} on {self}: {e}")).expect("the instance")
+        self.client
+            .state(r)
+            .await
+            .unwrap_or_else(|e| panic!("state of {address} on {self}: {e}"))
+            .expect("the instance")
     }
 
     /// The state of `r` decoded as `S`; an error when the call fails or the instance does not exist (for
@@ -205,7 +208,11 @@ impl Node {
     ///
     /// When the call fails or the message is unknown.
     pub async fn status(&self, id: &MessageId) -> MessageStatusView {
-        self.client.status(id).await.unwrap_or_else(|e| panic!("status of {id} on {self}: {e}")).expect("a known message")
+        self.client
+            .status(id)
+            .await
+            .unwrap_or_else(|e| panic!("status of {id} on {self}: {e}"))
+            .expect("a known message")
     }
 
     /// The failed messages of instances whose URI starts with `prefix`.

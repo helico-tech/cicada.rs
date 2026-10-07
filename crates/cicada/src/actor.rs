@@ -304,10 +304,7 @@ impl<A: Actor> HostedActor for Hosted<A> {
     fn canonical_problem(&self, address: &ActorAddress) -> Option<String> {
         let analysis = self.analysis.as_ref().ok()?;
         let name = type_name::<A::Ref>();
-        let canonical = analysis
-            .binding
-            .from_address(address)
-            .and_then(|r| analysis.binding.to_address(&r));
+        let canonical = analysis.binding.from_address(address).and_then(|r| analysis.binding.to_address(&r));
         match canonical {
             Err(e) => Some(format!("{address} is not an address of {name}: {e}")),
             Ok(c) if &c == address => None,
@@ -318,9 +315,10 @@ impl<A: Actor> HostedActor for Hosted<A> {
     fn load(&self, claim: &Claim) -> Result<Loaded, String> {
         let analysis = self.analysis.as_ref().map_err(|p| p.join("; "))?;
         let state = A::State::decode(claim.state.as_ref()).map_err(|e| format!("State cannot be decoded: {e}"))?;
-        let self_ref = analysis.binding.from_address(&claim.actor).map_err(|e| {
-            format!("Address cannot be decoded as {}: {e}", type_name::<A::Ref>())
-        })?;
+        let self_ref = analysis
+            .binding
+            .from_address(&claim.actor)
+            .map_err(|e| format!("Address cannot be decoded as {}: {e}", type_name::<A::Ref>()))?;
         let decoded: Result<A::Message, String> = if analysis.family.accepts(&claim.message.message_type) {
             message::decode(&claim.message.message_type, &claim.message.payload)
         } else {

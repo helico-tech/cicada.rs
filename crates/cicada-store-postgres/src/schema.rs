@@ -113,7 +113,11 @@ pub(crate) async fn migrate(c: &mut PgConnection, schema: &str) -> Result<(), St
     }
     let s = quote(schema);
     let mut tx = c.begin().await.map_err(map_error)?;
-    sqlx::query("SELECT pg_advisory_xact_lock($1)").bind(lock_key(schema)).execute(&mut *tx).await.map_err(map_error)?;
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(lock_key(schema))
+        .execute(&mut *tx)
+        .await
+        .map_err(map_error)?;
     ddl(&mut tx, &format!("CREATE SCHEMA IF NOT EXISTS {s}")).await?;
     ddl(
         &mut tx,
@@ -123,12 +127,15 @@ pub(crate) async fn migrate(c: &mut PgConnection, schema: &str) -> Result<(), St
         ),
     )
     .await?;
-    let current: i32 = sqlx::query_scalar(AssertSqlSafe(format!("SELECT coalesce(max(version), 0) FROM {s}.cicada_schema_version")))
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(map_error)?;
+    let current: i32 =
+        sqlx::query_scalar(AssertSqlSafe(format!("SELECT coalesce(max(version), 0) FROM {s}.cicada_schema_version")))
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(map_error)?;
     if current > VERSION {
-        return Err(StoreError::Invalid(format!("Database schema version {current} is newer than supported ({VERSION})")));
+        return Err(StoreError::Invalid(format!(
+            "Database schema version {current} is newer than supported ({VERSION})"
+        )));
     }
     for version in current + 1..=VERSION {
         for statement in MIGRATIONS[version as usize - 1] {
@@ -152,8 +159,11 @@ async fn ddl(c: &mut PgConnection, statement: &str) -> Result<(), StoreError> {
 async fn current_version(c: &mut PgConnection, schema: &str) -> Result<Option<i32>, StoreError> {
     let table = format!("{}.cicada_schema_version", quote(schema));
     let mut tx = c.begin().await.map_err(map_error)?;
-    let exists: bool =
-        sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL").bind(&table).fetch_one(&mut *tx).await.map_err(map_error)?;
+    let exists: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
+        .bind(&table)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(map_error)?;
     let version = if exists {
         Some(
             sqlx::query_scalar(AssertSqlSafe(format!("SELECT coalesce(max(version), 0) FROM {table}")))

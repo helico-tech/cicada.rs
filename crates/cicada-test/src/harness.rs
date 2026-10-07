@@ -193,7 +193,10 @@ impl TestActors {
                 return turns;
             }
             turns += ran;
-            assert!(turns <= max_turns, "Not idle after {max_turns} turns; an actor may be sending to itself without delay");
+            assert!(
+                turns <= max_turns,
+                "Not idle after {max_turns} turns; an actor may be sending to itself without delay"
+            );
         }
     }
 
@@ -269,14 +272,20 @@ impl TestActors {
     /// The state of `r` decoded as `S`; panics when the instance is absent.
     pub async fn state<R: ActorRef, S: DeserializeOwned>(&self, r: &R) -> S {
         let address = r.address().expect("a valid ref");
-        let record = self.store.get(&address).await.expect("store failed").unwrap_or_else(|| panic!("{address} does not exist"));
+        let record =
+            self.store.get(&address).await.expect("store failed").unwrap_or_else(|| panic!("{address} does not exist"));
         serde_json::from_value(record.state.unwrap_or(Value::Null)).expect("state decodes")
     }
 
     /// The state version of `r`; panics when the instance is absent.
     pub async fn version<R: ActorRef>(&self, r: &R) -> i64 {
         let address = r.address().expect("a valid ref");
-        self.store.get(&address).await.expect("store failed").unwrap_or_else(|| panic!("{address} does not exist")).version
+        self.store
+            .get(&address)
+            .await
+            .expect("store failed")
+            .unwrap_or_else(|| panic!("{address} does not exist"))
+            .version
     }
 
     /// The outcome of `message`, or `None` while it is pending.

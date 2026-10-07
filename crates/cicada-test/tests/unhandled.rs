@@ -105,10 +105,7 @@ async fn custom_receives_the_raw_envelope_and_its_effects_are_committed() {
     let bad = raw_enqueue(&test, "Mystery", json!({})).await;
     test.run_until_idle().await;
     assert_eq!(test.outcome(&bad).await.unwrap().status, OutcomeStatus::Done);
-    assert_eq!(
-        test.state::<_, CounterState>(&a()).await.log,
-        vec!["unhandled:Mystery:Unknown message type 'Mystery'"]
-    );
+    assert_eq!(test.state::<_, CounterState>(&a()).await.log, vec!["unhandled:Mystery:Unknown message type 'Mystery'"]);
 }
 
 struct DecidingCounter;

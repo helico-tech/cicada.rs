@@ -136,7 +136,10 @@ impl Run {
                     );
                 }
                 Err(e) => {
-                    tracing::warn!("Wake-up listener on '{}' cannot connect ({e}); retrying in {backoff:?}", self.channel)
+                    tracing::warn!(
+                        "Wake-up listener on '{}' cannot connect ({e}); retrying in {backoff:?}",
+                        self.channel
+                    )
                 }
             }
             sleep(backoff).await;
@@ -171,7 +174,9 @@ impl Run {
                 // The connection was lost and sqlx re-established it (and its LISTEN): notifications may be missed.
                 Ok(Ok(None)) => self.publish(String::new()),
                 Ok(Err(e)) => return e.to_string(),
-                Err(_) => return format!("no notification, not even a probe, for {:?}", PROBE_INTERVAL + PROBE_TIMEOUT),
+                Err(_) => {
+                    return format!("no notification, not even a probe, for {:?}", PROBE_INTERVAL + PROBE_TIMEOUT);
+                }
             }
         }
     }

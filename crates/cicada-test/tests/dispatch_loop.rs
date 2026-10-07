@@ -8,11 +8,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use cicada::ActorSystem;
 use cicada::address::{ActorAddress, UriTemplate};
 use cicada::prelude::*;
 use cicada::runtime::{ActorSystemBuilder, NodeState, SendResult};
 use cicada::store::{Claim, MessageStatus, NodeId, OutcomeStatus, OutgoingMessage, Store, StoreError, StoreResult};
-use cicada::ActorSystem;
 use cicada_test::InMemoryStore;
 use common::*;
 use futures::stream::BoxStream;
@@ -109,7 +109,9 @@ async fn turns_run_end_to_end_across_instances() {
     system.send(&a, CounterMsg::Forward { to: "actor://counter/b".into(), n: 5 }).await.unwrap();
     system.send(&a, CounterMsg::Spawn { child: "c".into(), n: 1 }).await.unwrap();
     eventually(5 * SECOND, || async {
-        total(&*store, &a).await == 210 && total(&*store, &b).await == 5 && store.get(&c.address()).await.unwrap().is_some()
+        total(&*store, &a).await == 210
+            && total(&*store, &b).await == 5
+            && store.get(&c.address()).await.unwrap().is_some()
     })
     .await;
     eventually(5 * SECOND, || async { total(&*store, &c).await == 101 }).await;
@@ -154,10 +156,7 @@ async fn delayed_messages_are_delivered_at_their_time_not_before() {
     let a = Counter::new("a");
     system.create(&a, &CounterState::default()).await.unwrap();
     let started = Instant::now();
-    system
-        .send_with(&a, CounterMsg::Add { n: 1 }, SendOptions::new().delay(Duration::from_millis(400)))
-        .await
-        .unwrap();
+    system.send_with(&a, CounterMsg::Add { n: 1 }, SendOptions::new().delay(Duration::from_millis(400))).await.unwrap();
     eventually(5 * SECOND, || async { total(&*store, &a).await == 1 }).await;
     assert!(started.elapsed() >= Duration::from_millis(400));
     stop_all(&[&system]).await;
@@ -208,7 +207,9 @@ async fn graceful_stop_lets_running_turns_finish_within_the_grace_period() {
     let system = system(store.clone()).host(WorkerActor(gauges.clone())).build();
     system.start().await.unwrap();
     system.create_stateless(&Worker { id: 1 }).await.unwrap();
-    let m = accepted(system.send(&Worker { id: 1 }, WorkerMsg::Job { millis: 300, first_attempt_only: false }).await.unwrap());
+    let m = accepted(
+        system.send(&Worker { id: 1 }, WorkerMsg::Job { millis: 300, first_attempt_only: false }).await.unwrap(),
+    );
     eventually(5 * SECOND, || async { gauges.running.load(Ordering::SeqCst) == 1 }).await;
     system.stop_with_grace(5 * SECOND).await;
     assert_eq!(system.state(), NodeState::Stopped);
@@ -236,7 +237,8 @@ async fn turns_still_running_after_the_grace_period_are_cancelled_and_their_leas
         other => panic!("not pending: {other:?}"),
     }
 
-    let second = system(store.clone()).node_id(NodeId::new("second").unwrap()).host(WorkerActor(gauges.clone())).build();
+    let second =
+        system(store.clone()).node_id(NodeId::new("second").unwrap()).host(WorkerActor(gauges.clone())).build();
     second.start().await.unwrap();
     // Claimed again at once, without waiting for the TTL.
     eventually(5 * SECOND, || async { store.outcome(&m.id).await.unwrap().is_some() }).await;

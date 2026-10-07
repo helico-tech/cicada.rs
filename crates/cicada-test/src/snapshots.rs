@@ -93,7 +93,10 @@ pub fn describe_changes(old: &Contract, new: &Contract) -> Vec<String> {
     changes.extend(new_m.keys().filter(|k| !old_m.contains_key(*k)).map(|k| format!("message type added: {k}")));
     changes.extend(old_m.keys().filter(|k| !new_m.contains_key(*k)).map(|k| format!("message type removed: {k}")));
     changes.extend(
-        old_m.iter().filter(|(k, v)| new_m.get(*k).is_some_and(|n| n != *v)).map(|(k, _)| format!("message type changed: {k}")),
+        old_m
+            .iter()
+            .filter(|(k, v)| new_m.get(*k).is_some_and(|n| n != *v))
+            .map(|(k, _)| format!("message type changed: {k}")),
     );
     if changes.is_empty() {
         changes.push(format!("contract hash changed: {} -> {}", old.hash(), new.hash()));

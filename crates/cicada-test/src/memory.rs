@@ -173,7 +173,14 @@ impl InMemoryStore {
         Ok(stored)
     }
 
-    fn finish(&self, s: &mut State, message: Message, status: OutcomeStatus, error: Option<String>, now: Timestamp) -> OutcomeRecord {
+    fn finish(
+        &self,
+        s: &mut State,
+        message: Message,
+        status: OutcomeStatus,
+        error: Option<String>,
+        now: Timestamp,
+    ) -> OutcomeRecord {
         s.messages.remove(&message.id);
         let record = OutcomeRecord {
             message_id: message.id.clone(),
@@ -195,7 +202,12 @@ impl InMemoryStore {
         });
         s.outcomes.insert(
             message.id.clone(),
-            OutcomeRow { record: kept, visible_until: support::visible_until(&message, status, now), keep_seq, stripped: false },
+            OutcomeRow {
+                record: kept,
+                visible_until: support::visible_until(&message, status, now),
+                keep_seq,
+                stripped: false,
+            },
         );
         if let Some(count) = keep_last {
             self.trim(s, &message.to, status, count as usize, now);
@@ -265,7 +277,13 @@ impl InMemoryStore {
         })
     }
 
-    fn create_locked(s: &mut State, address: &ActorAddress, template: &UriTemplate, state: Option<Value>, now: Timestamp) -> CreateResult {
+    fn create_locked(
+        s: &mut State,
+        address: &ActorAddress,
+        template: &UriTemplate,
+        state: Option<Value>,
+        now: Timestamp,
+    ) -> CreateResult {
         if let Some(row) = s.actors.get(address.as_str()) {
             return CreateResult::Exists(row.snapshot());
         }
@@ -341,7 +359,12 @@ impl Store for InMemoryStore {
         })
     }
 
-    async fn create(&self, address: &ActorAddress, template: &UriTemplate, state: Option<Value>) -> StoreResult<CreateResult> {
+    async fn create(
+        &self,
+        address: &ActorAddress,
+        template: &UriTemplate,
+        state: Option<Value>,
+    ) -> StoreResult<CreateResult> {
         self.locked(|s, now| Ok(Self::create_locked(s, address, template, state, now)))
     }
 
@@ -479,7 +502,12 @@ impl Store for InMemoryStore {
         })
     }
 
-    async fn pending(&self, address: &ActorAddress, cursor: Option<&PageCursor>, limit: usize) -> StoreResult<Page<Message>> {
+    async fn pending(
+        &self,
+        address: &ActorAddress,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> StoreResult<Page<Message>> {
         check_limit(limit)?;
         let after = cursor.map(support::decode_mailbox_cursor).transpose()?;
         self.locked(|s, _| {
@@ -503,7 +531,12 @@ impl Store for InMemoryStore {
         })
     }
 
-    async fn list_pending(&self, prefix: &str, cursor: Option<&PageCursor>, limit: usize) -> StoreResult<Page<Message>> {
+    async fn list_pending(
+        &self,
+        prefix: &str,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> StoreResult<Page<Message>> {
         check_limit(limit)?;
         let after = cursor.map(support::decode_pending_cursor).transpose()?;
         self.locked(|s, _| {
@@ -602,11 +635,17 @@ impl Store for InMemoryStore {
         check_limit(limit)?;
         self.locked(|s, now| {
             let wanted: HashSet<&MessageId> = parents.iter().collect();
-            let pending = s.messages.values().filter(|m| m.caused_by.as_ref().is_some_and(|c| wanted.contains(c))).map(|m| m.id.clone());
+            let pending = s
+                .messages
+                .values()
+                .filter(|m| m.caused_by.as_ref().is_some_and(|c| wanted.contains(c)))
+                .map(|m| m.id.clone());
             let finished = s
                 .outcomes
                 .values()
-                .filter(|r| r.record.envelope.caused_by.as_ref().is_some_and(|c| wanted.contains(c)) && self.is_retained(r, now))
+                .filter(|r| {
+                    r.record.envelope.caused_by.as_ref().is_some_and(|c| wanted.contains(c)) && self.is_retained(r, now)
+                })
                 .map(|r| r.record.message_id.clone());
             let ids: Vec<MessageId> = pending.chain(finished).take(limit).collect();
             Ok(ids.iter().filter_map(|id| self.chain_entry_locked(s, id, now)).collect())
@@ -655,17 +694,23 @@ impl Store for InMemoryStore {
             // Validate everything before changing anything (S2).
             let mut send_ids = HashSet::new();
             for send in &commit.sends {
-                let exists = s.actors.contains_key(send.to.as_str()) || commit.creates.iter().any(|c| c.address == send.to);
+                let exists =
+                    s.actors.contains_key(send.to.as_str()) || commit.creates.iter().any(|c| c.address == send.to);
                 if !exists {
                     return Ok(CommitResult::Rejected(format!("Send to absent instance {}", send.to)));
                 }
-                if !send_ids.insert(send.id.clone()) || send.id == commit.message_id || self.is_id_in_use(s, &send.id, now) {
+                if !send_ids.insert(send.id.clone())
+                    || send.id == commit.message_id
+                    || self.is_id_in_use(s, &send.id, now)
+                {
                     return Ok(CommitResult::Rejected(format!("Message id {} is already in use", send.id)));
                 }
                 send.delivery.resolve(now).map_err(|e| StoreError::Invalid(e.0))?;
             }
             let reschedule_at = match &commit.outcome {
-                TurnOutcome::Rescheduled { delivery, .. } => Some(delivery.resolve(now).map_err(|e| StoreError::Invalid(e.0))?),
+                TurnOutcome::Rescheduled { delivery, .. } => {
+                    Some(delivery.resolve(now).map_err(|e| StoreError::Invalid(e.0))?)
+                }
                 _ => None,
             };
 

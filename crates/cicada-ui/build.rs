@@ -6,7 +6,8 @@ use std::process::Command;
 use std::{env, fs};
 
 fn main() {
-    for path in ["src", "public", "index.html", "vite.config.ts", "tsconfig.json", "package.json", "package-lock.json"] {
+    for path in ["src", "public", "index.html", "vite.config.ts", "tsconfig.json", "package.json", "package-lock.json"]
+    {
         println!("cargo:rerun-if-changed=web/{path}");
     }
     println!("cargo:rerun-if-env-changed=CICADA_UI_SKIP_BUILD");

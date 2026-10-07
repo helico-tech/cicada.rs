@@ -367,10 +367,13 @@ mod tests {
         assert!(a.insert(TraceId("t1".into())).is_none());
         assert_eq!(b.get::<TraceId>(), Some(TraceId("t1".into())));
         assert_eq!(b.get_or_insert_with(|| 5u32), 5);
-        assert_eq!(a.with_mut::<u32, _>(|v| {
-            *v += 1;
-            *v
-        }), Some(6));
+        assert_eq!(
+            a.with_mut::<u32, _>(|v| {
+                *v += 1;
+                *v
+            }),
+            Some(6)
+        );
         assert_eq!(a.remove::<TraceId>(), Some(TraceId("t1".into())));
         assert!(!b.contains::<TraceId>());
     }

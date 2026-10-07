@@ -122,8 +122,12 @@ pub trait Store: Send + Sync + 'static {
 
     /// Creates the instance with initial `state`, version 0, no lease and an empty mailbox. Idempotent: an existing
     /// instance is left untouched. The store does not check that `address` matches `template`.
-    async fn create(&self, address: &ActorAddress, template: &UriTemplate, state: Option<Value>)
-    -> StoreResult<CreateResult>;
+    async fn create(
+        &self,
+        address: &ActorAddress,
+        template: &UriTemplate,
+        state: Option<Value>,
+    ) -> StoreResult<CreateResult>;
 
     /// Snapshot of the instance, or `None` when it is absent.
     async fn get(&self, address: &ActorAddress) -> StoreResult<Option<ActorRecord>>;
@@ -168,8 +172,12 @@ pub trait Store: Send + Sync + 'static {
 
     /// The pending messages of `address` in delivery order `(deliver_at, seq)`, including one being handled. Paging is
     /// a keyset, not a snapshot.
-    async fn pending(&self, address: &ActorAddress, cursor: Option<&PageCursor>, limit: usize)
-    -> StoreResult<Page<Message>>;
+    async fn pending(
+        &self,
+        address: &ActorAddress,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> StoreResult<Page<Message>>;
 
     /// The pending messages of every instance whose URI starts with `prefix`, ordered by `(to, deliver_at, seq)`.
     async fn list_pending(&self, prefix: &str, cursor: Option<&PageCursor>, limit: usize)

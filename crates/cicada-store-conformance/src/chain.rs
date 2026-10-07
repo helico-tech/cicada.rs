@@ -143,10 +143,8 @@ pub async fn chain_children_are_found_across_pending_messages_and_outcomes_up_to
             kids.iter().map(|k| k.id.clone()).collect::<BTreeSet<_>>()
         );
         assert!(children.iter().all(|c| c.caused_by() == Some(&root.id)));
-        let statuses: HashMap<MessageId, MessageStatus> = children
-            .into_iter()
-            .map(|c| (c.id().clone(), expect_matches!(c, ChainEntry::Live(s) => s)))
-            .collect();
+        let statuses: HashMap<MessageId, MessageStatus> =
+            children.into_iter().map(|c| (c.id().clone(), expect_matches!(c, ChainEntry::Live(s) => s))).collect();
         assert_matches!(&statuses[&kids[0].id], MessageStatus::Finished(_));
         assert_matches!(&statuses[&kids[1].id], MessageStatus::Finished(_));
         assert_matches!(&statuses[&kids[2].id], MessageStatus::Pending(_));
@@ -156,7 +154,11 @@ pub async fn chain_children_are_found_across_pending_messages_and_outcomes_up_to
             5,
             "several parents at once"
         );
-        assert_eq!(store.chain_children(std::slice::from_ref(&root.id), 3).await.unwrap().len(), 3, "at most the limit");
+        assert_eq!(
+            store.chain_children(std::slice::from_ref(&root.id), 3).await.unwrap().len(),
+            3,
+            "at most the limit"
+        );
         assert_eq!(store.chain_children(&[MessageId::random()], 10).await.unwrap(), vec![]);
         assert_eq!(store.chain_children(&[], 10).await.unwrap(), vec![]);
     })

@@ -4,7 +4,9 @@ use std::collections::BTreeMap;
 
 use cicada::SendOptions;
 use cicada::store::OutcomeStatus;
-use cicada_examples::reply::{Cart, CartActor, CartLine, CartMsg, CartState, PriceList, Pricing, PricingActor, PricingMsg};
+use cicada_examples::reply::{
+    Cart, CartActor, CartLine, CartMsg, CartState, PriceList, Pricing, PricingActor, PricingMsg,
+};
 use cicada_test::TestActors;
 
 struct Prices;
@@ -24,11 +26,7 @@ fn cart() -> Cart {
 }
 
 async fn harness() -> TestActors {
-    TestActors::builder()
-        .with(|node| node.host(PricingActor { prices: Prices }).host(CartActor))
-        .build()
-        .await
-        .unwrap()
+    TestActors::builder().with(|node| node.host(PricingActor { prices: Prices }).host(CartActor)).build().await.unwrap()
 }
 
 fn add_item(sku: &str, quantity: i32) -> CartMsg {

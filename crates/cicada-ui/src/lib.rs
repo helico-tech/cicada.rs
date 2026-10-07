@@ -47,7 +47,11 @@ pub struct InvalidPath {
 
 impl std::fmt::Display for InvalidPath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} must be an absolute path of unreserved characters, such as / or /api: '{}'", self.name, self.value)
+        write!(
+            f,
+            "{} must be an absolute path of unreserved characters, such as / or /api: '{}'",
+            self.name, self.value
+        )
     }
 }
 
@@ -70,7 +74,9 @@ pub fn actor_ui(mount_path: &str, api_path: &str) -> Router {
 /// [`actor_ui`], failing instead of panicking on an invalid path.
 pub fn try_actor_ui(mount_path: &str, api_path: &str) -> Result<Router, InvalidPath> {
     let valid = |p: &str| {
-        p.starts_with('/') && !p.starts_with("//") && p.chars().all(|c| c.is_ascii_alphanumeric() || "-._~/".contains(c))
+        p.starts_with('/')
+            && !p.starts_with("//")
+            && p.chars().all(|c| c.is_ascii_alphanumeric() || "-._~/".contains(c))
     };
     if !valid(api_path) {
         return Err(InvalidPath { name: "api_path", value: api_path.to_owned() });
@@ -89,15 +95,19 @@ pub fn try_actor_ui(mount_path: &str, api_path: &str) -> Result<Router, InvalidP
     if !base.is_empty() {
         router = router.route(base, page_route);
     }
-    Ok(router
-        .route(
-            &format!("{base}/config.json"),
-            get(move || {
-                let config = config.clone();
-                async move { secured(Response::builder().header(header::CONTENT_TYPE, "application/json"), config.into()) }
-            }),
-        )
-        .route(&format!("{base}/{{*file}}"), get(|Path(file): Path<String>| async move { asset(&file) })))
+    Ok(
+        router
+            .route(
+                &format!("{base}/config.json"),
+                get(move || {
+                    let config = config.clone();
+                    async move {
+                        secured(Response::builder().header(header::CONTENT_TYPE, "application/json"), config.into())
+                    }
+                }),
+            )
+            .route(&format!("{base}/{{*file}}"), get(|Path(file): Path<String>| async move { asset(&file) })),
+    )
 }
 
 /// The page at the mount path; without the trailing slash a relative redirect to it, so it stays right behind a proxy

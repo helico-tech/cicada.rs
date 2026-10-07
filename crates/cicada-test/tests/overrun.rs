@@ -112,7 +112,12 @@ impl Plugin for Observer {
     }
 
     async fn on_handler_error(&self, ctx: &mut HandlerErrorContext<'_>) -> HookResult {
-        self.seen.push(format!("{}:willRetry={}:{}", failure_kind(ctx.error()), ctx.will_retry(), ctx.failure_reason()));
+        self.seen.push(format!(
+            "{}:willRetry={}:{}",
+            failure_kind(ctx.error()),
+            ctx.will_retry(),
+            ctx.failure_reason()
+        ));
         let cause = match ctx.error() {
             HandlerFailure::Timeout { cause, .. } => cause.as_ref().map(|c| c.reason()),
             _ => None,
@@ -183,7 +188,11 @@ async fn a_handler_that_returned_after_overrunning_ends_failed_timeout_and_is_no
     s.run().await;
     s.assert_timed_out_for_good(&m).await;
     assert_eq!(s.observer.seen.all(), vec!["TurnTimeoutException:willRetry=false:timeout"]);
-    assert_eq!(state_of::<LaggardState>(&*s.memory, &addr(&slow())).await, LaggardState::default(), "effects discarded");
+    assert_eq!(
+        state_of::<LaggardState>(&*s.memory, &addr(&slow())).await,
+        LaggardState::default(),
+        "effects discarded"
+    );
 }
 
 #[tokio::test]

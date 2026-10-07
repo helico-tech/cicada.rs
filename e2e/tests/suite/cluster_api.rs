@@ -157,7 +157,8 @@ async fn send_through_a_hosting_node_and_through_the_send_only_node_pending_then
     for via in [&c.node1, &c.send_only] {
         let recorder = Recorder { id: format!("send-{}-{}", run_id(), via.id) };
         via.client.create(&recorder, &RecorderState::default()).await.unwrap();
-        let receipt = via.client.send_with(&recorder, record("hello"), SendOptions::new().delay(secs(2))).await.unwrap();
+        let receipt =
+            via.client.send_with(&recorder, record("hello"), SendOptions::new().delay(secs(2))).await.unwrap();
         assert!(!receipt.duplicate);
         assert_eq!(via.status(&receipt.id).await.status, MessageState::Pending);
         let pending = via.client.pending(&address(&recorder), None, None).await.unwrap().unwrap();
@@ -303,7 +304,8 @@ async fn cancel_a_pending_delayed_message_409_once_finished() {
     assert_eq!(c.node1.delete(&format!("/messages/{}", now.id)).await.status, 409);
     assert_eq!(c.node1.client.cancel(&now.id).await.unwrap(), CancelOutcome::AlreadyFinished);
     assert_eq!(c.node1.delete(&format!("/messages/{}", MessageId::random())).await.status, 404);
-    let labels: Vec<String> = c.node3.state::<RecorderState, _>(&recorder).await.records.into_iter().map(|r| r.label).collect();
+    let labels: Vec<String> =
+        c.node3.state::<RecorderState, _>(&recorder).await.records.into_iter().map(|r| r.label).collect();
     assert_eq!(labels, ["now"]);
 }
 

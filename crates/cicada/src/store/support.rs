@@ -136,7 +136,9 @@ pub fn headers_from_json(value: &Value) -> StoreResult<BTreeMap<String, String>>
 pub fn visible_until(message: &Message, status: OutcomeStatus, finished_at: Timestamp) -> Option<Timestamp> {
     match message.retention.as_ref().and_then(|r| r.rule_for(status)) {
         Some(Keep::Remove) => Some(finished_at),
-        Some(Keep::For { age }) => Some(time::add(finished_at, *age).map(|t| t.min(MAX_INSTANT)).unwrap_or(MAX_INSTANT)),
+        Some(Keep::For { age }) => {
+            Some(time::add(finished_at, *age).map(|t| t.min(MAX_INSTANT)).unwrap_or(MAX_INSTANT))
+        }
         Some(Keep::Last { .. }) | None => None,
     }
 }

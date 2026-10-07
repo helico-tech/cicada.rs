@@ -4,7 +4,9 @@ mod common;
 
 use std::collections::BTreeMap;
 
-use cicada_examples::fanout::{Batch, BatchActor, BatchItem, BatchItemActor, BatchMsg, BatchState, BatchStatus, ItemProcessor};
+use cicada_examples::fanout::{
+    Batch, BatchActor, BatchItem, BatchItemActor, BatchMsg, BatchState, BatchStatus, ItemProcessor,
+};
 use cicada_test::TestActors;
 
 /// The result of an item is the length of its input.

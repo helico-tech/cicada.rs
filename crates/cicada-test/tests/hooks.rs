@@ -5,7 +5,9 @@ mod common;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use cicada::plugin::{BeforeCommitContext, ClaimContext, HandlerErrorContext, HookResult, HookSend, OutcomeContext, Plugin};
+use cicada::plugin::{
+    BeforeCommitContext, ClaimContext, HandlerErrorContext, HookResult, HookSend, OutcomeContext, Plugin,
+};
 use cicada::prelude::*;
 use cicada::store::{Delivery, OutcomeStatus, TurnOutcome};
 use cicada_test::TestActors;

@@ -38,11 +38,7 @@ pub fn truncate(instant: Timestamp) -> Timestamp {
 /// Rounds `instant` up to whole microseconds, so that a requested delivery time is never moved earlier.
 pub fn ceil(instant: Timestamp) -> Timestamp {
     let truncated = truncate(instant);
-    if truncated == instant {
-        instant
-    } else {
-        from_micros(to_micros(truncated) + 1)
-    }
+    if truncated == instant { instant } else { from_micros(to_micros(truncated) + 1) }
 }
 
 /// Microseconds since the epoch (floored); the integer representation used by SQL backends.
@@ -52,23 +48,23 @@ pub fn to_micros(instant: Timestamp) -> i64 {
 
 /// Inverse of [`to_micros`]. Saturates at the bounds jiff can represent.
 pub fn from_micros(micros: i64) -> Timestamp {
-    DateTime::from_timestamp_micros(micros).unwrap_or(if micros < 0 { DateTime::<Utc>::MIN_UTC } else { DateTime::<Utc>::MAX_UTC })
+    DateTime::from_timestamp_micros(micros).unwrap_or(if micros < 0 {
+        DateTime::<Utc>::MIN_UTC
+    } else {
+        DateTime::<Utc>::MAX_UTC
+    })
 }
 
 /// `instant + duration`, failing beyond what can be represented.
 pub fn add(instant: Timestamp, duration: Duration) -> Result<Timestamp, TimeError> {
-    TimeDelta::from_std(duration)
-        .ok()
-        .and_then(|d| instant.checked_add_signed(d))
-        .ok_or_else(|| TimeError(format!("{} + {} is out of range", format_instant(instant), format_duration(duration))))
+    TimeDelta::from_std(duration).ok().and_then(|d| instant.checked_add_signed(d)).ok_or_else(|| {
+        TimeError(format!("{} + {} is out of range", format_instant(instant), format_duration(duration)))
+    })
 }
 
 /// `instant - duration`, saturating at the earliest representable instant.
 pub fn sub(instant: Timestamp, duration: Duration) -> Timestamp {
-    TimeDelta::from_std(duration)
-        .ok()
-        .and_then(|d| instant.checked_sub_signed(d))
-        .unwrap_or(DateTime::<Utc>::MIN_UTC)
+    TimeDelta::from_std(duration).ok().and_then(|d| instant.checked_sub_signed(d)).unwrap_or(DateTime::<Utc>::MIN_UTC)
 }
 
 /// The time from `earlier` to `later`, zero when `later` is not after `earlier`.
@@ -164,11 +160,8 @@ pub fn parse_duration(text: &str) -> Result<SignedNanos, TimeError> {
     let nanos = if body.starts_with('P') || body.starts_with('p') {
         parse_iso(&body[1..]).ok_or_else(err)?
     } else {
-        let body = if negative {
-            body.strip_prefix('(').and_then(|b| b.strip_suffix(')')).unwrap_or(body)
-        } else {
-            body
-        };
+        let body =
+            if negative { body.strip_prefix('(').and_then(|b| b.strip_suffix(')')).unwrap_or(body) } else { body };
         parse_short(body).ok_or_else(err)?
     };
     Ok(SignedNanos(if negative { -nanos } else { nanos }))

@@ -182,7 +182,10 @@ mod tests {
         assert_eq!(e, EncodedMessage { message_type: "Run".into(), payload: json!({}) });
         let e = encode(&Msg::Charge(Charge { amount: 3 })).unwrap();
         assert_eq!(e.payload, json!({"amount": 3}));
-        assert_eq!(decode::<Msg>("Charge", &json!({"amount": 3, "extra": true})).unwrap(), Msg::Charge(Charge { amount: 3 }));
+        assert_eq!(
+            decode::<Msg>("Charge", &json!({"amount": 3, "extra": true})).unwrap(),
+            Msg::Charge(Charge { amount: 3 })
+        );
         assert_eq!(decode::<Msg>("FetchPage", &json!({})).unwrap(), Msg::FetchPage { cursor: None });
         assert!(decode::<Msg>("Nope", &json!({})).is_err());
         assert!(decode::<Msg>("Run", &json!([])).is_err());

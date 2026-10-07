@@ -12,7 +12,7 @@ pub mod time;
 
 pub use guard::{CrashLoopError, CrashLoopGuard};
 pub use supervision::{
-    ActorOperations, DeadLetter, DeadLetters, DeadLettersActor, DeadLettersMsg, DeadLettersState, Failure, FailureWatcher,
-    OperationError, Sent,
+    ActorOperations, DeadLetter, DeadLetters, DeadLettersActor, DeadLettersMsg, DeadLettersState, Failure,
+    FailureWatcher, OperationError, Sent,
 };
 pub use time::{Schedule, ScheduleError, Timer};

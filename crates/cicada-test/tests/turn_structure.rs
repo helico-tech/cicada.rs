@@ -90,7 +90,13 @@ struct BrokenRenew {
 
 #[async_trait]
 impl Faults for BrokenRenew {
-    async fn renew(&self, inner: &dyn Store, address: &ActorAddress, epoch: i64, ttl: Duration) -> StoreResult<RenewResult> {
+    async fn renew(
+        &self,
+        inner: &dyn Store,
+        address: &ActorAddress,
+        epoch: i64,
+        ttl: Duration,
+    ) -> StoreResult<RenewResult> {
         if self.broken.load(Ordering::SeqCst) {
             panic!("renew bug");
         }

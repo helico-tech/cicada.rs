@@ -4,7 +4,9 @@ mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use cicada_examples::registry::{Device, DeviceActor, DeviceRegistry, DeviceRegistryActor, DeviceState, RegistryMsg, RegistryState};
+use cicada_examples::registry::{
+    Device, DeviceActor, DeviceRegistry, DeviceRegistryActor, DeviceState, RegistryMsg, RegistryState,
+};
 use cicada_test::TestActors;
 
 async fn harness() -> TestActors {

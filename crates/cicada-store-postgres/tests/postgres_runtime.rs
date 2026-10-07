@@ -99,7 +99,10 @@ impl Actor for PlayerActor {
                 self.guarded(&name).await;
                 turn.state_mut().ticks += 1;
                 if left > 1 {
-                    turn.send_self_with(PlayerMsg::Tick { left: left - 1 }, SendOptions::new().delay(Duration::from_millis(100)))?;
+                    turn.send_self_with(
+                        PlayerMsg::Tick { left: left - 1 },
+                        SendOptions::new().delay(Duration::from_millis(100)),
+                    )?;
                 }
             }
             PlayerMsg::Slow { millis } => {
@@ -193,10 +196,14 @@ async fn two_nodes_play_ping_pong_run_timers_and_recover_stopped_and_crashed_nod
     // A delayed send is not handled before its time.
     let sent_at = store.now().await.unwrap();
     let delayed = accepted(
-        first.send_with(&player("ping"), PlayerMsg::Ping, SendOptions::new().delay(Duration::from_secs(1))).await.unwrap(),
+        first
+            .send_with(&player("ping"), PlayerMsg::Ping, SendOptions::new().delay(Duration::from_secs(1)))
+            .await
+            .unwrap(),
     );
     eventually(wait, "40 hits and 5 ticks", || async {
-        state(&*store, "ping").await.hits + state(&*store, "pong").await.hits == 40 && state(&*store, "pong").await.ticks == 5
+        state(&*store, "ping").await.hits + state(&*store, "pong").await.hits == 40
+            && state(&*store, "pong").await.ticks == 5
     })
     .await;
     assert_eq!(state(&*store, "ping").await.hits, 20);
@@ -260,7 +267,9 @@ async fn turns_of_one_instance_stay_serial_under_load_from_several_nodes() {
     }
     // Every node sends to every instance concurrently.
     let sends = nodes.iter().flat_map(|node| {
-        names.iter().flat_map(move |name| (0..10).map(move |_| async move { node.send(&player(name), PlayerMsg::Ping).await }))
+        names
+            .iter()
+            .flat_map(move |name| (0..10).map(move |_| async move { node.send(&player(name), PlayerMsg::Ping).await }))
     });
     let ids: Vec<_> = futures::future::join_all(sends).await.into_iter().map(|r| accepted(r.unwrap()).id).collect();
     assert_eq!(ids.len(), 120);
@@ -307,7 +316,10 @@ async fn listen_notify_wakes_a_node_long_before_its_poll_interval() {
     // A delayed send wakes the node too, which then sleeps only until the message is due.
     let delayed_mark = Instant::now();
     let delayed = accepted(
-        sender.send_with(&player("far"), PlayerMsg::Ping, SendOptions::new().delay(Duration::from_millis(1500))).await.unwrap(),
+        sender
+            .send_with(&player("far"), PlayerMsg::Ping, SendOptions::new().delay(Duration::from_millis(1500)))
+            .await
+            .unwrap(),
     );
     eventually(Duration::from_secs(4), "the delayed ping is handled", || async {
         host_store.outcome(&delayed.id).await.unwrap().is_some()

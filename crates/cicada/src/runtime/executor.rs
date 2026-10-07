@@ -242,12 +242,7 @@ impl TurnExecutor {
             }
         };
         match decision {
-            None => tracing::info!(
-                "Turn of {} for {} abandoned: {}",
-                claim.actor,
-                claim.message.id,
-                guard.reason()
-            ),
+            None => tracing::info!("Turn of {} for {} abandoned: {}", claim.actor, claim.message.id, guard.reason()),
             // The heartbeat keeps running while the commit is retried.
             Some(decision) => self.commit(&hosted, &claim, &info, decision, &guard).await,
         }
@@ -277,11 +272,7 @@ impl TurnExecutor {
                         return;
                     }
                     Err(e) => {
-                        tracing::warn!(
-                            "Lease renewal for {} failed; {:?} left: {e}",
-                            claim.actor,
-                            guard.remaining()
-                        );
+                        tracing::warn!("Lease renewal for {} failed; {:?} left: {e}", claim.actor, guard.remaining());
                         wait = (self.lease.heartbeat / 4).min(RENEW_RETRY);
                     }
                 }
@@ -344,8 +335,11 @@ impl TurnExecutor {
         match AssertUnwindSafe(self.decide(&hosted, &claim, &info, &guard, &handler_ended)).catch_unwind().await {
             Ok(decision) => decision,
             Err(panic) => {
-                let phase =
-                    if handler_ended.load(Ordering::SeqCst) { "after its handler ended" } else { "before its handler ran" };
+                let phase = if handler_ended.load(Ordering::SeqCst) {
+                    "after its handler ended"
+                } else {
+                    "before its handler ran"
+                };
                 let panic = panic_message(&*panic);
                 tracing::error!("Turn of {} for {} failed {phase}: {panic}", claim.actor, claim.message.id);
                 Decision::failed(format!("Turn failed {phase}: panic: {panic}"))
@@ -435,7 +429,8 @@ impl TurnExecutor {
             }
             _ => None,
         };
-        let retry = retry_delay.map(|d| TurnOutcome::Rescheduled { delivery: Delivery::After(d), error: reason.clone() });
+        let retry =
+            retry_delay.map(|d| TurnOutcome::Rescheduled { delivery: Delivery::After(d), error: reason.clone() });
         let mut effects = EffectBuffer::default();
         let mut outcome = retry.clone().unwrap_or_else(|| TurnOutcome::Failed(reason.clone()));
         for plugin in &hosted.plugins {
@@ -590,7 +585,14 @@ impl TurnExecutor {
         }
     }
 
-    async fn commit(&self, hosted: &HostedType, claim: &Claim, info: &TurnInfo, decision: Decision, guard: &LeaseGuard) {
+    async fn commit(
+        &self,
+        hosted: &HostedType,
+        claim: &Claim,
+        info: &TurnInfo,
+        decision: Decision,
+        guard: &LeaseGuard,
+    ) {
         // Every backend can store the reason (PostgreSQL refuses NUL characters in text). A rescheduled message carries
         // its `lastError` along, so that one is also bounded.
         let outcome = match decision.outcome {
@@ -633,7 +635,9 @@ impl TurnExecutor {
         // Rejected or refused: nothing was applied and the lease is still held; record the failure without effects.
         let request = CommitRequest::new(claim.actor.clone(), claim.epoch, claim.message.id.clone(), failure.clone());
         match self.commit_with_retry(claim, guard, request).await {
-            CommitEnd::Answered(CommitResult::Committed { sent, .. }) => self.outcome(hosted, info, &failure, &sent).await,
+            CommitEnd::Answered(CommitResult::Committed { sent, .. }) => {
+                self.outcome(hosted, info, &failure, &sent).await
+            }
             CommitEnd::Answered(other) => {
                 tracing::warn!("Failure commit of {} for {}: {other:?}", claim.actor, claim.message.id)
             }
@@ -680,7 +684,11 @@ impl TurnExecutor {
                         );
                         return CommitEnd::Abandoned;
                     }
-                    tracing::warn!("Commit of {} for {} failed; retrying ({left:?} left): {e}", claim.actor, claim.message.id);
+                    tracing::warn!(
+                        "Commit of {} for {} failed; retrying ({left:?} left): {e}",
+                        claim.actor,
+                        claim.message.id
+                    );
                     sleep(backoff.min(left)).await;
                     backoff = (backoff * 2).min(COMMIT_RETRY_MAX);
                 }

@@ -70,7 +70,11 @@ async fn kill_9_mid_turn_the_turn_is_re_run_on_another_node_after_the_lease_ttl(
     assert_eq!(run.attempt, 2);
     assert_ne!(run.node, victim);
     let lease_until = running.lease_until.unwrap();
-    assert!(run.claimed_at >= lease_until, "re-claimed ({}) before the victim's lease ended ({lease_until})", run.claimed_at);
+    assert!(
+        run.claimed_at >= lease_until,
+        "re-claimed ({}) before the victim's lease ended ({lease_until})",
+        run.claimed_at
+    );
     assert!(so.failures(&uri(&slow)).await.is_empty());
 }
 

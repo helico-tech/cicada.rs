@@ -8,9 +8,9 @@ use std::time::Duration;
 
 use cicada::address::ActorAddress;
 use cicada::store::{
-    ActorCreate, CancelResult, Claim, CommitRequest, CommitResult, CreateResult, DeleteResult, Delivery,
-    EnqueueResult, Message, MessageId, MessageStatus, OutcomeRecord, OutcomeStatus, OutgoingMessage, Page,
-    PageCursor, RegisterResult, RenewResult, StateChange, Store, StoreError, TurnOutcome, TypeDef,
+    ActorCreate, CancelResult, Claim, CommitRequest, CommitResult, CreateResult, DeleteResult, Delivery, EnqueueResult,
+    Message, MessageId, MessageStatus, OutcomeRecord, OutcomeStatus, OutgoingMessage, Page, PageCursor, RegisterResult,
+    RenewResult, StateChange, Store, StoreError, TurnOutcome, TypeDef,
 };
 use cicada::time::Timestamp;
 use serde_json::json;
@@ -213,7 +213,10 @@ pub async fn registry_resolve_finds_the_one_matching_template_and_decodes_its_pa
         let r = store.resolve(&address("actor://jobs/42/steps/1")).await.unwrap().expect("a match");
         assert_eq!(r.type_def, steps);
         let n = store.resolve(&address("actor://sync/a%20b/j1")).await.unwrap().expect("a match");
-        assert_eq!(n.params, BTreeMap::from([("tenant".to_owned(), "a b".to_owned()), ("job".to_owned(), "j1".to_owned())]));
+        assert_eq!(
+            n.params,
+            BTreeMap::from([("tenant".to_owned(), "a b".to_owned()), ("job".to_owned(), "j1".to_owned())])
+        );
         assert_eq!(store.resolve(&address("actor://jobs/1/2")).await.unwrap(), None);
         assert_eq!(store.resolve(&address("actor://unknown/1")).await.unwrap(), None);
     })
@@ -245,9 +248,7 @@ pub async fn instances_create_then_get_returns_the_initial_snapshot<B: FixtureFa
 }
 
 /// instances - create is idempotent and leaves the existing instance untouched
-pub async fn instances_create_is_idempotent_and_leaves_the_existing_instance_untouched<B: FixtureFactory>(
-    backend: &B,
-) {
+pub async fn instances_create_is_idempotent_and_leaves_the_existing_instance_untouched<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
         let a = t.new_actor(&TYPE, Some(json!({"n": 1}))).await;
@@ -370,7 +371,11 @@ pub async fn s2_commit_applies_state_creates_sends_and_outcome_together<B: Fixtu
         let committed = t
             .commit_ok(CommitRequest {
                 state: StateChange::NewState(Some(json!({"n": 1}))),
-                creates: vec![ActorCreate { address: child.clone(), template: TYPE.clone(), state: Some(json!({"child": 1})) }],
+                creates: vec![ActorCreate {
+                    address: child.clone(),
+                    template: TYPE.clone(),
+                    state: Some(json!({"child": 1})),
+                }],
                 sends: vec![
                     OutgoingMessage {
                         from: Some(a.clone()),
@@ -378,7 +383,10 @@ pub async fn s2_commit_applies_state_creates_sends_and_outcome_together<B: Fixtu
                         headers: BTreeMap::from([("h".to_owned(), "v".to_owned())]),
                         ..OutgoingMessage::new(other.clone(), "Hello", json!("x"))
                     },
-                    OutgoingMessage { from: Some(a.clone()), ..OutgoingMessage::new(child.clone(), "Init", json!("y")) },
+                    OutgoingMessage {
+                        from: Some(a.clone()),
+                        ..OutgoingMessage::new(child.clone(), "Init", json!("y"))
+                    },
                 ],
                 ..done(&claim)
             })
@@ -880,7 +888,10 @@ pub async fn s5_a_stale_epoch_cannot_commit_after_a_re_claim<B: FixtureFactory>(
         assert_eq!(store.get(&ghost).await.unwrap(), None);
         assert!(t.pending(&target).await.is_empty());
         let status = store.status(&m.id).await.unwrap();
-        assert_eq!(expect_matches!(status, Some(MessageStatus::Running { message, .. }) => message).id, current.message.id);
+        assert_eq!(
+            expect_matches!(status, Some(MessageStatus::Running { message, .. }) => message).id,
+            current.message.id
+        );
         t.commit_ok(CommitRequest { state: StateChange::NewState(Some(json!({"n": 1}))), ..done(&current) }).await;
         assert_eq!(state_of(&*store, &a).await, Some(json!({"n": 1})));
     })
@@ -896,12 +907,16 @@ pub async fn s5_renew_succeeds_only_with_the_current_held_lease<B: FixtureFactor
         t.send(&a).await;
         let c = t.claim_one().await;
         t.advance_ticks(2).await;
-        let renewed = expect_matches!(store.renew(&a, c.epoch, ttl).await.unwrap(), RenewResult::Renewed(until) => until);
+        let renewed =
+            expect_matches!(store.renew(&a, c.epoch, ttl).await.unwrap(), RenewResult::Renewed(until) => until);
         assert!(renewed > c.lease_until);
         t.advance_ticks(3).await; // past the original expiry, within the renewed lease
         assert!(t.claim_node(&NODE_B).await.is_empty(), "a renewed lease stays exclusive");
         assert_eq!(store.renew(&a, c.epoch + 1_000_000, ttl).await.unwrap(), RenewResult::LeaseLost);
-        assert_eq!(store.renew(&address("actor://conformance/none"), c.epoch, ttl).await.unwrap(), RenewResult::LeaseLost);
+        assert_eq!(
+            store.renew(&address("actor://conformance/none"), c.epoch, ttl).await.unwrap(),
+            RenewResult::LeaseLost
+        );
         t.commit_ok(done(&c)).await;
         assert_eq!(store.renew(&a, c.epoch, ttl).await.unwrap(), RenewResult::LeaseLost, "no renew after commit");
         t.send(&a).await;
@@ -966,9 +981,7 @@ pub async fn s5_racing_stale_and_current_commits_produce_exactly_one_outcome<B: 
 }
 
 /// S5 - committing a message other than the claimed one is a programming error
-pub async fn s5_committing_a_message_other_than_the_claimed_one_is_a_programming_error<B: FixtureFactory>(
-    backend: &B,
-) {
+pub async fn s5_committing_a_message_other_than_the_claimed_one_is_a_programming_error<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
         let a = t.new_actor(&TYPE, None).await;
@@ -1011,7 +1024,11 @@ pub async fn s6_only_the_head_message_is_claimed_one_turn_at_a_time<B: FixtureFa
 }
 
 /// Claims and commits `count` turns of [`TYPE`] one by one; returns the claimed messages.
-async fn handle_in_turn<F: StoreFixture>(t: &Env<F>, types: &[&cicada::address::UriTemplate], count: usize) -> Vec<Message> {
+async fn handle_in_turn<F: StoreFixture>(
+    t: &Env<F>,
+    types: &[&cicada::address::UriTemplate],
+    count: usize,
+) -> Vec<Message> {
     let mut out = Vec::new();
     for _ in 0..count {
         let c = t.claim_one_types(types).await;
@@ -1216,7 +1233,11 @@ pub async fn s6_pending_of_all_instances_by_prefix_instance_by_instance_in_deliv
 
         let expected = vec![a_now.id.clone(), a_soon.id.clone(), a_later.id.clone(), b_now.id.clone()];
         for page_size in [1, 2, 3, 100] {
-            assert_eq!(list_all_pending(&*store, "actor://conformance/", page_size).await, expected, "page size {page_size}");
+            assert_eq!(
+                list_all_pending(&*store, "actor://conformance/", page_size).await,
+                expected,
+                "page size {page_size}"
+            );
         }
         assert_eq!(list_all_pending(&*store, "actor://other/", 2).await, vec![other_now.id.clone()]);
         let mut everything = expected.clone();
@@ -1258,10 +1279,19 @@ pub async fn s7_message_ids_are_unique_across_pending_messages_and_retained_outc
         let a = t.new_actor(&TYPE, None).await;
         let b = t.new_actor(&TYPE, None).await;
         let pending = t.send(&a).await;
-        assert_eq!(store.enqueue(with_id(&a, &pending.id)).await.unwrap(), EnqueueResult::Duplicate(pending.id.clone()));
-        assert_eq!(store.enqueue(with_id(&b, &pending.id)).await.unwrap(), EnqueueResult::Duplicate(pending.id.clone()));
+        assert_eq!(
+            store.enqueue(with_id(&a, &pending.id)).await.unwrap(),
+            EnqueueResult::Duplicate(pending.id.clone())
+        );
+        assert_eq!(
+            store.enqueue(with_id(&b, &pending.id)).await.unwrap(),
+            EnqueueResult::Duplicate(pending.id.clone())
+        );
         t.commit_ok(done(&t.claim_one().await)).await;
-        assert_eq!(store.enqueue(with_id(&b, &pending.id)).await.unwrap(), EnqueueResult::Duplicate(pending.id.clone()));
+        assert_eq!(
+            store.enqueue(with_id(&b, &pending.id)).await.unwrap(),
+            EnqueueResult::Duplicate(pending.id.clone())
+        );
         let cancelled = t.send(&b).await;
         store.cancel(&cancelled.id).await.unwrap();
         assert_eq!(
@@ -1336,9 +1366,7 @@ pub async fn s7_cancel_ends_only_pending_messages<B: FixtureFactory>(backend: &B
 }
 
 /// S7 - cancelling a claimed message whose lease expired fences the stale turn
-pub async fn s7_cancelling_a_claimed_message_whose_lease_expired_fences_the_stale_turn<B: FixtureFactory>(
-    backend: &B,
-) {
+pub async fn s7_cancelling_a_claimed_message_whose_lease_expired_fences_the_stale_turn<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
         let a = t.new_actor(&TYPE, None).await;
@@ -1659,9 +1687,7 @@ async fn collect_failures(store: &dyn Store, prefix: &str, since: Timestamp) -> 
 }
 
 /// S10 - failures are listed by prefix and since, with paging, within retention
-pub async fn s10_failures_are_listed_by_prefix_and_since_with_paging_within_retention<B: FixtureFactory>(
-    backend: &B,
-) {
+pub async fn s10_failures_are_listed_by_prefix_and_since_with_paging_within_retention<B: FixtureFactory>(backend: &B) {
     store_test_with(backend, tick_retention(backend), DEFAULT_TIMEOUT, async |t| {
         let store = t.store();
         let a = t.new_actor(&TYPE, None).await;

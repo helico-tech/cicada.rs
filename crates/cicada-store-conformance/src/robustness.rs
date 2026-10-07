@@ -46,7 +46,11 @@ pub async fn time_a_delivery_time_beyond_the_supported_range_is_refused_and_noth
             );
         }
         assert_eq!(ids(&t.pending(&a).await), vec![m.id.clone()], "nothing was enqueued");
-        assert_matches!(store.status(&m.id).await.unwrap(), Some(MessageStatus::Running { .. }), "the lease is still held");
+        assert_matches!(
+            store.status(&m.id).await.unwrap(),
+            Some(MessageStatus::Running { .. }),
+            "the lease is still held"
+        );
         t.commit_ok(done(&c)).await;
         assert_eq!(t.claim().await, vec![]);
     })
@@ -157,7 +161,11 @@ pub async fn s5_renew_and_commit_still_work_after_expiry_as_long_as_nobody_re_cl
         let m = t.send(&a).await;
         let c = t.claim_one().await;
         t.expire_lease().await;
-        assert_matches!(store.status(&m.id).await.unwrap(), Some(MessageStatus::Pending(_)), "an expired lease is not running");
+        assert_matches!(
+            store.status(&m.id).await.unwrap(),
+            Some(MessageStatus::Pending(_)),
+            "an expired lease is not running"
+        );
         assert_matches!(store.renew(&a, c.epoch, t.ttl()).await.unwrap(), RenewResult::Renewed(_));
         assert_matches!(store.status(&m.id).await.unwrap(), Some(MessageStatus::Running { .. }), "renewed again");
         t.expire_lease().await;
@@ -180,8 +188,15 @@ pub async fn commit_repeating_a_commit_that_already_applied_changes_nothing<B: F
         let c = t.claim_one().await;
         let request = CommitRequest {
             state: StateChange::NewState(Some(json!({"n": 1}))),
-            creates: vec![ActorCreate { address: child.clone(), template: OTHER.clone(), state: Some(json!({"c": 1})) }],
-            sends: vec![OutgoingMessage::new(b.clone(), "T", json!(1)), OutgoingMessage::new(child.clone(), "T", json!(2))],
+            creates: vec![ActorCreate {
+                address: child.clone(),
+                template: OTHER.clone(),
+                state: Some(json!({"c": 1})),
+            }],
+            sends: vec![
+                OutgoingMessage::new(b.clone(), "T", json!(1)),
+                OutgoingMessage::new(child.clone(), "T", json!(2)),
+            ],
             ..done(&c)
         };
         let first = t.commit_ok(request.clone()).await;
@@ -264,9 +279,7 @@ enum Raced {
 }
 
 /// S7 - a commit and a concurrent enqueue racing for one id accept exactly one
-pub async fn s7_a_commit_and_a_concurrent_enqueue_racing_for_one_id_accept_exactly_one<B: FixtureFactory>(
-    backend: &B,
-) {
+pub async fn s7_a_commit_and_a_concurrent_enqueue_racing_for_one_id_accept_exactly_one<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         for round in 0..10 {
             let a = t.new_actor(&TYPE, None).await;

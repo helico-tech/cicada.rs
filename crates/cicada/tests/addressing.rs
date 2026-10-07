@@ -120,7 +120,10 @@ fn parses_literals_and_params() {
 #[test]
 fn matches_and_extracts_decoded_params() {
     let template = t("actor://sync/{tenant}");
-    assert_eq!(template.matches(&ActorAddress::parse("actor://sync/a%20b").unwrap()), Some(params(&[("tenant", "a b")])));
+    assert_eq!(
+        template.matches(&ActorAddress::parse("actor://sync/a%20b").unwrap()),
+        Some(params(&[("tenant", "a b")]))
+    );
     assert_eq!(template.matches(&ActorAddress::parse("actor://sync/a/b").unwrap()), None);
     assert_eq!(template.matches(&ActorAddress::parse("actor://other/a").unwrap()), None);
 }
@@ -147,9 +150,21 @@ fn templates_overlap_when_some_address_matches_both() {
     let common = |a: &str, b: &str| t(a).common_address(&t(b)).map(|c| c.to_string());
 
     assert_eq!(common("actor://jobs/{id}", "actor://jobs/cleanup").as_deref(), Some("actor://jobs/cleanup"));
-    assert_eq!(common("actor://jobs/{id}", "actor://jobs/{name}").as_deref(), Some("actor://jobs/id"), "identical shape");
-    assert_eq!(common("actor://{a}/x", "actor://s/{b}").as_deref(), Some("actor://s/x"), "literals in different positions");
-    assert_eq!(common("actor://jobs/{id}", "actor://jobs/{id}").as_deref(), Some("actor://jobs/id"), "an equal template");
+    assert_eq!(
+        common("actor://jobs/{id}", "actor://jobs/{name}").as_deref(),
+        Some("actor://jobs/id"),
+        "identical shape"
+    );
+    assert_eq!(
+        common("actor://{a}/x", "actor://s/{b}").as_deref(),
+        Some("actor://s/x"),
+        "literals in different positions"
+    );
+    assert_eq!(
+        common("actor://jobs/{id}", "actor://jobs/{id}").as_deref(),
+        Some("actor://jobs/id"),
+        "an equal template"
+    );
     assert!(t("actor://{a}/x").overlaps(&t("actor://s/{b}")));
 
     assert_eq!(common("actor://jobs/{id}", "actor://jobs/{id}/steps/{n}"), None, "different segment counts");
@@ -160,7 +175,9 @@ fn templates_overlap_when_some_address_matches_both() {
 
 #[test]
 fn rejects_malformed_templates() {
-    for bad in ["actor://", "x://a", "actor://a/{}", "actor://a/{1x}", "actor://{a}/{a}", "actor://a/{b", "actor://a//b"] {
+    for bad in
+        ["actor://", "x://a", "actor://a/{}", "actor://a/{1x}", "actor://{a}/{a}", "actor://a/{b", "actor://a//b"]
+    {
         assert!(UriTemplate::parse(bad).is_err(), "{bad}");
     }
 }

@@ -12,11 +12,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use cicada::ActorSystem;
 use cicada::address::ActorAddress;
 use cicada::prelude::*;
 use cicada::runtime::NodeState;
 use cicada::store::{MessageStatus, NodeId, OutcomeStatus, RenewResult, Store, StoreResult};
-use cicada::ActorSystem;
 use cicada_test::InMemoryStore;
 use common::*;
 use serde::{Deserialize, Serialize};
@@ -67,7 +67,13 @@ struct CountRenewals(AtomicUsize);
 
 #[async_trait]
 impl Faults for CountRenewals {
-    async fn renew(&self, inner: &dyn Store, address: &ActorAddress, epoch: i64, ttl: Duration) -> StoreResult<RenewResult> {
+    async fn renew(
+        &self,
+        inner: &dyn Store,
+        address: &ActorAddress,
+        epoch: i64,
+        ttl: Duration,
+    ) -> StoreResult<RenewResult> {
         self.0.fetch_add(1, Ordering::SeqCst);
         inner.renew(address, epoch, ttl).await
     }
@@ -95,8 +101,10 @@ async fn a_blocking_handler_does_not_starve_the_heartbeat() {
     node.create_stateless(&blocker("b")).await.unwrap();
     node.start().await.unwrap();
     let m = accepted(node.send(&blocker("b"), BlockerMsg::Block { millis: 1_500 }).await.unwrap());
-    eventually(TEN_SECONDS, || async { matches!(memory.status(&m.id).await.unwrap(), Some(MessageStatus::Running { .. })) })
-        .await;
+    eventually(TEN_SECONDS, || async {
+        matches!(memory.status(&m.id).await.unwrap(), Some(MessageStatus::Running { .. }))
+    })
+    .await;
     other.start().await.unwrap();
     eventually(TEN_SECONDS, || async { memory.outcome(&m.id).await.unwrap().is_some() }).await;
     let outcome = memory.outcome(&m.id).await.unwrap().unwrap();
@@ -121,8 +129,10 @@ async fn stop_does_not_hang_on_a_handler_that_ignores_cancellation() {
     // Kotlin: 20 s suspended in NonCancellable. A blocked thread holds up the runtime's shutdown at the end of the test,
     // so it blocks for 3 s only.
     let m = accepted(node.send(&blocker("s"), BlockerMsg::Block { millis: 3_000 }).await.unwrap());
-    eventually(TEN_SECONDS, || async { matches!(memory.status(&m.id).await.unwrap(), Some(MessageStatus::Running { .. })) })
-        .await;
+    eventually(TEN_SECONDS, || async {
+        matches!(memory.status(&m.id).await.unwrap(), Some(MessageStatus::Running { .. }))
+    })
+    .await;
     let mark = Instant::now();
     node.stop_with_grace(Duration::ZERO).await;
     assert!(mark.elapsed() < Duration::from_secs(2), "stop returned after {:?}", mark.elapsed());
@@ -133,7 +143,8 @@ async fn stop_does_not_hang_on_a_handler_that_ignores_cancellation() {
 async fn stopping_right_after_a_claim_never_leaves_a_lease_behind() {
     for round in 0..30 {
         let memory = Arc::new(InMemoryStore::default());
-        let node = ActorSystem::builder(memory.clone()).host(BlockerActor).poll_interval(Duration::from_millis(5)).build();
+        let node =
+            ActorSystem::builder(memory.clone()).host(BlockerActor).poll_interval(Duration::from_millis(5)).build();
         let r = blocker(&format!("r{round}"));
         node.create_stateless(&r).await.unwrap();
         let m = accepted(node.send(&r, BlockerMsg::Nap { millis: 10_000 }).await.unwrap());

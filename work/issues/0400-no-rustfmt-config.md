@@ -1,5 +1,5 @@
 ---
-status: todo
+status: done
 type: debt
 created: 2026-10-07
 ---
@@ -25,3 +25,5 @@ cargo fmt -p cicada --check -- --config max_width=120,use_small_heuristics=Max |
 
 Proposal: add `rustfmt.toml` with `max_width = 120` and `use_small_heuristics = "Max"`, run `cargo fmt --all` once in
 a separate commit, and add `cargo fmt --all --check` to the build instructions in `AGENTS.md`.
+
+- 2026-10-07: `rustfmt.toml` (120 columns, `use_small_heuristics = "Max"`), the workspace formatted, `cargo fmt --all --check` in CI.

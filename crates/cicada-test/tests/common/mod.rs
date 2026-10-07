@@ -134,7 +134,9 @@ where
             let to = ActorAddress::parse(&to)?;
             match turn.send_raw(&to, "Nope", serde_json::json!({}), SendOptions::new()).await {
                 Ok(_) => turn.state_mut().log("sent"),
-                Err(TurnError::SendRejected { message_type, .. }) => turn.state_mut().log(format!("rejected:{message_type}")),
+                Err(TurnError::SendRejected { message_type, .. }) => {
+                    turn.state_mut().log(format!("rejected:{message_type}"))
+                }
                 Err(e) => return Err(e.into()),
             }
         }
@@ -394,7 +396,13 @@ pub trait Faults: Send + Sync + 'static {
         inner.claim_due(types, node, ttl, limit).await
     }
 
-    async fn renew(&self, inner: &dyn Store, address: &ActorAddress, epoch: i64, ttl: Duration) -> StoreResult<RenewResult> {
+    async fn renew(
+        &self,
+        inner: &dyn Store,
+        address: &ActorAddress,
+        epoch: i64,
+        ttl: Duration,
+    ) -> StoreResult<RenewResult> {
         inner.renew(address, epoch, ttl).await
     }
 
@@ -449,7 +457,12 @@ impl<F: Faults> Store for Faulty<F> {
         self.faults.resolve(&*self.inner, address).await
     }
 
-    async fn create(&self, address: &ActorAddress, template: &UriTemplate, state: Option<Value>) -> StoreResult<CreateResult> {
+    async fn create(
+        &self,
+        address: &ActorAddress,
+        template: &UriTemplate,
+        state: Option<Value>,
+    ) -> StoreResult<CreateResult> {
         self.inner.create(address, template, state).await
     }
 
@@ -491,11 +504,21 @@ impl<F: Faults> Store for Faulty<F> {
         self.inner.next_due_at(types).await
     }
 
-    async fn pending(&self, address: &ActorAddress, cursor: Option<&PageCursor>, limit: usize) -> StoreResult<Page<Message>> {
+    async fn pending(
+        &self,
+        address: &ActorAddress,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> StoreResult<Page<Message>> {
         self.inner.pending(address, cursor, limit).await
     }
 
-    async fn list_pending(&self, prefix: &str, cursor: Option<&PageCursor>, limit: usize) -> StoreResult<Page<Message>> {
+    async fn list_pending(
+        &self,
+        prefix: &str,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> StoreResult<Page<Message>> {
         self.inner.list_pending(prefix, cursor, limit).await
     }
 

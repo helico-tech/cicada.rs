@@ -43,7 +43,10 @@ fn hash_ignores_key_order_but_not_array_order() {
 #[test]
 fn known_hash() {
     // sha256 of the 2-byte string "{}"
-    assert_eq!(canonical_sha256(&parse("{}")), "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a");
+    assert_eq!(
+        canonical_sha256(&parse("{}")),
+        "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    );
 }
 
 // ---- JSON Schemas ----
@@ -101,7 +104,9 @@ fn defaults_are_not_required_and_nullable_accepts_null() {
 
 fn has_additional_properties_false(value: &Value) -> bool {
     match value {
-        Value::Object(o) => o.iter().any(|(k, v)| (k == "additionalProperties" && v == &json!(false)) || has_additional_properties_false(v)),
+        Value::Object(o) => o
+            .iter()
+            .any(|(k, v)| (k == "additionalProperties" && v == &json!(false)) || has_additional_properties_false(v)),
         Value::Array(a) => a.iter().any(has_additional_properties_false),
         _ => false,
     }
@@ -159,7 +164,10 @@ fn generation_is_deterministic() {
 
 #[test]
 fn encode_uses_the_variant_fields_without_the_tag() {
-    assert_eq!(message::encode(&CodecMsg::Ping).unwrap(), EncodedMessage { message_type: "Ping".into(), payload: json!({}) });
+    assert_eq!(
+        message::encode(&CodecMsg::Ping).unwrap(),
+        EncodedMessage { message_type: "Ping".into(), payload: json!({}) }
+    );
     let draw = message::encode(&CodecMsg::Draw { shape: Shape::Circle { radius: 2.0 }, count: 1 }).unwrap();
     assert_eq!(draw.message_type, "Draw");
     assert_eq!(draw.payload, json!({"shape": {"type": "circle", "radius": 2.0}, "count": 1}));

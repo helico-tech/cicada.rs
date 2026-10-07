@@ -4,11 +4,11 @@ mod common;
 
 use std::time::Duration;
 
-use cicada::{ActorRef, ActorType};
 use cicada::runtime::SendResult;
 use cicada::store::{MessageStatus, OutcomeStatus, OutgoingMessage, Store};
 use cicada::time;
 use cicada::turn::SendOptions;
+use cicada::{ActorRef, ActorType};
 use cicada_test::TestActors;
 use common::*;
 use serde_json::json;
@@ -56,10 +56,7 @@ async fn handler_fails_failed_with_error_no_effects_mailbox_continues() {
     assert_eq!(record.envelope.attempt, 1);
     assert_eq!(test.outcome(&next).await.unwrap().status, OutcomeStatus::Done);
     // Neither the state change nor the self-send of the failed turn was applied.
-    assert_eq!(
-        test.state::<_, CounterState>(&a()).await,
-        CounterState { total: 1, log: vec!["add:1".into()] }
-    );
+    assert_eq!(test.state::<_, CounterState>(&a()).await, CounterState { total: 1, log: vec!["add:1".into()] });
     assert_eq!(test.failures().await.iter().map(|f| f.message_id.clone()).collect::<Vec<_>>(), vec![boom.id]);
 }
 
@@ -175,9 +172,8 @@ async fn a_message_is_never_delivered_early() {
 async fn handler_sees_the_envelope_and_store_time_at_claim() {
     let test = harness().await;
     test.create(&a(), &CounterState::default()).await;
-    let m = test
-        .send_with(&a(), CounterMsg::Inspect, SendOptions::new().correlation_id("c-1").header("trace", "t"))
-        .await;
+    let m =
+        test.send_with(&a(), CounterMsg::Inspect, SendOptions::new().correlation_id("c-1").header("trace", "t")).await;
     test.run_until_idle().await;
     assert_eq!(
         test.state::<_, CounterState>(&a()).await.log,

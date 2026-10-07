@@ -112,11 +112,8 @@ impl Actor for LinkActor {
 }
 
 async fn harness() -> TestActors {
-    let test = TestActors::builder()
-        .with(|n| n.host(ActorType::new(LinkActor).install(EchoHook)))
-        .build()
-        .await
-        .unwrap();
+    let test =
+        TestActors::builder().with(|n| n.host(ActorType::new(LinkActor).install(EchoHook))).build().await.unwrap();
     test.create_stateless(&link("r")).await;
     test
 }
@@ -199,7 +196,11 @@ async fn pending_and_failed_messages_are_part_of_a_chain() {
     let failing = test.send(&link("r"), LinkMsg::Ping { later: true, fail: true }).await;
     test.run_until_idle().await;
     let failed = chain(&test, &failing.id).await;
-    assert_eq!(failed.entries.iter().map(|e| e.id().clone()).collect::<Vec<_>>(), vec![failing.id], "a failed turn's sends were discarded");
+    assert_eq!(
+        failed.entries.iter().map(|e| e.id().clone()).collect::<Vec<_>>(),
+        vec![failing.id],
+        "a failed turn's sends were discarded"
+    );
     assert!(matches!(status(&failed.entries[0]), MessageStatus::Finished(_)));
 }
 
@@ -213,7 +214,12 @@ async fn a_long_chain_is_cut_off_after_the_maximum_depth_both_ways() {
     assert!(down.truncated);
 
     let last_hop = |c: &MessageChain| {
-        c.entries.iter().map(|e| status(e).envelope().clone()).filter(|m| m.message_type == "Hop").max_by_key(|m| m.seq).unwrap()
+        c.entries
+            .iter()
+            .map(|e| status(e).envelope().clone())
+            .filter(|m| m.message_type == "Hop")
+            .max_by_key(|m| m.seq)
+            .unwrap()
     };
     let last = last_hop(&down);
     let tail = chain(&test, &last.id).await;

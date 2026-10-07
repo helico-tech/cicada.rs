@@ -8,7 +8,7 @@ use serde_json::Value;
 use crate::address::{ActorAddress, UriTemplate};
 use crate::retention::Retention;
 use crate::retry::RetryPolicy;
-use crate::time::{self, MAX_DELAY, MAX_INSTANT, Timestamp, TimeError};
+use crate::time::{self, MAX_DELAY, MAX_INSTANT, TimeError, Timestamp};
 
 macro_rules! string_id {
     ($(#[$doc:meta])* $name:ident, $what:literal) => {

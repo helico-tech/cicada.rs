@@ -209,7 +209,8 @@ mod tests {
     #[test]
     fn a_jdbc_url_becomes_a_libpq_url() {
         assert_eq!(
-            PostgresConnection::parse("jdbc:postgresql://db:5432/actors?sslmode=require", Some("u"), Some("p")).unwrap(),
+            PostgresConnection::parse("jdbc:postgresql://db:5432/actors?sslmode=require", Some("u"), Some("p"))
+                .unwrap(),
             conn("postgres://db:5432/actors?sslmode=require", Some("u"), Some("p")),
         );
         assert_eq!(parse(" jdbc:postgresql://db/actors "), conn("postgres://db/actors", None, None));
@@ -217,7 +218,10 @@ mod tests {
             parse("jdbc:postgresql://db/actors?user=app&password=s%40cret&ApplicationName=x&ssl=true"),
             conn("postgres://db/actors?application_name=x&sslmode=verify-full", Some("app"), Some("s@cret")),
         );
-        assert_eq!(parse("jdbc:postgresql://db/a?ssl=true&sslmode=disable"), conn("postgres://db/a?sslmode=disable", None, None));
+        assert_eq!(
+            parse("jdbc:postgresql://db/a?ssl=true&sslmode=disable"),
+            conn("postgres://db/a?sslmode=disable", None, None)
+        );
         assert_eq!(parse("jdbc:postgresql:actors"), conn("postgres://localhost/actors", None, None));
     }
 
@@ -227,7 +231,10 @@ mod tests {
             parse("postgres://app:s3cr%40t%3A%2Fx@db.example:6543/orders?sslmode=require"),
             conn("postgres://db.example:6543/orders?sslmode=require", Some("app"), Some("s3cr@t:/x")),
         );
-        assert_eq!(parse("postgresql://actors@localhost/actors"), conn("postgres://localhost/actors", Some("actors"), None));
+        assert_eq!(
+            parse("postgresql://actors@localhost/actors"),
+            conn("postgres://localhost/actors", Some("actors"), None)
+        );
         assert_eq!(parse("postgres://h"), conn("postgres://h/", None, None));
         assert_eq!(parse("postgres://a:b+c@h/d"), conn("postgres://h/d", Some("a"), Some("b+c")));
         assert_eq!(parse("postgres://a@[::1]:5433/d"), conn("postgres://[::1]:5433/d", Some("a"), None));

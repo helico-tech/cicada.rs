@@ -26,9 +26,7 @@ fn keeper() -> Keeper {
 #[serde(tag = "type")]
 enum KeeperMsg {
     /// Sends a `Note` to itself with the policy given, so the turn's own send carries it.
-    Pass {
-        retention: Option<Retention>,
-    },
+    Pass { retention: Option<Retention> },
     Note {
         #[serde(default)]
         fail: bool,
@@ -93,8 +91,10 @@ async fn a_record_kept_for_a_time_disappears_after_it_and_a_failed_one_follows_t
     let test = harness().await;
     let hour = Duration::from_secs(3600);
     let day = 24 * hour;
-    let policy = Retention { done: Some(Keep::keep_for(hour).unwrap()), failed: Some(Keep::keep_for(30 * day).unwrap()) };
-    let done = test.send_with(&keeper(), KeeperMsg::Note { fail: false }, SendOptions::new().retention(policy.clone())).await;
+    let policy =
+        Retention { done: Some(Keep::keep_for(hour).unwrap()), failed: Some(Keep::keep_for(30 * day).unwrap()) };
+    let done =
+        test.send_with(&keeper(), KeeperMsg::Note { fail: false }, SendOptions::new().retention(policy.clone())).await;
     let failed = test.send_with(&keeper(), KeeperMsg::Note { fail: true }, SendOptions::new().retention(policy)).await;
     test.run_until_idle().await;
     assert!(test.outcome(&done).await.is_some());

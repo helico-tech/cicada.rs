@@ -1,9 +1,8 @@
 //! Conversions between the runtime model and the HTTP bodies.
 
 use super::{
-    Params,
     ActorView, ChainNodeView, MessageChainView, MessageState, MessageStatusView, MessageView, OutcomeView, PageView,
-    SendRequest, TypeMatchView, TypeView,
+    Params, SendRequest, TypeMatchView, TypeView,
 };
 use crate::runtime::{ActorSnapshot, MessageChain, RegisteredType, ResolvedActorType};
 use crate::store::{ChainEntry, Delivery, Message, MessageStatus, OutcomeRecord, OutcomeStatus, Page};
@@ -192,7 +191,10 @@ impl From<&RegisteredType> for TypeView {
 
 impl From<&ResolvedActorType> for TypeMatchView {
     fn from(r: &ResolvedActorType) -> Self {
-        Self { actor_type: (&r.registered).into(), params: Params::in_template_order(r.registered.template(), &r.params) }
+        Self {
+            actor_type: (&r.registered).into(),
+            params: Params::in_template_order(r.registered.template(), &r.params),
+        }
     }
 }
 

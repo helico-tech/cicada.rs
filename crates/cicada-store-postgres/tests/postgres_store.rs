@@ -73,7 +73,8 @@ async fn connections_stay_on_the_stores_schema_across_read_only_and_rolled_back_
     let setup = db.open().await;
     let a = addr("actor://pg/a");
     setup.create(&a, &template(), None).await.unwrap();
-    let EnqueueResult::Enqueued(m) = setup.enqueue(OutgoingMessage::new(a.clone(), "T", json!(1))).await.unwrap() else {
+    let EnqueueResult::Enqueued(m) = setup.enqueue(OutgoingMessage::new(a.clone(), "T", json!(1))).await.unwrap()
+    else {
         panic!("enqueued")
     };
     // Concurrent operations force the pools to open fresh connections whose first transaction is read-only, or rolls
@@ -160,7 +161,10 @@ async fn a_closed_store_refuses_operations() {
 }
 
 /// Collects `store`'s wake-ups for `t` into a channel.
-fn collect_wake_ups(store: &PostgresStore, t: UriTemplate) -> (mpsc::UnboundedReceiver<()>, tokio::task::JoinHandle<()>) {
+fn collect_wake_ups(
+    store: &PostgresStore,
+    t: UriTemplate,
+) -> (mpsc::UnboundedReceiver<()>, tokio::task::JoinHandle<()>) {
     let (sender, receiver) = mpsc::unbounded_channel();
     let mut wake_ups = store.wake_ups(&types(t)).expect("the PostgreSQL store has wake-ups");
     let collector = tokio::spawn(async move {
@@ -202,11 +206,17 @@ async fn wake_ups_follow_enqueues_sends_and_releases_of_the_requested_types_on_a
     assert!(none_within(&mut received, short).await, "creates do not notify");
 
     // An enqueue on another node.
-    assert!(matches!(writer.enqueue(OutgoingMessage::new(a.clone(), "T", json!(1))).await, Ok(EnqueueResult::Enqueued(_))));
+    assert!(matches!(
+        writer.enqueue(OutgoingMessage::new(a.clone(), "T", json!(1))).await,
+        Ok(EnqueueResult::Enqueued(_))
+    ));
     assert!(some_within(&mut received, long).await, "enqueue notifies");
 
     // Another type is filtered out.
-    assert!(matches!(writer.enqueue(OutgoingMessage::new(b.clone(), "T", json!(1))).await, Ok(EnqueueResult::Enqueued(_))));
+    assert!(matches!(
+        writer.enqueue(OutgoingMessage::new(b.clone(), "T", json!(1))).await,
+        Ok(EnqueueResult::Enqueued(_))
+    ));
     assert!(none_within(&mut received, short).await, "other types are filtered");
 
     // A release makes the message claimable again.

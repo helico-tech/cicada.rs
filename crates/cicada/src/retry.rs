@@ -42,11 +42,7 @@ impl TryFrom<RawRetryPolicy> for RetryPolicy {
 
     fn try_from(raw: RawRetryPolicy) -> Result<Self, String> {
         if !(1..=Self::MAX_ATTEMPTS as i64).contains(&raw.max_attempts) {
-            return Err(format!(
-                "retry maxAttempts must be in 1..{}, was {}",
-                Self::MAX_ATTEMPTS,
-                raw.max_attempts
-            ));
+            return Err(format!("retry maxAttempts must be in 1..{}, was {}", Self::MAX_ATTEMPTS, raw.max_attempts));
         }
         Ok(Self { max_attempts: raw.max_attempts as u32, backoff: raw.backoff })
     }
@@ -223,11 +219,7 @@ impl Backoff {
             Backoff::Fixed { delay } => *delay,
             Backoff::Exponential { initial, factor, max } => {
                 let raw = initial.as_secs_f64() * factor.powi((retry - 1).min(i32::MAX as u32) as i32);
-                if !raw.is_finite() || raw >= max.as_secs_f64() {
-                    *max
-                } else {
-                    Duration::from_secs_f64(raw).min(*max)
-                }
+                if !raw.is_finite() || raw >= max.as_secs_f64() { *max } else { Duration::from_secs_f64(raw).min(*max) }
             }
         }
         .min(MAX_DELAY)
@@ -294,11 +286,9 @@ mod tests {
 
     #[test]
     fn json_round_trip() {
-        let policy = RetryPolicy::new(
-            4,
-            Backoff::exponential(Duration::from_secs(1), 2.0, Duration::from_secs(60)).unwrap(),
-        )
-        .unwrap();
+        let policy =
+            RetryPolicy::new(4, Backoff::exponential(Duration::from_secs(1), 2.0, Duration::from_secs(60)).unwrap())
+                .unwrap();
         let json = policy.to_json();
         assert_eq!(
             json,
