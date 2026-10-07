@@ -291,9 +291,13 @@ name = "cicada-examples"
 version = "0.1.0"
 dependencies = [
  "cicada",
+ "cicada-extras",
+ "cicada-otel",
+ "cicada-test",
  "schemars",
  "serde",
  "serde_json",
+ "thiserror",
  "tokio",
 ]
 
