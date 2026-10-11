@@ -27,6 +27,8 @@ jobs:
           - 55432:5432
     env:
       CICADA_PG_URL: postgres://cicada:cicada@localhost:55432/cicada
+      # cicada-docker's tests against the runner's Docker daemon.
+      CICADA_DOCKER: "1"
       CARGO_TERM_COLOR: always
     steps:
       - uses: actions/checkout@v7

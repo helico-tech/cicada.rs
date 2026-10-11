@@ -1,0 +1,33 @@
+[package]
+name = "cicada-docker"
+description = "Container handles on Cicada: actors that run, watch and stop Docker containers."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+axum.workspace = true
+bollard = "0.21.1"
+chrono.workspace = true
+cicada.workspace = true
+futures.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+cicada-axum.workspace = true
+cicada-test.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+tower.workspace = true
+http-body-util = "0.1"
+
+[lints]
+workspace = true

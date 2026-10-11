@@ -1,5 +1,5 @@
 ---
-status: todo
+status: done
 created: 2026-10-11
 ---
 
@@ -19,6 +19,18 @@ The handle: `ContainerHandle` (`actor://containers/{name}`) and `ContainerActor`
 
 ## Plan
 
+`ContainerActor { engine: Arc<dyn Engine>, prefix, check_every }`. Each turn: validate the name, run the command
+(inspect first; a container without the handle's `cicada.uri` fails permanently), then `observe` (never fails; errors
+go to `checkError`) and re-arm one `Check` (cancel the previous pending one, `Retention::REMOVE_ON_DONE` so polls do
+not fill the outcomes table). `Remove` ends with `turn.stop()`. Tests in `tests/container_actor.rs` on a fake engine
+(`tests/support`).
+
 ## Progress log
+
+- 2026-10-11: Built; 13 tests on `TestActors` (virtual time): apply/pull/create/start, repeat apply, spec change,
+  retried apply after a failed start, foreign container, exit with code and last lines (read once per run), Docker
+  down during a check, stop/start, start after an outside removal, start without spec, remove, pull `never`, reserved
+  labels and bad names.
+- `Start` creates a missing container (from the last applied spec); `Check` never does.
 
 ## Follow-ups

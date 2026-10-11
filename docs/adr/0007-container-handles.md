@@ -35,7 +35,7 @@ and the actor type `ContainerActor`, one instance per container.
 - **Status by polling.** Each turn re-arms one `Check` self-send (cancelling the previous one), at an interval set on
   the actor type. A `Check` that cannot reach Docker records the error and re-arms, so polling never stops while the
   handle exists. A Docker events watcher is a later addition, not a replacement.
-- **Logs bypass the store.** `container_logs(engine)` is an axum `Router` with `GET /containers/{name}/logs` that
+- **Logs bypass the store.** `container_logs(&containers)` is an axum `Router` with `GET /containers/{name}/logs` that
   streams the container's output straight from Docker (`tail`, `follow`, `since`, `timestamps`). The state keeps only
   the last lines at exit, for the failure reason.
 - **One Docker endpoint.** Every node that hosts `ContainerActor` must reach the same Docker daemon (local socket for a

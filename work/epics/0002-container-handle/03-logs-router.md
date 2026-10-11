@@ -1,5 +1,5 @@
 ---
-status: todo
+status: done
 created: 2026-10-11
 ---
 
@@ -18,6 +18,14 @@ created: 2026-10-11
 
 ## Plan
 
+`container_logs(&ContainerActor) -> Router`: validate the query, resolve the container name, inspect and require the
+handle's `cicada.uri` label, then `Body::from_stream` of the engine's log stream. Problems are rendered with
+`cicada::api::Problem`; a Docker failure is `502` with `urn:cicada:problem:docker-unavailable`.
+
 ## Progress log
+
+- 2026-10-11: Built; 5 tests with `tower::ServiceExt::oneshot` on the fake engine (default tail, `tail`, 404 for
+  unknown, foreign and invalid names, 400 for bad queries, 502 when Docker is down).
+- Takes the `ContainerActor` instead of the engine, so it uses the same prefix.
 
 ## Follow-ups

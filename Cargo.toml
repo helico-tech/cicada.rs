@@ -11,6 +11,7 @@ members = [
     "crates/cicada-ui",
     "crates/cicada-otel",
     "crates/cicada-extras",
+    "crates/cicada-docker",
     "examples",
     "sample-service",
     "e2e",
@@ -35,6 +36,7 @@ cicada-client = { path = "crates/cicada-client" }
 cicada-ui = { path = "crates/cicada-ui" }
 cicada-otel = { path = "crates/cicada-otel" }
 cicada-extras = { path = "crates/cicada-extras" }
+cicada-docker = { path = "crates/cicada-docker" }
 cicada-examples = { path = "examples" }
 
 anyhow = "1.0.104"

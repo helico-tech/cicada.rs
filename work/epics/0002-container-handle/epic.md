@@ -23,8 +23,8 @@ Docker tests, and the branch is merged and pushed.
 
 ## Stories
 
-- [01 Crate, container spec and the `Engine` seam with a bollard engine](01-engine.md) — todo
-- [02 `ContainerActor`: commands, status polling, tests on a fake engine](02-container-actor.md) — todo
-- [03 Logs router](03-logs-router.md) — todo
-- [04 Tests against a real Docker daemon, in CI](04-docker-tests.md) — todo
+- [01 Crate, container spec and the `Engine` seam with a bollard engine](01-engine.md) — done
+- [02 `ContainerActor`: commands, status polling, tests on a fake engine](02-container-actor.md) — done
+- [03 Logs router](03-logs-router.md) — done
+- [04 Tests against a real Docker daemon, in CI](04-docker-tests.md) — done
 - [05 Sample service group and docs](05-sample-and-docs.md) — todo
