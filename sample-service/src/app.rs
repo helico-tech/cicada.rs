@@ -12,8 +12,9 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;
 use cicada::store::{NodeId, Store};
-use cicada::{ActorSystem, CreateActorResult};
+use cicada::{ActorRef, ActorSystem, CreateActorResult};
 use cicada_axum::{actor_api, actor_health};
+use cicada_docker::{ContainerActor, ContainerHandle, DockerEngine, container_logs};
 use cicada_extras::{CrashLoopGuard, FailureWatcher};
 use cicada_store_postgres::{PostgresStore, PostgresStoreConfig};
 use cicada_store_sqlite::{SqliteOptions, SqliteStore};
@@ -39,8 +40,8 @@ pub struct NodeInfo {
     pub store: String,
 }
 
-/// A running sample node: the actor system on its store, the failure watcher when it hosts `supervision`, and the
-/// telemetry providers when export is configured. [`Self::router`] serves it over HTTP; [`Self::shutdown`] stops it.
+/// A running sample node: the actor system on its store, the failure watcher when it hosts `supervision`, the container
+/// handles when `CONTAINERS` is set, and the telemetry providers when export is configured. [`Self::router`] serves it over HTTP; [`Self::shutdown`] stops it.
 #[derive(Debug)]
 pub struct SampleNode {
     system: ActorSystem,
@@ -48,6 +49,7 @@ pub struct SampleNode {
     effects: EffectLog,
     api_token: Option<String>,
     watcher: Option<JoinHandle<()>>,
+    containers: Option<ContainerActor>,
     telemetry: Option<Telemetry>,
 }
 
@@ -61,11 +63,18 @@ impl SampleNode {
         let catalog = Catalog::new(node_id.as_str(), effects.clone());
         let hosted = catalog.types(&config.groups);
         let telemetry = if config.telemetry { Some(Telemetry::from_env().context("OpenTelemetry")?) } else { None };
+        let containers = match config.containers {
+            true => Some(ContainerActor::new(DockerEngine::connect().context("Docker")?)),
+            false => None,
+        };
         let store = open_store(config).await?;
 
         let mut builder = ActorSystem::builder(store.clone()).node_id(node_id.clone());
         for t in &hosted {
             builder = t.host(builder);
+        }
+        if let Some(containers) = &containers {
+            builder = builder.host(containers.clone());
         }
         if let Some(ttl) = config.lease_ttl {
             builder = builder.lease_ttl(ttl);
@@ -117,15 +126,19 @@ impl SampleNode {
             .any(|g| g == "supervision")
             .then(|| FailureWatcher::new(system.clone()).start(config.failure_watcher_interval));
 
+        let mut types: Vec<String> = hosted.iter().map(|t| t.template().to_owned()).collect();
+        if containers.is_some() {
+            types.push(ContainerHandle::TEMPLATE.to_owned());
+        }
         let info = NodeInfo {
             node: node_id.as_str().to_owned(),
             groups: config.groups.clone(),
-            types: hosted.iter().map(|t| t.template().to_owned()).collect(),
+            types,
             store: config.store_description(),
         };
         let hosting = if info.groups.is_empty() { "nothing (send-only)".to_owned() } else { info.groups.join(", ") };
         tracing::info!("Sample node {}: hosting {hosting} on {}", info.node, info.store);
-        Ok(Self { system, info, effects, api_token: config.api_token.clone(), watcher, telemetry })
+        Ok(Self { system, info, effects, api_token: config.api_token.clone(), watcher, containers, telemetry })
     }
 
     /// The actor system.
@@ -149,13 +162,17 @@ impl SampleNode {
     /// - `/console/`: the actor console, static files without authentication; it asks for the token when the API
     ///   answers `401`;
     /// - `GET /ready`: readiness, without authentication, for container and Kubernetes probes;
-    /// - `GET /e2e/effects[?actor=actor://…]`: this node's in-memory [`EffectLog`].
+    /// - `GET /e2e/effects[?actor=actor://…]`: this node's in-memory [`EffectLog`];
+    /// - `GET /containers/{name}/logs`: a container handle's logs, when `CONTAINERS` is set.
     ///
-    /// With an API token the API and `/e2e/effects` require `Authorization: Bearer <token>`.
+    /// With an API token the API, `/e2e/effects` and the logs require `Authorization: Bearer <token>`.
     pub fn router(&self) -> Router {
         let info = self.info.clone();
         let effects = self.effects.clone();
         let mut protected = actor_api(self.system.clone()).route("/e2e/effects", get(list_effects).with_state(effects));
+        if let Some(containers) = &self.containers {
+            protected = protected.merge(container_logs(containers));
+        }
         if let Some(token) = &self.api_token {
             let token: Arc<[u8]> = token.as_bytes().into();
             protected = protected.layer(middleware::from_fn_with_state(token, require_bearer));

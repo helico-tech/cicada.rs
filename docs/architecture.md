@@ -172,6 +172,7 @@ impl Actor for SyncActor {
 | `cicada-ui` | The actor console (the React app of the Kotlin repo, restyled to the Sensus BPM Online design system, ADR 0006), embedded and served by `actor_ui()` | `actors-ui` |
 | `cicada-otel` | OpenTelemetry plugin | `actors-otel` |
 | `cicada-extras` | Timer, schedules (interval, daily), crash-loop guard, failure watcher, dead letters | `actors-extras` |
+| `cicada-docker` | Container handles (ADR 0007): `ContainerActor` on the `Engine` seam (`DockerEngine`, bollard), `container_logs()` | — (Rust only) |
 | `examples` | Worked examples with tests | `examples` |
 | `sample-service` | A runnable node (binary) with the examples, used by end-to-end tests | `sample-service` |
 | `e2e` (`cicada-e2e`) | End-to-end and fault tests: sample nodes in Docker on PostgreSQL and SQLite, driven over HTTP (`CICADA_E2E=1`) | `e2e`, `e2e-tests` |

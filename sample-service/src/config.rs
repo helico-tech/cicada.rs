@@ -58,6 +58,9 @@ pub struct SampleConfig {
     pub telemetry: bool,
     /// When set, `CrashLoopGuard` fails a message after this many claims without a commit.
     pub crash_loop_limit: Option<u32>,
+    /// Whether the node hosts container handles (`cicada-docker`) on the Docker daemon of `DOCKER_HOST` or the local
+    /// socket, and serves their logs.
+    pub containers: bool,
 }
 
 impl Default for SampleConfig {
@@ -82,6 +85,7 @@ impl Default for SampleConfig {
             failure_watcher_interval: Duration::from_secs(10),
             telemetry: false,
             crash_loop_limit: None,
+            containers: false,
         }
     }
 }
@@ -110,6 +114,7 @@ impl SampleConfig {
     /// | `FAILURE_WATCHER_INTERVAL` | poll interval of the dead-letter watcher (group `supervision`) | `10s` |
     /// | `OTEL_EXPORTER_OTLP_ENDPOINT` | when set, traces and metrics go there over OTLP/HTTP (`ActorTelemetry`); see [`crate::telemetry`] | — |
     /// | `CRASH_LOOP_LIMIT` | when set, `CrashLoopGuard` fails a message after this many claims without a commit | — |
+    /// | `CONTAINERS` | `true` to host container handles (`actor://containers/{name}`) on the Docker daemon of `DOCKER_HOST` or the local socket, and serve `GET /containers/{name}/logs` | `false` |
     pub fn from_vars(vars: &HashMap<String, String>) -> Result<Self, ConfigError> {
         let get = |name: &str| vars.get(name).map(|v| v.trim()).filter(|v| !v.is_empty()).map(str::to_owned);
         let duration = |name: &str| -> Result<Option<Duration>, ConfigError> {
@@ -145,6 +150,11 @@ impl SampleConfig {
                 .unwrap_or(defaults.failure_watcher_interval),
             telemetry: get("OTEL_EXPORTER_OTLP_ENDPOINT").is_some(),
             crash_loop_limit: number("CRASH_LOOP_LIMIT", get("CRASH_LOOP_LIMIT"))?,
+            containers: match get("CONTAINERS").as_deref() {
+                None | Some("false") => false,
+                Some("true") => true,
+                Some(other) => return Err(ConfigError(format!("CONTAINERS: not true or false: {other}"))),
+            },
         })
     }
 
@@ -186,6 +196,7 @@ impl fmt::Debug for SampleConfig {
             .field("concurrency", &self.concurrency)
             .field("telemetry", &self.telemetry)
             .field("crash_loop_limit", &self.crash_loop_limit)
+            .field("containers", &self.containers)
             .finish()
     }
 }

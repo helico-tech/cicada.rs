@@ -23,6 +23,7 @@ async-trait.workspace = true
 axum.workspace = true
 cicada-axum.workspace = true
 cicada-client.workspace = true
+cicada-docker.workspace = true
 cicada-store-postgres.workspace = true
 cicada-store-sqlite.workspace = true
 cicada-test.workspace = true

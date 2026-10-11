@@ -105,6 +105,7 @@ async fn a_container_through_its_whole_life() {
     f.command(ContainerMsg::Apply { spec: sh("echo hello; echo oops >&2; sleep 300") }).await;
     let observed = f.observed().await;
     assert_eq!(observed.status, ContainerStatus::Running);
+    assert_eq!(observed.exit_code, None, "no exit code while it runs");
     let first_id = observed.container_id.clone().unwrap();
 
     let (status, body) = f.logs("tail=all").await;

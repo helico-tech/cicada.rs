@@ -37,6 +37,7 @@ known differences from Kotlin are summarised [below](#decisions-and-deviations).
 | `cicada-test` | `TestActors`, `InMemoryStore`, virtual time, contract snapshots and state samples. | `actors-test` |
 | `cicada-extras` | Building blocks on the public API, no core changes: `CrashLoopGuard`, dead letters (`DeadLettersActor`, `FailureWatcher`), `Timer`, `Schedule`. | `actors-extras` |
 | `cicada-otel` | `ActorTelemetry`: OpenTelemetry traces and metrics per turn, a plugin on the OpenTelemetry API. | `actors-otel` |
+| `cicada-docker` | Container handles: `ContainerActor` (one actor per Docker container), `DockerEngine` on bollard, `container_logs()`; see [Container handles](#container-handles). | — (Rust only) |
 | `examples` (`cicada-examples`) | Ten worked examples, each tested with `TestActors`; see [Examples](#examples). | `examples` |
 | `sample-service` | A runnable node hosting the examples, configured by environment variables. | `sample-service` |
 
@@ -892,6 +893,70 @@ assert_eq!(Schedule::every(3600).unwrap().next(t), "2026-10-02T11:00:00Z".parse:
 assert_eq!(Schedule::daily(2, 30).unwrap().next(t), "2026-10-03T02:30:00Z".parse::<Timestamp>().unwrap());
 ```
 
+## Container handles
+
+`cicada-docker` (Rust only, [ADR 0007](docs/adr/0007-container-handles.md)) gives every Docker container an actor: a
+**container handle** at `actor://containers/{name}`. The handle does not hold the running container; it keeps a
+durable record of it and acts on it. Docker stays the truth: every turn looks at the container before it acts.
+
+<!-- doctest
+# use std::sync::Arc;
+# use axum::Router;
+# use cicada::ActorSystem;
+# use cicada_axum::actor_api;
+# async fn node(store: Arc<dyn cicada::store::Store>) -> Result<(), Box<dyn std::error::Error>> {
+@@10
+# let _: Router = app;
+# Ok(())
+# }
+-->
+```rust,no_run
+use cicada_docker::{ContainerActor, ContainerHandle, ContainerMsg, ContainerSpec, ContainerState, DockerEngine, container_logs};
+
+let containers = ContainerActor::new(DockerEngine::connect()?); // DOCKER_HOST, else the local socket
+let system = ActorSystem::builder(store).host(containers.clone()).build();
+system.start().await?;
+let app = Router::new().nest("/api", actor_api(system.clone()).merge(container_logs(&containers)));
+
+let web = ContainerHandle::new("web"); // the container is named `cicada-web`
+system.create(&web, &ContainerState::default()).await?;
+system.send(&web, ContainerMsg::Apply { spec: ContainerSpec::new("nginx:1.27").port(80, 8080) }).await?;
+```
+
+| Message | What it does |
+| --- | --- |
+| `Apply { spec }` | Runs the container with `spec`: pulls the image (pull policy `missing`, `always` or `never`), creates and starts it. A container created from another spec is replaced. |
+| `Start` | Starts the container with the last applied spec; creates it when it is missing. |
+| `Stop` | Stops it; Docker kills it after the spec's `stopTimeoutSeconds`. |
+| `Remove` | Removes the container, then the handle. |
+| `Check` | Records what Docker reports. The handle sends it to itself every 15 s (`ContainerActor::check_every`). |
+
+The state holds the last spec and `observed`: `status` (`running`, `exited`, … or `missing`), `containerId`,
+`exitCode` (once it has ended), `startedAt`, `finishedAt`, the last 20 lines of output when it exits, and
+`checkError` when Docker could not be reached (polling goes on). The console shows it like any other state.
+
+Rules worth knowing:
+
+- **Safe when repeated.** A turn may run again after a node dies (G4). The container's fixed name (prefix `cicada-`
+  plus the handle name) and the look-first rule make every command harmless when repeated: no second container.
+- **Not yours, not touched.** A container with the handle's name but without its `cicada.uri` label fails the command
+  permanently.
+- **No restarts by the handle.** A container that exits stays exited, and one removed outside Cicada is reported
+  `missing`; neither comes back until the next `Apply` or `Start`. Restarting is Docker's job: set the spec's
+  `restart` policy (`no`, `on-failure`, `unless-stopped`, `always`).
+- **One Docker daemon.** Every node that hosts `ContainerActor` must reach the same daemon, since any of them may run
+  the next turn. Nodes that share a daemon but not a store need different prefixes (`ContainerActor::prefix`).
+- **Retry policies.** Send commands with a retry policy to ride out a daemon that is briefly unreachable.
+
+**Logs** never pass through the store. `container_logs()` streams them straight from Docker as `text/plain`:
+
+```sh
+curl -N "http://localhost:8080/api/containers/web/logs?tail=100&follow=true"   # also since=<RFC 3339>, timestamps=true
+```
+
+Only containers labelled with a handle's URI are served; any other name is `404`, and a Docker failure is `502`
+(`urn:cicada:problem:docker-unavailable`). Wrap the router in the same authentication as the API.
+
 ## Configuration
 
 Node settings are `NodeConfig` fields, set with the builder (`ActorSystem::builder(store).lease_ttl(…)`) or all at
@@ -962,6 +1027,7 @@ the examples and the end-to-end actors, with the API, the console and the readin
 | `FAILURE_WATCHER_INTERVAL` | poll interval of the dead-letter watcher (group `supervision`) | `10s` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | when set, traces and metrics go there over OTLP (`ActorTelemetry`); only HTTP/protobuf, so `OTEL_EXPORTER_OTLP_PROTOCOL` must be unset or `http/protobuf` | — |
 | `CRASH_LOOP_LIMIT` | when set, `CrashLoopGuard` fails a message after this many claims without a commit | — |
+| `CONTAINERS` | `true` to host [container handles](#container-handles) on the Docker daemon of `DOCKER_HOST` or the local socket, and serve `GET /containers/{name}/logs` | `false` |
 
 The root `docker-compose.yml` starts a PostgreSQL for development and tests
 (`postgres://cicada:cicada@localhost:55432/cicada`).
@@ -977,9 +1043,11 @@ cargo test --workspace                     # unit, runtime, SQLite, HTTP and REA
 cargo clippy --workspace --all-targets
 docker compose up -d postgres              # PostgreSQL on port 55432
 CICADA_PG_URL=postgres://cicada:cicada@localhost:55432/cicada cargo test -p cicada-store-postgres
+CICADA_DOCKER=1 cargo test -p cicada-docker  # container handles against the local Docker daemon
 ```
 
-Tests that need PostgreSQL are skipped when `CICADA_PG_URL` is unset. Every store backend runs the conformance suite
+Tests that need PostgreSQL are skipped when `CICADA_PG_URL` is unset, and tests that need Docker when `CICADA_DOCKER`
+is not `1`. Every store backend runs the conformance suite
 of `cicada-store-conformance`; `cicada-store-sqlite` also checks its schema against the Kotlin one when the Kotlin
 repository is next to this one.
 
@@ -1030,6 +1098,7 @@ Decisions of the port, as ADRs in [docs/adr/](docs/adr/):
 | [0004](docs/adr/0004-shared-store-schema.md) | The SQL schema is shared with Kotlin; contract hashes differ, so one template is hosted by one implementation. |
 | [0005](docs/adr/0005-reuse-the-console.md) | The React console is reused unchanged; a fixtures test checks the Rust API against its zod schemas. |
 | [0006](docs/adr/0006-console-in-sensus-design.md) | The Rust console is restyled to the Sensus BPM Online design system; behaviour, routes and wire types stay as in the Kotlin copy. |
+| [0007](docs/adr/0007-container-handles.md) | Container handles (Rust only): one actor per Docker container, commands that look first and are safe to repeat, status by polling, logs streamed from Docker outside the store. |
 
 Open questions of the original design, resolved there and kept here:
 

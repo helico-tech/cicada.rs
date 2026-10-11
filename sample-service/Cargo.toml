@@ -13,6 +13,7 @@ axum.workspace = true
 chrono.workspace = true
 cicada.workspace = true
 cicada-axum.workspace = true
+cicada-docker.workspace = true
 cicada-examples.workspace = true
 cicada-extras.workspace = true
 cicada-otel.workspace = true

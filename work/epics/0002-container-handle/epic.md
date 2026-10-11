@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: done
 created: 2026-10-11
 ---
 
@@ -27,4 +27,4 @@ Docker tests, and the branch is merged and pushed.
 - [02 `ContainerActor`: commands, status polling, tests on a fake engine](02-container-actor.md) — done
 - [03 Logs router](03-logs-router.md) — done
 - [04 Tests against a real Docker daemon, in CI](04-docker-tests.md) — done
-- [05 Sample service group and docs](05-sample-and-docs.md) — todo
+- [05 Sample service group and docs](05-sample-and-docs.md) — done

@@ -83,7 +83,7 @@ pub struct Observed {
     /// Docker's container id.
     #[serde(default)]
     pub container_id: Option<String>,
-    /// Exit code of the last run.
+    /// Exit code of the last run, once it has ended (`exited` or `dead`).
     #[serde(default)]
     pub exit_code: Option<i64>,
     /// Docker's error text for the last run.
@@ -126,6 +126,15 @@ pub struct ContainerActor {
     engine: Arc<dyn Engine>,
     prefix: String,
     check_every: Duration,
+}
+
+impl std::fmt::Debug for ContainerActor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ContainerActor")
+            .field("prefix", &self.prefix)
+            .field("check_every", &self.check_every)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ContainerActor {
@@ -258,7 +267,7 @@ impl ContainerActor {
                 Observed {
                     status: info.status,
                     container_id: Some(info.id),
-                    exit_code: info.exit_code,
+                    exit_code: info.exit_code.filter(|_| ended), // Docker reports 0 while it runs
                     error: info.error,
                     oom_killed: info.oom_killed,
                     started_at: info.started_at,
