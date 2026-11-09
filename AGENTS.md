@@ -41,6 +41,8 @@ PostgreSQL for tests: `docker compose up -d postgres` (port 55432). Tests that n
   appended migration.
 - Tests for runtime behaviour run on virtual time: `#[tokio::test(start_paused = true)]` with `TestActors`.
 - Store backends must pass `cicada-store-conformance`.
+- Releases are tags on `main`; [docs/operations.md](docs/operations.md), Releasing, has the steps. Do not tag or release
+  unless asked.
 - Public items have doc comments (`missing_docs` warns). Keep comments as dense as the surrounding code.
 - The Rust blocks of `README.md` and `docs/operations.md` are doctests of `cicada-examples` (`ReadmeDoctests`,
   `OperationsDoctests` in `examples/src/lib.rs`): a change to a public API must keep them compiling. Use `no_run` for

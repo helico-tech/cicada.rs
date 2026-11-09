@@ -69,10 +69,11 @@ different source. Access is set up around it:
   built-in git does not use the usual credential helpers.
 - **On a developer machine:** `gh auth setup-git`.
 - **In GitHub Actions:** the default `GITHUB_TOKEN` only reaches its own repository. A fine-grained token with read
-  access to this repository, kept as a secret, is used through
-  `git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"`.
-  A deploy key is the alternative, but it would need an SSH URL or a rewrite per repository.
-- **In a Docker build:** the same token, passed as a BuildKit secret so that it does not end up in an image layer.
+  access to this repository, kept as a secret, is used through a `git config --global url."…".insteadOf` rule for this
+  repository's URL only, so the token is never sent for other dependencies. A deploy key is the alternative, but it
+  would need an SSH URL.
+- **In a Docker build:** the same token, passed as a BuildKit secret and set through `GIT_CONFIG_*` variables of that one
+  step. `git config --global` would write it to a file in an image layer.
 
 Consumers name the tag once, in `[workspace.dependencies]`.
 

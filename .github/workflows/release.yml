@@ -1,0 +1,51 @@
+# A pushed version tag becomes a GitHub Release, once the version check, CI and the E2E suite have passed on that commit.
+# docs/operations.md, Releasing, has the steps.
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - run: scripts/release-check.sh "$GITHUB_REF_NAME"
+
+  checks:
+    needs: verify
+    uses: ./.github/workflows/ci.yml
+
+  e2e:
+    needs: verify
+    runs-on: ubuntu-latest
+    env:
+      CICADA_E2E: "1"
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p cicada-e2e -- --nocapture
+
+  release:
+    needs: [verify, checks, e2e]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - run: scripts/release-check.sh "$GITHUB_REF_NAME" > release-notes.md
+      - run: gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --notes-file release-notes.md
+        env:
+          GH_TOKEN: ${{ github.token }}

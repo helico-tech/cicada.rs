@@ -934,18 +934,65 @@ CICADA_PG_URL=postgres://cicada:cicada@localhost:55432/cicada cargo test -p cica
 Tests that need PostgreSQL are skipped when `CICADA_PG_URL` is unset. Every store backend runs the conformance suite
 of `cicada-store-conformance`.
 
-The crates are not published to crates.io (`publish = false`). Use them as git dependencies:
+## Using a release in another project
+
+A release is a git tag `vX.Y.Z` with a GitHub Release; [CHANGELOG.md](CHANGELOG.md) says what changed. The crates are not
+published to a registry (`publish = false`), so they are git dependencies. Name the tag once:
 
 ```toml
-[dependencies]
-cicada = { git = "https://github.com/helico-tech/cicada.rs" }
-cicada-axum = { git = "https://github.com/helico-tech/cicada.rs" }
-cicada-store-postgres = { git = "https://github.com/helico-tech/cicada.rs" }
-
-[dev-dependencies]
-cicada-test = { git = "https://github.com/helico-tech/cicada.rs" }
-tokio = { version = "1", features = ["test-util"] }
+[workspace.dependencies]
+cicada = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.2.0" }
+cicada-axum = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.2.0" }
+cicada-store-postgres = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.2.0" }
+cicada-test = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.2.0" }
 ```
+
+Every Cicada crate must come from the same tag; mixing tags gives two copies of the same types. In a project that is
+not a workspace, put the same lines in `[dependencies]`, and `cicada-test` in `[dev-dependencies]`, with
+`tokio = { version = "1", features = ["test-util"] }` next to it. To upgrade, change the tag and read the changelog.
+
+While the version is 0.x, a breaking change raises the minor number (`0.3.1` to `0.4.0`) and anything else the patch
+number. A breaking change is one to the public Rust API, the HTTP wire format, the store schema, a contract hash, or a
+guarantee in [docs/architecture.md](docs/architecture.md). A published tag never moves.
+
+**Access.** The repository is private, and Cargo must use the git command line to reach it. Keep the URL as it is above
+everywhere: Cargo treats another URL as another source.
+
+On a developer machine, in `~/.cargo/config.toml`:
+
+```toml
+[net]
+git-fetch-with-cli = true
+```
+
+and once, `gh auth login` followed by `gh auth setup-git`.
+
+In GitHub Actions, the default `GITHUB_TOKEN` only reaches its own repository. Create a fine-grained token with read
+access to the contents of this repository only, keep it as a secret, and use it for this repository only:
+
+```yaml
+env:
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+steps:
+  - uses: actions/checkout@v7
+  - run: git config --global url."https://x-access-token:${CICADA_TOKEN}@github.com/helico-tech/cicada.rs".insteadOf "https://github.com/helico-tech/cicada.rs"
+    env:
+      CICADA_TOKEN: ${{ secrets.CICADA_READ_TOKEN }}
+```
+
+In a Docker build, pass the same token as a BuildKit secret and set it through the environment of that one step, so
+that it does not end up in an image layer. The image needs `git`:
+
+```dockerfile
+RUN --mount=type=secret,id=cicada_token \
+    GIT_CONFIG_COUNT=1 \
+    GIT_CONFIG_KEY_0="url.https://x-access-token:$(cat /run/secrets/cicada_token)@github.com/helico-tech/cicada.rs.insteadOf" \
+    GIT_CONFIG_VALUE_0="https://github.com/helico-tech/cicada.rs" \
+    CARGO_NET_GIT_FETCH_WITH_CLI=true \
+    cargo build --release --locked
+```
+
+and build with `docker build --secret id=cicada_token,env=CICADA_TOKEN .`.
 
 ## Decisions
 
@@ -968,6 +1015,7 @@ Decisions, as ADRs in [docs/adr/](docs/adr/):
 | [0013](docs/adr/0013-type-and-key-addresses.md) | Actors are addressed by type name and key (`sync/acme`) instead of URIs. |
 | [0014](docs/adr/0014-management-reads-and-type-removal.md) | Management reads over HTTP (outcomes, stats, caused-by) and removing a type's registration. |
 | [0015](docs/adr/0015-operator-actions.md) | Operator actions: node table, cancelling a running turn, pausing and purging a mailbox, retrying a message, bulk actions; the store refuses creates of an unregistered type. |
+| [0016](docs/adr/0016-releases-are-tags.md) | A release is a tag on `main` with one version for the workspace; a release passes all checks first and never moves. |
 
 Design questions and their answers:
 
