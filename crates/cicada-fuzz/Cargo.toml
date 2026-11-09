@@ -1,0 +1,22 @@
+[package]
+name = "cicada-fuzz"
+description = "Randomised tests for Cicada: parsers, backend comparison and a node simulation under injected faults."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+cicada.workspace = true
+cicada-store-sqlite.workspace = true
+cicada-test.workspace = true
+proptest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

@@ -431,6 +431,7 @@ impl ActorSystem {
                         tracing::warn!("The heartbeat of node {node} failed; retrying after {NODE_HEARTBEAT:?}: {e}");
                     }
                     tokio::select! {
+                        biased;
                         _ = stop.cancelled() => return,
                         _ = sleep(NODE_HEARTBEAT) => {}
                     }
@@ -620,6 +621,7 @@ impl ActorSystem {
             let pause = if free > 0 && !failed { self.sleep_time(&init).await } else { config.poll_interval };
             if !pause.is_zero() {
                 tokio::select! {
+                    biased;
                     _ = self.inner.wake.notified() => {}
                     _ = sleep(pause) => {}
                 }

@@ -161,6 +161,7 @@ impl Actor for SyncActor {
 | `cicada-client` | Typed HTTP client (reqwest) |
 | `cicada-otel` | OpenTelemetry plugin |
 | `cicada-extras` | Schedules (interval, daily), crash-loop guard, failure watcher, dead letters |
+| `cicada-fuzz` | Randomised tests: parsers, backend comparison, and a node simulation under injected faults. Test-only |
 | `examples` | Worked examples with tests |
 | `sample-service` | A runnable node (binary) with the examples, used by end-to-end tests |
 | `e2e` (`cicada-e2e`) | End-to-end and fault tests: sample nodes in Docker on PostgreSQL and SQLite, driven over HTTP (`CICADA_E2E=1`) |

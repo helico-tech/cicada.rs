@@ -348,6 +348,7 @@ impl TurnExecutor {
         };
         let kept = AssertUnwindSafe(async {
             tokio::select! {
+                biased;
                 _ = heartbeat => {}
                 _ = watchdog => {}
             }

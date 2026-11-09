@@ -13,6 +13,7 @@ cargo test -p cicada-examples --doc    # only the Rust blocks of README.md and d
 cargo clippy --workspace --all-targets
 cargo fmt --all                        # rustfmt.toml: 120 columns; CI checks it
 CICADA_PG_URL=postgres://cicada:cicada@localhost:55432/cicada cargo test -p cicada-store-postgres   # needs PostgreSQL
+PROPTEST_CASES=100000 cargo test -p cicada-fuzz   # a long randomised run; a short one is part of cargo test --workspace
 CICADA_E2E=1 cargo test -p cicada-e2e -- --nocapture   # E2E and fault tests in Docker, ~3 min; see e2e/README.md
 ```
 
@@ -29,6 +30,7 @@ PostgreSQL for tests: `docker compose up -d postgres` (port 55432). Tests that n
 | `crates/cicada-axum` | HTTP API routers |
 | `crates/cicada-client` | Typed HTTP client |
 | `crates/cicada-otel`, `crates/cicada-extras` | Plugins and building blocks |
+| `crates/cicada-fuzz` | Randomised tests: parsers, backend comparison, node simulation under faults |
 | `examples/`, `sample-service/` | Worked examples; a runnable node |
 | `e2e/` | End-to-end and fault tests against sample nodes in Docker |
 | `docs/` | Architecture, ADRs and the operations guide |

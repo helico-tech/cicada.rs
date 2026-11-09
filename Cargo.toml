@@ -11,6 +11,7 @@ members = [
     "crates/cicada-otel",
     "crates/cicada-extras",
     "crates/cicada-cli",
+    "crates/cicada-fuzz",
     "examples",
     "sample-service",
     "e2e",
@@ -48,6 +49,7 @@ futures = "0.3.34"
 http = "1"
 opentelemetry = "0.33.0"
 opentelemetry_sdk = "0.33.0"
+proptest = "1.12.0"
 ratatui = "0.30.2"
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls"] }
 schemars = { version = "1.2.2", features = ["preserve_order", "chrono04"] }
