@@ -145,6 +145,8 @@ A release is a tag `vX.Y.Z` on `main` (ADR 0016). All crates share the version i
 
 1. On `main`, set the version in `Cargo.toml` and run `cargo check`, which updates `Cargo.lock`. A breaking change raises
    the minor number while the version is 0.x, anything else the patch number; the README says what counts as breaking.
+   `docs/openapi.json` carries the version: regenerate it (a test says how when it is stale) and update the README's
+   `tag = "vX.Y.Z"` lines.
 2. In `CHANGELOG.md`, replace `unreleased` in the heading of that version with today's date, as `YYYY-MM-DD`.
 3. Commit and push to `main`, and wait for CI.
 4. Run `scripts/release-check.sh vX.Y.Z`. It prints the release notes, or says what is wrong.
