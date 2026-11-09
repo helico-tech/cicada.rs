@@ -12,7 +12,7 @@ use axum::body::Body;
 use axum::http::{HeaderMap, Method, Request, StatusCode, header};
 use cicada::address::{ActorAddress, UriTemplate};
 use cicada::prelude::*;
-use cicada::runtime::ActorSystemBuilder;
+use cicada::runtime::{ActorSystemBuilder, NodeConfig};
 use cicada::store::*;
 use cicada::time::Timestamp;
 use cicada_test::{InMemoryStore, TokioClock, default_start};
@@ -149,12 +149,17 @@ pub async fn node(store: Arc<dyn Store>) -> ActorSystem {
     node_with(store, |b| b.host(CounterActor).host(PingActor)).await
 }
 
-/// A started node configured by `configure`, polling every 50 ms.
+/// The node settings of these tests: polling every `poll_interval`, the rest as by default.
+pub fn polling(poll_interval: Duration) -> NodeConfig {
+    NodeConfig { poll_interval, ..NodeConfig::default() }
+}
+
+/// A started node configured by `configure`, polling every 50 ms unless `configure` sets another config.
 pub async fn node_with(
     store: Arc<dyn Store>,
     configure: impl FnOnce(ActorSystemBuilder) -> ActorSystemBuilder,
 ) -> ActorSystem {
-    let system = configure(ActorSystem::builder(store).poll_interval(Duration::from_millis(50))).build();
+    let system = configure(ActorSystem::builder(store).config(polling(Duration::from_millis(50)))).build();
     system.start().await.expect("the node starts");
     system
 }
@@ -215,9 +220,6 @@ impl FlakyStore {
 
 #[async_trait]
 impl Store for FlakyStore {
-    fn retention(&self) -> Duration {
-        self.inner.retention()
-    }
     async fn now(&self) -> StoreResult<Timestamp> {
         self.check()?;
         self.inner.now().await
@@ -225,15 +227,9 @@ impl Store for FlakyStore {
     async fn register(&self, def: TypeDef) -> StoreResult<RegisterResult> {
         self.inner.register(def).await
     }
-    async fn type_def(&self, template: &UriTemplate) -> StoreResult<Option<TypeDef>> {
-        self.inner.type_def(template).await
-    }
     async fn list_types(&self) -> StoreResult<Vec<TypeDef>> {
-        self.inner.list_types().await
-    }
-    async fn resolve(&self, address: &ActorAddress) -> StoreResult<Option<ResolvedType>> {
         self.check()?;
-        self.inner.resolve(address).await
+        self.inner.list_types().await
     }
     async fn create(
         &self,
@@ -299,9 +295,6 @@ impl Store for FlakyStore {
     async fn cancel(&self, id: &MessageId) -> StoreResult<CancelResult> {
         self.inner.cancel(id).await
     }
-    async fn outcome(&self, id: &MessageId) -> StoreResult<Option<OutcomeRecord>> {
-        self.inner.outcome(id).await
-    }
     async fn status(&self, id: &MessageId) -> StoreResult<Option<MessageStatus>> {
         self.inner.status(id).await
     }
@@ -313,12 +306,6 @@ impl Store for FlakyStore {
         limit: usize,
     ) -> StoreResult<Page<OutcomeRecord>> {
         self.inner.failures(prefix, since, cursor, limit).await
-    }
-    async fn chain_entries(&self, ids: &[MessageId]) -> StoreResult<Vec<ChainEntry>> {
-        self.inner.chain_entries(ids).await
-    }
-    async fn chain_children(&self, parents: &[MessageId], limit: usize) -> StoreResult<Vec<ChainEntry>> {
-        self.inner.chain_children(parents, limit).await
     }
     async fn sweep_expired(&self) -> StoreResult<u64> {
         self.inner.sweep_expired().await

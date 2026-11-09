@@ -1,23 +1,23 @@
 //! Once a handler has returned or failed, the runtime never releases the lease for a re-run (G6). Every unexpected
 //! failure after the handler ends in a failed outcome, or in abandoning the turn without release; a failure before the
 //! handler fails the message instead of crash-looping it. Faults are injected at each point after the handler: the
-//! typed-effects checks (store reads), hooks, encoding the state, the commit, the failure commit, and cancellation.
+//! typed-effects checks (store reads), encoding the state, the commit, the failure commit, and cancellation.
 
 mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use cicada::address::{ActorAddress, UriTemplate};
-use cicada::plugin::{BeforeCommitContext, ClaimContext, HookResult, Plugin};
+use cicada::plugin::{ClaimContext, HookResult, Plugin};
 use cicada::prelude::*;
-use cicada::runtime::{CreateActorResult, OpError};
+use cicada::runtime::{CreateActorResult, NodeConfig, OpError};
 use cicada::store::{
-    Claim, CommitRequest, CommitResult, Message, MessageStatus, NodeId, OutcomeStatus, OutgoingMessage, ResolvedType,
-    Store, StoreError, StoreResult, TurnOutcome,
+    Claim, CommitRequest, CommitResult, Message, MessageStatus, NodeId, OutcomeStatus, OutgoingMessage, Store,
+    StoreError, StoreResult, TurnOutcome, TypeDef,
 };
 use cicada::{ActorSystem, ActorType};
 use cicada_test::InMemoryStore;
@@ -87,14 +87,15 @@ struct TallyState {
     note: String,
 }
 
-struct TallyActor(Arc<AtomicI32>);
+/// The tally type; its maximum turn is 5 minutes unless given.
+struct TallyActor<const MAX_TURN_MILLIS: u64 = 300_000>(Arc<AtomicI32>);
 
-impl Actor for TallyActor {
+impl<const MAX_TURN_MILLIS: u64> Actor for TallyActor<MAX_TURN_MILLIS> {
     type Ref = Tally;
     type State = TallyState;
     type Message = TallyMsg;
     const UNHANDLED: Unhandled = Unhandled::Fail;
-    const MAX_TURN: Option<Duration> = Some(Duration::from_secs(300));
+    const MAX_TURN: Option<Duration> = Some(Duration::from_millis(MAX_TURN_MILLIS));
 
     async fn handle(&self, turn: &mut Turn<Self>, message: TallyMsg) -> HandlerResult {
         match message {
@@ -158,7 +159,7 @@ impl Fixture {
     }
 
     fn node_with(&self, store: Arc<dyn Store>, name: &str, plugin: impl Plugin) -> ActorSystem {
-        node(store, name).host(self.tally_type().install(plugin)).build()
+        node(store, name).host(self.tally_type()).install(plugin).build()
     }
 }
 
@@ -170,7 +171,7 @@ async fn tally_state(store: &dyn Store, r: &Tally) -> TallyState {
     state_of(store, &addr(r)).await
 }
 
-/// TypeRegistry resolution fails while `failures` is positive (counting down).
+/// Reading the TypeRegistry fails while `failures` is positive (counting down).
 #[derive(Default)]
 struct FlakyResolve {
     failures: AtomicI32,
@@ -178,12 +179,12 @@ struct FlakyResolve {
 
 #[async_trait]
 impl Faults for FlakyResolve {
-    async fn resolve(&self, inner: &dyn Store, address: &ActorAddress) -> StoreResult<Option<ResolvedType>> {
+    async fn list_types(&self, inner: &dyn Store) -> StoreResult<Vec<TypeDef>> {
         if self.failures.fetch_sub(1, Ordering::SeqCst) > 0 {
             return Err(StoreError::unavailable("registry unreachable"));
         }
         self.failures.store(0, Ordering::SeqCst);
-        inner.resolve(address).await
+        inner.list_types().await
     }
 }
 
@@ -199,7 +200,7 @@ async fn a_store_read_that_keeps_failing_after_the_handler_returned_fails_the_me
     flaky.faults.failures.store(i32::MAX, Ordering::SeqCst);
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1);
 
-    let outcome = memory.outcome(&m.id).await.unwrap().expect("the turn ends with an outcome, it is not released");
+    let outcome = outcome_of(&*memory, &m.id).await.expect("the turn ends with an outcome, it is not released");
     assert_eq!(outcome.status, OutcomeStatus::Failed);
     let error = outcome.error.unwrap();
     assert!(error.contains("after its handler ended"), "{error}");
@@ -220,16 +221,14 @@ async fn a_store_read_that_fails_briefly_after_the_handler_returned_is_retried()
     let m = accepted_by(&system, TallyMsg::Hatch { child: "child".into() }).await;
     flaky.faults.failures.store(2, Ordering::SeqCst);
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1);
-    assert_eq!(memory.outcome(&m.id).await.unwrap().map(|o| o.status), Some(OutcomeStatus::Done));
+    assert_eq!(outcome_of(&*memory, &m.id).await.map(|o| o.status), Some(OutcomeStatus::Done));
     assert_eq!(f.runs(), 1);
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1, "the child's Bump");
     assert_eq!(tally_state(&*memory, &tally("child")).await.runs, 1);
 }
 
-/// Sleeps in `on_claim` or `before_commit`.
-struct Stalling {
-    on_claim: bool,
-}
+/// Sleeps in `on_claim`.
+struct Stalling;
 
 #[async_trait]
 impl Plugin for Stalling {
@@ -237,18 +236,25 @@ impl Plugin for Stalling {
         "Stalling"
     }
 
-    async fn on_claim(&self, _ctx: &mut ClaimContext<'_>) -> HookResult {
-        if self.on_claim {
-            tokio::time::sleep(Duration::from_secs(10)).await;
-        }
+    async fn on_claim(&self, _ctx: &ClaimContext<'_>) -> HookResult {
+        tokio::time::sleep(Duration::from_secs(10)).await;
         Ok(())
     }
+}
 
-    async fn before_commit(&self, _ctx: &mut BeforeCommitContext<'_>) -> HookResult {
-        if !self.on_claim {
+/// Reading the TypeRegistry takes 10 s while `stall` is set (a slow database).
+#[derive(Default)]
+struct StallingRegistry {
+    stall: AtomicBool,
+}
+
+#[async_trait]
+impl Faults for StallingRegistry {
+    async fn list_types(&self, inner: &dyn Store) -> StoreResult<Vec<TypeDef>> {
+        if self.stall.load(Ordering::SeqCst) {
             tokio::time::sleep(Duration::from_secs(10)).await;
         }
-        Ok(())
+        inner.list_types().await
     }
 }
 
@@ -256,15 +262,18 @@ impl Plugin for Stalling {
 async fn cancelling_a_turn_after_its_handler_returned_does_not_release_the_lease() {
     let f = Fixture::new();
     let memory = virtual_store();
-    let stale = f.node_with(memory.clone(), "stale", Stalling { on_claim: false });
+    let stalling = Faulty::new(memory.clone(), StallingRegistry::default());
+    let stale = f.node(stalling.clone(), "stale");
     let other = f.node(memory.clone(), "other");
     stale.create(&t(), &TallyState::default()).await.unwrap();
-    let m = accepted_by(&stale, TallyMsg::Bump).await;
+    let m = accepted_by(&stale, TallyMsg::Hatch { child: "child".into() }).await;
+    // From now on the check of the handler's typed create waits for the registry.
+    stalling.faults.stall.store(true, Ordering::SeqCst);
     let job = tokio::spawn({
         let stale = stale.clone();
         async move { stale.run_due_turns(1).await }
     });
-    tokio::time::sleep(Duration::from_secs(5)).await; // the handler returned; the before_commit hook is still running
+    tokio::time::sleep(Duration::from_secs(5)).await; // the handler returned; the check of its effects is still running
     job.abort();
     let _ = job.await;
     settle().await;
@@ -281,7 +290,7 @@ async fn cancelling_a_turn_after_its_handler_returned_does_not_release_the_lease
 async fn cancelling_a_turn_before_its_handler_returned_releases_the_lease() {
     let f = Fixture::new();
     let memory = virtual_store();
-    let system = f.node_with(memory.clone(), "n1", Stalling { on_claim: true });
+    let system = f.node_with(memory.clone(), "n1", Stalling);
     system.create(&t(), &TallyState::default()).await.unwrap();
     let m = accepted_by(&system, TallyMsg::Bump).await;
     let job = tokio::spawn({
@@ -314,7 +323,7 @@ async fn an_error_from_decoding_the_ref_fails_the_message_instead_of_crash_loopi
     memory.create(&cursed, &UriTemplate::parse("actor://tally/{id}").unwrap(), Some(json!({}))).await.unwrap();
     let m = enqueue(&*memory, OutgoingMessage::new(cursed, "Bump", json!({}))).await;
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1);
-    let outcome = memory.outcome(&m.id).await.unwrap().unwrap();
+    let outcome = outcome_of(&*memory, &m.id).await.unwrap();
     assert_eq!(outcome.status, OutcomeStatus::Failed);
     assert!(outcome.error.as_deref().unwrap().contains("not allowed"), "{:?}", outcome.error);
     assert_eq!(f.runs(), 0);
@@ -356,23 +365,19 @@ async fn new_state_with_a_nul_character_fails_the_turn_on_every_backend() {
     system.create(&t(), &TallyState::default()).await.unwrap();
     let m = accepted_by(&system, TallyMsg::Nul).await;
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1);
-    let outcome = memory.outcome(&m.id).await.unwrap().unwrap();
+    let outcome = outcome_of(&*memory, &m.id).await.unwrap();
     assert_eq!(outcome.status, OutcomeStatus::Failed);
     assert!(outcome.error.as_deref().unwrap().contains("NUL"), "{:?}", outcome.error);
     assert_eq!(tally_state(&*memory, &t()).await, TallyState::default());
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_handler_cannot_send_reserved_headers_or_nul_characters_refused_at_the_call() {
+async fn a_handler_cannot_send_nul_characters_in_headers_refused_at_the_call() {
     let f = Fixture::new();
     let memory = virtual_store();
     let system = f.node(memory.clone(), "n1");
     system.create(&t(), &TallyState::default()).await.unwrap();
     let tag = |k: &str, v: &str| TallyMsg::Tag { headers: [(k.to_owned(), v.to_owned())].into() };
-    accepted_by(&system, tag("cicada-trace", "x")).await;
-    assert_eq!(system.run_due_turns(1).await.unwrap(), 1);
-    let note = tally_state(&*memory, &t()).await.note;
-    assert!(note.contains("reserved prefix"), "{note}");
     accepted_by(&system, tag("x", "a<NUL>b")).await;
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1);
     let note = tally_state(&*memory, &t()).await.note;
@@ -382,6 +387,27 @@ async fn a_handler_cannot_send_reserved_headers_or_nul_characters_refused_at_the
     assert_eq!(tally_state(&*memory, &t()).await.note, "sent");
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1, "the one accepted Bump");
     assert_eq!(system.run_due_turns(1).await.unwrap(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cicada_header_is_an_ordinary_header_accepted_and_delivered() {
+    let f = Fixture::new();
+    let memory = virtual_store();
+    let system = f.node(memory.clone(), "n1");
+    system.create(&t(), &TallyState::default()).await.unwrap();
+    let headers = BTreeMap::from([("cicada-trace".to_owned(), "x".to_owned())]);
+    // From outside ...
+    let options = SendOptions::new().header("cicada-trace", "x");
+    let tag = accepted(system.send_with(&t(), TallyMsg::Tag { headers: headers.clone() }, options).await.unwrap());
+    assert_eq!(tag.headers, headers);
+    // ... and from a handler.
+    assert_eq!(system.run_due_turns(1).await.unwrap(), 1);
+    assert_eq!(tally_state(&*memory, &t()).await.note, "sent");
+    let pending = memory.pending(&addr(&t()), None, 10).await.unwrap().items;
+    assert_eq!(pending.iter().map(|m| &m.headers).collect::<Vec<_>>(), vec![&headers]);
+    assert_eq!(system.run_due_turns(1).await.unwrap(), 1, "the Bump is delivered");
+    assert_eq!(outcome_of(&*memory, &pending[0].id).await.map(|o| o.status), Some(OutcomeStatus::Done));
+    assert_eq!(f.runs(), 1);
 }
 
 #[tokio::test(start_paused = true)]
@@ -402,11 +428,11 @@ async fn a_handler_that_blocks_past_its_max_turn_still_ends_failed_timeout_never
     // does not advance tokio's paused clock.
     let f = Fixture::new();
     let memory = Arc::new(InMemoryStore::default());
-    let system = ActorSystem::builder(memory.clone()).host(f.tally_type().max_turn(Duration::from_millis(200))).build();
+    let system = ActorSystem::builder(memory.clone()).host(TallyActor::<200>(f.runs.clone())).build();
     system.create(&t(), &TallyState::default()).await.unwrap();
     let m = accepted_by(&system, TallyMsg::Stall { millis: 1_000 }).await;
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1);
-    let outcome = memory.outcome(&m.id).await.unwrap().unwrap();
+    let outcome = outcome_of(&*memory, &m.id).await.unwrap();
     assert_eq!(outcome.status, OutcomeStatus::Failed);
     assert_eq!(outcome.error.as_deref(), Some("timeout"));
     assert_eq!(tally_state(&*memory, &t()).await, TallyState::default());
@@ -442,7 +468,7 @@ async fn stop_does_not_hang_on_a_claim_that_never_returns_and_releases_what_that
     let hanging = Faulty::new(memory.clone(), HangingClaim::default());
     let system = ActorSystem::builder(hanging.clone())
         .host(f.tally_type())
-        .shutdown_cancel_timeout(Duration::from_millis(200))
+        .config(NodeConfig { shutdown_cancel_timeout: Duration::from_millis(200), ..NodeConfig::default() })
         .build();
     system.create(&t(), &TallyState::default()).await.unwrap();
     let m = accepted_by(&system, TallyMsg::Bump).await;

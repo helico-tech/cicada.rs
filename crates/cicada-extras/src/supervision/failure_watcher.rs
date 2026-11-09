@@ -1,17 +1,20 @@
 use std::fmt;
-use std::sync::Arc;
 use std::time::Duration;
 
-use cicada::ActorAddress;
 use cicada::address::ActorRef;
-use cicada::message;
-use cicada::store::MessageId;
+use cicada::contract::canonical_sha256;
+use cicada::runtime::{CreateActorResult, SendResult};
+use cicada::store::{MessageId, OutcomeRecord, PageCursor};
 use cicada::time::{self, Timestamp};
-use md5::{Digest, Md5};
+use cicada::{ActorAddress, ActorSystem, SendOptions};
+use serde_json::Value;
 use tokio::task::JoinHandle;
 
 use super::dead_letters::{DeadLetter, DeadLetters, DeadLettersMsg, DeadLettersState};
-use super::operations::{ActorOperations, Failure, OperationError, Sent};
+/// Why a poll of the [`FailureWatcher`] failed.
+pub type WatchError = Box<dyn std::error::Error + Send + Sync>;
+
+const PAGE: usize = 100;
 
 /// Copies failed messages from the failures list (`GET /failures`) into the [`DeadLetters`] actor.
 ///
@@ -32,7 +35,7 @@ use super::operations::{ActorOperations, Failure, OperationError, Sent};
 /// # }
 /// ```
 pub struct FailureWatcher {
-    ops: Arc<dyn ActorOperations>,
+    system: ActorSystem,
     prefix: String,
     overlap: Duration,
     dead_letters: ActorAddress,
@@ -46,9 +49,9 @@ impl FailureWatcher {
 
     /// A watcher of every failure reachable through `ops` (an `ActorSystem`, or an `ActorClient` with the `client`
     /// feature).
-    pub fn new(ops: impl ActorOperations) -> Self {
+    pub fn new(system: ActorSystem) -> Self {
         Self {
-            ops: Arc::new(ops),
+            system,
             prefix: String::new(),
             overlap: Self::DEFAULT_OVERLAP,
             dead_letters: DeadLetters.address().expect("the dead-letter address is valid"),
@@ -72,34 +75,37 @@ impl FailureWatcher {
 
     /// Reads the failures since the last poll and forwards the new ones. Returns how many failures were forwarded for
     /// the first time.
-    pub async fn poll(&mut self) -> Result<usize, OperationError> {
+    pub async fn poll(&mut self) -> Result<usize, WatchError> {
         if !self.created {
-            let state = serde_json::to_value(DeadLettersState::default())?;
-            self.ops.create(&self.dead_letters, state).await?; // idempotent
-            self.created = true;
+            // Idempotent.
+            match self.system.create(&DeadLetters, &DeadLettersState::default()).await? {
+                CreateActorResult::Created | CreateActorResult::Exists(_) => self.created = true,
+                other => return Err(format!("Create of {} refused: {other:?}", self.dead_letters).into()),
+            }
         }
         let mut newest = self.since;
         let mut forwarded = 0;
-        let mut cursor: Option<String> = None;
+        let mut cursor: Option<PageCursor> = None;
         loop {
-            let (failures, next) = self.ops.failures(&self.prefix, self.since, cursor.take()).await?;
-            for failure in failures {
+            let page = self.system.failures(&self.prefix, self.since, cursor.as_ref(), PAGE).await?;
+            for failure in page.items {
                 if failure.actor == self.dead_letters {
                     continue; // a failed Redrive is not itself a dead letter
                 }
                 let finished_at = failure.finished_at;
                 let id = Self::dead_letter_id(&failure.message_id);
-                let record = message::encode(&DeadLettersMsg::RecordFailure { letter: to_dead_letter(failure) })?;
-                match self.ops.send(&self.dead_letters, &record.message_type, record.payload, id).await? {
-                    Sent::Accepted => forwarded += 1,
-                    Sent::NoSuchInstance => self.created = false, // deleted meanwhile: re-create next time
-                    Sent::Duplicate => {}                         // already forwarded, by this or another watcher
+                let record = DeadLettersMsg::RecordFailure { letter: to_dead_letter(failure) };
+                match self.system.send_with(&DeadLetters, record, SendOptions::new().id(id)).await? {
+                    SendResult::Accepted(_) => forwarded += 1,
+                    SendResult::NoSuchInstance => self.created = false, // deleted meanwhile: re-create next time
+                    SendResult::Duplicate(_) => {}                      // already forwarded, by this or another watcher
+                    other => return Err(format!("Send to {} refused: {other:?}", self.dead_letters).into()),
                 }
                 if newest.is_none_or(|n| finished_at > n) {
                     newest = Some(finished_at);
                 }
             }
-            match next {
+            match page.next {
                 Some(next) => cursor = Some(next),
                 None => break,
             }
@@ -129,9 +135,8 @@ impl FailureWatcher {
     /// The id under which the failure of `failed` is recorded: the same on every node (a name-based UUID,
     /// version 3, of `dead-letter/<id>`).
     pub fn dead_letter_id(failed: &MessageId) -> MessageId {
-        let digest: [u8; 16] = Md5::digest(format!("dead-letter/{failed}").as_bytes()).into();
-        let uuid = uuid::Builder::from_md5_bytes(digest).into_uuid();
-        MessageId::new(uuid.to_string()).expect("a UUID is not blank")
+        let hash = canonical_sha256(&Value::String(failed.to_string()));
+        MessageId::new(format!("dead-letter-{}", hash.trim_start_matches("sha256:"))).expect("the id is not blank")
     }
 }
 
@@ -141,13 +146,13 @@ impl fmt::Debug for FailureWatcher {
     }
 }
 
-fn to_dead_letter(failure: Failure) -> DeadLetter {
+fn to_dead_letter(failure: OutcomeRecord) -> DeadLetter {
     DeadLetter {
         failed_message_id: failure.message_id.to_string(),
         actor: failure.actor.to_string(),
-        message_type: failure.message_type,
-        payload: failure.payload,
-        correlation_id: failure.correlation_id,
+        message_type: failure.envelope.message_type,
+        payload: failure.envelope.payload,
+        correlation_id: failure.envelope.correlation_id,
         error: failure.error,
         failed_at: failure.finished_at,
         redriven_as: None,
@@ -161,8 +166,10 @@ mod tests {
 
     #[test]
     fn dead_letter_ids_are_stable() {
-        // The version 3 UUID of "dead-letter/0f4c1e5a-1b8e-4a0e-9b1a-3c2d5e6f7a8b".
         let failed = MessageId::new("0f4c1e5a-1b8e-4a0e-9b1a-3c2d5e6f7a8b").unwrap();
-        assert_eq!(FailureWatcher::dead_letter_id(&failed).as_str(), "75de82e8-12d3-38e1-955b-632295d120fb");
+        let id = FailureWatcher::dead_letter_id(&failed);
+        assert_eq!(id, FailureWatcher::dead_letter_id(&failed));
+        assert!(id.as_str().starts_with("dead-letter-") && id.as_str().len() == 12 + 64, "{id}");
+        assert_ne!(id, FailureWatcher::dead_letter_id(&MessageId::new("other").unwrap()));
     }
 }

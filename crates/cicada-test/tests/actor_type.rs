@@ -86,6 +86,7 @@ impl Actor for BadActor {
     type State = Stateless;
     type Message = SyncMsg;
     const UNHANDLED: Unhandled = Unhandled::Fail;
+    const MAX_TURN: Option<Duration> = Some(Duration::ZERO);
 
     async fn handle(&self, _turn: &mut Turn<Self>, _message: SyncMsg) -> HandlerResult {
         Ok(())
@@ -103,7 +104,7 @@ async fn registered<A: Actor>(actor: A) -> TypeDef {
     store.list_types().await.unwrap().remove(0)
 }
 
-async fn problems<A: Actor>(actor: ActorType<A>) -> Vec<String> {
+async fn problems<A: Actor>(actor: A) -> Vec<String> {
     let e: StartError = ActorSystem::builder(store()).host(actor).build().initialize().await.unwrap_err();
     e.problems
 }
@@ -118,9 +119,9 @@ async fn a_complete_definition_has_no_problems() {
 
 #[tokio::test]
 async fn a_bad_ref_and_a_zero_max_turn_are_reported() {
-    let problems = problems(ActorType::new(BadActor).max_turn(Duration::ZERO)).await;
+    let problems = problems(BadActor).await;
     assert!(problems.iter().any(|p| p.contains("Ref:")), "{problems:?}");
-    assert!(problems.iter().any(|p| p.contains("max_turn must be positive")), "{problems:?}");
+    assert!(problems.iter().any(|p| p.contains("MAX_TURN must be positive")), "{problems:?}");
 }
 
 #[tokio::test]

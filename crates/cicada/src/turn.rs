@@ -11,10 +11,10 @@ use serde_json::Value;
 use crate::actor::Actor;
 use crate::address::{ActorAddress, ActorRef, RefBinding, to_params};
 use crate::message::{self, ActorState, MessageFamily};
-use crate::plugin::{Attributes, HookSend, TurnInfo, reserved_headers};
+use crate::plugin::{Attributes, TurnInfo};
 use crate::retention::Retention;
 use crate::retry::RetryPolicy;
-use crate::runtime::effects::{EffectBuffer, RawSender};
+use crate::runtime::effects::EffectBuffer;
 use crate::runtime::limits;
 use crate::runtime::resolver::TypeResolver;
 use crate::store::{ActorCreate, Delivery, Message, MessageId, OutgoingMessage, StoreError};
@@ -141,7 +141,7 @@ impl fmt::Display for HandlerFailure {
 /// A send, create or cancel of a handler (or hook) that was refused when called.
 #[derive(Debug, thiserror::Error)]
 pub enum TurnError {
-    /// A field is out of bounds, contains a NUL character, uses a reserved header, or the value cannot be encoded.
+    /// A field is out of bounds, contains a NUL character, or the value cannot be encoded.
     #[error("{0}")]
     Invalid(String),
     /// A send to a raw address was refused: no registered type matches it, or that type does not accept the message
@@ -174,7 +174,8 @@ pub struct SendOptions {
     pub delivery: Delivery,
     /// Opaque string passed through unchanged.
     pub correlation_id: Option<String>,
-    /// Plugin headers passed through unchanged; names starting with `cicada-` are reserved.
+    /// Headers passed through unchanged. A plugin may add headers to a turn's sends (trace context); a header set
+    /// here wins over one of the same name from a plugin.
     pub headers: BTreeMap<String, String>,
     /// The new message's retry policy; `None`: a failed handler run of it ends it `failed`.
     pub retry: Option<RetryPolicy>,
@@ -232,17 +233,6 @@ impl SendOptions {
         self.id = Some(id);
         self
     }
-
-    pub(crate) fn into_hook_send(self) -> HookSend {
-        HookSend {
-            delivery: self.delivery,
-            correlation_id: self.correlation_id,
-            headers: self.headers,
-            id: self.id,
-            retry: self.retry,
-            retention: self.retention,
-        }
-    }
 }
 
 /// Checks a delivery's bounds when a send is called.
@@ -254,21 +244,11 @@ pub(crate) fn check_delivery(delivery: &Delivery) -> Result<(), TurnError> {
     }
 }
 
-pub(crate) fn refuse_reserved(headers: &BTreeMap<String, String>) -> Result<(), TurnError> {
-    if let Some(name) = headers.keys().find(|n| reserved_headers::is_reserved(n)) {
-        return Err(TurnError::Invalid(format!(
-            "Header '{name}' uses the reserved prefix '{}'; only plugins may set such headers",
-            reserved_headers::PREFIX
-        )));
-    }
-    Ok(())
-}
-
 /// What a handler sees during one turn. Everything it does inside the system is buffered and applied by the turn's
 /// single atomic commit; nothing is visible before that.
 ///
 /// Every send checks its envelope when called and fails with [`TurnError::Invalid`] (which the handler can handle)
-/// for a header with the reserved prefix `cicada-`, for fields beyond the send limits, and for NUL characters.
+/// for fields beyond the send limits and for NUL characters.
 pub struct Turn<A: Actor> {
     pub(crate) info: Arc<TurnInfo>,
     self_ref: A::Ref,
@@ -388,9 +368,11 @@ impl<A: Actor> Turn<A> {
         payload: Value,
         options: SendOptions,
     ) -> Result<MessageId, TurnError> {
-        refuse_reserved(&options.headers)?;
-        let mut sender = RawSender { resolver: &self.resolver, effects: &mut self.effects, allow_reserved: false };
-        sender.send(&self.info, to, message_type, payload, options.into_hook_send()).await
+        let options = self.with_turn_headers(options);
+        let id = check_send(message_type, &payload, &options)?;
+        self.resolver.check_send(to, message_type).await?;
+        self.push_send(to.clone(), message_type.to_owned(), payload, id.clone(), options);
+        Ok(id)
     }
 
     /// Buffers an idempotent create of `r` with `initial_state`. Creates are applied before the turn's sends, so
@@ -465,23 +447,35 @@ impl<A: Actor> Turn<A> {
         msg: &M,
         options: SendOptions,
     ) -> Result<MessageId, TurnError> {
-        refuse_reserved(&options.headers)?;
-        check_delivery(&options.delivery)?;
         let encoded = message::encode(msg).map_err(TurnError::Invalid)?;
-        let id = options.id.unwrap_or_else(MessageId::random);
-        limits::check_envelope(
-            &id,
-            &encoded.message_type,
-            &encoded.payload,
-            options.correlation_id.as_deref(),
-            &options.headers,
-        )
-        .map_err(TurnError::Invalid)?;
+        let options = self.with_turn_headers(options);
+        let id = check_send(&encoded.message_type, &encoded.payload, &options)?;
+        self.push_send(to, encoded.message_type, encoded.payload, id.clone(), options);
+        Ok(id)
+    }
+
+    /// Adds the headers that plugins set for this turn's sends; the send's own headers win.
+    fn with_turn_headers(&self, mut options: SendOptions) -> SendOptions {
+        let turn_headers = self.info.send_headers.lock().unwrap_or_else(|e| e.into_inner());
+        for (name, value) in turn_headers.iter() {
+            options.headers.entry(name.clone()).or_insert_with(|| value.clone());
+        }
+        options
+    }
+
+    fn push_send(
+        &mut self,
+        to: ActorAddress,
+        message_type: String,
+        payload: Value,
+        id: MessageId,
+        options: SendOptions,
+    ) {
         self.effects.sends.push(OutgoingMessage {
             to,
-            message_type: encoded.message_type,
-            payload: encoded.payload,
-            id: id.clone(),
+            message_type,
+            payload,
+            id,
             from: Some(self.info.self_address.clone()),
             delivery: options.delivery,
             correlation_id: options.correlation_id,
@@ -490,8 +484,16 @@ impl<A: Actor> Turn<A> {
             caused_by: Some(self.info.message.id.clone()),
             retention: options.retention,
         });
-        Ok(id)
     }
+}
+
+/// Checks the envelope of a send when it is called; returns the message's id (the given one, or a fresh one).
+fn check_send(message_type: &str, payload: &Value, options: &SendOptions) -> Result<MessageId, TurnError> {
+    check_delivery(&options.delivery)?;
+    let id = options.id.clone().unwrap_or_else(MessageId::random);
+    limits::check_envelope(&id, message_type, payload, options.correlation_id.as_deref(), &options.headers)
+        .map_err(TurnError::Invalid)?;
+    Ok(id)
 }
 
 impl<A: Actor> fmt::Debug for Turn<A> {

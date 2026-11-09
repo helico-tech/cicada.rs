@@ -14,7 +14,7 @@ use cicada::store::{
     Claim, CommitRequest, CommitResult, MessageStatus, NodeId, OutcomeStatus, RenewResult, Store, StoreError,
     StoreResult,
 };
-use cicada::{ActorSystem, ActorType};
+use cicada::{ActorSystem, Unhandled};
 use common::*;
 use tokio::time::{Instant, sleep};
 
@@ -22,8 +22,11 @@ fn a() -> Counter {
     Counter::new("a")
 }
 
+// The counter type with a maximum turn of 5 minutes.
+counter_type!(SlowCounter, Unhandled::Fail, Duration::from_secs(300));
+
 fn slow_node(store: Arc<dyn Store>, name: &str) -> ActorSystem {
-    node(store, name).host(ActorType::new(CounterActor).max_turn(Duration::from_secs(300))).build()
+    node(store, name).host(SlowCounter).build()
 }
 
 async fn log_of(memory: &dyn Store) -> Vec<String> {
@@ -81,7 +84,7 @@ async fn a_stale_commit_after_a_pause_is_fenced_off_exactly_one_outcome_effects_
     first.await.unwrap();
 
     assert_eq!(*pausing.faults.stale_commit.lock().unwrap(), Some(CommitResult::LeaseLost));
-    let outcome = memory.outcome(&m.id).await.unwrap().unwrap();
+    let outcome = outcome_of(&*memory, &m.id).await.unwrap();
     assert_eq!(outcome.status, OutcomeStatus::Done);
     assert_eq!(outcome.envelope.attempt, 2);
     assert_eq!(log_of(&*memory).await, vec!["sleep:5000", "woke"]);
@@ -117,7 +120,7 @@ async fn a_commit_that_fails_is_retried_and_the_handler_is_not_run_again() {
     system.create(&a(), &CounterState::default()).await.unwrap();
     let m = accepted(system.send(&a(), CounterMsg::Add { n: 1 }).await.unwrap());
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1);
-    let outcome = memory.outcome(&m.id).await.unwrap().expect("committed by a retry");
+    let outcome = outcome_of(&*memory, &m.id).await.expect("committed by a retry");
     assert_eq!(outcome.status, OutcomeStatus::Done);
     assert_eq!(outcome.envelope.attempt, 1);
     assert_eq!(log_of(&*memory).await, vec!["add:1"]);
@@ -131,7 +134,7 @@ async fn a_commit_whose_acknowledgement_was_lost_is_not_applied_twice() {
     system.create(&a(), &CounterState::default()).await.unwrap();
     let m = accepted(system.send(&a(), CounterMsg::Burst { count: 2 }).await.unwrap());
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1);
-    assert_eq!(memory.outcome(&m.id).await.unwrap().map(|o| o.status), Some(OutcomeStatus::Done));
+    assert_eq!(outcome_of(&*memory, &m.id).await.map(|o| o.status), Some(OutcomeStatus::Done));
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1);
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1);
     assert_eq!(system.run_due_turns(1).await.unwrap(), 0, "the burst's two sends were enqueued once");
@@ -163,7 +166,7 @@ async fn a_commit_that_keeps_failing_is_abandoned_without_releasing_the_lease() 
     assert_eq!(healthy.run_due_turns(1).await.unwrap(), 0);
     sleep(Duration::from_secs(31)).await;
     assert_eq!(healthy.run_due_turns(1).await.unwrap(), 1);
-    let outcome = memory.outcome(&m.id).await.unwrap().unwrap();
+    let outcome = outcome_of(&*memory, &m.id).await.unwrap();
     assert_eq!(outcome.status, OutcomeStatus::Done);
     assert_eq!(outcome.envelope.attempt, 2);
 }

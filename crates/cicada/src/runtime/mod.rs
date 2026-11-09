@@ -7,6 +7,6 @@ pub(crate) mod resolver;
 mod results;
 mod system;
 
-pub use resolver::{RegisteredType, ResolvedActorType};
-pub use results::{ActorSnapshot, CreateActorResult, MessageChain, OpError, SendResult};
+pub use resolver::RegisteredType;
+pub use results::{ActorSnapshot, CreateActorResult, OpError, SendResult};
 pub use system::{ActorSystem, ActorSystemBuilder, NodeConfig, NodeState, StartError};

@@ -65,7 +65,7 @@ impl Plugin for CrashLoopGuard {
         "CrashLoopGuard"
     }
 
-    async fn on_claim(&self, ctx: &mut ClaimContext<'_>) -> HookResult {
+    async fn on_claim(&self, ctx: &ClaimContext<'_>) -> HookResult {
         let message = ctx.info().message();
         let uncommitted = message.attempt.saturating_sub(message.failures).saturating_sub(1);
         if uncommitted >= self.max_uncommitted_claims {

@@ -18,14 +18,12 @@
 //! ```
 
 mod config;
-mod connection;
 mod error;
 mod listener;
 pub mod schema;
 mod store;
 
 pub use config::PostgresStoreConfig;
-pub use connection::PostgresConnection;
 /// sqlx connect options, for [`PostgresStore::connect_with`].
 pub use sqlx::postgres::{PgConnectOptions, PgSslMode};
 pub use store::PostgresStore;

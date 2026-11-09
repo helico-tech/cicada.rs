@@ -9,8 +9,6 @@
 
 mod dead_letters;
 mod failure_watcher;
-mod operations;
 
 pub use dead_letters::{DeadLetter, DeadLetters, DeadLettersActor, DeadLettersMsg, DeadLettersState};
-pub use failure_watcher::FailureWatcher;
-pub use operations::{ActorOperations, Failure, OperationError, Sent};
+pub use failure_watcher::{FailureWatcher, WatchError};

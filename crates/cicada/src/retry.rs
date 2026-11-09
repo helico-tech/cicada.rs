@@ -31,7 +31,7 @@ pub struct RetryPolicy {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RawRetryPolicy {
     max_attempts: i64,
     backoff: Backoff,
@@ -132,30 +132,20 @@ pub enum Backoff {
 }
 
 #[derive(Deserialize)]
-#[serde(tag = "kind", rename_all = "lowercase")]
+#[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
 enum RawBackoff {
     Exponential {
-        #[serde(deserialize_with = "field_duration")]
+        #[serde(deserialize_with = "serde_duration::deserialize")]
         initial: Duration,
         #[serde(default = "default_factor")]
         factor: f64,
-        #[serde(deserialize_with = "field_duration")]
+        #[serde(deserialize_with = "serde_duration::deserialize")]
         max: Duration,
     },
     Fixed {
-        #[serde(deserialize_with = "field_duration")]
+        #[serde(deserialize_with = "serde_duration::deserialize")]
         delay: Duration,
     },
-}
-
-/// A duration field that may be zero or negative in the JSON, so that the bounds check reports it properly.
-fn field_duration<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Duration, D::Error> {
-    let signed = crate::time::serde_signed_duration::deserialize(deserializer)?;
-    if signed.is_negative() {
-        // Reported as "must be a positive duration" by the bounds check.
-        return Ok(Duration::ZERO);
-    }
-    Ok(signed.non_negative())
 }
 
 fn default_factor() -> f64 {
@@ -296,11 +286,17 @@ mod tests {
         );
         assert_eq!(serde_json::from_value::<RetryPolicy>(json).unwrap(), policy);
         let fixed: RetryPolicy =
-            serde_json::from_value(json!({"maxAttempts": 3, "backoff": {"kind": "fixed", "delay": "5s"}})).unwrap();
+            serde_json::from_value(json!({"maxAttempts": 3, "backoff": {"kind": "fixed", "delay": "PT5S"}})).unwrap();
         assert_eq!(fixed.backoff().delay(1), Duration::from_secs(5));
-        let millis: RetryPolicy =
-            serde_json::from_value(json!({"maxAttempts": 3, "backoff": {"kind": "fixed", "delay": 250}})).unwrap();
-        assert_eq!(millis.backoff().delay(3), Duration::from_millis(250));
+        // Durations are ISO-8601 only, and an unknown key is refused.
+        for bad in [
+            json!({"maxAttempts": 3, "backoff": {"kind": "fixed", "delay": "5s"}}),
+            json!({"maxAttempts": 3, "backoff": {"kind": "fixed", "delay": 250}}),
+            json!({"maxAttempts": 3, "backoff": {"kind": "fixed", "delay": "PT5S", "jitter": true}}),
+            json!({"maxAttempts": 3, "backoff": {"kind": "fixed", "delay": "PT5S"}, "jitter": true}),
+        ] {
+            assert!(serde_json::from_value::<RetryPolicy>(bad.clone()).is_err(), "{bad}");
+        }
     }
 
     #[test]

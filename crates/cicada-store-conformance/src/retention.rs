@@ -1,16 +1,16 @@
 //! The sender's retention policy: how long a finished message's record stays visible,
-//! while a minimal record keeps dedup and chains working for the store retention.
+//! while a minimal record keeps dedup working for the store retention.
 
 use std::collections::BTreeMap;
 
 use cicada::address::ActorAddress;
 use cicada::retention::{Keep, Retention};
 use cicada::store::{
-    CancelResult, ChainEntry, CommitRequest, CommitResult, Delivery, EnqueueResult, Message, MessageStatus,
-    OutcomeStatus, OutgoingMessage, Page, Store, TurnOutcome,
+    CancelResult, CommitRequest, CommitResult, Delivery, EnqueueResult, Message, MessageStatus, OutcomeStatus,
+    OutgoingMessage, Page, Store, TurnOutcome,
 };
 use cicada::time::Timestamp;
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::env::*;
 use crate::fixture::{FixtureFactory, StoreFixture};
@@ -38,10 +38,15 @@ async fn finish<F: StoreFixture>(t: &Env<F>, message: &Message, outcome: TurnOut
     t.commit_ok(ending(&c, outcome)).await;
 }
 
-async fn is_duplicate(store: &dyn Store, message: &Message) -> bool {
+/// Enqueues a new message with the id of `message`.
+async fn send_again(store: &dyn Store, message: &Message) -> EnqueueResult {
     let again =
         OutgoingMessage { id: message.id.clone(), ..OutgoingMessage::new(message.to.clone(), "Msg", json!({"x": 2})) };
-    store.enqueue(again).await.unwrap() == EnqueueResult::Duplicate(message.id.clone())
+    store.enqueue(again).await.unwrap()
+}
+
+async fn is_duplicate(store: &dyn Store, message: &Message) -> bool {
+    send_again(store, message).await == EnqueueResult::Duplicate(message.id.clone())
 }
 
 async fn failure_ids(store: &dyn Store, since: Timestamp) -> Vec<cicada::store::MessageId> {
@@ -76,7 +81,7 @@ pub async fn retention_the_policy_is_stored_with_the_message_and_kept_in_its_env
         if t.fixture.supports_reopen() {
             t.fixture.reopen().await;
         }
-        let outcome = t.store().outcome(&m.id).await.unwrap().expect("an outcome");
+        let outcome = outcome_record(&*t.store(), &m.id).await.expect("an outcome");
         assert_eq!(outcome.envelope.retention.as_ref(), Some(&policy));
         assert_eq!(t.send(&a).await.retention, None, "no policy: null");
     })
@@ -95,7 +100,6 @@ pub async fn retention_remove_on_done_hides_the_record_at_once_drops_its_content
         let removed = send_kept(t, &a, Some(Retention::REMOVE_ON_DONE), Delivery::Now).await;
         finish(t, &removed, TurnOutcome::Done).await;
         assert_eq!(store.status(&removed.id).await.unwrap(), None, "gone from status");
-        assert_eq!(store.outcome(&removed.id).await.unwrap(), None);
         assert_eq!(store.cancel(&removed.id).await.unwrap(), CancelResult::NotFound);
         assert!(is_duplicate(&*store, &removed).await, "still a duplicate within the dedup window");
         assert_eq!(t.pending(&a).await, vec![], "nothing was enqueued again");
@@ -136,10 +140,10 @@ pub async fn retention_remove_on_failed_hides_a_failure_from_failures_and_the_ot
         finish(t, &failed_kept, TurnOutcome::Failed("kept".into())).await;
         assert_eq!(store.status(&failed.id).await.unwrap(), None);
         assert_eq!(failure_ids(&*store, since).await, vec![failed_kept.id.clone()]);
-        let kept = store.outcome(&done_msg.id).await.unwrap().expect("an outcome");
+        let kept = outcome_record(&*store, &done_msg.id).await.expect("an outcome");
         assert_eq!(kept.status, OutcomeStatus::Done);
         assert_eq!(kept.envelope.payload, json!({"secret": 1}), "a kept record keeps its content");
-        let kept_failure = store.outcome(&failed_kept.id).await.unwrap().expect("an outcome");
+        let kept_failure = outcome_record(&*store, &failed_kept.id).await.expect("an outcome");
         assert_eq!(kept_failure.error.as_deref(), Some("kept"));
     })
     .await
@@ -153,10 +157,10 @@ pub async fn retention_cancelled_and_purged_messages_keep_the_store_default<B: F
         let all = Retention { done: Some(Keep::Remove), failed: Some(Keep::Remove) };
         let cancelled = send_kept(t, &a, Some(all.clone()), Delivery::After(t.ticks(100))).await;
         assert_matches!(store.cancel(&cancelled.id).await.unwrap(), CancelResult::Cancelled(_));
-        assert_eq!(store.outcome(&cancelled.id).await.unwrap().expect("an outcome").status, OutcomeStatus::Cancelled);
+        assert_eq!(outcome_record(&*store, &cancelled.id).await.expect("an outcome").status, OutcomeStatus::Cancelled);
         let purged = send_kept(t, &a, Some(all), Delivery::After(t.ticks(100))).await;
         store.delete(&a).await.unwrap();
-        assert_eq!(store.outcome(&purged.id).await.unwrap().expect("an outcome").status, OutcomeStatus::Purged);
+        assert_eq!(outcome_record(&*store, &purged.id).await.expect("an outcome").status, OutcomeStatus::Purged);
     })
     .await
 }
@@ -179,21 +183,24 @@ pub async fn retention_keep_for_a_time_shorter_than_the_store_retention<B: Fixtu
         finish(t, &m, TurnOutcome::Done).await;
         t.advance_ticks(4).await;
         assert_eq!(
-            store.outcome(&m.id).await.unwrap().expect("an outcome").envelope.payload,
+            outcome_record(&*store, &m.id).await.expect("an outcome").envelope.payload,
             json!({"secret": 1}),
             "visible within its age"
         );
         t.advance_ticks(2).await;
-        assert_eq!(store.outcome(&m.id).await.unwrap(), None, "hidden after its age");
+        assert_eq!(outcome_record(&*store, &m.id).await, None, "hidden after its age");
         assert!(is_duplicate(&*store, &m).await, "dedup lasts for the store retention");
         assert_eq!(store.sweep_expired().await.unwrap(), 0, "nothing to delete yet");
-        let entries = store.chain_entries(std::slice::from_ref(&m.id)).await.unwrap();
-        assert_eq!(entries.len(), 1);
-        let payload = expect_matches!(&entries[0], ChainEntry::Removed { envelope, .. } => &envelope.payload);
-        assert_eq!(payload, &Value::Null, "the minimal record has no content");
+        assert_eq!(store.status(&m.id).await.unwrap(), None, "the minimal record stays hidden");
+        assert!(is_duplicate(&*store, &m).await, "the minimal record keeps the id in use after a sweep");
         t.advance_ticks(15).await;
         assert_eq!(store.sweep_expired().await.unwrap(), 1);
-        assert_eq!(store.chain_entries(std::slice::from_ref(&m.id)).await.unwrap(), vec![]);
+        assert_eq!(store.status(&m.id).await.unwrap(), None);
+        assert_matches!(
+            send_again(&*store, &m).await,
+            EnqueueResult::Enqueued(_),
+            "the id is free again after the dedup window"
+        );
     })
     .await
 }
@@ -219,12 +226,12 @@ pub async fn retention_keep_for_longer_than_the_store_retention<B: FixtureFactor
         finish(t, &plain, TurnOutcome::Failed("plain".into())).await;
         t.advance_ticks(10).await;
         assert_eq!(store.sweep_expired().await.unwrap(), 1, "only the default record expired");
-        assert_eq!(store.outcome(&m.id).await.unwrap().expect("an outcome").error.as_deref(), Some("boom"));
+        assert_eq!(outcome_record(&*store, &m.id).await.expect("an outcome").error.as_deref(), Some("boom"));
         assert_eq!(failure_ids(&*store, since).await, vec![m.id.clone()]);
         assert!(is_duplicate(&*store, &m).await, "a visible record is a duplicate too");
         assert_matches!(store.cancel(&m.id).await.unwrap(), CancelResult::AlreadyFinished(_));
         t.advance_ticks(11).await;
-        assert_eq!(store.outcome(&m.id).await.unwrap(), None);
+        assert_eq!(outcome_record(&*store, &m.id).await, None);
         assert_eq!(store.sweep_expired().await.unwrap(), 1);
     })
     .await
@@ -260,30 +267,25 @@ pub async fn retention_keep_last_n_per_instance_and_outcome_leaving_other_polici
 
         let mut visible = Vec::new();
         for m in &kept {
-            visible.push(store.outcome(&m.id).await.unwrap().is_some());
+            visible.push(outcome_record(&*store, &m.id).await.is_some());
         }
         assert_eq!(visible, vec![false, false, true, true], "the newest two");
         let mut visible = Vec::new();
         for m in &failed {
-            visible.push(store.outcome(&m.id).await.unwrap().is_some());
+            visible.push(outcome_record(&*store, &m.id).await.is_some());
         }
         assert_eq!(visible, vec![false, true], "failed counted apart");
-        assert!(store.outcome(&plain.id).await.unwrap().is_some(), "another policy is never trimmed");
-        assert!(store.outcome(&other.id).await.unwrap().is_some(), "another instance is never trimmed");
+        assert!(outcome_record(&*store, &plain.id).await.is_some(), "another policy is never trimmed");
+        assert!(outcome_record(&*store, &other.id).await.is_some(), "another instance is never trimmed");
         for m in &kept {
             assert!(is_duplicate(&*store, m).await, "trimmed records stay duplicates");
         }
-        let entries = store.chain_entries(std::slice::from_ref(&kept[0].id)).await.unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_matches!(&entries[0], ChainEntry::Removed { .. });
     })
     .await
 }
 
-/// retention - the sweep drops the content of hidden records and keeps visible ones intact
-pub async fn retention_the_sweep_drops_the_content_of_hidden_records_and_keeps_visible_ones_intact<
-    B: FixtureFactory,
->(
+/// retention - the sweep keeps hidden records as duplicates and visible ones intact
+pub async fn retention_the_sweep_keeps_hidden_records_as_duplicates_and_visible_ones_intact<B: FixtureFactory>(
     backend: &B,
 ) {
     store_test_with(backend, backend.tick() * 20, DEFAULT_TIMEOUT, async |t| {
@@ -300,17 +302,10 @@ pub async fn retention_the_sweep_drops_the_content_of_hidden_records_and_keeps_v
         finish(t, &plain, TurnOutcome::Done).await;
         t.advance_ticks(2).await;
         assert_eq!(store.sweep_expired().await.unwrap(), 0);
-        let entries = store.chain_entries(std::slice::from_ref(&short.id)).await.unwrap();
-        assert_eq!(entries.len(), 1);
-        let (status, envelope) =
-            expect_matches!(&entries[0], ChainEntry::Removed { status, envelope, .. } => (status, envelope));
-        assert_eq!(envelope.payload, Value::Null);
-        assert_eq!(envelope.headers, BTreeMap::new());
-        assert_eq!(envelope.correlation_id, None);
-        assert_eq!(envelope.message_type, "Msg", "the minimal record keeps type and target");
-        assert_eq!(envelope.to, a);
-        assert_eq!(*status, OutcomeStatus::Done);
-        let visible = store.outcome(&plain.id).await.unwrap().expect("an outcome");
+        assert_eq!(store.status(&short.id).await.unwrap(), None, "the hidden record stays hidden");
+        assert!(is_duplicate(&*store, &short).await, "the minimal record keeps the id in use");
+        assert_eq!(t.pending(&a).await, vec![], "nothing was enqueued again");
+        let visible = outcome_record(&*store, &plain.id).await.expect("an outcome");
         assert_eq!(visible.envelope.headers, BTreeMap::from([("h".to_owned(), "v".to_owned())]));
     })
     .await

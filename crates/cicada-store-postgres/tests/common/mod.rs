@@ -5,12 +5,13 @@
 use std::collections::hash_map::RandomState;
 use std::future::Future;
 use std::hash::{BuildHasher, Hasher};
+use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use cicada::store::Store;
-use cicada_store_postgres::{PostgresConnection, PostgresStore, PostgresStoreConfig};
+use cicada_store_postgres::{PgConnectOptions, PostgresStore, PostgresStoreConfig};
 use sqlx::{AssertSqlSafe, Connection, PgConnection};
 
 /// The test database URL, or `None` (with a note) when `CICADA_PG_URL` is unset.
@@ -57,7 +58,7 @@ impl TestDb {
 
     /// The settings tests use: this schema, a small pool.
     pub fn config(&self) -> PostgresStoreConfig {
-        PostgresStoreConfig { schema: self.schema.clone(), max_pool_size: 4, min_idle: 0, ..Default::default() }
+        PostgresStoreConfig { schema: self.schema.clone(), max_pool_size: 4, ..Default::default() }
     }
 
     /// Opens a store on this schema with [`Self::config`].
@@ -74,7 +75,7 @@ impl TestDb {
 
     /// A plain connection (auto-commit) for set-up and inspection.
     pub async fn connect(&self) -> PgConnection {
-        let options = PostgresConnection::parse(&self.url, None, None).unwrap().connect_options().unwrap();
+        let options = PgConnectOptions::from_str(&self.url).expect("a PostgreSQL URL");
         PgConnection::connect_with(&options).await.expect("test database reachable")
     }
 
@@ -120,7 +121,7 @@ impl Drop for TestDb {
         let _ = std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
             runtime.block_on(async {
-                let options = PostgresConnection::parse(&url, None, None).unwrap().connect_options().unwrap();
+                let options = PgConnectOptions::from_str(&url).expect("a PostgreSQL URL");
                 if let Ok(mut c) = PgConnection::connect_with(&options).await {
                     drop_schema(&mut c, &schema).await;
                 }

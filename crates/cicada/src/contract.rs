@@ -103,7 +103,7 @@ impl PartialEq for Contract {
     }
 }
 
-/// Canonical JSON text: object keys sorted by their UTF-16 code units, no insignificant whitespace, array order kept.
+/// Canonical JSON text: object keys sorted (by their bytes), no insignificant whitespace, array order kept.
 /// Two equal JSON values always yield the same text, so the text is a stable input for hashing.
 pub fn canonical_json(value: &Value) -> String {
     let mut out = String::new();
@@ -115,7 +115,7 @@ fn write_canonical(value: &Value, out: &mut String) {
     match value {
         Value::Object(o) => {
             let mut entries: Vec<(&String, &Value)> = o.iter().collect();
-            entries.sort_by(|a, b| a.0.encode_utf16().cmp(b.0.encode_utf16()));
+            entries.sort_by(|a, b| a.0.cmp(b.0));
             out.push('{');
             for (i, (k, v)) in entries.into_iter().enumerate() {
                 if i > 0 {

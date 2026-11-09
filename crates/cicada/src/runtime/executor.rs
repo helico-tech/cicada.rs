@@ -16,14 +16,14 @@
 //!
 //! **Retry.** When the handler fails or exceeds its maximum turn, the message's own retry policy decides: with a
 //! policy, attempts left and a failure that is not permanent, the commit is a reschedule after the backoff, else
-//! `failed`. The `on_handler_error` hooks then see that decision and may replace it with a final outcome.
+//! `failed`. The `on_handler_error` hooks then see that decision.
 //!
 //! **After the handler.** Once the handler has returned or failed (or was stopped by its turn timeout), the lease is
 //! never released for a re-run (G6): every later failure ends in a `failed` outcome or, when the outcome cannot be
 //! committed, in abandoning the turn without release.
 //!
 //! **Task structure.** Each turn is one task that spawns three children: *work* (load, `on_claim`, the handler under
-//! its timeout, hooks, checks), *keeper* (heartbeat and local-deadline watchdog; it aborts *work* when the lease is
+//! its timeout, checks), *keeper* (heartbeat and local-deadline watchdog; it aborts *work* when the lease is
 //! lost) and *overtime* (a warning about handlers that ignore cancellation). The turn task awaits *work*, then commits
 //! while the keeper keeps renewing.
 
@@ -39,14 +39,12 @@ use tokio::task::AbortHandle;
 use tokio::time::{Instant, sleep};
 use tokio_util::sync::CancellationToken;
 
-use super::effects::{EffectBuffer, RawSender};
+use super::effects::EffectBuffer;
 use super::limits;
 use super::resolver::TypeResolver;
 use crate::actor::{HostedActor, RunEnd, RunResult, panic_message};
 use crate::address::UriTemplate;
-use crate::plugin::{
-    Attributes, BeforeCommitContext, ClaimContext, HandlerErrorContext, HookResult, OutcomeContext, Plugin, TurnInfo,
-};
+use crate::plugin::{Attributes, ClaimContext, HandlerErrorContext, HookResult, OutcomeContext, Plugin, TurnInfo};
 use crate::store::{
     ActorCreate, Claim, CommitRequest, CommitResult, Delivery, Message, MessageId, OutgoingMessage, RenewResult,
     StateChange, Store, StoreError, TurnOutcome,
@@ -62,8 +60,6 @@ const COMMIT_RETRY_MAX: Duration = Duration::from_secs(2);
 #[derive(Clone)]
 pub(crate) struct HostedType {
     pub actor: Arc<dyn HostedActor>,
-    /// Node plugins first, then type plugins.
-    pub plugins: Vec<Arc<dyn Plugin>>,
     pub max_turn: Duration,
 }
 
@@ -169,6 +165,8 @@ pub(crate) struct TurnExecutor {
     pub store: Arc<dyn Store>,
     pub resolver: Arc<TypeResolver>,
     pub hosted: HashMap<UriTemplate, HostedType>,
+    /// The node's plugins, in installation order.
+    pub plugins: Vec<Arc<dyn Plugin>>,
     pub lease: LeaseSettings,
     /// Wakes the node's dispatch loop: after a commit that sent messages, or one that may have applied unacknowledged.
     pub wake: Arc<Notify>,
@@ -190,6 +188,7 @@ impl TurnExecutor {
             message: claim.message.clone(),
             now: claim.claimed_at,
             attributes: Attributes::default(),
+            send_headers: Mutex::default(),
             unhandled: std::sync::OnceLock::new(),
             claim_sent,
         });
@@ -244,7 +243,7 @@ impl TurnExecutor {
         match decision {
             None => tracing::info!("Turn of {} for {} abandoned: {}", claim.actor, claim.message.id, guard.reason()),
             // The heartbeat keeps running while the commit is retried.
-            Some(decision) => self.commit(&hosted, &claim, &info, decision, &guard).await,
+            Some(decision) => self.commit(&claim, &info, decision, &guard).await,
         }
         keeper.abort();
         overtime.abort();
@@ -364,10 +363,9 @@ impl TurnExecutor {
             let _ = info.unhandled.set(reason.clone());
         }
 
-        for plugin in &hosted.plugins {
-            let mut ctx = ClaimContext { info };
-            if let Err(e) = guarded(plugin.on_claim(&mut ctx)).await {
-                return Decision::failed(format!("onClaim of plugin {} failed: {e}", plugin.name()));
+        for plugin in &self.plugins {
+            if let Err(e) = guarded(plugin.on_claim(&ClaimContext { info })).await {
+                return Decision::failed(format!("on_claim of plugin {} failed: {e}", plugin.name()));
             }
         }
 
@@ -382,7 +380,7 @@ impl TurnExecutor {
             // Cut off at max_turn: a handler failure, retried under the message's policy, seen by the error hooks.
             Err(_) => {
                 let failure = HandlerFailure::Timeout { max_turn: hosted.max_turn, cause: None };
-                self.on_handler_error(hosted, info, failure, "timeout".into(), true).await
+                self.on_handler_error(info, failure, "timeout".into(), true).await
             }
             // It ended, but only after max_turn (blocking code): still a timeout. Re-running is allowed only when the
             // handler itself failed; one that returned, vetoed or decided ends failed(timeout), not retried.
@@ -393,7 +391,7 @@ impl TurnExecutor {
                 };
                 let retryable = cause.as_ref().is_some_and(|c| !c.is_permanent());
                 let failure = HandlerFailure::Timeout { max_turn: hosted.max_turn, cause };
-                self.on_handler_error(hosted, info, failure, "timeout".into(), retryable).await
+                self.on_handler_error(info, failure, "timeout".into(), retryable).await
             }
             Ok(run) => match run.end {
                 RunEnd::DecidedFail(reason) => {
@@ -403,19 +401,17 @@ impl TurnExecutor {
                 RunEnd::DecidedDrop => Decision::of(TurnOutcome::Done),
                 RunEnd::Threw(failure) => {
                     let reason = failure.reason();
-                    self.on_handler_error(hosted, info, failure, reason, true).await
+                    self.on_handler_error(info, failure, reason, true).await
                 }
-                RunEnd::Returned => self.after_return(hosted, info, run, guard).await,
+                RunEnd::Returned => self.after_return(info, run, guard).await,
             },
         }
     }
 
-    /// The handler failed; its effects are discarded. First the dispatcher decides from the message's retry policy;
-    /// then every `on_handler_error` hook runs on fresh effects and sees that decision. A failing hook is ignored
-    /// together with what it changed.
+    /// The handler failed; its effects are discarded. The message's retry policy decides between a reschedule and
+    /// `failed`; then every `on_handler_error` hook sees that decision. A failing hook is logged and ignored.
     async fn on_handler_error(
         &self,
-        hosted: &HostedType,
         info: &TurnInfo,
         failure: HandlerFailure,
         reason: String,
@@ -429,54 +425,21 @@ impl TurnExecutor {
             }
             _ => None,
         };
-        let retry =
-            retry_delay.map(|d| TurnOutcome::Rescheduled { delivery: Delivery::After(d), error: reason.clone() });
-        let mut effects = EffectBuffer::default();
-        let mut outcome = retry.clone().unwrap_or_else(|| TurnOutcome::Failed(reason.clone()));
-        for plugin in &hosted.plugins {
-            let mark = effects.mark();
-            let before = outcome.clone();
-            let mut ctx = HandlerErrorContext {
-                info,
-                sender: RawSender { resolver: &self.resolver, effects: &mut effects, allow_reserved: true },
-                error: &failure,
-                outcome: outcome.clone(),
-                retry: retry.clone(),
-                retry_delay,
-                failure_reason: reason.clone(),
-            };
-            let result = guarded(plugin.on_handler_error(&mut ctx)).await;
-            let changed = ctx.outcome;
-            match result {
-                Ok(()) => outcome = changed,
-                Err(e) => {
-                    effects.roll_back(&mark);
-                    outcome = before;
-                    tracing::warn!("onHandlerError of plugin {} failed; ignored: {e}", plugin.name());
-                }
+        for plugin in &self.plugins {
+            let ctx = HandlerErrorContext { info, error: &failure, retry_delay };
+            if let Err(e) = guarded(plugin.on_handler_error(&ctx)).await {
+                tracing::warn!("on_handler_error of plugin {} failed; ignored: {e}", plugin.name());
             }
         }
-        Decision {
-            outcome,
-            state: StateChange::Unchanged,
-            creates: effects.creates,
-            sends: effects.sends,
-            cancels: Vec::new(),
-            handler_failure: Some(reason),
-        }
+        let outcome = match retry_delay {
+            Some(delay) => TurnOutcome::Rescheduled { delivery: Delivery::After(delay), error: reason.clone() },
+            None => TurnOutcome::Failed(reason.clone()),
+        };
+        Decision { handler_failure: Some(reason), ..Decision::of(outcome) }
     }
 
-    async fn after_return(&self, hosted: &HostedType, info: &TurnInfo, run: RunResult, guard: &LeaseGuard) -> Decision {
-        let mut effects = run.effects;
-        for plugin in &hosted.plugins {
-            let mut ctx = BeforeCommitContext {
-                info,
-                sender: RawSender { resolver: &self.resolver, effects: &mut effects, allow_reserved: true },
-            };
-            if let Err(e) = guarded(plugin.before_commit(&mut ctx)).await {
-                return Decision::failed(format!("beforeCommit of plugin {} failed: {e}", plugin.name()));
-            }
-        }
+    async fn after_return(&self, info: &TurnInfo, run: RunResult, guard: &LeaseGuard) -> Decision {
+        let effects = run.effects;
         match self.check_typed_effects(info, &effects, guard).await {
             Ok(Some(reason)) => return Decision::failed(reason),
             Ok(None) => {}
@@ -585,14 +548,7 @@ impl TurnExecutor {
         }
     }
 
-    async fn commit(
-        &self,
-        hosted: &HostedType,
-        claim: &Claim,
-        info: &TurnInfo,
-        decision: Decision,
-        guard: &LeaseGuard,
-    ) {
+    async fn commit(&self, claim: &Claim, info: &TurnInfo, decision: Decision, guard: &LeaseGuard) {
         // Every backend can store the reason (PostgreSQL refuses NUL characters in text). A rescheduled message carries
         // its `lastError` along, so that one is also bounded.
         let outcome = match decision.outcome {
@@ -615,8 +571,8 @@ impl TurnExecutor {
         };
         let failure = match self.commit_with_retry(claim, guard, request).await {
             CommitEnd::Abandoned => return,
-            // A retry commit the store cannot apply (the reschedule's delivery time out of range, or invalid data in a
-            // hook's effects): the handler's failure stands, with the refusal appended.
+            // A retry commit the store cannot apply (the reschedule's delivery time out of range): the handler's
+            // failure stands, with the refusal appended.
             CommitEnd::Refused(reason) => match (&outcome, &decision.handler_failure) {
                 (TurnOutcome::Rescheduled { .. }, Some(handler_failure)) => {
                     TurnOutcome::Failed(sanitize(&format!("{handler_failure} (commit refused: {reason})")))
@@ -624,7 +580,7 @@ impl TurnExecutor {
                 _ => TurnOutcome::Failed(sanitize(&format!("Commit refused: {reason}"))),
             },
             CommitEnd::Answered(CommitResult::Committed { sent, .. }) => {
-                return self.outcome(hosted, info, &outcome, &sent).await;
+                return self.outcome(info, &outcome, &sent).await;
             }
             CommitEnd::Answered(CommitResult::LeaseLost) => {
                 tracing::info!("Commit of {} for {} rejected: lease lost", claim.actor, claim.message.id);
@@ -635,9 +591,7 @@ impl TurnExecutor {
         // Rejected or refused: nothing was applied and the lease is still held; record the failure without effects.
         let request = CommitRequest::new(claim.actor.clone(), claim.epoch, claim.message.id.clone(), failure.clone());
         match self.commit_with_retry(claim, guard, request).await {
-            CommitEnd::Answered(CommitResult::Committed { sent, .. }) => {
-                self.outcome(hosted, info, &failure, &sent).await
-            }
+            CommitEnd::Answered(CommitResult::Committed { sent, .. }) => self.outcome(info, &failure, &sent).await,
             CommitEnd::Answered(other) => {
                 tracing::warn!("Failure commit of {} for {}: {other:?}", claim.actor, claim.message.id)
             }
@@ -698,14 +652,14 @@ impl TurnExecutor {
 
     /// After a successful commit: wakes the node for the messages sent (and for a rescheduled message, which may be
     /// due at once), then runs the `on_outcome` hooks.
-    async fn outcome(&self, hosted: &HostedType, info: &TurnInfo, outcome: &TurnOutcome, sent: &[Message]) {
+    async fn outcome(&self, info: &TurnInfo, outcome: &TurnOutcome, sent: &[Message]) {
         if !sent.is_empty() || !outcome.is_final() {
             self.wake.notify_one();
         }
-        for plugin in &hosted.plugins {
+        for plugin in &self.plugins {
             let ctx = OutcomeContext { info, outcome, sent };
             if let Err(e) = guarded(plugin.on_outcome(&ctx)).await {
-                tracing::warn!("onOutcome of plugin {} failed; ignored: {e}", plugin.name());
+                tracing::warn!("on_outcome of plugin {} failed; ignored: {e}", plugin.name());
             }
         }
     }

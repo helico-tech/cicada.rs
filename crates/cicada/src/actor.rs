@@ -13,11 +13,11 @@ use serde_json::Value;
 use crate::address::{ActorAddress, ActorRef, RefBinding, UriTemplate};
 use crate::contract::Contract;
 use crate::message::{self, ActorState, FamilyInfo, MessageFamily};
-use crate::plugin::{Plugin, TurnInfo};
+use crate::plugin::TurnInfo;
 use crate::runtime::effects::EffectBuffer;
 use crate::runtime::resolver::TypeResolver;
 use crate::store::Claim;
-use crate::turn::{HandlerError, HandlerFailure, HandlerResult, Turn};
+use crate::turn::{HandlerFailure, HandlerResult, Turn};
 
 /// The mandatory policy for messages that cannot be decoded at delivery (an unknown type name or an invalid payload).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,20 +25,6 @@ pub enum Unhandled {
     /// End the message `failed` with the decoding error.
     Fail,
     /// End the message `done`, without effects.
-    Drop,
-    /// Run [`Actor::on_unhandled`], which receives the raw envelope (as [`Turn::message`]) and may produce effects
-    /// like any handler.
-    Custom,
-}
-
-/// What a custom unhandled policy decided.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum UnhandledDecision {
-    /// The policy handled the message like a handler: its effects are committed and the message ends `done`.
-    Handled,
-    /// End the message `failed` with this reason; effects are discarded, never retried, no `on_handler_error`.
-    Fail(String),
-    /// End the message `done` with no effects.
     Drop,
 }
 
@@ -100,7 +86,7 @@ pub trait Actor: Send + Sync + Sized + 'static {
     /// The message family: an enum with `#[serde(tag = "type")]`.
     type Message: MessageFamily;
 
-    /// The mandatory unhandled policy.
+    /// The mandatory unhandled policy: `Fail` or `Drop`.
     const UNHANDLED: Unhandled;
 
     /// The maximum duration of one turn; a longer turn ends as `failed` (`timeout`). `None` uses the node default.
@@ -114,25 +100,11 @@ pub trait Actor: Send + Sync + Sized + 'static {
     /// Handles one message. Everything the handler does through `turn` is buffered and committed atomically when it
     /// returns `Ok`; an `Err` discards it and fails the message (retried under its retry policy unless permanent).
     fn handle(&self, turn: &mut Turn<Self>, message: Self::Message) -> impl Future<Output = HandlerResult> + Send;
-
-    /// The custom unhandled policy, run when [`Self::UNHANDLED`] is [`Unhandled::Custom`]. The raw envelope is
-    /// [`Turn::message`]; `reason` says why it could not be decoded. Fails the message by default.
-    fn on_unhandled(
-        &self,
-        turn: &mut Turn<Self>,
-        reason: String,
-    ) -> impl Future<Output = Result<UnhandledDecision, HandlerError>> + Send {
-        let _ = turn;
-        async move { Ok(UnhandledDecision::Fail(reason)) }
-    }
 }
 
-/// An actor definition ready to be hosted by a node: the actor value, the plugins installed on this type only, and an
-/// optional maximum turn duration that overrides [`Actor::MAX_TURN`].
+/// An actor definition ready to be hosted by a node: the actor value, owned or shared.
 pub struct ActorType<A: Actor> {
     actor: Arc<A>,
-    plugins: Vec<Arc<dyn Plugin>>,
-    max_turn: Option<Duration>,
 }
 
 impl<A: Actor> ActorType<A> {
@@ -143,25 +115,7 @@ impl<A: Actor> ActorType<A> {
 
     /// The type of a shared `actor`.
     pub fn shared(actor: Arc<A>) -> Self {
-        Self { actor, plugins: Vec::new(), max_turn: A::MAX_TURN }
-    }
-
-    /// Installs `plugin` on this type only.
-    pub fn install(mut self, plugin: impl Plugin) -> Self {
-        self.plugins.push(Arc::new(plugin));
-        self
-    }
-
-    /// Installs a shared plugin on this type only.
-    pub fn install_shared(mut self, plugin: Arc<dyn Plugin>) -> Self {
-        self.plugins.push(plugin);
-        self
-    }
-
-    /// Sets the maximum turn duration of this type.
-    pub fn max_turn(mut self, max_turn: Duration) -> Self {
-        self.max_turn = Some(max_turn);
-        self
+        Self { actor }
     }
 
     /// The type's template, as declared by its ref.
@@ -170,7 +124,7 @@ impl<A: Actor> ActorType<A> {
     }
 
     pub(crate) fn into_hosted(self) -> Arc<dyn HostedActor> {
-        Arc::new(Hosted::analyse(self))
+        Arc::new(Hosted { actor: self.actor, analysis: analyse::<A>() })
     }
 }
 
@@ -180,7 +134,7 @@ impl<A: Actor> From<A> for ActorType<A> {
     }
 }
 
-/// How a handler (or unhandled policy) run ended.
+/// How a handler run ended, or what the unhandled policy decided.
 pub(crate) enum RunEnd {
     Returned,
     DecidedFail(String),
@@ -212,7 +166,6 @@ pub(crate) trait HostedActor: Send + Sync {
     fn problems(&self) -> Vec<String>;
     fn template(&self) -> Option<&UriTemplate>;
     fn contract(&self) -> Option<&Arc<Contract>>;
-    fn plugins(&self) -> &[Arc<dyn Plugin>];
     fn max_turn(&self) -> Option<Duration>;
     fn check_state(&self, state: Option<&Value>) -> Result<(), String>;
     fn check_payload(&self, message_type: &str, payload: &Value) -> Result<(), String>;
@@ -228,36 +181,24 @@ struct Analysis<A: Actor> {
 
 struct Hosted<A: Actor> {
     actor: Arc<A>,
-    plugins: Vec<Arc<dyn Plugin>>,
-    max_turn: Option<Duration>,
     analysis: Result<Analysis<A>, Vec<String>>,
 }
 
-impl<A: Actor> Hosted<A> {
-    fn analyse(def: ActorType<A>) -> Self {
-        let mut problems = Vec::new();
-        let mut names: Vec<&str> = def.plugins.iter().map(|p| p.name()).collect();
-        names.sort_unstable();
-        for pair in names.windows(2) {
-            if pair[0] == pair[1] {
-                problems.push(format!("Plugin {} is installed more than once", pair[0]));
-            }
+/// Checks the type `A` and builds its contract; fails with every problem found.
+fn analyse<A: Actor>() -> Result<Analysis<A>, Vec<String>> {
+    let mut problems = RefBinding::<A::Ref>::problems().into_iter().map(|p| format!("Ref: {p}")).collect::<Vec<_>>();
+    if A::MAX_TURN.is_some_and(|d| d.is_zero()) {
+        problems.push("MAX_TURN must be positive".to_owned());
+    }
+    let binding = RefBinding::<A::Ref>::new().ok();
+    let family = FamilyInfo::of::<A::Message>().map_err(|e| problems.push(format!("Messages: {e}"))).ok();
+    let state = A::State::schema().map_err(|e| problems.push(format!("State schema: {e}"))).ok();
+    match (binding, family, state) {
+        (Some(binding), Some(family), Some(state)) if problems.is_empty() => {
+            let contract = Arc::new(Contract::new(binding.template().clone(), state, family.schemas.clone()));
+            Ok(Analysis { binding, family, contract })
         }
-        if def.max_turn.is_some_and(|d| d.is_zero()) {
-            problems.push("max_turn must be positive".to_owned());
-        }
-        problems.extend(RefBinding::<A::Ref>::problems().into_iter().map(|p| format!("Ref: {p}")));
-        let binding = RefBinding::<A::Ref>::new().ok();
-        let family = FamilyInfo::of::<A::Message>().map_err(|e| problems.push(format!("Messages: {e}"))).ok();
-        let state_schema = A::State::schema().map_err(|e| problems.push(format!("State schema: {e}"))).ok();
-        let analysis = match (binding, family, state_schema) {
-            (Some(binding), Some(family), Some(state)) if problems.is_empty() => {
-                let contract = Arc::new(Contract::new(binding.template().clone(), state, family.schemas.clone()));
-                Ok(Analysis { binding, family, contract })
-            }
-            _ => Err(problems),
-        };
-        Self { actor: def.actor, plugins: def.plugins, max_turn: def.max_turn, analysis }
+        _ => Err(problems),
     }
 }
 
@@ -281,12 +222,8 @@ impl<A: Actor> HostedActor for Hosted<A> {
         self.analysis.as_ref().ok().map(|a| &a.contract)
     }
 
-    fn plugins(&self) -> &[Arc<dyn Plugin>] {
-        &self.plugins
-    }
-
     fn max_turn(&self) -> Option<Duration> {
-        self.max_turn
+        A::MAX_TURN
     }
 
     fn check_state(&self, state: Option<&Value>) -> Result<(), String> {
@@ -340,15 +277,6 @@ impl<A: Actor> HostedActor for Hosted<A> {
                         Err(reason) => match A::UNHANDLED {
                             Unhandled::Fail => RunEnd::DecidedFail(reason),
                             Unhandled::Drop => RunEnd::DecidedDrop,
-                            Unhandled::Custom => {
-                                match AssertUnwindSafe(actor.on_unhandled(&mut turn, reason)).catch_unwind().await {
-                                    Ok(Ok(UnhandledDecision::Handled)) => RunEnd::Returned,
-                                    Ok(Ok(UnhandledDecision::Fail(r))) => RunEnd::DecidedFail(r),
-                                    Ok(Ok(UnhandledDecision::Drop)) => RunEnd::DecidedDrop,
-                                    Ok(Err(e)) => RunEnd::Threw(HandlerFailure::Error(e)),
-                                    Err(panic) => RunEnd::Threw(HandlerFailure::Panic(panic_message(&*panic))),
-                                }
-                            }
                         },
                     };
                     let (state, assigned, effects) = turn.into_parts();
@@ -374,14 +302,5 @@ pub(crate) fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
 /// The contract of actor type `A`, as a node hosting it registers it: template, state schema and message schemas.
 /// Fails with the type's problems when it is invalid (see [`crate::runtime::StartError`]).
 pub fn contract_of<A: Actor>() -> Result<Contract, Vec<String>> {
-    let mut problems = RefBinding::<A::Ref>::problems().into_iter().map(|p| format!("Ref: {p}")).collect::<Vec<_>>();
-    let binding = RefBinding::<A::Ref>::new().ok();
-    let family = FamilyInfo::of::<A::Message>().map_err(|e| problems.push(format!("Messages: {e}"))).ok();
-    let state = A::State::schema().map_err(|e| problems.push(format!("State schema: {e}"))).ok();
-    match (binding, family, state) {
-        (Some(binding), Some(family), Some(state)) if problems.is_empty() => {
-            Ok(Contract::new(binding.template().clone(), state, family.schemas))
-        }
-        _ => Err(problems),
-    }
+    analyse::<A>().map(|a| a.contract.as_ref().clone())
 }

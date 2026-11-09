@@ -10,10 +10,10 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use cicada::ActorSystem;
 use cicada::address::ActorAddress;
 use cicada::prelude::*;
 use cicada::store::{CommitRequest, CommitResult, MessageStatus, OutcomeStatus, RenewResult, Store, StoreResult};
-use cicada::{ActorSystem, ActorType};
 use common::*;
 use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
@@ -66,6 +66,7 @@ impl Actor for SleeperActor {
     type State = Stateless;
     type Message = SleeperMsg;
     const UNHANDLED: Unhandled = Unhandled::Fail;
+    const MAX_TURN: Option<Duration> = Some(Duration::from_secs(300));
 
     async fn handle(&self, _turn: &mut Turn<Self>, message: SleeperMsg) -> HandlerResult {
         let SleeperMsg::Slumber { seconds } = message;
@@ -78,7 +79,7 @@ impl Actor for SleeperActor {
 }
 
 fn sleeper_node(store: Arc<dyn Store>, name: &str, counts: &Arc<Counts>) -> ActorSystem {
-    node(store, name).host(ActorType::new(SleeperActor(counts.clone())).max_turn(Duration::from_secs(300))).build()
+    node(store, name).host(SleeperActor(counts.clone())).build()
 }
 
 /// Renewal panics while `broken` is set: an unexpected failure of the store's renewal, not a failed renewal.
@@ -137,7 +138,7 @@ async fn a_lease_keeper_that_fails_unexpectedly_cancels_the_handler_and_abandons
     tokio::time::sleep(Duration::from_secs(30)).await;
     assert_eq!(n2.run_due_turns(1).await.unwrap(), 1);
     assert_eq!(counts.runs.load(Ordering::SeqCst), 2);
-    assert_eq!(memory.outcome(&m.id).await.unwrap().map(|o| o.status), Some(OutcomeStatus::Done));
+    assert_eq!(outcome_of(&*memory, &m.id).await.map(|o| o.status), Some(OutcomeStatus::Done));
 }
 
 #[tokio::test(start_paused = true)]
@@ -151,7 +152,7 @@ async fn with_a_working_keeper_the_same_turn_runs_to_its_outcome() {
     let m = accepted(n1.send(&s(), SleeperMsg::Slumber { seconds: 45 }).await.unwrap());
     assert_eq!(n1.run_due_turns(1).await.unwrap(), 1);
     assert_eq!(counts.cancelled.load(Ordering::SeqCst), 0);
-    assert_eq!(memory.outcome(&m.id).await.unwrap().map(|o| o.status), Some(OutcomeStatus::Done));
+    assert_eq!(outcome_of(&*memory, &m.id).await.map(|o| o.status), Some(OutcomeStatus::Done));
 }
 
 #[tokio::test(start_paused = true)]
@@ -165,7 +166,7 @@ async fn a_keeper_that_fails_during_the_commit_does_not_cancel_it_the_stores_fen
     assert_eq!(n1.run_due_turns(1).await.unwrap(), 1);
     assert_eq!(counts.cancelled.load(Ordering::SeqCst), 0);
     assert_eq!(
-        memory.outcome(&m.id).await.unwrap().map(|o| o.status),
+        outcome_of(&*memory, &m.id).await.map(|o| o.status),
         Some(OutcomeStatus::Done),
         "within the lease: the store accepted it"
     );

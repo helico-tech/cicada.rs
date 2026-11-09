@@ -11,10 +11,10 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;
+use cicada::runtime::NodeConfig;
 use cicada::store::{NodeId, Store};
-use cicada::{ActorRef, ActorSystem, CreateActorResult};
+use cicada::{ActorSystem, CreateActorResult};
 use cicada_axum::{actor_api, actor_health};
-use cicada_docker::{ContainerActor, ContainerHandle, DockerEngine, container_logs};
 use cicada_extras::{CrashLoopGuard, FailureWatcher};
 use cicada_store_postgres::{PostgresStore, PostgresStoreConfig};
 use cicada_store_sqlite::{SqliteOptions, SqliteStore};
@@ -40,8 +40,8 @@ pub struct NodeInfo {
     pub store: String,
 }
 
-/// A running sample node: the actor system on its store, the failure watcher when it hosts `supervision`, the container
-/// handles when `CONTAINERS` is set, and the telemetry providers when export is configured. [`Self::router`] serves it over HTTP; [`Self::shutdown`] stops it.
+/// A running sample node: the actor system on its store, the failure watcher when it hosts `supervision`, and the
+/// telemetry providers when export is configured. [`Self::router`] serves it over HTTP; [`Self::shutdown`] stops it.
 #[derive(Debug)]
 pub struct SampleNode {
     system: ActorSystem,
@@ -49,7 +49,6 @@ pub struct SampleNode {
     effects: EffectLog,
     api_token: Option<String>,
     watcher: Option<JoinHandle<()>>,
-    containers: Option<ContainerActor>,
     telemetry: Option<Telemetry>,
 }
 
@@ -63,36 +62,22 @@ impl SampleNode {
         let catalog = Catalog::new(node_id.as_str(), effects.clone());
         let hosted = catalog.types(&config.groups);
         let telemetry = if config.telemetry { Some(Telemetry::from_env().context("OpenTelemetry")?) } else { None };
-        let containers = match config.containers {
-            true => Some(ContainerActor::new(DockerEngine::connect().context("Docker")?)),
-            false => None,
-        };
         let store = open_store(config).await?;
 
-        let mut builder = ActorSystem::builder(store.clone()).node_id(node_id.clone());
+        let defaults = NodeConfig::default();
+        let node = NodeConfig {
+            node_id: node_id.clone(),
+            lease_ttl: config.lease_ttl.unwrap_or(defaults.lease_ttl),
+            heartbeat_interval: config.heartbeat_interval,
+            poll_interval: config.poll_interval.unwrap_or(defaults.poll_interval),
+            shutdown_grace_period: config.shutdown_grace_period.unwrap_or(defaults.shutdown_grace_period),
+            default_max_turn: config.default_max_turn.unwrap_or(defaults.default_max_turn),
+            concurrency: config.concurrency.unwrap_or(defaults.concurrency),
+            ..defaults
+        };
+        let mut builder = ActorSystem::builder(store.clone()).config(node);
         for t in &hosted {
             builder = t.host(builder);
-        }
-        if let Some(containers) = &containers {
-            builder = builder.host(containers.clone());
-        }
-        if let Some(ttl) = config.lease_ttl {
-            builder = builder.lease_ttl(ttl);
-        }
-        if let Some(interval) = config.heartbeat_interval {
-            builder = builder.heartbeat_interval(interval);
-        }
-        if let Some(interval) = config.poll_interval {
-            builder = builder.poll_interval(interval);
-        }
-        if let Some(grace) = config.shutdown_grace_period {
-            builder = builder.shutdown_grace_period(grace);
-        }
-        if let Some(max_turn) = config.default_max_turn {
-            builder = builder.default_max_turn(max_turn);
-        }
-        if let Some(concurrency) = config.concurrency {
-            builder = builder.concurrency(concurrency);
         }
         if let Some(t) = &telemetry {
             builder = builder.install(t.plugin());
@@ -126,10 +111,7 @@ impl SampleNode {
             .any(|g| g == "supervision")
             .then(|| FailureWatcher::new(system.clone()).start(config.failure_watcher_interval));
 
-        let mut types: Vec<String> = hosted.iter().map(|t| t.template().to_owned()).collect();
-        if containers.is_some() {
-            types.push(ContainerHandle::TEMPLATE.to_owned());
-        }
+        let types: Vec<String> = hosted.iter().map(|t| t.template().to_owned()).collect();
         let info = NodeInfo {
             node: node_id.as_str().to_owned(),
             groups: config.groups.clone(),
@@ -138,7 +120,7 @@ impl SampleNode {
         };
         let hosting = if info.groups.is_empty() { "nothing (send-only)".to_owned() } else { info.groups.join(", ") };
         tracing::info!("Sample node {}: hosting {hosting} on {}", info.node, info.store);
-        Ok(Self { system, info, effects, api_token: config.api_token.clone(), watcher, containers, telemetry })
+        Ok(Self { system, info, effects, api_token: config.api_token.clone(), watcher, telemetry })
     }
 
     /// The actor system.
@@ -156,30 +138,23 @@ impl SampleNode {
         &self.effects
     }
 
-    /// The node's routes besides the fourteen of `actor_api()`, which are mounted at the root:
+    /// The node's routes besides the twelve of `actor_api()`, which are mounted at the root:
     ///
     /// - `GET /`: [`NodeInfo`], without authentication;
-    /// - `/console/`: the actor console, static files without authentication; it asks for the token when the API
-    ///   answers `401`;
     /// - `GET /ready`: readiness, without authentication, for container and Kubernetes probes;
-    /// - `GET /e2e/effects[?actor=actor://…]`: this node's in-memory [`EffectLog`];
-    /// - `GET /containers/{name}/logs`: a container handle's logs, when `CONTAINERS` is set.
+    /// - `GET /e2e/effects[?actor=actor://…]`: this node's in-memory [`EffectLog`].
     ///
-    /// With an API token the API, `/e2e/effects` and the logs require `Authorization: Bearer <token>`.
+    /// With an API token the API and `/e2e/effects` require `Authorization: Bearer <token>`.
     pub fn router(&self) -> Router {
         let info = self.info.clone();
         let effects = self.effects.clone();
         let mut protected = actor_api(self.system.clone()).route("/e2e/effects", get(list_effects).with_state(effects));
-        if let Some(containers) = &self.containers {
-            protected = protected.merge(container_logs(containers));
-        }
         if let Some(token) = &self.api_token {
             let token: Arc<[u8]> = token.as_bytes().into();
             protected = protected.layer(middleware::from_fn_with_state(token, require_bearer));
         }
         Router::new()
             .route("/", get(move || async move { Json(info.clone()) }))
-            .merge(cicada_ui::actor_ui("/console", "/"))
             .merge(actor_health(self.system.clone(), "/ready"))
             .merge(protected)
     }
@@ -226,10 +201,7 @@ async fn open_store(config: &SampleConfig) -> anyhow::Result<Arc<dyn Store>> {
             // ending the process.
             let deadline = tokio::time::Instant::now() + STORE_STARTUP_TIMEOUT;
             let store = loop {
-                let user = config.database_user.as_deref();
-                match PostgresStore::connect_as(url, user, config.database_password.as_deref(), store_config.clone())
-                    .await
-                {
+                match PostgresStore::connect(url, store_config.clone()).await {
                     Err(e) if e.is_unavailable() && tokio::time::Instant::now() < deadline => {
                         tracing::warn!("PostgreSQL unavailable, retrying in 1 s: {e}");
                         tokio::time::sleep(std::time::Duration::from_secs(1)).await;

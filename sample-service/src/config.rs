@@ -17,7 +17,7 @@ pub struct ConfigError(pub String);
 
 /// Settings of the sample node (see [`SampleConfig::from_env`] for the variables).
 ///
-/// `Debug` leaves out the API token and the database URL and credentials.
+/// `Debug` leaves out the API token and the database URL, which holds the credentials.
 #[derive(Clone, PartialEq)]
 pub struct SampleConfig {
     /// HTTP port.
@@ -28,10 +28,6 @@ pub struct SampleConfig {
     pub groups: Vec<String>,
     /// PostgreSQL URL; selects PostgreSQL. SQLite when `None`.
     pub database_url: Option<String>,
-    /// PostgreSQL user, when not in the URL.
-    pub database_user: Option<String>,
-    /// PostgreSQL password, when not in the URL.
-    pub database_password: Option<String>,
     /// PostgreSQL schema of the store.
     pub database_schema: String,
     /// PostgreSQL pool size; see [`Self::effective_pool_size`].
@@ -58,9 +54,6 @@ pub struct SampleConfig {
     pub telemetry: bool,
     /// When set, `CrashLoopGuard` fails a message after this many claims without a commit.
     pub crash_loop_limit: Option<u32>,
-    /// Whether the node hosts container handles (`cicada-docker`) on the Docker daemon of `DOCKER_HOST` or the local
-    /// socket, and serves their logs.
-    pub containers: bool,
 }
 
 impl Default for SampleConfig {
@@ -70,8 +63,6 @@ impl Default for SampleConfig {
             node_id: None,
             groups: GROUPS.iter().map(|g| (*g).to_owned()).collect(),
             database_url: None,
-            database_user: None,
-            database_password: None,
             database_schema: "public".to_owned(),
             database_pool_size: None,
             sqlite_path: PathBuf::from("actors.db"),
@@ -85,7 +76,6 @@ impl Default for SampleConfig {
             failure_watcher_interval: Duration::from_secs(10),
             telemetry: false,
             crash_loop_limit: None,
-            containers: false,
         }
     }
 }
@@ -104,7 +94,6 @@ impl SampleConfig {
     /// | `NODE_ID` | node id (lease owner, shown by `/health`, recorded by the E2E actors) | random |
     /// | `HOSTED_TYPES` | `all`, `none`, or a comma-separated list of groups (see [`GROUPS`]) | `all` |
     /// | `DATABASE_URL` | PostgreSQL, `postgres://user:pass@host:5432/db`; selects PostgreSQL | — |
-    /// | `DATABASE_USER`, `DATABASE_PASSWORD` | credentials, when not in the URL | — |
     /// | `DATABASE_SCHEMA` | PostgreSQL schema of the store | `public` |
     /// | `DATABASE_POOL_SIZE` | PostgreSQL connection pool size | the store's default (20), or `CONCURRENCY` + 4 when larger |
     /// | `SQLITE_PATH` | SQLite file, used when `DATABASE_URL` is not set | `actors.db` |
@@ -114,15 +103,11 @@ impl SampleConfig {
     /// | `FAILURE_WATCHER_INTERVAL` | poll interval of the dead-letter watcher (group `supervision`) | `10s` |
     /// | `OTEL_EXPORTER_OTLP_ENDPOINT` | when set, traces and metrics go there over OTLP/HTTP (`ActorTelemetry`); see [`crate::telemetry`] | — |
     /// | `CRASH_LOOP_LIMIT` | when set, `CrashLoopGuard` fails a message after this many claims without a commit | — |
-    /// | `CONTAINERS` | `true` to host container handles (`actor://containers/{name}`) on the Docker daemon of `DOCKER_HOST` or the local socket, and serve `GET /containers/{name}/logs` | `false` |
     pub fn from_vars(vars: &HashMap<String, String>) -> Result<Self, ConfigError> {
         let get = |name: &str| vars.get(name).map(|v| v.trim()).filter(|v| !v.is_empty()).map(str::to_owned);
         let duration = |name: &str| -> Result<Option<Duration>, ConfigError> {
             get(name)
-                .map(|v| match parse_duration(&v) {
-                    Ok(d) if !d.is_negative() => Ok(d.non_negative()),
-                    _ => Err(ConfigError(format!("{name}: not a duration: {v}"))),
-                })
+                .map(|v| env_duration(&v).ok_or_else(|| ConfigError(format!("{name}: not a duration: {v}"))))
                 .transpose()
         };
         fn number<T: std::str::FromStr>(name: &str, value: Option<String>) -> Result<Option<T>, ConfigError> {
@@ -134,8 +119,6 @@ impl SampleConfig {
             node_id: get("NODE_ID"),
             groups: parse_groups(&get("HOSTED_TYPES").unwrap_or_else(|| "all".to_owned())).map_err(ConfigError)?,
             database_url: get("DATABASE_URL"),
-            database_user: get("DATABASE_USER"),
-            database_password: get("DATABASE_PASSWORD"),
             database_schema: get("DATABASE_SCHEMA").unwrap_or(defaults.database_schema),
             database_pool_size: number("DATABASE_POOL_SIZE", get("DATABASE_POOL_SIZE"))?,
             sqlite_path: get("SQLITE_PATH").map(PathBuf::from).unwrap_or(defaults.sqlite_path),
@@ -150,11 +133,6 @@ impl SampleConfig {
                 .unwrap_or(defaults.failure_watcher_interval),
             telemetry: get("OTEL_EXPORTER_OTLP_ENDPOINT").is_some(),
             crash_loop_limit: number("CRASH_LOOP_LIMIT", get("CRASH_LOOP_LIMIT"))?,
-            containers: match get("CONTAINERS").as_deref() {
-                None | Some("false") => false,
-                Some("true") => true,
-                Some(other) => return Err(ConfigError(format!("CONTAINERS: not true or false: {other}"))),
-            },
         })
     }
 
@@ -196,7 +174,23 @@ impl fmt::Debug for SampleConfig {
             .field("concurrency", &self.concurrency)
             .field("telemetry", &self.telemetry)
             .field("crash_loop_limit", &self.crash_loop_limit)
-            .field("containers", &self.containers)
             .finish()
+    }
+}
+
+/// A duration from the environment: the short form `250ms`, `5s`, `2m` or `1h` (one whole number and a unit), or
+/// ISO-8601 (`PT5S`).
+fn env_duration(text: &str) -> Option<Duration> {
+    let digits = text.find(|c: char| !c.is_ascii_digit()).unwrap_or(text.len());
+    let (number, unit) = text.split_at(digits);
+    let Ok(number) = number.parse::<u64>() else {
+        return parse_duration(text).ok();
+    };
+    match unit {
+        "ms" => Some(Duration::from_millis(number)),
+        "s" => Some(Duration::from_secs(number)),
+        "m" => number.checked_mul(60).map(Duration::from_secs),
+        "h" => number.checked_mul(3600).map(Duration::from_secs),
+        _ => None,
     }
 }

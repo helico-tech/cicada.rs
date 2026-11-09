@@ -11,7 +11,7 @@ use crate::env::*;
 use crate::fixture::FixtureFactory;
 
 async fn outcome_of(store: &dyn cicada::store::Store, id: &MessageId) -> Option<OutcomeStatus> {
-    store.outcome(id).await.unwrap().map(|o| o.status)
+    outcome_record(store, id).await.map(|o| o.status)
 }
 
 /// turn cancel - pending messages of the instance are cancelled in the commit, others are ignored
@@ -132,7 +132,7 @@ pub async fn turn_cancel_with_a_stop_the_cancelled_message_is_cancelled_and_the_
         assert_eq!(outcome_of(&*store, &cancelled.id).await, Some(OutcomeStatus::Cancelled));
         assert_eq!(outcome_of(&*store, &purged.id).await, Some(OutcomeStatus::Purged));
         assert!(store.get(&a).await.unwrap().is_none());
-        assert!(store.outcome(&cancelled.id).await.unwrap().is_some());
+        assert!(outcome_record(&*store, &cancelled.id).await.is_some());
     })
     .await
 }

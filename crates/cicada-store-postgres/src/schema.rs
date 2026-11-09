@@ -62,7 +62,6 @@ const MIGRATIONS: &[&[&str]] = &[
             retention_policy jsonb
         )"#,
         "CREATE INDEX messages_mailbox ON {s}.messages (actor_uri, deliver_at, seq)",
-        "CREATE INDEX messages_caused_by ON {s}.messages (caused_by) WHERE caused_by IS NOT NULL",
         r#"CREATE TABLE {s}.outcomes (
             message_id    text COLLATE "C" PRIMARY KEY,
             actor_uri     text COLLATE "C" NOT NULL,
@@ -70,7 +69,6 @@ const MIGRATIONS: &[&[&str]] = &[
             error         text,
             finished_at   timestamptz NOT NULL,
             envelope      jsonb NOT NULL,
-            caused_by     text COLLATE "C",
             visible_until timestamptz,
             keep_last     boolean NOT NULL DEFAULT false,
             keep_seq      bigint,
@@ -81,7 +79,6 @@ const MIGRATIONS: &[&[&str]] = &[
         // Failures: by time across all instances, and by URI prefix.
         "CREATE INDEX outcomes_failures ON {s}.outcomes (finished_at, message_id) WHERE status = 'failed'",
         "CREATE INDEX outcomes_failures_by_actor ON {s}.outcomes (actor_uri, finished_at) WHERE status = 'failed'",
-        "CREATE INDEX outcomes_caused_by ON {s}.outcomes (caused_by) WHERE caused_by IS NOT NULL",
         "CREATE INDEX outcomes_keep_last ON {s}.outcomes (actor_uri, status, keep_seq) WHERE keep_last",
         "CREATE INDEX outcomes_visible_until ON {s}.outcomes (visible_until) WHERE visible_until IS NOT NULL",
         "CREATE SEQUENCE {s}.message_seq",
@@ -173,12 +170,12 @@ pub(crate) fn quote(schema: &str) -> String {
 /// Advisory lock key for migrations of `schema`: a fixed namespace in the high bits, a hash of the name below. It must
 /// not change, so that nodes of different versions starting together serialise on the same lock.
 fn lock_key(schema: &str) -> i64 {
-    (0x4349_4341_i64 << 32) | (name_hash(schema) as i64 & 0xFFFF_FFFF)
+    (0x4349_4341_i64 << 32) | i64::from(name_hash(schema))
 }
 
-/// A 32-bit polynomial hash: `s[0]*31^(n-1) + … + s[n-1]` over UTF-16 code units, wrapping.
-fn name_hash(text: &str) -> i32 {
-    text.encode_utf16().fold(0i32, |h, unit| h.wrapping_mul(31).wrapping_add(unit as i32))
+/// The 32-bit FNV-1a hash of the name's bytes.
+fn name_hash(text: &str) -> u32 {
+    text.bytes().fold(0x811c_9dc5, |h, byte| (h ^ u32::from(byte)).wrapping_mul(0x0100_0193))
 }
 
 #[cfg(test)]
@@ -188,10 +185,10 @@ mod tests {
     #[test]
     fn the_lock_key_is_stable() {
         // Fixed values: other ones would split the lock between node versions.
-        assert_eq!(name_hash("public"), -977_423_767);
-        assert_eq!(name_hash(""), 0);
-        assert_eq!(lock_key(""), 0x4349_4341_0000_0000);
-        assert_eq!(lock_key("public"), 0x4349_4341_0000_0000 | (-977_423_767i64 & 0xFFFF_FFFF));
+        assert_eq!(name_hash(""), 0x811c_9dc5);
+        assert_eq!(name_hash("public"), 0xcc90_9380);
+        assert_eq!(lock_key(""), 0x4349_4341_811c_9dc5);
+        assert_eq!(lock_key("public"), 0x4349_4341_cc90_9380);
     }
 
     #[test]

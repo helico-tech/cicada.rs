@@ -22,7 +22,7 @@ pub const MAX_HEADER_NAME_LENGTH: usize = 200;
 /// Longest header value.
 pub const MAX_HEADER_VALUE_LENGTH: usize = 4_000;
 
-/// Checks the fields of one send, naming the first field that is out of bounds. Lengths count UTF-16 code units.
+/// Checks the fields of one send, naming the first field that is out of bounds. Lengths count characters.
 pub fn check(
     id: &MessageId,
     message_type: &str,
@@ -74,7 +74,7 @@ fn contains_nul(value: &Value) -> bool {
 }
 
 fn field(what: &str, value: &str, max: usize) -> Result<(), String> {
-    let length = value.encode_utf16().count();
+    let length = value.chars().count();
     if length > max {
         return Err(format!("The {what} is too long: {length} characters, at most {max}"));
     }

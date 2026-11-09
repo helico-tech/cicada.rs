@@ -4,19 +4,15 @@
 # Multi-arch: both stages use multi-platform base images, so this builds natively on arm64 (OrbStack, Apple silicon)
 # and amd64.
 
-# ---- build: Rust, and Node 22 for the console (cicada-ui builds it with npm and Vite) ----
+# ---- build ----
 FROM rust:1.94-slim-bookworm AS build
-COPY --from=node:22-slim /usr/local/bin/node /usr/local/bin/node
-COPY --from=node:22-slim /usr/local/lib/node_modules /usr/local/lib/node_modules
-RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && node --version && npm --version
 WORKDIR /src
 
 COPY . .
-# The registry, the target folder and npm's cache are build caches, so a source change rebuilds only what changed.
+# The registry and the target folder are build caches, so a source change rebuilds only what changed.
 # The binary is copied out of the cached target folder, which is not part of the image.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    --mount=type=cache,target=/root/.npm \
     cargo build --release --locked -p cicada-sample-service \
  && cp target/release/cicada-sample-service /usr/local/bin/cicada-sample-service
 

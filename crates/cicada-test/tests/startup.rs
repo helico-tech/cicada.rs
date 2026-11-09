@@ -122,9 +122,12 @@ async fn a_type_overlapping_one_another_node_registered_fails_start() {
 #[tokio::test]
 async fn invalid_configuration_fails_start() {
     let e = ActorSystem::builder(store())
-        .lease_ttl(Duration::from_secs(3))
-        .heartbeat_interval(Duration::from_secs(5))
-        .concurrency(0)
+        .config(NodeConfig {
+            lease_ttl: Duration::from_secs(3),
+            heartbeat_interval: Some(Duration::from_secs(5)),
+            concurrency: 0,
+            ..NodeConfig::default()
+        })
         .build()
         .start()
         .await
@@ -135,16 +138,22 @@ async fn invalid_configuration_fails_start() {
 #[tokio::test]
 async fn the_heartbeat_must_leave_room_for_a_retry_within_the_lease() {
     let e = ActorSystem::builder(store())
-        .lease_ttl(Duration::from_secs(30))
-        .heartbeat_interval(Duration::from_secs(20)) // > TTL / 2: one failed renewal would lose the lease
+        .config(NodeConfig {
+            lease_ttl: Duration::from_secs(30),
+            heartbeat_interval: Some(Duration::from_secs(20)), // > TTL / 2: one failed renewal would lose the lease
+            ..NodeConfig::default()
+        })
         .build()
         .start()
         .await
         .unwrap_err();
     assert!(single(&e).contains("lease_ttl / 2"), "{:?}", e.problems);
     ActorSystem::builder(store())
-        .lease_ttl(Duration::from_secs(30))
-        .heartbeat_interval(Duration::from_secs(15))
+        .config(NodeConfig {
+            lease_ttl: Duration::from_secs(30),
+            heartbeat_interval: Some(Duration::from_secs(15)),
+            ..NodeConfig::default()
+        })
         .build()
         .initialize()
         .await

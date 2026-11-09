@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use cicada::address::{ActorAddress, UriTemplate};
 use cicada::store::{
-    Claim, CommitRequest, CommitResult, CreateResult, Delivery, EnqueueResult, Message, MessageId, NodeId,
-    OutgoingMessage, Page, PageCursor, Store, TurnOutcome, TypeDef,
+    Claim, CommitRequest, CommitResult, CreateResult, Delivery, EnqueueResult, Message, MessageId, MessageStatus,
+    NodeId, OutcomeRecord, OutgoingMessage, Page, PageCursor, Store, TurnOutcome, TypeDef,
 };
 use cicada::time::{self, Timestamp};
 use serde_json::{Value, json};
@@ -289,6 +289,15 @@ pub async fn enqueue_ok(store: &dyn Store, message: OutgoingMessage) -> Message 
     match store.enqueue(message).await.unwrap() {
         EnqueueResult::Enqueued(m) => m,
         other => panic!("enqueue to {to}: expected Enqueued, got {other:?}"),
+    }
+}
+
+/// The retained, visible outcome of `id`: the record of a [`MessageStatus::Finished`] status; `None` while the message is
+/// pending or running, and when it is unknown, hidden or past retention.
+pub async fn outcome_record(store: &dyn Store, id: &MessageId) -> Option<OutcomeRecord> {
+    match store.status(id).await.unwrap() {
+        Some(MessageStatus::Finished(outcome)) => Some(outcome),
+        _ => None,
     }
 }
 

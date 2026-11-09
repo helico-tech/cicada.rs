@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use cicada::prelude::*;
-use cicada::store::{ChainEntry, MessageStatus, OutcomeStatus};
+use cicada::store::MessageStatus;
 use cicada_test::TestActors;
 use serde::{Deserialize, Serialize};
 
@@ -64,21 +64,16 @@ async fn harness() -> TestActors {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_handlers_send_carries_its_retention_policy_and_a_removed_record_leaves_only_its_minimal_record() {
+async fn a_handlers_send_carries_its_retention_policy_and_a_removed_record_has_no_status() {
     let test = harness().await;
     let pass = test.send(&keeper(), KeeperMsg::Pass { retention: Some(Retention::REMOVE_ON_DONE) }).await;
-    test.run_until_idle().await;
-    let chain = test.system().chain(&pass.id).await.unwrap().unwrap();
-    let notes: Vec<_> = chain.entries.iter().filter(|e| e.id() != &pass.id).collect();
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1);
+    let notes = test.pending(&keeper()).await;
     assert_eq!(notes.len(), 1);
-    match notes[0] {
-        ChainEntry::Removed { status, envelope, .. } => {
-            assert_eq!(*status, OutcomeStatus::Done);
-            assert_eq!(envelope.retention, Some(Retention::REMOVE_ON_DONE));
-        }
-        other => panic!("not removed: {other:?}"),
-    }
-    assert!(test.system().status(notes[0].id()).await.unwrap().is_none());
+    assert_eq!(notes[0].retention, Some(Retention::REMOVE_ON_DONE));
+    assert_eq!(notes[0].caused_by.as_ref(), Some(&pass.id));
+    assert_eq!(test.run_until_idle().await, 1);
+    assert!(test.system().status(&notes[0].id).await.unwrap().is_none());
     assert!(
         matches!(test.system().status(&pass.id).await.unwrap(), Some(MessageStatus::Finished(_))),
         "the sender's own message keeps the default"

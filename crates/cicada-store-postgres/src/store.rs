@@ -3,6 +3,7 @@
 use std::collections::hash_map::RandomState;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::{BuildHasher, Hasher};
+use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -13,7 +14,7 @@ use cicada::retention::Retention;
 use cicada::retry::RetryPolicy;
 use cicada::store::support::{self, check_limit};
 use cicada::store::{
-    ActorCreate, ActorRecord, CancelResult, ChainEntry, Claim, CommitRequest, CommitResult, CreateResult, DeleteResult,
+    ActorCreate, ActorRecord, CancelResult, Claim, CommitRequest, CommitResult, CreateResult, DeleteResult,
     EnqueueResult, Message, MessageId, MessageStatus, NodeId, OutcomeRecord, OutcomeStatus, OutgoingMessage, Page,
     PageCursor, RegisterResult, RenewResult, StateChange, Store, StoreError, StoreResult, TurnOutcome, TypeDef,
 };
@@ -28,10 +29,17 @@ use sqlx::{AssertSqlSafe, PgPool, Postgres, Row};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::config::PostgresStoreConfig;
-use crate::connection::PostgresConnection;
 use crate::error::{is_transient, map_error};
 use crate::listener::NotificationListener;
 use crate::schema;
+
+/// How many times a transaction is re-run after PostgreSQL aborted it for a deadlock or a serialization failure (both
+/// are transient under concurrent commits from several nodes) before the error is reported.
+const TRANSACTION_RETRIES: u32 = 8;
+/// Number of idle connections the pool keeps open.
+const MIN_IDLE: u32 = 1;
+/// How long an operation waits for a pooled connection before failing.
+pub(crate) const CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Runs `body` (a block that evaluates to `TxResult<T>`, with `tx: &mut Tx` in scope) as one transaction and sends the
 /// collected wake-ups with it; evaluates to `StoreResult<T>`. Re-runs the whole body when PostgreSQL aborted it for a
@@ -75,8 +83,7 @@ macro_rules! transaction {
 /// one instance are serialised (S3); `commit` locks the committing instance together with every instance it sends to
 /// or creates, in URI order, which avoids deadlocks between commits. `claim_due` locks candidates with
 /// `FOR UPDATE SKIP LOCKED`, so concurrent claims from many nodes never wait for each other and never share an
-/// instance (S4). Transactions PostgreSQL aborts for a deadlock or serialization failure are re-run
-/// ([`PostgresStoreConfig::transaction_retries`]).
+/// instance (S4). Transactions PostgreSQL aborts for a deadlock or serialization failure are re-run, up to 8 times.
 ///
 /// **Clock (S9).** The store clock is the database server's `clock_timestamp()`; the local clock is never used for
 /// due-ness or leases. Each transaction reads it once, *after* taking its row locks, and uses that single value for
@@ -107,7 +114,6 @@ macro_rules! transaction {
 pub struct PostgresStore {
     pool: PgPool,
     retention: Duration,
-    retries: u32,
     socket_timeout: Duration,
     channel: String,
     listener: NotificationListener,
@@ -122,29 +128,21 @@ impl std::fmt::Debug for PostgresStore {
 
 impl PostgresStore {
     /// Opens a store on the database at `url`, creating or migrating its schema. `url` is a libpq-style URL with
-    /// credentials as usually found in `DATABASE_URL` (`postgres://actors:secret@db:5432/actors?sslmode=require`); see
-    /// [`PostgresConnection`].
+    /// credentials as usually found in `DATABASE_URL` (`postgres://actors:secret@db:5432/actors?sslmode=require`, or
+    /// `postgresql://…`), parsed by sqlx ([`PgConnectOptions`]): special characters in the user and password are
+    /// percent-encoded, and only the query parameters sqlx knows have an effect (`sslmode`, `sslrootcert`,
+    /// `application_name`, `options`, …).
     ///
-    /// Fails with [`StoreError::Invalid`] for invalid settings or a URL that is not a PostgreSQL URL, or a database
-    /// migrated by a newer version, and with [`StoreError::Unavailable`] when the database cannot be reached.
+    /// Fails with [`StoreError::Invalid`] for invalid settings or a URL that is not a PostgreSQL URL (the message never
+    /// repeats the URL, which can hold a password), or a database migrated by a newer version, and with
+    /// [`StoreError::Unavailable`] when the database cannot be reached.
     pub async fn connect(url: &str, config: PostgresStoreConfig) -> StoreResult<Self> {
-        Self::connect_as(url, None, None, config).await
+        Self::connect_with(connect_options(url)?, config).await
     }
 
-    /// Like [`Self::connect`], connecting as `user` with `password`; when given, they win over the credentials in
-    /// the URL.
-    pub async fn connect_as(
-        url: &str,
-        user: Option<&str>,
-        password: Option<&str>,
-        config: PostgresStoreConfig,
-    ) -> StoreResult<Self> {
-        let base = PostgresConnection::parse(url, user, password)?.connect_options()?;
-        Self::connect_with(base, config).await
-    }
-
-    /// Opens a store with sqlx connect options built by the caller, for settings no URL parameter covers (TLS client
-    /// certificates and keys, statement cache, extra startup parameters). The store still sets `search_path` (from `config.schema`) and, when unset, the application name.
+    /// Opens a store with sqlx connect options built by the caller, for settings no URL parameter covers (credentials
+    /// kept apart from the URL, TLS client certificates and keys, statement cache, extra startup parameters). The
+    /// store still sets `search_path` (from `config.schema`) and, when unset, the application name.
     pub async fn connect_with(base: PgConnectOptions, config: PostgresStoreConfig) -> StoreResult<Self> {
         config.validate()?;
         let mut options = base.clone();
@@ -155,8 +153,8 @@ impl PostgresStore {
         let options = options.options([("search_path", config.schema.as_str())]);
         let pool = PgPoolOptions::new()
             .max_connections(config.max_pool_size)
-            .min_connections(config.min_idle)
-            .acquire_timeout(config.connection_timeout)
+            .min_connections(MIN_IDLE)
+            .acquire_timeout(CONNECTION_TIMEOUT)
             .connect_lazy_with(options);
         let migrated = async {
             let mut c = pool.acquire().await.map_err(map_error)?;
@@ -167,16 +165,10 @@ impl PostgresStore {
             return Err(e);
         }
         let channel = config.effective_channel();
-        let listener = NotificationListener::new(
-            channel.clone(),
-            base.application_name("cicada-listener"),
-            config.connection_timeout,
-            config.listener_reconnect_delay,
-        );
+        let listener = NotificationListener::new(channel.clone(), base.application_name("cicada-listener"));
         Ok(Self {
             pool,
             retention: config.retention,
-            retries: config.transaction_retries,
             socket_timeout: config.socket_timeout,
             channel,
             listener,
@@ -243,7 +235,7 @@ impl PostgresStore {
     /// are left. Waits a little before the next attempt.
     async fn retry(&self, error: &TxError, attempt: &mut u32) -> bool {
         let TxError::Sql(e) = error else { return false };
-        if !is_transient(e) || *attempt >= self.retries {
+        if !is_transient(e) || *attempt >= TRANSACTION_RETRIES {
             return false;
         }
         *attempt += 1;
@@ -254,23 +246,16 @@ impl PostgresStore {
     // ---- type registry ----
 
     async fn register_in(tx: &mut Tx, def: &TypeDef) -> Result<RegisterResult, TxError> {
-        let same = |existing: TypeDef| {
-            if existing.contract_hash == def.contract_hash {
-                RegisterResult::Registered(existing)
-            } else {
-                RegisterResult::Conflict { existing, reason: support::hash_conflict_reason(&def.template) }
-            }
-        };
         // The common case, every node re-registering its types at start, needs no lock.
         if let Some(existing) = type_def_in(tx, &def.template).await? {
-            return Ok(same(existing));
+            return Ok(support::register_again(existing, def));
         }
         // Overlap is a relation between rows, which no unique index expresses: registrations are serialised by a lock
         // that conflicts with itself but not with reads. READ COMMITTED: statements after the lock see every
         // registration committed before it was granted.
         sqlx::query("LOCK TABLE actor_types IN SHARE ROW EXCLUSIVE MODE").execute(&mut *tx.c).await?;
         if let Some(existing) = type_def_in(tx, &def.template).await? {
-            return Ok(same(existing));
+            return Ok(support::register_again(existing, def));
         }
         let registered = list_types_in(tx).await?;
         if let Some(overlapping) = support::overlapping(&registered, &def.template) {
@@ -288,6 +273,20 @@ impl PostgresStore {
             .await?;
         Ok(RegisterResult::Registered(def.clone()))
     }
+}
+
+/// The sqlx connect options of the PostgreSQL URL `url`. The errors never repeat the URL or sqlx's own message about
+/// it: either can hold a password.
+fn connect_options(url: &str) -> StoreResult<PgConnectOptions> {
+    let url = url.trim();
+    if !url.starts_with("postgres://") && !url.starts_with("postgresql://") {
+        return Err(StoreError::Invalid("Not a PostgreSQL URL: expected postgres://… or postgresql://…".into()));
+    }
+    PgConnectOptions::from_str(url).map_err(|_| {
+        StoreError::Invalid(
+            "Malformed PostgreSQL URL: expected postgres://user:password@host:port/database?parameters".into(),
+        )
+    })
 }
 
 // ---- transactions ----
@@ -638,23 +637,7 @@ async fn insert(tx: &mut Tx, message: &OutgoingMessage) -> Result<Option<Message
         .bind(message.to.as_str())
         .execute(&mut *tx.c)
         .await?;
-    Ok(Some(Message {
-        id: message.id.clone(),
-        to: message.to.clone(),
-        from: message.from.clone(),
-        message_type: message.message_type.clone(),
-        payload: message.payload.clone(),
-        deliver_at,
-        correlation_id: message.correlation_id.clone(),
-        headers: message.headers.clone(),
-        seq,
-        attempt: 0,
-        failures: 0,
-        last_error: None,
-        retry: message.retry.clone(),
-        caused_by: message.caused_by.clone(),
-        retention: message.retention.clone(),
-    }))
+    Ok(Some(message.clone().into_message(deliver_at, seq)))
 }
 
 async fn refresh_next_due(tx: &mut Tx, uri: &str) -> Result<(), TxError> {
@@ -685,12 +668,11 @@ async fn finish(
     };
     sqlx::query(
         "INSERT INTO outcomes
-            (message_id, actor_uri, status, error, finished_at, envelope, caused_by, visible_until, keep_last, keep_seq,
-             stripped)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CASE WHEN $9 THEN nextval('message_seq') END, $10)
+            (message_id, actor_uri, status, error, finished_at, envelope, visible_until, keep_last, keep_seq, stripped)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CASE WHEN $8 THEN nextval('message_seq') END, $9)
          ON CONFLICT (message_id) DO UPDATE SET actor_uri = excluded.actor_uri, status = excluded.status,
             error = excluded.error, finished_at = excluded.finished_at, envelope = excluded.envelope,
-            caused_by = excluded.caused_by, visible_until = excluded.visible_until, keep_last = excluded.keep_last,
+            visible_until = excluded.visible_until, keep_last = excluded.keep_last,
             keep_seq = excluded.keep_seq, stripped = excluded.stripped",
     )
     .bind(message.id.as_str())
@@ -699,7 +681,6 @@ async fn finish(
     .bind(if removed { None } else { error })
     .bind(now)
     .bind(envelope)
-    .bind(message.caused_by.as_ref().map(|id| id.as_str()))
     .bind(support::visible_until(message, status, now))
     .bind(keep_last.is_some())
     .bind(removed)
@@ -784,46 +765,12 @@ async fn status_in(tx: &mut Tx, id: &MessageId) -> Result<Option<MessageStatus>,
     Ok(live_outcome(tx, id).await?.map(MessageStatus::Finished))
 }
 
-async fn chain_entry_in(tx: &mut Tx, id: &MessageId) -> Result<Option<ChainEntry>, TxError> {
-    if let Some(status) = status_in(tx, id).await? {
-        return Ok(Some(ChainEntry::Live(status)));
-    }
-    let (cutoff, now) = (tx.cutoff().await?, tx.now().await?);
-    let row = sqlx::query(concat!("SELECT * FROM outcomes WHERE message_id = $1 AND ", retained!(2, 3)))
-        .bind(id.as_str())
-        .bind(cutoff)
-        .bind(now)
-        .fetch_optional(&mut *tx.c)
-        .await?;
-    let Some(row) = row else { return Ok(None) };
-    let removed = outcome(&row)?;
-    Ok(Some(ChainEntry::Removed {
-        status: removed.status,
-        finished_at: removed.finished_at,
-        envelope: support::stripped(&removed.envelope),
-    }))
-}
-
-fn page_of<T>(mut rows: Vec<T>, limit: usize, cursor: impl Fn(&T) -> PageCursor) -> Page<T> {
-    if rows.len() > limit {
-        rows.truncate(limit);
-        let next = rows.last().map(cursor);
-        Page::new(rows, next)
-    } else {
-        Page::new(rows, None)
-    }
-}
-
 fn commit<T>(value: T) -> TxResult<T> {
     Ok(Done::Commit(value))
 }
 
 #[async_trait]
 impl Store for PostgresStore {
-    fn retention(&self) -> Duration {
-        self.retention
-    }
-
     async fn now(&self) -> StoreResult<Timestamp> {
         transaction!(self, true, |tx| -> Timestamp { commit(tx.now().await?) })
     }
@@ -832,10 +779,6 @@ impl Store for PostgresStore {
 
     async fn register(&self, def: TypeDef) -> StoreResult<RegisterResult> {
         transaction!(self, false, |tx| -> RegisterResult { commit(Self::register_in(tx, &def).await?) })
-    }
-
-    async fn type_def(&self, template: &UriTemplate) -> StoreResult<Option<TypeDef>> {
-        transaction!(self, true, |tx| -> Option<TypeDef> { commit(type_def_in(tx, template).await?) })
     }
 
     async fn list_types(&self) -> StoreResult<Vec<TypeDef>> {
@@ -875,7 +818,7 @@ impl Store for PostgresStore {
                 .fetch_all(&mut *tx.c)
                 .await?;
             let addresses = rows.into_iter().map(address).collect::<Result<Vec<_>, _>>()?;
-            commit(page_of(addresses, limit, |a| PageCursor(a.to_string())))
+            commit(support::page_of(addresses, limit, |a| PageCursor(a.to_string())))
         })
     }
 
@@ -916,11 +859,8 @@ impl Store for PostgresStore {
         ttl: Duration,
         limit: usize,
     ) -> StoreResult<Vec<Claim>> {
-        if limit == 0 || types.is_empty() {
+        if !support::check_claim(types, ttl, limit)? {
             return Ok(Vec::new());
-        }
-        if ttl.is_zero() {
-            return Err(StoreError::Invalid("ttl must be positive".into()));
         }
         let names: Vec<String> = types.iter().map(|t| t.as_str().to_owned()).collect();
         transaction!(self, false, |tx| -> Vec<Claim> {
@@ -1072,7 +1012,7 @@ impl Store for PostgresStore {
                 }
             };
             let messages = rows.iter().map(message).collect::<Result<Vec<_>, _>>()?;
-            commit(page_of(messages, limit, support::mailbox_cursor))
+            commit(support::page_of(messages, limit, support::mailbox_cursor))
         })
     }
 
@@ -1119,7 +1059,7 @@ impl Store for PostgresStore {
                 }
             };
             let messages = rows.iter().map(message).collect::<Result<Vec<_>, _>>()?;
-            commit(page_of(messages, limit, support::pending_cursor))
+            commit(support::page_of(messages, limit, support::pending_cursor))
         })
     }
 
@@ -1179,10 +1119,6 @@ impl Store for PostgresStore {
         })
     }
 
-    async fn outcome(&self, id: &MessageId) -> StoreResult<Option<OutcomeRecord>> {
-        transaction!(self, true, |tx| -> Option<OutcomeRecord> { commit(live_outcome(tx, id).await?) })
-    }
-
     async fn status(&self, id: &MessageId) -> StoreResult<Option<MessageStatus>> {
         transaction!(self, true, |tx| -> Option<MessageStatus> { commit(status_in(tx, id).await?) })
     }
@@ -1224,60 +1160,14 @@ impl Store for PostgresStore {
             }
             let rows = query.bind(limit as i64 + 1).fetch_all(&mut *tx.c).await?;
             let outcomes = rows.iter().map(outcome).collect::<Result<Vec<_>, _>>()?;
-            commit(page_of(outcomes, limit, |o| support::failure_cursor(o.finished_at, &o.message_id)))
-        })
-    }
-
-    async fn chain_entries(&self, ids: &[MessageId]) -> StoreResult<Vec<ChainEntry>> {
-        let mut seen = HashSet::new();
-        let ids: Vec<&MessageId> = ids.iter().filter(|id| seen.insert(*id)).collect();
-        transaction!(self, true, |tx| -> Vec<ChainEntry> {
-            let mut entries = Vec::with_capacity(ids.len());
-            for id in &ids {
-                if let Some(entry) = chain_entry_in(tx, id).await? {
-                    entries.push(entry);
-                }
-            }
-            commit(entries)
-        })
-    }
-
-    async fn chain_children(&self, parents: &[MessageId], limit: usize) -> StoreResult<Vec<ChainEntry>> {
-        check_limit(limit)?;
-        let mut seen = HashSet::new();
-        let wanted: Vec<String> = parents.iter().filter(|p| seen.insert(*p)).map(|p| p.as_str().to_owned()).collect();
-        if wanted.is_empty() {
-            return Ok(Vec::new());
-        }
-        transaction!(self, true, |tx| -> Vec<ChainEntry> {
-            let (cutoff, now) = (tx.cutoff().await?, tx.now().await?);
-            let ids: Vec<String> = sqlx::query_scalar(concat!(
-                "SELECT id FROM messages WHERE caused_by = ANY ($1)
-                 UNION ALL
-                 SELECT message_id FROM outcomes WHERE caused_by = ANY ($1) AND ",
-                retained!(2, 3),
-                " LIMIT $4"
-            ))
-            .bind(&wanted)
-            .bind(cutoff)
-            .bind(now)
-            .bind(limit as i64)
-            .fetch_all(&mut *tx.c)
-            .await?;
-            let mut entries = Vec::with_capacity(ids.len());
-            for id in ids {
-                if let Some(entry) = chain_entry_in(tx, &message_id(id)?).await? {
-                    entries.push(entry);
-                }
-            }
-            commit(entries)
+            commit(support::page_of(outcomes, limit, |o| support::failure_cursor(o.finished_at, &o.message_id)))
         })
     }
 
     async fn sweep_expired(&self) -> StoreResult<u64> {
         transaction!(self, false, |tx| -> u64 {
             let (cutoff, now) = (tx.cutoff().await?, tx.now().await?);
-            // Hidden records lose their content (the minimal record stays for dedup and chains).
+            // Hidden records lose their content (the minimal record stays for dedup).
             sqlx::query(
                 "UPDATE outcomes SET error = NULL, stripped = true,
                      envelope = envelope || jsonb_build_object('payload', 'null'::jsonb, 'headers', '{}'::jsonb,
@@ -1483,5 +1373,45 @@ impl Store for PostgresStore {
         }
         self.listener.stop().await;
         self.pool.close().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn refused(url: &str) -> String {
+        match connect_options(url) {
+            Err(StoreError::Invalid(message)) => message,
+            other => panic!("expected Invalid, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_postgres_url_yields_its_location_and_user() {
+        let options = connect_options(" postgres://app:s3cr%40t@db.example:6543/orders?sslmode=require ").unwrap();
+        assert_eq!(options.get_host(), "db.example");
+        assert_eq!(options.get_port(), 6543);
+        assert_eq!(options.get_username(), "app");
+        assert_eq!(options.get_database(), Some("orders"));
+        assert_eq!(connect_options("postgresql://actors@localhost/actors").unwrap().get_username(), "actors");
+    }
+
+    #[test]
+    fn a_refused_url_is_never_echoed() {
+        let urls = [
+            "mysql://app:secret@db.example/actors",
+            "jdbc:postgresql://db.example/actors?user=app&password=secret",
+            "db.example/secret",
+            "postgres://app:secret@db.example:notaport/actors",
+            "postgres://db.example:notaport/actors?password=secret",
+            "postgres://app:secret@db.example/actors?sslmode=secret",
+            "postgres://app:secret@[db.example/actors",
+        ];
+        for url in urls {
+            let message = refused(url);
+            assert!(!message.contains("secret"), "{url}: {message}");
+            assert!(!message.contains("db.example"), "{url}: {message}");
+        }
     }
 }

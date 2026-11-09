@@ -11,7 +11,6 @@
 //! not know a field yet still accepts a request that does not set it.
 
 mod mappings;
-mod strict;
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -23,7 +22,7 @@ use crate::address::ActorAddress;
 use crate::retention::Retention;
 use crate::retry::RetryPolicy;
 use crate::store::MessageId;
-use crate::time::{Timestamp, serde_instant};
+use crate::time::{Timestamp, serde_duration, serde_instant};
 
 /// Body of `PUT /actors/{path}`. An empty request body means "no state" as well.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -53,7 +52,7 @@ pub struct ActorView {
     #[serde(rename = "type")]
     pub template: String,
     /// Decoded template parameters, in template order.
-    pub params: Params,
+    pub params: BTreeMap<String, String>,
     /// Current state, or null.
     pub state: Option<Value>,
     /// Number of commits that wrote state.
@@ -75,6 +74,16 @@ pub struct PageView<T> {
     pub next: Option<String>,
 }
 
+/// The retry policy of a served envelope, read leniently: one this version cannot decode reads as none.
+fn lenient_retry<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<RetryPolicy>, D::Error> {
+    Ok(Option::<Value>::deserialize(deserializer)?.and_then(|v| RetryPolicy::from_stored(&v, "a served message")))
+}
+
+/// The retention policy of a served envelope, read leniently.
+fn lenient_retention<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<Retention>, D::Error> {
+    Ok(Option::<Value>::deserialize(deserializer)?.and_then(|v| Retention::from_stored(&v, "a served message")))
+}
+
 fn empty_object() -> Value {
     Value::Object(serde_json::Map::new())
 }
@@ -82,8 +91,8 @@ fn empty_object() -> Value {
 /// Body of `POST /actors/{path}/messages`.
 ///
 /// Delivery time is optional and given either as an absolute [`Self::deliver_at`] or as a relative [`Self::delay`],
-/// never both. A delay is an ISO-8601 duration string (`"PT5S"`; the short form `"5s"` is accepted too) or a JSON
-/// number of milliseconds. A past `deliverAt` or a negative delay means "now".
+/// never both. A delay is an ISO-8601 duration string (`"PT5S"`); a negative one is `400`. A past `deliverAt` means
+/// "now".
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SendRequest {
@@ -99,27 +108,22 @@ pub struct SendRequest {
     /// Absolute delivery time.
     #[serde(default, skip_serializing_if = "Option::is_none", with = "serde_instant::option")]
     pub deliver_at: Option<Timestamp>,
-    /// Relative delivery time; a negative one reads as zero.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        serialize_with = "strict::serialize_delay",
-        deserialize_with = "strict::delay"
-    )]
+    /// Relative delivery time.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "serde_duration::option")]
     pub delay: Option<Duration>,
     /// Opaque string passed through unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub correlation_id: Option<String>,
-    /// Plugin headers passed through unchanged.
+    /// Headers passed through unchanged.
     #[serde(default)]
     pub headers: BTreeMap<String, String>,
     /// The message's retry policy, e.g. `{"maxAttempts": 4, "backoff": {"kind": "exponential", "initial": "PT1S",
     /// "max": "PT1M"}}`; absent for no retry. An invalid policy is `400`. Ignored on a duplicate send.
-    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "strict::retry")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry: Option<RetryPolicy>,
     /// How long the message's record is kept once it finished, e.g. `{"done": {"kind": "remove"}}`; absent for the
     /// store default. An invalid policy is `400`. Ignored on a duplicate send.
-    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "strict::retention")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention: Option<Retention>,
 }
 
@@ -185,14 +189,14 @@ pub struct MessageView {
     pub last_error: Option<String>,
     /// The retry policy the sender attached, or null (no retry). Decoded tolerantly: a policy this version cannot read
     /// (e.g. a backoff kind of a newer node) is null rather than failing the whole response.
-    #[serde(default, deserialize_with = "strict::lenient_retry")]
+    #[serde(default, deserialize_with = "lenient_retry")]
     pub retry: Option<RetryPolicy>,
     /// The message whose turn sent this one; null for a message sent from outside an actor.
     #[serde(default)]
     pub caused_by: Option<MessageId>,
     /// How long the sender wants the record kept once the message finished, or null (store default). Decoded
     /// tolerantly like [`Self::retry`].
-    #[serde(default, deserialize_with = "strict::lenient_retention")]
+    #[serde(default, deserialize_with = "lenient_retention")]
     pub retention: Option<Retention>,
 }
 
@@ -271,59 +275,6 @@ pub struct OutcomeView {
     pub message: MessageView,
 }
 
-/// One message of a chain, as served by `GET /messages/{id}/chain`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ChainNodeView {
-    /// The message id.
-    pub id: MessageId,
-    /// The message whose turn sent this one; null when sent from outside an actor.
-    #[serde(default)]
-    pub caused_by: Option<MessageId>,
-    /// The target instance.
-    pub to: ActorAddress,
-    /// The sending instance; null when sent from outside an actor.
-    #[serde(default)]
-    pub from: Option<ActorAddress>,
-    /// The message type name.
-    #[serde(rename = "type")]
-    pub message_type: String,
-    /// Where the message is in its life cycle.
-    pub status: MessageState,
-    /// Effective delivery time (store time).
-    #[serde(with = "serde_instant")]
-    pub deliver_at: Timestamp,
-    /// Store time of the outcome, for finished messages.
-    #[serde(default, with = "serde_instant::option")]
-    pub finished_at: Option<Timestamp>,
-    /// Error of a failed message, or the last retried error of a pending or running one; null for a done one.
-    #[serde(default)]
-    pub error: Option<String>,
-    /// Number of claims.
-    #[serde(default)]
-    pub attempt: u32,
-    /// Number of failed runs that were retried.
-    #[serde(default)]
-    pub failures: u32,
-    /// True when the message's record was removed by its retention policy: only id, cause, target, sender, type,
-    /// status and times are left, and `GET /messages/{id}` answers 404.
-    #[serde(default)]
-    pub removed: bool,
-}
-
-/// Response of `GET /messages/{id}/chain`: the message [`Self::focus`], the messages that led to it and the ones it
-/// caused. Link [`Self::nodes`] by [`ChainNodeView::caused_by`]; the topmost node's cause may be missing (sent from
-/// outside, or past retention).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct MessageChainView {
-    /// The message the chain was asked for.
-    pub focus: MessageId,
-    /// Every message of the chain, [`Self::focus`] included, ordered by delivery time.
-    pub nodes: Vec<ChainNodeView>,
-    /// True when the chain goes on beyond what is served (50 steps up or down, 500 caused messages).
-    pub truncated: bool,
-}
-
 /// A registered type's contract, as served by `GET /types`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TypeView {
@@ -342,16 +293,6 @@ pub struct TypeView {
 pub struct TypeListView {
     /// Every registered type, by template.
     pub items: Vec<TypeView>,
-}
-
-/// Response of `GET /types?uri=`: the type an address resolves to, with the address's template parameters.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TypeMatchView {
-    /// The type.
-    #[serde(rename = "type")]
-    pub actor_type: TypeView,
-    /// The address's decoded template parameters, in template order.
-    pub params: Params,
 }
 
 /// Response of `GET /health` when healthy (`200`).
@@ -406,8 +347,6 @@ pub mod problem_types {
     pub const MESSAGE_ID_CONFLICT: &str = "urn:cicada:problem:message-id-conflict";
     /// 422: the address cannot be an instance of its type (e.g. not canonical for its ref; hosting node).
     pub const INVALID_ADDRESS: &str = "urn:cicada:problem:invalid-address";
-    /// 422: a header with a reserved name (`cicada-…`) on a send from outside an actor.
-    pub const INVALID_HEADERS: &str = "urn:cicada:problem:invalid-headers";
     /// 413: the request body is larger than the node accepts.
     pub const REQUEST_TOO_LARGE: &str = "urn:cicada:problem:request-too-large";
     /// 500: an unexpected error in the node; not retryable as such.
@@ -426,82 +365,3 @@ pub mod problem_types {
 
 #[cfg(test)]
 mod tests;
-
-/// An address's decoded template parameters, in template order (`actor://account/{tenant}/{id}` serves
-/// `{"tenant": …, "id": …}`), as a JSON object.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Params(Vec<(String, String)>);
-
-impl Params {
-    /// `values` in the order of `template`'s parameters.
-    pub fn in_template_order(template: &crate::address::UriTemplate, values: &BTreeMap<String, String>) -> Self {
-        let mut ordered: Vec<(String, String)> = template
-            .param_names()
-            .into_iter()
-            .filter_map(|n| values.get(n).map(|v| (n.to_owned(), v.clone())))
-            .collect();
-        let rest: Vec<(String, String)> = values
-            .iter()
-            .filter(|(k, _)| !ordered.iter().any(|(o, _)| o == *k))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        ordered.extend(rest);
-        Self(ordered)
-    }
-
-    /// The value of parameter `name`.
-    pub fn get(&self, name: &str) -> Option<&str> {
-        self.0.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
-    }
-
-    /// The parameters in order.
-    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.0.iter().map(|(k, v)| (k.as_str(), v.as_str()))
-    }
-
-    /// The parameters as a sorted map.
-    pub fn to_map(&self) -> BTreeMap<String, String> {
-        self.0.iter().cloned().collect()
-    }
-}
-
-impl std::ops::Index<&str> for Params {
-    type Output = str;
-
-    fn index(&self, name: &str) -> &str {
-        self.get(name).unwrap_or_else(|| panic!("no parameter {name}"))
-    }
-}
-
-impl Serialize for Params {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeMap;
-        let mut map = serializer.serialize_map(Some(self.0.len()))?;
-        for (k, v) in &self.0 {
-            map.serialize_entry(k, v)?;
-        }
-        map.end()
-    }
-}
-
-impl<'de> Deserialize<'de> for Params {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct V;
-        impl<'de> serde::de::Visitor<'de> for V {
-            type Value = Params;
-
-            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str("an object of parameter values")
-            }
-
-            fn visit_map<A: serde::de::MapAccess<'de>>(self, mut access: A) -> Result<Params, A::Error> {
-                let mut out = Vec::new();
-                while let Some((k, v)) = access.next_entry::<String, String>()? {
-                    out.push((k, v));
-                }
-                Ok(Params(out))
-            }
-        }
-        deserializer.deserialize_map(V)
-    }
-}

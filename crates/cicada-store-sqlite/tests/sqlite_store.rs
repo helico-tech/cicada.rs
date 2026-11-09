@@ -8,12 +8,14 @@ use std::time::Duration;
 
 use cicada::ActorAddress;
 use cicada::address::UriTemplate;
+use cicada::retention::{Keep, Retention};
 use cicada::retry::{Backoff, RetryPolicy};
 use cicada::store::{
-    CommitRequest, CommitResult, CreateResult, EnqueueResult, MessageStatus, NodeId, OutgoingMessage, Store,
+    CommitRequest, CommitResult, CreateResult, Delivery, EnqueueResult, MessageStatus, NodeId, OutgoingMessage, Store,
     StoreError, TurnOutcome,
 };
 use cicada::time::{self, Timestamp};
+use cicada_store_conformance::outcome_record;
 use cicada_store_sqlite::{SqliteOptions, SqliteStore, schema};
 use cicada_test::VirtualClock;
 use common::TempDb;
@@ -92,7 +94,7 @@ async fn a_stored_retry_policy_this_version_cannot_decode_reads_as_no_policy_and
     let result =
         store.commit(CommitRequest::new(a.clone(), claim.epoch, bad.clone(), TurnOutcome::Done)).await.unwrap();
     assert!(matches!(result, CommitResult::Committed { .. }));
-    assert!(store.outcome(bad).await.unwrap().unwrap().envelope.retry.is_none());
+    assert!(outcome_record(&store, bad).await.unwrap().envelope.retry.is_none());
     let next = store.claim_due(&types(), &node, Duration::from_secs(30), 1).await.unwrap().remove(0);
     assert_eq!(&next.message.id, garbled);
     assert!(next.message.retry.is_none());
@@ -119,13 +121,6 @@ async fn a_closed_store_refuses_operations() {
     assert!(error.is_unavailable());
     assert_eq!(error.to_string(), "store unavailable: Store is closed");
     assert!(store.create(&instance("1"), &template(), None).await.unwrap_err().is_unavailable());
-}
-
-#[tokio::test]
-async fn zero_readers_are_refused() {
-    let db = TempDb::new();
-    let result = SqliteStore::open(&db.file, SqliteOptions { readers: 0, ..SqliteOptions::default() }).await;
-    assert!(matches!(result, Err(StoreError::Invalid(ref r)) if r == "readers must be positive"), "{result:?}");
 }
 
 #[tokio::test]
@@ -165,4 +160,56 @@ async fn instants_are_integer_microseconds_and_json_is_text() {
     assert_eq!(db.text("SELECT payload FROM messages").await.as_deref(), Some(r#"{"x":[1,2]}"#));
     assert_eq!(db.text("SELECT headers FROM messages").await.as_deref(), Some(r#"{"h":"v"}"#));
     assert_eq!(db.text("SELECT deliver_at FROM messages").await.as_deref(), Some("1234567"));
+}
+
+#[tokio::test]
+async fn a_hidden_record_is_minimal_without_payload_headers_correlation_id_or_errors() {
+    // S10: a hidden record only keeps its id in use. The store never returns it, so its content is read from the file.
+    let db = TempDb::new();
+    let clock = clock_at(10);
+    let store = db.open(clock.clone()).await;
+    let a = instance("1");
+    store.create(&a, &template(), None).await.unwrap();
+    let node = NodeId::new("n").unwrap();
+    // The first record is removed as soon as it fails; the second is hidden a second later and stripped by the sweep.
+    let hide_later = Retention { done: None, failed: Some(Keep::For { age: Duration::from_secs(1) }) };
+    let mut ids = Vec::new();
+    for retention in [Retention::REMOVE_ON_FAILED, hide_later] {
+        let message = OutgoingMessage {
+            correlation_id: Some("corr".into()),
+            headers: BTreeMap::from([("h".to_owned(), "v".to_owned())]),
+            retention: Some(retention),
+            ..OutgoingMessage::new(a.clone(), "M", json!({"secret": 1}))
+        };
+        let EnqueueResult::Enqueued(m) = store.enqueue(message).await.unwrap() else { panic!("enqueued") };
+        let outcomes = [
+            TurnOutcome::Rescheduled { delivery: Delivery::Now, error: "again".into() },
+            TurnOutcome::Failed("boom".into()),
+        ];
+        for outcome in outcomes {
+            let claim = store.claim_due(&types(), &node, Duration::from_secs(30), 1).await.unwrap().remove(0);
+            let result = store.commit(CommitRequest::new(a.clone(), claim.epoch, m.id.clone(), outcome)).await.unwrap();
+            assert!(matches!(result, CommitResult::Committed { .. }));
+        }
+        ids.push(m.id);
+    }
+    clock.advance_by(Duration::from_secs(2));
+    assert_eq!(store.sweep_expired().await.unwrap(), 0, "both records stay for the dedup window");
+    store.close().await;
+    for id in &ids {
+        let row = db
+            .text(&format!(
+                "SELECT json_array(error, stripped, json(envelope)) FROM outcomes WHERE message_id = '{id}'"
+            ))
+            .await
+            .expect("the minimal record");
+        let row: serde_json::Value = serde_json::from_str(&row).unwrap();
+        assert_eq!((&row[0], &row[1]), (&json!(null), &json!(1)), "no error, marked as stripped");
+        let envelope = &row[2];
+        assert_eq!(envelope["payload"], json!(null));
+        assert_eq!(envelope["headers"], json!({}));
+        assert_eq!(envelope["correlationId"], json!(null));
+        assert_eq!(envelope["lastError"], json!(null));
+        assert_eq!((&envelope["type"], &envelope["to"]), (&json!("M"), &json!(a.as_str())), "type and target stay");
+    }
 }

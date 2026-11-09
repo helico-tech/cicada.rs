@@ -8,8 +8,9 @@
 //! `cicada.message.type`, `cicada.attempt`, `cicada.failures`, `cicada.outcome` (`done`, `failed`, `rescheduled`),
 //! `cicada.sent` (messages the commit enqueued). A failed turn has status `ERROR` with the failure reason; a handler
 //! error is recorded as an `exception` event, also when the message is retried. Its parent is the trace context in the
-//! message's headers (W3C `traceparent`/`tracestate`, or whatever the configured propagator reads), so a sender puts
-//! it there: a handler with [`trace_headers`], code outside an actor with [`current_trace_headers`]. A turn that never
+//! message's headers (W3C `traceparent`/`tracestate`, or whatever the configured propagator reads). Every message a
+//! turn sends carries the turn's trace context, so the turns of a chain of messages form one trace without any code in
+//! the handlers; code outside an actor puts its context on a send with [`current_trace_headers`]. A turn that never
 //! commits (its lease was lost, or its node stopped mid-turn) has no outcome; the OpenTelemetry SDK for Rust exports
 //! every span it drops, so its span is ended when the turn ends, with `cicada.outcome` `abandoned` and status unset.
 //! The re-run gets its own span.
@@ -37,7 +38,6 @@ use std::time::Instant;
 use async_trait::async_trait;
 use cicada::plugin::{ClaimContext, HandlerErrorContext, HookResult, OutcomeContext, Plugin, TurnInfo};
 use cicada::store::TurnOutcome;
-use cicada::{Actor, Turn};
 use opentelemetry::global::{self, BoxedTracer, ObjectSafeTracerProvider};
 use opentelemetry::metrics::{Histogram, Meter, MeterProvider};
 use opentelemetry::propagation::{Extractor, Injector, TextMapPropagator};
@@ -106,12 +106,6 @@ impl ActorTelemetry {
         Self { tracer, duration, lag, propagator: None }
     }
 
-    /// The trace headers for the caller's current OpenTelemetry context ([`Context::current`]), written by this
-    /// plugin's propagator; see [`current_trace_headers`].
-    pub fn current_trace_headers(&self) -> BTreeMap<String, String> {
-        self.inject(&Context::current())
-    }
-
     fn with_propagator_do<T>(&self, mut f: impl FnMut(&dyn TextMapPropagator) -> T) -> T {
         match &self.propagator {
             Some(p) => f(p.as_ref()),
@@ -150,8 +144,7 @@ impl ActorTelemetry {
             .with_attributes(attributes)
             .start_with_context(&self.tracer, &parent);
         let cx = Context::new().with_span(span);
-        let headers = self.inject(&cx);
-        TurnSpan { cx, started: Instant::now(), headers, ended: Arc::new(AtomicBool::new(false)) }
+        TurnSpan { cx, started: Instant::now(), ended: Arc::new(AtomicBool::new(false)) }
     }
 }
 
@@ -168,9 +161,11 @@ impl Plugin for ActorTelemetry {
         "ActorTelemetry"
     }
 
-    async fn on_claim(&self, ctx: &mut ClaimContext<'_>) -> HookResult {
+    async fn on_claim(&self, ctx: &ClaimContext<'_>) -> HookResult {
         let info = ctx.info();
         let turn = self.start_span(info);
+        // The messages this turn sends are children of its span.
+        ctx.send_headers(self.inject(&turn.cx));
         info.attributes().insert(Abandoned { cx: turn.cx.clone(), ended: turn.ended.clone() });
         info.attributes().insert(turn);
         let message = info.message();
@@ -185,7 +180,7 @@ impl Plugin for ActorTelemetry {
         Ok(())
     }
 
-    async fn on_handler_error(&self, ctx: &mut HandlerErrorContext<'_>) -> HookResult {
+    async fn on_handler_error(&self, ctx: &HandlerErrorContext<'_>) -> HookResult {
         if let Some(turn) = ctx.info().attributes().get::<TurnSpan>() {
             turn.cx.span().add_event("exception", vec![KeyValue::new("exception.message", ctx.error().to_string())]);
         }
@@ -221,31 +216,20 @@ impl Plugin for ActorTelemetry {
     }
 }
 
-/// The trace headers for the current turn's span: pass them on the sends whose turns should be its children,
-/// `turn.send_with(&to, msg, SendOptions { headers: trace_headers(turn), ..Default::default() })`. Empty when
-/// [`ActorTelemetry`] is not installed or tracing is off.
-///
-/// Plugins cannot change a handler's sends, so propagation is explicit. Add other headers to the returned map.
-pub fn trace_headers<A: Actor>(turn: &Turn<A>) -> BTreeMap<String, String> {
-    turn.attributes().get::<TurnSpan>().map(|t| t.headers).unwrap_or_default()
-}
-
 /// The trace headers for the caller's current OpenTelemetry context ([`Context::current`]), written by the global
 /// propagator, for sends from outside an actor: `system.send_with(&to, msg, SendOptions { headers:
-/// current_trace_headers(), ..Default::default() })`, or with the HTTP client. With a propagator configured on the
-/// plugin instead, use [`ActorTelemetry::current_trace_headers`].
+/// current_trace_headers(), ..Default::default() })`, or with the HTTP client.
 pub fn current_trace_headers() -> BTreeMap<String, String> {
     let mut headers = Headers::default();
     global::get_text_map_propagator(|p| p.inject_context(&Context::current(), &mut headers));
     headers.0
 }
 
-/// A turn's span (in its context), when it started, and the headers that make a message a child of it.
+/// A turn's span (in its context) and when it started.
 #[derive(Clone)]
 struct TurnSpan {
     cx: Context,
     started: Instant,
-    headers: BTreeMap<String, String>,
     ended: Arc<AtomicBool>,
 }
 

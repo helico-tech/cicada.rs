@@ -10,7 +10,6 @@ publish.workspace = true
 [dependencies]
 cicada.workspace = true
 cicada-extras.workspace = true
-cicada-otel.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true
@@ -23,11 +22,10 @@ async-trait.workspace = true
 axum.workspace = true
 cicada-axum.workspace = true
 cicada-client.workspace = true
-cicada-docker.workspace = true
+cicada-otel.workspace = true
 cicada-store-postgres.workspace = true
 cicada-store-sqlite.workspace = true
 cicada-test.workspace = true
-cicada-ui.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber.workspace = true
 

@@ -13,8 +13,8 @@ use futures::stream::BoxStream;
 use serde_json::Value;
 
 pub use model::{
-    ActorCreate, ActorRecord, ChainEntry, Claim, CommitRequest, Delivery, Message, MessageId, MessageStatus, NodeId,
-    OutcomeRecord, OutcomeStatus, OutgoingMessage, Page, PageCursor, StateChange, TurnOutcome, TypeDef,
+    ActorCreate, ActorRecord, Claim, CommitRequest, Delivery, Message, MessageId, MessageStatus, NodeId, OutcomeRecord,
+    OutcomeStatus, OutgoingMessage, Page, PageCursor, StateChange, TurnOutcome, TypeDef,
 };
 pub use results::{
     CancelResult, CommitResult, CreateResult, DeleteResult, EnqueueResult, RegisterResult, RenewResult, ResolvedType,
@@ -90,9 +90,6 @@ impl Clock for SystemClock {
 /// | S10 Retention | Outcomes are kept for the retention period, which is also the dedup window. |
 #[async_trait]
 pub trait Store: Send + Sync + 'static {
-    /// How long outcomes are retained; also the dedup window for message ids (S10).
-    fn retention(&self) -> Duration;
-
     // ---- clock ----
 
     /// Current store time, truncated to microseconds. Also serves as the store's liveness probe.
@@ -105,18 +102,8 @@ pub trait Store: Send + Sync + 'static {
     /// admit at most one.
     async fn register(&self, def: TypeDef) -> StoreResult<RegisterResult>;
 
-    /// The type registered for exactly `template`.
-    async fn type_def(&self, template: &UriTemplate) -> StoreResult<Option<TypeDef>>;
-
-    /// All registered types, ordered by template string.
+    /// All registered types, ordered by template string. [`support::resolve`] picks the one that matches an address.
     async fn list_types(&self) -> StoreResult<Vec<TypeDef>>;
-
-    /// The type whose template matches `address`, with the decoded parameters. Registered templates do not overlap,
-    /// so at most one does.
-    async fn resolve(&self, address: &ActorAddress) -> StoreResult<Option<ResolvedType>> {
-        let types = self.list_types().await?;
-        support::resolve(&types, address)
-    }
 
     // ---- state store ----
 
@@ -187,10 +174,8 @@ pub trait Store: Send + Sync + 'static {
     /// lease. Cancelling a claimed message whose lease expired also voids that lease.
     async fn cancel(&self, id: &MessageId) -> StoreResult<CancelResult>;
 
-    /// The retained, visible outcome of `id`.
-    async fn outcome(&self, id: &MessageId) -> StoreResult<Option<OutcomeRecord>>;
-
-    /// Life-cycle status of `id`: pending, running (valid lease) or finished; `None` when unknown or past retention.
+    /// Life-cycle status of `id`: pending, running (valid lease) or finished with a retained, visible outcome; `None`
+    /// when the id is unknown, its outcome is hidden by its retention policy, or it is past retention.
     async fn status(&self, id: &MessageId) -> StoreResult<Option<MessageStatus>>;
 
     /// Retained, visible `failed` outcomes of instances whose URI starts with `prefix` that finished at or after
@@ -202,13 +187,6 @@ pub trait Store: Send + Sync + 'static {
         cursor: Option<&PageCursor>,
         limit: usize,
     ) -> StoreResult<Page<OutcomeRecord>>;
-
-    /// The messages with the given ids, for following message chains: pending ones (as running when their turn holds
-    /// a valid lease), retained outcomes, and removed records within the dedup window, in no particular order.
-    async fn chain_entries(&self, ids: &[MessageId]) -> StoreResult<Vec<ChainEntry>>;
-
-    /// The messages caused by one of `parents`: pending ones and retained outcomes, at most `limit` of them.
-    async fn chain_children(&self, parents: &[MessageId], limit: usize) -> StoreResult<Vec<ChainEntry>>;
 
     /// Removes outcomes past retention and strips hidden records; returns how many outcomes were removed.
     async fn sweep_expired(&self) -> StoreResult<u64>;

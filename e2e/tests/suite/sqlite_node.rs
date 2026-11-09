@@ -4,16 +4,12 @@
 use std::sync::OnceLock;
 use std::time::Instant;
 
-use chrono::{TimeDelta, Utc};
 use cicada::SendOptions;
-use cicada::api::{MessageState, problem_types};
-use cicada::store::MessageId;
-use cicada_e2e::cluster::{Node, address, eventually, path, run_id};
+use cicada::api::MessageState;
+use cicada_e2e::cluster::{Node, eventually, run_id};
 use cicada_e2e::docker::{SingleNode, docker};
 use cicada_e2e::{Class, SINGLE_CONTAINERS, SQLITE_VOLUME, save_logs, step};
-use cicada_sample_service::e2e::{
-    Counter, CounterMsg, CounterState, Recorder, RecorderMsg, RecorderState, Slow, SlowMsg, SlowState,
-};
+use cicada_sample_service::e2e::{Counter, CounterMsg, CounterState, Slow, SlowMsg, SlowState};
 use reqwest::Method;
 
 use crate::secs;
@@ -29,8 +25,6 @@ pub fn class() -> Class {
             "SqliteNodeTest",
             vec![
                 step!(health_and_types),
-                step!(create_send_delayed_send_status_and_errors),
-                step!(idempotent_send_cancel_and_delete),
                 step!(state_pending_messages_and_an_in_flight_turn_survive_a_container_restart),
                 step!(bearer_authentication),
             ],
@@ -80,10 +74,6 @@ fn step_msg(seq: i64) -> CounterMsg {
     CounterMsg::Step { seq, hold_millis: 0 }
 }
 
-fn record(label: &str) -> RecorderMsg {
-    RecorderMsg::Record { label: label.to_owned(), sleep_millis: 0 }
-}
-
 async fn health_and_types() {
     let node = node();
     let health = node.get("/health").await;
@@ -92,66 +82,7 @@ async fn health_and_types() {
     let types = node.client.types().await.unwrap();
     let slow = types.iter().find(|t| t.template == "actor://e2e/slow/{id}").expect("the slow type");
     assert!(slow.messages.contains_key("Sleep"));
-    let matched = node.client.type_of(&address(&Slow { id: "abc".to_owned() })).await.unwrap().unwrap();
-    assert_eq!(matched.params.get("id"), Some("abc"));
     assert!(node.get("/").await.body.contains("sqlite"));
-}
-
-async fn create_send_delayed_send_status_and_errors() {
-    let node = node();
-    let counter = Counter { id: format!("sqlite-{}", run_id()) };
-    assert_eq!(node.put(&path(&counter), r#"{"state":{}}"#).await.status, 201);
-    assert_eq!(node.put(&path(&counter), r#"{"state":{}}"#).await.status, 200);
-
-    let sent_at = Utc::now();
-    let delayed = node.client.send_with(&counter, step_msg(2), SendOptions::new().delay(secs(2))).await.unwrap();
-    let now = node.client.send(&counter, step_msg(1)).await.unwrap();
-    assert_eq!(node.status(&delayed.id).await.status, MessageState::Pending);
-    assert_eq!(node.await_finished(&now.id).await.status, MessageState::Done);
-    let done = node.await_finished(&delayed.id).await;
-    let due = delayed.deliver_at.unwrap();
-    assert!(done.finished_at.unwrap() >= due);
-    assert!(due >= sent_at + TimeDelta::seconds(1));
-    let state: CounterState = node.state(&counter).await;
-    assert_eq!(state.entries.iter().map(|e| e.seq).collect::<Vec<_>>(), [1, 2]);
-    assert!(state.entries.last().unwrap().claimed_at >= due);
-    assert_eq!(node.view(&counter).await.version, 2);
-
-    let mailbox = format!("{}/messages", path(&counter));
-    let unknown = node.post(&mailbox, r#"{"type":"Nope","payload":{}}"#).await;
-    assert_eq!(unknown.status, 422, "{unknown}");
-    assert_eq!(unknown.text("/type").as_deref(), Some(problem_types::UNKNOWN_MESSAGE_TYPE));
-    let invalid = node.post(&mailbox, r#"{"type":"Step","payload":{"seq":"x"}}"#).await;
-    assert_eq!(invalid.status, 422, "{invalid}");
-    assert_eq!(invalid.text("/type").as_deref(), Some(problem_types::INVALID_PAYLOAD));
-    let absent = format!("/actors/e2e/counter/absent-{}/messages", run_id());
-    assert_eq!(node.post(&absent, r#"{"type":"Step","payload":{"seq":1}}"#).await.status, 404);
-}
-
-async fn idempotent_send_cancel_and_delete() {
-    let node = node();
-    let recorder = Recorder { id: format!("sqlite-{}", run_id()) };
-    let path = path(&recorder);
-    node.client.create(&recorder, &RecorderState::default()).await.unwrap();
-    let body = format!(r#"{{"id":"{}","type":"Record","payload":{{"label":"once"}}}}"#, MessageId::random());
-    assert_eq!(node.post(&format!("{path}/messages"), &body).await.status, 202);
-    assert_eq!(node.post(&format!("{path}/messages"), &body).await.status, 200);
-
-    let later = node.client.send_with(&recorder, record("later"), SendOptions::new().delay(secs(600))).await.unwrap();
-    assert_eq!(node.delete(&format!("/messages/{}", later.id)).await.status, 204);
-    assert_eq!(node.delete(&format!("/messages/{}", later.id)).await.status, 409);
-    assert_eq!(node.status(&later.id).await.status, MessageState::Cancelled);
-
-    let purged = node.client.send_with(&recorder, record("purged"), SendOptions::new().delay(secs(600))).await.unwrap();
-    eventually("first record", secs(30), async || {
-        let state: RecorderState = node.try_state(&recorder).await?;
-        Ok((state.records.len() == 1).then_some(()))
-    })
-    .await;
-    assert_eq!(node.delete(&path).await.status, 204);
-    assert_eq!(node.status(&purged.id).await.status, MessageState::Purged);
-    assert_eq!(node.get(&path).await.status, 404);
-    assert_eq!(node.delete(&path).await.status, 404);
 }
 
 async fn state_pending_messages_and_an_in_flight_turn_survive_a_container_restart() {

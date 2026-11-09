@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use crate::address::{ActorAddress, UriTemplate};
-use crate::store::{ActorRecord, ChainEntry, Message, MessageId, StoreError};
+use crate::store::{ActorRecord, Message, StoreError};
 use crate::time::Timestamp;
 
 /// Result of creating an instance (`PUT /actors/{path}`). HTTP: `201`, `200`, `404`, `422`, `422`.
@@ -24,7 +24,7 @@ pub enum CreateActorResult {
 }
 
 /// Result of a send from outside an actor (`POST /actors/{path}/messages`).
-/// HTTP: `202`, `200`, `409`, `422`, `404`, `422`, `422`.
+/// HTTP: `202`, `200`, `409`, `404`, `422`, `422`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SendResult {
     /// The message was enqueued, with its store-assigned `seq` and effective `deliver_at`.
@@ -34,8 +34,6 @@ pub enum SendResult {
     Duplicate(Option<Message>),
     /// The id was already accepted for a *different* message (another target or type); nothing was enqueued.
     IdConflict(Message),
-    /// A header uses the reserved prefix `cicada-`.
-    InvalidHeaders(String),
     /// The target instance does not exist.
     NoSuchInstance,
     /// The target's type does not accept the message type name.
@@ -69,25 +67,6 @@ pub struct ActorSnapshot {
     pub version: i64,
     /// Store time of creation.
     pub created_at: Timestamp,
-}
-
-/// The message `focus`, the messages that led to it and the ones it caused (`GET /messages/{id}/chain`).
-#[derive(Debug, Clone, PartialEq)]
-pub struct MessageChain {
-    /// The message the chain was asked for.
-    pub focus: MessageId,
-    /// Every message of the chain, `focus` included, in no particular order; `caused_by` links them.
-    pub entries: Vec<ChainEntry>,
-    /// True when the chain goes on beyond [`Self::MAX_DEPTH`] steps up or down, or beyond [`Self::MAX_DESCENDANTS`]
-    /// caused messages.
-    pub truncated: bool,
-}
-
-impl MessageChain {
-    /// How many steps a chain follows up (causes) and down (caused messages) from its focus.
-    pub const MAX_DEPTH: usize = 50;
-    /// How many caused messages a chain holds at most.
-    pub const MAX_DESCENDANTS: usize = 500;
 }
 
 /// A failed operation of [`super::ActorSystem`].

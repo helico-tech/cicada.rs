@@ -133,11 +133,6 @@ impl<T> Page<T> {
     pub fn new(items: Vec<T>, next: Option<PageCursor>) -> Self {
         Self { items, next }
     }
-
-    /// Converts every item.
-    pub fn map<R>(self, f: impl FnMut(T) -> R) -> Page<R> {
-        Page { items: self.items.into_iter().map(f).collect(), next: self.next }
-    }
 }
 
 /// A message as held by the store: the envelope plus the store-assigned `seq` and `attempt`.
@@ -283,6 +278,28 @@ impl OutgoingMessage {
             retention: None,
         }
     }
+
+    /// The message as the store holds it once enqueued: due at `deliver_at`, with the store-assigned `seq`, never
+    /// claimed and never failed.
+    pub fn into_message(self, deliver_at: Timestamp, seq: i64) -> Message {
+        Message {
+            id: self.id,
+            to: self.to,
+            from: self.from,
+            message_type: self.message_type,
+            payload: self.payload,
+            deliver_at,
+            correlation_id: self.correlation_id,
+            headers: self.headers,
+            seq,
+            attempt: 0,
+            failures: 0,
+            last_error: None,
+            retry: self.retry,
+            caused_by: self.caused_by,
+            retention: self.retention,
+        }
+    }
 }
 
 /// Terminal status of a message.
@@ -415,41 +432,6 @@ impl MessageStatus {
         match self {
             MessageStatus::Pending(m) | MessageStatus::Running { message: m, .. } => m,
             MessageStatus::Finished(o) => &o.envelope,
-        }
-    }
-}
-
-/// A message as a chain query sees it.
-#[derive(Debug, Clone, PartialEq)]
-pub enum ChainEntry {
-    /// A pending, running or finished message with its full envelope.
-    Live(MessageStatus),
-    /// A finished message whose record was removed by its retention policy, within the store's retention: only the
-    /// minimal record is left, so the envelope has no payload, headers, correlation id or last error.
-    Removed {
-        /// The terminal status.
-        status: OutcomeStatus,
-        /// When it finished.
-        finished_at: Timestamp,
-        /// The stripped envelope.
-        envelope: Message,
-    },
-}
-
-impl ChainEntry {
-    /// The message id.
-    pub fn id(&self) -> &MessageId {
-        match self {
-            ChainEntry::Live(s) => &s.envelope().id,
-            ChainEntry::Removed { envelope, .. } => &envelope.id,
-        }
-    }
-
-    /// The message whose turn sent it.
-    pub fn caused_by(&self) -> Option<&MessageId> {
-        match self {
-            ChainEntry::Live(s) => s.envelope().caused_by.as_ref(),
-            ChainEntry::Removed { envelope, .. } => envelope.caused_by.as_ref(),
         }
     }
 }

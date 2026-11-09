@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use cicada::ActorSystem;
 use cicada::address::ActorAddress;
 use cicada::prelude::*;
-use cicada::runtime::NodeState;
+use cicada::runtime::{NodeConfig, NodeState};
 use cicada::store::{MessageStatus, NodeId, OutcomeStatus, RenewResult, Store, StoreResult};
 use cicada_test::InMemoryStore;
 use common::*;
@@ -84,17 +84,23 @@ async fn a_blocking_handler_does_not_starve_the_heartbeat() {
     let memory = Arc::new(InMemoryStore::default());
     let store = Faulty::new(memory.clone(), CountRenewals::default());
     let node = ActorSystem::builder(store.clone())
-        .node_id(NodeId::new("blocking").unwrap())
         .host(BlockerActor)
-        .lease_ttl(Duration::from_millis(600))
-        .heartbeat_interval(Duration::from_millis(150))
-        .poll_interval(Duration::from_millis(20))
+        .config(NodeConfig {
+            node_id: NodeId::new("blocking").unwrap(),
+            lease_ttl: Duration::from_millis(600),
+            heartbeat_interval: Some(Duration::from_millis(150)),
+            poll_interval: Duration::from_millis(20),
+            ..NodeConfig::default()
+        })
         .build();
     let other = ActorSystem::builder(memory.clone())
-        .node_id(NodeId::new("other").unwrap())
         .host(BlockerActor)
-        .lease_ttl(Duration::from_millis(600))
-        .poll_interval(Duration::from_millis(20))
+        .config(NodeConfig {
+            node_id: NodeId::new("other").unwrap(),
+            lease_ttl: Duration::from_millis(600),
+            poll_interval: Duration::from_millis(20),
+            ..NodeConfig::default()
+        })
         .build();
     node.create_stateless(&blocker("b")).await.unwrap();
     node.start().await.unwrap();
@@ -104,8 +110,8 @@ async fn a_blocking_handler_does_not_starve_the_heartbeat() {
     })
     .await;
     other.start().await.unwrap();
-    eventually(TEN_SECONDS, || async { memory.outcome(&m.id).await.unwrap().is_some() }).await;
-    let outcome = memory.outcome(&m.id).await.unwrap().unwrap();
+    eventually(TEN_SECONDS, || async { outcome_of(&*memory, &m.id).await.is_some() }).await;
+    let outcome = outcome_of(&*memory, &m.id).await.unwrap();
     assert_eq!(outcome.status, OutcomeStatus::Done);
     assert_eq!(outcome.envelope.attempt, 1, "the lease never expired, so no other node ran the turn");
     let renewals = store.faults.0.load(Ordering::SeqCst);
@@ -119,8 +125,11 @@ async fn stop_does_not_hang_on_a_handler_that_ignores_cancellation() {
     let memory = Arc::new(InMemoryStore::default());
     let node = ActorSystem::builder(memory.clone())
         .host(BlockerActor)
-        .poll_interval(Duration::from_millis(20))
-        .shutdown_cancel_timeout(Duration::from_millis(200))
+        .config(NodeConfig {
+            poll_interval: Duration::from_millis(20),
+            shutdown_cancel_timeout: Duration::from_millis(200),
+            ..NodeConfig::default()
+        })
         .build();
     node.create_stateless(&blocker("s")).await.unwrap();
     node.start().await.unwrap();
@@ -141,8 +150,10 @@ async fn stop_does_not_hang_on_a_handler_that_ignores_cancellation() {
 async fn stopping_right_after_a_claim_never_leaves_a_lease_behind() {
     for round in 0..30 {
         let memory = Arc::new(InMemoryStore::default());
-        let node =
-            ActorSystem::builder(memory.clone()).host(BlockerActor).poll_interval(Duration::from_millis(5)).build();
+        let node = ActorSystem::builder(memory.clone())
+            .host(BlockerActor)
+            .config(NodeConfig { poll_interval: Duration::from_millis(5), ..NodeConfig::default() })
+            .build();
         let r = blocker(&format!("r{round}"));
         node.create_stateless(&r).await.unwrap();
         let m = accepted(node.send(&r, BlockerMsg::Nap { millis: 10_000 }).await.unwrap());

@@ -2,8 +2,7 @@
 //!
 //! Every instant a store hands out has microsecond precision (the precision of every backend). Delivery times are
 //! bounded by [`MAX_INSTANT`], so every backend stores them without overflow. Instants travel as ISO-8601 strings in
-//! UTC (`2026-01-01T00:00:00Z`, fractions in groups of three digits); durations as ISO-8601 durations (`PT5S`), and are
-//! also accepted in the short form `5s`, `1h 30m` or as a JSON number of milliseconds.
+//! UTC (`2026-01-01T00:00:00Z`, fractions in groups of three digits); durations as ISO-8601 durations (`PT5S`).
 
 use std::time::Duration;
 
@@ -129,42 +128,17 @@ pub fn format_duration(duration: Duration) -> String {
     out
 }
 
-/// A parsed duration, which may be negative.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SignedNanos(pub i128);
-
-impl SignedNanos {
-    /// The duration, with a negative one counted as zero.
-    pub fn non_negative(self) -> Duration {
-        if self.0 <= 0 { Duration::ZERO } else { Duration::from_nanos(self.0.min(u64::MAX as i128) as u64) }
-    }
-
-    /// True when negative.
-    pub fn is_negative(self) -> bool {
-        self.0 < 0
-    }
-}
-
-/// Parses a duration: ISO-8601 (`PT5S`, `P1DT2H`, `-PT1M`; a day is 24 hours) or the short form (`5s`, `1h 30m`,
-/// `1.5s`, `500ms`, `2d`, `-(1h 30m)`).
-pub fn parse_duration(text: &str) -> Result<SignedNanos, TimeError> {
+/// Parses an ISO-8601 duration (`PT5S`, `PT1H30M`, `PT0.5S`, `P1DT2H`; a day is 24 hours). A negative duration is
+/// refused.
+pub fn parse_duration(text: &str) -> Result<Duration, TimeError> {
     let err = || TimeError(format!("'{text}' is not an ISO-8601 duration such as PT5S"));
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return Err(err());
+    let body = text.trim();
+    if body.starts_with('-') {
+        return Err(TimeError(format!("A duration must not be negative, was '{text}'")));
     }
-    let (negative, body) = match trimmed.strip_prefix('-') {
-        Some(rest) => (true, rest),
-        None => (false, trimmed.strip_prefix('+').unwrap_or(trimmed)),
-    };
-    let nanos = if body.starts_with('P') || body.starts_with('p') {
-        parse_iso(&body[1..]).ok_or_else(err)?
-    } else {
-        let body =
-            if negative { body.strip_prefix('(').and_then(|b| b.strip_suffix(')')).unwrap_or(body) } else { body };
-        parse_short(body).ok_or_else(err)?
-    };
-    Ok(SignedNanos(if negative { -nanos } else { nanos }))
+    let nanos = parse_iso(body.strip_prefix(['P', 'p']).ok_or_else(err)?).filter(|n| *n >= 0).ok_or_else(err)?;
+    let secs = u64::try_from(nanos / 1_000_000_000).map_err(|_| err())?;
+    Ok(Duration::new(secs, (nanos % 1_000_000_000) as u32))
 }
 
 const NANOS_PER: [(char, i128); 4] =
@@ -202,27 +176,6 @@ fn parse_iso(body: &str) -> Option<i128> {
             time = &rest[1..];
             any = true;
         }
-    }
-    any.then_some(total)
-}
-
-fn parse_short(body: &str) -> Option<i128> {
-    let mut total: i128 = 0;
-    let mut any = false;
-    for part in body.split_whitespace() {
-        let (n, unit) = number_then_unit(part)?;
-        let factor = match unit {
-            "d" => 86_400_000_000_000,
-            "h" => 3_600_000_000_000,
-            "m" => 60_000_000_000,
-            "s" => 1_000_000_000,
-            "ms" => 1_000_000,
-            "us" => 1_000,
-            "ns" => 1,
-            _ => return None,
-        };
-        total += scale(n, factor)?;
-        any = true;
     }
     any.then_some(total)
 }
@@ -310,68 +263,46 @@ pub mod serde_instant {
     }
 }
 
-/// Serde for a non-negative duration: written as ISO-8601, read from ISO-8601, the short form or a JSON number of
-/// milliseconds. A negative value is refused.
+/// Serde for a duration as its ISO-8601 string (see [`format_duration`], [`parse_duration`]).
 pub mod serde_duration {
     use std::time::Duration;
 
-    use serde::{Deserializer, Serializer};
+    use serde::{Deserialize, Deserializer, Serializer};
 
-    use super::format_duration;
+    use super::{format_duration, parse_duration};
 
     /// Serializes as ISO-8601.
     pub fn serialize<S: Serializer>(value: &Duration, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(&format_duration(*value))
     }
 
-    /// Deserializes from a duration string or milliseconds; refuses negative values.
+    /// Deserializes from an ISO-8601 duration string.
     pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Duration, D::Error> {
-        let signed = super::serde_signed_duration::deserialize(deserializer)?;
-        if signed.is_negative() {
-            return Err(serde::de::Error::custom("a duration must not be negative"));
-        }
-        Ok(signed.non_negative())
+        parse_duration(&String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
     }
-}
 
-/// Serde for a duration that may be negative (a send's `delay`): read from a duration string or milliseconds.
-pub mod serde_signed_duration {
-    use serde::Deserializer;
-    use serde::de::{self, Visitor};
+    /// Serde for an optional duration.
+    pub mod option {
+        use std::time::Duration;
 
-    use super::{SignedNanos, parse_duration};
+        use serde::{Deserialize, Deserializer, Serializer};
 
-    /// Deserializes from a duration string or a whole number of milliseconds.
-    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<SignedNanos, D::Error> {
-        struct V;
-        impl Visitor<'_> for V {
-            type Value = SignedNanos;
+        use super::super::{format_duration, parse_duration};
 
-            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str("an ISO-8601 duration string such as PT5S or a number of milliseconds")
-            }
-
-            fn visit_str<E: de::Error>(self, v: &str) -> Result<SignedNanos, E> {
-                parse_duration(v).map_err(E::custom)
-            }
-
-            fn visit_i64<E: de::Error>(self, v: i64) -> Result<SignedNanos, E> {
-                Ok(SignedNanos(v as i128 * 1_000_000))
-            }
-
-            fn visit_u64<E: de::Error>(self, v: u64) -> Result<SignedNanos, E> {
-                Ok(SignedNanos(v as i128 * 1_000_000))
-            }
-
-            fn visit_f64<E: de::Error>(self, v: f64) -> Result<SignedNanos, E> {
-                if v.fract() == 0.0 && v.is_finite() && v.abs() < 9.0e15 {
-                    Ok(SignedNanos(v as i128 * 1_000_000))
-                } else {
-                    Err(E::custom(format!("must be a whole number of milliseconds: {v}")))
-                }
+        /// Serializes as ISO-8601, or null.
+        pub fn serialize<S: Serializer>(value: &Option<Duration>, serializer: S) -> Result<S::Ok, S::Error> {
+            match value {
+                Some(d) => serializer.serialize_str(&format_duration(*d)),
+                None => serializer.serialize_none(),
             }
         }
-        deserializer.deserialize_any(V)
+
+        /// Deserializes from an ISO-8601 duration string, or null.
+        pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Duration>, D::Error> {
+            Option::<String>::deserialize(deserializer)?
+                .map(|text| parse_duration(&text).map_err(serde::de::Error::custom))
+                .transpose()
+        }
     }
 }
 
@@ -421,19 +352,20 @@ mod tests {
 
     #[test]
     fn parses_durations() {
-        let s = |t: &str| parse_duration(t).unwrap().0;
-        assert_eq!(s("PT5S"), 5_000_000_000);
-        assert_eq!(s("P1D"), 86_400_000_000_000);
-        assert_eq!(s("P1DT2H"), 93_600_000_000_000);
-        assert_eq!(s("PT1.5S"), 1_500_000_000);
-        assert_eq!(s("-PT1M"), -60_000_000_000);
-        assert_eq!(s("5s"), 5_000_000_000);
-        assert_eq!(s("1h 30m"), 5_400_000_000_000);
-        assert_eq!(s("500ms"), 500_000_000);
-        assert_eq!(s("2d"), 172_800_000_000_000);
-        assert_eq!(s("-(1h 30m)"), -5_400_000_000_000);
-        for bad in ["", "P", "PT", "5", "5x", "PTS", "P1H", "PT1S1M", "abc"] {
+        let s = |t: &str| parse_duration(t).unwrap();
+        assert_eq!(s("PT5S"), Duration::from_secs(5));
+        assert_eq!(s("P1D"), Duration::from_secs(86_400));
+        assert_eq!(s("P1DT2H"), Duration::from_secs(93_600));
+        assert_eq!(s("PT1.5S"), Duration::from_millis(1_500));
+        assert_eq!(s("PT0S"), Duration::ZERO);
+        for text in ["PT5S", "PT1M30S", "PT48H", "PT0.500S"] {
+            assert_eq!(format_duration(s(text)), text);
+        }
+        // Only ISO-8601, and never negative.
+        for bad in ["", "P", "PT", "5", "5x", "PTS", "P1H", "PT1S1M", "abc", "5s", "1h 30m", "500ms", "-PT1M", "PT-5S"]
+        {
             assert!(parse_duration(bad).is_err(), "{bad}");
         }
+        assert!(parse_duration("-PT1M").unwrap_err().to_string().contains("negative"));
     }
 }

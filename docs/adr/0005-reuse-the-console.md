@@ -4,7 +4,7 @@ Date: 2026-10-07
 
 ## Status
 
-Accepted. Superseded in part by 0006 and 0008
+Superseded by 0011 (earlier in part by 0006 and 0008)
 
 ## Context
 

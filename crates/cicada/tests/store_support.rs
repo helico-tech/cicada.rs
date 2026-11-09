@@ -1,11 +1,11 @@
-//! Rules shared by stores: registry resolution, store time, delivery times and envelopes.
+//! Rules shared by stores: registry resolution, store time and delivery times.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
 
 use cicada::address::{ActorAddress, UriTemplate};
-use cicada::store::support::{self, envelope_from_json, envelope_to_json};
-use cicada::store::{Delivery, Message, MessageId, StoreError, TypeDef};
+use cicada::store::support;
+use cicada::store::{Delivery, StoreError, TypeDef};
 use cicada::time::{self, MAX_DELAY, MAX_INSTANT, Timestamp};
 use serde_json::json;
 
@@ -102,28 +102,4 @@ fn delivery_times_outside_the_supported_range_are_refused_never_wrapped() {
     assert_eq!(time::from_micros(time::to_micros(MAX_INSTANT)), MAX_INSTANT);
     // Beyond chrono's range, so it cannot even be parsed.
     assert!(time::parse_instant("+300000-01-01T00:00:00Z").is_err());
-}
-
-#[test]
-fn envelope_json_round_trips() {
-    let m = Message {
-        id: MessageId::random(),
-        to: a("actor://a/b"),
-        from: Some(a("actor://c/d")),
-        message_type: "Run".into(),
-        payload: json!({"x": 1, "s": "y"}),
-        deliver_at: now(),
-        correlation_id: Some("corr".into()),
-        headers: [("retry".to_owned(), "2".to_owned())].into(),
-        seq: 7,
-        attempt: 3,
-        failures: 0,
-        last_error: None,
-        retry: None,
-        caused_by: None,
-        retention: None,
-    };
-    assert_eq!(envelope_from_json(&envelope_to_json(&m)).unwrap(), m);
-    let minimal = Message { from: None, correlation_id: None, headers: BTreeMap::new(), payload: json!("p"), ..m };
-    assert_eq!(envelope_from_json(&envelope_to_json(&minimal)).unwrap(), minimal);
 }

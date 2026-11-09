@@ -14,11 +14,10 @@ cargo clippy --workspace --all-targets
 cargo fmt --all                        # rustfmt.toml: 120 columns; CI checks it
 CICADA_PG_URL=postgres://cicada:cicada@localhost:55432/cicada cargo test -p cicada-store-postgres   # needs PostgreSQL
 CICADA_E2E=1 cargo test -p cicada-e2e -- --nocapture   # E2E and fault tests in Docker, ~3 min; see e2e/README.md
-CICADA_DOCKER=1 cargo test -p cicada-docker            # container handles against the local Docker daemon
 ```
 
 PostgreSQL for tests: `docker compose up -d postgres` (port 55432). Tests that need it are skipped when
-`CICADA_PG_URL` is unset. `cicada-ui` needs Node.js 22+ and npm to build the console.
+`CICADA_PG_URL` is unset.
 
 ## Map
 
@@ -29,9 +28,7 @@ PostgreSQL for tests: `docker compose up -d postgres` (port 55432). Tests that n
 | `crates/cicada-store-*` | Store backends and the conformance suite |
 | `crates/cicada-axum` | HTTP API routers |
 | `crates/cicada-client` | Typed HTTP client |
-| `crates/cicada-ui` | The embedded console |
 | `crates/cicada-otel`, `crates/cicada-extras` | Plugins and building blocks |
-| `crates/cicada-docker` | Container handles: actors that run and watch Docker containers (ADR 0007) |
 | `examples/`, `sample-service/` | Worked examples; a runnable node |
 | `e2e/` | End-to-end and fault tests against sample nodes in Docker |
 | `docs/` | Architecture, ADRs and the operations guide |

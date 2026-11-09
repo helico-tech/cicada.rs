@@ -58,7 +58,6 @@ const MIGRATIONS: &[&[&str]] = &[
     retention_policy TEXT
 )",
         "CREATE INDEX messages_mailbox ON messages (actor_uri, deliver_at, seq)",
-        "CREATE INDEX messages_caused_by ON messages (caused_by) WHERE caused_by IS NOT NULL",
         "CREATE TABLE outcomes (
     message_id    TEXT PRIMARY KEY,
     actor_uri     TEXT NOT NULL,
@@ -66,7 +65,6 @@ const MIGRATIONS: &[&[&str]] = &[
     error         TEXT,
     finished_at   INTEGER NOT NULL,
     envelope      TEXT NOT NULL,
-    caused_by     TEXT,
     visible_until INTEGER,
     keep_last     INTEGER NOT NULL DEFAULT 0,
     keep_seq      INTEGER,
@@ -74,7 +72,6 @@ const MIGRATIONS: &[&[&str]] = &[
 )",
         "CREATE INDEX outcomes_failures ON outcomes (status, finished_at, message_id)",
         "CREATE INDEX outcomes_finished ON outcomes (finished_at)",
-        "CREATE INDEX outcomes_caused_by ON outcomes (caused_by) WHERE caused_by IS NOT NULL",
         "CREATE INDEX outcomes_keep_last ON outcomes (actor_uri, status, keep_seq) WHERE keep_last = 1",
         "CREATE INDEX outcomes_visible_until ON outcomes (visible_until) WHERE visible_until IS NOT NULL",
         "CREATE TABLE sequences (name TEXT PRIMARY KEY, value INTEGER NOT NULL)",

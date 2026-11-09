@@ -6,8 +6,9 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use cicada::address::{ActorAddress, UriTemplate};
+use cicada::retention::{Keep, Retention};
 use cicada::store::{
-    CommitRequest, CommitResult, EnqueueResult, NodeId, OutgoingMessage, Store, StoreError, TurnOutcome,
+    CommitRequest, CommitResult, Delivery, EnqueueResult, NodeId, OutgoingMessage, Store, StoreError, TurnOutcome,
 };
 use cicada::time;
 use cicada_store_postgres::{PostgresStore, PostgresStoreConfig, schema};
@@ -106,7 +107,6 @@ async fn invalid_settings_are_refused_before_connecting() {
     };
     assert!(invalid(PostgresStoreConfig::for_schema("Robert'); DROP TABLE students;--")).await);
     assert!(invalid(PostgresStoreConfig { max_pool_size: 0, ..Default::default() }).await);
-    assert!(invalid(PostgresStoreConfig { channel: Some("no spaces".into()), ..Default::default() }).await);
     assert!(matches!(
         PostgresStore::connect("mysql://u:secret@db/x", PostgresStoreConfig::default()).await,
         Err(StoreError::Invalid(m)) if !m.contains("secret")
@@ -249,8 +249,8 @@ async fn wake_ups_follow_enqueues_sends_and_releases_of_the_requested_types_on_a
 #[tokio::test(flavor = "multi_thread")]
 async fn the_wake_up_listener_reconnects_after_losing_its_connection() {
     let db = test_db!("s");
-    let config = PostgresStoreConfig { listener_reconnect_delay: Duration::from_millis(100), ..db.config() };
-    let listening = db.open_with(config.clone()).await;
+    let config = db.config();
+    let listening = db.open().await;
     let writer = db.open().await;
     let (mut received, collector) = collect_wake_ups(&listening, template());
     wait_listening(&listening).await;
@@ -276,5 +276,58 @@ async fn the_wake_up_listener_reconnects_after_losing_its_connection() {
     writer.enqueue(OutgoingMessage::new(a, "T", json!(1))).await.unwrap();
     assert!(some_within(&mut received, Duration::from_secs(2)).await, "notifications arrive after reconnecting");
     collector.abort();
+    db.cleanup().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hidden_record_is_minimal_without_payload_headers_correlation_id_or_errors() {
+    // S10: a hidden record only keeps its id in use. The store never returns it, so its content is read from the table.
+    let db = test_db!("s");
+    let store = db.open().await;
+    let a = addr("actor://pg/a");
+    store.create(&a, &template(), None).await.unwrap();
+    let node = NodeId::new("n").unwrap();
+    // The first record is removed as soon as it fails; the second is hidden a moment later and stripped by the sweep.
+    let hide_later = Retention { done: None, failed: Some(Keep::For { age: Duration::from_millis(1) }) };
+    let mut ids = Vec::new();
+    for retention in [Retention::REMOVE_ON_FAILED, hide_later] {
+        let message = OutgoingMessage {
+            correlation_id: Some("corr".into()),
+            headers: [("h".to_owned(), "v".to_owned())].into(),
+            retention: Some(retention),
+            ..OutgoingMessage::new(a.clone(), "M", json!({"secret": 1}))
+        };
+        let EnqueueResult::Enqueued(m) = store.enqueue(message).await.unwrap() else { panic!("enqueued") };
+        let outcomes = [
+            TurnOutcome::Rescheduled { delivery: Delivery::Now, error: "again".into() },
+            TurnOutcome::Failed("boom".into()),
+        ];
+        for outcome in outcomes {
+            let claim = store.claim_due(&types(template()), &node, Duration::from_secs(30), 1).await.unwrap().remove(0);
+            let result = store.commit(CommitRequest::new(a.clone(), claim.epoch, m.id.clone(), outcome)).await.unwrap();
+            assert!(matches!(result, CommitResult::Committed { .. }));
+        }
+        ids.push(m.id);
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(store.sweep_expired().await.unwrap(), 0, "both records stay for the dedup window");
+    let mut c = db.connect().await;
+    for id in &ids {
+        let (error, stripped, envelope): (Option<String>, bool, serde_json::Value) =
+            sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "SELECT error, stripped, envelope FROM \"{}\".outcomes WHERE message_id = $1",
+                db.schema
+            )))
+            .bind(id.as_str())
+            .fetch_one(&mut c)
+            .await
+            .expect("the minimal record");
+        assert_eq!((error, stripped), (None, true), "no error, marked as stripped");
+        assert_eq!(envelope["payload"], json!(null));
+        assert_eq!(envelope["headers"], json!({}));
+        assert_eq!(envelope["correlationId"], json!(null));
+        assert_eq!(envelope["lastError"], json!(null));
+        assert_eq!((&envelope["type"], &envelope["to"]), (&json!("M"), &json!(a.as_str())), "type and target stay");
+    }
     db.cleanup().await;
 }

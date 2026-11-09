@@ -11,7 +11,7 @@ coordinator and no cluster protocol.
   outcome per message (`done`, `failed`, `cancelled`, `purged`).
 - **Typed and checked.** Actor addresses are typed refs bound to URI templates (`actor://sync/{tenant}`); the compiler
   checks that a ref accepts a message, and that a handler covers every message of its family.
-- **One HTTP API** (fourteen endpoints) on every node as an axum `Router`, a typed client, an in-process API,
+- **One HTTP API** (twelve endpoints) on every node as an axum `Router`, a typed client, an in-process API,
   `TestActors` on tokio's paused time, and per-message retry policies set by the sender.
 
 The design — domain language, guarantees G1–G6, store requirements S1–S10, the HTTP contract — is in
@@ -27,13 +27,11 @@ summarised [below](#decisions).
 | `cicada-store-sqlite` | `SqliteStore` (sqlx): one file, WAL, one writer. For a single node or a few processes on one host. |
 | `cicada-store-postgres` | `PostgresStore` (sqlx): `FOR UPDATE SKIP LOCKED` claims, `LISTEN/NOTIFY` wake-ups. For many nodes. |
 | `cicada-store-conformance` | The shared suite (S1–S10 and robustness cases) every store must pass, as a macro. |
-| `cicada-axum` | `actor_api()` (the fourteen endpoints) and `actor_health()` (a public readiness check) as axum routers. |
-| `cicada-ui` | The actor console: a React app in the Sensus BPM Online design, embedded and served by `actor_ui()`. |
+| `cicada-axum` | `actor_api()` (the twelve endpoints) and `actor_health()` (a public readiness check) as axum routers. |
 | `cicada-client` | `ActorClient`: typed HTTP client (reqwest) for remote callers, idempotent sends. |
 | `cicada-test` | `TestActors`, `InMemoryStore`, virtual time, contract snapshots and state samples. |
-| `cicada-extras` | Building blocks on the public API, no core changes: `CrashLoopGuard`, dead letters (`DeadLettersActor`, `FailureWatcher`), `Timer`, `Schedule`. |
+| `cicada-extras` | Building blocks on the public API, no core changes: `CrashLoopGuard`, dead letters (`DeadLettersActor`, `FailureWatcher`), `Schedule`. |
 | `cicada-otel` | `ActorTelemetry`: OpenTelemetry traces and metrics per turn, a plugin on the OpenTelemetry API. |
-| `cicada-docker` | Container handles: `ContainerActor` (one actor per Docker container), `DockerEngine` on bollard, `container_logs()`; see [Container handles](#container-handles). |
 | `examples` (`cicada-examples`) | Ten worked examples, each tested with `TestActors`; see [Examples](#examples). |
 | `sample-service` | A runnable node hosting the examples, configured by environment variables. |
 
@@ -110,7 +108,7 @@ impl<A: SyncApi> Actor for SyncActor<A> {
     type Ref = Sync;
     type State = SyncState;
     type Message = SyncMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail; // mandatory: Fail | Drop | Custom
+    const UNHANDLED: Unhandled = Unhandled::Fail; // mandatory: Fail | Drop
     const MAX_TURN: Option<Duration> = Some(Duration::from_secs(5 * 60));
 
     async fn handle(&self, turn: &mut Turn<Self>, message: SyncMsg) -> HandlerResult {
@@ -158,9 +156,8 @@ Inside a handler, `turn` offers:
   retried).
 
 Effects are buffered and committed atomically. A handler that returns `Err` (any error converts with `?`) or panics
-commits `failed` and nothing else — unless the message carries a [retry policy](#retry). Sends refuse a header with
-the reserved prefix `cicada-` and fields beyond the send limits with `TurnError::Invalid`, which the handler may
-handle. A stateless type has `type State = Stateless`.
+commits `failed` and nothing else — unless the message carries a [retry policy](#retry). Sends refuse fields beyond
+the send limits with `TurnError::Invalid`, which the handler may handle. A stateless type has `type State = Stateless`.
 
 **Times in long turns.** A `delay` counts from the commit; an `at` is absolute. In a turn that runs for 70 s,
 `SendOptions::new().at(turn.now() + 1 minute)` is due 10 s *before* the commit, so it runs right after it: use
@@ -217,7 +214,7 @@ async fn main() -> anyhow::Result<()> {
         .with_state(system.clone());
     let app = Router::new()
         .merge(actor_health(system.clone(), "/ready")) // GET /ready: public readiness, for probes
-        .merge(actor_api(system.clone()).layer(middleware::from_fn_with_state(token, bearer))) // the fourteen endpoints
+        .merge(actor_api(system.clone()).layer(middleware::from_fn_with_state(token, bearer))) // the twelve endpoints
         .merge(own_routes);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
@@ -267,8 +264,7 @@ async fn shutdown_signal() {
   rest and releases their leases. While it stops, `/health` and `/ready` answer `503`. `stop` is idempotent.
 - The store is the caller's: `ActorSystem` never closes it. Open it before `start` and close it after `stop`.
   `PostgresStore::connect(url, config)` accepts the libpq form of `DATABASE_URL`
-  (`postgres://user:pass@host:5432/db?sslmode=require`);
-  `connect_as(url, user, password, config)` adds credentials, and `connect_with(PgConnectOptions, config)` takes sqlx
+  (`postgres://user:pass@host:5432/db?sslmode=require`), and `connect_with(PgConnectOptions, config)` takes sqlx
   options built by the caller (TLS client certificates and the like).
 - A node hosting no types still serves the whole API (create, send, query) for every registered type.
 - `actor_api(system)` and `actor_health(system, path)` are plain routers with no fallback: `merge` them or `nest`
@@ -277,7 +273,7 @@ async fn shutdown_signal() {
   changes the body limit.
 - `ActorSystem` is cheap to clone; every clone is the same node. Its methods are the in-process API: `create`,
   `send`, `send_with`, `send_to`, `send_message`, `get_actor`, `delete_actor`, `list_actors`, `pending`,
-  `list_pending`, `status`, `outcome`, `chain`, `cancel`, `failures`, `types`, `type_of`, `health`.
+  `list_pending`, `status`, `outcome`, `cancel`, `failures`, `types`, `health`.
 - The runtime logs with [`tracing`](https://docs.rs/tracing); install a subscriber (such as `tracing_subscriber`) to
   see its output.
 
@@ -332,15 +328,13 @@ request's path and query as `instance`.
 | `GET /actors/{path}` — type, params, state, version, createdAt | 200 | 404 |
 | `DELETE /actors/{path}` — admin delete, purges the mailbox | 204 | 404 |
 | `GET /actors?prefix=&cursor=&limit=` — instance URIs, paged | 200 | |
-| `POST /actors/{path}/messages` body `{id?, type, payload?, deliverAt? \| delay?, correlationId?, headers?, retry?, retention?}` — send | 202 `{id, deliverAt}`; 200 that id was already accepted (same target and type) | 400 invalid `retry` or `retention` policy; 404 no instance; 409 id already used for another target or type; 422 unknown message type, undecodable payload (hosting node only), reserved `cicada-*` header |
+| `POST /actors/{path}/messages` body `{id?, type, payload?, deliverAt? \| delay?, correlationId?, headers?, retry?, retention?}` — send | 202 `{id, deliverAt}`; 200 that id was already accepted (same target and type) | 400 invalid `retry` or `retention` policy; 404 no instance; 409 id already used for another target or type; 422 unknown message type, undecodable payload (hosting node only) |
 | `GET /actors/{path}/messages?cursor=&limit=` — pending mailbox in delivery order, each with `attempt`, `failures`, `lastError`, `retry` | 200 | 404 |
 | `GET /messages?prefix=&cursor=&limit=` — pending messages of every instance under the prefix (including running ones), instance by instance in URI order, each in delivery order | 200 | |
 | `GET /messages/{id}` — status, error, `failures` and `lastError`, node and lease while running, envelope (with `retry`, `retention` and `causedBy`) | 200 | 404 unknown, past retention, or removed by its retention policy |
-| `GET /messages/{id}/chain` — the messages that led to this one and the ones it caused (see [Message chains](#message-chains)) | 200 | 404 unknown or past retention |
 | `DELETE /messages/{id}` — cancel a pending message | 204 | 404; 409 running or already finished |
 | `GET /failures?prefix=&since=&cursor=&limit=` — failed messages with envelope and error | 200 | |
 | `GET /types` — templates, contract hashes, state and message JSON Schemas | 200 | |
-| `GET /types?uri=` — the type matching one URI, with its params | 200 | 404 |
 | `GET /health` — node running and store reachable | 200 | 503 |
 
 On every endpoint, additionally:
@@ -357,66 +351,12 @@ On every endpoint, additionally:
   retrying as such).
 - `401`/`403` — whatever the host's authentication layer answers.
 
-`delay` is an ISO-8601 duration (`"PT5S"`; `"5s"` also works) or a number of milliseconds; `deliverAt` is an ISO-8601
+`delay` is an ISO-8601 duration (`"PT5S"`, `"PT1H30M"`; a negative one is `400`); `deliverAt` is an ISO-8601
 instant. Both are resolved against the store clock. Listings take `cursor` (the previous page's `next`) and `limit`
 (default 100); a `prefix` is an actor-URI prefix (`actor://sync/`; the scheme may be left out). Pages are a keyset,
 not a snapshot: in a mailbox listing, a message rescheduled in place between two pages (later `deliverAt`, new `seq`)
 can appear on both, so deduplicate by id. A trailing segment that is literally `messages` names the mailbox; an
 instance whose last segment is `messages` is addressed as `%6Dessages` (`ActorAddress::to_http_path` does this).
-
-## Actor console
-
-`cicada-ui` is a web console over the HTTP API, for developers and on-call engineers. Merge it next to the API:
-
-<!-- doctest
-# fn app(system: cicada::ActorSystem) -> axum::Router {
-@@7
-# }
--->
-```rust
-use axum::Router;
-use cicada_axum::actor_api;
-use cicada_ui::actor_ui;
-
-Router::new()
-    .merge(actor_api(system))         // the API, at the root (behind your authentication layer)
-    .merge(actor_ui("/console", "/")) // the console, at /console/
-```
-
-`actor_ui(mount_path, api_path)` takes where the console is served and where `actor_api()` is mounted on the same
-origin (`try_actor_ui` returns an error instead of panicking on an invalid path). The console is a React +
-TypeScript single-page app in the Sensus BPM Online design system (ADR 0006; its tokens and fonts are vendored, nothing loads from outside the origin). It is built with Vite
-when `cicada-ui` compiles (Node.js 22+ and npm; `CICADA_UI_SKIP_BUILD` embeds an empty console) and embedded in the
-binary with `config.json`; it calls only the API, from the browser. What it does:
-
-- **Actors** — list by type template or URI prefix, cursor pages; create (form from the state's JSON Schema, or raw
-  JSON) and delete (type the URI to confirm).
-- **Actor** — type, params, version, state as collapsible JSON; the pending mailbox with cancel; recent failures.
-- **Pending** — the pending messages of every actor, by type, URI prefix and message type.
-- **Message** — status, lease or outcome, retries and policy, persistence policy, envelope, payload; cancel while
-  pending. The **message chain**: what led to the message and everything it caused, as a tree graph (pan and zoom,
-  click a card to open that message) or an indented list; removed records show as removed.
-- **Send** — payload form from the message type's JSON Schema (or raw JSON), now / after a delay / at a time, id,
-  correlation id, headers, retry policy, persistence policy (done / failed: default, remove, keep for a time, keep the
-  last N). A generated id is reused by Retry Now, so a retried send cannot enqueue twice.
-- **Failures** — newest first, by prefix, message type and time window. **Types** — templates, hashes, schemas.
-- **Live** — the API has no push, so the open page is polled every 5 s (paused while the tab is hidden, or with the
-  Live switch). New rows, a version that went up, changed state fields and messages that left the mailbox are
-  highlighted for one refresh. The top bar shows the node's health; ⌘K opens an actor URI or message id.
-- **Light and dark** — follows the system setting until the viewer picks one with the top bar's switch, which this
-  browser then remembers.
-
-Limits that come from the API: the actor list carries only URIs (type and params are matched to the templates in the
-browser); finished messages are not listed, only found by id or under Failures; the Pending page does not mark running
-messages (open one to see); `/failures` lists failed outcomes only, oldest first, so the console loads the whole
-window (at most 10 000) and sorts it. Authentication stays the host's: cookies and HTTP Basic credentials the browser
-has are sent; for a bearer-token API the console asks for the token on the first `401` and keeps it in the tab's
-session storage. The page sends a strict Content Security Policy and inserts every value from the node as text. No
-fonts are loaded from outside.
-
-**Types checked end to end.** The console parses every response with the zod schemas in
-`crates/cicada-ui/web/src/api/wire.ts`. `crates/cicada-ui/tests/api_fixtures.rs` records a response of every endpoint from a running Rust node and
-runs the console's fixture test over them, so a Rust response the console does not expect fails the build.
 
 ## Testing with `TestActors`
 
@@ -575,7 +515,7 @@ sends, `ActorClient::send_with` / `send_message`, `TestActors::send_with`, and o
 ```sh
 curl -X POST localhost:8080/actors/payments/messages -d '{"type": "Charge", "payload": {…},
   "retry": {"maxAttempts": 4, "backoff": {"kind": "exponential", "initial": "PT1S", "factor": 2.0, "max": "PT30S"}}}'
-# or "backoff": {"kind": "fixed", "delay": "PT5S"}; durations as ISO-8601 (also "5s" or milliseconds); factor defaults to 2
+# or "backoff": {"kind": "fixed", "delay": "PT5S"}; durations as ISO-8601; factor defaults to 2
 ```
 
 Bounds: `max_attempts` in 1..100; every duration positive and at most `cicada::time::MAX_DELAY` (about 1000 years);
@@ -597,14 +537,12 @@ message; deleting or stopping the instance purges it.
 - **The receiver's veto.** A handler that returns `HandlerError::permanent(reason)` (or `turn.fail(reason)`, the same
   thing) ends the message `failed` at once with that reason, whatever the policy. `HandlerError::permanent_from(err)`
   keeps the cause.
-- **Not retried:** undecodable state, the unhandled policies `Fail` and `Drop` and a custom policy's
-  `UnhandledDecision::Fail` / `Drop` (decisions, not failures: no `on_handler_error` either), failing `on_claim` /
-  `before_commit` hooks, and commits rejected by the store (e.g. a send to an absent instance). A *custom* unhandled
-  policy that returns `Err`, panics or times out is a handler failure and follows the message's policy.
+- **Not retried:** undecodable state, the unhandled policies `Fail` and `Drop` (decisions, not failures: no
+  `on_handler_error` either), a failing `on_claim` hook, and commits rejected by the store (e.g. a send to an absent
+  instance).
 - **Timeouts.** A run cut off at its maximum turn is a failure retried per policy. A handler that blocks its thread
   past the maximum (code that does not yield) is waited for; it is retried only if it then fails with an ordinary
-  error. If it returns `Ok`, vetoes or (unhandled policy) decides, the message ends `failed` with `timeout`, never
-  re-run.
+  error. If it returns `Ok` or vetoes, the message ends `failed` with `timeout`, never re-run.
 - **Counting.** `message().failures` counts failed runs (this run is attempt `failures + 1`); `message().attempt`
   counts claims, including crash recoveries, which do not use up an attempt.
 - **Forwarding.** `message().retry` is the incoming policy; pass it on with
@@ -612,10 +550,8 @@ message; deleting or stopping the instance purges it.
 - **Dedup.** A resend with an id that was already accepted is `200` / `SendResult::Duplicate` when target and type
   match, as before; a different `retry` on it is ignored, like a different payload — the first accepted send stands.
 - **Hooks.** The runtime decides retry-or-fail first; then `on_handler_error` hooks run and see the decision
-  (`will_retry`, `retry_delay`, `outcome`, `failure_reason`). They may add effects (committed with the retry too) or
-  replace the failure with a final outcome (`set_outcome(TurnOutcome::Done)` with compensating sends, or
-  `TurnOutcome::Failed(…)`), which cancels the retry. They cannot schedule a retry: `set_outcome` refuses any other
-  reschedule. `on_outcome` sees `TurnOutcome::Rescheduled` for each retried run.
+  (`will_retry`, `retry_delay`). They observe only. `on_outcome` sees `TurnOutcome::Rescheduled` for each retried
+  run.
 - **Unreadable policies.** A stored or served policy that a node or client cannot decode (a backoff kind of a newer
   version, a damaged row) is logged as a warning and read as no policy: the message is handled without retry, and
   claims, status reads and listings keep working.
@@ -664,37 +600,33 @@ curl -X POST localhost:8080/actors/mailers/m-1/messages -d '{"type": "Send", "pa
   that also chose `Last` (and at most for the store retention). Records with another rule are never trimmed by it.
 - A removed record is gone from `GET /messages/{id}` (404), `/failures` and cancel. Its content is dropped at once
   (`Remove`) or by the next retention sweep (`sweep_interval`, 1 h by default).
-- **Dedup and chains keep working.** The store keeps a minimal record (id, target, sender, type, status, times,
-  cause) for its retention, which is also the dedup window: a resend with a removed message's id is still `200`, so a
-  client retry after a lost acknowledgement never runs the message twice. Message chains show it as removed.
+- **Dedup keeps working.** The store keeps a minimal record (id, target, sender, type, status, times, cause) for
+  its retention, which is also the dedup window: a resend with a removed message's id is still `200`, so a client
+  retry after a lost acknowledgement never runs the message twice.
 - Bounds: `count` in 1..10 000; `age` positive and at most `MAX_DELAY`; `Keep::last` and `Keep::keep_for` check them.
   Invalid policies are `400` over HTTP. A resend of an accepted id with another policy is a duplicate; the first
   policy stands. Unreadable stored policies read as none. Every send path takes `retention`, as for `retry`;
   `message().retention` lets a handler pass it on.
 
-## Message chains
+## Message causes
 
-Every message sent from a turn records the id of the message that turn handled as `caused_by` (`None` for a send
-from outside an actor). `GET /messages/{id}/chain` (`ActorSystem::chain`, `ActorClient::chain`) follows these links:
-up to the message that started it all, and down through everything the message caused, directly or not. The result
-is a flat list of nodes (`id`, `causedBy`, `to`, `from`, `type`, `status`, `deliverAt`, `finishedAt`, `error`,
-`attempt`, `failures`, `removed`) plus `truncated`, which is true beyond 50 steps either way or 500 caused messages
-(`MessageChain::MAX_DEPTH`, `MAX_DESCENDANTS`). Messages past retention are left out, so a chain can start at a
-message whose cause is gone. The console draws it as a tree on the message page.
+Every message sent from a turn records the id of the message that turn handled as `caused_by` (`causedBy` over HTTP;
+`None` for a send from outside an actor). It is part of the envelope everywhere a message is served, so a tool can
+follow a message back to what started it, one `GET /messages/{id}` at a time.
 
 ## Plugins
 
-A plugin observes or alters a turn through four async hooks of the `Plugin` trait: `on_claim` (after load, before the
-handler; an `Err` fails the turn), `on_handler_error` (sees the retry decision; may add effects or replace the
-outcome), `before_commit` (may add effects; an `Err` fails the turn) and `on_outcome` (after a successful commit).
-Effects a hook adds join the turn's single commit, so the guarantees hold with or without plugins. The plugin value
-is its configuration; the turn's `Attributes` (a bag keyed by type) carry data from one hook to the next and to the
-handler.
+A plugin observes a turn through three async hooks of the `Plugin` trait: `on_claim` (after load, before the
+handler), `on_handler_error` (sees the failure and the retry decision) and `on_outcome` (after a successful commit).
+A plugin never changes what a turn commits: only the handler does. The one exception: in `on_claim` a plugin may add
+headers to the messages the turn sends (`ClaimContext::send_headers`), which is how tracing travels. The one thing a
+plugin can decide is to refuse a turn, by returning `Err` from `on_claim`; the message then ends `failed`. The plugin value is its configuration; the
+turn's `Attributes` (a bag keyed by type) carry data from one hook to the next and to the handler.
 
 <!-- doctest
 @@1
 # use std::sync::Arc;
-# use cicada::{ActorSystem, ActorType};
+# use cicada::ActorSystem;
 # use cicada_examples::sync::ReportsActor;
 @@17
 # fn node(store: Arc<dyn cicada::store::Store>) {
@@ -721,15 +653,13 @@ impl Plugin for Audit {
 }
 
 let system = ActorSystem::builder(store)
-    .install(Audit { prefix: "node".into() }) // every hosted type
-    .host(ActorType::new(ReportsActor).install(Audit { prefix: "reports".into() })) // this type; wins over the node's
+    .install(Audit { prefix: "node".into() }) // for every hosted type
+    .host(ReportsActor)
     .build();
 ```
 
-Node plugins run before type plugins, each in installation order. A plugin installed on both the node and a type runs
-once for that type, with the type's installation (matched by `name`). `ActorType::new(actor).max_turn(d)` also sets
-a type's maximum turn, overriding `Actor::MAX_TURN`. Hook headers may use the reserved prefix `cicada-`; handlers and outside
-senders may not. The table of which hook runs in which situation is in the `cicada::plugin` docs.
+Plugins run in installation order, and a name is installed at most once per node. Pass an `Arc` to share one plugin
+value. The table of which hook runs in which situation is in the `cicada::plugin` docs.
 
 ### OpenTelemetry
 
@@ -761,16 +691,17 @@ system.send_with(&Sync { tenant: "acme".into() }, SyncMsg::Run, options).await?;
   exception event, also when the message is retried. A turn that never commits (lost lease, node stopped mid-turn)
   ends its span with `cicada.outcome` = `abandoned`.
 - **One trace across actors.** The span's parent is the trace context in the message's headers (W3C `traceparent`).
-  Plugins cannot change a handler's sends, so a handler passes it on itself:
-  `SendOptions { headers: cicada_otel::trace_headers(turn), ..SendOptions::new() }` (the saga example does). Over
-  HTTP, put `traceparent` in the message's `headers`. `with_propagator(..)` replaces the global propagator.
+  Every message a turn sends carries the turn's trace context automatically, so the turns of a chain form one trace
+  with no code in the handlers. A send that sets `traceparent` itself keeps its own. From outside an actor, use
+  `current_trace_headers()`; over HTTP, put `traceparent` in the message's `headers`. `with_propagator(..)` replaces
+  the global propagator.
 - **Metrics:** `cicada.turn.duration` (claim to commit) and `cicada.message.lag` (due time to claim), histograms in
   seconds by `cicada.actor.type` and `cicada.message.type`; the duration also by `cicada.outcome`.
 
 ## Extras
 
 `cicada-extras` holds building blocks that use only the public API (plugin hooks and the operations of
-`ActorSystem` or `ActorClient`).
+`ActorSystem`).
 
 **Crash-loop guard.** A message that kills its node (out of memory, `std::process::exit`, an abort) is otherwise
 claimed again forever. `CrashLoopGuard` counts the claims of a message that ended without a commit
@@ -789,11 +720,11 @@ claimed again forever. `CrashLoopGuard` counts the claims of a message that ende
 use cicada_extras::CrashLoopGuard;
 
 let system = ActorSystem::builder(store)
-    .install(CrashLoopGuard::new(5)?) // CrashLoopGuard::default() is 5; on the node or on one type
+    .install(CrashLoopGuard::new(5)?) // CrashLoopGuard::default() is 5
     .build();
 ```
 
-The message ends `failed` (`onClaim of plugin CrashLoopGuard failed: crash loop: 5 claims without a commit`), is never
+The message ends `failed` (`on_claim of plugin CrashLoopGuard failed: crash loop: 5 claims without a commit`), is never
 retried and shows under `/failures`. Every claim without a commit counts, also a lease lost to a long pause or released
 by a stopping node, so keep the limit above what rolling deploys during long turns can cause.
 
@@ -821,30 +752,30 @@ let watcher = FailureWatcher::new(system.clone()).prefix("actor://orders/").star
 // … on shutdown: watcher.abort();
 ```
 
-The watcher reads through the `ActorOperations` trait, which `ActorSystem` implements and, with the `client` feature
-of `cicada-extras`, `ActorClient` too, so a watcher can also run in a process of its own. Every node may run one:
-each failure is forwarded with an id derived from the failed message's id, so the store's send
-dedup records it once. Act on a letter with a message: `Redrive { failed_message_id }` sends it again (same target,
+The watcher works through an `ActorSystem`; a process that hosts no types can run one on a send-only node. Every node
+may run one: each failure is forwarded with an id derived from the failed message's id, so the store's send dedup
+records it once. Act on a letter with a message: `Redrive { failed_message_id }` sends it again (same target,
 type, payload, correlation id; once), `Discard { failed_message_id }` forgets it — over HTTP,
 `POST /actors/cicada/dead-letters/messages {"type": "Redrive", "payload": {"failedMessageId": "…"}}`.
 
-**Timers and schedules.** A timer is a delayed self-send that is cancelled by making it stale. `Timer`, kept in
-state, gets a new generation on every `arm(at)` and `disarm()`; the timeout carries the generation it was armed with,
-and only one for which `timer.is_current(generation)` is true counts. The handler still sends:
+**Timers.** A timer is a delayed self-send. To stop or move it, keep the id of the pending message in state and
+cancel it with `turn.cancel`: the cancel, the state change and any new timer commit together, and the turns of one
+actor never overlap, so state and mailbox never disagree. There is no timer type; this is the whole recipe
+([examples/src/timer.rs](examples/src/timer.rs) is the full version):
 
 <!-- doctest
 # use std::time::Duration;
 # use cicada::prelude::*;
-# use cicada_extras::Timer;
+# use cicada::store::MessageId;
 # use serde::{Deserialize, Serialize};
 # #[derive(Debug, Clone, Serialize, Deserialize)]
 # struct Checkout { id: String }
 # impl ActorRef for Checkout { const TEMPLATE: &'static str = "actor://checkout/{id}"; type Message = CheckoutMsg; }
 # #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 # #[serde(tag = "type")]
-# enum CheckoutMsg { Begin, PaymentTimeout { generation: u32 } }
+# enum CheckoutMsg { Begin, Pay, PaymentTimeout }
 # #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
-# struct CheckoutState { timer: Timer, expired: bool }
+# struct CheckoutState { timeout: Option<MessageId>, paid: bool, expired: bool }
 # struct CheckoutActor;
 # impl Actor for CheckoutActor {
 #     type Ref = Checkout;
@@ -852,7 +783,7 @@ and only one for which `timer.is_current(generation)` is true counts. The handle
 #     type Message = CheckoutMsg;
 #     const UNHANDLED: Unhandled = Unhandled::Fail;
 #     async fn handle(&self, turn: &mut Turn<Self>, msg: CheckoutMsg) -> HandlerResult {
-@@15
+@@17
 #         Ok(())
 #     }
 # }
@@ -860,22 +791,24 @@ and only one for which `timer.is_current(generation)` is true counts. The handle
 ```rust
 match msg {
     CheckoutMsg::Begin => {
-        let deadline = turn.now() + Duration::from_secs(15 * 60);
-        let generation = turn.state_mut().timer.arm(deadline);
-        turn.send_self_with(CheckoutMsg::PaymentTimeout { generation }, SendOptions::new().at(deadline))?;
+        let options = SendOptions::new().delay(Duration::from_secs(15 * 60));
+        let timeout = turn.send_self_with(CheckoutMsg::PaymentTimeout, options)?;
+        turn.state_mut().timeout = Some(timeout); // keep the id, to cancel it later
     }
-    CheckoutMsg::PaymentTimeout { generation } => {
-        if !turn.state().timer.is_current(generation) {
-            return Ok(()); // re-armed or disarmed since: stale
+    CheckoutMsg::Pay => {
+        if let Some(timeout) = turn.state_mut().timeout.take() {
+            turn.cancel(&timeout)?; // gone in the same commit as the state change
         }
-        let state = turn.state_mut();
-        state.timer.disarm();
-        state.expired = true;
+        turn.state_mut().paid = true;
+    }
+    CheckoutMsg::PaymentTimeout => {
+        turn.state_mut().timeout = None;
+        turn.state_mut().expired = true;
     }
 }
 ```
 
-`Schedule` (`Schedule::every(seconds)`, aligned to the epoch, and `Schedule::daily(hour, minute)`, UTC) gives a cron
+**Schedules.** `Schedule` (`Schedule::every(seconds)`, aligned to the epoch, and `Schedule::daily(hour, minute)`, UTC) gives a cron
 actor its next slot; it is serializable, so it can live in state. See [examples/src/cron.rs](examples/src/cron.rs)
 for the `Tick` chain:
 
@@ -888,74 +821,10 @@ assert_eq!(Schedule::every(3600).unwrap().next(t), "2026-10-02T11:00:00Z".parse:
 assert_eq!(Schedule::daily(2, 30).unwrap().next(t), "2026-10-03T02:30:00Z".parse::<Timestamp>().unwrap());
 ```
 
-## Container handles
-
-`cicada-docker` ([ADR 0007](docs/adr/0007-container-handles.md)) gives every Docker container an actor: a
-**container handle** at `actor://containers/{name}`. The handle does not hold the running container; it keeps a
-durable record of it and acts on it. Docker stays the truth: every turn looks at the container before it acts.
-
-<!-- doctest
-# use std::sync::Arc;
-# use axum::Router;
-# use cicada::ActorSystem;
-# use cicada_axum::actor_api;
-# async fn node(store: Arc<dyn cicada::store::Store>) -> Result<(), Box<dyn std::error::Error>> {
-@@10
-# let _: Router = app;
-# Ok(())
-# }
--->
-```rust,no_run
-use cicada_docker::{ContainerActor, ContainerHandle, ContainerMsg, ContainerSpec, ContainerState, DockerEngine, container_logs};
-
-let containers = ContainerActor::new(DockerEngine::connect()?); // DOCKER_HOST, else the local socket
-let system = ActorSystem::builder(store).host(containers.clone()).build();
-system.start().await?;
-let app = Router::new().nest("/api", actor_api(system.clone()).merge(container_logs(&containers)));
-
-let web = ContainerHandle::new("web"); // the container is named `cicada-web`
-system.create(&web, &ContainerState::default()).await?;
-system.send(&web, ContainerMsg::Apply { spec: ContainerSpec::new("nginx:1.27").port(80, 8080) }).await?;
-```
-
-| Message | What it does |
-| --- | --- |
-| `Apply { spec }` | Runs the container with `spec`: pulls the image (pull policy `missing`, `always` or `never`), creates and starts it. A container created from another spec is replaced. |
-| `Start` | Starts the container with the last applied spec; creates it when it is missing. |
-| `Stop` | Stops it; Docker kills it after the spec's `stopTimeoutSeconds`. |
-| `Remove` | Removes the container, then the handle. |
-| `Check` | Records what Docker reports. The handle sends it to itself every 15 s (`ContainerActor::check_every`). |
-
-The state holds the last spec and `observed`: `status` (`running`, `exited`, … or `missing`), `containerId`,
-`exitCode` (once it has ended), `startedAt`, `finishedAt`, the last 20 lines of output when it exits, and
-`checkError` when Docker could not be reached (polling goes on). The console shows it like any other state.
-
-Rules worth knowing:
-
-- **Safe when repeated.** A turn may run again after a node dies (G4). The container's fixed name (prefix `cicada-`
-  plus the handle name) and the look-first rule make every command harmless when repeated: no second container.
-- **Not yours, not touched.** A container with the handle's name but without its `cicada.uri` label fails the command
-  permanently.
-- **No restarts by the handle.** A container that exits stays exited, and one removed outside Cicada is reported
-  `missing`; neither comes back until the next `Apply` or `Start`. Restarting is Docker's job: set the spec's
-  `restart` policy (`no`, `on-failure`, `unless-stopped`, `always`).
-- **One Docker daemon.** Every node that hosts `ContainerActor` must reach the same daemon, since any of them may run
-  the next turn. Nodes that share a daemon but not a store need different prefixes (`ContainerActor::prefix`).
-- **Retry policies.** Send commands with a retry policy to ride out a daemon that is briefly unreachable.
-
-**Logs** never pass through the store. `container_logs()` streams them straight from Docker as `text/plain`:
-
-```sh
-curl -N "http://localhost:8080/api/containers/web/logs?tail=100&follow=true"   # also since=<RFC 3339>, timestamps=true
-```
-
-Only containers labelled with a handle's URI are served; any other name is `404`, and a Docker failure is `502`
-(`urn:cicada:problem:docker-unavailable`). Wrap the router in the same authentication as the API.
-
 ## Configuration
 
-Node settings are `NodeConfig` fields, set with the builder (`ActorSystem::builder(store).lease_ttl(…)`) or all at
-once with `.config(NodeConfig { … })`:
+Node settings are the fields of `NodeConfig`, passed to the builder:
+`ActorSystem::builder(store).config(NodeConfig { lease_ttl: Duration::from_secs(60), ..NodeConfig::default() })`.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
@@ -963,7 +832,7 @@ once with `.config(NodeConfig { … })`:
 | `lease_ttl` | 30 s | A turn's lease; a dead node's turn is re-claimed after it expires. |
 | `heartbeat_interval` | `lease_ttl / 3` | Lease renewal; must be in `(0, lease_ttl / 2]`. |
 | `poll_interval` | 500 ms | Longest sleep of the dispatch loop (wake-ups usually come sooner: own sends, PostgreSQL `NOTIFY`). |
-| `default_max_turn` | 15 min | Turn timeout (`failed("timeout")`) unless the type sets `MAX_TURN` or `ActorType::max_turn`. |
+| `default_max_turn` | 15 min | Turn timeout (`failed("timeout")`) unless the type sets `MAX_TURN`. |
 | `concurrency` | 16 | Turns running at once on this node. |
 | `shutdown_grace_period` | 30 s | Running turns may finish on stop; then they are cancelled and their leases released. |
 | `shutdown_cancel_timeout` | 5 s | How long a cancelled turn may take to end before it is left to its lease. |
@@ -973,9 +842,8 @@ Handlers run on the tokio runtime that called `start`; there is no separate hand
 [Blocking code](#define-an-actor-type)).
 
 Store settings: outcome **retention 7 days** (`SqliteOptions::retention`, `PostgresStoreConfig::retention`), also the
-dedup window. SQLite: `SqliteOptions { clock, retention, busy_timeout: 5 s, readers: 4 }`. PostgreSQL:
-`PostgresStoreConfig { schema: "public", max_pool_size: 20, min_idle: 1, connection_timeout: 10 s, socket_timeout:
-30 s, channel: "cicada_<schema>", listener_reconnect_delay: 250 ms, transaction_retries: 8 }` (deadlocks and
+dedup window. SQLite: `SqliteOptions { clock, retention, busy_timeout: 5 s }`. PostgreSQL:
+`PostgresStoreConfig { schema: "public", retention, max_pool_size: 20, socket_timeout: 30 s }` (deadlocks and
 serialization failures are re-run). [docs/operations.md](docs/operations.md) says how to size them.
 
 ## Examples
@@ -986,7 +854,7 @@ with `TestActors` on virtual time:
 | Module | Pattern |
 | --- | --- |
 | `singleton` | A stateless singleton (`actor://maintenance/cleanup`) whose turns never overlap. |
-| `timer` | A timer / timeout with a generation number; a stale timeout is ignored. |
+| `timer` | A timer / timeout: a delayed self-send, cancelled by its id. |
 | `cron` | A cron job; each tick does the work and arms the next one in the same commit. |
 | `reply` | Request and reply; the responder replies to `message().from` with the correlation id. |
 | `saga` | An orchestrator saga with compensation, and per-message retry set by the sender. |
@@ -1003,7 +871,7 @@ message enum with `#[serde(tag = "type")]`, a state struct, and an actor struct 
 ## Sample service
 
 `sample-service` is a runnable node (binary `cicada-sample-service`, Docker image from `sample-service/Dockerfile`) hosting
-the examples and the end-to-end actors, with the API, the console and the readiness check; see
+the examples and the end-to-end actors, with the API and the readiness check; see
 [sample-service/](sample-service/). It stops gracefully on SIGTERM and SIGINT. It is configured by environment variables:
 
 | Variable | Meaning | Default |
@@ -1012,7 +880,6 @@ the examples and the end-to-end actors, with the API, the console and the readin
 | `NODE_ID` | node id (lease owner, shown by `/health`) | random |
 | `HOSTED_TYPES` | `all`, `none`, or a comma-separated list of example groups | `all` |
 | `DATABASE_URL` | PostgreSQL, `postgres://user:pass@host:5432/db`; selects PostgreSQL | — |
-| `DATABASE_USER`, `DATABASE_PASSWORD` | credentials, when not in the URL | — |
 | `DATABASE_SCHEMA` | PostgreSQL schema of the store | `public` |
 | `DATABASE_POOL_SIZE` | PostgreSQL connection pool size | the store's default (20), or `CONCURRENCY` + 4 when larger |
 | `SQLITE_PATH` | SQLite file, used when `DATABASE_URL` is not set | `actors.db` |
@@ -1022,15 +889,13 @@ the examples and the end-to-end actors, with the API, the console and the readin
 | `FAILURE_WATCHER_INTERVAL` | poll interval of the dead-letter watcher (group `supervision`) | `10s` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | when set, traces and metrics go there over OTLP (`ActorTelemetry`); only HTTP/protobuf, so `OTEL_EXPORTER_OTLP_PROTOCOL` must be unset or `http/protobuf` | — |
 | `CRASH_LOOP_LIMIT` | when set, `CrashLoopGuard` fails a message after this many claims without a commit | — |
-| `CONTAINERS` | `true` to host [container handles](#container-handles) on the Docker daemon of `DOCKER_HOST` or the local socket, and serve `GET /containers/{name}/logs` | `false` |
 
 The root `docker-compose.yml` starts a PostgreSQL for development and tests
 (`postgres://cicada:cicada@localhost:55432/cicada`).
 
 ## Building and testing
 
-Requirements: Rust 1.94 or newer, Node.js 22+ with npm for the console (`cicada-ui` builds it in its build script),
-and, for the PostgreSQL tests, Docker.
+Requirements: Rust 1.94 or newer and, for the PostgreSQL tests, Docker.
 
 ```sh
 cargo build --workspace
@@ -1038,11 +903,9 @@ cargo test --workspace                     # unit, runtime, SQLite, HTTP and REA
 cargo clippy --workspace --all-targets
 docker compose up -d postgres              # PostgreSQL on port 55432
 CICADA_PG_URL=postgres://cicada:cicada@localhost:55432/cicada cargo test -p cicada-store-postgres
-CICADA_DOCKER=1 cargo test -p cicada-docker  # container handles against the local Docker daemon
 ```
 
-Tests that need PostgreSQL are skipped when `CICADA_PG_URL` is unset, and tests that need Docker when `CICADA_DOCKER`
-is not `1`. Every store backend runs the conformance suite
+Tests that need PostgreSQL are skipped when `CICADA_PG_URL` is unset. Every store backend runs the conformance suite
 of `cicada-store-conformance`.
 
 The crates are not published to crates.io (`publish = false`). Use them as git dependencies:
@@ -1065,14 +928,17 @@ Decisions, as ADRs in [docs/adr/](docs/adr/):
 | ADR | Decision |
 | --- | --- |
 | [0001](docs/adr/0001-port-keeps-the-contract.md) | Superseded by 0008. |
-| [0002](docs/adr/0002-crate-stack.md) | Crate stack: tokio, axum 0.8, sqlx 0.9 (one store per backend), serde, schemars, chrono, thiserror/anyhow, async-trait, reqwest, rust-embed, tracing and opentelemetry. |
+| [0002](docs/adr/0002-crate-stack.md) | Crate stack: tokio, axum 0.8, sqlx 0.9 (one store per backend), serde, schemars, chrono, thiserror/anyhow, async-trait, reqwest, tracing and opentelemetry. |
 | [0003](docs/adr/0003-actor-definition-api.md) | Actor definitions: a ref struct implementing `ActorRef`, a tagged serde enum, and the `Actor` trait with a required `UNHANDLED` and one `handle`; no proc macro. |
 | [0004](docs/adr/0004-shared-store-schema.md) | Superseded by 0008. |
-| [0005](docs/adr/0005-reuse-the-console.md) | A fixtures test checks the API against the console's zod schemas. |
-| [0006](docs/adr/0006-console-in-sensus-design.md) | The console uses the Sensus BPM Online design system. |
-| [0007](docs/adr/0007-container-handles.md) | Container handles: one actor per Docker container, commands that look first and are safe to repeat, status by polling, logs streamed from Docker outside the store. |
+| [0005](docs/adr/0005-reuse-the-console.md) | Superseded by 0011. |
+| [0006](docs/adr/0006-console-in-sensus-design.md) | Superseded by 0011. |
+| [0007](docs/adr/0007-container-handles.md) | Superseded by 0011. |
 | [0008](docs/adr/0008-rust-only.md) | Cicada for Rust stands alone: no contract with the Kotlin implementation. |
 | [0009](docs/adr/0009-one-baseline-schema.md) | The six early migrations are merged into one schema at version 1. |
+| [0010](docs/adr/0010-openspec-for-work-tracking.md) | Changes, designs and tasks live in `openspec/` (OpenSpec). |
+| [0011](docs/adr/0011-library-only.md) | A library only: the console (`cicada-ui`) and container handles (`cicada-docker`) are removed. |
+| [0012](docs/adr/0012-slimmer-api-and-wire-format.md) | A slimmer API and wire format: plugins observe, one way to configure and send, ISO-8601 durations only, twelve endpoints. |
 
 Design questions and their answers:
 
@@ -1091,8 +957,7 @@ Design notes:
 
 - **Definitions are checked by the compiler.** One `handle` with an exhaustive `match`, and a required
   `const UNHANDLED` (ADR 0003). Handlers return `Result<(), HandlerError>`: `HandlerError::permanent` / `turn.fail(..)`
-  refuse further retries, and a panic is caught and treated as a failure (`panic: …`). A custom unhandled policy is
-  `Actor::on_unhandled`, returning an `UnhandledDecision`. `Attributes` are keyed by type.
+  refuse further retries, and a panic is caught and treated as a failure (`panic: …`). `Attributes` are keyed by type.
 - **The host owns the node.** The host builds an `ActorSystem`, calls `start` and `stop` itself, merges `actor_api()`
   into its router, and owns the store. `actor_api()` takes the `ActorSystem` itself, so it cannot be mounted without a
   node.

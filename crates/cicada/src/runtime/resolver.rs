@@ -1,11 +1,11 @@
 //! Resolves addresses through the TypeRegistry and caches parsed contracts.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::address::ActorAddress;
 use crate::contract::Contract;
-use crate::store::{Store, StoreError, StoreResult, TypeDef};
+use crate::store::{Store, StoreError, StoreResult, TypeDef, support};
 use crate::turn::TurnError;
 
 /// A registered type with its parsed contract.
@@ -24,13 +24,10 @@ impl RegisteredType {
     }
 }
 
-/// The type an address resolves to, with the address's template parameters.
+/// The type an address resolves to.
 #[derive(Debug, Clone)]
-pub struct ResolvedActorType {
-    /// The type.
+pub(crate) struct ResolvedActorType {
     pub registered: RegisteredType,
-    /// The decoded parameters.
-    pub params: BTreeMap<String, String>,
 }
 
 /// Registered templates do not overlap, so the type an address resolves to is fixed once registered.
@@ -61,10 +58,8 @@ impl TypeResolver {
 
     /// The type the TypeRegistry resolves `address` to.
     pub async fn resolve(&self, address: &ActorAddress) -> StoreResult<Option<ResolvedActorType>> {
-        match self.store.resolve(address).await? {
-            Some(resolved) => {
-                Ok(Some(ResolvedActorType { registered: self.registered(resolved.type_def)?, params: resolved.params }))
-            }
+        match support::resolve(&self.store.list_types().await?, address)? {
+            Some(resolved) => Ok(Some(ResolvedActorType { registered: self.registered(resolved.type_def)? })),
             None => Ok(None),
         }
     }

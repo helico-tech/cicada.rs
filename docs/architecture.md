@@ -39,7 +39,7 @@ state plus a mailbox; it occupies memory only while one message is being handled
 | Lease | A node's exclusive, time-limited right to run a turn for one instance. |
 | Epoch | Per-instance counter, increased on every claim. The fencing token for commits. |
 | Outcome | The terminal result of a message: `done`, `failed`, `cancelled` or `purged`. |
-| Plugin | An optional extension that observes or alters a turn through four hooks. The core uses none. |
+| Plugin | An optional extension that observes a turn through three hooks and may refuse it at claim. It never changes what a turn commits, except that it may add headers to the turn's sends. The core uses none. |
 
 ## Guarantees
 
@@ -100,7 +100,7 @@ when a store opens a database.
 ### How the runtime maps to tokio
 
 Each claimed turn is a task with three children: *work* (load, `on_claim`, the handler under `tokio::time::timeout`,
-hooks, checks), *keeper* (heartbeat at a third of the TTL, plus a watchdog on the local lease deadline; it aborts
+checks), *keeper* (heartbeat at a third of the TTL, plus a watchdog on the local lease deadline; it aborts
 *work* when the lease is lost) and *overtime* (warns about handlers that do not yield). The turn task awaits *work* and
 then commits while the keeper keeps renewing. Cancellation is tokio's: an aborted future stops at its next `.await`, so
 a handler blocked in synchronous code keeps its turn until it returns. Blocking work belongs in `spawn_blocking`. A cancelled turn (node stop after the grace period,
@@ -131,7 +131,7 @@ impl Actor for SyncActor {
     type Ref = Sync;
     type State = SyncState;
     type Message = SyncMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;   // mandatory: Fail | Drop | Custom
+    const UNHANDLED: Unhandled = Unhandled::Fail;   // mandatory: Fail | Drop
 
     async fn handle(&self, turn: &mut Turn<Self>, msg: SyncMsg) -> HandlerResult {
         match msg {
@@ -152,19 +152,17 @@ impl Actor for SyncActor {
 | `cicada-store-conformance` | The S1–S10 suite every store runs |
 | `cicada-store-sqlite` | `SqliteStore` (sqlx): one file, WAL, one writer |
 | `cicada-store-postgres` | `PostgresStore` (sqlx): `FOR UPDATE SKIP LOCKED` claims, `LISTEN/NOTIFY` wake-ups |
-| `cicada-axum` | `actor_api()` (the fourteen endpoints) and `actor_health()` as axum routers |
+| `cicada-axum` | `actor_api()` (the twelve endpoints) and `actor_health()` as axum routers |
 | `cicada-client` | Typed HTTP client (reqwest) |
-| `cicada-ui` | The actor console (a React app in the Sensus BPM Online design system, ADR 0006), embedded and served by `actor_ui()` |
 | `cicada-otel` | OpenTelemetry plugin |
-| `cicada-extras` | Timer, schedules (interval, daily), crash-loop guard, failure watcher, dead letters |
-| `cicada-docker` | Container handles (ADR 0007): `ContainerActor` on the `Engine` seam (`DockerEngine`, bollard), `container_logs()` |
+| `cicada-extras` | Schedules (interval, daily), crash-loop guard, failure watcher, dead letters |
 | `examples` | Worked examples with tests |
 | `sample-service` | A runnable node (binary) with the examples, used by end-to-end tests |
 | `e2e` (`cicada-e2e`) | End-to-end and fault tests: sample nodes in Docker on PostgreSQL and SQLite, driven over HTTP (`CICADA_E2E=1`) |
 
 ## HTTP contract
 
-Fourteen endpoints; see the README. Errors are `application/problem+json` (RFC 9457) with `type` `urn:cicada:problem:<slug>`. The routes are an
+Twelve endpoints; see the README. Durations are ISO-8601 strings (`PT5S`); instants are ISO-8601 in UTC. Errors are `application/problem+json` (RFC 9457) with `type` `urn:cicada:problem:<slug>`. The routes are an
 axum `Router` that the host nests into its own router and wraps in its own authentication layers. The bodies are the
 types of `cicada::api`, used by both `cicada-axum` and `cicada-client`; request envelopes decode strictly (an unknown
 key is `400`), payloads and states leniently.

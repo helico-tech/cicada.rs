@@ -5,9 +5,9 @@
 use std::collections::BTreeMap;
 
 use chrono::{TimeDelta, Utc};
+use cicada::SendOptions;
 use cicada::api::{MessageState, problem_types};
 use cicada::store::MessageId;
-use cicada::{ActorAddress, SendOptions};
 use cicada_client::CancelOutcome;
 use cicada_e2e::cluster::{address, cluster, eventually, path, run_id, uri};
 use cicada_e2e::{Class, step};
@@ -23,7 +23,7 @@ pub fn class() -> Class {
         "ClusterApiTest",
         vec![
             step!(health_on_every_node),
-            step!(types_with_json_schemas_on_every_node_and_the_type_of_one_uri),
+            step!(types_with_json_schemas_on_every_node),
             step!(create_is_idempotent_get_returns_state_and_version),
             step!(list_by_prefix_with_paging),
             step!(send_through_a_hosting_node_and_through_the_send_only_node_pending_then_done),
@@ -55,7 +55,7 @@ async fn health_on_every_node() {
     }
 }
 
-async fn types_with_json_schemas_on_every_node_and_the_type_of_one_uri() {
+async fn types_with_json_schemas_on_every_node() {
     let c = cluster();
     let expected = [
         "actor://e2e/slow/{id}",
@@ -85,14 +85,6 @@ async fn types_with_json_schemas_on_every_node_and_the_type_of_one_uri() {
     }
     // Every node answers from the shared registry, also the send-only one that hosts nothing.
     assert!(hashes.windows(2).all(|w| w[0] == w[1]), "nodes disagree on the registry: {hashes:?}");
-
-    let matched = c.send_only.get("/types?uri=actor://e2e/slow/x-1").await;
-    assert_eq!(matched.status, 200, "{matched}");
-    assert_eq!(matched.text("/type/template").as_deref(), Some("actor://e2e/slow/{id}"));
-    assert_eq!(matched.text("/params/id").as_deref(), Some("x-1"));
-    let order = c.node2.client.type_of(&ActorAddress::parse("actor://orders/o-9").unwrap()).await.unwrap().unwrap();
-    assert_eq!(order.params.get("id"), Some("o-9"));
-    assert_eq!(c.node1.get("/types?uri=actor://no-such/thing").await.status, 404);
 }
 
 async fn create_is_idempotent_get_returns_state_and_version() {
@@ -110,7 +102,7 @@ async fn create_is_idempotent_get_returns_state_and_version() {
 
     let view = c.send_only.view(&counter).await;
     assert_eq!(view.template, "actor://e2e/counter/{id}");
-    assert_eq!(view.params.to_map(), BTreeMap::from([("id".to_owned(), id)]));
+    assert_eq!(view.params, BTreeMap::from([("id".to_owned(), id)]));
     assert_eq!(view.version, 0);
     let state: CounterState = c.send_only.state(&counter).await;
     assert_eq!(state.count, 0, "a repeated create leaves the state untouched");

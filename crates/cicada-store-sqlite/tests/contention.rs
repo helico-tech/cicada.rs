@@ -14,6 +14,7 @@ use cicada::store::{
     Claim, CommitRequest, CommitResult, EnqueueResult, MessageStatus, NodeId, OutgoingMessage, StateChange, Store,
     TurnOutcome,
 };
+use cicada_store_conformance::outcome_record;
 use cicada_test::VirtualClock;
 use common::{TempDb, open_with};
 use serde_json::json;
@@ -59,7 +60,7 @@ async fn assert_failed_commit_applies_nothing(store: &impl Store, claim: Claim) 
     };
     let error = store.commit(commit).await.expect_err("the injected fault fails the commit");
     assert!(error.is_unavailable(), "{error}");
-    assert!(store.outcome(&claim.message.id).await.unwrap().is_none(), "no outcome recorded");
+    assert!(outcome_record(store, &claim.message.id).await.is_none(), "no outcome recorded");
     let status = store.status(&claim.message.id).await.unwrap();
     assert!(matches!(status, Some(MessageStatus::Running { .. })), "the lease is still held: {status:?}");
     assert!(store.pending(&target, None, 100).await.unwrap().items.is_empty(), "no send applied");

@@ -1,4 +1,4 @@
-//! The Cicada HTTP API as axum routers: [`actor_api`] serves the fourteen endpoints of the actor HTTP API for a node's
+//! The Cicada HTTP API as axum routers: [`actor_api`] serves the twelve endpoints of the actor HTTP API for a node's
 //! [`ActorSystem`], [`actor_health`] a public readiness check.
 //!
 //! | Method and path | Success | Errors |
@@ -7,15 +7,13 @@
 //! | `GET /actors/{path}` | 200 | 404 |
 //! | `DELETE /actors/{path}` | 204 | 404 |
 //! | `GET /actors?prefix=&cursor=&limit=` | 200 | |
-//! | `POST /actors/{path}/messages` body `{id?, type, payload, deliverAt or delay, correlationId?, headers?, retry?, retention?}` | 202, 200 duplicate id | 400 invalid retry or retention policy, 404, 409 id taken, 422 type, payload or header |
+//! | `POST /actors/{path}/messages` body `{id?, type, payload, deliverAt or delay, correlationId?, headers?, retry?, retention?}` | 202, 200 duplicate id | 400 invalid retry or retention policy, 404, 409 id taken, 422 type or payload |
 //! | `GET /actors/{path}/messages?cursor=&limit=` | 200 | 404 |
 //! | `GET /messages?prefix=&cursor=&limit=` | 200 | |
 //! | `GET /messages/{id}` | 200 | 404 |
-//! | `GET /messages/{id}/chain` | 200 | 404 |
 //! | `DELETE /messages/{id}` | 204 | 404, 409 running or finished |
 //! | `GET /failures?prefix=&since=&cursor=&limit=` | 200 | |
 //! | `GET /types` | 200 | |
-//! | `GET /types?uri=` | 200 | 404 |
 //! | `GET /health` | 200 | 503 |
 //!
 //! Every endpoint also answers `400` for a malformed body, path or query parameter, `503` when the store is unavailable
@@ -88,13 +86,13 @@ pub(crate) struct Api {
     max_body: usize,
 }
 
-/// The fourteen endpoints of the actor HTTP API, served by `system`, with the default [`ApiConfig`]. See the crate
+/// The twelve endpoints of the actor HTTP API, served by `system`, with the default [`ApiConfig`]. See the crate
 /// documentation.
 pub fn actor_api(system: ActorSystem) -> Router {
     actor_api_with(system, ApiConfig::default())
 }
 
-/// The fourteen endpoints of the actor HTTP API, served by `system`, with `config`.
+/// The twelve endpoints of the actor HTTP API, served by `system`, with `config`.
 ///
 /// # Panics
 ///
@@ -110,7 +108,6 @@ pub fn actor_api_with(system: ActorSystem, config: ApiConfig) -> Router {
         )
         .route("/messages", get(handlers::list_pending))
         .route("/messages/{id}", get(handlers::message_status).delete(handlers::cancel_message))
-        .route("/messages/{id}/chain", get(handlers::message_chain))
         .route("/failures", get(handlers::failures))
         .route("/types", get(handlers::types))
         .route("/health", get(handlers::health))

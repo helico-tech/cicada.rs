@@ -90,20 +90,6 @@ async fn a_repeated_id_is_answered_as_a_duplicate_first_and_a_reused_id_for_anot
 }
 
 #[tokio::test(start_paused = true)]
-async fn reserved_cicada_headers_cannot_be_set_by_external_senders() {
-    let app = app().await;
-    put(&app, "/actors/counter/h", r#"{"state": {}}"#).await;
-    for name in ["cicada-trace", "Cicada-Anything"] {
-        let body = format!(r#"{{"type": "Add", "payload": {{"n": 1}}, "headers": {{"{name}": "99"}}}}"#);
-        assert_status(&post(&app, "/actors/counter/h/messages", &body).await, 422, pt::INVALID_HEADERS);
-    }
-    let ok =
-        post(&app, "/actors/counter/h/messages", r#"{"type": "Add", "payload": {"n": 1}, "headers": {"trace": "t"}}"#)
-            .await;
-    assert_eq!(ok.status, StatusCode::ACCEPTED);
-}
-
-#[tokio::test(start_paused = true)]
 async fn oversized_or_nul_containing_envelope_fields_are_refused_with_400() {
     let app = app().await;
     put(&app, "/actors/counter/n", r#"{"state": {}}"#).await;
@@ -141,6 +127,9 @@ async fn an_invalid_retry_policy_is_refused_with_400_valid_forms_are_accepted() 
         r#"{"maxAttempts": 3, "backoff": {"kind": "fixed", "delay": "PT1S", "jitter": 0.1}}"#,
         r#"{"maxAttempts": 3, "backoff": {"kind": "exponential", "initial": "PT1S", "max": "PT1M", "cap": "PT1H"}}"#,
         r#""three times""#,
+        // A duration is an ISO-8601 string: not the short form, not a number of milliseconds.
+        r#"{"maxAttempts": 3, "backoff": {"kind": "fixed", "delay": "5s"}}"#,
+        r#"{"maxAttempts": 3, "backoff": {"kind": "fixed", "delay": 1500}}"#,
     ] {
         let reply = post(
             &app,
@@ -151,8 +140,8 @@ async fn an_invalid_retry_policy_is_refused_with_400_valid_forms_are_accepted() 
         assert_status(&reply, 400, pt::BAD_REQUEST);
     }
     for retry in [
-        r#"{"maxAttempts": 3, "backoff": {"kind": "fixed", "delay": "5s"}}"#,
-        r#"{"maxAttempts": 3, "backoff": {"kind": "fixed", "delay": 1500}}"#,
+        r#"{"maxAttempts": 3, "backoff": {"kind": "fixed", "delay": "PT5S"}}"#,
+        r#"{"maxAttempts": 3, "backoff": {"kind": "fixed", "delay": "PT1.5S"}}"#,
         r#"{"maxAttempts": 100, "backoff": {"kind": "exponential", "initial": "PT1S", "max": "PT1M"}}"#,
         "null",
     ] {
@@ -178,6 +167,8 @@ async fn an_invalid_retention_policy_is_refused_with_400_valid_forms_are_accepte
         r#"{"failed": {"kind": "for", "age": "PT0S"}}"#,
         r#"{"failed": {"kind": "for", "age": "soon"}}"#,
         r#"{"failed": {"kind": "for"}}"#,
+        r#"{"failed": {"kind": "for", "age": 60000}}"#,
+        r#"{"failed": {"kind": "for", "age": "60s"}}"#,
         r#"{"cancelled": {"kind": "remove"}}"#,
         r#""remove""#,
     ] {
@@ -188,7 +179,7 @@ async fn an_invalid_retention_policy_is_refused_with_400_valid_forms_are_accepte
     for retention in [
         r#"{"done": {"kind": "remove"}}"#,
         r#"{"failed": {"kind": "for", "age": "P30D"}}"#,
-        r#"{"done": {"kind": "last", "count": 10}, "failed": {"kind": "for", "age": 60000}}"#,
+        r#"{"done": {"kind": "last", "count": 10}, "failed": {"kind": "for", "age": "PT1M"}}"#,
         "{}",
         "null",
     ] {
@@ -203,11 +194,20 @@ async fn an_invalid_retention_policy_is_refused_with_400_valid_forms_are_accepte
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_message_removed_on_success_answers_404_but_stays_a_duplicate_and_shows_as_removed_in_its_chain() {
+async fn a_message_removed_on_success_answers_404_but_stays_a_duplicate_and_the_cause_of_what_it_sent() {
     let app = app().await;
     for c in ["from", "to"] {
         put(&app, &format!("/actors/counter/{c}"), r#"{"state": {}}"#).await;
     }
+    // The receiver is busy, so the message sent to it stays in its mailbox.
+    let gate = unique();
+    let blocked = send_id(
+        &app,
+        "/actors/counter/to/messages",
+        &format!(r#"{{"type": "Block", "payload": {{"gate": "{gate}"}}}}"#),
+    )
+    .await;
+    eventually(async || get_json(&app, &format!("/messages/{blocked}")).await["status"] == "running").await;
     let id = unique();
     let sent = post(
         &app,
@@ -216,9 +216,17 @@ async fn a_message_removed_on_success_answers_404_but_stays_a_duplicate_and_show
     )
     .await;
     assert_eq!(sent.status, StatusCode::ACCEPTED);
-    eventually(async || get_json(&app, "/actors/counter/to").await["version"] == 1).await;
     eventually(async || get(&app, &format!("/messages/{id}")).await.status == StatusCode::NOT_FOUND).await;
     assert_status(&get(&app, &format!("/messages/{id}")).await, 404, pt::NO_SUCH_MESSAGE);
+    // The child message is kept (no policy) and still names the removed message as its cause.
+    let mailbox = get_json(&app, "/actors/counter/to/messages").await;
+    let sent: Vec<&Value> = items(&mailbox).iter().filter(|m| m["type"] == "Add").collect();
+    let [child] = sent.as_slice() else { panic!("one message from the removed one: {mailbox}") };
+    assert_eq!(child["causedBy"], id.as_str());
+    let child_id = child["id"].as_str().unwrap().to_owned();
+
+    gates::open(&gate);
+    eventually(async || get_json(&app, "/actors/counter/to").await["state"]["total"] == 1).await;
     let again = post(
         &app,
         "/actors/counter/from/messages",
@@ -228,18 +236,9 @@ async fn a_message_removed_on_success_answers_404_but_stays_a_duplicate_and_show
     assert_eq!(again.status, StatusCode::OK, "still a duplicate");
 
     assert_eq!(get_json(&app, "/actors/counter/to").await["state"]["total"], 1, "handled once");
-    // The child message is kept (no policy); its chain shows the removed cause.
-    let chain = get_json(&app, &format!("/messages/{id}/chain")).await;
-    let nodes = chain["nodes"].as_array().unwrap();
-    assert_eq!(nodes.len(), 2);
-    let root = nodes.iter().find(|n| n["id"] == id.as_str()).unwrap();
-    assert_eq!(root["removed"], true);
-    assert_eq!(root["status"], "done");
-    assert_eq!(root["type"], "Forward");
-    let child = nodes.iter().find(|n| n["id"] != id.as_str()).unwrap();
-    assert_eq!(child["removed"], false);
-    let child_id = child["id"].as_str().unwrap();
-    assert_eq!(get_json(&app, &format!("/messages/{child_id}")).await["message"]["causedBy"], id.as_str());
+    let child = get_json(&app, &format!("/messages/{child_id}")).await;
+    assert_eq!(child["status"], "done");
+    assert_eq!(child["message"]["causedBy"], id.as_str());
 }
 
 #[tokio::test(start_paused = true)]
@@ -256,13 +255,13 @@ async fn explicit_nulls_for_every_optional_send_field_are_accepted() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn an_invalid_backoff_duration_names_its_field() {
+async fn an_invalid_duration_in_a_backoff_or_as_the_delay_is_refused_with_400() {
     let app = app().await;
     put(&app, "/actors/counter/dur", r#"{"state": {}}"#).await;
-    for (field, retry) in [
-        ("initial", r#"{"maxAttempts": 3, "backoff": {"kind": "exponential", "initial": "soon", "max": "PT1M"}}"#),
-        ("max", r#"{"maxAttempts": 3, "backoff": {"kind": "exponential", "initial": "PT1S", "max": 1.5}}"#),
-        ("delay", r#"{"maxAttempts": 3, "backoff": {"kind": "fixed", "delay": {"s": 1}}}"#),
+    for retry in [
+        r#"{"maxAttempts": 3, "backoff": {"kind": "exponential", "initial": "soon", "max": "PT1M"}}"#,
+        r#"{"maxAttempts": 3, "backoff": {"kind": "exponential", "initial": "PT1S", "max": 1.5}}"#,
+        r#"{"maxAttempts": 3, "backoff": {"kind": "fixed", "delay": {"s": 1}}}"#,
     ] {
         let reply = post(
             &app,
@@ -271,14 +270,11 @@ async fn an_invalid_backoff_duration_names_its_field() {
         )
         .await;
         assert_status(&reply, 400, pt::BAD_REQUEST);
-        let detail = reply.json()["detail"].as_str().unwrap().to_owned();
-        assert!(detail.contains(&format!("backoff.{field}")), "{detail}");
     }
     let reply =
         post(&app, "/actors/counter/dur/messages", r#"{"type": "Add", "payload": {"n": 1}, "delay": "soon"}"#).await;
     assert_status(&reply, 400, pt::BAD_REQUEST);
-    let detail = reply.json()["detail"].as_str().unwrap().to_owned();
-    assert!(detail.contains("delay") && !detail.contains("backoff"), "{detail}");
+    assert!(items(&get_json(&app, "/actors/counter/dur/messages").await).is_empty());
 }
 
 #[tokio::test(start_paused = true)]

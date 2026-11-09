@@ -14,15 +14,15 @@ use tokio_util::task::TaskTracker;
 
 use super::executor::{HostedType, LeaseSettings, TurnExecutor};
 use super::limits;
-use super::resolver::{RegisteredType, ResolvedActorType, TypeResolver};
-use super::results::{ActorSnapshot, CreateActorResult, MessageChain, OpError, SendResult};
+use super::resolver::{RegisteredType, TypeResolver};
+use super::results::{ActorSnapshot, CreateActorResult, OpError, SendResult};
 use crate::actor::{Actor, ActorType, HostedActor};
 use crate::address::{ActorAddress, ActorRef, UriTemplate};
 use crate::message::{self, MessageFamily};
-use crate::plugin::{Plugin, reserved_headers};
+use crate::plugin::Plugin;
 use crate::store::{
-    CancelResult, ChainEntry, Claim, CreateResult, DeleteResult, EnqueueResult, Message, MessageId, MessageStatus,
-    NodeId, OutcomeRecord, OutgoingMessage, Page, PageCursor, RegisterResult, Store, StoreError,
+    CancelResult, Claim, CreateResult, DeleteResult, EnqueueResult, Message, MessageId, MessageStatus, NodeId,
+    OutcomeRecord, OutgoingMessage, Page, PageCursor, RegisterResult, Store, StoreError,
 };
 use crate::time::{self, MAX_INSTANT, Timestamp};
 use crate::turn::SendOptions;
@@ -79,7 +79,15 @@ impl fmt::Display for NodeState {
     }
 }
 
-/// Configuration of one node. Every value has a default; outcome retention is the store's.
+/// Configuration of one node, passed to [`ActorSystemBuilder::config`]. Every value has a default; outcome retention
+/// is the store's.
+///
+/// ```
+/// use std::time::Duration;
+/// use cicada::runtime::NodeConfig;
+///
+/// let config = NodeConfig { lease_ttl: Duration::from_secs(60), concurrency: 4, ..NodeConfig::default() };
+/// ```
 #[derive(Debug, Clone)]
 pub struct NodeConfig {
     /// This node's identity, recorded as lease owner. Random by default.
@@ -163,75 +171,15 @@ impl ActorSystemBuilder {
         self
     }
 
-    /// Installs `plugin` on this node, for every type it hosts.
+    /// Installs `plugin` on this node, for every type it hosts. Pass an `Arc` to share one plugin value.
     pub fn install(mut self, plugin: impl Plugin) -> Self {
         self.plugins.push(Arc::new(plugin));
         self
     }
 
-    /// Installs a shared plugin on this node.
-    pub fn install_shared(mut self, plugin: Arc<dyn Plugin>) -> Self {
-        self.plugins.push(plugin);
-        self
-    }
-
-    /// Replaces the whole configuration.
+    /// Sets the node's configuration.
     pub fn config(mut self, config: NodeConfig) -> Self {
         self.config = config;
-        self
-    }
-
-    /// Sets this node's identity.
-    pub fn node_id(mut self, id: NodeId) -> Self {
-        self.config.node_id = id;
-        self
-    }
-
-    /// Sets the lease TTL.
-    pub fn lease_ttl(mut self, ttl: Duration) -> Self {
-        self.config.lease_ttl = ttl;
-        self
-    }
-
-    /// Sets the heartbeat interval.
-    pub fn heartbeat_interval(mut self, interval: Duration) -> Self {
-        self.config.heartbeat_interval = Some(interval);
-        self
-    }
-
-    /// Sets the poll interval.
-    pub fn poll_interval(mut self, interval: Duration) -> Self {
-        self.config.poll_interval = interval;
-        self
-    }
-
-    /// Sets the default maximum turn duration.
-    pub fn default_max_turn(mut self, max_turn: Duration) -> Self {
-        self.config.default_max_turn = max_turn;
-        self
-    }
-
-    /// Sets the turn concurrency.
-    pub fn concurrency(mut self, concurrency: usize) -> Self {
-        self.config.concurrency = concurrency;
-        self
-    }
-
-    /// Sets the shutdown grace period.
-    pub fn shutdown_grace_period(mut self, grace: Duration) -> Self {
-        self.config.shutdown_grace_period = grace;
-        self
-    }
-
-    /// Sets the shutdown cancel timeout.
-    pub fn shutdown_cancel_timeout(mut self, timeout: Duration) -> Self {
-        self.config.shutdown_cancel_timeout = timeout;
-        self
-    }
-
-    /// Sets the sweep interval.
-    pub fn sweep_interval(mut self, interval: Duration) -> Self {
-        self.config.sweep_interval = interval;
         self
     }
 
@@ -396,18 +344,9 @@ impl ActorSystem {
                 problems.push(format!("{}: template {template} overlaps {other}: both match {common}", hosted.name()));
                 continue;
             }
-            // A type installation replaces the node installation of the same plugin.
-            let type_plugins = hosted.plugins();
-            let mut plugins: Vec<Arc<dyn Plugin>> = inner
-                .plugins
-                .iter()
-                .filter(|node| type_plugins.iter().all(|t| t.name() != node.name()))
-                .cloned()
-                .collect();
-            plugins.extend(type_plugins.iter().cloned());
             let max_turn = hosted.max_turn().unwrap_or(inner.config.default_max_turn);
             order.push(template.clone());
-            types.insert(template, HostedType { actor: hosted.clone(), plugins, max_turn });
+            types.insert(template, HostedType { actor: hosted.clone(), max_turn });
         }
         if !problems.is_empty() {
             return Err(StartError { problems });
@@ -435,6 +374,7 @@ impl ActorSystem {
             store: inner.store.clone(),
             resolver: inner.resolver.clone(),
             hosted: types,
+            plugins: inner.plugins.clone(),
             lease,
             wake: inner.wake.clone(),
         });
@@ -537,7 +477,7 @@ impl ActorSystem {
     }
 
     /// Wakes the dispatch loop so it claims now instead of after its sleep. Spurious calls are harmless.
-    pub fn wake_up(&self) {
+    fn wake_up(&self) {
         self.inner.wake.notify_one();
     }
 
@@ -733,7 +673,7 @@ impl ActorSystem {
     /// Sends a message (`POST /actors/{path}/messages`). Idempotent on the id within the retention window.
     ///
     /// Checks, in order: the id was not already accepted (then [`SendResult::Duplicate`] for the same target and type,
-    /// whatever else changed, and [`SendResult::IdConflict`] for a different message); no reserved header; a registered
+    /// whatever else changed, and [`SendResult::IdConflict`] for a different message); a registered
     /// type matches `to`; it accepts `message_type`; when this node hosts the type, `payload` decodes. Then the store
     /// enqueues it, refusing an absent instance. Fields beyond the send limits and delivery times out of range are
     /// [`OpError::Invalid`].
@@ -753,12 +693,6 @@ impl ActorSystem {
         // Idempotency first: a send repeating an accepted id gets the same answer even when it would be refused now.
         if let Some(existing) = self.existing_envelope(&id).await? {
             return Ok(duplicate_of(Some(existing), to, message_type));
-        }
-        if let Some(name) = options.headers.keys().find(|n| reserved_headers::is_reserved(n)) {
-            return Ok(SendResult::InvalidHeaders(format!(
-                "Header '{name}' uses the reserved prefix '{}'",
-                reserved_headers::PREFIX
-            )));
         }
         let Some(resolved) = self.inner.resolver.resolve(to).await? else {
             return Ok(SendResult::NoSuchInstance);
@@ -832,82 +766,15 @@ impl ActorSystem {
 
     /// The retained outcome of a message.
     pub async fn outcome(&self, id: &MessageId) -> Result<Option<OutcomeRecord>, OpError> {
-        Ok(self.inner.store.outcome(id).await?)
+        Ok(match self.inner.store.status(id).await? {
+            Some(MessageStatus::Finished(outcome)) => Some(outcome),
+            _ => None,
+        })
     }
 
     /// Admin cancel of a pending message (`DELETE /messages/{id}`).
     pub async fn cancel(&self, id: &MessageId) -> Result<CancelResult, OpError> {
         Ok(self.inner.store.cancel(id).await?)
-    }
-
-    /// The chain of message `id` (`GET /messages/{id}/chain`): the messages that led to it, following `caused_by`
-    /// upwards, and the messages it caused, directly or not, breadth first, both bounded. `None` when `id` is unknown
-    /// or past retention.
-    pub async fn chain(&self, id: &MessageId) -> Result<Option<MessageChain>, OpError> {
-        let store = &self.inner.store;
-        let Some(focus) = store.chain_entries(std::slice::from_ref(id)).await?.into_iter().next() else {
-            return Ok(None);
-        };
-        let focus_id = focus.id().clone();
-        let mut order: Vec<MessageId> = vec![focus_id.clone()];
-        let mut entries: HashMap<MessageId, ChainEntry> = HashMap::new();
-        let mut cause = focus.caused_by().cloned();
-        entries.insert(focus_id.clone(), focus);
-        let mut truncated = false;
-        // Up: what led to it, one cause at a time.
-        let mut steps = 0;
-        while let Some(parent_id) = cause.take() {
-            if entries.contains_key(&parent_id) {
-                break;
-            }
-            if steps == MessageChain::MAX_DEPTH {
-                truncated = true;
-                break;
-            }
-            let Some(parent) = store.chain_entries(std::slice::from_ref(&parent_id)).await?.into_iter().next() else {
-                break;
-            };
-            cause = parent.caused_by().cloned();
-            order.push(parent.id().clone());
-            entries.insert(parent.id().clone(), parent);
-            steps += 1;
-        }
-        // Down: what it caused, level by level.
-        let mut frontier = vec![focus_id.clone()];
-        let mut depth = 0;
-        let mut descendants = 0;
-        while !frontier.is_empty() {
-            let room = MessageChain::MAX_DESCENDANTS - descendants;
-            let children: Vec<ChainEntry> = store
-                .chain_children(&frontier, room + 1)
-                .await?
-                .into_iter()
-                .filter(|c| !entries.contains_key(c.id()))
-                .collect();
-            if children.is_empty() {
-                break;
-            }
-            if depth == MessageChain::MAX_DEPTH || room == 0 {
-                truncated = true;
-                break;
-            }
-            if children.len() > room {
-                truncated = true;
-            }
-            frontier = Vec::new();
-            for child in children.into_iter().take(room) {
-                if entries.contains_key(child.id()) {
-                    continue;
-                }
-                frontier.push(child.id().clone());
-                order.push(child.id().clone());
-                entries.insert(child.id().clone(), child);
-                descendants += 1;
-            }
-            depth += 1;
-        }
-        let entries = order.into_iter().filter_map(|id| entries.remove(&id)).collect();
-        Ok(Some(MessageChain { focus: focus_id, entries, truncated }))
     }
 
     /// Failed messages with envelope and error (`GET /failures?prefix=&since=`).
@@ -935,11 +802,6 @@ impl ActorSystem {
         let mut types = defs.into_iter().map(|d| self.inner.resolver.registered(d)).collect::<Result<Vec<_>, _>>()?;
         types.sort_by(|a, b| a.template().as_str().cmp(b.template().as_str()));
         Ok(types)
-    }
-
-    /// The type matching `address` (`GET /types?uri=`).
-    pub async fn type_of(&self, address: &ActorAddress) -> Result<Option<ResolvedActorType>, OpError> {
-        Ok(self.inner.resolver.resolve(address).await?)
     }
 
     /// True when the node is running (or usable) and the store is reachable (`GET /health`).

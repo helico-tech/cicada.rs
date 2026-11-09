@@ -74,7 +74,7 @@ impl TempDb {
 }
 
 pub async fn open_with(file: &Path, clock: Arc<dyn Clock>, busy_timeout: Duration) -> SqliteStore {
-    SqliteStore::open(file, SqliteOptions { clock, retention: DEFAULT_RETENTION, busy_timeout, readers: 4 })
+    SqliteStore::open(file, SqliteOptions { clock, retention: DEFAULT_RETENTION, busy_timeout })
         .await
         .expect("the store opens")
 }

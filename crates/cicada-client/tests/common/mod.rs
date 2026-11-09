@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use axum::Router;
 use cicada::prelude::*;
-use cicada::runtime::ActorSystemBuilder;
+use cicada::runtime::{ActorSystemBuilder, NodeConfig};
 use cicada_axum::actor_api;
 use cicada_client::ActorClient;
 use cicada_test::InMemoryStore;
@@ -136,7 +136,8 @@ pub async fn node() -> ActorSystem {
 
 pub async fn node_with(configure: impl FnOnce(ActorSystemBuilder) -> ActorSystemBuilder) -> ActorSystem {
     let store = Arc::new(InMemoryStore::default());
-    let system = configure(ActorSystem::builder(store).poll_interval(Duration::from_millis(50))).build();
+    let config = NodeConfig { poll_interval: Duration::from_millis(50), ..NodeConfig::default() };
+    let system = configure(ActorSystem::builder(store).config(config)).build();
     system.start().await.expect("the node starts");
     system
 }

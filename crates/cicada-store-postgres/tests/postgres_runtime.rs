@@ -8,8 +8,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use cicada::prelude::*;
+use cicada::runtime::NodeConfig;
 use cicada::store::{MessageStatus, NodeId, OutcomeStatus, Store};
 use cicada::{SendResult, UriTemplate, time};
+use cicada_store_conformance::outcome_record;
 use cicada_store_postgres::{PostgresStore, PostgresStoreConfig};
 use common::{TestDb, eventually};
 use serde::{Deserialize, Serialize};
@@ -137,11 +139,13 @@ impl Cluster {
     }
 
     fn node_on(&self, name: &str, poll: Duration, hosting: bool, store: Arc<PostgresStore>) -> ActorSystem {
-        let mut builder = ActorSystem::builder(store)
-            .node_id(NodeId::new(name).unwrap())
-            .lease_ttl(Duration::from_secs(2))
-            .poll_interval(poll)
-            .concurrency(4);
+        let mut builder = ActorSystem::builder(store).config(NodeConfig {
+            node_id: NodeId::new(name).unwrap(),
+            lease_ttl: Duration::from_secs(2),
+            poll_interval: poll,
+            concurrency: 4,
+            ..NodeConfig::default()
+        });
         if hosting {
             builder = builder.host(PlayerActor { overlaps: self.overlaps.clone() });
         }
@@ -207,8 +211,8 @@ async fn two_nodes_play_ping_pong_run_timers_and_recover_stopped_and_crashed_nod
     .await;
     assert_eq!(state(&*store, "ping").await.hits, 20);
     assert_eq!(state(&*store, "pong").await.hits, 20);
-    eventually(wait, "the delayed ping", || async { store.outcome(&delayed.id).await.unwrap().is_some() }).await;
-    let finished_at = store.outcome(&delayed.id).await.unwrap().unwrap().finished_at;
+    eventually(wait, "the delayed ping", || async { outcome_record(&*store, &delayed.id).await.is_some() }).await;
+    let finished_at = outcome_record(&*store, &delayed.id).await.unwrap().finished_at;
     assert!(finished_at >= time::add(sent_at, Duration::from_secs(1)).unwrap(), "delayed message handled early");
     assert_eq!(state(&*store, "ping").await.pings, 1);
 
@@ -222,8 +226,8 @@ async fn two_nodes_play_ping_pong_run_timers_and_recover_stopped_and_crashed_nod
     .await;
     first.stop_with_grace(Duration::from_millis(100)).await;
     third.start().await.unwrap();
-    eventually(wait, "the slow message finishes", || async { store.outcome(&slow.id).await.unwrap().is_some() }).await;
-    let outcome = store.outcome(&slow.id).await.unwrap().unwrap();
+    eventually(wait, "the slow message finishes", || async { outcome_record(&*store, &slow.id).await.is_some() }).await;
+    let outcome = outcome_record(&*store, &slow.id).await.unwrap();
     assert_eq!(outcome.status, OutcomeStatus::Done);
     assert_eq!(outcome.envelope.attempt, 2);
     assert_eq!(state(&*store, "pong").await.slow, 1);
@@ -243,8 +247,8 @@ async fn two_nodes_play_ping_pong_run_timers_and_recover_stopped_and_crashed_nod
     crashed.close().await;
     let fourth = cluster.node("fourth", POLL, true).await;
     fourth.start().await.unwrap();
-    eventually(wait, "the lost message finishes", || async { store.outcome(&lost.id).await.unwrap().is_some() }).await;
-    let outcome = store.outcome(&lost.id).await.unwrap().unwrap();
+    eventually(wait, "the lost message finishes", || async { outcome_record(&*store, &lost.id).await.is_some() }).await;
+    let outcome = outcome_record(&*store, &lost.id).await.unwrap();
     assert_eq!(outcome.envelope.attempt, 2);
     assert!(outcome.finished_at >= claim.lease_until, "re-run only after the lease expired");
     assert!(!cluster.overlapped(), "turns of one instance overlapped");
@@ -275,7 +279,7 @@ async fn turns_of_one_instance_stay_serial_under_load_from_several_nodes() {
     let store = nodes[0].store().clone();
     eventually(Duration::from_secs(30), "every ping finishes", || async {
         for id in &ids {
-            if store.outcome(id).await.unwrap().is_none() {
+            if outcome_record(&*store, id).await.is_none() {
                 return false;
             }
         }
@@ -283,7 +287,7 @@ async fn turns_of_one_instance_stay_serial_under_load_from_several_nodes() {
     })
     .await;
     for id in &ids {
-        assert_eq!(store.outcome(id).await.unwrap().unwrap().status, OutcomeStatus::Done);
+        assert_eq!(outcome_record(&*store, id).await.unwrap().status, OutcomeStatus::Done);
     }
     for name in &names {
         assert_eq!(state(&*store, name).await.pings, 30);
@@ -307,7 +311,7 @@ async fn listen_notify_wakes_a_node_long_before_its_poll_interval() {
     let mark = Instant::now();
     let now = accepted(sender.send(&player("far"), PlayerMsg::Ping).await.unwrap());
     eventually(Duration::from_secs(1), "the ping is handled", || async {
-        host_store.outcome(&now.id).await.unwrap().is_some()
+        outcome_record(&*host_store, &now.id).await.is_some()
     })
     .await;
     assert!(mark.elapsed() < Duration::from_secs(1));
@@ -321,7 +325,7 @@ async fn listen_notify_wakes_a_node_long_before_its_poll_interval() {
             .unwrap(),
     );
     eventually(Duration::from_secs(4), "the delayed ping is handled", || async {
-        host_store.outcome(&delayed.id).await.unwrap().is_some()
+        outcome_record(&*host_store, &delayed.id).await.is_some()
     })
     .await;
     assert!(delayed_mark.elapsed() >= Duration::from_millis(1500));

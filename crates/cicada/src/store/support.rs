@@ -1,11 +1,13 @@
-//! Rules shared by store implementations: template overlap, envelope JSON, retention of outcomes and cursors.
+//! Rules shared by store implementations: the type registry, claim arguments, envelope JSON, retention of outcomes,
+//! cursors and pages.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 
-use super::model::{Message, MessageId, OutcomeStatus, PageCursor, TypeDef};
-use super::results::ResolvedType;
+use super::model::{Message, MessageId, OutcomeStatus, Page, PageCursor, TypeDef};
+use super::results::{RegisterResult, ResolvedType};
 use super::{StoreError, StoreResult};
 use crate::address::{ActorAddress, UriTemplate};
 use crate::retention::{Keep, Retention};
@@ -31,6 +33,16 @@ pub fn hash_conflict_reason(template: &UriTemplate) -> String {
     format!("Template {template} is registered with a different contract")
 }
 
+/// The result of registering `def` while its template is already registered as `existing`: registered (as `existing`)
+/// for an equal contract hash, a conflict otherwise.
+pub fn register_again(existing: TypeDef, def: &TypeDef) -> RegisterResult {
+    if existing.contract_hash == def.contract_hash {
+        RegisterResult::Registered(existing)
+    } else {
+        RegisterResult::Conflict { reason: hash_conflict_reason(&def.template), existing }
+    }
+}
+
 /// The one type among `registered` whose template matches `address`, with the decoded parameters. Fails when several
 /// match: registration refuses overlaps, so only a registry written before that rule can hold them.
 pub fn resolve(registered: &[TypeDef], address: &ActorAddress) -> StoreResult<Option<ResolvedType>> {
@@ -47,6 +59,20 @@ pub fn resolve(registered: &[TypeDef], address: &ActorAddress) -> StoreResult<Op
         )));
     }
     Ok(first)
+}
+
+// ---- claims ----
+
+/// Checks the arguments of `claim_due`: `Ok(false)` when there is nothing to claim (no `types`, or a `limit` of 0),
+/// [`StoreError::Invalid`] for a zero `ttl`, `Ok(true)` otherwise.
+pub fn check_claim(types: &BTreeSet<UriTemplate>, ttl: Duration, limit: usize) -> StoreResult<bool> {
+    if limit == 0 || types.is_empty() {
+        return Ok(false);
+    }
+    if ttl.is_zero() {
+        return Err(StoreError::Invalid("ttl must be positive".into()));
+    }
+    Ok(true)
 }
 
 // ---- envelopes ----
@@ -217,6 +243,18 @@ pub fn check_limit(limit: usize) -> StoreResult<()> {
     Ok(())
 }
 
+/// The page of the first `limit` of `items`, which a store reads one beyond the page (at most `limit + 1`): when
+/// there are more than `limit`, the page continues after its last item, at `cursor` of that item.
+pub fn page_of<T>(mut items: Vec<T>, limit: usize, cursor: impl Fn(&T) -> PageCursor) -> Page<T> {
+    if items.len() > limit {
+        items.truncate(limit);
+        let next = items.last().map(cursor);
+        Page::new(items, next)
+    } else {
+        Page::new(items, None)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,7 +263,7 @@ mod tests {
         Message {
             id: MessageId::new("m1").unwrap(),
             to: ActorAddress::parse("actor://a/b").unwrap(),
-            from: None,
+            from: Some(ActorAddress::parse("actor://c/d").unwrap()),
             message_type: "Run".into(),
             payload: json!({"x": 1}),
             deliver_at: "2026-01-01T00:00:00.000001Z".parse().unwrap(),
@@ -269,6 +307,37 @@ mod tests {
         let s = stripped(&m);
         assert_eq!(s.payload, Value::Null);
         assert!(s.headers.is_empty() && s.correlation_id.is_none());
+    }
+
+    #[test]
+    fn registering_again_compares_the_contract_hash() {
+        let def = |hash: &str| TypeDef {
+            template: UriTemplate::parse("actor://a/{id}").unwrap(),
+            contract: json!({}),
+            contract_hash: hash.into(),
+        };
+        assert_eq!(register_again(def("h1"), &def("h1")), RegisterResult::Registered(def("h1")));
+        let conflict = register_again(def("h1"), &def("h2"));
+        assert!(matches!(conflict, RegisterResult::Conflict { existing, .. } if existing == def("h1")));
+    }
+
+    #[test]
+    fn claim_arguments() {
+        let types = BTreeSet::from([UriTemplate::parse("actor://a/{id}").unwrap()]);
+        let ttl = Duration::from_secs(1);
+        assert!(check_claim(&types, ttl, 1).unwrap());
+        assert!(!check_claim(&types, ttl, 0).unwrap());
+        assert!(!check_claim(&BTreeSet::new(), ttl, 1).unwrap());
+        assert!(!check_claim(&types, Duration::ZERO, 0).unwrap(), "nothing to claim comes first");
+        assert!(matches!(check_claim(&types, Duration::ZERO, 1), Err(StoreError::Invalid(_))));
+    }
+
+    #[test]
+    fn pages() {
+        let cursor = |n: &i32| PageCursor(n.to_string());
+        assert_eq!(page_of(vec![1, 2, 3], 2, cursor), Page::new(vec![1, 2], Some(PageCursor("2".into()))));
+        assert_eq!(page_of(vec![1, 2], 2, cursor), Page::new(vec![1, 2], None));
+        assert_eq!(page_of(Vec::<i32>::new(), 2, cursor), Page::new(vec![], None));
     }
 
     #[test]

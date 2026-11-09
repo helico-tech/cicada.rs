@@ -10,8 +10,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use cicada::prelude::*;
+use cicada::runtime::NodeConfig;
 use cicada::store::{MessageStatus, NodeId, OutcomeStatus, Store, SystemClock};
 use cicada::{SendResult, Turn};
+use cicada_store_conformance::outcome_record;
 use cicada_store_sqlite::{SqliteOptions, SqliteStore};
 use common::TempDb;
 use serde::{Deserialize, Serialize};
@@ -142,11 +144,14 @@ impl Cluster {
         let store = Arc::new(SqliteStore::open(&self.db.file, options).await.expect("the store opens"));
         self.stores.push(store.clone());
         let system = ActorSystem::builder(store)
-            .node_id(NodeId::new(name).unwrap())
             .host(PlayerActor { guard: self.guard.clone() })
-            .lease_ttl(Duration::from_secs(2))
-            .poll_interval(Duration::from_millis(50))
-            .concurrency(4)
+            .config(NodeConfig {
+                node_id: NodeId::new(name).unwrap(),
+                lease_ttl: Duration::from_secs(2),
+                poll_interval: Duration::from_millis(50),
+                concurrency: 4,
+                ..NodeConfig::default()
+            })
             .build();
         self.systems.push(system.clone());
         system
@@ -210,10 +215,10 @@ async fn two_nodes_on_one_sqlite_file_play_ping_pong_run_timers_and_recover_a_st
     let SendResult::Accepted(bad) = sent else { panic!("accepted, got {sent:?}") };
     eventually(|| {
         let (store, id) = (store.clone(), bad.id.clone());
-        async move { store.outcome(&id).await.unwrap().is_some() }
+        async move { outcome_record(&*store, &id).await.is_some() }
     })
     .await;
-    assert_eq!(store.outcome(&bad.id).await.unwrap().unwrap().status, OutcomeStatus::Failed);
+    assert_eq!(outcome_record(&*store, &bad.id).await.unwrap().status, OutcomeStatus::Failed);
 
     // Stop a node mid-turn: its lease is released and another node completes the message (attempt 2).
     second.stop_with_grace(Duration::ZERO).await;
@@ -229,10 +234,10 @@ async fn two_nodes_on_one_sqlite_file_play_ping_pong_run_timers_and_recover_a_st
     third.start().await.unwrap();
     eventually(|| {
         let (store, id) = (store.clone(), slow.id.clone());
-        async move { store.outcome(&id).await.unwrap().is_some() }
+        async move { outcome_record(&*store, &id).await.is_some() }
     })
     .await;
-    let outcome = store.outcome(&slow.id).await.unwrap().unwrap();
+    let outcome = outcome_record(&*store, &slow.id).await.unwrap();
     assert_eq!(outcome.status, OutcomeStatus::Done);
     assert_eq!(outcome.envelope.attempt, 2);
     assert_eq!(state(&store, "pong").await.slow, 1);

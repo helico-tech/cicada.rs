@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use cicada::address::{ActorAddress, ActorRef};
 use cicada::runtime::{ActorSystemBuilder, CreateActorResult, SendResult, StartError};
-use cicada::store::{Message, OutcomeRecord, PageCursor, Store};
+use cicada::store::{Message, MessageStatus, OutcomeRecord, PageCursor, Store};
 use cicada::time::{self, Timestamp};
 use cicada::{ActorSystem, SendOptions};
 use serde::Serialize;
@@ -28,7 +28,7 @@ pub struct TestActorsBuilder {
 }
 
 impl TestActorsBuilder {
-    /// Hosts and configures through the node builder: `.with(|node| node.host(SyncActor).lease_ttl(..))`.
+    /// Hosts and configures through the node builder: `.with(|node| node.host(SyncActor).config(..))`.
     pub fn with(mut self, configure: impl FnOnce(ActorSystemBuilder) -> ActorSystemBuilder + 'static) -> Self {
         self.configure.push(Box::new(configure));
         self
@@ -290,7 +290,10 @@ impl TestActors {
 
     /// The outcome of `message`, or `None` while it is pending.
     pub async fn outcome(&self, message: &Message) -> Option<OutcomeRecord> {
-        self.store.outcome(&message.id).await.expect("store failed")
+        match self.store.status(&message.id).await.expect("store failed") {
+            Some(MessageStatus::Finished(outcome)) => Some(outcome),
+            _ => None,
+        }
     }
 
     /// All retained failed outcomes, oldest first.

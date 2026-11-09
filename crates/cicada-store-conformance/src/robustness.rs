@@ -113,7 +113,7 @@ pub async fn time_store_time_stays_monotonic_when_the_underlying_clock_steps_bac
         assert!(c1.claimed_at >= t1);
         assert!(c1.lease_until >= plus(t1, t.ttl()));
         t.commit_ok(done(&c1)).await;
-        assert!(store.outcome(&first.id).await.unwrap().expect("an outcome").finished_at >= t1);
+        assert!(outcome_record(&*store, &first.id).await.expect("an outcome").finished_at >= t1);
         let c2 = t.claim_one().await;
         assert_eq!(c2.message.id, second.id);
         t.commit_ok(done(&c2)).await;
@@ -169,7 +169,7 @@ pub async fn s5_renew_and_commit_still_work_after_expiry_as_long_as_nobody_re_cl
         assert_matches!(store.status(&m.id).await.unwrap(), Some(MessageStatus::Running { .. }), "renewed again");
         t.expire_lease().await;
         t.commit_ok(done(&c)).await;
-        assert_eq!(store.outcome(&m.id).await.unwrap().map(|o| o.status), Some(OutcomeStatus::Done));
+        assert_eq!(outcome_record(&*store, &m.id).await.map(|o| o.status), Some(OutcomeStatus::Done));
     })
     .await
 }
@@ -203,7 +203,7 @@ pub async fn commit_repeating_a_commit_that_already_applied_changes_nothing<B: F
         assert_eq!(store.get(&a).await.unwrap().expect("the instance").version, 1);
         assert_eq!(ids(&t.pending(&b).await), vec![first.sent[0].id.clone()]);
         assert_eq!(ids(&t.pending(&child).await), vec![first.sent[1].id.clone()]);
-        assert_eq!(store.outcome(&m.id).await.unwrap().map(|o| o.status), Some(OutcomeStatus::Done));
+        assert_eq!(outcome_record(&*store, &m.id).await.map(|o| o.status), Some(OutcomeStatus::Done));
 
         // Repeated while the next turn holds the lease, and after a stop.
         let m2 = t.send(&a).await;
@@ -215,7 +215,7 @@ pub async fn commit_repeating_a_commit_that_already_applied_changes_nothing<B: F
         t.commit_ok(CommitRequest { state: StateChange::Stop, ..done(&c2) }).await;
         assert_eq!(t.commit(CommitRequest { state: StateChange::Stop, ..done(&c2) }).await, CommitResult::LeaseLost);
         assert_eq!(store.get(&a).await.unwrap(), None, "a repeated stop does not resurrect or touch the instance");
-        assert_eq!(store.outcome(&m2.id).await.unwrap().map(|o| o.status), Some(OutcomeStatus::Done));
+        assert_eq!(outcome_record(&*store, &m2.id).await.map(|o| o.status), Some(OutcomeStatus::Done));
     })
     .await
 }
@@ -376,7 +376,7 @@ pub async fn s7_cancel_racing_a_commit_that_sends_the_same_id_never_loses_the_me
             assert_matches!(&results[0], Raced::Commit(CommitResult::Committed { .. }), "round {round}");
             match &results[1] {
                 Raced::Cancel(CancelResult::Cancelled(_)) => {
-                    assert_eq!(store.outcome(&id).await.unwrap().map(|o| o.status), Some(OutcomeStatus::Cancelled))
+                    assert_eq!(outcome_record(&*store, &id).await.map(|o| o.status), Some(OutcomeStatus::Cancelled))
                 }
                 Raced::Cancel(CancelResult::NotFound) => {
                     assert_matches!(store.status(&id).await.unwrap(), Some(MessageStatus::Pending(_)))

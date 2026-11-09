@@ -81,7 +81,7 @@ async fn a_message_claimed_too_often_without_a_commit_ends_failed_without_runnin
     assert_eq!(outcome.status, OutcomeStatus::Failed);
     assert_eq!(
         outcome.error.as_deref(),
-        Some("onClaim of plugin CrashLoopGuard failed: crash loop: 3 claims without a commit")
+        Some("on_claim of plugin CrashLoopGuard failed: crash loop: 3 claims without a commit")
     );
     assert_eq!(test.state::<_, GuardedState>(&guarded()).await.runs, 0);
 }
@@ -110,23 +110,6 @@ async fn committed_retries_do_not_count() {
     assert_eq!(outcome.status, OutcomeStatus::Failed);
     assert_eq!(outcome.envelope.attempt, 4);
     assert!(outcome.error.as_deref().unwrap().contains("boom"), "{:?}", outcome.error);
-}
-
-#[tokio::test(start_paused = true)]
-async fn installed_on_a_type() {
-    let test = TestActors::builder()
-        .with(|node| node.host(ActorType::new(GuardedActor).install(CrashLoopGuard::new(1).unwrap())))
-        .build()
-        .await
-        .unwrap();
-    test.create(&guarded(), &GuardedState::default()).await;
-    let msg = test.send(&guarded(), GuardedMsg::Work).await;
-    crash(&test).await;
-    test.run_until_idle().await;
-    assert_eq!(
-        test.outcome(&msg).await.unwrap().error.as_deref(),
-        Some("onClaim of plugin CrashLoopGuard failed: crash loop: 1 claims without a commit")
-    );
 }
 
 #[test]

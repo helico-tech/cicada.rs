@@ -74,14 +74,19 @@ fn json_form_kind_discriminator_iso_durations_round_trip() {
     for policy in [&exp, &fix] {
         assert_eq!(&serde_json::from_value::<RetryPolicy>(policy.to_json()).unwrap(), policy);
     }
-    // The factor defaults to 2; durations also as short strings or milliseconds.
+    // The factor defaults to 2.
     assert_eq!(
         serde_json::from_value::<RetryPolicy>(
-            json!({"maxAttempts": 4, "backoff": {"kind": "exponential", "initial": 1000, "max": "1m"}})
+            json!({"maxAttempts": 4, "backoff": {"kind": "exponential", "initial": "PT1S", "max": "PT1M"}})
         )
         .unwrap(),
         exp
     );
+    // Durations are ISO-8601 strings only: not a short string, not a number of milliseconds.
+    for (initial, max) in [(json!(1000), json!("PT1M")), (json!("PT1S"), json!("1m"))] {
+        let backoff = json!({"kind": "exponential", "initial": initial, "max": max});
+        assert!(serde_json::from_value::<RetryPolicy>(json!({"maxAttempts": 4, "backoff": backoff})).is_err());
+    }
     assert!(
         serde_json::from_value::<RetryPolicy>(json!({"maxAttempts": 0, "backoff": {"kind": "fixed", "delay": "PT1S"}}))
             .is_err()

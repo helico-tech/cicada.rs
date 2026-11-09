@@ -41,8 +41,8 @@ use std::time::Duration;
 
 use cicada::address::percent;
 use cicada::api::{
-    ActorView, CreateActorRequest, CreateActorResponse, MessageChainView, MessageStatusView, MessageView, OutcomeView,
-    PageView, Problem, SendRequest, SendResponse, TypeListView, TypeMatchView, TypeView, problem_types,
+    ActorView, CreateActorRequest, CreateActorResponse, MessageStatusView, MessageView, OutcomeView, PageView, Problem,
+    SendRequest, SendResponse, TypeListView, TypeView, problem_types,
 };
 use cicada::store::MessageId;
 use cicada::time::{Timestamp, format_instant};
@@ -304,7 +304,7 @@ impl ActorClient {
     /// Sends a message given as type name and JSON payload (`POST /actors/{path}/messages`), for callers without the
     /// message types. Retried with the same id on transport errors and `503` (see the crate documentation); the
     /// policies of `options` are ignored when the id was already accepted. Errors: `404` when the instance does not
-    /// exist, `422` for an unknown type name, a reserved header or (on a node hosting the type) an undecodable payload,
+    /// exist, `422` for an unknown type name or (on a node hosting the type) an undecodable payload,
     /// `409` when the id was accepted for another message, `400` for an invalid envelope.
     pub async fn send_message(
         &self,
@@ -383,18 +383,6 @@ impl ActorClient {
         }
     }
 
-    /// The chain of message `id` (`GET /messages/{id}/chain`): the messages that led to it and the ones it caused, or
-    /// `None` when `id` is unknown or past retention.
-    pub async fn chain(&self, id: &MessageId) -> ClientResult<Option<MessageChainView>> {
-        let path = format!("{}/chain", message_path(id)?);
-        let answer = self.call(Method::GET, self.url(&path, &[])?, None).await?;
-        match answer.status {
-            StatusCode::OK => answer.decode().map(Some),
-            StatusCode::NOT_FOUND => answer.absent(problem_types::NO_SUCH_MESSAGE),
-            _ => Err(answer.failure()),
-        }
-    }
-
     /// Admin cancel of a pending message (`DELETE /messages/{id}`).
     pub async fn cancel(&self, id: &MessageId) -> ClientResult<CancelOutcome> {
         let answer = self.call(Method::DELETE, self.url(&message_path(id)?, &[])?, None).await?;
@@ -431,17 +419,6 @@ impl ActorClient {
     pub async fn types(&self) -> ClientResult<Vec<TypeView>> {
         let list: TypeListView = self.call(Method::GET, self.url("/types", &[])?, None).await?.ok()?;
         Ok(list.items)
-    }
-
-    /// The type `address` resolves to, with its template parameters (`GET /types?uri=`), or `None`.
-    pub async fn type_of(&self, address: &ActorAddress) -> ClientResult<Option<TypeMatchView>> {
-        let url = self.url("/types", &[("uri", address.as_str().to_owned())])?;
-        let answer = self.call(Method::GET, url, None).await?;
-        match answer.status {
-            StatusCode::OK => answer.decode().map(Some),
-            StatusCode::NOT_FOUND => answer.absent(problem_types::NO_SUCH_TYPE),
-            _ => Err(answer.failure()),
-        }
     }
 
     /// True when the node is up and its store reachable (`GET /health` answers `200`); false on `503`.

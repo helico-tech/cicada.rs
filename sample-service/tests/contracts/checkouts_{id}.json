@@ -17,7 +17,7 @@
     },
     "Extend": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "Gives the customer `seconds` more: re-arms the timer, which makes the pending timeout stale.",
+      "description": "Gives the customer `seconds` more: cancels the pending timeout and sends a later one.",
       "properties": {
         "seconds": {
           "description": "Seconds added to the deadline.",
@@ -50,18 +50,8 @@
     },
     "PaymentTimeout": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "The timer: sent by the checkout to itself, valid only while `generation` is the current one.",
-      "properties": {
-        "generation": {
-          "description": "The timer generation it was armed with.",
-          "format": "uint32",
-          "minimum": 0,
-          "type": "integer"
-        }
-      },
-      "required": [
-        "generation"
-      ],
+      "description": "The timer: sent by the checkout to itself.",
+      "properties": {},
       "title": "PaymentTimeout",
       "type": "object"
     }
@@ -92,32 +82,19 @@
             "type": "string"
           }
         ]
-      },
-      "Timer": {
-        "description": "A timer kept in an actor's state: a delayed self-send that can be re-armed and cancelled.\n\nA timer is cancelled by making its message stale: every [`Self::arm`] and [`Self::disarm`] increments the\ngeneration, and the timeout message carries the generation it was armed with. Only a timeout for which\n[`Self::is_current`] is true counts; any other is a leftover and is ignored. State and the self-send commit\natomically, so the timer in state and the pending timeouts never disagree. (A handler may also cancel the pending\ntimeout with `turn.cancel(id)`; the generation check still guards against one that was already claimed.)\n\nThe timer does not send: the handler does, in the same turn.\n\n```\n# use std::time::Duration;\n# use cicada::prelude::*;\n# use cicada_extras::Timer;\n# use serde::{Deserialize, Serialize};\n# #[derive(Debug, Clone, Serialize, Deserialize)]\n# struct Checkout { id: String }\n# impl ActorRef for Checkout { const TEMPLATE: &'static str = \"actor://checkout/{id}\"; type Message = CheckoutMsg; }\n#[derive(Debug, Serialize, Deserialize, JsonSchema)]\n#[serde(tag = \"type\")]\nenum CheckoutMsg {\n    Begin,\n    Pay,\n    PaymentTimeout { generation: u32 },\n}\n\n#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]\nstruct CheckoutState {\n    timer: Timer,\n    expired: bool,\n}\n\nstruct CheckoutActor;\n\nimpl Actor for CheckoutActor {\n    type Ref = Checkout;\n    type State = CheckoutState;\n    type Message = CheckoutMsg;\n    const UNHANDLED: Unhandled = Unhandled::Fail;\n\n    async fn handle(&self, turn: &mut Turn<Self>, msg: CheckoutMsg) -> HandlerResult {\n        match msg {\n            CheckoutMsg::Begin => {\n                let deadline = turn.now() + Duration::from_secs(15 * 60);\n                let generation = turn.state_mut().timer.arm(deadline);\n                turn.send_self_with(CheckoutMsg::PaymentTimeout { generation }, SendOptions::new().at(deadline))?;\n            }\n            CheckoutMsg::Pay => turn.state_mut().timer.disarm(),\n            CheckoutMsg::PaymentTimeout { generation } => {\n                if !turn.state().timer.is_current(generation) {\n                    return Ok(()); // stale: re-armed or disarmed since\n                }\n                let state = turn.state_mut();\n                state.timer.disarm();\n                state.expired = true;\n            }\n        }\n        Ok(())\n    }\n}\n```",
-        "properties": {
-          "deadline": {
-            "description": "When the armed timeout is due; null while disarmed.",
-            "format": "date-time",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "generation": {
-            "default": 0,
-            "description": "Incremented on every arm and disarm.",
-            "format": "uint32",
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
-        "type": "object"
       }
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "description": "State of a [`Checkout`].",
     "properties": {
+      "deadline": {
+        "description": "When the checkout expires; null while no timer runs.",
+        "format": "date-time",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "paidCents": {
         "description": "The amount paid.",
         "format": "int64",
@@ -126,23 +103,18 @@
           "null"
         ]
       },
-      "staleTimeouts": {
-        "default": 0,
-        "description": "How many timeouts were ignored as stale (for illustration).",
-        "format": "int32",
-        "type": "integer"
-      },
       "status": {
         "$ref": "#/$defs/CheckoutStatus",
         "default": "OPEN",
         "description": "Where the checkout is."
       },
-      "timer": {
-        "$ref": "#/$defs/Timer",
-        "default": {
-          "generation": 0
-        },
-        "description": "The payment timeout; only a `PaymentTimeout` carrying its current generation counts."
+      "timeout": {
+        "description": "The id of the pending `PaymentTimeout`, so it can be cancelled; null while no timer runs.",
+        "minLength": 1,
+        "type": [
+          "string",
+          "null"
+        ]
       }
     },
     "title": "CheckoutState",

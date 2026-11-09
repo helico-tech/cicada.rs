@@ -5,7 +5,6 @@ use cicada::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use super::order::{Order, OrderMsg};
-use super::traced;
 
 /// The payment service, a stateless singleton and saga participant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,7 +114,7 @@ impl<G: PaymentGateway> Actor for PaymentsActor<G> {
                     ChargeResult::Approved { transaction_id } => OrderMsg::Charged { transaction_id },
                     ChargeResult::Declined { reason } => OrderMsg::ChargeDeclined { reason },
                 };
-                turn.send_with(&reply_to, reply, traced(turn))?;
+                turn.send(&reply_to, reply)?;
             }
         }
         Ok(())

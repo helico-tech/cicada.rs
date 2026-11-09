@@ -10,11 +10,11 @@ use std::time::Duration;
 use async_trait::async_trait;
 use cicada::address::{ActorAddress, UriTemplate};
 use cicada::prelude::*;
-use cicada::runtime::{ActorSystemBuilder, SendResult};
+use cicada::runtime::{ActorSystemBuilder, NodeConfig, SendResult};
 use cicada::store::{
-    CancelResult, ChainEntry, Claim, CommitRequest, CommitResult, CreateResult, DeleteResult, EnqueueResult, Message,
-    MessageId, MessageStatus, NodeId, OutcomeRecord, OutgoingMessage, Page, PageCursor, RegisterResult, RenewResult,
-    ResolvedType, Store, StoreResult, TurnOutcome, TypeDef,
+    CancelResult, Claim, CommitRequest, CommitResult, CreateResult, DeleteResult, EnqueueResult, Message, MessageId,
+    MessageStatus, NodeId, OutcomeRecord, OutgoingMessage, Page, PageCursor, RegisterResult, RenewResult, Store,
+    StoreResult, TurnOutcome, TypeDef,
 };
 use cicada::time::{self, Timestamp};
 use cicada::turn::{HandlerFailure, TurnError};
@@ -186,10 +186,14 @@ where
     Ok(())
 }
 
-/// Defines a counter type with the shared handler, a maximum turn of one minute and the given unhandled policy.
+/// Defines a counter type with the shared handler, the given unhandled policy and a maximum turn of one minute (or
+/// the one given).
 #[macro_export]
 macro_rules! counter_type {
     ($name:ident, $policy:expr) => {
+        $crate::counter_type!($name, $policy, ::std::time::Duration::from_secs(60));
+    };
+    ($name:ident, $policy:expr, $max_turn:expr) => {
         /// A counter type with the shared handler.
         pub struct $name;
 
@@ -198,7 +202,7 @@ macro_rules! counter_type {
             type State = $crate::common::CounterState;
             type Message = $crate::common::CounterMsg;
             const UNHANDLED: ::cicada::Unhandled = $policy;
-            const MAX_TURN: Option<::std::time::Duration> = Some(::std::time::Duration::from_secs(60));
+            const MAX_TURN: Option<::std::time::Duration> = Some($max_turn);
 
             async fn handle(
                 &self,
@@ -265,9 +269,22 @@ pub fn virtual_store_at(start: Timestamp) -> Arc<InMemoryStore> {
     Arc::new(InMemoryStore::new(Arc::new(TokioClock::new(start)), time::DEFAULT_RETENTION))
 }
 
+/// The configuration of a node named `name` with a lease TTL of 30 s.
+pub fn node_config(name: &str) -> NodeConfig {
+    NodeConfig { node_id: NodeId::new(name).unwrap(), lease_ttl: Duration::from_secs(30), ..NodeConfig::default() }
+}
+
 /// A node on `store` named `name` with a lease TTL of 30 s.
 pub fn node(store: Arc<dyn Store>, name: &str) -> ActorSystemBuilder {
-    ActorSystem::builder(store).node_id(NodeId::new(name).unwrap()).lease_ttl(Duration::from_secs(30))
+    ActorSystem::builder(store).config(node_config(name))
+}
+
+/// The retained outcome of message `id`; `None` while it is pending or running, or when it is unknown.
+pub async fn outcome_of(store: &dyn Store, id: &MessageId) -> Option<OutcomeRecord> {
+    match store.status(id).await.unwrap() {
+        Some(MessageStatus::Finished(outcome)) => Some(outcome),
+        _ => None,
+    }
 }
 
 /// The template of the ref type `R`.
@@ -381,8 +398,8 @@ pub fn failure_kind(failure: &HandlerFailure) -> &'static str {
 /// The operations a test can intercept; each default delegates to the real store.
 #[async_trait]
 pub trait Faults: Send + Sync + 'static {
-    async fn resolve(&self, inner: &dyn Store, address: &ActorAddress) -> StoreResult<Option<ResolvedType>> {
-        inner.resolve(address).await
+    async fn list_types(&self, inner: &dyn Store) -> StoreResult<Vec<TypeDef>> {
+        inner.list_types().await
     }
 
     async fn claim_due(
@@ -433,10 +450,6 @@ impl<F: Faults> Faulty<F> {
 
 #[async_trait]
 impl<F: Faults> Store for Faulty<F> {
-    fn retention(&self) -> Duration {
-        self.inner.retention()
-    }
-
     async fn now(&self) -> StoreResult<Timestamp> {
         self.inner.now().await
     }
@@ -445,16 +458,8 @@ impl<F: Faults> Store for Faulty<F> {
         self.inner.register(def).await
     }
 
-    async fn type_def(&self, template: &UriTemplate) -> StoreResult<Option<TypeDef>> {
-        self.inner.type_def(template).await
-    }
-
     async fn list_types(&self) -> StoreResult<Vec<TypeDef>> {
-        self.inner.list_types().await
-    }
-
-    async fn resolve(&self, address: &ActorAddress) -> StoreResult<Option<ResolvedType>> {
-        self.faults.resolve(&*self.inner, address).await
+        self.faults.list_types(&*self.inner).await
     }
 
     async fn create(
@@ -526,10 +531,6 @@ impl<F: Faults> Store for Faulty<F> {
         self.inner.cancel(id).await
     }
 
-    async fn outcome(&self, id: &MessageId) -> StoreResult<Option<OutcomeRecord>> {
-        self.inner.outcome(id).await
-    }
-
     async fn status(&self, id: &MessageId) -> StoreResult<Option<MessageStatus>> {
         self.inner.status(id).await
     }
@@ -542,14 +543,6 @@ impl<F: Faults> Store for Faulty<F> {
         limit: usize,
     ) -> StoreResult<Page<OutcomeRecord>> {
         self.inner.failures(prefix, since, cursor, limit).await
-    }
-
-    async fn chain_entries(&self, ids: &[MessageId]) -> StoreResult<Vec<ChainEntry>> {
-        self.inner.chain_entries(ids).await
-    }
-
-    async fn chain_children(&self, parents: &[MessageId], limit: usize) -> StoreResult<Vec<ChainEntry>> {
-        self.inner.chain_children(parents, limit).await
     }
 
     async fn sweep_expired(&self) -> StoreResult<u64> {

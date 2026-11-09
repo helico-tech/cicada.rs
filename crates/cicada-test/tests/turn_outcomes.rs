@@ -8,7 +8,7 @@ use cicada::runtime::SendResult;
 use cicada::store::{MessageStatus, OutcomeStatus, OutgoingMessage, Store};
 use cicada::time;
 use cicada::turn::SendOptions;
-use cicada::{ActorRef, ActorType};
+use cicada::{ActorRef, Unhandled};
 use cicada_test::TestActors;
 use common::*;
 use serde_json::json;
@@ -87,13 +87,12 @@ async fn commit_rejected_by_a_send_to_an_absent_instance_failed_with_reason_no_e
     assert!(!test.exists(&Counter::new("ghost")).await);
 }
 
+// The counter type with a maximum turn of 30 seconds.
+counter_type!(HalfMinuteCounter, Unhandled::Fail, Duration::from_secs(30));
+
 #[tokio::test(start_paused = true)]
 async fn turn_exceeding_max_turn_failed_timeout_no_effects_handler_not_re_run() {
-    let test = TestActors::builder()
-        .with(|n| n.host(ActorType::new(CounterActor).max_turn(Duration::from_secs(30))))
-        .build()
-        .await
-        .unwrap();
+    let test = TestActors::builder().with(|n| n.host(HalfMinuteCounter)).build().await.unwrap();
     test.create(&a(), &CounterState::default()).await;
     let m = test.send(&a(), CounterMsg::Sleep { millis: 5 * 60 * 1000 }).await;
     let start = test.now();
@@ -216,6 +215,21 @@ async fn raw_send_of_a_known_type_is_buffered_and_delivered() {
     test.send(&a(), CounterMsg::Forward { to: "actor://counter/b".into(), n: 4 }).await;
     test.run_until_idle().await;
     assert_eq!(test.state::<_, CounterState>(&Counter::new("b")).await.total, 4);
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_sends_of_a_turn_carry_the_turns_message_as_their_cause() {
+    let test = harness().await;
+    test.create(&a(), &CounterState::default()).await;
+    let burst = test.send(&a(), CounterMsg::Burst { count: 2 }).await;
+    assert!(burst.caused_by.is_none(), "a send from outside an actor has no cause");
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1);
+    let sent = test.pending(&a()).await;
+    assert_eq!(sent.len(), 2);
+    assert!(sent.iter().all(|m| m.caused_by.as_ref() == Some(&burst.id)), "{sent:?}");
+    test.run_until_idle().await;
+    let record = test.outcome(&sent[0]).await.unwrap();
+    assert_eq!(record.envelope.caused_by, Some(burst.id), "kept with the outcome");
 }
 
 #[tokio::test(start_paused = true)]

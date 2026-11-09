@@ -8,8 +8,8 @@ use axum::extract::{Path, Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use cicada::api::{
-    ActorView, CreateActorRequest, CreateActorResponse, HealthView, MessageChainView, MessageStatusView, MessageView,
-    OutcomeView, PageView, SendRequest, SendResponse, TypeListView, TypeMatchView, TypeView, problem_types,
+    ActorView, CreateActorRequest, CreateActorResponse, HealthView, MessageStatusView, MessageView, OutcomeView,
+    PageView, SendRequest, SendResponse, TypeListView, TypeView, problem_types,
 };
 use cicada::store::{CancelResult, DeleteResult, MessageId};
 use cicada::{ActorAddress, CreateActorResult, SendOptions, SendResult};
@@ -167,9 +167,6 @@ async fn send(api: &Api, address: ActorAddress, req: Request) -> Outcome {
             format!("Message id {id} was already accepted for a {} message to {}", existing.message_type, existing.to),
         )
         .into()),
-        SendResult::InvalidHeaders(e) => {
-            Err(unprocessable(problem_types::INVALID_HEADERS, "Invalid headers", e).into())
-        }
         SendResult::NoSuchInstance => Err(no_such_instance(&address).into()),
         SendResult::UnknownType { message_type, template } => Err(unprocessable(
             problem_types::UNKNOWN_MESSAGE_TYPE,
@@ -231,16 +228,6 @@ pub(crate) async fn message_status(State(api): Shared, Path(id): Path<String>, r
     .await
 }
 
-pub(crate) async fn message_chain(State(api): Shared, Path(id): Path<String>, req: Request) -> Response {
-    let instance = request::instance(&req);
-    run(instance, async move {
-        let id = request::message_id(&id)?;
-        let chain = api.system.chain(&id).await?.ok_or_else(|| no_such_message(&id))?;
-        Ok(json(StatusCode::OK, &MessageChainView::from(chain)))
-    })
-    .await
-}
-
 pub(crate) async fn cancel_message(State(api): Shared, Path(id): Path<String>, req: Request) -> Response {
     let instance = request::instance(&req);
     run(instance, async move {
@@ -272,15 +259,8 @@ pub(crate) async fn cancel_message(State(api): Shared, Path(id): Path<String>, r
 pub(crate) async fn types(State(api): Shared, req: Request) -> Response {
     let instance = request::instance(&req);
     run(instance, async move {
-        let params = Params::of(req.uri())?;
-        let Some(uri) = params.get("uri") else {
-            let items = api.system.types().await?.iter().map(TypeView::from).collect();
-            return Ok(json(StatusCode::OK, &TypeListView { items }));
-        };
-        let address = ActorAddress::parse(uri)
-            .map_err(|_| ApiProblem::bad_request(format!("uri must be an actor URI: '{uri}'")))?;
-        let resolved = api.system.type_of(&address).await?.ok_or_else(|| no_such_type(&address))?;
-        Ok(json(StatusCode::OK, &TypeMatchView::from(&resolved)))
+        let items = api.system.types().await?.iter().map(TypeView::from).collect();
+        Ok(json(StatusCode::OK, &TypeListView { items }))
     })
     .await
 }

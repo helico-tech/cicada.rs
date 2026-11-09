@@ -12,6 +12,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post as post_route;
 use cicada::api::problem_types as pt;
+use cicada::runtime::NodeConfig;
 use cicada::store::NodeId;
 use cicada::{ActorSystem, SendResult};
 use cicada_axum::{PROBLEM_JSON, actor_api, actor_health};
@@ -43,7 +44,8 @@ async fn get_with(app: &Router, uri: &str, authorization: &str) -> Reply {
 
 #[tokio::test(start_paused = true)]
 async fn the_system_is_the_in_process_sdk_next_to_the_api() {
-    let system = node_with(memory_store(), |b| b.host(CounterActor).node_id(NodeId::new("node-x").unwrap())).await;
+    let config = NodeConfig { node_id: NodeId::new("node-x").unwrap(), ..polling(Duration::from_millis(50)) };
+    let system = node_with(memory_store(), |b| b.host(CounterActor).config(config)).await;
     async fn bump(State(system): State<ActorSystem>, Path(id): Path<String>) -> Response {
         // Service code sends without the HTTP hop.
         match system.send(&Counter { id }, CounterMsg::Add { n: 10 }).await {
@@ -149,7 +151,7 @@ async fn actor_health_serves_readiness_outside_authentication_and_503_while_the_
 async fn a_node_handles_messages_over_http_including_delayed_ones_and_a_later_node_continues() {
     let store = memory_store();
     let total = async |app: &Router| get_json(app, "/actors/counter/a").await["state"]["total"].clone();
-    let first = node_with(store.clone(), |b| b.host(CounterActor).poll_interval(Duration::from_millis(100))).await;
+    let first = node_with(store.clone(), |b| b.host(CounterActor).config(polling(Duration::from_millis(100)))).await;
     let app = actor_api(first.clone());
     assert_eq!(put(&app, "/actors/counter/a", r#"{"state": {}}"#).await.status, StatusCode::CREATED);
     for n in 1..=5 {
@@ -172,7 +174,7 @@ async fn a_node_handles_messages_over_http_including_delayed_ones_and_a_later_no
     post(&app, "/actors/counter/a/messages", r#"{"type": "Add", "payload": {"n": 1000}, "delay": "PT1.5S"}"#).await;
     first.stop().await;
 
-    let second = node_with(store, |b| b.host(CounterActor).poll_interval(Duration::from_millis(100))).await;
+    let second = node_with(store, |b| b.host(CounterActor).config(polling(Duration::from_millis(100)))).await;
     let app = actor_api(second);
     assert_eq!(items(&get_json(&app, "/actors/counter/a/messages").await).len(), 1);
     eventually(async || total(&app).await == 1115).await;

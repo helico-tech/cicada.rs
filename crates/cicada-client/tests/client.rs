@@ -60,7 +60,9 @@ async fn typed_create_send_state_and_status() {
 
     let view = actors.get(&acme()).await.unwrap().unwrap();
     assert_eq!(view.template, "actor://account/{tenant}/{id}");
-    assert_eq!(view.params.iter().collect::<Vec<_>>(), vec![("tenant", "acme"), ("id", "7")]);
+    // Alphabetical, not in template order.
+    let params: Vec<(&str, &str)> = view.params.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    assert_eq!(params, [("id", "7"), ("tenant", "acme")]);
     assert_eq!(view.version, 1);
 
     assert!(actors.get(&account("acme", 8)).await.unwrap().is_none());
@@ -68,22 +70,26 @@ async fn typed_create_send_state_and_status() {
 }
 
 #[tokio::test]
-async fn chain_of_a_message_and_the_cause_in_its_envelope() {
+async fn the_cause_of_a_message_is_in_its_envelope() {
     let (actors, _, _) = client_test(|r| r).await;
     actors.create(&acme(), &AccountState::default()).await.unwrap();
     actors.create(&account("acme", 8), &AccountState::default()).await.unwrap();
+    // The receiver is busy, so the deposit stays in its mailbox.
+    let gate = MessageId::random().to_string();
+    let held = actors.send(&account("acme", 8), AccountMsg::Hold { gate: gate.clone() }).await.unwrap();
+    eventually(async || actors.status(&held.id).await.unwrap().unwrap().status == MessageState::Running).await;
     let receipt = actors.send(&acme(), AccountMsg::Transfer { to: 8, amount: 3 }).await.unwrap();
-    eventually(async || balance(&actors, &account("acme", 8)).await == Some(3)).await;
+    eventually(async || actors.status(&receipt.id).await.unwrap().map(|s| s.status) == Some(MessageState::Done)).await;
 
-    let chain = actors.chain(&receipt.id).await.unwrap().unwrap();
-    assert_eq!(chain.focus, receipt.id);
-    assert!(!chain.truncated);
-    assert_eq!(chain.nodes.iter().map(|n| n.message_type.as_str()).collect::<Vec<_>>(), ["Transfer", "Deposit"]);
-    let deposit = chain.nodes.last().unwrap();
+    assert_eq!(actors.status(&receipt.id).await.unwrap().unwrap().message.caused_by, None);
+    let mailbox = actors.pending(&account("acme", 8).address().unwrap(), None, None).await.unwrap().unwrap();
+    let deposits: Vec<_> = mailbox.items.iter().filter(|m| m.message_type == "Deposit").collect();
+    let [deposit] = deposits.as_slice() else { panic!("one deposit: {mailbox:?}") };
     assert_eq!(deposit.caused_by.as_ref(), Some(&receipt.id));
-    assert_eq!(deposit.status, MessageState::Done);
     assert_eq!(actors.status(&deposit.id).await.unwrap().unwrap().message.caused_by, Some(receipt.id.clone()));
-    assert!(actors.chain(&MessageId::random()).await.unwrap().is_none());
+
+    gates::open(&gate);
+    eventually(async || balance(&actors, &account("acme", 8)).await == Some(3)).await;
 }
 
 #[tokio::test]
@@ -103,9 +109,6 @@ async fn a_typed_send_carries_its_retention_policy_served_with_the_message() {
         .unwrap();
     actors.cancel(&receipt.id).await.unwrap();
     eventually(async || actors.status(&removed.id).await.unwrap().is_none()).await;
-    let chain = actors.chain(&removed.id).await.unwrap().unwrap();
-    assert_eq!(chain.nodes.len(), 1);
-    assert!(chain.nodes[0].removed);
 }
 
 #[tokio::test]
@@ -113,7 +116,7 @@ async fn stateless_types_and_percent_encoded_parameters() {
     let (actors, _, _) = client_test(|r| r).await;
     let odd = account("a b/c é", 1);
     assert!(actors.create(&odd, &AccountState::default()).await.unwrap().created);
-    assert_eq!(actors.get(&odd).await.unwrap().unwrap().params.get("tenant"), Some("a b/c é"));
+    assert_eq!(actors.get(&odd).await.unwrap().unwrap().params.get("tenant").map(String::as_str), Some("a b/c é"));
     assert_eq!(actors.list_actors("actor://account/", None, None).await.unwrap().items, [odd.address().unwrap()]);
 
     let beacon = Beacon { name: "b".into() };
@@ -333,31 +336,6 @@ async fn delete_purges_and_list_pages() {
 }
 
 #[tokio::test]
-async fn a_message_sent_with_a_retry_policy_shows_its_policy_failures_and_last_error_in_status_and_pending() {
-    let (actors, _, _) = client_test(|r| r).await;
-    actors.create(&acme(), &AccountState::default()).await.unwrap();
-    let retry = RetryPolicy::new(2, Backoff::fixed(Duration::from_secs(3600)).unwrap()).unwrap();
-    let boom = actors.send_with(&acme(), AccountMsg::Explode, SendOptions::new().retry(retry.clone())).await.unwrap();
-    eventually(async || actors.status(&boom.id).await.unwrap().is_some_and(|s| s.failures == 1)).await;
-    let status = actors.status(&boom.id).await.unwrap().unwrap();
-    assert_eq!(status.status, MessageState::Pending);
-    let last_error = status.last_error.clone().unwrap();
-    assert!(last_error.contains("boom"), "{last_error}");
-    assert!(status.error.is_none());
-    assert_eq!(status.message.failures, 1);
-    assert_eq!(status.message.last_error, Some(last_error));
-    assert_eq!(status.message.retry.as_ref(), Some(&retry));
-    let page = actors.pending(&acme().address().unwrap(), None, None).await.unwrap().unwrap();
-    let [listed] = page.items.as_slice() else { panic!("one pending message: {page:?}") };
-    assert_eq!(listed.id, boom.id);
-    assert_eq!(listed.failures, 1);
-    assert_eq!(listed.retry.as_ref(), Some(&retry));
-    assert!(actors.failures("", None, None, None).await.unwrap().items.is_empty());
-    assert_eq!(actors.cancel(&boom.id).await.unwrap(), CancelOutcome::Cancelled);
-    assert_eq!(actors.status(&boom.id).await.unwrap().unwrap().failures, 1);
-}
-
-#[tokio::test]
 async fn send_bodies_leave_out_absent_optional_fields_so_nodes_that_do_not_know_them_yet_accept_them() {
     // A node of an older version decodes request bodies strictly (unknown keys are 400), so a body must not carry
     // "retry": null, or any other absent field, when the caller did not set it.
@@ -402,7 +380,7 @@ async fn send_bodies_leave_out_absent_optional_fields_so_nodes_that_do_not_know_
 }
 
 #[tokio::test]
-async fn failures_types_and_type_of() {
+async fn failures_and_types() {
     let (actors, _, _) = client_test(|r| r).await;
     actors.create(&acme(), &AccountState::default()).await.unwrap();
     actors.create(&account("other", 1), &AccountState::default()).await.unwrap();
@@ -430,11 +408,6 @@ async fn failures_types_and_type_of() {
         ["Deposit", "Explode", "Hold", "Transfer"]
     );
     assert!(types[1].state.is_none());
-
-    let found = actors.type_of(&acme().address().unwrap()).await.unwrap().unwrap();
-    assert_eq!(found.params.iter().collect::<Vec<_>>(), vec![("tenant", "acme"), ("id", "7")]);
-    assert_eq!(found.actor_type, types[0]);
-    assert!(actors.type_of(&ActorAddress::parse("actor://nope/x").unwrap()).await.unwrap().is_none());
 }
 
 #[tokio::test]

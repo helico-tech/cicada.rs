@@ -2,8 +2,6 @@
 
 mod common;
 
-use std::collections::BTreeSet;
-
 use axum::Router;
 use axum::http::{StatusCode, header};
 use cicada::ActorAddress;
@@ -160,10 +158,10 @@ async fn send_with_delay_deliver_at_correlation_id_and_headers() {
     let before = instant(
         &post(&app, path, r#"{"type": "Add", "payload": {"n": 1}, "delay": "PT1H"}"#).await.json()["deliverAt"],
     );
-    let millis = instant(
-        &post(&app, path, r#"{"type": "Add", "payload": {"n": 1}, "delay": 7200000}"#).await.json()["deliverAt"],
+    let later = instant(
+        &post(&app, path, r#"{"type": "Add", "payload": {"n": 1}, "delay": "PT2H"}"#).await.json()["deliverAt"],
     );
-    let gap = (millis - before).num_minutes();
+    let gap = (later - before).num_minutes();
     assert!((59..=61).contains(&gap), "{gap}");
     let at = "2999-01-01T00:00:00Z";
     let at_response = post(
@@ -196,6 +194,10 @@ async fn send_errors() {
     for bad in [
         r#"{"type": "Add", "payload": {"n": 1}, "delay": "PT1S", "deliverAt": "2030-01-01T00:00:00Z"}"#,
         r#"{"type": "Add", "payload": {"n": 1}, "delay": "soon"}"#,
+        // A duration is an ISO-8601 string and not negative.
+        r#"{"type": "Add", "payload": {"n": 1}, "delay": "5s"}"#,
+        r#"{"type": "Add", "payload": {"n": 1}, "delay": 7200000}"#,
+        r#"{"type": "Add", "payload": {"n": 1}, "delay": "-PT1S"}"#,
         r#"{"type": "Add", "payload": {"n": 1}, "deliverAt": "tomorrow"}"#,
         r#"{"type": "Add", "payload": {"n": 1}, "id": ""}"#,
         r#"{"payload": {"n": 1}}"#,
@@ -312,43 +314,38 @@ async fn message_status_goes_pending_running_done_and_cancel_answers_409_for_run
 }
 
 #[tokio::test(start_paused = true)]
-async fn chain_shows_what_led_to_a_message_and_what_it_caused() {
+async fn a_message_sent_by_a_turn_names_its_sender_and_its_cause() {
     let app = app().await;
-    for c in ["a", "b", "c"] {
+    for c in ["a", "b"] {
         put(&app, &format!("/actors/counter/{c}"), r#"{"state": {}}"#).await;
     }
+    // b is busy, so what a sends to it stays in its mailbox.
+    let gate = unique();
+    let blocked = send_id(
+        &app,
+        "/actors/counter/b/messages",
+        &format!(r#"{{"type": "Block", "payload": {{"gate": "{gate}"}}}}"#),
+    )
+    .await;
+    eventually(async || get_json(&app, &format!("/messages/{blocked}")).await["status"] == "running").await;
     let root =
-        send_id(&app, "/actors/counter/a/messages", r#"{"type": "Forward", "payload": {"to": ["b", "c"], "n": 2}}"#)
-            .await;
-    eventually(async || get_json(&app, "/actors/counter/c").await["version"] == 1).await;
-    eventually(async || get_json(&app, "/actors/counter/b").await["version"] == 1).await;
+        send_id(&app, "/actors/counter/a/messages", r#"{"type": "Forward", "payload": {"to": ["b"], "n": 2}}"#).await;
+    eventually(async || get_json(&app, &format!("/messages/{root}")).await["status"] == "done").await;
 
-    let chain = get_json(&app, &format!("/messages/{root}/chain")).await;
-    assert_eq!(chain["focus"], root.as_str());
-    assert_eq!(chain["truncated"], false);
-    let nodes = chain["nodes"].as_array().unwrap();
-    assert_eq!(nodes.len(), 3);
-    let top = nodes.iter().find(|n| n["id"] == root.as_str()).unwrap();
-    assert_eq!(top["causedBy"], Value::Null);
-    assert_eq!(top["type"], "Forward");
-    assert_eq!(top["status"], "done");
-    let children: Vec<&Value> = nodes.iter().filter(|n| n["id"] != root.as_str()).collect();
-    let targets: BTreeSet<&str> = children.iter().map(|c| c["to"].as_str().unwrap()).collect();
-    assert_eq!(targets, BTreeSet::from(["actor://counter/b", "actor://counter/c"]));
-    assert!(children.iter().all(|c| c["causedBy"] == root.as_str() && c["from"] == "actor://counter/a"));
+    let top = get_json(&app, &format!("/messages/{root}")).await;
+    assert_eq!(top["message"]["causedBy"], Value::Null);
+    assert_eq!(top["message"]["from"], Value::Null);
+    let mailbox = get_json(&app, "/actors/counter/b/messages").await;
+    let sent: Vec<&Value> = items(&mailbox).iter().filter(|m| m["type"] == "Add").collect();
+    let [child] = sent.as_slice() else { panic!("one message from a: {mailbox}") };
+    assert_eq!(child["causedBy"], root.as_str());
+    assert_eq!(child["from"], "actor://counter/a");
+    let child_id = child["id"].as_str().unwrap();
+    assert_eq!(get_json(&app, &format!("/messages/{child_id}")).await["message"]["causedBy"], root.as_str());
 
-    // From a child: its cause above it; and the envelope names the cause.
-    let child = children[0]["id"].as_str().unwrap();
-    let ids: BTreeSet<String> = get_json(&app, &format!("/messages/{child}/chain")).await["nodes"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|n| n["id"].as_str().unwrap().to_owned())
-        .collect();
-    assert_eq!(ids, BTreeSet::from([root.clone(), child.to_owned()]));
-    assert_eq!(get_json(&app, &format!("/messages/{child}")).await["message"]["causedBy"], root.as_str());
-
-    assert_problem(&get(&app, &format!("/messages/{}/chain", unique())).await, 404, pt::NO_SUCH_MESSAGE);
+    gates::open(&gate);
+    eventually(async || get_json(&app, "/actors/counter/b").await["state"]["total"] == 2).await;
+    assert_eq!(get_json(&app, &format!("/messages/{child_id}")).await["message"]["causedBy"], root.as_str());
 }
 
 #[tokio::test(start_paused = true)]
@@ -411,13 +408,8 @@ async fn types_return_the_generated_schemas() {
     assert_eq!(counter["state"]["type"], "object");
     assert_eq!(types[1]["state"], Value::Null);
 
-    // The query value is URL-encoded once more: the actor URI itself contains %20.
-    let found = get_json(&app, &format!("/types?uri={}", enc("actor://counter/x%20y"))).await;
-    assert_eq!(found["type"]["template"], "actor://counter/{id}");
-    assert_eq!(found["params"]["id"], "x y");
-
-    assert_problem(&get(&app, "/types?uri=actor://nope/x").await, 404, pt::NO_SUCH_TYPE);
-    assert_problem(&get(&app, "/types?uri=http://x").await, 400, pt::BAD_REQUEST);
+    // The list takes no query parameters; one that is sent is ignored.
+    assert_eq!(get_json(&app, "/types?uri=actor://nope/x").await, list);
 }
 
 // ---- GET /health and store failures ----

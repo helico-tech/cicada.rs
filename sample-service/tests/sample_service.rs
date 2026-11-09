@@ -288,7 +288,6 @@ async fn with_api_token_the_api_requires_the_bearer_token() {
         assert_eq!(right.status(), StatusCode::OK);
         assert!(node.api.health().await.unwrap());
         assert_eq!(node.get("/").await.status(), StatusCode::OK); // node info stays public
-        assert_eq!(node.get("/console/").await.status(), StatusCode::OK); // so does the console page; it asks for the token
         assert_eq!(node.get("/ready").await.status(), StatusCode::OK); // and readiness, for probes
     })
     .await;

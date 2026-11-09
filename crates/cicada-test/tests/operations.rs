@@ -141,9 +141,6 @@ async fn status_cancel_failures_types() {
         schema::message_schemas::<CounterMsg>().unwrap(),
     );
     assert_eq!(*types[0].contract, expected);
-    let resolved = system.type_of(&a().address()).await.unwrap().unwrap();
-    assert_eq!(resolved.params, BTreeMap::from([("id".to_owned(), "a".to_owned())]));
-    assert!(system.type_of(&parse("actor://x/y")).await.unwrap().is_none());
     assert!(system.health().await);
 }
 
@@ -173,7 +170,7 @@ async fn a_node_that_does_not_host_the_type_accepts_any_payload_and_the_hosting_
     accepted(send_only.send(&a(), CounterMsg::Add { n: 2 }).await.unwrap());
     assert_eq!(send_only.run_due_turns(10).await.unwrap(), 0);
     assert_eq!(host.run_due_turns(1).await.unwrap(), 1);
-    let failed = store.outcome(&bad.id).await.unwrap().unwrap();
+    let failed = outcome_of(&*store, &bad.id).await.unwrap();
     assert_eq!(failed.status, OutcomeStatus::Failed);
     assert!(failed.error.unwrap().starts_with("Payload of 'Add' cannot be decoded"));
     host.run_due_turns(1).await.unwrap();

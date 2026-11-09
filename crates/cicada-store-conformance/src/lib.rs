@@ -182,13 +182,10 @@ macro_rules! __for_each_case {
             retention_keep_for_a_time_shorter_than_the_store_retention,
             retention_keep_for_longer_than_the_store_retention,
             retention_keep_last_n_per_instance_and_outcome_leaving_other_policies_and_instances_alone,
-            retention_the_sweep_drops_the_content_of_hidden_records_and_keeps_visible_ones_intact,
+            retention_the_sweep_keeps_hidden_records_as_duplicates_and_visible_ones_intact,
             // chain.rs
             chain_caused_by_is_stored_with_the_message_and_returned_everywhere_also_in_the_outcome_envelope,
-            chain_entries_by_id_are_pending_running_or_finished_and_unknown_ids_are_left_out,
-            chain_children_are_found_across_pending_messages_and_outcomes_up_to_the_limit,
             chain_caused_by_survives_reschedule_and_reopen,
-            chain_outcomes_past_retention_are_not_part_of_a_chain,
             // turn_cancel.rs
             turn_cancel_pending_messages_of_the_instance_are_cancelled_in_the_commit_others_are_ignored,
             turn_cancel_a_cancelled_due_message_is_no_longer_claimed,

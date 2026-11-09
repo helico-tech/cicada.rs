@@ -4,10 +4,11 @@
 
 use std::path::PathBuf;
 
+use cicada::store::MessageId;
 use cicada::time::Timestamp;
 use cicada_examples::cron::CronState;
 use cicada_examples::timer::{CheckoutState, CheckoutStatus};
-use cicada_extras::{DeadLetter, DeadLettersState, Schedule, Timer};
+use cicada_extras::{DeadLetter, DeadLettersState, Schedule};
 use cicada_test::{assert_state_decodes, record_state_sample};
 use serde_json::json;
 
@@ -22,19 +23,14 @@ fn t() -> Timestamp {
 #[test]
 fn checkout() {
     let dir = dir("checkout");
-    let mut armed = Timer::new();
-    armed.arm(t());
-    let awaiting = CheckoutState { status: CheckoutStatus::AwaitingPayment, timer: armed, ..CheckoutState::default() };
-    record_state_sample(&dir, "awaiting-payment", &awaiting);
-    let mut disarmed = Timer::new();
-    disarmed.arm(t());
-    disarmed.disarm();
-    let paid = CheckoutState {
-        status: CheckoutStatus::Paid,
-        timer: disarmed,
-        paid_cents: Some(1250),
-        ..CheckoutState::default()
+    let awaiting = CheckoutState {
+        status: CheckoutStatus::AwaitingPayment,
+        deadline: Some(t()),
+        timeout: Some(MessageId::new("0b9f6a52-5c1e-4a55-9d0c-3f1f8f0f2a11").unwrap()),
+        paid_cents: None,
     };
+    record_state_sample(&dir, "awaiting-payment", &awaiting);
+    let paid = CheckoutState { status: CheckoutStatus::Paid, paid_cents: Some(1250), ..CheckoutState::default() };
     record_state_sample(&dir, "paid", &paid);
     assert_state_decodes::<CheckoutState>(&dir);
 }

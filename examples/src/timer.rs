@@ -1,15 +1,14 @@
-//! Example 2 — timer / timeout with a generation number.
+//! Example 2 — timer / timeout.
 //!
-//! A timer is a delayed self-send. Instead of cancelling the message, a timer is "cancelled" by making it stale: the
-//! [`Timer`] of `cicada-extras`, kept in state, gets a new generation on every arm and disarm, and the timeout carries
-//! the generation it was armed with. A timeout that is not current is ignored. Because state and the self-send commit
-//! atomically, the timer in state and the pending timeouts never disagree.
+//! A timer is a delayed self-send. The state keeps the id of the pending timeout; to stop or move the timer, the
+//! handler cancels that message with `turn.cancel`. State, the cancel and the new self-send commit atomically, and the
+//! turns of one actor never overlap, so the timeout in state and the one in the mailbox never disagree.
 
 use std::time::Duration;
 
 use cicada::prelude::*;
-use cicada::time;
-use cicada_extras::Timer;
+use cicada::store::MessageId;
+use cicada::time::{self, Timestamp};
 use serde::{Deserialize, Serialize};
 
 /// One checkout session waiting for its payment.
@@ -34,7 +33,7 @@ pub enum CheckoutMsg {
         #[serde(default = "default_timeout_seconds")]
         timeout_seconds: u64,
     },
-    /// Gives the customer `seconds` more: re-arms the timer, which makes the pending timeout stale.
+    /// Gives the customer `seconds` more: cancels the pending timeout and sends a later one.
     Extend {
         /// Seconds added to the deadline.
         seconds: u64,
@@ -44,11 +43,8 @@ pub enum CheckoutMsg {
         /// The amount paid.
         amount_cents: i64,
     },
-    /// The timer: sent by the checkout to itself, valid only while `generation` is the current one.
-    PaymentTimeout {
-        /// The timer generation it was armed with.
-        generation: u32,
-    },
+    /// The timer: sent by the checkout to itself.
+    PaymentTimeout,
 }
 
 fn default_timeout_seconds() -> u64 {
@@ -76,12 +72,12 @@ pub enum CheckoutStatus {
 pub struct CheckoutState {
     /// Where the checkout is.
     pub status: CheckoutStatus,
-    /// The payment timeout; only a `PaymentTimeout` carrying its current generation counts.
-    pub timer: Timer,
+    /// When the checkout expires; null while no timer runs.
+    pub deadline: Option<Timestamp>,
+    /// The id of the pending `PaymentTimeout`, so it can be cancelled; null while no timer runs.
+    pub timeout: Option<MessageId>,
     /// The amount paid.
     pub paid_cents: Option<i64>,
-    /// How many timeouts were ignored as stale (for illustration).
-    pub stale_timeouts: i32,
 }
 
 /// The checkout type.
@@ -101,42 +97,54 @@ impl Actor for CheckoutActor {
                     return Ok(()); // already begun: Begin is idempotent
                 }
                 let deadline = time::add(turn.now(), Duration::from_secs(timeout_seconds))?;
-                let state = turn.state_mut();
-                state.status = CheckoutStatus::AwaitingPayment;
-                let generation = state.timer.arm(deadline);
-                turn.send_self_with(CheckoutMsg::PaymentTimeout { generation }, SendOptions::new().at(deadline))?;
+                turn.state_mut().status = CheckoutStatus::AwaitingPayment;
+                arm(turn, deadline)?;
             }
             CheckoutMsg::Extend { seconds } => {
-                let Some(deadline) = turn.state().timer.deadline() else { return Ok(()) };
+                let Some(deadline) = turn.state().deadline else { return Ok(()) };
                 if status != CheckoutStatus::AwaitingPayment {
                     return Ok(());
                 }
-                // Re-arm: a new generation and a new timeout. The old one is still in the mailbox and will be ignored.
-                let deadline = time::add(deadline, Duration::from_secs(seconds))?;
-                let generation = turn.state_mut().timer.arm(deadline);
-                turn.send_self_with(CheckoutMsg::PaymentTimeout { generation }, SendOptions::new().at(deadline))?;
+                disarm(turn)?;
+                arm(turn, time::add(deadline, Duration::from_secs(seconds))?)?;
             }
             CheckoutMsg::Pay { amount_cents } => {
                 if status != CheckoutStatus::AwaitingPayment {
                     return Ok(());
                 }
-                // Disarm: a new generation is all it takes.
+                disarm(turn)?;
                 let state = turn.state_mut();
                 state.status = CheckoutStatus::Paid;
-                state.timer.disarm();
                 state.paid_cents = Some(amount_cents);
             }
-            CheckoutMsg::PaymentTimeout { generation } => {
-                let current = turn.state().timer.is_current(generation);
-                let state = turn.state_mut();
-                if !current || status != CheckoutStatus::AwaitingPayment {
-                    state.stale_timeouts += 1;
-                } else {
-                    state.status = CheckoutStatus::Expired;
-                    state.timer.disarm();
+            CheckoutMsg::PaymentTimeout => {
+                if turn.state().timeout.as_ref() != Some(&turn.message().id) {
+                    return Ok(()); // not the timer in state: sent by hand, not by this actor
                 }
+                let state = turn.state_mut();
+                state.status = CheckoutStatus::Expired;
+                state.deadline = None;
+                state.timeout = None;
             }
         }
         Ok(())
     }
+}
+
+/// Starts the timer: a `PaymentTimeout` due at `deadline`, with its id kept in state.
+fn arm(turn: &mut Turn<CheckoutActor>, deadline: Timestamp) -> HandlerResult {
+    let timeout = turn.send_self_with(CheckoutMsg::PaymentTimeout, SendOptions::new().at(deadline))?;
+    let state = turn.state_mut();
+    state.deadline = Some(deadline);
+    state.timeout = Some(timeout);
+    Ok(())
+}
+
+/// Stops the timer: cancels the pending `PaymentTimeout` in this turn's commit.
+fn disarm(turn: &mut Turn<CheckoutActor>) -> HandlerResult {
+    if let Some(timeout) = turn.state_mut().timeout.take() {
+        turn.cancel(&timeout)?;
+    }
+    turn.state_mut().deadline = None;
+    Ok(())
 }

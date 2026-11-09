@@ -73,7 +73,7 @@ pub async fn reschedule_the_same_message_stays_pending_with_its_failure_recorded
         let after = store.now().await.unwrap();
         assert_eq!(committed.sent, vec![]);
 
-        assert_eq!(store.outcome(&sent.id).await.unwrap(), None, "no outcome while rescheduled");
+        assert_eq!(outcome_record(&*store, &sent.id).await, None, "no outcome while rescheduled");
         let again = pending_message(&*store, &sent.id).await;
         assert_same_message(&c.message, &again);
         assert_eq!(again.failures, 1);
@@ -161,7 +161,7 @@ pub async fn reschedule_the_message_gets_exactly_one_final_outcome_carrying_its_
         let last = t.claim_one().await;
         assert_eq!(last.message.attempt, 3);
         t.commit_ok(ending(&last, TurnOutcome::Failed("final".into()))).await;
-        let outcome = store.outcome(&m.id).await.unwrap().expect("an outcome");
+        let outcome = outcome_record(&*store, &m.id).await.expect("an outcome");
         assert_eq!(outcome.status, OutcomeStatus::Failed);
         assert_eq!(outcome.error.as_deref(), Some("final"));
         assert_eq!(outcome.envelope.failures, 2);
@@ -175,7 +175,7 @@ pub async fn reschedule_the_message_gets_exactly_one_final_outcome_carrying_its_
         let n = t.send(&a).await;
         t.commit_ok(ending(&t.claim_one().await, rescheduled("e1", Delivery::Now))).await;
         t.commit_ok(done(&t.claim_one().await)).await;
-        let done_outcome = store.outcome(&n.id).await.unwrap().expect("an outcome");
+        let done_outcome = outcome_record(&*store, &n.id).await.expect("an outcome");
         assert_eq!(done_outcome.status, OutcomeStatus::Done);
         assert_eq!(done_outcome.error, None);
         assert_eq!(done_outcome.envelope.failures, 1);
@@ -270,7 +270,7 @@ pub async fn reschedule_a_rescheduled_message_can_be_cancelled<B: FixtureFactory
         assert_eq!(cancelled.status, OutcomeStatus::Cancelled);
         assert_eq!(cancelled.envelope.failures, 1);
         assert_eq!(cancelled.envelope.last_error.as_deref(), Some("e1"));
-        assert_eq!(store.outcome(&m.id).await.unwrap().map(|o| o.status), Some(OutcomeStatus::Cancelled));
+        assert_eq!(outcome_record(&*store, &m.id).await.map(|o| o.status), Some(OutcomeStatus::Cancelled));
         assert_eq!(t.pending(&a).await, vec![]);
         assert_eq!(store.next_due_at(&type_set(&[&TYPE])).await.unwrap(), None);
         assert_matches!(store.cancel(&m.id).await.unwrap(), CancelResult::AlreadyFinished(_));
@@ -287,7 +287,7 @@ pub async fn reschedule_delete_and_stop_purge_a_rescheduled_message<B: FixtureFa
         let c = t.claim_one().await;
         t.commit_ok(ending(&c, rescheduled("e1", Delivery::After(Duration::from_secs(86_400))))).await;
         assert_eq!(store.delete(&a).await.unwrap(), DeleteResult::Deleted { purged: 1 });
-        let purged = store.outcome(&m.id).await.unwrap().expect("an outcome");
+        let purged = outcome_record(&*store, &m.id).await.expect("an outcome");
         assert_eq!(purged.status, OutcomeStatus::Purged);
         assert_eq!(purged.envelope.failures, 1);
 
@@ -297,7 +297,7 @@ pub async fn reschedule_delete_and_stop_purge_a_rescheduled_message<B: FixtureFa
         let c = t.claim_one().await;
         t.commit_ok(CommitRequest { state: StateChange::Stop, ..ending(&c, rescheduled("boom", Delivery::Now)) }).await;
         assert_eq!(store.get(&b).await.unwrap(), None);
-        assert_eq!(store.outcome(&n.id).await.unwrap().map(|o| o.status), Some(OutcomeStatus::Purged));
+        assert_eq!(outcome_record(&*store, &n.id).await.map(|o| o.status), Some(OutcomeStatus::Purged));
     })
     .await
 }
@@ -379,7 +379,7 @@ pub async fn retry_policy_stored_with_the_message_and_returned_everywhere_retain
         assert_eq!(committed.sent[0].retry.as_ref(), Some(&policy));
         assert_eq!(pending_message(&*store, &forwarded.id).await.retry.as_ref(), Some(&policy));
         assert_eq!(
-            store.outcome(&sent.id).await.unwrap().expect("an outcome").envelope.retry.as_ref(),
+            outcome_record(&*store, &sent.id).await.expect("an outcome").envelope.retry.as_ref(),
             Some(&policy),
             "retained with the outcome"
         );
@@ -387,7 +387,7 @@ pub async fn retry_policy_stored_with_the_message_and_returned_everywhere_retain
         let c = t.claim_one().await;
         assert_eq!(c.message.id, plain.id);
         t.commit_ok(ending(&c, TurnOutcome::Failed("x".into()))).await;
-        assert_eq!(store.outcome(&plain.id).await.unwrap().expect("an outcome").envelope.retry, None);
+        assert_eq!(outcome_record(&*store, &plain.id).await.expect("an outcome").envelope.retry, None);
     })
     .await
 }
@@ -421,7 +421,7 @@ pub async fn retry_policy_survives_reschedule_and_reopen<B: FixtureFactory>(back
             t.fixture.reopen().await;
         }
         let store = t.store();
-        let outcome = store.outcome(&sent.id).await.unwrap().expect("an outcome");
+        let outcome = outcome_record(&*store, &sent.id).await.expect("an outcome");
         assert_eq!(outcome.envelope.retry.as_ref(), Some(&policy));
         assert_eq!(outcome.envelope.failures, 1);
         let failures = store.failures("", DateTime::<Utc>::MIN_UTC, None, Page::<Message>::DEFAULT_SIZE).await.unwrap();

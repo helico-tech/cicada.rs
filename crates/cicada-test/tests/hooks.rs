@@ -1,19 +1,15 @@
-//! The four plugin hooks: when they fire, what they can do, node vs type installation.
+//! The three plugin hooks: when they fire, what they see, and the order of the plugins of a node.
 
 mod common;
 
-use std::time::Duration;
+use std::sync::Arc;
 
 use async_trait::async_trait;
-use cicada::plugin::{
-    BeforeCommitContext, ClaimContext, HandlerErrorContext, HookResult, HookSend, OutcomeContext, Plugin,
-};
+use cicada::plugin::{ClaimContext, HandlerErrorContext, HookResult, OutcomeContext, Plugin};
 use cicada::prelude::*;
-use cicada::store::{Delivery, OutcomeStatus, TurnOutcome};
 use cicada_test::TestActors;
 use common::*;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Hooked {
@@ -86,19 +82,14 @@ impl Plugin for Tracer {
         "Tracer"
     }
 
-    async fn on_claim(&self, ctx: &mut ClaimContext<'_>) -> HookResult {
+    async fn on_claim(&self, ctx: &ClaimContext<'_>) -> HookResult {
         let m = ctx.info().message();
         self.0.push(format!("claim:{}", m.message_type));
         ctx.info().attributes().insert(TraceId(format!("t-{}", m.attempt)));
         Ok(())
     }
 
-    async fn before_commit(&self, ctx: &mut BeforeCommitContext<'_>) -> HookResult {
-        self.0.push(format!("beforeCommit:{}", ctx.info().message().message_type));
-        Ok(())
-    }
-
-    async fn on_handler_error(&self, ctx: &mut HandlerErrorContext<'_>) -> HookResult {
+    async fn on_handler_error(&self, ctx: &HandlerErrorContext<'_>) -> HookResult {
         self.0.push(format!("error:{}", ctx.error().reason()));
         Ok(())
     }
@@ -114,119 +105,69 @@ impl Plugin for Tracer {
     }
 }
 
-async fn harness(events: &Events, plugins: Vec<std::sync::Arc<dyn Plugin>>) -> TestActors {
+/// A node that hosts the hooked type with the tracer installed.
+async fn harness(events: &Events) -> TestActors {
     let actor = HookedActor { events: events.clone() };
-    TestActors::builder()
-        .with(move |n| {
-            let mut t = ActorType::new(actor);
-            for p in plugins {
-                t = t.install_shared(p);
-            }
-            n.host(t)
-        })
-        .build()
-        .await
-        .unwrap()
+    let tracer = Tracer(events.clone());
+    TestActors::builder().with(move |n| n.host(actor).install(tracer)).build().await.unwrap()
 }
 
 #[tokio::test(start_paused = true)]
 async fn hooks_fire_in_order_and_on_claim_attributes_reach_the_handler() {
     let events = Events::default();
-    let test = harness(&events, vec![std::sync::Arc::new(Tracer(events.clone()))]).await;
+    let test = harness(&events).await;
     test.create(&h("h"), &HookedState::default()).await;
     test.send(&h("h"), HookedMsg::Work { fail: false }).await;
     test.run_until_idle().await;
     assert_eq!(
         events.all(),
-        vec![
-            "claim:Work",
-            "handler:t-1",
-            "beforeCommit:Work",
-            "outcome:Work:Done:1",
-            "claim:Note",
-            "beforeCommit:Note",
-            "outcome:Note:Done:0",
-        ]
+        vec!["claim:Work", "handler:t-1", "outcome:Work:Done:1", "claim:Note", "outcome:Note:Done:0"]
     );
 }
 
-struct TakeOver;
+/// Counts the turns it sees.
+#[derive(Default)]
+struct Counting(std::sync::atomic::AtomicUsize);
 
 #[async_trait]
-impl Plugin for TakeOver {
+impl Plugin for Counting {
     fn name(&self) -> &str {
-        "TakeOver"
+        "Counting"
     }
 
-    async fn on_handler_error(&self, ctx: &mut HandlerErrorContext<'_>) -> HookResult {
-        let me = ctx.info().self_address().clone();
-        let options = HookSend { delivery: Delivery::After(Duration::from_secs(5)), ..HookSend::default() };
-        ctx.send(&me, "Note", json!({"text": "retry"}), options).await?;
-        ctx.set_outcome(TurnOutcome::Done).map_err(anyhow::Error::msg)?;
+    async fn on_outcome(&self, _ctx: &OutcomeContext<'_>) -> HookResult {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 }
 
 #[tokio::test(start_paused = true)]
-async fn on_handler_error_replaces_the_failure_with_its_own_effects_and_outcome() {
-    let events = Events::default();
-    let test = harness(&events, vec![std::sync::Arc::new(Tracer(events.clone())), std::sync::Arc::new(TakeOver)]).await;
+async fn an_arc_of_a_plugin_is_installed_as_a_plugin_and_shares_its_value() {
+    let counting = Arc::new(Counting::default());
+    let actor = HookedActor { events: Events::default() };
+    let installed = counting.clone();
+    let test = TestActors::builder().with(move |n| n.host(actor).install(installed)).build().await.unwrap();
     test.create(&h("h"), &HookedState::default()).await;
-    let m = test.send(&h("h"), HookedMsg::Work { fail: true }).await;
-    test.run_until_idle().await;
-    assert_eq!(test.outcome(&m).await.unwrap().status, OutcomeStatus::Done);
-    // The handler's state change and send were discarded; only the hook's delayed send was committed.
-    assert_eq!(test.state::<_, HookedState>(&h("h")).await, HookedState::default());
-    assert_eq!(test.pending(&h("h")).await.iter().map(|m| m.message_type.clone()).collect::<Vec<_>>(), vec!["Note"]);
-    test.advance_time_by(Duration::from_secs(5)).await;
-    assert_eq!(test.state::<_, HookedState>(&h("h")).await.notes, vec!["retry"]);
-    assert!(events.all().contains(&"error:work failed".to_owned()));
+    test.send(&h("h"), HookedMsg::Work { fail: false }).await;
+    assert_eq!(test.run_until_idle().await, 2);
+    assert_eq!(counting.0.load(std::sync::atomic::Ordering::SeqCst), 2, "Work and its Note");
 }
 
 #[tokio::test(start_paused = true)]
-async fn without_a_replacing_hook_the_failure_stands() {
+async fn a_handler_failure_stands_and_the_error_and_outcome_hooks_see_it() {
     let events = Events::default();
-    let test = harness(&events, vec![std::sync::Arc::new(Tracer(events.clone()))]).await;
+    let test = harness(&events).await;
     test.create(&h("h"), &HookedState::default()).await;
     let m = test.send(&h("h"), HookedMsg::Work { fail: true }).await;
     test.run_until_idle().await;
     assert_eq!(test.outcome(&m).await.unwrap().error.as_deref(), Some("work failed"));
-    assert_eq!(events.last(), "outcome:Work:Failed(error=work failed):0");
-}
-
-struct Audit;
-
-#[async_trait]
-impl Plugin for Audit {
-    fn name(&self) -> &str {
-        "Audit"
-    }
-
-    async fn before_commit(&self, ctx: &mut BeforeCommitContext<'_>) -> HookResult {
-        if ctx.info().message().message_type == "Work" {
-            let id = ctx.info().message().id.to_string();
-            ctx.send(&addr(&h("audit")), "Note", json!({"text": id}), HookSend::default()).await?;
-        }
-        Ok(())
-    }
-}
-
-#[tokio::test(start_paused = true)]
-async fn before_commit_effects_join_the_atomic_commit_and_a_bad_one_fails_the_whole_turn() {
-    let events = Events::default();
-    let test = harness(&events, vec![std::sync::Arc::new(Audit)]).await;
-    test.create(&h("h"), &HookedState::default()).await;
-    let m = test.send(&h("h"), HookedMsg::Work { fail: false }).await;
-    test.run_until_idle().await;
-    // actor://hooked/audit does not exist: the commit is rejected and nothing of the turn is applied.
-    assert!(test.outcome(&m).await.unwrap().error.unwrap().contains("actor://hooked/audit"));
+    // The handler's state change and send were discarded.
     assert_eq!(test.state::<_, HookedState>(&h("h")).await, HookedState::default());
-
-    test.create(&h("audit"), &HookedState::default()).await;
-    let m2 = test.send(&h("h"), HookedMsg::Work { fail: false }).await;
-    test.run_until_idle().await;
-    assert_eq!(test.outcome(&m2).await.unwrap().status, OutcomeStatus::Done);
-    assert_eq!(test.state::<_, HookedState>(&h("audit")).await.notes, vec![m2.id.to_string()]);
+    assert!(test.pending(&h("h")).await.is_empty());
+    assert_eq!(
+        events.all(),
+        vec!["claim:Work", "handler:t-1", "error:work failed", "outcome:Work:Failed(error=work failed):0"]
+    );
 }
 
 struct Named {
@@ -241,7 +182,7 @@ impl Plugin for Named {
         self.name
     }
 
-    async fn on_claim(&self, ctx: &mut ClaimContext<'_>) -> HookResult {
+    async fn on_claim(&self, ctx: &ClaimContext<'_>) -> HookResult {
         self.events.push(self.name.to_lowercase());
         if self.fail_on_note && ctx.info().message().message_type == "Note" {
             anyhow::bail!("claim hook broke");
@@ -251,22 +192,25 @@ impl Plugin for Named {
 }
 
 #[tokio::test(start_paused = true)]
-async fn node_plugins_run_before_type_plugins_and_a_failing_on_claim_fails_the_turn() {
+async fn plugins_run_in_installation_order_and_a_failing_on_claim_fails_the_turn() {
     let events = Events::default();
     let actor = HookedActor { events: events.clone() };
-    let type_level = Named { name: "Type", events: events.clone(), fail_on_note: true };
-    let node_level = Named { name: "Node", events: events.clone(), fail_on_note: false };
+    let first = Named { name: "First", events: events.clone(), fail_on_note: false };
+    let second = Named { name: "Second", events: events.clone(), fail_on_note: true };
+    let third = Named { name: "Third", events: events.clone(), fail_on_note: false };
     let test = TestActors::builder()
-        .with(move |n| n.host(ActorType::new(actor).install(type_level)).install(node_level))
+        .with(move |n| n.install(first).host(actor).install(second).install(third))
         .build()
         .await
         .unwrap();
     test.create(&h("h"), &HookedState::default()).await;
     test.send(&h("h"), HookedMsg::Work { fail: false }).await;
     test.run_until_idle().await;
-    assert_eq!(events.all(), vec!["node", "type", "handler:null", "node", "type"]);
+    // The Note's turn is refused by the second plugin: the third is not reached and no handler runs.
+    assert_eq!(events.all(), vec!["first", "second", "third", "handler:null", "first", "second"]);
     let failures = test.failures().await;
     assert_eq!(failures.len(), 1);
     assert_eq!(failures[0].envelope.message_type, "Note");
-    assert!(failures[0].error.as_deref().unwrap().starts_with("onClaim of plugin Type failed"));
+    assert_eq!(failures[0].error.as_deref(), Some("on_claim of plugin Second failed: claim hook broke"));
+    assert_eq!(test.state::<_, HookedState>(&h("h")).await.notes, vec!["worked"]);
 }

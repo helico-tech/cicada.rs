@@ -1,7 +1,5 @@
-//! Time in actor state: a cancellable timer and recurring schedules.
+//! Recurring schedules.
 
 mod schedule;
-mod timer;
 
 pub use schedule::{Schedule, ScheduleError};
-pub use timer::Timer;

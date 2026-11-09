@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use cicada::address::ActorAddress;
+use cicada::store::support;
 use cicada::store::{
     ActorCreate, CancelResult, Claim, CommitRequest, CommitResult, CreateResult, DeleteResult, Delivery, EnqueueResult,
     Message, MessageId, MessageStatus, OutcomeRecord, OutcomeStatus, OutgoingMessage, Page, PageCursor, RegisterResult,
@@ -31,7 +32,7 @@ async fn list_types(store: &dyn Store) -> Vec<TypeDef> {
 }
 
 async fn outcome_status(store: &dyn Store, id: &MessageId) -> Option<OutcomeStatus> {
-    store.outcome(id).await.unwrap().map(|o| o.status)
+    outcome_record(store, id).await.map(|o| o.status)
 }
 
 async fn state_of(store: &dyn Store, a: &ActorAddress) -> Option<serde_json::Value> {
@@ -66,9 +67,7 @@ pub async fn registry_register_is_idempotent_and_types_are_listed_by_template<B:
         assert_eq!(store.register(b.clone()).await.unwrap(), RegisterResult::Registered(b.clone()));
         assert_eq!(store.register(a.clone()).await.unwrap(), RegisterResult::Registered(a.clone()));
         assert_eq!(store.register(b.clone()).await.unwrap(), RegisterResult::Registered(b.clone()));
-        assert_eq!(list_types(&*store).await, vec![a.clone(), b]);
-        assert_eq!(store.type_def(&a.template).await.unwrap(), Some(a));
-        assert_eq!(store.type_def(&template("actor://c/{id}")).await.unwrap(), None);
+        assert_eq!(list_types(&*store).await, vec![a, b]);
     })
     .await
 }
@@ -207,18 +206,20 @@ pub async fn registry_resolve_finds_the_one_matching_template_and_decodes_its_pa
             assert_matches!(store.register(d.clone()).await.unwrap(), RegisterResult::Registered(_));
         }
 
-        let r = store.resolve(&address("actor://jobs/42")).await.unwrap().expect("a match");
+        // The runtime resolves an address against the listed types.
+        let types = list_types(&*store).await;
+        let r = support::resolve(&types, &address("actor://jobs/42")).unwrap().expect("a match");
         assert_eq!(r.type_def, by_id);
         assert_eq!(r.params, BTreeMap::from([("id".to_owned(), "42".to_owned())]));
-        let r = store.resolve(&address("actor://jobs/42/steps/1")).await.unwrap().expect("a match");
+        let r = support::resolve(&types, &address("actor://jobs/42/steps/1")).unwrap().expect("a match");
         assert_eq!(r.type_def, steps);
-        let n = store.resolve(&address("actor://sync/a%20b/j1")).await.unwrap().expect("a match");
+        let n = support::resolve(&types, &address("actor://sync/a%20b/j1")).unwrap().expect("a match");
         assert_eq!(
             n.params,
             BTreeMap::from([("tenant".to_owned(), "a b".to_owned()), ("job".to_owned(), "j1".to_owned())])
         );
-        assert_eq!(store.resolve(&address("actor://jobs/1/2")).await.unwrap(), None);
-        assert_eq!(store.resolve(&address("actor://unknown/1")).await.unwrap(), None);
+        assert_eq!(support::resolve(&types, &address("actor://jobs/1/2")).unwrap(), None);
+        assert_eq!(support::resolve(&types, &address("actor://unknown/1")).unwrap(), None);
     })
     .await
 }
@@ -407,7 +408,7 @@ pub async fn s2_commit_applies_state_creates_sends_and_outcome_together<B: Fixtu
         let init = t.pending(&child).await;
         assert_eq!(init.len(), 1);
         assert_eq!(init[0].message_type, "Init");
-        let outcome = store.outcome(&m.id).await.unwrap().expect("an outcome");
+        let outcome = outcome_record(&*store, &m.id).await.expect("an outcome");
         assert_eq!(outcome.status, OutcomeStatus::Done);
         assert_eq!(outcome.error, None);
         assert_eq!(outcome.envelope, claim.message);
@@ -447,13 +448,13 @@ pub async fn s2_a_send_to_an_absent_instance_rejects_the_whole_commit_and_keeps_
         assert_eq!(state_of(&*store, &a).await, Some(json!({"n": 0})));
         assert_eq!(version_of(&*store, &a).await, 0);
         assert_eq!(store.get(&child).await.unwrap(), None);
-        assert_eq!(store.outcome(&m.id).await.unwrap(), None);
+        assert_eq!(outcome_record(&*store, &m.id).await, None);
         assert_eq!(t.pending(&a).await, vec![claim.message.clone()]);
         // Lease still held: not claimable, renewable, and a failed commit can follow.
         assert!(t.claim_node(&NODE_B).await.is_empty());
         assert_matches!(store.renew(&a, claim.epoch, t.ttl()).await.unwrap(), RenewResult::Renewed(_));
         t.commit_ok(ending(&claim, TurnOutcome::Failed(reason.clone()))).await;
-        let outcome = store.outcome(&m.id).await.unwrap().expect("an outcome");
+        let outcome = outcome_record(&*store, &m.id).await.expect("an outcome");
         assert_eq!(outcome.status, OutcomeStatus::Failed);
         assert_eq!(outcome.error, Some(reason));
         assert_eq!(state_of(&*store, &a).await, Some(json!({"n": 0})));
@@ -540,13 +541,13 @@ pub async fn s2_delete_removes_the_instance_and_purges_its_whole_mailbox<B: Fixt
         assert_eq!(store.get(&a).await.unwrap(), None);
         assert!(t.pending(&a).await.is_empty());
         for m in [&m1, &m2] {
-            let o = store.outcome(&m.id).await.unwrap().expect("an outcome");
+            let o = outcome_record(&*store, &m.id).await.expect("an outcome");
             assert_eq!(o.status, OutcomeStatus::Purged);
             assert_eq!(o.actor, a);
             assert_eq!(o.envelope.id, m.id);
         }
         assert_eq!(
-            store.outcome(&m1.id).await.unwrap().expect("an outcome").envelope.attempt,
+            outcome_record(&*store, &m1.id).await.expect("an outcome").envelope.attempt,
             1,
             "the envelope keeps the claim's attempt"
         );
@@ -609,7 +610,7 @@ pub async fn s2_a_failed_outcome_keeps_state_and_records_the_error_and_envelope<
         let committed = t.commit_ok(ending(&claim, TurnOutcome::Failed("boom".into()))).await;
         assert_eq!(committed.version, 0);
         assert_eq!(state_of(&*store, &a).await, Some(json!({"n": 1})));
-        let o = store.outcome(&m.id).await.unwrap().expect("an outcome");
+        let o = outcome_record(&*store, &m.id).await.expect("an outcome");
         assert_eq!(o.status, OutcomeStatus::Failed);
         assert_eq!(o.error.as_deref(), Some("boom"));
         assert_eq!(o.envelope.payload, json!({"p": 7}));
@@ -1400,9 +1401,9 @@ pub async fn s7_release_expiry_and_lost_commits_keep_the_message_pending<B: Fixt
         assert_eq!(t.commit(done(&c2)).await, CommitResult::LeaseLost);
         let status = store.status(&m.id).await.unwrap();
         assert_eq!(expect_matches!(status, Some(MessageStatus::Running { message, .. }) => message).attempt, 3);
-        assert_eq!(store.outcome(&m.id).await.unwrap(), None);
+        assert_eq!(outcome_record(&*store, &m.id).await, None);
         t.commit_ok(done(&c3)).await;
-        assert_eq!(store.outcome(&m.id).await.unwrap().expect("an outcome").envelope.attempt, 3);
+        assert_eq!(outcome_record(&*store, &m.id).await.expect("an outcome").envelope.attempt, 3);
     })
     .await
 }
@@ -1633,13 +1634,13 @@ pub async fn s10_outcomes_are_retained_for_the_retention_period_then_removed<B: 
         t.commit_ok(done(&t.claim_one().await)).await;
         let cancelled = t.send(&a).await;
         store.cancel(&cancelled.id).await.unwrap();
-        assert!(store.outcome(&m.id).await.unwrap().is_some());
+        assert!(outcome_record(&*store, &m.id).await.is_some());
         t.advance_ticks(RETENTION_TICKS / 2).await;
-        assert!(store.outcome(&m.id).await.unwrap().is_some());
+        assert!(outcome_record(&*store, &m.id).await.is_some());
         assert_matches!(store.status(&m.id).await.unwrap(), Some(MessageStatus::Finished(_)));
         assert_eq!(store.enqueue(with_id(&a, &m.id)).await.unwrap(), EnqueueResult::Duplicate(m.id.clone()));
         t.advance_ticks(RETENTION_TICKS / 2 + 1).await;
-        assert_eq!(store.outcome(&m.id).await.unwrap(), None, "expired outcomes are invisible before a sweep");
+        assert_eq!(outcome_record(&*store, &m.id).await, None, "expired outcomes are invisible before a sweep");
         assert_eq!(store.status(&m.id).await.unwrap(), None);
         assert_eq!(store.cancel(&cancelled.id).await.unwrap(), CancelResult::NotFound);
         assert_eq!(store.sweep_expired().await.unwrap(), 2, "both expired outcomes are swept");
@@ -1663,7 +1664,7 @@ pub async fn s10_a_message_id_can_be_reused_once_its_outcome_expired<B: FixtureF
         t.commit_ok(done(&t.claim_one().await)).await;
         assert_eq!(outcome_status(&*store, &m.id).await, Some(OutcomeStatus::Done));
         store.sweep_expired().await.unwrap();
-        assert!(store.outcome(&m.id).await.unwrap().is_some(), "a sweep only removes expired outcomes");
+        assert!(outcome_record(&*store, &m.id).await.is_some(), "a sweep only removes expired outcomes");
     })
     .await
 }

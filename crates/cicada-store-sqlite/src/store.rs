@@ -12,10 +12,9 @@ use cicada::retention::Retention;
 use cicada::retry::RetryPolicy;
 use cicada::store::support::{self, check_limit};
 use cicada::store::{
-    ActorRecord, CancelResult, ChainEntry, Claim, Clock, CommitRequest, CommitResult, CreateResult, DeleteResult,
-    EnqueueResult, Message, MessageId, MessageStatus, NodeId, OutcomeRecord, OutcomeStatus, OutgoingMessage, Page,
-    PageCursor, RegisterResult, RenewResult, StateChange, Store, StoreError, StoreResult, SystemClock, TurnOutcome,
-    TypeDef,
+    ActorRecord, CancelResult, Claim, Clock, CommitRequest, CommitResult, CreateResult, DeleteResult, EnqueueResult,
+    Message, MessageId, MessageStatus, NodeId, OutcomeRecord, OutcomeStatus, OutgoingMessage, Page, PageCursor,
+    RegisterResult, RenewResult, StateChange, Store, StoreError, StoreResult, SystemClock, TurnOutcome, TypeDef,
 };
 use cicada::time::{self, DEFAULT_RETENTION, Timestamp};
 use serde_json::Value;
@@ -27,6 +26,9 @@ use crate::conn::{Conn, Mode, db_error};
 use crate::rows::{self, col, instant, json, micros};
 use crate::schema;
 
+/// Number of read connections of a store.
+const READERS: usize = 4;
+
 /// Settings of a [`SqliteStore`].
 #[derive(Clone)]
 pub struct SqliteOptions {
@@ -36,18 +38,11 @@ pub struct SqliteOptions {
     pub retention: Duration,
     /// How long a statement waits for another connection's (or process's) lock.
     pub busy_timeout: Duration,
-    /// Number of read connections.
-    pub readers: usize,
 }
 
 impl Default for SqliteOptions {
     fn default() -> Self {
-        Self {
-            clock: Arc::new(SystemClock),
-            retention: DEFAULT_RETENTION,
-            busy_timeout: Duration::from_secs(5),
-            readers: 4,
-        }
+        Self { clock: Arc::new(SystemClock), retention: DEFAULT_RETENTION, busy_timeout: Duration::from_secs(5) }
     }
 }
 
@@ -56,7 +51,6 @@ impl std::fmt::Debug for SqliteOptions {
         f.debug_struct("SqliteOptions")
             .field("retention", &self.retention)
             .field("busy_timeout", &self.busy_timeout)
-            .field("readers", &self.readers)
             .finish_non_exhaustive()
     }
 }
@@ -176,12 +170,9 @@ impl ReadTx<'_> {
 
 impl SqliteStore {
     /// Opens (or creates, with its schema) the database file at `path` and migrates it to the current schema version.
-    /// Fails with [`StoreError::Invalid`] when `readers` is 0 or the file was written by a newer schema version, and
-    /// with [`StoreError::Unavailable`] when the file cannot be opened.
+    /// Fails with [`StoreError::Invalid`] when the file was written by a newer schema version, and with
+    /// [`StoreError::Unavailable`] when the file cannot be opened.
     pub async fn open(path: impl AsRef<Path>, options: SqliteOptions) -> StoreResult<Self> {
-        if options.readers == 0 {
-            return Err(StoreError::Invalid("readers must be positive".into()));
-        }
         let base = SqliteConnectOptions::new()
             .filename(path.as_ref())
             .busy_timeout(options.busy_timeout)
@@ -195,8 +186,8 @@ impl SqliteStore {
         }
         // WAL is a property of the file, set by the writer; readers only read.
         let reader_options = base.read_only(true);
-        let mut readers = Vec::with_capacity(options.readers);
-        for _ in 0..options.readers {
+        let mut readers = Vec::with_capacity(READERS);
+        for _ in 0..READERS {
             match Conn::connect(&reader_options).await {
                 Ok(conn) => readers.push(conn),
                 Err(e) => {
@@ -290,11 +281,7 @@ impl SqliteStore {
                 .map(|row| rows::type_def(&row))
                 .transpose()?;
         if let Some(existing) = existing {
-            return Ok(if existing.contract_hash == def.contract_hash {
-                RegisterResult::Registered(existing)
-            } else {
-                RegisterResult::Conflict { reason: support::hash_conflict_reason(&def.template), existing }
-            });
+            return Ok(support::register_again(existing, &def));
         }
         // BEGIN IMMEDIATE serialises registrations, so the overlap check sees every committed template.
         let registered = fetch_all(c, sqlx::query("SELECT * FROM actor_types"), rows::type_def).await?;
@@ -399,23 +386,7 @@ impl SqliteStore {
         let deliver_at = message.delivery.resolve(now).map_err(invalid)?;
         // An expired, not yet swept outcome with the same id.
         execute(c, sqlx::query("DELETE FROM outcomes WHERE message_id = ?").bind(message.id.as_str())).await?;
-        let stored = Message {
-            id: message.id,
-            to: message.to,
-            from: message.from,
-            message_type: message.message_type,
-            payload: message.payload,
-            deliver_at,
-            correlation_id: message.correlation_id,
-            headers: message.headers,
-            seq: next_value(c, "seq").await?,
-            attempt: 0,
-            failures: 0,
-            last_error: None,
-            retry: message.retry,
-            caused_by: message.caused_by,
-            retention: message.retention,
-        };
+        let stored = message.into_message(deliver_at, next_value(c, "seq").await?);
         execute(
             c,
             sqlx::query(
@@ -469,12 +440,11 @@ impl SqliteStore {
             c,
             sqlx::query(
                 "INSERT INTO outcomes
-                    (message_id, actor_uri, status, error, finished_at, envelope, caused_by, visible_until, keep_last, keep_seq,
-                     stripped)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (message_id, actor_uri, status, error, finished_at, envelope, visible_until, keep_last, keep_seq, stripped)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                  ON CONFLICT (message_id) DO UPDATE SET actor_uri = excluded.actor_uri, status = excluded.status,
                     error = excluded.error, finished_at = excluded.finished_at, envelope = excluded.envelope,
-                    caused_by = excluded.caused_by, visible_until = excluded.visible_until, keep_last = excluded.keep_last,
+                    visible_until = excluded.visible_until, keep_last = excluded.keep_last,
                     keep_seq = excluded.keep_seq, stripped = excluded.stripped",
             )
             .bind(message.id.as_str())
@@ -483,7 +453,6 @@ impl SqliteStore {
             .bind(if removed { None } else { error.as_deref() })
             .bind(micros(now))
             .bind(json(&support::envelope_to_json(&envelope)))
-            .bind(message.caused_by.as_ref().map(MessageId::as_str))
             .bind(support::visible_until(&message, status, now).map(micros))
             .bind(i64::from(keep_last.is_some()))
             .bind(keep_seq)
@@ -683,32 +652,6 @@ impl SqliteStore {
         }))
     }
 
-    async fn chain_entry_in(
-        &self,
-        c: &mut SqliteConnection,
-        id: &MessageId,
-        now: Timestamp,
-    ) -> StoreResult<Option<ChainEntry>> {
-        if let Some(status) = self.status_in(c, id, now).await? {
-            return Ok(Some(ChainEntry::Live(status)));
-        }
-        let removed = fetch_optional(
-            c,
-            sqlx::query("SELECT * FROM outcomes WHERE message_id = ? AND (finished_at > ? OR visible_until > ?)")
-                .bind(id.as_str())
-                .bind(self.cutoff(now))
-                .bind(micros(now)),
-        )
-        .await?
-        .map(|row| rows::outcome(&row))
-        .transpose()?;
-        Ok(removed.map(|o| ChainEntry::Removed {
-            status: o.status,
-            finished_at: o.finished_at,
-            envelope: support::stripped(&o.envelope),
-        }))
-    }
-
     async fn cancel_in(&self, c: &mut SqliteConnection, id: &MessageId, now: Timestamp) -> StoreResult<CancelResult> {
         let Some(message) = Self::message_in(c, id).await? else {
             return Ok(match self.live_outcome(c, id, now).await? {
@@ -895,23 +838,8 @@ async fn next_value(c: &mut SqliteConnection, name: &str) -> StoreResult<i64> {
     Ok(row.get(0))
 }
 
-/// The first `limit` of `items` (which holds at most `limit + 1`), with the cursor of the last one when there are more.
-fn page_of<T>(mut items: Vec<T>, limit: usize, cursor: impl Fn(&T) -> PageCursor) -> Page<T> {
-    if items.len() > limit {
-        items.truncate(limit);
-        let next = items.last().map(&cursor);
-        Page::new(items, next)
-    } else {
-        Page::new(items, None)
-    }
-}
-
 #[async_trait]
 impl Store for SqliteStore {
-    fn retention(&self) -> Duration {
-        self.retention
-    }
-
     async fn now(&self) -> StoreResult<Timestamp> {
         let tx = self.read().await?;
         let now = tx.now;
@@ -921,17 +849,6 @@ impl Store for SqliteStore {
     async fn register(&self, def: TypeDef) -> StoreResult<RegisterResult> {
         let mut tx = self.write().await?;
         let result = Self::register_in(tx.conn(), def).await;
-        tx.end(result).await
-    }
-
-    async fn type_def(&self, template: &UriTemplate) -> StoreResult<Option<TypeDef>> {
-        let mut tx = self.read().await?;
-        let result = fetch_optional(
-            tx.conn(),
-            sqlx::query("SELECT * FROM actor_types WHERE template = ?").bind(template.as_str()),
-        )
-        .await
-        .and_then(|row| row.map(|row| rows::type_def(&row)).transpose());
         tx.end(result).await
     }
 
@@ -978,7 +895,7 @@ impl Store for SqliteStore {
             |row| rows::address(&col::<String>(row, "uri")?),
         )
         .await
-        .map(|items| page_of(items, limit, |a| PageCursor(a.to_string())));
+        .map(|items| support::page_of(items, limit, |a| PageCursor(a.to_string())));
         tx.end(result).await
     }
 
@@ -1022,11 +939,8 @@ impl Store for SqliteStore {
         ttl: Duration,
         limit: usize,
     ) -> StoreResult<Vec<Claim>> {
-        if limit == 0 || types.is_empty() {
+        if !support::check_claim(types, ttl, limit)? {
             return Ok(Vec::new());
-        }
-        if ttl.is_zero() {
-            return Err(StoreError::Invalid("ttl must be positive".into()));
         }
         let mut tx = self.write().await?;
         let now = tx.now;
@@ -1117,7 +1031,7 @@ impl Store for SqliteStore {
             rows::message,
         )
         .await
-        .map(|items| page_of(items, limit, support::mailbox_cursor));
+        .map(|items| support::page_of(items, limit, support::mailbox_cursor));
         tx.end(result).await
     }
 
@@ -1160,7 +1074,7 @@ impl Store for SqliteStore {
         let mut tx = self.read().await?;
         let result = fetch_all(tx.conn(), query, rows::message)
             .await
-            .map(|items| page_of(items, limit, support::pending_cursor));
+            .map(|items| support::page_of(items, limit, support::pending_cursor));
         tx.end(result).await
     }
 
@@ -1168,13 +1082,6 @@ impl Store for SqliteStore {
         let mut tx = self.write().await?;
         let now = tx.now;
         let result = self.cancel_in(tx.conn(), id, now).await;
-        tx.end(result).await
-    }
-
-    async fn outcome(&self, id: &MessageId) -> StoreResult<Option<OutcomeRecord>> {
-        let mut tx = self.read().await?;
-        let now = tx.now;
-        let result = self.live_outcome(tx.conn(), id, now).await;
         tx.end(result).await
     }
 
@@ -1220,63 +1127,7 @@ impl Store for SqliteStore {
             rows::outcome,
         )
         .await
-        .map(|items| page_of(items, limit, |o| support::failure_cursor(o.finished_at, &o.message_id)));
-        tx.end(result).await
-    }
-
-    async fn chain_entries(&self, ids: &[MessageId]) -> StoreResult<Vec<ChainEntry>> {
-        let mut tx = self.read().await?;
-        let now = tx.now;
-        let result = async {
-            let mut seen = HashSet::new();
-            let mut entries = Vec::new();
-            for id in ids.iter().filter(|id| seen.insert(*id)) {
-                if let Some(entry) = self.chain_entry_in(tx.conn(), id, now).await? {
-                    entries.push(entry);
-                }
-            }
-            Ok(entries)
-        }
-        .await;
-        tx.end(result).await
-    }
-
-    async fn chain_children(&self, parents: &[MessageId], limit: usize) -> StoreResult<Vec<ChainEntry>> {
-        check_limit(limit)?;
-        let mut seen = HashSet::new();
-        let wanted: Vec<&str> = parents.iter().map(MessageId::as_str).filter(|id| seen.insert(*id)).collect();
-        if wanted.is_empty() {
-            self.check_open()?;
-            return Ok(Vec::new());
-        }
-        let sql = format!(
-            "SELECT id FROM messages WHERE caused_by IN {in_list}
-             UNION ALL
-             SELECT message_id FROM outcomes WHERE caused_by IN {in_list} AND (finished_at > ? OR visible_until > ?)
-             LIMIT ?",
-            in_list = placeholders(wanted.len())
-        );
-        let mut tx = self.read().await?;
-        let now = tx.now;
-        let result = async {
-            let mut query = sqlx::query(AssertSqlSafe(sql));
-            for id in wanted.iter().chain(wanted.iter()) {
-                query = query.bind(*id);
-            }
-            let query = query.bind(self.cutoff(now)).bind(micros(now)).bind(limit as i64);
-            let ids = fetch_all(tx.conn(), query, |row| {
-                rows::message_id(row.try_get(0).map_err(|e| StoreError::Corrupt(e.to_string()))?)
-            })
-            .await?;
-            let mut entries = Vec::with_capacity(ids.len());
-            for id in &ids {
-                if let Some(entry) = self.chain_entry_in(tx.conn(), id, now).await? {
-                    entries.push(entry);
-                }
-            }
-            Ok(entries)
-        }
-        .await;
+        .map(|items| support::page_of(items, limit, |o| support::failure_cursor(o.finished_at, &o.message_id)));
         tx.end(result).await
     }
 
@@ -1284,7 +1135,7 @@ impl Store for SqliteStore {
         let mut tx = self.write().await?;
         let now = tx.now;
         let result = async {
-            // Hidden records lose their content (the minimal record stays for dedup and chains).
+            // Hidden records lose their content (the minimal record stays for dedup).
             execute(
                 tx.conn(),
                 sqlx::query(

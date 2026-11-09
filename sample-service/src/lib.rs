@@ -1,4 +1,4 @@
-//! A runnable Cicada node with the examples, the HTTP API and the console, configured by environment variables (see
+//! A runnable Cicada node with the examples and the HTTP API, configured by environment variables (see
 //! [`SampleConfig::from_vars`]). End-to-end tests drive it over HTTP.
 //!
 //! | Module | What |

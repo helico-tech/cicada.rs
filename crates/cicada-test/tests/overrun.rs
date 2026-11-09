@@ -1,6 +1,6 @@
 //! A run that *ended* but overran its maximum turn in blocking code (which cancellation cannot stop) is a timeout, but
-//! it is only retried when the handler itself failed: a handler that returned, a permanent failure and the unhandled
-//! policy's decisions must not be re-run. A run that was cut off at its maximum turn is a timeout retried per policy.
+//! it is only retried when the handler itself failed: a handler that returned and a permanent failure must not be
+//! re-run. A run that was cut off at its maximum turn is a timeout retried per policy.
 //! Real time: blocking code does not advance tokio's paused clock.
 
 mod common;
@@ -9,15 +9,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use cicada::ActorSystem;
 use cicada::plugin::{HandlerErrorContext, HookResult, Plugin};
 use cicada::prelude::*;
-use cicada::store::{Message, MessageStatus, OutcomeStatus, OutgoingMessage, Store};
+use cicada::store::{Message, MessageStatus, OutcomeStatus, Store};
 use cicada::turn::HandlerFailure;
-use cicada::{ActorSystem, ActorType};
 use cicada_test::InMemoryStore;
 use common::*;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
 const MAX_TURN: Duration = Duration::from_millis(200);
 const BLOCK: u64 = 600;
@@ -66,7 +65,7 @@ impl Actor for LaggardActor {
     type Ref = Laggard;
     type State = LaggardState;
     type Message = LaggardMsg;
-    const UNHANDLED: Unhandled = Unhandled::Custom;
+    const UNHANDLED: Unhandled = Unhandled::Fail;
     const MAX_TURN: Option<Duration> = Some(MAX_TURN);
 
     async fn handle(&self, turn: &mut Turn<Self>, message: LaggardMsg) -> HandlerResult {
@@ -88,15 +87,6 @@ impl Actor for LaggardActor {
             }
         }
     }
-
-    async fn on_unhandled(&self, turn: &mut Turn<Self>, _reason: String) -> Result<UnhandledDecision, HandlerError> {
-        std::thread::sleep(Duration::from_millis(BLOCK));
-        Ok(if turn.message().message_type == "SlowDrop" {
-            UnhandledDecision::Drop
-        } else {
-            UnhandledDecision::Fail("unhandled after blocking".into())
-        })
-    }
 }
 
 #[derive(Default, Clone)]
@@ -111,12 +101,12 @@ impl Plugin for Observer {
         "Observer"
     }
 
-    async fn on_handler_error(&self, ctx: &mut HandlerErrorContext<'_>) -> HookResult {
+    async fn on_handler_error(&self, ctx: &HandlerErrorContext<'_>) -> HookResult {
         self.seen.push(format!(
             "{}:willRetry={}:{}",
             failure_kind(ctx.error()),
             ctx.will_retry(),
-            ctx.failure_reason()
+            ctx.error().reason()
         ));
         let cause = match ctx.error() {
             HandlerFailure::Timeout { cause, .. } => cause.as_ref().map(|c| c.reason()),
@@ -141,8 +131,7 @@ impl Scenario {
     async fn new() -> Self {
         let memory = Arc::new(InMemoryStore::default());
         let observer = Observer::default();
-        let system =
-            ActorSystem::builder(memory.clone()).host(ActorType::new(LaggardActor).install(observer.clone())).build();
+        let system = ActorSystem::builder(memory.clone()).host(LaggardActor).install(observer.clone()).build();
         system.create(&slow(), &LaggardState::default()).await.unwrap();
         Self { system, memory, observer }
     }
@@ -151,19 +140,13 @@ impl Scenario {
         accepted(self.system.send_with(&slow(), message, SendOptions::new().retry(policy())).await.unwrap())
     }
 
-    async fn raw(&self, message_type: &str) -> Message {
-        let mut m = OutgoingMessage::new(addr(&slow()), message_type, json!({}));
-        m.retry = Some(policy());
-        enqueue(&*self.memory, m).await
-    }
-
     async fn run(&self) {
         assert_eq!(self.system.run_due_turns(1).await.unwrap(), 1);
     }
 
     /// The message ended failed(timeout) after one run, not retried.
     async fn assert_timed_out_for_good(&self, m: &Message) {
-        let outcome = self.memory.outcome(&m.id).await.unwrap().expect("a final outcome, no retry");
+        let outcome = outcome_of(&*self.memory, &m.id).await.expect("a final outcome, no retry");
         assert_eq!(outcome.status, OutcomeStatus::Failed);
         assert_eq!(outcome.error.as_deref(), Some("timeout"));
         assert_eq!(outcome.envelope.failures, 0);
@@ -205,17 +188,6 @@ async fn a_permanent_failure_after_overrunning_is_not_retried() {
     s.run().await;
     s.assert_timed_out_for_good(&vetoed).await;
     assert_eq!(s.observer.seen.all(), vec!["TurnTimeoutException:willRetry=false:timeout"; 2]);
-}
-
-#[tokio::test]
-async fn unhandled_fail_and_drop_decisions_after_overrunning_are_not_retried() {
-    let s = Scenario::new().await;
-    let failed = s.raw("SlowFail").await;
-    s.run().await;
-    s.assert_timed_out_for_good(&failed).await;
-    let dropped = s.raw("SlowDrop").await;
-    s.run().await;
-    s.assert_timed_out_for_good(&dropped).await;
 }
 
 #[tokio::test]

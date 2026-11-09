@@ -36,7 +36,7 @@ fn message_view_keeps_its_wire_form() {
         r#"{"id":"m1","to":"actor://a/b","from":null,"type":"Run","payload":{"x":1},"deliverAt":"2026-01-01T00:00:00.000001Z","correlationId":null,"headers":{},"seq":3,"attempt":0,"failures":0,"lastError":null,"retry":{"maxAttempts":2,"backoff":{"kind":"fixed","delay":"PT1H"}},"causedBy":null,"retention":{"done":{"kind":"last","count":5},"failed":null}}"#
     );
     let back: MessageView = serde_json::from_str(&text).unwrap();
-    assert_eq!(Message::from(back), message());
+    assert_eq!(back, MessageView::from(message()));
 }
 
 #[test]
@@ -117,28 +117,42 @@ fn send_requests_decode_strictly() {
 fn delays_and_their_errors() {
     let delay = |d: &str| decode(&format!(r#"{{"type": "Add", "delay": {d}}}"#)).map(|r| r.delay.unwrap());
     assert_eq!(delay(r#""PT5S""#).unwrap(), Duration::from_secs(5));
-    assert_eq!(delay(r#""5s""#).unwrap(), Duration::from_secs(5));
-    assert_eq!(delay("1500").unwrap(), Duration::from_millis(1500));
-    assert_eq!(delay(r#""-PT1M""#).unwrap(), Duration::ZERO);
-    let soon = delay(r#""soon""#).unwrap_err();
-    assert!(soon.contains("delay 'soon'") && !soon.contains("backoff"), "{soon}");
+    // ISO-8601 only: no short form, no milliseconds, not negative.
+    assert!(delay(r#""5s""#).is_err());
+    assert!(delay("1500").is_err());
     assert!(delay("1.5").is_err());
+    assert!(delay(r#""-PT1M""#).unwrap_err().contains("negative"));
+    let soon = delay(r#""soon""#).unwrap_err();
+    assert!(soon.contains("'soon'"), "{soon}");
     let both = decode(r#"{"type": "Add", "delay": "PT1S", "deliverAt": "2030-01-01T00:00:00Z"}"#).unwrap();
     assert!(both.delivery().is_err());
 }
 
 #[test]
-fn policy_errors_name_their_field() {
-    for (field, retry) in [
-        ("initial", r#"{"maxAttempts": 3, "backoff": {"kind": "exponential", "initial": "soon", "max": "PT1M"}}"#),
-        ("max", r#"{"maxAttempts": 3, "backoff": {"kind": "exponential", "initial": "PT1S", "max": 1.5}}"#),
-        ("delay", r#"{"maxAttempts": 3, "backoff": {"kind": "fixed", "delay": {"s": 1}}}"#),
+fn policies_are_refused_or_decoded() {
+    for retry in [
+        r#"{"maxAttempts": 3, "backoff": {"kind": "exponential", "initial": "soon", "max": "PT1M"}}"#,
+        r#"{"maxAttempts": 3, "backoff": {"kind": "exponential", "initial": "PT1S", "max": 1.5}}"#,
+        r#"{"maxAttempts": 3, "backoff": {"kind": "fixed", "delay": {"s": 1}}}"#,
+        r#"{"maxAttempts": 3, "backoff": {"kind": "fixed", "delay": "-PT1S"}}"#,
+        r#"{"maxAttempts": 3, "backoff": {"kind": "fixed", "delay": "PT0S"}}"#,
+        r#"{"maxAttempts": 0, "backoff": {"kind": "fixed", "delay": "PT1S"}}"#,
+        r#"{"maxAttempts": 3, "backoff": {"kind": "linear", "delay": "PT1S"}}"#,
     ] {
-        let e = decode(&format!(r#"{{"type": "Add", "retry": {retry}}}"#)).unwrap_err();
-        assert!(e.contains(&format!("backoff.{field}")), "{e}");
+        assert!(decode(&format!(r#"{{"type": "Add", "retry": {retry}}}"#)).is_err(), "{retry}");
     }
+    let defaulted = decode(
+        r#"{"type": "Add", "retry": {"maxAttempts": 3, "backoff": {"kind": "exponential", "initial": "PT1S", "max": "PT1M"}}}"#,
+    )
+    .unwrap()
+    .retry
+    .unwrap();
+    assert_eq!(
+        defaulted.backoff(),
+        &Backoff::exponential(Duration::from_secs(1), 2.0, Duration::from_secs(60)).unwrap()
+    );
     let policy = decode(
-        r#"{"type": "Add", "retention": {"done": {"kind": "last", "count": 10}, "failed": {"kind": "for", "age": 60000}}}"#,
+        r#"{"type": "Add", "retention": {"done": {"kind": "last", "count": 10}, "failed": {"kind": "for", "age": "PT1M"}}}"#,
     )
     .unwrap()
     .retention

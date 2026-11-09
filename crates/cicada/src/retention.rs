@@ -19,6 +19,7 @@ use crate::time::{MAX_DELAY, format_duration, serde_duration};
 /// JSON: `{"done": {"kind": "remove"}, "failed": {"kind": "for", "age": "P30D"}}`, with `{"kind": "last", "count":
 /// 100}` for [`Keep::Last`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Retention {
     /// The rule for a message that ends `done`; `None` for the store default.
     #[serde(default)]
@@ -97,11 +98,11 @@ pub enum Keep {
 }
 
 #[derive(Deserialize)]
-#[serde(tag = "kind", rename_all = "lowercase")]
+#[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
 enum RawKeep {
-    Remove,
+    Remove {},
     For {
-        #[serde(deserialize_with = "age_field")]
+        #[serde(deserialize_with = "serde_duration::deserialize")]
         age: Duration,
     },
     Last {
@@ -109,17 +110,12 @@ enum RawKeep {
     },
 }
 
-fn age_field<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Duration, D::Error> {
-    let signed = crate::time::serde_signed_duration::deserialize(deserializer)?;
-    Ok(if signed.is_negative() { Duration::ZERO } else { signed.non_negative() })
-}
-
 impl TryFrom<RawKeep> for Keep {
     type Error = String;
 
     fn try_from(raw: RawKeep) -> Result<Self, String> {
         match raw {
-            RawKeep::Remove => Ok(Keep::Remove),
+            RawKeep::Remove {} => Ok(Keep::Remove),
             RawKeep::For { age } => Keep::keep_for(age),
             RawKeep::Last { count } => {
                 if !(1..=Keep::MAX_COUNT as i64).contains(&count) {

@@ -11,7 +11,7 @@ use cicada::address::ActorAddress;
 use cicada::store::{
     CommitRequest, CommitResult, MessageStatus, OutcomeStatus, RenewResult, Store, StoreError, StoreResult,
 };
-use cicada::{ActorSystem, ActorType};
+use cicada::{ActorSystem, Unhandled};
 use common::*;
 use tokio::time::Instant;
 
@@ -19,13 +19,11 @@ fn a() -> Counter {
     Counter::new("a")
 }
 
-/// The counter type with a maximum turn of 5 minutes.
-fn slow() -> ActorType<CounterActor> {
-    ActorType::new(CounterActor).max_turn(Duration::from_secs(300))
-}
+// The counter type with a maximum turn of 5 minutes.
+counter_type!(SlowCounter, Unhandled::Fail, Duration::from_secs(300));
 
 fn slow_node(store: Arc<dyn Store>, name: &str) -> ActorSystem {
-    node(store, name).host(slow()).build()
+    node(store, name).host(SlowCounter).build()
 }
 
 #[derive(Default)]
@@ -54,7 +52,7 @@ async fn heartbeat_renews_at_a_third_of_the_ttl_and_keeps_a_long_turn_alive() {
     let m = accepted(system.send(&a(), CounterMsg::Sleep { millis: 95_000 }).await.unwrap());
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1);
     assert_eq!(store.faults.0.load(Ordering::SeqCst), 9); // at 10, 20, ..., 90 s
-    assert_eq!(memory.outcome(&m.id).await.unwrap().unwrap().status, OutcomeStatus::Done);
+    assert_eq!(outcome_of(&*memory, &m.id).await.unwrap().status, OutcomeStatus::Done);
     assert_eq!(state_of::<CounterState>(&*memory, &a().address()).await.log, vec!["sleep:95000", "woke"]);
 }
 
@@ -129,7 +127,7 @@ async fn a_node_that_cannot_renew_cancels_its_handler_before_the_lease_expires_e
     assert_eq!(healthy.run_due_turns(1).await.unwrap(), 1); // claims at t = 31 s (attempt 2), finishes at t = 76 s
 
     assert!(partitioned.faults.0.lock().unwrap().is_none(), "the stale node never tried to commit");
-    let outcome = memory.outcome(&m.id).await.unwrap().unwrap();
+    let outcome = outcome_of(&*memory, &m.id).await.unwrap();
     assert_eq!(outcome.status, OutcomeStatus::Done);
     assert_eq!(outcome.envelope.attempt, 2);
     assert_eq!(state_of::<CounterState>(&*memory, &a().address()).await.log, vec!["sleep:45000", "woke"]);
@@ -155,5 +153,5 @@ async fn a_released_lease_leaves_the_message_pending_for_the_next_claim() {
         other => panic!("not pending: {other:?}"),
     }
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1); // claimable immediately, no TTL wait
-    assert_eq!(memory.outcome(&m.id).await.unwrap().unwrap().envelope.attempt, 2);
+    assert_eq!(outcome_of(&*memory, &m.id).await.unwrap().envelope.attempt, 2);
 }

@@ -3,6 +3,7 @@
 mod common;
 
 use std::collections::BTreeSet;
+use std::str::FromStr;
 use std::time::Duration;
 
 use cicada::address::{ActorAddress, UriTemplate};
@@ -11,7 +12,8 @@ use cicada::store::{
     ActorCreate, CommitRequest, CommitResult, EnqueueResult, MessageId, MessageStatus, NodeId, OutcomeStatus,
     OutgoingMessage, StateChange, Store, StoreError, TurnOutcome,
 };
-use cicada_store_postgres::PostgresStore;
+use cicada_store_conformance::outcome_record;
+use cicada_store_postgres::{PgConnectOptions, PostgresStore};
 use serde_json::json;
 use sqlx::AssertSqlSafe;
 
@@ -100,7 +102,7 @@ async fn s2_a_commit_failing_half_way_applies_nothing() {
         Err(e @ StoreError::Unavailable(_)) => assert!(format!("{e:?}").contains("injected fault"), "{e:?}"),
         other => panic!("expected the injected fault, got {other:?}"),
     }
-    assert!(store.outcome(&m.id).await.unwrap().is_none(), "no outcome");
+    assert!(outcome_record(&*store, &m.id).await.is_none(), "no outcome");
     assert!(
         matches!(store.status(&m.id).await.unwrap(), Some(MessageStatus::Running { .. })),
         "the lease is still held"
@@ -123,7 +125,8 @@ async fn a_node_can_start_as_a_user_without_create_privileges_once_the_schema_is
     db.sql(&format!("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA \"{s}\" TO \"{role}\"")).await;
     db.sql(&format!("GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA \"{s}\" TO \"{role}\"")).await;
     let result = async {
-        let store = PostgresStore::connect_as(&db.url, Some(&role), Some("dml"), db.config()).await?;
+        let options = PgConnectOptions::from_str(&db.url).expect("a PostgreSQL URL").username(&role).password("dml");
+        let store = PostgresStore::connect_with(options, db.config()).await?;
         store.create(&a(), &template(), None).await?;
         let enqueued = store.enqueue(OutgoingMessage::new(a(), "T", json!(1))).await?;
         let claim = store.claim_due(&types(), &node(), TTL, 1).await?.remove(0);
@@ -164,7 +167,7 @@ async fn a_stored_retry_policy_this_version_cannot_decode_reads_as_no_policy_and
     let committed =
         store.commit(CommitRequest::new(a(), claim.epoch, bad.id.clone(), TurnOutcome::Done)).await.unwrap();
     assert!(matches!(committed, CommitResult::Committed { .. }));
-    let outcome = store.outcome(&bad.id).await.unwrap().unwrap();
+    let outcome = outcome_record(&*store, &bad.id).await.unwrap();
     assert_eq!(outcome.status, OutcomeStatus::Done);
     assert!(outcome.envelope.retry.is_none());
     db.cleanup().await;

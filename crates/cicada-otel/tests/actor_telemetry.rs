@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use cicada::prelude::*;
 use cicada::store::Store;
-use cicada_otel::{ActorTelemetry, trace_headers};
+use cicada_otel::ActorTelemetry;
 use cicada_test::TestActors;
 use opentelemetry::trace::{SpanId, SpanKind, Status};
 use opentelemetry::{KeyValue, Value};
@@ -30,7 +30,11 @@ impl ActorRef for Traced {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type")]
 enum TracedMsg {
-    Hop { left: u32 },
+    Hop {
+        left: u32,
+    },
+    /// Sends `Hop { left: 0 }` to `b` with its own `traceparent`.
+    OwnParent,
     Crash,
 }
 
@@ -38,6 +42,8 @@ enum TracedMsg {
 struct TracedState {
     hops: u32,
 }
+
+const OWN_PARENT: &str = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
 
 type Seen = Arc<Mutex<Vec<BTreeMap<String, String>>>>;
 
@@ -54,12 +60,16 @@ impl Actor for TracedActor {
     async fn handle(&self, turn: &mut Turn<Self>, message: TracedMsg) -> HandlerResult {
         match message {
             TracedMsg::Hop { left } => {
-                self.seen.lock().unwrap().push(trace_headers(turn));
+                self.seen.lock().unwrap().push(turn.message().headers.clone());
                 turn.state_mut().hops += 1;
                 if left > 0 {
-                    let options = SendOptions { headers: trace_headers(turn), ..SendOptions::default() };
-                    turn.send_self_with(TracedMsg::Hop { left: left - 1 }, options)?;
+                    turn.send_self(TracedMsg::Hop { left: left - 1 })?;
                 }
+                Ok(())
+            }
+            TracedMsg::OwnParent => {
+                let own = SendOptions::new().header("traceparent", OWN_PARENT);
+                turn.send_with(&Traced { id: "b".into() }, TracedMsg::Hop { left: 0 }, own)?;
                 Ok(())
             }
             TracedMsg::Crash => Err(HandlerError::msg("boom")),
@@ -159,7 +169,7 @@ async fn one_consumer_span_per_turn_with_the_messaging_attributes() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn trace_headers_make_the_next_turn_a_child_so_a_chain_is_one_trace() {
+async fn a_chain_of_turns_is_one_trace_without_the_handlers_passing_headers() {
     let t = Telemetry::new().await;
     t.test.create(&traced(), &TracedState::default()).await;
     t.test.send(&traced(), TracedMsg::Hop { left: 2 }).await;
@@ -236,25 +246,43 @@ async fn turn_duration_and_lag_are_recorded_per_type_message_type_and_outcome() 
 }
 
 #[tokio::test(start_paused = true)]
-async fn trace_headers_hold_the_turns_traceparent_and_are_empty_without_the_plugin() {
+async fn a_sent_message_carries_the_turns_traceparent_only_with_the_plugin() {
     let t = Telemetry::new().await;
     t.test.create(&traced(), &TracedState::default()).await;
-    t.test.send(&traced(), TracedMsg::Hop { left: 0 }).await;
+    t.test.send(&traced(), TracedMsg::Hop { left: 1 }).await;
     t.test.run_until_idle().await;
-    let span = t.spans().pop().unwrap();
+    let spans = t.spans();
     let seen = t.seen.lock().unwrap().clone();
-    assert_eq!(seen.len(), 1);
-    assert_eq!(seen[0].keys().collect::<Vec<_>>(), vec!["traceparent"]);
-    let expected = format!("00-{}-{}-", span.span_context.trace_id(), span.span_context.span_id());
-    assert!(seen[0]["traceparent"].starts_with(&expected), "{seen:?}");
+    assert_eq!(seen.len(), 2);
+    // The first message came from outside the actor; the second was sent by the first turn.
+    assert!(!seen[0].contains_key("traceparent"));
+    assert_eq!(seen[1].keys().collect::<Vec<_>>(), vec!["traceparent"]);
+    let expected = format!("00-{}-{}-", spans[0].span_context.trace_id(), spans[0].span_context.span_id());
+    assert!(seen[1]["traceparent"].starts_with(&expected), "{seen:?}");
 
     let seen = Seen::default();
     let actor = TracedActor { seen: seen.clone() };
     let test = TestActors::builder().with(move |node| node.host(actor)).build().await.unwrap();
     test.create(&traced(), &TracedState::default()).await;
-    test.send(&traced(), TracedMsg::Hop { left: 0 }).await;
+    test.send(&traced(), TracedMsg::Hop { left: 1 }).await;
     test.run_until_idle().await;
-    assert_eq!(*seen.lock().unwrap(), vec![BTreeMap::new()]);
+    assert_eq!(*seen.lock().unwrap(), vec![BTreeMap::new(), BTreeMap::new()]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_send_that_sets_its_own_traceparent_keeps_it() {
+    let t = Telemetry::new().await;
+    t.test.create(&traced(), &TracedState::default()).await;
+    t.test.create(&Traced { id: "b".into() }, &TracedState::default()).await;
+    t.test.send(&traced(), TracedMsg::OwnParent).await;
+    t.test.run_until_idle().await;
+    let seen = t.seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0]["traceparent"], OWN_PARENT);
+    let spans = t.spans();
+    assert_eq!(spans.len(), 2);
+    assert_eq!(spans[1].span_context.trace_id().to_string(), "0af7651916cd43dd8448eb211c80319c");
+    assert_eq!(spans[1].parent_span_id.to_string(), "b7ad6b7169203331");
 }
 
 struct Stuck;
@@ -297,8 +325,11 @@ async fn the_span_of_a_turn_that_never_commits_is_marked_abandoned() {
     let system = ActorSystem::builder(store)
         .host(Stuck)
         .install(plugin)
-        .poll_interval(std::time::Duration::from_millis(10))
-        .shutdown_cancel_timeout(std::time::Duration::from_secs(2))
+        .config(cicada::runtime::NodeConfig {
+            poll_interval: std::time::Duration::from_millis(10),
+            shutdown_cancel_timeout: std::time::Duration::from_secs(2),
+            ..Default::default()
+        })
         .build();
     system.start().await.unwrap();
     let stuck = StuckRef { id: "s".into() };

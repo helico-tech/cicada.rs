@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use cicada::ActorSystem;
 use cicada::address::{ActorAddress, UriTemplate};
 use cicada::prelude::*;
-use cicada::runtime::{ActorSystemBuilder, NodeState, SendResult};
+use cicada::runtime::{ActorSystemBuilder, NodeConfig, NodeState, SendResult};
 use cicada::store::{Claim, MessageStatus, NodeId, OutcomeStatus, OutgoingMessage, Store, StoreError, StoreResult};
 use cicada_test::InMemoryStore;
 use common::*;
@@ -23,9 +23,14 @@ use tokio::time::Instant;
 
 const SECOND: Duration = Duration::from_secs(1);
 
+/// A lease TTL of 3 s and a poll interval of 50 ms.
+fn config() -> NodeConfig {
+    NodeConfig { lease_ttl: Duration::from_secs(3), poll_interval: Duration::from_millis(50), ..NodeConfig::default() }
+}
+
 /// A node with a lease TTL of 3 s and a poll interval of 50 ms.
 fn system(store: Arc<dyn Store>) -> ActorSystemBuilder {
-    ActorSystem::builder(store).lease_ttl(Duration::from_secs(3)).poll_interval(Duration::from_millis(50))
+    ActorSystem::builder(store).config(config())
 }
 
 async fn total(store: &dyn Store, r: &Counter) -> i32 {
@@ -122,7 +127,10 @@ async fn turns_run_end_to_end_across_instances() {
 async fn concurrency_is_bounded_by_the_per_node_limit() {
     let gauges = Arc::new(Gauges::default());
     let store = Arc::new(InMemoryStore::default());
-    let system = system(store.clone()).host(WorkerActor(gauges.clone())).concurrency(3).build();
+    let system = system(store.clone())
+        .host(WorkerActor(gauges.clone()))
+        .config(NodeConfig { concurrency: 3, ..config() })
+        .build();
     system.start().await.unwrap();
     for id in 0..12 {
         system.create_stateless(&Worker { id }).await.unwrap();
@@ -136,7 +144,10 @@ async fn concurrency_is_bounded_by_the_per_node_limit() {
 #[tokio::test]
 async fn own_enqueues_wake_the_loop_without_waiting_for_the_poll_interval() {
     let store = Arc::new(InMemoryStore::default());
-    let system = system(store.clone()).host(CounterActor).poll_interval(Duration::from_secs(3600)).build();
+    let system = system(store.clone())
+        .host(CounterActor)
+        .config(NodeConfig { poll_interval: Duration::from_secs(3600), ..config() })
+        .build();
     system.start().await.unwrap();
     let a = Counter::new("a");
     system.create(&a, &CounterState::default()).await.unwrap();
@@ -182,7 +193,10 @@ async fn a_store_wake_up_source_wakes_the_loop() {
     let memory = Arc::new(InMemoryStore::default());
     let (signals, _) = broadcast::channel(16);
     let store = Faulty::new(memory.clone(), WakeUps { signals, seen: Mutex::new(Vec::new()) });
-    let system = system(store.clone()).host(CounterActor).poll_interval(Duration::from_secs(3600)).build();
+    let system = system(store.clone())
+        .host(CounterActor)
+        .config(NodeConfig { poll_interval: Duration::from_secs(3600), ..config() })
+        .build();
     system.start().await.unwrap();
     let a = Counter::new("a");
     system.create(&a, &CounterState::default()).await.unwrap();
@@ -213,7 +227,7 @@ async fn graceful_stop_lets_running_turns_finish_within_the_grace_period() {
     eventually(5 * SECOND, || async { gauges.running.load(Ordering::SeqCst) == 1 }).await;
     system.stop_with_grace(5 * SECOND).await;
     assert_eq!(system.state(), NodeState::Stopped);
-    assert_eq!(store.outcome(&m.id).await.unwrap().unwrap().status, OutcomeStatus::Done);
+    assert_eq!(outcome_of(&*store, &m.id).await.unwrap().status, OutcomeStatus::Done);
     assert!(!system.health().await);
 }
 
@@ -221,7 +235,10 @@ async fn graceful_stop_lets_running_turns_finish_within_the_grace_period() {
 async fn turns_still_running_after_the_grace_period_are_cancelled_and_their_leases_released() {
     let gauges = Arc::new(Gauges::default());
     let store = Arc::new(InMemoryStore::default());
-    let first = system(store.clone()).node_id(NodeId::new("first").unwrap()).host(WorkerActor(gauges.clone())).build();
+    let first = system(store.clone())
+        .config(NodeConfig { node_id: NodeId::new("first").unwrap(), ..config() })
+        .host(WorkerActor(gauges.clone()))
+        .build();
     first.start().await.unwrap();
     first.create_stateless(&Worker { id: 1 }).await.unwrap();
     let m = accepted(
@@ -237,12 +254,14 @@ async fn turns_still_running_after_the_grace_period_are_cancelled_and_their_leas
         other => panic!("not pending: {other:?}"),
     }
 
-    let second =
-        system(store.clone()).node_id(NodeId::new("second").unwrap()).host(WorkerActor(gauges.clone())).build();
+    let second = system(store.clone())
+        .config(NodeConfig { node_id: NodeId::new("second").unwrap(), ..config() })
+        .host(WorkerActor(gauges.clone()))
+        .build();
     second.start().await.unwrap();
     // Claimed again at once, without waiting for the TTL.
-    eventually(5 * SECOND, || async { store.outcome(&m.id).await.unwrap().is_some() }).await;
-    assert_eq!(store.outcome(&m.id).await.unwrap().unwrap().envelope.attempt, 2);
+    eventually(5 * SECOND, || async { outcome_of(&*store, &m.id).await.is_some() }).await;
+    assert_eq!(outcome_of(&*store, &m.id).await.unwrap().envelope.attempt, 2);
     stop_all(&[&second]).await;
 }
 
@@ -260,7 +279,8 @@ impl Faults for CountSweeps {
 #[tokio::test]
 async fn the_retention_sweep_runs_periodically() {
     let store = Faulty::new(Arc::new(InMemoryStore::default()), CountSweeps::default());
-    let system = system(store.clone()).sweep_interval(Duration::from_millis(50)).build();
+    let system =
+        system(store.clone()).config(NodeConfig { sweep_interval: Duration::from_millis(50), ..config() }).build();
     system.start().await.unwrap();
     eventually(5 * SECOND, || async { store.faults.0.load(Ordering::SeqCst) >= 3 }).await;
     stop_all(&[&system]).await;

@@ -27,7 +27,7 @@ pub mod store;
 pub mod time;
 pub mod turn;
 
-pub use actor::{Actor, ActorType, Unhandled, UnhandledDecision};
+pub use actor::{Actor, ActorType, Unhandled};
 pub use address::{ActorAddress, ActorRef, UriTemplate};
 pub use message::Stateless;
 pub use runtime::{ActorSystem, CreateActorResult, OpError, SendResult, StartError};
@@ -37,7 +37,7 @@ pub use turn::{HandlerError, HandlerResult, SendOptions, Turn};
 pub mod prelude {
     pub use schemars::JsonSchema;
 
-    pub use crate::actor::{Actor, ActorType, Unhandled, UnhandledDecision};
+    pub use crate::actor::{Actor, ActorType, Unhandled};
     pub use crate::address::{ActorAddress, ActorRef};
     pub use crate::message::Stateless;
     pub use crate::retention::{Keep, Retention};

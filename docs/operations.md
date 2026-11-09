@@ -41,6 +41,7 @@ futures, logs go through `tracing`, and the host owns the store and the node's l
   use std::time::Duration;
 
   use cicada::ActorSystem;
+  use cicada::runtime::NodeConfig;
   use cicada::store::Store;
   use cicada_store_postgres::{PostgresStore, PostgresStoreConfig};
   use tokio::signal::unix::{SignalKind, signal};
@@ -50,10 +51,10 @@ futures, logs go through `tracing`, and the host owns the store and the node's l
       tracing_subscriber::fmt().with_env_filter("info").init(); // or EnvFilter::from_default_env() for RUST_LOG
       let config = PostgresStoreConfig { max_pool_size: 36, ..PostgresStoreConfig::for_schema("orders") };
       let store = Arc::new(PostgresStore::connect(&std::env::var("DATABASE_URL")?, config).await?);
+      let node = NodeConfig { concurrency: 32, shutdown_grace_period: Duration::from_secs(30), ..NodeConfig::default() };
       let system = ActorSystem::builder(store.clone())
           // .host(…) the types this node runs
-          .concurrency(32)
-          .shutdown_grace_period(Duration::from_secs(30))
+          .config(node)
           .build();
       system.start().await?;
       // … serve the HTTP API (see the README) …
@@ -136,9 +137,6 @@ works against an older node as long as it does not use a newer feature.
 
 ## On call
 
-- **The console** (`cicada_ui::actor_ui`, README, Actor console) shows actors, mailboxes, pending messages, failures
-  and types, and can send, cancel and delete. Mount it behind the same authentication as the API if the network is
-  not trusted.
 - **Health.** `GET /health` is 200 while the node runs and its store answers, 503 otherwise (also while it stops).
   Use it for readiness; for liveness, prefer a check that does not fail when only the database is down.
 - **Failures.** `GET /failures?since=…` lists failed messages with envelope and error, kept for the outcome
@@ -153,7 +151,7 @@ works against an older node as long as it does not use a newer feature.
   `PUT /actors/{path}`; the delete purges its mailbox).
 - **Store down.** Nothing proceeds and HTTP answers 503 `store-unavailable`; `ActorClient` retries sends with the same
   id. Nodes recover on their own when the store returns: the dispatch loop retries claims after `poll_interval`, and
-  the PostgreSQL wake-up listener reconnects with a back-off (from `listener_reconnect_delay`, doubling up to 30 s),
+  the PostgreSQL wake-up listener reconnects with a back-off (from 250 ms, doubling up to 30 s),
   polling meanwhile.
 
 ### Logs
@@ -169,7 +167,7 @@ worth an alert:
 | info | `Commit of … rejected: lease lost` | A turn outlived its lease (a stalled runtime, a pause, a slow store); another node may have run it. |
 | warn | `Handler of … is still running … it does not yield` | Blocking code in a handler; move it to `spawn_blocking`. |
 | error | `Turn of … panicked …`, `A turn task failed` | A panic outside the handler (a hook, the runtime): a bug. A handler's own panic is an ordinary handler failure (`panic: …`). |
-| warn | `onHandlerError of plugin … failed; ignored`, `onOutcome of plugin … failed; ignored` | A plugin hook failed. |
+| warn | `on_handler_error of plugin … failed; ignored`, `on_outcome of plugin … failed; ignored` | A plugin hook failed. |
 | warn | `Retention sweep failed`, `Store wake-ups ended; falling back to polling` | The node keeps working, slower or with more stored data. |
 | warn | `Ignoring the retry policy of …` | A stored policy that cannot be decoded is read as no policy. |
 | info | `Cancelling N turns after the grace period of …` | A stop that cut running turns off. |
@@ -183,12 +181,7 @@ PostgreSQL (`PostgresStoreConfig`):
 | `schema` | `public` | Created on start when absent. Separate schemas let environments or tests share a database. |
 | `retention` | 7 days | Outcome retention and the dedup window of message ids. |
 | `max_pool_size` | 20 | At least `concurrency + 4`; see [Sizing](#sizing). |
-| `min_idle` | 1 | Idle connections kept open. |
-| `connection_timeout` | 10 s | Wait for a pooled connection before an operation fails as unavailable. |
 | `socket_timeout` | 30 s | Longest single transaction attempt; then it fails and its connection is closed, so a dead peer without a TCP reset cannot block a claim, commit or stop. Zero disables it. |
-| `channel` | `cicada_<schema>` | The `LISTEN/NOTIFY` channel; one per store, so stores in other schemas do not wake each other. |
-| `listener_reconnect_delay` | 250 ms | First back-off of the wake-up listener; doubles up to 30 s. |
-| `transaction_retries` | 8 | Re-runs of a transaction PostgreSQL aborted for a deadlock or a serialization failure. |
 
 Connection parameters (`sslmode`, `sslrootcert`, `application_name`, `options`, …) go in the URL;
 `PostgresStore::connect_with(PgConnectOptions, config)` takes sqlx options for anything a URL cannot carry. Store time
@@ -201,7 +194,6 @@ SQLite (`SqliteOptions`):
 | --- | --- | --- |
 | `retention` | 7 days | As for PostgreSQL. |
 | `busy_timeout` | 5 s | How long a write waits for another process's lock before it fails as unavailable. |
-| `readers` | 4 | Read connections next to the one writer. |
 | `clock` | system clock | The store clock; a virtual one in tests. |
 
 The file runs in WAL mode with `synchronous = FULL`. Keep it on a local disk, not a network file system. Store time
@@ -219,5 +211,4 @@ Install `ActorTelemetry` (`cicada-otel`, README, OpenTelemetry) to get a span pe
 - **Retries** (`cicada.outcome="rescheduled"`) climbing: a dependency is failing and senders' retry policies are
   absorbing it.
 - **Abandoned turns** (spans with `cicada.outcome="abandoned"`): turns that lost their lease or were cut off by a stop.
-- Mailbox depth is not a metric (it needs a store query); `GET /messages?prefix=` and the console's Pending page
-  show it.
+- Mailbox depth is not a metric (it needs a store query); `GET /messages?prefix=` shows it.

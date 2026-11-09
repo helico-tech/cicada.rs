@@ -1,6 +1,6 @@
 [package]
 name = "cicada-sample-service"
-description = "A runnable Cicada node with the examples, the HTTP API and the console."
+description = "A runnable Cicada node with the examples and the HTTP API."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,14 +13,11 @@ axum.workspace = true
 chrono.workspace = true
 cicada.workspace = true
 cicada-axum.workspace = true
-cicada-docker.workspace = true
 cicada-examples.workspace = true
 cicada-extras.workspace = true
 cicada-otel.workspace = true
 cicada-store-postgres.workspace = true
 cicada-store-sqlite.workspace = true
-cicada-ui.workspace = true
-md-5 = "0.11"
 opentelemetry.workspace = true
 # OTLP over HTTP/protobuf (port 4318). The blocking reqwest
 # client suits the SDK's batch processors, which export from their own threads.

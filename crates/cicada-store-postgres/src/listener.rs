@@ -9,6 +9,10 @@ use tokio::sync::{broadcast, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
 
+use crate::store::CONNECTION_TIMEOUT;
+
+/// First delay before the listener reconnects after losing its connection; doubles up to [`MAX_RECONNECT_DELAY`].
+const RECONNECT_DELAY: Duration = Duration::from_millis(250);
 /// Longest back-off between reconnects.
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30);
 /// How often the listener sends itself a probe notification.
@@ -23,14 +27,12 @@ pub(crate) const PROBE_PAYLOAD: &str = "cicada-listener-probe";
 ///
 /// Robustness: the listener sends itself a probe notification every 5 s (sqlx only notices a dead socket when it
 /// reads from it, and a dead peer without a TCP reset never answers); when nothing arrives for 10 s, or the connection
-/// fails, it is dropped and re-opened after a back-off that starts at the configured delay and doubles up to 30 s.
+/// fails, it is dropped and re-opened after a back-off that starts at 250 ms and doubles up to 30 s.
 /// After every reconnect an empty payload is published, because notifications sent while disconnected are lost:
 /// subscribers treat it as "something may have changed".
 pub(crate) struct NotificationListener {
     channel: String,
     options: PgConnectOptions,
-    connection_timeout: Duration,
-    reconnect_delay: Duration,
     notifications: broadcast::Sender<String>,
     listening: watch::Sender<bool>,
     task: Mutex<Option<JoinHandle<()>>>,
@@ -38,17 +40,10 @@ pub(crate) struct NotificationListener {
 }
 
 impl NotificationListener {
-    pub(crate) fn new(
-        channel: String,
-        options: PgConnectOptions,
-        connection_timeout: Duration,
-        reconnect_delay: Duration,
-    ) -> Self {
+    pub(crate) fn new(channel: String, options: PgConnectOptions) -> Self {
         Self {
             channel,
             options,
-            connection_timeout,
-            reconnect_delay,
             notifications: broadcast::channel(64).0,
             listening: watch::channel(false).0,
             task: Mutex::new(None),
@@ -75,8 +70,6 @@ impl NotificationListener {
         let run = Run {
             channel: self.channel.clone(),
             options: self.options.clone(),
-            connection_timeout: self.connection_timeout,
-            reconnect_delay: self.reconnect_delay,
             notifications: self.notifications.clone(),
             listening: self.listening.clone(),
         };
@@ -106,15 +99,13 @@ impl Drop for NotificationListener {
 struct Run {
     channel: String,
     options: PgConnectOptions,
-    connection_timeout: Duration,
-    reconnect_delay: Duration,
     notifications: broadcast::Sender<String>,
     listening: watch::Sender<bool>,
 }
 
 impl Run {
     async fn run(self) {
-        let mut backoff = self.reconnect_delay;
+        let mut backoff = RECONNECT_DELAY;
         let mut reconnecting = false;
         loop {
             match self.connect().await {
@@ -124,7 +115,7 @@ impl Run {
                         self.publish(String::new());
                     }
                     reconnecting = true;
-                    backoff = self.reconnect_delay;
+                    backoff = RECONNECT_DELAY;
                     let probe = tokio::spawn(probe(pool, self.channel.clone()));
                     let error = self.receive(&mut listener).await;
                     probe.abort();
@@ -152,7 +143,7 @@ impl Run {
         let pool = PgPoolOptions::new()
             .max_connections(2)
             .min_connections(0)
-            .acquire_timeout(self.connection_timeout)
+            .acquire_timeout(CONNECTION_TIMEOUT)
             .idle_timeout(None)
             .max_lifetime(None)
             .connect_lazy_with(self.options.clone());

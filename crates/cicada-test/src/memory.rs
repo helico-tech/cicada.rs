@@ -9,10 +9,9 @@ use async_trait::async_trait;
 use cicada::address::{ActorAddress, UriTemplate};
 use cicada::store::support::{self, check_limit};
 use cicada::store::{
-    ActorRecord, CancelResult, ChainEntry, Claim, Clock, CommitRequest, CommitResult, CreateResult, DeleteResult,
-    EnqueueResult, Message, MessageId, MessageStatus, NodeId, OutcomeRecord, OutcomeStatus, OutgoingMessage, Page,
-    PageCursor, RegisterResult, RenewResult, ResolvedType, StateChange, Store, StoreError, StoreResult, SystemClock,
-    TurnOutcome, TypeDef,
+    ActorRecord, CancelResult, Claim, Clock, CommitRequest, CommitResult, CreateResult, DeleteResult, EnqueueResult,
+    Message, MessageId, MessageStatus, NodeId, OutcomeRecord, OutcomeStatus, OutgoingMessage, Page, PageCursor,
+    RegisterResult, RenewResult, StateChange, Store, StoreError, StoreResult, SystemClock, TurnOutcome, TypeDef,
 };
 use cicada::time::{self, DEFAULT_RETENTION, Timestamp};
 use serde_json::Value;
@@ -150,23 +149,7 @@ impl InMemoryStore {
         let deliver_at = message.delivery.resolve(now).map_err(|e| StoreError::Invalid(e.0))?;
         s.outcomes.remove(&message.id); // an expired, not yet swept outcome with the same id
         s.last_seq += 1;
-        let stored = Message {
-            id: message.id,
-            to: message.to,
-            from: message.from,
-            message_type: message.message_type,
-            payload: message.payload,
-            deliver_at,
-            correlation_id: message.correlation_id,
-            headers: message.headers,
-            seq: s.last_seq,
-            attempt: 0,
-            failures: 0,
-            last_error: None,
-            retry: message.retry,
-            caused_by: message.caused_by,
-            retention: message.retention,
-        };
+        let stored = message.into_message(deliver_at, s.last_seq);
         let row = s.actors.get_mut(stored.to.as_str()).expect("target exists");
         row.mailbox.insert((stored.deliver_at, stored.seq, stored.id.clone()));
         s.messages.insert(stored.id.clone(), stored.clone());
@@ -265,18 +248,6 @@ impl InMemoryStore {
         self.live_outcome(s, id, now).map(MessageStatus::Finished)
     }
 
-    fn chain_entry_locked(&self, s: &State, id: &MessageId, now: Timestamp) -> Option<ChainEntry> {
-        if let Some(status) = self.status_locked(s, id, now) {
-            return Some(ChainEntry::Live(status));
-        }
-        let row = s.outcomes.get(id).filter(|r| self.is_retained(r, now))?;
-        Some(ChainEntry::Removed {
-            status: row.record.status,
-            finished_at: row.record.finished_at,
-            envelope: support::stripped(&row.record.envelope),
-        })
-    }
-
     fn create_locked(
         s: &mut State,
         address: &ActorAddress,
@@ -312,10 +283,6 @@ fn held_lease<'a>(s: &'a mut State, address: &ActorAddress, epoch: i64) -> Optio
 
 #[async_trait]
 impl Store for InMemoryStore {
-    fn retention(&self) -> Duration {
-        self.retention
-    }
-
     async fn now(&self) -> StoreResult<Timestamp> {
         self.locked(|_, now| Ok(now))
     }
@@ -323,14 +290,7 @@ impl Store for InMemoryStore {
     async fn register(&self, def: TypeDef) -> StoreResult<RegisterResult> {
         self.locked(|s, _| {
             if let Some(existing) = s.types.get(def.template.as_str()) {
-                return Ok(if existing.contract_hash == def.contract_hash {
-                    RegisterResult::Registered(existing.clone())
-                } else {
-                    RegisterResult::Conflict {
-                        existing: existing.clone(),
-                        reason: support::hash_conflict_reason(&def.template),
-                    }
-                });
+                return Ok(support::register_again(existing.clone(), &def));
             }
             let registered: Vec<TypeDef> = s.types.values().cloned().collect();
             if let Some(overlapping) = support::overlapping(&registered, &def.template) {
@@ -344,19 +304,8 @@ impl Store for InMemoryStore {
         })
     }
 
-    async fn type_def(&self, template: &UriTemplate) -> StoreResult<Option<TypeDef>> {
-        self.locked(|s, _| Ok(s.types.get(template.as_str()).cloned()))
-    }
-
     async fn list_types(&self) -> StoreResult<Vec<TypeDef>> {
         self.locked(|s, _| Ok(s.types.values().cloned().collect()))
-    }
-
-    async fn resolve(&self, address: &ActorAddress) -> StoreResult<Option<ResolvedType>> {
-        self.locked(|s, _| {
-            let types: Vec<TypeDef> = s.types.values().cloned().collect();
-            support::resolve(&types, address)
-        })
     }
 
     async fn create(
@@ -380,16 +329,16 @@ impl Store for InMemoryStore {
                 Some(c) => Bound::Excluded(c.0.clone()),
                 None => Bound::Included(prefix.to_owned()),
             };
-            let items: Vec<&ActorRow> = s
+            let items: Vec<ActorAddress> = s
                 .actors
                 .range((start, Bound::Unbounded))
-                .map(|(_, r)| r)
-                .skip_while(|r| !r.address.as_str().starts_with(prefix) && r.address.as_str() < prefix)
-                .take_while(|r| r.address.as_str().starts_with(prefix))
+                .map(|(_, r)| &r.address)
+                .skip_while(|a| !a.as_str().starts_with(prefix) && a.as_str() < prefix)
+                .take_while(|a| a.as_str().starts_with(prefix))
                 .take(limit + 1)
+                .cloned()
                 .collect();
-            let next = (items.len() > limit).then(|| PageCursor(items[limit - 1].address.to_string()));
-            Ok(Page::new(items.into_iter().take(limit).map(|r| r.address.clone()).collect(), next))
+            Ok(support::page_of(items, limit, |a| PageCursor(a.to_string())))
         })
     }
 
@@ -423,11 +372,8 @@ impl Store for InMemoryStore {
         ttl: Duration,
         limit: usize,
     ) -> StoreResult<Vec<Claim>> {
-        if limit == 0 || types.is_empty() {
+        if !support::check_claim(types, ttl, limit)? {
             return Ok(Vec::new());
-        }
-        if ttl.is_zero() {
-            return Err(StoreError::Invalid("ttl must be positive".into()));
         }
         self.locked(|s, now| {
             let mut due: Vec<(Timestamp, String)> = s
@@ -527,7 +473,7 @@ impl Store for InMemoryStore {
                 .take(limit + 1)
                 .map(|(_, _, id)| s.messages[id].clone())
                 .collect();
-            Ok(page_of(items, limit, support::mailbox_cursor))
+            Ok(support::page_of(items, limit, support::mailbox_cursor))
         })
     }
 
@@ -561,7 +507,7 @@ impl Store for InMemoryStore {
                 .take(limit + 1)
                 .cloned()
                 .collect();
-            Ok(page_of(items, limit, support::pending_cursor))
+            Ok(support::page_of(items, limit, support::pending_cursor))
         })
     }
 
@@ -583,10 +529,6 @@ impl Store for InMemoryStore {
             row.mailbox.remove(&(message.deliver_at, message.seq, message.id.clone()));
             Ok(CancelResult::Cancelled(self.finish(s, message, OutcomeStatus::Cancelled, None, now)))
         })
-    }
-
-    async fn outcome(&self, id: &MessageId) -> StoreResult<Option<OutcomeRecord>> {
-        self.locked(|s, now| Ok(self.live_outcome(s, id, now)))
     }
 
     async fn status(&self, id: &MessageId) -> StoreResult<Option<MessageStatus>> {
@@ -620,35 +562,7 @@ impl Store for InMemoryStore {
                 .collect();
             items.sort_by(|a, b| (a.finished_at, a.message_id.as_str()).cmp(&(b.finished_at, b.message_id.as_str())));
             items.truncate(limit + 1);
-            Ok(page_of(items, limit, |o| support::failure_cursor(o.finished_at, &o.message_id)))
-        })
-    }
-
-    async fn chain_entries(&self, ids: &[MessageId]) -> StoreResult<Vec<ChainEntry>> {
-        self.locked(|s, now| {
-            let mut seen = HashSet::new();
-            Ok(ids.iter().filter(|id| seen.insert(*id)).filter_map(|id| self.chain_entry_locked(s, id, now)).collect())
-        })
-    }
-
-    async fn chain_children(&self, parents: &[MessageId], limit: usize) -> StoreResult<Vec<ChainEntry>> {
-        check_limit(limit)?;
-        self.locked(|s, now| {
-            let wanted: HashSet<&MessageId> = parents.iter().collect();
-            let pending = s
-                .messages
-                .values()
-                .filter(|m| m.caused_by.as_ref().is_some_and(|c| wanted.contains(c)))
-                .map(|m| m.id.clone());
-            let finished = s
-                .outcomes
-                .values()
-                .filter(|r| {
-                    r.record.envelope.caused_by.as_ref().is_some_and(|c| wanted.contains(c)) && self.is_retained(r, now)
-                })
-                .map(|r| r.record.message_id.clone());
-            let ids: Vec<MessageId> = pending.chain(finished).take(limit).collect();
-            Ok(ids.iter().filter_map(|id| self.chain_entry_locked(s, id, now)).collect())
+            Ok(support::page_of(items, limit, |o| support::failure_cursor(o.finished_at, &o.message_id)))
         })
     }
 
@@ -782,15 +696,5 @@ impl Store for InMemoryStore {
 
     async fn close(&self) {
         self.closed.store(true, Ordering::SeqCst);
-    }
-}
-
-fn page_of<T>(mut items: Vec<T>, limit: usize, cursor: impl Fn(&T) -> PageCursor) -> Page<T> {
-    if items.len() > limit {
-        items.truncate(limit);
-        let next = items.last().map(&cursor);
-        Page::new(items, next)
-    } else {
-        Page::new(items, None)
     }
 }

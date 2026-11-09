@@ -18,7 +18,6 @@ use cicada_examples::saga::{ChargeResult, GatewayUnavailable, PaymentGateway};
 use cicada_examples::singleton::TempFiles;
 use cicada_examples::steps::{OnboardingServices, ServiceError};
 use cicada_examples::sync::{Page, SyncApi};
-use md5::{Digest, Md5};
 
 const LOG: &str = "cicada_sample_service::fakes";
 
@@ -161,11 +160,10 @@ impl SyncApi for FakeSyncApi {
     }
 }
 
-/// The first 8 characters of the name-based UUID of `key`: the first 4
-/// bytes of the key's MD5 digest (the version bits come later).
+/// A stable 8-character id for `key`: the start of its SHA-256.
 fn short_id(key: &str) -> String {
-    let digest = Md5::digest(key.as_bytes());
-    digest[..4].iter().map(|b| format!("{b:02x}")).collect()
+    let hash = cicada::contract::canonical_sha256(&serde_json::Value::String(key.to_owned()));
+    hash.trim_start_matches("sha256:")[..8].to_owned()
 }
 
 #[cfg(test)]
@@ -174,7 +172,7 @@ mod tests {
 
     #[test]
     fn short_ids_are_stable() {
-        // The version 3 UUID of "abc" is 90015098-3cd2-3fb0-9696-3f7d28e17f72
-        assert_eq!(short_id("abc"), "90015098");
+        assert_eq!(short_id("abc"), "6cc43f85");
+        assert_ne!(short_id("abc"), short_id("abd"));
     }
 }
