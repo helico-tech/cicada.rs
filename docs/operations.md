@@ -109,7 +109,9 @@ futures, logs go through `tracing`, and the host owns the store and the node's l
 
 A node refuses to start when one of its types has a contract other than the registered one, so mixed versions never
 decode each other's messages differently. That holds also for compatible changes, such as a new field with a default,
-and for a dependency upgrade that changes the generated schemas (schemars). Change a type in one of two ways:
+and for a dependency upgrade that changes the generated schemas (schemars). A reworded doc comment is not a change: the
+hash leaves out the schemas' `description`s (ADR 0017). `GET /types` keeps showing the descriptions of the first
+registration until the type is registered again. Change a type in one of two ways:
 
 - **Add, then switch.** Keep the old type and add the new one under a **versioned type name**
   (`billing.v2.invoices`). New instances are created at the new address; senders switch to it in a later

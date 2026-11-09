@@ -267,7 +267,8 @@ async fn shutdown_signal() {
 - The store is the caller's: `ActorSystem` never closes it. Open it before `start` and close it after `stop`.
   `PostgresStore::connect(url, config)` accepts the libpq form of `DATABASE_URL`
   (`postgres://user:pass@host:5432/db?sslmode=require`), and `connect_with(PgConnectOptions, config)` takes sqlx
-  options built by the caller (TLS client certificates and the like).
+  options built by the caller (TLS client certificates and the like). `SqliteStore::open(path, options)` sets up a
+  new or empty file and refuses a SQLite file that holds the tables of another program.
 - A node hosting no types still serves the whole API (create, send, query) for every registered type.
 - `actor_api(system)` and `actor_health(system, path)` are plain routers with no fallback: `merge` them or `nest`
   them under a prefix, and wrap them in your own layers. They need nothing installed on the app: they read and write
@@ -1016,13 +1017,14 @@ Decisions, as ADRs in [docs/adr/](docs/adr/):
 | [0014](docs/adr/0014-management-reads-and-type-removal.md) | Management reads over HTTP (outcomes, stats, caused-by) and removing a type's registration. |
 | [0015](docs/adr/0015-operator-actions.md) | Operator actions: node table, cancelling a running turn, pausing and purging a mailbox, retrying a message, bulk actions; the store refuses creates of an unregistered type. |
 | [0016](docs/adr/0016-releases-are-tags.md) | A release is a tag on `main` with one version for the workspace; a release passes all checks first and never moves. |
+| [0017](docs/adr/0017-contracts-ignore-descriptions-and-stores-refuse-foreign-databases.md) | A contract hash leaves out the schemas' descriptions (the published contract keeps them); the SQLite store refuses a database that holds other tables. |
 
 Design questions and their answers:
 
 | Question | Decision |
 | --- | --- |
 | Crash loops | No claim limit in the core; `attempt` is on the envelope and in `/messages/{id}`. `CrashLoopGuard` is opt-in. |
-| Contract changes | Strict contract-hash equality; a node with a different contract for a registered type name fails to start. Contracts include the generated schemas, so a schemars upgrade can change hashes. |
+| Contract changes | Strict contract-hash equality; a node with a different contract for a registered type name fails to start. Contracts include the generated schemas, so a schemars upgrade can change hashes. Doc comments (`description`) do not count in the hash. |
 | State evolution | No migrations; changes must be additive with defaults (`#[serde(default)]`). |
 | Plugin data | `headers` on the envelope; `correlation_id` is kept (the HTTP contract uses it). |
 | Send to an absent instance inside a turn | The whole turn fails at commit: outcome `failed` with the reason, no effects. |

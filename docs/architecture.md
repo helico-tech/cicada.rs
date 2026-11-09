@@ -28,7 +28,7 @@ state plus a mailbox; it occupies memory only while one message is being handled
 | Node | A service running an `ActorSystem`. Sends messages, serves the HTTP API, and runs turns for the actor types it hosts. |
 | Store | The shared durable backend: mailbox, state store, type registry, the atomic commit, and the only clock. |
 | Actor type | A definition: a ref type with its type name, an optional state type, a message family, a handler, an unhandled policy. In Rust: an implementation of the `Actor` trait. |
-| Contract | The published description of a type: type name, key fields, message type names, and the JSON Schemas generated from its types. |
+| Contract | The published description of a type: type name, key fields, message type names, and the JSON Schemas generated from its types. Its hash leaves out the schemas' `description`s (doc comments), so a reworded comment keeps the hash (ADR 0017). |
 | Actor instance | One concrete key of a type, explicitly created. Owns one state value and one mailbox. |
 | Ref | An actor's address. A typed ref struct in code (`ActorRef`); its address text (`sync/acme`) on the wire, in state and in messages. |
 | Message | A typed envelope addressed to one instance, with a delivery time. |
@@ -74,7 +74,8 @@ Every backend implements the `cicada::store::Store` trait and passes the conform
 | S10 Retention | Outcomes are kept for a configured period, which is also the dedup window. A message's retention policy can hide its outcome earlier or keep it longer; a minimal record stays for the whole dedup window. |
 
 The SQL schema (tables `actor_types`, `actors`, `messages`, `outcomes`, plus sequences) is versioned and migrated
-when a store opens a database.
+when a store opens a database. The SQLite store sets up only a new or empty database: one without a schema version that
+already holds tables belongs to another program, and opening it fails and leaves it as it was (ADR 0017).
 
 ## Turn semantics
 
