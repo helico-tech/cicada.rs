@@ -77,6 +77,112 @@ other_type!(SameShapeActor, SameShape);
 
 counter_type!(SameCounter, Unhandled::Fail);
 
+/// A `documented` type with state and one message, all in the calling module: `Doc`, `DocState`, `DocMsg`.
+macro_rules! documented_type {
+    () => {
+        #[derive(Debug, Clone, Serialize, Deserialize)]
+        pub struct Doc {
+            id: String,
+        }
+
+        impl ActorRef for Doc {
+            const TYPE: &'static str = "documented";
+            type Message = DocMsg;
+        }
+
+        pub struct DocActor;
+
+        impl Actor for DocActor {
+            type Ref = Doc;
+            type State = DocState;
+            type Message = DocMsg;
+            const UNHANDLED: Unhandled = Unhandled::Fail;
+
+            async fn handle(&self, _turn: &mut Turn<Self>, _message: DocMsg) -> HandlerResult {
+                Ok(())
+            }
+        }
+    };
+}
+
+/// The first version of `documented`.
+mod doc_old {
+    use super::*;
+
+    /// What a document holds.
+    #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+    pub struct DocState {
+        /// The text.
+        text: String,
+    }
+
+    /// Messages of a document.
+    #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+    #[serde(tag = "type")]
+    pub enum DocMsg {
+        /// Replaces the text.
+        Write {
+            /// The new text.
+            text: String,
+        },
+    }
+
+    documented_type!();
+}
+
+/// `doc_old` with every doc comment reworded.
+mod doc_reworded {
+    use super::*;
+
+    /// The state of one document, reworded.
+    #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+    pub struct DocState {
+        /// The whole text of the document.
+        text: String,
+    }
+
+    /// What a document accepts.
+    #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+    #[serde(tag = "type")]
+    pub enum DocMsg {
+        /// Sets the text, dropping the old one.
+        Write {
+            /// The text to keep from now on.
+            text: String,
+        },
+    }
+
+    documented_type!();
+}
+
+/// `doc_old` with a property named `description` in its message.
+mod doc_with_description {
+    use super::*;
+
+    /// What a document holds.
+    #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+    pub struct DocState {
+        /// The text.
+        text: String,
+    }
+
+    /// Messages of a document.
+    #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+    #[serde(tag = "type")]
+    pub enum DocMsg {
+        /// Replaces the text.
+        Write {
+            /// The new text.
+            text: String,
+            /// A summary of the change.
+            #[serde(default)]
+            description: String,
+        },
+    }
+
+    documented_type!();
+}
+
 fn single(e: &StartError) -> &str {
     assert_eq!(e.problems.len(), 1, "{:?}", e.problems);
     &e.problems[0]
@@ -170,4 +276,19 @@ async fn start_registers_contracts_and_a_failed_start_leaves_the_node_unstarted(
     let conflicting = ActorSystem::builder(store).host(OtherActor).build();
     assert!(conflicting.start().await.is_err());
     assert_eq!(conflicting.state(), NodeState::New);
+}
+
+#[tokio::test]
+async fn a_reworded_doc_comment_keeps_the_contract_and_the_registry_keeps_the_first_descriptions() {
+    let store = store();
+    ActorSystem::builder(store.clone()).host(doc_old::DocActor).build().initialize().await.unwrap();
+    ActorSystem::builder(store.clone()).host(doc_reworded::DocActor).build().initialize().await.unwrap();
+    let registered = store.list_types().await.unwrap().remove(0);
+    let state = &registered.contract["state"];
+    assert_eq!(state["description"], "What a document holds.");
+    assert_eq!(state["properties"]["text"]["description"], "The text.");
+    assert_eq!(registered.contract["messages"]["Write"]["properties"]["text"]["description"], "The new text.");
+
+    let e = ActorSystem::builder(store).host(doc_with_description::DocActor).build().initialize().await.unwrap_err();
+    assert!(single(&e).contains("different contract"), "{:?}", e.problems);
 }

@@ -13,7 +13,8 @@ use crate::store::TypeDef;
 ///
 /// Its JSON form ([`Self::to_json`]) is what the TypeRegistry stores and `GET /types` serves:
 /// `{"type": "sync", "key": ["tenant"], "state": {...} | null, "messages": {"FetchPage": {...}, "Run": {...}}}`.
-/// [`Self::hash`] is the SHA-256 of the canonical JSON; two nodes registering the same name must produce the same
+/// It keeps the schemas' `description`s (doc comments). [`Self::hash`] is the SHA-256 of the canonical JSON without
+/// them (ADR 0017), so a doc comment change keeps the hash; two nodes registering the same name must produce the same
 /// hash.
 #[derive(Debug, Clone)]
 pub struct Contract {
@@ -33,8 +34,20 @@ impl Contract {
         message_schemas: BTreeMap<String, Value>,
     ) -> Self {
         let mut contract = Self { type_name, key_fields, state_schema, message_schemas, hash: String::new() };
-        contract.hash = canonical_sha256(&contract.to_json());
+        contract.hash = canonical_sha256(&contract.hash_input());
         contract
+    }
+
+    /// [`Self::to_json`] with every `description` keyword removed from the state and message schemas.
+    fn hash_input(&self) -> Value {
+        let mut json = self.to_json();
+        if let Some(state) = json.get_mut("state") {
+            strip_descriptions(state);
+        }
+        if let Some(Value::Object(messages)) = json.get_mut("messages") {
+            messages.values_mut().for_each(strip_descriptions);
+        }
+        json
     }
 
     /// The type's name.
@@ -67,7 +80,7 @@ impl Contract {
         self.message_schemas.contains_key(message_type)
     }
 
-    /// The stable hash: `sha256:` + hex of the canonical JSON.
+    /// The stable hash: `sha256:` + hex of the canonical JSON, with the schemas' descriptions left out.
     pub fn hash(&self) -> &str {
         &self.hash
     }
@@ -124,6 +137,38 @@ impl Contract {
 impl PartialEq for Contract {
     fn eq(&self, other: &Self) -> bool {
         self.hash == other.hash
+    }
+}
+
+/// Removes the keyword `description` from `schema` and from every subschema in it. Only keywords that hold schemas are
+/// walked: the keys of `properties` and the like are names (a property named `description` stays), and `const`, `enum`,
+/// `default` and `examples` hold data.
+fn strip_descriptions(schema: &mut Value) {
+    let Value::Object(o) = schema else { return }; // a boolean schema has nothing to strip
+    o.remove("description");
+    for (keyword, value) in o.iter_mut() {
+        match keyword.as_str() {
+            "properties" | "patternProperties" | "$defs" | "definitions" | "dependentSchemas" => {
+                if let Value::Object(named) = value {
+                    named.values_mut().for_each(strip_descriptions);
+                }
+            }
+            "items" | "prefixItems" | "anyOf" | "oneOf" | "allOf" => match value {
+                Value::Array(list) => list.iter_mut().for_each(strip_descriptions),
+                single => strip_descriptions(single),
+            },
+            "additionalProperties"
+            | "additionalItems"
+            | "unevaluatedProperties"
+            | "unevaluatedItems"
+            | "not"
+            | "if"
+            | "then"
+            | "else"
+            | "contains"
+            | "propertyNames" => strip_descriptions(value),
+            _ => {}
+        }
     }
 }
 
@@ -198,5 +243,81 @@ mod tests {
         assert_eq!(parsed.hash(), c.hash());
         assert!(parsed.accepts("Run"));
         assert_eq!(c.to_json()["state"], Value::Null);
+    }
+
+    fn contract(state: Value, message: Value) -> Contract {
+        let messages = BTreeMap::from([("Run".to_owned(), message)]);
+        Contract::new(TypeName::parse("sync").unwrap(), vec!["tenant".to_owned()], Some(state), messages)
+    }
+
+    /// A state schema with a description at every place where schemars nests schemas, all set to `text`.
+    fn documented(text: &str) -> Value {
+        json!({
+            "title": "State",
+            "description": text,
+            "type": "object",
+            "properties": {
+                "note": {"description": text, "type": "string"},
+                "inner": {"type": "object", "properties": {"deep": {"description": text, "type": "integer"}}},
+                "list": {"type": "array", "items": {"description": text, "type": "string"}},
+                "either": {"anyOf": [{"description": text, "type": "string"}, {"type": "null"}]},
+                "tuple": {"type": "array", "prefixItems": [{"description": text}]},
+                "map": {"type": "object", "additionalProperties": {"description": text, "type": "string"}},
+                "pick": {"oneOf": [{"description": text, "const": "a"}], "allOf": [{"description": text}]},
+                "neg": {"not": {"description": text}},
+                "cond": {"if": {"description": text}, "then": {"description": text}, "else": {"description": text}},
+                "shared": {"$ref": "#/$defs/Shared"}
+            },
+            "patternProperties": {"^x-": {"description": text}},
+            "$defs": {"Shared": {"description": text, "type": "object"}}
+        })
+    }
+
+    #[test]
+    fn descriptions_do_not_count_in_the_hash_but_stay_in_the_json() {
+        let message = |text: &str| json!({"title": "Run", "description": text, "type": "object", "properties": {}});
+        let old = contract(documented("old"), message("old"));
+        let new = contract(documented("new, reworded"), message("new"));
+        assert_eq!(old.hash(), new.hash());
+        assert_eq!(old.to_json()["state"]["properties"]["inner"]["properties"]["deep"]["description"], "old");
+        assert_eq!(new.to_json()["messages"]["Run"]["description"], "new");
+        let mut bare = documented("x");
+        strip_descriptions(&mut bare);
+        assert!(!canonical_json(&bare).contains("description"), "{bare}");
+        let without = contract(bare, json!({"title": "Run", "type": "object", "properties": {}}));
+        assert_eq!(without.hash(), old.hash());
+    }
+
+    #[test]
+    fn a_property_definition_or_message_named_description_still_counts() {
+        let base = contract(json!({"type": "object", "properties": {}}), json!({"type": "object"}));
+        let property = contract(
+            json!({"type": "object", "properties": {"description": {"type": "string"}}}),
+            json!({"type": "object"}),
+        );
+        let property_typed = contract(
+            json!({"type": "object", "properties": {"description": {"type": "integer"}}}),
+            json!({"type": "object"}),
+        );
+        let definition = contract(
+            json!({"type": "object", "properties": {}, "$defs": {"description": {"type": "string"}}}),
+            json!({"type": "object"}),
+        );
+        let in_default = contract(
+            json!({"type": "object", "properties": {}, "default": {"description": "x"}}),
+            json!({"type": "object"}),
+        );
+        let mut hashes: Vec<&str> =
+            [&base, &property, &property_typed, &definition, &in_default].iter().map(|c| c.hash()).collect();
+        hashes.sort();
+        hashes.dedup();
+        assert_eq!(hashes.len(), 5, "each contract has its own hash");
+
+        let named = |schema: Value| {
+            let messages = BTreeMap::from([("description".to_owned(), schema)]);
+            Contract::new(TypeName::parse("sync").unwrap(), vec![], None, messages)
+        };
+        assert_ne!(named(json!({"type": "object"})).hash(), named(json!({"type": "string"})).hash());
+        assert!(named(json!({"type": "object"})).accepts("description"));
     }
 }
