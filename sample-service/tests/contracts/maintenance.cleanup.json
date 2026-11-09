@@ -1,0 +1,21 @@
+{
+  "key": [],
+  "messages": {
+    "Purge": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Deletes temporary files older than `retention_hours` (24 by default).",
+      "properties": {
+        "retentionHours": {
+          "default": 24,
+          "description": "Age limit in hours; must not be negative.",
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "title": "Purge",
+      "type": "object"
+    }
+  },
+  "state": null,
+  "type": "maintenance.cleanup"
+}

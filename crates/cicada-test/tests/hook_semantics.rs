@@ -24,7 +24,7 @@ struct Probe {
 }
 
 impl ActorRef for Probe {
-    const TEMPLATE: &'static str = "actor://probe/{id}";
+    const TYPE: &'static str = "probe";
     type Message = ProbeMsg;
 }
 
@@ -273,7 +273,7 @@ impl Plugin for ReasonReader {
 async fn state_that_cannot_be_decoded_is_a_load_failure_only_on_outcome_fires() {
     let events = Events::default();
     let test = probe_test(ProbeActor(events.clone()), MINUTE, vec![Arc::new(Recorder(events.clone()))]).await;
-    test.store().create(&addr(&p("p")), &template::<Probe>(), Some(json!({"log": "not a list"}))).await.unwrap();
+    test.store().create(&addr(&p("p")), Some(json!({"log": "not a list"}))).await.unwrap();
     let m = test.send(&p("p"), ProbeMsg::Do { fail: true, sleep_seconds: 0 }).await;
     test.run_until_idle().await;
     assert_eq!(test.outcome(&m).await.unwrap().status, OutcomeStatus::Failed);
@@ -431,7 +431,7 @@ async fn a_retry_puts_the_same_message_back_in_place_and_the_error_hook_sees_the
 
     test.advance_time_by(Duration::from_secs(5)).await;
     let handlers: Vec<String> = events.all().into_iter().filter(|e| e.starts_with("handler")).collect();
-    assert_eq!(handlers, vec!["handler from=actor://probe/a corr=c-1 x=1"; 2]);
+    assert_eq!(handlers, vec!["handler from=probe/a corr=c-1 x=1"; 2]);
     let record = test.outcome(&again).await.unwrap();
     assert_eq!(record.status, OutcomeStatus::Failed, "the second failure is the last attempt: exactly one outcome");
     assert_eq!(record.error.as_deref(), Some("boom"));

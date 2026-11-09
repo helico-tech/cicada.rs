@@ -5,35 +5,51 @@ use std::collections::BTreeMap;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::address::UriTemplate;
+use crate::address::{ActorAddress, TypeName};
 use crate::store::TypeDef;
 
-/// The published description of an actor type: its template, the JSON Schema of its state (`None` for a stateless
+/// The published description of an actor type: its name and key fields, the JSON Schema of its state (`None` for a stateless
 /// type) and one JSON Schema per message type name.
 ///
 /// Its JSON form ([`Self::to_json`]) is what the TypeRegistry stores and `GET /types` serves:
-/// `{"template": "actor://sync/{tenant}", "state": {...} | null, "messages": {"FetchPage": {...}, "Run": {...}}}`.
-/// [`Self::hash`] is the SHA-256 of the canonical JSON; two nodes registering the same template must produce the same
+/// `{"type": "sync", "key": ["tenant"], "state": {...} | null, "messages": {"FetchPage": {...}, "Run": {...}}}`.
+/// [`Self::hash`] is the SHA-256 of the canonical JSON; two nodes registering the same name must produce the same
 /// hash.
 #[derive(Debug, Clone)]
 pub struct Contract {
-    template: UriTemplate,
+    type_name: TypeName,
+    key_fields: Vec<String>,
     state_schema: Option<Value>,
     message_schemas: BTreeMap<String, Value>,
     hash: String,
 }
 
 impl Contract {
-    /// A contract of `template` with the given schemas.
-    pub fn new(template: UriTemplate, state_schema: Option<Value>, message_schemas: BTreeMap<String, Value>) -> Self {
-        let mut contract = Self { template, state_schema, message_schemas, hash: String::new() };
+    /// A contract of `type_name`, whose key is made of `key_fields`, with the given schemas.
+    pub fn new(
+        type_name: TypeName,
+        key_fields: Vec<String>,
+        state_schema: Option<Value>,
+        message_schemas: BTreeMap<String, Value>,
+    ) -> Self {
+        let mut contract = Self { type_name, key_fields, state_schema, message_schemas, hash: String::new() };
         contract.hash = canonical_sha256(&contract.to_json());
         contract
     }
 
-    /// The type's template.
-    pub fn template(&self) -> &UriTemplate {
-        &self.template
+    /// The type's name.
+    pub fn type_name(&self) -> &TypeName {
+        &self.type_name
+    }
+
+    /// The names of the ref's fields that form the key, in order; empty for a singleton.
+    pub fn key_fields(&self) -> &[String] {
+        &self.key_fields
+    }
+
+    /// The values of `address`'s key by field name; empty for a singleton.
+    pub fn params_of(&self, address: &ActorAddress) -> BTreeMap<String, String> {
+        self.key_fields.iter().cloned().zip(address.key_values()).collect()
     }
 
     /// The JSON Schema of the state, or `None` for a stateless type.
@@ -59,7 +75,8 @@ impl Contract {
     /// The contract as JSON.
     pub fn to_json(&self) -> Value {
         json!({
-            "template": self.template.as_str(),
+            "type": self.type_name.as_str(),
+            "key": self.key_fields,
             "state": self.state_schema,
             "messages": Value::Object(self.message_schemas.clone().into_iter().collect::<Map<_, _>>()),
         })
@@ -67,17 +84,24 @@ impl Contract {
 
     /// The registry entry for this contract.
     pub fn to_type_def(&self) -> TypeDef {
-        TypeDef { template: self.template.clone(), contract: self.to_json(), contract_hash: self.hash.clone() }
+        TypeDef { name: self.type_name.clone(), contract: self.to_json(), contract_hash: self.hash.clone() }
     }
 
     /// Parses a contract from its JSON form.
     pub fn from_json(json: &Value) -> Result<Self, String> {
         let o = json.as_object().ok_or("Not a contract: not an object")?;
-        let template = o
-            .get("template")
+        let type_name = o
+            .get("type")
             .and_then(Value::as_str)
-            .ok_or("Not a contract: no template")
-            .and_then(|t| UriTemplate::parse(t).map_err(|_| "Not a contract: bad template"))?;
+            .ok_or("Not a contract: no type")
+            .and_then(|t| TypeName::parse(t).map_err(|_| "Not a contract: bad type name"))?;
+        let key_fields = o
+            .get("key")
+            .and_then(Value::as_array)
+            .ok_or("Not a contract: no key")?
+            .iter()
+            .map(|f| f.as_str().map(str::to_owned).ok_or("Not a contract: bad key"))
+            .collect::<Result<Vec<_>, _>>()?;
         let state_schema = o.get("state").filter(|s| !s.is_null()).cloned();
         let messages = o
             .get("messages")
@@ -86,7 +110,7 @@ impl Contract {
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-        Ok(Self::new(template, state_schema, messages))
+        Ok(Self::new(type_name, key_fields, state_schema, messages))
     }
 
     /// Parses the contract of a registry entry, keeping its registered hash.
@@ -169,7 +193,7 @@ mod tests {
     fn contract_round_trip() {
         let mut messages = BTreeMap::new();
         messages.insert("Run".to_owned(), json!({"type": "object"}));
-        let c = Contract::new(UriTemplate::parse("actor://sync/{tenant}").unwrap(), None, messages);
+        let c = Contract::new(TypeName::parse("sync").unwrap(), vec!["tenant".to_owned()], None, messages);
         let parsed = Contract::from_json(&c.to_json()).unwrap();
         assert_eq!(parsed.hash(), c.hash());
         assert!(parsed.accepts("Run"));

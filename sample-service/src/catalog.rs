@@ -28,7 +28,7 @@ pub const GROUPS: [&str; 11] =
 
 /// One actor type of the catalog, with its generic parameters erased.
 pub struct CatalogType {
-    template: &'static str,
+    type_name: &'static str,
     contract: fn() -> Result<Contract, Vec<String>>,
     host: Box<dyn Fn(ActorSystemBuilder) -> ActorSystemBuilder + Send + Sync>,
 }
@@ -38,15 +38,15 @@ impl CatalogType {
     pub fn of<A: Actor>(actor: A) -> Self {
         let actor = Arc::new(actor);
         Self {
-            template: <A::Ref as ActorRef>::TEMPLATE,
+            type_name: <A::Ref as ActorRef>::TYPE,
             contract: contract_of::<A>,
             host: Box::new(move |builder| builder.host(ActorType::shared(actor.clone()))),
         }
     }
 
-    /// The type's template.
-    pub fn template(&self) -> &'static str {
-        self.template
+    /// The type's name.
+    pub fn type_name(&self) -> &'static str {
+        self.type_name
     }
 
     /// The contract a node hosting this type registers.
@@ -62,7 +62,7 @@ impl CatalogType {
 
 impl std::fmt::Debug for CatalogType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CatalogType").field("template", &self.template).finish_non_exhaustive()
+        f.debug_struct("CatalogType").field("type_name", &self.type_name).finish_non_exhaustive()
     }
 }
 

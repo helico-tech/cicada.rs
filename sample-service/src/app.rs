@@ -34,7 +34,7 @@ pub struct NodeInfo {
     pub node: String,
     /// The hosted groups.
     pub groups: Vec<String>,
-    /// The templates of the hosted types.
+    /// The type names of the hosted types.
     pub types: Vec<String>,
     /// The store, e.g. `sqlite (actors.db)`.
     pub store: String,
@@ -111,7 +111,7 @@ impl SampleNode {
             .any(|g| g == "supervision")
             .then(|| FailureWatcher::new(system.clone()).start(config.failure_watcher_interval));
 
-        let types: Vec<String> = hosted.iter().map(|t| t.template().to_owned()).collect();
+        let types: Vec<String> = hosted.iter().map(|t| t.type_name().to_owned()).collect();
         let info = NodeInfo {
             node: node_id.as_str().to_owned(),
             groups: config.groups.clone(),
@@ -138,11 +138,11 @@ impl SampleNode {
         &self.effects
     }
 
-    /// The node's routes besides the twelve of `actor_api()`, which are mounted at the root:
+    /// The node's routes besides those of `actor_api()`, which are mounted at the root:
     ///
     /// - `GET /`: [`NodeInfo`], without authentication;
     /// - `GET /ready`: readiness, without authentication, for container and Kubernetes probes;
-    /// - `GET /e2e/effects[?actor=actor://…]`: this node's in-memory [`EffectLog`].
+    /// - `GET /e2e/effects[?actor=<address>]`: this node's in-memory [`EffectLog`].
     ///
     /// With an API token the API and `/e2e/effects` require `Authorization: Bearer <token>`.
     pub fn router(&self) -> Router {

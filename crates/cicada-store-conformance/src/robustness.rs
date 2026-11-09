@@ -182,16 +182,12 @@ pub async fn commit_repeating_a_commit_that_already_applied_changes_nothing<B: F
         let store = t.store();
         let a = t.new_actor(&TYPE, Some(json!({"n": 0}))).await;
         let b = t.new_actor(&OTHER, None).await;
-        let child = address("actor://other/repeated-child");
+        let child = address("other/repeated-child");
         let m = t.send(&a).await;
         let c = t.claim_one().await;
         let request = CommitRequest {
             state: StateChange::NewState(Some(json!({"n": 1}))),
-            creates: vec![ActorCreate {
-                address: child.clone(),
-                template: OTHER.clone(),
-                state: Some(json!({"c": 1})),
-            }],
+            creates: vec![ActorCreate { address: child.clone(), state: Some(json!({"c": 1})) }],
             sends: vec![
                 OutgoingMessage::new(b.clone(), "T", json!(1)),
                 OutgoingMessage::new(child.clone(), "T", json!(2)),
@@ -395,24 +391,25 @@ pub async fn s3_a_commit_that_creates_and_sends_to_a_child_is_serialised_with_co
     backend: &B,
 ) {
     store_test(backend, async |t| {
+        t.register_type(&OTHER).await;
         for round in 0..8 {
             let parent = t.new_actor(&TYPE, None).await;
             t.send(&parent).await;
             let c = t.claim_one().await;
-            let child = address(&format!("actor://other/race-{round}"));
+            let child = address(&format!("other/race-{round}"));
             t.concurrently(2, |i, peer| {
                 let (c, child) = (c.clone(), child.clone());
                 async move {
                     if i == 0 {
                         peer.commit(CommitRequest {
-                            creates: vec![ActorCreate { address: child.clone(), template: OTHER.clone(), state: None }],
+                            creates: vec![ActorCreate { address: child.clone(), state: None }],
                             sends: vec![OutgoingMessage::new(child, "FromCommit", json!(0))],
                             ..done(&c)
                         })
                         .await
                         .unwrap();
                     } else {
-                        peer.create(&child, &OTHER, None).await.unwrap();
+                        peer.create(&child, None).await.unwrap();
                         for k in 0..3 {
                             peer.enqueue(OutgoingMessage::new(child.clone(), "External", json!(k))).await.unwrap();
                         }

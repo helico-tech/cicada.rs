@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use cicada::api::{MessageState, problem_types};
 use cicada::store::MessageId;
-use cicada_e2e::cluster::{RawResponse, cluster, eventually, path, run_id, uri};
+use cicada_e2e::cluster::{RawResponse, address_text, cluster, eventually, path, run_id};
 use cicada_e2e::docker::compose;
 use cicada_e2e::ordering::send_step;
 use cicada_e2e::{Class, step};
@@ -97,5 +97,5 @@ async fn store_unavailable_sends_and_health_answer_503_the_cluster_recovers_when
     assert_eq!(state.entries.iter().map(|e| e.seq).collect::<Vec<_>>(), [1, 2], "each step handled once, in order");
     assert_eq!(state.out_of_order, 0);
     assert_eq!(state.overlaps, 0);
-    assert!(c.send_only.failures(&uri(&counter)).await.is_empty());
+    assert!(c.send_only.failures(&address_text(&counter)).await.is_empty());
 }

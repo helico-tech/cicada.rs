@@ -13,14 +13,16 @@ use futures::stream::BoxStream;
 use serde_json::Value;
 
 pub use model::{
-    ActorCreate, ActorRecord, Claim, CommitRequest, Delivery, Message, MessageId, MessageStatus, NodeId, OutcomeRecord,
-    OutcomeStatus, OutgoingMessage, Page, PageCursor, StateChange, TurnOutcome, TypeDef,
+    ActorCreate, ActorRecord, Claim, CommitRequest, Delivery, Message, MessageId, MessageStatus, NodeId, NodeRecord,
+    OutcomeRecord, OutcomeStatus, OutgoingMessage, Page, PageCursor, RunningTurn, StateChange, StoreStats, TurnOutcome,
+    TypeDef,
 };
 pub use results::{
-    CancelResult, CommitResult, CreateResult, DeleteResult, EnqueueResult, RegisterResult, RenewResult, ResolvedType,
+    CancelResult, CommitResult, CreateResult, DeleteResult, DeliverNowResult, EnqueueResult, RegisterResult,
+    RemoveTypeResult, RenewResult,
 };
 
-use crate::address::{ActorAddress, UriTemplate};
+use crate::address::{ActorAddress, TypeName};
 use crate::time::Timestamp;
 
 /// A failed store operation.
@@ -85,7 +87,7 @@ impl Clock for SystemClock {
 /// | S5 Fencing | `commit` and `renew` succeed only with the current epoch. |
 /// | S6 Order | `claim_due` returns, per instance, only the pending message with the smallest `(deliver_at, seq)`, when due. |
 /// | S7 No loss, no duplicate | A message leaves pending only by commit, cancel or delete; ids are unique. |
-/// | S8 Liveness | An instance with a due head message and no valid lease is eventually returned by `claim_due`. |
+/// | S8 Liveness | An instance that is not paused, with a due head message and no valid lease, is eventually returned by `claim_due`. |
 /// | S9 One clock | Due-ness and lease expiry use the store clock only. |
 /// | S10 Retention | Outcomes are kept for the retention period, which is also the dedup window. |
 #[async_trait]
@@ -97,24 +99,24 @@ pub trait Store: Send + Sync + 'static {
 
     // ---- type registry ----
 
-    /// Registers `def`. Idempotent for an equal contract hash. A conflict when the template is registered with a
-    /// different hash, or another registered template overlaps it. Concurrent registrations of overlapping templates
-    /// admit at most one.
+    /// Registers `def`. Idempotent for an equal contract hash. A conflict when the name is registered with a different
+    /// hash.
     async fn register(&self, def: TypeDef) -> StoreResult<RegisterResult>;
 
-    /// All registered types, ordered by template string. [`support::resolve`] picks the one that matches an address.
+    /// All registered types, ordered by name.
     async fn list_types(&self) -> StoreResult<Vec<TypeDef>>;
+
+    /// Removes the registration of `name`, unless instances of that type exist ([`RemoveTypeResult::InUse`]). Checking
+    /// and removing are one atomic step, and a concurrent [`Self::create`] (or a commit's create) either lands first
+    /// (then this is `InUse`) or finds the type gone and refuses.
+    async fn remove_type(&self, name: &TypeName) -> StoreResult<RemoveTypeResult>;
 
     // ---- state store ----
 
     /// Creates the instance with initial `state`, version 0, no lease and an empty mailbox. Idempotent: an existing
-    /// instance is left untouched. The store does not check that `address` matches `template`.
-    async fn create(
-        &self,
-        address: &ActorAddress,
-        template: &UriTemplate,
-        state: Option<Value>,
-    ) -> StoreResult<CreateResult>;
+    /// instance is left untouched. The type is the address's own and must be registered, checked atomically with the
+    /// create: otherwise [`CreateResult::NoSuchType`] and nothing is created.
+    async fn create(&self, address: &ActorAddress, state: Option<Value>) -> StoreResult<CreateResult>;
 
     /// Snapshot of the instance, or `None` when it is absent.
     async fn get(&self, address: &ActorAddress) -> StoreResult<Option<ActorRecord>>;
@@ -137,16 +139,18 @@ pub trait Store: Send + Sync + 'static {
 
     /// Claims up to `limit` instances of `types` that have a due head message and no valid lease, for `node`. Per
     /// claimed instance, atomically: a new, greater epoch; the lease set to `store now + ttl`; the head message's
-    /// `attempt` increased by 1.
+    /// `attempt` increased by 1. Paused instances are not claimed.
     async fn claim_due(
         &self,
-        types: &BTreeSet<UriTemplate>,
+        types: &BTreeSet<TypeName>,
         node: &NodeId,
         ttl: Duration,
         limit: usize,
     ) -> StoreResult<Vec<Claim>>;
 
-    /// Extends the lease to `store now + ttl`; succeeds only with the current epoch while the lease is held.
+    /// Extends the lease to `store now + ttl`; succeeds only with the current epoch while the lease is held. Reports
+    /// [`RenewResult::CancelRequested`] when [`Self::request_cancel`] recorded this epoch; the lease is renewed either
+    /// way.
     async fn renew(&self, address: &ActorAddress, epoch: i64, ttl: Duration) -> StoreResult<RenewResult>;
 
     /// Gives up the lease without an outcome. The message stays pending with its incremented `attempt`. A no-op unless
@@ -154,8 +158,9 @@ pub trait Store: Send + Sync + 'static {
     async fn release(&self, address: &ActorAddress, epoch: i64) -> StoreResult<()>;
 
     /// The earliest store time at which an instance of `types` may become claimable: the minimum of their head's
-    /// `deliver_at`, or of their lease expiry when that is later. `None` when nothing is pending.
-    async fn next_due_at(&self, types: &BTreeSet<UriTemplate>) -> StoreResult<Option<Timestamp>>;
+    /// `deliver_at`, or of their lease expiry when that is later. `None` when nothing is pending. Paused instances do
+    /// not count.
+    async fn next_due_at(&self, types: &BTreeSet<TypeName>) -> StoreResult<Option<Timestamp>>;
 
     /// The pending messages of `address` in delivery order `(deliver_at, seq)`, including one being handled. Paging is
     /// a keyset, not a snapshot.
@@ -170,26 +175,84 @@ pub trait Store: Send + Sync + 'static {
     async fn list_pending(&self, prefix: &str, cursor: Option<&PageCursor>, limit: usize)
     -> StoreResult<Page<Message>>;
 
+    /// Makes a pending message that is not running due at store now, with a new `seq` (a new place in delivery order,
+    /// as a reschedule does).
+    async fn deliver_now(&self, id: &MessageId) -> StoreResult<DeliverNowResult>;
+
     /// Admin cancel of a pending message: outcome `cancelled`. Refused for a message being handled under a valid
     /// lease. Cancelling a claimed message whose lease expired also voids that lease.
     async fn cancel(&self, id: &MessageId) -> StoreResult<CancelResult>;
+
+    /// Pauses or resumes the mailbox of `address`: paused, messages still queue up, but no new turn is claimed; a
+    /// running turn finishes. False when the instance is absent.
+    async fn set_paused(&self, address: &ActorAddress, paused: bool) -> StoreResult<bool>;
+
+    /// Atomically gives outcome `purged` to every pending message of `address`, except one being handled under a
+    /// valid lease; the instance stays. Returns how many were purged, or `None` when the instance is absent. Purging a
+    /// message whose lease expired also voids that lease.
+    async fn purge(&self, address: &ActorAddress) -> StoreResult<Option<u64>>;
 
     /// Life-cycle status of `id`: pending, running (valid lease) or finished with a retained, visible outcome; `None`
     /// when the id is unknown, its outcome is hidden by its retention policy, or it is past retention.
     async fn status(&self, id: &MessageId) -> StoreResult<Option<MessageStatus>>;
 
-    /// Retained, visible `failed` outcomes of instances whose URI starts with `prefix` that finished at or after
-    /// `since`, ordered by `(finished_at, message_id)`.
-    async fn failures(
+    /// Retained, visible outcomes of instances whose URI starts with `prefix` that finished at or after `since`,
+    /// ordered by `(finished_at, message_id)`. `status` limits them to one status; `None` lists all.
+    async fn outcomes(
         &self,
+        status: Option<OutcomeStatus>,
         prefix: &str,
         since: Timestamp,
         cursor: Option<&PageCursor>,
         limit: usize,
     ) -> StoreResult<Page<OutcomeRecord>>;
 
+    /// The messages whose `caused_by` is `id`, one level down: pending (or running) ones and finished ones with a
+    /// retained, visible outcome, in ascending message-id order, at most `limit` per page. Paging is a keyset, not a
+    /// snapshot. It does not check that `id` itself exists.
+    async fn caused_by(
+        &self,
+        id: &MessageId,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> StoreResult<Page<MessageStatus>>;
+
+    /// Counts the instances and the pending messages of instances whose URI starts with `prefix` (empty: all), and
+    /// finds the earliest `deliver_at` among those messages that is due at store now. The cost grows with the number
+    /// of rows under the prefix. The counts are read one after the other, not as one snapshot.
+    async fn stats(&self, prefix: &str) -> StoreResult<StoreStats>;
+
     /// Removes outcomes past retention and strips hidden records; returns how many outcomes were removed.
     async fn sweep_expired(&self) -> StoreResult<u64>;
+
+    // ---- nodes and running turns (display only; leases stay the only authority) ----
+
+    /// Upserts the row of node `id` with its `hosted` types, stamped with store time (`started_at` only on the first
+    /// write), and removes the rows of every node last seen more than a day ago.
+    async fn heartbeat_node(&self, id: &NodeId, hosted: &BTreeSet<TypeName>) -> StoreResult<()>;
+
+    /// Every node row, ordered by id.
+    async fn list_nodes(&self) -> StoreResult<Vec<NodeRecord>>;
+
+    /// Removes the row of node `id`. A no-op when it has none.
+    async fn remove_node(&self, id: &NodeId) -> StoreResult<()>;
+
+    /// The turns running now: instances under `prefix` (of `node`, or of any node) with a lease valid at store now, in
+    /// ascending address order, at most `limit` per page. A snapshot of running work, approximate by nature.
+    async fn running_turns(
+        &self,
+        node: Option<&NodeId>,
+        prefix: &str,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> StoreResult<Page<RunningTurn>>;
+
+    /// The turn running now on `address`, or `None` when no lease on it is valid at store now.
+    async fn running_turn(&self, address: &ActorAddress) -> StoreResult<Option<RunningTurn>>;
+
+    /// Asks the node that holds the lease on `address` to cancel the running turn. Records the current epoch, only
+    /// while a valid lease is held, so a request can never hit a later turn. False when no valid lease is held.
+    async fn request_cancel(&self, address: &ActorAddress) -> StoreResult<bool>;
 
     // ---- commit ----
 
@@ -197,8 +260,9 @@ pub trait Store: Send + Sync + 'static {
     /// in this order: the outcome (or the reschedule), the cancels of this instance's pending messages, the creates
     /// (idempotent), the sends (in order), the state change, the release of the lease.
     ///
-    /// `LeaseLost` when the epoch is not current or the lease is no longer held; `Rejected` when a send targets an
-    /// instance that is absent after the creates, or a send id is already in use (the lease is then still held).
+    /// `LeaseLost` when the epoch is not current or the lease is no longer held; `Rejected` when a create names a type
+    /// that is not registered, a send targets an instance that is absent after the creates, or a send id is already in
+    /// use (the lease is then still held).
     /// [`StoreError::Invalid`] when the message is not the one claimed under the epoch, the cancels contain the turn's
     /// own message, or the data cannot be stored; nothing is applied then either.
     async fn commit(&self, commit: CommitRequest) -> StoreResult<CommitResult>;
@@ -207,7 +271,7 @@ pub trait Store: Send + Sync + 'static {
 
     /// Wake-up signals: a stream that yields whenever a message for an instance of one of `types` may have become
     /// claimable (e.g. PostgreSQL `LISTEN/NOTIFY`). An optimisation only; `None` when the store has none.
-    fn wake_ups(&self, _types: &BTreeSet<UriTemplate>) -> Option<BoxStream<'static, ()>> {
+    fn wake_ups(&self, _types: &BTreeSet<TypeName>) -> Option<BoxStream<'static, ()>> {
         None
     }
 

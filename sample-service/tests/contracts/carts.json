@@ -1,0 +1,160 @@
+{
+  "key": [
+    "id"
+  ],
+  "messages": {
+    "AddItem": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Adds `quantity` × `sku`; the line is priced asynchronously.",
+      "properties": {
+        "quantity": {
+          "description": "How many.",
+          "format": "int32",
+          "type": "integer"
+        },
+        "sku": {
+          "description": "The article.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sku",
+        "quantity"
+      ],
+      "title": "AddItem",
+      "type": "object"
+    },
+    "Quote": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Reply of [`Pricing`] to a [`PricingMsg::QuoteRequest`].",
+      "properties": {
+        "quantity": {
+          "description": "How many.",
+          "format": "int32",
+          "type": "integer"
+        },
+        "sku": {
+          "description": "The article.",
+          "type": "string"
+        },
+        "totalCents": {
+          "description": "Price of all.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "unitPriceCents": {
+          "description": "Price of one.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sku",
+        "quantity",
+        "unitPriceCents",
+        "totalCents"
+      ],
+      "title": "Quote",
+      "type": "object"
+    },
+    "QuoteRejected": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Reply of [`Pricing`] when it cannot price a [`PricingMsg::QuoteRequest`].",
+      "properties": {
+        "reason": {
+          "description": "Why.",
+          "type": "string"
+        },
+        "sku": {
+          "description": "The article.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sku",
+        "reason"
+      ],
+      "title": "QuoteRejected",
+      "type": "object"
+    }
+  },
+  "state": {
+    "$defs": {
+      "CartLine": {
+        "description": "A priced cart line.",
+        "properties": {
+          "quantity": {
+            "description": "How many.",
+            "format": "int32",
+            "type": "integer"
+          },
+          "sku": {
+            "description": "The article.",
+            "type": "string"
+          },
+          "totalCents": {
+            "description": "Price of the line.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "sku",
+          "quantity",
+          "totalCents"
+        ],
+        "type": "object"
+      },
+      "PendingLine": {
+        "description": "A line waiting for its quote.",
+        "properties": {
+          "quantity": {
+            "description": "How many.",
+            "format": "int32",
+            "type": "integer"
+          },
+          "sku": {
+            "description": "The article.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sku",
+          "quantity"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "State of a [`Cart`].",
+    "properties": {
+      "awaiting": {
+        "additionalProperties": {
+          "$ref": "#/$defs/PendingLine"
+        },
+        "default": {},
+        "description": "Requests in flight, by correlation id.",
+        "type": "object"
+      },
+      "lines": {
+        "default": [],
+        "description": "The priced lines.",
+        "items": {
+          "$ref": "#/$defs/CartLine"
+        },
+        "type": "array"
+      },
+      "rejected": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "default": {},
+        "description": "Rejection reason per sku.",
+        "type": "object"
+      }
+    },
+    "title": "CartState",
+    "type": "object"
+  },
+  "type": "carts"
+}

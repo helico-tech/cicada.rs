@@ -43,7 +43,8 @@ fn policy() -> RetryPolicy {
 }
 
 async fn failure_ids(store: &dyn Store, since: chrono::DateTime<Utc>) -> Vec<MessageId> {
-    let page = store.failures("", since, None, Page::<Message>::DEFAULT_SIZE).await.unwrap();
+    let page =
+        store.outcomes(Some(OutcomeStatus::Failed), "", since, None, Page::<Message>::DEFAULT_SIZE).await.unwrap();
     page.items.into_iter().map(|o| o.message_id).collect()
 }
 
@@ -223,12 +224,12 @@ pub async fn reschedule_is_atomic_with_the_commits_sends_and_creates_and_a_rejec
         let store = t.store();
         let a = t.new_actor(&TYPE, None).await;
         let other = t.new_actor(&OTHER, None).await;
-        let child = address("actor://other/reschedule-child");
+        let child = address("other/reschedule-child");
         let m = t.send(&a).await;
         let c = t.claim_one().await;
         let rejected = t
             .commit(CommitRequest {
-                sends: vec![OutgoingMessage::new(address("actor://other/absent"), "T", json!(1))],
+                sends: vec![OutgoingMessage::new(address("other/absent"), "T", json!(1))],
                 ..ending(&c, rescheduled("boom", Delivery::Now))
             })
             .await;
@@ -240,7 +241,7 @@ pub async fn reschedule_is_atomic_with_the_commits_sends_and_creates_and_a_rejec
 
         let committed = t
             .commit_ok(CommitRequest {
-                creates: vec![ActorCreate { address: child.clone(), template: OTHER.clone(), state: None }],
+                creates: vec![ActorCreate { address: child.clone(), state: None }],
                 sends: vec![
                     OutgoingMessage::new(other.clone(), "T", json!(1)),
                     OutgoingMessage::new(child.clone(), "T", json!(2)),
@@ -424,7 +425,10 @@ pub async fn retry_policy_survives_reschedule_and_reopen<B: FixtureFactory>(back
         let outcome = outcome_record(&*store, &sent.id).await.expect("an outcome");
         assert_eq!(outcome.envelope.retry.as_ref(), Some(&policy));
         assert_eq!(outcome.envelope.failures, 1);
-        let failures = store.failures("", DateTime::<Utc>::MIN_UTC, None, Page::<Message>::DEFAULT_SIZE).await.unwrap();
+        let failures = store
+            .outcomes(Some(OutcomeStatus::Failed), "", DateTime::<Utc>::MIN_UTC, None, Page::<Message>::DEFAULT_SIZE)
+            .await
+            .unwrap();
         let failure: Vec<_> = failures.items.iter().filter(|o| o.message_id == sent.id).collect();
         assert_eq!(failure.len(), 1);
         assert_eq!(failure[0].envelope.retry.as_ref(), Some(&policy));

@@ -1,19 +1,36 @@
-//! The Cicada HTTP API as axum routers: [`actor_api`] serves the twelve endpoints of the actor HTTP API for a node's
-//! [`ActorSystem`], [`actor_health`] a public readiness check.
+//! The Cicada HTTP API as axum routers: [`actor_api`] serves all of it for a node's [`ActorSystem`], [`actor_api_read`]
+//! only what reads, and [`actor_health`] a public readiness check. Both API routers serve their OpenAPI 3.1 document at
+//! `GET /openapi.json`; [`openapi_document`] gives the document of the full API, and `docs/openapi.json` is a copy.
 //!
 //! | Method and path | Success | Errors |
 //! | --- | --- | --- |
-//! | `PUT /actors/{path}` body `{state?}` | 201 created, 200 exists | 404 no type, 422 bad state or address |
-//! | `GET /actors/{path}` | 200 | 404 |
-//! | `DELETE /actors/{path}` | 204 | 404 |
+//! | `PUT /actors/{type}/{key}` body `{state?}` | 201 created, 200 exists | 404 no type, 422 bad state or address |
+//! | `GET /actors/{type}/{key}` | 200 | 404 |
+//! | `DELETE /actors/{type}/{key}` | 204 | 404 |
 //! | `GET /actors?prefix=&cursor=&limit=` | 200 | |
-//! | `POST /actors/{path}/messages` body `{id?, type, payload, deliverAt or delay, correlationId?, headers?, retry?, retention?}` | 202, 200 duplicate id | 400 invalid retry or retention policy, 404, 409 id taken, 422 type or payload |
-//! | `GET /actors/{path}/messages?cursor=&limit=` | 200 | 404 |
+//! | `POST /actors/{type}/{key}/messages` body `{id?, type, payload, deliverAt or delay, correlationId?, headers?, retry?, retention?}` | 202, 200 duplicate id | 400 invalid retry or retention policy, 404, 409 id taken, 422 type or payload |
+//! | `GET /actors/{type}/{key}/mailbox?cursor=&limit=` | 200 | 404 |
+//! | `POST /actors/{type}/{key}/mailbox/pause` | 204 | 404 |
+//! | `POST /actors/{type}/{key}/mailbox/resume` | 204 | 404 |
+//! | `POST /actors/{type}/{key}/mailbox/purge` | 200 `{purged}` | 404 |
+//! | `GET /actors/{type}/{key}/turn` | 200 | 404 no running turn |
+//! | `POST /actors/{type}/{key}/turn/cancel` | 202 | 404 no running turn |
 //! | `GET /messages?prefix=&cursor=&limit=` | 200 | |
 //! | `GET /messages/{id}` | 200 | 404 |
-//! | `DELETE /messages/{id}` | 204 | 404, 409 running or finished |
-//! | `GET /failures?prefix=&since=&cursor=&limit=` | 200 | |
+//! | `POST /messages/{id}/cancel` | 204 | 404, 409 running or finished |
+//! | `POST /messages/{id}/retry` | 202 | 404, 409 not retryable |
+//! | `POST /messages/{id}/deliver-now` | 200 | 404, 409 running or finished |
+//! | `POST /messages/bulk-cancel` body `{ids? or prefix?, messageType?}` | 200 `{affected, more}` | 400 |
+//! | `POST /messages/bulk-retry` body `{ids? or prefix?, messageType?}` | 200 `{affected, more}` | 400 |
+//! | `GET /nodes` | 200 | |
+//! | `GET /nodes/{node}` | 200 | 404 |
+//! | `GET /turns?node=&prefix=&cursor=&limit=` | 200 | |
+//! | `GET /messages/{id}/caused?cursor=&limit=` | 200 | 404 |
+//! | `GET /outcomes?status=&prefix=&since=&cursor=&limit=` | 200 | 400 unknown status |
+//! | `GET /stats?prefix=` | 200 `{actors, pending, oldestDue}` | |
 //! | `GET /types` | 200 | |
+//! | `GET /types/{name}` | 200 | 404 |
+//! | `DELETE /types/{name}` | 204 | 404, 409 actors of the type exist |
 //! | `GET /health` | 200 | 503 |
 //!
 //! Every endpoint also answers `400` for a malformed body, path or query parameter, `503` when the store is unavailable
@@ -26,13 +43,10 @@
 //! them are decoded leniently, like every message. A body larger than [`ApiConfig::max_request_body_bytes`] (default
 //! 1 MiB) is refused with `413`: by its `Content-Length`, or while reading, which stops one byte past the limit.
 //!
-//! **Paths.** `actor://a/b` is `/actors/a/b`; segments are percent-encoded exactly as in the actor URI, so
-//! `actor://a/b%20c` is `/actors/a/b%20c`. A trailing segment that is literally `messages` (in the raw, still encoded
-//! path) names the mailbox for `GET` and `POST`; to address an instance whose last segment is `messages`, escape it as
-//! `%6Dessages` (as [`cicada::ActorAddress::to_http_path`] does). `PUT` and `DELETE` always address the instance.
+//! **Paths.** The actor `sync/acme` is `/actors/sync/acme`; its key is written exactly as in the address.
 //!
 //! **Listings** take `cursor` (the `next` of the previous page) and `limit` (1..[`MAX_PAGE_SIZE`], default 100). A
-//! `prefix` is an actor-URI prefix such as `actor://sync/`; the scheme may be left out (`sync/`).
+//! `prefix` is a prefix of the address, such as `sync/` (one type) or `sync/ac`.
 //!
 //! **Mounting.** The routers have no fallback, so a host can [`Router::nest`] or [`Router::merge`] them, and wraps the
 //! API in its own authentication layers:
@@ -51,12 +65,16 @@
 mod handlers;
 mod problem;
 mod request;
+mod routes;
 
 use std::sync::Arc;
 
 use axum::Router;
 use axum::routing::get;
 use cicada::ActorSystem;
+
+use routes::Access;
+pub use routes::openapi_document;
 
 /// Largest accepted `limit` of a paged listing.
 pub const MAX_PAGE_SIZE: usize = 1000;
@@ -86,32 +104,25 @@ pub(crate) struct Api {
     max_body: usize,
 }
 
-/// The twelve endpoints of the actor HTTP API, served by `system`, with the default [`ApiConfig`]. See the crate
-/// documentation.
+/// The whole actor HTTP API, served by `system`, with the default [`ApiConfig`]. See the crate documentation.
 pub fn actor_api(system: ActorSystem) -> Router {
     actor_api_with(system, ApiConfig::default())
 }
 
-/// The twelve endpoints of the actor HTTP API, served by `system`, with `config`.
+/// The whole actor HTTP API, served by `system`, with `config`.
 ///
 /// # Panics
 ///
 /// When `config.max_request_body_bytes` is zero.
 pub fn actor_api_with(system: ActorSystem, config: ApiConfig) -> Router {
     assert!(config.max_request_body_bytes > 0, "max_request_body_bytes must be positive");
-    let api = Arc::new(Api { system, max_body: config.max_request_body_bytes });
-    Router::new()
-        .route("/actors", get(handlers::list_actors))
-        .route(
-            "/actors/{*path}",
-            get(handlers::get_path).put(handlers::put_path).delete(handlers::delete_path).post(handlers::post_path),
-        )
-        .route("/messages", get(handlers::list_pending))
-        .route("/messages/{id}", get(handlers::message_status).delete(handlers::cancel_message))
-        .route("/failures", get(handlers::failures))
-        .route("/types", get(handlers::types))
-        .route("/health", get(handlers::health))
-        .with_state(api)
+    routes::router(Access::Full, Arc::new(Api { system, max_body: config.max_request_body_bytes }))
+}
+
+/// Only the routes of the actor HTTP API that read, served by `system`. It has no route that changes anything, so it is
+/// safe to expose more widely than [`actor_api`]; authentication stays the host's.
+pub fn actor_api_read(system: ActorSystem) -> Router {
+    routes::router(Access::Read, Arc::new(Api { system, max_body: DEFAULT_MAX_REQUEST_BODY_BYTES }))
 }
 
 /// A readiness check at `path` (e.g. `/ready`): `200` with the body of the API's `GET /health` while the node is

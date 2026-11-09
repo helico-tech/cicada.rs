@@ -18,7 +18,7 @@ pub struct Batch {
 }
 
 impl ActorRef for Batch {
-    const TEMPLATE: &'static str = "actor://batches/{id}";
+    const TYPE: &'static str = "batches";
     type Message = BatchMsg;
 }
 
@@ -82,7 +82,7 @@ pub struct BatchItem {
 }
 
 impl ActorRef for BatchItem {
-    const TEMPLATE: &'static str = "actor://batches/{batch}/items/{index}";
+    const TYPE: &'static str = "batch-items";
     type Message = BatchItemMsg;
 }
 

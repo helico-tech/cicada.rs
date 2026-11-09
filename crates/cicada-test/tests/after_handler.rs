@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use cicada::address::{ActorAddress, UriTemplate};
+use cicada::address::{ActorAddress, TypeName};
 use cicada::plugin::{ClaimContext, HookResult, Plugin};
 use cicada::prelude::*;
 use cicada::runtime::{CreateActorResult, NodeConfig, OpError};
@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::Notify;
 
-/// `actor://tally/{id}`; the id `cursed` is refused when a ref is decoded.
+/// `tally/{id}`; the id `cursed` is refused when a ref is decoded.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(try_from = "RawTally")]
 struct Tally {
@@ -50,7 +50,7 @@ impl TryFrom<RawTally> for Tally {
 }
 
 impl ActorRef for Tally {
-    const TEMPLATE: &'static str = "actor://tally/{id}";
+    const TYPE: &'static str = "tally";
     type Message = TallyMsg;
 }
 
@@ -313,14 +313,14 @@ async fn an_error_from_decoding_the_ref_fails_the_message_instead_of_crash_loopi
     let f = Fixture::new();
     let memory = virtual_store();
     let system = f.node(memory.clone(), "n1");
-    let cursed = ActorAddress::parse("actor://tally/cursed").unwrap();
+    let cursed = ActorAddress::parse("tally/cursed").unwrap();
     match system.create_actor(&cursed, None).await.unwrap() {
         CreateActorResult::InvalidAddress(e) => assert!(e.contains("not allowed"), "{e}"),
         other => panic!("refused by a hosting node, was {other:?}"),
     }
 
     // Created where nothing checks the ref (a node that does not host the type).
-    memory.create(&cursed, &UriTemplate::parse("actor://tally/{id}").unwrap(), Some(json!({}))).await.unwrap();
+    memory.create(&cursed, Some(json!({}))).await.unwrap();
     let m = enqueue(&*memory, OutgoingMessage::new(cursed, "Bump", json!({}))).await;
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1);
     let outcome = outcome_of(&*memory, &m.id).await.unwrap();
@@ -450,7 +450,7 @@ impl Faults for HangingClaim {
     async fn claim_due(
         &self,
         inner: &dyn Store,
-        types: &BTreeSet<UriTemplate>,
+        types: &BTreeSet<TypeName>,
         node: &NodeId,
         ttl: Duration,
         limit: usize,

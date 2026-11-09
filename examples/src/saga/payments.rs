@@ -11,7 +11,7 @@ use super::order::{Order, OrderMsg};
 pub struct Payments;
 
 impl ActorRef for Payments {
-    const TEMPLATE: &'static str = "actor://payments";
+    const TYPE: &'static str = "payments";
     type Message = PaymentsMsg;
 }
 

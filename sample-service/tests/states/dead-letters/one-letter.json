@@ -2,7 +2,7 @@
   "letters": {
     "m-1": {
       "failedMessageId": "m-1",
-      "actor": "actor://mailers/m",
+      "actor": "mailers/m",
       "type": "SendMail",
       "payload": "x",
       "correlationId": null,

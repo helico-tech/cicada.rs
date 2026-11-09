@@ -27,10 +27,10 @@ state plus a mailbox; it occupies memory only while one message is being handled
 | --- | --- |
 | Node | A service running an `ActorSystem`. Sends messages, serves the HTTP API, and runs turns for the actor types it hosts. |
 | Store | The shared durable backend: mailbox, state store, type registry, the atomic commit, and the only clock. |
-| Actor type | A definition: a ref type with its URI template, an optional state type, a message family, a handler, an unhandled policy. In Rust: an implementation of the `Actor` trait. |
-| Contract | The published description of a type: template, message type names, and the JSON Schemas generated from its types. |
-| Actor instance | One concrete URI of a type, explicitly created. Owns one state value and one mailbox. |
-| Ref | An actor's address. A typed ref struct in code (`ActorRef`); its URI string on the wire, in state and in messages. |
+| Actor type | A definition: a ref type with its type name, an optional state type, a message family, a handler, an unhandled policy. In Rust: an implementation of the `Actor` trait. |
+| Contract | The published description of a type: type name, key fields, message type names, and the JSON Schemas generated from its types. |
+| Actor instance | One concrete key of a type, explicitly created. Owns one state value and one mailbox. |
+| Ref | An actor's address. A typed ref struct in code (`ActorRef`); its address text (`sync/acme`) on the wire, in state and in messages. |
 | Message | A typed envelope addressed to one instance, with a delivery time. |
 | Mailbox | An instance's pending messages, ordered by delivery time. |
 | Turn | One handling of one message: claim, load, run handler, commit. |
@@ -65,11 +65,11 @@ Every backend implements the `cicada::store::Store` trait and passes the conform
 | S1 Durability | An acknowledged write survives process and machine crash. |
 | S2 Atomicity | `commit` applies all of its parts or none. `delete` removes instance and mailbox together. |
 | S3 Per-instance linearizability | All operations on one instance and its mailbox have a single order. A read after an acknowledged write sees it. |
-| S4 Lease exclusivity | At most one unexpired lease per instance. Each claim issues an epoch greater than any earlier one for that URI, also across delete and re-create. |
+| S4 Lease exclusivity | At most one unexpired lease per instance. Each claim issues an epoch greater than any earlier one for that address, also across delete and re-create. |
 | S5 Fencing | `commit` and `renew` succeed only with the current epoch. |
 | S6 Order | `claim_due` returns, per instance, only the pending message with the smallest `(deliverAt, seq)`, and only when it is due. |
 | S7 No loss, no duplicate | A message leaves pending only by commit, cancel or delete. Message ids are unique across pending messages and retained outcomes. |
-| S8 Liveness | An instance with a due head message and no valid lease is eventually returned by `claim_due`. |
+| S8 Liveness | An instance that is not paused, with a due head message and no valid lease, is eventually returned by `claim_due`. A paused instance is not claimed until it is resumed (ADR 0015). |
 | S9 One clock | Due-ness and lease expiry use the store clock only. |
 | S10 Retention | Outcomes are kept for a configured period, which is also the dedup window. A message's retention policy can hide its outcome earlier or keep it longer; a minimal record stays for the whole dedup window. |
 
@@ -96,6 +96,8 @@ when a store opens a database.
 | Node dies or loses the lease before commit | None; message stays pending | None |
 | Instance stopped or deleted | `purged` for all still-pending messages | — |
 | Admin cancels a pending message | `cancelled` | — |
+| Admin cancels a running turn, before its handler ended | `cancelled` at the owning node's next heartbeat, no retry; the mailbox moves on. A handler stops at its next `.await`; blocking code runs until it returns, and the commit is then `cancelled` rather than done (`on_outcome` sees it, `on_handler_error` does not run). A request after the handler ended is ignored (G6) | None |
+| Admin purges a mailbox | `purged` for every pending message except one being handled | — |
 
 ### How the runtime maps to tokio
 
@@ -107,6 +109,8 @@ a handler blocked in synchronous code keeps its turn until it returns. Blocking 
 or a dropped `run_due_turns` future) aborts *work*, waits for it to stop, and releases its lease only if the handler
 had not ended. A claim the store answers after its caller is gone is released, never left to expire.
 
+An admin cancel of a running turn is recorded by the store as the turn's epoch and read by the keeper at its next renewal, so it takes up to one heartbeat. The keeper aborts *work*, waits for it to stop and commits `cancelled` itself, fenced by its epoch, so G1 and G3 hold and no other node runs the message meanwhile. Whether the cancel request or the handler's end came first is decided once, by one atomic flag: a request that lost is ignored and the turn commits normally. No request can reach a later turn, because each stores the epoch it was for. A lease is never taken away from a running node: there is no operation that does so (ADR 0015).
+
 All local timing uses `tokio::time`, so tests on a paused runtime (`start_paused = true`) run on virtual time: the
 in-memory store reads its clock from `tokio::time::Instant` (`TokioClock`).
 
@@ -117,7 +121,7 @@ in-memory store reads its clock from `tokio::time::Instant` (`TokioClock`).
 struct Sync { tenant: String }
 
 impl ActorRef for Sync {
-    const TEMPLATE: &'static str = "actor://sync/{tenant}";
+    const TYPE: &'static str = "sync";
     type Message = SyncMsg;
 }
 
@@ -152,7 +156,7 @@ impl Actor for SyncActor {
 | `cicada-store-conformance` | The S1–S10 suite every store runs |
 | `cicada-store-sqlite` | `SqliteStore` (sqlx): one file, WAL, one writer |
 | `cicada-store-postgres` | `PostgresStore` (sqlx): `FOR UPDATE SKIP LOCKED` claims, `LISTEN/NOTIFY` wake-ups |
-| `cicada-axum` | `actor_api()` (the twelve endpoints) and `actor_health()` as axum routers |
+| `cicada-axum` | `actor_api()`, `actor_api_read()` and `actor_health()` as axum routers, and the OpenAPI document |
 | `cicada-client` | Typed HTTP client (reqwest) |
 | `cicada-otel` | OpenTelemetry plugin |
 | `cicada-extras` | Schedules (interval, daily), crash-loop guard, failure watcher, dead letters |
@@ -162,7 +166,7 @@ impl Actor for SyncActor {
 
 ## HTTP contract
 
-Twelve endpoints; see the README. Durations are ISO-8601 strings (`PT5S`); instants are ISO-8601 in UTC. Errors are `application/problem+json` (RFC 9457) with `type` `urn:cicada:problem:<slug>`. The routes are an
+See the README for the endpoints and `docs/openapi.json` for the OpenAPI document. Durations are ISO-8601 strings (`PT5S`); instants are ISO-8601 in UTC. Errors are `application/problem+json` (RFC 9457) with `type` `urn:cicada:problem:<slug>`. The routes are an
 axum `Router` that the host nests into its own router and wraps in its own authentication layers. The bodies are the
 types of `cicada::api`, used by both `cicada-axum` and `cicada-client`; request envelopes decode strictly (an unknown
 key is `400`), payloads and states leniently.

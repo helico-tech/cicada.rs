@@ -4,9 +4,12 @@
 use chrono::{DateTime, Utc};
 use cicada::address::ActorAddress;
 use cicada::store::{
-    CommitRequest, Delivery, EnqueueResult, Message, MessageId, MessageStatus, OutgoingMessage, Page, TurnOutcome,
+    CommitRequest, Delivery, EnqueueResult, Message, MessageId, MessageStatus, OutcomeStatus, OutgoingMessage, Page,
+    TurnOutcome,
 };
 use serde_json::json;
+
+use cicada::retention::Retention;
 
 use crate::env::*;
 use crate::fixture::{FixtureFactory, StoreFixture};
@@ -60,7 +63,10 @@ pub async fn chain_caused_by_is_stored_with_the_message_and_returned_everywhere_
             Some(&root.id),
             "retained with the outcome"
         );
-        let failures = store.failures("", DateTime::<Utc>::MIN_UTC, None, Page::<Message>::DEFAULT_SIZE).await.unwrap();
+        let failures = store
+            .outcomes(Some(OutcomeStatus::Failed), "", DateTime::<Utc>::MIN_UTC, None, Page::<Message>::DEFAULT_SIZE)
+            .await
+            .unwrap();
         assert_eq!(failures.items.len(), 1);
         assert_eq!(failures.items[0].envelope.caused_by.as_ref(), Some(&root.id));
     })
@@ -107,10 +113,85 @@ pub async fn chain_caused_by_survives_reschedule_and_reopen<B: FixtureFactory>(b
         }
         let outcome = outcome_record(&*t.store(), &child.id).await.expect("an outcome");
         assert_eq!(outcome.envelope.caused_by.as_ref(), Some(&root.id), "kept with the outcome");
-        let failures =
-            t.store().failures("", DateTime::<Utc>::MIN_UTC, None, Page::<Message>::DEFAULT_SIZE).await.unwrap();
+        let failures = t
+            .store()
+            .outcomes(Some(OutcomeStatus::Failed), "", DateTime::<Utc>::MIN_UTC, None, Page::<Message>::DEFAULT_SIZE)
+            .await
+            .unwrap();
         assert_eq!(failures.items.len(), 1);
         assert_eq!(failures.items[0].envelope.caused_by.as_ref(), Some(&root.id));
+    })
+    .await
+}
+
+/// chain - caused_by lists one level of pending and retained visible messages in id order across pages
+pub async fn chain_caused_by_lists_one_level_of_pending_and_retained_visible_messages_in_id_order_across_pages<
+    B: FixtureFactory,
+>(
+    backend: &B,
+) {
+    store_test_with(backend, backend.tick() * 10, DEFAULT_TIMEOUT, async |t| {
+        let store = t.store();
+        let a = t.new_actor(&TYPE, None).await;
+        let b = t.new_actor(&OTHER, None).await;
+        let root = t.send(&a).await;
+        let kid = |n: &str, retention| OutgoingMessage {
+            id: MessageId::new(format!("kid-{n}")).unwrap(),
+            retention,
+            ..caused(&b, &root.id, Some(&a))
+        };
+        // Sent in an order other than the id order, one of them removed at once when it is done.
+        let sends = vec![kid("3", None), kid("1", None), kid("2", Some(Retention::REMOVE_ON_DONE))];
+        t.commit_ok(CommitRequest { sends, ..done(&t.claim_one().await) }).await;
+        let all = async || {
+            let mut out = Vec::new();
+            let mut cursor = None;
+            loop {
+                let page = store.caused_by(&root.id, cursor.as_ref(), 2).await.unwrap();
+                assert!(page.items.len() <= 2);
+                out.extend(page.items);
+                match page.next {
+                    Some(next) => cursor = Some(next),
+                    None => return out,
+                }
+            }
+        };
+        let listed = |statuses: &[MessageStatus]| -> Vec<String> {
+            statuses.iter().map(|s| s.envelope().id.to_string()).collect()
+        };
+        let before = all().await;
+        assert_eq!(listed(&before), ["kid-1", "kid-2", "kid-3"]);
+        assert!(before.iter().all(|s| matches!(s, MessageStatus::Pending(_))));
+        assert_eq!(store.caused_by(&root.id, None, 10).await.unwrap().next, None);
+
+        // One level only, and only what the message caused: a grandchild and a stranger are not listed.
+        let grandchild = caused(&a, &MessageId::new("kid-1").unwrap(), Some(&b));
+        enqueue_ok(&*store, grandchild.clone()).await;
+        t.send(&a).await;
+        assert_eq!(listed(&all().await), ["kid-1", "kid-2", "kid-3"]);
+        let grandchildren = store.caused_by(&MessageId::new("kid-1").unwrap(), None, 10).await.unwrap().items;
+        assert_eq!(listed(&grandchildren), [grandchild.id.to_string()]);
+        assert!(store.caused_by(&MessageId::random(), None, 10).await.unwrap().items.is_empty());
+
+        // kid-3 is handled first (the mailbox is in send order), then kid-1 is done, kid-2 removed at once.
+        let running = t.claim_one_types(&[&OTHER]).await;
+        assert_eq!(running.message.id.as_str(), "kid-3");
+        let states = all().await;
+        assert!(matches!(&states[2], MessageStatus::Running { .. }), "{states:?}");
+        t.commit_ok(ending(&running, TurnOutcome::Failed("boom".into()))).await;
+        for _ in 0..2 {
+            t.commit_ok(done(&t.claim_one_types(&[&OTHER]).await)).await;
+        }
+        let after = all().await;
+        assert_eq!(listed(&after), ["kid-1", "kid-3"], "the removed record stays out");
+        assert!(matches!(&after[0], MessageStatus::Finished(o) if o.status == OutcomeStatus::Done));
+        assert!(matches!(&after[1], MessageStatus::Finished(o) if o.status == OutcomeStatus::Failed));
+
+        // Past retention the outcomes go; the grandchild is still pending.
+        t.advance_ticks(11).await;
+        store.sweep_expired().await.unwrap();
+        assert!(all().await.is_empty());
+        assert_eq!(store.caused_by(&MessageId::new("kid-1").unwrap(), None, 10).await.unwrap().items.len(), 1);
     })
     .await
 }

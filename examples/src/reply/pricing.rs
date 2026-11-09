@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 pub struct Pricing;
 
 impl ActorRef for Pricing {
-    const TEMPLATE: &'static str = "actor://pricing";
+    const TYPE: &'static str = "pricing";
     type Message = PricingMsg;
 }
 

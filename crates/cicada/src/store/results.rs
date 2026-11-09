@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use super::model::{ActorRecord, Message, MessageId, OutcomeRecord, TypeDef};
 use crate::time::Timestamp;
 
@@ -8,8 +6,7 @@ use crate::time::Timestamp;
 pub enum RegisterResult {
     /// The type is registered (newly, or it already was with the same contract hash).
     Registered(TypeDef),
-    /// The registration conflicts with `existing`: the same template with a different contract hash, or a different
-    /// template that overlaps it.
+    /// The registration conflicts with `existing`: the same name with a different contract hash.
     Conflict {
         /// The registered type it conflicts with.
         existing: TypeDef,
@@ -18,13 +15,15 @@ pub enum RegisterResult {
     },
 }
 
-/// The matching type of an address and the address's decoded template parameters.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ResolvedType {
-    /// The type.
-    pub type_def: TypeDef,
-    /// The decoded parameters.
-    pub params: BTreeMap<String, String>,
+/// Result of removing a type's registration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoveTypeResult {
+    /// The registration is removed.
+    Removed,
+    /// No type with this name is registered.
+    Absent,
+    /// Instances of the type exist; the registration is kept.
+    InUse,
 }
 
 /// Result of creating an instance in the store.
@@ -34,6 +33,8 @@ pub enum CreateResult {
     Created,
     /// The instance already existed and was left untouched.
     Exists(ActorRecord),
+    /// No type is registered under the address's type name; nothing was created.
+    NoSuchType,
 }
 
 /// Result of deleting an instance.
@@ -65,6 +66,9 @@ pub enum EnqueueResult {
 pub enum RenewResult {
     /// The lease now runs until this store time.
     Renewed(Timestamp),
+    /// The lease now runs until this store time, and an operator asked to cancel this turn
+    /// ([`Store::request_cancel`](super::Store::request_cancel)).
+    CancelRequested(Timestamp),
     /// The epoch is no longer current or the lease was released; the turn must be abandoned.
     LeaseLost,
 }
@@ -75,6 +79,19 @@ pub enum CancelResult {
     /// The message was pending and now has outcome `cancelled`.
     Cancelled(OutcomeRecord),
     /// The message is being handled under a valid lease and cannot be cancelled.
+    Running,
+    /// The message already has a retained outcome.
+    AlreadyFinished(OutcomeRecord),
+    /// No pending message and no retained outcome has this id.
+    NotFound,
+}
+
+/// Result of [`Store::deliver_now`](super::Store::deliver_now).
+#[derive(Debug, Clone, PartialEq)]
+pub enum DeliverNowResult {
+    /// The message is now due at store now, with a new `seq`.
+    Delivered(Message),
+    /// The message is being handled under a valid lease.
     Running,
     /// The message already has a retained outcome.
     AlreadyFinished(OutcomeRecord),

@@ -53,7 +53,7 @@ fn dead_letters() {
     let dir = dir("dead-letters");
     let letter = DeadLetter {
         failed_message_id: "m-1".into(),
-        actor: "actor://mailers/m".into(),
+        actor: "mailers/m".into(),
         message_type: "SendMail".into(),
         payload: json!("x"),
         correlation_id: None,

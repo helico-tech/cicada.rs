@@ -13,11 +13,11 @@ pub const UPDATE_CONTRACTS_ENV: &str = "CICADA_UPDATE_CONTRACTS";
 
 /// Asserts that `contracts` equal the snapshots in `directory`, so that a contract change shows up in a test run instead
 /// of failing node start against the registry during a deploy (a node refuses a contract that differs from the one
-/// registered for its template). Rewrites differing snapshots when `CICADA_UPDATE_CONTRACTS=true`.
+/// registered for its type name). Rewrites differing snapshots when `CICADA_UPDATE_CONTRACTS=true`.
 ///
-/// Each type has one file, `<directory>/<template as file name>.json`, holding its contract as `GET /types` serves it
+/// Each type has one file, `<directory>/<type name>.json`, holding its contract as `GET /types` serves it
 /// (pretty printed, keys sorted). A missing file is written and the type passes, so the first run records the
-/// snapshots; commit them. A file that differs fails the assertion with what changed: the template, the state schema,
+/// snapshots; commit them. A file that differs fails the assertion with what changed: the key fields, the state schema,
 /// and which message types were added, removed or changed. Formatting does not matter: contracts are compared by their
 /// hash. Get a type's contract with [`cicada::actor::contract_of`].
 ///
@@ -40,7 +40,7 @@ pub fn assert_contracts_match(directory: impl AsRef<Path>, contracts: &[Contract
 /// [`assert_contracts_match`] as a result, with an explicit `update` flag.
 pub fn check_contracts(directory: &Path, contracts: &[Contract], update: bool) -> Result<(), String> {
     let mut names: Vec<(String, &str)> =
-        contracts.iter().map(|c| (snapshot_file_name(c), c.template().as_str())).collect();
+        contracts.iter().map(|c| (snapshot_file_name(c), c.type_name().as_str())).collect();
     names.sort();
     for pair in names.windows(2) {
         if pair[0].0 == pair[1].0 {
@@ -56,7 +56,7 @@ pub fn check_contracts(directory: &Path, contracts: &[Contract], update: bool) -
             Some(r) if r.hash() == contract.hash() => {}
             Some(r) if !update => problems.push(format!(
                 "{} ({}):\n{}",
-                contract.template(),
+                contract.type_name(),
                 file.display(),
                 describe_changes(&r, contract).iter().map(|c| format!("  - {c}")).collect::<Vec<_>>().join("\n")
             )),
@@ -80,8 +80,15 @@ pub fn check_contracts(directory: &Path, contracts: &[Contract], update: bool) -
 /// What changed from `old` to `new`, one line per change.
 pub fn describe_changes(old: &Contract, new: &Contract) -> Vec<String> {
     let mut changes = Vec::new();
-    if old.template() != new.template() {
-        changes.push(format!("template changed: {} -> {}", old.template(), new.template()));
+    if old.type_name() != new.type_name() {
+        changes.push(format!("type name changed: {} -> {}", old.type_name(), new.type_name()));
+    }
+    if old.key_fields() != new.key_fields() {
+        changes.push(format!(
+            "key fields changed: [{}] -> [{}]",
+            old.key_fields().join(", "),
+            new.key_fields().join(", ")
+        ));
     }
     match (old.state_schema(), new.state_schema()) {
         (None, Some(_)) => changes.push("state added (the type was stateless)".to_owned()),
@@ -104,12 +111,9 @@ pub fn describe_changes(old: &Contract, new: &Contract) -> Vec<String> {
     changes
 }
 
-/// `actor://sync/{tenant}` → `sync_{tenant}.json`: the template without its scheme, other characters as `_`.
+/// `sync` → `sync.json`: the type name, which is safe as a file name.
 pub fn snapshot_file_name(contract: &Contract) -> String {
-    let rest = contract.template().as_str().trim_start_matches("actor://");
-    let name: String =
-        rest.chars().map(|c| if c.is_ascii_alphanumeric() || "._{}-".contains(c) { c } else { '_' }).collect();
-    format!("{name}.json")
+    format!("{}.json", contract.type_name())
 }
 
 fn read_snapshot(file: &Path) -> Result<Contract, String> {

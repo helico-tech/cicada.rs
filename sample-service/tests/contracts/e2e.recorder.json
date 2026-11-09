@@ -1,0 +1,77 @@
+{
+  "key": [
+    "id"
+  ],
+  "messages": {
+    "Record": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Performs an external side effect (the node's [`EffectLog`]), then sleeps `sleepMillis`, then commits the\nrecord.",
+      "properties": {
+        "label": {
+          "description": "The record's label.",
+          "type": "string"
+        },
+        "sleepMillis": {
+          "default": 0,
+          "description": "How long to sleep between the effect and the commit, in milliseconds.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "title": "Record",
+      "type": "object"
+    }
+  },
+  "state": {
+    "$defs": {
+      "Recorded": {
+        "description": "One committed record.",
+        "properties": {
+          "attempt": {
+            "description": "The message's `attempt`.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "label": {
+            "description": "The record's label.",
+            "type": "string"
+          },
+          "messageId": {
+            "description": "The message's id.",
+            "type": "string"
+          },
+          "node": {
+            "description": "The node that ran it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "messageId",
+          "attempt",
+          "node"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "State of a [`Recorder`].",
+    "properties": {
+      "records": {
+        "default": [],
+        "description": "Every committed record.",
+        "items": {
+          "$ref": "#/$defs/Recorded"
+        },
+        "type": "array"
+      }
+    },
+    "title": "RecorderState",
+    "type": "object"
+  },
+  "type": "e2e.recorder"
+}

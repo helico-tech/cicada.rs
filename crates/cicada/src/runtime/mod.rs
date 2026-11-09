@@ -8,5 +8,8 @@ mod results;
 mod system;
 
 pub use resolver::RegisteredType;
-pub use results::{ActorSnapshot, CreateActorResult, OpError, SendResult};
-pub use system::{ActorSystem, ActorSystemBuilder, NodeConfig, NodeState, StartError};
+pub use results::{
+    ActorSnapshot, BulkResult, BulkSelection, CreateActorResult, MailboxEntry, NodeHealth, NodeInfo, OpError,
+    RetryResult, SendResult,
+};
+pub use system::{ActorSystem, ActorSystemBuilder, BULK_LIMIT, NodeConfig, NodeState, StartError};

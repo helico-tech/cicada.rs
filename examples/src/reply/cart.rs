@@ -13,7 +13,7 @@ pub struct Cart {
 }
 
 impl ActorRef for Cart {
-    const TEMPLATE: &'static str = "actor://carts/{id}";
+    const TYPE: &'static str = "carts";
     type Message = CartMsg;
 }
 

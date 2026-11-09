@@ -10,7 +10,7 @@ use futures::FutureExt;
 use futures::future::BoxFuture;
 use serde_json::Value;
 
-use crate::address::{ActorAddress, ActorRef, RefBinding, UriTemplate};
+use crate::address::{ActorAddress, ActorRef, RefBinding, TypeName};
 use crate::contract::Contract;
 use crate::message::{self, ActorState, FamilyInfo, MessageFamily};
 use crate::plugin::TurnInfo;
@@ -28,7 +28,7 @@ pub enum Unhandled {
     Drop,
 }
 
-/// An actor type: a typed ref bound to a URI template, an optional state, a message family, one handler for the whole
+/// An actor type: a typed ref bound to a type name, an optional state, a message family, one handler for the whole
 /// family, and the mandatory unhandled policy.
 ///
 /// ```
@@ -41,7 +41,7 @@ pub enum Unhandled {
 /// }
 ///
 /// impl ActorRef for Counter {
-///     const TEMPLATE: &'static str = "actor://counter/{id}";
+///     const TYPE: &'static str = "counter";
 ///     type Message = CounterMsg;
 /// }
 ///
@@ -79,7 +79,7 @@ pub enum Unhandled {
 /// message is handled. The value implementing the trait carries the actor's dependencies (clients, configuration),
 /// shared by all its turns.
 pub trait Actor: Send + Sync + Sized + 'static {
-    /// The typed ref; its template is the type's identity.
+    /// The typed ref; its type name is the type's identity.
     type Ref: ActorRef<Message = Self::Message>;
     /// The state, or [`crate::message::Stateless`].
     type State: ActorState;
@@ -118,9 +118,9 @@ impl<A: Actor> ActorType<A> {
         Self { actor }
     }
 
-    /// The type's template, as declared by its ref.
-    pub fn template(&self) -> &'static str {
-        <A::Ref as ActorRef>::TEMPLATE
+    /// The type's name, as declared by its ref.
+    pub fn type_name(&self) -> &'static str {
+        <A::Ref as ActorRef>::TYPE
     }
 
     pub(crate) fn into_hosted(self) -> Arc<dyn HostedActor> {
@@ -164,7 +164,7 @@ pub(crate) struct Loaded {
 pub(crate) trait HostedActor: Send + Sync {
     fn name(&self) -> &'static str;
     fn problems(&self) -> Vec<String>;
-    fn template(&self) -> Option<&UriTemplate>;
+    fn type_name(&self) -> Option<&TypeName>;
     fn contract(&self) -> Option<&Arc<Contract>>;
     fn max_turn(&self) -> Option<Duration>;
     fn check_state(&self, state: Option<&Value>) -> Result<(), String>;
@@ -186,16 +186,18 @@ struct Hosted<A: Actor> {
 
 /// Checks the type `A` and builds its contract; fails with every problem found.
 fn analyse<A: Actor>() -> Result<Analysis<A>, Vec<String>> {
-    let mut problems = RefBinding::<A::Ref>::problems().into_iter().map(|p| format!("Ref: {p}")).collect::<Vec<_>>();
+    let mut problems = Vec::new();
     if A::MAX_TURN.is_some_and(|d| d.is_zero()) {
         problems.push("MAX_TURN must be positive".to_owned());
     }
-    let binding = RefBinding::<A::Ref>::new().ok();
+    let binding = RefBinding::<A::Ref>::new().map_err(|e| problems.push(format!("Ref: {e}"))).ok();
     let family = FamilyInfo::of::<A::Message>().map_err(|e| problems.push(format!("Messages: {e}"))).ok();
     let state = A::State::schema().map_err(|e| problems.push(format!("State schema: {e}"))).ok();
     match (binding, family, state) {
         (Some(binding), Some(family), Some(state)) if problems.is_empty() => {
-            let contract = Arc::new(Contract::new(binding.template().clone(), state, family.schemas.clone()));
+            let key_fields = binding.key_fields().iter().map(|f| (*f).to_owned()).collect();
+            let contract =
+                Arc::new(Contract::new(binding.type_name().clone(), key_fields, state, family.schemas.clone()));
             Ok(Analysis { binding, family, contract })
         }
         _ => Err(problems),
@@ -214,8 +216,8 @@ impl<A: Actor> HostedActor for Hosted<A> {
         }
     }
 
-    fn template(&self) -> Option<&UriTemplate> {
-        self.analysis.as_ref().ok().map(|a| a.binding.template())
+    fn type_name(&self) -> Option<&TypeName> {
+        self.analysis.as_ref().ok().map(|a| a.binding.type_name())
     }
 
     fn contract(&self) -> Option<&Arc<Contract>> {
@@ -299,7 +301,7 @@ pub(crate) fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
     }
 }
 
-/// The contract of actor type `A`, as a node hosting it registers it: template, state schema and message schemas.
+/// The contract of actor type `A`, as a node hosting it registers it: name, key fields, state schema and message schemas.
 /// Fails with the type's problems when it is invalid (see [`crate::runtime::StartError`]).
 pub fn contract_of<A: Actor>() -> Result<Contract, Vec<String>> {
     analyse::<A>().map(|a| a.contract.as_ref().clone())

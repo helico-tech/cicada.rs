@@ -15,7 +15,7 @@ struct Pacer {
 }
 
 impl ActorRef for Pacer {
-    const TEMPLATE: &'static str = "actor://pacer/{id}";
+    const TYPE: &'static str = "pacer";
     type Message = PacerMsg;
 }
 

@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
-use crate::address::{ActorAddress, UriTemplate};
+use crate::address::{ActorAddress, TypeName};
 use crate::store::{Message, TurnOutcome};
 use crate::time::Timestamp;
 use crate::turn::HandlerFailure;
@@ -135,7 +135,6 @@ impl fmt::Debug for Attributes {
 #[derive(Debug)]
 pub struct TurnInfo {
     pub(crate) self_address: ActorAddress,
-    pub(crate) template: UriTemplate,
     pub(crate) message: Message,
     pub(crate) now: Timestamp,
     pub(crate) attributes: Attributes,
@@ -151,8 +150,8 @@ impl TurnInfo {
     }
 
     /// The instance's type.
-    pub fn template(&self) -> &UriTemplate {
-        &self.template
+    pub fn type_name(&self) -> &TypeName {
+        self.self_address.type_name()
     }
 
     /// The message being handled, as claimed: its `attempt` already counts this claim.

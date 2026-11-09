@@ -17,7 +17,7 @@ struct Hooked {
 }
 
 impl ActorRef for Hooked {
-    const TEMPLATE: &'static str = "actor://hooked/{id}";
+    const TYPE: &'static str = "hooked";
     type Message = HookedMsg;
 }
 

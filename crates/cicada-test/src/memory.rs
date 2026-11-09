@@ -6,19 +6,19 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use cicada::address::{ActorAddress, UriTemplate};
+use cicada::address::{ActorAddress, TypeName};
 use cicada::store::support::{self, check_limit};
 use cicada::store::{
-    ActorRecord, CancelResult, Claim, Clock, CommitRequest, CommitResult, CreateResult, DeleteResult, EnqueueResult,
-    Message, MessageId, MessageStatus, NodeId, OutcomeRecord, OutcomeStatus, OutgoingMessage, Page, PageCursor,
-    RegisterResult, RenewResult, StateChange, Store, StoreError, StoreResult, SystemClock, TurnOutcome, TypeDef,
+    ActorRecord, CancelResult, Claim, Clock, CommitRequest, CommitResult, CreateResult, DeleteResult, DeliverNowResult,
+    EnqueueResult, Message, MessageId, MessageStatus, NodeId, NodeRecord, OutcomeRecord, OutcomeStatus,
+    OutgoingMessage, Page, PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn, StateChange, Store,
+    StoreError, StoreResult, StoreStats, SystemClock, TurnOutcome, TypeDef,
 };
 use cicada::time::{self, DEFAULT_RETENTION, Timestamp};
 use serde_json::Value;
 
 struct ActorRow {
     address: ActorAddress,
-    template: UriTemplate,
     state: Option<Value>,
     version: i64,
     created_at: Timestamp,
@@ -26,6 +26,9 @@ struct ActorRow {
     lease_owner: Option<NodeId>,
     lease_until: Option<Timestamp>,
     lease_message: Option<MessageId>,
+    /// The epoch an operator asked to cancel.
+    cancel_epoch: Option<i64>,
+    paused: bool,
     /// Pending messages ordered by `(deliver_at, seq)`.
     mailbox: BTreeSet<(Timestamp, i64, MessageId)>,
 }
@@ -44,11 +47,22 @@ impl ActorRow {
     fn snapshot(&self) -> ActorRecord {
         ActorRecord {
             address: self.address.clone(),
-            template: self.template.clone(),
             state: self.state.clone(),
             version: self.version,
             created_at: self.created_at,
+            paused: self.paused,
         }
+    }
+
+    /// The turn running now, when a lease is valid at `now`.
+    fn running(&self, now: Timestamp) -> Option<RunningTurn> {
+        self.has_valid_lease(now).then(|| RunningTurn {
+            actor: self.address.clone(),
+            message_id: self.lease_message.clone().expect("a held lease has a message"),
+            node: self.lease_owner.clone().expect("a valid lease has an owner"),
+            lease_until: self.lease_until.expect("a valid lease has an expiry"),
+            cancel_requested: self.cancel_epoch == Some(self.epoch),
+        })
     }
 
     fn head(&self) -> Option<&(Timestamp, i64, MessageId)> {
@@ -69,6 +83,7 @@ struct OutcomeRow {
 struct State {
     types: BTreeMap<String, TypeDef>,
     actors: BTreeMap<String, ActorRow>,
+    nodes: BTreeMap<String, NodeRecord>,
     messages: HashMap<MessageId, Message>,
     outcomes: HashMap<MessageId, OutcomeRow>,
     last_seq: i64,
@@ -248,13 +263,10 @@ impl InMemoryStore {
         self.live_outcome(s, id, now).map(MessageStatus::Finished)
     }
 
-    fn create_locked(
-        s: &mut State,
-        address: &ActorAddress,
-        template: &UriTemplate,
-        state: Option<Value>,
-        now: Timestamp,
-    ) -> CreateResult {
+    fn create_locked(s: &mut State, address: &ActorAddress, state: Option<Value>, now: Timestamp) -> CreateResult {
+        if !s.types.contains_key(address.type_name().as_str()) {
+            return CreateResult::NoSuchType;
+        }
         if let Some(row) = s.actors.get(address.as_str()) {
             return CreateResult::Exists(row.snapshot());
         }
@@ -262,7 +274,6 @@ impl InMemoryStore {
             address.as_str().to_owned(),
             ActorRow {
                 address: address.clone(),
-                template: template.clone(),
                 state,
                 version: 0,
                 created_at: now,
@@ -270,6 +281,8 @@ impl InMemoryStore {
                 lease_owner: None,
                 lease_until: None,
                 lease_message: None,
+                cancel_epoch: None,
+                paused: false,
                 mailbox: BTreeSet::new(),
             },
         );
@@ -289,17 +302,10 @@ impl Store for InMemoryStore {
 
     async fn register(&self, def: TypeDef) -> StoreResult<RegisterResult> {
         self.locked(|s, _| {
-            if let Some(existing) = s.types.get(def.template.as_str()) {
+            if let Some(existing) = s.types.get(def.name.as_str()) {
                 return Ok(support::register_again(existing.clone(), &def));
             }
-            let registered: Vec<TypeDef> = s.types.values().cloned().collect();
-            if let Some(overlapping) = support::overlapping(&registered, &def.template) {
-                return Ok(RegisterResult::Conflict {
-                    existing: overlapping.clone(),
-                    reason: support::overlap_reason(&def.template, &overlapping.template),
-                });
-            }
-            s.types.insert(def.template.as_str().to_owned(), def.clone());
+            s.types.insert(def.name.as_str().to_owned(), def.clone());
             Ok(RegisterResult::Registered(def))
         })
     }
@@ -308,13 +314,21 @@ impl Store for InMemoryStore {
         self.locked(|s, _| Ok(s.types.values().cloned().collect()))
     }
 
-    async fn create(
-        &self,
-        address: &ActorAddress,
-        template: &UriTemplate,
-        state: Option<Value>,
-    ) -> StoreResult<CreateResult> {
-        self.locked(|s, now| Ok(Self::create_locked(s, address, template, state, now)))
+    async fn remove_type(&self, name: &TypeName) -> StoreResult<RemoveTypeResult> {
+        self.locked(|s, _| {
+            if !s.types.contains_key(name.as_str()) {
+                return Ok(RemoveTypeResult::Absent);
+            }
+            if s.actors.values().any(|r| r.address.type_name() == name) {
+                return Ok(RemoveTypeResult::InUse);
+            }
+            s.types.remove(name.as_str());
+            Ok(RemoveTypeResult::Removed)
+        })
+    }
+
+    async fn create(&self, address: &ActorAddress, state: Option<Value>) -> StoreResult<CreateResult> {
+        self.locked(|s, now| Ok(Self::create_locked(s, address, state, now)))
     }
 
     async fn get(&self, address: &ActorAddress) -> StoreResult<Option<ActorRecord>> {
@@ -367,7 +381,7 @@ impl Store for InMemoryStore {
 
     async fn claim_due(
         &self,
-        types: &BTreeSet<UriTemplate>,
+        types: &BTreeSet<TypeName>,
         node: &NodeId,
         ttl: Duration,
         limit: usize,
@@ -379,17 +393,17 @@ impl Store for InMemoryStore {
             let mut due: Vec<(Timestamp, String)> = s
                 .actors
                 .values()
-                .filter(|r| types.contains(&r.template) && !r.has_valid_lease(now))
+                .filter(|r| types.contains(r.address.type_name()) && !r.paused && !r.has_valid_lease(now))
                 .filter_map(|r| r.head().filter(|h| h.0 <= now).map(|h| (h.0, r.address.as_str().to_owned())))
                 .collect();
             due.sort();
             due.truncate(limit);
             let lease_until = time::truncate(time::add(now, ttl).map_err(|e| StoreError::Invalid(e.0))?);
             let mut claims = Vec::with_capacity(due.len());
-            for (_, uri) in due {
+            for (_, key) in due {
                 s.last_epoch += 1;
                 let epoch = s.last_epoch;
-                let row = s.actors.get_mut(&uri).expect("candidate exists");
+                let row = s.actors.get_mut(&key).expect("candidate exists");
                 let head_id = row.head().expect("due head").2.clone();
                 let message = s.messages.get_mut(&head_id).expect("head message exists");
                 message.attempt += 1;
@@ -400,7 +414,6 @@ impl Store for InMemoryStore {
                 row.lease_message = Some(claimed.id.clone());
                 claims.push(Claim {
                     actor: row.address.clone(),
-                    template: row.template.clone(),
                     epoch,
                     message: claimed,
                     state: row.state.clone(),
@@ -419,7 +432,11 @@ impl Store for InMemoryStore {
             Ok(match held_lease(s, address, epoch) {
                 Some(row) => {
                     row.lease_until = Some(lease_until);
-                    RenewResult::Renewed(lease_until)
+                    if row.cancel_epoch == Some(epoch) {
+                        RenewResult::CancelRequested(lease_until)
+                    } else {
+                        RenewResult::Renewed(lease_until)
+                    }
                 }
                 None => RenewResult::LeaseLost,
             })
@@ -435,11 +452,11 @@ impl Store for InMemoryStore {
         })
     }
 
-    async fn next_due_at(&self, types: &BTreeSet<UriTemplate>) -> StoreResult<Option<Timestamp>> {
+    async fn next_due_at(&self, types: &BTreeSet<TypeName>) -> StoreResult<Option<Timestamp>> {
         self.locked(|s, now| {
             Ok(s.actors
                 .values()
-                .filter(|r| types.contains(&r.template))
+                .filter(|r| types.contains(r.address.type_name()) && !r.paused)
                 .filter_map(|r| {
                     let head = r.head()?.0;
                     Some(if r.has_valid_lease(now) { head.max(r.lease_until.expect("valid lease")) } else { head })
@@ -487,7 +504,7 @@ impl Store for InMemoryStore {
         let after = cursor.map(support::decode_pending_cursor).transpose()?;
         self.locked(|s, _| {
             let from = match &after {
-                Some((uri, _, _)) if uri.as_str() >= prefix => uri.clone(),
+                Some((address_text, _, _)) if address_text.as_str() >= prefix => address_text.clone(),
                 _ => prefix.to_owned(),
             };
             let items: Vec<Message> = s
@@ -498,10 +515,10 @@ impl Store for InMemoryStore {
                 .flat_map(|r| r.mailbox.iter().map(|(_, _, id)| &s.messages[id]))
                 .filter(|m| match &after {
                     None => true,
-                    Some((uri, at, seq)) => {
+                    Some((address_text, at, seq)) => {
                         let m_at = time::to_micros(m.deliver_at);
-                        m.to.as_str() > uri.as_str()
-                            || (m.to.as_str() == uri && (m_at > *at || (m_at == *at && m.seq > *seq)))
+                        m.to.as_str() > address_text.as_str()
+                            || (m.to.as_str() == address_text && (m_at > *at || (m_at == *at && m.seq > *seq)))
                     }
                 })
                 .take(limit + 1)
@@ -531,26 +548,86 @@ impl Store for InMemoryStore {
         })
     }
 
+    async fn deliver_now(&self, id: &MessageId) -> StoreResult<DeliverNowResult> {
+        self.locked(|s, now| {
+            let Some(message) = s.messages.get(id).cloned() else {
+                return Ok(match self.live_outcome(s, id, now) {
+                    Some(o) => DeliverNowResult::AlreadyFinished(o),
+                    None => DeliverNowResult::NotFound,
+                });
+            };
+            s.last_seq += 1;
+            let seq = s.last_seq;
+            let row = s.actors.get_mut(message.to.as_str()).expect("target exists");
+            if row.lease_message.as_ref() == Some(id) && row.has_valid_lease(now) {
+                return Ok(DeliverNowResult::Running);
+            }
+            row.mailbox.remove(&(message.deliver_at, message.seq, message.id.clone()));
+            let due = Message { deliver_at: now, seq, ..message };
+            row.mailbox.insert((due.deliver_at, due.seq, due.id.clone()));
+            s.messages.insert(due.id.clone(), due.clone());
+            Ok(DeliverNowResult::Delivered(due))
+        })
+    }
+
+    async fn set_paused(&self, address: &ActorAddress, paused: bool) -> StoreResult<bool> {
+        self.locked(|s, _| {
+            Ok(match s.actors.get_mut(address.as_str()) {
+                Some(row) => {
+                    row.paused = paused;
+                    true
+                }
+                None => false,
+            })
+        })
+    }
+
+    async fn purge(&self, address: &ActorAddress) -> StoreResult<Option<u64>> {
+        self.locked(|s, now| {
+            let Some(row) = s.actors.get_mut(address.as_str()) else {
+                return Ok(None);
+            };
+            let held = if row.has_valid_lease(now) { row.lease_message.clone() } else { None };
+            if held.is_none() {
+                row.clear_lease(); // void an expired lease so the stale turn cannot commit
+            }
+            let purged: Vec<_> = row.mailbox.iter().filter(|e| held.as_ref() != Some(&e.2)).cloned().collect();
+            for entry in &purged {
+                row.mailbox.remove(entry);
+            }
+            for (_, _, id) in &purged {
+                let message = s.messages.get(id).cloned().expect("mailbox entry has a message");
+                self.finish(s, message, OutcomeStatus::Purged, None, now);
+            }
+            Ok(Some(purged.len() as u64))
+        })
+    }
+
     async fn status(&self, id: &MessageId) -> StoreResult<Option<MessageStatus>> {
         self.locked(|s, now| Ok(self.status_locked(s, id, now)))
     }
 
-    async fn failures(
+    async fn outcomes(
         &self,
+        status: Option<OutcomeStatus>,
         prefix: &str,
         since: Timestamp,
         cursor: Option<&PageCursor>,
         limit: usize,
     ) -> StoreResult<Page<OutcomeRecord>> {
         check_limit(limit)?;
-        let after = cursor.map(support::decode_failure_cursor).transpose()?;
+        let after = cursor.map(support::decode_outcome_cursor).transpose()?;
         self.locked(|s, now| {
             let mut items: Vec<OutcomeRecord> = s
                 .outcomes
                 .values()
                 .filter(|r| self.is_visible(r, now))
                 .map(|r| &r.record)
-                .filter(|r| r.status == OutcomeStatus::Failed && r.actor.has_prefix(prefix) && r.finished_at >= since)
+                .filter(|r| {
+                    status.is_none_or(|status| r.status == status)
+                        && r.actor.has_prefix(prefix)
+                        && r.finished_at >= since
+                })
                 .filter(|r| match &after {
                     None => true,
                     Some((at, id)) => {
@@ -562,7 +639,48 @@ impl Store for InMemoryStore {
                 .collect();
             items.sort_by(|a, b| (a.finished_at, a.message_id.as_str()).cmp(&(b.finished_at, b.message_id.as_str())));
             items.truncate(limit + 1);
-            Ok(support::page_of(items, limit, |o| support::failure_cursor(o.finished_at, &o.message_id)))
+            Ok(support::page_of(items, limit, |o| support::outcome_cursor(o.finished_at, &o.message_id)))
+        })
+    }
+
+    async fn caused_by(
+        &self,
+        id: &MessageId,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> StoreResult<Page<MessageStatus>> {
+        check_limit(limit)?;
+        let after = cursor.map_or("", |c| c.0.as_str());
+        self.locked(|s, now| {
+            let ids: BTreeSet<&MessageId> = s
+                .messages
+                .values()
+                .filter(|m| m.caused_by.as_ref() == Some(id))
+                .map(|m| &m.id)
+                .chain(
+                    s.outcomes
+                        .values()
+                        .filter(|r| r.record.envelope.caused_by.as_ref() == Some(id) && self.is_visible(r, now))
+                        .map(|r| &r.record.message_id),
+                )
+                .filter(|found| found.as_str() > after)
+                .collect();
+            let ids: Vec<MessageId> = ids.into_iter().take(limit + 1).cloned().collect();
+            let page = support::page_of(ids, limit, |id| PageCursor(id.to_string()));
+            let items = page.items.iter().filter_map(|id| self.status_locked(s, id, now)).collect();
+            Ok(Page::new(items, page.next))
+        })
+    }
+
+    async fn stats(&self, prefix: &str) -> StoreResult<StoreStats> {
+        self.locked(|s, now| {
+            let rows = || s.actors.values().filter(|r| r.address.has_prefix(prefix));
+            let oldest = rows().filter_map(|r| r.head().map(|(at, _, _)| *at)).min().filter(|at| *at <= now);
+            Ok(StoreStats {
+                actors: rows().count() as u64,
+                pending: rows().map(|r| r.mailbox.len() as u64).sum(),
+                oldest_due: oldest,
+            })
         })
     }
 
@@ -606,6 +724,10 @@ impl Store for InMemoryStore {
                 return Err(StoreError::Invalid(format!("A turn cannot cancel its own message {}", commit.message_id)));
             }
             // Validate everything before changing anything (S2).
+            if let Some(create) = commit.creates.iter().find(|c| !s.types.contains_key(c.address.type_name().as_str()))
+            {
+                return Ok(CommitResult::Rejected(format!("Create of {}: its type is not registered", create.address)));
+            }
             let mut send_ids = HashSet::new();
             for send in &commit.sends {
                 let exists =
@@ -665,7 +787,7 @@ impl Store for InMemoryStore {
             }
             // 3. creates, 4. sends
             for c in &commit.creates {
-                Self::create_locked(s, &c.address, &c.template, c.state.clone(), now);
+                Self::create_locked(s, &c.address, c.state.clone(), now);
             }
             let mut sent = Vec::with_capacity(commit.sends.len());
             for send in commit.sends {
@@ -691,6 +813,82 @@ impl Store for InMemoryStore {
                 row.clear_lease();
             }
             Ok(CommitResult::Committed { version, sent, cancelled })
+        })
+    }
+
+    async fn heartbeat_node(&self, id: &NodeId, hosted: &BTreeSet<TypeName>) -> StoreResult<()> {
+        self.locked(|s, now| {
+            let hosted: Vec<TypeName> = hosted.iter().cloned().collect();
+            match s.nodes.get_mut(id.as_str()) {
+                Some(row) => {
+                    row.hosted = hosted;
+                    row.last_seen = now;
+                }
+                None => {
+                    s.nodes.insert(
+                        id.as_str().to_owned(),
+                        NodeRecord { id: id.clone(), hosted, started_at: now, last_seen: now },
+                    );
+                }
+            }
+            let oldest = time::sub(now, support::NODE_ROW_KEPT);
+            s.nodes.retain(|_, r| r.last_seen >= oldest);
+            Ok(())
+        })
+    }
+
+    async fn list_nodes(&self) -> StoreResult<Vec<NodeRecord>> {
+        self.locked(|s, _| Ok(s.nodes.values().cloned().collect()))
+    }
+
+    async fn remove_node(&self, id: &NodeId) -> StoreResult<()> {
+        self.locked(|s, _| {
+            s.nodes.remove(id.as_str());
+            Ok(())
+        })
+    }
+
+    async fn running_turns(
+        &self,
+        node: Option<&NodeId>,
+        prefix: &str,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> StoreResult<Page<RunningTurn>> {
+        check_limit(limit)?;
+        self.locked(|s, now| {
+            use std::ops::Bound;
+            let start = match cursor {
+                Some(c) => Bound::Excluded(c.0.clone()),
+                None => Bound::Included(prefix.to_owned()),
+            };
+            let items: Vec<RunningTurn> = s
+                .actors
+                .range((start, Bound::Unbounded))
+                .map(|(_, r)| r)
+                .skip_while(|r| !r.address.as_str().starts_with(prefix) && r.address.as_str() < prefix)
+                .take_while(|r| r.address.as_str().starts_with(prefix))
+                .filter_map(|r| r.running(now))
+                .filter(|t| node.is_none_or(|n| &t.node == n))
+                .take(limit + 1)
+                .collect();
+            Ok(support::page_of(items, limit, |t| PageCursor(t.actor.to_string())))
+        })
+    }
+
+    async fn running_turn(&self, address: &ActorAddress) -> StoreResult<Option<RunningTurn>> {
+        self.locked(|s, now| Ok(s.actors.get(address.as_str()).and_then(|r| r.running(now))))
+    }
+
+    async fn request_cancel(&self, address: &ActorAddress) -> StoreResult<bool> {
+        self.locked(|s, now| {
+            Ok(match s.actors.get_mut(address.as_str()).filter(|r| r.has_valid_lease(now)) {
+                Some(row) => {
+                    row.cancel_epoch = Some(row.epoch);
+                    true
+                }
+                None => false,
+            })
         })
     }
 

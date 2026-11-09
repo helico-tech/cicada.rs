@@ -2,7 +2,7 @@
 //!
 //! | Module | Pattern |
 //! | --- | --- |
-//! | [`singleton`] | Example 1: a stateless singleton (`actor://maintenance/cleanup`) whose turns never overlap. |
+//! | [`singleton`] | Example 1: a stateless singleton (`maintenance.cleanup/_`) whose turns never overlap. |
 //! | [`timer`] | Example 2: a timer / timeout with a generation number; a stale timeout is ignored. |
 //! | [`cron`] | Example 3: a cron job; each tick does the work and arms the next one in the same commit. |
 //! | [`reply`] | Example 4: request and reply; the responder replies to `message.from` with the correlation id. |
@@ -13,7 +13,7 @@
 //! | [`supervision`] | Example 9: supervision; failed messages become dead letters that an operator redrives. |
 //! | [`sync`] | The architecture's example: a paged import, one turn per page, rescheduled hourly. |
 //!
-//! Every example has the same shape: a public ref struct per actor type (its fields are the template parameters), a
+//! Every example has the same shape: a public ref struct per actor type (its fields form the key), a
 //! message enum with `#[serde(tag = "type")]`, a state struct, and an actor struct whose fields are its dependencies
 //! (external services, faked in the tests), with one `impl Actor` whose `handle` matches on the message.
 

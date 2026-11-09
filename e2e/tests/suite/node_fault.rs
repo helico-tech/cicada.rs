@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use cicada::api::{MessageState, MessageStatusView};
 use cicada::store::MessageId;
-use cicada_e2e::cluster::{cluster, eventually, eventually_every, run_id, uri};
+use cicada_e2e::cluster::{address_text, cluster, eventually, eventually_every, run_id};
 use cicada_e2e::docker::compose;
 use cicada_e2e::{Class, step};
 use cicada_sample_service::e2e::{Recorder, RecorderMsg, RecorderState, Slow, SlowMsg, SlowState};
@@ -75,14 +75,14 @@ async fn kill_9_mid_turn_the_turn_is_re_run_on_another_node_after_the_lease_ttl(
         "re-claimed ({}) before the victim's lease ended ({lease_until})",
         run.claimed_at
     );
-    assert!(so.failures(&uri(&slow)).await.is_empty());
+    assert!(so.failures(&address_text(&slow)).await.is_empty());
 }
 
 async fn pause_past_the_lease_another_node_completes_the_stale_commit_is_rejected() {
     let c = cluster();
     let so = &c.send_only;
     let recorder = Recorder { id: format!("pause-{}", run_id()) };
-    let recorder_uri = uri(&recorder);
+    let recorder_address = address_text(&recorder);
     so.client.create(&recorder, &RecorderState::default()).await.unwrap();
     let message = RecorderMsg::Record { label: "pause".to_owned(), sleep_millis: 4_000 };
     let receipt = so.client.send(&recorder, message).await.unwrap();
@@ -90,7 +90,7 @@ async fn pause_past_the_lease_another_node_completes_the_stale_commit_is_rejecte
     let victim = c.node(&victim_id);
     // The external side effect happens before the sleep: wait until the victim has done it, then freeze it.
     eventually(&format!("side effect on {victim}"), secs(30), async || {
-        Ok((victim.effects(&recorder_uri).await?.len() == 1).then_some(()))
+        Ok((victim.effects(&recorder_address).await?.len() == 1).then_some(()))
     })
     .await;
     compose::pause(&victim_id).await.unwrap();
@@ -118,8 +118,8 @@ async fn pause_past_the_lease_another_node_completes_the_stale_commit_is_rejecte
     assert_eq!(so.view(&recorder).await.version, 1);
 
     // External side effects are at-least-once (G4): both nodes performed it.
-    let victim_effects = victim.effects(&recorder_uri).await.unwrap();
-    let winner_effects = c.node(&records[0].node).effects(&recorder_uri).await.unwrap();
+    let victim_effects = victim.effects(&recorder_address).await.unwrap();
+    let winner_effects = c.node(&records[0].node).effects(&recorder_address).await.unwrap();
     assert_eq!(victim_effects.iter().map(|e| e.attempt).collect::<Vec<_>>(), [1]);
     assert_eq!(winner_effects.iter().map(|e| e.attempt).collect::<Vec<_>>(), [2]);
     let ids: HashSet<&str> = victim_effects.iter().chain(&winner_effects).map(|e| e.message_id.as_str()).collect();
@@ -161,5 +161,5 @@ async fn graceful_stop_a_turn_longer_than_the_grace_period_is_released_and_re_ru
     assert_ne!(runs[0].node, victim);
     assert_eq!(runs[0].attempt, 2);
     assert_eq!(so.view(&slow).await.version, 1);
-    assert!(so.failures(&uri(&slow)).await.is_empty());
+    assert!(so.failures(&address_text(&slow)).await.is_empty());
 }

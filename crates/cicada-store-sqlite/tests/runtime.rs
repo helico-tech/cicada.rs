@@ -25,7 +25,7 @@ struct Player {
 }
 
 impl ActorRef for Player {
-    const TEMPLATE: &'static str = "actor://player/{name}";
+    const TYPE: &'static str = "player";
     type Message = PlayerMsg;
 }
 

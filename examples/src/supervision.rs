@@ -31,7 +31,7 @@ pub struct Mailer {
 }
 
 impl ActorRef for Mailer {
-    const TEMPLATE: &'static str = "actor://mailers/{id}";
+    const TYPE: &'static str = "mailers";
     type Message = MailerMsg;
 }
 

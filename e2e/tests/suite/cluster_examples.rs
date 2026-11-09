@@ -1,13 +1,14 @@
 //! The worked examples across nodes (request/reply, saga with a retried charge),
-//! per-message retry policies and `/failures`, over HTTP only.
+//! per-message retry policies and `/outcomes`, over HTTP only.
 
 use std::collections::{BTreeMap, HashSet};
 
 use chrono::{TimeDelta, Utc};
 use cicada::SendOptions;
 use cicada::api::{MessageState, SendResponse};
+use cicada::store::OutcomeStatus;
 use cicada::time::format_instant;
-use cicada_e2e::cluster::{cluster, eventually, eventually_every, run_id, uri};
+use cicada_e2e::cluster::{address_text, cluster, eventually, eventually_every, run_id};
 use cicada_e2e::{Class, step};
 use cicada_examples::reply::{Cart, CartLine, CartMsg, CartState};
 use cicada_examples::saga::{Inventory, InventoryMsg, InventoryState, Order, OrderMsg, OrderState, OrderStatus};
@@ -90,13 +91,8 @@ async fn saga_completes_through_a_retried_payment_and_compensates_a_declined_one
     })
     .await;
     assert_eq!(settled.available, 8, "2 reserved by the completed order, the declined order's 3 released");
-    let failed: Vec<_> = c
-        .node1
-        .failures("actor://orders/")
-        .await
-        .into_iter()
-        .filter(|f| f.actor.as_str().ends_with(run_id()))
-        .collect();
+    let failed: Vec<_> =
+        c.node1.failures("orders/").await.into_iter().filter(|f| f.actor.as_str().ends_with(run_id())).collect();
     assert!(failed.is_empty(), "{failed:?}");
 }
 
@@ -108,7 +104,7 @@ async fn a_message_sent_with_a_retry_policy_over_http_is_retried_in_place_until_
     let sent = c
         .send_only
         .post(
-            &format!("/actors/e2e/flaky/retry-{}/messages", run_id()),
+            &format!("/actors/e2e.flaky/retry-{}/messages", run_id()),
             &format!(r#"{{"type": "Attempt", "payload": {{"times": 2}}, "retry": {retry}}}"#),
         )
         .await;
@@ -143,7 +139,7 @@ async fn a_message_sent_with_a_retry_policy_over_http_is_retried_in_place_until_
     })
     .await;
     assert_eq!(state.last_attempt, 3);
-    assert!(c.node3.failures(&uri(&flaky)).await.is_empty(), "a retried message is no failure");
+    assert!(c.node3.failures(&address_text(&flaky)).await.is_empty(), "a retried message is no failure");
 }
 
 async fn a_message_sent_without_a_retry_policy_fails_at_its_first_error() {
@@ -157,7 +153,7 @@ async fn a_message_sent_without_a_retry_policy_fails_at_its_first_error() {
     assert_eq!(last.message.attempt, 1);
     assert_eq!(last.message.retry, None);
     let listed = eventually("failure listed", secs(30), async || {
-        let failures = c.node2.try_failures(&uri(&flaky)).await?;
+        let failures = c.node2.try_failures(&address_text(&flaky)).await?;
         Ok((failures.len() == 1).then(|| failures[0].clone()))
     })
     .await;
@@ -175,7 +171,7 @@ async fn failures_list_a_failed_message_with_its_envelope_and_error() {
     let sent = c.node2.client.send_with(&flaky, FlakyMsg::Attempt { times: 5 }, options).await.unwrap();
 
     let failure = eventually("failure listed", secs(30), async || {
-        let failures = c.send_only.try_failures(&uri(&flaky)).await?;
+        let failures = c.send_only.try_failures(&address_text(&flaky)).await?;
         Ok((failures.len() == 1).then(|| failures[0].clone()))
     })
     .await;
@@ -183,20 +179,28 @@ async fn failures_list_a_failed_message_with_its_envelope_and_error() {
     assert_eq!(failure.id, sent.id, "the message itself failed, once, after its retries");
     assert_eq!(failure.message.failures, 2);
     assert_eq!(failure.message.retry, Some(flaky_retry()));
-    assert_eq!(failure.actor.to_string(), uri(&flaky));
+    assert_eq!(failure.actor.to_string(), address_text(&flaky));
     let error = failure.error.clone().unwrap_or_default();
     assert!(error.contains("failing on purpose"), "{error}");
     assert_eq!(failure.message.message_type, "Attempt");
     assert_eq!(failure.message.payload["times"], 5);
     assert_eq!(failure.message.correlation_id, Some(correlation), "the retried message keeps its correlation id");
-    assert_eq!(failure.message.to.to_string(), uri(&flaky));
+    assert_eq!(failure.message.to.to_string(), address_text(&flaky));
 
     // Raw form and the `since` filter.
-    let raw = c.node3.get(&format!("/failures?prefix={}&since={}", uri(&flaky), format_instant(before))).await;
+    let raw = c
+        .node3
+        .get(&format!("/outcomes?status=failed&prefix={}&since={}", address_text(&flaky), format_instant(before)))
+        .await;
     assert_eq!(raw.status, 200, "{raw}");
     assert!(raw.body.contains("failing on purpose"), "{raw}");
     let later = Utc::now() + TimeDelta::hours(1);
-    let none = c.node3.client.failures(&uri(&flaky), Some(later), None, None).await.unwrap();
+    let none = c
+        .node3
+        .client
+        .outcomes(Some(OutcomeStatus::Failed), &address_text(&flaky), Some(later), None, None)
+        .await
+        .unwrap();
     assert!(none.items.is_empty(), "{:?}", none.items);
     assert_eq!(c.node1.state::<FlakyState, _>(&flaky).await.succeeded, 0);
 }

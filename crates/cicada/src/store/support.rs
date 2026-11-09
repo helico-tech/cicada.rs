@@ -7,65 +7,58 @@ use std::time::Duration;
 use serde_json::{Map, Value, json};
 
 use super::model::{Message, MessageId, OutcomeStatus, Page, PageCursor, TypeDef};
-use super::results::{RegisterResult, ResolvedType};
+use super::results::RegisterResult;
 use super::{StoreError, StoreResult};
-use crate::address::{ActorAddress, UriTemplate};
+use crate::address::{ActorAddress, TypeName};
 use crate::retention::{Keep, Retention};
 use crate::retry::RetryPolicy;
 use crate::time::{self, MAX_INSTANT, Timestamp};
 
 // ---- registry ----
 
-/// The first of `registered` whose template differs from `template` but overlaps it. A store calls this in the
-/// transaction that inserts `template`, serialised with other registrations.
-pub fn overlapping<'a>(registered: &'a [TypeDef], template: &UriTemplate) -> Option<&'a TypeDef> {
-    registered.iter().find(|t| &t.template != template && t.template.overlaps(template))
+/// The reason of the conflict for `name` registered with a different contract.
+pub fn hash_conflict_reason(name: &TypeName) -> String {
+    format!("Type {name} is registered with a different contract")
 }
 
-/// The reason of the conflict for `template` overlapping the registered `existing`.
-pub fn overlap_reason(template: &UriTemplate, existing: &UriTemplate) -> String {
-    let common = template.common_address(existing).map(|a| a.to_string()).unwrap_or_default();
-    format!("Template {template} overlaps {existing}: both match {common}")
-}
-
-/// The reason of the conflict for `template` registered with a different contract.
-pub fn hash_conflict_reason(template: &UriTemplate) -> String {
-    format!("Template {template} is registered with a different contract")
-}
-
-/// The result of registering `def` while its template is already registered as `existing`: registered (as `existing`)
+/// The result of registering `def` while its name is already registered as `existing`: registered (as `existing`)
 /// for an equal contract hash, a conflict otherwise.
 pub fn register_again(existing: TypeDef, def: &TypeDef) -> RegisterResult {
     if existing.contract_hash == def.contract_hash {
         RegisterResult::Registered(existing)
     } else {
-        RegisterResult::Conflict { reason: hash_conflict_reason(&def.template), existing }
+        RegisterResult::Conflict { reason: hash_conflict_reason(&def.name), existing }
     }
 }
 
-/// The one type among `registered` whose template matches `address`, with the decoded parameters. Fails when several
-/// match: registration refuses overlaps, so only a registry written before that rule can hold them.
-pub fn resolve(registered: &[TypeDef], address: &ActorAddress) -> StoreResult<Option<ResolvedType>> {
-    let mut matches = registered
+// ---- nodes ----
+
+/// How long a node's row may go without a heartbeat before any node's heartbeat removes it.
+pub const NODE_ROW_KEPT: Duration = Duration::from_secs(24 * 3600);
+
+/// The JSON form of a node's hosted types, as stored in the node table.
+pub fn hosted_to_json(hosted: &BTreeSet<TypeName>) -> Value {
+    Value::Array(hosted.iter().map(|t| Value::String(t.as_str().to_owned())).collect())
+}
+
+/// Reads the stored JSON form of a node's hosted types; anything else is corrupt data.
+pub fn hosted_from_json(value: &Value) -> StoreResult<Vec<TypeName>> {
+    let names = value.as_array().ok_or_else(|| StoreError::Corrupt("stored hosted types are not a list".to_owned()))?;
+    names
         .iter()
-        .filter_map(|t| t.template.matches(address).map(|params| ResolvedType { type_def: t.clone(), params }));
-    let first = matches.next();
-    if let Some(second) = matches.next() {
-        return Err(StoreError::Corrupt(format!(
-            "Address {address} matches the overlapping templates {} and {}; remove all but one of them from the \
-             TypeRegistry",
-            first.map(|f| f.type_def.template.to_string()).unwrap_or_default(),
-            second.type_def.template
-        )));
-    }
-    Ok(first)
+        .map(|name| {
+            name.as_str()
+                .and_then(|n| TypeName::parse(n).ok())
+                .ok_or_else(|| StoreError::Corrupt(format!("stored hosted type {name} is invalid")))
+        })
+        .collect()
 }
 
 // ---- claims ----
 
 /// Checks the arguments of `claim_due`: `Ok(false)` when there is nothing to claim (no `types`, or a `limit` of 0),
 /// [`StoreError::Invalid`] for a zero `ttl`, `Ok(true)` otherwise.
-pub fn check_claim(types: &BTreeSet<UriTemplate>, ttl: Duration, limit: usize) -> StoreResult<bool> {
+pub fn check_claim(types: &BTreeSet<TypeName>, ttl: Duration, limit: usize) -> StoreResult<bool> {
     if limit == 0 || types.is_empty() {
         return Ok(false);
     }
@@ -77,7 +70,7 @@ pub fn check_claim(types: &BTreeSet<UriTemplate>, ttl: Duration, limit: usize) -
 
 // ---- envelopes ----
 
-/// The JSON form of a message envelope, as retained with outcomes and served by `/failures`; the field names match
+/// The JSON form of a message envelope, as retained with outcomes and served by `/outcomes`; the field names match
 /// the HTTP contract.
 pub fn envelope_to_json(message: &Message) -> Value {
     json!({
@@ -208,28 +201,28 @@ pub fn decode_mailbox_cursor(cursor: &PageCursor) -> StoreResult<(i64, i64)> {
     Ok((at.parse().map_err(|_| invalid())?, seq.parse().map_err(|_| invalid())?))
 }
 
-/// The cursor after `message` in a listing of every mailbox: `micros:seq:uri` (the URI last, as it contains colons).
+/// The cursor after `message` in a listing of every mailbox: `micros:seq:address` (the address last, as it contains colons).
 pub fn pending_cursor(message: &Message) -> PageCursor {
     PageCursor(format!("{}:{}:{}", time::to_micros(message.deliver_at), message.seq, message.to))
 }
 
-/// Decodes a [`pending_cursor`] into `(uri, micros, seq)`.
+/// Decodes a [`pending_cursor`] into `(address, micros, seq)`.
 pub fn decode_pending_cursor(cursor: &PageCursor) -> StoreResult<(String, i64, i64)> {
     let invalid = || StoreError::Invalid(format!("Invalid cursor '{cursor}'"));
     let mut parts = cursor.0.splitn(3, ':');
     let at = parts.next().and_then(|p| p.parse().ok()).ok_or_else(invalid)?;
     let seq = parts.next().and_then(|p| p.parse().ok()).ok_or_else(invalid)?;
-    let uri = parts.next().ok_or_else(invalid)?.to_owned();
-    Ok((uri, at, seq))
+    let address = parts.next().ok_or_else(invalid)?.to_owned();
+    Ok((address, at, seq))
 }
 
-/// The cursor after an outcome in a failures listing: `micros:messageId`.
-pub fn failure_cursor(finished_at: Timestamp, id: &MessageId) -> PageCursor {
+/// The cursor after an outcome in an outcomes listing: `micros:messageId`.
+pub fn outcome_cursor(finished_at: Timestamp, id: &MessageId) -> PageCursor {
     PageCursor(format!("{}:{}", time::to_micros(finished_at), id))
 }
 
-/// Decodes a [`failure_cursor`] into `(micros, messageId)`.
-pub fn decode_failure_cursor(cursor: &PageCursor) -> StoreResult<(i64, String)> {
+/// Decodes a [`outcome_cursor`] into `(micros, messageId)`.
+pub fn decode_outcome_cursor(cursor: &PageCursor) -> StoreResult<(i64, String)> {
     let invalid = || StoreError::Invalid(format!("Invalid cursor '{cursor}'"));
     let (at, id) = cursor.0.split_once(':').ok_or_else(invalid)?;
     Ok((at.parse().map_err(|_| invalid())?, id.to_owned()))
@@ -262,8 +255,8 @@ mod tests {
     fn message() -> Message {
         Message {
             id: MessageId::new("m1").unwrap(),
-            to: ActorAddress::parse("actor://a/b").unwrap(),
-            from: Some(ActorAddress::parse("actor://c/d").unwrap()),
+            to: ActorAddress::parse("a/b").unwrap(),
+            from: Some(ActorAddress::parse("c/d").unwrap()),
             message_type: "Run".into(),
             payload: json!({"x": 1}),
             deliver_at: "2026-01-01T00:00:00.000001Z".parse().unwrap(),
@@ -289,7 +282,7 @@ mod tests {
 
     #[test]
     fn old_envelopes_decode() {
-        let json = json!({"id": "m1", "to": "actor://a/b", "from": null, "type": "Run", "payload": {},
+        let json = json!({"id": "m1", "to": "a/b", "from": null, "type": "Run", "payload": {},
             "deliverAt": "2026-01-01T00:00:00Z", "correlationId": null, "headers": {}, "seq": 1, "attempt": 0});
         let m = envelope_from_json(&json).unwrap();
         assert_eq!(m.failures, 0);
@@ -312,7 +305,7 @@ mod tests {
     #[test]
     fn registering_again_compares_the_contract_hash() {
         let def = |hash: &str| TypeDef {
-            template: UriTemplate::parse("actor://a/{id}").unwrap(),
+            name: TypeName::parse("a").unwrap(),
             contract: json!({}),
             contract_hash: hash.into(),
         };
@@ -323,7 +316,7 @@ mod tests {
 
     #[test]
     fn claim_arguments() {
-        let types = BTreeSet::from([UriTemplate::parse("actor://a/{id}").unwrap()]);
+        let types = BTreeSet::from([TypeName::parse("a").unwrap()]);
         let ttl = Duration::from_secs(1);
         assert!(check_claim(&types, ttl, 1).unwrap());
         assert!(!check_claim(&types, ttl, 0).unwrap());
@@ -345,7 +338,7 @@ mod tests {
         let m = message();
         assert_eq!(decode_mailbox_cursor(&mailbox_cursor(&m)).unwrap().1, 3);
         let (uri, _, seq) = decode_pending_cursor(&pending_cursor(&m)).unwrap();
-        assert_eq!((uri.as_str(), seq), ("actor://a/b", 3));
+        assert_eq!((uri.as_str(), seq), ("a/b", 3));
         assert!(decode_mailbox_cursor(&PageCursor("x".into())).is_err());
     }
 }

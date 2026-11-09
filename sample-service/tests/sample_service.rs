@@ -222,7 +222,7 @@ async fn the_e2e_actors_record_node_attempt_and_effects() {
             api.state::<_, RecorderState>(&recorder).await.unwrap().is_some_and(|s| s.records.len() == 1)
         })
         .await;
-        let effects = node.get("/e2e/effects?actor=actor://e2e/recorder/r").await.text().await.unwrap();
+        let effects = node.get("/e2e/effects?actor=e2e.recorder/r").await.text().await.unwrap();
         assert!(effects.contains(r#""label":"effect-1""#) && effects.contains(r#""node":"test-node""#), "{effects}");
         let all = node.get("/e2e/effects").await.text().await.unwrap();
         assert!(all.contains(r#""label":"nap""#) && all.contains(r#""messageId""#), "{all}");

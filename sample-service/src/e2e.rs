@@ -6,7 +6,7 @@
 //! - [`Recorder`]: an external side effect (the per-node [`EffectLog`], served at `GET /e2e/effects`) before a sleep,
 //!   and the same record in state; comparing both shows at-least-once execution vs exactly-once effects (G4).
 //! - [`Flaky`]: fails a given number of times; senders attach a retry policy ([`flaky_retry`]: 3 attempts, 1 s apart)
-//!   or none, for `/failures` and retry checks.
+//!   or none, for `/outcomes` and retry checks.
 //!
 //! The node id is a field of each actor value, which does not change the contract: contracts come from the types
 //! only, so every node registers the same hash.
@@ -91,7 +91,7 @@ pub struct Slow {
 }
 
 impl ActorRef for Slow {
-    const TEMPLATE: &'static str = "actor://e2e/slow/{id}";
+    const TYPE: &'static str = "e2e.slow";
     type Message = SlowMsg;
 }
 
@@ -184,7 +184,7 @@ pub struct Counter {
 }
 
 impl ActorRef for Counter {
-    const TEMPLATE: &'static str = "actor://e2e/counter/{id}";
+    const TYPE: &'static str = "e2e.counter";
     type Message = CounterMsg;
 }
 
@@ -325,7 +325,7 @@ pub struct Recorder {
 }
 
 impl ActorRef for Recorder {
-    const TEMPLATE: &'static str = "actor://e2e/recorder/{id}";
+    const TYPE: &'static str = "e2e.recorder";
     type Message = RecorderMsg;
 }
 
@@ -413,7 +413,7 @@ pub struct Flaky {
 }
 
 impl ActorRef for Flaky {
-    const TEMPLATE: &'static str = "actor://e2e/flaky/{id}";
+    const TYPE: &'static str = "e2e.flaky";
     type Message = FlakyMsg;
 }
 

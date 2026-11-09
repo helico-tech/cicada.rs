@@ -8,7 +8,7 @@
 //!   are written in one transaction; a node that dies mid-turn loses its lease and the turn is re-run elsewhere.
 //! - **One turn at a time per actor**, messages in delivery-time order, delayed messages never early, exactly one
 //!   outcome per message (`done`, `failed`, `cancelled`, `purged`).
-//! - **Typed and checked.** Actor addresses are typed refs bound to URI templates (`actor://sync/{tenant}`); the
+//! - **Typed and checked.** Actor addresses are typed refs: a type name and a key (`sync/acme`). The
 //!   compiler checks that a ref accepts a message, and that a handler covers every message of its family.
 //!
 //! See [`actor::Actor`] for defining an actor type and [`ActorSystem`] for running a node.
@@ -28,7 +28,7 @@ pub mod time;
 pub mod turn;
 
 pub use actor::{Actor, ActorType, Unhandled};
-pub use address::{ActorAddress, ActorRef, UriTemplate};
+pub use address::{ActorAddress, ActorRef, TypeName};
 pub use message::Stateless;
 pub use runtime::{ActorSystem, CreateActorResult, OpError, SendResult, StartError};
 pub use turn::{HandlerError, HandlerResult, SendOptions, Turn};

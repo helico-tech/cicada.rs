@@ -13,7 +13,7 @@ struct Sync {
 }
 
 impl ActorRef for Sync {
-    const TEMPLATE: &'static str = "actor://sync/{tenant}";
+    const TYPE: &'static str = "sync";
     type Message = SyncMsg;
 }
 
@@ -37,7 +37,7 @@ struct Reports {
 }
 
 impl ActorRef for Reports {
-    const TEMPLATE: &'static str = "actor://reports/{tenant}";
+    const TYPE: &'static str = "reports";
     type Message = ReportsMsg;
 }
 
@@ -159,7 +159,7 @@ async fn a_send_to_an_absent_instance_fails_the_turn() {
     let failures = test.failures().await;
     assert_eq!(failures.len(), 1);
     assert_eq!(failures[0].envelope.message_type, "FetchPage");
-    assert!(failures[0].error.as_deref().unwrap().contains("Send to absent instance actor://reports/acme"));
+    assert!(failures[0].error.as_deref().unwrap().contains("Send to absent instance reports/acme"));
     // The failed turn's effects are not applied.
     assert!(test.pending(&sync).await.is_empty());
 }

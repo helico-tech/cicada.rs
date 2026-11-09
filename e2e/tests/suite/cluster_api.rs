@@ -9,7 +9,7 @@ use cicada::SendOptions;
 use cicada::api::{MessageState, problem_types};
 use cicada::store::MessageId;
 use cicada_client::CancelOutcome;
-use cicada_e2e::cluster::{address, cluster, eventually, path, run_id, uri};
+use cicada_e2e::cluster::{address, address_text, cluster, eventually, path, run_id};
 use cicada_e2e::{Class, step};
 use cicada_sample_service::e2e::{
     Counter, CounterMsg, CounterState, Recorder, RecorderMsg, RecorderState, Slow, SlowState,
@@ -57,31 +57,22 @@ async fn health_on_every_node() {
 
 async fn types_with_json_schemas_on_every_node() {
     let c = cluster();
-    let expected = [
-        "actor://e2e/slow/{id}",
-        "actor://e2e/counter/{id}",
-        "actor://e2e/recorder/{id}",
-        "actor://e2e/flaky/{id}",
-        "actor://orders/{id}",
-        "actor://inventory/{sku}",
-        "actor://payments",
-        "actor://carts/{id}",
-        "actor://pricing",
-    ];
+    let expected =
+        ["e2e.slow", "e2e.counter", "e2e.recorder", "e2e.flaky", "orders", "inventory", "payments", "carts", "pricing"];
     let mut hashes = Vec::new();
     for node in c.nodes() {
         let types: BTreeMap<String, _> =
-            node.client.types().await.unwrap().into_iter().map(|t| (t.template.clone(), t)).collect();
-        for template in expected {
-            assert!(types.contains_key(template), "{node} serves {:?}", types.keys());
+            node.client.types().await.unwrap().into_iter().map(|t| (t.name.clone(), t)).collect();
+        for type_name in expected {
+            assert!(types.contains_key(type_name), "{node} serves {:?}", types.keys());
         }
-        let slow = &types["actor://e2e/slow/{id}"];
+        let slow = &types["e2e.slow"];
         assert!(slow.hash.starts_with("sha256:"));
         let sleep = &slow.messages["Sleep"];
         assert!(sleep.pointer("/properties/millis").is_some(), "Sleep schema: {sleep}");
         assert!(slow.state.as_ref().and_then(|s| s.get("properties")).is_some(), "state schema: {:?}", slow.state);
-        assert!(types["actor://payments"].state.is_none(), "a stateless type has no state schema");
-        hashes.push(types.into_iter().map(|(template, t)| (template, t.hash)).collect::<BTreeMap<_, _>>());
+        assert!(types["payments"].state.is_none(), "a stateless type has no state schema");
+        hashes.push(types.into_iter().map(|(name, t)| (name, t.hash)).collect::<BTreeMap<_, _>>());
     }
     // Every node answers from the shared registry, also the send-only one that hosts nothing.
     assert!(hashes.windows(2).all(|w| w[0] == w[1]), "nodes disagree on the registry: {hashes:?}");
@@ -101,7 +92,7 @@ async fn create_is_idempotent_get_returns_state_and_version() {
     }
 
     let view = c.send_only.view(&counter).await;
-    assert_eq!(view.template, "actor://e2e/counter/{id}");
+    assert_eq!(view.type_name, "e2e.counter");
     assert_eq!(view.params, BTreeMap::from([("id".to_owned(), id)]));
     assert_eq!(view.version, 0);
     let state: CounterState = c.send_only.state(&counter).await;
@@ -113,7 +104,7 @@ async fn create_is_idempotent_get_returns_state_and_version() {
     assert_eq!(c.node2.state::<CounterState, _>(&counter).await.count, 1);
 
     assert_eq!(c.node1.put("/actors/no-such/thing", r#"{"state":{}}"#).await.status, 404);
-    assert_eq!(c.node1.get(&format!("/actors/e2e/counter/absent-{}", run_id())).await.status, 404);
+    assert_eq!(c.node1.get(&format!("/actors/e2e.counter/absent-{}", run_id())).await.status, 404);
 }
 
 async fn list_by_prefix_with_paging() {
@@ -124,7 +115,7 @@ async fn list_by_prefix_with_paging() {
     }
     c.node1.client.create(&Recorder { id: format!("other-{}", run_id()) }, &RecorderState::default()).await.unwrap();
 
-    let prefix = format!("actor://e2e/recorder/list-{}-", run_id());
+    let prefix = format!("e2e.recorder/list-{}-", run_id());
     let mut pages = Vec::new();
     let mut cursor: Option<String> = None;
     loop {
@@ -137,9 +128,9 @@ async fn list_by_prefix_with_paging() {
     }
     assert_eq!(pages.iter().map(Vec::len).collect::<Vec<_>>(), [2, 2, 1]);
     let listed: Vec<String> = pages.concat().iter().map(ToString::to_string).collect();
-    assert_eq!(listed, refs.iter().map(uri).collect::<Vec<_>>());
+    assert_eq!(listed, refs.iter().map(address_text).collect::<Vec<_>>());
 
-    let raw = c.send_only.get(&format!("/actors?prefix=e2e/recorder/list-{}-&limit=10", run_id())).await;
+    let raw = c.send_only.get(&format!("/actors?prefix=e2e.recorder/list-{}-&limit=10", run_id())).await;
     assert_eq!(raw.status, 200, "{raw}");
     assert_eq!(raw.json()["items"].as_array().map(Vec::len), Some(5));
 }
@@ -153,8 +144,8 @@ async fn send_through_a_hosting_node_and_through_the_send_only_node_pending_then
             via.client.send_with(&recorder, record("hello"), SendOptions::new().delay(secs(2))).await.unwrap();
         assert!(!receipt.duplicate);
         assert_eq!(via.status(&receipt.id).await.status, MessageState::Pending);
-        let pending = via.client.pending(&address(&recorder), None, None).await.unwrap().unwrap();
-        assert_eq!(pending.items.iter().map(|m| &m.id).collect::<Vec<_>>(), [&receipt.id]);
+        let pending = via.client.mailbox(&address(&recorder), None, None).await.unwrap().unwrap();
+        assert_eq!(pending.items.iter().map(|m| &m.message.id).collect::<Vec<_>>(), [&receipt.id]);
 
         let done = via.await_finished(&receipt.id).await;
         assert_eq!(done.status, MessageState::Done);
@@ -229,7 +220,7 @@ async fn an_idempotent_resend_with_the_same_id_has_one_outcome() {
     assert_eq!(c.node2.state::<RecorderState, _>(&recorder).await.records.len(), 1);
     let mut effects = 0;
     for node in c.hosting_nodes() {
-        effects += node.effects(&uri(&recorder)).await.unwrap().len();
+        effects += node.effects(&address_text(&recorder)).await.unwrap().len();
     }
     assert_eq!(effects, 1, "the handler ran once");
 }
@@ -259,7 +250,7 @@ async fn unknown_type_and_bad_payloads() {
     assert_eq!(outcome.status, MessageState::Failed);
     assert!(outcome.error.is_some());
     let failure = eventually("failure listed", secs(30), async || {
-        Ok(c.node3.try_failures(&uri(&slow)).await?.into_iter().find(|f| f.id == id))
+        Ok(c.node3.try_failures(&address_text(&slow)).await?.into_iter().find(|f| f.id == id))
     })
     .await;
     assert_eq!(failure.message.message_type, "Sleep");
@@ -269,7 +260,7 @@ async fn unknown_type_and_bad_payloads() {
 async fn a_send_to_an_absent_instance_is_404() {
     let c = cluster();
     for node in [&c.node1, &c.send_only] {
-        let path = format!("/actors/e2e/recorder/absent-{}/messages", run_id());
+        let path = format!("/actors/e2e.recorder/absent-{}/messages", run_id());
         let response = node.post(&path, r#"{"type":"Record","payload":{"label":"x"}}"#).await;
         assert_eq!(response.status, 404, "{node}: {response}");
         assert_eq!(response.text("/type").as_deref(), Some(problem_types::NO_SUCH_INSTANCE));
@@ -282,20 +273,20 @@ async fn cancel_a_pending_delayed_message_409_once_finished() {
     c.node1.client.create(&recorder, &RecorderState::default()).await.unwrap();
     let later = SendOptions::new().delay(secs(600));
     let delayed = c.node1.client.send_with(&recorder, record("later"), later).await.unwrap();
-    let pending = c.send_only.client.pending(&address(&recorder), None, None).await.unwrap().unwrap();
-    assert_eq!(pending.items.iter().map(|m| &m.id).collect::<Vec<_>>(), [&delayed.id]);
+    let pending = c.send_only.client.mailbox(&address(&recorder), None, None).await.unwrap().unwrap();
+    assert_eq!(pending.items.iter().map(|m| &m.message.id).collect::<Vec<_>>(), [&delayed.id]);
 
-    assert_eq!(c.send_only.delete(&format!("/messages/{}", delayed.id)).await.status, 204);
+    assert_eq!(c.send_only.post_empty(&format!("/messages/{}/cancel", delayed.id)).await.status, 204);
     assert_eq!(c.node2.status(&delayed.id).await.status, MessageState::Cancelled);
-    assert!(c.node2.client.pending(&address(&recorder), None, None).await.unwrap().unwrap().items.is_empty());
-    let again = c.node3.delete(&format!("/messages/{}", delayed.id)).await;
+    assert!(c.node2.client.mailbox(&address(&recorder), None, None).await.unwrap().unwrap().items.is_empty());
+    let again = c.node3.post_empty(&format!("/messages/{}/cancel", delayed.id)).await;
     assert_eq!(again.status, 409, "{again}");
 
     let now = c.node2.client.send(&recorder, record("now")).await.unwrap();
     assert_eq!(c.node2.await_finished(&now.id).await.status, MessageState::Done);
-    assert_eq!(c.node1.delete(&format!("/messages/{}", now.id)).await.status, 409);
+    assert_eq!(c.node1.post_empty(&format!("/messages/{}/cancel", now.id)).await.status, 409);
     assert_eq!(c.node1.client.cancel(&now.id).await.unwrap(), CancelOutcome::AlreadyFinished);
-    assert_eq!(c.node1.delete(&format!("/messages/{}", MessageId::random())).await.status, 404);
+    assert_eq!(c.node1.post_empty(&format!("/messages/{}/cancel", MessageId::random())).await.status, 404);
     let labels: Vec<String> =
         c.node3.state::<RecorderState, _>(&recorder).await.records.into_iter().map(|r| r.label).collect();
     assert_eq!(labels, ["now"]);
@@ -312,7 +303,7 @@ async fn delete_purges_the_mailbox() {
         let label = format!("pending-{i}");
         receipts.push(c.nodes()[i].client.send_with(&recorder, record(&label), later).await.unwrap());
     }
-    assert_eq!(c.node1.client.pending(&address(&recorder), None, None).await.unwrap().unwrap().items.len(), 3);
+    assert_eq!(c.node1.client.mailbox(&address(&recorder), None, None).await.unwrap().unwrap().items.len(), 3);
 
     let deleted = c.node2.delete(&path).await;
     assert_eq!(deleted.status, 204, "{deleted}");
@@ -321,12 +312,12 @@ async fn delete_purges_the_mailbox() {
         assert_eq!(c.send_only.status(&receipt.id).await.status, MessageState::Purged);
     }
     assert_eq!(c.node3.delete(&path).await.status, 404);
-    assert_eq!(c.node3.get(&format!("{path}/messages")).await.status, 404);
+    assert_eq!(c.node3.get(&format!("{path}/mailbox")).await.status, 404);
     let send = c.node1.post(&format!("{path}/messages"), r#"{"type":"Record","payload":{"label":"x"}}"#).await;
     assert_eq!(send.status, 404);
 
     // Re-created, it starts empty.
     assert_eq!(c.node1.put(&path, r#"{"state":{}}"#).await.status, 201);
     assert_eq!(c.node1.view(&recorder).await.version, 0);
-    assert!(c.node1.client.pending(&address(&recorder), None, None).await.unwrap().unwrap().items.is_empty());
+    assert!(c.node1.client.mailbox(&address(&recorder), None, None).await.unwrap().unwrap().items.is_empty());
 }

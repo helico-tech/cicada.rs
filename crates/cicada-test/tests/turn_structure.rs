@@ -24,7 +24,7 @@ struct Sleeper {
 }
 
 impl ActorRef for Sleeper {
-    const TEMPLATE: &'static str = "actor://sleeper/{id}";
+    const TYPE: &'static str = "sleeper";
     type Message = SleeperMsg;
 }
 

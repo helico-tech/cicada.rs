@@ -39,7 +39,7 @@ async fn delivery_times_beyond_the_supported_range_are_refused_with_400() {
                 .await;
         assert_status(&reply, 400, pt::BAD_REQUEST);
     }
-    assert!(items(&get_json(&app, "/actors/counter/t/messages").await).is_empty());
+    assert!(items(&get_json(&app, "/actors/counter/t/mailbox").await).is_empty());
 }
 
 #[tokio::test(start_paused = true)]
@@ -85,7 +85,7 @@ async fn a_repeated_id_is_answered_as_a_duplicate_first_and_a_reused_id_for_anot
     assert_status(&conflict, 409, pt::MESSAGE_ID_CONFLICT);
     assert_eq!(
         conflict.json()["detail"],
-        format!("Message id {id} was already accepted for a Add message to actor://counter/d")
+        format!("Message id {id} was already accepted for a Add message to counter/d")
     );
 }
 
@@ -187,7 +187,7 @@ async fn an_invalid_retention_policy_is_refused_with_400_valid_forms_are_accepte
         let reply = post(&app, path, &body).await;
         assert_eq!(reply.status, StatusCode::ACCEPTED, "{retention}: {}", reply.text);
     }
-    let page = get_json(&app, path).await;
+    let page = get_json(&app, "/actors/counter/ret/mailbox").await;
     let served: Vec<&Value> = items(&page).iter().map(|m| &m["retention"]).collect();
     assert_eq!(served[2], &json!({"done": {"kind": "last", "count": 10}, "failed": {"kind": "for", "age": "PT1M"}}));
     assert_eq!(served[4], &Value::Null);
@@ -219,7 +219,7 @@ async fn a_message_removed_on_success_answers_404_but_stays_a_duplicate_and_the_
     eventually(async || get(&app, &format!("/messages/{id}")).await.status == StatusCode::NOT_FOUND).await;
     assert_status(&get(&app, &format!("/messages/{id}")).await, 404, pt::NO_SUCH_MESSAGE);
     // The child message is kept (no policy) and still names the removed message as its cause.
-    let mailbox = get_json(&app, "/actors/counter/to/messages").await;
+    let mailbox = get_json(&app, "/actors/counter/to/mailbox").await;
     let sent: Vec<&Value> = items(&mailbox).iter().filter(|m| m["type"] == "Add").collect();
     let [child] = sent.as_slice() else { panic!("one message from the removed one: {mailbox}") };
     assert_eq!(child["causedBy"], id.as_str());
@@ -274,7 +274,7 @@ async fn an_invalid_duration_in_a_backoff_or_as_the_delay_is_refused_with_400() 
     let reply =
         post(&app, "/actors/counter/dur/messages", r#"{"type": "Add", "payload": {"n": 1}, "delay": "soon"}"#).await;
     assert_status(&reply, 400, pt::BAD_REQUEST);
-    assert!(items(&get_json(&app, "/actors/counter/dur/messages").await).is_empty());
+    assert!(items(&get_json(&app, "/actors/counter/dur/mailbox").await).is_empty());
 }
 
 #[tokio::test(start_paused = true)]
@@ -326,15 +326,15 @@ async fn a_retried_message_is_pending_with_its_failures_last_error_and_policy_li
     assert_eq!(envelope["attempt"], 1);
     assert_eq!(envelope["retry"], serde_json::from_str::<Value>(retry).unwrap());
 
-    let page = get_json(&app, "/actors/counter/r/messages").await;
+    let page = get_json(&app, "/actors/counter/r/mailbox").await;
     let [listed] = items(&page).as_slice() else { panic!("one pending message: {page}") };
     assert_eq!(listed["id"], original.as_str());
     assert_eq!(listed["failures"], 1);
     assert_eq!(listed["lastError"], last_error.as_str());
     assert_eq!(listed["retry"], serde_json::from_str::<Value>(retry).unwrap());
-    assert!(items(&get_json(&app, "/failures").await).is_empty());
+    assert!(items(&get_json(&app, "/outcomes?status=failed").await).is_empty());
 
-    assert_eq!(delete(&app, &format!("/messages/{original}")).await.status, StatusCode::NO_CONTENT);
+    assert_eq!(post(&app, &format!("/messages/{original}/cancel"), "").await.status, StatusCode::NO_CONTENT);
     let cancelled = get_json(&app, &format!("/messages/{original}")).await;
     assert_eq!(cancelled["status"], "cancelled");
     assert_eq!(cancelled["failures"], 1);
@@ -357,12 +357,12 @@ async fn store_failures_answer_503_and_unexpected_errors_500() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn failures_since_an_instant_beyond_the_supported_range_is_a_400_on_every_backend() {
+async fn outcomes_since_an_instant_beyond_the_supported_range_is_a_400_on_every_backend() {
     let app = app().await;
     for since in ["+300000-01-01T00:00:00Z", "-300000-01-01T00:00:00Z", "9999-12-31T23:59:59.9999999Z"] {
-        assert_status(&get(&app, &format!("/failures?since={}", enc(since))).await, 400, pt::BAD_REQUEST);
+        assert_status(&get(&app, &format!("/outcomes?since={}", enc(since))).await, 400, pt::BAD_REQUEST);
     }
-    assert_eq!(get(&app, "/failures?since=9999-12-31T00:00:00Z").await.status, StatusCode::OK);
+    assert_eq!(get(&app, "/outcomes?since=9999-12-31T00:00:00Z").await.status, StatusCode::OK);
 }
 
 #[tokio::test(start_paused = true)]

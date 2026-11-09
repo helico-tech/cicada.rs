@@ -15,19 +15,34 @@ use tokio_util::task::TaskTracker;
 use super::executor::{HostedType, LeaseSettings, TurnExecutor};
 use super::limits;
 use super::resolver::{RegisteredType, TypeResolver};
-use super::results::{ActorSnapshot, CreateActorResult, OpError, SendResult};
+use super::results::{
+    ActorSnapshot, BulkResult, BulkSelection, CreateActorResult, MailboxEntry, NodeHealth, NodeInfo, OpError,
+    RetryResult, SendResult,
+};
 use crate::actor::{Actor, ActorType, HostedActor};
-use crate::address::{ActorAddress, ActorRef, UriTemplate};
+use crate::address::{ActorAddress, ActorRef, TypeName};
 use crate::message::{self, MessageFamily};
 use crate::plugin::Plugin;
 use crate::store::{
-    CancelResult, Claim, CreateResult, DeleteResult, EnqueueResult, Message, MessageId, MessageStatus, NodeId,
-    OutcomeRecord, OutgoingMessage, Page, PageCursor, RegisterResult, Store, StoreError,
+    CancelResult, Claim, CreateResult, DeleteResult, DeliverNowResult, EnqueueResult, Message, MessageId,
+    MessageStatus, NodeId, OutcomeRecord, OutcomeStatus, OutgoingMessage, Page, PageCursor, RegisterResult,
+    RemoveTypeResult, RunningTurn, Store, StoreError, StoreStats,
 };
 use crate::time::{self, MAX_INSTANT, Timestamp};
 use crate::turn::SendOptions;
 
 const MIN_SLEEP: Duration = Duration::from_millis(1);
+/// How often a node refreshes its row in the node table.
+const NODE_HEARTBEAT: Duration = Duration::from_secs(10);
+/// A node last seen less than this long ago is alive.
+const NODE_ALIVE_FOR: Duration = Duration::from_secs(30);
+/// A node last seen less than this long ago (and not alive) is suspect; older ones are dead.
+const NODE_SUSPECT_FOR: Duration = Duration::from_secs(120);
+/// Most running turns read per page when the node view counts them.
+const PAGE_OF_TURNS: usize = 1000;
+
+/// The most messages one bulk call acts on, and the most ids it takes.
+pub const BULK_LIMIT: usize = 1000;
 
 /// A node could not start: an invalid actor type, an invalid configuration, or a contract conflict in the
 /// TypeRegistry.
@@ -206,7 +221,7 @@ impl ActorSystemBuilder {
 
 struct Initialized {
     executor: Arc<TurnExecutor>,
-    templates: BTreeSet<UriTemplate>,
+    types: BTreeSet<TypeName>,
 }
 
 #[derive(Default)]
@@ -215,6 +230,9 @@ struct Lifecycle {
     cancel_turns: CancellationToken,
     dispatch: Option<JoinHandle<()>>,
     background: Vec<JoinHandle<()>>,
+    /// Stops the heartbeat of this node's row; awaited on stop so that no heartbeat follows the row's removal.
+    node_stop: CancellationToken,
+    node_heartbeat: Option<JoinHandle<()>>,
 }
 
 struct Inner {
@@ -250,7 +268,8 @@ struct Inner {
 ///
 /// Life cycle: [`Self::start`] validates the hosted types, registers their contracts (a conflicting contract fails the
 /// start) and starts the dispatch loop; [`Self::stop`] stops claiming, lets running turns finish within the grace
-/// period, then cancels the rest and releases their leases. The store is owned by the caller and is not closed.
+/// period, then cancels the rest, releases their leases and removes the node's row. The store is owned by the caller and
+/// is not closed.
 ///
 /// Without `start`, [`Self::initialize`] plus [`Self::run_due_turns`] drive turns manually, as the test harness does.
 #[derive(Clone)]
@@ -299,9 +318,9 @@ impl ActorSystem {
         self.inner.running.load(Ordering::SeqCst)
     }
 
-    /// The templates of the hosted types (valid types only).
-    pub fn hosted_templates(&self) -> BTreeSet<UriTemplate> {
-        self.inner.hosted.iter().filter_map(|h| h.template().cloned()).collect()
+    /// The names of the hosted types (valid types only).
+    pub fn hosted_types(&self) -> BTreeSet<TypeName> {
+        self.inner.hosted.iter().filter_map(|h| h.type_name().cloned()).collect()
     }
 
     // ---- life cycle ----
@@ -331,35 +350,27 @@ impl ActorSystem {
         if !problems.is_empty() {
             return Err(StartError { problems });
         }
-        let mut types: HashMap<UriTemplate, HostedType> = HashMap::new();
-        let mut order: Vec<UriTemplate> = Vec::new();
+        let mut types: HashMap<TypeName, HostedType> = HashMap::new();
         for hosted in &inner.hosted {
-            let template = hosted.template().expect("a valid type has a template").clone();
-            if types.contains_key(&template) {
-                problems.push(format!("{}: template {template} is hosted twice", hosted.name()));
-                continue;
-            }
-            if let Some(other) = order.iter().find(|t| t.overlaps(&template)) {
-                let common = template.common_address(other).map(|a| a.to_string()).unwrap_or_default();
-                problems.push(format!("{}: template {template} overlaps {other}: both match {common}", hosted.name()));
+            let name = hosted.type_name().expect("a valid type has a name").clone();
+            if types.contains_key(&name) {
+                problems.push(format!("{}: type {name} is hosted twice", hosted.name()));
                 continue;
             }
             let max_turn = hosted.max_turn().unwrap_or(inner.config.default_max_turn);
-            order.push(template.clone());
-            types.insert(template, HostedType { actor: hosted.clone(), max_turn });
+            types.insert(name, HostedType { actor: hosted.clone(), max_turn });
         }
         if !problems.is_empty() {
             return Err(StartError { problems });
         }
-        for template in &order {
-            let hosted = &types[template];
+        for hosted in types.values() {
             let def = hosted.actor.contract().expect("a valid type has a contract").to_type_def();
             match inner.store.register(def.clone()).await {
                 Ok(RegisterResult::Registered(_)) => {}
                 Ok(RegisterResult::Conflict { existing, reason }) => problems.push(format!(
                     "{}: {reason} (registered {} {}, this node {})",
                     hosted.actor.name(),
-                    existing.template,
+                    existing.name,
                     existing.contract_hash,
                     def.contract_hash
                 )),
@@ -369,6 +380,7 @@ impl ActorSystem {
         if !problems.is_empty() {
             return Err(StartError { problems });
         }
+        let names: BTreeSet<TypeName> = types.keys().cloned().collect();
         let lease = LeaseSettings { ttl: inner.config.lease_ttl, heartbeat: inner.config.heartbeat() };
         let executor = Arc::new(TurnExecutor {
             store: inner.store.clone(),
@@ -378,11 +390,12 @@ impl ActorSystem {
             lease,
             wake: inner.wake.clone(),
         });
-        Ok(Arc::new(Initialized { executor, templates: order.into_iter().collect() }))
+        Ok(Arc::new(Initialized { executor, types: names }))
     }
 
-    /// Initializes (see [`Self::initialize`]) and starts the dispatch loop, the retention sweep and, when the store
-    /// offers them, the collection of its wake-ups. Fails when the node was already started or stopped.
+    /// Initializes (see [`Self::initialize`]) and starts the dispatch loop, the heartbeat of its node-table row, the
+    /// retention sweep and, when the store offers them, the collection of its wake-ups. Fails when the node was already
+    /// started or stopped.
     pub async fn start(&self) -> Result<(), StartError> {
         let mut lifecycle = self.inner.lifecycle.lock().await;
         if self.state() != NodeState::New {
@@ -390,14 +403,14 @@ impl ActorSystem {
         }
         let init = self.initialized().await?.clone();
         self.inner.stopping.store(false, Ordering::SeqCst);
-        if !init.templates.is_empty() {
+        if !init.types.is_empty() {
             let this = self.clone();
             let tracker = lifecycle.tracker.clone();
             let cancel = lifecycle.cancel_turns.clone();
             let loop_init = init.clone();
             lifecycle.dispatch =
                 Some(tokio::spawn(async move { this.dispatch_loop(loop_init, tracker, cancel).await }));
-            if let Some(mut wake_ups) = self.inner.store.wake_ups(&init.templates) {
+            if let Some(mut wake_ups) = self.inner.store.wake_ups(&init.types) {
                 let wake = self.inner.wake.clone();
                 lifecycle.background.push(tokio::spawn(async move {
                     while wake_ups.next().await.is_some() {
@@ -407,6 +420,23 @@ impl ActorSystem {
                 }));
             }
         }
+        lifecycle.node_heartbeat = Some(tokio::spawn({
+            let store = self.inner.store.clone();
+            let node = self.inner.config.node_id.clone();
+            let hosted = init.types.clone();
+            let stop = lifecycle.node_stop.clone();
+            async move {
+                loop {
+                    if let Err(e) = store.heartbeat_node(&node, &hosted).await {
+                        tracing::warn!("The heartbeat of node {node} failed; retrying after {NODE_HEARTBEAT:?}: {e}");
+                    }
+                    tokio::select! {
+                        _ = stop.cancelled() => return,
+                        _ = sleep(NODE_HEARTBEAT) => {}
+                    }
+                }
+            }
+        }));
         let store = self.inner.store.clone();
         let interval = self.inner.config.sweep_interval;
         lifecycle.background.push(tokio::spawn(async move {
@@ -423,7 +453,7 @@ impl ActorSystem {
         tracing::info!(
             "Actors node {} started; hosting {:?}",
             self.inner.config.node_id,
-            init.templates.iter().map(|t| t.as_str()).collect::<Vec<_>>()
+            init.types.iter().map(|t| t.as_str()).collect::<Vec<_>>()
         );
         Ok(())
     }
@@ -472,6 +502,16 @@ impl ActorSystem {
         for task in lifecycle.background.drain(..) {
             task.abort();
         }
+        lifecycle.node_stop.cancel();
+        if let Some(heartbeat) = lifecycle.node_heartbeat.take() {
+            let abort = heartbeat.abort_handle();
+            if timeout(cancel_timeout, heartbeat).await.is_err() {
+                abort.abort();
+            }
+        }
+        if let Err(e) = self.inner.store.remove_node(&self.inner.config.node_id).await {
+            tracing::warn!("Removing the row of node {} failed: {e}", self.inner.config.node_id);
+        }
         self.inner.state.store(NodeState::Stopped as u8, Ordering::SeqCst);
         tracing::info!("Actors node {} stopped", self.inner.config.node_id);
     }
@@ -489,7 +529,7 @@ impl ActorSystem {
     /// ended leaves it to expire (G6); claims still in flight are released when they arrive.
     pub async fn run_due_turns(&self, limit: usize) -> Result<usize, OpError> {
         let init = self.initialized().await?.clone();
-        if init.templates.is_empty() {
+        if init.types.is_empty() {
             return Ok(0);
         }
         let claims = self.claim(&init, limit).await?;
@@ -526,12 +566,12 @@ impl ActorSystem {
     async fn claim(&self, init: &Initialized, limit: usize) -> Result<Vec<(Claim, Instant)>, StoreError> {
         let sent = Instant::now();
         let store = self.inner.store.clone();
-        let templates = init.templates.clone();
+        let types = init.types.clone();
         let node = self.inner.config.node_id.clone();
         let ttl = self.inner.config.lease_ttl;
         let (tx, rx) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
-            let result = store.claim_due(&templates, &node, ttl, limit).await;
+            let result = store.claim_due(&types, &node, ttl, limit).await;
             // Unsent or never received, the batch releases its claims when dropped.
             let _ = tx.send(result.map(|claims| ClaimBatch { store, claims }));
         });
@@ -591,7 +631,7 @@ impl ActorSystem {
     async fn sleep_time(&self, init: &Initialized) -> Duration {
         let poll = self.inner.config.poll_interval;
         let store = &self.inner.store;
-        match store.next_due_at(&init.templates).await {
+        match store.next_due_at(&init.types).await {
             Ok(None) => poll,
             Ok(Some(next)) => match store.now().await {
                 Ok(now) => time::between(now, next).clamp(MIN_SLEEP, poll),
@@ -606,11 +646,11 @@ impl ActorSystem {
 
     // ---- operations ----
 
-    fn hosted_for<'a>(&self, init: &'a Initialized, template: &UriTemplate) -> Option<&'a HostedType> {
-        init.executor.hosted.get(template)
+    fn hosted_for<'a>(&self, init: &'a Initialized, name: &TypeName) -> Option<&'a HostedType> {
+        init.executor.hosted.get(name)
     }
 
-    /// Creates an instance (`PUT /actors/{path}`). Idempotent: an existing instance is left untouched.
+    /// Creates an instance (`PUT /actors/{type}/{key}`). Idempotent: an existing instance is left untouched.
     ///
     /// The type is resolved through the TypeRegistry. A node that hosts the type decodes `state` with the state type
     /// and refuses it when that fails; any node refuses a state for a stateless type.
@@ -623,13 +663,13 @@ impl ActorSystem {
         let Some(resolved) = self.inner.resolver.resolve(address).await? else {
             return Ok(CreateActorResult::NoSuchType);
         };
-        let template = resolved.registered.template().clone();
+        let name = address.type_name();
         let given = state.filter(|s| !s.is_null());
         limits::check_json("state", given.as_ref()).map_err(OpError::Invalid)?;
-        if resolved.registered.contract.state_schema().is_none() && given.is_some() {
-            return Ok(CreateActorResult::InvalidState(format!("{template} is stateless and takes no state")));
+        if resolved.contract.state_schema().is_none() && given.is_some() {
+            return Ok(CreateActorResult::InvalidState(format!("{name} is stateless and takes no state")));
         }
-        if let Some(hosted) = self.hosted_for(&init, &template) {
+        if let Some(hosted) = self.hosted_for(&init, name) {
             if let Some(problem) = hosted.actor.canonical_problem(address) {
                 return Ok(CreateActorResult::InvalidAddress(problem));
             }
@@ -637,25 +677,31 @@ impl ActorSystem {
                 return Ok(CreateActorResult::InvalidState(format!("State cannot be decoded: {e}")));
             }
         }
-        Ok(match self.inner.store.create(address, &template, given).await? {
+        Ok(match self.inner.store.create(address, given).await? {
             CreateResult::Created => CreateActorResult::Created,
             CreateResult::Exists(existing) => CreateActorResult::Exists(existing),
+            // The type was removed between the lookup and the insert; the store refused atomically.
+            CreateResult::NoSuchType => CreateActorResult::NoSuchType,
         })
     }
 
-    /// Type, params, state and version of an instance (`GET /actors/{path}`).
+    /// Type, params, state and version of an instance (`GET /actors/{type}/{key}`).
     pub async fn get_actor(&self, address: &ActorAddress) -> Result<Option<ActorSnapshot>, OpError> {
-        Ok(self.inner.store.get(address).await?.map(|r| ActorSnapshot {
-            params: r.template.matches(&r.address).unwrap_or_default(),
-            address: r.address,
-            template: r.template,
-            state: r.state,
-            version: r.version,
-            created_at: r.created_at,
+        let Some(record) = self.inner.store.get(address).await? else {
+            return Ok(None);
+        };
+        let params = self.inner.resolver.resolve(address).await?.map(|t| t.contract.params_of(address));
+        Ok(Some(ActorSnapshot {
+            params: params.unwrap_or_default(),
+            address: record.address,
+            state: record.state,
+            version: record.version,
+            created_at: record.created_at,
+            paused: record.paused,
         }))
     }
 
-    /// Admin delete (`DELETE /actors/{path}`): removes the instance and purges its mailbox.
+    /// Admin delete (`DELETE /actors/{type}/{key}`): removes the instance and purges its mailbox.
     pub async fn delete_actor(&self, address: &ActorAddress) -> Result<DeleteResult, OpError> {
         Ok(self.inner.store.delete(address).await?)
     }
@@ -670,7 +716,7 @@ impl ActorSystem {
         Ok(self.inner.store.list(prefix, cursor, limit).await?)
     }
 
-    /// Sends a message (`POST /actors/{path}/messages`). Idempotent on the id within the retention window.
+    /// Sends a message (`POST /actors/{type}/{key}/messages`). Idempotent on the id within the retention window.
     ///
     /// Checks, in order: the id was not already accepted (then [`SendResult::Duplicate`] for the same target and type,
     /// whatever else changed, and [`SendResult::IdConflict`] for a different message); a registered
@@ -697,12 +743,12 @@ impl ActorSystem {
         let Some(resolved) = self.inner.resolver.resolve(to).await? else {
             return Ok(SendResult::NoSuchInstance);
         };
-        let template = resolved.registered.template().clone();
-        if !resolved.registered.contract.accepts(message_type) {
-            return Ok(SendResult::UnknownType { message_type: message_type.to_owned(), template });
+        let name = to.type_name();
+        if !resolved.contract.accepts(message_type) {
+            return Ok(SendResult::UnknownType { message_type: message_type.to_owned(), type_name: name.clone() });
         }
-        let hosted = self.hosted_for(&init, &template).is_some();
-        if let Some(h) = self.hosted_for(&init, &template)
+        let hosted = self.hosted_for(&init, name).is_some();
+        if let Some(h) = self.hosted_for(&init, name)
             && let Err(e) = h.actor.check_payload(message_type, &payload)
         {
             return Ok(SendResult::InvalidPayload { message_type: message_type.to_owned(), error: e });
@@ -736,7 +782,8 @@ impl ActorSystem {
         Ok(self.inner.store.status(id).await?.map(|s| s.envelope().clone()))
     }
 
-    /// The pending mailbox in delivery order (`GET /actors/{path}/messages`), or `None` when the instance is absent.
+    /// The pending mailbox in delivery order, or `None` when the instance is absent. [`Self::mailbox`] adds which message
+    /// is running.
     pub async fn pending(
         &self,
         address: &ActorAddress,
@@ -747,6 +794,49 @@ impl ActorSystem {
             return Ok(None);
         }
         Ok(Some(self.inner.store.pending(address, cursor, limit).await?))
+    }
+
+    /// The mailbox of `address` in delivery order, each message marked running or pending (`GET
+    /// /actors/{type}/{key}/mailbox`); `None` when the instance is absent. Marking is approximate: the turn is read
+    /// separately from the page.
+    pub async fn mailbox(
+        &self,
+        address: &ActorAddress,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> Result<Option<Page<MailboxEntry>>, OpError> {
+        let Some(page) = self.pending(address, cursor, limit).await? else {
+            return Ok(None);
+        };
+        let running = self.inner.store.running_turn(address).await?.map(|t| t.message_id);
+        let items = page
+            .items
+            .into_iter()
+            .map(|message| MailboxEntry { running: running.as_ref() == Some(&message.id), message })
+            .collect();
+        Ok(Some(Page::new(items, page.next)))
+    }
+
+    /// Pauses the mailbox of `address` (`POST /actors/{type}/{key}/mailbox/pause`): messages still queue up, no new turn
+    /// is claimed, a running turn finishes. False when the instance is absent.
+    pub async fn pause_mailbox(&self, address: &ActorAddress) -> Result<bool, OpError> {
+        Ok(self.inner.store.set_paused(address, true).await?)
+    }
+
+    /// Resumes the mailbox of `address` (`POST /actors/{type}/{key}/mailbox/resume`) and wakes the dispatch loop. False
+    /// when the instance is absent.
+    pub async fn resume_mailbox(&self, address: &ActorAddress) -> Result<bool, OpError> {
+        let found = self.inner.store.set_paused(address, false).await?;
+        if found {
+            self.wake_up();
+        }
+        Ok(found)
+    }
+
+    /// Gives outcome `purged` to every pending message of `address` except one being handled, and keeps the instance
+    /// (`POST /actors/{type}/{key}/mailbox/purge`). `None` when the instance is absent.
+    pub async fn purge_mailbox(&self, address: &ActorAddress) -> Result<Option<u64>, OpError> {
+        Ok(self.inner.store.purge(address).await?)
     }
 
     /// The pending messages of every instance whose URI starts with `prefix` (`GET /messages?prefix=`).
@@ -764,6 +854,20 @@ impl ActorSystem {
         Ok(self.inner.store.status(id).await?)
     }
 
+    /// The messages sent by the turn that handled `id`, one level down: pending ones and retained outcomes, in message-id
+    /// order (`GET /messages/{id}/caused`). `None` when `id` itself is unknown or past retention.
+    pub async fn caused_by(
+        &self,
+        id: &MessageId,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> Result<Option<Page<MessageStatus>>, OpError> {
+        if self.inner.store.status(id).await?.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(self.inner.store.caused_by(id, cursor, limit).await?))
+    }
+
     /// The retained outcome of a message.
     pub async fn outcome(&self, id: &MessageId) -> Result<Option<OutcomeRecord>, OpError> {
         Ok(match self.inner.store.status(id).await? {
@@ -772,14 +876,145 @@ impl ActorSystem {
         })
     }
 
-    /// Admin cancel of a pending message (`DELETE /messages/{id}`).
+    /// Admin cancel of a pending message (`POST /messages/{id}/cancel`).
     pub async fn cancel(&self, id: &MessageId) -> Result<CancelResult, OpError> {
         Ok(self.inner.store.cancel(id).await?)
     }
 
-    /// Failed messages with envelope and error (`GET /failures?prefix=&since=`).
-    pub async fn failures(
+    /// Makes a pending, not running message due at store now with a new `seq` (`POST /messages/{id}/deliver-now`) and
+    /// wakes the dispatch loop.
+    pub async fn deliver_now(&self, id: &MessageId) -> Result<DeliverNowResult, OpError> {
+        let result = self.inner.store.deliver_now(id).await?;
+        if matches!(result, DeliverNowResult::Delivered(_)) {
+            self.wake_up();
+        }
+        Ok(result)
+    }
+
+    /// Sends a message that ended `failed` or `cancelled` again (`POST /messages/{id}/retry`): a new message with a new
+    /// id and `caused_by` the original, otherwise equal in target, type, payload, correlation id, headers, retry and
+    /// retention. A retry is not idempotent: every call sends another message.
+    pub async fn retry_message(&self, id: &MessageId) -> Result<RetryResult, OpError> {
+        let original = match self.inner.store.status(id).await? {
+            None => return Ok(RetryResult::NotFound),
+            Some(MessageStatus::Pending(_)) => return Ok(RetryResult::NotRetryable { state: "pending".to_owned() }),
+            Some(MessageStatus::Running { .. }) => {
+                return Ok(RetryResult::NotRetryable { state: "running".to_owned() });
+            }
+            Some(MessageStatus::Finished(o)) => match o.status {
+                OutcomeStatus::Failed | OutcomeStatus::Cancelled => o.envelope,
+                status => return Ok(RetryResult::NotRetryable { state: status.wire_name().to_owned() }),
+            },
+        };
+        let to = original.to.clone();
+        let outgoing = OutgoingMessage {
+            correlation_id: original.correlation_id,
+            headers: original.headers,
+            retry: original.retry,
+            retention: original.retention,
+            caused_by: Some(original.id),
+            ..OutgoingMessage::new(original.to, original.message_type, original.payload)
+        };
+        Ok(match self.inner.store.enqueue(outgoing).await? {
+            EnqueueResult::Enqueued(message) => {
+                self.wake_up();
+                RetryResult::Accepted(message)
+            }
+            EnqueueResult::NoSuchInstance => RetryResult::NoSuchInstance(to),
+            EnqueueResult::Duplicate(id) => {
+                return Err(OpError::Store(StoreError::Corrupt(format!("the new message id {id} is already in use"))));
+            }
+        })
+    }
+
+    /// Cancels at most [`BULK_LIMIT`] messages (`POST /messages/bulk-cancel`), each as [`Self::cancel`] does; ones that
+    /// are not pending are skipped and not counted. Not one transaction: a store failure half way reports it as an
+    /// error, with the work done so far kept. Paging is the listing's keyset, not a snapshot.
+    pub async fn bulk_cancel(&self, selection: BulkSelection) -> Result<BulkResult, OpError> {
+        match selection {
+            BulkSelection::Ids(ids) => {
+                check_bulk_ids(&ids)?;
+                let mut affected = 0;
+                for id in &ids {
+                    if matches!(self.cancel(id).await?, CancelResult::Cancelled(_)) {
+                        affected += 1;
+                    }
+                }
+                Ok(BulkResult { affected, more: false })
+            }
+            BulkSelection::Filter { prefix, message_type } => {
+                let mut affected = 0;
+                let mut cursor = None;
+                loop {
+                    let page = self.list_pending(&prefix, cursor.as_ref(), BULK_LIMIT).await?;
+                    for message in page.items.iter().filter(|m| of_type(&message_type, &m.message_type)) {
+                        if affected < BULK_LIMIT as u64 {
+                            if matches!(self.cancel(&message.id).await?, CancelResult::Cancelled(_)) {
+                                affected += 1;
+                            }
+                        } else if matches!(self.inner.store.status(&message.id).await?, Some(MessageStatus::Pending(_)))
+                        {
+                            return Ok(BulkResult { affected, more: true });
+                        }
+                    }
+                    match page.next {
+                        Some(next) => cursor = Some(next),
+                        None => return Ok(BulkResult { affected, more: false }),
+                    }
+                }
+            }
+        }
+    }
+
+    /// Retries at most [`BULK_LIMIT`] messages (`POST /messages/bulk-retry`), each as [`Self::retry_message`] does; ones
+    /// that are not eligible are skipped and not counted. With a filter it walks the `failed` outcomes and also skips one
+    /// already retried (it has a `caused_by` child), so that calling again until `more` is false does not send a message
+    /// twice. Not one transaction: a store failure half way reports it as an error, with the work done so far kept.
+    pub async fn bulk_retry(&self, selection: BulkSelection) -> Result<BulkResult, OpError> {
+        match selection {
+            BulkSelection::Ids(ids) => {
+                check_bulk_ids(&ids)?;
+                let mut affected = 0;
+                for id in &ids {
+                    if matches!(self.retry_message(id).await?, RetryResult::Accepted(_)) {
+                        affected += 1;
+                    }
+                }
+                Ok(BulkResult { affected, more: false })
+            }
+            BulkSelection::Filter { prefix, message_type } => {
+                let mut affected = 0;
+                let mut cursor = None;
+                loop {
+                    let page =
+                        self.outcomes(Some(OutcomeStatus::Failed), &prefix, None, cursor.as_ref(), BULK_LIMIT).await?;
+                    for outcome in page.items.iter().filter(|o| of_type(&message_type, &o.envelope.message_type)) {
+                        let retried = !self.inner.store.caused_by(&outcome.message_id, None, 1).await?.items.is_empty();
+                        if retried {
+                            continue;
+                        }
+                        if affected < BULK_LIMIT as u64 {
+                            if matches!(self.retry_message(&outcome.message_id).await?, RetryResult::Accepted(_)) {
+                                affected += 1;
+                            }
+                        } else {
+                            return Ok(BulkResult { affected, more: true });
+                        }
+                    }
+                    match page.next {
+                        Some(next) => cursor = Some(next),
+                        None => return Ok(BulkResult { affected, more: false }),
+                    }
+                }
+            }
+        }
+    }
+
+    /// Finished messages with envelope and error (`GET /outcomes?status=&prefix=&since=`), of one `status` or, with
+    /// `None`, of every status.
+    pub async fn outcomes(
         &self,
+        status: Option<OutcomeStatus>,
         prefix: &str,
         since: Option<Timestamp>,
         cursor: Option<&PageCursor>,
@@ -793,15 +1028,101 @@ impl ActorSystem {
                 time::format_instant(since)
             )));
         }
-        Ok(self.inner.store.failures(prefix, since, cursor, limit).await?)
+        Ok(self.inner.store.outcomes(status, prefix, since, cursor, limit).await?)
     }
 
-    /// All registered types with their contracts (`GET /types`), ordered by template.
+    /// The number of actors and pending messages under `prefix`, and the delivery time of the oldest due message
+    /// (`GET /stats?prefix=`).
+    pub async fn stats(&self, prefix: &str) -> Result<StoreStats, OpError> {
+        Ok(self.inner.store.stats(prefix).await?)
+    }
+
+    /// All registered types with their contracts (`GET /types`), ordered by name.
     pub async fn types(&self) -> Result<Vec<RegisteredType>, OpError> {
         let defs = self.inner.store.list_types().await?;
         let mut types = defs.into_iter().map(|d| self.inner.resolver.registered(d)).collect::<Result<Vec<_>, _>>()?;
-        types.sort_by(|a, b| a.template().as_str().cmp(b.template().as_str()));
+        types.sort_by(|a, b| a.name().cmp(b.name()));
         Ok(types)
+    }
+
+    /// Removes the registration of the type `name` (`DELETE /types/{name}`), unless actors of the type exist. A node that
+    /// still hosts the type registers it again at its next start.
+    pub async fn remove_type(&self, name: &TypeName) -> Result<RemoveTypeResult, OpError> {
+        Ok(self.inner.store.remove_type(name).await?)
+    }
+
+    /// Every node in the node table (`GET /nodes`), by id, with its status from store time and its running turns.
+    /// Display only: leases, not this table, decide who runs what.
+    pub async fn nodes(&self) -> Result<Vec<NodeInfo>, OpError> {
+        let records = self.inner.store.list_nodes().await?;
+        let now = self.inner.store.now().await?;
+        let mut turns: HashMap<NodeId, Vec<RunningTurn>> = HashMap::new();
+        for turn in self.all_running_turns().await? {
+            turns.entry(turn.node.clone()).or_default().push(turn);
+        }
+        Ok(records
+            .into_iter()
+            .map(|r| {
+                let age = time::between(r.last_seen, now);
+                let status = if age < NODE_ALIVE_FOR {
+                    NodeHealth::Alive
+                } else if age < NODE_SUSPECT_FOR {
+                    NodeHealth::Suspect
+                } else {
+                    NodeHealth::Dead
+                };
+                let running_turns = turns.remove(&r.id).unwrap_or_default();
+                NodeInfo {
+                    id: r.id,
+                    hosted: r.hosted,
+                    started_at: r.started_at,
+                    last_seen: r.last_seen,
+                    status,
+                    running_turns,
+                }
+            })
+            .collect())
+    }
+
+    /// One node as [`Self::nodes`] reports it (`GET /nodes/{node}`), or `None`.
+    pub async fn node(&self, id: &NodeId) -> Result<Option<NodeInfo>, OpError> {
+        Ok(self.nodes().await?.into_iter().find(|n| &n.id == id))
+    }
+
+    async fn all_running_turns(&self) -> Result<Vec<RunningTurn>, OpError> {
+        let mut turns = Vec::new();
+        let mut cursor = None;
+        loop {
+            let page = self.inner.store.running_turns(None, "", cursor.as_ref(), PAGE_OF_TURNS).await?;
+            turns.extend(page.items);
+            match page.next {
+                Some(next) => cursor = Some(next),
+                None => return Ok(turns),
+            }
+        }
+    }
+
+    /// The turns running now, with a valid lease, of `node` or of any node, under the address `prefix` (`GET
+    /// /turns?node=&prefix=`), in address order. A snapshot of running work, approximate by nature.
+    pub async fn list_running_turns(
+        &self,
+        node: Option<&NodeId>,
+        prefix: &str,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> Result<Page<RunningTurn>, OpError> {
+        Ok(self.inner.store.running_turns(node, prefix, cursor, limit).await?)
+    }
+
+    /// The turn running now on `address` (`GET /actors/{type}/{key}/turn`), or `None`.
+    pub async fn running_turn(&self, address: &ActorAddress) -> Result<Option<RunningTurn>, OpError> {
+        Ok(self.inner.store.running_turn(address).await?)
+    }
+
+    /// Asks the node running the turn on `address` to cancel it (`POST /actors/{type}/{key}/turn/cancel`); it does so
+    /// within one heartbeat. False when no turn is running. A turn that ends first is not affected.
+    pub async fn cancel_turn(&self, address: &ActorAddress) -> Result<bool, OpError> {
+        Ok(self.inner.store.request_cancel(address).await?)
     }
 
     /// True when the node is running (or usable) and the store is reachable (`GET /health`).
@@ -856,6 +1177,18 @@ impl ActorSystem {
         let encoded = message::encode(msg).map_err(OpError::Invalid)?;
         self.send_message(to, &encoded.message_type, encoded.payload, options).await
     }
+}
+
+fn check_bulk_ids(ids: &[MessageId]) -> Result<(), OpError> {
+    if ids.len() > BULK_LIMIT {
+        return Err(OpError::Invalid(format!("At most {BULK_LIMIT} ids per call, got {}", ids.len())));
+    }
+    Ok(())
+}
+
+/// True when `actual` is the wanted message type, or none is wanted.
+fn of_type(wanted: &Option<String>, actual: &str) -> bool {
+    wanted.as_deref().is_none_or(|w| w == actual)
 }
 
 /// A repeated id: the same send again, or a different message that happens to reuse the id.

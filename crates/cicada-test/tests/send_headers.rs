@@ -18,7 +18,7 @@ struct Relay {
 }
 
 impl ActorRef for Relay {
-    const TEMPLATE: &'static str = "actor://relay/{id}";
+    const TYPE: &'static str = "relay";
     type Message = RelayMsg;
 }
 

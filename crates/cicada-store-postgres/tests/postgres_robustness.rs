@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use std::str::FromStr;
 use std::time::Duration;
 
-use cicada::address::{ActorAddress, UriTemplate};
+use cicada::address::{ActorAddress, TypeName};
 use cicada::retry::{Backoff, RetryPolicy};
 use cicada::store::{
     ActorCreate, CommitRequest, CommitResult, EnqueueResult, MessageId, MessageStatus, NodeId, OutcomeStatus,
@@ -17,16 +17,16 @@ use cicada_store_postgres::{PgConnectOptions, PostgresStore};
 use serde_json::json;
 use sqlx::AssertSqlSafe;
 
-fn template() -> UriTemplate {
-    UriTemplate::parse("actor://pgr/{id}").unwrap()
+fn type_name() -> TypeName {
+    TypeName::parse("pgr").unwrap()
 }
 
-fn types() -> BTreeSet<UriTemplate> {
-    BTreeSet::from([template()])
+fn types() -> BTreeSet<TypeName> {
+    BTreeSet::from([type_name()])
 }
 
 fn a() -> ActorAddress {
-    ActorAddress::parse("actor://pgr/a").unwrap()
+    ActorAddress::parse("pgr/a").unwrap()
 }
 
 fn node() -> NodeId {
@@ -43,7 +43,8 @@ fn is_invalid<T: std::fmt::Debug>(result: Result<T, StoreError>) -> bool {
 async fn values_postgres_refuses_are_invalid_not_an_unavailable_store() {
     let db = test_db!("r");
     let store = db.open().await;
-    store.create(&a(), &template(), None).await.unwrap();
+    store.register(cicada_store_conformance::type_def(a().type_name(), "test")).await.unwrap();
+    store.create(&a(), None).await.unwrap();
     let nul = "a\u{0}b";
     assert!(is_invalid(store.enqueue(OutgoingMessage::new(a(), "T", json!(nul))).await), "NUL in a JSON string");
     let mut m = OutgoingMessage::new(a(), "T", json!(1));
@@ -73,9 +74,11 @@ async fn values_postgres_refuses_are_invalid_not_an_unavailable_store() {
 async fn s2_a_commit_failing_half_way_applies_nothing() {
     let db = test_db!("r");
     let store = db.open().await;
-    store.create(&a(), &template(), None).await.unwrap();
-    let target = ActorAddress::parse("actor://pgr/target").unwrap();
-    store.create(&target, &template(), None).await.unwrap();
+    store.register(cicada_store_conformance::type_def(a().type_name(), "test")).await.unwrap();
+    store.create(&a(), None).await.unwrap();
+    let target = ActorAddress::parse("pgr/target").unwrap();
+    store.register(cicada_store_conformance::type_def(target.type_name(), "test")).await.unwrap();
+    store.create(&target, None).await.unwrap();
     let EnqueueResult::Enqueued(m) = store.enqueue(OutgoingMessage::new(a(), "T", json!(0))).await.unwrap() else {
         panic!("enqueued")
     };
@@ -90,10 +93,10 @@ async fn s2_a_commit_failing_half_way_applies_nothing() {
     ))
     .await;
     let claim = store.claim_due(&types(), &node(), TTL, 1).await.unwrap().remove(0);
-    let child = ActorAddress::parse("actor://pgr/child").unwrap();
+    let child = ActorAddress::parse("pgr/child").unwrap();
     let mut commit = CommitRequest::new(a(), claim.epoch, claim.message.id, TurnOutcome::Done);
     commit.state = StateChange::NewState(Some(json!(1)));
-    commit.creates = vec![ActorCreate { address: child.clone(), template: template(), state: None }];
+    commit.creates = vec![ActorCreate { address: child.clone(), state: None }];
     commit.sends = vec![
         OutgoingMessage::new(target.clone(), "Good", json!(1)),
         OutgoingMessage::new(target.clone(), "Poison", json!(2)),
@@ -127,7 +130,8 @@ async fn a_node_can_start_as_a_user_without_create_privileges_once_the_schema_is
     let result = async {
         let options = PgConnectOptions::from_str(&db.url).expect("a PostgreSQL URL").username(&role).password("dml");
         let store = PostgresStore::connect_with(options, db.config()).await?;
-        store.create(&a(), &template(), None).await?;
+        store.register(cicada_store_conformance::type_def(a().type_name(), "test")).await.unwrap();
+        store.create(&a(), None).await?;
         let enqueued = store.enqueue(OutgoingMessage::new(a(), "T", json!(1))).await?;
         let claim = store.claim_due(&types(), &node(), TTL, 1).await?.remove(0);
         let committed = store.commit(CommitRequest::new(a(), claim.epoch, claim.message.id, TurnOutcome::Done)).await?;
@@ -147,7 +151,8 @@ async fn a_node_can_start_as_a_user_without_create_privileges_once_the_schema_is
 async fn a_stored_retry_policy_this_version_cannot_decode_reads_as_no_policy_and_does_not_break_claims() {
     let db = test_db!("r");
     let store = db.open().await;
-    store.create(&a(), &template(), None).await.unwrap();
+    store.register(cicada_store_conformance::type_def(a().type_name(), "test")).await.unwrap();
+    store.create(&a(), None).await.unwrap();
     let mut m = OutgoingMessage::new(a(), "T", json!(1));
     m.retry = Some(RetryPolicy::new(3, Backoff::fixed(Duration::from_secs(1)).unwrap()).unwrap());
     let EnqueueResult::Enqueued(bad) = store.enqueue(m).await.unwrap() else { panic!("enqueued") };
@@ -179,11 +184,12 @@ async fn a_transaction_past_the_socket_timeout_fails_as_unavailable_and_the_stor
     let config =
         cicada_store_postgres::PostgresStoreConfig { socket_timeout: Duration::from_millis(500), ..db.config() };
     let store = db.open_with(config).await;
-    store.create(&a(), &template(), None).await.unwrap();
+    store.register(cicada_store_conformance::type_def(a().type_name(), "test")).await.unwrap();
+    store.create(&a(), None).await.unwrap();
     // Hold the instance's row lock from another connection: the enqueue waits for it beyond the timeout.
     let mut blocker = db.connect().await;
     sqlx::raw_sql(AssertSqlSafe(format!(
-        "BEGIN; SELECT 1 FROM \"{}\".actors WHERE uri = '{}' FOR UPDATE",
+        "BEGIN; SELECT 1 FROM \"{}\".actors WHERE address = '{}' FOR UPDATE",
         db.schema,
         a()
     )))

@@ -50,8 +50,8 @@ Fault scenarios (what the suite automates):
 
 ```sh
 # A slow turn, then kill its node mid-turn; another node re-runs it after the lease TTL (attempt 2).
-curl -s -X PUT localhost:9084/actors/e2e/slow/demo -H 'Content-Type: application/json' -d '{"state":{}}'
-curl -s -X POST localhost:9084/actors/e2e/slow/demo/messages -H 'Content-Type: application/json' \
+curl -s -X PUT localhost:9084/actors/e2e.slow/demo -H 'Content-Type: application/json' -d '{"state":{}}'
+curl -s -X POST localhost:9084/actors/e2e.slow/demo/messages -H 'Content-Type: application/json' \
   -d '{"type":"Sleep","payload":{"millis":8000,"label":"demo"}}'          # note the "id"
 curl -s localhost:9084/messages/<id>                                       # "status":"running","node":"node-2"
 docker compose -f e2e/docker-compose.yml kill -s SIGKILL node-2            # or: pause node-2 / stop node-2

@@ -1,0 +1,110 @@
+{
+  "key": [
+    "id"
+  ],
+  "messages": {
+    "Step": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "One step; a client sending `seq` 1, 2, 3, … one after another expects them handled in that order.",
+      "properties": {
+        "holdMillis": {
+          "default": 0,
+          "description": "How long the turn takes, in milliseconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "seq": {
+          "description": "The client's sequence number.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "seq"
+      ],
+      "title": "Step",
+      "type": "object"
+    }
+  },
+  "state": {
+    "$defs": {
+      "StepEntry": {
+        "description": "One handled `Step`. `claimedAt` is store time, `finishedAt` the node's clock.",
+        "properties": {
+          "attempt": {
+            "description": "The message's `attempt`.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "claimedAt": {
+            "description": "The claim time (store time).",
+            "format": "date-time",
+            "type": "string"
+          },
+          "finishedAt": {
+            "description": "When the turn ended (the node's clock).",
+            "format": "date-time",
+            "type": "string"
+          },
+          "node": {
+            "description": "The node that ran it.",
+            "type": "string"
+          },
+          "seq": {
+            "description": "The step's seq.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "seq",
+          "node",
+          "attempt",
+          "claimedAt",
+          "finishedAt"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "State of a [`Counter`]. `outOfOrder` counts steps whose seq was not larger than the previous one's; `overlaps`\ncounts turns that started while another turn of this instance was running (on this node), or that were claimed\nbefore the previous turn finished (any node). Both must stay 0 (G1).",
+    "properties": {
+      "count": {
+        "default": 0,
+        "description": "Steps handled.",
+        "format": "int64",
+        "type": "integer"
+      },
+      "entries": {
+        "default": [],
+        "description": "The latest steps, at most 5 000 ([`MAX_ENTRIES`]).",
+        "items": {
+          "$ref": "#/$defs/StepEntry"
+        },
+        "type": "array"
+      },
+      "lastSeq": {
+        "default": 0,
+        "description": "The seq of the latest step.",
+        "format": "int64",
+        "type": "integer"
+      },
+      "outOfOrder": {
+        "default": 0,
+        "description": "Steps that arrived out of order.",
+        "format": "int32",
+        "type": "integer"
+      },
+      "overlaps": {
+        "default": 0,
+        "description": "Overlapping turns.",
+        "format": "int32",
+        "type": "integer"
+      }
+    },
+    "title": "CounterState",
+    "type": "object"
+  },
+  "type": "e2e.counter"
+}

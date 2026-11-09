@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use cicada::address::{ActorAddress, UriTemplate};
+use cicada::address::{ActorAddress, TypeName};
 use cicada::store::{
     Claim, CommitRequest, CommitResult, MessageStatus, NodeId, OutcomeStatus, RenewResult, Store, StoreError,
     StoreResult,
@@ -193,7 +193,7 @@ impl Faults for SlowClaims {
     async fn claim_due(
         &self,
         inner: &dyn Store,
-        types: &BTreeSet<UriTemplate>,
+        types: &BTreeSet<TypeName>,
         node: &NodeId,
         ttl: Duration,
         limit: usize,

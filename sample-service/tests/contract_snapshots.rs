@@ -11,7 +11,7 @@ fn contracts_match_their_snapshots() {
     let contracts: Vec<_> = catalog
         .types(&groups)
         .iter()
-        .map(|t| t.contract().unwrap_or_else(|p| panic!("{}: {p:?}", t.template())))
+        .map(|t| t.contract().unwrap_or_else(|p| panic!("{}: {p:?}", t.type_name())))
         .collect();
     cicada_test::assert_contracts_match(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/contracts"), &contracts);
 }

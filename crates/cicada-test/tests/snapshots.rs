@@ -7,13 +7,13 @@ use cicada_test::{check_contracts, check_state_decodes, record_state_sample};
 use serde::{Deserialize, Serialize};
 
 macro_rules! actor_ref {
-    ($name:ident, $template:literal, $msg:ty) => {
+    ($name:ident, $type_name:literal, $msg:ty) => {
         #[derive(Debug, Clone, Serialize, Deserialize)]
         struct $name {
             id: String,
         }
         impl ActorRef for $name {
-            const TEMPLATE: &'static str = $template;
+            const TYPE: &'static str = $type_name;
             type Message = $msg;
         }
     };
@@ -45,10 +45,8 @@ struct SnapStateV2 {
     count: i64,
 }
 
-actor_ref!(SnapV1, "actor://snap/{id}", SnapV1Msg);
-actor_ref!(SnapV2, "actor://snap/{id}", SnapV2Msg);
-actor_ref!(SnapClash, "actor://snap_x/{id}", SnapV1Msg);
-actor_ref!(SnapX, "actor://snap/x/{id}", SnapV1Msg);
+actor_ref!(SnapV1, "snap", SnapV1Msg);
+actor_ref!(SnapV2, "snap", SnapV2Msg);
 
 macro_rules! actor {
     ($name:ident, $ref:ty, $state:ty, $msg:ty) => {
@@ -68,8 +66,6 @@ macro_rules! actor {
 actor!(V1, SnapV1, SnapStateV1, SnapV1Msg);
 actor!(V2, SnapV2, SnapStateV2, SnapV2Msg);
 actor!(StatelessV1, SnapV1, Stateless, SnapV1Msg);
-actor!(Other, SnapX, Stateless, SnapV1Msg);
-actor!(Clash, SnapClash, Stateless, SnapV1Msg);
 
 fn v1() -> Contract {
     contract_of::<V1>().unwrap()
@@ -79,7 +75,7 @@ fn v1() -> Contract {
 fn a_missing_snapshot_is_written_then_matches() {
     let dir = tempfile::tempdir().unwrap();
     check_contracts(dir.path(), &[v1()], false).unwrap();
-    let file = dir.path().join("snap_{id}.json");
+    let file = dir.path().join("snap.json");
     let text = std::fs::read_to_string(&file).unwrap();
     assert_eq!(Contract::from_json(&serde_json::from_str(&text).unwrap()).unwrap(), v1());
     assert!(text.lines().count() > 3, "pretty printed");
@@ -89,7 +85,7 @@ fn a_missing_snapshot_is_written_then_matches() {
 #[test]
 fn formatting_does_not_matter() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("snap_{id}.json"), canonical_json(&v1().to_json())).unwrap();
+    std::fs::write(dir.path().join("snap.json"), canonical_json(&v1().to_json())).unwrap();
     check_contracts(dir.path(), &[v1()], false).unwrap();
 }
 
@@ -99,7 +95,7 @@ fn a_changed_contract_fails_naming_every_change() {
     check_contracts(dir.path(), &[v1()], false).unwrap();
     let text = check_contracts(dir.path(), &[contract_of::<V2>().unwrap()], false).unwrap_err();
     for expected in [
-        "actor://snap/{id}",
+        "snap",
         "- state schema changed",
         "- message type added: Pong",
         "- message type removed: Reset",
@@ -131,15 +127,15 @@ fn update_mode_rewrites_a_snapshot_that_differs() {
 #[test]
 fn a_snapshot_that_is_not_a_contract_fails() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("snap_{id}.json"), r#"{"nope": true}"#).unwrap();
+    std::fs::write(dir.path().join("snap.json"), r#"{"nope": true}"#).unwrap();
     assert!(check_contracts(dir.path(), &[v1()], false).is_err());
 }
 
 #[test]
 #[should_panic(expected = "share the snapshot file")]
-fn types_that_share_a_file_name_are_refused() {
+fn two_contracts_for_one_type_name_are_refused() {
     let dir = tempfile::tempdir().unwrap();
-    let _ = check_contracts(dir.path(), &[contract_of::<Other>().unwrap(), contract_of::<Clash>().unwrap()], false);
+    let _ = check_contracts(dir.path(), &[v1(), contract_of::<V2>().unwrap()], false);
 }
 
 // ---- state samples ----

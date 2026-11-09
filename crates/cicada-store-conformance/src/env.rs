@@ -1,12 +1,12 @@
 //! Helpers shared by the cases: the per-case [`Env`], constants and assertions.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
-use cicada::address::{ActorAddress, UriTemplate};
+use cicada::address::{ActorAddress, TypeName};
 use cicada::store::{
     Claim, CommitRequest, CommitResult, CreateResult, Delivery, EnqueueResult, Message, MessageId, MessageStatus,
     NodeId, OutcomeRecord, OutgoingMessage, Page, PageCursor, Store, TurnOutcome, TypeDef,
@@ -17,10 +17,10 @@ use serde_json::{Value, json};
 use crate::fixture::{FixtureFactory, StoreFixture};
 
 /// The main type used by the cases.
-pub static TYPE: LazyLock<UriTemplate> = LazyLock::new(|| template("actor://conformance/{id}"));
+pub static TYPE: LazyLock<TypeName> = LazyLock::new(|| type_name("conformance"));
 
 /// A second type, for type filtering.
-pub static OTHER: LazyLock<UriTemplate> = LazyLock::new(|| template("actor://other/{id}"));
+pub static OTHER: LazyLock<TypeName> = LazyLock::new(|| type_name("other"));
 
 /// A node identity used by the cases.
 pub static NODE_A: LazyLock<NodeId> = LazyLock::new(|| node("node-a"));
@@ -116,17 +116,21 @@ impl<F: StoreFixture> Env<F> {
     }
 
     /// Creates a new instance of `ty` with `state` and returns its address.
-    pub async fn new_actor(&self, ty: &UriTemplate, state: Option<Value>) -> ActorAddress {
+    pub async fn new_actor(&self, ty: &TypeName, state: Option<Value>) -> ActorAddress {
         let id = format!("a{}", self.next());
         self.new_actor_named(ty, &id, state).await
     }
 
-    /// Creates the instance of `ty` whose every parameter is `id`, with `state`, and returns its address.
-    pub async fn new_actor_named(&self, ty: &UriTemplate, id: &str, state: Option<Value>) -> ActorAddress {
-        let params: BTreeMap<String, String> =
-            ty.param_names().into_iter().map(|n| (n.to_owned(), id.to_owned())).collect();
-        let address = ty.expand(&params).expect("a valid address");
-        assert_eq!(self.store().create(&address, ty, state).await.unwrap(), CreateResult::Created);
+    /// Registers `ty`, so that instances of it can be created; idempotent. Does nothing to a registration a case made.
+    pub async fn register_type(&self, ty: &TypeName) {
+        self.store().register(type_def(ty, "fixture")).await.unwrap();
+    }
+
+    /// Creates the instance of `ty` with the key `id` and `state`, and returns its address. Registers `ty` first.
+    pub async fn new_actor_named(&self, ty: &TypeName, id: &str, state: Option<Value>) -> ActorAddress {
+        self.register_type(ty).await;
+        let address = ActorAddress::of(ty, [id]).expect("a valid address");
+        assert_eq!(self.store().create(&address, state).await.unwrap(), CreateResult::Created);
         address
     }
 
@@ -164,7 +168,7 @@ impl<F: StoreFixture> Env<F> {
     }
 
     /// Claims due turns of `types` for [`NODE_A`].
-    pub async fn claim_types(&self, types: &[&UriTemplate]) -> Vec<Claim> {
+    pub async fn claim_types(&self, types: &[&TypeName]) -> Vec<Claim> {
         self.claim_with(types, &NODE_A, self.ttl(), 10).await
     }
 
@@ -174,7 +178,7 @@ impl<F: StoreFixture> Env<F> {
     }
 
     /// Claims due turns.
-    pub async fn claim_with(&self, types: &[&UriTemplate], node: &NodeId, ttl: Duration, limit: usize) -> Vec<Claim> {
+    pub async fn claim_with(&self, types: &[&TypeName], node: &NodeId, ttl: Duration, limit: usize) -> Vec<Claim> {
         claim_on(&*self.store(), types, node, ttl, limit).await
     }
 
@@ -189,7 +193,7 @@ impl<F: StoreFixture> Env<F> {
     }
 
     /// [`Self::claim_one`] of `types`.
-    pub async fn claim_one_types(&self, types: &[&UriTemplate]) -> Claim {
+    pub async fn claim_one_types(&self, types: &[&TypeName]) -> Claim {
         single(self.claim_types(types).await)
     }
 
@@ -304,7 +308,7 @@ pub async fn outcome_record(store: &dyn Store, id: &MessageId) -> Option<Outcome
 /// Claims due turns on `store`.
 pub async fn claim_on(
     store: &dyn Store,
-    types: &[&UriTemplate],
+    types: &[&TypeName],
     node: &NodeId,
     ttl: Duration,
     limit: usize,
@@ -319,22 +323,22 @@ pub fn single(mut claims: Vec<Claim>) -> Claim {
 }
 
 /// The set of `types`.
-pub fn type_set(types: &[&UriTemplate]) -> BTreeSet<UriTemplate> {
+pub fn type_set(types: &[&TypeName]) -> BTreeSet<TypeName> {
     types.iter().map(|t| (*t).clone()).collect()
 }
 
-/// A type definition for `template` with contract hash `hash`.
-pub fn type_def(template: &UriTemplate, hash: &str) -> TypeDef {
+/// A type definition for `name` with contract hash `hash`.
+pub fn type_def(name: &TypeName, hash: &str) -> TypeDef {
     TypeDef {
-        template: template.clone(),
-        contract: json!({"template": template.as_str(), "hash": hash}),
+        name: name.clone(),
+        contract: json!({"type": name.as_str(), "hash": hash}),
         contract_hash: hash.to_owned(),
     }
 }
 
-/// Parses a template.
-pub fn template(text: &str) -> UriTemplate {
-    UriTemplate::parse(text).expect("a valid template")
+/// Parses a type name.
+pub fn type_name(text: &str) -> TypeName {
+    TypeName::parse(text).expect("a valid type name")
 }
 
 /// Parses an address.

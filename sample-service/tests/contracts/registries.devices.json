@@ -1,0 +1,87 @@
+{
+  "key": [],
+  "messages": {
+    "BroadcastFirmware": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Sends a firmware update to every registered device.",
+      "properties": {
+        "version": {
+          "description": "The firmware version.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "version"
+      ],
+      "title": "BroadcastFirmware",
+      "type": "object"
+    },
+    "RegisterDevice": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Registers (creates) a device; idempotent.",
+      "properties": {
+        "deviceId": {
+          "description": "The device id.",
+          "type": "string"
+        },
+        "model": {
+          "description": "Its model.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "deviceId",
+        "model"
+      ],
+      "title": "RegisterDevice",
+      "type": "object"
+    },
+    "UnregisterDevice": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Unregisters a device; the device deletes itself.",
+      "properties": {
+        "deviceId": {
+          "description": "The device id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "deviceId"
+      ],
+      "title": "UnregisterDevice",
+      "type": "object"
+    }
+  },
+  "state": {
+    "$defs": {
+      "Device": {
+        "description": "One device.",
+        "properties": {
+          "id": {
+            "description": "The device id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "State of the [`DeviceRegistry`]: the refs of all registered devices, by id.",
+    "properties": {
+      "devices": {
+        "additionalProperties": {
+          "$ref": "#/$defs/Device"
+        },
+        "default": {},
+        "description": "The registered devices.",
+        "type": "object"
+      }
+    },
+    "title": "RegistryState",
+    "type": "object"
+  },
+  "type": "registries.devices"
+}

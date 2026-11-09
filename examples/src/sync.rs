@@ -16,7 +16,7 @@ pub struct Sync {
 }
 
 impl ActorRef for Sync {
-    const TEMPLATE: &'static str = "actor://sync/{tenant}";
+    const TYPE: &'static str = "sync";
     type Message = SyncMsg;
 }
 
@@ -51,7 +51,7 @@ pub struct Reports {
 }
 
 impl ActorRef for Reports {
-    const TEMPLATE: &'static str = "actor://reports/{tenant}";
+    const TYPE: &'static str = "reports";
     type Message = ReportsMsg;
 }
 

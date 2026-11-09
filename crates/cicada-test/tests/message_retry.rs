@@ -23,7 +23,7 @@ struct Chore {
 }
 
 impl ActorRef for Chore {
-    const TEMPLATE: &'static str = "actor://chore/{id}";
+    const TYPE: &'static str = "chore";
     type Message = ChoreMsg;
 }
 
@@ -374,7 +374,7 @@ async fn crash_recovery_between_retries_does_not_use_up_an_attempt() {
     h.test.run_until_idle().await; // attempt 1 fails: retried
     tokio::time::sleep(secs(5)).await; // virtual time only; no turn runs
     // Another node claims the message and dies without committing.
-    let types: BTreeSet<_> = [template::<Chore>()].into();
+    let types: BTreeSet<_> = [type_name::<Chore>()].into();
     let lost = h.test.store().claim_due(&types, &NodeId::new("crashed").unwrap(), secs(30), 1).await.unwrap();
     assert_eq!(lost.len(), 1);
     let lost = &lost[0];
@@ -573,7 +573,7 @@ async fn load_failures_and_unhandled_fail_decisions_are_not_retried() {
     bad.retry = Some(exponential4());
     let bad = enqueue(&**test.store(), bad).await;
     // Undecodable state.
-    test.store().create(&addr(&chore("broken")), &template::<Chore>(), Some(json!({"log": 1}))).await.unwrap();
+    test.store().create(&addr(&chore("broken")), Some(json!({"log": 1}))).await.unwrap();
     let to_broken = test
         .send_with(&chore("broken"), ChoreMsg::Attempt(fail_until(0)), SendOptions::new().retry(exponential4()))
         .await;

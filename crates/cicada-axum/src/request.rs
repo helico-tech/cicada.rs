@@ -3,7 +3,7 @@
 use axum::extract::{OriginalUri, Query, Request};
 use axum::http::{Uri, header};
 use cicada::ActorAddress;
-use cicada::store::{MessageId, Page, PageCursor};
+use cicada::store::{MessageId, NodeId, OutcomeStatus, Page, PageCursor};
 use cicada::time::{MAX_INSTANT, Timestamp, format_instant, parse_instant};
 use futures::StreamExt;
 use serde::de::DeserializeOwned;
@@ -18,64 +18,18 @@ pub(crate) fn instance(req: &Request) -> String {
     uri.path_and_query().map(|pq| pq.as_str().to_owned()).unwrap_or_else(|| uri.path().to_owned())
 }
 
-/// What a `/actors/{path}` request addresses.
-pub(crate) enum Target {
-    Instance(ActorAddress),
-    Mailbox(ActorAddress),
-}
-
-/// The raw (still percent-encoded) segments below `/actors/`, empty ones dropped.
-fn raw_segments(uri: &Uri) -> Vec<&str> {
+/// The actor a `/actors/{type}/{key}` request addresses. The two segments are read raw (still percent-encoded), so
+/// that an encoded `:` in a value is not mistaken for the separator of the key.
+pub(crate) fn address(uri: &Uri) -> Result<ActorAddress, ApiProblem> {
     let path = uri.path();
     let below = path.strip_prefix("/actors/").unwrap_or(path);
-    below.split('/').filter(|s| !s.is_empty()).collect()
-}
-
-/// The instance the whole path names (`PUT`, `DELETE`).
-pub(crate) fn instance_path(uri: &Uri) -> Result<ActorAddress, ApiProblem> {
-    address_of(&raw_segments(uri))
-}
-
-/// Instance or mailbox (`GET`, `POST`): a trailing raw segment `messages` is the mailbox. The escaped `%6Dessages`
-/// decodes to the same text but is an actor segment.
-pub(crate) fn target(uri: &Uri) -> Result<Target, ApiProblem> {
-    let raw = raw_segments(uri);
-    match raw.split_last() {
-        Some((&last, rest)) if !rest.is_empty() && last == ActorAddress::MAILBOX_SEGMENT => {
-            Ok(Target::Mailbox(address_of(rest)?))
+    let mut segments = below.split('/');
+    match (segments.next(), segments.next()) {
+        (Some(type_name), Some(key)) => {
+            ActorAddress::parse(&format!("{type_name}/{key}")).map_err(|e| ApiProblem::bad_request(e.to_string()))
         }
-        _ => Ok(Target::Instance(address_of(&raw)?)),
+        _ => Err(ApiProblem::bad_request("An actor path is /actors/{type}/{key}")),
     }
-}
-
-fn address_of(raw: &[&str]) -> Result<ActorAddress, ApiProblem> {
-    if raw.is_empty() {
-        return Err(ApiProblem::bad_request("An actor path needs at least one segment"));
-    }
-    let segments = raw.iter().map(|s| decode_segment(s)).collect::<Result<Vec<_>, _>>()?;
-    ActorAddress::of(segments).map_err(|e| ApiProblem::bad_request(e.to_string()))
-}
-
-/// Decodes the `%XX` escapes of a path segment; every other character stands for itself, as in any HTTP path.
-fn decode_segment(raw: &str) -> Result<String, ApiProblem> {
-    let bytes = raw.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' {
-            let hex = |b: u8| (b as char).to_digit(16);
-            match (bytes.get(i + 1).copied().and_then(hex), bytes.get(i + 2).copied().and_then(hex)) {
-                (Some(hi), Some(lo)) => out.push((hi * 16 + lo) as u8),
-                _ => return Err(ApiProblem::bad_request(format!("Invalid percent escape in path segment '{raw}'"))),
-            }
-            i += 3;
-        } else {
-            out.push(bytes[i]);
-            i += 1;
-        }
-    }
-    String::from_utf8(out)
-        .map_err(|_| ApiProblem::bad_request(format!("Percent escapes in path segment '{raw}' are not valid UTF-8")))
 }
 
 /// A message id path parameter.
@@ -98,13 +52,14 @@ impl Params {
         self.0.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
     }
 
-    /// The `prefix` as an actor-URI prefix; the scheme may be left out.
+    /// The `node` filter of a listing; an absent or blank value lists every node.
+    pub fn node(&self) -> Option<NodeId> {
+        self.get("node").and_then(|n| NodeId::new(n).ok())
+    }
+
+    /// The `prefix` of the addresses to list; empty for all.
     pub fn prefix(&self) -> String {
-        match self.get("prefix") {
-            None | Some("") => String::new(),
-            Some(p) if p.starts_with(ActorAddress::SCHEME) => p.to_owned(),
-            Some(p) => format!("{}{p}", ActorAddress::SCHEME),
-        }
+        self.get("prefix").unwrap_or_default().to_owned()
     }
 
     pub fn cursor(&self) -> Option<PageCursor> {
@@ -119,6 +74,16 @@ impl Params {
             .ok()
             .filter(|l| (1..=MAX_PAGE_SIZE).contains(l))
             .ok_or_else(|| ApiProblem::bad_request(format!("limit must be a number in 1..{MAX_PAGE_SIZE}: '{raw}'")))
+    }
+
+    /// The `status` of the outcomes to list; `None` for all.
+    pub fn status(&self) -> Result<Option<OutcomeStatus>, ApiProblem> {
+        let Some(raw) = self.get("status") else {
+            return Ok(None);
+        };
+        OutcomeStatus::from_wire_name(raw).map(Some).ok_or_else(|| {
+            ApiProblem::bad_request(format!("status must be done, failed, cancelled or purged: '{raw}'"))
+        })
     }
 
     /// `since`, within the range every backend stores.
@@ -173,27 +138,24 @@ pub(crate) async fn body<T: DeserializeOwned>(req: Request, limit: usize) -> Res
 mod tests {
     use super::*;
 
-    fn target_of(path: &str) -> Result<Target, ApiProblem> {
-        target(&path.parse::<Uri>().unwrap())
+    fn address_of(path: &str) -> Result<ActorAddress, ApiProblem> {
+        address(&path.parse::<Uri>().unwrap())
     }
 
     #[test]
-    fn mailbox_only_for_a_raw_trailing_messages_segment() {
-        assert!(matches!(target_of("/actors/a/b/messages"), Ok(Target::Mailbox(a)) if a.as_str() == "actor://a/b"));
-        assert!(
-            matches!(target_of("/actors/a/%6Dessages"), Ok(Target::Instance(a)) if a.as_str() == "actor://a/messages")
-        );
-        assert!(matches!(target_of("/actors/messages"), Ok(Target::Instance(a)) if a.as_str() == "actor://messages"));
-        assert!(matches!(target_of("/actors/a//b/"), Ok(Target::Instance(a)) if a.as_str() == "actor://a/b"));
+    fn the_first_two_segments_are_the_address() {
+        assert_eq!(address_of("/actors/a/b").unwrap().as_str(), "a/b");
+        assert_eq!(address_of("/actors/a/b/messages").unwrap().as_str(), "a/b");
+        assert_eq!(address_of("/actors/a/messages").unwrap().key(), "messages");
     }
 
     #[test]
-    fn segments_decode_leniently_and_canonically() {
-        let a = instance_path(&"/actors/c/a%20b%2fc%c3%a9".parse().unwrap()).unwrap();
-        assert_eq!(a.as_str(), "actor://c/a%20b%2Fc%C3%A9");
-        let dots = instance_path(&"/actors/c/%2E%2E/./x:y".parse().unwrap()).unwrap();
-        assert_eq!(dots.segments(), ["c", "..", ".", "x:y"]);
-        assert!(instance_path(&"/actors/c/%zz".parse().unwrap()).is_err());
-        assert!(instance_path(&"/actors/c/%C3".parse().unwrap()).is_err());
+    fn keys_stay_canonical_and_an_encoded_colon_is_a_value() {
+        assert_eq!(address_of("/actors/c/a%20b%2fc%c3%a9").unwrap().as_str(), "c/a%20b%2Fc%C3%A9");
+        assert_eq!(address_of("/actors/c/x%3Ay").unwrap().key_values(), ["x:y"]);
+        assert_eq!(address_of("/actors/c/x:y").unwrap().key_values(), ["x", "y"]);
+        for bad in ["/actors/c/%zz", "/actors/c/%C3", "/actors/c/%2E%2E", "/actors/C/x"] {
+            assert!(address_of(bad).is_err(), "{bad}");
+        }
     }
 }

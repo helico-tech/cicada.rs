@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, Method, Request, StatusCode, header};
-use cicada::address::{ActorAddress, UriTemplate};
+use cicada::address::{ActorAddress, TypeName};
 use cicada::prelude::*;
 use cicada::runtime::{ActorSystemBuilder, NodeConfig};
 use cicada::store::*;
@@ -30,7 +30,7 @@ pub struct Counter {
 }
 
 impl ActorRef for Counter {
-    const TEMPLATE: &'static str = "actor://counter/{id}";
+    const TYPE: &'static str = "counter";
     type Message = CounterMsg;
 }
 
@@ -89,7 +89,7 @@ pub struct Ping {
 }
 
 impl ActorRef for Ping {
-    const TEMPLATE: &'static str = "actor://ping/{name}";
+    const TYPE: &'static str = "ping";
     type Message = PingMsg;
 }
 
@@ -227,17 +227,16 @@ impl Store for FlakyStore {
     async fn register(&self, def: TypeDef) -> StoreResult<RegisterResult> {
         self.inner.register(def).await
     }
+    async fn remove_type(&self, name: &TypeName) -> StoreResult<RemoveTypeResult> {
+        self.inner.remove_type(name).await
+    }
+
     async fn list_types(&self) -> StoreResult<Vec<TypeDef>> {
         self.check()?;
         self.inner.list_types().await
     }
-    async fn create(
-        &self,
-        address: &ActorAddress,
-        template: &UriTemplate,
-        state: Option<Value>,
-    ) -> StoreResult<CreateResult> {
-        self.inner.create(address, template, state).await
+    async fn create(&self, address: &ActorAddress, state: Option<Value>) -> StoreResult<CreateResult> {
+        self.inner.create(address, state).await
     }
     async fn get(&self, address: &ActorAddress) -> StoreResult<Option<ActorRecord>> {
         let failure = *self.get_failure.lock().unwrap();
@@ -260,7 +259,7 @@ impl Store for FlakyStore {
     }
     async fn claim_due(
         &self,
-        types: &BTreeSet<UriTemplate>,
+        types: &BTreeSet<TypeName>,
         node: &NodeId,
         ttl: Duration,
         limit: usize,
@@ -273,7 +272,7 @@ impl Store for FlakyStore {
     async fn release(&self, address: &ActorAddress, epoch: i64) -> StoreResult<()> {
         self.inner.release(address, epoch).await
     }
-    async fn next_due_at(&self, types: &BTreeSet<UriTemplate>) -> StoreResult<Option<Timestamp>> {
+    async fn next_due_at(&self, types: &BTreeSet<TypeName>) -> StoreResult<Option<Timestamp>> {
         self.inner.next_due_at(types).await
     }
     async fn pending(
@@ -298,14 +297,27 @@ impl Store for FlakyStore {
     async fn status(&self, id: &MessageId) -> StoreResult<Option<MessageStatus>> {
         self.inner.status(id).await
     }
-    async fn failures(
+    async fn outcomes(
         &self,
+        status: Option<OutcomeStatus>,
         prefix: &str,
         since: Timestamp,
         cursor: Option<&PageCursor>,
         limit: usize,
     ) -> StoreResult<Page<OutcomeRecord>> {
-        self.inner.failures(prefix, since, cursor, limit).await
+        self.inner.outcomes(status, prefix, since, cursor, limit).await
+    }
+    async fn caused_by(
+        &self,
+        id: &MessageId,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> StoreResult<Page<MessageStatus>> {
+        self.inner.caused_by(id, cursor, limit).await
+    }
+
+    async fn stats(&self, prefix: &str) -> StoreResult<StoreStats> {
+        self.inner.stats(prefix).await
     }
     async fn sweep_expired(&self) -> StoreResult<u64> {
         self.inner.sweep_expired().await
@@ -313,7 +325,49 @@ impl Store for FlakyStore {
     async fn commit(&self, commit: CommitRequest) -> StoreResult<CommitResult> {
         self.inner.commit(commit).await
     }
-    fn wake_ups(&self, types: &BTreeSet<UriTemplate>) -> Option<BoxStream<'static, ()>> {
+
+    async fn deliver_now(&self, id: &MessageId) -> StoreResult<DeliverNowResult> {
+        self.inner.deliver_now(id).await
+    }
+
+    async fn set_paused(&self, address: &ActorAddress, paused: bool) -> StoreResult<bool> {
+        self.inner.set_paused(address, paused).await
+    }
+
+    async fn purge(&self, address: &ActorAddress) -> StoreResult<Option<u64>> {
+        self.inner.purge(address).await
+    }
+
+    async fn heartbeat_node(&self, id: &NodeId, hosted: &BTreeSet<TypeName>) -> StoreResult<()> {
+        self.inner.heartbeat_node(id, hosted).await
+    }
+
+    async fn list_nodes(&self) -> StoreResult<Vec<NodeRecord>> {
+        self.inner.list_nodes().await
+    }
+
+    async fn remove_node(&self, id: &NodeId) -> StoreResult<()> {
+        self.inner.remove_node(id).await
+    }
+
+    async fn running_turns(
+        &self,
+        node: Option<&NodeId>,
+        prefix: &str,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> StoreResult<Page<RunningTurn>> {
+        self.inner.running_turns(node, prefix, cursor, limit).await
+    }
+
+    async fn running_turn(&self, address: &ActorAddress) -> StoreResult<Option<RunningTurn>> {
+        self.inner.running_turn(address).await
+    }
+
+    async fn request_cancel(&self, address: &ActorAddress) -> StoreResult<bool> {
+        self.inner.request_cancel(address).await
+    }
+    fn wake_ups(&self, types: &BTreeSet<TypeName>) -> Option<BoxStream<'static, ()>> {
         self.inner.wake_ups(types)
     }
 }

@@ -2,8 +2,8 @@
 //!
 //! Uses the OpenTelemetry API only; the service brings the SDK and its exporters.
 //!
-//! **Traces.** One `CONSUMER` span per turn, named `process <template>`, from the claim to the commit, with
-//! `messaging.system` = `cicada`, `messaging.operation.name` = `process`, `messaging.destination.name` (the template),
+//! **Traces.** One `CONSUMER` span per turn, named `process <type name>`, from the claim to the commit, with
+//! `messaging.system` = `cicada`, `messaging.operation.name` = `process`, `messaging.destination.name` (the type name),
 //! `messaging.message.id`, `messaging.message.conversation_id` (the correlation id), and `cicada.actor`,
 //! `cicada.message.type`, `cicada.attempt`, `cicada.failures`, `cicada.outcome` (`done`, `failed`, `rescheduled`),
 //! `cicada.sent` (messages the commit enqueued). A failed turn has status `ERROR` with the failure reason; a handler
@@ -16,7 +16,7 @@
 //! The re-run gets its own span.
 //!
 //! **Metrics.** `cicada.turn.duration` (histogram, seconds, claim to commit) and `cicada.message.lag` (histogram,
-//! seconds, from the message's due time to its claim), both with `cicada.actor.type` (the template) and
+//! seconds, from the message's due time to its claim), both with `cicada.actor.type` (the type name) and
 //! `cicada.message.type`; the duration also with `cicada.outcome`. Its count is the number of turns per outcome.
 //!
 //! ```
@@ -123,11 +123,11 @@ impl ActorTelemetry {
         let message = info.message();
         let parent =
             self.with_propagator_do(|p| p.extract_with_context(&Context::new(), &HeaderReader(&message.headers)));
-        let template = info.template().as_str().to_owned();
+        let type_name = info.type_name().as_str().to_owned();
         let mut attributes = vec![
             KeyValue::new(MESSAGING_SYSTEM, "cicada"),
             KeyValue::new(MESSAGING_OPERATION, "process"),
-            KeyValue::new(MESSAGING_DESTINATION, template.clone()),
+            KeyValue::new(MESSAGING_DESTINATION, type_name.clone()),
             KeyValue::new(MESSAGING_MESSAGE_ID, message.id.to_string()),
             KeyValue::new(ACTOR, info.self_address().to_string()),
             KeyValue::new(MESSAGE_TYPE, message.message_type.clone()),
@@ -139,7 +139,7 @@ impl ActorTelemetry {
         }
         let span = self
             .tracer
-            .span_builder(format!("process {template}"))
+            .span_builder(format!("process {type_name}"))
             .with_kind(SpanKind::Consumer)
             .with_attributes(attributes)
             .start_with_context(&self.tracer, &parent);
@@ -173,7 +173,7 @@ impl Plugin for ActorTelemetry {
         self.lag.record(
             lag.as_secs_f64(),
             &[
-                KeyValue::new(ACTOR_TYPE, info.template().as_str().to_owned()),
+                KeyValue::new(ACTOR_TYPE, info.type_name().as_str().to_owned()),
                 KeyValue::new(MESSAGE_TYPE, message.message_type.clone()),
             ],
         );
@@ -199,6 +199,7 @@ impl Plugin for ActorTelemetry {
                 "failed"
             }
             TurnOutcome::Rescheduled { .. } => "rescheduled",
+            TurnOutcome::Cancelled => "cancelled",
         };
         span.set_attribute(KeyValue::new(OUTCOME, name));
         span.set_attribute(KeyValue::new(SENT, ctx.sent().len() as i64));
@@ -207,7 +208,7 @@ impl Plugin for ActorTelemetry {
         self.duration.record(
             turn.started.elapsed().as_secs_f64(),
             &[
-                KeyValue::new(ACTOR_TYPE, info.template().as_str().to_owned()),
+                KeyValue::new(ACTOR_TYPE, info.type_name().as_str().to_owned()),
                 KeyValue::new(MESSAGE_TYPE, info.message().message_type.clone()),
                 KeyValue::new(OUTCOME, name),
             ],

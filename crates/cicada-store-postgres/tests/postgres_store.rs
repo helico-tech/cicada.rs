@@ -5,7 +5,7 @@ mod common;
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use cicada::address::{ActorAddress, UriTemplate};
+use cicada::address::{ActorAddress, TypeName};
 use cicada::retention::{Keep, Retention};
 use cicada::store::{
     CommitRequest, CommitResult, Delivery, EnqueueResult, NodeId, OutgoingMessage, Store, StoreError, TurnOutcome,
@@ -18,19 +18,19 @@ use serde_json::json;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
-fn template() -> UriTemplate {
-    UriTemplate::parse("actor://pg/{id}").unwrap()
+fn type_name() -> TypeName {
+    TypeName::parse("pg").unwrap()
 }
 
-fn other() -> UriTemplate {
-    UriTemplate::parse("actor://pg-other/{id}").unwrap()
+fn other() -> TypeName {
+    TypeName::parse("pg-other").unwrap()
 }
 
-fn addr(uri: &str) -> ActorAddress {
-    ActorAddress::parse(uri).unwrap()
+fn addr(text: &str) -> ActorAddress {
+    ActorAddress::parse(text).unwrap()
 }
 
-fn types(t: UriTemplate) -> BTreeSet<UriTemplate> {
+fn types(t: TypeName) -> BTreeSet<TypeName> {
     BTreeSet::from([t])
 }
 
@@ -71,8 +71,9 @@ async fn refuses_a_schema_written_by_a_newer_version() {
 async fn connections_stay_on_the_stores_schema_across_read_only_and_rolled_back_transactions() {
     let db = test_db!("s");
     let setup = db.open().await;
-    let a = addr("actor://pg/a");
-    setup.create(&a, &template(), None).await.unwrap();
+    let a = addr("pg/a");
+    setup.register(cicada_store_conformance::type_def(a.type_name(), "test")).await.unwrap();
+    setup.create(&a, None).await.unwrap();
     let EnqueueResult::Enqueued(m) = setup.enqueue(OutgoingMessage::new(a.clone(), "T", json!(1))).await.unwrap()
     else {
         panic!("enqueued")
@@ -160,10 +161,7 @@ async fn a_closed_store_refuses_operations() {
 }
 
 /// Collects `store`'s wake-ups for `t` into a channel.
-fn collect_wake_ups(
-    store: &PostgresStore,
-    t: UriTemplate,
-) -> (mpsc::UnboundedReceiver<()>, tokio::task::JoinHandle<()>) {
+fn collect_wake_ups(store: &PostgresStore, t: TypeName) -> (mpsc::UnboundedReceiver<()>, tokio::task::JoinHandle<()>) {
     let (sender, receiver) = mpsc::unbounded_channel();
     let mut wake_ups = store.wake_ups(&types(t)).expect("the PostgreSQL store has wake-ups");
     let collector = tokio::spawn(async move {
@@ -193,15 +191,17 @@ async fn wake_ups_follow_enqueues_sends_and_releases_of_the_requested_types_on_a
     let db = test_db!("s");
     let listening = db.open().await;
     let writer = db.open().await;
-    let (mut received, collector) = collect_wake_ups(&listening, template());
+    let (mut received, collector) = collect_wake_ups(&listening, type_name());
     wait_listening(&listening).await;
     let short = Duration::from_millis(300);
     let long = Duration::from_secs(2);
 
-    let a = addr("actor://pg/a");
-    let b = addr("actor://pg-other/b");
-    writer.create(&a, &template(), None).await.unwrap();
-    writer.create(&b, &other(), None).await.unwrap();
+    let a = addr("pg/a");
+    let b = addr("pg-other/b");
+    writer.register(cicada_store_conformance::type_def(a.type_name(), "test")).await.unwrap();
+    writer.create(&a, None).await.unwrap();
+    writer.register(cicada_store_conformance::type_def(b.type_name(), "test")).await.unwrap();
+    writer.create(&b, None).await.unwrap();
     assert!(none_within(&mut received, short).await, "creates do not notify");
 
     // An enqueue on another node.
@@ -221,7 +221,7 @@ async fn wake_ups_follow_enqueues_sends_and_releases_of_the_requested_types_on_a
     // A release makes the message claimable again.
     let node = NodeId::new("w").unwrap();
     let ttl = Duration::from_secs(10);
-    let claim = writer.claim_due(&types(template()), &node, ttl, 1).await.unwrap().remove(0);
+    let claim = writer.claim_due(&types(type_name()), &node, ttl, 1).await.unwrap().remove(0);
     writer.release(&claim.actor, claim.epoch).await.unwrap();
     assert!(some_within(&mut received, long).await, "release notifies");
 
@@ -233,13 +233,11 @@ async fn wake_ups_follow_enqueues_sends_and_releases_of_the_requested_types_on_a
     assert!(some_within(&mut received, long).await, "a commit's send notifies");
 
     // A rolled-back (rejected) commit does not.
-    let claim_a = writer.claim_due(&types(template()), &node, ttl, 1).await.unwrap().remove(0);
+    let claim_a = writer.claim_due(&types(type_name()), &node, ttl, 1).await.unwrap().remove(0);
     while received.try_recv().is_ok() {} // drain wake-ups of the steps above
     let mut commit = CommitRequest::new(claim_a.actor, claim_a.epoch, claim_a.message.id, TurnOutcome::Done);
-    commit.sends = vec![
-        OutgoingMessage::new(a.clone(), "Self", json!(3)),
-        OutgoingMessage::new(addr("actor://pg/absent"), "T", json!(4)),
-    ];
+    commit.sends =
+        vec![OutgoingMessage::new(a.clone(), "Self", json!(3)), OutgoingMessage::new(addr("pg/absent"), "T", json!(4))];
     assert!(matches!(writer.commit(commit).await, Ok(CommitResult::Rejected(_))));
     assert!(none_within(&mut received, short).await, "rejected commits do not notify");
     collector.abort();
@@ -252,7 +250,7 @@ async fn the_wake_up_listener_reconnects_after_losing_its_connection() {
     let config = db.config();
     let listening = db.open().await;
     let writer = db.open().await;
-    let (mut received, collector) = collect_wake_ups(&listening, template());
+    let (mut received, collector) = collect_wake_ups(&listening, type_name());
     wait_listening(&listening).await;
 
     // Kill the listener's backend, as a database restart or a network failure would. Only this test's listener: it
@@ -271,8 +269,9 @@ async fn the_wake_up_listener_reconnects_after_losing_its_connection() {
     assert!(some_within(&mut received, Duration::from_secs(10)).await, "reconnect wakes");
     wait_listening(&listening).await;
 
-    let a = addr("actor://pg/a");
-    writer.create(&a, &template(), None).await.unwrap();
+    let a = addr("pg/a");
+    writer.register(cicada_store_conformance::type_def(a.type_name(), "test")).await.unwrap();
+    writer.create(&a, None).await.unwrap();
     writer.enqueue(OutgoingMessage::new(a, "T", json!(1))).await.unwrap();
     assert!(some_within(&mut received, Duration::from_secs(2)).await, "notifications arrive after reconnecting");
     collector.abort();
@@ -284,8 +283,9 @@ async fn a_hidden_record_is_minimal_without_payload_headers_correlation_id_or_er
     // S10: a hidden record only keeps its id in use. The store never returns it, so its content is read from the table.
     let db = test_db!("s");
     let store = db.open().await;
-    let a = addr("actor://pg/a");
-    store.create(&a, &template(), None).await.unwrap();
+    let a = addr("pg/a");
+    store.register(cicada_store_conformance::type_def(a.type_name(), "test")).await.unwrap();
+    store.create(&a, None).await.unwrap();
     let node = NodeId::new("n").unwrap();
     // The first record is removed as soon as it fails; the second is hidden a moment later and stripped by the sweep.
     let hide_later = Retention { done: None, failed: Some(Keep::For { age: Duration::from_millis(1) }) };
@@ -303,7 +303,8 @@ async fn a_hidden_record_is_minimal_without_payload_headers_correlation_id_or_er
             TurnOutcome::Failed("boom".into()),
         ];
         for outcome in outcomes {
-            let claim = store.claim_due(&types(template()), &node, Duration::from_secs(30), 1).await.unwrap().remove(0);
+            let claim =
+                store.claim_due(&types(type_name()), &node, Duration::from_secs(30), 1).await.unwrap().remove(0);
             let result = store.commit(CommitRequest::new(a.clone(), claim.epoch, m.id.clone(), outcome)).await.unwrap();
             assert!(matches!(result, CommitResult::Committed { .. }));
         }

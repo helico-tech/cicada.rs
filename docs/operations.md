@@ -111,15 +111,17 @@ A node refuses to start when one of its types has a contract other than the regi
 decode each other's messages differently. That holds also for compatible changes, such as a new field with a default,
 and for a dependency upgrade that changes the generated schemas (schemars). Change a type in one of two ways:
 
-- **Add, then switch.** Keep the old type and add the new one under a **versioned template**
-  (`actor://billing/v2/invoices/{id}`). New instances are created at the new address; senders switch to it in a later
+- **Add, then switch.** Keep the old type and add the new one under a **versioned type name**
+  (`billing.v2.invoices`). New instances are created at the new address; senders switch to it in a later
   release. Old instances keep running on their old contract until they are done, or a handler of the old type moves
   them: it creates the new instance with its state converted and stops itself (`turn.create(&new_ref, &converted)?`,
   then `turn.stop()`), in one atomic turn.
 - **Stop the world** (a single node, or a deploy that stops every node before starting new ones): reset the type's
   registration in the store and start the new version. Use contract snapshots to see the change in CI and state
-  samples to prove old states still decode. The registry has no API for this; on SQLite or PostgreSQL delete the
-  type's row from `actor_types` while no node runs.
+  samples to prove old states still decode. Stop every node that hosts the type first: a running node registers its
+  type again at its next start, and one that is still up keeps running on the old contract. Then delete the actors
+  of the type (`DELETE /actors/{type}/{key}`) and remove its registration with `DELETE /types/{name}`; the call is
+  refused with `409` while an actor of the type exists. Start the new version, which registers its contract.
 
 ## Upgrading
 
@@ -139,8 +141,8 @@ works against an older node as long as it does not use a newer feature.
 
 - **Health.** `GET /health` is 200 while the node runs and its store answers, 503 otherwise (also while it stops).
   Use it for readiness; for liveness, prefer a check that does not fail when only the database is down.
-- **Failures.** `GET /failures?since=…` lists failed messages with envelope and error, kept for the outcome
-  retention (7 days). For longer, host `DeadLettersActor` and run `FailureWatcher` (`cicada-extras`): failures become
+- **Failures.** `GET /outcomes?status=failed&since=…` lists failed messages with envelope and error, kept for the outcome
+  retention (7 days). Without `status` it lists every finished message. For longer, host `DeadLettersActor` and run `FailureWatcher` (`cicada-extras`): failures become
   dead letters that an operator redrives or discards with a message.
 - **A message that keeps killing its node** (out of memory, an abort, a native crash) is claimed again forever: its
   `attempt` climbs while `failures` stays put (`GET /messages/{id}`). Install `CrashLoopGuard` (`cicada-extras`) to
@@ -148,11 +150,21 @@ works against an older node as long as it does not use a newer feature.
   lost or released lease counts.
 - **Stuck instances.** An instance whose state no longer decodes fails every turn: its messages end `failed` one by
   one. Fix the state type (add `#[serde(default)]`), or delete and re-create the instance (`DELETE`, then
-  `PUT /actors/{path}`; the delete purges its mailbox).
+  `PUT /actors/{type}/{key}`; the delete purges its mailbox).
 - **Store down.** Nothing proceeds and HTTP answers 503 `store-unavailable`; `ActorClient` retries sends with the same
   id. Nodes recover on their own when the store returns: the dispatch loop retries claims after `poll_interval`, and
   the PostgreSQL wake-up listener reconnects with a back-off (from 250 ms, doubling up to 30 s),
   polling meanwhile.
+
+### Node table
+
+Every node, send-only ones too, writes a row to the `nodes` table every 10 s, with its id and hosted types; `GET /nodes`
+and `GET /nodes/{node}` read it. Status is derived from the age of the last heartbeat in the store's clock: `alive`
+(under 30 s), `suspect` (under 2 min), `dead`. Any node's heartbeat removes rows older than a day, and a clean stop
+removes the node's own row. The table is for display only: leases decide who runs what, so a wrong status cannot cause
+overlapping turns. A stopped turn is not forced away from a node that is alive: `POST
+/actors/{type}/{key}/turn/cancel` asks the owning node to cancel it within one heartbeat, and a dead node's lease
+expires by itself within the lease TTL.
 
 ### Logs
 
@@ -211,4 +223,6 @@ Install `ActorTelemetry` (`cicada-otel`, README, OpenTelemetry) to get a span pe
 - **Retries** (`cicada.outcome="rescheduled"`) climbing: a dependency is failing and senders' retry policies are
   absorbing it.
 - **Abandoned turns** (spans with `cicada.outcome="abandoned"`): turns that lost their lease or were cut off by a stop.
-- Mailbox depth is not a metric (it needs a store query); `GET /messages?prefix=` shows it.
+- Mailbox depth is not a metric (it needs a store query); `GET /stats?prefix=` counts the actors and pending messages
+  under a prefix and names the delivery time of the oldest due message, and `GET /messages?prefix=` lists them. A
+  call reads every row under the prefix, so poll it rarely, and with a prefix on a big store.

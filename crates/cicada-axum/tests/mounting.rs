@@ -98,7 +98,7 @@ async fn a_non_hosting_node_accepts_any_payload_which_then_ends_as_the_unhandled
     post(&b, "/actors/counter/c/messages", r#"{"type": "Add", "payload": {"n": 3}}"#).await;
     eventually(async || get_json(&a, "/actors/counter/c").await["state"]["total"] == 3).await;
     let types = get_json(&b, "/types").await;
-    assert_eq!(items(&types).iter().map(|t| t["template"].clone()).collect::<Vec<_>>(), ["actor://counter/{id}"]);
+    assert_eq!(items(&types).iter().map(|t| t["name"].clone()).collect::<Vec<_>>(), ["counter"]);
     assert_eq!(get(&b, "/health").await.status, StatusCode::OK);
 }
 
@@ -119,10 +119,10 @@ async fn the_api_works_behind_bearer_authentication_under_a_route_prefix() {
     assert_eq!(get_with(&app, "/internal/health", BEARER).await.status, StatusCode::OK);
     assert_eq!(put(&app, "/internal/actors/counter/a", r#"{"state": {}}"#).await.status, StatusCode::UNAUTHORIZED);
     // Problems name the request as the client sent it, prefix included; mailboxes resolve below the prefix.
-    let missing = get_with(&app, "/internal/actors/counter/zz/messages?limit=5", BEARER).await;
+    let missing = get_with(&app, "/internal/actors/counter/zz/mailbox?limit=5", BEARER).await;
     assert_problem(&missing, 404, pt::NO_SUCH_INSTANCE);
-    assert_eq!(missing.json()["instance"], "/internal/actors/counter/zz/messages?limit=5");
-    assert_eq!(missing.json()["detail"], "actor://counter/zz does not exist");
+    assert_eq!(missing.json()["instance"], "/internal/actors/counter/zz/mailbox?limit=5");
+    assert_eq!(missing.json()["detail"], "counter/zz does not exist");
 }
 
 #[tokio::test(start_paused = true)]
@@ -176,7 +176,7 @@ async fn a_node_handles_messages_over_http_including_delayed_ones_and_a_later_no
 
     let second = node_with(store, |b| b.host(CounterActor).config(polling(Duration::from_millis(100)))).await;
     let app = actor_api(second);
-    assert_eq!(items(&get_json(&app, "/actors/counter/a/messages").await).len(), 1);
+    assert_eq!(items(&get_json(&app, "/actors/counter/a/mailbox").await).len(), 1);
     eventually(async || total(&app).await == 1115).await;
     assert_eq!(items(&get_json(&app, "/types").await).len(), 1);
 }

@@ -4,12 +4,12 @@
 
 mod common;
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
 use cicada::ActorAddress;
-use cicada::address::UriTemplate;
+use cicada::address::TypeName;
 use cicada::store::{
     Claim, CommitRequest, CommitResult, EnqueueResult, MessageStatus, NodeId, OutgoingMessage, StateChange, Store,
     TurnOutcome,
@@ -19,12 +19,12 @@ use cicada_test::VirtualClock;
 use common::{TempDb, open_with};
 use serde_json::json;
 
-fn template() -> UriTemplate {
-    UriTemplate::parse("actor://busy/{id}").unwrap()
+fn type_name() -> TypeName {
+    TypeName::parse("busy").unwrap()
 }
 
 fn instance(id: &str) -> ActorAddress {
-    template().expand(&BTreeMap::from([("id".to_owned(), id.to_owned())])).unwrap()
+    ActorAddress::of(&type_name(), [id]).unwrap()
 }
 
 /// Makes every insert of a message of type `Poison` fail, in the middle of whatever transaction does it.
@@ -38,7 +38,7 @@ async fn install_poison_trigger(db: &TempDb) {
 
 async fn claim_one(store: &impl Store) -> Claim {
     let claims = store
-        .claim_due(&BTreeSet::from([template()]), &NodeId::new("n").unwrap(), Duration::from_secs(30), 1)
+        .claim_due(&BTreeSet::from([type_name()]), &NodeId::new("n").unwrap(), Duration::from_secs(30), 1)
         .await
         .unwrap();
     let [claim] = <[Claim; 1]>::try_from(claims).expect("one claim");
@@ -49,7 +49,8 @@ async fn claim_one(store: &impl Store) -> Claim {
 async fn assert_failed_commit_applies_nothing(store: &impl Store, claim: Claim) {
     let a = instance("a");
     let target = instance("target");
-    store.create(&target, &template(), None).await.unwrap();
+    store.register(cicada_store_conformance::type_def(target.type_name(), "test")).await.unwrap();
+    store.create(&target, None).await.unwrap();
     let commit = CommitRequest {
         state: StateChange::NewState(Some(json!(1))),
         sends: vec![
@@ -75,7 +76,8 @@ async fn s2_a_commit_failing_half_way_applies_nothing() {
     let db = TempDb::new();
     let store = db.open(Arc::new(VirtualClock::default())).await;
     let a = instance("a");
-    store.create(&a, &template(), None).await.unwrap();
+    store.register(cicada_store_conformance::type_def(a.type_name(), "test")).await.unwrap();
+    store.create(&a, None).await.unwrap();
     store.enqueue(OutgoingMessage::new(a.clone(), "M", json!(0))).await.unwrap();
     install_poison_trigger(&db).await;
     let claim = claim_one(&store).await;
@@ -88,7 +90,8 @@ async fn a_write_that_times_out_on_another_process_lock_leaves_the_writer_transa
     let db = TempDb::new();
     let store = open_with(&db.file, Arc::new(VirtualClock::default()), Duration::from_millis(50)).await;
     let a = instance("a");
-    store.create(&a, &template(), None).await.unwrap();
+    store.register(cicada_store_conformance::type_def(a.type_name(), "test")).await.unwrap();
+    store.create(&a, None).await.unwrap();
     store.enqueue(OutgoingMessage::new(a.clone(), "M", json!(0))).await.unwrap();
     install_poison_trigger(&db).await;
     {
@@ -116,7 +119,8 @@ async fn two_stores_on_one_file_contend_for_the_write_lock_without_losing_atomic
     let first = Arc::new(db.open(clock.clone()).await);
     let second = Arc::new(db.open(clock.clone()).await);
     let a = instance("a");
-    first.create(&a, &template(), None).await.unwrap();
+    first.register(cicada_store_conformance::type_def(a.type_name(), "test")).await.unwrap();
+    first.create(&a, None).await.unwrap();
     let total = 200;
     let tasks: Vec<_> = [first.clone(), second.clone()]
         .into_iter()
@@ -152,7 +156,8 @@ async fn a_cancelled_write_leaves_no_transaction_open() {
     let db = TempDb::new();
     let store = Arc::new(open_with(&db.file, Arc::new(VirtualClock::default()), Duration::from_secs(5)).await);
     let a = instance("a");
-    store.create(&a, &template(), None).await.unwrap();
+    store.register(cicada_store_conformance::type_def(a.type_name(), "test")).await.unwrap();
+    store.create(&a, None).await.unwrap();
     let mut other = db.raw().await;
     sqlx::raw_sql("BEGIN IMMEDIATE").execute(&mut other).await.unwrap();
     // The write waits on the other connection's lock and is cancelled while it waits.

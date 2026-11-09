@@ -23,14 +23,14 @@ fn store() -> Arc<dyn Store> {
     Arc::new(InMemoryStore::with_clock(Arc::new(VirtualClock::default())))
 }
 
-/// Another type for `actor://counter/{id}`, with a different contract.
+/// Another type for `counter`, with a different contract.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct OtherCounter {
     id: String,
 }
 
 impl ActorRef for OtherCounter {
-    const TEMPLATE: &'static str = "actor://counter/{id}";
+    const TYPE: &'static str = "counter";
     type Message = OtherMsg;
 }
 
@@ -44,23 +44,14 @@ enum OtherMsg {
     },
 }
 
-/// The same shape as `actor://counter/{id}`.
+/// The same shape as `counter`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SameShape {
     x: String,
 }
 
 impl ActorRef for SameShape {
-    const TEMPLATE: &'static str = "actor://counter/{x}";
-    type Message = OtherMsg;
-}
-
-/// Overlaps `actor://counter/{id}` in one address only: `actor://counter/main`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct MainCounter;
-
-impl ActorRef for MainCounter {
-    const TEMPLATE: &'static str = "actor://counter/main";
+    const TYPE: &'static str = "counter";
     type Message = OtherMsg;
 }
 
@@ -83,7 +74,6 @@ macro_rules! other_type {
 
 other_type!(OtherActor, OtherCounter);
 other_type!(SameShapeActor, SameShape);
-other_type!(MainActor, MainCounter);
 
 counter_type!(SameCounter, Unhandled::Fail);
 
@@ -93,7 +83,7 @@ fn single(e: &StartError) -> &str {
 }
 
 #[tokio::test]
-async fn same_contract_registers_on_many_nodes_a_different_contract_for_the_template_fails_start() {
+async fn same_contract_registers_on_many_nodes_a_different_contract_for_the_type_name_fails_start() {
     let store = store();
     ActorSystem::builder(store.clone()).host(CounterActor).build().initialize().await.unwrap();
     ActorSystem::builder(store.clone()).host(SameCounter).build().initialize().await.unwrap(); // equal contract: fine
@@ -102,21 +92,11 @@ async fn same_contract_registers_on_many_nodes_a_different_contract_for_the_temp
 }
 
 #[tokio::test]
-async fn two_hosted_types_whose_templates_overlap_or_the_same_type_twice_fail_start() {
+async fn two_hosted_types_with_one_type_name_or_the_same_type_twice_fail_start() {
     let e = ActorSystem::builder(store()).host(CounterActor).host(SameShapeActor).build().start().await.unwrap_err();
-    assert!(single(&e).contains("overlaps actor://counter/{id}"), "{:?}", e.problems);
-    let literal = ActorSystem::builder(store()).host(CounterActor).host(MainActor).build().start().await.unwrap_err();
-    assert!(single(&literal).contains("both match actor://counter/main"), "{:?}", literal.problems);
+    assert!(single(&e).contains("hosted twice"), "{:?}", e.problems);
     let twice = ActorSystem::builder(store()).host(CounterActor).host(CounterActor).build().start().await.unwrap_err();
     assert!(single(&twice).contains("hosted twice"), "{:?}", twice.problems);
-}
-
-#[tokio::test]
-async fn a_type_overlapping_one_another_node_registered_fails_start() {
-    let store = store();
-    ActorSystem::builder(store.clone()).host(CounterActor).build().initialize().await.unwrap();
-    let e = ActorSystem::builder(store).host(MainActor).build().initialize().await.unwrap_err();
-    assert!(single(&e).contains("overlaps actor://counter/{id}"), "{:?}", e.problems);
 }
 
 #[tokio::test]
@@ -168,7 +148,7 @@ async fn a_node_keeps_its_own_copy_of_the_configuration() {
     config.lease_ttl = Duration::ZERO;
     system.initialize().await.unwrap(); // the invalid TTL set afterwards does not affect it
     assert_eq!(system.node_id().as_str(), "first");
-    assert_eq!(system.hosted_templates().into_iter().collect::<Vec<_>>(), vec![template::<Counter>()]);
+    assert_eq!(system.hosted_types().into_iter().collect::<Vec<_>>(), vec![type_name::<Counter>()]);
 }
 
 #[tokio::test]
@@ -177,12 +157,10 @@ async fn start_registers_contracts_and_a_failed_start_leaves_the_node_unstarted(
     let system = ActorSystem::builder(store.clone()).host(CounterActor).host(EchoActor).build();
     system.initialize().await.unwrap();
     let types = store.list_types().await.unwrap();
-    assert_eq!(
-        types.iter().map(|t| t.template.to_string()).collect::<Vec<_>>(),
-        vec!["actor://counter/{id}", "actor://echo/{name}"]
-    );
+    assert_eq!(types.iter().map(|t| t.name.to_string()).collect::<Vec<_>>(), vec!["counter", "echo"]);
     let expected = Contract::new(
-        template::<Counter>(),
+        type_name::<Counter>(),
+        vec!["id".into()],
         Some(schema::root_schema::<CounterState>()),
         schema::message_schemas::<CounterMsg>().unwrap(),
     );

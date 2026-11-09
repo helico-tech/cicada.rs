@@ -51,7 +51,7 @@ async fn the_parent_fans_out_to_children_and_counts_their_replies() {
     assert_eq!(state.results, BTreeMap::from([(0, 1), (1, 2), (2, 3), (3, 4), (4, 5)]));
     assert_eq!(state.sum(), 15);
     // The children stopped after reporting; only the parent is left in the namespace.
-    assert_eq!(common::list(&test, "actor://batches/").await, vec!["actor://batches/b-1"]);
+    assert_eq!(common::list(&test, "batches/").await, vec!["batches/b-1"]);
 }
 
 #[tokio::test(start_paused = true)]

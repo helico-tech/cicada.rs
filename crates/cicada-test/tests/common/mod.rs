@@ -8,13 +8,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use cicada::address::{ActorAddress, UriTemplate};
+use cicada::address::{ActorAddress, TypeName};
 use cicada::prelude::*;
 use cicada::runtime::{ActorSystemBuilder, NodeConfig, SendResult};
 use cicada::store::{
-    CancelResult, Claim, CommitRequest, CommitResult, CreateResult, DeleteResult, EnqueueResult, Message, MessageId,
-    MessageStatus, NodeId, OutcomeRecord, OutgoingMessage, Page, PageCursor, RegisterResult, RenewResult, Store,
-    StoreResult, TurnOutcome, TypeDef,
+    CancelResult, Claim, CommitRequest, CommitResult, CreateResult, DeleteResult, DeliverNowResult, EnqueueResult,
+    Message, MessageId, MessageStatus, NodeId, NodeRecord, OutcomeRecord, OutcomeStatus, OutgoingMessage, Page,
+    PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn, Store, StoreResult, StoreStats,
+    TurnOutcome, TypeDef,
 };
 use cicada::time::{self, Timestamp};
 use cicada::turn::{HandlerFailure, TurnError};
@@ -26,7 +27,7 @@ use serde_json::Value;
 
 // ---- counter ----
 
-/// `actor://counter/{id}`.
+/// type `counter`, key `{id}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Counter {
     pub id: String,
@@ -43,7 +44,7 @@ impl Counter {
 }
 
 impl ActorRef for Counter {
-    const TEMPLATE: &'static str = "actor://counter/{id}";
+    const TYPE: &'static str = "counter";
     type Message = CounterMsg;
 }
 
@@ -219,7 +220,7 @@ counter_type!(CounterActor, Unhandled::Fail);
 
 // ---- echo ----
 
-/// `actor://echo/{name}`: a stateless type that forwards `Add(1)` to a counter.
+/// type `echo`, key `{name}`: a stateless type that forwards `Add(1)` to a counter.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Echo {
     pub name: String,
@@ -232,7 +233,7 @@ impl Echo {
 }
 
 impl ActorRef for Echo {
-    const TEMPLATE: &'static str = "actor://echo/{name}";
+    const TYPE: &'static str = "echo";
     type Message = EchoMsg;
 }
 
@@ -287,9 +288,9 @@ pub async fn outcome_of(store: &dyn Store, id: &MessageId) -> Option<OutcomeReco
     }
 }
 
-/// The template of the ref type `R`.
-pub fn template<R: ActorRef>() -> UriTemplate {
-    UriTemplate::parse(R::TEMPLATE).unwrap()
+/// The type name of the ref type `R`.
+pub fn type_name<R: ActorRef>() -> TypeName {
+    TypeName::parse(R::TYPE).unwrap()
 }
 
 /// The address of a ref.
@@ -373,6 +374,7 @@ pub fn outcome_text(outcome: &TurnOutcome) -> String {
     match outcome {
         TurnOutcome::Done => "Done".to_owned(),
         TurnOutcome::Failed(e) => format!("Failed(error={e})"),
+        TurnOutcome::Cancelled => "Cancelled".to_owned(),
         TurnOutcome::Rescheduled { delivery, error } => {
             let delivery = match delivery {
                 cicada::store::Delivery::Now => "Now".to_owned(),
@@ -405,7 +407,7 @@ pub trait Faults: Send + Sync + 'static {
     async fn claim_due(
         &self,
         inner: &dyn Store,
-        types: &BTreeSet<UriTemplate>,
+        types: &BTreeSet<TypeName>,
         node: &NodeId,
         ttl: Duration,
         limit: usize,
@@ -431,7 +433,7 @@ pub trait Faults: Send + Sync + 'static {
         inner.sweep_expired().await
     }
 
-    fn wake_ups(&self, inner: &dyn Store, types: &BTreeSet<UriTemplate>) -> Option<BoxStream<'static, ()>> {
+    fn wake_ups(&self, inner: &dyn Store, types: &BTreeSet<TypeName>) -> Option<BoxStream<'static, ()>> {
         inner.wake_ups(types)
     }
 }
@@ -458,17 +460,16 @@ impl<F: Faults> Store for Faulty<F> {
         self.inner.register(def).await
     }
 
+    async fn remove_type(&self, name: &TypeName) -> StoreResult<RemoveTypeResult> {
+        self.inner.remove_type(name).await
+    }
+
     async fn list_types(&self) -> StoreResult<Vec<TypeDef>> {
         self.faults.list_types(&*self.inner).await
     }
 
-    async fn create(
-        &self,
-        address: &ActorAddress,
-        template: &UriTemplate,
-        state: Option<Value>,
-    ) -> StoreResult<CreateResult> {
-        self.inner.create(address, template, state).await
+    async fn create(&self, address: &ActorAddress, state: Option<Value>) -> StoreResult<CreateResult> {
+        self.inner.create(address, state).await
     }
 
     async fn get(&self, address: &ActorAddress) -> StoreResult<Option<cicada::store::ActorRecord>> {
@@ -489,7 +490,7 @@ impl<F: Faults> Store for Faulty<F> {
 
     async fn claim_due(
         &self,
-        types: &BTreeSet<UriTemplate>,
+        types: &BTreeSet<TypeName>,
         node: &NodeId,
         ttl: Duration,
         limit: usize,
@@ -505,7 +506,7 @@ impl<F: Faults> Store for Faulty<F> {
         self.inner.release(address, epoch).await
     }
 
-    async fn next_due_at(&self, types: &BTreeSet<UriTemplate>) -> StoreResult<Option<Timestamp>> {
+    async fn next_due_at(&self, types: &BTreeSet<TypeName>) -> StoreResult<Option<Timestamp>> {
         self.inner.next_due_at(types).await
     }
 
@@ -535,14 +536,28 @@ impl<F: Faults> Store for Faulty<F> {
         self.inner.status(id).await
     }
 
-    async fn failures(
+    async fn outcomes(
         &self,
+        status: Option<OutcomeStatus>,
         prefix: &str,
         since: Timestamp,
         cursor: Option<&PageCursor>,
         limit: usize,
     ) -> StoreResult<Page<OutcomeRecord>> {
-        self.inner.failures(prefix, since, cursor, limit).await
+        self.inner.outcomes(status, prefix, since, cursor, limit).await
+    }
+
+    async fn caused_by(
+        &self,
+        id: &MessageId,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> StoreResult<Page<MessageStatus>> {
+        self.inner.caused_by(id, cursor, limit).await
+    }
+
+    async fn stats(&self, prefix: &str) -> StoreResult<StoreStats> {
+        self.inner.stats(prefix).await
     }
 
     async fn sweep_expired(&self) -> StoreResult<u64> {
@@ -553,7 +568,49 @@ impl<F: Faults> Store for Faulty<F> {
         self.faults.commit(&*self.inner, commit).await
     }
 
-    fn wake_ups(&self, types: &BTreeSet<UriTemplate>) -> Option<BoxStream<'static, ()>> {
+    async fn deliver_now(&self, id: &MessageId) -> StoreResult<DeliverNowResult> {
+        self.inner.deliver_now(id).await
+    }
+
+    async fn set_paused(&self, address: &ActorAddress, paused: bool) -> StoreResult<bool> {
+        self.inner.set_paused(address, paused).await
+    }
+
+    async fn purge(&self, address: &ActorAddress) -> StoreResult<Option<u64>> {
+        self.inner.purge(address).await
+    }
+
+    async fn heartbeat_node(&self, id: &NodeId, hosted: &BTreeSet<TypeName>) -> StoreResult<()> {
+        self.inner.heartbeat_node(id, hosted).await
+    }
+
+    async fn list_nodes(&self) -> StoreResult<Vec<NodeRecord>> {
+        self.inner.list_nodes().await
+    }
+
+    async fn remove_node(&self, id: &NodeId) -> StoreResult<()> {
+        self.inner.remove_node(id).await
+    }
+
+    async fn running_turns(
+        &self,
+        node: Option<&NodeId>,
+        prefix: &str,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> StoreResult<Page<RunningTurn>> {
+        self.inner.running_turns(node, prefix, cursor, limit).await
+    }
+
+    async fn running_turn(&self, address: &ActorAddress) -> StoreResult<Option<RunningTurn>> {
+        self.inner.running_turn(address).await
+    }
+
+    async fn request_cancel(&self, address: &ActorAddress) -> StoreResult<bool> {
+        self.inner.request_cancel(address).await
+    }
+
+    fn wake_ups(&self, types: &BTreeSet<TypeName>) -> Option<BoxStream<'static, ()>> {
         self.faults.wake_ups(&*self.inner, types)
     }
 

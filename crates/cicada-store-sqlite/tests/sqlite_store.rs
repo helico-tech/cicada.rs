@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cicada::ActorAddress;
-use cicada::address::UriTemplate;
+use cicada::address::TypeName;
 use cicada::retention::{Keep, Retention};
 use cicada::retry::{Backoff, RetryPolicy};
 use cicada::store::{
@@ -21,12 +21,12 @@ use cicada_test::VirtualClock;
 use common::TempDb;
 use serde_json::json;
 
-fn template() -> UriTemplate {
-    UriTemplate::parse("actor://x/{id}").unwrap()
+fn type_name() -> TypeName {
+    TypeName::parse("x").unwrap()
 }
 
 fn instance(id: &str) -> ActorAddress {
-    template().expand(&BTreeMap::from([("id".to_owned(), id.to_owned())])).unwrap()
+    ActorAddress::of(&type_name(), [id]).unwrap()
 }
 
 fn at_seconds(seconds: i64) -> Timestamp {
@@ -37,18 +37,18 @@ fn clock_at(seconds: i64) -> Arc<VirtualClock> {
     Arc::new(VirtualClock::new(at_seconds(seconds)))
 }
 
-fn types() -> BTreeSet<UriTemplate> {
-    BTreeSet::from([template()])
+fn types() -> BTreeSet<TypeName> {
+    BTreeSet::from([type_name()])
 }
 
 #[tokio::test]
-async fn database_uses_wal_and_has_the_four_tables() {
+async fn database_uses_wal_and_has_its_tables() {
     let db = TempDb::new();
     db.open(Arc::new(VirtualClock::default())).await.close().await;
     assert_eq!(db.pragma("journal_mode").await, "wal");
     assert_eq!(db.pragma("user_version").await, schema::VERSION.to_string());
     let tables = db.column_names("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").await;
-    assert_eq!(tables, ["actor_types", "actors", "messages", "outcomes", "sequences"]);
+    assert_eq!(tables, ["actor_types", "actors", "messages", "nodes", "outcomes", "sequences"]);
 }
 
 #[tokio::test]
@@ -56,10 +56,11 @@ async fn reopening_an_existing_database_keeps_its_data() {
     let db = TempDb::new();
     let a = instance("1");
     let store = db.open(Arc::new(VirtualClock::default())).await;
-    assert_eq!(store.create(&a, &template(), None).await.unwrap(), CreateResult::Created);
+    store.register(cicada_store_conformance::type_def(a.type_name(), "test")).await.unwrap();
+    assert_eq!(store.create(&a, None).await.unwrap(), CreateResult::Created);
     store.close().await;
     let store = db.open(Arc::new(VirtualClock::default())).await;
-    assert_eq!(store.get(&a).await.unwrap().unwrap().template, template());
+    assert_eq!(store.get(&a).await.unwrap().unwrap().address.type_name(), &type_name());
     store.close().await;
 }
 
@@ -70,7 +71,8 @@ async fn a_stored_retry_policy_this_version_cannot_decode_reads_as_no_policy_and
     let a = instance("1");
     let policy = RetryPolicy::new(3, Backoff::Fixed { delay: Duration::from_secs(1) }).unwrap();
     let store = db.open(clock_at(10)).await;
-    store.create(&a, &template(), None).await.unwrap();
+    store.register(cicada_store_conformance::type_def(a.type_name(), "test")).await.unwrap();
+    store.create(&a, None).await.unwrap();
     let mut ids = Vec::new();
     for n in [1, 2] {
         let message = OutgoingMessage { retry: Some(policy.clone()), ..OutgoingMessage::new(a.clone(), "M", json!(n)) };
@@ -120,7 +122,7 @@ async fn a_closed_store_refuses_operations() {
     let error = store.get(&instance("1")).await.unwrap_err();
     assert!(error.is_unavailable());
     assert_eq!(error.to_string(), "store unavailable: Store is closed");
-    assert!(store.create(&instance("1"), &template(), None).await.unwrap_err().is_unavailable());
+    assert!(store.create(&instance("1"), None).await.unwrap_err().is_unavailable());
 }
 
 #[tokio::test]
@@ -129,7 +131,8 @@ async fn store_time_never_goes_backwards_across_a_reopen() {
     // stands earlier.
     let db = TempDb::new();
     let store = db.open(clock_at(1_000)).await;
-    store.create(&instance("1"), &template(), None).await.unwrap(); // a write persists the mark
+    store.register(cicada_store_conformance::type_def(instance("1").type_name(), "test")).await.unwrap();
+    store.create(&instance("1"), None).await.unwrap(); // a write persists the mark
     store.close().await;
     assert_eq!(db.text("SELECT value FROM sequences WHERE name = 'clock'").await.as_deref(), Some("1000000000"));
     let store = db.open(clock_at(10)).await;
@@ -143,7 +146,8 @@ async fn instants_are_integer_microseconds_and_json_is_text() {
     let clock = Arc::new(VirtualClock::new(time::from_micros(1_234_567)));
     let store = db.open(clock).await;
     let a = instance("1");
-    store.create(&a, &template(), Some(json!({"n": 1}))).await.unwrap();
+    store.register(cicada_store_conformance::type_def(a.type_name(), "test")).await.unwrap();
+    store.create(&a, Some(json!({"n": 1}))).await.unwrap();
     store
         .enqueue(OutgoingMessage {
             headers: BTreeMap::from([("h".to_owned(), "v".to_owned())]),
@@ -169,7 +173,8 @@ async fn a_hidden_record_is_minimal_without_payload_headers_correlation_id_or_er
     let clock = clock_at(10);
     let store = db.open(clock.clone()).await;
     let a = instance("1");
-    store.create(&a, &template(), None).await.unwrap();
+    store.register(cicada_store_conformance::type_def(a.type_name(), "test")).await.unwrap();
+    store.create(&a, None).await.unwrap();
     let node = NodeId::new("n").unwrap();
     // The first record is removed as soon as it fails; the second is hidden a second later and stripped by the sweep.
     let hide_later = Retention { done: None, failed: Some(Keep::For { age: Duration::from_secs(1) }) };

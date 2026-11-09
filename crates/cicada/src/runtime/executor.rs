@@ -18,6 +18,12 @@
 //! policy, attempts left and a failure that is not permanent, the commit is a reschedule after the backoff, else
 //! `failed`. The `on_handler_error` hooks then see that decision.
 //!
+//! **Cancel.** An operator's cancel request ([`crate::store::Store::request_cancel`]) reaches the keeper through its next
+//! renewal. If the handler has not ended, the keeper aborts *work* and the turn commits `cancelled`, without effects
+//! and fenced by its epoch; the lease is kept throughout, so no other turn can start (G1). If the handler already
+//! ended, the request is ignored and the turn commits normally (G6). One atomic [`HandlerPhase`] decides which of the
+//! two came first.
+//!
 //! **After the handler.** Once the handler has returned or failed (or was stopped by its turn timeout), the lease is
 //! never released for a re-run (G6): every later failure ends in a `failed` outcome or, when the outcome cannot be
 //! committed, in abandoning the turn without release.
@@ -29,7 +35,7 @@
 
 use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -43,7 +49,7 @@ use super::effects::EffectBuffer;
 use super::limits;
 use super::resolver::TypeResolver;
 use crate::actor::{HostedActor, RunEnd, RunResult, panic_message};
-use crate::address::UriTemplate;
+use crate::address::TypeName;
 use crate::plugin::{Attributes, ClaimContext, HandlerErrorContext, HookResult, OutcomeContext, Plugin, TurnInfo};
 use crate::store::{
     ActorCreate, Claim, CommitRequest, CommitResult, Delivery, Message, MessageId, OutgoingMessage, RenewResult,
@@ -161,10 +167,41 @@ impl LeaseGuard {
     }
 }
 
+/// Which came first: the end of the handler, or a cancel request. Decided once.
+struct HandlerPhase(AtomicU8);
+
+const HANDLER_RUNNING: u8 = 0;
+const HANDLER_ENDED: u8 = 1;
+const CANCEL_REQUESTED: u8 = 2;
+
+impl HandlerPhase {
+    fn new() -> Self {
+        Self(AtomicU8::new(HANDLER_RUNNING))
+    }
+
+    /// Records that the handler ended; false when a cancel request came first.
+    fn end(&self) -> bool {
+        self.0.compare_exchange(HANDLER_RUNNING, HANDLER_ENDED, Ordering::SeqCst, Ordering::SeqCst).is_ok()
+    }
+
+    /// Records a cancel request; false when the handler has already ended (or the request is already recorded).
+    fn cancel(&self) -> bool {
+        self.0.compare_exchange(HANDLER_RUNNING, CANCEL_REQUESTED, Ordering::SeqCst, Ordering::SeqCst).is_ok()
+    }
+
+    fn handler_ended(&self) -> bool {
+        self.0.load(Ordering::SeqCst) == HANDLER_ENDED
+    }
+
+    fn cancelled(&self) -> bool {
+        self.0.load(Ordering::SeqCst) == CANCEL_REQUESTED
+    }
+}
+
 pub(crate) struct TurnExecutor {
     pub store: Arc<dyn Store>,
     pub resolver: Arc<TypeResolver>,
-    pub hosted: HashMap<UriTemplate, HostedType>,
+    pub hosted: HashMap<TypeName, HostedType>,
     /// The node's plugins, in installation order.
     pub plugins: Vec<Arc<dyn Plugin>>,
     pub lease: LeaseSettings,
@@ -175,16 +212,16 @@ pub(crate) struct TurnExecutor {
 impl TurnExecutor {
     /// Executes one claimed turn to its end. `claim_sent` is the local time at which the claim request was sent.
     /// `cancel` is the node stopping after its grace period (or a dropped `run_due_turns`): the worker is aborted and
-    /// waited for; then, unless the handler already ended or the lease was lost, the lease is released.
+    /// waited for; then, unless the handler already ended or the lease was lost, the lease is released, or, after an
+    /// operator's cancel request that came first, the message commits `cancelled`.
     pub async fn execute(self: Arc<Self>, claim: Claim, claim_sent: Instant, cancel: CancellationToken) {
-        let Some(hosted) = self.hosted.get(&claim.template).cloned() else {
-            tracing::warn!("Claimed {} of type {}, which this node does not host", claim.actor, claim.template);
+        let Some(hosted) = self.hosted.get(claim.actor.type_name()).cloned() else {
+            tracing::warn!("Claimed {}, whose type this node does not host", claim.actor);
             let _ = self.store.release(&claim.actor, claim.epoch).await;
             return;
         };
         let info = Arc::new(TurnInfo {
             self_address: claim.actor.clone(),
-            template: claim.template.clone(),
             message: claim.message.clone(),
             now: claim.claimed_at,
             attributes: Attributes::default(),
@@ -193,31 +230,35 @@ impl TurnExecutor {
             claim_sent,
         });
         let guard = Arc::new(LeaseGuard::new(claim_sent + self.lease.ttl - self.lease.safety_margin()));
-        let handler_ended = Arc::new(AtomicBool::new(false));
+        let phase = Arc::new(HandlerPhase::new());
 
         let mut work = tokio::spawn(self.clone().decide_or_fail(
             hosted.clone(),
             claim.clone(),
             info.clone(),
             guard.clone(),
-            handler_ended.clone(),
+            phase.clone(),
         ));
-        let keeper = tokio::spawn(self.clone().keep_lease(guard.clone(), work.abort_handle(), claim.clone()));
+        let keeper =
+            tokio::spawn(self.clone().keep_lease(guard.clone(), phase.clone(), work.abort_handle(), claim.clone()));
         let overtime = tokio::spawn(overtime_warning(work.abort_handle(), claim.clone(), hosted.max_turn));
 
         let decision = tokio::select! {
             biased;
             result = &mut work => match result {
+                // A cancel request came first: *work* was aborted (or ended without yielding) and its result is
+                // dropped; the turn commits `cancelled`, fenced by its epoch.
+                _ if phase.cancelled() && !guard.is_lost() => Some(Decision::of(TurnOutcome::Cancelled)),
                 // The lease was lost while the work ended (it did not yield in time to be cancelled): by now another
                 // node may run the turn, so nothing is committed (as a cancelled worker).
                 Ok(_) if guard.is_lost() => None,
                 Ok(decision) => Some(decision),
                 Err(e) if e.is_cancelled() => None,
                 Err(e) => {
-                    let phase = if handler_ended.load(Ordering::SeqCst) { "after its handler ended" } else { "before its handler ran" };
+                    let when = if phase.handler_ended() { "after its handler ended" } else { "before its handler ran" };
                     let panic = e.try_into_panic().map(|p| panic_message(&*p)).unwrap_or_default();
-                    tracing::error!("Turn of {} for {} panicked {phase}: {panic}", claim.actor, claim.message.id);
-                    Some(Decision::failed(format!("Turn failed {phase}: panic: {panic}")))
+                    tracing::error!("Turn of {} for {} panicked {when}: {panic}", claim.actor, claim.message.id);
+                    Some(Decision::failed(format!("Turn failed {when}: panic: {panic}")))
                 }
             },
             _ = cancel.cancelled() => {
@@ -229,7 +270,10 @@ impl TurnExecutor {
                 // run the turn while this one still does.
                 let _ = (&mut work).await;
                 if guard.is_lost() {
-                } else if handler_ended.load(Ordering::SeqCst) {
+                } else if phase.cancelled() {
+                    // An operator's cancel request came first: honour it instead of handing the turn to another node.
+                    self.commit(&claim, &info, Decision::of(TurnOutcome::Cancelled), &guard).await;
+                } else if phase.handler_ended() {
                     tracing::info!(
                         "Turn of {} for {} cancelled after its handler ended; the lease is not released but expires",
                         claim.actor, claim.message.id
@@ -249,8 +293,15 @@ impl TurnExecutor {
         overtime.abort();
     }
 
-    /// The keeper: renews the lease and aborts `work` when it is lost.
-    async fn keep_lease(self: Arc<Self>, guard: Arc<LeaseGuard>, work: AbortHandle, claim: Claim) {
+    /// The keeper: renews the lease, aborts `work` when it is lost, and aborts it when a renewal brings a cancel request
+    /// before the handler ended.
+    async fn keep_lease(
+        self: Arc<Self>,
+        guard: Arc<LeaseGuard>,
+        phase: Arc<HandlerPhase>,
+        work: AbortHandle,
+        claim: Claim,
+    ) {
         let lose = |why: &str| {
             if guard.lose(why) {
                 work.abort();
@@ -262,9 +313,13 @@ impl TurnExecutor {
                 sleep(wait).await;
                 let sent = Instant::now();
                 match self.store.renew(&claim.actor, claim.epoch, self.lease.ttl).await {
-                    Ok(RenewResult::Renewed(_)) => {
+                    Ok(result @ (RenewResult::Renewed(_) | RenewResult::CancelRequested(_))) => {
                         guard.extend(sent + self.lease.ttl - self.lease.safety_margin());
                         wait = self.lease.heartbeat;
+                        if matches!(result, RenewResult::CancelRequested(_)) && phase.cancel() {
+                            tracing::info!("Cancelling the turn of {} for {}", claim.actor, claim.message.id);
+                            work.abort();
+                        }
                     }
                     Ok(RenewResult::LeaseLost) => {
                         lose("the store reports it lost");
@@ -329,19 +384,15 @@ impl TurnExecutor {
         claim: Claim,
         info: Arc<TurnInfo>,
         guard: Arc<LeaseGuard>,
-        handler_ended: Arc<AtomicBool>,
+        phase: Arc<HandlerPhase>,
     ) -> Decision {
-        match AssertUnwindSafe(self.decide(&hosted, &claim, &info, &guard, &handler_ended)).catch_unwind().await {
+        match AssertUnwindSafe(self.decide(&hosted, &claim, &info, &guard, &phase)).catch_unwind().await {
             Ok(decision) => decision,
             Err(panic) => {
-                let phase = if handler_ended.load(Ordering::SeqCst) {
-                    "after its handler ended"
-                } else {
-                    "before its handler ran"
-                };
+                let when = if phase.handler_ended() { "after its handler ended" } else { "before its handler ran" };
                 let panic = panic_message(&*panic);
-                tracing::error!("Turn of {} for {} failed {phase}: {panic}", claim.actor, claim.message.id);
-                Decision::failed(format!("Turn failed {phase}: panic: {panic}"))
+                tracing::error!("Turn of {} for {} failed {when}: {panic}", claim.actor, claim.message.id);
+                Decision::failed(format!("Turn failed {when}: panic: {panic}"))
             }
         }
     }
@@ -352,7 +403,7 @@ impl TurnExecutor {
         claim: &Claim,
         info: &Arc<TurnInfo>,
         guard: &LeaseGuard,
-        handler_ended: &AtomicBool,
+        phase: &HandlerPhase,
     ) -> Decision {
         // Load: state, own ref, message.
         let loaded = match hosted.actor.load(claim) {
@@ -372,8 +423,11 @@ impl TurnExecutor {
         // Run.
         let started = Instant::now();
         let ended = tokio::time::timeout(hosted.max_turn, (loaded.run)(info.clone(), self.resolver.clone())).await;
-        // Also after the turn timeout: the outcome is failed(timeout), never a re-run.
-        handler_ended.store(true, Ordering::SeqCst);
+        // Also after the turn timeout: the outcome is failed(timeout), never a re-run. Only a cancel request that came
+        // first outranks that.
+        if !phase.end() {
+            return Decision::of(TurnOutcome::Cancelled);
+        }
         // A handler that only blocked its thread past max_turn returns its value: judge the duration ourselves.
         let overran = started.elapsed() > hosted.max_turn;
         match ended {
@@ -403,7 +457,7 @@ impl TurnExecutor {
                     let reason = failure.reason();
                     self.on_handler_error(info, failure, reason, true).await
                 }
-                RunEnd::Returned => self.after_return(info, run, guard).await,
+                RunEnd::Returned => self.after_return(run, guard).await,
             },
         }
     }
@@ -438,9 +492,9 @@ impl TurnExecutor {
         Decision { handler_failure: Some(reason), ..Decision::of(outcome) }
     }
 
-    async fn after_return(&self, info: &TurnInfo, run: RunResult, guard: &LeaseGuard) -> Decision {
+    async fn after_return(&self, run: RunResult, guard: &LeaseGuard) -> Decision {
         let effects = run.effects;
-        match self.check_typed_effects(info, &effects, guard).await {
+        match self.check_typed_effects(&effects, guard).await {
             Ok(Some(reason)) => return Decision::failed(reason),
             Ok(None) => {}
             Err(e) => return Decision::failed(format!("Turn failed after its handler ended: {e}")),
@@ -469,11 +523,10 @@ impl TurnExecutor {
         }
     }
 
-    /// Checks what the compiler cannot: that every typed ref the handler created or sent to resolves, through the
-    /// TypeRegistry, to the type of its ref; and a create's initial state against the created type.
+    /// Checks what the compiler cannot: that every created actor's type is registered, and its initial state against
+    /// that type.
     async fn check_typed_effects(
         &self,
-        info: &TurnInfo,
         effects: &EffectBuffer,
         guard: &LeaseGuard,
     ) -> Result<Option<String>, StoreError> {
@@ -481,43 +534,20 @@ impl TurnExecutor {
             let what = format!("type of {}", create.address);
             let resolved = self.retry_read(guard, &what, || self.resolver.resolve(&create.address)).await?;
             let Some(resolved) = resolved else {
-                return Ok(Some(format!("Create of {}: no registered actor type matches it", create.address)));
+                return Ok(Some(format!("Create of {}: its type is not registered", create.address)));
             };
-            if resolved.registered.template() != &create.template {
-                return Ok(Some(format!(
-                    "Create of {}: the address belongs to type {}, not {}",
-                    create.address,
-                    resolved.registered.template(),
-                    create.template
-                )));
-            }
             let state = create.state.as_ref().filter(|s| !s.is_null());
-            if resolved.registered.contract.state_schema().is_none() && state.is_some() {
+            if resolved.contract.state_schema().is_none() && state.is_some() {
                 return Ok(Some(format!(
                     "Create of {}: {} is stateless and takes no state",
-                    create.address, create.template
+                    create.address,
+                    create.address.type_name()
                 )));
             }
-            if let Some(target) = self.hosted.get(&create.template)
+            if let Some(target) = self.hosted.get(create.address.type_name())
                 && let Err(e) = target.actor.check_state(state)
             {
                 return Ok(Some(format!("Create of {}: the initial state cannot be decoded: {e}", create.address)));
-            }
-        }
-        for (address, template) in &effects.typed_targets {
-            if address == &info.self_address {
-                continue;
-            }
-            let what = format!("type of {address}");
-            // No such instance either: the commit rejects the send.
-            let Some(resolved) = self.retry_read(guard, &what, || self.resolver.resolve(address)).await? else {
-                continue;
-            };
-            if resolved.registered.template() != template {
-                return Ok(Some(format!(
-                    "Send to {address}: the address belongs to type {}, not {template}",
-                    resolved.registered.template()
-                )));
             }
         }
         Ok(None)
@@ -557,7 +587,7 @@ impl TurnExecutor {
                 delivery,
                 error: sanitize(&error).chars().take(TurnOutcome::MAX_ERROR_LENGTH).collect(),
             },
-            TurnOutcome::Done => TurnOutcome::Done,
+            outcome @ (TurnOutcome::Done | TurnOutcome::Cancelled) => outcome,
         };
         let request = CommitRequest {
             address: claim.actor.clone(),

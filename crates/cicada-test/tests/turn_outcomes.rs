@@ -63,7 +63,7 @@ async fn handler_fails_failed_with_error_no_effects_mailbox_continues() {
 async fn state_that_cannot_be_decoded_at_load_failed_state_untouched() {
     let test = harness().await;
     let bad = json!({"total": "not a number"});
-    test.store().create(&a().address(), &template::<Counter>(), Some(bad.clone())).await.unwrap();
+    test.store().create(&a().address(), Some(bad.clone())).await.unwrap();
     let m = test.send(&a(), CounterMsg::Add { n: 1 }).await;
     test.run_until_idle().await;
     let record = test.outcome(&m).await.unwrap();
@@ -82,7 +82,7 @@ async fn commit_rejected_by_a_send_to_an_absent_instance_failed_with_reason_no_e
     test.run_until_idle().await;
     let record = test.outcome(&m).await.unwrap();
     assert_eq!(record.status, OutcomeStatus::Failed);
-    assert!(record.error.as_deref().unwrap().contains("actor://counter/ghost"), "{:?}", record.error);
+    assert!(record.error.as_deref().unwrap().contains("counter/ghost"), "{:?}", record.error);
     assert_eq!(test.state::<_, CounterState>(&a()).await, CounterState::default());
     assert!(!test.exists(&Counter::new("ghost")).await);
 }
@@ -201,8 +201,8 @@ async fn reply_to_message_from() {
 async fn raw_send_is_checked_against_the_registry_when_called_and_the_error_is_catchable() {
     let test = harness().await;
     test.create(&a(), &CounterState::default()).await;
-    test.send(&a(), CounterMsg::SendUnknown { to: "actor://counter/a".into() }).await;
-    test.send(&a(), CounterMsg::SendUnknown { to: "actor://nowhere/x".into() }).await;
+    test.send(&a(), CounterMsg::SendUnknown { to: "counter/a".into() }).await;
+    test.send(&a(), CounterMsg::SendUnknown { to: "nowhere/x".into() }).await;
     test.run_until_idle().await;
     assert_eq!(test.state::<_, CounterState>(&a()).await.log, vec!["rejected:Nope", "rejected:Nope"]);
 }
@@ -212,7 +212,7 @@ async fn raw_send_of_a_known_type_is_buffered_and_delivered() {
     let test = harness().await;
     test.create(&a(), &CounterState::default()).await;
     test.create(&Counter::new("b"), &CounterState::default()).await;
-    test.send(&a(), CounterMsg::Forward { to: "actor://counter/b".into(), n: 4 }).await;
+    test.send(&a(), CounterMsg::Forward { to: "counter/b".into(), n: 4 }).await;
     test.run_until_idle().await;
     assert_eq!(test.state::<_, CounterState>(&Counter::new("b")).await.total, 4);
 }

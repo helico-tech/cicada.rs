@@ -14,7 +14,7 @@ pub struct Inventory {
 }
 
 impl ActorRef for Inventory {
-    const TEMPLATE: &'static str = "actor://inventory/{sku}";
+    const TYPE: &'static str = "inventory";
     type Message = InventoryMsg;
 }
 

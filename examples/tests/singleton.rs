@@ -41,7 +41,7 @@ async fn the_singleton_purges_with_the_message_id_as_idempotency_key() {
     let cutoff = time::sub(test.now(), Duration::from_secs(6 * 3600));
     assert_eq!(*files.calls.lock().unwrap(), vec![(cutoff, purge.id.as_str().to_owned())]);
     assert_eq!(test.outcome(&purge).await.unwrap().status, OutcomeStatus::Done);
-    assert_eq!(common::list(&test, "actor://maintenance/").await, vec!["actor://maintenance/cleanup"]);
+    assert_eq!(common::list(&test, "maintenance.").await, vec!["maintenance.cleanup/_"]);
 }
 
 #[tokio::test(start_paused = true)]

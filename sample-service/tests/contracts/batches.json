@@ -1,0 +1,101 @@
+{
+  "key": [
+    "id"
+  ],
+  "messages": {
+    "ItemDone": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "A child's result.",
+      "properties": {
+        "index": {
+          "description": "The child's index.",
+          "format": "int32",
+          "type": "integer"
+        },
+        "result": {
+          "description": "Its result.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "index",
+        "result"
+      ],
+      "title": "ItemDone",
+      "type": "object"
+    },
+    "StartBatch": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Fans out one child per item.",
+      "properties": {
+        "items": {
+          "description": "The inputs, one per child.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "title": "StartBatch",
+      "type": "object"
+    }
+  },
+  "state": {
+    "$defs": {
+      "BatchStatus": {
+        "description": "Life cycle of a [`Batch`].",
+        "oneOf": [
+          {
+            "const": "NEW",
+            "description": "Not started.",
+            "type": "string"
+          },
+          {
+            "const": "RUNNING",
+            "description": "Waiting for children.",
+            "type": "string"
+          },
+          {
+            "const": "COMPLETED",
+            "description": "Every child reported.",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "State of a [`Batch`].",
+    "properties": {
+      "results": {
+        "additionalProperties": false,
+        "default": {},
+        "description": "Result per child index.",
+        "patternProperties": {
+          "^-?\\d+$": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "status": {
+        "$ref": "#/$defs/BatchStatus",
+        "default": "NEW",
+        "description": "Where the batch is."
+      },
+      "total": {
+        "default": 0,
+        "description": "The number of children.",
+        "format": "int32",
+        "type": "integer"
+      }
+    },
+    "title": "BatchState",
+    "type": "object"
+  },
+  "type": "batches"
+}

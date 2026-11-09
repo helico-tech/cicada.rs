@@ -1,8 +1,8 @@
 //! The PostgreSQL schema and its versioned migrations.
 //!
-//! The four tables of the architecture (`actor_types`, `actors`, `messages`, `outcomes`) plus two sequences for the
+//! The tables of the architecture (`actor_types`, `actors`, `messages`, `outcomes`, `nodes`) plus two sequences for the
 //! store-wide `seq` and epoch counters. JSON values are `jsonb`, instants `timestamptz` (microsecond precision, the
-//! store's precision). Keys and URIs use the `"C"` collation, so ordering and keyset paging are by code point, as in
+//! store's precision). Keys and addresses use the `"C"` collation, so ordering and keyset paging are by code point, as in
 //! every other backend, and prefix ranges can use the B-tree indexes.
 //!
 //! Migrations are applied by [`migrate`] on store start: idempotent, serialised between concurrently starting nodes
@@ -20,18 +20,20 @@ use crate::error::map_error;
 /// Ordered migrations; index + 1 is the version. `{s}` is replaced by the quoted schema name. Never edit one.
 const MIGRATIONS: &[&[&str]] = &[
     // 1: the schema. A message records its failures (it is rescheduled in place), the sender's retry and retention
-    // policies (null for none) and the message whose turn sent it (`caused_by`). An outcome is visible until
+    // policies (null for none) and the message whose turn sent it (`caused_by`, indexed; an outcome keeps it in its own
+    // column). An outcome is visible until
     // `visible_until` (null: for the store retention), `keep_last` outcomes are trimmed per instance and status in
     // `keep_seq` order (from `message_seq`), and `stripped` marks a hidden record whose content the sweep dropped.
+    // `actors.cancel_epoch` is the epoch an operator asked to cancel, and a paused actor is left out of `actors_due`.
+    // `nodes` is display only: one row per node, with hosted types as a JSON array.
     &[
         r#"CREATE TABLE {s}.actor_types (
-            template      text COLLATE "C" PRIMARY KEY,
-            shape         text COLLATE "C" NOT NULL UNIQUE,
+            name          text COLLATE "C" PRIMARY KEY,
             contract      jsonb NOT NULL,
             contract_hash text NOT NULL
         )"#,
         r#"CREATE TABLE {s}.actors (
-            uri           text COLLATE "C" PRIMARY KEY,
+            address       text COLLATE "C" PRIMARY KEY,
             type          text COLLATE "C" NOT NULL,
             state         jsonb,
             version       bigint NOT NULL DEFAULT 0,
@@ -39,14 +41,18 @@ const MIGRATIONS: &[&[&str]] = &[
             lease_owner   text,
             lease_until   timestamptz,
             lease_message text COLLATE "C",
+            cancel_epoch  bigint,
+            paused        boolean NOT NULL DEFAULT false,
             next_due_at   timestamptz,
             created_at    timestamptz NOT NULL
         )"#,
-        // The claim scan: instances with a pending message, in due order.
-        "CREATE INDEX actors_due ON {s}.actors (next_due_at, type) WHERE next_due_at IS NOT NULL",
+        // The claim scan: unpaused instances with a pending message, in due order.
+        "CREATE INDEX actors_due ON {s}.actors (next_due_at, type) WHERE next_due_at IS NOT NULL AND NOT paused",
+        // The running turns listing.
+        "CREATE INDEX actors_running ON {s}.actors (address) WHERE lease_owner IS NOT NULL",
         r#"CREATE TABLE {s}.messages (
             id               text COLLATE "C" PRIMARY KEY,
-            actor_uri        text COLLATE "C" NOT NULL,
+            actor_address    text COLLATE "C" NOT NULL,
             seq              bigint NOT NULL,
             type             text NOT NULL,
             payload          jsonb NOT NULL,
@@ -61,26 +67,35 @@ const MIGRATIONS: &[&[&str]] = &[
             caused_by        text COLLATE "C",
             retention_policy jsonb
         )"#,
-        "CREATE INDEX messages_mailbox ON {s}.messages (actor_uri, deliver_at, seq)",
+        "CREATE INDEX messages_mailbox ON {s}.messages (actor_address, deliver_at, seq)",
+        "CREATE INDEX messages_caused_by ON {s}.messages (caused_by) WHERE caused_by IS NOT NULL",
         r#"CREATE TABLE {s}.outcomes (
             message_id    text COLLATE "C" PRIMARY KEY,
-            actor_uri     text COLLATE "C" NOT NULL,
+            actor_address text COLLATE "C" NOT NULL,
             status        text NOT NULL,
             error         text,
             finished_at   timestamptz NOT NULL,
             envelope      jsonb NOT NULL,
+            caused_by     text COLLATE "C",
             visible_until timestamptz,
             keep_last     boolean NOT NULL DEFAULT false,
             keep_seq      bigint,
             stripped      boolean NOT NULL DEFAULT false
         )"#,
-        // Retention sweep.
-        "CREATE INDEX outcomes_finished ON {s}.outcomes (finished_at)",
-        // Failures: by time across all instances, and by URI prefix.
+        // The outcomes listing without a status, and the retention sweep.
+        "CREATE INDEX outcomes_finished ON {s}.outcomes (finished_at, message_id)",
+        // Failed outcomes: by time across all instances, and by address prefix.
         "CREATE INDEX outcomes_failures ON {s}.outcomes (finished_at, message_id) WHERE status = 'failed'",
-        "CREATE INDEX outcomes_failures_by_actor ON {s}.outcomes (actor_uri, finished_at) WHERE status = 'failed'",
-        "CREATE INDEX outcomes_keep_last ON {s}.outcomes (actor_uri, status, keep_seq) WHERE keep_last",
+        "CREATE INDEX outcomes_failures_by_actor ON {s}.outcomes (actor_address, finished_at) WHERE status = 'failed'",
+        "CREATE INDEX outcomes_caused_by ON {s}.outcomes (caused_by) WHERE caused_by IS NOT NULL",
+        "CREATE INDEX outcomes_keep_last ON {s}.outcomes (actor_address, status, keep_seq) WHERE keep_last",
         "CREATE INDEX outcomes_visible_until ON {s}.outcomes (visible_until) WHERE visible_until IS NOT NULL",
+        r#"CREATE TABLE {s}.nodes (
+            id         text COLLATE "C" PRIMARY KEY,
+            hosted     jsonb NOT NULL,
+            started_at timestamptz NOT NULL,
+            last_seen  timestamptz NOT NULL
+        )"#,
         "CREATE SEQUENCE {s}.message_seq",
         "CREATE SEQUENCE {s}.epoch_seq",
     ],

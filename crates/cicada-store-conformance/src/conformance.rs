@@ -7,11 +7,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use cicada::address::ActorAddress;
-use cicada::store::support;
+use cicada::retention::Retention;
 use cicada::store::{
     ActorCreate, CancelResult, Claim, CommitRequest, CommitResult, CreateResult, DeleteResult, Delivery, EnqueueResult,
     Message, MessageId, MessageStatus, OutcomeRecord, OutcomeStatus, OutgoingMessage, Page, PageCursor, RegisterResult,
-    RenewResult, StateChange, Store, StoreError, TurnOutcome, TypeDef,
+    RemoveTypeResult, RenewResult, StateChange, Store, StoreError, StoreStats, TurnOutcome, TypeDef,
 };
 use cicada::time::Timestamp;
 use serde_json::json;
@@ -43,7 +43,7 @@ async fn version_of(store: &dyn Store, a: &ActorAddress) -> i64 {
     store.get(a).await.unwrap().expect("the instance").version
 }
 
-/// The ids of `templates` rotated by `by` (and reversed for odd `by`), so concurrent registrations use different
+/// The definitions in `types` rotated by `by` (and reversed for odd `by`), so concurrent registrations use different
 /// orders.
 fn reordered(types: &[TypeDef], by: usize) -> Vec<TypeDef> {
     let mut out = types.to_vec();
@@ -58,12 +58,12 @@ fn reordered(types: &[TypeDef], by: usize) -> Vec<TypeDef> {
 // TypeRegistry
 // ------------------------------------------------------------------------------------------------------------------
 
-/// registry - register is idempotent and types are listed by template
-pub async fn registry_register_is_idempotent_and_types_are_listed_by_template<B: FixtureFactory>(backend: &B) {
+/// registry - register is idempotent and types are listed by name
+pub async fn registry_register_is_idempotent_and_types_are_listed_by_name<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
-        let b = type_def(&template("actor://b/{id}"), "h1");
-        let a = type_def(&template("actor://a/{id}"), "h1");
+        let b = type_def(&type_name("b"), "h1");
+        let a = type_def(&type_name("a"), "h1");
         assert_eq!(store.register(b.clone()).await.unwrap(), RegisterResult::Registered(b.clone()));
         assert_eq!(store.register(a.clone()).await.unwrap(), RegisterResult::Registered(a.clone()));
         assert_eq!(store.register(b.clone()).await.unwrap(), RegisterResult::Registered(b.clone()));
@@ -72,8 +72,8 @@ pub async fn registry_register_is_idempotent_and_types_are_listed_by_template<B:
     .await
 }
 
-/// registry - same template with a different contract hash conflicts
-pub async fn registry_same_template_with_a_different_contract_hash_conflicts<B: FixtureFactory>(backend: &B) {
+/// registry - same name with a different contract hash conflicts
+pub async fn registry_same_name_with_a_different_contract_hash_conflicts<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
         let v1 = type_def(&TYPE, "h1");
@@ -88,61 +88,13 @@ pub async fn registry_same_template_with_a_different_contract_hash_conflicts<B: 
     .await
 }
 
-/// registry - overlapping templates conflict
-pub async fn registry_overlapping_templates_conflict<B: FixtureFactory>(backend: &B) {
-    store_test(backend, async |t| {
-        let store = t.store();
-        let first = type_def(&template("actor://jobs/{id}"), "h1");
-        store.register(first.clone()).await.unwrap();
-        // Identical shape, a literal where the first has a parameter, and a parameter where the first has a literal.
-        for other in ["actor://jobs/{name}", "actor://jobs/cleanup", "actor://{kind}/42"] {
-            let (existing, reason) = expect_matches!(
-                store.register(type_def(&template(other), "h1")).await.unwrap(),
-                RegisterResult::Conflict { existing, reason } => (existing, reason),
-                "{other}"
-            );
-            assert_eq!(existing, first);
-            assert!(reason.contains("overlaps"), "{reason}");
-        }
-        assert_eq!(list_types(&*store).await, vec![first]);
-    })
-    .await
-}
-
-/// registry - templates that share no address coexist, also within one namespace
-pub async fn registry_templates_that_share_no_address_coexist_also_within_one_namespace<B: FixtureFactory>(
-    backend: &B,
-) {
-    store_test(backend, async |t| {
-        let store = t.store();
-        let mut types: Vec<TypeDef> = [
-            "actor://jobs/{id}",
-            "actor://jobs/{id}/steps/{n}",
-            "actor://e2e/counter/{id}",
-            "actor://e2e/slow/{id}",
-            "actor://maintenance/cleanup",
-            "actor://maintenance/compact",
-        ]
-        .into_iter()
-        .map(|s| type_def(&template(s), "h1"))
-        .collect();
-        for d in &types {
-            assert_matches!(store.register(d.clone()).await.unwrap(), RegisterResult::Registered(_), "{}", d.template);
-        }
-        types.sort_by(|a, b| a.template.as_str().cmp(b.template.as_str()));
-        assert_eq!(list_types(&*store).await, types);
-    })
-    .await
-}
-
 /// registry - nodes registering the same contracts concurrently all succeed
 pub async fn registry_nodes_registering_the_same_contracts_concurrently_all_succeed<B: FixtureFactory>(backend: &B) {
     // Every node of a deployment registers the same types at start, often at the same moment.
     store_test(backend, async |t| {
         for round in 0..5 {
-            let types: Arc<Vec<TypeDef>> = Arc::new(
-                (0..8).map(|i| type_def(&template(&format!("actor://concurrent-{round}/t{i}/{{id}}")), "h1")).collect(),
-            );
+            let types: Arc<Vec<TypeDef>> =
+                Arc::new((0..8).map(|i| type_def(&type_name(&format!("concurrent-{round}.t{i}")), "h1")).collect());
             let results: Vec<RegisterResult> = t
                 .concurrently(8, |i, peer| {
                     let types = types.clone();
@@ -165,17 +117,101 @@ pub async fn registry_nodes_registering_the_same_contracts_concurrently_all_succ
     .await
 }
 
-/// registry - nodes registering overlapping templates concurrently admit exactly one
-pub async fn registry_nodes_registering_overlapping_templates_concurrently_admit_exactly_one<B: FixtureFactory>(
+/// registry - remove_type removes an unused type, refuses one with instances and reports an absent one
+pub async fn registry_remove_type_removes_an_unused_type_refuses_one_with_instances_and_reports_an_absent_one<
+    B: FixtureFactory,
+>(
     backend: &B,
 ) {
-    // Pairwise overlapping (all match race-N/x/y) but of different shapes, so no unique index decides the race.
+    store_test(backend, async |t| {
+        let store = t.store();
+        assert_eq!(store.remove_type(&TYPE).await.unwrap(), RemoveTypeResult::Absent);
+        let used = type_def(&TYPE, "h1");
+        let unused = type_def(&OTHER, "h1");
+        // A type whose name is a prefix of another one's name does not see that one's instances.
+        let short = type_def(&type_name("conf"), "h1");
+        for def in [&used, &unused, &short] {
+            store.register(def.clone()).await.unwrap();
+        }
+        let a = t.new_actor(&TYPE, None).await;
+        assert_eq!(store.remove_type(&TYPE).await.unwrap(), RemoveTypeResult::InUse);
+        assert_eq!(list_types(&*store).await, vec![short.clone(), used.clone(), unused.clone()]);
+        assert_eq!(store.remove_type(&OTHER).await.unwrap(), RemoveTypeResult::Removed);
+        assert_eq!(store.remove_type(&type_name("conf")).await.unwrap(), RemoveTypeResult::Removed);
+        assert_eq!(store.remove_type(&OTHER).await.unwrap(), RemoveTypeResult::Absent);
+        assert_eq!(list_types(&*store).await, vec![used.clone()]);
+
+        // Once its last instance is gone the type can go, and be registered again with another contract.
+        assert!(matches!(store.delete(&a).await.unwrap(), DeleteResult::Deleted { .. }));
+        assert_eq!(store.remove_type(&TYPE).await.unwrap(), RemoveTypeResult::Removed);
+        assert!(list_types(&*store).await.is_empty());
+        let changed = type_def(&TYPE, "h2");
+        assert_eq!(store.register(changed.clone()).await.unwrap(), RegisterResult::Registered(changed));
+    })
+    .await
+}
+
+/// registry - nodes removing one type concurrently remove it once, and a racing create is either seen or finds it gone
+pub async fn registry_nodes_removing_one_type_concurrently_remove_it_once_and_a_racing_create_is_not_lost<
+    B: FixtureFactory,
+>(
+    backend: &B,
+) {
+    store_test(backend, async |t| {
+        let store = t.store();
+        for round in 0..5 {
+            let name = type_name(&format!("removal{round}"));
+            store.register(type_def(&name, "h1")).await.unwrap();
+            let results = t
+                .concurrently(8, |_, peer| {
+                    let name = name.clone();
+                    async move { peer.remove_type(&name).await.unwrap() }
+                })
+                .await;
+            assert_eq!(results.iter().filter(|r| **r == RemoveTypeResult::Removed).count(), 1, "{results:?}");
+            assert!(results.iter().all(|r| matches!(r, RemoveTypeResult::Removed | RemoveTypeResult::Absent)));
+
+            // A create racing a remove: when the remove answers `InUse`, the instance exists and the type stays; when
+            // it answers `Removed`, the type is gone.
+            store.register(type_def(&name, "h1")).await.unwrap();
+            let target = address(&format!("{name}/x"));
+            let results = t
+                .concurrently(2, |i, peer| {
+                    let (name, target) = (name.clone(), target.clone());
+                    async move {
+                        if i == 0 {
+                            peer.create(&target, None).await.unwrap();
+                            None
+                        } else {
+                            Some(peer.remove_type(&name).await.unwrap())
+                        }
+                    }
+                })
+                .await;
+            let removal = results.into_iter().flatten().next().expect("the remove answered");
+            let registered = list_types(&*store).await.iter().any(|d| d.name == name);
+            match removal {
+                RemoveTypeResult::InUse => assert!(registered && store.get(&target).await.unwrap().is_some()),
+                RemoveTypeResult::Removed => assert!(!registered),
+                RemoveTypeResult::Absent => panic!("the type was registered"),
+            }
+        }
+    })
+    .await
+}
+
+/// registry - nodes registering one name with different contracts concurrently admit exactly one
+pub async fn registry_nodes_registering_one_name_with_different_contracts_concurrently_admit_exactly_one<
+    B: FixtureFactory,
+>(
+    backend: &B,
+) {
     store_test(backend, async |t| {
         for round in 0..5 {
             let types: Arc<Vec<TypeDef>> = Arc::new(
-                ["{a}/{b}", "x/{b}", "{a}/y", "x/y"]
+                ["h1", "h2", "h3", "h4"]
                     .into_iter()
-                    .map(|s| type_def(&template(&format!("actor://race-{round}/{s}")), "h1"))
+                    .map(|h| type_def(&type_name(&format!("race-{round}")), h))
                     .collect(),
             );
             let results = t
@@ -185,41 +221,10 @@ pub async fn registry_nodes_registering_overlapping_templates_concurrently_admit
                 })
                 .await;
             assert_eq!(results.iter().filter(|r| matches!(r, RegisterResult::Registered(_))).count(), 1, "{results:?}");
-            let prefix = format!("actor://race-{round}/");
+            let name = format!("race-{round}");
             let registered = list_types(&*t.store()).await;
-            assert_eq!(registered.iter().filter(|d| d.template.as_str().starts_with(&prefix)).count(), 1);
+            assert_eq!(registered.iter().filter(|d| d.name.as_str() == name).count(), 1);
         }
-    })
-    .await
-}
-
-/// registry - resolve finds the one matching template and decodes its parameters
-pub async fn registry_resolve_finds_the_one_matching_template_and_decodes_its_parameters<B: FixtureFactory>(
-    backend: &B,
-) {
-    store_test(backend, async |t| {
-        let store = t.store();
-        let by_id = type_def(&template("actor://jobs/{id}"), "h1");
-        let steps = type_def(&template("actor://jobs/{id}/steps/{n}"), "h1");
-        let nested = type_def(&template("actor://sync/{tenant}/{job}"), "h1");
-        for d in [&by_id, &steps, &nested] {
-            assert_matches!(store.register(d.clone()).await.unwrap(), RegisterResult::Registered(_));
-        }
-
-        // The runtime resolves an address against the listed types.
-        let types = list_types(&*store).await;
-        let r = support::resolve(&types, &address("actor://jobs/42")).unwrap().expect("a match");
-        assert_eq!(r.type_def, by_id);
-        assert_eq!(r.params, BTreeMap::from([("id".to_owned(), "42".to_owned())]));
-        let r = support::resolve(&types, &address("actor://jobs/42/steps/1")).unwrap().expect("a match");
-        assert_eq!(r.type_def, steps);
-        let n = support::resolve(&types, &address("actor://sync/a%20b/j1")).unwrap().expect("a match");
-        assert_eq!(
-            n.params,
-            BTreeMap::from([("tenant".to_owned(), "a b".to_owned()), ("job".to_owned(), "j1".to_owned())])
-        );
-        assert_eq!(support::resolve(&types, &address("actor://jobs/1/2")).unwrap(), None);
-        assert_eq!(support::resolve(&types, &address("actor://unknown/1")).unwrap(), None);
     })
     .await
 }
@@ -237,11 +242,11 @@ pub async fn instances_create_then_get_returns_the_initial_snapshot<B: FixtureFa
         let after = store.now().await.unwrap();
         let rec = store.get(&a).await.unwrap().expect("the instance");
         assert_eq!(rec.address, a);
-        assert_eq!(rec.template, *TYPE);
+        assert_eq!(rec.address.type_name(), &*TYPE);
         assert_eq!(rec.state, Some(json!({"n": 1})));
         assert_eq!(rec.version, 0);
         assert!(rec.created_at >= before && rec.created_at <= after);
-        assert_eq!(store.get(&address("actor://conformance/absent")).await.unwrap(), None);
+        assert_eq!(store.get(&address("conformance/absent")).await.unwrap(), None);
         let b = t.new_actor(&TYPE, None).await;
         assert_eq!(state_of(&*store, &b).await, None);
     })
@@ -258,7 +263,7 @@ pub async fn instances_create_is_idempotent_and_leaves_the_existing_instance_unt
         t.commit_ok(CommitRequest { state: StateChange::NewState(Some(json!({"n": 2}))), ..done(&c) }).await;
         t.send(&a).await;
         let existing = expect_matches!(
-            store.create(&a, &TYPE, Some(json!({"n": 99}))).await.unwrap(),
+            store.create(&a, Some(json!({"n": 99}))).await.unwrap(),
             CreateResult::Exists(existing) => existing
         );
         assert_eq!(existing.state, Some(json!({"n": 2})));
@@ -270,8 +275,8 @@ pub async fn instances_create_is_idempotent_and_leaves_the_existing_instance_unt
     .await
 }
 
-/// instances - list by prefix in uri order with paging
-pub async fn instances_list_by_prefix_in_uri_order_with_paging<B: FixtureFactory>(backend: &B) {
+/// instances - list by prefix in address order with paging
+pub async fn instances_list_by_prefix_in_address_order_with_paging<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
         let mut wanted = Vec::new();
@@ -279,12 +284,12 @@ pub async fn instances_list_by_prefix_in_uri_order_with_paging<B: FixtureFactory
             wanted.push(t.new_actor_named(&TYPE, &format!("w{i:02}"), None).await);
         }
         t.new_actor_named(&OTHER, "x", None).await;
-        t.new_actor_named(&template("actor://conformance2/{id}"), "y", None).await;
+        t.new_actor_named(&type_name("conformance2"), "y", None).await;
         let mut seen: Vec<ActorAddress> = Vec::new();
         let mut cursor: Option<PageCursor> = None;
         let mut pages = 0;
         loop {
-            let page = store.list("actor://conformance/", cursor.as_ref(), 5).await.unwrap();
+            let page = store.list("conformance/", cursor.as_ref(), 5).await.unwrap();
             assert!(page.items.len() <= 5);
             seen.extend(page.items);
             pages += 1;
@@ -296,9 +301,9 @@ pub async fn instances_list_by_prefix_in_uri_order_with_paging<B: FixtureFactory
         wanted.sort_by(|a, b| a.as_str().cmp(b.as_str()));
         assert_eq!(seen, wanted);
         assert!((5..=6).contains(&pages), "{pages} pages");
-        assert_eq!(store.list("actor://", None, 100).await.unwrap().items.len(), 25);
-        assert_eq!(store.list("actor://other", None, PAGE).await.unwrap().items, vec![address("actor://other/x")]);
-        assert!(store.list("actor://nothing/", None, PAGE).await.unwrap().items.is_empty());
+        assert_eq!(store.list("", None, 100).await.unwrap().items.len(), 25);
+        assert_eq!(store.list("other", None, PAGE).await.unwrap().items, vec![address("other/x")]);
+        assert!(store.list("nothing/", None, PAGE).await.unwrap().items.is_empty());
     })
     .await
 }
@@ -307,7 +312,7 @@ pub async fn instances_list_by_prefix_in_uri_order_with_paging<B: FixtureFactory
 pub async fn instances_delete_of_an_absent_instance_reports_absent<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
-        assert_eq!(store.delete(&address("actor://conformance/none")).await.unwrap(), DeleteResult::Absent);
+        assert_eq!(store.delete(&address("conformance/none")).await.unwrap(), DeleteResult::Absent);
         let a = t.new_actor(&TYPE, None).await;
         assert_eq!(store.delete(&a).await.unwrap(), DeleteResult::Deleted { purged: 0 });
         assert_eq!(store.delete(&a).await.unwrap(), DeleteResult::Absent);
@@ -368,15 +373,11 @@ pub async fn s2_commit_applies_state_creates_sends_and_outcome_together<B: Fixtu
         let other = t.new_actor(&TYPE, None).await;
         let m = t.send(&a).await;
         let claim = t.claim_one().await;
-        let child = address("actor://conformance/child");
+        let child = address("conformance/child");
         let committed = t
             .commit_ok(CommitRequest {
                 state: StateChange::NewState(Some(json!({"n": 1}))),
-                creates: vec![ActorCreate {
-                    address: child.clone(),
-                    template: TYPE.clone(),
-                    state: Some(json!({"child": 1})),
-                }],
+                creates: vec![ActorCreate { address: child.clone(), state: Some(json!({"child": 1})) }],
                 sends: vec![
                     OutgoingMessage {
                         from: Some(a.clone()),
@@ -429,12 +430,12 @@ pub async fn s2_a_send_to_an_absent_instance_rejects_the_whole_commit_and_keeps_
         let a = t.new_actor(&TYPE, Some(json!({"n": 0}))).await;
         let m = t.send(&a).await;
         let claim = t.claim_one().await;
-        let child = address("actor://conformance/child");
-        let absent = address("actor://conformance/absent");
+        let child = address("conformance/child");
+        let absent = address("conformance/absent");
         let result = t
             .commit(CommitRequest {
                 state: StateChange::NewState(Some(json!({"n": 1}))),
-                creates: vec![ActorCreate { address: child.clone(), template: TYPE.clone(), state: None }],
+                creates: vec![ActorCreate { address: child.clone(), state: None }],
                 sends: vec![
                     OutgoingMessage::new(child.clone(), "T", json!(1)),
                     OutgoingMessage::new(absent, "T", json!(2)),
@@ -468,14 +469,15 @@ pub async fn s2_creates_are_applied_before_sends_in_one_commit<B: FixtureFactory
         let store = t.store();
         let a = t.new_actor(&TYPE, None).await;
         t.send(&a).await;
-        let child = address("actor://other/kid");
+        let child = address("other/kid");
+        t.register_type(&OTHER).await;
         let existing = t.new_actor(&TYPE, Some(json!({"keep": 1}))).await;
         let c = t.claim_one().await;
         let committed = t
             .commit_ok(CommitRequest {
                 creates: vec![
-                    ActorCreate { address: child.clone(), template: OTHER.clone(), state: Some(json!({"k": 1})) },
-                    ActorCreate { address: existing.clone(), template: TYPE.clone(), state: Some(json!({"keep": 2})) },
+                    ActorCreate { address: child.clone(), state: Some(json!({"k": 1})) },
+                    ActorCreate { address: existing.clone(), state: Some(json!({"keep": 2})) },
                 ],
                 sends: vec![OutgoingMessage::new(child.clone(), "Start", json!(0))],
                 ..done(&c)
@@ -484,7 +486,7 @@ pub async fn s2_creates_are_applied_before_sends_in_one_commit<B: FixtureFactory
         assert_eq!(committed.sent.len(), 1);
         assert_eq!(committed.sent[0].to, child);
         let rec = store.get(&child).await.unwrap().expect("the child");
-        assert_eq!(rec.template, *OTHER);
+        assert_eq!(rec.address.type_name(), &*OTHER);
         assert_eq!(rec.state, Some(json!({"k": 1})));
         assert_eq!(state_of(&*store, &existing).await, Some(json!({"keep": 1})), "create in a commit is idempotent");
         assert_eq!(t.claim_one_types(&[&OTHER]).await.message.message_type, "Start");
@@ -593,7 +595,7 @@ pub async fn s2_stop_removes_the_instance_and_purges_the_rest_of_its_mailbox<B: 
         assert_eq!(t.pending(&other).await, vec![committed.sent[1].clone()]);
         assert!(t.claim().await.is_empty());
         // Re-create starts from scratch.
-        assert_eq!(store.create(&a, &TYPE, None).await.unwrap(), CreateResult::Created);
+        assert_eq!(store.create(&a, None).await.unwrap(), CreateResult::Created);
         assert_eq!(version_of(&*store, &a).await, 0);
         assert!(t.pending(&a).await.is_empty());
     })
@@ -694,11 +696,12 @@ pub async fn s3_concurrent_enqueues_to_one_instance_get_distinct_seqs_in_one_ord
 /// S3 - concurrent creates of one instance create it once
 pub async fn s3_concurrent_creates_of_one_instance_create_it_once<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
-        let a = address("actor://conformance/racy");
+        let a = address("conformance/racy");
+        t.register_type(&TYPE).await;
         let results = t
             .concurrently(10, |i, peer| {
                 let a = a.clone();
-                async move { peer.create(&a, &TYPE, Some(json!({"by": i}))).await.unwrap() }
+                async move { peer.create(&a, Some(json!({"by": i}))).await.unwrap() }
             })
             .await;
         assert_eq!(results.iter().filter(|r| **r == CreateResult::Created).count(), 1);
@@ -845,7 +848,7 @@ pub async fn s4_epochs_stay_monotonic_across_delete_and_re_create<B: FixtureFact
         t.send(&a).await;
         let old = t.claim_one().await;
         assert_matches!(store.delete(&a).await.unwrap(), DeleteResult::Deleted { .. });
-        assert_eq!(store.create(&a, &TYPE, None).await.unwrap(), CreateResult::Created);
+        assert_eq!(store.create(&a, None).await.unwrap(), CreateResult::Created);
         t.send(&a).await;
         let fresh = t.claim_one().await;
         assert!(fresh.epoch > old.epoch);
@@ -854,7 +857,7 @@ pub async fn s4_epochs_stay_monotonic_across_delete_and_re_create<B: FixtureFact
         t.commit_ok(done(&fresh)).await;
         // Delete and re-create again, now without an outstanding lease.
         store.delete(&a).await.unwrap();
-        store.create(&a, &TYPE, None).await.unwrap();
+        store.create(&a, None).await.unwrap();
         t.send(&a).await;
         assert!(t.claim_one().await.epoch > fresh.epoch);
     })
@@ -875,11 +878,11 @@ pub async fn s5_a_stale_epoch_cannot_commit_after_a_re_claim<B: FixtureFactory>(
         let stale = t.claim_one_node(&NODE_A).await;
         t.expire_lease().await;
         let current = t.claim_one_node(&NODE_B).await;
-        let ghost = address("actor://other/ghost");
+        let ghost = address("other/ghost");
         let result = t
             .commit(CommitRequest {
                 state: StateChange::NewState(Some(json!({"n": 666}))),
-                creates: vec![ActorCreate { address: ghost.clone(), template: OTHER.clone(), state: None }],
+                creates: vec![ActorCreate { address: ghost.clone(), state: None }],
                 sends: vec![OutgoingMessage::new(target.clone(), "T", json!(1))],
                 ..done(&stale)
             })
@@ -914,10 +917,7 @@ pub async fn s5_renew_succeeds_only_with_the_current_held_lease<B: FixtureFactor
         t.advance_ticks(3).await; // past the original expiry, within the renewed lease
         assert!(t.claim_node(&NODE_B).await.is_empty(), "a renewed lease stays exclusive");
         assert_eq!(store.renew(&a, c.epoch + 1_000_000, ttl).await.unwrap(), RenewResult::LeaseLost);
-        assert_eq!(
-            store.renew(&address("actor://conformance/none"), c.epoch, ttl).await.unwrap(),
-            RenewResult::LeaseLost
-        );
+        assert_eq!(store.renew(&address("conformance/none"), c.epoch, ttl).await.unwrap(), RenewResult::LeaseLost);
         t.commit_ok(done(&c)).await;
         assert_eq!(store.renew(&a, c.epoch, ttl).await.unwrap(), RenewResult::LeaseLost, "no renew after commit");
         t.send(&a).await;
@@ -1027,7 +1027,7 @@ pub async fn s6_only_the_head_message_is_claimed_one_turn_at_a_time<B: FixtureFa
 /// Claims and commits `count` turns of [`TYPE`] one by one; returns the claimed messages.
 async fn handle_in_turn<F: StoreFixture>(
     t: &Env<F>,
-    types: &[&cicada::address::UriTemplate],
+    types: &[&cicada::address::TypeName],
     count: usize,
 ) -> Vec<Message> {
     let mut out = Vec::new();
@@ -1195,7 +1195,7 @@ pub async fn s6_pending_lists_the_mailbox_in_delivery_order_across_pages<B: Fixt
         assert_delivery_order(&listed);
         assert_eq!(ids(&listed[2..]), vec![in2.id, in2b.id, in5.id]);
         assert_eq!(ids(&listed[..2]).into_iter().collect::<HashSet<_>>(), HashSet::from([now.id, now2.id]));
-        assert!(t.pending(&address("actor://conformance/none")).await.is_empty());
+        assert!(t.pending(&address("conformance/none")).await.is_empty());
     })
     .await
 }
@@ -1234,17 +1234,13 @@ pub async fn s6_pending_of_all_instances_by_prefix_instance_by_instance_in_deliv
 
         let expected = vec![a_now.id.clone(), a_soon.id.clone(), a_later.id.clone(), b_now.id.clone()];
         for page_size in [1, 2, 3, 100] {
-            assert_eq!(
-                list_all_pending(&*store, "actor://conformance/", page_size).await,
-                expected,
-                "page size {page_size}"
-            );
+            assert_eq!(list_all_pending(&*store, "conformance/", page_size).await, expected, "page size {page_size}");
         }
-        assert_eq!(list_all_pending(&*store, "actor://other/", 2).await, vec![other_now.id.clone()]);
+        assert_eq!(list_all_pending(&*store, "other/", 2).await, vec![other_now.id.clone()]);
         let mut everything = expected.clone();
         everything.push(other_now.id.clone());
-        assert_eq!(list_all_pending(&*store, "actor://", 2).await, everything);
-        assert!(store.list_pending("actor://nothing/", None, PAGE).await.unwrap().items.is_empty());
+        assert_eq!(list_all_pending(&*store, "", 2).await, everything);
+        assert!(store.list_pending("nothing/", None, PAGE).await.unwrap().items.is_empty());
 
         // Messages being handled are still pending; ones that end leave the listing.
         let claimed = t.claim().await;
@@ -1332,11 +1328,12 @@ pub async fn s7_concurrent_enqueues_of_one_id_accept_exactly_one<B: FixtureFacto
 pub async fn s7_a_send_to_an_absent_instance_is_refused_and_does_not_consume_the_id<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = address("actor://conformance/later");
+        let a = address("conformance/later");
+        t.register_type(&TYPE).await;
         let id = MessageId::random();
         assert_eq!(store.enqueue(with_id(&a, &id)).await.unwrap(), EnqueueResult::NoSuchInstance);
         assert_eq!(store.status(&id).await.unwrap(), None);
-        store.create(&a, &TYPE, None).await.unwrap();
+        store.create(&a, None).await.unwrap();
         assert_matches!(store.enqueue(with_id(&a, &id)).await.unwrap(), EnqueueResult::Enqueued(_));
     })
     .await
@@ -1669,12 +1666,18 @@ pub async fn s10_a_message_id_can_be_reused_once_its_outcome_expired<B: FixtureF
     .await
 }
 
-/// All failures of `prefix` since `since`, following pages of 2; asserts the `(finished_at, message_id)` order.
-async fn collect_failures(store: &dyn Store, prefix: &str, since: Timestamp) -> Vec<OutcomeRecord> {
+/// All outcomes of `status` and `prefix` since `since`, following pages of 2; asserts the `(finished_at, message_id)`
+/// order.
+async fn collect_outcomes(
+    store: &dyn Store,
+    status: Option<OutcomeStatus>,
+    prefix: &str,
+    since: Timestamp,
+) -> Vec<OutcomeRecord> {
     let mut out: Vec<OutcomeRecord> = Vec::new();
     let mut cursor: Option<PageCursor> = None;
     loop {
-        let page = store.failures(prefix, since, cursor.as_ref(), 2).await.unwrap();
+        let page = store.outcomes(status, prefix, since, cursor.as_ref(), 2).await.unwrap();
         out.extend(page.items);
         match page.next {
             Some(next) => cursor = Some(next),
@@ -1683,8 +1686,12 @@ async fn collect_failures(store: &dyn Store, prefix: &str, since: Timestamp) -> 
     }
     let mut sorted = out.clone();
     sorted.sort_by(|a, b| (a.finished_at, a.message_id.as_str()).cmp(&(b.finished_at, b.message_id.as_str())));
-    assert_eq!(sorted, out, "failures are ordered by (finishedAt, messageId)");
+    assert_eq!(sorted, out, "outcomes are ordered by (finishedAt, messageId)");
     out
+}
+
+async fn collect_failures(store: &dyn Store, prefix: &str, since: Timestamp) -> Vec<OutcomeRecord> {
+    collect_outcomes(store, Some(OutcomeStatus::Failed), prefix, since).await
 }
 
 /// S10 - failures are listed by prefix and since, with paging, within retention
@@ -1709,7 +1716,7 @@ pub async fn s10_failures_are_listed_by_prefix_and_since_with_paging_within_rete
         let late_a = t.send(&a).await;
         t.commit_ok(ending(&t.claim_one().await, TurnOutcome::Failed("late".into()))).await;
 
-        let all = collect_failures(&*store, "actor://conformance/", start).await;
+        let all = collect_failures(&*store, "conformance/", start).await;
         assert_eq!(all.len(), 5);
         assert_eq!(
             all[..4].iter().map(|o| o.message_id.clone()).collect::<HashSet<_>>(),
@@ -1721,14 +1728,120 @@ pub async fn s10_failures_are_listed_by_prefix_and_since_with_paging_within_rete
         assert_eq!(last.error.as_deref(), Some("late"));
         assert_eq!(last.envelope.attempt, 1);
         let since_mid: Vec<MessageId> =
-            collect_failures(&*store, "actor://conformance/", mid).await.into_iter().map(|o| o.message_id).collect();
+            collect_failures(&*store, "conformance/", mid).await.into_iter().map(|o| o.message_id).collect();
         assert_eq!(since_mid, vec![late_a.id.clone()]);
         let other: Vec<Option<String>> =
-            collect_failures(&*store, "actor://other/", start).await.into_iter().map(|o| o.error).collect();
+            collect_failures(&*store, "other/", start).await.into_iter().map(|o| o.error).collect();
         assert_eq!(other, vec![Some("err-b".to_owned())]);
-        assert_eq!(collect_failures(&*store, "actor://", start).await.len(), 6);
+        assert_eq!(collect_failures(&*store, "", start).await.len(), 6);
         t.advance_ticks(RETENTION_TICKS + 1).await;
-        assert!(collect_failures(&*store, "actor://", start).await.is_empty());
+        assert!(collect_failures(&*store, "", start).await.is_empty());
+    })
+    .await
+}
+
+/// stats - actors and pending messages are counted under a prefix, and the oldest due message is found
+pub async fn stats_count_actors_and_pending_messages_under_a_prefix_and_find_the_oldest_due_one<B: FixtureFactory>(
+    backend: &B,
+) {
+    store_test(backend, async |t| {
+        let store = t.store();
+        let none = StoreStats { actors: 0, pending: 0, oldest_due: None };
+        assert_eq!(store.stats("").await.unwrap(), none);
+        let a = t.new_actor(&TYPE, None).await;
+        let b = t.new_actor(&OTHER, None).await;
+        assert_eq!(store.stats("").await.unwrap(), StoreStats { actors: 2, ..none });
+        let first = t.send(&a).await;
+        let second = t.send(&a).await;
+        let later = t.send_at(&b, Delivery::After(t.ticks(10))).await;
+        let oldest = Some(first.deliver_at);
+        assert_eq!(store.stats("").await.unwrap(), StoreStats { actors: 2, pending: 3, oldest_due: oldest });
+        assert_eq!(
+            store.stats("conformance/").await.unwrap(),
+            StoreStats { actors: 1, pending: 2, oldest_due: oldest }
+        );
+        assert_eq!(store.stats(a.as_str()).await.unwrap(), StoreStats { actors: 1, pending: 2, oldest_due: oldest });
+        assert_eq!(store.stats("other/").await.unwrap(), StoreStats { actors: 1, pending: 1, oldest_due: None });
+        assert_eq!(store.stats("nothing/").await.unwrap(), none);
+
+        // A message being handled is still pending; a finished one is not, and the next one is the oldest.
+        let claim = t.claim_one().await;
+        assert_eq!(store.stats("conformance/").await.unwrap().pending, 2);
+        t.commit_ok(done(&claim)).await;
+        assert_eq!(
+            store.stats("conformance/").await.unwrap(),
+            StoreStats { actors: 1, pending: 1, oldest_due: Some(second.deliver_at) }
+        );
+
+        // A delayed message counts as due once its time came.
+        t.advance(t.ticks(10)).await;
+        assert_eq!(
+            store.stats("other/").await.unwrap(),
+            StoreStats { actors: 1, pending: 1, oldest_due: Some(later.deliver_at) }
+        );
+        assert_eq!(store.delete(&a).await.unwrap(), DeleteResult::Deleted { purged: 1 });
+        assert_eq!(
+            store.stats("").await.unwrap(),
+            StoreStats { actors: 1, pending: 1, oldest_due: Some(later.deliver_at) }
+        );
+    })
+    .await
+}
+
+/// S10 - outcomes are listed by status, prefix and since, with paging; a hidden record stays out
+pub async fn s10_outcomes_are_listed_by_status_prefix_and_since_with_paging_and_a_hidden_record_stays_out<
+    B: FixtureFactory,
+>(
+    backend: &B,
+) {
+    store_test_with(backend, tick_retention(backend), DEFAULT_TIMEOUT, async |t| {
+        let store = t.store();
+        let a = t.new_actor(&TYPE, None).await;
+        let b = t.new_actor(&OTHER, None).await;
+        let start = store.now().await.unwrap();
+        let mut done_ids = Vec::new();
+        for _ in 0..3 {
+            let m = t.send(&a).await;
+            t.commit_ok(done(&t.claim_one().await)).await;
+            done_ids.push(m.id);
+        }
+        let failed = t.send(&a).await;
+        t.commit_ok(ending(&t.claim_one().await, TurnOutcome::Failed("err".into()))).await;
+        let cancelled = t.send_at(&a, Delivery::After(t.ticks(100))).await;
+        assert!(matches!(store.cancel(&cancelled.id).await.unwrap(), CancelResult::Cancelled(_)));
+        let purged = t.send_at(&b, Delivery::After(t.ticks(100))).await;
+        assert!(matches!(store.delete(&b).await.unwrap(), DeleteResult::Deleted { purged: 1 }));
+        // A record removed at once is hidden from every listing.
+        let hidden = enqueue_ok(
+            &*store,
+            OutgoingMessage {
+                retention: Some(Retention::REMOVE_ON_DONE),
+                ..OutgoingMessage::new(a.clone(), "Msg", json!({}))
+            },
+        )
+        .await;
+        t.commit_ok(done(&t.claim_one().await)).await;
+        assert_eq!(store.status(&hidden.id).await.unwrap(), None);
+
+        let ids = |records: Vec<OutcomeRecord>| records.into_iter().map(|o| o.message_id).collect::<HashSet<_>>();
+        let status_of = |status| collect_outcomes(&*store, status, "", start);
+        assert_eq!(ids(status_of(Some(OutcomeStatus::Done)).await), done_ids.iter().cloned().collect());
+        assert_eq!(ids(status_of(Some(OutcomeStatus::Failed)).await), HashSet::from([failed.id.clone()]));
+        assert_eq!(ids(status_of(Some(OutcomeStatus::Cancelled)).await), HashSet::from([cancelled.id.clone()]));
+        assert_eq!(ids(status_of(Some(OutcomeStatus::Purged)).await), HashSet::from([purged.id.clone()]));
+        let everything = status_of(None).await;
+        assert_eq!(everything.len(), 6, "{everything:?}");
+        assert!(everything.iter().all(|o| o.message_id != hidden.id));
+        assert_eq!(
+            collect_outcomes(&*store, None, "conformance/", start).await.len(),
+            5,
+            "the prefix limits the instances"
+        );
+        let after_all = store.now().await.unwrap() + chrono::TimeDelta::microseconds(1);
+        assert!(collect_outcomes(&*store, None, "", after_all).await.is_empty(), "since");
+
+        t.advance_ticks(RETENTION_TICKS + 1).await;
+        assert!(collect_outcomes(&*store, None, "", start).await.is_empty());
     })
     .await
 }

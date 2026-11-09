@@ -93,5 +93,5 @@ async fn no_lost_or_duplicated_outcomes_while_a_node_is_killed_and_restarted() {
     let re_run = statuses.values().filter(|s| s.message.attempt > 1).count();
     println!("g3: {} messages, {re_run} re-run after the kill", sent.len());
     assert!(statuses.values().all(|s| s.message.attempt <= 2));
-    assert!(c.send_only.failures(&format!("actor://e2e/counter/g3-{}-", run_id())).await.is_empty());
+    assert!(c.send_only.failures(&format!("e2e.counter/g3-{}-", run_id())).await.is_empty());
 }

@@ -1,0 +1,127 @@
+{
+  "key": [
+    "id"
+  ],
+  "messages": {
+    "Begin": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Starts waiting for the payment; the checkout expires after `timeout_seconds` (900 by default).",
+      "properties": {
+        "timeoutSeconds": {
+          "default": 900,
+          "description": "Seconds until the checkout expires.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "title": "Begin",
+      "type": "object"
+    },
+    "Extend": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Gives the customer `seconds` more: cancels the pending timeout and sends a later one.",
+      "properties": {
+        "seconds": {
+          "description": "Seconds added to the deadline.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "seconds"
+      ],
+      "title": "Extend",
+      "type": "object"
+    },
+    "Pay": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The payment arrived.",
+      "properties": {
+        "amountCents": {
+          "description": "The amount paid.",
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "amountCents"
+      ],
+      "title": "Pay",
+      "type": "object"
+    },
+    "PaymentTimeout": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The timer: sent by the checkout to itself.",
+      "properties": {},
+      "title": "PaymentTimeout",
+      "type": "object"
+    }
+  },
+  "state": {
+    "$defs": {
+      "CheckoutStatus": {
+        "description": "Life cycle of a [`Checkout`].",
+        "oneOf": [
+          {
+            "const": "OPEN",
+            "description": "Not begun.",
+            "type": "string"
+          },
+          {
+            "const": "AWAITING_PAYMENT",
+            "description": "Waiting for the payment, with the timer armed.",
+            "type": "string"
+          },
+          {
+            "const": "PAID",
+            "description": "Paid in time.",
+            "type": "string"
+          },
+          {
+            "const": "EXPIRED",
+            "description": "The timer fired first.",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "State of a [`Checkout`].",
+    "properties": {
+      "deadline": {
+        "description": "When the checkout expires; null while no timer runs.",
+        "format": "date-time",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "paidCents": {
+        "description": "The amount paid.",
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "status": {
+        "$ref": "#/$defs/CheckoutStatus",
+        "default": "OPEN",
+        "description": "Where the checkout is."
+      },
+      "timeout": {
+        "description": "The id of the pending `PaymentTimeout`, so it can be cancelled; null while no timer runs.",
+        "minLength": 1,
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "CheckoutState",
+    "type": "object"
+  },
+  "type": "checkouts"
+}

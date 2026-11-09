@@ -4,7 +4,7 @@ use std::time::Duration;
 use cicada::address::ActorRef;
 use cicada::contract::canonical_sha256;
 use cicada::runtime::{CreateActorResult, SendResult};
-use cicada::store::{MessageId, OutcomeRecord, PageCursor};
+use cicada::store::{MessageId, OutcomeRecord, OutcomeStatus, PageCursor};
 use cicada::time::{self, Timestamp};
 use cicada::{ActorAddress, ActorSystem, SendOptions};
 use serde_json::Value;
@@ -16,7 +16,7 @@ pub type WatchError = Box<dyn std::error::Error + Send + Sync>;
 
 const PAGE: usize = 100;
 
-/// Copies failed messages from the failures list (`GET /failures`) into the [`DeadLetters`] actor.
+/// Copies failed messages from the failed outcomes (`GET /outcomes?status=failed`) into the [`DeadLetters`] actor.
 ///
 /// It talks to the actors through [`ActorOperations`]: in the service, next to the node, through the node itself
 /// (`FailureWatcher::new(system)`), or in a process of its own through the HTTP client (`FailureWatcher::new(client)`,
@@ -29,7 +29,7 @@ const PAGE: usize = 100;
 /// # async fn run(system: cicada::ActorSystem) {
 /// use cicada_extras::FailureWatcher;
 ///
-/// let watcher = FailureWatcher::new(system).prefix("actor://orders/").start(Duration::from_secs(10));
+/// let watcher = FailureWatcher::new(system).prefix("orders/").start(Duration::from_secs(10));
 /// // … on shutdown:
 /// watcher.abort();
 /// # }
@@ -60,7 +60,7 @@ impl FailureWatcher {
         }
     }
 
-    /// Only failures of instances under this URI prefix, e.g. `actor://orders/`; empty (the default) for all.
+    /// Only failures of instances under this address prefix, e.g. `orders/`; empty (the default) for all.
     pub fn prefix(mut self, prefix: impl Into<String>) -> Self {
         self.prefix = prefix.into();
         self
@@ -87,7 +87,10 @@ impl FailureWatcher {
         let mut forwarded = 0;
         let mut cursor: Option<PageCursor> = None;
         loop {
-            let page = self.system.failures(&self.prefix, self.since, cursor.as_ref(), PAGE).await?;
+            let page = self
+                .system
+                .outcomes(Some(OutcomeStatus::Failed), &self.prefix, self.since, cursor.as_ref(), PAGE)
+                .await?;
             for failure in page.items {
                 if failure.actor == self.dead_letters {
                     continue; // a failed Redrive is not itself a dead letter

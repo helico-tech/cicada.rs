@@ -1,0 +1,143 @@
+{
+  "key": [
+    "user"
+  ],
+  "messages": {
+    "BeginOnboarding": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Starts the onboarding for `email`.",
+      "properties": {
+        "email": {
+          "description": "The user's mail address.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "email"
+      ],
+      "title": "BeginOnboarding",
+      "type": "object"
+    },
+    "Resume": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Runs the current step again, after it failed.",
+      "properties": {},
+      "title": "Resume",
+      "type": "object"
+    },
+    "RunStep": {
+      "$defs": {
+        "OnboardingStep": {
+          "description": "The steps, in order.",
+          "oneOf": [
+            {
+              "const": "NOT_STARTED",
+              "description": "Not begun.",
+              "type": "string"
+            },
+            {
+              "const": "CREATE_ACCOUNT",
+              "description": "Create the account.",
+              "type": "string"
+            },
+            {
+              "const": "SEND_WELCOME",
+              "description": "Send the welcome mail.",
+              "type": "string"
+            },
+            {
+              "const": "PROVISION_WORKSPACE",
+              "description": "Provision a workspace.",
+              "type": "string"
+            },
+            {
+              "const": "DONE",
+              "description": "All steps done.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Runs `step`; sent by the onboarding to itself.",
+      "properties": {
+        "step": {
+          "$ref": "#/$defs/OnboardingStep",
+          "description": "The step to run."
+        }
+      },
+      "required": [
+        "step"
+      ],
+      "title": "RunStep",
+      "type": "object"
+    }
+  },
+  "state": {
+    "$defs": {
+      "OnboardingStep": {
+        "description": "The steps, in order.",
+        "oneOf": [
+          {
+            "const": "NOT_STARTED",
+            "description": "Not begun.",
+            "type": "string"
+          },
+          {
+            "const": "CREATE_ACCOUNT",
+            "description": "Create the account.",
+            "type": "string"
+          },
+          {
+            "const": "SEND_WELCOME",
+            "description": "Send the welcome mail.",
+            "type": "string"
+          },
+          {
+            "const": "PROVISION_WORKSPACE",
+            "description": "Provision a workspace.",
+            "type": "string"
+          },
+          {
+            "const": "DONE",
+            "description": "All steps done.",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "State of an [`Onboarding`]: the current step and what earlier steps produced.",
+    "properties": {
+      "accountId": {
+        "description": "The account, once created.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "email": {
+        "description": "The user's mail address.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "step": {
+        "$ref": "#/$defs/OnboardingStep",
+        "default": "NOT_STARTED",
+        "description": "The current step."
+      },
+      "workspaceId": {
+        "description": "The workspace, once provisioned.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "title": "OnboardingState",
+    "type": "object"
+  },
+  "type": "onboarding"
+}

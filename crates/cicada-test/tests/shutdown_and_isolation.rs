@@ -26,7 +26,7 @@ struct Blocker {
 }
 
 impl ActorRef for Blocker {
-    const TEMPLATE: &'static str = "actor://blocker/{id}";
+    const TYPE: &'static str = "blocker";
     type Message = BlockerMsg;
 }
 

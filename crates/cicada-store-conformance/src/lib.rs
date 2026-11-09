@@ -54,6 +54,7 @@ mod chain;
 mod conformance;
 mod env;
 mod fixture;
+mod operator;
 mod reschedule;
 mod retention;
 mod robustness;
@@ -66,6 +67,7 @@ pub use fixture::{FixtureFactory, StoreFixture};
 pub mod cases {
     pub use crate::chain::*;
     pub use crate::conformance::*;
+    pub use crate::operator::*;
     pub use crate::reschedule::*;
     pub use crate::retention::*;
     pub use crate::robustness::*;
@@ -88,16 +90,15 @@ macro_rules! __for_each_case {
     ($callback:ident ! ($($args:tt)*)) => {
         $crate::$callback!($($args)* ;
             // conformance.rs
-            registry_register_is_idempotent_and_types_are_listed_by_template,
-            registry_same_template_with_a_different_contract_hash_conflicts,
-            registry_overlapping_templates_conflict,
-            registry_templates_that_share_no_address_coexist_also_within_one_namespace,
+            registry_register_is_idempotent_and_types_are_listed_by_name,
+            registry_same_name_with_a_different_contract_hash_conflicts,
             registry_nodes_registering_the_same_contracts_concurrently_all_succeed,
-            registry_nodes_registering_overlapping_templates_concurrently_admit_exactly_one,
-            registry_resolve_finds_the_one_matching_template_and_decodes_its_parameters,
+            registry_nodes_registering_one_name_with_different_contracts_concurrently_admit_exactly_one,
+            registry_remove_type_removes_an_unused_type_refuses_one_with_instances_and_reports_an_absent_one,
+            registry_nodes_removing_one_type_concurrently_remove_it_once_and_a_racing_create_is_not_lost,
             instances_create_then_get_returns_the_initial_snapshot,
             instances_create_is_idempotent_and_leaves_the_existing_instance_untouched,
-            instances_list_by_prefix_in_uri_order_with_paging,
+            instances_list_by_prefix_in_address_order_with_paging,
             instances_delete_of_an_absent_instance_reports_absent,
             s1_acknowledged_writes_survive_a_restart,
             s2_commit_applies_state_creates_sends_and_outcome_together,
@@ -147,6 +148,8 @@ macro_rules! __for_each_case {
             s10_outcomes_are_retained_for_the_retention_period_then_removed,
             s10_a_message_id_can_be_reused_once_its_outcome_expired,
             s10_failures_are_listed_by_prefix_and_since_with_paging_within_retention,
+            s10_outcomes_are_listed_by_status_prefix_and_since_with_paging_and_a_hidden_record_stays_out,
+            stats_count_actors_and_pending_messages_under_a_prefix_and_find_the_oldest_due_one,
             // robustness.rs
             time_a_delivery_time_beyond_the_supported_range_is_refused_and_nothing_is_enqueued,
             time_the_latest_supported_delivery_time_is_stored_exactly_and_never_due,
@@ -186,12 +189,31 @@ macro_rules! __for_each_case {
             // chain.rs
             chain_caused_by_is_stored_with_the_message_and_returned_everywhere_also_in_the_outcome_envelope,
             chain_caused_by_survives_reschedule_and_reopen,
+            chain_caused_by_lists_one_level_of_pending_and_retained_visible_messages_in_id_order_across_pages,
             // turn_cancel.rs
             turn_cancel_pending_messages_of_the_instance_are_cancelled_in_the_commit_others_are_ignored,
             turn_cancel_a_cancelled_due_message_is_no_longer_claimed,
             turn_cancel_the_turns_own_message_cannot_be_cancelled_and_nothing_is_applied,
             turn_cancel_a_rejected_or_fenced_commit_cancels_nothing,
             turn_cancel_with_a_stop_the_cancelled_message_is_cancelled_and_the_rest_purged,
+            // operator.rs
+            registry_a_create_of_an_unregistered_type_is_refused_and_creates_nothing,
+            registry_a_commit_creating_an_unregistered_type_is_rejected_applies_nothing_and_keeps_the_lease,
+            registry_removing_a_type_racing_a_commit_that_creates_an_instance_of_it_leaves_no_orphan,
+            nodes_a_heartbeat_upserts_the_row_with_store_time_and_nodes_are_listed_by_id,
+            nodes_any_heartbeat_removes_rows_last_seen_more_than_a_day_ago,
+            turns_running_turns_are_valid_leases_by_node_and_prefix_in_address_order_across_pages,
+            turns_a_cancel_request_is_recorded_only_under_a_valid_lease_and_reported_only_for_its_epoch,
+            turns_a_request_made_for_an_earlier_epoch_has_no_effect_on_a_later_turn,
+            turns_a_cancelled_commit_is_fenced_by_its_epoch_and_moves_the_mailbox_on,
+            pause_a_paused_actor_is_not_claimed_and_keeps_queueing_until_resumed,
+            pause_a_running_turn_of_a_paused_actor_finishes_and_other_actors_are_unaffected,
+            pause_and_purge_of_an_unknown_instance_report_it,
+            purge_gives_purged_to_pending_messages_keeps_the_running_one_and_the_instance,
+            purge_of_a_message_whose_lease_expired_fences_the_stale_turn,
+            deliver_now_makes_a_delayed_message_due_at_once_with_a_new_seq,
+            deliver_now_refuses_running_finished_and_unknown_messages,
+            deliver_now_keeps_the_message_order_after_an_enqueue_following_it,
         );
     };
 }
@@ -246,6 +268,7 @@ mod tests {
         let sources = [
             include_str!("chain.rs"),
             include_str!("conformance.rs"),
+            include_str!("operator.rs"),
             include_str!("reschedule.rs"),
             include_str!("retention.rs"),
             include_str!("robustness.rs"),

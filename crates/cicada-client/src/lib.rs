@@ -6,7 +6,7 @@
 //! use cicada_client::ActorClient;
 //! # use cicada::prelude::*;
 //! # #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)] struct Sync { tenant: String }
-//! # impl ActorRef for Sync { const TEMPLATE: &'static str = "actor://sync/{tenant}"; type Message = SyncMsg; }
+//! # impl ActorRef for Sync { const TYPE: &'static str = "sync"; type Message = SyncMsg; }
 //! # #[derive(Debug, serde::Serialize, serde::Deserialize, JsonSchema)] #[serde(tag = "type")] enum SyncMsg { Run }
 //! # #[derive(serde::Serialize)] struct SyncState { source: String }
 //!
@@ -32,19 +32,16 @@
 //! fails with a transport error or a `503` is retried with the same id, up to [`ActorClient::send_attempts`] attempts,
 //! so it is enqueued at most once even when an acknowledgement was lost; the server answers a repeated id with `200`,
 //! reported as [`SendReceipt::duplicate`]. To retry later yourself, pass the same id again.
-//!
-//! **Dot segments.** An address with a segment `.` or `..` cannot be put into a URL by this client: the URL parser
-//! removes such segments, also escaped as `%2E`, and would address another instance. Those calls fail with
-//! [`ClientError::Invalid`] instead.
 
 use std::time::Duration;
 
-use cicada::address::percent;
+use cicada::address::{TypeName, percent};
 use cicada::api::{
-    ActorView, CreateActorRequest, CreateActorResponse, MessageStatusView, MessageView, OutcomeView, PageView, Problem,
-    SendRequest, SendResponse, TypeListView, TypeView, problem_types,
+    ActorView, BulkRequest, BulkResponse, CreateActorRequest, CreateActorResponse, MailboxMessageView,
+    MessageStatusView, MessageView, NodeDetailView, NodeListView, NodeView, OutcomeView, PageView, Problem,
+    PurgeResponse, RunningTurnView, SendRequest, SendResponse, StatsView, TypeListView, TypeView, problem_types,
 };
-use cicada::store::MessageId;
+use cicada::store::{MessageId, NodeId, OutcomeStatus, RemoveTypeResult};
 use cicada::time::{Timestamp, format_instant};
 use cicada::{ActorAddress, ActorRef, SendOptions, message};
 use reqwest::{Method, StatusCode, Url};
@@ -252,7 +249,7 @@ impl ActorClient {
         };
         serde_json::from_value(view.state.unwrap_or(Value::Null))
             .map(Some)
-            .map_err(|e| ClientError::Body(format!("The state of {} cannot be decoded: {e}", view.uri)))
+            .map_err(|e| ClientError::Body(format!("The state of {} cannot be decoded: {e}", view.address)))
     }
 
     /// Admin delete (`DELETE /actors/{path}`); purges the mailbox. False when the instance did not exist.
@@ -323,7 +320,7 @@ impl ActorClient {
         }
         .with_delivery(options.delivery);
         let body = encode(&request)?;
-        let url = self.url(&mailbox_path(to)?, &[])?;
+        let url = self.url(&send_path(to)?, &[])?;
         let mut wait = self.retry_delay;
         for attempt in 1..=self.send_attempts {
             let last = attempt == self.send_attempts;
@@ -343,19 +340,51 @@ impl ActorClient {
         unreachable!("the last attempt returns")
     }
 
-    /// The pending mailbox of `address` in delivery order (`GET /actors/{path}/messages`), or `None` when the instance
-    /// does not exist. Pages are not a snapshot: a message retried between two pages can appear on both; deduplicate by
-    /// id.
-    pub async fn pending(
+    /// The mailbox of `address` in delivery order (`GET /actors/{path}/mailbox`), each message marked running or
+    /// pending, or `None` when the instance does not exist. Pages are not a snapshot: a message retried between two
+    /// pages can appear on both; deduplicate by id.
+    pub async fn mailbox(
         &self,
         address: &ActorAddress,
         cursor: Option<&str>,
         limit: Option<usize>,
-    ) -> ClientResult<Option<PageView<MessageView>>> {
+    ) -> ClientResult<Option<PageView<MailboxMessageView>>> {
         let url = self.url(&mailbox_path(address)?, &listing("", None, cursor, limit))?;
         let answer = self.call(Method::GET, url, None).await?;
         match answer.status {
             StatusCode::OK => answer.decode().map(Some),
+            StatusCode::NOT_FOUND => answer.absent(problem_types::NO_SUCH_INSTANCE),
+            _ => Err(answer.failure()),
+        }
+    }
+
+    /// Pauses the mailbox of `address` (`POST /actors/{path}/mailbox/pause`). False when the instance does not exist.
+    pub async fn pause_mailbox(&self, address: &ActorAddress) -> ClientResult<bool> {
+        self.mailbox_action(address, "pause").await
+    }
+
+    /// Resumes the mailbox of `address` (`POST /actors/{path}/mailbox/resume`). False when the instance does not exist.
+    pub async fn resume_mailbox(&self, address: &ActorAddress) -> ClientResult<bool> {
+        self.mailbox_action(address, "resume").await
+    }
+
+    async fn mailbox_action(&self, address: &ActorAddress, action: &str) -> ClientResult<bool> {
+        let url = self.url(&format!("{}/mailbox/{action}", http_path(address)?), &[])?;
+        let answer = self.call(Method::POST, url, None).await?;
+        match answer.status {
+            StatusCode::NO_CONTENT => Ok(true),
+            StatusCode::NOT_FOUND => answer.absent::<()>(problem_types::NO_SUCH_INSTANCE).map(|_| false),
+            _ => Err(answer.failure()),
+        }
+    }
+
+    /// Gives outcome `purged` to every pending message of `address` except one being handled
+    /// (`POST /actors/{path}/mailbox/purge`); returns how many, or `None` when the instance does not exist.
+    pub async fn purge_mailbox(&self, address: &ActorAddress) -> ClientResult<Option<u64>> {
+        let url = self.url(&format!("{}/mailbox/purge", http_path(address)?), &[])?;
+        let answer = self.call(Method::POST, url, None).await?;
+        match answer.status {
+            StatusCode::OK => Ok(Some(answer.decode::<PurgeResponse>()?.purged)),
             StatusCode::NOT_FOUND => answer.absent(problem_types::NO_SUCH_INSTANCE),
             _ => Err(answer.failure()),
         }
@@ -383,9 +412,27 @@ impl ActorClient {
         }
     }
 
-    /// Admin cancel of a pending message (`DELETE /messages/{id}`).
+    /// The messages sent by the turn that handled `id`, one level down (`GET /messages/{id}/caused`): pending ones and
+    /// retained outcomes, in message-id order. `None` when `id` is unknown or past retention. Pages are not a snapshot.
+    pub async fn caused_by(
+        &self,
+        id: &MessageId,
+        cursor: Option<&str>,
+        limit: Option<usize>,
+    ) -> ClientResult<Option<PageView<MessageStatusView>>> {
+        let url = self.url(&format!("{}/caused", message_path(id)?), &listing("", None, cursor, limit))?;
+        let answer = self.call(Method::GET, url, None).await?;
+        match answer.status {
+            StatusCode::OK => answer.decode().map(Some),
+            StatusCode::NOT_FOUND => answer.absent(problem_types::NO_SUCH_MESSAGE),
+            _ => Err(answer.failure()),
+        }
+    }
+
+    /// Admin cancel of a pending message (`POST /messages/{id}/cancel`).
     pub async fn cancel(&self, id: &MessageId) -> ClientResult<CancelOutcome> {
-        let answer = self.call(Method::DELETE, self.url(&message_path(id)?, &[])?, None).await?;
+        let url = self.url(&format!("{}/cancel", message_path(id)?), &[])?;
+        let answer = self.call(Method::POST, url, None).await?;
         match answer.status {
             StatusCode::NO_CONTENT => Ok(CancelOutcome::Cancelled),
             StatusCode::NOT_FOUND => {
@@ -400,17 +447,121 @@ impl ActorClient {
         }
     }
 
-    /// Failed messages with envelope and error (`GET /failures`), optionally limited to a URI `prefix` and to those
-    /// that finished at or after `since`.
-    pub async fn failures(
+    /// Sends a failed or cancelled message again as a new message with a new id (`POST /messages/{id}/retry`), or `None`
+    /// when `id` is unknown or past retention. Other refusals are [`ClientError::Api`]: `404 no-such-instance` when the
+    /// target is gone, `409 message-not-retryable` for a pending, running, done or purged message.
+    pub async fn retry(&self, id: &MessageId) -> ClientResult<Option<SendReceipt>> {
+        let url = self.url(&format!("{}/retry", message_path(id)?), &[])?;
+        let answer = self.call(Method::POST, url, None).await?;
+        match answer.status {
+            StatusCode::ACCEPTED => Ok(Some(receipt(&answer, false)?)),
+            StatusCode::NOT_FOUND => answer.absent(problem_types::NO_SUCH_MESSAGE),
+            _ => Err(answer.failure()),
+        }
+    }
+
+    /// Makes a pending message due now, at a new place in delivery order (`POST /messages/{id}/deliver-now`), or `None`
+    /// when `id` is unknown or past retention. A running or finished message is `409` as [`ClientError::Api`].
+    pub async fn deliver_now(&self, id: &MessageId) -> ClientResult<Option<MessageView>> {
+        let url = self.url(&format!("{}/deliver-now", message_path(id)?), &[])?;
+        let answer = self.call(Method::POST, url, None).await?;
+        match answer.status {
+            StatusCode::OK => answer.decode().map(Some),
+            StatusCode::NOT_FOUND => answer.absent(problem_types::NO_SUCH_MESSAGE),
+            _ => Err(answer.failure()),
+        }
+    }
+
+    /// Cancels messages by ids or filter, at most 1000 per call (`POST /messages/bulk-cancel`).
+    pub async fn bulk_cancel(&self, request: &BulkRequest) -> ClientResult<BulkResponse> {
+        let url = self.url("/messages/bulk-cancel", &[])?;
+        self.call(Method::POST, url, Some(encode(request)?)).await?.ok()
+    }
+
+    /// Retries messages by ids or filter, at most 1000 per call (`POST /messages/bulk-retry`).
+    pub async fn bulk_retry(&self, request: &BulkRequest) -> ClientResult<BulkResponse> {
+        let url = self.url("/messages/bulk-retry", &[])?;
+        self.call(Method::POST, url, Some(encode(request)?)).await?.ok()
+    }
+
+    /// Finished messages with envelope and error (`GET /outcomes`), of one `status` or all, optionally limited to a
+    /// URI `prefix` and to those that finished at or after `since`.
+    pub async fn outcomes(
         &self,
+        status: Option<OutcomeStatus>,
         prefix: &str,
         since: Option<Timestamp>,
         cursor: Option<&str>,
         limit: Option<usize>,
     ) -> ClientResult<PageView<OutcomeView>> {
-        let query = listing(prefix, since, cursor, limit);
-        self.call(Method::GET, self.url("/failures", &query)?, None).await?.ok()
+        let mut query = listing(prefix, since, cursor, limit);
+        if let Some(status) = status {
+            query.push(("status", status.wire_name().to_owned()));
+        }
+        self.call(Method::GET, self.url("/outcomes", &query)?, None).await?.ok()
+    }
+
+    /// The number of actors and pending messages under the URI `prefix` (empty: all), and the delivery time of the
+    /// oldest due message (`GET /stats`).
+    pub async fn stats(&self, prefix: &str) -> ClientResult<StatsView> {
+        let query = listing(prefix, None, None, None);
+        self.call(Method::GET, self.url("/stats", &query)?, None).await?.ok()
+    }
+
+    // ---- nodes and turns ----
+
+    /// Every node with its status and the number of its running turns (`GET /nodes`).
+    pub async fn nodes(&self) -> ClientResult<Vec<NodeView>> {
+        let list: NodeListView = self.call(Method::GET, self.url("/nodes", &[])?, None).await?.ok()?;
+        Ok(list.items)
+    }
+
+    /// One node with its status and running turns (`GET /nodes/{node}`), or `None`.
+    pub async fn node(&self, id: &NodeId) -> ClientResult<Option<NodeDetailView>> {
+        let url = self.url(&format!("/nodes/{}", percent::encode(id.as_str())), &[])?;
+        let answer = self.call(Method::GET, url, None).await?;
+        match answer.status {
+            StatusCode::OK => answer.decode().map(Some),
+            StatusCode::NOT_FOUND => answer.absent(problem_types::NO_SUCH_NODE),
+            _ => Err(answer.failure()),
+        }
+    }
+
+    /// The turns running now, optionally of one `node` and under a URI `prefix` (`GET /turns`).
+    pub async fn turns(
+        &self,
+        node: Option<&NodeId>,
+        prefix: &str,
+        cursor: Option<&str>,
+        limit: Option<usize>,
+    ) -> ClientResult<PageView<RunningTurnView>> {
+        let mut query = listing(prefix, None, cursor, limit);
+        if let Some(node) = node {
+            query.push(("node", node.to_string()));
+        }
+        self.call(Method::GET, self.url("/turns", &query)?, None).await?.ok()
+    }
+
+    /// The turn running now on `address` (`GET /actors/{path}/turn`), or `None`.
+    pub async fn turn(&self, address: &ActorAddress) -> ClientResult<Option<RunningTurnView>> {
+        let answer = self.call(Method::GET, self.url(&turn_path(address)?, &[])?, None).await?;
+        match answer.status {
+            StatusCode::OK => answer.decode().map(Some),
+            StatusCode::NOT_FOUND => answer.absent(problem_types::NO_RUNNING_TURN),
+            _ => Err(answer.failure()),
+        }
+    }
+
+    /// Asks the owning node to cancel the running turn of `address` (`POST /actors/{path}/turn/cancel`); it stops within
+    /// one heartbeat. False when no turn is running.
+    pub async fn cancel_turn(&self, address: &ActorAddress) -> ClientResult<bool> {
+        let url = self.url(&format!("{}/cancel", turn_path(address)?), &[])?;
+        let answer = self.call(Method::POST, url, None).await?;
+        match answer.status {
+            StatusCode::ACCEPTED => Ok(true),
+            StatusCode::NOT_FOUND => answer.absent::<()>(problem_types::NO_RUNNING_TURN).map(|_| false),
+            _ => Err(answer.failure()),
+        }
     }
 
     // ---- types and health ----
@@ -419,6 +570,31 @@ impl ActorClient {
     pub async fn types(&self) -> ClientResult<Vec<TypeView>> {
         let list: TypeListView = self.call(Method::GET, self.url("/types", &[])?, None).await?.ok()?;
         Ok(list.items)
+    }
+
+    /// One registered type with its JSON Schemas (`GET /types/{name}`), or `None`.
+    pub async fn get_type(&self, name: &TypeName) -> ClientResult<Option<TypeView>> {
+        let answer = self.call(Method::GET, self.url(&format!("/types/{name}"), &[])?, None).await?;
+        match answer.status {
+            StatusCode::OK => answer.decode().map(Some),
+            StatusCode::NOT_FOUND => answer.absent(problem_types::NO_SUCH_TYPE),
+            _ => Err(answer.failure()),
+        }
+    }
+
+    /// Removes the registration of the type `name` (`DELETE /types/{name}`): [`RemoveTypeResult::Removed`] (`204`),
+    /// [`RemoveTypeResult::Absent`] (`404`) or [`RemoveTypeResult::InUse`] while actors of the type exist (`409`). A
+    /// node that still hosts the type registers it again at its next start.
+    pub async fn remove_type(&self, name: &TypeName) -> ClientResult<RemoveTypeResult> {
+        let answer = self.call(Method::DELETE, self.url(&format!("/types/{name}"), &[])?, None).await?;
+        match answer.status {
+            StatusCode::NO_CONTENT => Ok(RemoveTypeResult::Removed),
+            StatusCode::NOT_FOUND => answer.absent::<()>(problem_types::NO_SUCH_TYPE).map(|_| RemoveTypeResult::Absent),
+            StatusCode::CONFLICT if answer.problem().problem_type == problem_types::TYPE_IN_USE => {
+                Ok(RemoveTypeResult::InUse)
+            }
+            _ => Err(answer.failure()),
+        }
     }
 
     /// True when the node is up and its store reachable (`GET /health` answers `200`); false on `503`.
@@ -501,14 +677,19 @@ fn check_segment(segment: &str, what: &dyn std::fmt::Display) -> ClientResult<()
 }
 
 fn http_path(address: &ActorAddress) -> ClientResult<String> {
-    for segment in address.segments() {
-        check_segment(segment, address)?;
-    }
-    Ok(address.to_http_path())
+    Ok(format!("/actors/{address}"))
 }
 
 fn mailbox_path(address: &ActorAddress) -> ClientResult<String> {
-    Ok(format!("{}/{}", http_path(address)?, ActorAddress::MAILBOX_SEGMENT))
+    Ok(format!("/actors/{address}/mailbox"))
+}
+
+fn send_path(address: &ActorAddress) -> ClientResult<String> {
+    Ok(format!("/actors/{address}/messages"))
+}
+
+fn turn_path(address: &ActorAddress) -> ClientResult<String> {
+    Ok(format!("/actors/{address}/turn"))
 }
 
 fn message_path(id: &MessageId) -> ClientResult<String> {

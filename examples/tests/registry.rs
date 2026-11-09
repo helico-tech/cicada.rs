@@ -37,10 +37,7 @@ async fn the_registry_keeps_the_refs_of_the_devices_it_created() {
     assert_eq!(devices, expected);
     assert_eq!(test.state::<_, DeviceState>(&device("d1")).await.model, "thermo");
     // The other way to find them: list by namespace prefix, no actor needed.
-    assert_eq!(
-        common::list(&test, "actor://devices/").await,
-        vec!["actor://devices/d1", "actor://devices/d2", "actor://devices/d3"]
-    );
+    assert_eq!(common::list(&test, "devices/").await, vec!["devices/d1", "devices/d2", "devices/d3"]);
 }
 
 #[tokio::test(start_paused = true)]
@@ -56,5 +53,5 @@ async fn unregistering_removes_the_device_and_a_broadcast_reaches_the_remaining_
     assert_eq!(devices.keys().map(String::as_str).collect::<BTreeSet<_>>(), BTreeSet::from(["d1", "d3"]));
     assert_eq!(test.state::<_, DeviceState>(&device("d1")).await.firmware.as_deref(), Some("2.1.0"));
     assert_eq!(test.state::<_, DeviceState>(&device("d3")).await.firmware.as_deref(), Some("2.1.0"));
-    assert_eq!(common::list(&test, "actor://devices/").await, vec!["actor://devices/d1", "actor://devices/d3"]);
+    assert_eq!(common::list(&test, "devices/").await, vec!["devices/d1", "devices/d3"]);
 }

@@ -35,6 +35,7 @@ cicada-otel = { path = "crates/cicada-otel" }
 cicada-extras = { path = "crates/cicada-extras" }
 cicada-examples = { path = "examples" }
 
+aide = { version = "=0.16.0-alpha.4", features = ["axum", "axum-json", "axum-query"] }
 anyhow = "1.0.104"
 async-trait = "0.1.92"
 axum = "0.8.9"

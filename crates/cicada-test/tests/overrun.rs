@@ -27,7 +27,7 @@ struct Laggard {
 }
 
 impl ActorRef for Laggard {
-    const TEMPLATE: &'static str = "actor://laggard/{id}";
+    const TYPE: &'static str = "laggard";
     type Message = LaggardMsg;
 }
 

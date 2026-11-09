@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::address::ActorAddress;
 use crate::contract::Contract;
-use crate::store::{Store, StoreError, StoreResult, TypeDef, support};
+use crate::store::{Store, StoreError, StoreResult, TypeDef};
 use crate::turn::TurnError;
 
 /// A registered type with its parsed contract.
@@ -18,19 +18,13 @@ pub struct RegisteredType {
 }
 
 impl RegisteredType {
-    /// The type's template.
-    pub fn template(&self) -> &crate::address::UriTemplate {
-        &self.definition.template
+    /// The type's name.
+    pub fn name(&self) -> &crate::address::TypeName {
+        &self.definition.name
     }
 }
 
-/// The type an address resolves to.
-#[derive(Debug, Clone)]
-pub(crate) struct ResolvedActorType {
-    pub registered: RegisteredType,
-}
-
-/// Registered templates do not overlap, so the type an address resolves to is fixed once registered.
+/// Finds the type of an address in the TypeRegistry and caches parsed contracts.
 pub(crate) struct TypeResolver {
     store: Arc<dyn Store>,
     contracts: Mutex<HashMap<String, Arc<Contract>>>,
@@ -46,9 +40,10 @@ impl TypeResolver {
         let contract = match cache.get(&def.contract_hash) {
             Some(c) => c.clone(),
             None => {
-                let parsed = Arc::new(Contract::of(&def).map_err(|e| {
-                    StoreError::Corrupt(format!("The contract of {} cannot be read: {e}", def.template))
-                })?);
+                let parsed =
+                    Arc::new(Contract::of(&def).map_err(|e| {
+                        StoreError::Corrupt(format!("The contract of {} cannot be read: {e}", def.name))
+                    })?);
                 cache.insert(def.contract_hash.clone(), parsed.clone());
                 parsed
             }
@@ -56,12 +51,10 @@ impl TypeResolver {
         Ok(RegisteredType { definition: def, contract })
     }
 
-    /// The type the TypeRegistry resolves `address` to.
-    pub async fn resolve(&self, address: &ActorAddress) -> StoreResult<Option<ResolvedActorType>> {
-        match support::resolve(&self.store.list_types().await?, address)? {
-            Some(resolved) => Ok(Some(ResolvedActorType { registered: self.registered(resolved.type_def)? })),
-            None => Ok(None),
-        }
+    /// The registered type of `address`, when there is one.
+    pub async fn resolve(&self, address: &ActorAddress) -> StoreResult<Option<RegisteredType>> {
+        let types = self.store.list_types().await?;
+        types.into_iter().find(|t| &t.name == address.type_name()).map(|t| self.registered(t)).transpose()
     }
 
     /// Checks a raw-address send at call time, against the type `to` resolves to.
@@ -69,12 +62,9 @@ impl TypeResolver {
         let rejected =
             |reason: String| TurnError::SendRejected { to: to.clone(), message_type: message_type.to_owned(), reason };
         let resolved =
-            self.resolve(to).await?.ok_or_else(|| rejected(format!("No registered actor type matches {to}")))?;
-        if !resolved.registered.contract.accepts(message_type) {
-            return Err(rejected(format!(
-                "{} does not accept message type '{message_type}'",
-                resolved.registered.template()
-            )));
+            self.resolve(to).await?.ok_or_else(|| rejected(format!("No registered actor type {}", to.type_name())))?;
+        if !resolved.contract.accepts(message_type) {
+            return Err(rejected(format!("{} does not accept message type '{message_type}'", resolved.name())));
         }
         Ok(())
     }

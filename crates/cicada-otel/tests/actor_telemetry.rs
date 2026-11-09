@@ -23,7 +23,7 @@ struct Traced {
 }
 
 impl ActorRef for Traced {
-    const TEMPLATE: &'static str = "actor://traced/{id}";
+    const TYPE: &'static str = "traced";
     type Message = TracedMsg;
 }
 
@@ -151,14 +151,14 @@ async fn one_consumer_span_per_turn_with_the_messaging_attributes() {
     let spans = t.spans();
     assert_eq!(spans.len(), 1);
     let span = &spans[0];
-    assert_eq!(span.name, "process actor://traced/{id}");
+    assert_eq!(span.name, "process traced");
     assert_eq!(span.span_kind, SpanKind::Consumer);
     assert_eq!(str_attr(span, "messaging.system").as_deref(), Some("cicada"));
     assert_eq!(str_attr(span, "messaging.operation.name").as_deref(), Some("process"));
-    assert_eq!(str_attr(span, "messaging.destination.name").as_deref(), Some("actor://traced/{id}"));
+    assert_eq!(str_attr(span, "messaging.destination.name").as_deref(), Some("traced"));
     assert_eq!(str_attr(span, "messaging.message.id").as_deref(), Some(msg.id.as_str()));
     assert_eq!(str_attr(span, "messaging.message.conversation_id").as_deref(), Some("c-1"));
-    assert_eq!(str_attr(span, "cicada.actor").as_deref(), Some("actor://traced/a"));
+    assert_eq!(str_attr(span, "cicada.actor").as_deref(), Some("traced/a"));
     assert_eq!(str_attr(span, "cicada.message.type").as_deref(), Some("Hop"));
     assert_eq!(long_attr(span, "cicada.attempt"), Some(1));
     assert_eq!(long_attr(span, "cicada.failures"), Some(0));
@@ -220,9 +220,8 @@ async fn a_failed_turn_has_error_status_a_retried_one_records_the_exception() {
 async fn a_turn_that_fails_before_on_claim_still_gets_a_span() {
     let t = Telemetry::new().await;
     // State that does not decode: on_claim never runs, on_outcome does.
-    let address = cicada::ActorAddress::parse("actor://traced/bad").unwrap();
-    let template = cicada::UriTemplate::parse(Traced::TEMPLATE).unwrap();
-    t.test.store().create(&address, &template, Some(json!("not a state"))).await.unwrap();
+    let address = cicada::ActorAddress::parse("traced/bad").unwrap();
+    t.test.store().create(&address, Some(json!("not a state"))).await.unwrap();
     t.test.send_raw(&address, "Hop", json!({ "left": 0 }), SendOptions::new()).await;
     t.test.run_until_idle().await;
     let spans = t.spans();
@@ -240,7 +239,7 @@ async fn turn_duration_and_lag_are_recorded_per_type_message_type_and_outcome() 
     let duration = t.histogram("cicada.turn.duration");
     assert_eq!(duration.count(), 2);
     assert_eq!(attribute(duration.attributes(), "cicada.outcome"), Some("done".into()));
-    assert_eq!(attribute(duration.attributes(), "cicada.actor.type"), Some("actor://traced/{id}".into()));
+    assert_eq!(attribute(duration.attributes(), "cicada.actor.type"), Some("traced".into()));
     assert_eq!(attribute(duration.attributes(), "cicada.message.type"), Some("Hop".into()));
     assert_eq!(t.histogram("cicada.message.lag").count(), 2);
 }
@@ -293,7 +292,7 @@ struct StuckRef {
 }
 
 impl ActorRef for StuckRef {
-    const TEMPLATE: &'static str = "actor://stuck/{id}";
+    const TYPE: &'static str = "stuck";
     type Message = StuckMsg;
 }
 

@@ -80,7 +80,7 @@ async fn health_and_types() {
     assert_eq!(health.status, 200, "{health}");
     assert_eq!(health.text("/node").as_deref(), Some("sqlite-1"));
     let types = node.client.types().await.unwrap();
-    let slow = types.iter().find(|t| t.template == "actor://e2e/slow/{id}").expect("the slow type");
+    let slow = types.iter().find(|t| t.name == "e2e.slow").expect("the slow type");
     assert!(slow.messages.contains_key("Sleep"));
     assert!(node.get("/").await.body.contains("sqlite"));
 }
@@ -123,7 +123,7 @@ async fn bearer_authentication() {
     assert_eq!(node.request_as(Method::GET, "/health", None, None).await.unwrap().status, 401);
     assert_eq!(node.request_as(Method::GET, "/types", None, Some("wrong")).await.unwrap().status, 401);
     assert_eq!(node.get("/health").await.status, 200);
-    assert_eq!(node.put(&format!("/actors/e2e/counter/{id}"), r#"{"state":{}}"#).await.status, 201);
+    assert_eq!(node.put(&format!("/actors/e2e.counter/{id}"), r#"{"state":{}}"#).await.status, 201);
     let root = node.request_as(Method::GET, "/", None, None).await.unwrap();
     assert_eq!(root.status, 200, "GET / stays public: {root}");
     let receipt = node.client.send(&Counter { id }, step_msg(1)).await.unwrap();

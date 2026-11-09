@@ -1,9 +1,8 @@
-//! Actor addresses: URIs such as `actor://sync/acme`, the URI templates actor types own, and typed refs.
+//! Actor addresses: a type name plus a key, written `sync/acme`, and the typed refs that build them.
 
 mod actor_ref;
 mod params;
 pub mod percent;
-mod template;
 
 use std::fmt;
 use std::str::FromStr;
@@ -12,9 +11,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 pub use actor_ref::{ActorRef, RefBinding};
 pub use params::{from_params, to_params};
-pub use template::{Segment, UriTemplate};
 
-/// A malformed actor URI, template or path.
+/// A malformed type name or actor address.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{0}")]
 pub struct AddressError(String);
@@ -25,109 +23,147 @@ impl AddressError {
     }
 }
 
-/// The URI of one actor instance, e.g. `actor://sync/acme`, always held in canonical form.
+/// The name of an actor type, e.g. `sync` or `billing.v2.invoices`: it matches `[a-z][a-z0-9._-]*`, at most
+/// [`Self::MAX_LENGTH`] characters. It is the type's identity in the store.
 ///
-/// Form: `actor://<segment>/<segment>/…` with at least one segment. Each segment is non-empty and uses
-/// `A-Z a-z 0-9 . _ ~ -`; any other character is percent-encoded (see [`percent`]). Two addresses are equal exactly
-/// when their canonical strings are equal, so `actor://a/%7e` and `actor://a/~` denote the same instance.
+/// Serialized as its string.
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TypeName(String);
+
+impl TypeName {
+    /// The longest type name.
+    pub const MAX_LENGTH: usize = 100;
+
+    /// Checks `name`.
+    pub fn parse(name: &str) -> Result<Self, AddressError> {
+        let valid = name.len() <= Self::MAX_LENGTH
+            && name.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+            && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'));
+        if valid {
+            Ok(Self(name.to_owned()))
+        } else {
+            Err(AddressError::new(format!(
+                "Invalid type name '{name}': use [a-z][a-z0-9._-]*, at most {} characters",
+                Self::MAX_LENGTH
+            )))
+        }
+    }
+
+    /// The name.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for TypeName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl fmt::Debug for TypeName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "TypeName({})", self.0)
+    }
+}
+
+impl FromStr for TypeName {
+    type Err = AddressError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
+    }
+}
+
+impl Serialize for TypeName {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for TypeName {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        Self::parse(&s).map_err(serde::de::Error::custom)
+    }
+}
+
+/// The address of one actor instance: its type name and its key, written `type/key` (`sync/acme`) and always held in
+/// canonical form.
 ///
-/// Serialized as its URI string; ordered by it.
+/// A key is one value (`acme`), or several joined with `:` in the order of the ref's fields (`b1:7`). A singleton has
+/// the key [`Self::SINGLETON_KEY`]. Each value is non-empty and uses `A-Z a-z 0-9 . _ ~ -`; any other character is
+/// percent-encoded (see [`percent`]), so a key never holds a `/`, and a `:` is always a separator. Two addresses are
+/// equal exactly when their canonical strings are equal, so `a/%7e` and `a/~` denote the same instance. The key `.` or
+/// `..` is refused, because URL parsing would remove it.
+///
+/// Serialized as its text form; ordered by it. The text form is also the address's path below `/actors/` over HTTP.
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ActorAddress {
     // `value` first: the derived ordering compares canonical strings.
     value: String,
-    segments: Vec<String>,
+    type_name: TypeName,
 }
 
 impl ActorAddress {
-    /// URI scheme prefix of every actor address.
-    pub const SCHEME: &'static str = "actor://";
+    /// The key of a singleton: the instance of a type whose ref has no fields.
+    pub const SINGLETON_KEY: &'static str = "_";
 
-    /// The HTTP path segment that names an instance's mailbox, as in `/actors/{path}/messages`.
-    pub const MAILBOX_SEGMENT: &'static str = "messages";
-
-    /// [`Self::MAILBOX_SEGMENT`] with its first character percent-encoded: an actor segment, never the mailbox.
-    pub const ESCAPED_MAILBOX_SEGMENT: &'static str = "%6Dessages";
-
-    /// Parses a URI string into its canonical address.
-    pub fn parse(uri: &str) -> Result<Self, AddressError> {
-        let rest = uri
-            .strip_prefix(Self::SCHEME)
-            .ok_or_else(|| AddressError::new(format!("Actor URI must start with '{}': '{uri}'", Self::SCHEME)))?;
-        if rest.is_empty() {
-            return Err(AddressError::new(format!("Actor URI must have at least one segment: '{uri}'")));
-        }
-        let parts: Vec<&str> = rest.split('/').collect();
-        if parts.iter().any(|p| p.is_empty()) {
-            return Err(AddressError::new(format!("Actor URI segments must be non-empty: '{uri}'")));
-        }
-        let segments = parts.into_iter().map(percent::decode).collect::<Result<Vec<_>, _>>()?;
-        Ok(Self::from_segments_unchecked(segments))
+    /// Parses `type/key` into its canonical address.
+    pub fn parse(text: &str) -> Result<Self, AddressError> {
+        let (type_name, key) = text
+            .split_once('/')
+            .ok_or_else(|| AddressError::new(format!("An actor address is type/key, was '{text}'")))?;
+        let type_name = TypeName::parse(type_name)?;
+        let values = key.split(':').map(percent::decode).collect::<Result<Vec<_>, _>>()?;
+        Self::of(&type_name, values).map_err(|e| AddressError::new(format!("Invalid address '{text}': {e}")))
     }
 
-    /// Builds an address from raw (decoded) segment values; each value is percent-encoded as needed.
-    pub fn of<I, S>(segments: I) -> Result<Self, AddressError>
+    /// Builds the address of `type_name` from raw (decoded) key values, each percent-encoded as needed. No values is
+    /// the singleton.
+    pub fn of<I, S>(type_name: &TypeName, values: I) -> Result<Self, AddressError>
     where
         I: IntoIterator<Item = S>,
-        S: Into<String>,
+        S: AsRef<str>,
     {
-        let segments: Vec<String> = segments.into_iter().map(Into::into).collect();
-        if segments.is_empty() {
-            return Err(AddressError::new("An actor address needs at least one segment"));
+        let mut encoded = Vec::new();
+        for value in values {
+            let value = value.as_ref();
+            if value.is_empty() {
+                return Err(AddressError::new("Key values must be non-empty"));
+            }
+            encoded.push(percent::encode(value));
         }
-        if segments.iter().any(String::is_empty) {
-            return Err(AddressError::new(format!("Actor address segments must be non-empty: {segments:?}")));
+        let key = if encoded.is_empty() { Self::SINGLETON_KEY.to_owned() } else { encoded.join(":") };
+        if key == "." || key == ".." {
+            return Err(AddressError::new(format!("The key must not be '{key}'")));
         }
-        Ok(Self::from_segments_unchecked(segments))
+        Ok(Self { value: format!("{type_name}/{key}"), type_name: type_name.clone() })
     }
 
-    fn from_segments_unchecked(segments: Vec<String>) -> Self {
-        let encoded: Vec<String> = segments.iter().map(|s| percent::encode(s)).collect();
-        Self { value: format!("{}{}", Self::SCHEME, encoded.join("/")), segments }
-    }
-
-    /// The canonical URI string, e.g. `actor://sync/acme`.
+    /// The canonical text form, e.g. `sync/acme`.
     pub fn as_str(&self) -> &str {
         &self.value
     }
 
-    /// Decoded segment values, in order.
-    pub fn segments(&self) -> &[String] {
-        &self.segments
+    /// The type name.
+    pub fn type_name(&self) -> &TypeName {
+        &self.type_name
     }
 
-    /// True when this address's URI string starts with `prefix`; namespaces are plain string prefixes.
+    /// The canonical key, e.g. `acme` or `b1:7`.
+    pub fn key(&self) -> &str {
+        &self.value[self.type_name.as_str().len() + 1..]
+    }
+
+    /// The decoded key values, in order.
+    pub fn key_values(&self) -> Vec<String> {
+        self.key().split(':').map(|v| percent::decode(v).expect("a canonical key decodes")).collect()
+    }
+
+    /// True when this address's text form starts with `prefix`: `sync/` is one type, `sync/ac` a key prefix.
     pub fn has_prefix(&self, prefix: &str) -> bool {
         self.value.starts_with(prefix)
-    }
-
-    /// The HTTP path form of this address, e.g. `/actors/sync/acme` for `actor://sync/acme`.
-    ///
-    /// A trailing path segment `messages` addresses the mailbox endpoint (`/actors/{path}/messages`), so a last segment
-    /// that is literally `messages` is written in its equivalent escaped form `%6Dessages`. Segments `.` and `..`
-    /// would be removed by path normalisation in clients and proxies (RFC 3986 dot segments), so they are written as
-    /// `%2E` and `%2E%2E`. Every escaped form decodes to the same address.
-    pub fn to_http_path(&self) -> String {
-        let mut encoded: Vec<String> = self
-            .segments
-            .iter()
-            .map(|s| match s.as_str() {
-                "." => "%2E".to_owned(),
-                ".." => "%2E%2E".to_owned(),
-                other => percent::encode(other),
-            })
-            .collect();
-        if let Some(last) = encoded.last_mut()
-            && last == Self::MAILBOX_SEGMENT
-        {
-            *last = Self::ESCAPED_MAILBOX_SEGMENT.to_owned();
-        }
-        format!("/actors/{}", encoded.join("/"))
-    }
-
-    /// Parses the path below `/actors/` (e.g. `sync/acme`, still percent-encoded) into an address.
-    pub fn from_http_path(path: &str) -> Result<Self, AddressError> {
-        Self::parse(&format!("{}{}", Self::SCHEME, path.trim_matches('/')))
     }
 }
 
@@ -176,7 +212,7 @@ impl schemars::JsonSchema for ActorAddress {
     }
 
     fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        schemars::json_schema!({ "type": "string", "format": "uri", "pattern": "^actor://" })
+        schemars::json_schema!({ "type": "string", "pattern": "^[a-z][a-z0-9._-]*/[^/]+$" })
     }
 
     fn inline_schema() -> bool {
@@ -188,36 +224,44 @@ impl schemars::JsonSchema for ActorAddress {
 mod tests {
     use super::*;
 
-    #[test]
-    fn parses_canonically() {
-        let a = ActorAddress::parse("actor://a/%7e").unwrap();
-        let b = ActorAddress::parse("actor://a/~").unwrap();
-        assert_eq!(a, b);
-        assert_eq!(a.as_str(), "actor://a/~");
-        assert_eq!(ActorAddress::of(["sync", "a b"]).unwrap().as_str(), "actor://sync/a%20b");
+    fn name(n: &str) -> TypeName {
+        TypeName::parse(n).unwrap()
     }
 
     #[test]
-    fn rejects_malformed() {
-        for uri in ["sync/acme", "actor://", "actor://a//b", "actor://a/", "actor://a b"] {
-            assert!(ActorAddress::parse(uri).is_err(), "{uri}");
+    fn type_names() {
+        for good in ["sync", "billing.v2.invoices", "a-b_c", "x1"] {
+            assert_eq!(name(good).as_str(), good);
+        }
+        for bad in ["", "Sync", "1a", ".a", "a/b", "a b", &"a".repeat(101)] {
+            assert!(TypeName::parse(bad).is_err(), "{bad}");
         }
     }
 
     #[test]
-    fn http_paths() {
-        let a = ActorAddress::of(["a", "messages"]).unwrap();
-        assert_eq!(a.to_http_path(), "/actors/a/%6Dessages");
-        assert_eq!(ActorAddress::from_http_path("a/%6Dessages").unwrap(), a);
-        let dots = ActorAddress::of([".", ".."]).unwrap();
-        assert_eq!(dots.to_http_path(), "/actors/%2E/%2E%2E");
-        assert_eq!(ActorAddress::from_http_path("%2E/%2E%2E").unwrap(), dots);
+    fn parses_to_canonical_form() {
+        let a = ActorAddress::parse("sync/acme").unwrap();
+        assert_eq!((a.type_name().as_str(), a.key(), a.as_str()), ("sync", "acme", "sync/acme"));
+        assert_eq!(ActorAddress::parse("a/%7e").unwrap(), ActorAddress::parse("a/~").unwrap());
+        assert_eq!(ActorAddress::parse("b/x:7").unwrap().key_values(), ["x", "7"]);
+        for bad in ["sync", "sync/", "/x", "sync/a/b", "sync/a:", "sync/:a", "Sync/a", "a/b c", "a/.", "a/..", "a/%2E"]
+        {
+            assert!(ActorAddress::parse(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]
-    fn serde_as_string() {
-        let a = ActorAddress::parse("actor://sync/acme").unwrap();
-        assert_eq!(serde_json::to_string(&a).unwrap(), "\"actor://sync/acme\"");
-        assert_eq!(serde_json::from_str::<ActorAddress>("\"actor://sync/acme\"").unwrap(), a);
+    fn values_with_separators_are_encoded() {
+        let a = ActorAddress::of(&name("files"), ["a/b c", "d:e"]).unwrap();
+        assert_eq!(a.as_str(), "files/a%2Fb%20c:d%3Ae");
+        assert_eq!(a.key_values(), ["a/b c", "d:e"]);
+        assert_eq!(ActorAddress::parse(a.as_str()).unwrap(), a);
+    }
+
+    #[test]
+    fn a_ref_without_fields_is_the_singleton() {
+        let a = ActorAddress::of(&name("cleanup"), Vec::<String>::new()).unwrap();
+        assert_eq!(a.as_str(), "cleanup/_");
+        assert!(ActorAddress::of(&name("x"), [""]).is_err());
     }
 }

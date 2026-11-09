@@ -12,7 +12,7 @@ pub struct Order {
 }
 
 impl ActorRef for Order {
-    const TEMPLATE: &'static str = "actor://orders/{id}";
+    const TYPE: &'static str = "orders";
     type Message = OrderMsg;
 }
 

@@ -19,7 +19,7 @@ pub struct Onboarding {
 }
 
 impl ActorRef for Onboarding {
-    const TEMPLATE: &'static str = "actor://onboarding/{user}";
+    const TYPE: &'static str = "onboarding";
     type Message = OnboardingMsg;
 }
 

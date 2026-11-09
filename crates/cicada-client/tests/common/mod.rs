@@ -21,7 +21,7 @@ pub struct Account {
 }
 
 impl ActorRef for Account {
-    const TEMPLATE: &'static str = "actor://account/{tenant}/{id}";
+    const TYPE: &'static str = "account";
     type Message = AccountMsg;
 }
 
@@ -86,7 +86,7 @@ pub struct Beacon {
 }
 
 impl ActorRef for Beacon {
-    const TEMPLATE: &'static str = "actor://beacon/{name}";
+    const TYPE: &'static str = "beacon";
     type Message = BeaconMsg;
 }
 

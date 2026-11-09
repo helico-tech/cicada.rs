@@ -50,7 +50,8 @@ async fn is_duplicate(store: &dyn Store, message: &Message) -> bool {
 }
 
 async fn failure_ids(store: &dyn Store, since: Timestamp) -> Vec<cicada::store::MessageId> {
-    let page = store.failures("", since, None, Page::<Message>::DEFAULT_SIZE).await.unwrap();
+    let page =
+        store.outcomes(Some(OutcomeStatus::Failed), "", since, None, Page::<Message>::DEFAULT_SIZE).await.unwrap();
     page.items.into_iter().map(|o| o.message_id).collect()
 }
 

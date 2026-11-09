@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use cicada::ActorSystem;
-use cicada::address::{ActorAddress, UriTemplate};
+use cicada::address::{ActorAddress, TypeName};
 use cicada::prelude::*;
 use cicada::runtime::{ActorSystemBuilder, NodeConfig, NodeState, SendResult};
 use cicada::store::{Claim, MessageStatus, NodeId, OutcomeStatus, OutgoingMessage, Store, StoreError, StoreResult};
@@ -43,7 +43,7 @@ struct Worker {
 }
 
 impl ActorRef for Worker {
-    const TEMPLATE: &'static str = "actor://worker/{id}";
+    const TYPE: &'static str = "worker";
     type Message = WorkerMsg;
 }
 
@@ -111,7 +111,7 @@ async fn turns_run_end_to_end_across_instances() {
     system.create(&a, &CounterState::default()).await.unwrap();
     system.create(&b, &CounterState::default()).await.unwrap();
     system.send(&a, CounterMsg::Burst { count: 20 }).await.unwrap();
-    system.send(&a, CounterMsg::Forward { to: "actor://counter/b".into(), n: 5 }).await.unwrap();
+    system.send(&a, CounterMsg::Forward { to: "counter/b".into(), n: 5 }).await.unwrap();
     system.send(&a, CounterMsg::Spawn { child: "c".into(), n: 1 }).await.unwrap();
     eventually(5 * SECOND, || async {
         total(&*store, &a).await == 210
@@ -176,12 +176,12 @@ async fn delayed_messages_are_delivered_at_their_time_not_before() {
 /// A store with a wake-up source: every call subscribes to `signals`; the types asked for are recorded.
 struct WakeUps {
     signals: broadcast::Sender<()>,
-    seen: Mutex<Vec<BTreeSet<UriTemplate>>>,
+    seen: Mutex<Vec<BTreeSet<TypeName>>>,
 }
 
 #[async_trait]
 impl Faults for WakeUps {
-    fn wake_ups(&self, _: &dyn Store, types: &BTreeSet<UriTemplate>) -> Option<BoxStream<'static, ()>> {
+    fn wake_ups(&self, _: &dyn Store, types: &BTreeSet<TypeName>) -> Option<BoxStream<'static, ()>> {
         self.seen.lock().unwrap().push(types.clone());
         let rx = self.signals.subscribe();
         Some(Box::pin(futures::stream::unfold(rx, |mut rx| async move { rx.recv().await.ok().map(|()| ((), rx)) })))
@@ -201,7 +201,7 @@ async fn a_store_wake_up_source_wakes_the_loop() {
     let a = Counter::new("a");
     system.create(&a, &CounterState::default()).await.unwrap();
     eventually(5 * SECOND, || async { !store.faults.seen.lock().unwrap().is_empty() }).await;
-    assert_eq!(*store.faults.seen.lock().unwrap(), vec![BTreeSet::from([template::<Counter>()])]);
+    assert_eq!(*store.faults.seen.lock().unwrap(), vec![BTreeSet::from([type_name::<Counter>()])]);
     // `start` asks for the wake-ups before the loop first ran: let the loop
     // run and fall asleep first.
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -294,7 +294,7 @@ impl Faults for FailingClaims {
     async fn claim_due(
         &self,
         inner: &dyn Store,
-        types: &BTreeSet<UriTemplate>,
+        types: &BTreeSet<TypeName>,
         node: &NodeId,
         ttl: Duration,
         limit: usize,
@@ -334,7 +334,7 @@ async fn life_cycle_start_once_stop_is_idempotent_a_send_only_node_needs_no_loop
     let send_only = self::system(store.clone()).build();
     send_only.start().await.unwrap();
     assert!(send_only.health().await);
-    let none = ActorAddress::parse("actor://counter/none").unwrap();
+    let none = ActorAddress::parse("counter/none").unwrap();
     assert_eq!(
         send_only.send_message(&none, "Add", json!({"n": 1}), SendOptions::new()).await.unwrap(),
         SendResult::NoSuchInstance

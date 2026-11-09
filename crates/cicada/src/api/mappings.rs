@@ -1,8 +1,11 @@
 //! Conversions between the runtime model and the HTTP bodies.
 
-use super::{ActorView, MessageState, MessageStatusView, MessageView, OutcomeView, PageView, SendRequest, TypeView};
-use crate::runtime::{ActorSnapshot, RegisteredType};
-use crate::store::{Delivery, Message, MessageStatus, OutcomeRecord, OutcomeStatus, Page};
+use super::{
+    ActorView, BulkResponse, MailboxMessageView, MessageState, MessageStatusView, MessageView, NodeDetailView,
+    NodeView, OutcomeView, PageView, RunningTurnView, SendRequest, StatsView, TypeView,
+};
+use crate::runtime::{ActorSnapshot, BulkResult, MailboxEntry, NodeInfo, RegisteredType};
+use crate::store::{Delivery, Message, MessageStatus, OutcomeRecord, OutcomeStatus, Page, RunningTurn, StoreStats};
 
 impl From<Message> for MessageView {
     fn from(m: Message) -> Self {
@@ -90,23 +93,74 @@ impl From<MessageStatus> for MessageStatusView {
     }
 }
 
+impl From<StoreStats> for StatsView {
+    fn from(s: StoreStats) -> Self {
+        Self { actors: s.actors, pending: s.pending, oldest_due: s.oldest_due }
+    }
+}
+
 impl From<ActorSnapshot> for ActorView {
     fn from(s: ActorSnapshot) -> Self {
         Self {
-            uri: s.address,
+            type_name: s.address.type_name().as_str().to_owned(),
+            address: s.address,
             params: s.params,
-            template: s.template.as_str().to_owned(),
             state: s.state,
             version: s.version,
             created_at: s.created_at,
+            paused: s.paused,
         }
+    }
+}
+
+impl From<RunningTurn> for RunningTurnView {
+    fn from(t: RunningTurn) -> Self {
+        Self {
+            actor: t.actor,
+            message_id: t.message_id,
+            node: t.node,
+            lease_until: t.lease_until,
+            cancel_requested: t.cancel_requested,
+        }
+    }
+}
+
+impl From<&NodeInfo> for NodeView {
+    fn from(n: &NodeInfo) -> Self {
+        Self {
+            id: n.id.clone(),
+            hosted: n.hosted.iter().map(|t| t.as_str().to_owned()).collect(),
+            started_at: n.started_at,
+            last_seen: n.last_seen,
+            status: n.status,
+            running_turns: n.running_turns.len(),
+        }
+    }
+}
+
+impl From<NodeInfo> for NodeDetailView {
+    fn from(n: NodeInfo) -> Self {
+        Self { node: NodeView::from(&n), turns: n.running_turns.into_iter().map(RunningTurnView::from).collect() }
+    }
+}
+
+impl From<MailboxEntry> for MailboxMessageView {
+    fn from(e: MailboxEntry) -> Self {
+        Self { message: e.message.into(), state: if e.running { MessageState::Running } else { MessageState::Pending } }
+    }
+}
+
+impl From<BulkResult> for BulkResponse {
+    fn from(r: BulkResult) -> Self {
+        Self { affected: r.affected, more: r.more }
     }
 }
 
 impl From<&RegisteredType> for TypeView {
     fn from(t: &RegisteredType) -> Self {
         Self {
-            template: t.template().as_str().to_owned(),
+            name: t.name().as_str().to_owned(),
+            key: t.contract.key_fields().to_vec(),
             hash: t.definition.contract_hash.clone(),
             state: t.contract.state_schema().cloned(),
             messages: t.contract.message_schemas().clone(),

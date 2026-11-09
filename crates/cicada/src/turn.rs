@@ -267,7 +267,7 @@ impl<A: Actor> Turn<A> {
         (self.state, self.state_assigned, self.effects)
     }
 
-    /// Own typed ref. Its fields are the template parameters.
+    /// Own typed ref. Its fields are the key.
     pub fn self_ref(&self) -> &A::Ref {
         &self.self_ref
     }
@@ -392,7 +392,7 @@ impl<A: Actor> Turn<A> {
     fn push_create<R: ActorRef>(&mut self, r: &R, state: Option<Value>) -> Result<(), TurnError> {
         let binding = RefBinding::<R>::new().map_err(|e| TurnError::Invalid(e.to_string()))?;
         let address = binding.to_address(r).map_err(|e| TurnError::Invalid(e.to_string()))?;
-        self.effects.creates.push(ActorCreate { address, template: binding.template().clone(), state });
+        self.effects.creates.push(ActorCreate { address, state });
         Ok(())
     }
 
@@ -427,18 +427,13 @@ impl<A: Actor> Turn<A> {
     fn typed_address<R: ActorRef>(&mut self, to: &R) -> Result<ActorAddress, TurnError> {
         let invalid = |e: &dyn fmt::Display| TurnError::Invalid(e.to_string());
         // `self` always means this instance's own address, even when it was claimed under a non-canonical form.
-        if R::TEMPLATE == <A::Ref as ActorRef>::TEMPLATE
+        if R::TYPE == <A::Ref as ActorRef>::TYPE
             && let (Ok(a), Ok(b)) = (to_params(to), to_params(&self.self_ref))
             && a == b
         {
             return Ok(self.info.self_address.clone());
         }
-        let binding = RefBinding::<R>::new().map_err(|e| invalid(&e))?;
-        let address = binding.to_address(to).map_err(|e| invalid(&e))?;
-        if !self.effects.typed_targets.iter().any(|(a, _)| a == &address) {
-            self.effects.typed_targets.push((address.clone(), binding.template().clone()));
-        }
-        Ok(address)
+        to.address().map_err(|e| invalid(&e))
     }
 
     fn buffer<M: MessageFamily>(

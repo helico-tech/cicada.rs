@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use cicada::address::{ActorAddress, ActorRef};
 use cicada::runtime::{ActorSystemBuilder, CreateActorResult, SendResult, StartError};
-use cicada::store::{Message, MessageStatus, OutcomeRecord, PageCursor, Store};
+use cicada::store::{Message, MessageStatus, OutcomeRecord, OutcomeStatus, PageCursor, Store};
 use cicada::time::{self, Timestamp};
 use cicada::{ActorSystem, SendOptions};
 use serde::Serialize;
@@ -73,7 +73,7 @@ impl TestActorsBuilder {
 /// # use serde::{Deserialize, Serialize};
 /// # #[derive(Debug, Clone, Serialize, Deserialize)]
 /// # struct Counter { id: String }
-/// # impl ActorRef for Counter { const TEMPLATE: &'static str = "actor://counter/{id}"; type Message = CounterMsg; }
+/// # impl ActorRef for Counter { const TYPE: &'static str = "counter"; type Message = CounterMsg; }
 /// # #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 /// # #[serde(tag = "type")]
 /// # enum CounterMsg { Add { amount: i64 } }
@@ -205,9 +205,9 @@ impl TestActors {
     pub async fn advance_time_by(&self, duration: Duration) -> usize {
         let target = time::add(self.now(), duration).expect("virtual time stays in range");
         let mut turns = self.run_until_idle().await;
-        let templates: BTreeSet<_> = self.system.hosted_templates();
+        let types: BTreeSet<_> = self.system.hosted_types();
         loop {
-            let next = self.store.next_due_at(&templates).await.expect("store failed");
+            let next = self.store.next_due_at(&types).await.expect("store failed");
             match next {
                 Some(next) if next <= target => {
                     let now = self.now();
@@ -245,7 +245,7 @@ impl TestActors {
         }
     }
 
-    /// All instance URIs starting with `prefix` (a URI prefix such as `actor://sync/`), in URI order.
+    /// All instance addresses starting with `prefix` (a prefix of the text form, such as `sync/`), in address order.
     pub async fn list(&self, prefix: &str) -> Vec<ActorAddress> {
         let mut out = Vec::new();
         let mut cursor: Option<PageCursor> = None;
@@ -303,7 +303,13 @@ impl TestActors {
         loop {
             let page = self
                 .store
-                .failures("", chrono::DateTime::<chrono::Utc>::MIN_UTC, cursor.as_ref(), 100)
+                .outcomes(
+                    Some(OutcomeStatus::Failed),
+                    "",
+                    chrono::DateTime::<chrono::Utc>::MIN_UTC,
+                    cursor.as_ref(),
+                    100,
+                )
                 .await
                 .expect("store failed");
             out.extend(page.items);

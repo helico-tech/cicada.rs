@@ -13,7 +13,7 @@ struct Keeper {
 }
 
 impl ActorRef for Keeper {
-    const TEMPLATE: &'static str = "actor://keeper/{id}";
+    const TYPE: &'static str = "keeper";
     type Message = KeeperMsg;
 }
 

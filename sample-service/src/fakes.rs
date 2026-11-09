@@ -4,7 +4,7 @@
 //! - payments decline amounts above 100.00 (10 000 cents); for an amount ending in `13` cents the gateway is
 //!   "unavailable" on the first call of each charge *per node* (in memory), so it fails at most once per node and the
 //!   saga's charge retry policy (4 attempts) always gets it through on a cluster of up to three nodes;
-//! - onboarding fails to provision a workspace for users whose id contains `fail` (`actor://onboarding/fail-1`);
+//! - onboarding fails to provision a workspace for users whose id contains `fail` (`onboarding/fail-1`);
 //! - the sync API serves three pages (10, 10 and 5 items).
 
 use std::collections::HashMap;

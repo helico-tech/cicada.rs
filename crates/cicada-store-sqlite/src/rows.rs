@@ -1,10 +1,13 @@
 //! Mapping between rows and the store model: instants as INTEGER microseconds, JSON as TEXT.
 
-use cicada::address::{ActorAddress, UriTemplate};
+use cicada::address::{ActorAddress, TypeName};
 use cicada::retention::Retention;
 use cicada::retry::RetryPolicy;
 use cicada::store::support;
-use cicada::store::{ActorRecord, Message, MessageId, OutcomeRecord, OutcomeStatus, StoreError, StoreResult, TypeDef};
+use cicada::store::{
+    ActorRecord, Message, MessageId, NodeId, NodeRecord, OutcomeRecord, OutcomeStatus, RunningTurn, StoreError,
+    StoreResult, TypeDef,
+};
 use cicada::time::{self, Timestamp};
 use serde_json::Value;
 use sqlx::sqlite::SqliteRow;
@@ -32,12 +35,12 @@ pub(crate) fn parse_json(text: &str, what: &str) -> StoreResult<Value> {
     serde_json::from_str(text).map_err(|e| StoreError::Corrupt(format!("{what} is not JSON: {e}")))
 }
 
-pub(crate) fn address(uri: &str) -> StoreResult<ActorAddress> {
-    ActorAddress::parse(uri).map_err(|e| StoreError::Corrupt(format!("stored address '{uri}': {e}")))
+pub(crate) fn address(text: &str) -> StoreResult<ActorAddress> {
+    ActorAddress::parse(text).map_err(|e| StoreError::Corrupt(format!("stored address '{text}': {e}")))
 }
 
-pub(crate) fn template(text: &str) -> StoreResult<UriTemplate> {
-    UriTemplate::parse(text).map_err(|e| StoreError::Corrupt(format!("stored template '{text}': {e}")))
+pub(crate) fn type_name(text: &str) -> StoreResult<TypeName> {
+    TypeName::parse(text).map_err(|e| StoreError::Corrupt(format!("stored type name '{text}': {e}")))
 }
 
 pub(crate) fn message_id(id: String) -> StoreResult<MessageId> {
@@ -50,7 +53,7 @@ fn count(value: i64, what: &str) -> StoreResult<u32> {
 
 pub(crate) fn type_def(row: &SqliteRow) -> StoreResult<TypeDef> {
     Ok(TypeDef {
-        template: template(&col::<String>(row, "template")?)?,
+        name: type_name(&col::<String>(row, "name")?)?,
         contract: parse_json(&col::<String>(row, "contract")?, "contract")?,
         contract_hash: col(row, "contract_hash")?,
     })
@@ -58,11 +61,35 @@ pub(crate) fn type_def(row: &SqliteRow) -> StoreResult<TypeDef> {
 
 pub(crate) fn actor_record(row: &SqliteRow) -> StoreResult<ActorRecord> {
     Ok(ActorRecord {
-        address: address(&col::<String>(row, "uri")?)?,
-        template: template(&col::<String>(row, "type")?)?,
+        address: address(&col::<String>(row, "address")?)?,
         state: col::<Option<String>>(row, "state")?.map(|s| parse_json(&s, "state")).transpose()?,
         version: col(row, "version")?,
         created_at: instant(col(row, "created_at")?),
+        paused: col::<i64>(row, "paused")? != 0,
+    })
+}
+
+pub(crate) fn node_id(id: String) -> StoreResult<NodeId> {
+    NodeId::new(id).map_err(StoreError::Corrupt)
+}
+
+pub(crate) fn node_record(row: &SqliteRow) -> StoreResult<NodeRecord> {
+    Ok(NodeRecord {
+        id: node_id(col(row, "id")?)?,
+        hosted: support::hosted_from_json(&parse_json(&col::<String>(row, "hosted")?, "hosted types")?)?,
+        started_at: instant(col(row, "started_at")?),
+        last_seen: instant(col(row, "last_seen")?),
+    })
+}
+
+/// A row of the columns `address, lease_message, lease_owner, lease_until, cancel_requested`.
+pub(crate) fn running_turn(row: &SqliteRow) -> StoreResult<RunningTurn> {
+    Ok(RunningTurn {
+        actor: address(&col::<String>(row, "address")?)?,
+        message_id: message_id(col(row, "lease_message")?)?,
+        node: node_id(col(row, "lease_owner")?)?,
+        lease_until: instant(col(row, "lease_until")?),
+        cancel_requested: col::<i64>(row, "cancel_requested")? != 0,
     })
 }
 
@@ -72,7 +99,7 @@ pub(crate) fn message(row: &SqliteRow) -> StoreResult<Message> {
     let id: String = col(row, "id")?;
     let source = format!("message {id}");
     Ok(Message {
-        to: address(&col::<String>(row, "actor_uri")?)?,
+        to: address(&col::<String>(row, "actor_address")?)?,
         from: col::<Option<String>>(row, "sender")?.map(|s| address(&s)).transpose()?,
         message_type: col(row, "type")?,
         payload: parse_json(&col::<String>(row, "payload")?, "payload")?,
@@ -95,7 +122,7 @@ pub(crate) fn outcome(row: &SqliteRow) -> StoreResult<OutcomeRecord> {
     let status: String = col(row, "status")?;
     Ok(OutcomeRecord {
         message_id: message_id(col(row, "message_id")?)?,
-        actor: address(&col::<String>(row, "actor_uri")?)?,
+        actor: address(&col::<String>(row, "actor_address")?)?,
         status: OutcomeStatus::from_wire_name(&status)
             .ok_or_else(|| StoreError::Corrupt(format!("unknown outcome status '{status}'")))?,
         error: col(row, "error")?,

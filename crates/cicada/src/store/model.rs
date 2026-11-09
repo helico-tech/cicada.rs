@@ -5,7 +5,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::address::{ActorAddress, UriTemplate};
+use crate::address::{ActorAddress, TypeName};
 use crate::retention::Retention;
 use crate::retry::RetryPolicy;
 use crate::time::{self, MAX_DELAY, MAX_INSTANT, TimeError, Timestamp};
@@ -310,7 +310,8 @@ pub enum OutcomeStatus {
     Done,
     /// The handler failed, the state could not be decoded, the commit was rejected, or the turn timed out.
     Failed,
-    /// An administrator (or the actor itself) cancelled the message while it was pending.
+    /// An administrator (or the actor itself) cancelled the message while it was pending, or an administrator stopped
+    /// its running turn.
     Cancelled,
     /// The instance was stopped or deleted while the message was pending.
     Purged,
@@ -345,14 +346,16 @@ impl fmt::Display for OutcomeStatus {
     }
 }
 
-/// How a commit ends the turn's message: with a terminal outcome ([`TurnOutcome::Done`] or [`TurnOutcome::Failed`]),
-/// or by putting it back into the mailbox ([`TurnOutcome::Rescheduled`]) without an outcome.
+/// How a commit ends the turn's message: with a terminal outcome ([`TurnOutcome::Done`], [`TurnOutcome::Failed`] or
+/// [`TurnOutcome::Cancelled`]), or by putting it back into the mailbox ([`TurnOutcome::Rescheduled`]) without an outcome.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TurnOutcome {
     /// The turn succeeded: outcome `done`.
     Done,
     /// The turn failed: outcome `failed` with the error recorded.
     Failed(String),
+    /// An operator stopped the running turn: outcome `cancelled`, no effects, no retry.
+    Cancelled,
     /// The handler failed and the dispatcher retries the message under its retry policy: the *same* message goes back
     /// to pending, due at `delivery` resolved against store time, with a new `seq`, `failures` + 1 and `lastError` =
     /// `error`. It gets no outcome.
@@ -373,6 +376,7 @@ impl TurnOutcome {
         match self {
             TurnOutcome::Done => Some(OutcomeStatus::Done),
             TurnOutcome::Failed(_) => Some(OutcomeStatus::Failed),
+            TurnOutcome::Cancelled => Some(OutcomeStatus::Cancelled),
             TurnOutcome::Rescheduled { .. } => None,
         }
     }
@@ -380,7 +384,7 @@ impl TurnOutcome {
     /// The error recorded with this outcome.
     pub fn error(&self) -> Option<&str> {
         match self {
-            TurnOutcome::Done => None,
+            TurnOutcome::Done | TurnOutcome::Cancelled => None,
             TurnOutcome::Failed(e) | TurnOutcome::Rescheduled { error: e, .. } => Some(e),
         }
     }
@@ -441,8 +445,6 @@ impl MessageStatus {
 pub struct Claim {
     /// The claimed instance.
     pub actor: ActorAddress,
-    /// Its type.
-    pub template: UriTemplate,
     /// Fencing token; pass it to renew, release and commit.
     pub epoch: i64,
     /// The head message, with `attempt` already incremented for this claim.
@@ -462,22 +464,61 @@ pub struct Claim {
 pub struct ActorRecord {
     /// The instance.
     pub address: ActorAddress,
-    /// Its type.
-    pub template: UriTemplate,
     /// Its state.
     pub state: Option<Value>,
     /// Starts at 0 and increases by 1 with every commit that writes state.
     pub version: i64,
     /// Store time of creation.
     pub created_at: Timestamp,
+    /// True while the mailbox is paused: messages queue up, no new turn is claimed.
+    pub paused: bool,
+}
+
+/// What a [`Store::stats`](super::Store::stats) call counts under an address prefix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StoreStats {
+    /// The number of instances.
+    pub actors: u64,
+    /// The number of pending messages, including one being handled and delayed ones.
+    pub pending: u64,
+    /// The earliest `deliver_at` of a pending message that is due at store now; `None` when none is due.
+    pub oldest_due: Option<Timestamp>,
+}
+
+/// The row of one node in the node table: display only, never used to decide who runs what.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeRecord {
+    /// The node.
+    pub id: NodeId,
+    /// The names of the types it hosts; empty for a send-only node.
+    pub hosted: Vec<TypeName>,
+    /// Store time of its first heartbeat since it last had no row.
+    pub started_at: Timestamp,
+    /// Store time of its latest heartbeat.
+    pub last_seen: Timestamp,
+}
+
+/// A turn in progress, as a snapshot: an instance with a lease that is valid at store now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunningTurn {
+    /// The instance.
+    pub actor: ActorAddress,
+    /// The message being handled.
+    pub message_id: MessageId,
+    /// The node holding the lease.
+    pub node: NodeId,
+    /// Lease expiry (store time).
+    pub lease_until: Timestamp,
+    /// True when an operator asked to cancel this turn ([`super::Store::request_cancel`]).
+    pub cancel_requested: bool,
 }
 
 /// The published definition of an actor type.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeDef {
-    /// The type's URI template; also the type's identity in the store.
-    pub template: UriTemplate,
-    /// The published contract (template, message type names, JSON Schemas). Opaque to the store.
+    /// The type's name; its identity in the store.
+    pub name: TypeName,
+    /// The published contract (name, key fields, message type names, JSON Schemas). Opaque to the store.
     pub contract: Value,
     /// Stable hash of the contract; registrations conflict when it differs.
     pub contract_hash: String,
@@ -488,8 +529,6 @@ pub struct TypeDef {
 pub struct ActorCreate {
     /// The instance to create.
     pub address: ActorAddress,
-    /// Its type.
-    pub template: UriTemplate,
     /// Its initial state.
     pub state: Option<Value>,
 }

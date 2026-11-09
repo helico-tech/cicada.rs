@@ -15,7 +15,7 @@ struct Guarded {
 }
 
 impl ActorRef for Guarded {
-    const TEMPLATE: &'static str = "actor://guarded/{id}";
+    const TYPE: &'static str = "guarded";
     type Message = GuardedMsg;
 }
 
@@ -62,8 +62,8 @@ async fn harness(limit: u32) -> TestActors {
 
 /// A node that claims the head message and dies before committing: its lease simply expires.
 async fn crash(test: &TestActors) {
-    let templates: BTreeSet<_> = test.system().hosted_templates();
-    let claims = test.store().claim_due(&templates, &NodeId::new("doomed").unwrap(), Duration::from_secs(30), 1).await;
+    let types: BTreeSet<_> = test.system().hosted_types();
+    let claims = test.store().claim_due(&types, &NodeId::new("doomed").unwrap(), Duration::from_secs(30), 1).await;
     assert_eq!(claims.unwrap().len(), 1);
     tokio::time::sleep(Duration::from_secs(31)).await; // only time passes: no turn runs meanwhile
 }

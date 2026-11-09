@@ -1,6 +1,6 @@
 //! Example 1 — stateless singleton.
 //!
-//! A template without parameters has exactly one instance: `actor://maintenance/cleanup`. It is created once (create
+//! A ref without fields has exactly one instance: `maintenance.cleanup/_`. It is created once (create
 //! is idempotent, so every node may do it at start) and has no state. What it adds over a plain function is that its
 //! turns never overlap (G1), wherever the message comes from, and that a request survives a node crash.
 
@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 pub struct Cleanup;
 
 impl ActorRef for Cleanup {
-    const TEMPLATE: &'static str = "actor://maintenance/cleanup";
+    const TYPE: &'static str = "maintenance.cleanup";
     type Message = CleanupMsg;
 }
 

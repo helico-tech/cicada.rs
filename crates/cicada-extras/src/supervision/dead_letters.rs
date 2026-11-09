@@ -6,12 +6,12 @@ use cicada::turn::TurnError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// The dead-letter queue, a singleton at `actor://cicada/dead-letters`.
+/// The dead-letter queue, a singleton at `cicada.dead-letters/_`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeadLetters;
 
 impl ActorRef for DeadLetters {
-    const TEMPLATE: &'static str = "actor://cicada/dead-letters";
+    const TYPE: &'static str = "cicada.dead-letters";
     type Message = DeadLettersMsg;
 }
 

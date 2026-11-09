@@ -19,7 +19,7 @@ pub struct Checkout {
 }
 
 impl ActorRef for Checkout {
-    const TEMPLATE: &'static str = "actor://checkouts/{id}";
+    const TYPE: &'static str = "checkouts";
     type Message = CheckoutMsg;
 }
 

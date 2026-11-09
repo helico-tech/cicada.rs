@@ -1,4 +1,5 @@
 {
+  "key": [],
   "messages": {
     "Charge": {
       "$defs": {
@@ -38,5 +39,5 @@
     }
   },
   "state": null,
-  "template": "actor://payments"
+  "type": "payments"
 }

@@ -11,7 +11,7 @@ use cicada::plugin::{ClaimContext, HookResult, Plugin};
 /// `attempt - failures - 1` claims before this one never reached a commit. When that reaches the limit, the guard's
 /// `on_claim` hook fails: the handler does not run and the message ends `failed` with reason
 /// `onClaim of plugin CrashLoopGuard failed: crash loop: N claims without a commit`. It is never retried, and shows up
-/// under `/failures`.
+/// under `/outcomes?status=failed`.
 ///
 /// Every claim without a commit counts, whatever ended it: a lease lost to a long pause or a partition, and a lease
 /// released by a node that stopped before the turn finished, count as much as a crash. Keep the limit well above the

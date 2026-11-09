@@ -8,9 +8,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use cicada::prelude::*;
+use cicada::runtime::CreateActorResult;
 use cicada::runtime::NodeConfig;
-use cicada::store::{MessageStatus, NodeId, OutcomeStatus, Store};
-use cicada::{SendResult, UriTemplate, time};
+use cicada::store::{MessageStatus, NodeId, OutcomeStatus, RemoveTypeResult, Store};
+use cicada::{SendResult, TypeName, time};
 use cicada_store_conformance::outcome_record;
 use cicada_store_postgres::{PostgresStore, PostgresStoreConfig};
 use common::{TestDb, eventually};
@@ -22,7 +23,7 @@ struct Player {
 }
 
 impl ActorRef for Player {
-    const TEMPLATE: &'static str = "actor://player/{name}";
+    const TYPE: &'static str = "player";
     type Message = PlayerMsg;
 }
 
@@ -237,12 +238,9 @@ async fn two_nodes_play_ping_pong_run_timers_and_recover_stopped_and_crashed_nod
     let crashed = cluster.store().await;
     let sender = cluster.node("sender", POLL, false).await;
     let lost = accepted(sender.send(&player("ping"), PlayerMsg::Slow { millis: 0 }).await.unwrap());
-    let templates = BTreeSet::from([UriTemplate::parse(Player::TEMPLATE).unwrap()]);
-    let claim = crashed
-        .claim_due(&templates, &NodeId::new("crashed").unwrap(), Duration::from_secs(1), 1)
-        .await
-        .unwrap()
-        .remove(0);
+    let types = BTreeSet::from([TypeName::parse(Player::TYPE).unwrap()]);
+    let claim =
+        crashed.claim_due(&types, &NodeId::new("crashed").unwrap(), Duration::from_secs(1), 1).await.unwrap().remove(0);
     assert_eq!(claim.message.id, lost.id);
     crashed.close().await;
     let fourth = cluster.node("fourth", POLL, true).await;
@@ -330,5 +328,56 @@ async fn listen_notify_wakes_a_node_long_before_its_poll_interval() {
     .await;
     assert!(delayed_mark.elapsed() >= Duration::from_millis(1500));
     assert_eq!(state(&*host_store, "far").await.pings, 2);
+    cluster.cleanup().await;
+}
+
+/// A create racing the removal of its type either lands first (the removal is refused) or finds the type gone: an
+/// actor never stays behind without its type.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn removing_a_type_races_with_creates_without_leaving_an_actor_of_a_removed_type() {
+    let cluster = Cluster::new(test_db!("rt"));
+    let host = cluster.node("host", POLL, true).await;
+    host.initialize().await.unwrap();
+    let creator = cluster.node("creator", POLL, false).await;
+    let remover = cluster.node("remover", POLL, false).await;
+    let store = host.store().clone();
+    let def = store.list_types().await.unwrap().remove(0);
+    let name = def.name.clone();
+    let (mut kept, mut removed) = (0, 0);
+    for round in 0..40u64 {
+        store.register(def.clone()).await.unwrap();
+        let who = player(&format!("race{round}"));
+        let state = serde_json::to_value(PlayerState::new("x")).unwrap();
+        let address = who.address().unwrap();
+        let create = tokio::spawn({
+            let (creator, address) = (creator.clone(), address.clone());
+            async move { creator.create_actor(&address, Some(state)).await }
+        });
+        let remove = tokio::spawn({
+            let (remover, name) = (remover.clone(), name.clone());
+            async move {
+                // Spread the starts, so that the remove lands before, inside and after the create.
+                tokio::time::sleep(Duration::from_micros(150 * round)).await;
+                remover.remove_type(&name).await
+            }
+        });
+        let (created, removal) = (create.await.unwrap(), remove.await.unwrap());
+        let exists = store.get(&who.address().unwrap()).await.unwrap().is_some();
+        let registered = !store.list_types().await.unwrap().is_empty();
+        match removal.unwrap() {
+            RemoveTypeResult::InUse => {
+                assert!(registered && exists && created.unwrap() == CreateActorResult::Created, "round {round}");
+                kept += 1;
+            }
+            RemoveTypeResult::Removed => {
+                assert!(!registered && !exists, "round {round}: the actor of a removed type stayed ({created:?})");
+                assert_eq!(created.unwrap(), CreateActorResult::NoSuchType, "round {round}");
+                removed += 1;
+            }
+            RemoveTypeResult::Absent => panic!("round {round}: the type was registered"),
+        }
+        store.delete(&who.address().unwrap()).await.unwrap();
+    }
+    assert_eq!(kept + removed, 40);
     cluster.cleanup().await;
 }

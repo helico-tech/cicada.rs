@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
 use cicada::api::{ActorView, MessageStatusView, OutcomeView};
-use cicada::store::MessageId;
+use cicada::store::{MessageId, OutcomeStatus};
 use cicada::{ActorAddress, ActorRef};
 use cicada_client::ActorClient;
 use cicada_sample_service::e2e::Effect;
@@ -137,6 +137,11 @@ impl Node {
         self.request(Method::POST, path, Some(body)).await.unwrap()
     }
 
+    /// `POST path` without a body.
+    pub async fn post_empty(&self, path: &str) -> RawResponse {
+        self.request(Method::POST, path, None).await.unwrap()
+    }
+
     /// `DELETE path`.
     pub async fn delete(&self, path: &str) -> RawResponse {
         self.request(Method::DELETE, path, None).await.unwrap()
@@ -147,10 +152,10 @@ impl Node {
         matches!(self.request(Method::GET, "/health", None).await, Ok(r) if r.status == 200)
     }
 
-    /// This node's in-memory side-effect log for the actor `uri` (`GET /e2e/effects`).
-    pub async fn effects(&self, uri: &str) -> anyhow::Result<Vec<Effect>> {
+    /// This node's in-memory side-effect log for the actor `address` (`GET /e2e/effects`).
+    pub async fn effects(&self, address: &str) -> anyhow::Result<Vec<Effect>> {
         let mut url = reqwest::Url::parse(&format!("{}/e2e/effects", self.base_url))?;
-        url.query_pairs_mut().append_pair("actor", uri);
+        url.query_pairs_mut().append_pair("actor", address);
         let mut request = http().get(url);
         if let Some(token) = &self.token {
             request = request.bearer_auth(token);
@@ -199,7 +204,7 @@ impl Node {
 
     /// The failed messages of instances whose URI starts with `prefix` (for [`eventually`]).
     pub async fn try_failures(&self, prefix: &str) -> anyhow::Result<Vec<OutcomeView>> {
-        Ok(self.client.failures(prefix, None, None, None).await?.items)
+        Ok(self.client.outcomes(Some(OutcomeStatus::Failed), prefix, None, None, None).await?.items)
     }
 
     /// The status of message `id`.
@@ -221,7 +226,11 @@ impl Node {
     ///
     /// When the call fails.
     pub async fn failures(&self, prefix: &str) -> Vec<OutcomeView> {
-        self.client.failures(prefix, None, None, None).await.unwrap_or_else(|e| panic!("failures on {self}: {e}")).items
+        self.client
+            .outcomes(Some(OutcomeStatus::Failed), prefix, None, None, None)
+            .await
+            .unwrap_or_else(|e| panic!("failures on {self}: {e}"))
+            .items
     }
 
     /// Waits up to 60 s until message `id` has an outcome and returns its status.
@@ -244,19 +253,19 @@ impl fmt::Display for Node {
     }
 }
 
-/// The address of a ref (`actor://…`).
+/// The address of a ref (`type/key`).
 pub fn address<R: ActorRef>(r: &R) -> ActorAddress {
     r.address().expect("a valid ref")
 }
 
-/// The ref's URI string, e.g. for prefix queries.
-pub fn uri<R: ActorRef>(r: &R) -> String {
+/// The ref's address text, e.g. for prefix queries.
+pub fn address_text<R: ActorRef>(r: &R) -> String {
     address(r).to_string()
 }
 
-/// The HTTP path of an instance: `actor://a/b` → `/actors/a/b`.
+/// The HTTP path of an instance: `a/b` → `/actors/a/b`.
 pub fn path<R: ActorRef>(r: &R) -> String {
-    address(r).to_http_path()
+    format!("/actors/{}", address(r))
 }
 
 /// Polls `check` every 200 ms until it returns `Some`, for at most `timeout`; see [`eventually_every`].

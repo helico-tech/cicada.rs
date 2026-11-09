@@ -1,7 +1,7 @@
-//! Serde bridge between a ref struct and its template parameters.
+//! Serde bridge between a ref struct and the values of its key.
 //!
-//! A ref is a plain `#[derive(Serialize, Deserialize)]` struct (or unit struct) whose fields are exactly the template's
-//! parameters. Each field is a scalar written as text: strings, booleans, integers, floats, chars, unit enum variants
+//! A ref is a plain `#[derive(Serialize, Deserialize)]` struct (or unit struct) whose fields are the actor's
+//! key. Each field is a scalar written as text: strings, booleans, integers, floats, chars, unit enum variants
 //! and newtypes wrapping one of those. [`to_params`] writes a ref as `name -> text`; [`from_params`] parses the text
 //! back, field type by field type, the way `serde_urlencoded` reads a form.
 
@@ -11,7 +11,7 @@ use std::fmt::{self, Display};
 use serde::de::{self, DeserializeOwned, IntoDeserializer, Visitor};
 use serde::ser::{self, Impossible, Serialize};
 
-/// Why a ref could not be written as, or read from, template parameters.
+/// Why a ref could not be written as, or read from, key values.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{0}")]
 pub struct ParamsError(String);

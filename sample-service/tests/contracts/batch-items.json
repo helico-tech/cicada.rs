@@ -1,0 +1,31 @@
+{
+  "key": [
+    "batch",
+    "index"
+  ],
+  "messages": {
+    "ProcessItem": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Processes the item and reports to the parent.",
+      "properties": {},
+      "title": "ProcessItem",
+      "type": "object"
+    }
+  },
+  "state": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "State of a [`BatchItem`]: its input.",
+    "properties": {
+      "input": {
+        "description": "The item's input.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "input"
+    ],
+    "title": "BatchItemState",
+    "type": "object"
+  },
+  "type": "batch-items"
+}

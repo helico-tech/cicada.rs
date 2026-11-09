@@ -17,7 +17,7 @@ struct Mailer {
 }
 
 impl ActorRef for Mailer {
-    const TEMPLATE: &'static str = "actor://mailers/{id}";
+    const TYPE: &'static str = "mailers";
     type Message = MailerMsg;
 }
 
@@ -100,7 +100,7 @@ async fn the_watcher_copies_each_failure_once_into_the_dead_letters() {
     let letters = letters(&test).await;
     assert_eq!(letters.len(), 2);
     let letter = &letters[failed.id.as_str()];
-    assert_eq!(letter.actor, "actor://mailers/m");
+    assert_eq!(letter.actor, "mailers/m");
     assert_eq!(letter.message_type, "SendMail");
     assert_eq!(letter.payload, json!({ "to": "a@example.test" }));
     assert_eq!(letter.correlation_id.as_deref(), Some("c-1"));
@@ -110,7 +110,7 @@ async fn the_watcher_copies_each_failure_once_into_the_dead_letters() {
 #[tokio::test(start_paused = true)]
 async fn redrive_sends_the_failed_message_again_once_the_cause_is_fixed() {
     let (test, smtp_up) = harness(1_000).await;
-    let mut watcher = FailureWatcher::new(test.system().clone()).prefix("actor://mailers/");
+    let mut watcher = FailureWatcher::new(test.system().clone()).prefix("mailers/");
     test.create(&mailer("m"), &MailerState::default()).await;
     let failed = test.send(&mailer("m"), MailerMsg::SendMail { to: "a@example.test".into() }).await;
     test.run_until_idle().await;
@@ -156,7 +156,7 @@ async fn a_redrive_of_a_type_the_target_does_not_accept_records_the_refusal() {
     test.create(&mailer("m"), &MailerState::default()).await;
     let letter = DeadLetter {
         failed_message_id: "f-1".into(),
-        actor: "actor://mailers/m".into(),
+        actor: "mailers/m".into(),
         message_type: "Unknown".into(),
         payload: json!({}),
         correlation_id: None,
@@ -192,7 +192,7 @@ async fn the_oldest_letter_is_evicted_by_failure_time_whatever_the_order_of_the_
     let (test, _) = harness(2).await;
     let letter = |id: &str, second: i64| DeadLetter {
         failed_message_id: id.into(),
-        actor: "actor://mailers/m".into(),
+        actor: "mailers/m".into(),
         message_type: "SendMail".into(),
         payload: json!({}),
         correlation_id: None,
@@ -218,14 +218,14 @@ fn messages_and_state_keep_their_wire_form() {
     assert_eq!(msg.message_type, "Redrive");
     assert_eq!(msg.payload, json!({ "failedMessageId": "m-1" }));
     let letter: DeadLetter = serde_json::from_value(json!({
-        "failedMessageId": "m-1", "actor": "actor://mailers/m", "type": "SendMail", "payload": { "to": "a" },
+        "failedMessageId": "m-1", "actor": "mailers/m", "type": "SendMail", "payload": { "to": "a" },
         "failedAt": "2026-01-01T00:00:00Z"
     }))
     .unwrap();
     assert_eq!(
         serde_json::to_value(&letter).unwrap(),
         json!({
-            "failedMessageId": "m-1", "actor": "actor://mailers/m", "type": "SendMail", "payload": { "to": "a" },
+            "failedMessageId": "m-1", "actor": "mailers/m", "type": "SendMail", "payload": { "to": "a" },
             "correlationId": null, "error": null, "failedAt": "2026-01-01T00:00:00Z", "redrivenAs": null,
             "redriveError": null
         })

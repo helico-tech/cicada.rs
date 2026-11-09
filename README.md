@@ -9,9 +9,9 @@ coordinator and no cluster protocol.
   are written in one transaction; a node that dies mid-turn loses its lease and the turn is re-run elsewhere.
 - **One turn at a time per actor**, messages in delivery-time order, delayed messages never early, exactly one
   outcome per message (`done`, `failed`, `cancelled`, `purged`).
-- **Typed and checked.** Actor addresses are typed refs bound to URI templates (`actor://sync/{tenant}`); the compiler
+- **Typed and checked.** Actor addresses are typed refs with a type name and a key (`sync/acme`); the compiler
   checks that a ref accepts a message, and that a handler covers every message of its family.
-- **One HTTP API** (twelve endpoints) on every node as an axum `Router`, a typed client, an in-process API,
+- **One HTTP API** on every node as an axum `Router`, described by an OpenAPI document, a typed client, an in-process API,
   `TestActors` on tokio's paused time, and per-message retry policies set by the sender.
 
 The design — domain language, guarantees G1–G6, store requirements S1–S10, the HTTP contract — is in
@@ -23,11 +23,11 @@ summarised [below](#decisions).
 
 | Crate | Contents |
 | --- | --- |
-| `cicada` | Addressing (`ActorAddress`, `ActorRef`, `UriTemplate`), the definition API (the `Actor` trait), the runtime and dispatch loop (`ActorSystem`) with per-message retry (`RetryPolicy`) and retention (`Retention`), the `Store` trait, plugin hooks, contracts and JSON Schemas, the HTTP wire model (`cicada::api`). No HTTP server. |
+| `cicada` | Addressing (`ActorAddress`, `ActorRef`, `TypeName`), the definition API (the `Actor` trait), the runtime and dispatch loop (`ActorSystem`) with per-message retry (`RetryPolicy`) and retention (`Retention`), the `Store` trait, plugin hooks, contracts and JSON Schemas, the HTTP wire model (`cicada::api`). No HTTP server. |
 | `cicada-store-sqlite` | `SqliteStore` (sqlx): one file, WAL, one writer. For a single node or a few processes on one host. |
 | `cicada-store-postgres` | `PostgresStore` (sqlx): `FOR UPDATE SKIP LOCKED` claims, `LISTEN/NOTIFY` wake-ups. For many nodes. |
 | `cicada-store-conformance` | The shared suite (S1–S10 and robustness cases) every store must pass, as a macro. |
-| `cicada-axum` | `actor_api()` (the twelve endpoints) and `actor_health()` (a public readiness check) as axum routers. |
+| `cicada-axum` | `actor_api()` (the whole API), `actor_api_read()` (only what reads) and `actor_health()` (a public readiness check) as axum routers. |
 | `cicada-client` | `ActorClient`: typed HTTP client (reqwest) for remote callers, idempotent sends. |
 | `cicada-test` | `TestActors`, `InMemoryStore`, virtual time, contract snapshots and state samples. |
 | `cicada-extras` | Building blocks on the public API, no core changes: `CrashLoopGuard`, dead letters (`DeadLettersActor`, `FailureWatcher`), `Schedule`. |
@@ -39,7 +39,7 @@ summarised [below](#decisions).
 
 ### Define an actor type
 
-A ref struct binds a URI template; an enum with `#[serde(tag = "type")]` holds the messages (the variant name is the
+A ref struct names the type and holds the key; an enum with `#[serde(tag = "type")]` holds the messages (the variant name is the
 type name on the wire); one `handle` matches on the message, so the compiler checks that every message is handled.
 This is [examples/src/sync.rs](examples/src/sync.rs), shortened:
 
@@ -52,11 +52,11 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Sync {
-    pub tenant: String, // the fields are the template's parameters
+    pub tenant: String, // the fields form the key
 }
 
 impl ActorRef for Sync {
-    const TEMPLATE: &'static str = "actor://sync/{tenant}";
+    const TYPE: &'static str = "sync";
     type Message = SyncMsg;
 }
 
@@ -80,7 +80,7 @@ pub struct Reports {
 }
 
 impl ActorRef for Reports {
-    const TEMPLATE: &'static str = "actor://reports/{tenant}";
+    const TYPE: &'static str = "reports";
     type Message = ReportsMsg;
 }
 
@@ -137,6 +137,10 @@ impl<A: SyncApi> Actor for SyncActor<A> {
     }
 }
 ```
+
+The address of `Sync { tenant: "acme" }` is `sync/acme`. A key is the fields of the ref joined with `:` in declared
+order (`b1:7`); a ref without fields is a singleton with the key `_`. Each value is percent-encoded, so a key holds
+no raw `/` and a `:` is always a separator.
 
 Inside a handler, `turn` offers:
 
@@ -214,7 +218,7 @@ async fn main() -> anyhow::Result<()> {
         .with_state(system.clone());
     let app = Router::new()
         .merge(actor_health(system.clone(), "/ready")) // GET /ready: public readiness, for probes
-        .merge(actor_api(system.clone()).layer(middleware::from_fn_with_state(token, bearer))) // the twelve endpoints
+        .merge(actor_api(system.clone()).layer(middleware::from_fn_with_state(token, bearer))) // the whole API
         .merge(own_routes);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8080").await?;
@@ -256,10 +260,8 @@ async fn shutdown_signal() {
 ```
 
 - `system.start()` validates the hosted types and registers their contracts. An invalid type, a contract that differs
-  from the one already registered for its template, or a template that overlaps another type's fails the start with
-  a `StartError` that lists every problem. No address may match two templates (`actor://jobs/{id}` and
-  `actor://jobs/cleanup` both match `actor://jobs/cleanup`). `start` then runs the dispatch loop, the retention
-  sweep and, on PostgreSQL, the collection of wake-ups.
+  from the one already registered for its type name, fails the start with a `StartError` that lists every problem.
+  `start` then runs the dispatch loop, the retention sweep and, on PostgreSQL, the collection of wake-ups.
 - `system.stop()` stops claiming, lets running turns finish within `shutdown_grace_period` (30 s), then cancels the
   rest and releases their leases. While it stops, `/health` and `/ready` answer `503`. `stop` is idempotent.
 - The store is the caller's: `ActorSystem` never closes it. Open it before `start` and close it after `stop`.
@@ -318,24 +320,48 @@ they keep compiling, and the ones that need no server or database run.
 
 ## HTTP API
 
-`{path}` is the actor URI without `actor://`, segments percent-encoded exactly as in the URI (`actor://a/b%20c` →
-`/actors/a/b%20c`). Errors are `application/problem+json` (RFC 9457) with `type` `urn:cicada:problem:<slug>` and the
+`{type}` is the type name and `{key}` the key of the address (`sync/acme`), the key percent-encoded as in the address. Errors are `application/problem+json` (RFC 9457) with `type` `urn:cicada:problem:<slug>` and the
 request's path and query as `instance`.
 
 | Endpoint | Success | Errors |
 | --- | --- | --- |
-| `PUT /actors/{path}` body `{state?}` — create | 201 created; 200 already exists (untouched) | 404 no type matches; 422 state cannot be decoded, a state for a stateless type, or non-canonical parameters (hosting node) |
-| `GET /actors/{path}` — type, params, state, version, createdAt | 200 | 404 |
-| `DELETE /actors/{path}` — admin delete, purges the mailbox | 204 | 404 |
-| `GET /actors?prefix=&cursor=&limit=` — instance URIs, paged | 200 | |
-| `POST /actors/{path}/messages` body `{id?, type, payload?, deliverAt? \| delay?, correlationId?, headers?, retry?, retention?}` — send | 202 `{id, deliverAt}`; 200 that id was already accepted (same target and type) | 400 invalid `retry` or `retention` policy; 404 no instance; 409 id already used for another target or type; 422 unknown message type, undecodable payload (hosting node only) |
-| `GET /actors/{path}/messages?cursor=&limit=` — pending mailbox in delivery order, each with `attempt`, `failures`, `lastError`, `retry` | 200 | 404 |
-| `GET /messages?prefix=&cursor=&limit=` — pending messages of every instance under the prefix (including running ones), instance by instance in URI order, each in delivery order | 200 | |
+| `PUT /actors/{type}/{key}` body `{state?}` — create | 201 created; 200 already exists (untouched) | 404 no such type; 422 state cannot be decoded, a state for a stateless type, or a non-canonical key (hosting node) |
+| `GET /actors/{type}/{key}` — type, params, state, version, createdAt, paused | 200 | 404 |
+| `DELETE /actors/{type}/{key}` — admin delete, purges the mailbox | 204 | 404 |
+| `GET /actors?prefix=&cursor=&limit=` — instance addresses, paged | 200 | |
+| `POST /actors/{type}/{key}/messages` body `{id?, type, payload?, deliverAt? \| delay?, correlationId?, headers?, retry?, retention?}` — send | 202 `{id, deliverAt}`; 200 that id was already accepted (same target and type) | 400 invalid `retry` or `retention` policy; 404 no instance; 409 id already used for another target or type; 422 unknown message type, undecodable payload (hosting node only) |
+| `GET /actors/{type}/{key}/mailbox?cursor=&limit=` — pending mailbox in delivery order, each with `attempt`, `failures`, `lastError`, `retry` and `state` (`running` or `pending`) | 200 | 404 |
+| `POST /actors/{type}/{key}/mailbox/pause` — pause: messages queue up, no new turn is started, a running turn finishes | 204 | 404 |
+| `POST /actors/{type}/{key}/mailbox/resume` — resume a paused actor | 204 | 404 |
+| `POST /actors/{type}/{key}/mailbox/purge` — every pending message except one being handled ends `purged`; the actor stays | 200 `{purged}` | 404 |
+| `GET /actors/{type}/{key}/turn` — the running turn: message, node, lease expiry, `cancelRequested` | 200 | 404 `no-running-turn` |
+| `POST /actors/{type}/{key}/turn/cancel` — ask the owning node to cancel the running turn, within one heartbeat; the message ends `cancelled`, without effects | 202 | 404 `no-running-turn` |
+| `GET /messages?prefix=&cursor=&limit=` — pending messages of every instance under the prefix (including running ones), instance by instance in address order, each in delivery order | 200 | |
 | `GET /messages/{id}` — status, error, `failures` and `lastError`, node and lease while running, envelope (with `retry`, `retention` and `causedBy`) | 200 | 404 unknown, past retention, or removed by its retention policy |
-| `DELETE /messages/{id}` — cancel a pending message | 204 | 404; 409 running or already finished |
-| `GET /failures?prefix=&since=&cursor=&limit=` — failed messages with envelope and error | 200 | |
-| `GET /types` — templates, contract hashes, state and message JSON Schemas | 200 | |
+| `POST /messages/{id}/cancel` — cancel a pending message (a running turn is stopped with `turn/cancel`) | 204 | 404; 409 running or already finished |
+| `POST /messages/{id}/retry` — send a `failed` or `cancelled` message again: a new message with a new id, same target, type, payload, correlation id, headers, retry and retention, `causedBy` the original | 202 `{id, deliverAt}` | 404 unknown, past retention or removed by its retention policy; 404 `no-such-instance` when the target is gone; 409 `message-not-retryable` for a pending, running, done or purged message |
+| `POST /messages/{id}/deliver-now` — make a pending, not running message due at once, at a new place in delivery order | 200 message | 404; 409 running or already finished |
+| `POST /messages/bulk-cancel` body `{ids? or prefix?, messageType?}` — cancel by ids (at most 1000) or by filter, at most 1000 per call; skips what cannot be cancelled | 200 `{affected, more}` | 400 not exactly one of ids or a filter, or more than 1000 ids |
+| `POST /messages/bulk-retry` body `{ids? or prefix?, messageType?}` — retry by ids or by filter (over `failed` outcomes), at most 1000 per call; a filter skips messages already retried | 200 `{affected, more}` | 400 |
+| `GET /messages/{id}/caused?cursor=&limit=` — the messages that the turn which handled `{id}` sent, one level down: pending ones and retained outcomes, each like `GET /messages/{id}`, in message-id order | 200 | 404 unknown or past retention |
+| `GET /outcomes?status=&prefix=&since=&cursor=&limit=` — finished messages with envelope and error; `status` is `done`, `failed`, `cancelled` or `purged` (absent: all), oldest first | 200 | 400 unknown status |
+| `GET /turns?node=&prefix=&cursor=&limit=` — the turns running now, by address: actor, message, node, lease expiry, `cancelRequested` | 200 | |
+| `GET /nodes` — every node: id, hosted types, started and last seen, status (`alive`, `suspect`, `dead`), `runningTurns` (count) | 200 | |
+| `GET /nodes/{node}` — one node, and the list of its running `turns` | 200 | 404 `no-such-node` |
+| `GET /stats?prefix=` — `{actors, pending, oldestDue}`: the number of actors and pending messages under the prefix, and the delivery time of the oldest message that is due (null when none is). It reads every row under the prefix | 200 | |
+| `GET /types` — type names, key fields, contract hashes, state and message JSON Schemas | 200 | |
+| `GET /types/{name}` — one type | 200 | 404 |
+| `DELETE /types/{name}` — removes the type's registration (a node that hosts the type registers it again at its next start) | 204 | 404; 409 actors of the type exist |
+| `GET /openapi.json` — the OpenAPI 3.1 document of this router | 200 | |
 | `GET /health` — node running and store reachable | 200 | 503 |
+
+`actor_api(system)` serves all of this. `actor_api_read(system)` serves only what reads: it has no route that changes
+anything, so it can be exposed more widely. Authentication stays the host's for both.
+
+Clients can be generated from the OpenAPI document. A copy is in [docs/openapi.json](docs/openapi.json), and a test fails
+when it no longer matches the routes (`CICADA_UPDATE_OPENAPI=true` updates it). Payloads and states are free-form JSON in
+the document; the schemas of a type come from `GET /types/{name}`. The document is OpenAPI 3.1, which not every generator
+reads yet (Progenitor reads 3.0 only), so `cicada-client` stays hand-written.
 
 On every endpoint, additionally:
 
@@ -343,7 +369,7 @@ On every endpoint, additionally:
   and `retention`); both `deliverAt` and `delay`; a delivery time beyond year 9999; envelope limits (id/type ≤ 200
   chars, ≤ 64 headers, no NUL); an invalid retry policy; `limit` outside 1..1000; a bad cursor. Payloads and states
   themselves are decoded leniently (unknown keys ignored).
-- `405` — `POST /actors/{path}` without `/messages`.
+- `405` — `POST /actors/{type}/{key}` without `/messages`.
 - `413 request-too-large` — a body larger than `ApiConfig::max_request_body_bytes` (default 1 MiB), by its
   `Content-Length` or while reading.
 - `503 store-unavailable` — the store cannot be reached (worth retrying; the client retries sends with the same id).
@@ -353,10 +379,9 @@ On every endpoint, additionally:
 
 `delay` is an ISO-8601 duration (`"PT5S"`, `"PT1H30M"`; a negative one is `400`); `deliverAt` is an ISO-8601
 instant. Both are resolved against the store clock. Listings take `cursor` (the previous page's `next`) and `limit`
-(default 100); a `prefix` is an actor-URI prefix (`actor://sync/`; the scheme may be left out). Pages are a keyset,
+(default 100); a `prefix` is a prefix of the address (`sync/`, `sync/ac`). Pages are a keyset,
 not a snapshot: in a mailbox listing, a message rescheduled in place between two pages (later `deliverAt`, new `seq`)
-can appear on both, so deduplicate by id. A trailing segment that is literally `messages` names the mailbox; an
-instance whose last segment is `messages` is addressed as `%6Dessages` (`ActorAddress::to_http_path` does this).
+can appear on both, so deduplicate by id.
 
 ## Testing with `TestActors`
 
@@ -419,7 +444,7 @@ is the test's virtual time; `test.clock()` is the store's virtual wall clock.
 
 ### Contract snapshots
 
-A node refuses to start when a type's contract differs from the one registered for its template, which in a rolling
+A node refuses to start when a type's contract differs from the one registered for its type name, which in a rolling
 deploy shows up in production. `assert_contracts_match` moves that failure into a test: it keeps each type's contract
 as a JSON file and fails, naming what changed (state schema, message types added, removed or changed), when the code
 no longer matches. In a test:
@@ -444,8 +469,8 @@ assert_contracts_match("tests/contracts", &[
 ```
 
 A missing file is written (commit it). To accept a change, delete the file or run the tests with
-`CICADA_UPDATE_CONTRACTS=true`. The files are named after the template (`actor://sync/{tenant}` →
-`sync_{tenant}.json`) and hold the contract as `GET /types` serves it.
+`CICADA_UPDATE_CONTRACTS=true`. The files are named after the type (`sync` →
+`sync.json`) and hold the contract as `GET /types` serves it.
 
 ### State samples
 
@@ -510,7 +535,7 @@ let result = gateway.charge(&reply_to.id, amount_cents, turn.message().id.as_str
 
 Every send takes `retry` through `SendOptions::retry`: `send_with` in a handler (typed and raw), the `ActorSystem`
 sends, `ActorClient::send_with` / `send_message`, `TestActors::send_with`, and over HTTP the `retry` field of
-`POST /actors/{path}/messages`:
+`POST /actors/{type}/{key}/messages`:
 
 ```sh
 curl -X POST localhost:8080/actors/payments/messages -d '{"type": "Charge", "payload": {…},
@@ -530,7 +555,7 @@ into the mailbox, in the same commit: same id, type, payload, `from`, `correlati
 after `backoff.delay(failures + 1)`, with a new `seq` (it queues again behind messages already due), `failures` + 1
 and `last_error` = the handler's error (at most 1000 characters). It gets no outcome in between: `GET /messages/{id}`
 shows `pending` with `failures`/`lastError`, and the message ends with exactly one outcome — `done` when an attempt
-succeeds, `failed` with the handler's error when the policy is exhausted. `/failures` lists only such final failures.
+succeeds, `failed` with the handler's error when the policy is exhausted. `/outcomes?status=failed` lists only such final failures.
 The handler's buffered effects are discarded on every failed run, as for any failure. Cancel works on a waiting
 message; deleting or stopping the instance purges it.
 
@@ -598,7 +623,7 @@ curl -X POST localhost:8080/actors/mailers/m-1/messages -d '{"type": "Send", "pa
 - **`Keep::For { age }`** keeps it readable for `age` after it finished, shorter or longer than the store retention.
 - **`Keep::Last { count }`** keeps it while it is among the `count` newest records of the same instance and outcome
   that also chose `Last` (and at most for the store retention). Records with another rule are never trimmed by it.
-- A removed record is gone from `GET /messages/{id}` (404), `/failures` and cancel. Its content is dropped at once
+- A removed record is gone from `GET /messages/{id}` (404), `/outcomes` and cancel. Its content is dropped at once
   (`Remove`) or by the next retention sweep (`sweep_interval`, 1 h by default).
 - **Dedup keeps working.** The store keeps a minimal record (id, target, sender, type, status, times, cause) for
   its retention, which is also the dedup window: a resend with a removed message's id is still `200`, so a client
@@ -612,7 +637,8 @@ curl -X POST localhost:8080/actors/mailers/m-1/messages -d '{"type": "Send", "pa
 
 Every message sent from a turn records the id of the message that turn handled as `caused_by` (`causedBy` over HTTP;
 `None` for a send from outside an actor). It is part of the envelope everywhere a message is served, so a tool can
-follow a message back to what started it, one `GET /messages/{id}` at a time.
+follow a message back to what started it, one `GET /messages/{id}` at a time. `GET /messages/{id}/caused` goes the
+other way, one level down; a tool that wants the tree calls it again for each child.
 
 ## Plugins
 
@@ -686,7 +712,7 @@ let options = SendOptions { headers: current_trace_headers(), ..SendOptions::new
 system.send_with(&Sync { tenant: "acme".into() }, SyncMsg::Run, options).await?;
 ```
 
-- **A span per turn**, `process <template>` (kind `CONSUMER`), with `messaging.*` and `cicada.*` attributes (actor,
+- **A span per turn**, `process <type name>` (kind `CONSUMER`), with `messaging.*` and `cicada.*` attributes (actor,
   message type, attempt, failures, outcome, messages sent). `failed` turns have status `ERROR`; a handler error is an
   exception event, also when the message is retried. A turn that never commits (lost lease, node stopped mid-turn)
   ends its span with `cicada.outcome` = `abandoned`.
@@ -725,12 +751,12 @@ let system = ActorSystem::builder(store)
 ```
 
 The message ends `failed` (`on_claim of plugin CrashLoopGuard failed: crash loop: 5 claims without a commit`), is never
-retried and shows under `/failures`. Every claim without a commit counts, also a lease lost to a long pause or released
+retried and shows under `/outcomes?status=failed`. Every claim without a commit counts, also a lease lost to a long pause or released
 by a stopping node, so keep the limit above what rolling deploys during long turns can cause.
 
 **Dead letters.** A failed message stays in the failures list for the outcome retention. `FailureWatcher` (a job, not
-an actor: handlers cannot read `/failures`) copies each failure into the `DeadLetters` singleton
-(`actor://cicada/dead-letters`, hosted as `DeadLettersActor`), which keeps them past the retention, at most `capacity`
+an actor: handlers cannot read `/outcomes`) copies each failure into the `DeadLetters` singleton
+(`cicada.dead-letters/_`, hosted as `DeadLettersActor`), which keeps them past the retention, at most `capacity`
 (oldest dropped first):
 
 <!-- doctest
@@ -748,7 +774,7 @@ use cicada_extras::{DeadLettersActor, FailureWatcher};
 
 let system = ActorSystem::builder(store).host(DeadLettersActor::with_capacity(1_000)? /* , … */).build();
 system.start().await?;
-let watcher = FailureWatcher::new(system.clone()).prefix("actor://orders/").start(Duration::from_secs(10));
+let watcher = FailureWatcher::new(system.clone()).prefix("orders/").start(Duration::from_secs(10));
 // … on shutdown: watcher.abort();
 ```
 
@@ -770,7 +796,7 @@ actor never overlap, so state and mailbox never disagree. There is no timer type
 # use serde::{Deserialize, Serialize};
 # #[derive(Debug, Clone, Serialize, Deserialize)]
 # struct Checkout { id: String }
-# impl ActorRef for Checkout { const TEMPLATE: &'static str = "actor://checkout/{id}"; type Message = CheckoutMsg; }
+# impl ActorRef for Checkout { const TYPE: &'static str = "checkout"; type Message = CheckoutMsg; }
 # #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 # #[serde(tag = "type")]
 # enum CheckoutMsg { Begin, Pay, PaymentTimeout }
@@ -853,7 +879,7 @@ with `TestActors` on virtual time:
 
 | Module | Pattern |
 | --- | --- |
-| `singleton` | A stateless singleton (`actor://maintenance/cleanup`) whose turns never overlap. |
+| `singleton` | A stateless singleton (`maintenance.cleanup/_`) whose turns never overlap. |
 | `timer` | A timer / timeout: a delayed self-send, cancelled by its id. |
 | `cron` | A cron job; each tick does the work and arms the next one in the same commit. |
 | `reply` | Request and reply; the responder replies to `message().from` with the correlation id. |
@@ -864,7 +890,7 @@ with `TestActors` on virtual time:
 | `supervision` | Supervision; failed messages become dead letters that an operator redrives. |
 | `sync` | The architecture's example: a paged import, one turn per page, rescheduled hourly. |
 
-Every example has the same shape: a public ref struct per actor type (its fields are the template parameters), a
+Every example has the same shape: a public ref struct per actor type (its fields form the key), a
 message enum with `#[serde(tag = "type")]`, a state struct, and an actor struct whose fields are its dependencies
 (external services, faked in the tests), with one `impl Actor` whose `handle` matches on the message.
 
@@ -939,17 +965,20 @@ Decisions, as ADRs in [docs/adr/](docs/adr/):
 | [0010](docs/adr/0010-openspec-for-work-tracking.md) | Changes, designs and tasks live in `openspec/` (OpenSpec). |
 | [0011](docs/adr/0011-library-only.md) | A library only: the console (`cicada-ui`) and container handles (`cicada-docker`) are removed. |
 | [0012](docs/adr/0012-slimmer-api-and-wire-format.md) | A slimmer API and wire format: plugins observe, one way to configure and send, ISO-8601 durations only, twelve endpoints. |
+| [0013](docs/adr/0013-type-and-key-addresses.md) | Actors are addressed by type name and key (`sync/acme`) instead of URIs. |
+| [0014](docs/adr/0014-management-reads-and-type-removal.md) | Management reads over HTTP (outcomes, stats, caused-by) and removing a type's registration. |
+| [0015](docs/adr/0015-operator-actions.md) | Operator actions: node table, cancelling a running turn, pausing and purging a mailbox, retrying a message, bulk actions; the store refuses creates of an unregistered type. |
 
 Design questions and their answers:
 
 | Question | Decision |
 | --- | --- |
 | Crash loops | No claim limit in the core; `attempt` is on the envelope and in `/messages/{id}`. `CrashLoopGuard` is opt-in. |
-| Contract changes | Strict contract-hash equality; a node with a different contract for a registered template fails to start. Contracts include the generated schemas, so a schemars upgrade can change hashes. |
+| Contract changes | Strict contract-hash equality; a node with a different contract for a registered type name fails to start. Contracts include the generated schemas, so a schemars upgrade can change hashes. |
 | State evolution | No migrations; changes must be additive with defaults (`#[serde(default)]`). |
 | Plugin data | `headers` on the envelope; `correlation_id` is kept (the HTTP contract uses it). |
 | Send to an absent instance inside a turn | The whole turn fails at commit: outcome `failed` with the reason, no effects. |
-| Admin delete | Allowed: `DELETE /actors/{path}`. |
+| Admin delete | Allowed: `DELETE /actors/{type}/{key}`. |
 | One-way messaging | Kept; no ask/await. |
 | Defaults | Lease 30 s, heartbeat 10 s, poll 500 ms, max turn 15 min, retention 7 days; all configurable. |
 
@@ -974,17 +1003,14 @@ Design notes:
 - **Telemetry.** The OpenTelemetry SDK for Rust exports every span it drops, so the span of a turn that never commits
   is ended and exported with `cicada.outcome` = `abandoned` (issue 0600). The W3C propagator's empty `tracestate` is
   left out.
-- **Client.** `ActorClient` refuses addresses with a `.` or `..` segment (`ClientError::Invalid`): reqwest's URL
-  parser removes such segments even when escaped, and would address another instance. The server and the in-process
-  API serve them (issue 0300, won't fix).
 - **PostgreSQL settings.** Connection parameters go in the URL, and `PostgresStore::connect_with(PgConnectOptions,
   config)` takes sqlx options for the rest (issue 0501). `socket_timeout` bounds a whole transaction attempt (the
   connection is then closed), not every read, because sqlx has no per-read timeout.
 - **Cancelling `run_due_turns`.** Dropping its future cancels the turns like a node stop after the grace period: the
   worker is stopped first, then the lease is released only when the handler had not ended, and claims that arrive
   after the caller is gone are released.
-- **Errors and templates.** Error texts use Rust names (`max_uncommitted_claims must be at least 1`); a SQLite file of a
-  newer schema is refused with `StoreError::Invalid`. Template parameters are served in template order.
+- **Errors.** Error texts use Rust names (`max_uncommitted_claims must be at least 1`); a SQLite file of a
+  newer schema is refused with `StoreError::Invalid`.
 
 Known limitations: no claim limit for crash loops without `CrashLoopGuard`; external side effects are at-least-once
 (use `message().id` as idempotency key, also across retries); a commit rejected because of the handler's own sends is

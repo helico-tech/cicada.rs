@@ -96,7 +96,7 @@ fn json_form_kind_discriminator_iso_durations_round_trip() {
 fn message(retry: Option<RetryPolicy>) -> Message {
     Message {
         id: MessageId::new("m").unwrap(),
-        to: ActorAddress::parse("actor://x/1").unwrap(),
+        to: ActorAddress::parse("x/1").unwrap(),
         from: None,
         message_type: "T".into(),
         payload: json!({}),

@@ -7,17 +7,20 @@ use std::sync::Arc;
 use axum::extract::{Path, Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use cicada::address::TypeName;
 use cicada::api::{
-    ActorView, CreateActorRequest, CreateActorResponse, HealthView, MessageStatusView, MessageView, OutcomeView,
-    PageView, SendRequest, SendResponse, TypeListView, TypeView, problem_types,
+    ActorView, BulkRequest, BulkResponse, CreateActorRequest, CreateActorResponse, HealthView, MailboxMessageView,
+    MessageStatusView, MessageView, NodeDetailView, NodeListView, NodeView, OutcomeView, PageView, PurgeResponse,
+    RunningTurnView, SendRequest, SendResponse, StatsView, TypeListView, TypeView, problem_types,
 };
-use cicada::store::{CancelResult, DeleteResult, MessageId};
+use cicada::runtime::{BulkResult, RetryResult};
+use cicada::store::{CancelResult, DeleteResult, DeliverNowResult, MessageId, NodeId, RemoveTypeResult};
 use cicada::{ActorAddress, CreateActorResult, SendOptions, SendResult};
 use futures::FutureExt;
 
 use crate::Api;
 use crate::problem::{ApiError, ApiProblem, json, panicked};
-use crate::request::{self, Params, Target};
+use crate::request::{self, Params};
 
 type Shared = State<Arc<Api>>;
 type Outcome = Result<Response, ApiError>;
@@ -58,18 +61,54 @@ fn no_such_type(address: &ActorAddress) -> ApiProblem {
     )
 }
 
+fn no_running_turn(address: &ActorAddress) -> ApiProblem {
+    ApiProblem::new(
+        StatusCode::NOT_FOUND,
+        problem_types::NO_RUNNING_TURN,
+        "No running turn",
+        format!("No turn is running on {address}"),
+    )
+}
+
+fn no_such_node(id: &str) -> ApiProblem {
+    ApiProblem::new(
+        StatusCode::NOT_FOUND,
+        problem_types::NO_SUCH_NODE,
+        "No such node",
+        format!("No node {id} is known"),
+    )
+}
+
+fn message_running(id: &MessageId) -> ApiProblem {
+    ApiProblem::new(
+        StatusCode::CONFLICT,
+        problem_types::MESSAGE_RUNNING,
+        "Message is running",
+        format!("Message {id} is being handled"),
+    )
+}
+
+fn message_finished(id: &MessageId, status: cicada::store::OutcomeStatus) -> ApiProblem {
+    ApiProblem::new(
+        StatusCode::CONFLICT,
+        problem_types::MESSAGE_FINISHED,
+        "Message is finished",
+        format!("Message {id} already has outcome {status}"),
+    )
+}
+
 fn unprocessable(problem_type: &'static str, title: &'static str, detail: impl Into<String>) -> ApiProblem {
     ApiProblem::new(StatusCode::UNPROCESSABLE_ENTITY, problem_type, title, detail)
 }
 
-// ---- /actors/{path} ----
+// ---- /actors/{type}/{key} ----
 
-pub(crate) async fn put_path(State(api): Shared, req: Request) -> Response {
+pub(crate) async fn put_actor(State(api): Shared, req: Request) -> Response {
     let instance = request::instance(&req);
     run(instance, async move {
-        let address = request::instance_path(req.uri())?;
+        let address = request::address(req.uri())?;
         let body: CreateActorRequest = request::body(req, api.max_body).await?.unwrap_or_default();
-        let response = |created| CreateActorResponse { uri: address.clone(), created };
+        let response = |created| CreateActorResponse { address: address.clone(), created };
         match api.system.create_actor(&address, body.state).await? {
             CreateActorResult::Created => Ok(json(StatusCode::CREATED, &response(true))),
             CreateActorResult::Exists(_) => Ok(json(StatusCode::OK, &response(false))),
@@ -85,32 +124,91 @@ pub(crate) async fn put_path(State(api): Shared, req: Request) -> Response {
     .await
 }
 
-pub(crate) async fn get_path(State(api): Shared, req: Request) -> Response {
+pub(crate) async fn get_actor(State(api): Shared, req: Request) -> Response {
     let instance = request::instance(&req);
     run(instance, async move {
-        match request::target(req.uri())? {
-            Target::Instance(address) => {
-                let snapshot = api.system.get_actor(&address).await?.ok_or_else(|| no_such_instance(&address))?;
-                Ok(json(StatusCode::OK, &ActorView::from(snapshot)))
-            }
-            Target::Mailbox(address) => {
-                let params = Params::of(req.uri())?;
-                let page = api
-                    .system
-                    .pending(&address, params.cursor().as_ref(), params.limit()?)
-                    .await?
-                    .ok_or_else(|| no_such_instance(&address))?;
-                Ok(json(StatusCode::OK, &PageView::of(page, MessageView::from)))
-            }
-        }
+        let address = request::address(req.uri())?;
+        let snapshot = api.system.get_actor(&address).await?.ok_or_else(|| no_such_instance(&address))?;
+        Ok(json(StatusCode::OK, &ActorView::from(snapshot)))
     })
     .await
 }
 
-pub(crate) async fn delete_path(State(api): Shared, req: Request) -> Response {
+pub(crate) async fn mailbox(State(api): Shared, req: Request) -> Response {
     let instance = request::instance(&req);
     run(instance, async move {
-        let address = request::instance_path(req.uri())?;
+        let address = request::address(req.uri())?;
+        let params = Params::of(req.uri())?;
+        let page = api
+            .system
+            .mailbox(&address, params.cursor().as_ref(), params.limit()?)
+            .await?
+            .ok_or_else(|| no_such_instance(&address))?;
+        Ok(json(StatusCode::OK, &PageView::of(page, MailboxMessageView::from)))
+    })
+    .await
+}
+
+pub(crate) async fn pause_mailbox(State(api): Shared, req: Request) -> Response {
+    let instance = request::instance(&req);
+    run(instance, async move {
+        let address = request::address(req.uri())?;
+        if !api.system.pause_mailbox(&address).await? {
+            return Err(no_such_instance(&address).into());
+        }
+        Ok(StatusCode::NO_CONTENT.into_response())
+    })
+    .await
+}
+
+pub(crate) async fn resume_mailbox(State(api): Shared, req: Request) -> Response {
+    let instance = request::instance(&req);
+    run(instance, async move {
+        let address = request::address(req.uri())?;
+        if !api.system.resume_mailbox(&address).await? {
+            return Err(no_such_instance(&address).into());
+        }
+        Ok(StatusCode::NO_CONTENT.into_response())
+    })
+    .await
+}
+
+pub(crate) async fn purge_mailbox(State(api): Shared, req: Request) -> Response {
+    let instance = request::instance(&req);
+    run(instance, async move {
+        let address = request::address(req.uri())?;
+        let purged = api.system.purge_mailbox(&address).await?.ok_or_else(|| no_such_instance(&address))?;
+        Ok(json(StatusCode::OK, &PurgeResponse { purged }))
+    })
+    .await
+}
+
+pub(crate) async fn running_turn(State(api): Shared, req: Request) -> Response {
+    let instance = request::instance(&req);
+    run(instance, async move {
+        let address = request::address(req.uri())?;
+        let turn = api.system.running_turn(&address).await?.ok_or_else(|| no_running_turn(&address))?;
+        Ok(json(StatusCode::OK, &RunningTurnView::from(turn)))
+    })
+    .await
+}
+
+pub(crate) async fn cancel_turn(State(api): Shared, req: Request) -> Response {
+    let instance = request::instance(&req);
+    run(instance, async move {
+        let address = request::address(req.uri())?;
+        if !api.system.cancel_turn(&address).await? {
+            return Err(no_running_turn(&address).into());
+        }
+        Ok(StatusCode::ACCEPTED.into_response())
+    })
+    .await
+}
+
+pub(crate) async fn delete_actor(State(api): Shared, req: Request) -> Response {
+    let instance = request::instance(&req);
+    run(instance, async move {
+        let address = request::address(req.uri())?;
         match api.system.delete_actor(&address).await? {
             DeleteResult::Deleted { .. } => Ok(StatusCode::NO_CONTENT.into_response()),
             DeleteResult::Absent => Err(no_such_instance(&address).into()),
@@ -119,22 +217,28 @@ pub(crate) async fn delete_path(State(api): Shared, req: Request) -> Response {
     .await
 }
 
-pub(crate) async fn post_path(State(api): Shared, req: Request) -> Response {
+pub(crate) async fn post_actor(req: Request) -> Response {
     let instance = request::instance(&req);
     run(instance, async move {
-        match request::target(req.uri())? {
-            Target::Mailbox(address) => send(&api, address, req).await,
-            Target::Instance(_) => Err(ApiProblem {
-                allow: Some("GET, PUT, DELETE"),
-                ..ApiProblem::new(
-                    StatusCode::METHOD_NOT_ALLOWED,
-                    problem_types::METHOD_NOT_ALLOWED,
-                    "Method not allowed",
-                    "POST is only defined on /actors/{path}/messages",
-                )
-            }
-            .into()),
+        Err(ApiProblem {
+            allow: Some("GET, PUT, DELETE"),
+            ..ApiProblem::new(
+                StatusCode::METHOD_NOT_ALLOWED,
+                problem_types::METHOD_NOT_ALLOWED,
+                "Method not allowed",
+                "POST is only defined on /actors/{type}/{key}/messages",
+            )
         }
+        .into())
+    })
+    .await
+}
+
+pub(crate) async fn send_message(State(api): Shared, req: Request) -> Response {
+    let instance = request::instance(&req);
+    run(instance, async move {
+        let address = request::address(req.uri())?;
+        send(&api, address, req).await
     })
     .await
 }
@@ -168,10 +272,10 @@ async fn send(api: &Api, address: ActorAddress, req: Request) -> Outcome {
         )
         .into()),
         SendResult::NoSuchInstance => Err(no_such_instance(&address).into()),
-        SendResult::UnknownType { message_type, template } => Err(unprocessable(
+        SendResult::UnknownType { message_type, type_name } => Err(unprocessable(
             problem_types::UNKNOWN_MESSAGE_TYPE,
             "Unknown message type",
-            format!("{template} does not accept message type '{message_type}'"),
+            format!("{type_name} does not accept message type '{message_type}'"),
         )
         .into()),
         SendResult::InvalidPayload { message_type, error } => Err(unprocessable(
@@ -205,13 +309,37 @@ pub(crate) async fn list_pending(State(api): Shared, req: Request) -> Response {
     .await
 }
 
-pub(crate) async fn failures(State(api): Shared, req: Request) -> Response {
+pub(crate) async fn outcomes(State(api): Shared, req: Request) -> Response {
     let instance = request::instance(&req);
     run(instance, async move {
         let params = Params::of(req.uri())?;
-        let since = params.since()?;
-        let page = api.system.failures(&params.prefix(), since, params.cursor().as_ref(), params.limit()?).await?;
+        let (status, since) = (params.status()?, params.since()?);
+        let page =
+            api.system.outcomes(status, &params.prefix(), since, params.cursor().as_ref(), params.limit()?).await?;
         Ok(json(StatusCode::OK, &PageView::of(page, OutcomeView::from)))
+    })
+    .await
+}
+
+pub(crate) async fn list_turns(State(api): Shared, req: Request) -> Response {
+    let instance = request::instance(&req);
+    run(instance, async move {
+        let params = Params::of(req.uri())?;
+        let node = params.node();
+        let page = api
+            .system
+            .list_running_turns(node.as_ref(), &params.prefix(), params.cursor().as_ref(), params.limit()?)
+            .await?;
+        Ok(json(StatusCode::OK, &PageView::of(page, RunningTurnView::from)))
+    })
+    .await
+}
+
+pub(crate) async fn stats(State(api): Shared, req: Request) -> Response {
+    let instance = request::instance(&req);
+    run(instance, async move {
+        let params = Params::of(req.uri())?;
+        Ok(json(StatusCode::OK, &StatsView::from(api.system.stats(&params.prefix()).await?)))
     })
     .await
 }
@@ -228,6 +356,21 @@ pub(crate) async fn message_status(State(api): Shared, Path(id): Path<String>, r
     .await
 }
 
+pub(crate) async fn caused(State(api): Shared, Path(id): Path<String>, req: Request) -> Response {
+    let instance = request::instance(&req);
+    run(instance, async move {
+        let id = request::message_id(&id)?;
+        let params = Params::of(req.uri())?;
+        let page = api
+            .system
+            .caused_by(&id, params.cursor().as_ref(), params.limit()?)
+            .await?
+            .ok_or_else(|| no_such_message(&id))?;
+        Ok(json(StatusCode::OK, &PageView::of(page, MessageStatusView::from)))
+    })
+    .await
+}
+
 pub(crate) async fn cancel_message(State(api): Shared, Path(id): Path<String>, req: Request) -> Response {
     let instance = request::instance(&req);
     run(instance, async move {
@@ -235,21 +378,88 @@ pub(crate) async fn cancel_message(State(api): Shared, Path(id): Path<String>, r
         match api.system.cancel(&id).await? {
             CancelResult::Cancelled(_) => Ok(StatusCode::NO_CONTENT.into_response()),
             CancelResult::NotFound => Err(no_such_message(&id).into()),
-            CancelResult::Running => Err(ApiProblem::new(
+            CancelResult::Running => Err(message_running(&id).into()),
+            CancelResult::AlreadyFinished(outcome) => Err(message_finished(&id, outcome.status).into()),
+        }
+    })
+    .await
+}
+
+pub(crate) async fn retry_message(State(api): Shared, Path(id): Path<String>, req: Request) -> Response {
+    let instance = request::instance(&req);
+    run(instance, async move {
+        let id = request::message_id(&id)?;
+        match api.system.retry_message(&id).await? {
+            RetryResult::Accepted(m) => {
+                Ok(json(StatusCode::ACCEPTED, &SendResponse { id: m.id, deliver_at: Some(m.deliver_at) }))
+            }
+            RetryResult::NotFound => Err(no_such_message(&id).into()),
+            RetryResult::NoSuchInstance(address) => Err(no_such_instance(&address).into()),
+            RetryResult::NotRetryable { state } => Err(ApiProblem::new(
                 StatusCode::CONFLICT,
-                problem_types::MESSAGE_RUNNING,
-                "Message is running",
-                format!("Message {id} is being handled and cannot be cancelled"),
-            )
-            .into()),
-            CancelResult::AlreadyFinished(outcome) => Err(ApiProblem::new(
-                StatusCode::CONFLICT,
-                problem_types::MESSAGE_FINISHED,
-                "Message is finished",
-                format!("Message {id} already has outcome {}", outcome.status),
+                problem_types::MESSAGE_NOT_RETRYABLE,
+                "Message cannot be retried",
+                format!("Message {id} is {state}; only failed or cancelled messages can be retried"),
             )
             .into()),
         }
+    })
+    .await
+}
+
+pub(crate) async fn deliver_now(State(api): Shared, Path(id): Path<String>, req: Request) -> Response {
+    let instance = request::instance(&req);
+    run(instance, async move {
+        let id = request::message_id(&id)?;
+        match api.system.deliver_now(&id).await? {
+            DeliverNowResult::Delivered(m) => Ok(json(StatusCode::OK, &MessageView::from(m))),
+            DeliverNowResult::NotFound => Err(no_such_message(&id).into()),
+            DeliverNowResult::Running => Err(message_running(&id).into()),
+            DeliverNowResult::AlreadyFinished(outcome) => Err(message_finished(&id, outcome.status).into()),
+        }
+    })
+    .await
+}
+
+async fn bulk(
+    api: &Api,
+    req: Request,
+    act: impl AsyncFnOnce(cicada::runtime::BulkSelection) -> Result<BulkResult, cicada::OpError>,
+) -> Outcome {
+    let body: BulkRequest = request::body(req, api.max_body)
+        .await?
+        .ok_or_else(|| ApiProblem::bad_request("A bulk action needs a JSON body with ids or a filter"))?;
+    let selection = body.selection().map_err(ApiProblem::bad_request)?;
+    Ok(json(StatusCode::OK, &BulkResponse::from(act(selection).await?)))
+}
+
+pub(crate) async fn bulk_cancel(State(api): Shared, req: Request) -> Response {
+    let instance = request::instance(&req);
+    run(instance, async move { bulk(&api, req, async |s| api.system.bulk_cancel(s).await).await }).await
+}
+
+pub(crate) async fn bulk_retry(State(api): Shared, req: Request) -> Response {
+    let instance = request::instance(&req);
+    run(instance, async move { bulk(&api, req, async |s| api.system.bulk_retry(s).await).await }).await
+}
+
+// ---- /nodes ----
+
+pub(crate) async fn nodes(State(api): Shared, req: Request) -> Response {
+    let instance = request::instance(&req);
+    run(instance, async move {
+        let items = api.system.nodes().await?.iter().map(NodeView::from).collect();
+        Ok(json(StatusCode::OK, &NodeListView { items }))
+    })
+    .await
+}
+
+pub(crate) async fn node(State(api): Shared, Path(id): Path<String>, req: Request) -> Response {
+    let instance = request::instance(&req);
+    run(instance, async move {
+        let node_id = NodeId::new(&id).map_err(|_| no_such_node(&id))?;
+        let node = api.system.node(&node_id).await?.ok_or_else(|| no_such_node(&id))?;
+        Ok(json(StatusCode::OK, &NodeDetailView::from(node)))
     })
     .await
 }
@@ -261,6 +471,51 @@ pub(crate) async fn types(State(api): Shared, req: Request) -> Response {
     run(instance, async move {
         let items = api.system.types().await?.iter().map(TypeView::from).collect();
         Ok(json(StatusCode::OK, &TypeListView { items }))
+    })
+    .await
+}
+
+pub(crate) async fn type_by_name(State(api): Shared, Path(name): Path<String>, req: Request) -> Response {
+    let instance = request::instance(&req);
+    run(instance, async move {
+        let found = api.system.types().await?.into_iter().find(|t| t.name().as_str() == name);
+        let found = found.ok_or_else(|| {
+            ApiProblem::new(
+                StatusCode::NOT_FOUND,
+                problem_types::NO_SUCH_TYPE,
+                "No such actor type",
+                format!("No registered actor type {name}"),
+            )
+        })?;
+        Ok(json(StatusCode::OK, &TypeView::from(&found)))
+    })
+    .await
+}
+
+pub(crate) async fn remove_type(State(api): Shared, Path(name): Path<String>, req: Request) -> Response {
+    let instance = request::instance(&req);
+    run(instance, async move {
+        let absent = || {
+            ApiProblem::new(
+                StatusCode::NOT_FOUND,
+                problem_types::NO_SUCH_TYPE,
+                "No such actor type",
+                format!("No registered actor type {name}"),
+            )
+        };
+        // A name that is not a valid type name cannot be registered.
+        let type_name = TypeName::parse(&name).map_err(|_| absent())?;
+        match api.system.remove_type(&type_name).await? {
+            RemoveTypeResult::Removed => Ok(StatusCode::NO_CONTENT.into_response()),
+            RemoveTypeResult::Absent => Err(absent().into()),
+            RemoveTypeResult::InUse => Err(ApiProblem::new(
+                StatusCode::CONFLICT,
+                problem_types::TYPE_IN_USE,
+                "Type is in use",
+                format!("Actors of type {name} exist; delete them first"),
+            )
+            .into()),
+        }
     })
     .await
 }

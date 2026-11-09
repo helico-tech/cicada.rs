@@ -30,7 +30,7 @@ pub struct CronJob {
 }
 
 impl ActorRef for CronJob {
-    const TEMPLATE: &'static str = "actor://cron/{name}";
+    const TYPE: &'static str = "cron";
     type Message = CronMsg;
 }
 

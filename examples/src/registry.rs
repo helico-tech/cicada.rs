@@ -2,7 +2,7 @@
 //!
 //! Two ways to find instances. The registry actor keeps the refs of the devices it created in its state, so a handler
 //! can act on all of them (here: broadcast a firmware update) and the set is consistent with its own commits. From
-//! outside, `list_actors(prefix)` (`GET /actors?prefix=actor://devices/`) enumerates instances by namespace without
+//! outside, `list_actors(prefix)` (`GET /actors?prefix=devices/`) enumerates instances by namespace without
 //! any actor.
 
 use std::collections::BTreeMap;
@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 pub struct DeviceRegistry;
 
 impl ActorRef for DeviceRegistry {
-    const TEMPLATE: &'static str = "actor://registries/devices";
+    const TYPE: &'static str = "registries.devices";
     type Message = RegistryMsg;
 }
 
@@ -59,7 +59,7 @@ pub struct Device {
 }
 
 impl ActorRef for Device {
-    const TEMPLATE: &'static str = "actor://devices/{id}";
+    const TYPE: &'static str = "devices";
     type Message = DeviceMsg;
 }
 

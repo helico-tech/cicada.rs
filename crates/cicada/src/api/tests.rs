@@ -11,7 +11,7 @@ use crate::time::parse_instant;
 fn message() -> Message {
     Message {
         id: MessageId::new("m1").unwrap(),
-        to: ActorAddress::parse("actor://a/b").unwrap(),
+        to: ActorAddress::parse("a/b").unwrap(),
         from: None,
         message_type: "Run".into(),
         payload: json!({"x": 1}),
@@ -33,7 +33,7 @@ fn message_view_keeps_its_wire_form() {
     let text = serde_json::to_string(&MessageView::from(message())).unwrap();
     assert_eq!(
         text,
-        r#"{"id":"m1","to":"actor://a/b","from":null,"type":"Run","payload":{"x":1},"deliverAt":"2026-01-01T00:00:00.000001Z","correlationId":null,"headers":{},"seq":3,"attempt":0,"failures":0,"lastError":null,"retry":{"maxAttempts":2,"backoff":{"kind":"fixed","delay":"PT1H"}},"causedBy":null,"retention":{"done":{"kind":"last","count":5},"failed":null}}"#
+        r#"{"id":"m1","to":"a/b","from":null,"type":"Run","payload":{"x":1},"deliverAt":"2026-01-01T00:00:00.000001Z","correlationId":null,"headers":{},"seq":3,"attempt":0,"failures":0,"lastError":null,"retry":{"maxAttempts":2,"backoff":{"kind":"fixed","delay":"PT1H"}},"causedBy":null,"retention":{"done":{"kind":"last","count":5},"failed":null}}"#
     );
     let back: MessageView = serde_json::from_str(&text).unwrap();
     assert_eq!(back, MessageView::from(message()));
@@ -47,7 +47,7 @@ fn status_views_write_every_field() {
     assert_eq!(pending["status"], "pending");
     let outcome = OutcomeRecord {
         message_id: MessageId::new("m1").unwrap(),
-        actor: ActorAddress::parse("actor://a/b").unwrap(),
+        actor: ActorAddress::parse("a/b").unwrap(),
         status: OutcomeStatus::Failed,
         error: Some("boom".into()),
         finished_at: parse_instant("2026-01-01T00:00:01Z").unwrap(),

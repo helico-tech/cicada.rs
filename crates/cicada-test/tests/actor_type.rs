@@ -1,8 +1,8 @@
 //! Actor type definitions: what a node checks at start, and the published contract.
 //!
 //! Checked by the compiler instead, so not tested here: a message without a handler and a duplicate handler (one exhaustive
-//! `match`), a missing or doubled unhandled policy (`UNHANDLED` is a required associated constant), a missing template
-//! (`TEMPLATE` is a required associated constant), and a message field named `type` (serde refuses it: "variant field
+//! `match`), a missing or doubled unhandled policy (`UNHANDLED` is a required associated constant), a missing type name
+//! (`TYPE` is a required associated constant), and a message field named `type` (serde refuses it: "variant field
 //! name `type` conflicts with internal tag"). A message family is one flat
 //! enum.
 
@@ -22,7 +22,7 @@ struct Sync {
 }
 
 impl ActorRef for Sync {
-    const TEMPLATE: &'static str = "actor://sync/{tenant}";
+    const TYPE: &'static str = "sync";
     type Message = SyncMsg;
 }
 
@@ -68,14 +68,14 @@ impl Actor for StatelessSync {
     }
 }
 
-/// A ref whose fields are not the parameters of its template.
+/// A ref whose type name is malformed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct BadRef {
     name: String,
 }
 
 impl ActorRef for BadRef {
-    const TEMPLATE: &'static str = "actor://bad/{id}";
+    const TYPE: &'static str = "Bad Type";
     type Message = SyncMsg;
 }
 
@@ -112,7 +112,7 @@ async fn problems<A: Actor>(actor: A) -> Vec<String> {
 #[tokio::test]
 async fn a_complete_definition_has_no_problems() {
     let def = registered(SyncActor).await;
-    assert_eq!(def.template.as_str(), "actor://sync/{tenant}");
+    assert_eq!(def.name.as_str(), "sync");
     let messages: Vec<&String> = def.contract["messages"].as_object().unwrap().keys().collect();
     assert_eq!(messages, vec!["FetchPage", "Pause", "Resume", "Run"]);
 }
@@ -136,13 +136,13 @@ async fn contract_snapshot_and_stable_hash() {
     let def = registered(SyncActor).await;
     // The schemas come from schemars.
     let expected = concat!(
-        r#"{"messages":{"#,
+        r#"{"key":["tenant"],"messages":{"#,
         r#""FetchPage":{"$schema":"https://json-schema.org/draft/2020-12/schema","properties":{"cursor":{"type":["string","null"]}},"title":"FetchPage","type":"object"},"#,
         r#""Pause":{"$schema":"https://json-schema.org/draft/2020-12/schema","properties":{},"title":"Pause","type":"object"},"#,
         r#""Resume":{"$schema":"https://json-schema.org/draft/2020-12/schema","properties":{},"title":"Resume","type":"object"},"#,
         r#""Run":{"$schema":"https://json-schema.org/draft/2020-12/schema","properties":{},"title":"Run","type":"object"}},"#,
         r#""state":{"$schema":"https://json-schema.org/draft/2020-12/schema","properties":{"imported":{"default":0,"format":"int32","type":"integer"},"source":{"type":"string"}},"required":["source"],"title":"SyncState","type":"object"},"#,
-        r#""template":"actor://sync/{tenant}"}"#
+        r#""type":"sync"}"#
     );
     assert_eq!(canonical_json(&def.contract), expected);
     let contract = Contract::from_json(&def.contract).unwrap();

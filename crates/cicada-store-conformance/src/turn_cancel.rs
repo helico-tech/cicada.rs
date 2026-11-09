@@ -96,7 +96,7 @@ pub async fn turn_cancel_a_rejected_or_fenced_commit_cancels_nothing<B: FixtureF
         t.send(&a).await;
         let keep = t.send_at(&a, Delivery::After(t.ticks(50))).await;
         let c = t.claim_one().await;
-        let absent = address("actor://other/absent");
+        let absent = address("other/absent");
         let rejected = t
             .commit(CommitRequest {
                 sends: vec![OutgoingMessage::new(absent, "T", json!(1))],

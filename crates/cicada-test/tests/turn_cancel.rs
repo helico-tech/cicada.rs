@@ -14,7 +14,7 @@ struct Alarm {
 }
 
 impl ActorRef for Alarm {
-    const TEMPLATE: &'static str = "actor://alarm/{id}";
+    const TYPE: &'static str = "alarm";
     type Message = AlarmMsg;
 }
 
