@@ -35,7 +35,7 @@ PostgreSQL for tests: `docker compose up -d postgres` (port 55432). Tests that n
 | `examples/`, `sample-service/` | Worked examples; a runnable node |
 | `e2e/` | End-to-end and fault tests against sample nodes in Docker |
 | `docs/` | Architecture, ADRs and the operations guide |
-| `work/` | Queue, epics and stories, issues |
+| `openspec/` | Specs, changes in progress and finished changes |
 
 ## Rules
 
@@ -48,5 +48,17 @@ PostgreSQL for tests: `docker compose up -d postgres` (port 55432). Tests that n
 - The Rust blocks of `README.md` and `docs/operations.md` are doctests of `cicada-examples` (`ReadmeDoctests`,
   `OperationsDoctests` in `examples/src/lib.rs`): a change to a public API must keep them compiling. Use `no_run` for
   blocks that start a server or need a database.
-- Work tracking: take the top item of [work/queue.md](work/queue.md), set it `in-progress`, write the plan in the story,
-  log progress there, set `done` when tests pass. Out-of-scope findings become issues in `work/issues/`.
+
+## Specs and changes: OpenSpec
+
+Specs, changes, designs and tasks live in `openspec/` ([OpenSpec](https://github.com/Fission-AI/OpenSpec), ADR 0010).
+
+- `openspec/specs/`: what the system does, one folder per capability. It grows as changes are archived;
+  `docs/architecture.md` stays the reference for behaviour.
+- `openspec/changes/<name>/`: a change: `proposal.md`, `design.md`, `tasks.md` and spec deltas. A change with only a
+  `proposal.md` is not started.
+- `openspec/changes/archive/`: finished changes, and the old epics and issues (`2026-11-09-work-tracker-history/`).
+- Flow: `/opsx:explore` to think it through, `/opsx:propose` to write the change, `/opsx:apply` to build it,
+  `/opsx:archive` when done. Project rules for these are in `openspec/config.yaml`.
+- Out-of-scope findings become a change with only a `proposal.md`.
+- Use the CLI (`openspec list`, `openspec show`, `openspec validate`) to read and check them.

@@ -1,0 +1,25 @@
+schema: spec-driven
+
+context: |
+  Cicada for Rust: durable actors on a shared SQL store (PostgreSQL or SQLite). A library others build on, so keep
+  public APIs stable. It has no contract with the Kotlin implementation (ADR 0008).
+  Write all artifacts in English, plain words, short sentences.
+  Read docs/architecture.md first and follow it: it is the reference for behaviour (guarantees G1-G6, store
+  requirements S1-S10, the HTTP contract), and it wins over openspec/specs/ if they differ. Decisions are in docs/adr/.
+  Priorities, in order: simplicity, ease of use, correctness. Throughput is not a goal.
+  A change with only a proposal.md is an idea or a finding that is not started; write its specs, design and tasks when
+  it is next.
+
+rules:
+  proposal:
+    - Start with the simplest version that meets the requirements
+    - Always state what is out of scope
+  design:
+    - A change to a guarantee or a wire format needs a new ADR in docs/adr/ and an update of docs/architecture.md
+    - A schema change is an appended migration
+  tasks:
+    - Every task states how it is verified
+    - Test runtime behaviour on virtual time with `#[tokio::test(start_paused = true)]` and `TestActors`
+    - A store backend change must pass `cicada-store-conformance`
+    - A public API change keeps the doctests of `cicada-examples` (README.md, docs/operations.md) compiling
+    - End with `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and `openspec validate <change> --strict`

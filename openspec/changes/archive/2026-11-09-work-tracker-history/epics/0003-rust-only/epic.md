@@ -8,7 +8,7 @@ created: 2026-11-09
 ## Goal
 
 Cicada for Rust stands alone: no contract with, and no dependency on, the Kotlin implementation.
-Decision: [ADR 0008](../../../docs/adr/0008-rust-only.md).
+Decision: [ADR 0008](../../../../../../docs/adr/0008-rust-only.md).
 
 ## Scope
 

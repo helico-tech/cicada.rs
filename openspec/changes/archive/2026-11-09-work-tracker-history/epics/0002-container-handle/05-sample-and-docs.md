@@ -31,6 +31,6 @@ authenticated routes. Docs: README section and tables, architecture crate table,
 
 ## Follow-ups
 
-- [0800 Docker events watcher](../../issues/0800-docker-events-watcher.md)
-- [0801 Container logs in the console](../../issues/0801-console-container-logs.md)
-- [0802 Several Docker hosts](../../issues/0802-several-docker-hosts.md)
+- 0800 Docker events watcher (now OpenSpec change `docker-events-watcher`)
+- 0801 Container logs in the console (now OpenSpec change `console-container-logs`)
+- 0802 Several Docker hosts (now OpenSpec change `several-docker-hosts`)

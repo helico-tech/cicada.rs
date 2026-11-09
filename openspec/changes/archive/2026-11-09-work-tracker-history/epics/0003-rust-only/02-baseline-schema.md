@@ -8,7 +8,7 @@ created: 2026-11-09
 ## Goal
 
 Replace the six inherited migrations with one clean schema at version 1. Decision:
-[ADR 0009](../../../docs/adr/0009-one-baseline-schema.md).
+[ADR 0009](../../../../../../docs/adr/0009-one-baseline-schema.md).
 
 ## Acceptance criteria
 

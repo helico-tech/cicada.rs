@@ -8,7 +8,7 @@ created: 2026-10-11
 ## Goal
 
 Actors that look after Docker containers: run one with a spec, see its status, read its logs, stop and remove it.
-Design: [ADR 0007](../../../docs/adr/0007-container-handles.md).
+Design: [ADR 0007](../../../../../../docs/adr/0007-container-handles.md).
 
 ## Scope
 

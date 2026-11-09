@@ -36,4 +36,4 @@ Nothing in this repository depends on, or promises anything to, the Kotlin imple
 
 ## Follow-ups
 
-- [0900](../../issues/0900-connect-options-error-url.md): `connect_options` error can print a URL password.
+- 0900 (now OpenSpec change `redact-connect-options-url`): `connect_options` error can print a URL password.
