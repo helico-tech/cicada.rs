@@ -1,4 +1,4 @@
-//! Port of ContractSnapshotTest: the contracts this service registers, against the snapshots in `tests/contracts`. A
+//! The contracts this service registers, against the snapshots in `tests/contracts`. A
 //! change to any of them fails here, before a deploy would fail at node start next to nodes of the previous version.
 
 use cicada_sample_service::e2e::EffectLog;

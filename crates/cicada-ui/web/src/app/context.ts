@@ -2,7 +2,7 @@
 
 import { createContext, useContext, useEffect, useRef } from 'react';
 import type { Api } from '../api/client';
-import type { TypeView } from '../api/generated';
+import type { TypeView } from '../api/wire';
 
 export interface ConsoleContext {
   api: Api;

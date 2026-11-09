@@ -1,13 +1,11 @@
-//! Runs the S1–S10 conformance suite against [`PostgresStore`] on a real PostgreSQL (`CICADA_PG_URL`). Port of the
-//! Kotlin `PostgresStoreConformanceTest`.
+//! Runs the S1–S10 conformance suite against [`PostgresStore`] on a real PostgreSQL (`CICADA_PG_URL`).
 //!
 //! Time is the database clock, so the fixture is real-time: `advance` waits, durations scale with the tick, and the
 //! suite skips its time-exact cases. Each case gets a fresh schema; peers are separate stores with their own pools on
 //! that schema, as other nodes would be; `reopen` closes every handle and opens the schema again (S1).
 //!
 //! At most [`PARALLEL_CASES`] cases run at once, and peers (up to 16 per case, each used by one task) have pools of 1, so that the cases'
-//! connections stay below the default `max_connections` (100) of the docker-compose PostgreSQL; the Kotlin suite runs
-//! its container with 500.
+//! connections stay below the default `max_connections` (100) of the docker-compose PostgreSQL.
 
 mod common;
 

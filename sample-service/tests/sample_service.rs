@@ -1,4 +1,4 @@
-//! Port of SampleServiceTest: the sample node over HTTP, on SQLite (and on PostgreSQL when `CICADA_PG_URL` is set).
+//! The sample node over HTTP, on SQLite (and on PostgreSQL when `CICADA_PG_URL` is set).
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -138,7 +138,7 @@ fn configuration_comes_from_the_environment() {
 
 #[test]
 fn the_postgres_pool_is_never_smaller_than_the_store_default_nor_than_the_concurrency_needs() {
-    // Kotlin review round 2: the sample always set 10, below the default concurrency of 16, starving heartbeats.
+    // The sample once always set 10, below the default concurrency of 16, starving heartbeats.
     let pool = |pairs: &[(&str, &str)]| SampleConfig::from_vars(&vars(pairs)).unwrap().effective_pool_size();
     assert_eq!(pool(&[]), None, "the store's default (20)");
     assert_eq!(pool(&[("CONCURRENCY", "4")]), Some(20));

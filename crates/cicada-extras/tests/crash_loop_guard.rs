@@ -1,4 +1,4 @@
-//! The crash-loop guard, ported from `CrashLoopGuardTest.kt`.
+//! The crash-loop guard.
 
 use std::collections::BTreeSet;
 use std::time::Duration;

@@ -3,7 +3,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { fetchPages } from '../api/client';
-import type { OutcomeView } from '../api/generated';
+import type { OutcomeView } from '../api/wire';
 import { useConsole, usePageRefresh, useTitle } from '../app/context';
 import { normalizePrefix } from '../lib/address';
 import { count, dateTime, localInputValue, relative, shortDateTime } from '../lib/format';

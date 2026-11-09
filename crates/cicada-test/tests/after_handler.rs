@@ -1,11 +1,7 @@
 //! Once a handler has returned or failed, the runtime never releases the lease for a re-run (G6). Every unexpected
 //! failure after the handler ends in a failed outcome, or in abandoning the turn without release; a failure before the
 //! handler fails the message instead of crash-looping it. Faults are injected at each point after the handler: the
-//! typed-effects checks (store reads), hooks, encoding the state, the commit, the failure commit, and cancellation
-//! (Kotlin `AfterHandlerTest`).
-//!
-//! Kotlin's `onOutcome hooks run on the handler context` is not ported: the Kotlin node runs handlers and hooks on a
-//! configurable `handlerContext` dispatcher; a Rust node has no such setting, every hook runs on the tokio runtime.
+//! typed-effects checks (store reads), hooks, encoding the state, the commit, the failure commit, and cancellation.
 
 mod common;
 
@@ -30,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::Notify;
 
-/// `actor://tally/{id}`; the id `cursed` is refused when a ref is decoded (Kotlin: a check in the ref class's `init`).
+/// `actor://tally/{id}`; the id `cursed` is refused when a ref is decoded.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(try_from = "RawTally")]
 struct Tally {

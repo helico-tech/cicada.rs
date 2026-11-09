@@ -61,8 +61,7 @@ impl std::fmt::Debug for SqliteOptions {
     }
 }
 
-/// [`Store`] on one SQLite database file in WAL mode, for single-host deployments. The schema is the Kotlin
-/// implementation's, so either implementation opens a file the other wrote (ADR 0004).
+/// [`Store`] on one SQLite database file in WAL mode, for single-host deployments.
 ///
 /// Concurrency: all writes of this instance go through one writer connection, serialised by an async mutex, and each
 /// write is one explicit `BEGIN IMMEDIATE` … `COMMIT` transaction; that transaction is the atomic commit (S2). Several

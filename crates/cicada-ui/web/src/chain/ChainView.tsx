@@ -8,7 +8,7 @@ import {
   type Edge, type Node, type NodeProps, type ReactFlowInstance,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import type { ChainNodeView, MessageChainView } from '../api/generated';
+import type { ChainNodeView, MessageChainView } from '../api/wire';
 import { withoutScheme } from '../lib/address';
 import { count, shortDateTime } from '../lib/format';
 import { layoutChain, type ChainLayout } from '../lib/chain';

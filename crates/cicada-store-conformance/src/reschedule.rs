@@ -1,4 +1,4 @@
-//! A commit that reschedules the turn's message in place (Kotlin `StoreRescheduleSuite`): the same message goes back
+//! A commit that reschedules the turn's message in place: the same message goes back
 //! to pending with a new delivery time and `seq`, counts the failure, and gets exactly one outcome later. Also the
 //! message's retry policy: stored with the message, kept across reschedules and reopen, retained with the outcome.
 

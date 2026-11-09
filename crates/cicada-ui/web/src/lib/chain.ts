@@ -1,7 +1,7 @@
 // The layout of a message chain (GET /messages/{id}/chain): the flat list of nodes linked by `causedBy`, laid out as
 // a tree from cause (left) to effects (right). Leaves take one row each; a parent sits in the middle of its children.
 
-import type { ChainNodeView } from '../api/generated';
+import type { ChainNodeView } from '../api/wire';
 
 export interface TreeNode {
   node: ChainNodeView;

@@ -118,7 +118,7 @@ mod tests {
         assert_eq!(Schedule::daily(2, 30).unwrap().next(now), t("2026-10-03T02:30:00Z"));
         assert_eq!(Schedule::daily(23, 0).unwrap().next(now), t("2026-10-02T23:00:00Z"));
         assert_eq!(Schedule::daily(10, 15).unwrap().next(t("2026-10-02T10:15:00Z")), t("2026-10-03T10:15:00Z"));
-        // Fractions of a second count as the whole second, as in Kotlin.
+        // Fractions of a second count as the whole second.
         assert_eq!(Schedule::every(60).unwrap().next(t("2026-10-02T10:14:59.900Z")), t("2026-10-02T10:15:00Z"));
     }
 

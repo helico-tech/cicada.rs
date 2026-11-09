@@ -1,4 +1,4 @@
-//! Port of `ClusterExamplesTest` (T17): the worked examples across nodes (request/reply, saga with a retried charge),
+//! The worked examples across nodes (request/reply, saga with a retried charge),
 //! per-message retry policies and `/failures`, over HTTP only.
 
 use std::collections::{BTreeMap, HashSet};

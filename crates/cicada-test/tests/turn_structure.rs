@@ -1,7 +1,7 @@
 //! The turn's task structure: the worker (handler and hooks), the lease keeper (heartbeat and watchdog) and the
 //! overtime warning are separate tasks, so one failing child never cancels another; each child's failure is handled
 //! explicitly. A keeper that fails unexpectedly means the lease is no longer known to be held: the worker is cancelled
-//! and nothing is committed or released (Kotlin `TurnStructureTest`).
+//! and nothing is committed or released.
 
 mod common;
 
@@ -81,8 +81,7 @@ fn sleeper_node(store: Arc<dyn Store>, name: &str, counts: &Arc<Counts>) -> Acto
     node(store, name).host(ActorType::new(SleeperActor(counts.clone())).max_turn(Duration::from_secs(300))).build()
 }
 
-/// Renewal panics while `broken` is set: an unexpected failure of the store's renewal, not a failed renewal (Kotlin
-/// throws an `Error`).
+/// Renewal panics while `broken` is set: an unexpected failure of the store's renewal, not a failed renewal.
 struct BrokenRenew {
     broken: AtomicBool,
     slow_commit: bool,

@@ -3,7 +3,7 @@
 
 import { lazy, Suspense, useState } from 'react';
 import { ApiError } from '../api/client';
-import type { MessageChainView, MessageStatusView, MessageView, RetryPolicy } from '../api/generated';
+import type { MessageChainView, MessageStatusView, MessageView, RetryPolicy } from '../api/wire';
 import { useConsole, usePageRefresh, useTitle } from '../app/context';
 import { bytes, dateTime, isoDurationText, relative, utf8Length } from '../lib/format';
 import { keepText } from '../lib/retention';

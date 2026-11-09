@@ -1,5 +1,5 @@
-// Client for the fourteen actorApi() endpoints (ARCHITECTURE.md "HTTP contract"). Every response body is parsed with
-// the validator generated from the Kotlin wire classes (generated.ts), so the console never works on a shape the node
+// Client for the fourteen actor_api() endpoints (docs/architecture.md "HTTP contract"). Every response body is parsed
+// with its validator (wire.ts), so the console never works on a shape the node
 // did not send. Errors are thrown as ApiError, built from the problem+json body when there is one.
 
 import type { z } from 'zod';
@@ -20,7 +20,7 @@ import {
   type CreateActorRequest,
   type Json,
   type SendRequest,
-} from './generated';
+} from './wire';
 
 const STATUS_TEXT: Record<number, string> = {
   400: 'Bad Request',

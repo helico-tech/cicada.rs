@@ -1,4 +1,4 @@
-//! Ports of ContractSnapshotsTest and StateSamplesTest.
+//! Contract snapshots and state samples.
 
 use cicada::actor::contract_of;
 use cicada::contract::{Contract, canonical_json};

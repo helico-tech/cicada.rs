@@ -3,7 +3,7 @@
 
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode, type Ref } from 'react';
 import type { ApiError } from '../api/client';
-import type { MessageState } from '../api/generated';
+import type { MessageState } from '../api/wire';
 
 /** Joins class names, skipping falsy ones. */
 export function cx(...names: Array<string | false | null | undefined>): string {

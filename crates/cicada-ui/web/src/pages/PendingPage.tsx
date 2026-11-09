@@ -3,7 +3,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { fetchPages } from '../api/client';
-import type { MessageView } from '../api/generated';
+import type { MessageView } from '../api/wire';
 import { useConsole, usePageRefresh, useTitle } from '../app/context';
 import { combinePrefixes, matchTemplate, normalizePrefix, templatePrefix, withoutScheme } from '../lib/address';
 import { addedKeys, removedKeys } from '../lib/diff';

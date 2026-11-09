@@ -4,12 +4,12 @@ import {
   describe, draftOf, emptyDraft, hint, readDraft, skeleton, summary, type DraftObject, type SchemaNode,
 } from '../src/lib/schema';
 
-// The schema kotlinx-schema generates for JsonSchemasTest's Order (actors-core), as served by GET /types.
+// A JSON Schema as served by GET /types.
 const ORDER = {
   $defs: {
     circle: { properties: { radius: { type: 'number' }, type: { const: 'circle', type: 'string' } }, required: ['type', 'radius'], type: 'object' },
-    'nl.helico.cicada.serialization.Priority': { enum: ['LOW', 'HIGH'], type: 'string' },
-    'nl.helico.cicada.serialization.Shape': { oneOf: [{ $ref: '#/$defs/circle' }, { $ref: '#/$defs/square' }] },
+    'Priority': { enum: ['LOW', 'HIGH'], type: 'string' },
+    'Shape': { oneOf: [{ $ref: '#/$defs/circle' }, { $ref: '#/$defs/square' }] },
     square: { properties: { side: { type: 'number' }, type: { const: 'square', type: 'string' } }, required: ['type', 'side'], type: 'object' },
   },
   $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -18,10 +18,10 @@ const ORDER = {
     extra: {},
     note: { type: ['string', 'null'] },
     prices: { additionalProperties: { type: 'integer' }, type: 'object' },
-    priority: { $ref: '#/$defs/nl.helico.cicada.serialization.Priority' },
+    priority: { $ref: '#/$defs/Priority' },
     quantity: { type: 'integer' },
     replyTo: { type: ['string', 'null'] },
-    shape: { $ref: '#/$defs/nl.helico.cicada.serialization.Shape' },
+    shape: { $ref: '#/$defs/Shape' },
     sku: { type: 'string' },
     tags: { items: { type: 'string' }, type: 'array' },
   },

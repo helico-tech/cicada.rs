@@ -1,9 +1,7 @@
 # Architecture
 
-Cicada for Rust is a port of [Cicada for Kotlin](https://github.com/helico-tech/cicada) (`ARCHITECTURE.md` there is
-the original design). It keeps the contract: the domain language, guarantees G1–G6, store requirements S1–S10, the
-store schema and the HTTP API. What changed is how the contract is expressed in Rust; see the ADRs in
-[adr/](adr/).
+This document is the reference for Cicada's domain language, guarantees G1–G6, store requirements S1–S10 and HTTP
+contract. Decisions are recorded in the ADRs in [adr/](adr/).
 
 Priorities, in order: simplicity, ease of use, correctness. Throughput is not a goal.
 
@@ -75,8 +73,8 @@ Every backend implements the `cicada::store::Store` trait and passes the conform
 | S9 One clock | Due-ness and lease expiry use the store clock only. |
 | S10 Retention | Outcomes are kept for a configured period, which is also the dedup window. A message's retention policy can hide its outcome earlier or keep it longer; a minimal record stays for the whole dedup window. |
 
-The SQL schema (tables `actor_types`, `actors`, `messages`, `outcomes`, plus sequences) is the same as the Kotlin
-implementation's, migrations included, so both implementations read each other's databases (ADR 0004).
+The SQL schema (tables `actor_types`, `actors`, `messages`, `outcomes`, plus sequences) is versioned and migrated
+when a store opens a database.
 
 ## Turn semantics
 
@@ -105,8 +103,7 @@ Each claimed turn is a task with three children: *work* (load, `on_claim`, the h
 hooks, checks), *keeper* (heartbeat at a third of the TTL, plus a watchdog on the local lease deadline; it aborts
 *work* when the lease is lost) and *overtime* (warns about handlers that do not yield). The turn task awaits *work* and
 then commits while the keeper keeps renewing. Cancellation is tokio's: an aborted future stops at its next `.await`, so
-a handler blocked in synchronous code keeps its turn until it returns, exactly like a Kotlin handler that ignores
-coroutine cancellation. Blocking work belongs in `spawn_blocking`. A cancelled turn (node stop after the grace period,
+a handler blocked in synchronous code keeps its turn until it returns. Blocking work belongs in `spawn_blocking`. A cancelled turn (node stop after the grace period,
 or a dropped `run_due_turns` future) aborts *work*, waits for it to stop, and releases its lease only if the handler
 had not ended. A claim the store answers after its caller is gone is released, never left to expire.
 
@@ -146,41 +143,28 @@ impl Actor for SyncActor {
 }
 ```
 
-| Kotlin | Rust |
-| --- | --- |
-| `@ActorUri` ref data class | struct implementing `ActorRef` (`TEMPLATE`, `Message`); fields ↔ template params via serde |
-| sealed message family, `@SerialName` | enum with `#[serde(tag = "type")]`; variant name (or `#[serde(rename)]`) is the type name |
-| `on<T> { }` per message, checked at node start | one `handle` with an exhaustive `match`, checked by the compiler |
-| `unhandled { fail() }` mandatory | `const UNHANDLED: Unhandled` without default: the compiler requires it |
-| `TurnScope` (`self`, `state`, `send`, `create`, `stop`, `cancel`, `fail`) | `Turn<Self>` (`self_ref`, `state`/`state_mut`, `send`/`send_with`/`send_self`/`send_to`/`send_raw`, `create`, `stop`, `cancel`, `fail`) |
-| exceptions, `PermanentFailure` | `Result<(), HandlerError>`; `?` for ordinary failures, `HandlerError::permanent` / `turn.fail(..)` for the veto; panics are caught as failures |
-| plugin DSL with four hooks | `Plugin` trait with four async hooks |
-| `Attributes` with `AttributeKey<T>` | `Attributes` keyed by type (like `http::Extensions`) |
-| `testActors { }` on virtual time | `TestActors` on tokio's paused clock |
-
 ## Crates
 
-| Crate | Contents | Kotlin module |
-| --- | --- | --- |
-| `cicada` | Addressing, definition API, runtime and dispatch loop, store trait and model, contracts and schemas, retry and retention policies, the HTTP wire model (`api`, shared by server and client) | `actors-core` |
-| `cicada-test` | `InMemoryStore`, clocks, `TestActors`, contract snapshots and state samples | `actors-test` |
-| `cicada-store-conformance` | The S1–S10 suite every store runs | `actors-store-conformance` |
-| `cicada-store-sqlite` | `SqliteStore` (sqlx): one file, WAL, one writer | `actors-store-sqlite` |
-| `cicada-store-postgres` | `PostgresStore` (sqlx): `FOR UPDATE SKIP LOCKED` claims, `LISTEN/NOTIFY` wake-ups | `actors-store-postgres` |
-| `cicada-axum` | `actor_api()` (the fourteen endpoints) and `actor_health()` as axum routers | `actors-ktor` |
-| `cicada-client` | Typed HTTP client (reqwest) | `actors-client` |
-| `cicada-ui` | The actor console (the React app of the Kotlin repo, restyled to the Sensus BPM Online design system, ADR 0006), embedded and served by `actor_ui()` | `actors-ui` |
-| `cicada-otel` | OpenTelemetry plugin | `actors-otel` |
-| `cicada-extras` | Timer, schedules (interval, daily), crash-loop guard, failure watcher, dead letters | `actors-extras` |
-| `cicada-docker` | Container handles (ADR 0007): `ContainerActor` on the `Engine` seam (`DockerEngine`, bollard), `container_logs()` | — (Rust only) |
-| `examples` | Worked examples with tests | `examples` |
-| `sample-service` | A runnable node (binary) with the examples, used by end-to-end tests | `sample-service` |
-| `e2e` (`cicada-e2e`) | End-to-end and fault tests: sample nodes in Docker on PostgreSQL and SQLite, driven over HTTP (`CICADA_E2E=1`) | `e2e`, `e2e-tests` |
+| Crate | Contents |
+| --- | --- |
+| `cicada` | Addressing, definition API, runtime and dispatch loop, store trait and model, contracts and schemas, retry and retention policies, the HTTP wire model (`api`, shared by server and client) |
+| `cicada-test` | `InMemoryStore`, clocks, `TestActors`, contract snapshots and state samples |
+| `cicada-store-conformance` | The S1–S10 suite every store runs |
+| `cicada-store-sqlite` | `SqliteStore` (sqlx): one file, WAL, one writer |
+| `cicada-store-postgres` | `PostgresStore` (sqlx): `FOR UPDATE SKIP LOCKED` claims, `LISTEN/NOTIFY` wake-ups |
+| `cicada-axum` | `actor_api()` (the fourteen endpoints) and `actor_health()` as axum routers |
+| `cicada-client` | Typed HTTP client (reqwest) |
+| `cicada-ui` | The actor console (a React app in the Sensus BPM Online design system, ADR 0006), embedded and served by `actor_ui()` |
+| `cicada-otel` | OpenTelemetry plugin |
+| `cicada-extras` | Timer, schedules (interval, daily), crash-loop guard, failure watcher, dead letters |
+| `cicada-docker` | Container handles (ADR 0007): `ContainerActor` on the `Engine` seam (`DockerEngine`, bollard), `container_logs()` |
+| `examples` | Worked examples with tests |
+| `sample-service` | A runnable node (binary) with the examples, used by end-to-end tests |
+| `e2e` (`cicada-e2e`) | End-to-end and fault tests: sample nodes in Docker on PostgreSQL and SQLite, driven over HTTP (`CICADA_E2E=1`) |
 
 ## HTTP contract
 
-Fourteen endpoints, identical to the Kotlin implementation (paths, bodies, status codes, problem types); see the
-README. Errors are `application/problem+json` (RFC 9457) with `type` `urn:cicada:problem:<slug>`. The routes are an
+Fourteen endpoints; see the README. Errors are `application/problem+json` (RFC 9457) with `type` `urn:cicada:problem:<slug>`. The routes are an
 axum `Router` that the host nests into its own router and wraps in its own authentication layers. The bodies are the
 types of `cicada::api`, used by both `cicada-axum` and `cicada-client`; request envelopes decode strictly (an unknown
 key is `400`), payloads and states leniently.

@@ -1,5 +1,5 @@
 //! The exact semantics of the four hooks, including the edge cases: timeouts, undecodable payloads and state, failing
-//! hooks, rejected commits, node vs type installation (Kotlin `HookSemanticsTest`).
+//! hooks, rejected commits, node vs type installation.
 
 mod common;
 
@@ -622,9 +622,8 @@ async fn a_plugin_installed_on_the_node_and_on_a_type_runs_once_there_with_the_t
     assert_eq!(all, vec!["actor://counter/c:type", "actor://probe/p:node"]);
 }
 
-// Kotlin `a plugin whose configuration is invalid fails node start`: not ported. A Kotlin plugin is built from a
-// configuration block at install time and may refuse it; a Rust plugin is a value the caller constructs, so an invalid
-// configuration is refused by the plugin's own constructor before it can be installed.
+// An invalid plugin configuration is not tested here: a plugin is a value the caller constructs, so its own constructor
+// refuses an invalid configuration before it can be installed.
 
 struct Veto;
 

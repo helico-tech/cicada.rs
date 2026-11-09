@@ -43,7 +43,7 @@ pub enum Sent {
 
 /// The subset of the actor operations the [`super::FailureWatcher`] uses: implemented by [`ActorSystem`] (in-process)
 /// and, with the `client` feature, by `cicada_client::ActorClient`, so a watcher can also run in a process of its own
-/// and reach the nodes over HTTP, as in the Kotlin implementation.
+/// and reach the nodes over HTTP.
 #[async_trait]
 pub trait ActorOperations: Send + Sync + 'static {
     /// Creates `address` with `state`; idempotent.

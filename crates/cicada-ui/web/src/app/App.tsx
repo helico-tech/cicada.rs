@@ -3,7 +3,7 @@
 
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react';
 import { ApiError, createApi } from '../api/client';
-import type { TypeView } from '../api/generated';
+import type { TypeView } from '../api/wire';
 import { isActorUri, resolveType } from '../lib/address';
 import { capitalize, clock } from '../lib/format';
 import { Poller } from '../lib/poller';

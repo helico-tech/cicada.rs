@@ -1,4 +1,4 @@
-//! Port of `ClusterApiTest` (T17): the HTTP contract end to end on the PostgreSQL cluster (three hosting nodes, one
+//! The HTTP contract end to end on the PostgreSQL cluster (three hosting nodes, one
 //! send-only node), driven over HTTP only. Status codes are asserted on raw responses; the typed client is used for
 //! everything else.
 

@@ -1,4 +1,4 @@
-//! The four plugin hooks: when they fire, what they can do, node vs type installation (Kotlin `HooksTest`).
+//! The four plugin hooks: when they fire, what they can do, node vs type installation.
 
 mod common;
 

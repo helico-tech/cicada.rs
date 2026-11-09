@@ -1,4 +1,4 @@
-//! The E2E and fault suite (port of Kotlin's `e2e-tests`): one module per Kotlin test class, run in the Kotlin order
+//! The E2E and fault suite: one module per test class, run in a fixed order
 //! against one stack by `cicada_e2e::run_suite`. Runs only with `CICADA_E2E=1`; see e2e/README.md.
 
 mod cluster_api;

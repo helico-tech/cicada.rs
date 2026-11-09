@@ -1,4 +1,4 @@
-//! I6: a turn cancels pending messages of its own instance, atomically with its commit (Kotlin `TurnCancelTest`).
+//! A turn cancels pending messages of its own instance, atomically with its commit.
 
 use std::time::Duration;
 

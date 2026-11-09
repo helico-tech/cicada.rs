@@ -408,7 +408,7 @@ mod tests {
     }
 
     #[test]
-    fn formats_durations_like_kotlin() {
+    fn formats_durations() {
         assert_eq!(format_duration(Duration::ZERO), "PT0S");
         assert_eq!(format_duration(Duration::from_secs(1)), "PT1S");
         assert_eq!(format_duration(Duration::from_secs(60)), "PT1M");

@@ -1,5 +1,4 @@
-//! Percent-encoding, actor addresses and URI templates (Kotlin `AddressingTest`: `PercentEncodingTest`,
-//! `ActorAddressTest`, `UriTemplateTest`).
+//! Percent-encoding, actor addresses and URI templates.
 
 use std::collections::BTreeMap;
 

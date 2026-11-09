@@ -1,4 +1,4 @@
-//! Message causation (Kotlin `StoreChainSuite`): the store keeps `caused_by` with every message and its outcome, and
+//! Message causation: the store keeps `caused_by` with every message and its outcome, and
 //! finds messages by id and by cause (`chain_entries`, `chain_children`).
 
 use std::collections::{BTreeSet, HashMap};

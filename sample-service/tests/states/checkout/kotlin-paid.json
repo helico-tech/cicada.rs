@@ -1,9 +1,0 @@
-{
-    "status": "PAID",
-    "timer": {
-        "generation": 2,
-        "deadline": null
-    },
-    "paidCents": 1250,
-    "staleTimeouts": 0
-}

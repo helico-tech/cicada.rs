@@ -1,6 +1,6 @@
 // The persistence (retention) policy of a send, as the send drawer edits it and the message page shows it.
 
-import type { Keep, Retention } from '../api/generated';
+import type { Keep, Retention } from '../api/wire';
 import { isoDurationText } from './format';
 
 export type KeepKind = 'default' | 'remove' | 'for' | 'last';
@@ -16,7 +16,7 @@ export const blankKeep = (): KeepDraft => ({ kind: 'default', age: '30d', count:
 
 export const MAX_COUNT = 10_000;
 
-/** A form's age as the API takes it: Kotlin's `30d` / `2h 30m` form or ISO-8601 (`P30D`) pass through as typed. */
+/** A form's age as the API takes it: the short form `30d` / `2h 30m` or ISO-8601 (`P30D`) pass through as typed. */
 function readKeep(draft: KeepDraft, outcome: string): { keep: Keep | null } | { error: string } {
   switch (draft.kind) {
     case 'default':

@@ -1,7 +1,7 @@
 //! A run that *ended* but overran its maximum turn in blocking code (which cancellation cannot stop) is a timeout, but
 //! it is only retried when the handler itself failed: a handler that returned, a permanent failure and the unhandled
 //! policy's decisions must not be re-run. A run that was cut off at its maximum turn is a timeout retried per policy.
-//! Real time: blocking code does not advance tokio's paused clock (Kotlin `OverrunTest`).
+//! Real time: blocking code does not advance tokio's paused clock.
 
 mod common;
 

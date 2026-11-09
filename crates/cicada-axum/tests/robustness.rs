@@ -1,4 +1,4 @@
-//! Request validation and status codes of the HTTP API (the Kotlin `ActorApiRobustnessTest`), on virtual time.
+//! Request validation and status codes of the HTTP API, on virtual time.
 
 mod common;
 

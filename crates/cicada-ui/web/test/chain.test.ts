@@ -1,6 +1,6 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import type { ChainNodeView } from '../src/api/generated';
+import type { ChainNodeView } from '../src/api/wire';
 import { chainTree, layoutChain } from '../src/lib/chain';
 
 let clock = 0;

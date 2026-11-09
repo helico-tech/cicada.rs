@@ -3,7 +3,7 @@
 #   docker compose -f e2e/docker-compose.yml up -d --build --wait
 #   docker compose -f e2e/docker-compose.yml down -v
 #
-# Ports on the host (apart from the Kotlin stack's): node-1 9081, node-2 9082, node-3 9083, send-only node 9084,
+# Ports on the host: node-1 9081, node-2 9082, node-3 9083, send-only node 9084,
 # PostgreSQL 25432. Fault-test timings are short and can be overridden from the shell: LEASE_TTL (default 5s;
 # heartbeat = TTL/3), POLL_INTERVAL (200ms), SHUTDOWN_GRACE_PERIOD (5s), API_TOKEN (unset = no auth). How to drive
 # fault scenarios by hand: e2e/README.md.

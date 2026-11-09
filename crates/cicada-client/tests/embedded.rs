@@ -1,5 +1,4 @@
-//! Client and node over a real socket, the API nested under a prefix (the Kotlin `EmbeddedServerTest`; SQLite is
-//! not available yet, so the node runs on the in-memory store).
+//! Client and node over a real socket, the API nested under a prefix.
 
 mod common;
 

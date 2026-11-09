@@ -1,4 +1,4 @@
-//! Every endpoint and status code of the HTTP contract on one hosting node (the Kotlin `ActorApiTest`), on virtual time.
+//! Every endpoint and status code of the HTTP contract on one hosting node, on virtual time.
 
 mod common;
 

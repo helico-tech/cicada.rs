@@ -1,4 +1,4 @@
-//! Port of `OrderingTest` (T13): serial turns (G1), one outcome per message (G3) and mailbox order (G5) under load
+//! Serial turns (G1), one outcome per message (G3) and mailbox order (G5) under load
 //! from all four nodes.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -60,7 +60,7 @@ async fn sequential_sends_through_rotating_nodes_are_handled_in_send_order() {
     println!("sequential: turns ran on {:?}", per_node(&state));
 }
 
-/// A small deterministic generator (xorshift64*) for the delays, seeded like the Kotlin test's `Random(42)`.
+/// A small deterministic generator (xorshift64*) for the delays, with a fixed seed.
 struct Random(u64);
 
 impl Random {

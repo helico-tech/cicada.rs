@@ -12,7 +12,7 @@
 //! it there: a handler with [`trace_headers`], code outside an actor with [`current_trace_headers`]. A turn that never
 //! commits (its lease was lost, or its node stopped mid-turn) has no outcome; the OpenTelemetry SDK for Rust exports
 //! every span it drops, so its span is ended when the turn ends, with `cicada.outcome` `abandoned` and status unset.
-//! (The Kotlin plugin never ends such a span, so it is not exported there.) The re-run gets its own span.
+//! The re-run gets its own span.
 //!
 //! **Metrics.** `cicada.turn.duration` (histogram, seconds, claim to commit) and `cicada.message.lag` (histogram,
 //! seconds, from the message's due time to its claim), both with `cicada.actor.type` (the template) and
@@ -250,8 +250,8 @@ struct TurnSpan {
 }
 
 /// Ends the span of a turn that never reached `on_outcome` (its lease was lost, or the node stopped mid-turn) with
-/// `cicada.outcome = abandoned`, when the turn's attributes are dropped. The Kotlin plugin never ends such a span, so it
-/// is not exported there; the Rust SDK exports every span it drops, so here it is exported and marked.
+/// `cicada.outcome = abandoned`, when the turn's attributes are dropped. The SDK exports every span it drops, so it is
+/// exported and marked.
 struct Abandoned {
     cx: Context,
     ended: Arc<AtomicBool>,
@@ -291,7 +291,7 @@ impl Extractor for HeaderReader<'_> {
 }
 
 /// Collects headers written by a propagator. Empty values are left out: the Rust W3C propagator writes an empty
-/// `tracestate`, which means the same as none (and the Java one, so the Kotlin implementation, leaves it out).
+/// `tracestate`, which means the same as none.
 #[derive(Default)]
 struct Headers(BTreeMap<String, String>);
 

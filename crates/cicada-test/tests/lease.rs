@@ -1,4 +1,4 @@
-//! Leases, heartbeats and fencing, in virtual time with two nodes on one store (Kotlin `LeaseTest`).
+//! Leases, heartbeats and fencing, in virtual time with two nodes on one store.
 
 mod common;
 

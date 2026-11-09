@@ -1,4 +1,4 @@
-//! Port of `OutcomesUnderFaultTest` (T13, G3): N messages to M actors through all nodes while a node is killed and
+//! N messages to M actors through all nodes while a node is killed and
 //! started again in the middle. Every accepted message ends with exactly one outcome (`done`), each committed exactly
 //! once, in mailbox order.
 

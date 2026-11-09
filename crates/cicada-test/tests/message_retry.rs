@@ -1,5 +1,4 @@
-//! Retry v3: the sender's per-message retry policy, enforced by the dispatcher, in virtual time (Kotlin
-//! `MessageRetryTest`).
+//! The sender's per-message retry policy, enforced by the dispatcher, in virtual time.
 
 mod common;
 
@@ -41,7 +40,7 @@ struct AttemptSpec {
     /// Fail with `turn.fail(reason)` instead of an ordinary error.
     #[serde(default)]
     veto_with_fail: bool,
-    /// Fail with a permanent error built from another error (Kotlin: a subclass of `PermanentFailure`).
+    /// Fail with a permanent error built from another error.
     #[serde(default)]
     veto_with_subclass: bool,
     #[serde(default)]
@@ -85,7 +84,7 @@ struct ChoreState {
     log: Vec<String>,
 }
 
-/// A permanent failure built from an error of the handler's own (Kotlin: `DeclinedException : PermanentFailure`).
+/// A permanent failure built from an error of the handler's own.
 #[derive(Debug)]
 struct Declined(String);
 

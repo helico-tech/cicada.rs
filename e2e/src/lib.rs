@@ -1,6 +1,6 @@
 //! End-to-end and fault tests: the sample service in Docker (a PostgreSQL cluster from `e2e/docker-compose.yml` and
 //! single SQLite nodes), driven over HTTP only. This library is the harness; the scenarios are in `tests/suite/`, one
-//! module per Kotlin test class, and `e2e/README.md` says how to run them.
+//! module per test class, and `e2e/README.md` says how to run them.
 //!
 //! The suite runs only with `CICADA_E2E=1`; otherwise its one test returns at once, so `cargo test --workspace` needs
 //! no Docker. [`run_suite`] owns the life cycle: it builds the image, starts the stack once, runs the classes one after
@@ -46,9 +46,9 @@ macro_rules! step {
     };
 }
 
-/// A test class: tests run in order, with optional hooks (as JUnit's `@BeforeAll`, `@AfterEach`, `@AfterAll`).
+/// A test class: tests run in order, with optional hooks.
 pub struct Class {
-    /// The name of the Kotlin class it ports.
+    /// The name shown in the report.
     pub name: &'static str,
     /// Runs before the first test; when it fails, every test of the class fails.
     pub before_all: Option<Step>,

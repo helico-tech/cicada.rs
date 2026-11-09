@@ -1,4 +1,4 @@
-//! The in-process operations behind the HTTP endpoints (Kotlin `OperationsTest`).
+//! The in-process operations behind the HTTP endpoints.
 
 mod common;
 

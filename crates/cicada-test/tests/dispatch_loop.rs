@@ -1,4 +1,4 @@
-//! The dispatch loop in real time on an in-memory store (Kotlin `DispatchLoopTest`).
+//! The dispatch loop in real time on an in-memory store.
 
 mod common;
 
@@ -188,7 +188,7 @@ async fn a_store_wake_up_source_wakes_the_loop() {
     system.create(&a, &CounterState::default()).await.unwrap();
     eventually(5 * SECOND, || async { !store.faults.seen.lock().unwrap().is_empty() }).await;
     assert_eq!(*store.faults.seen.lock().unwrap(), vec![BTreeSet::from([template::<Counter>()])]);
-    // `start` asks for the wake-ups before the loop first ran (Kotlin collects them in the node's scope): let the loop
+    // `start` asks for the wake-ups before the loop first ran: let the loop
     // run and fall asleep first.
     tokio::time::sleep(Duration::from_millis(100)).await;
     // Another node's enqueue: no in-process wake-up here.

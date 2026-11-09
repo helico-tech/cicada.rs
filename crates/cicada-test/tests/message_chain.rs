@@ -1,5 +1,4 @@
-//! H1: every send of a turn records the turn's message as its cause, and `chain(id)` follows the links both ways
-//! (Kotlin `MessageChainTest`).
+//! H1: every send of a turn records the turn's message as its cause, and `chain(id)` follows the links both ways.
 
 mod common;
 

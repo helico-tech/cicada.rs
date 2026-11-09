@@ -1,4 +1,4 @@
-//! The sender's retention policy (Kotlin `StoreRetentionSuite`): how long a finished message's record stays visible,
+//! The sender's retention policy: how long a finished message's record stays visible,
 //! while a minimal record keeps dedup and chains working for the store retention.
 
 use std::collections::BTreeMap;

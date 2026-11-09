@@ -5,10 +5,6 @@ transactional store (PostgreSQL or SQLite); it occupies memory only while one of
 service that runs an `ActorSystem` is a *node*. Nodes are peers that coordinate only through the store: there is no
 coordinator and no cluster protocol.
 
-This is a port of [Cicada for Kotlin](https://github.com/helico-tech/cicada). It keeps that implementation's contract
-(guarantees, store schema, HTTP API, console), so Kotlin and Rust nodes can share one database and serve each other's
-callers. See [Interoperability with Kotlin nodes](#interoperability-with-kotlin-nodes).
-
 - **Durable turns.** Claim → load → handle → commit. New state, outgoing messages, creates and the message's outcome
   are written in one transaction; a node that dies mid-turn loses its lease and the turn is re-run elsewhere.
 - **One turn at a time per actor**, messages in delivery-time order, delayed messages never early, exactly one
@@ -19,27 +15,27 @@ callers. See [Interoperability with Kotlin nodes](#interoperability-with-kotlin-
   `TestActors` on tokio's paused time, and per-message retry policies set by the sender.
 
 The design — domain language, guarantees G1–G6, store requirements S1–S10, the HTTP contract — is in
-[docs/architecture.md](docs/architecture.md); the decisions of the port in [docs/adr/](docs/adr/); how to size,
-deploy, upgrade and watch nodes in [docs/operations.md](docs/operations.md). The most important decisions and the
-known differences from Kotlin are summarised [below](#decisions-and-deviations).
+[docs/architecture.md](docs/architecture.md); the decisions in [docs/adr/](docs/adr/); how to size,
+deploy, upgrade and watch nodes in [docs/operations.md](docs/operations.md). The most important decisions are
+summarised [below](#decisions).
 
 ## Crates
 
-| Crate | Contents | Kotlin module |
-| --- | --- | --- |
-| `cicada` | Addressing (`ActorAddress`, `ActorRef`, `UriTemplate`), the definition API (the `Actor` trait), the runtime and dispatch loop (`ActorSystem`) with per-message retry (`RetryPolicy`) and retention (`Retention`), the `Store` trait, plugin hooks, contracts and JSON Schemas, the HTTP wire model (`cicada::api`). No HTTP server. | `actors-core` |
-| `cicada-store-sqlite` | `SqliteStore` (sqlx): one file, WAL, one writer. For a single node or a few processes on one host. | `actors-store-sqlite` |
-| `cicada-store-postgres` | `PostgresStore` (sqlx): `FOR UPDATE SKIP LOCKED` claims, `LISTEN/NOTIFY` wake-ups. For many nodes. | `actors-store-postgres` |
-| `cicada-store-conformance` | The shared suite (S1–S10 and robustness cases) every store must pass, as a macro. | `actors-store-conformance` |
-| `cicada-axum` | `actor_api()` (the fourteen endpoints) and `actor_health()` (a public readiness check) as axum routers. | `actors-ktor` |
-| `cicada-ui` | The actor console: the React app of the Kotlin repo in the Sensus BPM Online design, embedded and served by `actor_ui()`. | `actors-ui` |
-| `cicada-client` | `ActorClient`: typed HTTP client (reqwest) for remote callers, idempotent sends. | `actors-client` |
-| `cicada-test` | `TestActors`, `InMemoryStore`, virtual time, contract snapshots and state samples. | `actors-test` |
-| `cicada-extras` | Building blocks on the public API, no core changes: `CrashLoopGuard`, dead letters (`DeadLettersActor`, `FailureWatcher`), `Timer`, `Schedule`. | `actors-extras` |
-| `cicada-otel` | `ActorTelemetry`: OpenTelemetry traces and metrics per turn, a plugin on the OpenTelemetry API. | `actors-otel` |
-| `cicada-docker` | Container handles: `ContainerActor` (one actor per Docker container), `DockerEngine` on bollard, `container_logs()`; see [Container handles](#container-handles). | — (Rust only) |
-| `examples` (`cicada-examples`) | Ten worked examples, each tested with `TestActors`; see [Examples](#examples). | `examples` |
-| `sample-service` | A runnable node hosting the examples, configured by environment variables. | `sample-service` |
+| Crate | Contents |
+| --- | --- |
+| `cicada` | Addressing (`ActorAddress`, `ActorRef`, `UriTemplate`), the definition API (the `Actor` trait), the runtime and dispatch loop (`ActorSystem`) with per-message retry (`RetryPolicy`) and retention (`Retention`), the `Store` trait, plugin hooks, contracts and JSON Schemas, the HTTP wire model (`cicada::api`). No HTTP server. |
+| `cicada-store-sqlite` | `SqliteStore` (sqlx): one file, WAL, one writer. For a single node or a few processes on one host. |
+| `cicada-store-postgres` | `PostgresStore` (sqlx): `FOR UPDATE SKIP LOCKED` claims, `LISTEN/NOTIFY` wake-ups. For many nodes. |
+| `cicada-store-conformance` | The shared suite (S1–S10 and robustness cases) every store must pass, as a macro. |
+| `cicada-axum` | `actor_api()` (the fourteen endpoints) and `actor_health()` (a public readiness check) as axum routers. |
+| `cicada-ui` | The actor console: a React app in the Sensus BPM Online design, embedded and served by `actor_ui()`. |
+| `cicada-client` | `ActorClient`: typed HTTP client (reqwest) for remote callers, idempotent sends. |
+| `cicada-test` | `TestActors`, `InMemoryStore`, virtual time, contract snapshots and state samples. |
+| `cicada-extras` | Building blocks on the public API, no core changes: `CrashLoopGuard`, dead letters (`DeadLettersActor`, `FailureWatcher`), `Timer`, `Schedule`. |
+| `cicada-otel` | `ActorTelemetry`: OpenTelemetry traces and metrics per turn, a plugin on the OpenTelemetry API. |
+| `cicada-docker` | Container handles: `ContainerActor` (one actor per Docker container), `DockerEngine` on bollard, `container_logs()`; see [Container handles](#container-handles). |
+| `examples` (`cicada-examples`) | Ten worked examples, each tested with `TestActors`; see [Examples](#examples). |
+| `sample-service` | A runnable node hosting the examples, configured by environment variables. |
 
 ## Quick start
 
@@ -271,7 +267,7 @@ async fn shutdown_signal() {
   rest and releases their leases. While it stops, `/health` and `/ready` answer `503`. `stop` is idempotent.
 - The store is the caller's: `ActorSystem` never closes it. Open it before `start` and close it after `stop`.
   `PostgresStore::connect(url, config)` accepts the libpq form of `DATABASE_URL`
-  (`postgres://user:pass@host:5432/db?sslmode=require`) and the Kotlin JDBC form (`jdbc:postgresql://…`);
+  (`postgres://user:pass@host:5432/db?sslmode=require`);
   `connect_as(url, user, password, config)` adds credentials, and `connect_with(PgConnectOptions, config)` takes sqlx
   options built by the caller (TLS client certificates and the like).
 - A node hosting no types still serves the whole API (create, send, query) for every registered type.
@@ -319,7 +315,7 @@ The client takes the same ref and message types as the actor definitions. Authen
 give `ActorClient::with_client` one with default headers. Expected alternatives are values (a missing instance is
 `None`, a duplicate send is `receipt.duplicate`, a cancel returns a `CancelOutcome`); every other error response is
 `ClientError::Api` with the server's problem. A send that fails on I/O or with `503` is retried with the same id (3
-attempts by default), so it is enqueued at most once. The client also talks to Kotlin nodes.
+attempts by default), so it is enqueued at most once.
 
 The Rust snippets in this README are doctests of the `examples` crate (`cargo test -p cicada-examples --doc`), so
 they keep compiling, and the ones that need no server or database run.
@@ -388,9 +384,8 @@ Router::new()
 ```
 
 `actor_ui(mount_path, api_path)` takes where the console is served and where `actor_api()` is mounted on the same
-origin (`try_actor_ui` returns an error instead of panicking on an invalid path). The console is the React +
-TypeScript single-page app of the Kotlin repo (ADR 0005), restyled to the Sensus BPM Online design system with the same
-behaviour (ADR 0006; its tokens and fonts are vendored, nothing loads from outside the origin). It is built with Vite
+origin (`try_actor_ui` returns an error instead of panicking on an invalid path). The console is a React +
+TypeScript single-page app in the Sensus BPM Online design system (ADR 0006; its tokens and fonts are vendored, nothing loads from outside the origin). It is built with Vite
 when `cicada-ui` compiles (Node.js 22+ and npm; `CICADA_UI_SKIP_BUILD` embeds an empty console) and embedded in the
 binary with `config.json`; it calls only the API, from the browser. What it does:
 
@@ -419,8 +414,8 @@ has are sent; for a bearer-token API the console asks for the token on the first
 session storage. The page sends a strict Content Security Policy and inserts every value from the node as text. No
 fonts are loaded from outside.
 
-**Types checked end to end.** The console parses every response with zod schemas generated from the Kotlin wire
-classes. `crates/cicada-ui/tests/api_fixtures.rs` records a response of every endpoint from a running Rust node and
+**Types checked end to end.** The console parses every response with the zod schemas in
+`crates/cicada-ui/web/src/api/wire.ts`. `crates/cicada-ui/tests/api_fixtures.rs` records a response of every endpoint from a running Rust node and
 runs the console's fixture test over them, so a Rust response the console does not expect fails the build.
 
 ## Testing with `TestActors`
@@ -828,7 +823,7 @@ let watcher = FailureWatcher::new(system.clone()).prefix("actor://orders/").star
 
 The watcher reads through the `ActorOperations` trait, which `ActorSystem` implements and, with the `client` feature
 of `cicada-extras`, `ActorClient` too, so a watcher can also run in a process of its own. Every node may run one:
-each failure is forwarded with an id derived from the failed message's id (the same as Kotlin's), so the store's send
+each failure is forwarded with an id derived from the failed message's id, so the store's send
 dedup records it once. Act on a letter with a message: `Redrive { failed_message_id }` sends it again (same target,
 type, payload, correlation id; once), `Discard { failed_message_id }` forgets it — over HTTP,
 `POST /actors/cicada/dead-letters/messages {"type": "Redrive", "payload": {"failedMessageId": "…"}}`.
@@ -895,7 +890,7 @@ assert_eq!(Schedule::daily(2, 30).unwrap().next(t), "2026-10-03T02:30:00Z".parse
 
 ## Container handles
 
-`cicada-docker` (Rust only, [ADR 0007](docs/adr/0007-container-handles.md)) gives every Docker container an actor: a
+`cicada-docker` ([ADR 0007](docs/adr/0007-container-handles.md)) gives every Docker container an actor: a
 **container handle** at `actor://containers/{name}`. The handle does not hold the running container; it keeps a
 durable record of it and acts on it. Docker stays the truth: every turn looks at the container before it acts.
 
@@ -1009,14 +1004,14 @@ message enum with `#[serde(tag = "type")]`, a state struct, and an actor struct 
 
 `sample-service` is a runnable node (binary `cicada-sample-service`, Docker image from `sample-service/Dockerfile`) hosting
 the examples and the end-to-end actors, with the API, the console and the readiness check; see
-[sample-service/](sample-service/). It stops gracefully on SIGTERM and SIGINT. It is configured by environment variables, the same as the Kotlin sample:
+[sample-service/](sample-service/). It stops gracefully on SIGTERM and SIGINT. It is configured by environment variables:
 
 | Variable | Meaning | Default |
 | --- | --- | --- |
 | `PORT` | HTTP port | 8080 |
 | `NODE_ID` | node id (lease owner, shown by `/health`) | random |
 | `HOSTED_TYPES` | `all`, `none`, or a comma-separated list of example groups | `all` |
-| `DATABASE_URL` | PostgreSQL, `postgres://user:pass@host:5432/db` or `jdbc:postgresql://…`; selects PostgreSQL | — |
+| `DATABASE_URL` | PostgreSQL, `postgres://user:pass@host:5432/db`; selects PostgreSQL | — |
 | `DATABASE_USER`, `DATABASE_PASSWORD` | credentials, when not in the URL | — |
 | `DATABASE_SCHEMA` | PostgreSQL schema of the store | `public` |
 | `DATABASE_POOL_SIZE` | PostgreSQL connection pool size | the store's default (20), or `CONCURRENCY` + 4 when larger |
@@ -1048,8 +1043,7 @@ CICADA_DOCKER=1 cargo test -p cicada-docker  # container handles against the loc
 
 Tests that need PostgreSQL are skipped when `CICADA_PG_URL` is unset, and tests that need Docker when `CICADA_DOCKER`
 is not `1`. Every store backend runs the conformance suite
-of `cicada-store-conformance`; `cicada-store-sqlite` also checks its schema against the Kotlin one when the Kotlin
-repository is next to this one.
+of `cicada-store-conformance`.
 
 The crates are not published to crates.io (`publish = false`). Use them as git dependencies:
 
@@ -1064,43 +1058,23 @@ cicada-test = { git = "https://github.com/helico-tech/cicada.rs" }
 tokio = { version = "1", features = ["test-util"] }
 ```
 
-## Interoperability with Kotlin nodes
+## Decisions
 
-The Rust port keeps the Kotlin contract (ADR 0001): the store schema (version 6, migrations included), the JSON of
-envelopes, states and policies, the HTTP API with its bodies, status codes and problem types, and the console.
-
-- **One database.** `SqliteStore` and `PostgresStore` create and migrate exactly the Kotlin tables, columns, indexes,
-  sequences and version records (ADR 0004). Kotlin and Rust nodes can run on one store, and a database written by one
-  opens with the other. A node refuses a schema newer than its own, so upgrade both implementations to the same
-  schema version.
-- **One type, one implementation.** Contract hashes differ between the implementations, because the JSON Schemas
-  generated by schemars and by kotlinx-schema differ in detail (integers get a `format`, for example). A template
-  registered by a Kotlin node therefore conflicts with the same template from a Rust node, and the second node fails
-  to start. Host each actor type in one implementation; types of different templates mix freely.
-- **Across implementations.** Any node serves the whole HTTP API for every registered type and sends to it: a Rust
-  node can create, send to and read instances of a type that only Kotlin nodes host, and the other way round (only
-  the hosting implementation decodes payloads and states). A Rust actor sends to a type hosted by Kotlin nodes with a
-  ref struct and message enum of its own that match the Kotlin template and type names (typed sends are resolved
-  through the type registry, so the ref need not be hosted), or with `send_raw`.
-- **Clients.** `cicada_client::ActorClient` talks to Kotlin nodes, and the Kotlin client to Rust nodes. The dead
-  letter id of `FailureWatcher` is the same as Kotlin's, so watchers of both implementations record a failure once
-  (the `DeadLetters` type itself is hosted by one of them).
-
-## Decisions and deviations
-
-Decisions of the port, as ADRs in [docs/adr/](docs/adr/):
+Decisions, as ADRs in [docs/adr/](docs/adr/):
 
 | ADR | Decision |
 | --- | --- |
-| [0001](docs/adr/0001-port-keeps-the-contract.md) | The port keeps Cicada's contract: domain language, G1–G6, S1–S10, the HTTP API, the JSON forms and the SQL schema. Only how definitions are written and which libraries are used change. |
+| [0001](docs/adr/0001-port-keeps-the-contract.md) | Superseded by 0008. |
 | [0002](docs/adr/0002-crate-stack.md) | Crate stack: tokio, axum 0.8, sqlx 0.9 (one store per backend), serde, schemars, chrono, thiserror/anyhow, async-trait, reqwest, rust-embed, tracing and opentelemetry. |
 | [0003](docs/adr/0003-actor-definition-api.md) | Actor definitions: a ref struct implementing `ActorRef`, a tagged serde enum, and the `Actor` trait with a required `UNHANDLED` and one `handle`; no proc macro. |
-| [0004](docs/adr/0004-shared-store-schema.md) | The SQL schema is shared with Kotlin; contract hashes differ, so one template is hosted by one implementation. |
-| [0005](docs/adr/0005-reuse-the-console.md) | The React console is reused unchanged; a fixtures test checks the Rust API against its zod schemas. |
-| [0006](docs/adr/0006-console-in-sensus-design.md) | The Rust console is restyled to the Sensus BPM Online design system; behaviour, routes and wire types stay as in the Kotlin copy. |
-| [0007](docs/adr/0007-container-handles.md) | Container handles (Rust only): one actor per Docker container, commands that look first and are safe to repeat, status by polling, logs streamed from Docker outside the store. |
+| [0004](docs/adr/0004-shared-store-schema.md) | Superseded by 0008. |
+| [0005](docs/adr/0005-reuse-the-console.md) | A fixtures test checks the API against the console's zod schemas. |
+| [0006](docs/adr/0006-console-in-sensus-design.md) | The console uses the Sensus BPM Online design system. |
+| [0007](docs/adr/0007-container-handles.md) | Container handles: one actor per Docker container, commands that look first and are safe to repeat, status by polling, logs streamed from Docker outside the store. |
+| [0008](docs/adr/0008-rust-only.md) | Cicada for Rust stands alone: no contract with the Kotlin implementation. |
+| [0009](docs/adr/0009-one-baseline-schema.md) | The six early migrations are merged into one schema at version 1. |
 
-Open questions of the original design, resolved there and kept here:
+Design questions and their answers:
 
 | Question | Decision |
 | --- | --- |
@@ -1113,20 +1087,19 @@ Open questions of the original design, resolved there and kept here:
 | One-way messaging | Kept; no ask/await. |
 | Defaults | Lease 30 s, heartbeat 10 s, poll 500 ms, max turn 15 min, retention 7 days; all configurable. |
 
-How the Rust port differs from the Kotlin implementation:
+Design notes:
 
-- **Definitions are checked by the compiler.** One `handle` with an exhaustive `match` replaces `on<T> { }`, and the
-  required `const UNHANDLED` replaces the check at node start (ADR 0003). Handlers return
-  `Result<(), HandlerError>`: `HandlerError::permanent` / `turn.fail(..)` replace `PermanentFailure` and `fail()`,
-  and a panic is caught and treated as a failure (`panic: …`). A custom unhandled policy is `Actor::on_unhandled`,
-  returning an `UnhandledDecision`. `Attributes` are keyed by type instead of `AttributeKey<T>`.
-- **No application plugin.** There is no `install(Actors)`: the host builds an `ActorSystem`, calls `start` and
-  `stop` itself, merges `actor_api()` into its router, and owns the store (no `sqlite(…)` / `postgres(…)` helpers
-  that close it). `actor_api()` takes the `ActorSystem` itself, so it cannot be mounted without a node.
-- **Handlers run as futures on the tokio runtime.** Kotlin runs them on `Dispatchers.IO`, where blocking calls are
-  fine. In Rust a handler that does not yield is cut off only when it returns, and it holds a runtime worker thread
-  meanwhile; when every worker is blocked, heartbeats and the dispatch loop stall too. Run blocking work in
-  `spawn_blocking`. A handler still running well after its maximum turn or a lost lease is logged as a warning.
+- **Definitions are checked by the compiler.** One `handle` with an exhaustive `match`, and a required
+  `const UNHANDLED` (ADR 0003). Handlers return `Result<(), HandlerError>`: `HandlerError::permanent` / `turn.fail(..)`
+  refuse further retries, and a panic is caught and treated as a failure (`panic: …`). A custom unhandled policy is
+  `Actor::on_unhandled`, returning an `UnhandledDecision`. `Attributes` are keyed by type.
+- **The host owns the node.** The host builds an `ActorSystem`, calls `start` and `stop` itself, merges `actor_api()`
+  into its router, and owns the store. `actor_api()` takes the `ActorSystem` itself, so it cannot be mounted without a
+  node.
+- **Handlers run as futures on the tokio runtime.** A handler that does not yield is cut off only when it returns, and
+  it holds a runtime worker thread meanwhile; when every worker is blocked, heartbeats and the dispatch loop stall too.
+  Run blocking work in `spawn_blocking`. A handler still running well after its maximum turn or a lost lease is logged
+  as a warning.
 - **Validation at construction.** `CrashLoopGuard::new(0)` and `DeadLettersActor::with_capacity(0)` return an `Err`
   instead of failing node start (a plugin has no validation hook). `RetryPolicy::new`, `Backoff::*`, `Keep::last`,
   `Keep::keep_for` and `Schedule::*` return `Result` too.
@@ -1134,24 +1107,19 @@ How the Rust port differs from the Kotlin implementation:
   have JSON Schemas, so states and messages hold them without attributes (issue 0701). `RetryPolicy` and `Retention`
   have JSON Schemas too (issue 0200).
 - **Telemetry.** The OpenTelemetry SDK for Rust exports every span it drops, so the span of a turn that never commits
-  is ended and exported with `cicada.outcome` = `abandoned`; Kotlin never exports it (issue 0600). The W3C
-  propagator's empty `tracestate` is left out, so headers equal Kotlin's.
+  is ended and exported with `cicada.outcome` = `abandoned` (issue 0600). The W3C propagator's empty `tracestate` is
+  left out.
 - **Client.** `ActorClient` refuses addresses with a `.` or `..` segment (`ClientError::Invalid`): reqwest's URL
   parser removes such segments even when escaped, and would address another instance. The server and the in-process
   API serve them (issue 0300, won't fix).
-- **PostgreSQL settings.** There is no map of extra connection properties: connection parameters go in the URL, and
-  `PostgresStore::connect_with(PgConnectOptions, config)` takes sqlx options for the rest (issue 0501).
-  `socket_timeout` bounds a whole transaction attempt (the connection is then closed), not every read as pgjdbc's
-  does, because sqlx has no per-read timeout.
+- **PostgreSQL settings.** Connection parameters go in the URL, and `PostgresStore::connect_with(PgConnectOptions,
+  config)` takes sqlx options for the rest (issue 0501). `socket_timeout` bounds a whole transaction attempt (the
+  connection is then closed), not every read, because sqlx has no per-read timeout.
 - **Cancelling `run_due_turns`.** Dropping its future cancels the turns like a node stop after the grace period: the
   worker is stopped first, then the lease is released only when the handler had not ended, and claims that arrive
   after the caller is gone are released.
-- **Small differences on the wire and in logs.** Error texts use Rust names (`max_uncommitted_claims must be at least
-  1`); a SQLite file of a newer schema is refused with `StoreError::Invalid`. Template parameters are served in
-  template order, as in Kotlin.
-- **Examples.** Pricing replies with its own `PricingReply` enum instead of reusing the Cart's message classes;
-  fallible fakes return a `Result`; `charge_retry()` and `tick_retry()` are functions because the policy constructors
-  validate.
+- **Errors and templates.** Error texts use Rust names (`max_uncommitted_claims must be at least 1`); a SQLite file of a
+  newer schema is refused with `StoreError::Invalid`. Template parameters are served in template order.
 
 Known limitations: no claim limit for crash loops without `CrashLoopGuard`; external side effects are at-least-once
 (use `message().id` as idempotency key, also across retries); a commit rejected because of the handler's own sends is

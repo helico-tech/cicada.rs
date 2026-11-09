@@ -1,4 +1,4 @@
-//! Port of `SqliteNodeTest` (T17): a single node on the SQLite store (a named volume), plus bearer authentication on
+//! A single node on the SQLite store (a named volume), plus bearer authentication on
 //! another node; both started with `docker run`, outside the compose stack.
 
 use std::sync::OnceLock;

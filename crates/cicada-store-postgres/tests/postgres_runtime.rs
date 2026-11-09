@@ -1,5 +1,4 @@
-//! End-to-end dispatch on PostgreSQL: several nodes (each with its own store and pool) on one schema, real time. Port
-//! of the Kotlin `PostgresRuntimeIntegrationTest`.
+//! End-to-end dispatch on PostgreSQL: several nodes (each with its own store and pool) on one schema, real time.
 
 mod common;
 

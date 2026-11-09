@@ -1,9 +1,6 @@
-//! Port of StateSamplesTest: stored state of some of this service's types, against the samples in `tests/states`. A
+//! Stored state of some of this service's types, against the samples in `tests/states`. A
 //! state type change that would make existing instances undecodable fails here. Samples are recorded once and kept;
 //! add one when a state type changes shape.
-//!
-//! The `kotlin-*.json` samples are copies of the Kotlin sample service's samples: state written by Kotlin nodes must
-//! decode too, since both implementations share one store schema (ADR 0004).
 
 use std::path::PathBuf;
 

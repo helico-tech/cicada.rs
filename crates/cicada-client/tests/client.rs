@@ -1,4 +1,4 @@
-//! The client against a real `actor_api()` server on a local port (the Kotlin `ActorClientTest`), in real time.
+//! The client against a real `actor_api()` server on a local port, in real time.
 
 mod common;
 
@@ -483,7 +483,7 @@ fn zero_send_attempts_are_refused() {
 }
 
 #[test]
-fn errors_read_like_the_kotlin_exception() {
+fn errors_read_as_status_title_and_detail() {
     let e = ClientError::Api(cicada::api::Problem {
         problem_type: pt::NO_SUCH_TYPE.into(),
         title: "No such actor type".into(),

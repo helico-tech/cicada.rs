@@ -1,4 +1,4 @@
-//! Port of the Kotlin `SqliteContentionTest`: write contention with another process on the same file (`SQLITE_BUSY`)
+//! Write contention with another process on the same file (`SQLITE_BUSY`)
 //! and fault injection inside a commit (S2). The "other process" is a raw connection holding the write lock; faults are
 //! injected with a trigger.
 

@@ -1,4 +1,4 @@
-//! Port of the Kotlin `SqliteRuntimeIntegrationTest`: end-to-end dispatch on a real backend, two nodes and one SQLite
+//! End-to-end dispatch on a real backend, two nodes and one SQLite
 //! file, real time.
 
 mod common;

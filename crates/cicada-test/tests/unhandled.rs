@@ -1,4 +1,4 @@
-//! Messages that cannot be decoded at delivery go to the type's unhandled policy (Kotlin `UnhandledTest`).
+//! Messages that cannot be decoded at delivery go to the type's unhandled policy.
 
 mod common;
 
@@ -38,7 +38,7 @@ async fn fail_outcome_failed_with_the_decode_reason() {
     );
 }
 
-/// Kotlin's `unhandled { state = state.logged("x"); drop() }`: a custom policy that changes state, then drops.
+/// A custom policy that changes state, then drops.
 struct DroppingCounter;
 
 impl Actor for DroppingCounter {
@@ -137,7 +137,6 @@ async fn custom_fail_with_own_reason_and_a_failing_custom_policy_fails_the_turn(
     let second = raw_enqueue(&test, "B", json!({})).await;
     test.run_until_idle().await;
     assert_eq!(test.outcome(&first).await.unwrap().error.as_deref(), Some("custom reason"));
-    // Kotlin: "java.lang.IllegalStateException: policy broke".
     assert_eq!(test.outcome(&second).await.unwrap().error.as_deref(), Some("policy broke"));
 }
 
@@ -170,7 +169,6 @@ impl Actor for FailingPolicyCounter {
     async fn on_unhandled(&self, turn: &mut Turn<Self>, reason: String) -> Result<UnhandledDecision, HandlerError> {
         let message_type = turn.message().message_type.clone();
         turn.state_mut().log(format!("unhandled:{message_type}"));
-        // Kotlin has `fail()`, `fail(reason)` and `fail(reason, cause)`; Rust has one decision, `Fail(reason)`.
         Ok(UnhandledDecision::Fail(match message_type.as_str() {
             "Plain" => reason,
             "Reason" => "own reason".into(),

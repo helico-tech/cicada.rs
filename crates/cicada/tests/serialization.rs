@@ -1,10 +1,4 @@
-//! Canonical JSON, JSON Schemas and the message codec (Kotlin `CanonicalJsonTest`, `JsonSchemasTest`,
-//! `MessageCodecTest`).
-//!
-//! Not ported: the Kotlin schema snapshot (`class schema snapshot`, `object schema is an empty object` as text), since
-//! the schemas come from schemars and differ from kotlinx-schema in detail (ADR 0004); nested sealed sub-families
-//! (Rust message families are flat enums); and `non-serializable class is rejected`, which the compiler checks
-//! (`MessageFamily` requires `Serialize`).
+//! Canonical JSON, JSON Schemas and the message codec.
 
 use std::collections::BTreeMap;
 

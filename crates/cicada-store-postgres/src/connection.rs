@@ -1,4 +1,4 @@
-//! Database locations: libpq-style and JDBC URLs, normalised to what sqlx understands.
+//! Database locations: libpq-style URLs, normalised to what sqlx understands.
 
 use std::fmt;
 use std::str::FromStr;
@@ -9,14 +9,10 @@ use sqlx::postgres::PgConnectOptions;
 /// A database location normalised to what sqlx understands: a libpq-style URL without credentials, plus the
 /// credentials to connect with.
 ///
-/// Accepted forms:
-/// - a libpq-style URL as found in `DATABASE_URL` (Heroku, Render, Fly, docker-compose setups):
-///   `postgres://user:password@host:5432/db?sslmode=require` or `postgresql://…`. User and password are taken from
-///   the user-info part (percent-decoded); host, port, database and query parameters are kept. Query parameters are
-///   passed as they are, so only those sqlx knows work (`sslmode`, `sslrootcert`, `application_name`, `options`, …).
-/// - a JDBC URL as used by the Kotlin implementation, `jdbc:postgresql://host:5432/db?sslmode=require`. Its `user`
-///   and `password` parameters become the credentials, `ApplicationName` becomes `application_name`, and `ssl=true`
-///   becomes `sslmode=verify-full` (pgjdbc's meaning) unless `sslmode` is given; other parameters are kept.
+/// The accepted form is a libpq-style URL as found in `DATABASE_URL` (Heroku, Render, Fly, docker-compose setups):
+/// `postgres://user:password@host:5432/db?sslmode=require` or `postgresql://…`. User and password are taken from the
+/// user-info part (percent-decoded); host, port, database and query parameters are kept. Query parameters are passed
+/// as they are, so only those sqlx knows work (`sslmode`, `sslrootcert`, `application_name`, `options`, …).
 ///
 /// Several comma-separated hosts are not supported. Explicit credentials win over those in the URL.
 #[derive(Clone, PartialEq, Eq)]
@@ -41,24 +37,18 @@ impl fmt::Debug for PostgresConnection {
 
 impl PostgresConnection {
     /// Parses `url` (see [`PostgresConnection`]); `user` and `password`, when given, replace the URL's own. Fails with
-    /// [`StoreError::Invalid`] when `url` is neither a `jdbc:postgresql:` nor a `postgres(ql)://` URL; the message never
-    /// contains the password.
+    /// [`StoreError::Invalid`] when `url` is not a `postgres(ql)://` URL; the message never contains the
+    /// password.
     pub fn parse(url: &str, user: Option<&str>, password: Option<&str>) -> Result<Self, StoreError> {
         let trimmed = url.trim();
-        let parsed = if let Some(rest) = trimmed.strip_prefix("jdbc:postgresql:") {
-            // `jdbc:postgresql:db` names a database on localhost.
-            let rest = if rest.starts_with("//") { rest.to_owned() } else { format!("//localhost/{rest}") };
-            parse_url(trimmed, &rest, true)?
-        } else {
-            let (scheme, rest) = trimmed.split_once("://").unwrap_or(("", ""));
-            if scheme != "postgres" && scheme != "postgresql" {
-                return Err(StoreError::Invalid(format!(
-                    "Not a PostgreSQL URL (expected jdbc:postgresql://…, postgres://… or postgresql://…): {}",
-                    redact(trimmed)
-                )));
-            }
-            parse_url(trimmed, &format!("//{rest}"), false)?
-        };
+        let (scheme, rest) = trimmed.split_once("://").unwrap_or(("", ""));
+        if scheme != "postgres" && scheme != "postgresql" {
+            return Err(StoreError::Invalid(format!(
+                "Not a PostgreSQL URL (expected postgres://… or postgresql://…): {}",
+                redact(trimmed)
+            )));
+        }
+        let parsed = parse_url(trimmed, &format!("//{rest}"))?;
         Ok(Self {
             url: parsed.url,
             user: user.map(str::to_owned).or(parsed.user),
@@ -87,7 +77,7 @@ struct Parsed {
 }
 
 /// Parses `//[user[:password]@]host[:port][/path][?query]`; `original` is the whole URL, for error messages.
-fn parse_url(original: &str, rest: &str, jdbc: bool) -> Result<Parsed, StoreError> {
+fn parse_url(original: &str, rest: &str) -> Result<Parsed, StoreError> {
     let malformed = || StoreError::Invalid(format!("Malformed PostgreSQL URL: {}", redact(original)));
     let without_host = || StoreError::Invalid(format!("PostgreSQL URL without host: {}", redact(original)));
     let rest = rest.strip_prefix("//").ok_or_else(malformed)?;
@@ -132,22 +122,9 @@ fn parse_url(original: &str, rest: &str, jdbc: bool) -> Result<Parsed, StoreErro
     }
     let mut params: Vec<String> = Vec::new();
     if let Some(query) = query {
-        let pairs: Vec<(&str, &str)> =
-            query.split('&').filter(|p| !p.is_empty()).map(|p| p.split_once('=').unwrap_or((p, ""))).collect();
-        let has_sslmode = pairs.iter().any(|(k, _)| *k == "sslmode");
-        for (key, value) in pairs {
-            match key {
-                "user" if jdbc => user = user.or(Some(decode(value).ok_or_else(malformed)?)),
-                "password" if jdbc => password = password.or(Some(decode(value).ok_or_else(malformed)?)),
-                "ApplicationName" if jdbc => params.push(format!("application_name={value}")),
-                "ssl" if jdbc && !has_sslmode => match value {
-                    "" | "true" => params.push("sslmode=verify-full".to_owned()),
-                    "false" => params.push("sslmode=disable".to_owned()),
-                    _ => return Err(malformed()),
-                },
-                "ssl" if jdbc => {}
-                _ => params.push(if value.is_empty() { key.to_owned() } else { format!("{key}={value}") }),
-            }
+        for pair in query.split('&').filter(|p| !p.is_empty()) {
+            let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+            params.push(if value.is_empty() { key.to_owned() } else { format!("{key}={value}") });
         }
     }
     let mut url = format!("postgres://{host}");
@@ -182,6 +159,8 @@ fn decode(text: &str) -> Option<String> {
 
 /// Removes the password from a URL for error messages.
 fn redact(url: &str) -> String {
+    // Query parameters can carry a password too (`?password=…`), so they are left out.
+    let url = url.split(['?', '#']).next().unwrap_or(url);
     let Some(start) = url.find("://").map(|i| i + 3) else { return url.to_owned() };
     let authority_end = url[start..].find(['/', '?', '#']).map_or(url.len(), |i| start + i);
     let authority = &url[start..authority_end];
@@ -204,25 +183,6 @@ mod tests {
 
     fn parse(url: &str) -> PostgresConnection {
         PostgresConnection::parse(url, None, None).unwrap()
-    }
-
-    #[test]
-    fn a_jdbc_url_becomes_a_libpq_url() {
-        assert_eq!(
-            PostgresConnection::parse("jdbc:postgresql://db:5432/actors?sslmode=require", Some("u"), Some("p"))
-                .unwrap(),
-            conn("postgres://db:5432/actors?sslmode=require", Some("u"), Some("p")),
-        );
-        assert_eq!(parse(" jdbc:postgresql://db/actors "), conn("postgres://db/actors", None, None));
-        assert_eq!(
-            parse("jdbc:postgresql://db/actors?user=app&password=s%40cret&ApplicationName=x&ssl=true"),
-            conn("postgres://db/actors?application_name=x&sslmode=verify-full", Some("app"), Some("s@cret")),
-        );
-        assert_eq!(
-            parse("jdbc:postgresql://db/a?ssl=true&sslmode=disable"),
-            conn("postgres://db/a?sslmode=disable", None, None)
-        );
-        assert_eq!(parse("jdbc:postgresql:actors"), conn("postgres://localhost/actors", None, None));
     }
 
     #[test]
@@ -257,6 +217,8 @@ mod tests {
         assert!(!message("mysql://app:secret@db/actors").contains("secret"));
         assert!(message("mysql://app:secret@db/actors").contains("app:***@db"));
         message("actors.db");
+        assert!(!message("jdbc:postgresql://db/actors?user=app&password=secret").contains("secret"));
+        assert!(!message("postgres://h:notaport/db?password=secret").contains("secret"));
         assert!(!message("postgres://a:secret@h1,h2/db").contains("secret"));
         message("postgres://h:notaport/db");
         assert!(format!("{:?}", conn("x", Some("u"), Some("secret"))).contains("***"));

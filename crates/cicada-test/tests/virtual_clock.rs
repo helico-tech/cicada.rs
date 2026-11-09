@@ -1,4 +1,4 @@
-//! The virtual clock (Kotlin `VirtualClockTest`).
+//! The virtual clock.
 
 use std::time::Duration;
 

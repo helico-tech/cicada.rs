@@ -29,7 +29,7 @@ fn message() -> Message {
 }
 
 #[test]
-fn message_view_is_written_like_kotlin() {
+fn message_view_keeps_its_wire_form() {
     let text = serde_json::to_string(&MessageView::from(message())).unwrap();
     assert_eq!(
         text,

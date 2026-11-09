@@ -1,6 +1,5 @@
 //! Mounting the routers into a host application: next to service routes, behind the host's authentication, under a
-//! prefix, a public readiness check, several nodes on one store and restarts (the parts of the Kotlin
-//! `ActorsPluginTest` and `SqliteNodeTest` that do not depend on Ktor's plugin system), on virtual time.
+//! prefix, a public readiness check, several nodes on one store and restarts, on virtual time.
 
 mod common;
 
@@ -144,7 +143,7 @@ async fn actor_health_serves_readiness_outside_authentication_and_503_while_the_
     assert_eq!(down.json()["type"], pt::UNHEALTHY);
 }
 
-/// The Kotlin `SqliteNodeTest` on the in-memory store: messages sent over HTTP, delayed ones included, are handled by
+/// On the in-memory store: messages sent over HTTP, delayed ones included, are handled by
 /// the dispatch loop, and a later node on the same store picks up what is left.
 #[tokio::test(start_paused = true)]
 async fn a_node_handles_messages_over_http_including_delayed_ones_and_a_later_node_continues() {

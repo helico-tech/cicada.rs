@@ -1,4 +1,4 @@
-//! Typed client for the Cicada HTTP API (`cicada_axum::actor_api`, or a Kotlin node's `actorApi()`), for callers
+//! Typed client for the Cicada HTTP API (`cicada_axum::actor_api`), for callers
 //! outside the node's process.
 //!
 //! ```no_run

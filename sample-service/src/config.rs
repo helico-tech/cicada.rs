@@ -103,7 +103,7 @@ impl SampleConfig {
     /// | `PORT` | HTTP port | 8080 |
     /// | `NODE_ID` | node id (lease owner, shown by `/health`, recorded by the E2E actors) | random |
     /// | `HOSTED_TYPES` | `all`, `none`, or a comma-separated list of groups (see [`GROUPS`]) | `all` |
-    /// | `DATABASE_URL` | PostgreSQL, `postgres://user:pass@host:5432/db` or `jdbc:postgresql://…`; selects PostgreSQL | — |
+    /// | `DATABASE_URL` | PostgreSQL, `postgres://user:pass@host:5432/db`; selects PostgreSQL | — |
     /// | `DATABASE_USER`, `DATABASE_PASSWORD` | credentials, when not in the URL | — |
     /// | `DATABASE_SCHEMA` | PostgreSQL schema of the store | `public` |
     /// | `DATABASE_POOL_SIZE` | PostgreSQL connection pool size | the store's default (20), or `CONCURRENCY` + 4 when larger |

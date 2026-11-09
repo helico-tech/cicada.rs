@@ -1,5 +1,4 @@
-//! PostgreSQL-specific behaviour beyond the conformance suite: schema migration, clock, wake-ups, configuration. Port
-//! of the Kotlin `PostgresStoreTest`.
+//! PostgreSQL-specific behaviour beyond the conformance suite: schema migration, clock, wake-ups, configuration.
 
 mod common;
 

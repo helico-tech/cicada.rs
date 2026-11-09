@@ -1,4 +1,4 @@
-//! The telemetry plugin, ported from `ActorTelemetryTest.kt`, against the SDK's in-memory exporters.
+//! The telemetry plugin, against the SDK's in-memory exporters.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};

@@ -23,7 +23,7 @@ pub(crate) fn instant(micros: i64) -> Timestamp {
     time::from_micros(micros)
 }
 
-/// Compact JSON text, as Kotlin's `Json.encodeToString(JsonElement)` writes it.
+/// Compact JSON text.
 pub(crate) fn json(value: &Value) -> String {
     value.to_string()
 }
@@ -67,7 +67,7 @@ pub(crate) fn actor_record(row: &SqliteRow) -> StoreResult<ActorRecord> {
 }
 
 /// A `messages` row. A retry or retention policy this version cannot decode reads as no policy, so that it cannot
-/// break claims (Kotlin review L1).
+/// break claims.
 pub(crate) fn message(row: &SqliteRow) -> StoreResult<Message> {
     let id: String = col(row, "id")?;
     let source = format!("message {id}");

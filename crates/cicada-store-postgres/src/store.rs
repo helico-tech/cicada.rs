@@ -68,8 +68,7 @@ macro_rules! transaction {
     }};
 }
 
-/// [`Store`] on PostgreSQL: the multi-node reference backend. Any number of nodes (processes, hosts, also Kotlin
-/// nodes) may open a store on the same database and schema; the database is their only coordination.
+/// [`Store`] on PostgreSQL: the multi-node reference backend. Any number of nodes (processes, hosts) may open a store on the same database and schema; the database is their only coordination.
 ///
 /// **Transactions.** Every operation is one transaction at `READ COMMITTED` on a pooled connection. A transaction that
 /// writes an instance or its mailbox first locks the instance's `actors` row (`SELECT … FOR UPDATE`), so all writes to
@@ -123,8 +122,8 @@ impl std::fmt::Debug for PostgresStore {
 
 impl PostgresStore {
     /// Opens a store on the database at `url`, creating or migrating its schema. `url` is a libpq-style URL with
-    /// credentials as usually found in `DATABASE_URL` (`postgres://actors:secret@db:5432/actors?sslmode=require`) or
-    /// a JDBC URL (`jdbc:postgresql://db:5432/actors`); see [`PostgresConnection`].
+    /// credentials as usually found in `DATABASE_URL` (`postgres://actors:secret@db:5432/actors?sslmode=require`); see
+    /// [`PostgresConnection`].
     ///
     /// Fails with [`StoreError::Invalid`] for invalid settings or a URL that is not a PostgreSQL URL, or a database
     /// migrated by a newer version, and with [`StoreError::Unavailable`] when the database cannot be reached.
@@ -145,8 +144,7 @@ impl PostgresStore {
     }
 
     /// Opens a store with sqlx connect options built by the caller, for settings no URL parameter covers (TLS client
-    /// certificates and keys, statement cache, extra startup parameters): the equivalent of the Kotlin config's
-    /// `properties`. The store still sets `search_path` (from `config.schema`) and, when unset, the application name.
+    /// certificates and keys, statement cache, extra startup parameters). The store still sets `search_path` (from `config.schema`) and, when unset, the application name.
     pub async fn connect_with(base: PgConnectOptions, config: PostgresStoreConfig) -> StoreResult<Self> {
         config.validate()?;
         let mut options = base.clone();

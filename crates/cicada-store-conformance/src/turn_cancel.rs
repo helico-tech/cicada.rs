@@ -1,4 +1,4 @@
-//! A turn cancelling pending messages of its own instance (Kotlin `StoreTurnCancelSuite`): the commit's `cancels`,
+//! A turn cancelling pending messages of its own instance: the commit's `cancels`,
 //! applied atomically with the rest of the commit.
 
 use cicada::store::{

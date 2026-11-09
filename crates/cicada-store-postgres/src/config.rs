@@ -33,7 +33,7 @@ pub struct PostgresStoreConfig {
     /// The longest one transaction may take on its connection before it fails as unavailable and the connection is
     /// closed. Default 30 s, far above any transaction of the store, so a hanging connection (a dead peer without a
     /// TCP reset) turns into an error instead of blocking a claim, a commit or a node's stop forever. Zero disables
-    /// it. (The Kotlin store sets pgjdbc's `socketTimeout`, which bounds every single read; sqlx has no equivalent.)
+    /// it. (sqlx has no timeout on a single read.)
     pub socket_timeout: Duration,
     /// The `LISTEN/NOTIFY` channel for wake-ups. `None` (the default) means `cicada_<schema>`, i.e. one channel per
     /// store, so stores in other schemas of the same database do not wake each other.

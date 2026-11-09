@@ -1,4 +1,4 @@
-//! Port of `StoreOutageTest`: PostgreSQL is stopped under a running cluster. Every node must answer sends and `/health`
+//! PostgreSQL is stopped under a running cluster. Every node must answer sends and `/health`
 //! with `503` problems (so clients retry), and the cluster must recover by itself when PostgreSQL is back: no message
 //! accepted before the outage is lost, and new sends work again.
 

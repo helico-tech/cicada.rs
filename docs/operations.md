@@ -1,8 +1,7 @@
 # Operating Cicada for Rust
 
 How to size, deploy, upgrade and watch Cicada nodes. The design is in [architecture.md](architecture.md), the API and
-the settings in the [README](../README.md). This guide follows the Kotlin implementation's `OPERATIONS.md`; what
-differs is the Rust side: settings are `NodeConfig`, `PostgresStoreConfig` and `SqliteOptions`, handlers are tokio
+the settings in the [README](../README.md). Settings are `NodeConfig`, `PostgresStoreConfig` and `SqliteOptions`, handlers are tokio
 futures, logs go through `tracing`, and the host owns the store and the node's life cycle.
 
 ## Sizing
@@ -76,9 +75,8 @@ futures, logs go through `tracing`, and the host owns the store and the node's l
   differs from the registered one. Check that in CI with contract snapshots (`cicada_test::assert_contracts_match`,
   README, Testing) and keep stored states readable with state samples (`assert_state_decodes`).
 - **Schema migrations** run when a store is opened (`SqliteStore::open`, `PostgresStore::connect`), so the first
-  node of a new version migrates the database. On PostgreSQL concurrent starts serialise on an advisory lock shared
-  with Kotlin nodes, and a current schema runs no DDL, so a node may connect as a user without `CREATE` once the
-  schema was migrated. A store does not open a schema newer than its own (`StoreError::Invalid`). Start the new nodes
+  node of a new version migrates the database. On PostgreSQL concurrent starts serialise on an advisory lock, and a current schema runs no DDL, so a node may connect
+  as a user without `CREATE` once the schema was migrated. A store does not open a schema newer than its own (`StoreError::Invalid`). Start the new nodes
   first, then stop the old ones, and do not restart old nodes after the migration (see [Upgrading](#upgrading)).
 - **Send-only nodes** (a node that hosts nothing) serve the whole API for every registered type and are a safe place
   for public traffic: they never run turns.
@@ -122,22 +120,15 @@ and for a dependency upgrade that changes the generated schemas (schemars). Chan
   samples to prove old states still decode. The registry has no API for this; on SQLite or PostgreSQL delete the
   type's row from `actor_types` while no node runs.
 
-The same rule applies across implementations: a Kotlin node and a Rust node register different contracts for the same
-template (ADR 0004), so moving a type from Kotlin to Rust is a contract change.
-
 ## Upgrading
 
-The Rust port writes schema version 6, the version of Kotlin Cicada 0.3.0 and later, and migrates older databases
-(versions 1–5, written by older Kotlin nodes) in place when a store opens them. Migrations are additive, so nodes of the
-previous version keep working during a rolling deploy, with the limits the Kotlin `OPERATIONS.md` lists per version
-(a version 4 node ignores causation and retention policies; a version 3 node ignores retry policies).
+Stores write schema version 1 and apply any missing migrations in place when they open a database. Migrations are
+additive, so nodes of the previous version keep working during a rolling deploy.
 
 **Order of a rolling deploy.** The first node of the new version migrates the database; from then on a node of the
 old version refuses to start (it does not open a schema newer than its own), while old nodes that are already running
 keep working. So: start the new nodes, then stop the old ones. Do not restart an old node after the migration (a
-crash-looping or rescheduled old pod will not come back), and do not roll back against a migrated database. The same
-holds for a mixed fleet: Kotlin nodes on the same database must be at Cicada 0.3.0 or later once a Rust node has opened
-it.
+crash-looping or rescheduled old pod will not come back), and do not roll back against a migrated database.
 
 **Upgrade nodes before clients.** Nodes decode request bodies strictly, so a request field a node does not know yet
 is a `400`. `ActorClient` leaves absent optional fields out of request bodies (no `"retry": null`), so a new client
@@ -195,7 +186,7 @@ PostgreSQL (`PostgresStoreConfig`):
 | `min_idle` | 1 | Idle connections kept open. |
 | `connection_timeout` | 10 s | Wait for a pooled connection before an operation fails as unavailable. |
 | `socket_timeout` | 30 s | Longest single transaction attempt; then it fails and its connection is closed, so a dead peer without a TCP reset cannot block a claim, commit or stop. Zero disables it. |
-| `channel` | `cicada_<schema>` | The `LISTEN/NOTIFY` channel; one per store, so stores in other schemas do not wake each other. Kotlin nodes on the same schema use the same channel. |
+| `channel` | `cicada_<schema>` | The `LISTEN/NOTIFY` channel; one per store, so stores in other schemas do not wake each other. |
 | `listener_reconnect_delay` | 250 ms | First back-off of the wake-up listener; doubles up to 30 s. |
 | `transaction_retries` | 8 | Re-runs of a transaction PostgreSQL aborted for a deadlock or a serialization failure. |
 

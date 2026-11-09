@@ -1,5 +1,4 @@
-//! Data errors, fault injection inside a commit (S2), privileges and the schema migrations. Port of the Kotlin
-//! `PostgresRobustnessTest`.
+//! Data errors, fault injection inside a commit (S2), privileges.
 
 mod common;
 
@@ -9,7 +8,7 @@ use std::time::Duration;
 use cicada::address::{ActorAddress, UriTemplate};
 use cicada::retry::{Backoff, RetryPolicy};
 use cicada::store::{
-    ActorCreate, CommitRequest, CommitResult, Delivery, EnqueueResult, MessageId, MessageStatus, NodeId, OutcomeStatus,
+    ActorCreate, CommitRequest, CommitResult, EnqueueResult, MessageId, MessageStatus, NodeId, OutcomeStatus,
     OutgoingMessage, StateChange, Store, StoreError, TurnOutcome,
 };
 use cicada_store_postgres::PostgresStore;
@@ -168,151 +167,6 @@ async fn a_stored_retry_policy_this_version_cannot_decode_reads_as_no_policy_and
     let outcome = store.outcome(&bad.id).await.unwrap().unwrap();
     assert_eq!(outcome.status, OutcomeStatus::Done);
     assert!(outcome.envelope.retry.is_none());
-    db.cleanup().await;
-}
-
-async fn columns(db: &common::TestDb, table: &str) -> BTreeSet<String> {
-    let mut c = db.connect().await;
-    sqlx::query_scalar(
-        "SELECT column_name::text FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2",
-    )
-    .bind(&db.schema)
-    .bind(table)
-    .fetch_all(&mut c)
-    .await
-    .unwrap()
-    .into_iter()
-    .collect()
-}
-
-/// Removes what schema versions 5 (causation) and 6 (retention) added.
-async fn drop_version_5_and_6(db: &common::TestDb) {
-    let s = &db.schema;
-    db.sql(&format!("ALTER TABLE \"{s}\".messages DROP COLUMN caused_by, DROP COLUMN retention_policy")).await;
-    db.sql(&format!(
-        "ALTER TABLE \"{s}\".outcomes DROP COLUMN caused_by, DROP COLUMN visible_until, DROP COLUMN keep_last, \
-         DROP COLUMN keep_seq, DROP COLUMN stripped"
-    ))
-    .await;
-}
-
-async fn drop_schema(db: &common::TestDb) {
-    db.sql(&format!("DROP SCHEMA IF EXISTS \"{}\" CASCADE", db.schema)).await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn version_1_to_4_schemas_are_migrated_and_keep_their_data() {
-    let db = test_db!("r");
-    let s = db.schema.clone();
-    for version in [4, 3, 2, 1] {
-        let done = MessageId::random();
-        let store = db.open().await;
-        store.create(&a(), &template(), None).await.unwrap();
-        let mut m = OutgoingMessage::new(a(), "T", json!(1));
-        m.id = done.clone();
-        store.enqueue(m).await.unwrap();
-        let claim = store.claim_due(&types(), &node(), TTL, 1).await.unwrap().remove(0);
-        let committed =
-            store.commit(CommitRequest::new(a(), claim.epoch, done.clone(), TurnOutcome::Done)).await.unwrap();
-        assert!(matches!(committed, CommitResult::Committed { .. }));
-        store.enqueue(OutgoingMessage::new(a(), "T", json!(2))).await.unwrap();
-        db.close_stores().await;
-        // Back to the schema of `version`, as written by the code of that time.
-        drop_version_5_and_6(&db).await;
-        if version < 4 {
-            db.sql(&format!("ALTER TABLE \"{s}\".messages DROP COLUMN retry_policy")).await;
-        }
-        if version < 3 {
-            db.sql(&format!("ALTER TABLE \"{s}\".messages DROP COLUMN failures, DROP COLUMN last_error")).await;
-        }
-        db.sql(&format!("UPDATE \"{s}\".outcomes SET retried_as = 'some-retry'")).await;
-        if version == 1 {
-            db.sql(&format!("ALTER TABLE \"{s}\".outcomes DROP COLUMN retried_as")).await;
-        }
-        db.sql(&format!("DELETE FROM \"{s}\".cicada_schema_version WHERE version > {version}")).await;
-
-        let store = db.open().await;
-        let messages = columns(&db, "messages").await;
-        let outcomes = columns(&db, "outcomes").await;
-        for column in ["failures", "last_error", "retry_policy", "caused_by", "retention_policy"] {
-            assert!(messages.contains(column), "messages.{column} from version {version}");
-        }
-        for column in ["caused_by", "visible_until", "keep_last", "keep_seq", "stripped"] {
-            assert!(outcomes.contains(column), "outcomes.{column} from version {version}");
-        }
-        // Additive: nodes still on version 2 write and read `retried_as` during a rolling deploy.
-        assert!(outcomes.contains("retried_as"), "retried_as is kept, unused");
-        let outcome = store.outcome(&done).await.unwrap().unwrap();
-        assert_eq!(outcome.status, OutcomeStatus::Done);
-        assert_eq!(outcome.envelope.failures, 0);
-        assert!(outcome.envelope.retry.is_none());
-        let claim = store.claim_due(&types(), &node(), TTL, 1).await.unwrap().remove(0);
-        assert_eq!(claim.message.failures, 0);
-        assert!(claim.message.last_error.is_none() && claim.message.retry.is_none());
-        assert!(claim.message.caused_by.is_none(), "older messages have no known cause");
-        let rescheduled = TurnOutcome::Rescheduled { delivery: Delivery::Now, error: "boom".into() };
-        let committed =
-            store.commit(CommitRequest::new(a(), claim.epoch, claim.message.id.clone(), rescheduled)).await.unwrap();
-        assert!(matches!(committed, CommitResult::Committed { .. }));
-        let pending = store.pending(&a(), None, 100).await.unwrap().items.remove(0);
-        assert_eq!(pending.failures, 1);
-        assert_eq!(pending.last_error.as_deref(), Some("boom"));
-        assert!(pending.seq > claim.message.seq);
-        db.close_stores().await;
-        drop_schema(&db).await;
-    }
-    db.cleanup().await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn version_2_to_4_nodes_can_still_write_and_read_after_the_latest_migration() {
-    let db = test_db!("r");
-    let s = db.schema.clone();
-    for from_version_2 in [false, true] {
-        db.open().await.create(&a(), &template(), None).await.unwrap();
-        db.close_stores().await;
-        if from_version_2 {
-            drop_version_5_and_6(&db).await;
-            db.sql(&format!(
-                "ALTER TABLE \"{s}\".messages DROP COLUMN failures, DROP COLUMN last_error, DROP COLUMN retry_policy"
-            ))
-            .await;
-            db.sql(&format!("DELETE FROM \"{s}\".cicada_schema_version WHERE version > 2")).await;
-            db.open().await;
-            db.close_stores().await;
-        }
-        let envelope = format!(
-            r#"{{"id":"m-v2","to":"{}","from":null,"type":"T","payload":1,"deliverAt":"1970-01-01T00:00:00Z","correlationId":null,"headers":{{}},"seq":5,"attempt":1}}"#,
-            a()
-        );
-        // The version 2 statements in shape: outcome upsert naming `retried_as`, message insert without `failures` /
-        // `last_error`.
-        db.sql(&format!(
-            "INSERT INTO \"{s}\".outcomes (message_id, actor_uri, status, error, finished_at, envelope, retried_as)
-             VALUES ('m-v2', '{}', 'done', NULL, now(), '{envelope}'::jsonb, 'm-v2-retry')
-             ON CONFLICT (message_id) DO UPDATE SET actor_uri = excluded.actor_uri, status = excluded.status,
-                 error = excluded.error, finished_at = excluded.finished_at, envelope = excluded.envelope,
-                 retried_as = excluded.retried_as",
-            a()
-        ))
-        .await;
-        db.sql(&format!(
-            "INSERT INTO \"{s}\".messages (id, actor_uri, seq, type, payload, sender, correlation_id, headers, deliver_at, attempt)
-             VALUES ('m-v2-pending', '{}', nextval('\"{s}\".message_seq'), 'T', '1', NULL, NULL, '{{}}', now(), 0)",
-            a()
-        ))
-        .await;
-        let store = db.open().await;
-        assert_eq!(store.outcome(&MessageId::new("m-v2").unwrap()).await.unwrap().unwrap().status, OutcomeStatus::Done);
-        let pending = store.pending(&a(), None, 100).await.unwrap().items.remove(0);
-        assert_eq!(pending.id.as_str(), "m-v2-pending");
-        assert_eq!(pending.failures, 0);
-        assert!(pending.last_error.is_none());
-        assert!(pending.retry.is_none(), "inserted without retry_policy: no policy");
-        assert!(pending.caused_by.is_none(), "inserted without caused_by: no known cause");
-        db.close_stores().await;
-        drop_schema(&db).await;
-    }
     db.cleanup().await;
 }
 

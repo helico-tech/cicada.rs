@@ -1,4 +1,4 @@
-// Payload and state forms from the JSON Schemas served by GET /types (kotlinx-schema, draft 2020-12). The schemas are
+// Payload and state forms from the JSON Schemas served by GET /types (schemars, draft 2020-12). The schemas are
 // published for callers like this one; they do not validate anything. The node decodes with the serializer and is the
 // only validator, so its 422 is the real answer and this module only catches what a form can see (a missing required
 // field, a number that is not a number). Shapes a form cannot edit field by field (unions, maps, lists of objects,

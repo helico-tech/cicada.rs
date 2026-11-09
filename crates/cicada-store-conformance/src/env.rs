@@ -1,4 +1,4 @@
-//! Helpers shared by the cases (the Kotlin `StoreConformanceBase`): the per-case [`Env`], constants and assertions.
+//! Helpers shared by the cases: the per-case [`Env`], constants and assertions.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -53,7 +53,7 @@ pub async fn store_test_with<B: FixtureFactory>(
     env.fixture.close().await;
 }
 
-/// Skips the rest of a case unless `condition` holds, like JUnit's `assumeTrue`: returns `false` after printing why.
+/// Skips the rest of a case unless `condition` holds: returns `false` after printing why.
 pub fn assume(condition: bool, reason: &str) -> bool {
     if !condition {
         eprintln!("skipped: {reason}");

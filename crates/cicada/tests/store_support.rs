@@ -1,5 +1,4 @@
-//! Rules shared by stores: registry resolution, store time, delivery times and envelopes (Kotlin
-//! `RegistrySupportTest`, `StoreSupportTest`).
+//! Rules shared by stores: registry resolution, store time, delivery times and envelopes.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -101,7 +100,7 @@ fn delivery_times_outside_the_supported_range_are_refused_never_wrapped() {
     assert!(Delivery::After(MAX_DELAY).resolve(late).is_err());
     assert_eq!(Delivery::At(MAX_INSTANT).resolve(now()).unwrap(), MAX_INSTANT);
     assert_eq!(time::from_micros(time::to_micros(MAX_INSTANT)), MAX_INSTANT);
-    // Kotlin's `+300000-01-01` cannot even be parsed: chrono's range ends before it.
+    // Beyond chrono's range, so it cannot even be parsed.
     assert!(time::parse_instant("+300000-01-01T00:00:00Z").is_err());
 }
 

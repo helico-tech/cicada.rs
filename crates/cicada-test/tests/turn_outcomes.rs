@@ -1,4 +1,4 @@
-//! One test per row of the architecture's outcomes table, plus the handler-context rules (Kotlin `TurnOutcomesTest`).
+//! One test per row of the architecture's outcomes table, plus the handler-context rules.
 
 mod common;
 
@@ -51,7 +51,6 @@ async fn handler_fails_failed_with_error_no_effects_mailbox_continues() {
     test.run_until_idle().await;
     let record = test.outcome(&boom).await.unwrap();
     assert_eq!(record.status, OutcomeStatus::Failed);
-    // Kotlin records the exception's toString ("java.lang.IllegalStateException: kaput"); Rust the error's text.
     assert_eq!(record.error.as_deref(), Some("kaput"));
     assert_eq!(record.envelope.attempt, 1);
     assert_eq!(test.outcome(&next).await.unwrap().status, OutcomeStatus::Done);

@@ -1,4 +1,4 @@
-//! The PostgreSQL schema and its versioned migrations, identical to the Kotlin implementation's (ADR 0004).
+//! The PostgreSQL schema and its versioned migrations.
 //!
 //! The four tables of the architecture (`actor_types`, `actors`, `messages`, `outcomes`) plus two sequences for the
 //! store-wide `seq` and epoch counters. JSON values are `jsonb`, instants `timestamptz` (microsecond precision, the
@@ -6,12 +6,11 @@
 //! every other backend, and prefix ranges can use the B-tree indexes.
 //!
 //! Migrations are applied by [`migrate`] on store start: idempotent, serialised between concurrently starting nodes
-//! (Kotlin or Rust) by a transaction-scoped advisory lock, and recorded in `cicada_schema_version`. A database written
-//! by a newer version is refused. When the schema is already current, start runs no DDL at all, so a node may connect
-//! as a user without `CREATE` privileges once the schema was migrated by one that has them.
+//! by a transaction-scoped advisory lock, and recorded in `cicada_schema_version`. A database written by a newer version
+//! is refused. When the schema is already current, start runs no DDL at all, so a node may connect as a user without
+//! `CREATE` privileges once the schema was migrated by one that has them.
 //!
-//! Migrations are additive so that nodes of the previous version keep working during a rolling deploy: version 3
-//! keeps `outcomes.retried_as` (written and read only by version 2) as an unused nullable column.
+//! Migrations are additive so that nodes of the previous version keep working during a rolling deploy.
 
 use cicada::store::StoreError;
 use sqlx::{AssertSqlSafe, Connection, PgConnection};
@@ -20,7 +19,10 @@ use crate::error::map_error;
 
 /// Ordered migrations; index + 1 is the version. `{s}` is replaced by the quoted schema name. Never edit one.
 const MIGRATIONS: &[&[&str]] = &[
-    // 1: initial schema
+    // 1: the schema. A message records its failures (it is rescheduled in place), the sender's retry and retention
+    // policies (null for none) and the message whose turn sent it (`caused_by`). An outcome is visible until
+    // `visible_until` (null: for the store retention), `keep_last` outcomes are trimmed per instance and status in
+    // `keep_seq` order (from `message_seq`), and `stripped` marks a hidden record whose content the sweep dropped.
     &[
         r#"CREATE TABLE {s}.actor_types (
             template      text COLLATE "C" PRIMARY KEY,
@@ -43,62 +45,47 @@ const MIGRATIONS: &[&[&str]] = &[
         // The claim scan: instances with a pending message, in due order.
         "CREATE INDEX actors_due ON {s}.actors (next_due_at, type) WHERE next_due_at IS NOT NULL",
         r#"CREATE TABLE {s}.messages (
-            id             text COLLATE "C" PRIMARY KEY,
-            actor_uri      text COLLATE "C" NOT NULL,
-            seq            bigint NOT NULL,
-            type           text NOT NULL,
-            payload        jsonb NOT NULL,
-            sender         text,
-            correlation_id text,
-            headers        jsonb NOT NULL,
-            deliver_at     timestamptz NOT NULL,
-            attempt        integer NOT NULL DEFAULT 0
+            id               text COLLATE "C" PRIMARY KEY,
+            actor_uri        text COLLATE "C" NOT NULL,
+            seq              bigint NOT NULL,
+            type             text NOT NULL,
+            payload          jsonb NOT NULL,
+            sender           text,
+            correlation_id   text,
+            headers          jsonb NOT NULL,
+            deliver_at       timestamptz NOT NULL,
+            attempt          integer NOT NULL DEFAULT 0,
+            failures         integer NOT NULL DEFAULT 0,
+            last_error       text,
+            retry_policy     jsonb,
+            caused_by        text COLLATE "C",
+            retention_policy jsonb
         )"#,
         "CREATE INDEX messages_mailbox ON {s}.messages (actor_uri, deliver_at, seq)",
+        "CREATE INDEX messages_caused_by ON {s}.messages (caused_by) WHERE caused_by IS NOT NULL",
         r#"CREATE TABLE {s}.outcomes (
-            message_id  text COLLATE "C" PRIMARY KEY,
-            actor_uri   text COLLATE "C" NOT NULL,
-            status      text NOT NULL,
-            error       text,
-            finished_at timestamptz NOT NULL,
-            envelope    jsonb NOT NULL
+            message_id    text COLLATE "C" PRIMARY KEY,
+            actor_uri     text COLLATE "C" NOT NULL,
+            status        text NOT NULL,
+            error         text,
+            finished_at   timestamptz NOT NULL,
+            envelope      jsonb NOT NULL,
+            caused_by     text COLLATE "C",
+            visible_until timestamptz,
+            keep_last     boolean NOT NULL DEFAULT false,
+            keep_seq      bigint,
+            stripped      boolean NOT NULL DEFAULT false
         )"#,
         // Retention sweep.
         "CREATE INDEX outcomes_finished ON {s}.outcomes (finished_at)",
         // Failures: by time across all instances, and by URI prefix.
         "CREATE INDEX outcomes_failures ON {s}.outcomes (finished_at, message_id) WHERE status = 'failed'",
         "CREATE INDEX outcomes_failures_by_actor ON {s}.outcomes (actor_uri, finished_at) WHERE status = 'failed'",
-        "CREATE SEQUENCE {s}.message_seq",
-        "CREATE SEQUENCE {s}.epoch_seq",
-    ],
-    // 2 (T18): the retry a `done` outcome was replaced by.
-    &[r#"ALTER TABLE {s}.outcomes ADD COLUMN retried_as text COLLATE "C""#],
-    // 3 (Retry v2): a failed message is rescheduled in place, so the message records its failures. Additive only:
-    // `outcomes.retried_as` stays, unused, because nodes still on version 2 write and read it during a rolling deploy.
-    &[
-        "ALTER TABLE {s}.messages ADD COLUMN failures integer NOT NULL DEFAULT 0",
-        "ALTER TABLE {s}.messages ADD COLUMN last_error text",
-    ],
-    // 4 (Retry v3): the sender's retry policy travels with the message (null for no retry).
-    &["ALTER TABLE {s}.messages ADD COLUMN retry_policy jsonb"],
-    // 5 (H1): the message whose turn sent a message, for message chains; indexed to find what a message caused.
-    &[
-        r#"ALTER TABLE {s}.messages ADD COLUMN caused_by text COLLATE "C""#,
-        r#"ALTER TABLE {s}.outcomes ADD COLUMN caused_by text COLLATE "C""#,
-        "CREATE INDEX messages_caused_by ON {s}.messages (caused_by) WHERE caused_by IS NOT NULL",
         "CREATE INDEX outcomes_caused_by ON {s}.outcomes (caused_by) WHERE caused_by IS NOT NULL",
-    ],
-    // 6 (H2): the sender's retention policy travels with the message; an outcome is visible until `visible_until`
-    // (null: for the store retention), `keep_last` outcomes are trimmed per instance and status in `keep_seq` order
-    // (from `message_seq`), and `stripped` marks a hidden record whose content the sweep dropped.
-    &[
-        "ALTER TABLE {s}.messages ADD COLUMN retention_policy jsonb",
-        "ALTER TABLE {s}.outcomes ADD COLUMN visible_until timestamptz",
-        "ALTER TABLE {s}.outcomes ADD COLUMN keep_last boolean NOT NULL DEFAULT false",
-        "ALTER TABLE {s}.outcomes ADD COLUMN keep_seq bigint",
-        "ALTER TABLE {s}.outcomes ADD COLUMN stripped boolean NOT NULL DEFAULT false",
         "CREATE INDEX outcomes_keep_last ON {s}.outcomes (actor_uri, status, keep_seq) WHERE keep_last",
         "CREATE INDEX outcomes_visible_until ON {s}.outcomes (visible_until) WHERE visible_until IS NOT NULL",
+        "CREATE SEQUENCE {s}.message_seq",
+        "CREATE SEQUENCE {s}.epoch_seq",
     ],
 ];
 
@@ -183,14 +170,14 @@ pub(crate) fn quote(schema: &str) -> String {
     format!("\"{schema}\"")
 }
 
-/// Advisory lock key for migrations of `schema`: a fixed namespace in the high bits, the name's Java `hashCode` below,
-/// so Kotlin and Rust nodes starting together serialise on the same lock.
+/// Advisory lock key for migrations of `schema`: a fixed namespace in the high bits, a hash of the name below. It must
+/// not change, so that nodes of different versions starting together serialise on the same lock.
 fn lock_key(schema: &str) -> i64 {
-    (0x4349_4341_i64 << 32) | (java_hash(schema) as i64 & 0xFFFF_FFFF)
+    (0x4349_4341_i64 << 32) | (name_hash(schema) as i64 & 0xFFFF_FFFF)
 }
 
-/// Java's `String.hashCode`: `s[0]*31^(n-1) + … + s[n-1]` over UTF-16 code units, wrapping.
-fn java_hash(text: &str) -> i32 {
+/// A 32-bit polynomial hash: `s[0]*31^(n-1) + … + s[n-1]` over UTF-16 code units, wrapping.
+fn name_hash(text: &str) -> i32 {
     text.encode_utf16().fold(0i32, |h, unit| h.wrapping_mul(31).wrapping_add(unit as i32))
 }
 
@@ -199,16 +186,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_lock_key_matches_kotlins() {
-        // Values of Java's "public".hashCode() and "".hashCode().
-        assert_eq!(java_hash("public"), -977_423_767);
-        assert_eq!(java_hash(""), 0);
+    fn the_lock_key_is_stable() {
+        // Fixed values: other ones would split the lock between node versions.
+        assert_eq!(name_hash("public"), -977_423_767);
+        assert_eq!(name_hash(""), 0);
         assert_eq!(lock_key(""), 0x4349_4341_0000_0000);
         assert_eq!(lock_key("public"), 0x4349_4341_0000_0000 | (-977_423_767i64 & 0xFFFF_FFFF));
     }
 
     #[test]
-    fn there_are_six_versions() {
-        assert_eq!(VERSION, 6);
+    fn the_schema_is_at_version_1() {
+        assert_eq!(VERSION, 1);
     }
 }

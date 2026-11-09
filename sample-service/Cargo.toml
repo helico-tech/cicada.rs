@@ -22,7 +22,7 @@ cicada-store-sqlite.workspace = true
 cicada-ui.workspace = true
 md-5 = "0.11"
 opentelemetry.workspace = true
-# OTLP over HTTP/protobuf (port 4318), the protocol of the Kotlin sample's E2E telemetry overlay. The blocking reqwest
+# OTLP over HTTP/protobuf (port 4318). The blocking reqwest
 # client suits the SDK's batch processors, which export from their own threads.
 opentelemetry-otlp = { version = "0.33.0", default-features = false, features = ["http-proto", "reqwest-blocking-client", "trace", "metrics"] }
 opentelemetry_sdk.workspace = true

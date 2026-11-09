@@ -1,5 +1,4 @@
-//! `now` is the claim time; `current_time()` moves on during the turn; a delay counts from the commit (Kotlin
-//! `TurnTimeTest`).
+//! `now` is the claim time; `current_time()` moves on during the turn; a delay counts from the commit.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -130,7 +129,7 @@ impl Actor for Dependent {
 
 #[tokio::test(start_paused = true)]
 async fn types_can_be_built_with_the_tests_virtual_clock_and_time_source() {
-    // Kotlin hands the types a `TestTime`; in Rust the test's virtual time is tokio's paused clock, so a dependency
+    // The test's virtual time is tokio's paused clock, so a dependency
     // built on it (a `TokioClock`, `tokio::time::Instant`) shares the store's time.
     let readings = Arc::new(Mutex::new(Vec::new()));
     let waited = Arc::new(Mutex::new(Vec::new()));

@@ -1,5 +1,5 @@
 //! A turn never outlives its lease (local lease deadline), commits are retried instead of re-running the handler, and
-//! claimed turns are never left behind. Virtual time, two nodes on one store (Kotlin `LeaseRobustnessTest`).
+//! claimed turns are never left behind. Virtual time, two nodes on one store.
 
 mod common;
 

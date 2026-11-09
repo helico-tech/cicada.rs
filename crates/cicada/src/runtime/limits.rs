@@ -22,8 +22,7 @@ pub const MAX_HEADER_NAME_LENGTH: usize = 200;
 /// Longest header value.
 pub const MAX_HEADER_VALUE_LENGTH: usize = 4_000;
 
-/// Checks the fields of one send, naming the first field that is out of bounds. Lengths count UTF-16 code units, as
-/// the Kotlin implementation does.
+/// Checks the fields of one send, naming the first field that is out of bounds. Lengths count UTF-16 code units.
 pub fn check(
     id: &MessageId,
     message_type: &str,

@@ -1,4 +1,4 @@
-//! Port of `ClusterRestartTest` (T13/T17 durability): the whole cluster (PostgreSQL included) restarts with delayed
+//! The whole cluster (PostgreSQL included) restarts with delayed
 //! messages pending.
 
 use std::collections::{HashMap, HashSet};

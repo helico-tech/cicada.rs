@@ -1,7 +1,7 @@
 //! The JSON bodies of the HTTP contract, shared by the server routes (`cicada-axum`) and the remote client
 //! (`cicada-client`), so the two cannot disagree on the format.
 //!
-//! Field names and order are those of the Kotlin implementation; every response field is written, absent values as
+//! Field names and order are part of the HTTP contract; every response field is written, absent values as
 //! explicit `null`. Instants are ISO-8601 strings in UTC ([`crate::time::format_instant`]), durations ISO-8601
 //! durations ([`crate::time::format_duration`]).
 //!

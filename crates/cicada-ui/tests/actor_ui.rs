@@ -1,4 +1,4 @@
-//! Port of ActorUiTest (actors-ui).
+//! The embedded console served by `actor_ui()`.
 
 use std::collections::{BTreeSet, VecDeque};
 

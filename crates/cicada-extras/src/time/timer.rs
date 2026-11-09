@@ -154,7 +154,7 @@ mod tests {
     }
 
     #[test]
-    fn keeps_the_kotlin_wire_form() {
+    fn keeps_its_wire_form() {
         let mut timer = Timer::new();
         assert_eq!(serde_json::to_string(&timer).unwrap(), r#"{"generation":0,"deadline":null}"#);
         timer.arm(t("2026-10-03T12:00:00Z"));

@@ -15,8 +15,7 @@ const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(30);
 const PROBE_INTERVAL: Duration = Duration::from_secs(5);
 /// How long the listener may receive nothing, not even its own probe, before it counts as hanging.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
-/// Payload of probe notifications. Never a template (templates contain `://`), so every listener ignores it, also
-/// those of Kotlin nodes on the same channel.
+/// Payload of probe notifications. Never a template (templates contain `://`), so every listener ignores it.
 pub(crate) const PROBE_PAYLOAD: &str = "cicada-listener-probe";
 
 /// Holds one dedicated connection that `LISTEN`s on `channel` and republishes every notification's payload. Started

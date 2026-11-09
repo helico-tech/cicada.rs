@@ -1,8 +1,6 @@
-//! Handler isolation from heartbeats, and shutdown that never hangs or leaks leases. Real time (Kotlin
-//! `ShutdownAndIsolationTest`).
+//! Handler isolation from heartbeats, and shutdown that never hangs or leaks leases. Real time.
 //!
-//! Kotlin runs handlers on a dispatcher of their own and has handlers that ignore cancellation by suspending in
-//! `NonCancellable`. A Rust future cannot ignore being dropped, so here the handler that ignores cancellation blocks its
+//! A future cannot ignore being dropped, so here the handler that ignores cancellation blocks its
 //! thread; heartbeats stay alive on the other worker threads of a multi-thread runtime.
 
 mod common;
@@ -39,7 +37,7 @@ fn blocker(id: &str) -> Blocker {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type")]
 enum BlockerMsg {
-    /// Blocks its thread for `millis` (e.g. a blocking JDBC or HTTP call); it ignores cancellation meanwhile.
+    /// Blocks its thread for `millis` (e.g. a blocking database or HTTP call); it ignores cancellation meanwhile.
     Block { millis: u64 },
     /// Sleeps for `millis`, cancellable.
     Nap { millis: u64 },
@@ -126,7 +124,7 @@ async fn stop_does_not_hang_on_a_handler_that_ignores_cancellation() {
         .build();
     node.create_stateless(&blocker("s")).await.unwrap();
     node.start().await.unwrap();
-    // Kotlin: 20 s suspended in NonCancellable. A blocked thread holds up the runtime's shutdown at the end of the test,
+    // A blocked thread holds up the runtime's shutdown at the end of the test,
     // so it blocks for 3 s only.
     let m = accepted(node.send(&blocker("s"), BlockerMsg::Block { millis: 3_000 }).await.unwrap());
     eventually(TEN_SECONDS, || async {

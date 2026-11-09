@@ -1,4 +1,4 @@
-//! The S1–S10 store conformance suite every Cicada store backend runs (the Kotlin `actors-store-conformance`).
+//! The S1–S10 store conformance suite every Cicada store backend runs.
 //!
 //! A backend implements [`FixtureFactory`] (a fresh [`StoreFixture`] per case, and the suite's unit of time) and runs
 //! every case with one macro call in its tests:
@@ -19,8 +19,7 @@
 //! on a virtual and on the real clock), call it in two modules. Each test runs on its own multi-threaded tokio
 //! runtime, so the concurrency cases run their peers in parallel. Every case is also a public `async fn` in
 //! [`cases`], generic over the factory, for running a single case by hand. Cases that need a capability the fixture
-//! lacks (a virtual clock, reopening, stepping the clock back) print `skipped: <reason>` and pass, as JUnit's
-//! `assumeTrue` skips them in Kotlin.
+//! lacks (a virtual clock, reopening, stepping the clock back) print `skipped: <reason>` and pass.
 
 /// Asserts that `$value` matches `$pattern`.
 macro_rules! assert_matches {
@@ -63,8 +62,7 @@ mod turn_cancel;
 pub use env::*;
 pub use fixture::{FixtureFactory, StoreFixture};
 
-/// Every case of the suite, as a public `async fn` named after the Kotlin case in snake_case, one module per Kotlin
-/// suite class.
+/// Every case of the suite, as a public `async fn`, one module per suite.
 pub mod cases {
     pub use crate::chain::*;
     pub use crate::conformance::*;

@@ -1,4 +1,4 @@
-//! The failure watcher and the dead letters, ported from `SupervisionTest.kt`.
+//! The failure watcher and the dead letters.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -213,7 +213,7 @@ async fn the_oldest_letter_is_evicted_by_failure_time_whatever_the_order_of_the_
 }
 
 #[test]
-fn messages_and_state_keep_the_kotlin_wire_form() {
+fn messages_and_state_keep_their_wire_form() {
     let msg = cicada::message::encode(&redrive(&MessageId::new("m-1").unwrap())).unwrap();
     assert_eq!(msg.message_type, "Redrive");
     assert_eq!(msg.payload, json!({ "failedMessageId": "m-1" }));

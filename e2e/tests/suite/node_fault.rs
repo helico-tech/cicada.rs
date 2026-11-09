@@ -1,4 +1,4 @@
-//! Port of `NodeFaultTest` (T13): a node killed, paused or stopped in the middle of a turn. All observation is over
+//! A node killed, paused or stopped in the middle of a turn. All observation is over
 //! HTTP through the send-only node (never the victim); every test puts the cluster back to all-up afterwards.
 
 use std::collections::HashSet;

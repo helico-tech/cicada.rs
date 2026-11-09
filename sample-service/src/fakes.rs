@@ -141,7 +141,7 @@ pub struct FakeItemProcessor;
 
 impl ItemProcessor for FakeItemProcessor {
     async fn process(&self, input: &str) -> i64 {
-        // Kotlin's String.length counts UTF-16 units.
+        // Counts UTF-16 units.
         input.encode_utf16().count() as i64
     }
 }
@@ -161,7 +161,7 @@ impl SyncApi for FakeSyncApi {
     }
 }
 
-/// The first 8 characters of the name-based UUID of `key`, as Kotlin's `UUID.nameUUIDFromBytes(key)`: the first 4
+/// The first 8 characters of the name-based UUID of `key`: the first 4
 /// bytes of the key's MD5 digest (the version bits come later).
 fn short_id(key: &str) -> String {
     let digest = Md5::digest(key.as_bytes());
@@ -173,8 +173,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn short_ids_match_kotlin() {
-        // UUID.nameUUIDFromBytes("abc".toByteArray()) = 90015098-3cd2-3fb0-9696-3f7d28e17f72
+    fn short_ids_are_stable() {
+        // The version 3 UUID of "abc" is 90015098-3cd2-3fb0-9696-3f7d28e17f72
         assert_eq!(short_id("abc"), "90015098");
     }
 }

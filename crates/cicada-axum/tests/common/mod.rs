@@ -1,4 +1,4 @@
-//! Actor types, a flaky store and HTTP helpers shared by the API tests (the Kotlin `Fixtures.kt`).
+//! Actor types, a flaky store and HTTP helpers shared by the API tests.
 #![allow(dead_code)]
 
 use std::collections::{BTreeSet, HashMap};

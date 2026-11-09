@@ -1,10 +1,10 @@
-//! Actor type definitions: what a node checks at start, and the published contract (Kotlin `ActorTypeTest`).
+//! Actor type definitions: what a node checks at start, and the published contract.
 //!
-//! Checked by the compiler instead, so not ported: a message without a handler and a duplicate handler (one exhaustive
+//! Checked by the compiler instead, so not tested here: a message without a handler and a duplicate handler (one exhaustive
 //! `match`), a missing or doubled unhandled policy (`UNHANDLED` is a required associated constant), a missing template
 //! (`TEMPLATE` is a required associated constant), and a message field named `type` (serde refuses it: "variant field
-//! name `type` conflicts with internal tag"). Kotlin's sealed sub-families have no Rust counterpart: a family is one
-//! flat enum.
+//! name `type` conflicts with internal tag"). A message family is one flat
+//! enum.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -133,7 +133,7 @@ async fn the_stateless_variant_has_no_state_schema() {
 #[tokio::test]
 async fn contract_snapshot_and_stable_hash() {
     let def = registered(SyncActor).await;
-    // The schemas come from schemars, so they differ in detail from the Kotlin ones (ADR 0004).
+    // The schemas come from schemars.
     let expected = concat!(
         r#"{"messages":{"#,
         r#""FetchPage":{"$schema":"https://json-schema.org/draft/2020-12/schema","properties":{"cursor":{"type":["string","null"]}},"title":"FetchPage","type":"object"},"#,

@@ -1,4 +1,4 @@
-//! The S1–S10 suite (Kotlin `StoreConformanceSuite`), plus the type registry, instance and query operations the
+//! The S1–S10 suite, plus the type registry, instance and query operations the
 //! runtime and HTTP API rely on.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -43,7 +43,7 @@ async fn version_of(store: &dyn Store, a: &ActorAddress) -> i64 {
 }
 
 /// The ids of `templates` rotated by `by` (and reversed for odd `by`), so concurrent registrations use different
-/// orders, as Kotlin's `shuffled()` does.
+/// orders.
 fn reordered(types: &[TypeDef], by: usize) -> Vec<TypeDef> {
     let mut out = types.to_vec();
     out.rotate_left(by % types.len().max(1));

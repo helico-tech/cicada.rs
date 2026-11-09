@@ -23,7 +23,7 @@ pub struct Telemetry {
 
 impl Telemetry {
     /// Builds the exporters and providers from the `OTEL_*` variables and installs the W3C trace-context and baggage
-    /// propagators globally (the defaults of the SDK autoconfiguration the Kotlin sample uses).
+    /// propagators globally.
     pub fn from_env() -> anyhow::Result<Self> {
         if let Ok(protocol) = std::env::var("OTEL_EXPORTER_OTLP_PROTOCOL")
             && !protocol.trim().is_empty()

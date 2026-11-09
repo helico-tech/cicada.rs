@@ -1,6 +1,4 @@
-//! Retry policies: backoff, bounds, JSON form, and how envelopes carry them (Kotlin `RetryPolicyTest`).
-//!
-//! The Kotlin `MessageView` checks (the HTTP wire model) belong to the HTTP API story and are not ported here.
+//! Retry policies: backoff, bounds, JSON form, and how envelopes carry them.
 
 use std::time::Duration;
 
@@ -76,7 +74,7 @@ fn json_form_kind_discriminator_iso_durations_round_trip() {
     for policy in [&exp, &fix] {
         assert_eq!(&serde_json::from_value::<RetryPolicy>(policy.to_json()).unwrap(), policy);
     }
-    // The factor defaults to 2; durations also as Kotlin strings or milliseconds.
+    // The factor defaults to 2; durations also as short strings or milliseconds.
     assert_eq!(
         serde_json::from_value::<RetryPolicy>(
             json!({"maxAttempts": 4, "backoff": {"kind": "exponential", "initial": 1000, "max": "1m"}})

@@ -1,4 +1,4 @@
-//! Edge cases of S1–S10 (Kotlin `StoreRobustnessSuite`): time bounds and rounding, clock step-back, lease boundaries,
+//! Edge cases of S1–S10: time bounds and rounding, clock step-back, lease boundaries,
 //! repeated (ambiguous) commits and id races between a commit and concurrent writes.
 
 use std::time::Duration;
@@ -14,8 +14,7 @@ use serde_json::json;
 use crate::env::*;
 use crate::fixture::{FixtureFactory, StoreFixture};
 
-/// Delivery times beyond the supported range. Kotlin uses the instant `+300000-01-01T00:00:00Z`, which chrono cannot
-/// represent; its latest instant (year 262143) is just as far out of range.
+/// Delivery times beyond the supported range, up to chrono's latest instant (year 262143).
 fn too_late() -> [Delivery; 3] {
     [
         Delivery::At(DateTime::<Utc>::MAX_UTC),

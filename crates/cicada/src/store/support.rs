@@ -73,7 +73,7 @@ pub fn envelope_to_json(message: &Message) -> Value {
     })
 }
 
-/// Decodes an envelope written by [`envelope_to_json`] (also by the Kotlin implementation, including envelopes
+/// Decodes an envelope written by [`envelope_to_json`] (including envelopes
 /// retained before later fields existed).
 pub fn envelope_from_json(value: &Value) -> StoreResult<Message> {
     let corrupt = |what: &str| StoreError::Corrupt(format!("envelope {what}: {value}"));

@@ -1,8 +1,7 @@
 //! PostgreSQL store for Cicada: SKIP LOCKED claims and LISTEN/NOTIFY wake-ups.
 //!
 //! [`PostgresStore`] is the multi-node backend: any number of nodes open a store on the same database and schema and
-//! coordinate only through it. The schema is the Kotlin implementation's (ADR 0004), so Kotlin and Rust nodes can share
-//! one database.
+//! coordinate only through it.
 //!
 //! ```no_run
 //! # async fn example() -> Result<(), cicada::store::StoreError> {

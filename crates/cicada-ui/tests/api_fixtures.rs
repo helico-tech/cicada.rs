@@ -1,6 +1,6 @@
-//! Port of ApiFixturesTest (actors-ui): records real responses of every endpoint of the Rust API (successes and
+//! Records real responses of every endpoint of the Rust API (successes and
 //! problems) as JSON files with a manifest naming each file's schema, then runs the console's vitest check
-//! (`web/test/fixtures.test.ts`), which parses every file with the validators generated from the wire classes. A response
+//! (`web/test/fixtures.test.ts`), which parses every file with the console's wire validators (`web/src/api/wire.ts`). A response
 //! the console cannot read fails the test. The vitest step is skipped when the console's node_modules are missing.
 
 use std::process::Command;

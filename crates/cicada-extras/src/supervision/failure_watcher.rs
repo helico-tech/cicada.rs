@@ -126,8 +126,8 @@ impl FailureWatcher {
         })
     }
 
-    /// The id under which the failure of `failed` is recorded: the same on every node, and the same as the Kotlin
-    /// implementation's (a name-based UUID, version 3, of `dead-letter/<id>`).
+    /// The id under which the failure of `failed` is recorded: the same on every node (a name-based UUID,
+    /// version 3, of `dead-letter/<id>`).
     pub fn dead_letter_id(failed: &MessageId) -> MessageId {
         let digest: [u8; 16] = Md5::digest(format!("dead-letter/{failed}").as_bytes()).into();
         let uuid = uuid::Builder::from_md5_bytes(digest).into_uuid();
@@ -160,8 +160,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dead_letter_ids_match_the_kotlin_implementation() {
-        // UUID.nameUUIDFromBytes("dead-letter/0f4c1e5a-1b8e-4a0e-9b1a-3c2d5e6f7a8b".toByteArray())
+    fn dead_letter_ids_are_stable() {
+        // The version 3 UUID of "dead-letter/0f4c1e5a-1b8e-4a0e-9b1a-3c2d5e6f7a8b".
         let failed = MessageId::new("0f4c1e5a-1b8e-4a0e-9b1a-3c2d5e6f7a8b").unwrap();
         assert_eq!(FailureWatcher::dead_letter_id(&failed).as_str(), "75de82e8-12d3-38e1-955b-632295d120fb");
     }

@@ -2,7 +2,7 @@
 // schema; switching to raw keeps what was typed, and switching back keeps it when the form can show it.
 
 import { useImperativeHandle, useMemo, useState, type Ref } from 'react';
-import type { Json } from '../api/generated';
+import type { Json } from '../api/wire';
 import { describe, draftOf, emptyDraft, readDraft, skeleton, type DraftObject, type FieldError } from '../lib/schema';
 import { Callout, Segmented } from '../sx';
 import { SchemaForm } from './SchemaForm';

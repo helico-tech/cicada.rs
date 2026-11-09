@@ -3,8 +3,8 @@
 
 import { useRef, useState } from 'react';
 import { ApiError, fetchPages } from '../api/client';
-import type { ActorView, MessageState, MessageStatusView, MessageView, OutcomeView, TypeView } from '../api/generated';
-import { ProblemTypes } from '../api/generated';
+import type { ActorView, MessageState, MessageStatusView, MessageView, OutcomeView, TypeView } from '../api/wire';
+import { ProblemTypes } from '../api/wire';
 import { useConsole, usePageRefresh, useTitle } from '../app/context';
 import { withoutScheme } from '../lib/address';
 import { addedKeys, jsonChanges, removedKeys, type JsonChanges } from '../lib/diff';

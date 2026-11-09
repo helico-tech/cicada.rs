@@ -1,5 +1,5 @@
-//! Shared fixtures of the runtime tests: the Kotlin `Fixtures.kt` (counter and echo types), a store wrapper that
-//! injects faults (the Kotlin `DelegatingStore`), virtual-time nodes and small helpers.
+//! Shared fixtures of the runtime tests: counter and echo types, a store wrapper that
+//! injects faults, virtual-time nodes and small helpers.
 
 #![allow(dead_code, missing_docs)]
 
@@ -100,7 +100,7 @@ impl CounterState {
     }
 }
 
-/// `None` as `null`, like Kotlin's string templates.
+/// `None` as `null`.
 pub fn opt<T: std::fmt::Display>(value: &Option<T>) -> String {
     value.as_ref().map(|v| v.to_string()).unwrap_or_else(|| "null".to_owned())
 }
@@ -265,7 +265,7 @@ pub fn virtual_store_at(start: Timestamp) -> Arc<InMemoryStore> {
     Arc::new(InMemoryStore::new(Arc::new(TokioClock::new(start)), time::DEFAULT_RETENTION))
 }
 
-/// A node on `store` named `name` with a lease TTL of 30 s, as the Kotlin tests' `node(store, name)`.
+/// A node on `store` named `name` with a lease TTL of 30 s.
 pub fn node(store: Arc<dyn Store>, name: &str) -> ActorSystemBuilder {
     ActorSystem::builder(store).node_id(NodeId::new(name).unwrap()).lease_ttl(Duration::from_secs(30))
 }
@@ -312,7 +312,7 @@ where
 }
 
 /// Lets background work run to idle: a turn whose `run_due_turns` future was dropped releases its lease in the
-/// background (Kotlin's `job.join()` waits for that release).
+/// background.
 pub async fn settle() {
     tokio::time::sleep(Duration::from_millis(1)).await;
 }
@@ -351,7 +351,7 @@ impl Events {
     }
 }
 
-/// A turn outcome written as Kotlin's `toString()`: `Done`, `Failed(error=…)`, `Rescheduled(delivery=…, error=…)`.
+/// A turn outcome as text: `Done`, `Failed(error=…)`, `Rescheduled(delivery=…, error=…)`.
 pub fn outcome_text(outcome: &TurnOutcome) -> String {
     match outcome {
         TurnOutcome::Done => "Done".to_owned(),
@@ -367,7 +367,7 @@ pub fn outcome_text(outcome: &TurnOutcome) -> String {
     }
 }
 
-/// The kind of a handler failure, as Kotlin's exception class names: `TurnTimeoutException`, `Error`, `Panic`.
+/// The kind of a handler failure: `TurnTimeoutException`, `Error`, `Panic`.
 pub fn failure_kind(failure: &HandlerFailure) -> &'static str {
     match failure {
         HandlerFailure::Timeout { .. } => "TurnTimeoutException",

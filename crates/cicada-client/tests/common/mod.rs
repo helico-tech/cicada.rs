@@ -1,4 +1,4 @@
-//! Actor types and a real HTTP server for the client tests (the Kotlin `Fixtures.kt` of `actors-client`).
+//! Actor types and a real HTTP server for the client tests.
 #![allow(dead_code)]
 
 use std::collections::HashMap;

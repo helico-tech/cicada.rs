@@ -4,9 +4,9 @@ The sample service (`sample-service`) in Docker, driven over HTTP only:
 
 - `docker-compose.yml` — compose project `cicada-rs-e2e`: PostgreSQL 18 (host port 25432), `node-1`..`node-3` hosting
   every type (9081–9083) and a send-only node (9084), all from the image `cicada-rs-sample:e2e`. `LEASE_TTL=5s`,
-  `POLL_INTERVAL=200ms`, `SHUTDOWN_GRACE_PERIOD=5s`. The ports differ from the Kotlin stack's, so both can run at once.
-- `tests/suite/` — the automated suite (port of Kotlin's `e2e-tests`: T13 fault tests, T17 E2E) against that stack,
-  plus single SQLite nodes started with `docker run` (9090, and 9091 with `API_TOKEN`). One module per Kotlin test
+  `POLL_INTERVAL=200ms`, `SHUTDOWN_GRACE_PERIOD=5s`.
+- `tests/suite/` — the automated suite (fault tests and E2E) against that stack,
+  plus single SQLite nodes started with `docker run` (9090, and 9091 with `API_TOKEN`). One module per test
   class; `src/` is the harness (docker CLI, nodes, polling, ordering checks, the suite runner).
 
 ## Run the suite
@@ -21,7 +21,7 @@ CICADA_E2E=1 cargo test -p cicada-e2e -- --nocapture
 Without `CICADA_E2E=1` the suite's one test returns at once, so `cargo test --workspace` needs no Docker.
 
 The test builds the image (`docker build -f sample-service/Dockerfile -t cicada-rs-sample:e2e .`), removes leftovers of
-an aborted run, starts the compose stack once, runs the classes in the Kotlin order (API, examples, ordering under
+an aborted run, starts the compose stack once, runs the classes in a fixed order (API, examples, ordering under
 load, kill / pause / stop a node mid-turn, outcomes while a node is killed, PostgreSQL stopped and started again, full
 cluster restart, SQLite node), and always removes every container and volume afterwards: at the end of the run, while
 unwinding from a panic, and on Ctrl-C. Every test is bounded by 4 minutes. A run takes about 3 minutes (170–180 s; plus the

@@ -1,7 +1,7 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { ApiError, ContractError, createApi, fetchPages } from '../src/api/client';
-import { ProblemTypes } from '../src/api/generated';
+import { ProblemTypes } from '../src/api/wire';
 
 type Answer = { status: number; body?: unknown } | Error;
 

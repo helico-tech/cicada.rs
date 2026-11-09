@@ -1,7 +1,6 @@
 //! SQLite store for Cicada: one file, WAL, one writer.
 //!
-//! [`SqliteStore`] keeps the schema of the Kotlin implementation (`actors-store-sqlite`), migrations and
-//! `PRAGMA user_version` included, so a database file written by either implementation opens with the other.
+//! [`SqliteStore`] versions its schema with `PRAGMA user_version` and migrates an older database file when it opens it.
 //!
 //! ```no_run
 //! # async fn example() -> cicada::store::StoreResult<()> {

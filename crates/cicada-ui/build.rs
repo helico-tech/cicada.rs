@@ -1,5 +1,4 @@
-//! Builds the console (web/) with Vite into `$OUT_DIR/web`, which `src/lib.rs` embeds. Needs Node.js and npm, like
-//! the Kotlin build. Set `CICADA_UI_SKIP_BUILD` to skip the build (an empty console is embedded then).
+//! Builds the console (web/) with Vite into `$OUT_DIR/web`, which `src/lib.rs` embeds. Needs Node.js and npm. Set `CICADA_UI_SKIP_BUILD` to skip the build (an empty console is embedded then).
 
 use std::path::Path;
 use std::process::Command;

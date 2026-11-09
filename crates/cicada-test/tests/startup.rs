@@ -1,6 +1,6 @@
-//! Node start: validation of hosted types and configuration, contract registration (Kotlin `StartupTest`).
+//! Node start: validation of hosted types and configuration, contract registration.
 //!
-//! Kotlin's `missing handler and missing unhandled stop the node` is not ported: in Rust a handler is one exhaustive
+//! A missing handler and a missing unhandled policy are not tested here: a handler is one exhaustive
 //! `match` and `UNHANDLED` is a required associated constant, so both are checked by the compiler (ADR 0003).
 
 #[macro_use]

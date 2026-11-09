@@ -1,6 +1,5 @@
-//! Runs the S1–S10 conformance suite against `SqliteStore` twice (the Kotlin `SqliteStoreConformanceTest` and
-//! `SqliteStoreRealTimeConformanceTest`): on a virtual clock that the fixture can step back, with peers as separate
-//! store instances on the same file (as separate processes would be) and reopening; and on the system clock, where time
+//! Runs the S1–S10 conformance suite against `SqliteStore` twice: on a virtual clock that the fixture can step
+//! back, with peers as separate store instances on the same file (as separate processes would be) and reopening; and on the system clock, where time
 //! advances by waiting.
 
 use std::path::PathBuf;

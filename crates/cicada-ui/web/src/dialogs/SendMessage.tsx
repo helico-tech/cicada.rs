@@ -3,7 +3,7 @@
 
 import { useRef, useState, type ReactNode } from 'react';
 import { ApiError } from '../api/client';
-import type { RetryPolicy, SendRequest, TypeView } from '../api/generated';
+import type { RetryPolicy, SendRequest, TypeView } from '../api/wire';
 import { useConsole } from '../app/context';
 import { clock, count, dateTime, localInputValue, relative, timeZone } from '../lib/format';
 import { blankKeep, readRetention, type KeepDraft, type KeepKind } from '../lib/retention';

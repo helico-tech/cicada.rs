@@ -1,5 +1,4 @@
-//! H2: the sender's retention policy, from outside and from a handler, in virtual time (Kotlin
-//! `MessageRetentionTest`).
+//! The sender's retention policy, from outside and from a handler, in virtual time.
 
 use std::time::Duration;
 

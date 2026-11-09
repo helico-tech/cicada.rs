@@ -1,6 +1,5 @@
 //! Typed refs are checked against the TypeRegistry where the compiler cannot (a ref type that is not registered, the
-//! initial state of a created type), and `self` is the claimed address even when it is not canonical (Kotlin
-//! `TypedEffectsTest`).
+//! initial state of a created type), and `self` is the claimed address even when it is not canonical.
 
 mod common;
 
