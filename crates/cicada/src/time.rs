@@ -156,7 +156,7 @@ fn parse_iso(body: &str) -> Option<i128> {
         if !rest.eq_ignore_ascii_case("D") {
             return None;
         }
-        total += scale(n, NANOS_PER[0].1)?;
+        total = total.checked_add(scale(n, NANOS_PER[0].1)?)?;
         any = true;
     }
     if let Some(mut time) = time {
@@ -172,7 +172,7 @@ fn parse_iso(body: &str) -> Option<i128> {
                 return None;
             }
             last = index;
-            total += scale(n, NANOS_PER[index].1)?;
+            total = total.checked_add(scale(n, NANOS_PER[index].1)?)?;
             time = &rest[1..];
             any = true;
         }
@@ -348,6 +348,16 @@ mod tests {
         assert_eq!(format_duration(Duration::from_millis(500)), "PT0.500S");
         assert_eq!(format_duration(Duration::from_millis(1_500)), "PT1.500S");
         assert_eq!(format_duration(Duration::from_nanos(1_000_000_001)), "PT1.000000001S");
+    }
+
+    #[test]
+    fn a_duration_whose_parts_sum_out_of_range_is_refused() {
+        assert!(parse_duration("PT47000000000000000000000000H2820000000000000000000000000M").is_err());
+        assert!(parse_duration("P1960000000000000000000000DT47000000000000000000000000H").is_err());
+        // Three parts that would wrap around to a small positive value.
+        let (h, m) = (47_000_000_000_000_000_000_000_000_i128, 2_820_000_000_000_000_000_000_000_000_i128);
+        let wrapped = (h * 3_600_000_000_000).wrapping_add(m * 60_000_000_000);
+        assert!(parse_duration(&format!("PT{h}H{m}M{}S", -wrapped / 1_000_000_000 + 5)).is_err());
     }
 
     #[test]
