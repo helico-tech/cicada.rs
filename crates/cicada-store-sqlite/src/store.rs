@@ -19,7 +19,7 @@ use cicada::store::{
 };
 use cicada::time::{self, DEFAULT_RETENTION, Timestamp};
 use serde_json::Value;
-use sqlx::sqlite::{SqliteArguments, SqliteConnectOptions, SqliteJournalMode, SqliteRow, SqliteSynchronous};
+use sqlx::sqlite::{SqliteArguments, SqliteConnectOptions, SqliteRow, SqliteSynchronous};
 use sqlx::{AssertSqlSafe, Row, Sqlite, SqliteConnection};
 use tokio::sync::{Semaphore, SemaphorePermit};
 
@@ -29,6 +29,9 @@ use crate::schema;
 
 /// Number of read connections of a store.
 const READERS: usize = 4;
+
+/// Turns the database file to WAL mode; a property of the file, so it holds for every later connection.
+const SET_WAL: &str = "PRAGMA journal_mode = WAL";
 
 /// Settings of a [`SqliteStore`].
 #[derive(Clone)]
@@ -174,17 +177,23 @@ impl ReadTx<'_> {
 
 impl SqliteStore {
     /// Opens (or creates, with its schema) the database file at `path` and migrates it to the current schema version.
-    /// Fails with [`StoreError::Invalid`] when the file was written by a newer schema version, and with
-    /// [`StoreError::Unavailable`] when the file cannot be opened.
+    /// A new or empty file is set up. Fails with [`StoreError::Invalid`] when the file was written by a newer schema
+    /// version or holds the tables of another program (it has tables but no schema version; the file is left as it
+    /// was), and with [`StoreError::Unavailable`] when the file cannot be opened.
     pub async fn open(path: impl AsRef<Path>, options: SqliteOptions) -> StoreResult<Self> {
+        let path = path.as_ref();
         let base = SqliteConnectOptions::new()
-            .filename(path.as_ref())
+            .filename(path)
             .busy_timeout(options.busy_timeout)
             .synchronous(SqliteSynchronous::Full)
             .foreign_keys(true);
-        let mut writer =
-            Conn::connect(&base.clone().create_if_missing(true).journal_mode(SqliteJournalMode::Wal)).await?;
-        if let Err(e) = schema::migrate(&mut writer).await {
+        let mut writer = Conn::connect(&base.clone().create_if_missing(true)).await?;
+        // WAL mode is set after the migration, so that a database the migration refuses stays as it was.
+        let setup = match schema::migrate(&mut writer, path).await {
+            Ok(()) => sqlx::raw_sql(SET_WAL).execute(writer.raw()).await.map(drop).map_err(db_error),
+            Err(e) => Err(e),
+        };
+        if let Err(e) = setup {
             writer.close().await;
             return Err(e);
         }

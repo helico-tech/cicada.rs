@@ -114,6 +114,35 @@ async fn a_database_from_a_newer_schema_version_is_refused() {
 }
 
 #[tokio::test]
+async fn a_database_of_another_program_is_refused_and_left_as_it_was() {
+    let db = TempDb::new();
+    db.exec("CREATE TABLE foo (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT); INSERT INTO foo (name) VALUES ('a')")
+        .await;
+    let before = std::fs::read(&db.file).unwrap();
+    let result = SqliteStore::open(&db.file, SqliteOptions::default()).await;
+    let Err(StoreError::Invalid(reason)) = result else { panic!("refused, got {result:?}") };
+    assert_eq!(reason, format!("Database {} is not a cicada store: it holds other tables", db.file.display()));
+    assert_eq!(std::fs::read(&db.file).unwrap(), before, "the file is unchanged");
+    assert_eq!(db.pragma("journal_mode").await, "delete");
+    let tables = db.column_names("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").await;
+    assert_eq!(tables, ["foo", "sqlite_sequence"]);
+}
+
+#[tokio::test]
+async fn a_new_path_and_an_empty_file_are_set_up() {
+    let new = TempDb::new();
+    let empty = TempDb::new();
+    std::fs::write(&empty.file, b"").unwrap();
+    for db in [&new, &empty] {
+        db.open(Arc::new(VirtualClock::default())).await.close().await;
+        assert_eq!(db.pragma("journal_mode").await, "wal");
+        assert_eq!(db.pragma("user_version").await, schema::VERSION.to_string());
+        let tables = db.column_names("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").await;
+        assert_eq!(tables, ["actor_types", "actors", "messages", "nodes", "outcomes", "sequences"]);
+    }
+}
+
+#[tokio::test]
 async fn a_closed_store_refuses_operations() {
     let db = TempDb::new();
     let store = db.open(Arc::new(VirtualClock::default())).await;

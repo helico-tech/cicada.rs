@@ -3,10 +3,13 @@
 //! are TEXT.
 //!
 //! The schema is versioned with `PRAGMA user_version`: opening a store applies every missing migration in one
-//! transaction and refuses a database written by a newer version. Migrations are additive so that nodes of the previous
+//! transaction and refuses a database written by a newer version. A database without a version is set up only when it
+//! has no tables; one with tables belongs to another program and is refused (ADR 0017). Migrations are additive so that nodes of the previous
 //! version keep working during a rolling deploy.
 //!
 //! SQLite keeps the text of every `CREATE` in `sqlite_master`, so the statement texts are part of the schema.
+
+use std::path::Path;
 
 use cicada::store::{StoreError, StoreResult};
 use sqlx::{Row, SqliteConnection};
@@ -99,19 +102,35 @@ const MIGRATIONS: &[&[&str]] = &[
 /// The schema version this code writes.
 pub const VERSION: i64 = MIGRATIONS.len() as i64;
 
-/// Applies every missing migration in one write transaction; refuses a database written by a newer version.
-pub(crate) async fn migrate(conn: &mut Conn) -> StoreResult<()> {
+/// Applies every missing migration in one write transaction; refuses a database written by a newer version, and one
+/// at `path` without a version that already holds tables.
+pub(crate) async fn migrate(conn: &mut Conn, path: &Path) -> StoreResult<()> {
     conn.begin(Mode::Write).await.map_err(db_error)?;
-    let result = apply(conn.raw()).await;
+    let result = apply(conn.raw(), path).await;
     conn.end(result).await
 }
 
-async fn apply(c: &mut SqliteConnection) -> StoreResult<()> {
+async fn apply(c: &mut SqliteConnection, path: &Path) -> StoreResult<()> {
     let current: i64 = sqlx::query("PRAGMA user_version").fetch_one(&mut *c).await.map_err(db_error)?.get(0);
     if current > VERSION {
         return Err(StoreError::Invalid(format!(
             "Database schema version {current} is newer than supported ({VERSION})"
         )));
+    }
+    if current == 0 {
+        // SQLite's own tables (`sqlite_sequence`, `sqlite_stat1`) do not count.
+        let foreign: Option<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND substr(name, 1, 7) <> 'sqlite_' LIMIT 1",
+        )
+        .fetch_optional(&mut *c)
+        .await
+        .map_err(db_error)?;
+        if foreign.is_some() {
+            return Err(StoreError::Invalid(format!(
+                "Database {} is not a cicada store: it holds other tables",
+                path.display()
+            )));
+        }
     }
     if current < VERSION {
         for statements in &MIGRATIONS[current as usize..] {

@@ -1,6 +1,7 @@
 //! SQLite store for Cicada: one file, WAL, one writer.
 //!
 //! [`SqliteStore`] versions its schema with `PRAGMA user_version` and migrates an older database file when it opens it.
+//! It sets up a new or empty file and refuses one that holds the tables of another program.
 //!
 //! ```no_run
 //! # async fn example() -> cicada::store::StoreResult<()> {
