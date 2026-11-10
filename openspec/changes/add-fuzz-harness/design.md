@@ -57,8 +57,8 @@ Scenario
 ```
 
 There is one actor type. A message's payload is its script: a list of actions such as send, create, stop, sleep, fail or
-panic. New behaviour then needs a new action, not a new actor. Every script action also appends the message id to the
-state, which is what the G4 check reads.
+panic. New behaviour then needs a new action, not a new actor. Every handler run appends the message id to the state,
+which is what the G4 check reads.
 
 Faults are keyed by call count and not by time, as call counts stay exact on replay.
 
@@ -93,6 +93,11 @@ start and end. Then:
 | S8 | After the drain bound, no due message is left pending |
 
 "Accepted" comes from the inner store, because a client can get an error for a send that applied.
+
+G1 is per instance, and a delete ends the instance. A handler can still be running when its instance is deleted, and a
+new instance at that address can then start a turn. The store has voided the old lease and fences the old commit, and
+the old handler stops at its next heartbeat, so only the new turn can commit. The check forgets a running handler when
+its instance is removed. Found by the first long run.
 
 The drain step lifts all faults except Dead, resumes paused instances and advances virtual time past the largest possible
 lease, delay and backoff in the scenario. Generators keep those small. Runs use a long retention and no hidden-outcome

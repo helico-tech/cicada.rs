@@ -29,24 +29,25 @@
 
 ## 5. Fault layer
 
-- [ ] 5.1 Add `FaultStore`, with every `Store` method going through one gate. Verify: a test on `InMemoryStore` checks that with no fault rules each method gives the inner store's answer.
-- [ ] 5.2 Add the Before, After, Delay and Dead faults and per-node rules keyed by operation and call count. Verify: one test per fault, on paused time; After leaves the commit applied and returns `Unavailable`.
-- [ ] 5.3 Add the event log, recording the inner store's real answers and the handler starts and ends. Verify: a test sees a lost-acknowledgement commit in the log.
+- [x] 5.1 Add `FaultStore`, with every `Store` method going through one gate. Verify: a test on `InMemoryStore` checks that with no fault rules each method gives the inner store's answer.
+- [x] 5.2 Add the Before, After, Delay and Dead faults and per-node rules keyed by operation and call count. Verify: one test per fault, on paused time; After leaves the commit applied and returns `Unavailable`.
+- [x] 5.3 Add the event log, recording the inner store's real answers and the handler starts and ends. Verify: a test sees a lost-acknowledgement commit in the log.
 
 ## 6. Node simulation
 
-- [ ] 6.1 Add `Scenario`, its generator and the one script actor. Verify: a test runs a scenario where each script action happens at least once.
-- [ ] 6.2 Add the runner: several `ActorSystem`s on `#[tokio::test(start_paused = true)]` and `InMemoryStore`, each with its own `FaultStore`, then heal and drain. It does not use `TestActors`, which has one node and owns its store. Verify: a scenario with no faults drains with every message `done`.
-- [ ] 6.3 Add the replay check. Verify: a test runs one scenario with faults twice and the event logs are equal.
-- [ ] 6.4 Add the checks G1, G3, G4, G5, G6 and S8. Verify: each check has a unit test on a hand-written bad event log that makes it fail.
-- [ ] 6.5 Add `tests/simulation.rs` and set the case count for `cargo test` from measured time. Verify: under 30 seconds in a normal run.
-- [ ] 6.6 Prove the harness catches real bugs: temporarily break the fencing check in `InMemoryStore`'s `commit`, and separately its head-of-mailbox check in `claim_due`. Verify: the simulation fails on G1 or G3, and on G5, with a short shrunk case; both breaks are reverted.
-- [ ] 6.7 Run long and write up each failure as a change with only a `proposal.md`, holding the shrunk case. Verify: `PROPTEST_CASES=20000 cargo test -p cicada-fuzz --test simulation` passes, or each failure has its change.
+- [x] 6.1 Add `Scenario`, its generator and the one script actor. Verify: a test runs a scenario where each script action happens at least once.
+- [x] 6.2 Add the runner: several `ActorSystem`s on `#[tokio::test(start_paused = true)]` and `InMemoryStore`, each with its own `FaultStore`, then heal and drain. It does not use `TestActors`, which has one node and owns its store. Verify: a scenario with no faults drains with every message `done`.
+- [x] 6.3 Add the replay check. Verify: a test runs one scenario with faults twice and the event logs are equal.
+- [x] 6.4 Add the checks G1, G3, G4, G5, G6 and S8. Verify: each check has a unit test on a hand-written bad event log that makes it fail.
+- [x] 6.5 Add `tests/simulation.rs` and set the case count for `cargo test` from measured time. Verify: under 30 seconds in a normal run.
+- [x] 6.6 Prove the harness catches real bugs: temporarily break the fencing check in `InMemoryStore`'s `commit`, and separately its head-of-mailbox check in `claim_due`. Verify: the simulation fails on G1 or G3, and on G5, with a short shrunk case; both breaks are reverted.
+- [x] 6.7 Run long and write up each failure as a change with only a `proposal.md`, holding the shrunk case. Verify: `PROPTEST_CASES=20000 cargo test -p cicada-fuzz --test simulation` passes, or each failure has its change.
+  - Outcome: passes at 20,000 and at 60,000 cases. The one failure was a handler still running when its instance was deleted and re-created. It is a written rule in `design.md`, with a plain test, and not a bug: the store fences the old turn.
 
 ## 7. Final checks
 
-- [ ] 7.1 Fix every finding that blocks green in its own change, with its saved case committed there. Verify: no open finding has a saved case failing on `main`.
-- [ ] 7.2 Run the full checks. Verify: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace` pass, and `openspec validate add-fuzz-harness --strict` passes.
+- [x] 7.1 Fix every finding that blocks green in its own change, with its saved case committed there. Verify: no open finding has a saved case failing on `main`.
+- [x] 7.2 Run the full checks. Verify: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace` pass, and `openspec validate add-fuzz-harness --strict` passes.
 
 ## Workflow follow-up
 

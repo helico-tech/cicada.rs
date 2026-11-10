@@ -566,10 +566,13 @@ name = "cicada-fuzz"
 version = "0.3.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "cicada",
  "cicada-store-sqlite",
  "cicada-test",
+ "futures",
  "proptest",
+ "schemars",
  "serde",
  "serde_json",
  "tempfile",

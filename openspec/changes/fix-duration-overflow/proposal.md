@@ -1,7 +1,6 @@
 # Proposal
 
-Status: a finding, not started. It was found by reading the code and has not been run yet, so the first step is to
-confirm it with a test.
+Status: done. It was found by reading the code and confirmed by a test: a debug build panicked at `time.rs:175`.
 
 ## Why
 

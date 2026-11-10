@@ -1163,6 +1163,11 @@ impl Pair {
         Self::start(clock, first, second, None).await
     }
 
+    /// Any two stores on `clock`.
+    pub async fn of(clock: Arc<VirtualClock>, first: Arc<dyn Store>, second: Arc<dyn Store>) -> Self {
+        Self::start(clock, first, second, None).await
+    }
+
     async fn start(
         clock: Arc<VirtualClock>,
         first: Arc<dyn Store>,

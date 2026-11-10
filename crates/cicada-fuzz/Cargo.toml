@@ -9,10 +9,13 @@ publish.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+chrono.workspace = true
 cicada.workspace = true
 cicada-store-sqlite.workspace = true
 cicada-test.workspace = true
+futures.workspace = true
 proptest.workspace = true
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
