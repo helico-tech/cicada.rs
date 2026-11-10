@@ -10,6 +10,7 @@ members = [
     "crates/cicada-client",
     "crates/cicada-otel",
     "crates/cicada-extras",
+    "crates/cicada-cli",
     "examples",
     "sample-service",
     "e2e",
@@ -33,6 +34,7 @@ cicada-axum = { path = "crates/cicada-axum" }
 cicada-client = { path = "crates/cicada-client" }
 cicada-otel = { path = "crates/cicada-otel" }
 cicada-extras = { path = "crates/cicada-extras" }
+cicada-cli = { path = "crates/cicada-cli" }
 cicada-examples = { path = "examples" }
 
 aide = { version = "=0.16.0-alpha.4", features = ["axum", "axum-json", "axum-query"] }
@@ -40,18 +42,23 @@ anyhow = "1.0.104"
 async-trait = "0.1.92"
 axum = "0.8.9"
 chrono = { version = "0.4.42", default-features = false, features = ["std", "clock", "serde"] }
+clap = { version = "4.6.7", features = ["derive"] }
+crossterm = { version = "0.29.0", features = ["event-stream"] }
 futures = "0.3.34"
 http = "1"
 opentelemetry = "0.33.0"
 opentelemetry_sdk = "0.33.0"
+ratatui = "0.30.2"
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls"] }
 schemars = { version = "1.2.2", features = ["preserve_order", "chrono04"] }
 serde = { version = "1", features = ["derive"] }
+serde_norway = "0.9.42"
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
 sha2 = "0.11.0"
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "json", "chrono"] }
 tempfile = "3"
 thiserror = "2.0.21"
+toml = "1.2.1"
 tokio = { version = "1.53.2", features = ["full"] }
 tokio-util = { version = "0.7.19", features = ["rt"] }
 tower = { version = "0.5", features = ["util"] }
