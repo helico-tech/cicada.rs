@@ -13,8 +13,10 @@ use std::time::Duration;
 use sqlx::{AssertSqlSafe, Connection, PgConnection};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-use crate::store::Store;
-use crate::store::postgres::{PgConnectOptions, PostgresStore, PostgresStoreConfig};
+use crate::store::Backend;
+use sqlx::postgres::PgConnectOptions;
+
+use crate::store::postgres::{PostgresOptions, PostgresStore};
 
 /// The test database URL, or `None` (with a note) when `CICADA_PG_URL` is unset.
 pub fn pg_url() -> Option<String> {
@@ -25,6 +27,13 @@ pub fn pg_url() -> Option<String> {
             None
         }
     }
+}
+
+/// `url` with another user and password.
+pub fn url_as(url: &str, user: &str, password: &str) -> String {
+    let (scheme, rest) = url.split_once("://").expect("a PostgreSQL URL");
+    let host = rest.rsplit_once('@').map_or(rest, |(_, host)| host);
+    format!("{scheme}://{user}:{password}@{host}")
 }
 
 /// A [`TestDb`] for this test, or returns from the test when `CICADA_PG_URL` is unset.
@@ -75,8 +84,8 @@ impl TestDb {
     }
 
     /// The settings tests use: this schema, a small pool.
-    pub fn config(&self) -> PostgresStoreConfig {
-        PostgresStoreConfig { schema: self.schema.clone(), max_pool_size: 4, ..Default::default() }
+    pub fn config(&self) -> PostgresOptions {
+        PostgresOptions { schema: self.schema.clone(), max_pool_size: 4, ..Default::default() }
     }
 
     /// Opens a store on this schema with [`Self::config`].
@@ -85,7 +94,7 @@ impl TestDb {
     }
 
     /// Opens a store on this schema with `config`.
-    pub async fn open_with(&self, config: PostgresStoreConfig) -> Arc<PostgresStore> {
+    pub async fn open_with(&self, config: PostgresOptions) -> Arc<PostgresStore> {
         let store = Arc::new(PostgresStore::connect(&self.url, config).await.expect("store opens"));
         self.stores.lock().unwrap().push(store.clone());
         store

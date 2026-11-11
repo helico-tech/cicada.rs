@@ -1,13 +1,13 @@
 //! Leases, heartbeats and fencing, in virtual time with two nodes on one store.
 
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::common::*;
 use crate::address::ActorAddress;
 use crate::store::{
-    CommitRequest, CommitResult, MessageStatus, OutcomeStatus, RenewResult, Store, StoreError, StoreResult,
+    Backend, CommitRequest, CommitResult, MessageStatus, OutcomeStatus, RenewResult, StoreError, StoreResult,
 };
 use crate::{ActorSystem, Unhandled};
 use async_trait::async_trait;
@@ -20,7 +20,7 @@ fn a() -> Counter {
 // The counter type with a maximum turn of 5 minutes.
 counter_type!(SlowCounter, Unhandled::Fail, Duration::from_secs(300));
 
-fn slow_node(store: Arc<dyn Store>, name: &str) -> ActorSystem {
+fn slow_node(store: impl IntoStore, name: &str) -> ActorSystem {
     node(store, name).host(SlowCounter).build()
 }
 
@@ -31,7 +31,7 @@ struct CountRenewals(AtomicUsize);
 impl Faults for CountRenewals {
     async fn renew(
         &self,
-        inner: &dyn Store,
+        inner: &dyn Backend,
         address: &ActorAddress,
         epoch: i64,
         ttl: Duration,
@@ -50,15 +50,15 @@ async fn heartbeat_renews_at_a_third_of_the_ttl_and_keeps_a_long_turn_alive() {
     let m = accepted(system.send(&a(), CounterMsg::Sleep { millis: 95_000 }).await.unwrap());
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1);
     assert_eq!(store.faults.0.load(Ordering::SeqCst), 9); // at 10, 20, ..., 90 s
-    assert_eq!(outcome_of(&*memory, &m.id).await.unwrap().status, OutcomeStatus::Done);
-    assert_eq!(state_of::<CounterState>(&*memory, &a().address()).await.log, vec!["sleep:95000", "woke"]);
+    assert_eq!(outcome_of(&memory, &m.id).await.unwrap().status, OutcomeStatus::Done);
+    assert_eq!(state_of::<CounterState>(&memory, &a().address()).await.log, vec!["sleep:95000", "woke"]);
 }
 
 struct LoseLease;
 
 #[async_trait]
 impl Faults for LoseLease {
-    async fn renew(&self, _: &dyn Store, _: &ActorAddress, _: i64, _: Duration) -> StoreResult<RenewResult> {
+    async fn renew(&self, _: &dyn Backend, _: &ActorAddress, _: i64, _: Duration) -> StoreResult<RenewResult> {
         Ok(RenewResult::LeaseLost)
     }
 }
@@ -77,7 +77,7 @@ async fn losing_the_lease_cancels_the_handler_and_nothing_is_committed() {
         Some(MessageStatus::Running { message, .. }) => assert_eq!(message.attempt, 1),
         other => panic!("not running: {other:?}"),
     }
-    assert_eq!(state_of::<CounterState>(&*memory, &a().address()).await, CounterState::default());
+    assert_eq!(state_of::<CounterState>(&memory, &a().address()).await, CounterState::default());
     assert_eq!(memory.get(&a().address()).await.unwrap().unwrap().version, 0);
 }
 
@@ -87,11 +87,11 @@ struct Partitioned(Mutex<Option<CommitResult>>);
 
 #[async_trait]
 impl Faults for Partitioned {
-    async fn renew(&self, _: &dyn Store, _: &ActorAddress, _: i64, _: Duration) -> StoreResult<RenewResult> {
+    async fn renew(&self, _: &dyn Backend, _: &ActorAddress, _: i64, _: Duration) -> StoreResult<RenewResult> {
         Err(StoreError::unavailable("store unreachable"))
     }
 
-    async fn commit(&self, inner: &dyn Store, commit: CommitRequest) -> StoreResult<CommitResult> {
+    async fn commit(&self, inner: &dyn Backend, commit: CommitRequest) -> StoreResult<CommitResult> {
         let result = inner.commit(commit).await?;
         *self.0.lock().unwrap() = Some(result.clone());
         Ok(result)
@@ -125,10 +125,10 @@ async fn a_node_that_cannot_renew_cancels_its_handler_before_the_lease_expires_e
     assert_eq!(healthy.run_due_turns(1).await.unwrap(), 1); // claims at t = 31 s (attempt 2), finishes at t = 76 s
 
     assert!(partitioned.faults.0.lock().unwrap().is_none(), "the stale node never tried to commit");
-    let outcome = outcome_of(&*memory, &m.id).await.unwrap();
+    let outcome = outcome_of(&memory, &m.id).await.unwrap();
     assert_eq!(outcome.status, OutcomeStatus::Done);
     assert_eq!(outcome.envelope.attempt, 2);
-    assert_eq!(state_of::<CounterState>(&*memory, &a().address()).await.log, vec!["sleep:45000", "woke"]);
+    assert_eq!(state_of::<CounterState>(&memory, &a().address()).await.log, vec!["sleep:45000", "woke"]);
     assert_eq!(memory.get(&a().address()).await.unwrap().unwrap().version, 1);
 }
 
@@ -151,5 +151,5 @@ async fn a_released_lease_leaves_the_message_pending_for_the_next_claim() {
         other => panic!("not pending: {other:?}"),
     }
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1); // claimable immediately, no TTL wait
-    assert_eq!(outcome_of(&*memory, &m.id).await.unwrap().envelope.attempt, 2);
+    assert_eq!(outcome_of(&memory, &m.id).await.unwrap().envelope.attempt, 2);
 }

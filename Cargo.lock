@@ -538,8 +538,6 @@ dependencies = [
  "cicada-client",
  "cicada-extras",
  "cicada-otel",
- "cicada-store-postgres",
- "cicada-store-sqlite",
  "cicada-test",
  "schemars",
  "serde",
@@ -564,10 +562,6 @@ dependencies = [
  "tokio",
  "tracing",
 ]
-
-[[package]]
-name = "cicada-fuzz"
-version = "0.4.0"
 
 [[package]]
 name = "cicada-otel"
@@ -597,8 +591,6 @@ dependencies = [
  "cicada-examples",
  "cicada-extras",
  "cicada-otel",
- "cicada-store-postgres",
- "cicada-store-sqlite",
  "cicada-test",
  "opentelemetry",
  "opentelemetry-otlp",
@@ -612,24 +604,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "cicada-store-conformance"
-version = "0.4.0"
-
-[[package]]
-name = "cicada-store-postgres"
-version = "0.4.0"
-dependencies = [
- "cicada",
-]
-
-[[package]]
-name = "cicada-store-sqlite"
-version = "0.4.0"
-dependencies = [
- "cicada",
 ]
 
 [[package]]

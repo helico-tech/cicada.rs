@@ -1,12 +1,11 @@
 //! Runs actor types against an in-memory store with virtual time.
 
-use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::address::{ActorAddress, ActorRef};
 use crate::runtime::{ActorSystemBuilder, CreateActorResult, SendResult, StartError};
-use crate::store::{Message, MessageStatus, OutcomeRecord, OutcomeStatus, PageCursor, Store};
+use crate::store::{Backend, Message, MessageStatus, OutcomeRecord, OutcomeStatus, PageCursor, Store};
 use crate::time::{self, Timestamp};
 use crate::{ActorSystem, SendOptions};
 use serde::Serialize;
@@ -14,7 +13,6 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::testing::clock::{TokioClock, default_start};
-use crate::testing::memory::InMemoryStore;
 
 const DEFAULT_MAX_TURNS: usize = 10_000;
 
@@ -50,7 +48,7 @@ impl TestActorsBuilder {
     /// contracts). The node is not started: turns run only when the test drives them.
     pub async fn build(self) -> Result<TestActors, StartError> {
         let clock = Arc::new(TokioClock::new(self.start));
-        let store = Arc::new(InMemoryStore::new(clock.clone(), self.retention));
+        let store = Store::memory_with(clock.clone(), self.retention);
         let mut builder = ActorSystem::builder(store.clone());
         for configure in self.configure {
             builder = configure(builder);
@@ -61,7 +59,7 @@ impl TestActorsBuilder {
     }
 }
 
-/// Runs actor types against an [`InMemoryStore`] with virtual time.
+/// Runs actor types against the in-memory store ([`Store::memory_with`]) with virtual time.
 ///
 /// Nothing runs in the background: [`Self::run_until_idle`] and [`Self::advance_time_by`] drive turns in the test's
 /// task, so tests are deterministic. Time is tokio's paused clock: run the test with
@@ -101,7 +99,7 @@ impl TestActorsBuilder {
 /// ```
 pub struct TestActors {
     system: ActorSystem,
-    store: Arc<InMemoryStore>,
+    store: Store,
     clock: Arc<TokioClock>,
 }
 
@@ -116,8 +114,8 @@ impl TestActors {
         &self.system
     }
 
-    /// The in-memory store.
-    pub fn store(&self) -> &Arc<InMemoryStore> {
+    /// The in-memory store, for example to build a second system on it.
+    pub fn store(&self) -> &Store {
         &self.store
     }
 
@@ -194,9 +192,8 @@ impl TestActors {
     pub async fn advance_time_by(&self, duration: Duration) -> usize {
         let target = time::add(self.now(), duration).expect("virtual time stays in range");
         let mut turns = self.run_until_idle().await;
-        let types: BTreeSet<_> = self.system.hosted_types();
         loop {
-            let next = self.store.next_due_at(&types).await.expect("store failed");
+            let next = self.system.next_due_at().await.expect("store failed");
             match next {
                 Some(next) if next <= target => {
                     let now = self.now();

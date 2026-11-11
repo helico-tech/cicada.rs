@@ -15,7 +15,7 @@ fn a() -> Counter {
 }
 
 async fn raw_enqueue(test: &TestActors, message_type: &str, payload: Value) -> Message {
-    enqueue(&**test.store(), OutgoingMessage::new(a().address(), message_type, payload)).await
+    enqueue(test.store(), OutgoingMessage::new(a().address(), message_type, payload)).await
 }
 
 #[tokio::test(start_paused = true)]
@@ -74,7 +74,7 @@ async fn fail_decisions_are_no_failure_no_error_hook_no_retry() {
     for (t, payload) in [("Plain", json!({})), ("Add", json!({"n": "x"})), ("Add", json!([]))] {
         let mut m = OutgoingMessage::new(a().address(), t, payload);
         m.retry = Some(retry.clone());
-        ids.push(enqueue(&**test.store(), m).await.id);
+        ids.push(enqueue(test.store(), m).await.id);
     }
     test.run_until_idle().await;
     let mut outcomes = Vec::new();

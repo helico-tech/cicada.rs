@@ -5,7 +5,7 @@ use super::common::*;
 use crate::address::ActorAddress;
 use crate::prelude::*;
 use crate::runtime::{CreateActorResult, SendResult};
-use crate::store::{OutcomeStatus, Store};
+use crate::store::{Backend, OutcomeStatus};
 use crate::testing::TestActors;
 use serde::{Deserialize, Serialize};
 use serde_json::json;

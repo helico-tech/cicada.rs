@@ -1,21 +1,22 @@
-//! Settings of a [`crate::store::postgres::PostgresStore`].
+//! The options of the PostgreSQL store.
 
 use std::time::Duration;
 
 use crate::store::StoreError;
 use crate::time::DEFAULT_RETENTION;
 
-/// Settings of a [`crate::store::postgres::PostgresStore`]. Every field has a usable default.
+/// The options of the PostgreSQL store, for [`Store::postgres`](crate::Store::postgres). Every field has a usable
+/// default; connection parameters go in the URL.
 ///
 /// ```
 /// use std::time::Duration;
-/// use cicada::store::postgres::PostgresStoreConfig;
+/// use cicada::store::PostgresOptions;
 ///
-/// let config = PostgresStoreConfig { schema: "orders".into(), max_pool_size: 20, ..Default::default() };
+/// let config = PostgresOptions { schema: "orders".into(), max_pool_size: 20, ..Default::default() };
 /// assert_eq!(config.socket_timeout, Duration::from_secs(30));
 /// ```
 #[derive(Debug, Clone, PartialEq)]
-pub struct PostgresStoreConfig {
+pub struct PostgresOptions {
     /// The database schema that holds the store's tables and sequences; created on start when absent. Several stores
     /// (e.g. separate environments or tests) can share one database in separate schemas. Must be a plain lower-case
     /// identifier (`[a-z_][a-z0-9_]*`, at most 50 characters). Default `public`.
@@ -33,7 +34,7 @@ pub struct PostgresStoreConfig {
     pub socket_timeout: Duration,
 }
 
-impl Default for PostgresStoreConfig {
+impl Default for PostgresOptions {
     fn default() -> Self {
         Self {
             schema: "public".to_owned(),
@@ -44,7 +45,7 @@ impl Default for PostgresStoreConfig {
     }
 }
 
-impl PostgresStoreConfig {
+impl PostgresOptions {
     /// The default settings on `schema`.
     pub fn for_schema(schema: impl Into<String>) -> Self {
         Self { schema: schema.into(), ..Self::default() }
@@ -84,30 +85,30 @@ mod tests {
 
     #[test]
     fn invalid_settings_are_refused() {
-        let invalid = |config: PostgresStoreConfig| matches!(config.validate(), Err(StoreError::Invalid(_)));
-        assert!(PostgresStoreConfig::default().validate().is_ok());
-        assert!(invalid(PostgresStoreConfig::for_schema("Robert'); DROP TABLE students;--")));
-        assert!(invalid(PostgresStoreConfig::for_schema("")));
-        assert!(invalid(PostgresStoreConfig::for_schema("a".repeat(51))));
-        assert!(PostgresStoreConfig::for_schema("a".repeat(50)).validate().is_ok());
-        assert!(invalid(PostgresStoreConfig { max_pool_size: 0, ..Default::default() }));
-        assert!(invalid(PostgresStoreConfig { retention: Duration::ZERO, ..Default::default() }));
-        assert!(PostgresStoreConfig { socket_timeout: Duration::ZERO, ..Default::default() }.validate().is_ok());
+        let invalid = |config: PostgresOptions| matches!(config.validate(), Err(StoreError::Invalid(_)));
+        assert!(PostgresOptions::default().validate().is_ok());
+        assert!(invalid(PostgresOptions::for_schema("Robert'); DROP TABLE students;--")));
+        assert!(invalid(PostgresOptions::for_schema("")));
+        assert!(invalid(PostgresOptions::for_schema("a".repeat(51))));
+        assert!(PostgresOptions::for_schema("a".repeat(50)).validate().is_ok());
+        assert!(invalid(PostgresOptions { max_pool_size: 0, ..Default::default() }));
+        assert!(invalid(PostgresOptions { retention: Duration::ZERO, ..Default::default() }));
+        assert!(PostgresOptions { socket_timeout: Duration::ZERO, ..Default::default() }.validate().is_ok());
     }
 
     #[test]
     fn there_is_one_channel_per_schema() {
-        assert_eq!(PostgresStoreConfig::for_schema("orders").effective_channel(), "cicada_orders");
+        assert_eq!(PostgresOptions::for_schema("orders").effective_channel(), "cicada_orders");
     }
 
     #[test]
     fn the_default_pool_has_room_for_a_nodes_default_concurrency_plus_heartbeats_and_http() {
         let concurrency = crate::runtime::NodeConfig::default().concurrency;
-        assert!(PostgresStoreConfig::default().max_pool_size as usize > concurrency);
+        assert!(PostgresOptions::default().max_pool_size as usize > concurrency);
     }
 
     #[test]
     fn connections_get_a_socket_timeout_by_default() {
-        assert_eq!(PostgresStoreConfig::default().socket_timeout, Duration::from_secs(30));
+        assert_eq!(PostgresOptions::default().socket_timeout, Duration::from_secs(30));
     }
 }

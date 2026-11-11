@@ -57,6 +57,7 @@ impl NotificationListener {
     }
 
     /// True while `LISTEN` is active on a live connection.
+    #[cfg(test)]
     pub(crate) fn is_listening(&self) -> bool {
         *self.listening.borrow()
     }

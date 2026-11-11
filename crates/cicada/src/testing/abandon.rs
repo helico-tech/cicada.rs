@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use crate::address::{ActorAddress, TypeName};
-use crate::store::{MessageId, NodeId, Store, StoreResult};
+use crate::store::{Backend, MessageId, NodeId, Store, StoreResult};
 
 /// A turn claimed by [`claim_and_abandon`] and never committed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,7 +44,7 @@ pub struct AbandonedClaim {
 /// test.create(&job, &NoState {}).await;
 /// let message = test.send(&job, JobMsg::Run).await;
 /// let lease = Duration::from_secs(30);
-/// let abandoned = claim_and_abandon(&**test.store(), &test.system().hosted_types(), lease, 1).await.unwrap();
+/// let abandoned = claim_and_abandon(test.store(), &test.system().hosted_types(), lease, 1).await.unwrap();
 /// assert_eq!(abandoned[0].message_id, message.id);
 ///
 /// test.advance_time_by(lease + Duration::from_secs(1)).await; // the lease runs out; the node runs the turn
@@ -52,7 +52,7 @@ pub struct AbandonedClaim {
 /// # }
 /// ```
 pub async fn claim_and_abandon(
-    store: &dyn Store,
+    store: &Store,
     types: &BTreeSet<TypeName>,
     lease: Duration,
     limit: usize,

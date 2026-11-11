@@ -4,13 +4,20 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
-use serde_json::{Map, Value, json};
+use serde_json::Value;
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+use serde_json::{Map, json};
 
 use super::model::{Message, MessageId, OutcomeStatus, Page, PageCursor, TypeDef};
 use super::results::RegisterResult;
 use super::{StoreError, StoreResult};
-use crate::address::{ActorAddress, TypeName};
-use crate::retention::{Keep, Retention};
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+use crate::address::ActorAddress;
+use crate::address::TypeName;
+use crate::retention::Keep;
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+use crate::retention::Retention;
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 use crate::retry::RetryPolicy;
 use crate::time::{self, MAX_INSTANT, Timestamp};
 
@@ -37,11 +44,13 @@ pub fn register_again(existing: TypeDef, def: &TypeDef) -> RegisterResult {
 pub const NODE_ROW_KEPT: Duration = Duration::from_secs(24 * 3600);
 
 /// The JSON form of a node's hosted types, as stored in the node table.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub fn hosted_to_json(hosted: &BTreeSet<TypeName>) -> Value {
     Value::Array(hosted.iter().map(|t| Value::String(t.as_str().to_owned())).collect())
 }
 
 /// Reads the stored JSON form of a node's hosted types; anything else is corrupt data.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub fn hosted_from_json(value: &Value) -> StoreResult<Vec<TypeName>> {
     let names = value.as_array().ok_or_else(|| StoreError::Corrupt("stored hosted types are not a list".to_owned()))?;
     names
@@ -72,6 +81,7 @@ pub fn check_claim(types: &BTreeSet<TypeName>, ttl: Duration, limit: usize) -> S
 
 /// The JSON form of a message envelope, as retained with outcomes and served by `/outcomes`; the field names match
 /// the HTTP contract.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub fn envelope_to_json(message: &Message) -> Value {
     json!({
         "id": message.id.as_str(),
@@ -94,6 +104,7 @@ pub fn envelope_to_json(message: &Message) -> Value {
 
 /// Decodes an envelope written by [`envelope_to_json`] (including envelopes
 /// retained before later fields existed).
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub fn envelope_from_json(value: &Value) -> StoreResult<Message> {
     let corrupt = |what: &str| StoreError::Corrupt(format!("envelope {what}: {value}"));
     let o = value.as_object().ok_or_else(|| corrupt("is not an object"))?;
@@ -129,6 +140,7 @@ pub fn envelope_from_json(value: &Value) -> StoreResult<Message> {
 }
 
 /// The text of a JSON value: a string's content, or the JSON of anything else.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 fn json_text(value: &Value) -> String {
     match value {
         Value::String(s) => s.clone(),
@@ -137,11 +149,13 @@ fn json_text(value: &Value) -> String {
 }
 
 /// Headers as a JSON object.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub fn headers_to_json(headers: &BTreeMap<String, String>) -> Value {
     Value::Object(headers.iter().map(|(k, v)| (k.clone(), Value::String(v.clone()))).collect::<Map<_, _>>())
 }
 
 /// Headers from a JSON object.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 pub fn headers_from_json(value: &Value) -> StoreResult<BTreeMap<String, String>> {
     let o = value.as_object().ok_or_else(|| StoreError::Corrupt(format!("headers are not an object: {value}")))?;
     Ok(o.iter().map(|(k, v)| (k.clone(), json_text(v))).collect())

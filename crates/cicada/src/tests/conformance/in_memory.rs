@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::store::{Clock, Store};
+use crate::store::{Backend, Clock};
 use crate::testing::{InMemoryStore, VirtualClock};
 use crate::tests::conformance::{FixtureFactory, StoreFixture};
 use crate::time::{self, Timestamp};
@@ -42,7 +42,7 @@ impl FixtureFactory for InMemory {
 
 #[async_trait]
 impl StoreFixture for InMemoryFixture {
-    fn store(&self) -> Arc<dyn Store> {
+    fn store(&self) -> Arc<dyn Backend> {
         self.store.clone()
     }
 

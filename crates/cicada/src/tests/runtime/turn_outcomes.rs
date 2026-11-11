@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use super::common::*;
 use crate::runtime::SendResult;
-use crate::store::{MessageStatus, OutcomeStatus, OutgoingMessage, Store};
+use crate::store::{Backend, MessageStatus, OutcomeStatus, OutgoingMessage};
 use crate::testing::TestActors;
 use crate::time;
 use crate::turn::SendOptions;
@@ -189,7 +189,7 @@ async fn reply_to_message_from() {
     // b asks a for a ping; a replies to b (raw address from the envelope).
     let mut ping = OutgoingMessage::new(a().address(), "Ping", json!({"n": 3}));
     ping.from = Some(Counter::new("b").address());
-    enqueue(&**test.store(), ping).await;
+    enqueue(test.store(), ping).await;
     test.run_until_idle().await;
     assert_eq!(test.state::<_, CounterState>(&Counter::new("b")).await.total, 3);
     assert!(test.failures().await.is_empty());

@@ -11,7 +11,7 @@ use axum::http::{HeaderMap, Method, Request, StatusCode, header};
 use cicada::prelude::*;
 use cicada::runtime::{ActorSystemBuilder, NodeConfig};
 use cicada::store::*;
-use cicada_test::{InMemoryStore, TokioClock, default_start};
+use cicada_test::{TokioClock, default_start};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::watch;
@@ -163,12 +163,12 @@ pub fn unique() -> String {
 // ---- nodes ----
 
 /// An in-memory store on tokio's (paused) clock.
-pub fn memory_store() -> Arc<InMemoryStore> {
-    Arc::new(InMemoryStore::with_clock(Arc::new(TokioClock::new(default_start()))))
+pub fn memory_store() -> Store {
+    Store::memory_on(Arc::new(TokioClock::new(default_start())))
 }
 
 /// A started node hosting the counter and ping types, polling every 50 ms.
-pub async fn node(store: Arc<dyn Store>) -> ActorSystem {
+pub async fn node(store: Store) -> ActorSystem {
     node_with(store, |b| b.host(CounterActor).host(PingActor)).await
 }
 
@@ -178,10 +178,7 @@ pub fn polling(poll_interval: Duration) -> NodeConfig {
 }
 
 /// A started node configured by `configure`, polling every 50 ms unless `configure` sets another config.
-pub async fn node_with(
-    store: Arc<dyn Store>,
-    configure: impl FnOnce(ActorSystemBuilder) -> ActorSystemBuilder,
-) -> ActorSystem {
+pub async fn node_with(store: Store, configure: impl FnOnce(ActorSystemBuilder) -> ActorSystemBuilder) -> ActorSystem {
     let system = configure(ActorSystem::builder(store).config(polling(Duration::from_millis(50)))).build();
     system.start().await.expect("the node starts");
     system

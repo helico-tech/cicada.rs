@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use crate::retry::{Backoff, RetryPolicy};
 use crate::store::{
-    ActorCreate, CancelResult, CommitRequest, CommitResult, DeleteResult, Delivery, EnqueueResult, Message, MessageId,
-    MessageStatus, OutcomeStatus, OutgoingMessage, Page, StateChange, Store, TurnOutcome,
+    ActorCreate, Backend, CancelResult, CommitRequest, CommitResult, DeleteResult, Delivery, EnqueueResult, Message,
+    MessageId, MessageStatus, OutcomeStatus, OutgoingMessage, Page, StateChange, TurnOutcome,
 };
 use chrono::{DateTime, Utc};
 use serde_json::json;
@@ -20,7 +20,7 @@ fn rescheduled(error: &str, delivery: Delivery) -> TurnOutcome {
     TurnOutcome::Rescheduled { delivery, error: error.to_owned() }
 }
 
-async fn pending_message(store: &dyn Store, id: &MessageId) -> Message {
+async fn pending_message(store: &dyn Backend, id: &MessageId) -> Message {
     let status = store.status(id).await.unwrap();
     expect_matches!(status, Some(MessageStatus::Pending(m)) => m, "message {id} is pending")
 }
@@ -42,7 +42,7 @@ fn policy() -> RetryPolicy {
     RetryPolicy::new(4, backoff).expect("a valid policy")
 }
 
-async fn failure_ids(store: &dyn Store, since: chrono::DateTime<Utc>) -> Vec<MessageId> {
+async fn failure_ids(store: &dyn Backend, since: chrono::DateTime<Utc>) -> Vec<MessageId> {
     let page =
         store.outcomes(Some(OutcomeStatus::Failed), "", since, None, Page::<Message>::DEFAULT_SIZE).await.unwrap();
     page.items.into_iter().map(|o| o.message_id).collect()

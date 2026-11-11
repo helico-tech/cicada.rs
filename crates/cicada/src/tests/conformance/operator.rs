@@ -17,11 +17,11 @@ fn typeset() -> BTreeSet<crate::address::TypeName> {
     type_set(&[&TYPE, &OTHER])
 }
 
-async fn status_of(store: &dyn crate::store::Store, id: &MessageId) -> Option<OutcomeStatus> {
+async fn status_of(store: &dyn crate::store::Backend, id: &MessageId) -> Option<OutcomeStatus> {
     outcome_record(store, id).await.map(|o| o.status)
 }
 
-async fn state_of(store: &dyn crate::store::Store, a: &crate::address::ActorAddress) -> serde_json::Value {
+async fn state_of(store: &dyn crate::store::Backend, a: &crate::address::ActorAddress) -> serde_json::Value {
     store.get(a).await.unwrap().expect("exists").state
 }
 

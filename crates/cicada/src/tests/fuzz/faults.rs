@@ -14,10 +14,10 @@ use std::time::Duration;
 use crate::address::{ActorAddress, TypeName};
 use crate::retry::RetryPolicy;
 use crate::store::{
-    ActorRecord, CancelResult, Claim, CommitRequest, CommitResult, CreateResult, DeleteResult, DeliverNowResult,
-    EnqueueResult, Message, MessageId, MessageStatus, NodeId, NodeRecord, OutcomeRecord, OutcomeStatus,
-    OutgoingMessage, Page, PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn, StateChange, Store,
-    StoreError, StoreResult, StoreStats, TurnOutcome, TypeDef,
+    ActorRecord, Backend, CancelResult, Claim, CommitRequest, CommitResult, CreateResult, DeleteResult,
+    DeliverNowResult, EnqueueResult, Message, MessageId, MessageStatus, NodeId, NodeRecord, OutcomeRecord,
+    OutcomeStatus, OutgoingMessage, Page, PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn,
+    StateChange, StoreError, StoreResult, StoreStats, TurnOutcome, TypeDef,
 };
 use crate::time::Timestamp;
 use async_trait::async_trait;
@@ -328,7 +328,7 @@ struct Plan {
 
 /// One node's view of the shared store. See the module documentation.
 pub struct FaultStore {
-    inner: Arc<dyn Store>,
+    inner: Arc<dyn Backend>,
     node: String,
     log: Log,
     plan: Mutex<Plan>,
@@ -337,7 +337,7 @@ pub struct FaultStore {
 impl FaultStore {
     /// A layer for `node` around `inner`, with `rules`. Starts unarmed: until [`Self::arm`], calls are not counted and
     /// no rule fires, so that a node can start.
-    pub fn new(inner: Arc<dyn Store>, node: impl Into<String>, rules: Vec<Rule>, log: Log) -> Arc<Self> {
+    pub fn new(inner: Arc<dyn Backend>, node: impl Into<String>, rules: Vec<Rule>, log: Log) -> Arc<Self> {
         let plan = Mutex::new(Plan { rules, ..Plan::default() });
         Arc::new(Self { inner, node: node.into(), log, plan })
     }
@@ -527,7 +527,7 @@ impl FaultStore {
 }
 
 #[async_trait]
-impl Store for FaultStore {
+impl Backend for FaultStore {
     async fn now(&self) -> StoreResult<Timestamp> {
         self.gate(Method::Now, || self.inner.now()).await
     }
@@ -749,7 +749,7 @@ mod tests {
         Rule { method, nth, fault }
     }
 
-    async fn claim(store: &dyn Store) -> Claim {
+    async fn claim(store: &dyn Backend) -> Claim {
         store.claim_due(&types(), &node(), Duration::from_secs(30), 1).await.unwrap().remove(0)
     }
 

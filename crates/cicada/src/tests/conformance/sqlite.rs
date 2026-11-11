@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::store::sqlite::{SqliteOptions, SqliteStore};
-use crate::store::{Clock, Store, SystemClock};
+use crate::store::{Backend, Clock, SystemClock};
 use crate::testing::VirtualClock;
 use crate::tests::conformance::{FixtureFactory, StoreFixture};
 use crate::time::{self, Timestamp};
@@ -84,7 +84,7 @@ mod virtual_time {
 
     #[async_trait]
     impl StoreFixture for SqliteFixture {
-        fn store(&self) -> Arc<dyn Store> {
+        fn store(&self) -> Arc<dyn Backend> {
             self.store.clone()
         }
 
@@ -96,7 +96,7 @@ mod virtual_time {
             self.clock.virtual_clock.advance_by(duration);
         }
 
-        async fn peer(&self) -> Arc<dyn Store> {
+        async fn peer(&self) -> Arc<dyn Backend> {
             self.open_handle().await
         }
 
@@ -151,7 +151,7 @@ mod real_time {
 
     #[async_trait]
     impl StoreFixture for RealTimeFixture {
-        fn store(&self) -> Arc<dyn Store> {
+        fn store(&self) -> Arc<dyn Backend> {
             self.store.clone()
         }
 

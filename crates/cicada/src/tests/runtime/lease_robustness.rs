@@ -2,14 +2,14 @@
 //! claimed turns are never left behind. Virtual time, two nodes on one store.
 
 use std::collections::BTreeSet;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::common::*;
 use crate::address::{ActorAddress, TypeName};
 use crate::store::{
-    Claim, CommitRequest, CommitResult, MessageStatus, NodeId, OutcomeStatus, RenewResult, Store, StoreError,
+    Backend, Claim, CommitRequest, CommitResult, MessageStatus, NodeId, OutcomeStatus, RenewResult, StoreError,
     StoreResult,
 };
 use crate::{ActorSystem, Unhandled};
@@ -23,11 +23,11 @@ fn a() -> Counter {
 // The counter type with a maximum turn of 5 minutes.
 counter_type!(SlowCounter, Unhandled::Fail, Duration::from_secs(300));
 
-fn slow_node(store: Arc<dyn Store>, name: &str) -> ActorSystem {
+fn slow_node(store: impl IntoStore, name: &str) -> ActorSystem {
     node(store, name).host(SlowCounter).build()
 }
 
-async fn log_of(memory: &dyn Store) -> Vec<String> {
+async fn log_of(memory: &dyn Backend) -> Vec<String> {
     state_of::<CounterState>(memory, &a().address()).await.log
 }
 
@@ -41,7 +41,7 @@ struct Pausing {
 
 #[async_trait]
 impl Faults for Pausing {
-    async fn commit(&self, inner: &dyn Store, commit: CommitRequest) -> StoreResult<CommitResult> {
+    async fn commit(&self, inner: &dyn Backend, commit: CommitRequest) -> StoreResult<CommitResult> {
         self.paused.store(true, Ordering::SeqCst);
         sleep(Duration::from_secs(40)).await;
         let result = inner.commit(commit).await?;
@@ -51,7 +51,7 @@ impl Faults for Pausing {
 
     async fn renew(
         &self,
-        inner: &dyn Store,
+        inner: &dyn Backend,
         address: &ActorAddress,
         epoch: i64,
         ttl: Duration,
@@ -82,10 +82,10 @@ async fn a_stale_commit_after_a_pause_is_fenced_off_exactly_one_outcome_effects_
     first.await.unwrap();
 
     assert_eq!(*pausing.faults.stale_commit.lock().unwrap(), Some(CommitResult::LeaseLost));
-    let outcome = outcome_of(&*memory, &m.id).await.unwrap();
+    let outcome = outcome_of(&memory, &m.id).await.unwrap();
     assert_eq!(outcome.status, OutcomeStatus::Done);
     assert_eq!(outcome.envelope.attempt, 2);
-    assert_eq!(log_of(&*memory).await, vec!["sleep:5000", "woke"]);
+    assert_eq!(log_of(&memory).await, vec!["sleep:5000", "woke"]);
     assert_eq!(memory.get(&a().address()).await.unwrap().unwrap().version, 1);
 }
 
@@ -97,7 +97,7 @@ struct FlakyCommit {
 
 #[async_trait]
 impl Faults for FlakyCommit {
-    async fn commit(&self, inner: &dyn Store, commit: CommitRequest) -> StoreResult<CommitResult> {
+    async fn commit(&self, inner: &dyn Backend, commit: CommitRequest) -> StoreResult<CommitResult> {
         let fail = self.failures.fetch_sub(1, Ordering::SeqCst) > 0;
         if fail && !self.after {
             return Err(StoreError::unavailable("connection reset"));
@@ -118,10 +118,10 @@ async fn a_commit_that_fails_is_retried_and_the_handler_is_not_run_again() {
     system.create(&a(), &CounterState::default()).await.unwrap();
     let m = accepted(system.send(&a(), CounterMsg::Add { n: 1 }).await.unwrap());
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1);
-    let outcome = outcome_of(&*memory, &m.id).await.expect("committed by a retry");
+    let outcome = outcome_of(&memory, &m.id).await.expect("committed by a retry");
     assert_eq!(outcome.status, OutcomeStatus::Done);
     assert_eq!(outcome.envelope.attempt, 1);
-    assert_eq!(log_of(&*memory).await, vec!["add:1"]);
+    assert_eq!(log_of(&memory).await, vec!["add:1"]);
     assert_eq!(system.run_due_turns(1).await.unwrap(), 0, "nothing left to re-run");
 }
 
@@ -132,18 +132,18 @@ async fn a_commit_whose_acknowledgement_was_lost_is_not_applied_twice() {
     system.create(&a(), &CounterState::default()).await.unwrap();
     let m = accepted(system.send(&a(), CounterMsg::Burst { count: 2 }).await.unwrap());
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1);
-    assert_eq!(outcome_of(&*memory, &m.id).await.map(|o| o.status), Some(OutcomeStatus::Done));
+    assert_eq!(outcome_of(&memory, &m.id).await.map(|o| o.status), Some(OutcomeStatus::Done));
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1);
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1);
     assert_eq!(system.run_due_turns(1).await.unwrap(), 0, "the burst's two sends were enqueued once");
-    assert_eq!(log_of(&*memory).await, vec!["add:1", "add:2"]);
+    assert_eq!(log_of(&memory).await, vec!["add:1", "add:2"]);
 }
 
 struct BrokenCommit;
 
 #[async_trait]
 impl Faults for BrokenCommit {
-    async fn commit(&self, _: &dyn Store, _: CommitRequest) -> StoreResult<CommitResult> {
+    async fn commit(&self, _: &dyn Backend, _: CommitRequest) -> StoreResult<CommitResult> {
         Err(StoreError::unavailable("disk full"))
     }
 }
@@ -164,7 +164,7 @@ async fn a_commit_that_keeps_failing_is_abandoned_without_releasing_the_lease() 
     assert_eq!(healthy.run_due_turns(1).await.unwrap(), 0);
     sleep(Duration::from_secs(31)).await;
     assert_eq!(healthy.run_due_turns(1).await.unwrap(), 1);
-    let outcome = outcome_of(&*memory, &m.id).await.unwrap();
+    let outcome = outcome_of(&memory, &m.id).await.unwrap();
     assert_eq!(outcome.status, OutcomeStatus::Done);
     assert_eq!(outcome.envelope.attempt, 2);
 }
@@ -190,7 +190,7 @@ struct SlowClaims;
 impl Faults for SlowClaims {
     async fn claim_due(
         &self,
-        inner: &dyn Store,
+        inner: &dyn Backend,
         types: &BTreeSet<TypeName>,
         node: &NodeId,
         ttl: Duration,

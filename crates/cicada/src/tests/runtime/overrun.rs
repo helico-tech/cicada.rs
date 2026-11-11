@@ -10,8 +10,7 @@ use super::common::*;
 use crate::ActorSystem;
 use crate::plugin::{HandlerErrorContext, HookResult, Plugin};
 use crate::prelude::*;
-use crate::store::{Message, MessageStatus, OutcomeStatus, Store};
-use crate::testing::InMemoryStore;
+use crate::store::{Backend, Message, MessageStatus, OutcomeStatus, Store};
 use crate::turn::HandlerFailure;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -121,13 +120,13 @@ fn policy() -> RetryPolicy {
 
 struct Scenario {
     system: ActorSystem,
-    memory: Arc<InMemoryStore>,
+    memory: Store,
     observer: Observer,
 }
 
 impl Scenario {
     async fn new() -> Self {
-        let memory = Arc::new(InMemoryStore::default());
+        let memory = Store::memory();
         let observer = Observer::default();
         let system = ActorSystem::builder(memory.clone()).host(LaggardActor).install(observer.clone()).build();
         system.create(&slow(), &LaggardState::default()).await.unwrap();
@@ -144,7 +143,7 @@ impl Scenario {
 
     /// The message ended failed(timeout) after one run, not retried.
     async fn assert_timed_out_for_good(&self, m: &Message) {
-        let outcome = outcome_of(&*self.memory, &m.id).await.expect("a final outcome, no retry");
+        let outcome = outcome_of(&self.memory, &m.id).await.expect("a final outcome, no retry");
         assert_eq!(outcome.status, OutcomeStatus::Failed);
         assert_eq!(outcome.error.as_deref(), Some("timeout"));
         assert_eq!(outcome.envelope.failures, 0);
@@ -169,11 +168,7 @@ async fn a_handler_that_returned_after_overrunning_ends_failed_timeout_and_is_no
     s.run().await;
     s.assert_timed_out_for_good(&m).await;
     assert_eq!(s.observer.seen.all(), vec!["TurnTimeoutException:willRetry=false:timeout"]);
-    assert_eq!(
-        state_of::<LaggardState>(&*s.memory, &addr(&slow())).await,
-        LaggardState::default(),
-        "effects discarded"
-    );
+    assert_eq!(state_of::<LaggardState>(&s.memory, &addr(&slow())).await, LaggardState::default(), "effects discarded");
 }
 
 #[tokio::test]

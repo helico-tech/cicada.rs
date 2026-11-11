@@ -7,11 +7,11 @@
 //! (see `tests/supervision.rs`). In a service:
 //!
 //! ```no_run
-//! # use std::{sync::Arc, time::Duration};
+//! # use std::time::Duration;
 //! # use cicada::ActorSystem;
 //! # use cicada_examples::supervision::{MailerActor, Smtp};
 //! # use cicada_extras::{DeadLettersActor, FailureWatcher};
-//! # async fn run(store: Arc<dyn cicada::store::Store>, smtp: impl Smtp) -> Result<(), cicada::StartError> {
+//! # async fn run(store: cicada::Store, smtp: impl Smtp) -> Result<(), cicada::StartError> {
 //! let system = ActorSystem::builder(store).host(MailerActor { smtp }).host(DeadLettersActor::default()).build();
 //! system.start().await?;
 //! let watcher = FailureWatcher::new(system.clone()).start(Duration::from_secs(10)); // abort() it on shutdown

@@ -322,7 +322,7 @@ async fn the_span_of_a_turn_that_never_commits_is_marked_abandoned() {
     let tracer_provider = SdkTracerProvider::builder().with_simple_exporter(spans.clone()).build();
     let meter_provider = SdkMeterProvider::builder().build();
     let plugin = ActorTelemetry::new(&tracer_provider, &meter_provider);
-    let store = std::sync::Arc::new(cicada_test::InMemoryStore::default());
+    let store = cicada::Store::memory();
     let system = ActorSystem::builder(store)
         .host(Stuck)
         .install(plugin)

@@ -14,7 +14,6 @@ use cicada::runtime::{ActorSystemBuilder, NodeConfig};
 use cicada_axum::actor_api;
 use cicada_cli::cli::Cli;
 use cicada_cli::config::Env;
-use cicada_test::InMemoryStore;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -103,7 +102,7 @@ async fn server_hosting(
     host: impl FnOnce(ActorSystemBuilder) -> ActorSystemBuilder,
     wrap: impl FnOnce(Router) -> Router,
 ) -> String {
-    let store = Arc::new(InMemoryStore::default());
+    let store = cicada::Store::memory();
     // A short heartbeat, so a cancelled turn ends within the wait of `eventually_status`.
     let config = NodeConfig {
         poll_interval: Duration::from_millis(50),

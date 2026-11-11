@@ -8,10 +8,10 @@ use std::time::Duration;
 use crate::address::{ActorAddress, TypeName};
 use crate::store::support::{self, check_limit};
 use crate::store::{
-    ActorRecord, CancelResult, Claim, Clock, CommitRequest, CommitResult, CreateResult, DeleteResult, DeliverNowResult,
-    EnqueueResult, Message, MessageId, MessageStatus, NodeId, NodeRecord, OutcomeRecord, OutcomeStatus,
-    OutgoingMessage, Page, PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn, StateChange, Store,
-    StoreError, StoreResult, StoreStats, SystemClock, TurnOutcome, TypeDef,
+    ActorRecord, Backend, CancelResult, Claim, Clock, CommitRequest, CommitResult, CreateResult, DeleteResult,
+    DeliverNowResult, EnqueueResult, Message, MessageId, MessageStatus, NodeId, NodeRecord, OutcomeRecord,
+    OutcomeStatus, OutgoingMessage, Page, PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn,
+    StateChange, StoreError, StoreResult, StoreStats, SystemClock, TurnOutcome, TypeDef,
 };
 use crate::time::{self, DEFAULT_RETENTION, Timestamp};
 use async_trait::async_trait;
@@ -91,13 +91,13 @@ struct State {
     last_now: Option<Timestamp>,
 }
 
-/// A complete [`Store`] held in memory, for tests and single-process experiments. Passes the S1–S10 conformance suite
+/// A complete [`Backend`] held in memory, for tests and single-process experiments. Passes the S1–S10 conformance suite
 /// except S1 (durability across process restarts), which an in-memory store cannot offer.
 ///
 /// Every operation runs under one lock and never awaits while holding it, so all operations are linearizable (S3) and
 /// commits are atomic (S2). Store time never goes backwards: when the clock steps back, the store keeps the latest
 /// time it handed out until the clock catches up.
-pub struct InMemoryStore {
+pub(crate) struct InMemoryStore {
     clock: Arc<dyn Clock>,
     retention: Duration,
     state: Mutex<State>,
@@ -112,12 +112,12 @@ impl Default for InMemoryStore {
 
 impl InMemoryStore {
     /// A store on `clock` that keeps outcomes for `retention`.
-    pub fn new(clock: Arc<dyn Clock>, retention: Duration) -> Self {
+    pub(crate) fn new(clock: Arc<dyn Clock>, retention: Duration) -> Self {
         Self { clock, retention, state: Mutex::new(State::default()), closed: AtomicBool::new(false) }
     }
 
     /// A store on `clock` with the default retention.
-    pub fn with_clock(clock: Arc<dyn Clock>) -> Self {
+    pub(crate) fn with_clock(clock: Arc<dyn Clock>) -> Self {
         Self::new(clock, DEFAULT_RETENTION)
     }
 
@@ -295,7 +295,7 @@ fn held_lease<'a>(s: &'a mut State, address: &ActorAddress, epoch: i64) -> Optio
 }
 
 #[async_trait]
-impl Store for InMemoryStore {
+impl Backend for InMemoryStore {
     async fn now(&self) -> StoreResult<Timestamp> {
         self.locked(|_, now| Ok(now))
     }

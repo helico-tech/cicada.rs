@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 use crate::address::ActorAddress;
 use crate::retention::{Keep, Retention};
 use crate::store::{
-    CancelResult, CommitRequest, CommitResult, Delivery, EnqueueResult, Message, MessageStatus, OutcomeStatus,
-    OutgoingMessage, Page, Store, TurnOutcome,
+    Backend, CancelResult, CommitRequest, CommitResult, Delivery, EnqueueResult, Message, MessageStatus, OutcomeStatus,
+    OutgoingMessage, Page, TurnOutcome,
 };
 use crate::time::Timestamp;
 use serde_json::json;
@@ -39,17 +39,17 @@ async fn finish<F: StoreFixture>(t: &Env<F>, message: &Message, outcome: TurnOut
 }
 
 /// Enqueues a new message with the id of `message`.
-async fn send_again(store: &dyn Store, message: &Message) -> EnqueueResult {
+async fn send_again(store: &dyn Backend, message: &Message) -> EnqueueResult {
     let again =
         OutgoingMessage { id: message.id.clone(), ..OutgoingMessage::new(message.to.clone(), "Msg", json!({"x": 2})) };
     store.enqueue(again).await.unwrap()
 }
 
-async fn is_duplicate(store: &dyn Store, message: &Message) -> bool {
+async fn is_duplicate(store: &dyn Backend, message: &Message) -> bool {
     send_again(store, message).await == EnqueueResult::Duplicate(message.id.clone())
 }
 
-async fn failure_ids(store: &dyn Store, since: Timestamp) -> Vec<crate::store::MessageId> {
+async fn failure_ids(store: &dyn Backend, since: Timestamp) -> Vec<crate::store::MessageId> {
     let page =
         store.outcomes(Some(OutcomeStatus::Failed), "", since, None, Page::<Message>::DEFAULT_SIZE).await.unwrap();
     page.items.into_iter().map(|o| o.message_id).collect()

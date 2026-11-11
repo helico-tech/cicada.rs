@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use crate::address::ActorAddress;
-use crate::store::{Claim, OutgoingMessage, RenewResult, Store, StoreError};
+use crate::store::{Backend, Claim, OutgoingMessage, RenewResult, StoreError};
 use crate::tests::fuzz::compare::{
     self, ADDRESSES, ALL_DUE, Commit, Due, End, Op, Pair, Ranker, StateOp, error_kind, in_address_order, op, ops,
 };
@@ -91,7 +91,7 @@ async fn the_list_with_two_instances_due_at_one_instant_agrees() {
 
 /// The epoch of the lease `address` holds in `store`: the small number that renews it. Renewed with the claim's ttl at
 /// the claim's instant, the lease stays as it was.
-async fn lease_epoch(store: &dyn Store, address: usize, ttl: Duration) -> i64 {
+async fn lease_epoch(store: &dyn Backend, address: usize, ttl: Duration) -> i64 {
     let address = ActorAddress::parse(ADDRESSES[address]).unwrap();
     for epoch in 1..=8 {
         if let Ok(RenewResult::Renewed(_)) = store.renew(&address, epoch, ttl).await {

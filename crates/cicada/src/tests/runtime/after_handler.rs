@@ -14,10 +14,9 @@ use crate::plugin::{ClaimContext, HookResult, Plugin};
 use crate::prelude::*;
 use crate::runtime::{CreateActorResult, NodeConfig, OpError};
 use crate::store::{
-    Claim, CommitRequest, CommitResult, Message, MessageStatus, NodeId, OutcomeStatus, OutgoingMessage, Store,
+    Backend, Claim, CommitRequest, CommitResult, Message, MessageStatus, NodeId, OutcomeStatus, OutgoingMessage, Store,
     StoreError, StoreResult, TurnOutcome, TypeDef,
 };
-use crate::testing::InMemoryStore;
 use crate::{ActorSystem, ActorType};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -152,11 +151,11 @@ impl Fixture {
         ActorType::new(TallyActor(self.runs.clone()))
     }
 
-    fn node(&self, store: Arc<dyn Store>, name: &str) -> ActorSystem {
+    fn node(&self, store: impl IntoStore, name: &str) -> ActorSystem {
         node(store, name).host(self.tally_type()).build()
     }
 
-    fn node_with(&self, store: Arc<dyn Store>, name: &str, plugin: impl Plugin) -> ActorSystem {
+    fn node_with(&self, store: impl IntoStore, name: &str, plugin: impl Plugin) -> ActorSystem {
         node(store, name).host(self.tally_type()).install(plugin).build()
     }
 }
@@ -165,7 +164,7 @@ async fn accepted_by(system: &ActorSystem, message: TallyMsg) -> Message {
     accepted(system.send(&t(), message).await.unwrap())
 }
 
-async fn tally_state(store: &dyn Store, r: &Tally) -> TallyState {
+async fn tally_state(store: &dyn Backend, r: &Tally) -> TallyState {
     state_of(store, &addr(r)).await
 }
 
@@ -177,7 +176,7 @@ struct FlakyResolve {
 
 #[async_trait]
 impl Faults for FlakyResolve {
-    async fn list_types(&self, inner: &dyn Store) -> StoreResult<Vec<TypeDef>> {
+    async fn list_types(&self, inner: &dyn Backend) -> StoreResult<Vec<TypeDef>> {
         if self.failures.fetch_sub(1, Ordering::SeqCst) > 0 {
             return Err(StoreError::unavailable("registry unreachable"));
         }
@@ -198,7 +197,7 @@ async fn a_store_read_that_keeps_failing_after_the_handler_returned_fails_the_me
     flaky.faults.failures.store(i32::MAX, Ordering::SeqCst);
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1);
 
-    let outcome = outcome_of(&*memory, &m.id).await.expect("the turn ends with an outcome, it is not released");
+    let outcome = outcome_of(&memory, &m.id).await.expect("the turn ends with an outcome, it is not released");
     assert_eq!(outcome.status, OutcomeStatus::Failed);
     let error = outcome.error.unwrap();
     assert!(error.contains("after its handler ended"), "{error}");
@@ -219,10 +218,10 @@ async fn a_store_read_that_fails_briefly_after_the_handler_returned_is_retried()
     let m = accepted_by(&system, TallyMsg::Hatch { child: "child".into() }).await;
     flaky.faults.failures.store(2, Ordering::SeqCst);
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1);
-    assert_eq!(outcome_of(&*memory, &m.id).await.map(|o| o.status), Some(OutcomeStatus::Done));
+    assert_eq!(outcome_of(&memory, &m.id).await.map(|o| o.status), Some(OutcomeStatus::Done));
     assert_eq!(f.runs(), 1);
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1, "the child's Bump");
-    assert_eq!(tally_state(&*memory, &tally("child")).await.runs, 1);
+    assert_eq!(tally_state(&memory, &tally("child")).await.runs, 1);
 }
 
 /// Sleeps in `on_claim`.
@@ -248,7 +247,7 @@ struct StallingRegistry {
 
 #[async_trait]
 impl Faults for StallingRegistry {
-    async fn list_types(&self, inner: &dyn Store) -> StoreResult<Vec<TypeDef>> {
+    async fn list_types(&self, inner: &dyn Backend) -> StoreResult<Vec<TypeDef>> {
         if self.stall.load(Ordering::SeqCst) {
             tokio::time::sleep(Duration::from_secs(10)).await;
         }
@@ -319,9 +318,9 @@ async fn an_error_from_decoding_the_ref_fails_the_message_instead_of_crash_loopi
 
     // Created where nothing checks the ref (a node that does not host the type).
     memory.create(&cursed, json!({})).await.unwrap();
-    let m = enqueue(&*memory, OutgoingMessage::new(cursed, "Bump", json!({}))).await;
+    let m = enqueue(&memory, OutgoingMessage::new(cursed, "Bump", json!({}))).await;
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1);
-    let outcome = outcome_of(&*memory, &m.id).await.unwrap();
+    let outcome = outcome_of(&memory, &m.id).await.unwrap();
     assert_eq!(outcome.status, OutcomeStatus::Failed);
     assert!(outcome.error.as_deref().unwrap().contains("not allowed"), "{:?}", outcome.error);
     assert_eq!(f.runs(), 0);
@@ -333,7 +332,7 @@ struct FailingFailureCommit;
 
 #[async_trait]
 impl Faults for FailingFailureCommit {
-    async fn commit(&self, inner: &dyn Store, commit: CommitRequest) -> StoreResult<CommitResult> {
+    async fn commit(&self, inner: &dyn Backend, commit: CommitRequest) -> StoreResult<CommitResult> {
         if let TurnOutcome::Failed(_) = commit.outcome {
             return Err(StoreError::unavailable("disk full"));
         }
@@ -363,10 +362,10 @@ async fn new_state_with_a_nul_character_fails_the_turn_on_every_backend() {
     system.create(&t(), &TallyState::default()).await.unwrap();
     let m = accepted_by(&system, TallyMsg::Nul).await;
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1);
-    let outcome = outcome_of(&*memory, &m.id).await.unwrap();
+    let outcome = outcome_of(&memory, &m.id).await.unwrap();
     assert_eq!(outcome.status, OutcomeStatus::Failed);
     assert!(outcome.error.as_deref().unwrap().contains("NUL"), "{:?}", outcome.error);
-    assert_eq!(tally_state(&*memory, &t()).await, TallyState::default());
+    assert_eq!(tally_state(&memory, &t()).await, TallyState::default());
 }
 
 #[tokio::test(start_paused = true)]
@@ -378,11 +377,11 @@ async fn a_handler_cannot_send_nul_characters_in_headers_refused_at_the_call() {
     let tag = |k: &str, v: &str| TallyMsg::Tag { headers: [(k.to_owned(), v.to_owned())].into() };
     accepted_by(&system, tag("x", "a<NUL>b")).await;
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1);
-    let note = tally_state(&*memory, &t()).await.note;
+    let note = tally_state(&memory, &t()).await.note;
     assert!(note.contains("NUL"), "{note}");
     accepted_by(&system, tag("x", "fine")).await;
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1);
-    assert_eq!(tally_state(&*memory, &t()).await.note, "sent");
+    assert_eq!(tally_state(&memory, &t()).await.note, "sent");
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1, "the one accepted Bump");
     assert_eq!(system.run_due_turns(1).await.unwrap(), 0);
 }
@@ -400,11 +399,11 @@ async fn a_cicada_header_is_an_ordinary_header_accepted_and_delivered() {
     assert_eq!(tag.headers, headers);
     // ... and from a handler.
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1);
-    assert_eq!(tally_state(&*memory, &t()).await.note, "sent");
+    assert_eq!(tally_state(&memory, &t()).await.note, "sent");
     let pending = memory.pending(&addr(&t()), None, 10).await.unwrap().items;
     assert_eq!(pending.iter().map(|m| &m.headers).collect::<Vec<_>>(), vec![&headers]);
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1, "the Bump is delivered");
-    assert_eq!(outcome_of(&*memory, &pending[0].id).await.map(|o| o.status), Some(OutcomeStatus::Done));
+    assert_eq!(outcome_of(&memory, &pending[0].id).await.map(|o| o.status), Some(OutcomeStatus::Done));
     assert_eq!(f.runs(), 1);
 }
 
@@ -425,15 +424,15 @@ async fn a_handler_that_blocks_past_its_max_turn_still_ends_failed_timeout_never
     // Cancellation is cooperative; a blocking handler is waited for, but its outcome stands. Real time: blocking code
     // does not advance tokio's paused clock.
     let f = Fixture::new();
-    let memory = Arc::new(InMemoryStore::default());
+    let memory = Store::memory();
     let system = ActorSystem::builder(memory.clone()).host(TallyActor::<200>(f.runs.clone())).build();
     system.create(&t(), &TallyState::default()).await.unwrap();
     let m = accepted_by(&system, TallyMsg::Stall { millis: 1_000 }).await;
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1);
-    let outcome = outcome_of(&*memory, &m.id).await.unwrap();
+    let outcome = outcome_of(&memory, &m.id).await.unwrap();
     assert_eq!(outcome.status, OutcomeStatus::Failed);
     assert_eq!(outcome.error.as_deref(), Some("timeout"));
-    assert_eq!(tally_state(&*memory, &t()).await, TallyState::default());
+    assert_eq!(tally_state(&memory, &t()).await, TallyState::default());
 }
 
 /// A claim that hangs (a database socket that hangs) until the gate opens.
@@ -447,7 +446,7 @@ struct HangingClaim {
 impl Faults for HangingClaim {
     async fn claim_due(
         &self,
-        inner: &dyn Store,
+        inner: &dyn Backend,
         types: &BTreeSet<TypeName>,
         node: &NodeId,
         ttl: Duration,
@@ -462,9 +461,9 @@ impl Faults for HangingClaim {
 #[tokio::test]
 async fn stop_does_not_hang_on_a_claim_that_never_returns_and_releases_what_that_claim_gets_later() {
     let f = Fixture::new();
-    let memory = Arc::new(InMemoryStore::default());
+    let memory = Store::memory();
     let hanging = Faulty::new(memory.clone(), HangingClaim::default());
-    let system = ActorSystem::builder(hanging.clone())
+    let system = ActorSystem::builder(hanging.clone().into_store())
         .host(f.tally_type())
         .config(NodeConfig { shutdown_cancel_timeout: Duration::from_millis(200), ..NodeConfig::default() })
         .build();

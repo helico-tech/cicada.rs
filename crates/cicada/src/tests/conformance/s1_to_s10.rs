@@ -9,9 +9,9 @@ use std::time::Duration;
 use crate::address::ActorAddress;
 use crate::retention::Retention;
 use crate::store::{
-    ActorCreate, CancelResult, Claim, CommitRequest, CommitResult, CreateResult, DeleteResult, Delivery, EnqueueResult,
-    Message, MessageId, MessageStatus, OutcomeRecord, OutcomeStatus, OutgoingMessage, Page, PageCursor, RegisterResult,
-    RemoveTypeResult, RenewResult, StateChange, Store, StoreError, StoreStats, TurnOutcome, TypeDef,
+    ActorCreate, Backend, CancelResult, Claim, CommitRequest, CommitResult, CreateResult, DeleteResult, Delivery,
+    EnqueueResult, Message, MessageId, MessageStatus, OutcomeRecord, OutcomeStatus, OutgoingMessage, Page, PageCursor,
+    RegisterResult, RemoveTypeResult, RenewResult, StateChange, StoreError, StoreStats, TurnOutcome, TypeDef,
 };
 use crate::time::Timestamp;
 use serde_json::json;
@@ -27,19 +27,19 @@ fn tick_retention<B: FixtureFactory>(backend: &B) -> Duration {
 
 const PAGE: usize = Page::<Message>::DEFAULT_SIZE;
 
-async fn list_types(store: &dyn Store) -> Vec<TypeDef> {
+async fn list_types(store: &dyn Backend) -> Vec<TypeDef> {
     store.list_types().await.unwrap()
 }
 
-async fn outcome_status(store: &dyn Store, id: &MessageId) -> Option<OutcomeStatus> {
+async fn outcome_status(store: &dyn Backend, id: &MessageId) -> Option<OutcomeStatus> {
     outcome_record(store, id).await.map(|o| o.status)
 }
 
-async fn state_of(store: &dyn Store, a: &ActorAddress) -> serde_json::Value {
+async fn state_of(store: &dyn Backend, a: &ActorAddress) -> serde_json::Value {
     store.get(a).await.unwrap().expect("the instance").state
 }
 
-async fn version_of(store: &dyn Store, a: &ActorAddress) -> i64 {
+async fn version_of(store: &dyn Backend, a: &ActorAddress) -> i64 {
     store.get(a).await.unwrap().expect("the instance").version
 }
 
@@ -1199,7 +1199,7 @@ pub async fn s6_pending_lists_the_mailbox_in_delivery_order_across_pages<B: Fixt
     .await
 }
 
-async fn list_all_pending(store: &dyn Store, prefix: &str, page_size: usize) -> Vec<MessageId> {
+async fn list_all_pending(store: &dyn Backend, prefix: &str, page_size: usize) -> Vec<MessageId> {
     let mut out = Vec::new();
     let mut cursor: Option<PageCursor> = None;
     loop {
@@ -1667,7 +1667,7 @@ pub async fn s10_a_message_id_can_be_reused_once_its_outcome_expired<B: FixtureF
 /// All outcomes of `status` and `prefix` since `since`, following pages of 2; asserts the `(finished_at, message_id)`
 /// order.
 async fn collect_outcomes(
-    store: &dyn Store,
+    store: &dyn Backend,
     status: Option<OutcomeStatus>,
     prefix: &str,
     since: Timestamp,
@@ -1688,7 +1688,7 @@ async fn collect_outcomes(
     out
 }
 
-async fn collect_failures(store: &dyn Store, prefix: &str, since: Timestamp) -> Vec<OutcomeRecord> {
+async fn collect_failures(store: &dyn Backend, prefix: &str, since: Timestamp) -> Vec<OutcomeRecord> {
     collect_outcomes(store, Some(OutcomeStatus::Failed), prefix, since).await
 }
 

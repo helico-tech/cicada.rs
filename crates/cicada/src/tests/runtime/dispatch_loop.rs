@@ -10,8 +10,9 @@ use crate::ActorSystem;
 use crate::address::{ActorAddress, TypeName};
 use crate::prelude::*;
 use crate::runtime::{ActorSystemBuilder, NodeConfig, NodeState, SendResult};
-use crate::store::{Claim, MessageStatus, NodeId, OutcomeStatus, OutgoingMessage, Store, StoreError, StoreResult};
-use crate::testing::InMemoryStore;
+use crate::store::{
+    Backend, Claim, MessageStatus, NodeId, OutcomeStatus, OutgoingMessage, Store, StoreError, StoreResult,
+};
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
@@ -27,11 +28,11 @@ fn config() -> NodeConfig {
 }
 
 /// A node with a lease TTL of 3 s and a poll interval of 50 ms.
-fn system(store: Arc<dyn Store>) -> ActorSystemBuilder {
-    ActorSystem::builder(store).config(config())
+fn system(store: impl IntoStore) -> ActorSystemBuilder {
+    ActorSystem::builder(store.into_store()).config(config())
 }
 
-async fn total(store: &dyn Store, r: &Counter) -> i32 {
+async fn total(store: &dyn Backend, r: &Counter) -> i32 {
     state_of::<CounterState>(store, &r.address()).await.total
 }
 
@@ -102,7 +103,7 @@ async fn stop_all(systems: &[&ActorSystem]) {
 
 #[tokio::test]
 async fn turns_run_end_to_end_across_instances() {
-    let store = Arc::new(InMemoryStore::default());
+    let store = Store::memory();
     let system = system(store.clone()).host(CounterActor).build();
     system.start().await.unwrap();
     let (a, b, c) = (Counter::new("a"), Counter::new("b"), Counter::new("c"));
@@ -112,19 +113,19 @@ async fn turns_run_end_to_end_across_instances() {
     system.send(&a, CounterMsg::Forward { to: "counter/b".into(), n: 5 }).await.unwrap();
     system.send(&a, CounterMsg::Spawn { child: "c".into(), n: 1 }).await.unwrap();
     eventually(5 * SECOND, || async {
-        total(&*store, &a).await == 210
-            && total(&*store, &b).await == 5
+        total(&store, &a).await == 210
+            && total(&store, &b).await == 5
             && store.get(&c.address()).await.unwrap().is_some()
     })
     .await;
-    eventually(5 * SECOND, || async { total(&*store, &c).await == 101 }).await;
+    eventually(5 * SECOND, || async { total(&store, &c).await == 101 }).await;
     stop_all(&[&system]).await;
 }
 
 #[tokio::test]
 async fn concurrency_is_bounded_by_the_per_node_limit() {
     let gauges = Arc::new(Gauges::default());
-    let store = Arc::new(InMemoryStore::default());
+    let store = Store::memory();
     let system = system(store.clone())
         .host(WorkerActor(gauges.clone()))
         .config(NodeConfig { concurrency: 3, ..config() })
@@ -141,7 +142,7 @@ async fn concurrency_is_bounded_by_the_per_node_limit() {
 
 #[tokio::test]
 async fn own_enqueues_wake_the_loop_without_waiting_for_the_poll_interval() {
-    let store = Arc::new(InMemoryStore::default());
+    let store = Store::memory();
     let system = system(store.clone())
         .host(CounterActor)
         .config(NodeConfig { poll_interval: Duration::from_secs(3600), ..config() })
@@ -152,21 +153,21 @@ async fn own_enqueues_wake_the_loop_without_waiting_for_the_poll_interval() {
     tokio::time::sleep(Duration::from_millis(100)).await; // the loop is asleep now
     let started = Instant::now();
     system.send(&a, CounterMsg::Burst { count: 5 }).await.unwrap(); // the turn's own sends wake the loop at commit, too
-    eventually(2 * SECOND, || async { total(&*store, &a).await == 15 }).await;
+    eventually(2 * SECOND, || async { total(&store, &a).await == 15 }).await;
     assert!(started.elapsed() < 2 * SECOND);
     stop_all(&[&system]).await;
 }
 
 #[tokio::test]
 async fn delayed_messages_are_delivered_at_their_time_not_before() {
-    let store = Arc::new(InMemoryStore::default());
+    let store = Store::memory();
     let system = system(store.clone()).host(CounterActor).build();
     system.start().await.unwrap();
     let a = Counter::new("a");
     system.create(&a, &CounterState::default()).await.unwrap();
     let started = Instant::now();
     system.send_with(&a, CounterMsg::Add { n: 1 }, SendOptions::new().delay(Duration::from_millis(400))).await.unwrap();
-    eventually(5 * SECOND, || async { total(&*store, &a).await == 1 }).await;
+    eventually(5 * SECOND, || async { total(&store, &a).await == 1 }).await;
     assert!(started.elapsed() >= Duration::from_millis(400));
     stop_all(&[&system]).await;
 }
@@ -179,7 +180,7 @@ struct WakeUps {
 
 #[async_trait]
 impl Faults for WakeUps {
-    fn wake_ups(&self, _: &dyn Store, types: &BTreeSet<TypeName>) -> Option<BoxStream<'static, ()>> {
+    fn wake_ups(&self, _: &dyn Backend, types: &BTreeSet<TypeName>) -> Option<BoxStream<'static, ()>> {
         self.seen.lock().unwrap().push(types.clone());
         let rx = self.signals.subscribe();
         Some(Box::pin(futures::stream::unfold(rx, |mut rx| async move { rx.recv().await.ok().map(|()| ((), rx)) })))
@@ -188,7 +189,7 @@ impl Faults for WakeUps {
 
 #[tokio::test]
 async fn a_store_wake_up_source_wakes_the_loop() {
-    let memory = Arc::new(InMemoryStore::default());
+    let memory = Store::memory();
     let (signals, _) = broadcast::channel(16);
     let store = Faulty::new(memory.clone(), WakeUps { signals, seen: Mutex::new(Vec::new()) });
     let system = system(store.clone())
@@ -204,18 +205,18 @@ async fn a_store_wake_up_source_wakes_the_loop() {
     // run and fall asleep first.
     tokio::time::sleep(Duration::from_millis(100)).await;
     // Another node's enqueue: no in-process wake-up here.
-    enqueue(&*memory, OutgoingMessage::new(a.address(), "Add", json!({"n": 1}))).await;
+    enqueue(&memory, OutgoingMessage::new(a.address(), "Add", json!({"n": 1}))).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(total(&*memory, &a).await, 0);
+    assert_eq!(total(&memory, &a).await, 0);
     store.faults.signals.send(()).unwrap();
-    eventually(2 * SECOND, || async { total(&*memory, &a).await == 1 }).await;
+    eventually(2 * SECOND, || async { total(&memory, &a).await == 1 }).await;
     stop_all(&[&system]).await;
 }
 
 #[tokio::test]
 async fn graceful_stop_lets_running_turns_finish_within_the_grace_period() {
     let gauges = Arc::new(Gauges::default());
-    let store = Arc::new(InMemoryStore::default());
+    let store = Store::memory();
     let system = system(store.clone()).host(WorkerActor(gauges.clone())).build();
     system.start().await.unwrap();
     system.create(&Worker { id: 1 }, &NoState {}).await.unwrap();
@@ -225,14 +226,14 @@ async fn graceful_stop_lets_running_turns_finish_within_the_grace_period() {
     eventually(5 * SECOND, || async { gauges.running.load(Ordering::SeqCst) == 1 }).await;
     system.stop_with_grace(5 * SECOND).await;
     assert_eq!(system.state(), NodeState::Stopped);
-    assert_eq!(outcome_of(&*store, &m.id).await.unwrap().status, OutcomeStatus::Done);
+    assert_eq!(outcome_of(&store, &m.id).await.unwrap().status, OutcomeStatus::Done);
     assert!(!system.health().await);
 }
 
 #[tokio::test]
 async fn turns_still_running_after_the_grace_period_are_cancelled_and_their_leases_released() {
     let gauges = Arc::new(Gauges::default());
-    let store = Arc::new(InMemoryStore::default());
+    let store = Store::memory();
     let first = system(store.clone())
         .config(NodeConfig { node_id: NodeId::new("first").unwrap(), ..config() })
         .host(WorkerActor(gauges.clone()))
@@ -258,8 +259,8 @@ async fn turns_still_running_after_the_grace_period_are_cancelled_and_their_leas
         .build();
     second.start().await.unwrap();
     // Claimed again at once, without waiting for the TTL.
-    eventually(5 * SECOND, || async { outcome_of(&*store, &m.id).await.is_some() }).await;
-    assert_eq!(outcome_of(&*store, &m.id).await.unwrap().envelope.attempt, 2);
+    eventually(5 * SECOND, || async { outcome_of(&store, &m.id).await.is_some() }).await;
+    assert_eq!(outcome_of(&store, &m.id).await.unwrap().envelope.attempt, 2);
     stop_all(&[&second]).await;
 }
 
@@ -268,7 +269,7 @@ struct CountSweeps(AtomicUsize);
 
 #[async_trait]
 impl Faults for CountSweeps {
-    async fn sweep_expired(&self, inner: &dyn Store) -> StoreResult<u64> {
+    async fn sweep_expired(&self, inner: &dyn Backend) -> StoreResult<u64> {
         self.0.fetch_add(1, Ordering::SeqCst);
         inner.sweep_expired().await
     }
@@ -276,7 +277,7 @@ impl Faults for CountSweeps {
 
 #[tokio::test]
 async fn the_retention_sweep_runs_periodically() {
-    let store = Faulty::new(Arc::new(InMemoryStore::default()), CountSweeps::default());
+    let store = Faulty::new(Store::memory(), CountSweeps::default());
     let system =
         system(store.clone()).config(NodeConfig { sweep_interval: Duration::from_millis(50), ..config() }).build();
     system.start().await.unwrap();
@@ -291,7 +292,7 @@ struct FailingClaims(AtomicI32);
 impl Faults for FailingClaims {
     async fn claim_due(
         &self,
-        inner: &dyn Store,
+        inner: &dyn Backend,
         types: &BTreeSet<TypeName>,
         node: &NodeId,
         ttl: Duration,
@@ -306,14 +307,14 @@ impl Faults for FailingClaims {
 
 #[tokio::test]
 async fn the_loop_survives_store_failures() {
-    let memory = Arc::new(InMemoryStore::default());
+    let memory = Store::memory();
     let store = Faulty::new(memory.clone(), FailingClaims(AtomicI32::new(3)));
     let system = system(store).host(CounterActor).build();
     let a = Counter::new("a");
     system.create(&a, &CounterState::default()).await.unwrap();
     system.send(&a, CounterMsg::Add { n: 3 }).await.unwrap();
     system.start().await.unwrap();
-    eventually(5 * SECOND, || async { total(&*memory, &a).await == 3 }).await;
+    eventually(5 * SECOND, || async { total(&memory, &a).await == 3 }).await;
     stop_all(&[&system]).await;
 }
 
@@ -324,7 +325,7 @@ struct Outage {
 
 #[async_trait]
 impl Faults for Outage {
-    async fn now(&self, inner: &dyn Store) -> StoreResult<crate::time::Timestamp> {
+    async fn now(&self, inner: &dyn Backend) -> StoreResult<crate::time::Timestamp> {
         if self.down.load(Ordering::SeqCst) {
             return Err(StoreError::unavailable("store down"));
         }
@@ -334,7 +335,7 @@ impl Faults for Outage {
 
 #[tokio::test]
 async fn a_node_is_unhealthy_while_its_store_fails_and_healthy_again_when_it_is_back() {
-    let store = Faulty::new(Arc::new(InMemoryStore::default()), Outage { down: false.into() });
+    let store = Faulty::new(Store::memory(), Outage { down: false.into() });
     let system = system(store.clone()).host(CounterActor).build();
     system.start().await.unwrap();
     assert!(system.health().await);
@@ -347,7 +348,7 @@ async fn a_node_is_unhealthy_while_its_store_fails_and_healthy_again_when_it_is_
 
 #[tokio::test]
 async fn life_cycle_start_once_stop_is_idempotent_a_send_only_node_needs_no_loop() {
-    let store = Arc::new(InMemoryStore::default());
+    let store = Store::memory();
     let system = system(store.clone()).host(CounterActor).build();
     system.start().await.unwrap();
     assert_eq!(system.state(), NodeState::Started);

@@ -182,7 +182,7 @@ The host owns the store and the node's life cycle; the HTTP API is a `Router` it
 authentication:
 
 <!-- doctest
-@@13
+@@11
 # use cicada_examples::sync::{Page, ReportsActor, Sync, SyncActor, SyncApi, SyncMsg};
 # struct HttpSyncApi;
 # impl SyncApi for HttpSyncApi {
@@ -199,17 +199,15 @@ use axum::http::{StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
-use cicada::store::Store;
-use cicada::{ActorSystem, SendResult};
+use cicada::store::{PostgresOptions, SqliteOptions};
+use cicada::{ActorSystem, SendResult, Store};
 use cicada_axum::{actor_api, actor_health};
-use cicada_store_postgres::{PostgresStore, PostgresStoreConfig};
-use cicada_store_sqlite::{SqliteOptions, SqliteStore};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let store: Arc<dyn Store> = match std::env::var("DATABASE_URL") {
-        Ok(url) => Arc::new(PostgresStore::connect(&url, PostgresStoreConfig::default()).await?),
-        Err(_) => Arc::new(SqliteStore::open("actors.db", SqliteOptions::default()).await?),
+    let store = match std::env::var("DATABASE_URL") {
+        Ok(url) => Store::postgres(&url, PostgresOptions::default()).await?, // feature "postgres"
+        Err(_) => Store::sqlite("actors.db", SqliteOptions::default()).await?, // feature "sqlite"
     };
     let system = ActorSystem::builder(store.clone())
         .host(SyncActor { api: HttpSyncApi }) // this node runs turns for these types
@@ -740,7 +738,7 @@ turn's `Attributes` (a bag keyed by type) carry data from one hook to the next a
 # use cicada::ActorSystem;
 # use cicada_examples::sync::ReportsActor;
 @@17
-# fn node(store: Arc<dyn cicada::store::Store>) {
+# fn node(store: cicada::Store) {
 @@4
 # }
 -->
@@ -783,7 +781,7 @@ providers, or passes them to `ActorTelemetry::new(&tracer_provider, &meter_provi
 # use cicada::{ActorSystem, SendOptions};
 # use cicada_examples::sync::{Sync, SyncMsg};
 @@1
-# async fn node(store: Arc<dyn cicada::store::Store>) -> anyhow::Result<()> {
+# async fn node(store: cicada::Store) -> anyhow::Result<()> {
 @@5
 # Ok(())
 # }
@@ -822,7 +820,7 @@ claimed again forever. `CrashLoopGuard` counts the claims of a message that ende
 # use std::sync::Arc;
 # use cicada::ActorSystem;
 @@1
-# fn node(store: Arc<dyn cicada::store::Store>) -> Result<(), String> {
+# fn node(store: cicada::Store) -> Result<(), String> {
 @@4
 # Ok(())
 # }
@@ -848,7 +846,7 @@ an actor: handlers cannot read `/outcomes`) copies each failure into the `DeadLe
 # use std::sync::Arc;
 # use std::time::Duration;
 @@2
-# async fn node(store: Arc<dyn cicada::store::Store>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+# async fn node(store: cicada::Store) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 @@5
 # Ok(())
 # }

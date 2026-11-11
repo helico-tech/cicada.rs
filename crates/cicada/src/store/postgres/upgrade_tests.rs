@@ -9,13 +9,15 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::address::ActorAddress;
-use crate::store::Store;
+use crate::store::Backend;
 use futures::FutureExt;
 use serde_json::{Value, json};
 use sqlx::{AssertSqlSafe, Connection, PgConnection};
 
 use crate::store::postgres::schema::{self, quote};
-use crate::store::postgres::{PgConnectOptions, PostgresStore, PostgresStoreConfig};
+use sqlx::postgres::PgConnectOptions;
+
+use crate::store::postgres::{PostgresOptions, PostgresStore};
 
 static SCHEMAS: AtomicU32 = AtomicU32::new(0);
 
@@ -71,7 +73,7 @@ impl V1 {
     }
 
     async fn open(&self) -> PostgresStore {
-        let config = PostgresStoreConfig { schema: self.name.clone(), max_pool_size: 2, ..Default::default() };
+        let config = PostgresOptions { schema: self.name.clone(), max_pool_size: 2, ..Default::default() };
         PostgresStore::connect(&self.url, config).await.expect("the store opens")
     }
 }

@@ -61,19 +61,19 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
 
 ## 4. One public `Store`, and the trait goes private
 
-- [ ] 4.1 The public type `Store` [4, 8, 10]: `Store::sqlite(path, options)`, `Store::postgres(url, options)`,
+- [x] 4.1 The public type `Store` [4, 8, 10]: `Store::sqlite(path, options)`, `Store::postgres(url, options)`,
       `Store::memory()`, `memory_on(clock)`, `memory_with(clock, retention)`, `close()`, cheap to clone.
       `ActorSystem::builder` takes a `Store`; `ActorSystem::store()` and `TestActors`' `InMemoryStore` go
       (`TestActors::store()` returns the `Store`); `connect_with` goes; `PostgresStoreConfig` becomes
       `PostgresOptions`. Follow in the sample service, the examples, `e2e` and every test. Verify: tests for the
       scenarios "A node on SQLite", "A node on PostgreSQL", "Two systems on one store" and "Closing and opening
       again" pass.
-- [ ] 4.2 The trait becomes `pub(crate)` under the name `Backend`, and every type the rule of decision 9 does not
+- [x] 4.2 The trait becomes `pub(crate)` under the name `Backend`, and every type the rule of decision 9 does not
       keep becomes private [1, 9]. `hash_conflict_reason` is public as `cicada::store::hash_conflict_reason`.
       Verify: `cargo build --workspace` has no warning about a private type in a public signature; a doc test
       marked `compile_fail` covers the scenario "A host names a backend type"; an existing test covers "A host
       reads an outcome" (name it in the report).
-- [ ] 4.3 Remove the crates `cicada-store-sqlite`, `cicada-store-postgres`, `cicada-store-conformance` and
+- [x] 4.3 Remove the crates `cicada-store-sqlite`, `cicada-store-postgres`, `cicada-store-conformance` and
       `cicada-fuzz` from the workspace and the disk [5, 10]. Doc examples that named `Arc<dyn cicada::store::Store>`
       name `cicada::Store`. Verify: `cargo test --workspace` passes; `cargo test -p cicada` alone runs the
       conformance cases for the in-memory store and SQLite (scenario "The tests of the core alone").

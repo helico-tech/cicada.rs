@@ -11,7 +11,7 @@ use super::common::TempDb;
 use crate::prelude::*;
 use crate::runtime::NodeConfig;
 use crate::store::sqlite::{SqliteOptions, SqliteStore};
-use crate::store::{MessageStatus, NodeId, OutcomeStatus, Store, SystemClock};
+use crate::store::{Backend, MessageStatus, NodeId, OutcomeStatus, Store, SystemClock};
 use crate::tests::conformance::outcome_record;
 use crate::{SendResult, Turn};
 use serde::{Deserialize, Serialize};
@@ -141,7 +141,7 @@ impl Cluster {
         let options = SqliteOptions { clock: Arc::new(SystemClock), ..SqliteOptions::default() };
         let store = Arc::new(SqliteStore::open(&self.db.file, options).await.expect("the store opens"));
         self.stores.push(store.clone());
-        let system = ActorSystem::builder(store)
+        let system = ActorSystem::builder(Store::from_backend(store))
             .host(PlayerActor { guard: self.guard.clone() })
             .config(NodeConfig {
                 node_id: NodeId::new(name).unwrap(),
@@ -175,7 +175,7 @@ async fn eventually<F: Future<Output = bool>>(mut condition: impl FnMut() -> F) 
     .expect("the condition holds within 20 s");
 }
 
-async fn state(store: &Arc<dyn Store>, name: &str) -> PlayerState {
+async fn state(store: &dyn Backend, name: &str) -> PlayerState {
     let record = store.get(&player(name).address().unwrap()).await.unwrap().expect("the player exists");
     serde_json::from_value(record.state).unwrap()
 }
@@ -213,10 +213,10 @@ async fn two_nodes_on_one_sqlite_file_play_ping_pong_run_timers_and_recover_a_st
     let SendResult::Accepted(bad) = sent else { panic!("accepted, got {sent:?}") };
     eventually(|| {
         let (store, id) = (store.clone(), bad.id.clone());
-        async move { outcome_record(&*store, &id).await.is_some() }
+        async move { outcome_record(&store, &id).await.is_some() }
     })
     .await;
-    assert_eq!(outcome_record(&*store, &bad.id).await.unwrap().status, OutcomeStatus::Failed);
+    assert_eq!(outcome_record(&store, &bad.id).await.unwrap().status, OutcomeStatus::Failed);
 
     // Stop a node mid-turn: its lease is released and another node completes the message (attempt 2).
     second.stop_with_grace(Duration::ZERO).await;
@@ -232,10 +232,10 @@ async fn two_nodes_on_one_sqlite_file_play_ping_pong_run_timers_and_recover_a_st
     third.start().await.unwrap();
     eventually(|| {
         let (store, id) = (store.clone(), slow.id.clone());
-        async move { outcome_record(&*store, &id).await.is_some() }
+        async move { outcome_record(&store, &id).await.is_some() }
     })
     .await;
-    let outcome = outcome_record(&*store, &slow.id).await.unwrap();
+    let outcome = outcome_record(&store, &slow.id).await.unwrap();
     assert_eq!(outcome.status, OutcomeStatus::Done);
     assert_eq!(outcome.envelope.attempt, 2);
     assert_eq!(state(&store, "pong").await.slow, 1);

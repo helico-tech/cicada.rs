@@ -18,8 +18,7 @@ use cicada::plugin::{ClaimContext, HookResult, Plugin};
 /// number of such interruptions a message may see in normal operation (rolling deploys during long turns).
 ///
 /// ```
-/// # use std::sync::Arc;
-/// # fn node(store: Arc<dyn cicada::store::Store>) -> Result<(), String> {
+/// # fn node(store: cicada::Store) -> Result<(), String> {
 /// use cicada::ActorSystem;
 /// use cicada_extras::CrashLoopGuard;
 ///

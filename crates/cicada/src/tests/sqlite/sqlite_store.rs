@@ -11,8 +11,8 @@ use crate::retention::{Keep, Retention};
 use crate::retry::{Backoff, RetryPolicy};
 use crate::store::sqlite::{SqliteOptions, SqliteStore, schema};
 use crate::store::{
-    CommitRequest, CommitResult, CreateResult, Delivery, EnqueueResult, MessageStatus, NodeId, OutgoingMessage, Store,
-    StoreError, TurnOutcome,
+    Backend, CommitRequest, CommitResult, CreateResult, Delivery, EnqueueResult, MessageStatus, NodeId,
+    OutgoingMessage, StoreError, TurnOutcome,
 };
 use crate::testing::VirtualClock;
 use crate::tests::conformance::outcome_record;

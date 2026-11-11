@@ -1,13 +1,18 @@
 //! The shared durable store: clock, type registry, state, mailboxes and the atomic commit, in one transactional
-//! system. Every implementation must pass the S1–S10 conformance suite (`cicada-store-conformance`).
+//! system. A host opens a [`Store`] and reads what it holds through [`ActorSystem`](crate::ActorSystem); the backends
+//! are private to this crate (ADR 0018). Every backend passes the S1–S10 conformance suite, test code of this crate.
 
+// Without a backend feature the crate opens no store, and what only the backends use is unused.
+#![cfg_attr(not(any(feature = "sqlite", feature = "postgres", feature = "testing")), allow(dead_code))]
+
+mod handle;
 mod model;
 #[cfg(feature = "postgres")]
-pub mod postgres;
+pub(crate) mod postgres;
 mod results;
 #[cfg(feature = "sqlite")]
-pub mod sqlite;
-pub mod support;
+pub(crate) mod sqlite;
+pub(crate) mod support;
 
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -16,15 +21,19 @@ use async_trait::async_trait;
 use futures::stream::BoxStream;
 use serde_json::Value;
 
+pub use handle::Store;
+pub(crate) use model::{ActorCreate, Claim, CommitRequest, NodeRecord, OutgoingMessage, StateChange};
 pub use model::{
-    ActorCreate, ActorRecord, Claim, CommitRequest, Delivery, Message, MessageId, MessageStatus, NodeId, NodeRecord,
-    OutcomeRecord, OutcomeStatus, OutgoingMessage, Page, PageCursor, RunningTurn, StateChange, StoreStats, TurnOutcome,
-    TypeDef,
+    ActorRecord, Delivery, Message, MessageId, MessageStatus, NodeId, OutcomeRecord, OutcomeStatus, Page, PageCursor,
+    RunningTurn, StoreStats, TurnOutcome, TypeDef,
 };
-pub use results::{
-    CancelResult, CommitResult, CreateResult, DeleteResult, DeliverNowResult, EnqueueResult, RegisterResult,
-    RemoveTypeResult, RenewResult,
-};
+#[cfg(feature = "postgres")]
+pub use postgres::PostgresOptions;
+pub use results::{CancelResult, DeleteResult, DeliverNowResult, RemoveTypeResult};
+pub(crate) use results::{CommitResult, CreateResult, EnqueueResult, RegisterResult, RenewResult};
+#[cfg(feature = "sqlite")]
+pub use sqlite::SqliteOptions;
+pub use support::hash_conflict_reason;
 
 use crate::address::{ActorAddress, TypeName};
 use crate::time::Timestamp;
@@ -77,8 +86,9 @@ impl Clock for SystemClock {
     }
 }
 
-/// The shared durable backend. Methods are grouped as in the architecture: clock, type registry, state store,
-/// mailbox and commit. All instants are store time with microsecond precision (S9).
+/// A store backend: the in-memory store, SQLite and PostgreSQL. Private to this crate, so that a new method or field is
+/// not a change of the public API; a host holds a [`Store`]. Methods are grouped as in the architecture: clock, type
+/// registry, state store, mailbox and commit. All instants are store time with microsecond precision (S9).
 ///
 /// Implementations must guarantee S1–S10:
 ///
@@ -95,7 +105,7 @@ impl Clock for SystemClock {
 /// | S9 One clock | Due-ness and lease expiry use the store clock only. |
 /// | S10 Retention | Outcomes are kept for the retention period, which is also the dedup window. |
 #[async_trait]
-pub trait Store: Send + Sync + 'static {
+pub(crate) trait Backend: Send + Sync + 'static {
     // ---- clock ----
 
     /// Current store time, truncated to microseconds. Also serves as the store's liveness probe.

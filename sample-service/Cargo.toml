@@ -11,13 +11,11 @@ publish.workspace = true
 anyhow.workspace = true
 axum.workspace = true
 chrono.workspace = true
-cicada.workspace = true
+cicada = { workspace = true, features = ["sqlite", "postgres"] }
 cicada-axum.workspace = true
 cicada-examples.workspace = true
 cicada-extras.workspace = true
 cicada-otel.workspace = true
-cicada-store-postgres.workspace = true
-cicada-store-sqlite.workspace = true
 opentelemetry.workspace = true
 # OTLP over HTTP/protobuf (port 4318). The blocking reqwest
 # client suits the SDK's batch processors, which export from their own threads.

@@ -11,12 +11,12 @@ use crate::address::{ActorAddress, TypeName};
 use crate::prelude::*;
 use crate::runtime::{ActorSystemBuilder, NodeConfig, SendResult};
 use crate::store::{
-    CancelResult, Claim, CommitRequest, CommitResult, CreateResult, DeleteResult, DeliverNowResult, EnqueueResult,
-    Message, MessageId, MessageStatus, NodeId, NodeRecord, OutcomeRecord, OutcomeStatus, OutgoingMessage, Page,
-    PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn, Store, StoreResult, StoreStats,
-    TurnOutcome, TypeDef,
+    Backend, CancelResult, Claim, CommitRequest, CommitResult, CreateResult, DeleteResult, DeliverNowResult,
+    EnqueueResult, Message, MessageId, MessageStatus, NodeId, NodeRecord, OutcomeRecord, OutcomeStatus,
+    OutgoingMessage, Page, PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn, Store, StoreResult,
+    StoreStats, TurnOutcome, TypeDef,
 };
-use crate::testing::{InMemoryStore, TokioClock, default_start};
+use crate::testing::{TokioClock, default_start};
 use crate::time::{self, Timestamp};
 use crate::turn::{HandlerFailure, TurnError};
 use crate::{ActorSystem, Turn};
@@ -262,13 +262,13 @@ impl Actor for EchoActor {
 // ---- stores and nodes ----
 
 /// An in-memory store on tokio's (paused) clock, starting at 2026-01-01T00:00:00Z.
-pub fn virtual_store() -> Arc<InMemoryStore> {
+pub fn virtual_store() -> Store {
     virtual_store_at(default_start())
 }
 
 /// An in-memory store on tokio's clock, starting at `start`.
-pub fn virtual_store_at(start: Timestamp) -> Arc<InMemoryStore> {
-    Arc::new(InMemoryStore::new(Arc::new(TokioClock::new(start)), time::DEFAULT_RETENTION))
+pub fn virtual_store_at(start: Timestamp) -> Store {
+    Store::memory_with(Arc::new(TokioClock::new(start)), time::DEFAULT_RETENTION)
 }
 
 /// The configuration of a node named `name` with a lease TTL of 30 s.
@@ -277,12 +277,12 @@ pub fn node_config(name: &str) -> NodeConfig {
 }
 
 /// A node on `store` named `name` with a lease TTL of 30 s.
-pub fn node(store: Arc<dyn Store>, name: &str) -> ActorSystemBuilder {
-    ActorSystem::builder(store).config(node_config(name))
+pub fn node(store: impl IntoStore, name: &str) -> ActorSystemBuilder {
+    ActorSystem::builder(store.into_store()).config(node_config(name))
 }
 
 /// The retained outcome of message `id`; `None` while it is pending or running, or when it is unknown.
-pub async fn outcome_of(store: &dyn Store, id: &MessageId) -> Option<OutcomeRecord> {
+pub async fn outcome_of(store: &dyn Backend, id: &MessageId) -> Option<OutcomeRecord> {
     match store.status(id).await.unwrap() {
         Some(MessageStatus::Finished(outcome)) => Some(outcome),
         _ => None,
@@ -308,7 +308,7 @@ pub fn accepted(result: SendResult) -> Message {
 }
 
 /// Enqueues directly into the store, as a node that does not host the type would.
-pub async fn enqueue(store: &dyn Store, message: OutgoingMessage) -> Message {
+pub async fn enqueue(store: &dyn Backend, message: OutgoingMessage) -> Message {
     match store.enqueue(message).await.unwrap() {
         EnqueueResult::Enqueued(m) => m,
         other => panic!("enqueue refused: {other:?}"),
@@ -337,7 +337,7 @@ pub async fn settle() {
 }
 
 /// The state of `address` decoded as `S`.
-pub async fn state_of<S: serde::de::DeserializeOwned>(store: &dyn Store, address: &ActorAddress) -> S {
+pub async fn state_of<S: serde::de::DeserializeOwned>(store: &dyn Backend, address: &ActorAddress) -> S {
     let record = store.get(address).await.unwrap().unwrap_or_else(|| panic!("{address} does not exist"));
     serde_json::from_value(record.state).unwrap()
 }
@@ -401,17 +401,17 @@ pub fn failure_kind(failure: &HandlerFailure) -> &'static str {
 /// The operations a test can intercept; each default delegates to the real store.
 #[async_trait]
 pub trait Faults: Send + Sync + 'static {
-    async fn now(&self, inner: &dyn Store) -> StoreResult<Timestamp> {
+    async fn now(&self, inner: &dyn Backend) -> StoreResult<Timestamp> {
         inner.now().await
     }
 
-    async fn list_types(&self, inner: &dyn Store) -> StoreResult<Vec<TypeDef>> {
+    async fn list_types(&self, inner: &dyn Backend) -> StoreResult<Vec<TypeDef>> {
         inner.list_types().await
     }
 
     async fn claim_due(
         &self,
-        inner: &dyn Store,
+        inner: &dyn Backend,
         types: &BTreeSet<TypeName>,
         node: &NodeId,
         ttl: Duration,
@@ -422,7 +422,7 @@ pub trait Faults: Send + Sync + 'static {
 
     async fn renew(
         &self,
-        inner: &dyn Store,
+        inner: &dyn Backend,
         address: &ActorAddress,
         epoch: i64,
         ttl: Duration,
@@ -430,35 +430,52 @@ pub trait Faults: Send + Sync + 'static {
         inner.renew(address, epoch, ttl).await
     }
 
-    async fn commit(&self, inner: &dyn Store, commit: CommitRequest) -> StoreResult<CommitResult> {
+    async fn commit(&self, inner: &dyn Backend, commit: CommitRequest) -> StoreResult<CommitResult> {
         inner.commit(commit).await
     }
 
-    async fn sweep_expired(&self, inner: &dyn Store) -> StoreResult<u64> {
+    async fn sweep_expired(&self, inner: &dyn Backend) -> StoreResult<u64> {
         inner.sweep_expired().await
     }
 
-    fn wake_ups(&self, inner: &dyn Store, types: &BTreeSet<TypeName>) -> Option<BoxStream<'static, ()>> {
+    fn wake_ups(&self, inner: &dyn Backend, types: &BTreeSet<TypeName>) -> Option<BoxStream<'static, ()>> {
         inner.wake_ups(types)
     }
 }
 
 /// A store that delegates everything to `inner`, routing the operations of [`Faults`] through `faults`.
 pub struct Faulty<F> {
-    pub inner: Arc<dyn Store>,
+    pub inner: Store,
     pub faults: F,
 }
 
 impl<F: Faults> Faulty<F> {
-    pub fn new(inner: Arc<dyn Store>, faults: F) -> Arc<Self> {
+    pub fn new(inner: Store, faults: F) -> Arc<Self> {
         Arc::new(Self { inner, faults })
     }
 }
 
+/// What a node can be built on: a `Store`, or a store wrapped in [`Faulty`].
+pub trait IntoStore {
+    fn into_store(self) -> Store;
+}
+
+impl IntoStore for Store {
+    fn into_store(self) -> Store {
+        self
+    }
+}
+
+impl<F: Faults> IntoStore for Arc<Faulty<F>> {
+    fn into_store(self) -> Store {
+        Store::from_backend(self)
+    }
+}
+
 #[async_trait]
-impl<F: Faults> Store for Faulty<F> {
+impl<F: Faults> Backend for Faulty<F> {
     async fn now(&self) -> StoreResult<Timestamp> {
-        self.faults.now(&*self.inner).await
+        self.faults.now(&self.inner).await
     }
 
     async fn register(&self, def: TypeDef) -> StoreResult<RegisterResult> {
@@ -470,7 +487,7 @@ impl<F: Faults> Store for Faulty<F> {
     }
 
     async fn list_types(&self) -> StoreResult<Vec<TypeDef>> {
-        self.faults.list_types(&*self.inner).await
+        self.faults.list_types(&self.inner).await
     }
 
     async fn create(&self, address: &ActorAddress, state: Value) -> StoreResult<CreateResult> {
@@ -500,11 +517,11 @@ impl<F: Faults> Store for Faulty<F> {
         ttl: Duration,
         limit: usize,
     ) -> StoreResult<Vec<Claim>> {
-        self.faults.claim_due(&*self.inner, types, node, ttl, limit).await
+        self.faults.claim_due(&self.inner, types, node, ttl, limit).await
     }
 
     async fn renew(&self, address: &ActorAddress, epoch: i64, ttl: Duration) -> StoreResult<RenewResult> {
-        self.faults.renew(&*self.inner, address, epoch, ttl).await
+        self.faults.renew(&self.inner, address, epoch, ttl).await
     }
 
     async fn release(&self, address: &ActorAddress, epoch: i64) -> StoreResult<()> {
@@ -566,11 +583,11 @@ impl<F: Faults> Store for Faulty<F> {
     }
 
     async fn sweep_expired(&self) -> StoreResult<u64> {
-        self.faults.sweep_expired(&*self.inner).await
+        self.faults.sweep_expired(&self.inner).await
     }
 
     async fn commit(&self, commit: CommitRequest) -> StoreResult<CommitResult> {
-        self.faults.commit(&*self.inner, commit).await
+        self.faults.commit(&self.inner, commit).await
     }
 
     async fn deliver_now(&self, id: &MessageId) -> StoreResult<DeliverNowResult> {
@@ -616,7 +633,7 @@ impl<F: Faults> Store for Faulty<F> {
     }
 
     fn wake_ups(&self, types: &BTreeSet<TypeName>) -> Option<BoxStream<'static, ()>> {
-        self.faults.wake_ups(&*self.inner, types)
+        self.faults.wake_ups(&self.inner, types)
     }
 
     async fn close(&self) {

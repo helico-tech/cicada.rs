@@ -10,7 +10,7 @@ use super::common::{TempDb, open_with};
 use crate::ActorAddress;
 use crate::address::TypeName;
 use crate::store::{
-    Claim, CommitRequest, CommitResult, EnqueueResult, MessageStatus, NodeId, OutgoingMessage, StateChange, Store,
+    Backend, Claim, CommitRequest, CommitResult, EnqueueResult, MessageStatus, NodeId, OutgoingMessage, StateChange,
     TurnOutcome,
 };
 use crate::testing::VirtualClock;
@@ -34,7 +34,7 @@ async fn install_poison_trigger(db: &TempDb) {
     .await;
 }
 
-async fn claim_one(store: &impl Store) -> Claim {
+async fn claim_one(store: &impl Backend) -> Claim {
     let claims = store
         .claim_due(&BTreeSet::from([type_name()]), &NodeId::new("n").unwrap(), Duration::from_secs(30), 1)
         .await
@@ -44,7 +44,7 @@ async fn claim_one(store: &impl Store) -> Claim {
 }
 
 /// Commits `a`'s claim with a good send followed by a poisoned one; asserts nothing was applied.
-async fn assert_failed_commit_applies_nothing(store: &impl Store, claim: Claim) {
+async fn assert_failed_commit_applies_nothing(store: &impl Backend, claim: Claim) {
     let a = instance("a");
     let target = instance("target");
     store.register(crate::tests::conformance::type_def(target.type_name(), "test")).await.unwrap();

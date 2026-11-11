@@ -11,13 +11,12 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;
+use cicada::Store;
 use cicada::runtime::NodeConfig;
-use cicada::store::{NodeId, Store};
+use cicada::store::{NodeId, PostgresOptions, SqliteOptions};
 use cicada::{ActorSystem, CreateActorResult};
 use cicada_axum::{actor_api, actor_health};
 use cicada_extras::{CrashLoopGuard, FailureWatcher};
-use cicada_store_postgres::{PostgresStore, PostgresStoreConfig};
-use cicada_store_sqlite::{SqliteOptions, SqliteStore};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -45,6 +44,7 @@ pub struct NodeInfo {
 #[derive(Debug)]
 pub struct SampleNode {
     system: ActorSystem,
+    store: Store,
     info: NodeInfo,
     effects: EffectLog,
     api_token: Option<String>,
@@ -120,7 +120,7 @@ impl SampleNode {
         };
         let hosting = if info.groups.is_empty() { "nothing (send-only)".to_owned() } else { info.groups.join(", ") };
         tracing::info!("Sample node {}: hosting {hosting} on {}", info.node, info.store);
-        Ok(Self { system, info, effects, api_token: config.api_token.clone(), watcher, telemetry })
+        Ok(Self { system, store, info, effects, api_token: config.api_token.clone(), watcher, telemetry })
     }
 
     /// The actor system.
@@ -166,7 +166,7 @@ impl SampleNode {
             watcher.abort();
         }
         self.system.stop().await;
-        self.system.store().close().await;
+        self.store.close().await;
         if let Some(t) = self.telemetry {
             t.shutdown().await;
         }
@@ -189,10 +189,10 @@ pub async fn serve(
 /// How long a node retries an unavailable PostgreSQL store at start before it gives up.
 const STORE_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
-async fn open_store(config: &SampleConfig) -> anyhow::Result<Arc<dyn Store>> {
+async fn open_store(config: &SampleConfig) -> anyhow::Result<Store> {
     Ok(match &config.database_url {
         Some(url) => {
-            let mut store_config = PostgresStoreConfig::for_schema(&config.database_schema);
+            let mut store_config = PostgresOptions::for_schema(&config.database_schema);
             if let Some(size) = config.effective_pool_size() {
                 store_config.max_pool_size = size;
             }
@@ -200,23 +200,19 @@ async fn open_store(config: &SampleConfig) -> anyhow::Result<Arc<dyn Store>> {
             // where even its host name may not resolve yet): an unavailable store is retried for a while instead of
             // ending the process.
             let deadline = tokio::time::Instant::now() + STORE_STARTUP_TIMEOUT;
-            let store = loop {
-                match PostgresStore::connect(url, store_config.clone()).await {
+            loop {
+                match Store::postgres(url, store_config.clone()).await {
                     Err(e) if e.is_unavailable() && tokio::time::Instant::now() < deadline => {
                         tracing::warn!("PostgreSQL unavailable, retrying in 1 s: {e}");
                         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                     }
                     opened => break opened.context("Opening the PostgreSQL store")?,
                 }
-            };
-            Arc::new(store)
+            }
         }
-        None => {
-            let store = SqliteStore::open(&config.sqlite_path, SqliteOptions::default())
-                .await
-                .with_context(|| format!("Opening the SQLite store {}", config.sqlite_path.display()))?;
-            Arc::new(store)
-        }
+        None => Store::sqlite(&config.sqlite_path, SqliteOptions::default())
+            .await
+            .with_context(|| format!("Opening the SQLite store {}", config.sqlite_path.display()))?,
     })
 }
 

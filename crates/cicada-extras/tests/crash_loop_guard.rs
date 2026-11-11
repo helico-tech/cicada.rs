@@ -61,7 +61,7 @@ async fn harness(limit: u32) -> TestActors {
 
 /// A node that claims the head message and dies before committing: its lease simply expires.
 async fn crash(test: &TestActors) {
-    let claims = claim_and_abandon(&**test.store(), &test.system().hosted_types(), Duration::from_secs(30), 1).await;
+    let claims = claim_and_abandon(test.store(), &test.system().hosted_types(), Duration::from_secs(30), 1).await;
     assert_eq!(claims.unwrap().len(), 1);
     tokio::time::sleep(Duration::from_secs(31)).await; // only time passes: no turn runs meanwhile
 }

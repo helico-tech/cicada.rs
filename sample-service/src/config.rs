@@ -5,8 +5,8 @@ use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use cicada::store::PostgresOptions;
 use cicada::time::parse_duration;
-use cicada_store_postgres::PostgresStoreConfig;
 
 use crate::catalog::{GROUPS, parse_groups};
 
@@ -143,7 +143,7 @@ impl SampleConfig {
         self.database_pool_size.or_else(|| {
             self.concurrency.map(|c| {
                 let needed = u32::try_from(c.saturating_add(4)).unwrap_or(u32::MAX);
-                needed.max(PostgresStoreConfig::default().max_pool_size)
+                needed.max(PostgresOptions::default().max_pool_size)
             })
         })
     }

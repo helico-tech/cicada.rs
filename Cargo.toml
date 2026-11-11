@@ -3,15 +3,11 @@ resolver = "3"
 members = [
     "crates/cicada",
     "crates/cicada-test",
-    "crates/cicada-store-conformance",
-    "crates/cicada-store-sqlite",
-    "crates/cicada-store-postgres",
     "crates/cicada-axum",
     "crates/cicada-client",
     "crates/cicada-otel",
     "crates/cicada-extras",
     "crates/cicada-cli",
-    "crates/cicada-fuzz",
     "examples",
     "sample-service",
     "e2e",
@@ -28,9 +24,6 @@ repository = "https://github.com/helico-tech/cicada.rs"
 [workspace.dependencies]
 cicada = { path = "crates/cicada" }
 cicada-test = { path = "crates/cicada-test" }
-cicada-store-conformance = { path = "crates/cicada-store-conformance" }
-cicada-store-sqlite = { path = "crates/cicada-store-sqlite" }
-cicada-store-postgres = { path = "crates/cicada-store-postgres" }
 cicada-axum = { path = "crates/cicada-axum" }
 cicada-client = { path = "crates/cicada-client" }
 cicada-otel = { path = "crates/cicada-otel" }

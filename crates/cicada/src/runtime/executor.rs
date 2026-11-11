@@ -18,7 +18,7 @@
 //! policy, attempts left and a failure that is not permanent, the commit is a reschedule after the backoff, else
 //! `failed`. The `on_handler_error` hooks then see that decision.
 //!
-//! **Cancel.** An operator's cancel request ([`crate::store::Store::request_cancel`]) reaches the keeper through its next
+//! **Cancel.** An operator's cancel request ([`crate::store::Backend::request_cancel`]) reaches the keeper through its next
 //! renewal. If the handler has not ended, the keeper aborts *work* and the turn commits `cancelled`, without effects
 //! and fenced by its epoch; the lease is kept throughout, so no other turn can start (G1). If the handler already
 //! ended, the request is ignored and the turn commits normally (G6). One atomic [`HandlerPhase`] decides which of the
@@ -53,8 +53,8 @@ use crate::address::TypeName;
 use crate::message;
 use crate::plugin::{Attributes, ClaimContext, HandlerErrorContext, HookResult, OutcomeContext, Plugin, TurnInfo};
 use crate::store::{
-    ActorCreate, Claim, CommitRequest, CommitResult, Delivery, Message, MessageId, OutgoingMessage, RenewResult,
-    StateChange, Store, StoreError, TurnOutcome,
+    ActorCreate, Backend, Claim, CommitRequest, CommitResult, Delivery, Message, MessageId, OutgoingMessage,
+    RenewResult, StateChange, Store, StoreError, TurnOutcome,
 };
 use crate::turn::HandlerFailure;
 
@@ -200,7 +200,7 @@ impl HandlerPhase {
 }
 
 pub(crate) struct TurnExecutor {
-    pub store: Arc<dyn Store>,
+    pub store: Store,
     pub resolver: Arc<TypeResolver>,
     pub hosted: HashMap<TypeName, HostedType>,
     /// The node's plugins, in installation order.

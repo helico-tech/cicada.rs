@@ -10,8 +10,8 @@ use super::common::{TestDb, eventually};
 use crate::prelude::*;
 use crate::runtime::CreateActorResult;
 use crate::runtime::NodeConfig;
-use crate::store::postgres::{PostgresStore, PostgresStoreConfig};
-use crate::store::{MessageStatus, NodeId, OutcomeStatus, RemoveTypeResult, Store};
+use crate::store::postgres::{PostgresOptions, PostgresStore};
+use crate::store::{Backend, MessageStatus, NodeId, OutcomeStatus, RemoveTypeResult, Store};
 use crate::tests::conformance::outcome_record;
 use crate::{SendResult, TypeName, time};
 use serde::{Deserialize, Serialize};
@@ -130,7 +130,7 @@ impl Cluster {
     }
 
     async fn store(&self) -> Arc<PostgresStore> {
-        self.db.open_with(PostgresStoreConfig { max_pool_size: 6, ..self.db.config() }).await
+        self.db.open_with(PostgresOptions { max_pool_size: 6, ..self.db.config() }).await
     }
 
     async fn node(&self, name: &str, poll: Duration, hosting: bool) -> ActorSystem {
@@ -139,7 +139,7 @@ impl Cluster {
     }
 
     fn node_on(&self, name: &str, poll: Duration, hosting: bool, store: Arc<PostgresStore>) -> ActorSystem {
-        let mut builder = ActorSystem::builder(store).config(NodeConfig {
+        let mut builder = ActorSystem::builder(Store::from_backend(store)).config(NodeConfig {
             node_id: NodeId::new(name).unwrap(),
             lease_ttl: Duration::from_secs(2),
             poll_interval: poll,
@@ -169,7 +169,7 @@ impl Cluster {
 
 const POLL: Duration = Duration::from_millis(200);
 
-async fn state(store: &dyn Store, name: &str) -> PlayerState {
+async fn state(store: &dyn Backend, name: &str) -> PlayerState {
     let address = player(name).address().unwrap();
     let record = store.get(&address).await.unwrap().expect("player exists");
     serde_json::from_value(record.state).unwrap()
@@ -205,16 +205,16 @@ async fn two_nodes_play_ping_pong_run_timers_and_recover_stopped_and_crashed_nod
             .unwrap(),
     );
     eventually(wait, "40 hits and 5 ticks", || async {
-        state(&*store, "ping").await.hits + state(&*store, "pong").await.hits == 40
-            && state(&*store, "pong").await.ticks == 5
+        state(&store, "ping").await.hits + state(&store, "pong").await.hits == 40
+            && state(&store, "pong").await.ticks == 5
     })
     .await;
-    assert_eq!(state(&*store, "ping").await.hits, 20);
-    assert_eq!(state(&*store, "pong").await.hits, 20);
-    eventually(wait, "the delayed ping", || async { outcome_record(&*store, &delayed.id).await.is_some() }).await;
-    let finished_at = outcome_record(&*store, &delayed.id).await.unwrap().finished_at;
+    assert_eq!(state(&store, "ping").await.hits, 20);
+    assert_eq!(state(&store, "pong").await.hits, 20);
+    eventually(wait, "the delayed ping", || async { outcome_record(&store, &delayed.id).await.is_some() }).await;
+    let finished_at = outcome_record(&store, &delayed.id).await.unwrap().finished_at;
     assert!(finished_at >= time::add(sent_at, Duration::from_secs(1)).unwrap(), "delayed message handled early");
-    assert_eq!(state(&*store, "ping").await.pings, 1);
+    assert_eq!(state(&store, "ping").await.pings, 1);
 
     // Stop a node mid-turn: its lease is released and another node completes the message (attempt 2).
     second.stop_with_grace(Duration::ZERO).await;
@@ -226,11 +226,11 @@ async fn two_nodes_play_ping_pong_run_timers_and_recover_stopped_and_crashed_nod
     .await;
     first.stop_with_grace(Duration::from_millis(100)).await;
     third.start().await.unwrap();
-    eventually(wait, "the slow message finishes", || async { outcome_record(&*store, &slow.id).await.is_some() }).await;
-    let outcome = outcome_record(&*store, &slow.id).await.unwrap();
+    eventually(wait, "the slow message finishes", || async { outcome_record(&store, &slow.id).await.is_some() }).await;
+    let outcome = outcome_record(&store, &slow.id).await.unwrap();
     assert_eq!(outcome.status, OutcomeStatus::Done);
     assert_eq!(outcome.envelope.attempt, 2);
-    assert_eq!(state(&*store, "pong").await.slow, 1);
+    assert_eq!(state(&store, "pong").await.slow, 1);
 
     // A crashed node never commits nor releases: the turn is re-run after the lease TTL.
     third.stop_with_grace(Duration::ZERO).await;
@@ -244,8 +244,8 @@ async fn two_nodes_play_ping_pong_run_timers_and_recover_stopped_and_crashed_nod
     crashed.close().await;
     let fourth = cluster.node("fourth", POLL, true).await;
     fourth.start().await.unwrap();
-    eventually(wait, "the lost message finishes", || async { outcome_record(&*store, &lost.id).await.is_some() }).await;
-    let outcome = outcome_record(&*store, &lost.id).await.unwrap();
+    eventually(wait, "the lost message finishes", || async { outcome_record(&store, &lost.id).await.is_some() }).await;
+    let outcome = outcome_record(&store, &lost.id).await.unwrap();
     assert_eq!(outcome.envelope.attempt, 2);
     assert!(outcome.finished_at >= claim.lease_until, "re-run only after the lease expired");
     assert!(!cluster.overlapped(), "turns of one instance overlapped");
@@ -276,7 +276,7 @@ async fn turns_of_one_instance_stay_serial_under_load_from_several_nodes() {
     let store = nodes[0].store().clone();
     eventually(Duration::from_secs(30), "every ping finishes", || async {
         for id in &ids {
-            if outcome_record(&*store, id).await.is_none() {
+            if outcome_record(&store, id).await.is_none() {
                 return false;
             }
         }
@@ -284,10 +284,10 @@ async fn turns_of_one_instance_stay_serial_under_load_from_several_nodes() {
     })
     .await;
     for id in &ids {
-        assert_eq!(outcome_record(&*store, id).await.unwrap().status, OutcomeStatus::Done);
+        assert_eq!(outcome_record(&store, id).await.unwrap().status, OutcomeStatus::Done);
     }
     for name in &names {
-        assert_eq!(state(&*store, name).await.pings, 30);
+        assert_eq!(state(&store, name).await.pings, 30);
     }
     assert!(!cluster.overlapped(), "turns of one instance overlapped");
     cluster.cleanup().await;

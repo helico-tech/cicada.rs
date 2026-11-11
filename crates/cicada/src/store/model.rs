@@ -474,7 +474,7 @@ pub struct ActorRecord {
     pub paused: bool,
 }
 
-/// What a [`Store::stats`](super::Store::stats) call counts under an address prefix.
+/// What [`ActorSystem::stats`](crate::ActorSystem::stats) counts under an address prefix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StoreStats {
     /// The number of instances.
@@ -509,7 +509,7 @@ pub struct RunningTurn {
     pub node: NodeId,
     /// Lease expiry (store time).
     pub lease_until: Timestamp,
-    /// True when an operator asked to cancel this turn ([`super::Store::request_cancel`]).
+    /// True when an operator asked to cancel this turn ([`ActorSystem::cancel_turn`](crate::ActorSystem::cancel_turn)).
     pub cancel_requested: bool,
 }
 
@@ -544,7 +544,7 @@ pub enum StateChange {
     Stop,
 }
 
-/// The single atomic write that ends a turn; see [`super::Store::commit`].
+/// The single atomic write that ends a turn; see [`super::Backend::commit`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct CommitRequest {
     /// The committing instance.

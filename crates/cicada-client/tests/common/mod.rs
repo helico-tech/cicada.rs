@@ -6,11 +6,11 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use axum::Router;
+use cicada::Store;
 use cicada::prelude::*;
 use cicada::runtime::{ActorSystemBuilder, NodeConfig};
 use cicada_axum::actor_api;
 use cicada_client::ActorClient;
-use cicada_test::InMemoryStore;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
@@ -135,7 +135,7 @@ pub async fn node() -> ActorSystem {
 }
 
 pub async fn node_with(configure: impl FnOnce(ActorSystemBuilder) -> ActorSystemBuilder) -> ActorSystem {
-    let store = Arc::new(InMemoryStore::default());
+    let store = Store::memory();
     let config = NodeConfig { poll_interval: Duration::from_millis(50), ..NodeConfig::default() };
     let system = configure(ActorSystem::builder(store).config(config)).build();
     system.start().await.expect("the node starts");

@@ -13,7 +13,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post as post_route;
 use cicada::api::problem_types as pt;
 use cicada::runtime::NodeConfig;
-use cicada::store::{NodeId, Store};
+use cicada::store::NodeId;
 use cicada::{ActorSystem, SendResult};
 use cicada_axum::{PROBLEM_JSON, actor_api, actor_health};
 use common::*;

@@ -8,7 +8,7 @@ use super::common::*;
 use crate::plugin::{ClaimContext, HandlerErrorContext, HookResult, OutcomeContext, Plugin};
 use crate::prelude::*;
 use crate::runtime::NodeConfig;
-use crate::store::{OutcomeStatus, OutgoingMessage, Store};
+use crate::store::{Backend, OutcomeStatus, OutgoingMessage};
 use crate::testing::TestActors;
 use crate::time;
 use crate::turn::HandlerFailure;
@@ -231,8 +231,7 @@ async fn an_undecodable_payload_with_policy_fail_on_claim_sees_it_as_unhandled_n
     )
     .await;
     test.create(&p("p"), &ProbeState::default()).await;
-    let bad =
-        enqueue(&**test.store(), OutgoingMessage::new(addr(&p("p")), "Do", json!({"fail": "not a boolean"}))).await;
+    let bad = enqueue(test.store(), OutgoingMessage::new(addr(&p("p")), "Do", json!({"fail": "not a boolean"}))).await;
     test.run_until_idle().await;
     assert_eq!(test.outcome(&bad).await.unwrap().status, OutcomeStatus::Failed);
     let all = events.all();
@@ -241,7 +240,7 @@ async fn an_undecodable_payload_with_policy_fail_on_claim_sees_it_as_unhandled_n
     assert!(all[1].starts_with("outcome:Do:Failed(error=Payload of 'Do' cannot be decoded"), "{}", all[1]);
 
     events.clear();
-    enqueue(&**test.store(), OutgoingMessage::new(addr(&p("p")), "Throw", json!({}))).await;
+    enqueue(test.store(), OutgoingMessage::new(addr(&p("p")), "Throw", json!({}))).await;
     test.run_until_idle().await;
     assert_eq!(reason.lock().unwrap().as_deref(), Some("Unknown message type 'Throw'"));
     assert_eq!(

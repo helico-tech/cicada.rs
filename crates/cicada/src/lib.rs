@@ -35,6 +35,7 @@ pub use actor::{Actor, ActorType, Unhandled};
 pub use address::{ActorAddress, ActorRef, TypeName};
 pub use message::NoState;
 pub use runtime::{ActorSystem, CreateActorResult, OpError, SendResult, StartError};
+pub use store::Store;
 pub use turn::{HandlerError, HandlerResult, SendOptions, Turn};
 
 /// Everything needed to define actor types.

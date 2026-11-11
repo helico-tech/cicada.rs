@@ -67,7 +67,7 @@ pub enum RenewResult {
     /// The lease now runs until this store time.
     Renewed(Timestamp),
     /// The lease now runs until this store time, and an operator asked to cancel this turn
-    /// ([`Store::request_cancel`](super::Store::request_cancel)).
+    /// ([`Backend::request_cancel`](super::Backend::request_cancel)).
     CancelRequested(Timestamp),
     /// The epoch is no longer current or the lease was released; the turn must be abandoned.
     LeaseLost,
@@ -86,7 +86,7 @@ pub enum CancelResult {
     NotFound,
 }
 
-/// Result of [`Store::deliver_now`](super::Store::deliver_now).
+/// Result of [`ActorSystem::deliver_now`](crate::ActorSystem::deliver_now).
 #[derive(Debug, Clone, PartialEq)]
 pub enum DeliverNowResult {
     /// The message is now due at store now, with a new `seq`.

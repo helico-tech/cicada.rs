@@ -6,7 +6,6 @@ use axum::Router;
 use axum::http::{StatusCode, header};
 use cicada::api::problem_types as pt;
 use cicada::prelude::*;
-use cicada::store::Store;
 use cicada::time::{Timestamp, parse_instant};
 use cicada_axum::actor_api;
 use common::*;

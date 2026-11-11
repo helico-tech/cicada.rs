@@ -10,7 +10,7 @@ use serde_json::json;
 use crate::tests::conformance::env::*;
 use crate::tests::conformance::fixture::FixtureFactory;
 
-async fn outcome_of(store: &dyn crate::store::Store, id: &MessageId) -> Option<OutcomeStatus> {
+async fn outcome_of(store: &dyn crate::store::Backend, id: &MessageId) -> Option<OutcomeStatus> {
     outcome_record(store, id).await.map(|o| o.status)
 }
 

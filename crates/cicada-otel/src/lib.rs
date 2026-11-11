@@ -20,8 +20,7 @@
 //! `cicada.message.type`; the duration also with `cicada.outcome`. Its count is the number of turns per outcome.
 //!
 //! ```
-//! # use std::sync::Arc;
-//! # fn node(store: Arc<dyn cicada::store::Store>) {
+//! # fn node(store: cicada::Store) {
 //! use cicada::ActorSystem;
 //! use cicada_otel::ActorTelemetry;
 //!

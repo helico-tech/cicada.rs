@@ -2,15 +2,14 @@
 
 use super::common::test_db;
 use std::collections::BTreeSet;
-use std::str::FromStr;
 use std::time::Duration;
 
 use crate::address::{ActorAddress, TypeName};
 use crate::retry::{Backoff, RetryPolicy};
-use crate::store::postgres::{PgConnectOptions, PostgresStore};
+use crate::store::postgres::PostgresStore;
 use crate::store::{
-    ActorCreate, CommitRequest, CommitResult, EnqueueResult, MessageId, MessageStatus, NodeId, OutcomeStatus,
-    OutgoingMessage, StateChange, Store, StoreError, TurnOutcome,
+    ActorCreate, Backend, CommitRequest, CommitResult, EnqueueResult, MessageId, MessageStatus, NodeId, OutcomeStatus,
+    OutgoingMessage, StateChange, StoreError, TurnOutcome,
 };
 use crate::tests::conformance::outcome_record;
 use serde_json::json;
@@ -127,8 +126,8 @@ async fn a_node_can_start_as_a_user_without_create_privileges_once_the_schema_is
     db.sql(&format!("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA \"{s}\" TO \"{role}\"")).await;
     db.sql(&format!("GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA \"{s}\" TO \"{role}\"")).await;
     let result = async {
-        let options = PgConnectOptions::from_str(&db.url).expect("a PostgreSQL URL").username(&role).password("dml");
-        let store = PostgresStore::connect_with(options, db.config()).await?;
+        let url = super::common::url_as(&db.url, &role, "dml");
+        let store = PostgresStore::connect(&url, db.config()).await?;
         store.register(crate::tests::conformance::type_def(a().type_name(), "test")).await.unwrap();
         store.create(&a(), serde_json::json!({})).await?;
         let enqueued = store.enqueue(OutgoingMessage::new(a(), "T", json!(1))).await?;
@@ -180,8 +179,7 @@ async fn a_stored_retry_policy_this_version_cannot_decode_reads_as_no_policy_and
 #[tokio::test(flavor = "multi_thread")]
 async fn a_transaction_past_the_socket_timeout_fails_as_unavailable_and_the_store_recovers() {
     let db = test_db!("r");
-    let config =
-        crate::store::postgres::PostgresStoreConfig { socket_timeout: Duration::from_millis(500), ..db.config() };
+    let config = crate::store::postgres::PostgresOptions { socket_timeout: Duration::from_millis(500), ..db.config() };
     let store = db.open_with(config).await;
     store.register(crate::tests::conformance::type_def(a().type_name(), "test")).await.unwrap();
     store.create(&a(), serde_json::json!({})).await.unwrap();

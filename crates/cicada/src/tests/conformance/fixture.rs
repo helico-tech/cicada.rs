@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::store::Store;
+use crate::store::Backend;
 use async_trait::async_trait;
 
 /// One fresh, empty store under test, created per case by [`FixtureFactory::create`].
@@ -15,7 +15,7 @@ use async_trait::async_trait;
 #[async_trait]
 pub trait StoreFixture: Send + Sync + 'static {
     /// The store under test. After [`reopen`](Self::reopen) this is the new handle.
-    fn store(&self) -> Arc<dyn Store>;
+    fn store(&self) -> Arc<dyn Backend>;
 
     /// True when [`advance`](Self::advance) moves a virtual store clock exactly and instantly.
     fn is_virtual_time(&self) -> bool;
@@ -26,7 +26,7 @@ pub trait StoreFixture: Send + Sync + 'static {
     /// Another handle on the same backend, as a second node would have (a separate connection or store instance).
     /// Used by concurrency cases. The default returns [`store`](Self::store) itself. Handles are closed by
     /// [`close`](Self::close).
-    async fn peer(&self) -> Arc<dyn Store> {
+    async fn peer(&self) -> Arc<dyn Backend> {
         self.store()
     }
 

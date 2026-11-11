@@ -1,4 +1,4 @@
-//! [`SqliteStore`]: the [`Store`] on one SQLite file.
+//! [`SqliteStore`]: the [`Backend`] on one SQLite file.
 
 use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
@@ -11,10 +11,10 @@ use crate::retention::Retention;
 use crate::retry::RetryPolicy;
 use crate::store::support::{self, check_limit};
 use crate::store::{
-    ActorRecord, CancelResult, Claim, Clock, CommitRequest, CommitResult, CreateResult, DeleteResult, DeliverNowResult,
-    EnqueueResult, Message, MessageId, MessageStatus, NodeId, NodeRecord, OutcomeRecord, OutcomeStatus,
-    OutgoingMessage, Page, PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn, StateChange, Store,
-    StoreError, StoreResult, StoreStats, SystemClock, TurnOutcome, TypeDef,
+    ActorRecord, Backend, CancelResult, Claim, Clock, CommitRequest, CommitResult, CreateResult, DeleteResult,
+    DeliverNowResult, EnqueueResult, Message, MessageId, MessageStatus, NodeId, NodeRecord, OutcomeRecord,
+    OutcomeStatus, OutgoingMessage, Page, PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn,
+    StateChange, StoreError, StoreResult, StoreStats, SystemClock, TurnOutcome, TypeDef,
 };
 use crate::time::{self, DEFAULT_RETENTION, Timestamp};
 use async_trait::async_trait;
@@ -59,7 +59,7 @@ impl std::fmt::Debug for SqliteOptions {
     }
 }
 
-/// [`Store`] on one SQLite database file in WAL mode, for single-host deployments.
+/// [`Backend`] on one SQLite database file in WAL mode, for single-host deployments.
 ///
 /// Concurrency: all writes of this instance go through one writer connection, serialised by an async mutex, and each
 /// write is one explicit `BEGIN IMMEDIATE` … `COMMIT` transaction; that transaction is the atomic commit (S2). Several
@@ -858,7 +858,7 @@ async fn next_value(c: &mut SqliteConnection, name: &str) -> StoreResult<i64> {
 }
 
 #[async_trait]
-impl Store for SqliteStore {
+impl Backend for SqliteStore {
     async fn now(&self) -> StoreResult<Timestamp> {
         let tx = self.read().await?;
         let now = tx.now;

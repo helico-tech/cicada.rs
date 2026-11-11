@@ -11,8 +11,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::store::Store;
-use crate::store::postgres::{PostgresStore, PostgresStoreConfig};
+use crate::store::Backend;
+use crate::store::postgres::{PostgresOptions, PostgresStore};
 use crate::tests::conformance::{FixtureFactory, StoreFixture};
 use crate::tests::postgres::common::TestDb;
 use async_trait::async_trait;
@@ -26,11 +26,11 @@ struct PostgresFixture {
 }
 
 async fn open(db: &TestDb, retention: Duration) -> Arc<PostgresStore> {
-    db.open_with(PostgresStoreConfig { retention, ..db.config() }).await
+    db.open_with(PostgresOptions { retention, ..db.config() }).await
 }
 
 async fn open_peer(db: &TestDb, retention: Duration) -> Arc<PostgresStore> {
-    db.open_with(PostgresStoreConfig { retention, max_pool_size: 1, ..db.config() }).await
+    db.open_with(PostgresOptions { retention, max_pool_size: 1, ..db.config() }).await
 }
 
 #[async_trait]
@@ -54,7 +54,7 @@ impl FixtureFactory for Postgres {
 
 #[async_trait]
 impl StoreFixture for PostgresFixture {
-    fn store(&self) -> Arc<dyn Store> {
+    fn store(&self) -> Arc<dyn Backend> {
         self.store.clone()
     }
 
@@ -66,7 +66,7 @@ impl StoreFixture for PostgresFixture {
         tokio::time::sleep(duration).await;
     }
 
-    async fn peer(&self) -> Arc<dyn Store> {
+    async fn peer(&self) -> Arc<dyn Backend> {
         open_peer(&self.db, self.retention).await
     }
 

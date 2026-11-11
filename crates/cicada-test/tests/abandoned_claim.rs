@@ -50,7 +50,7 @@ async fn a_node_that_claims_a_turn_and_dies_leaves_it_to_a_running_node_as_its_s
     let message = test.send(&job, JobMsg::Run).await;
     let lease = Duration::from_secs(30);
 
-    let abandoned = claim_and_abandon(&**test.store(), &test.system().hosted_types(), lease, 10).await.unwrap();
+    let abandoned = claim_and_abandon(test.store(), &test.system().hosted_types(), lease, 10).await.unwrap();
 
     assert_eq!(abandoned.len(), 1);
     assert_eq!(abandoned[0].address, job.address().unwrap());

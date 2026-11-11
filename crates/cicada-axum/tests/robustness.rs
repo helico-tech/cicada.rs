@@ -6,7 +6,6 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
 use cicada::api::problem_types as pt;
-use cicada::store::Store;
 use cicada_axum::{ApiConfig, actor_api, actor_api_with};
 use common::*;
 use serde_json::{Value, json};

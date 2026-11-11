@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::store::{Store, SystemClock};
+use crate::store::{Backend, SystemClock};
 use crate::testing::InMemoryStore;
 use crate::tests::conformance::{FixtureFactory, StoreFixture};
 use async_trait::async_trait;
@@ -31,7 +31,7 @@ impl FixtureFactory for InMemoryRealTime {
 
 #[async_trait]
 impl StoreFixture for RealTimeFixture {
-    fn store(&self) -> Arc<dyn Store> {
+    fn store(&self) -> Arc<dyn Backend> {
         self.store.clone()
     }
 

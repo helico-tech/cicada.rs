@@ -6,9 +6,9 @@ use std::time::Duration;
 
 use crate::address::{ActorAddress, TypeName};
 use crate::retention::{Keep, Retention};
-use crate::store::postgres::{PostgresStore, PostgresStoreConfig, schema};
+use crate::store::postgres::{PostgresOptions, PostgresStore, schema};
 use crate::store::{
-    CommitRequest, CommitResult, Delivery, EnqueueResult, NodeId, OutgoingMessage, Store, StoreError, TurnOutcome,
+    Backend, CommitRequest, CommitResult, Delivery, EnqueueResult, NodeId, OutgoingMessage, StoreError, TurnOutcome,
 };
 use crate::time;
 use futures::StreamExt;
@@ -102,22 +102,22 @@ async fn connections_stay_on_the_stores_schema_across_read_only_and_rolled_back_
 
 #[tokio::test]
 async fn invalid_settings_are_refused_before_connecting() {
-    let invalid = |config: PostgresStoreConfig| async move {
+    let invalid = |config: PostgresOptions| async move {
         matches!(PostgresStore::connect("postgres://nowhere.invalid/db", config).await, Err(StoreError::Invalid(_)))
     };
-    assert!(invalid(PostgresStoreConfig::for_schema("Robert'); DROP TABLE students;--")).await);
-    assert!(invalid(PostgresStoreConfig { max_pool_size: 0, ..Default::default() }).await);
+    assert!(invalid(PostgresOptions::for_schema("Robert'); DROP TABLE students;--")).await);
+    assert!(invalid(PostgresOptions { max_pool_size: 0, ..Default::default() }).await);
     assert!(matches!(
-        PostgresStore::connect("mysql://u:secret@db/x", PostgresStoreConfig::default()).await,
+        PostgresStore::connect("mysql://u:secret@db/x", PostgresOptions::default()).await,
         Err(StoreError::Invalid(m)) if !m.contains("secret")
     ));
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn connect_with_takes_sqlx_options_built_by_the_caller() {
+async fn connect_keeps_the_application_name_of_the_url() {
     let db = test_db!("w");
-    let options: crate::store::postgres::PgConnectOptions = db.url.parse().unwrap();
-    let store = PostgresStore::connect_with(options.application_name("custom-app"), db.config()).await.unwrap();
+    let url = format!("{}{}application_name=custom-app", db.url, if db.url.contains('?') { '&' } else { '?' });
+    let store = PostgresStore::connect(&url, db.config()).await.unwrap();
     store.now().await.unwrap();
     let mut c = db.connect().await;
     let names: Vec<String> =
@@ -125,7 +125,7 @@ async fn connect_with_takes_sqlx_options_built_by_the_caller() {
             .fetch_all(&mut c)
             .await
             .unwrap();
-    assert!(!names.is_empty(), "the caller's option reaches the connections");
+    assert!(!names.is_empty(), "the URL's application name reaches the connections");
     store.close().await;
     db.cleanup().await;
 }

@@ -13,10 +13,10 @@ use crate::retention::Retention;
 use crate::retry::RetryPolicy;
 use crate::store::support::{self, check_limit};
 use crate::store::{
-    ActorCreate, ActorRecord, CancelResult, Claim, CommitRequest, CommitResult, CreateResult, DeleteResult,
+    ActorCreate, ActorRecord, Backend, CancelResult, Claim, CommitRequest, CommitResult, CreateResult, DeleteResult,
     DeliverNowResult, EnqueueResult, Message, MessageId, MessageStatus, NodeId, NodeRecord, OutcomeRecord,
     OutcomeStatus, OutgoingMessage, Page, PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn,
-    StateChange, Store, StoreError, StoreResult, StoreStats, TurnOutcome, TypeDef,
+    StateChange, StoreError, StoreResult, StoreStats, TurnOutcome, TypeDef,
 };
 use crate::time::{self, Timestamp};
 use async_trait::async_trait;
@@ -29,7 +29,7 @@ use sqlx::postgres::{PgPoolOptions, PgRow};
 use sqlx::{AssertSqlSafe, PgPool, Postgres, Row};
 use tokio::sync::broadcast::error::RecvError;
 
-use crate::store::postgres::config::PostgresStoreConfig;
+use crate::store::postgres::config::PostgresOptions;
 use crate::store::postgres::error::{is_transient, map_error};
 use crate::store::postgres::listener::NotificationListener;
 use crate::store::postgres::schema;
@@ -77,7 +77,7 @@ macro_rules! transaction {
     }};
 }
 
-/// [`Store`] on PostgreSQL: the multi-node reference backend. Any number of nodes (processes, hosts) may open a store on the same database and schema; the database is their only coordination.
+/// [`Backend`] on PostgreSQL: the multi-node reference backend. Any number of nodes (processes, hosts) may open a store on the same database and schema; the database is their only coordination.
 ///
 /// **Transactions.** Every operation is one transaction at `READ COMMITTED` on a pooled connection. A transaction that
 /// writes an instance or its mailbox first locks the instance's `actors` row (`SELECT … FOR UPDATE`), so all writes to
@@ -98,11 +98,11 @@ macro_rules! transaction {
 /// The outcome check runs after inserting the message, so a concurrent commit that moves the same id from `messages`
 /// to `outcomes` cannot slip through.
 ///
-/// **Wake-ups.** The store `NOTIFY`s the channel [`PostgresStoreConfig::effective_channel`] whenever a message becomes
+/// **Wake-ups.** The store `NOTIFY`s the channel [`PostgresOptions::effective_channel`] whenever a message becomes
 /// claimable (enqueue, sends of a commit, a commit leaving messages behind, release, cancel of an expired turn,
 /// deliver-now, resume of a paused actor) with
 /// the instance's type name as payload. Notifications are transactional, so they are only delivered when the
-/// write committed. [`Store::wake_ups`] listens on one dedicated connection, started on first use and re-connected
+/// write committed. [`Backend::wake_ups`] listens on one dedicated connection, started on first use and re-connected
 /// with back-off when it breaks.
 ///
 /// **JSON.** State, payloads, headers, contracts and envelopes are `jsonb`, which normalises objects (key order,
@@ -112,7 +112,7 @@ macro_rules! transaction {
 /// its index) are [`StoreError::Invalid`]; stored data that cannot be decoded is [`StoreError::Corrupt`]; everything
 /// else, including a closed store, is [`StoreError::Unavailable`].
 ///
-/// The store owns its pool and listener; [`Store::close`] releases them.
+/// The store owns its pool and listener; [`Backend::close`] releases them.
 pub struct PostgresStore {
     pool: PgPool,
     retention: Duration,
@@ -138,14 +138,13 @@ impl PostgresStore {
     /// Fails with [`StoreError::Invalid`] for invalid settings or a URL that is not a PostgreSQL URL (the message never
     /// repeats the URL, which can hold a password), or a database migrated by a newer version, and with
     /// [`StoreError::Unavailable`] when the database cannot be reached.
-    pub async fn connect(url: &str, config: PostgresStoreConfig) -> StoreResult<Self> {
+    pub async fn connect(url: &str, config: PostgresOptions) -> StoreResult<Self> {
         Self::connect_with(connect_options(url)?, config).await
     }
 
-    /// Opens a store with sqlx connect options built by the caller, for settings no URL parameter covers (credentials
-    /// kept apart from the URL, TLS client certificates and keys, statement cache, extra startup parameters). The
-    /// store still sets `search_path` (from `config.schema`) and, when unset, the application name.
-    pub async fn connect_with(base: PgConnectOptions, config: PostgresStoreConfig) -> StoreResult<Self> {
+    /// Opens a store with the connect options of the URL. The store sets `search_path` (from `config.schema`) and,
+    /// when the URL sets none, the application name.
+    async fn connect_with(base: PgConnectOptions, config: PostgresOptions) -> StoreResult<Self> {
         config.validate()?;
         let mut options = base.clone();
         if options.get_application_name().is_none() {
@@ -179,7 +178,8 @@ impl PostgresStore {
     }
 
     /// True while the wake-up listener has `LISTEN` active. For tests and health checks.
-    pub fn is_listening(&self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn is_listening(&self) -> bool {
         self.listener.is_listening()
     }
 
@@ -802,7 +802,7 @@ fn commit<T>(value: T) -> TxResult<T> {
 }
 
 #[async_trait]
-impl Store for PostgresStore {
+impl Backend for PostgresStore {
     async fn now(&self) -> StoreResult<Timestamp> {
         transaction!(self, true, |tx| -> Timestamp { commit(tx.now().await?) })
     }

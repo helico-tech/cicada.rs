@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use crate::actor::contract_of;
 use crate::prelude::*;
-use crate::store::{DeleteResult, MessageStatus, OutcomeStatus, Store};
+use crate::store::{Backend, DeleteResult, MessageStatus, OutcomeStatus, Store};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::sqlite::SqliteConnectOptions;
@@ -202,7 +202,7 @@ async fn a_stateless_type_is_upgraded_in_place() {
     db.exec("UPDATE sequences SET value = 1 WHERE name = 'seq'", &[]).await.unwrap();
 
     let store = db.open().await;
-    let system = ActorSystem::builder(store.clone()).host(CleanupActor).build();
+    let system = ActorSystem::builder(Store::from_backend(store.clone())).host(CleanupActor).build();
     system.initialize().await.expect("the node starts");
     let types = store.list_types().await.unwrap();
     assert_eq!(types.len(), 1);
@@ -230,7 +230,7 @@ async fn a_type_that_no_node_hosts_any_more() {
         .unwrap();
 
     let store = db.open().await;
-    let system = ActorSystem::builder(store.clone()).host(CleanupActor).build();
+    let system = ActorSystem::builder(Store::from_backend(store.clone())).host(CleanupActor).build();
     system.initialize().await.expect("the node starts");
     let names: Vec<String> = system.types().await.unwrap().iter().map(|t| t.name().to_string()).collect();
     assert_eq!(names, ["maintenance.cleanup"], "gone is not registered");

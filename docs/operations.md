@@ -37,20 +37,18 @@ futures, logs go through `tracing`, and the host owns the store and the node's l
   after the lease TTL.
 
   ```rust,no_run
-  use std::sync::Arc;
   use std::time::Duration;
 
-  use cicada::ActorSystem;
   use cicada::runtime::NodeConfig;
-  use cicada::store::Store;
-  use cicada_store_postgres::{PostgresStore, PostgresStoreConfig};
+  use cicada::store::PostgresOptions;
+  use cicada::{ActorSystem, Store};
   use tokio::signal::unix::{SignalKind, signal};
 
   #[tokio::main]
   async fn main() -> anyhow::Result<()> {
       tracing_subscriber::fmt().with_env_filter("info").init(); // or EnvFilter::from_default_env() for RUST_LOG
-      let config = PostgresStoreConfig { max_pool_size: 36, ..PostgresStoreConfig::for_schema("orders") };
-      let store = Arc::new(PostgresStore::connect(&std::env::var("DATABASE_URL")?, config).await?);
+      let options = PostgresOptions { max_pool_size: 36, ..PostgresOptions::for_schema("orders") };
+      let store = Store::postgres(&std::env::var("DATABASE_URL")?, options).await?;
       let node = NodeConfig { concurrency: 32, shutdown_grace_period: Duration::from_secs(30), ..NodeConfig::default() };
       let system = ActorSystem::builder(store.clone())
           // .host(…) the types this node runs

@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use crate::prelude::*;
 use crate::runtime::NodeConfig;
-use crate::store::{CreateResult, Message, NodeId, OutcomeRecord, Page, PageCursor, Store};
+use crate::store::{Backend, CreateResult, Message, NodeId, OutcomeRecord, Page, PageCursor, Store};
 use crate::testing::{InMemoryStore, TokioClock, default_start};
 use proptest::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -348,7 +348,10 @@ impl Runner {
                 ..NodeConfig::default()
             };
             let actor = ScriptActor { node: name, log: log.clone() };
-            let system = ActorSystem::builder(store.clone()).config(config).host(ActorType::new(actor)).build();
+            let system = ActorSystem::builder(Store::from_backend(store.clone()))
+                .config(config)
+                .host(ActorType::new(actor))
+                .build();
             system.start().await.expect("the node starts");
             nodes.push(Node { store, system });
         }

@@ -80,8 +80,7 @@ pub struct DeadLettersState {
 /// The dead-letter type. Keeps at most its capacity of letters; the oldest (by [`DeadLetter::failed_at`]) go first.
 ///
 /// ```
-/// # use std::sync::Arc;
-/// # fn node(store: Arc<dyn cicada::store::Store>) -> Result<(), String> {
+/// # fn node(store: cicada::Store) -> Result<(), String> {
 /// use cicada::ActorSystem;
 /// use cicada_extras::DeadLettersActor;
 ///

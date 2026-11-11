@@ -6,7 +6,9 @@ use std::time::Duration;
 use super::common::*;
 use crate::plugin::{HandlerErrorContext, HookResult, OutcomeContext, Plugin};
 use crate::runtime::{BulkSelection, NodeHealth, RetryResult};
-use crate::store::{CommitRequest, CommitResult, DeliverNowResult, MessageStatus, OutcomeStatus, Store, StoreResult};
+use crate::store::{
+    Backend, CommitRequest, CommitResult, DeliverNowResult, MessageStatus, OutcomeStatus, Store, StoreResult,
+};
 use crate::{ActorSystem, SendOptions, Unhandled};
 use async_trait::async_trait;
 use tokio::time::{Instant, sleep};
@@ -18,7 +20,7 @@ fn a() -> Counter {
 // The counter type with a maximum turn of 5 minutes.
 counter_type!(SlowCounter, Unhandled::Fail, Duration::from_secs(300));
 
-fn slow_node(store: Arc<dyn Store>, name: &str) -> ActorSystem {
+fn slow_node(store: impl IntoStore, name: &str) -> ActorSystem {
     node(store, name).host(SlowCounter).build()
 }
 
@@ -52,7 +54,7 @@ struct SlowCommit(Duration);
 
 #[async_trait]
 impl Faults for SlowCommit {
-    async fn commit(&self, inner: &dyn Store, commit: CommitRequest) -> StoreResult<CommitResult> {
+    async fn commit(&self, inner: &dyn Backend, commit: CommitRequest) -> StoreResult<CommitResult> {
         sleep(self.0).await;
         inner.commit(commit).await
     }
@@ -127,17 +129,17 @@ async fn cancel_takes_effect_within_one_heartbeat_with_no_effects_and_on_outcome
     assert_eq!(runner.await.unwrap(), 1);
     assert_eq!(started.elapsed(), Duration::from_secs(10), "cancelled at the first heartbeat");
 
-    let outcome = outcome_of(&*memory, &running.id).await.unwrap();
+    let outcome = outcome_of(&memory, &running.id).await.unwrap();
     assert_eq!(outcome.status, OutcomeStatus::Cancelled);
     assert_eq!(outcome.error, None);
-    assert_eq!(state_of::<CounterState>(&*memory, &a().address()).await.total, 1, "no effects");
+    assert_eq!(state_of::<CounterState>(&memory, &a().address()).await.total, 1, "no effects");
     assert_eq!(events.all(), ["on_outcome:Cancelled"], "on_handler_error is not called");
     assert_eq!(system.running_turn(&a().address()).await.unwrap(), None);
 
     // The mailbox moves on to the next message, in a new epoch.
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1);
-    assert_eq!(outcome_of(&*memory, &next.id).await.unwrap().status, OutcomeStatus::Done);
-    assert_eq!(state_of::<CounterState>(&*memory, &a().address()).await.total, 2);
+    assert_eq!(outcome_of(&memory, &next.id).await.unwrap().status, OutcomeStatus::Done);
+    assert_eq!(state_of::<CounterState>(&memory, &a().address()).await.total, 2);
 }
 
 #[tokio::test(start_paused = true)]
@@ -153,7 +155,7 @@ async fn a_cancelled_turn_with_retry_left_is_not_retried() {
     settle().await;
     system.cancel_turn(&a().address()).await.unwrap();
     runner.await.unwrap();
-    assert_eq!(outcome_of(&*memory, &m.id).await.unwrap().status, OutcomeStatus::Cancelled);
+    assert_eq!(outcome_of(&memory, &m.id).await.unwrap().status, OutcomeStatus::Cancelled);
     assert!(memory.pending(&a().address(), None, 10).await.unwrap().items.is_empty());
 }
 
@@ -169,8 +171,8 @@ async fn a_handler_that_already_returned_is_not_cancelled_and_commits_done() {
     sleep(Duration::from_secs(1)).await;
     assert!(system.cancel_turn(&a().address()).await.unwrap());
     runner.await.unwrap();
-    assert_eq!(outcome_of(&*memory, &m.id).await.unwrap().status, OutcomeStatus::Done, "G6: the handler returned");
-    assert_eq!(state_of::<CounterState>(&*memory, &a().address()).await.total, 7);
+    assert_eq!(outcome_of(&memory, &m.id).await.unwrap().status, OutcomeStatus::Done, "G6: the handler returned");
+    assert_eq!(state_of::<CounterState>(&memory, &a().address()).await.total, 7);
 }
 
 #[tokio::test(start_paused = true)]
@@ -191,7 +193,7 @@ async fn a_request_from_an_earlier_epoch_does_not_cancel_a_later_turn() {
     let started = Instant::now();
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1);
     assert_eq!(started.elapsed(), Duration::from_secs(30), "the later turn runs to its end");
-    assert_eq!(outcome_of(&*memory, &later.id).await.unwrap().status, OutcomeStatus::Done);
+    assert_eq!(outcome_of(&memory, &later.id).await.unwrap().status, OutcomeStatus::Done);
 }
 
 // ---- pause, purge ----
@@ -209,7 +211,7 @@ async fn a_paused_mailbox_runs_nothing_until_resumed_and_the_snapshot_says_so() 
 
     assert!(system.resume_mailbox(&a().address()).await.unwrap());
     assert_eq!(system.run_due_turns(10).await.unwrap(), 1);
-    assert_eq!(outcome_of(&*memory, &m.id).await.unwrap().status, OutcomeStatus::Done);
+    assert_eq!(outcome_of(&memory, &m.id).await.unwrap().status, OutcomeStatus::Done);
 
     assert!(!system.pause_mailbox(&Counter::new("nope").address()).await.unwrap());
 }
@@ -230,13 +232,9 @@ async fn the_mailbox_marks_the_running_message_and_purge_spares_it() {
     assert!(!mailbox.items[1].running);
 
     assert_eq!(system.purge_mailbox(&a().address()).await.unwrap(), Some(1));
-    assert_eq!(outcome_of(&*memory, &queued.id).await.unwrap().status, OutcomeStatus::Purged);
+    assert_eq!(outcome_of(&memory, &queued.id).await.unwrap().status, OutcomeStatus::Purged);
     runner.await.unwrap();
-    assert_eq!(
-        outcome_of(&*memory, &running.id).await.unwrap().status,
-        OutcomeStatus::Done,
-        "the running one finishes"
-    );
+    assert_eq!(outcome_of(&memory, &running.id).await.unwrap().status, OutcomeStatus::Done, "the running one finishes");
 }
 
 // ---- retry and deliver now ----
@@ -249,7 +247,7 @@ async fn retry_sends_a_failed_or_cancelled_message_again_as_a_new_message_and_re
     let options = SendOptions::new().id(crate::store::MessageId::new("orig").unwrap()).correlation_id("corr");
     let failed = accepted(system.send_with(&a(), CounterMsg::Boom { reason: "no".into() }, options).await.unwrap());
     system.run_due_turns(1).await.unwrap();
-    assert_eq!(outcome_of(&*memory, &failed.id).await.unwrap().status, OutcomeStatus::Failed);
+    assert_eq!(outcome_of(&memory, &failed.id).await.unwrap().status, OutcomeStatus::Failed);
 
     let again = match system.retry_message(&failed.id).await.unwrap() {
         RetryResult::Accepted(m) => m,
@@ -289,13 +287,13 @@ async fn deliver_now_makes_a_delayed_message_run_now() {
     assert_eq!(system.run_due_turns(1).await.unwrap(), 0, "not due yet");
     assert!(matches!(system.deliver_now(&delayed.id).await.unwrap(), DeliverNowResult::Delivered(_)));
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1, "due at once");
-    assert_eq!(outcome_of(&*memory, &delayed.id).await.unwrap().status, OutcomeStatus::Done);
+    assert_eq!(outcome_of(&memory, &delayed.id).await.unwrap().status, OutcomeStatus::Done);
     assert!(matches!(system.deliver_now(&delayed.id).await.unwrap(), DeliverNowResult::AlreadyFinished(_)));
 }
 
 // ---- bulk actions ----
 
-async fn pending_ids(memory: &dyn Store) -> Vec<crate::store::MessageId> {
+async fn pending_ids(memory: &dyn Backend) -> Vec<crate::store::MessageId> {
     memory.list_pending("counter/", None, 1000).await.unwrap().items.into_iter().map(|m| m.id).collect()
 }
 
@@ -316,7 +314,7 @@ async fn bulk_cancel_by_filter_and_ids_counts_only_what_it_cancelled() {
         .unwrap();
     assert_eq!((result.affected, result.more), (1, false));
 
-    let ids = pending_ids(&*memory).await;
+    let ids = pending_ids(&memory).await;
     assert_eq!(ids.len(), 3);
     let result = system.bulk_cancel(BulkSelection::Ids(ids)).await.unwrap();
     assert_eq!((result.affected, result.more), (3, false));
@@ -439,7 +437,7 @@ impl crate::Actor for BlockerActor {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn blocking_code_runs_until_it_returns_and_then_the_commit_is_cancelled() {
-    let store = Arc::new(crate::testing::InMemoryStore::default());
+    let store = Store::memory();
     let returned = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut config = node_config("n1");
     config.lease_ttl = Duration::from_secs(4);
@@ -457,7 +455,7 @@ async fn blocking_code_runs_until_it_returns_and_then_the_commit_is_cancelled() 
     runner.await.unwrap();
     assert!(returned.load(std::sync::atomic::Ordering::SeqCst), "blocking code ran to its end");
     assert_eq!(
-        outcome_of(&*store, &m.id).await.unwrap().status,
+        outcome_of(&store, &m.id).await.unwrap().status,
         OutcomeStatus::Cancelled,
         "yet the commit is cancelled"
     );

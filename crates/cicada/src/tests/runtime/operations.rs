@@ -11,9 +11,9 @@ use crate::contract::Contract;
 use crate::runtime::{CreateActorResult, SendResult};
 use crate::schema;
 use crate::store::{
-    CancelResult, DeleteResult, Delivery, MessageId, MessageStatus, OutcomeStatus, RemoveTypeResult, Store,
+    Backend, CancelResult, DeleteResult, Delivery, MessageId, MessageStatus, OutcomeStatus, RemoveTypeResult, Store,
 };
-use crate::testing::{InMemoryStore, TestActors, VirtualClock};
+use crate::testing::{TestActors, VirtualClock};
 use crate::time;
 use crate::turn::SendOptions;
 use serde_json::{Value, json};
@@ -169,7 +169,7 @@ async fn status_cancel_outcomes_types() {
 
 #[tokio::test]
 async fn a_node_that_does_not_host_the_type_accepts_any_payload_and_the_hosting_node_applies_the_unhandled_policy() {
-    let store: Arc<dyn Store> = Arc::new(InMemoryStore::with_clock(Arc::new(VirtualClock::default())));
+    let store = Store::memory_on(Arc::new(VirtualClock::default()));
     let host = ActorSystem::builder(store.clone()).host(CounterActor).build();
     host.initialize().await.unwrap();
     let send_only = ActorSystem::builder(store.clone()).build();
@@ -195,11 +195,11 @@ async fn a_node_that_does_not_host_the_type_accepts_any_payload_and_the_hosting_
     accepted(send_only.send(&a(), CounterMsg::Add { n: 2 }).await.unwrap());
     assert_eq!(send_only.run_due_turns(10).await.unwrap(), 0);
     assert_eq!(host.run_due_turns(1).await.unwrap(), 1);
-    let failed = outcome_of(&*store, &bad.id).await.unwrap();
+    let failed = outcome_of(&store, &bad.id).await.unwrap();
     assert_eq!(failed.status, OutcomeStatus::Failed);
     assert!(failed.error.unwrap().starts_with("Payload of 'Add' cannot be decoded"));
     host.run_due_turns(1).await.unwrap();
-    assert_eq!(state_of::<CounterState>(&*store, &addr).await.total, 2);
+    assert_eq!(state_of::<CounterState>(&store, &addr).await.total, 2);
 }
 
 #[tokio::test(start_paused = true)]

@@ -11,13 +11,13 @@ use crate::contract::Contract;
 use crate::prelude::*;
 use crate::runtime::{NodeConfig, NodeState};
 use crate::schema;
-use crate::store::{NodeId, Store};
-use crate::testing::{InMemoryStore, VirtualClock};
+use crate::store::{Backend, NodeId, Store};
+use crate::testing::VirtualClock;
 use crate::{ActorSystem, StartError};
 use serde::{Deserialize, Serialize};
 
-fn store() -> Arc<dyn Store> {
-    Arc::new(InMemoryStore::with_clock(Arc::new(VirtualClock::default())))
+fn store() -> Store {
+    Store::memory_on(Arc::new(VirtualClock::default()))
 }
 
 /// Another type for `counter`, with a different contract.

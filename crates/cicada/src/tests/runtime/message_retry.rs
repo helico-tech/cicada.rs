@@ -8,7 +8,7 @@ use super::common::*;
 use crate::plugin::{HandlerErrorContext, HookResult, OutcomeContext, Plugin};
 use crate::prelude::*;
 use crate::runtime::{NodeConfig, SendResult};
-use crate::store::{Delivery, MessageStatus, NodeId, OutcomeStatus, OutgoingMessage, Store, TurnOutcome};
+use crate::store::{Backend, Delivery, MessageStatus, NodeId, OutcomeStatus, OutgoingMessage, TurnOutcome};
 use crate::testing::TestActors;
 use crate::time::{self, MAX_DELAY, Timestamp};
 use async_trait::async_trait;
@@ -569,7 +569,7 @@ async fn load_failures_and_unhandled_fail_decisions_are_not_retried() {
     // Undecodable payload, as accepted by a non-hosting node: policy fail.
     let mut bad = OutgoingMessage::new(addr(&chore("j")), "Attempt", json!({"failUntil": "x"}));
     bad.retry = Some(exponential4());
-    let bad = enqueue(&**test.store(), bad).await;
+    let bad = enqueue(test.store(), bad).await;
     // Undecodable state.
     test.store().create(&addr(&chore("broken")), json!({"log": 1})).await.unwrap();
     let to_broken = test

@@ -24,7 +24,7 @@ use crate::address::{ActorAddress, ActorRef, TypeName};
 use crate::message::{self, MessageFamily};
 use crate::plugin::Plugin;
 use crate::store::{
-    CancelResult, Claim, CreateResult, DeleteResult, DeliverNowResult, EnqueueResult, Message, MessageId,
+    Backend, CancelResult, Claim, CreateResult, DeleteResult, DeliverNowResult, EnqueueResult, Message, MessageId,
     MessageStatus, NodeId, OutcomeRecord, OutcomeStatus, OutgoingMessage, Page, PageCursor, RegisterResult,
     RemoveTypeResult, RunningTurn, Store, StoreError, StoreStats,
 };
@@ -173,7 +173,7 @@ impl NodeConfig {
 
 /// Builds an [`ActorSystem`].
 pub struct ActorSystemBuilder {
-    store: Arc<dyn Store>,
+    store: Store,
     config: NodeConfig,
     hosted: Vec<Arc<dyn HostedActor>>,
     plugins: Vec<Arc<dyn Plugin>>,
@@ -236,7 +236,7 @@ struct Lifecycle {
 }
 
 struct Inner {
-    store: Arc<dyn Store>,
+    store: Store,
     config: NodeConfig,
     hosted: Vec<Arc<dyn HostedActor>>,
     plugins: Vec<Arc<dyn Plugin>>,
@@ -253,7 +253,7 @@ struct Inner {
 /// HTTP operation in-process. A node that hosts no types is send-only. Cheap to clone: clones share the node.
 ///
 /// ```no_run
-/// # async fn example(store: std::sync::Arc<dyn cicada::store::Store>) -> Result<(), Box<dyn std::error::Error>> {
+/// # async fn example(store: cicada::Store) -> Result<(), Box<dyn std::error::Error>> {
 /// use cicada::ActorSystem;
 ///
 /// let system = ActorSystem::builder(store)
@@ -289,12 +289,13 @@ impl fmt::Debug for ActorSystem {
 
 impl ActorSystem {
     /// A builder for a node on `store`.
-    pub fn builder(store: Arc<dyn Store>) -> ActorSystemBuilder {
+    pub fn builder(store: Store) -> ActorSystemBuilder {
         ActorSystemBuilder { store, config: NodeConfig::default(), hosted: Vec::new(), plugins: Vec::new() }
     }
 
-    /// The shared store.
-    pub fn store(&self) -> &Arc<dyn Store> {
+    /// The store, for the tests of this crate.
+    #[cfg(test)]
+    pub(crate) fn store(&self) -> &Store {
         &self.inner.store
     }
 
@@ -1209,7 +1210,7 @@ fn duplicate_of(existing: Option<Message>, to: &ActorAddress, message_type: &str
 /// Claims on their way from the store to the caller. Claims still in the batch when it is dropped (the caller was gone
 /// when they arrived) are released in the background, so their messages are claimable again at once.
 struct ClaimBatch {
-    store: Arc<dyn Store>,
+    store: Store,
     claims: Vec<Claim>,
 }
 

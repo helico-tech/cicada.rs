@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use crate::contract::{Contract, canonical_json};
 use crate::prelude::*;
-use crate::store::{Store, TypeDef};
-use crate::testing::{InMemoryStore, VirtualClock};
+use crate::store::{Backend, Store, TypeDef};
+use crate::testing::VirtualClock;
 use crate::{ActorSystem, StartError};
 use serde::{Deserialize, Serialize};
 
@@ -93,8 +93,8 @@ impl Actor for BadActor {
     }
 }
 
-fn store() -> Arc<dyn Store> {
-    Arc::new(InMemoryStore::with_clock(Arc::new(VirtualClock::default())))
+fn store() -> Store {
+    Store::memory_on(Arc::new(VirtualClock::default()))
 }
 
 /// The registry entry a node registers for `actor`.

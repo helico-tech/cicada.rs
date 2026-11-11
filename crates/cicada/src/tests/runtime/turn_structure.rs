@@ -11,7 +11,7 @@ use super::common::*;
 use crate::ActorSystem;
 use crate::address::ActorAddress;
 use crate::prelude::*;
-use crate::store::{CommitRequest, CommitResult, MessageStatus, OutcomeStatus, RenewResult, Store, StoreResult};
+use crate::store::{Backend, CommitRequest, CommitResult, MessageStatus, OutcomeStatus, RenewResult, StoreResult};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
@@ -76,7 +76,7 @@ impl Actor for SleeperActor {
     }
 }
 
-fn sleeper_node(store: Arc<dyn Store>, name: &str, counts: &Arc<Counts>) -> ActorSystem {
+fn sleeper_node(store: impl IntoStore, name: &str, counts: &Arc<Counts>) -> ActorSystem {
     node(store, name).host(SleeperActor(counts.clone())).build()
 }
 
@@ -90,7 +90,7 @@ struct BrokenRenew {
 impl Faults for BrokenRenew {
     async fn renew(
         &self,
-        inner: &dyn Store,
+        inner: &dyn Backend,
         address: &ActorAddress,
         epoch: i64,
         ttl: Duration,
@@ -101,7 +101,7 @@ impl Faults for BrokenRenew {
         inner.renew(address, epoch, ttl).await
     }
 
-    async fn commit(&self, inner: &dyn Store, commit: CommitRequest) -> StoreResult<CommitResult> {
+    async fn commit(&self, inner: &dyn Backend, commit: CommitRequest) -> StoreResult<CommitResult> {
         if self.slow_commit {
             // The first heartbeat (10 s) fails while the commit is in flight.
             tokio::time::sleep(Duration::from_secs(15)).await;
@@ -136,7 +136,7 @@ async fn a_lease_keeper_that_fails_unexpectedly_cancels_the_handler_and_abandons
     tokio::time::sleep(Duration::from_secs(30)).await;
     assert_eq!(n2.run_due_turns(1).await.unwrap(), 1);
     assert_eq!(counts.runs.load(Ordering::SeqCst), 2);
-    assert_eq!(outcome_of(&*memory, &m.id).await.map(|o| o.status), Some(OutcomeStatus::Done));
+    assert_eq!(outcome_of(&memory, &m.id).await.map(|o| o.status), Some(OutcomeStatus::Done));
 }
 
 #[tokio::test(start_paused = true)]
@@ -150,7 +150,7 @@ async fn with_a_working_keeper_the_same_turn_runs_to_its_outcome() {
     let m = accepted(n1.send(&s(), SleeperMsg::Slumber { seconds: 45 }).await.unwrap());
     assert_eq!(n1.run_due_turns(1).await.unwrap(), 1);
     assert_eq!(counts.cancelled.load(Ordering::SeqCst), 0);
-    assert_eq!(outcome_of(&*memory, &m.id).await.map(|o| o.status), Some(OutcomeStatus::Done));
+    assert_eq!(outcome_of(&memory, &m.id).await.map(|o| o.status), Some(OutcomeStatus::Done));
 }
 
 #[tokio::test(start_paused = true)]
@@ -164,7 +164,7 @@ async fn a_keeper_that_fails_during_the_commit_does_not_cancel_it_the_stores_fen
     assert_eq!(n1.run_due_turns(1).await.unwrap(), 1);
     assert_eq!(counts.cancelled.load(Ordering::SeqCst), 0);
     assert_eq!(
-        outcome_of(&*memory, &m.id).await.map(|o| o.status),
+        outcome_of(&memory, &m.id).await.map(|o| o.status),
         Some(OutcomeStatus::Done),
         "within the lease: the store accepted it"
     );

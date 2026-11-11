@@ -3,7 +3,6 @@
 //! A future cannot ignore being dropped, so here the handler that ignores cancellation blocks its
 //! thread; heartbeats stay alive on the other worker threads of a multi-thread runtime.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
@@ -12,8 +11,7 @@ use crate::ActorSystem;
 use crate::address::ActorAddress;
 use crate::prelude::*;
 use crate::runtime::{NodeConfig, NodeState};
-use crate::store::{MessageStatus, NodeId, OutcomeStatus, RenewResult, Store, StoreResult};
-use crate::testing::InMemoryStore;
+use crate::store::{Backend, MessageStatus, NodeId, OutcomeStatus, RenewResult, Store, StoreResult};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
@@ -65,7 +63,7 @@ struct CountRenewals(AtomicUsize);
 impl Faults for CountRenewals {
     async fn renew(
         &self,
-        inner: &dyn Store,
+        inner: &dyn Backend,
         address: &ActorAddress,
         epoch: i64,
         ttl: Duration,
@@ -79,9 +77,9 @@ const TEN_SECONDS: Duration = Duration::from_secs(10);
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_blocking_handler_does_not_starve_the_heartbeat() {
-    let memory = Arc::new(InMemoryStore::default());
+    let memory = Store::memory();
     let store = Faulty::new(memory.clone(), CountRenewals::default());
-    let node = ActorSystem::builder(store.clone())
+    let node = ActorSystem::builder(store.clone().into_store())
         .host(BlockerActor)
         .config(NodeConfig {
             node_id: NodeId::new("blocking").unwrap(),
@@ -108,8 +106,8 @@ async fn a_blocking_handler_does_not_starve_the_heartbeat() {
     })
     .await;
     other.start().await.unwrap();
-    eventually(TEN_SECONDS, || async { outcome_of(&*memory, &m.id).await.is_some() }).await;
-    let outcome = outcome_of(&*memory, &m.id).await.unwrap();
+    eventually(TEN_SECONDS, || async { outcome_of(&memory, &m.id).await.is_some() }).await;
+    let outcome = outcome_of(&memory, &m.id).await.unwrap();
     assert_eq!(outcome.status, OutcomeStatus::Done);
     assert_eq!(outcome.envelope.attempt, 1, "the lease never expired, so no other node ran the turn");
     let renewals = store.faults.0.load(Ordering::SeqCst);
@@ -120,7 +118,7 @@ async fn a_blocking_handler_does_not_starve_the_heartbeat() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stop_does_not_hang_on_a_handler_that_ignores_cancellation() {
-    let memory = Arc::new(InMemoryStore::default());
+    let memory = Store::memory();
     let node = ActorSystem::builder(memory.clone())
         .host(BlockerActor)
         .config(NodeConfig {
@@ -147,7 +145,7 @@ async fn stop_does_not_hang_on_a_handler_that_ignores_cancellation() {
 #[tokio::test]
 async fn stopping_right_after_a_claim_never_leaves_a_lease_behind() {
     for round in 0..30 {
-        let memory = Arc::new(InMemoryStore::default());
+        let memory = Store::memory();
         let node = ActorSystem::builder(memory.clone())
             .host(BlockerActor)
             .config(NodeConfig { poll_interval: Duration::from_millis(5), ..NodeConfig::default() })

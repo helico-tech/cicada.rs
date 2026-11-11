@@ -26,10 +26,10 @@ use crate::retention::{Keep, Retention};
 use crate::retry::{Backoff, RetryPolicy};
 use crate::store::sqlite::{SqliteOptions, SqliteStore};
 use crate::store::{
-    ActorCreate, ActorRecord, CancelResult, Claim, CommitRequest, CommitResult, CreateResult, DeleteResult,
+    ActorCreate, ActorRecord, Backend, CancelResult, Claim, CommitRequest, CommitResult, CreateResult, DeleteResult,
     DeliverNowResult, Delivery, EnqueueResult, Message, MessageId, MessageStatus, NodeId, OutcomeRecord, OutcomeStatus,
-    OutgoingMessage, PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn, StateChange, Store,
-    StoreError, StoreResult, TurnOutcome, TypeDef,
+    OutgoingMessage, PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn, StateChange, StoreError,
+    StoreResult, TurnOutcome, TypeDef,
 };
 use crate::testing::{InMemoryStore, VirtualClock};
 use crate::time::{self, Timestamp};
@@ -650,7 +650,7 @@ fn opt_instant(t: Option<Timestamp>) -> Value {
 /// One backend and what must be kept per backend while a list runs.
 pub struct Side {
     /// The backend.
-    pub store: Arc<dyn Store>,
+    pub store: Arc<dyn Backend>,
     /// Claims that no commit or release has used yet.
     claims: Vec<Claim>,
     /// Per address, the epochs of every claim, in the order they came.
@@ -694,7 +694,7 @@ macro_rules! paged {
 
 impl Side {
     /// A backend at the start of a list.
-    pub fn new(store: Arc<dyn Store>) -> Self {
+    pub fn new(store: Arc<dyn Backend>) -> Self {
         Self {
             store,
             claims: Vec::new(),
@@ -1194,14 +1194,14 @@ impl Pair {
     }
 
     /// Any two stores on `clock`.
-    pub async fn of(clock: Arc<VirtualClock>, first: Arc<dyn Store>, second: Arc<dyn Store>) -> Self {
+    pub async fn of(clock: Arc<VirtualClock>, first: Arc<dyn Backend>, second: Arc<dyn Backend>) -> Self {
         Self::start(clock, first, second, None).await
     }
 
     async fn start(
         clock: Arc<VirtualClock>,
-        first: Arc<dyn Store>,
-        second: Arc<dyn Store>,
+        first: Arc<dyn Backend>,
+        second: Arc<dyn Backend>,
         dir: Option<TempDir>,
     ) -> Self {
         let mut pair = Self { clock, first: Side::new(first), second: Side::new(second), _dir: dir };

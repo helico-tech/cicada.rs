@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use crate::address::{ActorAddress, TypeName};
 use crate::store::{
-    Claim, CommitRequest, CommitResult, CreateResult, Delivery, EnqueueResult, Message, MessageId, MessageStatus,
-    NodeId, OutcomeRecord, OutgoingMessage, Page, PageCursor, Store, TurnOutcome, TypeDef,
+    Backend, Claim, CommitRequest, CommitResult, CreateResult, Delivery, EnqueueResult, Message, MessageId,
+    MessageStatus, NodeId, OutcomeRecord, OutgoingMessage, Page, PageCursor, TurnOutcome, TypeDef,
 };
 use crate::time::{self, Timestamp};
 use serde_json::{Value, json};
@@ -77,7 +77,7 @@ impl<F: StoreFixture> Env<F> {
     }
 
     /// The store under test (a new handle after a reopen).
-    pub fn store(&self) -> Arc<dyn Store> {
+    pub fn store(&self) -> Arc<dyn Backend> {
         self.fixture.store()
     }
 
@@ -234,7 +234,7 @@ impl<F: StoreFixture> Env<F> {
 
     /// Runs `count` copies of `block` concurrently on the runtime's worker threads, each with its own peer handle,
     /// and returns their results in order. A panic in one copy fails the case.
-    pub async fn concurrently<T, Fut>(&self, count: usize, block: impl Fn(usize, Arc<dyn Store>) -> Fut) -> Vec<T>
+    pub async fn concurrently<T, Fut>(&self, count: usize, block: impl Fn(usize, Arc<dyn Backend>) -> Fut) -> Vec<T>
     where
         Fut: Future<Output = T> + Send + 'static,
         T: Send + 'static,
@@ -288,7 +288,7 @@ pub fn ending(claim: &Claim, outcome: TurnOutcome) -> CommitRequest {
 }
 
 /// Enqueues `message` on `store` and asserts that it was accepted.
-pub async fn enqueue_ok(store: &dyn Store, message: OutgoingMessage) -> Message {
+pub async fn enqueue_ok(store: &dyn Backend, message: OutgoingMessage) -> Message {
     let to = message.to.clone();
     match store.enqueue(message).await.unwrap() {
         EnqueueResult::Enqueued(m) => m,
@@ -298,7 +298,7 @@ pub async fn enqueue_ok(store: &dyn Store, message: OutgoingMessage) -> Message 
 
 /// The retained, visible outcome of `id`: the record of a [`MessageStatus::Finished`] status; `None` while the message is
 /// pending or running, and when it is unknown, hidden or past retention.
-pub async fn outcome_record(store: &dyn Store, id: &MessageId) -> Option<OutcomeRecord> {
+pub async fn outcome_record(store: &dyn Backend, id: &MessageId) -> Option<OutcomeRecord> {
     match store.status(id).await.unwrap() {
         Some(MessageStatus::Finished(outcome)) => Some(outcome),
         _ => None,
@@ -307,7 +307,7 @@ pub async fn outcome_record(store: &dyn Store, id: &MessageId) -> Option<Outcome
 
 /// Claims due turns on `store`.
 pub async fn claim_on(
-    store: &dyn Store,
+    store: &dyn Backend,
     types: &[&TypeName],
     node: &NodeId,
     ttl: Duration,

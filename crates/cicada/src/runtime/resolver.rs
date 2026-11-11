@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::address::ActorAddress;
 use crate::contract::Contract;
-use crate::store::{Store, StoreError, StoreResult, TypeDef};
+use crate::store::{Backend, Store, StoreError, StoreResult, TypeDef};
 use crate::turn::TurnError;
 
 /// A registered type with its parsed contract.
@@ -26,12 +26,12 @@ impl RegisteredType {
 
 /// Finds the type of an address in the TypeRegistry and caches parsed contracts.
 pub(crate) struct TypeResolver {
-    store: Arc<dyn Store>,
+    store: Store,
     contracts: Mutex<HashMap<String, Arc<Contract>>>,
 }
 
 impl TypeResolver {
-    pub fn new(store: Arc<dyn Store>) -> Self {
+    pub fn new(store: Store) -> Self {
         Self { store, contracts: Mutex::new(HashMap::new()) }
     }
 
