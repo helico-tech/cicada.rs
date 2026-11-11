@@ -1,8 +1,8 @@
-//! Percent-encoding of actor URI segments.
+//! Percent-encoding of the key of an actor address and of other path segments.
 //!
-//! Unreserved characters (`A-Z a-z 0-9 . _ ~ -`) are kept as they are; every other character is encoded as the UTF-8
+//! The characters `A-Z a-z 0-9 . _ ~ -` and `:` are kept as they are; every other character is encoded as the UTF-8
 //! bytes of the character, each written as `%XX` with upper-case hex digits. The encoded form is canonical: `decode`
-//! followed by `encode` always yields the same string for the same segment value.
+//! followed by `encode` always yields the same string for the same segment value (ADR 0021).
 
 use std::fmt::Write;
 
@@ -10,7 +10,7 @@ use super::AddressError;
 
 /// True when `c` may appear unencoded in a segment.
 pub fn is_unreserved(c: char) -> bool {
-    c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '~' | '-')
+    c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '~' | '-' | ':')
 }
 
 /// Encodes a raw segment value into its canonical percent-encoded form.
@@ -72,9 +72,11 @@ mod tests {
 
     #[test]
     fn round_trips() {
-        for value in ["acme", "a b", "ü", "a/b", "%", "~-._", "日本"] {
+        for value in ["acme", "a b", "ü", "a/b", "%", "~-._", "日本", "a:b"] {
             assert_eq!(decode(&encode(value)).unwrap(), value);
         }
+        assert_eq!(encode("a:b"), "a:b");
+        assert_eq!(decode("a%3Ab").unwrap(), "a:b");
         assert_eq!(encode("a b"), "a%20b");
         assert_eq!(encode("ü"), "%C3%BC");
         assert_eq!(decode("%7e").unwrap(), "~");

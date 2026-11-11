@@ -104,7 +104,6 @@ impl From<ActorSnapshot> for ActorView {
         Self {
             type_name: s.address.type_name().as_str().to_owned(),
             address: s.address,
-            params: s.params,
             state: s.state,
             version: s.version,
             created_at: s.created_at,
@@ -160,7 +159,6 @@ impl From<&RegisteredType> for TypeView {
     fn from(t: &RegisteredType) -> Self {
         Self {
             name: t.name().as_str().to_owned(),
-            key: t.contract.key_fields().to_vec(),
             hash: t.definition.contract_hash.clone(),
             state: t.contract.state_schema().clone(),
             messages: t.contract.message_schemas().clone(),

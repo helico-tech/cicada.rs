@@ -140,7 +140,7 @@ async fn contract_snapshot_and_stable_hash() {
     let def = registered(SyncActor).await;
     // The schemas come from schemars.
     let expected = concat!(
-        r#"{"key":["tenant"],"messages":{"#,
+        r#"{"messages":{"#,
         r#""FetchPage":{"$schema":"https://json-schema.org/draft/2020-12/schema","properties":{"cursor":{"type":["string","null"]}},"title":"FetchPage","type":"object"},"#,
         r#""Pause":{"$schema":"https://json-schema.org/draft/2020-12/schema","properties":{},"title":"Pause","type":"object"},"#,
         r#""Resume":{"$schema":"https://json-schema.org/draft/2020-12/schema","properties":{},"title":"Resume","type":"object"},"#,

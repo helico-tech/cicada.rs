@@ -52,8 +52,6 @@ pub struct ActorView {
     /// The name of the instance's type, e.g. `sync`.
     #[serde(rename = "type")]
     pub type_name: String,
-    /// The values of the key, by field name.
-    pub params: BTreeMap<String, String>,
     /// Current state; never null.
     pub state: Value,
     /// Number of commits that wrote state.
@@ -432,8 +430,6 @@ pub struct StatsView {
 pub struct TypeView {
     /// The type's name, e.g. `sync`.
     pub name: String,
-    /// The fields that form the key, in order; empty for a singleton.
-    pub key: Vec<String>,
     /// The contract hash (`sha256:…`).
     pub hash: String,
     /// JSON Schema of the state.
@@ -507,7 +503,7 @@ pub mod problem_types {
     pub const MESSAGE_NOT_RETRYABLE: &str = "urn:cicada:problem:message-not-retryable";
     /// 409: actors of the type exist, so its registration cannot be removed.
     pub const TYPE_IN_USE: &str = "urn:cicada:problem:type-in-use";
-    /// 422: the address cannot be an instance of its type (e.g. not canonical for its ref; hosting node).
+    /// 422: the address cannot be an instance of its type: its ref does not accept the name (hosting node).
     pub const INVALID_ADDRESS: &str = "urn:cicada:problem:invalid-address";
     /// 413: the request body is larger than the node accepts.
     pub const REQUEST_TOO_LARGE: &str = "urn:cicada:problem:request-too-large";

@@ -89,6 +89,16 @@ fn formatting_does_not_matter() {
     check_contracts(dir.path(), &[v1()], false).unwrap();
 }
 
+/// Scenario: A contract snapshot of an earlier version.
+#[test]
+fn a_snapshot_of_an_earlier_version_with_key_fields_still_passes() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut earlier = v1().to_json();
+    earlier["key"] = serde_json::json!(["tenant"]);
+    std::fs::write(dir.path().join("snap.json"), serde_json::to_string_pretty(&earlier).unwrap()).unwrap();
+    check_contracts(dir.path(), &[v1()], false).unwrap();
+}
+
 #[test]
 fn a_changed_contract_fails_naming_every_change() {
     let dir = tempfile::tempdir().unwrap();

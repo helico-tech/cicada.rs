@@ -69,7 +69,7 @@
     },
     "/actors/{type}/{key}": {
       "get": {
-        "summary": "One actor: its type, key values, state and version.",
+        "summary": "One actor: its address, type, state and version.",
         "operationId": "getActor",
         "parameters": [
           {
@@ -86,10 +86,10 @@
           {
             "in": "path",
             "name": "key",
-            "description": "The key, e.g. `acme`, `b1:7`, or `_` for a singleton.",
+            "description": "The key: one name, percent-encoded, e.g. `acme`, `acme:7` or `jan%40example.com`; `_` for a singleton.",
             "required": true,
             "schema": {
-              "description": "The key, e.g. `acme`, `b1:7`, or `_` for a singleton.",
+              "description": "The key: one name, percent-encoded, e.g. `acme`, `acme:7` or `jan%40example.com`; `_` for a singleton.",
               "type": "string"
             },
             "style": "simple"
@@ -136,10 +136,10 @@
           {
             "in": "path",
             "name": "key",
-            "description": "The key, e.g. `acme`, `b1:7`, or `_` for a singleton.",
+            "description": "The key: one name, percent-encoded, e.g. `acme`, `acme:7` or `jan%40example.com`; `_` for a singleton.",
             "required": true,
             "schema": {
-              "description": "The key, e.g. `acme`, `b1:7`, or `_` for a singleton.",
+              "description": "The key: one name, percent-encoded, e.g. `acme`, `acme:7` or `jan%40example.com`; `_` for a singleton.",
               "type": "string"
             },
             "style": "simple"
@@ -207,10 +207,10 @@
           {
             "in": "path",
             "name": "key",
-            "description": "The key, e.g. `acme`, `b1:7`, or `_` for a singleton.",
+            "description": "The key: one name, percent-encoded, e.g. `acme`, `acme:7` or `jan%40example.com`; `_` for a singleton.",
             "required": true,
             "schema": {
-              "description": "The key, e.g. `acme`, `b1:7`, or `_` for a singleton.",
+              "description": "The key: one name, percent-encoded, e.g. `acme`, `acme:7` or `jan%40example.com`; `_` for a singleton.",
               "type": "string"
             },
             "style": "simple"
@@ -252,10 +252,10 @@
           {
             "in": "path",
             "name": "key",
-            "description": "The key, e.g. `acme`, `b1:7`, or `_` for a singleton.",
+            "description": "The key: one name, percent-encoded, e.g. `acme`, `acme:7` or `jan%40example.com`; `_` for a singleton.",
             "required": true,
             "schema": {
-              "description": "The key, e.g. `acme`, `b1:7`, or `_` for a singleton.",
+              "description": "The key: one name, percent-encoded, e.g. `acme`, `acme:7` or `jan%40example.com`; `_` for a singleton.",
               "type": "string"
             },
             "style": "simple"
@@ -326,10 +326,10 @@
           {
             "in": "path",
             "name": "key",
-            "description": "The key, e.g. `acme`, `b1:7`, or `_` for a singleton.",
+            "description": "The key: one name, percent-encoded, e.g. `acme`, `acme:7` or `jan%40example.com`; `_` for a singleton.",
             "required": true,
             "schema": {
-              "description": "The key, e.g. `acme`, `b1:7`, or `_` for a singleton.",
+              "description": "The key: one name, percent-encoded, e.g. `acme`, `acme:7` or `jan%40example.com`; `_` for a singleton.",
               "type": "string"
             },
             "style": "simple"
@@ -936,10 +936,10 @@
           {
             "in": "path",
             "name": "key",
-            "description": "The key, e.g. `acme`, `b1:7`, or `_` for a singleton.",
+            "description": "The key: one name, percent-encoded, e.g. `acme`, `acme:7` or `jan%40example.com`; `_` for a singleton.",
             "required": true,
             "schema": {
-              "description": "The key, e.g. `acme`, `b1:7`, or `_` for a singleton.",
+              "description": "The key: one name, percent-encoded, e.g. `acme`, `acme:7` or `jan%40example.com`; `_` for a singleton.",
               "type": "string"
             },
             "style": "simple"
@@ -1009,10 +1009,10 @@
           {
             "in": "path",
             "name": "key",
-            "description": "The key, e.g. `acme`, `b1:7`, or `_` for a singleton.",
+            "description": "The key: one name, percent-encoded, e.g. `acme`, `acme:7` or `jan%40example.com`; `_` for a singleton.",
             "required": true,
             "schema": {
-              "description": "The key, e.g. `acme`, `b1:7`, or `_` for a singleton.",
+              "description": "The key: one name, percent-encoded, e.g. `acme`, `acme:7` or `jan%40example.com`; `_` for a singleton.",
               "type": "string"
             },
             "style": "simple"
@@ -1054,10 +1054,10 @@
           {
             "in": "path",
             "name": "key",
-            "description": "The key, e.g. `acme`, `b1:7`, or `_` for a singleton.",
+            "description": "The key: one name, percent-encoded, e.g. `acme`, `acme:7` or `jan%40example.com`; `_` for a singleton.",
             "required": true,
             "schema": {
-              "description": "The key, e.g. `acme`, `b1:7`, or `_` for a singleton.",
+              "description": "The key: one name, percent-encoded, e.g. `acme`, `acme:7` or `jan%40example.com`; `_` for a singleton.",
               "type": "string"
             },
             "style": "simple"
@@ -1099,10 +1099,10 @@
           {
             "in": "path",
             "name": "key",
-            "description": "The key, e.g. `acme`, `b1:7`, or `_` for a singleton.",
+            "description": "The key: one name, percent-encoded, e.g. `acme`, `acme:7` or `jan%40example.com`; `_` for a singleton.",
             "required": true,
             "schema": {
-              "description": "The key, e.g. `acme`, `b1:7`, or `_` for a singleton.",
+              "description": "The key: one name, percent-encoded, e.g. `acme`, `acme:7` or `jan%40example.com`; `_` for a singleton.",
               "type": "string"
             },
             "style": "simple"
@@ -1144,10 +1144,10 @@
           {
             "in": "path",
             "name": "key",
-            "description": "The key, e.g. `acme`, `b1:7`, or `_` for a singleton.",
+            "description": "The key: one name, percent-encoded, e.g. `acme`, `acme:7` or `jan%40example.com`; `_` for a singleton.",
             "required": true,
             "schema": {
-              "description": "The key, e.g. `acme`, `b1:7`, or `_` for a singleton.",
+              "description": "The key: one name, percent-encoded, e.g. `acme`, `acme:7` or `jan%40example.com`; `_` for a singleton.",
               "type": "string"
             },
             "style": "simple"
@@ -1424,7 +1424,7 @@
             "type": "string"
           },
           "key": {
-            "description": "The key, e.g. `acme`, `b1:7`, or `_` for a singleton.",
+            "description": "The key: one name, percent-encoded, e.g. `acme`, `acme:7` or `jan%40example.com`; `_` for a singleton.",
             "type": "string"
           }
         },
@@ -1445,13 +1445,6 @@
           "type": {
             "description": "The name of the instance's type, e.g. `sync`.",
             "type": "string"
-          },
-          "params": {
-            "description": "The values of the key, by field name.",
-            "type": "object",
-            "additionalProperties": {
-              "type": "string"
-            }
           },
           "state": {
             "description": "Current state; never null."
@@ -1475,7 +1468,6 @@
         "required": [
           "address",
           "type",
-          "params",
           "state",
           "version",
           "createdAt"
@@ -2085,13 +2077,6 @@
             "description": "The type's name, e.g. `sync`.",
             "type": "string"
           },
-          "key": {
-            "description": "The fields that form the key, in order; empty for a singleton.",
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
           "hash": {
             "description": "The contract hash (`sha256:…`).",
             "type": "string"
@@ -2107,7 +2092,6 @@
         },
         "required": [
           "name",
-          "key",
           "hash",
           "state",
           "messages"

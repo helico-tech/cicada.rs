@@ -518,7 +518,7 @@ pub struct RunningTurn {
 pub struct TypeDef {
     /// The type's name; its identity in the store.
     pub name: TypeName,
-    /// The published contract (name, key fields, message type names, JSON Schemas). Opaque to the store.
+    /// The published contract (name, message type names, JSON Schemas). Opaque to the store.
     pub contract: Value,
     /// Stable hash of the contract; registrations conflict when it differs.
     pub contract_hash: String,

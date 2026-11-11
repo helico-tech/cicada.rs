@@ -668,7 +668,7 @@ impl ActorSystem {
             return Ok(CreateActorResult::InvalidState(e));
         }
         if let Some(hosted) = self.hosted_for(&init, address.type_name()) {
-            if let Some(problem) = hosted.actor.canonical_problem(address) {
+            if let Some(problem) = hosted.actor.address_problem(address) {
                 return Ok(CreateActorResult::InvalidAddress(problem));
             }
             if let Err(e) = hosted.actor.check_state(&state) {
@@ -683,14 +683,12 @@ impl ActorSystem {
         })
     }
 
-    /// Type, params, state and version of an instance (`GET /actors/{type}/{key}`).
+    /// Address, state and version of an instance (`GET /actors/{type}/{key}`).
     pub async fn get_actor(&self, address: &ActorAddress) -> Result<Option<ActorSnapshot>, OpError> {
         let Some(record) = self.inner.store.get(address).await? else {
             return Ok(None);
         };
-        let params = self.inner.resolver.resolve(address).await?.map(|t| t.contract.params_of(address));
         Ok(Some(ActorSnapshot {
-            params: params.unwrap_or_default(),
             address: record.address,
             state: record.state,
             version: record.version,

@@ -13,7 +13,7 @@
 //! | [`supervision`] | Example 9: supervision; failed messages become dead letters that an operator redrives. |
 //! | [`sync`] | The architecture's example: a paged import, one turn per page, rescheduled hourly. |
 //!
-//! Every example has the same shape: a public ref struct per actor type (its fields form the key), a
+//! Every example has the same shape: a public ref struct per actor type (its one field is the key), a
 //! message enum with `#[serde(tag = "type")]`, a state struct, and an actor struct whose fields are its dependencies
 //! (external services, faked in the tests), with one `impl Actor` whose `handle` matches on the message.
 

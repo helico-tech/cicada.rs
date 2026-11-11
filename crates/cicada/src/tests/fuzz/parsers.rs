@@ -204,8 +204,8 @@ fn message_at(deliver_at: Timestamp, seq: i64, to: &ActorAddress) -> crate::stor
 }
 
 fn any_address() -> impl Strategy<Value = ActorAddress> {
-    ("[a-z][a-z0-9._-]{0,20}", prop::collection::vec("\\PC{1,8}", 0..4))
-        .prop_filter_map("a valid address", |(t, key)| ActorAddress::of(&TypeName::parse(&t).ok()?, key).ok())
+    ("[a-z][a-z0-9._-]{0,20}", "\\PC{1,16}")
+        .prop_filter_map("a valid address", |(t, name)| ActorAddress::of(&TypeName::parse(&t).ok()?, &name).ok())
 }
 
 proptest! {
@@ -230,7 +230,7 @@ proptest! {
     #[test]
     fn addresses_answer_any_text(text in prop_oneof![address_text(), ".{0,40}"]) {
         if let Ok(address) = ActorAddress::parse(&text) {
-            let _ = address.key_values();
+            prop_assert_eq!(ActorAddress::of(address.type_name(), &address.name()).unwrap(), address.clone());
             prop_assert_eq!(ActorAddress::parse(address.as_str()).unwrap(), address);
         }
         let _ = TypeName::parse(&text);
@@ -264,7 +264,7 @@ proptest! {
     #[test]
     fn addresses_round_trip(address in any_address()) {
         prop_assert_eq!(ActorAddress::parse(address.as_str()).unwrap(), address.clone());
-        let again = ActorAddress::of(address.type_name(), address.key_values()).unwrap();
+        let again = ActorAddress::of(address.type_name(), &address.name()).unwrap();
         prop_assert_eq!(again, address);
     }
 

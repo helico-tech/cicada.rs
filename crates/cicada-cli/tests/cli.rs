@@ -18,10 +18,10 @@ use clap::Parser;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// An account of a tenant, named `tenant:id`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Account {
-    tenant: String,
-    id: i32,
+    name: String,
 }
 
 impl ActorRef for Account {
@@ -354,8 +354,8 @@ async fn nodes_types_and_health() {
     assert!(rows(&cicada(&s, &["get", "turns"]).await).is_empty());
     assert!(cicada_fails(&s, &["get", "turn", "account/acme:1"]).await.contains("not found"));
 
-    assert_eq!(rows(&cicada(&s, &["get", "types"]).await), ["account  tenant:id  3"]);
-    assert!(rows(&cicada(&s, &["get", "type", "account", "-o", "wide"]).await)[0].starts_with("account  tenant:id  "));
+    assert_eq!(rows(&cicada(&s, &["get", "types"]).await), ["account  3"]);
+    assert!(rows(&cicada(&s, &["get", "type", "account", "-o", "wide"]).await)[0].starts_with("account  Deposit,"));
     let account = json(&s, &["get", "type", "account"]).await;
     assert_eq!((account["name"].as_str(), account["messages"]["Hold"].is_object()), (Some("account"), true));
     assert_eq!(cicada_fails(&s, &["get", "type", "ghost"]).await, "type ghost not found");

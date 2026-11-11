@@ -17,8 +17,9 @@ pub const UPDATE_CONTRACTS_ENV: &str = "CICADA_UPDATE_CONTRACTS";
 ///
 /// Each type has one file, `<directory>/<type name>.json`, holding its contract as `GET /types` serves it
 /// (pretty printed, keys sorted). A missing file is written and the type passes, so the first run records the
-/// snapshots; commit them. A file that differs fails the assertion with what changed: the key fields, the state schema,
-/// and which message types were added, removed or changed. Formatting does not matter: contracts are compared by their
+/// snapshots; commit them. A file that differs fails the assertion with what changed: the state schema, and which
+/// message types were added, removed or changed. A snapshot of an earlier version with a `key` entry reads as the same
+/// contract. Formatting does not matter: contracts are compared by their
 /// hash. Get a type's contract with [`cicada::actor::contract_of`].
 ///
 /// ```no_run
@@ -82,13 +83,6 @@ pub fn describe_changes(old: &Contract, new: &Contract) -> Vec<String> {
     let mut changes = Vec::new();
     if old.type_name() != new.type_name() {
         changes.push(format!("type name changed: {} -> {}", old.type_name(), new.type_name()));
-    }
-    if old.key_fields() != new.key_fields() {
-        changes.push(format!(
-            "key fields changed: [{}] -> [{}]",
-            old.key_fields().join(", "),
-            new.key_fields().join(", ")
-        ));
     }
     if old.state_schema() != new.state_schema() {
         changes.push("state schema changed".to_owned());

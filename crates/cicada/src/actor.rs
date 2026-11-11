@@ -175,7 +175,7 @@ pub(crate) trait HostedActor: Send + Sync {
     fn max_turn(&self) -> Option<Duration>;
     fn check_state(&self, state: &Value) -> Result<(), String>;
     fn check_payload(&self, message_type: &str, payload: &Value) -> Result<(), String>;
-    fn canonical_problem(&self, address: &ActorAddress) -> Option<String>;
+    fn address_problem(&self, address: &ActorAddress) -> Option<String>;
     fn load(&self, claim: &Claim) -> Result<Loaded, String>;
 }
 
@@ -201,9 +201,7 @@ fn analyse<A: Actor>() -> Result<Analysis<A>, Vec<String>> {
     let state = schema::root_schema::<A::State>();
     match (binding, family) {
         (Some(binding), Some(family)) if problems.is_empty() => {
-            let key_fields = binding.key_fields().iter().map(|f| (*f).to_owned()).collect();
-            let contract =
-                Arc::new(Contract::new(binding.type_name().clone(), key_fields, state, family.schemas.clone()));
+            let contract = Arc::new(Contract::new(binding.type_name().clone(), state, family.schemas.clone()));
             Ok(Analysis { binding, family, contract })
         }
         _ => Err(problems),
@@ -246,15 +244,9 @@ impl<A: Actor> HostedActor for Hosted<A> {
         message::decode::<A::Message>(message_type, payload).map(|_| ())
     }
 
-    fn canonical_problem(&self, address: &ActorAddress) -> Option<String> {
-        let analysis = self.analysis.as_ref().ok()?;
-        let name = type_name::<A::Ref>();
-        let canonical = analysis.binding.from_address(address).and_then(|r| analysis.binding.to_address(&r));
-        match canonical {
-            Err(e) => Some(format!("{address} is not an address of {name}: {e}")),
-            Ok(c) if &c == address => None,
-            Ok(c) => Some(format!("{address} is not canonical for {name}; its ref addresses {c}")),
-        }
+    fn address_problem(&self, address: &ActorAddress) -> Option<String> {
+        let e = self.analysis.as_ref().ok()?.binding.from_address(address).err()?;
+        Some(format!("{address} is not an address of {}: {e}", type_name::<A::Ref>()))
     }
 
     fn load(&self, claim: &Claim) -> Result<Loaded, String> {
@@ -312,7 +304,7 @@ pub(crate) fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
     }
 }
 
-/// The contract of actor type `A`, as a node hosting it registers it: name, key fields, state schema and message schemas.
+/// The contract of actor type `A`, as a node hosting it registers it: name, state schema and message schemas.
 /// Fails with the type's problems when it is invalid (see [`crate::runtime::StartError`]).
 pub fn contract_of<A: Actor>() -> Result<Contract, Vec<String>> {
     analyse::<A>().map(|a| a.contract.as_ref().clone())

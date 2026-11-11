@@ -53,7 +53,7 @@ impl OperationOutput for ProblemJson {
 struct ActorPath {
     /// The type name, e.g. `sync`.
     r#type: String,
-    /// The key, e.g. `acme`, `b1:7`, or `_` for a singleton.
+    /// The key: one name, percent-encoded, e.g. `acme`, `acme:7` or `jan%40example.com`; `_` for a singleton.
     key: String,
 }
 
@@ -145,7 +145,7 @@ fn routes(access: Access) -> ApiRouter<Arc<Api>> {
     let full = access == Access::Full;
 
     let mut actor = get_with(handlers::get_actor, |op| {
-        described(op, "getActor", "One actor: its type, key values, state and version.")
+        described(op, "getActor", "One actor: its address, type, state and version.")
             .input::<Path<ActorPath>>()
             .response::<200, Json<ActorView>>()
     });

@@ -22,7 +22,7 @@ fn type_name() -> TypeName {
 }
 
 fn instance(id: &str) -> ActorAddress {
-    ActorAddress::of(&type_name(), [id]).unwrap()
+    ActorAddress::of(&type_name(), id).unwrap()
 }
 
 /// Makes every insert of a message of type `Poison` fail, in the middle of whatever transaction does it.

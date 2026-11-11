@@ -98,6 +98,8 @@ async fn one_type_is_served_by_name() {
     let app = actor_api(system);
     let found = get_json(&app, "/types/counter").await;
     assert_eq!(found["name"], "counter");
-    assert_eq!(found["key"], serde_json::json!(["id"]));
+    // Scenario: The view of a type.
+    let keys: Vec<&str> = found.as_object().unwrap().keys().map(String::as_str).collect();
+    assert_eq!(keys, ["name", "hash", "state", "messages"]);
     assert_problem(&get(&app, "/types/nope").await, 404, cicada::api::problem_types::NO_SUCH_TYPE);
 }

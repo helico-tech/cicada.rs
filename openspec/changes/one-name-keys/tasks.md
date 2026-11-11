@@ -6,32 +6,32 @@ inside `crates/cicada`.
 
 ## 1. One name per ref
 
-- [ ] 1.1 The address [2, 3, 5]: `:` joins the characters that `percent.rs` leaves as they are; `ActorAddress::of`
+- [x] 1.1 The address [2, 3, 5]: `:` joins the characters that `percent.rs` leaves as they are; `ActorAddress::of`
       takes a type name and one name; `name()` gives the decoded name and replaces `key_values()`. Verify: tests for
       the scenarios "A ref with one field", "A ref without fields", "A value holds a separator", "An address of an
       old key with two parts" and "An invalid address".
-- [ ] 1.2 The reader [1, 5]: replace `address/params.rs` by a small reader built on serde that takes the one string
+- [x] 1.2 The reader [1, 5]: replace `address/params.rs` by a small reader built on serde that takes the one string
       out of a ref and puts it back; `RefBinding` holds no list of fields; `to_params` and `from_params` go. A node
       checks the ref of each type it hosts at start by what its `Deserialize` asks for; `address()` of a ref checks
       what its `Serialize` writes. Verify: tests for the scenarios "A field that serde skips", "A field that is a
       newtype of a string", "A newtype ref", "A ref with typed parts that writes itself as a string", "A ref with
       several fields", "A ref with a number", "A ref with an enum variant" and "A ref of a type the node does not
       host".
-- [ ] 1.3 The refs of this repository that are not one string [5]: `BatchItem` of the examples keeps its typed
+- [x] 1.3 The refs of this repository that are not one string [5]: `BatchItem` of the examples keeps its typed
       fields and names `String` as its serde form (scenario "A ref that joins two parts"); the three test refs with
       two fields and `Num` and `Worker` get one `String`. Verify: `cargo test --workspace` passes, and no ref in the
       workspace is refused at start except the ones a test means to be.
-- [ ] 1.4 The canonical check [5]: a node that hosts a type still decodes an address as its ref and refuses one the
+- [x] 1.4 The canonical check [5]: a node that hosts a type still decodes an address as its ref and refuses one the
       ref does not accept; the write-back-and-compare half of `canonical_problem` and its special case in `turn.rs`
       go. Verify: a test that a singleton refuses a key other than `_`, and a test that a ref with a reader of its
       own refuses a name it does not accept, on a create over HTTP (`422`).
 
 ## 2. No key fields in a contract or a view
 
-- [ ] 2.1 `Contract` [5]: no key fields in `new`, in the JSON form or in the hash; `key_fields()` and `params_of`
+- [x] 2.1 `Contract` [5]: no key fields in `new`, in the JSON form or in the hash; `key_fields()` and `params_of`
       go; `from_json` ignores a `key` entry. Verify: tests for the scenarios "The JSON form", "A contract snapshot
       of an earlier version" and "Changing a ref's fields" (the hash stays when the field of a ref is renamed).
-- [ ] 2.2 The wire model, HTTP, client and command line [5]: `TypeView.key`, `ActorView.params` and
+- [x] 2.2 The wire model, HTTP, client and command line [5]: `TypeView.key`, `ActorView.params` and
       `ActorSnapshot.params` go; the client follows; the command line and the terminal UI lose the columns and facts
       for them. Regenerate `docs/openapi.json`. Verify: tests for the scenarios "The view of an actor" and "The view
       of a type"; the OpenAPI test passes; the `TestBackend` tests pass.

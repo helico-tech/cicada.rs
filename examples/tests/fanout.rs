@@ -62,6 +62,8 @@ async fn while_running_the_children_are_instances_of_their_own() {
     assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1); // only the parent's turn
     assert!(test.exists(&BatchItem { batch: "b-1".into(), index: 0 }).await);
     assert!(test.exists(&BatchItem { batch: "b-1".into(), index: 1 }).await);
+    // A ref that joins two parts: one name, `batch.index`.
+    assert_eq!(common::list(&test, "batch-items/").await, vec!["batch-items/b-1.0", "batch-items/b-1.1"]);
     assert_eq!(batch_state(&test, &batch()).await.status, BatchStatus::Running);
     test.run_until_idle().await;
     assert_eq!(batch_state(&test, &batch()).await.status, BatchStatus::Completed);

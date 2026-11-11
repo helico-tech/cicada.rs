@@ -14,10 +14,16 @@ use cicada_client::ActorClient;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
+/// An account of a tenant: its name is `tenant:id`, the address the ref with these two fields had before.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Account {
-    pub tenant: String,
-    pub id: i32,
+    pub name: String,
+}
+
+impl Account {
+    pub fn tenant(&self) -> &str {
+        self.name.rsplit_once(':').map_or(&self.name, |(tenant, _)| tenant)
+    }
 }
 
 impl ActorRef for Account {
@@ -26,7 +32,7 @@ impl ActorRef for Account {
 }
 
 pub fn account(tenant: &str, id: i32) -> Account {
-    Account { tenant: tenant.to_owned(), id }
+    Account { name: format!("{tenant}:{id}") }
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -72,8 +78,8 @@ impl Actor for AccountActor {
             AccountMsg::Hold { gate } => gates::wait(&gate).await,
             AccountMsg::Explode => return Err(HandlerError::msg("boom")),
             AccountMsg::Transfer { to, amount } => {
-                let tenant = turn.self_ref().tenant.clone();
-                turn.send(&Account { tenant, id: to }, AccountMsg::Deposit { amount })?;
+                let to = account(turn.self_ref().tenant(), to);
+                turn.send(&to, AccountMsg::Deposit { amount })?;
             }
         }
         Ok(())

@@ -24,7 +24,7 @@ fn type_name() -> TypeName {
 }
 
 fn instance(id: &str) -> ActorAddress {
-    ActorAddress::of(&type_name(), [id]).unwrap()
+    ActorAddress::of(&type_name(), id).unwrap()
 }
 
 fn at_seconds(seconds: i64) -> Timestamp {

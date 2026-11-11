@@ -19,7 +19,7 @@ pub(crate) fn instance(req: &Request) -> String {
 }
 
 /// The actor a `/actors/{type}/{key}` request addresses. The two segments are read raw (still percent-encoded), so
-/// that an encoded `:` in a value is not mistaken for the separator of the key.
+/// that an encoded `/` in a name is not mistaken for the end of the key.
 pub(crate) fn address(uri: &Uri) -> Result<ActorAddress, ApiProblem> {
     let path = uri.path();
     let below = path.strip_prefix("/actors/").unwrap_or(path);
@@ -150,10 +150,10 @@ mod tests {
     }
 
     #[test]
-    fn keys_stay_canonical_and_an_encoded_colon_is_a_value() {
+    fn keys_stay_canonical_and_a_colon_is_part_of_the_name() {
         assert_eq!(address_of("/actors/c/a%20b%2fc%c3%a9").unwrap().as_str(), "c/a%20b%2Fc%C3%A9");
-        assert_eq!(address_of("/actors/c/x%3Ay").unwrap().key_values(), ["x:y"]);
-        assert_eq!(address_of("/actors/c/x:y").unwrap().key_values(), ["x", "y"]);
+        assert_eq!(address_of("/actors/c/x%3Ay").unwrap().as_str(), "c/x:y");
+        assert_eq!(address_of("/actors/c/x:y").unwrap().name(), "x:y");
         for bad in ["/actors/c/%zz", "/actors/c/%C3", "/actors/c/%2E%2E", "/actors/C/x"] {
             assert!(address_of(bad).is_err(), "{bad}");
         }

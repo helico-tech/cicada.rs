@@ -94,7 +94,7 @@ async fn create_is_idempotent_get_returns_state_and_version() {
 
     let view = c.send_only.view(&counter).await;
     assert_eq!(view.type_name, "e2e.counter");
-    assert_eq!(view.params, BTreeMap::from([("id".to_owned(), id)]));
+    assert_eq!(view.address.name(), id);
     assert_eq!(view.version, 0);
     let state: CounterState = c.send_only.state(&counter).await;
     assert_eq!(state.count, 0, "a repeated create leaves the state untouched");

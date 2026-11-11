@@ -111,6 +111,24 @@ async fn a_type_that_keeps_no_data_has_the_schema_of_an_object_without_propertie
     assert_eq!(state["additionalProperties"], false, "{state}");
 }
 
+/// A hosting node decodes the address as its ref: a singleton accepts only `_`, and a ref with a reader of its own
+/// refuses a name it does not accept.
+#[tokio::test(start_paused = true)]
+async fn a_create_under_an_address_the_ref_does_not_accept_is_an_invalid_address() {
+    let app = actor_api(node_with(memory_store(), |b| b.host(CleanupActor).host(TicketActor)).await);
+    let other = "/actors/maintenance.cleanup/other";
+    let reply = put(&app, other, r#"{"state": {}}"#).await;
+    assert_problem(&reply, 422, pt::INVALID_ADDRESS);
+    assert!(reply.text.contains("singleton"), "{}", reply.text);
+    absent(&app, other).await;
+    let reply = put(&app, "/actors/tickets/seven", r#"{"state": {}}"#).await;
+    assert_problem(&reply, 422, pt::INVALID_ADDRESS);
+    assert!(reply.text.contains("'seven' is not a number"), "{}", reply.text);
+    absent(&app, "/actors/tickets/seven").await;
+    assert_eq!(put(&app, CLEANUP, r#"{"state": {}}"#).await.status, StatusCode::CREATED);
+    assert_eq!(put(&app, "/actors/tickets/7", r#"{"state": {}}"#).await.status, StatusCode::CREATED);
+}
+
 #[tokio::test(start_paused = true)]
 async fn create_errors() {
     let app = app().await;
@@ -123,19 +141,19 @@ async fn create_errors() {
 
 // ---- GET / DELETE /actors/{path} ----
 
+/// Scenario: The view of an actor.
 #[tokio::test(start_paused = true)]
-async fn get_returns_type_params_state_and_version() {
+async fn get_returns_address_type_state_and_version_and_no_params() {
     let app = app().await;
     put(&app, "/actors/counter/a", r#"{"state": {"total": 1}}"#).await;
     let body = get_json(&app, "/actors/counter/a").await;
     assert_eq!(body["address"], "counter/a");
     assert_eq!(body["type"], "counter");
-    assert_eq!(body["params"]["id"], "a");
     assert_eq!(body["state"]["total"], 1);
     assert_eq!(body["version"], 0);
     instant(&body["createdAt"]);
     let keys: Vec<&str> = body.as_object().unwrap().keys().map(String::as_str).collect();
-    assert_eq!(keys, ["address", "type", "params", "state", "version", "createdAt", "paused"]);
+    assert_eq!(keys, ["address", "type", "state", "version", "createdAt", "paused"]);
 
     put(&app, "/actors/ping/p", r#"{"state": {}}"#).await;
     assert_eq!(get_json(&app, "/actors/ping/p").await["state"], json!({}));
@@ -539,6 +557,7 @@ async fn delete_a_type_answers_204_404_and_409_while_actors_of_it_exist() {
     assert_problem(&put(&app, "/actors/counter/b", r#"{"state": {}}"#).await, 404, pt::NO_SUCH_TYPE);
 }
 
+/// Scenario: The view of a type, in the list.
 #[tokio::test(start_paused = true)]
 async fn types_return_the_generated_schemas() {
     let app = app().await;
@@ -546,8 +565,9 @@ async fn types_return_the_generated_schemas() {
     let types = items(&list);
     let names: Vec<&Value> = types.iter().map(|t| &t["name"]).collect();
     assert_eq!(names, [&json!("counter"), &json!("ping")]);
-    assert_eq!(types[0]["key"], json!(["id"]));
     let counter = &types[0];
+    let keys: Vec<&str> = counter.as_object().unwrap().keys().map(String::as_str).collect();
+    assert_eq!(keys, ["name", "hash", "state", "messages"]);
     assert!(counter["hash"].as_str().unwrap().starts_with("sha256:"));
     let messages: Vec<&str> = counter["messages"].as_object().unwrap().keys().map(String::as_str).collect();
     assert_eq!(messages, ["Add", "Block", "Fail", "Forward"]);
@@ -585,11 +605,13 @@ async fn percent_encoded_segments_map_to_canonical_actor_addresses() {
     assert_eq!(put(&app, "/actors/counter/a%20b%2Fc%C3%A9", r#"{"state": {}}"#).await.status, StatusCode::CREATED);
     let body = get_json(&app, "/actors/counter/a%20b%2Fc%C3%A9").await;
     assert_eq!(body["address"], "counter/a%20b%2Fc%C3%A9");
-    assert_eq!(body["params"]["id"], "a b/cé");
+    // A colon is part of the name and written as it is; an encoded one reads as the same name.
+    assert_eq!(put(&app, "/actors/counter/acme:7", r#"{"state": {}}"#).await.status, StatusCode::CREATED);
+    assert_eq!(get_json(&app, "/actors/counter/acme%3A7").await["address"], "counter/acme:7");
     // Non-canonical but equivalent escapes address the same instance.
     assert_eq!(get(&app, "/actors/counter/a%20b%2fc%c3%a9").await.status, StatusCode::OK);
     assert_eq!(get(&app, "/actors/counter/a%20b%2Fc%C3%A9/mailbox").await.status, StatusCode::OK);
-    assert_eq!(get_json(&app, "/actors").await["items"], json!(["counter/a%20b%2Fc%C3%A9"]));
+    assert_eq!(get_json(&app, "/actors").await["items"], json!(["counter/a%20b%2Fc%C3%A9", "counter/acme:7"]));
     assert_problem(&get(&app, "/actors/counter/a%zz").await, 400, pt::BAD_REQUEST);
 }
 

@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use serde_json::Value;
 
 use crate::address::{ActorAddress, TypeName};
@@ -18,8 +16,8 @@ pub enum CreateActorResult {
     /// The initial state was refused: it is `null` (checked on every node), or it cannot be decoded (checked on nodes
     /// that host the type).
     InvalidState(String),
-    /// The address cannot be an instance of its type, checked on nodes that host the type: its key does
-    /// not decode as the ref, or are not in the canonical form the ref writes (`x/007` for an integer).
+    /// The address cannot be an instance of its type, checked on nodes that host the type: the ref does not accept its
+    /// name (a singleton accepts only `_`, a ref with a reader of its own may refuse a name).
     InvalidAddress(String),
 }
 
@@ -57,8 +55,6 @@ pub enum SendResult {
 pub struct ActorSnapshot {
     /// The instance.
     pub address: ActorAddress,
-    /// The values of its key, by field name.
-    pub params: BTreeMap<String, String>,
     /// Its state.
     pub state: Value,
     /// Its version.

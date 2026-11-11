@@ -73,7 +73,12 @@ impl BatchState {
 }
 
 /// One item of a [`Batch`]; lives only until it reported its result.
+///
+/// A key is one name, so this ref keeps its two typed parts and names `String` as its serde form: the item `7` of the
+/// batch `b1` is written as `b1.7` and has the address `batch-items/b1.7`. The index comes after the last `.`, so a
+/// batch id may hold dots.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(into = "String", try_from = "String")]
 pub struct BatchItem {
     /// The parent's id.
     pub batch: String,
@@ -84,6 +89,22 @@ pub struct BatchItem {
 impl ActorRef for BatchItem {
     const TYPE: &'static str = "batch-items";
     type Message = BatchItemMsg;
+}
+
+impl From<BatchItem> for String {
+    fn from(item: BatchItem) -> Self {
+        format!("{}.{}", item.batch, item.index)
+    }
+}
+
+impl TryFrom<String> for BatchItem {
+    type Error = String;
+
+    fn try_from(name: String) -> Result<Self, String> {
+        let (batch, index) = name.rsplit_once('.').ok_or_else(|| format!("'{name}' is not batch.index"))?;
+        let index = index.parse().map_err(|_| format!("'{name}' does not end in an index"))?;
+        Ok(Self { batch: batch.to_owned(), index })
+    }
 }
 
 /// Messages of [`BatchItem`].

@@ -38,7 +38,13 @@ async fn total(store: &dyn Backend, r: &Counter) -> i32 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Worker {
-    id: i32,
+    id: String,
+}
+
+impl Worker {
+    fn new(id: impl ToString) -> Self {
+        Self { id: id.to_string() }
+    }
 }
 
 impl ActorRef for Worker {
@@ -132,8 +138,8 @@ async fn concurrency_is_bounded_by_the_per_node_limit() {
         .build();
     system.start().await.unwrap();
     for id in 0..12 {
-        system.create(&Worker { id }, &NoState {}).await.unwrap();
-        system.send(&Worker { id }, WorkerMsg::Job { millis: 100, first_attempt_only: false }).await.unwrap();
+        system.create(&Worker::new(id), &NoState {}).await.unwrap();
+        system.send(&Worker::new(id), WorkerMsg::Job { millis: 100, first_attempt_only: false }).await.unwrap();
     }
     eventually(5 * SECOND, || async { gauges.done.load(Ordering::SeqCst) == 12 }).await;
     assert_eq!(gauges.max_running.load(Ordering::SeqCst), 3);
@@ -219,9 +225,9 @@ async fn graceful_stop_lets_running_turns_finish_within_the_grace_period() {
     let store = Store::memory();
     let system = system(store.clone()).host(WorkerActor(gauges.clone())).build();
     system.start().await.unwrap();
-    system.create(&Worker { id: 1 }, &NoState {}).await.unwrap();
+    system.create(&Worker::new(1), &NoState {}).await.unwrap();
     let m = accepted(
-        system.send(&Worker { id: 1 }, WorkerMsg::Job { millis: 300, first_attempt_only: false }).await.unwrap(),
+        system.send(&Worker::new(1), WorkerMsg::Job { millis: 300, first_attempt_only: false }).await.unwrap(),
     );
     eventually(5 * SECOND, || async { gauges.running.load(Ordering::SeqCst) == 1 }).await;
     system.stop_with_grace(5 * SECOND).await;
@@ -239,9 +245,9 @@ async fn turns_still_running_after_the_grace_period_are_cancelled_and_their_leas
         .host(WorkerActor(gauges.clone()))
         .build();
     first.start().await.unwrap();
-    first.create(&Worker { id: 1 }, &NoState {}).await.unwrap();
+    first.create(&Worker::new(1), &NoState {}).await.unwrap();
     let m = accepted(
-        first.send(&Worker { id: 1 }, WorkerMsg::Job { millis: 60_000, first_attempt_only: true }).await.unwrap(),
+        first.send(&Worker::new(1), WorkerMsg::Job { millis: 60_000, first_attempt_only: true }).await.unwrap(),
     );
     eventually(5 * SECOND, || async { gauges.running.load(Ordering::SeqCst) == 1 }).await;
     let started = Instant::now();

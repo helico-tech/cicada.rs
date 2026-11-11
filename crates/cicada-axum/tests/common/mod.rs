@@ -136,6 +136,43 @@ impl Actor for CleanupActor {
     }
 }
 
+/// type `tickets`: a ref with a reader of its own, whose name is a number.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(into = "String", try_from = "String")]
+pub struct Ticket(pub u32);
+
+impl From<Ticket> for String {
+    fn from(t: Ticket) -> Self {
+        t.0.to_string()
+    }
+}
+
+impl TryFrom<String> for Ticket {
+    type Error = String;
+
+    fn try_from(name: String) -> Result<Self, String> {
+        name.parse().map(Ticket).map_err(|_| format!("'{name}' is not a number"))
+    }
+}
+
+impl ActorRef for Ticket {
+    const TYPE: &'static str = "tickets";
+    type Message = PingMsg;
+}
+
+pub struct TicketActor;
+
+impl Actor for TicketActor {
+    type Ref = Ticket;
+    type State = NoState;
+    type Message = PingMsg;
+    const UNHANDLED: Unhandled = Unhandled::Drop;
+
+    async fn handle(&self, _turn: &mut Turn<Self>, _message: PingMsg) -> HandlerResult {
+        Ok(())
+    }
+}
+
 /// Named latches that `Block` handlers wait on.
 pub mod gates {
     use super::*;

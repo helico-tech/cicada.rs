@@ -9,7 +9,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::actor::Actor;
-use crate::address::{ActorAddress, ActorRef, RefBinding, to_params};
+use crate::address::{ActorAddress, ActorRef};
 use crate::message::{self, MessageFamily};
 use crate::plugin::{Attributes, TurnInfo};
 use crate::retention::Retention;
@@ -267,7 +267,7 @@ impl<A: Actor> Turn<A> {
         (self.state, self.state_assigned, self.effects)
     }
 
-    /// Own typed ref. Its fields are the key.
+    /// Own typed ref, read from this instance's name.
     pub fn self_ref(&self) -> &A::Ref {
         &self.self_ref
     }
@@ -331,7 +331,7 @@ impl<A: Actor> Turn<A> {
         msg: impl Into<R::Message>,
         options: SendOptions,
     ) -> Result<MessageId, TurnError> {
-        let address = self.typed_address(to)?;
+        let address = to.address().map_err(|e| TurnError::Invalid(e.to_string()))?;
         self.buffer(address, &msg.into(), options)
     }
 
@@ -383,8 +383,7 @@ impl<A: Actor> Turn<A> {
             .map_err(|e| TurnError::Invalid(format!("The initial state cannot be encoded: {e}")))?;
         message::check_not_null("initial state", &state).map_err(TurnError::Invalid)?;
         limits::check_json("initial state", Some(&state)).map_err(TurnError::Invalid)?;
-        let binding = RefBinding::<R>::new().map_err(|e| TurnError::Invalid(e.to_string()))?;
-        let address = binding.to_address(r).map_err(|e| TurnError::Invalid(e.to_string()))?;
+        let address = r.address().map_err(|e| TurnError::Invalid(e.to_string()))?;
         self.effects.creates.push(ActorCreate { address, state });
         Ok(())
     }
@@ -415,18 +414,6 @@ impl<A: Actor> Turn<A> {
     /// without retry whatever its retry policy.
     pub fn fail(&self, reason: impl fmt::Display + fmt::Debug + Send + Sync + 'static) -> HandlerError {
         HandlerError::permanent(reason)
-    }
-
-    fn typed_address<R: ActorRef>(&mut self, to: &R) -> Result<ActorAddress, TurnError> {
-        let invalid = |e: &dyn fmt::Display| TurnError::Invalid(e.to_string());
-        // `self` always means this instance's own address, even when it was claimed under a non-canonical form.
-        if R::TYPE == <A::Ref as ActorRef>::TYPE
-            && let (Ok(a), Ok(b)) = (to_params(to), to_params(&self.self_ref))
-            && a == b
-        {
-            return Ok(self.info.self_address.clone());
-        }
-        to.address().map_err(|e| invalid(&e))
     }
 
     fn buffer<M: MessageFamily>(

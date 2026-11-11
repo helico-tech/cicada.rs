@@ -150,7 +150,6 @@ pub async fn screen(client: &ActorClient, target: &Target) -> anyhow::Result<Scr
                 subject: Item::Type(name.clone()),
                 facts: vec![
                     fact("Name", &view.name),
-                    fact("Key", if view.key.is_empty() { "(singleton)".to_owned() } else { view.key.join(":") }),
                     fact("Messages", view.messages.len().to_string()),
                     Fact { label: "Hash", value: short_hash(&view.hash), tone: Tone::Dim },
                 ],
@@ -177,11 +176,6 @@ async fn actor_overview(client: &ActorClient, actor: &cicada::ActorAddress) -> a
     let mailbox = mailbox.map(|p| p.items).unwrap_or_default();
     // The prefix also matches longer addresses; keep this actor's, newest first.
     let outcomes: Vec<OutcomeView> = outcomes.items.into_iter().rev().filter(|o| o.actor == *actor).collect();
-    let key = if view.params.is_empty() {
-        "(singleton)".to_owned()
-    } else {
-        view.params.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(", ")
-    };
     let turn_fact = match &turn {
         Some(t) if t.cancel_requested => {
             Fact { label: "Turn", value: format!("● stopping {} on {}", t.message_id, t.node), tone: Tone::Bad }
@@ -199,7 +193,6 @@ async fn actor_overview(client: &ActorClient, actor: &cicada::ActorAddress) -> a
         subject: Item::Actor(actor.clone()),
         facts: vec![
             fact("Type", &view.type_name),
-            fact("Key", key),
             fact("Version", view.version.to_string()),
             fact("Created", when(view.created_at)),
             Fact { label: "Mailbox", value: format!("{mailbox_state}, {pending} pending"), tone },

@@ -1,12 +1,14 @@
-//! Typed refs are checked against the TypeRegistry where the compiler cannot (a ref type that is not registered, the
-//! initial state of a created type), and `self` is the claimed address even when it is not canonical.
+//! Typed refs are checked where the compiler cannot: against the TypeRegistry (a ref type that is not registered, the
+//! initial state of a created type), by a hosting node (an address its ref does not accept), and at the call (a ref
+//! that serde does not write as one string has no address).
 
 use super::common::*;
 use crate::address::ActorAddress;
 use crate::prelude::*;
 use crate::runtime::{CreateActorResult, SendResult};
-use crate::store::{Backend, OutcomeStatus};
+use crate::store::OutcomeStatus;
 use crate::testing::TestActors;
+use crate::turn::TurnError;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -33,15 +35,62 @@ struct JobsState {
     runs: u32,
 }
 
-/// A ref with an integer parameter: num/7 is canonical, num/007 is not.
+/// A ref with a reader of its own: its name is a number.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct Num {
-    n: i32,
+#[serde(into = "String", try_from = "String")]
+struct Num(u32);
+
+impl From<Num> for String {
+    fn from(n: Num) -> Self {
+        n.0.to_string()
+    }
+}
+
+impl TryFrom<String> for Num {
+    type Error = String;
+
+    fn try_from(name: String) -> Result<Self, String> {
+        name.parse().map(Num).map_err(|_| format!("'{name}' is not a number"))
+    }
 }
 
 impl ActorRef for Num {
     const TYPE: &'static str = "num";
     type Message = NumMsg;
+}
+
+/// A singleton.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Solo;
+
+impl ActorRef for Solo {
+    const TYPE: &'static str = "solo";
+    type Message = NumMsg;
+}
+
+struct SoloActor;
+
+impl Actor for SoloActor {
+    type Ref = Solo;
+    type State = NoState;
+    type Message = NumMsg;
+    const UNHANDLED: Unhandled = Unhandled::Fail;
+
+    async fn handle(&self, _: &mut Turn<Self>, _: NumMsg) -> HandlerResult {
+        Ok(())
+    }
+}
+
+/// A ref of two fields, which serde does not write as one string; no node hosts its type.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Pair {
+    batch: String,
+    index: i32,
+}
+
+impl ActorRef for Pair {
+    const TYPE: &'static str = "pairs";
+    type Message = JobsMsg;
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -82,10 +131,16 @@ impl ActorRef for Maker {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type")]
 enum MakerMsg {
-    MakeJob { id: String },
-    PokeJob { id: String },
+    MakeJob {
+        id: String,
+    },
+    PokeJob {
+        id: String,
+    },
     MakeEcho,
     MakeBadCounter,
+    /// Sends to a `Pair`, which fails at the call; ends `done` only then.
+    PokePair,
 }
 
 struct MakerActor;
@@ -104,6 +159,10 @@ impl Actor for MakerActor {
             }
             MakerMsg::MakeEcho => turn.create(&Echo::new("e"), &JobsState::default())?,
             MakerMsg::MakeBadCounter => turn.create(&Counter::new("bad"), "not a counter state")?,
+            MakerMsg::PokePair => match turn.send(&Pair { batch: "b1".into(), index: 7 }, JobsMsg::RunJob) {
+                Err(TurnError::Invalid(e)) if e.contains("Pair has no address") => {}
+                other => return Err(turn.fail(format!("expected a refused send, got {other:?}"))),
+            },
         }
         Ok(())
     }
@@ -164,28 +223,40 @@ async fn a_handler_create_checks_the_initial_state_against_the_created_type() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_hosting_node_refuses_to_create_an_instance_under_a_non_canonical_address() {
-    let test = TestActors::builder().with(|n| n.host(NumActor)).build().await.unwrap();
-    match test.system().create_actor(&parse("num/007"), json!({})).await.unwrap() {
-        CreateActorResult::InvalidAddress(e) => assert!(e.contains("num/7"), "{e}"),
+async fn a_hosting_node_refuses_to_create_an_instance_under_an_address_its_ref_does_not_accept() {
+    let test = TestActors::builder().with(|n| n.host(NumActor).host(SoloActor)).build().await.unwrap();
+    let create = async |address: &str| test.system().create_actor(&parse(address), json!({})).await.unwrap();
+    match create("num/seven").await {
+        CreateActorResult::InvalidAddress(e) => assert!(e.contains("'seven' is not a number"), "{e}"),
         other => panic!("{other:?}"),
     }
-    let seven = test.system().create_actor(&parse("num/seven"), json!({})).await.unwrap();
-    assert!(matches!(seven, CreateActorResult::InvalidAddress(_)), "{seven:?}");
-    assert_eq!(test.system().create_actor(&parse("num/7"), json!({})).await.unwrap(), CreateActorResult::Created);
+    assert_eq!(create("num/7").await, CreateActorResult::Created);
+    match create("solo/other").await {
+        CreateActorResult::InvalidAddress(e) => assert!(e.contains("singleton"), "{e}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(create("solo/_").await, CreateActorResult::Created);
 }
 
 #[tokio::test(start_paused = true)]
-async fn self_is_the_claimed_address_even_when_it_is_not_canonical() {
+async fn a_ref_with_a_reader_of_its_own_sends_to_itself() {
     let test = TestActors::builder().with(|n| n.host(NumActor)).build().await.unwrap();
-    // Created through a node that does not host the type (no canonical check there), e.g. over HTTP.
-    let odd = parse("num/007");
-    test.store().create(&odd, json!({})).await.unwrap();
-    let first = match test.send_raw(&odd, "Again", json!({"left": 2}), SendOptions::new()).await {
+    test.create(&Num(7), &NoState {}).await;
+    let first = match test.send_raw(&parse("num/7"), "Again", json!({"left": 2}), SendOptions::new()).await {
         SendResult::Accepted(m) => m,
         other => panic!("{other:?}"),
     };
     assert_eq!(test.run_until_idle().await, 3, "the self-sends reached the same instance");
     assert_eq!(test.outcome(&first).await.unwrap().status, OutcomeStatus::Done);
     assert!(test.failures().await.is_empty());
+}
+
+/// Scenario: A ref of a type the node does not host.
+#[tokio::test(start_paused = true)]
+async fn a_send_to_a_ref_that_is_not_one_string_fails_at_the_call_and_the_turn_goes_on() {
+    let test = maker().await;
+    let poke = test.send(&m(), MakerMsg::PokePair).await;
+    test.run_until_idle().await;
+    let outcome = test.outcome(&poke).await.unwrap();
+    assert_eq!(outcome.status, OutcomeStatus::Done, "{:?}", outcome.error);
 }

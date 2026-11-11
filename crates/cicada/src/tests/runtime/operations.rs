@@ -1,6 +1,5 @@
 //! The in-process operations behind the HTTP endpoints.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -70,7 +69,6 @@ async fn get_list_delete() {
     test.create(&Counter::new("b"), &CounterState::default()).await;
     let snapshot = system.get_actor(&a().address()).await.unwrap().unwrap();
     assert_eq!(snapshot.address.type_name(), &type_name::<Counter>());
-    assert_eq!(snapshot.params, BTreeMap::from([("id".to_owned(), "a".to_owned())]));
     assert_eq!(snapshot.version, 0);
     assert_eq!(
         system.list_actors("counter/", None, 100).await.unwrap().items,
@@ -159,7 +157,6 @@ async fn status_cancel_outcomes_types() {
     assert_eq!(types.iter().map(|t| t.name().clone()).collect::<Vec<_>>(), vec![type_name::<Counter>()]);
     let expected = Contract::new(
         type_name::<Counter>(),
-        vec!["id".into()],
         schema::root_schema::<CounterState>(),
         schema::message_schemas::<CounterMsg>().unwrap(),
     );
@@ -244,7 +241,6 @@ async fn a_type_is_removed_only_while_no_actor_of_it_exists_and_is_not_served_af
     );
     let def = Contract::new(
         name.clone(),
-        vec!["id".into()],
         schema::root_schema::<CounterState>(),
         schema::message_schemas::<CounterMsg>().unwrap(),
     )

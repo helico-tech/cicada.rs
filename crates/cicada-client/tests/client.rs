@@ -62,9 +62,7 @@ async fn typed_create_send_state_and_status() {
     let view = actors.get(&acme()).await.unwrap().unwrap();
     assert_eq!(view.address, acme().address().unwrap());
     assert_eq!(view.type_name, "account");
-    // Alphabetical, not in key order.
-    let params: Vec<(&str, &str)> = view.params.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-    assert_eq!(params, [("id", "7"), ("tenant", "acme")]);
+    assert_eq!(view.address.as_str(), "account/acme:7");
     assert_eq!(view.version, 1);
 
     assert!(actors.get(&account("acme", 8)).await.unwrap().is_none());
@@ -118,7 +116,7 @@ async fn types_that_keep_no_data_and_percent_encoded_parameters() {
     let (actors, _, _) = client_test(|r| r).await;
     let odd = account("a b/c é", 1);
     assert!(actors.create(&odd, &AccountState::default()).await.unwrap().created);
-    assert_eq!(actors.get(&odd).await.unwrap().unwrap().params.get("tenant").map(String::as_str), Some("a b/c é"));
+    assert_eq!(actors.get(&odd).await.unwrap().unwrap().address.name(), "a b/c é:1");
     assert_eq!(actors.list_actors("account/", None, None).await.unwrap().items, [odd.address().unwrap()]);
 
     let beacon = Beacon { name: "b".into() };
