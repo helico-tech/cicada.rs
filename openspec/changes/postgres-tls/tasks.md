@@ -23,7 +23,7 @@ The numbers in brackets are the decisions of `design.md`.
 - [x] 2.1 `docs/operations.md`: a paragraph on TLS for PostgreSQL [6]; `README.md`: a pointer to it where it shows
       how to open PostgreSQL; `CHANGELOG.md`: one entry under Fixed, with the sentence on the default mode. Verify:
       `cargo test -p cicada-examples --doc` passes.
-- [ ] 2.2 `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` with
+- [x] 2.2 `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` with
       `CICADA_PG_URL` set, `openspec validate postgres-tls --strict`, and the end-to-end suite
       (`CICADA_E2E=1 cargo test -p cicada-e2e`), whose image of the sample service now compiles `aws-lc-sys`. Verify:
       all pass; if PostgreSQL cannot be started, say so in the report and leave this task open.
