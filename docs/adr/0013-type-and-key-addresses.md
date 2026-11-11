@@ -4,7 +4,8 @@ Date: 2026-11-09
 
 ## Status
 
-Accepted
+Accepted. ADR 0021 replaces its keys of several fields, the `:` as a separator, and `params` and `key` in the
+views; the rest stands.
 
 ## Context
 
