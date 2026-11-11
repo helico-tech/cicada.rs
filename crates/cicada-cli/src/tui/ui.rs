@@ -595,6 +595,30 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_row_is_drawn_in_red() {
+        let mut app = loaded(ScreenData::Grid(outcome_rows()));
+        app.on_key(KeyEvent::from(KeyCode::Char('j'))); // select `d1`, so the failed row is not highlighted
+        let mut terminal = Terminal::new(TestBackend::new(140, 24)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        // The cells of `word` in the table, by the column of its first letter in some row.
+        let cells = |word: &str| {
+            let width = word.chars().count() as u16;
+            (0..buffer.area.height)
+                .flat_map(|y| (0..buffer.area.width.saturating_sub(width)).map(move |x| (x, y)))
+                .find(|&(x, y)| {
+                    word.chars().enumerate().all(|(i, c)| buffer[(x + i as u16, y)].symbol() == c.to_string())
+                })
+                .map(|(x, y)| (x..x + width).map(|x| buffer[(x, y)].clone()).collect::<Vec<_>>())
+                .unwrap_or_else(|| panic!("{word} is not drawn"))
+        };
+        for word in ["f1", "● failed"] {
+            assert!(cells(word).iter().all(|c| c.fg == Color::Red), "{word} is red: {:?}", cells(word));
+        }
+        assert!(cells("d1").iter().all(|c| c.fg != Color::Red), "a done row is not red");
+    }
+
+    #[test]
     fn filter_prompt_confirm_and_help_draw() {
         let mut app = loaded(ScreenData::Grid(outcome_rows()));
         for c in "/f1".chars() {

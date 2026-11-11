@@ -186,7 +186,7 @@ async fn get_command(client: &ActorClient, get: Get, format: Format, out: &mut d
             one(out, format, &found(client.turn(&actor).await?, || format!("running turn on actor {actor}"))?)
         }
         Get::Nodes => list(out, format, &client.nodes().await?),
-        Get::Node { id } => one(out, format, &found(client.node(&id).await?, || format!("node {id}"))?.node),
+        Get::Node { id } => one(out, format, &found(client.node(&id).await?, || format!("node {id}"))?),
         Get::Types => list(out, format, &client.types().await?),
         Get::Type { name } => one(out, format, &found(client.get_type(&name).await?, || format!("type {name}"))?),
     }

@@ -303,8 +303,8 @@ pub struct Selection {
     /// Messages of actors under this address prefix.
     #[arg(long)]
     pub prefix: Option<String>,
-    /// Messages of this type.
-    #[arg(long = "type")]
+    /// Messages of this type, under `--prefix`.
+    #[arg(long = "type", requires = "prefix")]
     pub message_type: Option<String>,
 }
 
@@ -340,19 +340,20 @@ pub enum Retry {
     Messages(Selection),
 }
 
-/// `config` commands. They rewrite the whole file, so comments in it are not kept.
+/// `config` commands. `use-context` and `set-context` rewrite the whole file, so comments in it are not kept.
 #[derive(Debug, Subcommand)]
 pub enum ConfigCommand {
     /// List the contexts; `*` marks the current one.
     GetContexts,
     /// Print the current context.
     CurrentContext,
-    /// Make a context the current one.
+    /// Make a context the current one. Rewrites the whole file: comments in it are not kept.
     UseContext {
         /// The context name.
         name: String,
     },
-    /// Add or replace a context, with the global `--server` (required) and `--token`.
+    /// Add or replace a context, with the global `--server` (required) and `--token`. Rewrites the whole file:
+    /// comments in it are not kept.
     SetContext {
         /// The context name.
         name: String,
@@ -414,6 +415,24 @@ mod tests {
         assert!(Cli::try_parse_from(["cicada", "cancel", "messages"]).is_err());
         assert!(Cli::try_parse_from(["cicada", "cancel", "messages", "--id", "a", "--prefix", "x/"]).is_err());
         assert!(Cli::try_parse_from(["cicada", "cancel", "messages", "--prefix", "x/", "--type", "T"]).is_ok());
+    }
+
+    #[test]
+    fn a_bulk_filter_by_type_needs_a_prefix() {
+        for verb in ["cancel", "retry"] {
+            assert!(Cli::try_parse_from(["cicada", verb, "messages", "--type", "T"]).is_err(), "{verb}");
+            assert!(Cli::try_parse_from(["cicada", verb, "messages", "--prefix", "x/"]).is_ok(), "{verb}");
+        }
+    }
+
+    #[test]
+    fn the_commands_that_rewrite_the_config_file_say_that_comments_are_lost() {
+        let mut cli = Cli::command();
+        let config = cli.find_subcommand_mut("config").unwrap();
+        for name in ["use-context", "set-context"] {
+            let help = config.find_subcommand_mut(name).unwrap().render_long_help().to_string();
+            assert!(help.contains("comments in it are not kept"), "{name}: {help}");
+        }
     }
 
     #[test]

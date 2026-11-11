@@ -32,8 +32,12 @@ impl ActorRef for Account {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type")]
 enum AccountMsg {
-    Deposit { amount: i64 },
+    Deposit {
+        amount: i64,
+    },
     Explode,
+    /// Never finishes; only a cancel ends its turn.
+    Hold,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -54,6 +58,7 @@ impl Actor for AccountActor {
         match message {
             AccountMsg::Deposit { amount } => turn.state_mut().balance += amount,
             AccountMsg::Explode => return Err(HandlerError::msg("boom")),
+            AccountMsg::Hold => std::future::pending::<()>().await,
         }
         Ok(())
     }
@@ -62,7 +67,12 @@ impl Actor for AccountActor {
 /// A started node hosting `account`, served on a random local port; its base URL.
 async fn server_with(wrap: impl FnOnce(Router) -> Router) -> String {
     let store = Arc::new(InMemoryStore::default());
-    let config = NodeConfig { poll_interval: Duration::from_millis(50), ..NodeConfig::default() };
+    // A short heartbeat, so a cancelled turn ends within the wait of `eventually_status`.
+    let config = NodeConfig {
+        poll_interval: Duration::from_millis(50),
+        heartbeat_interval: Some(Duration::from_millis(200)),
+        ..NodeConfig::default()
+    };
     let system = ActorSystem::builder(store).config(config).host(AccountActor).build();
     system.start().await.expect("the node starts");
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a free port");
@@ -167,6 +177,18 @@ async fn create_send_and_read_back() {
     let again =
         cicada(&s, &["send", "account/acme:7", "--type", "Deposit", "--payload", r#"{"amount":1}"#, "--id", "fixed"]);
     assert_eq!(again.await, "message fixed already accepted\n");
+
+    let at = "2999-01-01T00:00:00Z";
+    let args = ["--id", "later", "--at", at, "--header", "k=v", "--correlation-id", "c1"];
+    let send = ["send", "account/acme:7", "--type", "Deposit", "--payload", r#"{"amount":1}"#];
+    let sent = cicada(&s, &[&send[..], &args].concat()).await;
+    assert_eq!(sent, format!("message later sent, due {at}\n"));
+    let later = json(&s, &["get", "message", "later"]).await;
+    assert_eq!((later["message"]["deliverAt"].as_str(), later["status"].as_str()), (Some(at), Some("pending")));
+    assert_eq!(
+        (later["message"]["headers"]["k"].as_str(), later["message"]["correlationId"].as_str()),
+        (Some("v"), Some("c1"))
+    );
 }
 
 #[tokio::test]
@@ -229,6 +251,10 @@ async fn failed_messages_are_listed_and_retried() {
     let failed = cicada(&s, &["get", "outcomes", "--status", "failed"]).await;
     assert_eq!(rows(&failed).len(), 3);
     assert!(failed.contains("boom"), "{failed}");
+    for (since, count) in [("2000-01-01T00:00:00Z", 3), ("2999-01-01T00:00:00Z", 0)] {
+        let outcomes = cicada(&s, &["get", "outcomes", "--status", "failed", "--since", since]).await;
+        assert_eq!(rows(&outcomes).len(), count, "since {since}");
+    }
 
     let retried = sent_id(&cicada(&s, &["retry", "message", "e1", "-o", "json"]).await);
     assert_ne!(retried, "e1");
@@ -292,7 +318,11 @@ async fn nodes_types_and_health() {
     assert!(rows(&cicada(&s, &["get", "turns"]).await).is_empty());
     assert!(cicada_fails(&s, &["get", "turn", "account/acme:1"]).await.contains("not found"));
 
-    assert!(rows(&cicada(&s, &["get", "types"]).await)[0].starts_with("account  tenant:id  true      2"));
+    assert!(rows(&cicada(&s, &["get", "types"]).await)[0].starts_with("account  tenant:id  true      3"));
+    assert!(rows(&cicada(&s, &["get", "type", "account"]).await)[0].starts_with("account  tenant:id  true      3"));
+    let account = json(&s, &["get", "type", "account"]).await;
+    assert_eq!((account["name"].as_str(), account["messages"]["Hold"].is_object()), (Some("account"), true));
+    assert_eq!(cicada_fails(&s, &["get", "type", "ghost"]).await, "type ghost not found");
     assert!(cicada(&s, &["describe", "type", "account"]).await.contains("Deposit:"));
     assert_eq!(cicada(&s, &["health"]).await, format!("{s} is healthy\n"));
 
@@ -301,6 +331,28 @@ async fn nodes_types_and_health() {
     cicada(&s, &["delete", "actor", "account/acme:4"]).await;
     assert_eq!(cicada(&s, &["delete", "type", "account"]).await, "type account removed\n");
     assert_eq!(cicada_fails(&s, &["delete", "type", "account"]).await, "type account not found");
+}
+
+#[tokio::test]
+async fn a_running_turn_is_shown_and_cancelled() {
+    let s = server().await;
+    cicada(&s, &["create", "actor", "account/acme:5", "--state", "{}"]).await;
+    cicada(&s, &["send", "account/acme:5", "--type", "Hold", "--id", "h1"]).await;
+    eventually_status(&s, "h1", "running").await;
+
+    let turn = json(&s, &["get", "turn", "account/acme:5"]).await;
+    assert_eq!((turn["messageId"].as_str(), turn["cancelRequested"].as_bool()), (Some("h1"), Some(false)));
+    assert_eq!(rows(&cicada(&s, &["get", "turns", "--prefix", "account/"]).await).len(), 1);
+    let node = turn["node"].as_str().unwrap();
+    let detail = json(&s, &["get", "node", node]).await;
+    assert_eq!((detail["id"].as_str(), detail["turns"][0]["messageId"].as_str()), (Some(node), Some("h1")));
+    let yaml = cicada(&s, &["get", "node", node, "-o", "yaml"]).await;
+    assert!(yaml.contains("turns:") && yaml.contains("messageId: h1"), "{yaml}");
+
+    let cancelled = cicada(&s, &["cancel", "turn", "account/acme:5"]).await;
+    assert_eq!(cancelled, "turn on actor account/acme:5 asked to cancel\n");
+    eventually_status(&s, "h1", "cancelled").await;
+    assert!(cicada_fails(&s, &["get", "turn", "account/acme:5"]).await.contains("not found"));
 }
 
 #[tokio::test]

@@ -1023,6 +1023,11 @@ mod tests {
         let cancel = Action::Cancel(MessageId::new("m1").unwrap());
         assert_eq!(app.mode, Mode::Confirm { action: cancel.clone(), yes: false });
         assert!(app.on_key(key(KeyCode::Enter)).is_empty(), "Enter on No does nothing");
+        for no in [KeyCode::Char('n'), KeyCode::Esc] {
+            app.on_key(key(KeyCode::Char('c')));
+            assert!(app.on_key(key(no)).is_empty(), "{no:?} cancels nothing");
+            assert_eq!(app.mode, Mode::Normal, "{no:?} closes the dialog");
+        }
 
         app.on_key(key(KeyCode::Char('c')));
         app.on_key(key(KeyCode::Left));

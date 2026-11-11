@@ -6,8 +6,8 @@ use std::io::Write;
 use chrono::Utc;
 use cicada::ActorAddress;
 use cicada::api::{
-    ActorView, MailboxMessageView, MessageStatusView, MessageView, NodeView, OutcomeView, RunningTurnView, StatsView,
-    TypeView,
+    ActorView, MailboxMessageView, MessageStatusView, MessageView, NodeDetailView, NodeView, OutcomeView,
+    RunningTurnView, StatsView, TypeView,
 };
 use cicada::time::{Timestamp, format_instant};
 use clap::ValueEnum;
@@ -259,6 +259,16 @@ impl Columns for NodeView {
             cells.push(self.hosted.join(","));
         }
         cells
+    }
+}
+
+/// The node's row; JSON and YAML show the whole view, with its turns.
+impl Columns for NodeDetailView {
+    fn headers(wide: bool) -> Vec<&'static str> {
+        NodeView::headers(wide)
+    }
+    fn cells(&self, wide: bool, now: Timestamp) -> Vec<String> {
+        self.node.cells(wide, now)
     }
 }
 
