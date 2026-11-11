@@ -18,7 +18,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 # ---- runtime: Debian slim ----
 FROM debian:bookworm-slim
-# CA certificates for TLS to PostgreSQL and OTLP endpoints; curl only for the container health check.
+# CA certificates: the system's list, which the node itself does not read. Its OTLP exporter speaks plain HTTP only
+# (its reqwest has no TLS feature), and the PostgreSQL driver has its own list of public CAs and takes a private one
+# from `sslrootcert`. curl only for the container health check.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl \
  && rm -rf /var/lib/apt/lists/* \
