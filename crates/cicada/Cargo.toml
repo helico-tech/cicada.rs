@@ -9,9 +9,9 @@ publish.workspace = true
 
 [features]
 # None is on by default: a host names the store it uses and builds only that driver. PostgreSQL comes with TLS:
-# rustls, trusting the certificate store of the operating system.
+# rustls on aws-lc-rs, the crypto provider of the HTTP client, trusting the built-in list of public CAs.
 sqlite = ["dep:sqlx", "sqlx/sqlite"]
-postgres = ["dep:sqlx", "sqlx/postgres", "sqlx/tls-rustls-ring-native-roots"]
+postgres = ["dep:sqlx", "sqlx/postgres", "sqlx/tls-rustls-aws-lc-rs"]
 # The in-memory store, the test clocks and `TestActors`; turned on by `cicada-test`.
 testing = []
 
