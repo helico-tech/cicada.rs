@@ -33,6 +33,7 @@ uuid.workspace = true
 [dev-dependencies]
 # The crate itself with every feature, so that its unit tests and its tests in `tests/` run on every store.
 cicada = { path = ".", features = ["sqlite", "postgres", "testing"] }
+proptest.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 

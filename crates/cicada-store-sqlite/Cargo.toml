@@ -10,16 +10,5 @@ publish.workspace = true
 [dependencies]
 cicada = { workspace = true, features = ["sqlite"] }
 
-[dev-dependencies]
-async-trait.workspace = true
-serde_json.workspace = true
-sqlx = { workspace = true, features = ["sqlite"] }
-cicada-store-conformance.workspace = true
-cicada-test.workspace = true
-schemars.workspace = true
-serde.workspace = true
-tempfile.workspace = true
-tokio = { workspace = true, features = ["test-util"] }
-
 [lints]
 workspace = true

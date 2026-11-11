@@ -36,6 +36,7 @@ impl V1 {
             eprintln!("CICADA_PG_URL is unset: skipping a PostgreSQL test");
             return;
         };
+        let _running = crate::tests::postgres::common::permit().await;
         let random = RandomState::new().build_hasher().finish() & 0xFF_FFFF;
         let n = SCHEMAS.fetch_add(1, Ordering::SeqCst);
         let name = format!("upgrade_{}_{n}_{random:06x}", std::process::id());

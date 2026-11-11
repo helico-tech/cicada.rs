@@ -1,7 +1,5 @@
 //! `ClaimContext::send_headers`: headers a plugin adds in `on_claim` to every message the turn sends.
 
-mod common;
-
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 

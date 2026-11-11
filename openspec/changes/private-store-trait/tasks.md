@@ -40,21 +40,21 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
 
 ## 3. The tests that need the trait move into the core
 
-- [ ] 3.1 The conformance suite becomes a `#[cfg(test)]` module of `cicada`, run for the in-memory store, SQLite
+- [x] 3.1 The conformance suite becomes a `#[cfg(test)]` module of `cicada`, run for the in-memory store, SQLite
       and, with `CICADA_PG_URL` set, PostgreSQL [11]. Verify: the count per backend equals that of 1.1.
-- [ ] 3.2 The tests of the two store crates move into `cicada`, with the helper that builds a version-1 database
+- [x] 3.2 The tests of the two store crates move into `cicada`, with the helper that builds a version-1 database
       and the upgrade tests: under `crates/cicada/tests/` when they use only public calls, inside the crate when
       they call the trait. All PostgreSQL tests take their databases through one shared limit [11]. Verify: the
       counts equal those of 1.1, and the PostgreSQL tests pass in one run with `CICADA_PG_URL` set.
-- [ ] 3.3 The code of `cicada-fuzz` becomes `#[cfg(test)]` modules of `cicada`, with `proptest` as a dev-dependency
+- [x] 3.3 The code of `cicada-fuzz` becomes `#[cfg(test)]` modules of `cicada`, with `proptest` as a dev-dependency
       and the regressions files where proptest reads them for a module under `src/` [5, 11]. Verify: the count
       equals that of 1.1; each seed is still replayed (say in the report how you checked, for example by putting
       `claim.epoch + delta` back in a scratch change and seeing `backends_agree` fail on its seed); and
       `PROPTEST_CASES=20000` with the filter of the comparison passes.
-- [ ] 3.4 The 11 test files of `cicada-test` that need the trait move into `cicada` with `Faulty`, and so do
+- [x] 3.4 The 11 test files of `cicada-test` that need the trait move into `cicada` with `Faulty`, and so do
       `store_support.rs` and `retry_policy.rs` [7, 11]. Moved tests name the crate as `crate::`. Verify: the counts
       equal those of 1.1.
-- [ ] 3.5 The tests that stay outside reach the store through public calls only [11]: `cicada-otel` plants its
+- [x] 3.5 The tests that stay outside reach the store through public calls only [11]: `cicada-otel` plants its
       undecodable state through a second system that hosts nothing; `cicada-cli`, `cicada-client`, `cicada-axum`
       and `cicada-otel` open their test stores without naming the trait. Verify: `cargo test --workspace` passes,
       and no file outside `crates/cicada/src` calls a method of the trait.

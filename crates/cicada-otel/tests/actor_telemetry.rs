@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use cicada::CreateActorResult;
 use cicada::prelude::*;
-use cicada::store::Store;
 use cicada_otel::ActorTelemetry;
 use cicada_test::TestActors;
 use opentelemetry::trace::{SpanId, SpanKind, Status};
@@ -219,9 +219,11 @@ async fn a_failed_turn_has_error_status_a_retried_one_records_the_exception() {
 #[tokio::test(start_paused = true)]
 async fn a_turn_that_fails_before_on_claim_still_gets_a_span() {
     let t = Telemetry::new().await;
-    // State that does not decode: on_claim never runs, on_outcome does.
+    // State that does not decode, planted by a node that does not host the type (it checks only for null): on_claim
+    // never runs, on_outcome does.
     let address = cicada::ActorAddress::parse("traced/bad").unwrap();
-    t.test.store().create(&address, json!("not a state")).await.unwrap();
+    let planter = ActorSystem::builder(t.test.store().clone()).build();
+    assert_eq!(planter.create_actor(&address, json!("not a state")).await.unwrap(), CreateActorResult::Created);
     t.test.send_raw(&address, "Hop", json!({ "left": 0 }), SendOptions::new()).await;
     t.test.run_until_idle().await;
     let spans = t.spans();

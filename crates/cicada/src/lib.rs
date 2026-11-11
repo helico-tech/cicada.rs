@@ -26,6 +26,8 @@ pub mod schema;
 pub mod store;
 #[cfg(feature = "testing")]
 pub mod testing;
+#[cfg(test)]
+mod tests;
 pub mod time;
 pub mod turn;
 
