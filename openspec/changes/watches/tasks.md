@@ -94,8 +94,9 @@ delete or a stop removes a tree.
       `cicada create watch --target … --watcher …` and `cicada delete watch`; the output of a message shows whether
       it is a notification. Verify: a case in `tests/cli.rs` for the scenario "The command line", and one for the
       exit code of a delete of a watch that does not exist.
-- [ ] 4.3 The terminal UI [13]: the listing `:watches`, with Enter on a row opening the watcher. Verify: a test with
-      `TestBackend` for the scenario "The view of watches".
+- [ ] 4.3 The terminal UI [13, 15]: the listing `:watches`, with Enter on a row opening the watcher; the `children`
+      tab of an actor says when there are more children than it shows, as the mailbox fact does. Verify: a test with
+      `TestBackend` for the scenario "The view of watches", and one for a tab of more children than the limit.
 
 ## 5. Docs
 
@@ -104,8 +105,9 @@ delete or a stop removes a tree.
       with an example of a watcher, the routes, the command line, the terminal UI, the row of ADR 0023) and
       `docs/operations.md`: "Version 0.9.0 is such a release", with every old node stopped first and why [10]; a
       type that starts to watch changes its contract; what a watcher of every type costs; the watcher of a removed
-      root and its lease [Risks]. Verify: `cargo test -p cicada-examples --doc` passes, and every risk of
-      `design.md` that names the docs is in them.
+      root and its lease [Risks]. The two doc leftovers of decision 15. Verify:
+      `cargo test -p cicada-examples --doc` passes, every risk of `design.md` that names the docs is in them, and no
+      line of the three files is longer than 120 columns where it was not before.
 - [ ] 5.2 `CHANGELOG.md`, a section `0.9.0 — unreleased`, and the version `0.9.0` in `Cargo.toml`: the section
       starts with the upgrade steps of the Migration Plan of `design.md`, then the breaking changes of the proposal,
       then the fix of the conformance case. Verify: every step of the plan and every **BREAKING** line of the

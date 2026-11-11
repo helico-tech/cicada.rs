@@ -383,6 +383,17 @@ that runs on real time, followed by an assertion that needs the lease to hold. E
 Not chosen: a longer tick for PostgreSQL (every case that waits for a lease to end would wait longer, and the
 pattern would stay).
 
+### 15. Three small things left from `child-actors`
+
+Decided by the main session. The validator of `child-actors` passed it and noted these; none blocked the release of
+0.8.0. They go here by the owner's rule for small findings, because this change edits the same files.
+
+- `docs/architecture.md` says of a stop, too, that a message "being handled" ends `purged`. The message of the
+  turn that stops ends `done`.
+- One line of `README.md`, in the part on children, is 181 columns long.
+- The `children` tab of the terminal UI shows the first 1000 children and does not say when there are more. The
+  mailbox fact of the same screen says `1000+`.
+
 ## Risks / Trade-offs
 
 - **A watcher of every type is in the way of every failure of the system**: each locks its row on PostgreSQL and
