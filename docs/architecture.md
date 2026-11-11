@@ -159,6 +159,7 @@ impl Actor for SyncActor {
 | `cicada-store-postgres` | `PostgresStore` (sqlx): `FOR UPDATE SKIP LOCKED` claims, `LISTEN/NOTIFY` wake-ups |
 | `cicada-axum` | `actor_api()`, `actor_api_read()` and `actor_health()` as axum routers, and the OpenAPI document |
 | `cicada-client` | Typed HTTP client (reqwest) |
+| `cicada-cli` | The binary `cicada`: commands and a terminal UI over the HTTP API, through `cicada-client`; no library crate depends on it |
 | `cicada-otel` | OpenTelemetry plugin |
 | `cicada-extras` | Schedules (interval, daily), crash-loop guard, failure watcher, dead letters |
 | `cicada-fuzz` | Randomised tests: parsers, backend comparison, and a node simulation under injected faults. Test-only |

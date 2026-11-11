@@ -29,7 +29,7 @@
 
 ## 4. Docs and checks
 
-- [ ] 4.1 README: a section on the CLI and TUI (config file, commands, keys); `docs/architecture.md`: the crate table.
+- [x] 4.1 README: a section on the CLI and TUI (config file, commands, keys); `docs/architecture.md`: the crate table.
       Verify: `cargo test -p cicada-examples --doc` passes.
 - [x] 4.2 `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
       `openspec validate cli-and-tui --strict`. Verify: all pass.

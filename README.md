@@ -29,6 +29,7 @@ summarised [below](#decisions).
 | `cicada-store-conformance` | The shared suite (S1–S10 and robustness cases) every store must pass, as a macro. |
 | `cicada-axum` | `actor_api()` (the whole API), `actor_api_read()` (only what reads) and `actor_health()` (a public readiness check) as axum routers. |
 | `cicada-client` | `ActorClient`: typed HTTP client (reqwest) for remote callers, idempotent sends. |
+| `cicada-cli` | The binary `cicada`: kubectl-style commands and a k9s-style terminal UI over the HTTP API; see [Command line and terminal UI](#command-line-and-terminal-ui). |
 | `cicada-test` | `TestActors`, `InMemoryStore`, virtual time, contract snapshots and state samples. |
 | `cicada-extras` | Building blocks on the public API, no core changes: `CrashLoopGuard`, dead letters (`DeadLettersActor`, `FailureWatcher`), `Schedule`. |
 | `cicada-otel` | `ActorTelemetry`: OpenTelemetry traces and metrics per turn, a plugin on the OpenTelemetry API. |
@@ -383,6 +384,84 @@ instant. Both are resolved against the store clock. Listings take `cursor` (the 
 (default 100); a `prefix` is a prefix of the address (`sync/`, `sync/ac`). Pages are a keyset,
 not a snapshot: in a mailbox listing, a message rescheduled in place between two pages (later `deliverAt`, new `seq`)
 can appear on both, so deduplicate by id.
+
+## Command line and terminal UI
+
+`cicada-cli` builds the binary `cicada`. It talks to a node only over HTTP, through `cicada-client`, so it works
+against any node that serves `actor_api()`; the commands that only read also work against `actor_api_read()`. Build it
+from a checkout with `cargo install --path crates/cicada-cli`, or run it with `cargo run -p cicada-cli -- <command>`.
+
+**Which server.** The server is `--server`, else `CICADA_SERVER`, else the `server` of the context. The context is
+`--context`, else `CICADA_CONTEXT`, else the file's `current-context`; a context the file does not have is an error.
+The token is `--token`, else `CICADA_TOKEN`, else the context's `token`, sent as `Authorization: Bearer <token>`; the
+context's `headers` go with every request. The file is `$CICADA_CONFIG`, else `$XDG_CONFIG_HOME/cicada/config.toml`,
+else `~/.config/cicada/config.toml` (on macOS too); a missing file counts as an empty one.
+
+```toml
+current-context = "local"
+
+[contexts.local]
+server = "http://localhost:8080"
+
+[contexts.prod]
+server = "https://cicada.internal/api"
+token = "…"
+headers = { "X-Tenant" = "ops" }
+```
+
+`cicada config set-context NAME --server URL [--token T] [--header K=V]` adds or replaces a context (the first one also
+becomes current), `config use-context NAME` switches, `config get-contexts` and `config current-context` show them.
+They rewrite the whole file, so comments in it are lost.
+
+**Commands.** Verb first, as in kubectl:
+
+```sh
+cicada get actors --prefix account/                                  # one page of --limit (100); --all reads every page
+cicada get actor account/acme:7 -o json                              # the API's view; -o yaml, -o wide, or a table
+cicada send account/acme:7 --type Deposit --payload '{"amount":5}'   # prints the message id
+cicada get outcomes --status failed --since 2026-11-10T00:00:00Z
+cicada retry messages --prefix account/ --type Deposit               # bulk: --id ID (repeatable) or a filter
+```
+
+| Command | What |
+| --- | --- |
+| `get actors\|messages\|outcomes\|turns [--prefix P]`, `get nodes\|types` | Listings; also `outcomes --status S --since T` and `turns --node N` |
+| `get actor\|mailbox\|turn ADDR`, `get message\|caused ID`, `get node ID`, `get type NAME` | One item; a mailbox; the running turn; what a message caused |
+| `describe actor\|message\|node\|type X` | One item in full, as YAML unless `-o json` |
+| `create actor ADDR [--state JSON]`, `delete actor ADDR`, `delete type NAME` | Create or delete an actor; remove a type's registration |
+| `send ADDR --type T [--payload JSON] [--id ID] [--delay PT5S \| --at INSTANT] [--correlation-id C] [--header K=V]` | Send a message |
+| `cancel message ID`, `cancel turn ADDR`, `retry message ID`, `deliver-now ID` | One message; stop a running turn |
+| `cancel messages`, `retry messages`, with `--id ID…` or `--prefix P [--type T]` | Bulk, at most 1000 per call |
+| `pause ADDR`, `resume ADDR`, `purge ADDR` | An actor's mailbox |
+| `stats [--prefix P]`, `health` | Counts; whether the node and its store answer |
+
+A missing item (`actor account/nobody:1 not found`) or an error response (the problem's title and detail) prints
+`error: …` and exits with code 1.
+
+**Terminal UI.** `cicada tui` (with the same flags, e.g. `cicada --server http://localhost:8080 --token secret tui`
+against the sample service with `API_TOKEN=secret`) opens on the actors. The header shows the context, the server, the
+nodes by health, the number of actors, pending messages and running turns, how long the oldest due message has waited,
+and the keys of the screen. The screen refreshes every 2 s and the header every 10 s (`GET /stats` reads every row).
+Requests run beside the screen, so a slow node never freezes it. Status words are coloured; failed rows are red.
+
+| Keys | What |
+| --- | --- |
+| `:actors`, `:messages`, `:outcomes [status]`, `:turns`, each with an optional prefix; `:nodes`, `:types` | A listing; Tab completes |
+| `:actor ADDR`, `:mailbox ADDR`, `:message ID`, `:node ID`, `:type NAME` | One item |
+| `enter`, `esc`, `q` | Open the selected row; clear the filter or go back; `q` on the first screen and `ctrl-c` quit |
+| `j` `k` `↑` `↓`, `g` `G`, `pgup` `pgdn` | Move |
+| `/`, `<` `>`, `s`, `w` | Filter rows as you type; sort column; sort order; wide columns |
+| `tab` | The next tab of an overview (an actor's mailbox and outcomes) |
+| `d` | Describe: the item as YAML; `t` switches to JSON, `w` wraps |
+| `m`, `a`, `b` | An actor's mailbox; a message's actor; its cause |
+| `c`, `r`, `n` | Cancel, retry, deliver now a message |
+| `p`, `u`, `x` | Pause, resume, purge an actor's mailbox |
+| `ctrl-k`, `ctrl-d` | Stop the running turn; delete an actor or remove a type |
+| `ctrl-r`, `?` | Refresh now; help |
+
+An action applies to the selected row, else to the item the screen shows, and runs only after a confirmation whose
+default is No (`y` confirms). The mouse wheel moves, a click selects a row, a click on the selected row opens it and a
+click on a column header sorts by it. Sending messages and bulk actions are CLI only.
 
 ## Testing with `TestActors`
 
