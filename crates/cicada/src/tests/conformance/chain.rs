@@ -174,7 +174,7 @@ pub async fn chain_caused_by_lists_one_level_of_pending_and_retained_visible_mes
         assert!(store.caused_by(&MessageId::random(), None, 10).await.unwrap().items.is_empty());
 
         // kid-3 is handled first (the mailbox is in send order), then kid-1 is done, kid-2 removed at once.
-        let running = t.claim_one_types(&[&OTHER]).await;
+        let running = single(t.claim_with(&[&OTHER], &NODE_A, LONG_LEASE, 10).await);
         assert_eq!(running.message.id.as_str(), "kid-3");
         let states = all().await;
         assert!(matches!(&states[2], MessageStatus::Running { .. }), "{states:?}");

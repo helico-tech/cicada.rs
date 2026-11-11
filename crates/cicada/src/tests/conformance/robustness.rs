@@ -35,7 +35,7 @@ pub async fn time_a_delivery_time_beyond_the_supported_range_is_refused_and_noth
             assert_matches!(store.enqueue(message).await, Err(StoreError::Invalid(_)), "{delivery:?}");
         }
         let m = t.send(&a).await;
-        let c = t.claim_one().await;
+        let c = t.claim_one_long().await;
         for delivery in too_late() {
             let message = OutgoingMessage { delivery, ..OutgoingMessage::new(a.clone(), "Msg", json!(2)) };
             assert_matches!(
@@ -165,8 +165,9 @@ pub async fn s5_renew_and_commit_still_work_after_expiry_as_long_as_nobody_re_cl
             Some(MessageStatus::Pending(_)),
             "an expired lease is not running"
         );
-        assert_matches!(store.renew(&a, c.epoch, t.ttl()).await.unwrap(), RenewResult::Renewed(_));
+        assert_matches!(store.renew(&a, c.epoch, LONG_LEASE).await.unwrap(), RenewResult::Renewed(_));
         assert_matches!(store.status(&m.id).await.unwrap(), Some(MessageStatus::Running { .. }), "renewed again");
+        assert_matches!(store.renew(&a, c.epoch, t.ttl()).await.unwrap(), RenewResult::Renewed(_));
         t.expire_lease().await;
         t.commit_ok(done(&c)).await;
         assert_eq!(outcome_record(&*store, &m.id).await.map(|o| o.status), Some(OutcomeStatus::Done));
@@ -458,7 +459,7 @@ pub async fn closed_after_close_every_operation_fails_as_unavailable<B: FixtureF
             store.get(&a),
             store.list("", None, 10),
             store.children(&a, None, 10),
-            store.delete(&a),
+            store.delete(&a, &MessageId::random()),
             store.enqueue(OutgoingMessage::new(a.clone(), "Msg", json!(0))),
             store.claim_due(&types, &node, t.ttl(), 10),
             store.renew(&a, c.epoch, t.ttl()),

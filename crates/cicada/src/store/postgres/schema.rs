@@ -1,4 +1,4 @@
-//! The PostgreSQL schema and its versioned migrations; the schema is at version 4.
+//! The PostgreSQL schema and its versioned migrations; the schema is at version 5.
 //!
 //! The tables of the architecture (`actor_types`, `actors`, `messages`, `outcomes`, `nodes`) plus two sequences for the
 //! store-wide `seq` and epoch counters. JSON values are `jsonb`, instants `timestamptz` (microsecond precision, the
@@ -10,12 +10,14 @@
 //! is refused. When the schema is already current, start runs no DDL at all, so a node may connect as a user without
 //! `CREATE` privileges once the schema was migrated by one that has them.
 //!
-//! Migrations are additive so that nodes of the previous version keep working during a rolling deploy, with three
+//! Migrations are additive so that nodes of the previous version keep working during a rolling deploy, with four
 //! exceptions, after which every old node is stopped before the first new one starts: migration 2 makes `actors.state`
 //! required, so a node of version 1 that writes an actor without a state fails; migration 3 removes every registration
 //! and rewrites `%3A` to `:` in addresses, and the contracts that nodes register again are not those of version 2
 //! (ADR 0021); migration 4 adds `actors.parent`, and a node of version 3 that keeps running deletes or stops a parent
-//! without its children, which then stay behind (ADR 0019). A node of version 3 that opens the migrated database
+//! without its children, which then stay behind (ADR 0019); migration 5 adds the watches and the mark on a message,
+//! and a node of version 4 that keeps running writes no notification for a message that fails there and leaves the
+//! watches of an actor it removes behind (ADR 0023). A node of the previous version that opens the migrated database
 //! refuses it.
 //!
 //! A statement of a migration that violates a constraint (SQLSTATE class `23`, such as two old addresses that become one
@@ -138,6 +140,20 @@ const MIGRATIONS: &[&[&str]] = &[
     &[
         r#"ALTER TABLE {s}.actors ADD COLUMN parent text COLLATE "C""#,
         "CREATE INDEX actors_parent ON {s}.actors (parent, address) WHERE parent IS NOT NULL",
+    ],
+    // 5: watches (ADR 0018, ADR 0023). A watch is the pair of a target (an address, a type prefix or `*`) and a
+    // watcher; the primary key serves the lookup of the watchers of an event, `watches_watcher` the listing by watcher
+    // and the removal of a watcher's watches. No foreign keys, as elsewhere. `messages.notification` marks a message the
+    // store wrote as a notification; every existing message is none, and an outcome keeps the mark in its envelope,
+    // where an older envelope without it reads as none. Not additive (see the module docs).
+    &[
+        r#"CREATE TABLE {s}.watches (
+            target  text COLLATE "C" NOT NULL,
+            watcher text COLLATE "C" NOT NULL,
+            PRIMARY KEY (target, watcher)
+        )"#,
+        "CREATE INDEX watches_watcher ON {s}.watches (watcher, target)",
+        "ALTER TABLE {s}.messages ADD COLUMN notification boolean NOT NULL DEFAULT false",
     ],
 ];
 
@@ -274,7 +290,7 @@ mod tests {
     }
 
     #[test]
-    fn the_schema_is_at_version_4() {
-        assert_eq!(VERSION, 4);
+    fn the_schema_is_at_version_5() {
+        assert_eq!(VERSION, 5);
     }
 }

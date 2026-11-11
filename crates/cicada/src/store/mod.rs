@@ -30,12 +30,13 @@ pub use model::{
 #[cfg(feature = "postgres")]
 pub use postgres::PostgresOptions;
 pub use results::{CancelResult, DeleteResult, DeliverNowResult, RemoveTypeResult};
-pub(crate) use results::{CommitResult, CreateResult, EnqueueResult, RegisterResult, RenewResult};
+pub(crate) use results::{CommitResult, CreateResult, EnqueueResult, RegisterResult, RenewResult, SetWatchResult};
 #[cfg(feature = "sqlite")]
 pub use sqlite::SqliteOptions;
 
 use crate::address::{ActorAddress, TypeName};
 use crate::time::Timestamp;
+use crate::watch::{Watch, WatchTarget};
 
 /// A failed store operation.
 #[derive(Debug, thiserror::Error)]
@@ -94,7 +95,7 @@ impl Clock for SystemClock {
 /// | # | Guarantee |
 /// | --- | --- |
 /// | S1 Durability | An acknowledged write survives process and machine crash. |
-/// | S2 Atomicity | `commit` applies all of its parts or none. `delete`, and a commit that stops, remove the instance, its descendants and their mailboxes together. |
+/// | S2 Atomicity | `commit` applies all of its parts or none. `delete`, and a commit that stops, remove the instance, its descendants and their mailboxes together. A commit that ends a message `failed`, a stop and a delete write their notifications with them. |
 /// | S3 Per-instance linearizability | All operations on one instance and its mailbox have a single order. |
 /// | S4 Lease exclusivity | At most one unexpired lease per instance; every claim issues a greater epoch. |
 /// | S5 Fencing | `commit` and `renew` succeed only with the current epoch. |
@@ -103,6 +104,17 @@ impl Clock for SystemClock {
 /// | S8 Liveness | An instance that is not paused, with a due head message and no valid lease, is eventually returned by `claim_due`. |
 /// | S9 One clock | Due-ness and lease expiry use the store clock only. |
 /// | S10 Retention | Outcomes are kept for the retention period, which is also the dedup window. |
+///
+/// **Watches** (ADR 0018, ADR 0023). A watch is a stored pair of a target and a watcher. Three events write
+/// notifications into the mailboxes of watchers, in their own transaction: a commit that ends a message `failed` (a
+/// [`Failed`](crate::Failed) for each watcher of the actor's address, of a prefix of its type at a dot, or of `*`,
+/// unless the message is itself a notification), and a commit that stops and a delete (a [`Stopped`](crate::Stopped)
+/// for each watcher of the address of each removed actor). Each watcher gets one notification per actor; a watcher that
+/// does not exist, or that the same event removes, gets nothing, and the watches of a watcher that does not exist are
+/// removed. Removing an actor removes the watches it holds as a watcher; the watches on it as a target stay. The
+/// notifications of one event are written last, in the order of the actor they are about and then of the watcher,
+/// named after the event's id with their number (`<event>.0`, …), and marked as notifications ([`Message::notification`]).
+/// One whose id is in use is skipped. A watch changes only under the lock of its watcher's row.
 #[async_trait]
 pub(crate) trait Backend: Send + Sync + 'static {
     // ---- clock ----
@@ -150,8 +162,29 @@ pub(crate) trait Backend: Send + Sync + 'static {
     /// Admin delete: atomically removes the instance, every descendant and their whole mailboxes; every pending
     /// message, including one being handled, receives outcome `purged`, and [`DeleteResult::Deleted`] counts them over
     /// the whole tree. Any lease is voided, and every epoch issued after a re-create is greater than all earlier ones
-    /// for this URI. The walk visits each instance once, so it ends on parent links that form a cycle.
-    async fn delete(&self, address: &ActorAddress) -> StoreResult<DeleteResult>;
+    /// for this URI. The walk visits each instance once, so it ends on parent links that form a cycle. The removed
+    /// instances' watches as watchers go, and the watchers of each removed instance get a `Stopped` (cause `deleted`
+    /// for the instance, `parent` for a descendant, no `by` and no `causedBy`), named after `event`.
+    async fn delete(&self, address: &ActorAddress, event: &MessageId) -> StoreResult<DeleteResult>;
+
+    // ---- watches ----
+
+    /// Sets the watch of `watcher` on `target`, under the lock of the watcher's row. Idempotent. Refused when the
+    /// watcher does not exist. The store checks neither the target nor the watcher's type.
+    async fn watch(&self, target: &WatchTarget, watcher: &ActorAddress) -> StoreResult<SetWatchResult>;
+
+    /// Removes the watch of `watcher` on `target`, under the lock of the watcher's row; false when it was not stored.
+    async fn unwatch(&self, target: &WatchTarget, watcher: &ActorAddress) -> StoreResult<bool>;
+
+    /// The stored watches in `(target, watcher)` order, at most `limit` per page: of one `watcher`, of exactly one
+    /// stored `target` (not every target that would match an actor), of both, or all.
+    async fn watches(
+        &self,
+        watcher: Option<&ActorAddress>,
+        target: Option<&WatchTarget>,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> StoreResult<Page<Watch>>;
 
     // ---- mailbox ----
 
@@ -280,10 +313,18 @@ pub(crate) trait Backend: Send + Sync + 'static {
     // ---- commit ----
 
     /// Ends the turn for the claimed message, fenced by the epoch (S5). Applies all of the following or nothing (S2),
-    /// in this order: the outcome (or the reschedule), the cancels of this instance's pending messages, the creates
+    /// in this order: the watches of the turn (set and removed in the order of the calls, the committing instance the
+    /// watcher), the outcome (or the reschedule), the cancels of this instance's pending messages, the creates
     /// (idempotent; a child create gives the new instance the committing instance as its parent), the sends (in
-    /// order), the state change, the release of the lease. A stop removes the instance and every descendant, the
-    /// children this commit created included, and purges their mailboxes, this commit's sends to them included.
+    /// order), the state change, the release of the lease, and last the notifications of the event, named after
+    /// [`CommitRequest::event`]. A stop removes the instance and every descendant, the children this commit created
+    /// included, and purges their mailboxes, this commit's sends to them included.
+    ///
+    /// An outcome `failed` writes a `Failed` for the watchers of the message's failure (no `causedBy`), unless the
+    /// message is a notification; a rescheduled, done or cancelled message writes none. A stop writes a `Stopped` for
+    /// the watchers of each removed instance: cause `stopped` for this instance, `parent` for a descendant, `by` this
+    /// instance and `causedBy` the turn's message. A notification is not a send of the turn: a watcher that does not
+    /// exist never rejects the commit.
     ///
     /// `LeaseLost` when the epoch is not current or the lease is no longer held; `Rejected` when a create names a type
     /// that is not registered, a child create names an instance that exists with another parent or none, a send

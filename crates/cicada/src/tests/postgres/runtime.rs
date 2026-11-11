@@ -373,7 +373,7 @@ async fn removing_a_type_races_with_creates_without_leaving_an_actor_of_a_remove
             }
             RemoveTypeResult::Absent => panic!("round {round}: the type was registered"),
         }
-        store.delete(&who.address().unwrap()).await.unwrap();
+        store.delete(&who.address().unwrap(), &MessageId::random()).await.unwrap();
     }
     assert_eq!(kept + removed, 40);
     cluster.cleanup().await;

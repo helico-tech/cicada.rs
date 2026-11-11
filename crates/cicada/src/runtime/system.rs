@@ -738,7 +738,7 @@ impl ActorSystem {
     /// created with [`Turn::create_child`](crate::Turn::create_child), theirs, and so on) in one transaction, and purges
     /// their mailboxes. [`DeleteResult::Deleted`] counts the purged messages of the whole tree.
     pub async fn delete_actor(&self, address: &ActorAddress) -> Result<DeleteResult, OpError> {
-        Ok(self.inner.store.delete(address).await?)
+        Ok(self.inner.store.delete(address, &MessageId::random()).await?)
     }
 
     /// The direct children of `address` in address order, paged (`GET /actors/{type}/{key}/children`); `None` when

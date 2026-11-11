@@ -13,12 +13,13 @@ use crate::runtime::{ActorSystemBuilder, NodeConfig, SendResult};
 use crate::store::{
     Backend, CancelResult, Claim, CommitRequest, CommitResult, CreateResult, DeleteResult, DeliverNowResult,
     EnqueueResult, Message, MessageId, MessageStatus, NodeId, NodeRecord, OutcomeRecord, OutcomeStatus,
-    OutgoingMessage, Page, PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn, Store, StoreResult,
-    StoreStats, TurnOutcome, TypeDef,
+    OutgoingMessage, Page, PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn, SetWatchResult,
+    Store, StoreResult, StoreStats, TurnOutcome, TypeDef,
 };
 use crate::testing::{TokioClock, default_start};
 use crate::time::{self, Timestamp};
 use crate::turn::{HandlerFailure, TurnError};
+use crate::watch::{Watch, WatchTarget};
 use crate::{ActorSystem, Turn};
 use async_trait::async_trait;
 use futures::stream::BoxStream;
@@ -506,8 +507,26 @@ impl<F: Faults> Backend for Faulty<F> {
         self.inner.children(parent, cursor, limit).await
     }
 
-    async fn delete(&self, address: &ActorAddress) -> StoreResult<DeleteResult> {
-        self.inner.delete(address).await
+    async fn delete(&self, address: &ActorAddress, event: &MessageId) -> StoreResult<DeleteResult> {
+        self.inner.delete(address, event).await
+    }
+
+    async fn watch(&self, target: &WatchTarget, watcher: &ActorAddress) -> StoreResult<SetWatchResult> {
+        self.inner.watch(target, watcher).await
+    }
+
+    async fn unwatch(&self, target: &WatchTarget, watcher: &ActorAddress) -> StoreResult<bool> {
+        self.inner.unwatch(target, watcher).await
+    }
+
+    async fn watches(
+        &self,
+        watcher: Option<&ActorAddress>,
+        target: Option<&WatchTarget>,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> StoreResult<Page<Watch>> {
+        self.inner.watches(watcher, target, cursor, limit).await
     }
 
     async fn enqueue(&self, message: OutgoingMessage) -> StoreResult<EnqueueResult> {

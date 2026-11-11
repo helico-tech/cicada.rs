@@ -9,14 +9,15 @@ use std::time::Duration;
 use crate::address::{ActorAddress, TypeName};
 use crate::retention::Retention;
 use crate::retry::RetryPolicy;
-use crate::store::support::{self, check_limit};
+use crate::store::support::{self, Notice, Removal, check_limit};
 use crate::store::{
     ActorRecord, Backend, CancelResult, Claim, Clock, CommitRequest, CommitResult, CreateResult, DeleteResult,
     DeliverNowResult, EnqueueResult, Message, MessageId, MessageStatus, NodeId, NodeRecord, OutcomeRecord,
     OutcomeStatus, OutgoingMessage, Page, PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn,
-    StateChange, StoreError, StoreResult, StoreStats, SystemClock, TurnOutcome, TypeDef,
+    SetWatchResult, StateChange, StoreError, StoreResult, StoreStats, SystemClock, TurnOutcome, TypeDef,
 };
 use crate::time::{self, DEFAULT_RETENTION, Timestamp};
+use crate::watch::{self, StopCause, Watch, WatchTarget};
 use async_trait::async_trait;
 use serde_json::Value;
 use sqlx::sqlite::{SqliteArguments, SqliteConnectOptions, SqliteRow, SqliteSynchronous};
@@ -374,7 +375,7 @@ impl SqliteStore {
 
     /// `root` and every descendant, in address order. `UNION` leaves out the rows found already, so the walk ends on
     /// parent links that form a cycle; the single writer makes it a consistent snapshot.
-    async fn tree(c: &mut SqliteConnection, root: &ActorAddress) -> StoreResult<Vec<String>> {
+    async fn tree(c: &mut SqliteConnection, root: &ActorAddress) -> StoreResult<Vec<ActorAddress>> {
         fetch_all(
             c,
             sqlx::query(
@@ -386,19 +387,90 @@ impl SqliteStore {
                  SELECT address FROM tree ORDER BY address",
             )
             .bind(root.as_str()),
-            |row| col::<String>(row, "address"),
+            |row| rows::address(&col::<String>(row, "address")?),
         )
         .await
     }
 
-    /// Removes `root` and every descendant and purges their mailboxes; returns how many messages were purged.
-    async fn remove_tree(&self, c: &mut SqliteConnection, root: &ActorAddress, now: Timestamp) -> StoreResult<usize> {
+    /// Removes every instance of `tree` with its mailbox and the watches it holds as a watcher; returns how many
+    /// messages were purged.
+    async fn remove_all(&self, c: &mut SqliteConnection, tree: &[ActorAddress], now: Timestamp) -> StoreResult<usize> {
         let mut purged = 0;
-        for addr in Self::tree(c, root).await? {
-            purged += self.purge_mailbox(c, &rows::address(&addr)?, now).await?;
-            execute(c, sqlx::query("DELETE FROM actors WHERE address = ?").bind(&addr)).await?;
+        for address in tree {
+            purged += self.purge_mailbox(c, address, now).await?;
+            execute(c, sqlx::query("DELETE FROM actors WHERE address = ?").bind(address.as_str())).await?;
+            execute(c, sqlx::query("DELETE FROM watches WHERE watcher = ?").bind(address.as_str())).await?;
         }
         Ok(purged)
+    }
+
+    /// The notices of an event: the `Failed` of `failed` (a message that ends `failed`, with its error) for the
+    /// watchers of its failure, and a `Stopped` of each actor of `removed` for the watchers of its address. A watcher
+    /// the event removes gets nothing; one that does not exist gets nothing and loses its watches.
+    async fn notices(
+        c: &mut SqliteConnection,
+        failed: Option<(&Message, &str)>,
+        removed: Option<(&Removal<'_>, &[ActorAddress])>,
+    ) -> StoreResult<Vec<Notice>> {
+        let watcher = |row: &SqliteRow| rows::address(&col::<String>(row, "watcher")?);
+        let mut notices = Vec::new();
+        if let Some((message, error)) = failed {
+            let targets = watch::failure_targets(&message.to);
+            let sql = format!(
+                "SELECT DISTINCT watcher FROM watches WHERE target IN {} ORDER BY watcher",
+                placeholders(targets.len())
+            );
+            let mut query = sqlx::query(AssertSqlSafe(sql));
+            for target in &targets {
+                query = query.bind(target.as_str());
+            }
+            for w in fetch_all(c, query, watcher).await? {
+                notices.push(Notice::failed(message, error, &w));
+            }
+        }
+        if let Some((removal, tree)) = removed {
+            for actor in tree {
+                let query =
+                    sqlx::query("SELECT watcher FROM watches WHERE target = ? ORDER BY watcher").bind(actor.as_str());
+                for w in fetch_all(c, query, watcher).await? {
+                    notices.push(removal.notice(actor, &w));
+                }
+            }
+        }
+        let removed = removed.map_or(&[][..], |(_, tree)| tree);
+        let mut kept = Vec::with_capacity(notices.len());
+        let mut gone = HashSet::new();
+        for notice in notices {
+            if removed.contains(&notice.watcher) || gone.contains(&notice.watcher) {
+                continue;
+            }
+            if !Self::actor_exists(c, notice.watcher.as_str()).await? {
+                execute(c, sqlx::query("DELETE FROM watches WHERE watcher = ?").bind(notice.watcher.as_str())).await?;
+                gone.insert(notice.watcher);
+                continue;
+            }
+            kept.push(notice);
+        }
+        Ok(kept)
+    }
+
+    /// Writes the notifications of `notices`, named after `event`, into the watchers' mailboxes; one whose id is in use
+    /// is skipped.
+    async fn notify(
+        &self,
+        c: &mut SqliteConnection,
+        event: &MessageId,
+        notices: Vec<Notice>,
+        now: Timestamp,
+    ) -> StoreResult<()> {
+        for message in support::notifications(event, notices) {
+            if self.is_id_in_use(c, &message.id, now).await? {
+                tracing::warn!("Skipping the notification {} for {}: its id is in use", message.id, message.to);
+                continue;
+            }
+            self.insert(c, message, now, true).await?;
+        }
+        Ok(())
     }
 
     async fn purge_mailbox(
@@ -438,18 +510,24 @@ impl SqliteStore {
         Ok(retained.is_some())
     }
 
-    async fn insert(&self, c: &mut SqliteConnection, message: OutgoingMessage, now: Timestamp) -> StoreResult<Message> {
+    async fn insert(
+        &self,
+        c: &mut SqliteConnection,
+        message: OutgoingMessage,
+        now: Timestamp,
+        notification: bool,
+    ) -> StoreResult<Message> {
         let deliver_at = message.delivery.resolve(now).map_err(invalid)?;
         // An expired, not yet swept outcome with the same id.
         execute(c, sqlx::query("DELETE FROM outcomes WHERE message_id = ?").bind(message.id.as_str())).await?;
-        let stored = message.into_message(deliver_at, next_value(c, "seq").await?);
+        let stored = message.into_message(deliver_at, next_value(c, "seq").await?, notification);
         execute(
             c,
             sqlx::query(
                 "INSERT INTO messages
                     (id, actor_address, seq, type, payload, sender, correlation_id, headers, deliver_at, attempt, retry_policy,
-                     caused_by, retention_policy)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
+                     caused_by, retention_policy, notification)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)",
             )
             .bind(stored.id.as_str())
             .bind(stored.to.as_str())
@@ -462,7 +540,8 @@ impl SqliteStore {
             .bind(micros(stored.deliver_at))
             .bind(stored.retry.as_ref().map(|r| json(&RetryPolicy::to_json(r))))
             .bind(stored.caused_by.as_ref().map(MessageId::as_str))
-            .bind(stored.retention.as_ref().map(|r| json(&Retention::to_json(r)))),
+            .bind(stored.retention.as_ref().map(|r| json(&Retention::to_json(r))))
+            .bind(i64::from(stored.notification)),
         )
         .await?;
         execute(
@@ -748,7 +827,8 @@ impl SqliteStore {
         commit: CommitRequest,
         now: Timestamp,
     ) -> StoreResult<CommitResult> {
-        let CommitRequest { address, epoch, message_id, outcome, state, creates, sends, cancels } = commit;
+        let CommitRequest { event, address, epoch, message_id, outcome, state, creates, sends, cancels, watches } =
+            commit;
         let Some(claimed) = Self::holds_lease(c, &address, epoch).await? else {
             return Ok(CommitResult::LeaseLost);
         };
@@ -786,10 +866,23 @@ impl SqliteStore {
             }
         }
 
+        // 0. the turn's watches, in the order of its calls
+        for change in &watches {
+            let sql = if change.set {
+                "INSERT INTO watches (target, watcher) VALUES (?, ?) ON CONFLICT DO NOTHING"
+            } else {
+                "DELETE FROM watches WHERE target = ? AND watcher = ?"
+            };
+            execute(c, sqlx::query(sql).bind(change.target.as_str()).bind(address.as_str())).await?;
+        }
         // 1. outcome, or back to pending
         let message = Self::message_in(c, &message_id)
             .await?
             .ok_or_else(|| StoreError::Corrupt(format!("the claimed message {message_id} is not pending")))?;
+        let failed = match &outcome {
+            TurnOutcome::Failed(error) if !message.notification => Some((message.clone(), error.clone())),
+            _ => None,
+        };
         match &outcome {
             TurnOutcome::Rescheduled { delivery, error } => {
                 let deliver_at = delivery.resolve(now).map_err(invalid)?;
@@ -833,9 +926,9 @@ impl SqliteStore {
         }
         let mut sent = Vec::with_capacity(sends.len());
         for send in sends {
-            sent.push(self.insert(c, send, now).await?);
+            sent.push(self.insert(c, send, now, false).await?);
         }
-        // 5. state, 6. release
+        // 5. state, 6. release, 7. the notifications of the event
         let stop = matches!(state, StateChange::Stop);
         if let StateChange::NewState(state) = state {
             execute(
@@ -852,9 +945,14 @@ impl SqliteStore {
                 .map(|row| col(&row, "version"))
                 .transpose()?
                 .ok_or_else(|| StoreError::Corrupt(format!("the lease holder {address} vanished")))?;
+        // The tree is read after the creates, so the children of this commit go with it.
+        let tree = if stop { Self::tree(c, &address).await? } else { Vec::new() };
+        let removal =
+            Removal { root: &address, cause: StopCause::Stopped, by: Some(&address), caused_by: Some(&message_id) };
+        let failed = failed.as_ref().map(|(m, e)| (m, e.as_str()));
+        let notices = Self::notices(c, failed, stop.then_some((&removal, &tree[..]))).await?;
         if stop {
-            // The tree is read after the creates, so the children of this commit go with it.
-            self.remove_tree(c, &address, now).await?;
+            self.remove_all(c, &tree, now).await?;
         } else {
             execute(
                 c,
@@ -866,6 +964,7 @@ impl SqliteStore {
             .await?;
             Self::refresh_next_due(c, address.as_str()).await?;
         }
+        self.notify(c, &event, notices, now).await?;
         Ok(CommitResult::Committed { version, sent, cancelled })
     }
 }
@@ -1006,7 +1105,7 @@ impl Backend for SqliteStore {
         tx.end(result).await
     }
 
-    async fn delete(&self, address: &ActorAddress) -> StoreResult<DeleteResult> {
+    async fn delete(&self, address: &ActorAddress, event: &MessageId) -> StoreResult<DeleteResult> {
         let mut tx = self.write().await?;
         let now = tx.now;
         let result = async {
@@ -1014,9 +1113,86 @@ impl Backend for SqliteStore {
             if !Self::actor_exists(c, address.as_str()).await? {
                 return Ok(DeleteResult::Absent);
             }
-            Ok(DeleteResult::Deleted { purged: self.remove_tree(c, address, now).await? })
+            let tree = Self::tree(c, address).await?;
+            let removal = Removal { root: address, cause: StopCause::Deleted, by: None, caused_by: None };
+            let notices = Self::notices(c, None, Some((&removal, &tree[..]))).await?;
+            let purged = self.remove_all(c, &tree, now).await?;
+            self.notify(c, event, notices, now).await?;
+            Ok(DeleteResult::Deleted { purged })
         }
         .await;
+        tx.end(result).await
+    }
+
+    async fn watch(&self, target: &WatchTarget, watcher: &ActorAddress) -> StoreResult<SetWatchResult> {
+        let mut tx = self.write().await?;
+        let result = async {
+            let c = tx.conn();
+            if !Self::actor_exists(c, watcher.as_str()).await? {
+                return Ok(SetWatchResult::NoSuchWatcher);
+            }
+            let inserted = execute(
+                c,
+                sqlx::query("INSERT INTO watches (target, watcher) VALUES (?, ?) ON CONFLICT DO NOTHING")
+                    .bind(target.as_str())
+                    .bind(watcher.as_str()),
+            )
+            .await?;
+            Ok(if inserted == 1 { SetWatchResult::Created } else { SetWatchResult::Exists })
+        }
+        .await;
+        tx.end(result).await
+    }
+
+    async fn unwatch(&self, target: &WatchTarget, watcher: &ActorAddress) -> StoreResult<bool> {
+        let mut tx = self.write().await?;
+        let result = execute(
+            tx.conn(),
+            sqlx::query("DELETE FROM watches WHERE target = ? AND watcher = ?")
+                .bind(target.as_str())
+                .bind(watcher.as_str()),
+        )
+        .await
+        .map(|removed| removed == 1);
+        tx.end(result).await
+    }
+
+    async fn watches(
+        &self,
+        watcher: Option<&ActorAddress>,
+        target: Option<&WatchTarget>,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> StoreResult<Page<Watch>> {
+        check_limit(limit)?;
+        let after = cursor.map(support::decode_watch_cursor).transpose()?;
+        let mut sql = "SELECT target, watcher FROM watches WHERE 1 = 1".to_owned();
+        if target.is_some() {
+            sql.push_str(" AND target = ?");
+        }
+        if watcher.is_some() {
+            sql.push_str(" AND watcher = ?");
+        }
+        if after.is_some() {
+            sql.push_str(" AND (target > ? OR (target = ? AND watcher > ?))");
+        }
+        sql.push_str(" ORDER BY target, watcher LIMIT ?");
+        let mut query = sqlx::query(AssertSqlSafe(sql));
+        if let Some(target) = target {
+            query = query.bind(target.as_str());
+        }
+        if let Some(watcher) = watcher {
+            query = query.bind(watcher.as_str());
+        }
+        if let Some((at, aw)) = &after {
+            query = query.bind(at.as_str()).bind(at.as_str()).bind(aw.as_str());
+        }
+        let mut tx = self.read().await?;
+        let result = fetch_all(tx.conn(), query.bind(limit as i64 + 1), |row| {
+            support::stored_watch(&col::<String>(row, "target")?, &col::<String>(row, "watcher")?)
+        })
+        .await
+        .map(|items| support::page_of(items, limit, support::watch_cursor));
         tx.end(result).await
     }
 
@@ -1031,7 +1207,7 @@ impl Backend for SqliteStore {
             if !Self::actor_exists(c, message.to.as_str()).await? {
                 return Ok(EnqueueResult::NoSuchInstance);
             }
-            Ok(EnqueueResult::Enqueued(self.insert(c, message, now).await?))
+            Ok(EnqueueResult::Enqueued(self.insert(c, message, now, false).await?))
         }
         .await;
         tx.end(result).await

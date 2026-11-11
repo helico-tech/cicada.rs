@@ -1,4 +1,5 @@
-//! Checks of G1, G3, G4, G5, G6 and S8 (see `docs/architecture.md`) on the history of a run.
+//! Checks of G1, G3, G4, G5, G6 and S8 (see `docs/architecture.md`) on the history of a run, G4 also for the
+//! notifications of the watcher.
 //!
 //! The order of the log is the order things happened in: the run is on one thread.
 
@@ -6,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use crate::retry::RetryPolicy;
+use crate::store::OutcomeStatus;
 
 use crate::tests::fuzz::faults::{Ending, Event, HandlerEnd};
 
@@ -33,6 +35,7 @@ pub fn check_all(events: &[Event]) -> Result<(), Violation> {
     g1(events)?;
     g3(events)?;
     g4(events)?;
+    g4_notifications(events)?;
     g5(events)?;
     g6(events)?;
     s8(events)
@@ -138,6 +141,44 @@ pub fn g4(events: &[Event]) -> Result<(), Violation> {
     Ok(())
 }
 
+/// G4 for watches: every `failed` outcome of a message to a watched actor (a script actor) has exactly one `Failed`
+/// for the watcher, pending or finished, whatever commits were repeated or lost, and every `Failed` tells of such an
+/// outcome.
+pub fn g4_notifications(events: &[Event]) -> Result<(), Violation> {
+    let to: BTreeMap<&str, &str> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Accepted { id, to } => Some((id.as_str(), to.as_str())),
+            _ => None,
+        })
+        .collect();
+    let failed: BTreeSet<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Outcome { id, status: OutcomeStatus::Failed }
+                if to.get(id.as_str()).is_some_and(|t| t.starts_with("script/")) =>
+            {
+                Some(id.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    let told = count(events.iter().filter_map(|e| match e {
+        Event::Notified { kind, of, .. } if kind == "Failed" => Some(of.as_str()),
+        _ => None,
+    }));
+    for id in &failed {
+        let times = told.get(id).copied().unwrap_or(0);
+        if times != 1 {
+            return broken("G4", format!("{id} failed and its watcher has {times} Failed for it"));
+        }
+    }
+    if let Some(of) = told.keys().find(|of| !failed.contains(*of)) {
+        return broken("G4", format!("the watcher has a Failed for {of}, which has no failed outcome"));
+    }
+    Ok(())
+}
+
 /// G5: a claim takes a due message that is the head of its mailbox.
 pub fn g5(events: &[Event]) -> Result<(), Violation> {
     for event in events {
@@ -230,7 +271,6 @@ mod tests {
     use std::time::Duration;
 
     use crate::retry::Backoff;
-    use crate::store::OutcomeStatus;
     use crate::testing::default_start;
 
     use super::*;
@@ -531,6 +571,39 @@ mod tests {
     #[test]
     fn g6_accepts_releasing_the_lease_of_a_handler_that_was_stopped() {
         g6(&[claimed(1, "m", 1), start("m", 1), end("m", 1, HandlerEnd::Dropped), released(1)]).unwrap();
+    }
+
+    fn failed_outcome(id: &str) -> Event {
+        Event::Outcome { id: s(id), status: OutcomeStatus::Failed }
+    }
+
+    fn notified(id: &str, of: &str) -> Event {
+        Event::Notified { id: s(id), kind: s("Failed"), of: s(of) }
+    }
+
+    #[test]
+    fn g4_accepts_one_failed_per_failed_message_of_a_watched_actor() {
+        let log = [
+            accepted("m"),
+            Event::Accepted { id: s("e.0"), to: s("watcher/_") },
+            failed_outcome("m"),
+            notified("e.0", "m"),
+        ];
+        g4_notifications(&log).unwrap();
+        let unwatched = [Event::Accepted { id: s("n"), to: s("watcher/_") }, failed_outcome("n")];
+        g4_notifications(&unwatched).unwrap();
+    }
+
+    #[test]
+    fn g4_refuses_a_failure_the_watcher_was_not_told_of_or_told_twice() {
+        failure(g4_notifications(&[accepted("m"), failed_outcome("m")]), "G4", "has 0 Failed");
+        let twice = [accepted("m"), failed_outcome("m"), notified("e.0", "m"), notified("f.0", "m")];
+        failure(g4_notifications(&twice), "G4", "has 2 Failed");
+    }
+
+    #[test]
+    fn g4_refuses_a_failed_for_a_message_that_did_not_fail() {
+        failure(g4_notifications(&[accepted("m"), outcome("m"), notified("e.0", "m")]), "G4", "no failed outcome");
     }
 
     #[test]

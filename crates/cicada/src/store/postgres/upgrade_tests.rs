@@ -1,5 +1,6 @@
-//! The upgrades from schema versions 1, 2 and 3: a schema built with the migrations of that version, rows written with
-//! SQL as a node of that version left them, then opened by this version. Skipped when `CICADA_PG_URL` is unset.
+//! The upgrades from schema versions 1, 2, 3 and 4: a schema built with the migrations of that version, rows written
+//! with SQL as a node of that version left them, then opened by this version. And rows that only a hand can write: two
+//! actors that name each other as parent, a watch whose watcher is gone. Skipped when `CICADA_PG_URL` is unset.
 
 use std::collections::hash_map::RandomState;
 use std::future::Future;
@@ -11,8 +12,12 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::actor::contract_of;
 use crate::prelude::*;
-use crate::store::{Backend, DeleteResult, MessageStatus, OutcomeStatus, OutgoingMessage, Store, StoreError, support};
+use crate::store::{
+    Backend, CommitRequest, CommitResult, DeleteResult, EnqueueResult, MessageStatus, NodeId, OutcomeRecord,
+    OutcomeStatus, OutgoingMessage, SetWatchResult, Store, StoreError, TurnOutcome, support,
+};
 use crate::time;
+use crate::watch::WatchTarget;
 use futures::FutureExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -222,7 +227,7 @@ async fn every_registration_is_removed_and_every_actor_and_message_kept() {
 async fn an_old_literal_colon() {
     Old::run(2, async |db| {
         let earlier = OutgoingMessage::new(address("notes/a:b"), "Note", json!({"text": "first"}))
-            .into_message(time::from_micros(0), 1);
+            .into_message(time::from_micros(0), 1, false);
         let mut envelope = support::envelope_to_json(&earlier);
         envelope["to"] = json!("notes/a%3Ab");
         db.exec(&format!(
@@ -341,8 +346,78 @@ async fn a_database_of_schema_version_3_is_opened_and_its_actors_have_no_parent(
         assert_eq!(store.pending(&address("notes/a"), None, 10).await.unwrap().items.len(), 1);
         assert!(store.children(&address("notes/a"), None, 10).await.unwrap().items.is_empty());
         // Every actor is independent: deleting one leaves the other.
-        assert_eq!(store.delete(&address("notes/a")).await.unwrap(), DeleteResult::Deleted { purged: 1 });
+        assert_eq!(store.delete(&address("notes/a"), &MessageId::random()).await.unwrap(), DeleteResult::Deleted { purged: 1 });
         assert!(store.get(&address("notes/b")).await.unwrap().is_some());
+        store.close().await;
+    })
+    .await;
+}
+
+/// Scenario: A database of schema version 4 is opened.
+#[tokio::test]
+async fn a_database_of_schema_version_4_is_opened_and_nothing_in_it_is_a_notification() {
+    Old::run(4, async |db| {
+        // An outcome as version 4 kept it: its envelope has no mark.
+        db.exec(
+            r#"INSERT INTO {s}.actors (address, type, state, next_due_at, created_at)
+                VALUES ('notes/a', 'notes', '{}', now(), now());
+               INSERT INTO {s}.messages (id, actor_address, seq, type, payload, headers, deliver_at)
+                VALUES ('m1', 'notes/a', 1, 'Note', '{"text":"x"}', '{}', now());
+               INSERT INTO {s}.outcomes (message_id, actor_address, status, finished_at, envelope)
+                VALUES ('m0', 'notes/a', 'done', now(), '{"id": "m0", "to": "notes/a", "from": null, "type": "Note",
+                    "payload": {}, "deliverAt": "2026-01-01T00:00:00Z", "correlationId": null, "headers": {},
+                    "seq": 0, "attempt": 1}');
+               SELECT setval('{s}.message_seq', 1)"#,
+        )
+        .await
+        .unwrap();
+
+        let store = db.open().await;
+        assert_eq!(db.version().await, schema::VERSION);
+        let pending = store.pending(&address("notes/a"), None, 10).await.unwrap().items;
+        assert_eq!(pending.len(), 1, "the message is still there");
+        assert!(!pending[0].notification);
+        let outcome = expect_finished(store.status(&MessageId::new("m0").unwrap()).await.unwrap());
+        assert!(!outcome.envelope.notification, "the outcome is still there and not a notification");
+        assert!(store.watches(None, None, None, 10).await.unwrap().items.is_empty(), "no watch is stored");
+        store.close().await;
+    })
+    .await;
+}
+
+fn expect_finished(status: Option<MessageStatus>) -> OutcomeRecord {
+    match status {
+        Some(MessageStatus::Finished(outcome)) => outcome,
+        other => panic!("expected an outcome, got {other:?}"),
+    }
+}
+
+/// Scenario: A watcher that is gone.
+#[tokio::test]
+async fn a_watcher_whose_row_was_removed_by_hand_is_skipped_and_its_watch_removed() {
+    Old::run(schema::VERSION, async |db| {
+        let store = db.open().await;
+        store.register(contract_of::<NotesActor>().unwrap().to_type_def()).await.unwrap();
+        let (x, w) = (address("notes/x"), address("notes/w"));
+        for a in [&x, &w] {
+            store.create(a, json!({})).await.unwrap();
+        }
+        assert_eq!(store.watch(&WatchTarget::Actor(x.clone()), &w).await.unwrap(), SetWatchResult::Created);
+        db.exec("DELETE FROM {s}.actors WHERE address = 'notes/w'").await.unwrap();
+
+        let sent = match store.enqueue(OutgoingMessage::new(x.clone(), "Note", json!({"text": "t"}))).await.unwrap() {
+            EnqueueResult::Enqueued(m) => m,
+            other => panic!("{other:?}"),
+        };
+        let types = std::collections::BTreeSet::from([x.type_name().clone()]);
+        let node = NodeId::new("n").unwrap();
+        let claim = store.claim_due(&types, &node, std::time::Duration::from_secs(30), 10).await.unwrap().remove(0);
+        let failure =
+            CommitRequest::new(x.clone(), claim.epoch, claim.message.id.clone(), TurnOutcome::Failed("boom".into()));
+        assert!(matches!(store.commit(failure).await.unwrap(), CommitResult::Committed { .. }), "the commit succeeds");
+        assert_eq!(expect_finished(store.status(&sent.id).await.unwrap()).status, OutcomeStatus::Failed);
+        assert!(store.watches(None, None, None, 10).await.unwrap().items.is_empty(), "the watch is removed");
+        assert_eq!(db.texts("SELECT count(*) FROM {s}.messages").await, ["0"], "nothing was written");
         store.close().await;
     })
     .await;
@@ -364,7 +439,10 @@ async fn a_delete_ends_on_two_rows_that_name_each_other() {
         .unwrap();
 
         let store = db.open().await;
-        assert_eq!(store.delete(&address("notes/a")).await.unwrap(), DeleteResult::Deleted { purged: 2 });
+        assert_eq!(
+            store.delete(&address("notes/a"), &MessageId::random()).await.unwrap(),
+            DeleteResult::Deleted { purged: 2 }
+        );
         assert_eq!(db.texts("SELECT address FROM {s}.actors ORDER BY address").await, ["notes/other"]);
         store.close().await;
     })

@@ -31,6 +31,11 @@ pub static NODE_B: LazyLock<NodeId> = LazyLock::new(|| node("node-b"));
 /// How long a case may run unless it says otherwise.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// A lease TTL that holds for a whole case on every fixture: for a claim (or a renewal) that a later assertion needs
+/// held, as running or exclusive, where nothing waits for the lease to end. [`Env::ttl`] is four ticks, less than a
+/// second of real time on PostgreSQL, which a slow machine can use up between two calls.
+pub const LONG_LEASE: Duration = Duration::from_secs(3600);
+
 /// Runs `block` against a fresh fixture with the long retention and the default timeout, closing the fixture
 /// afterwards.
 pub async fn store_test<B: FixtureFactory>(backend: &B, block: impl AsyncFnOnce(&mut Env<B::Fixture>)) {
@@ -200,6 +205,22 @@ impl<F: StoreFixture> Env<F> {
     /// [`Self::claim_one`] with lease `ttl`.
     pub async fn claim_one_ttl(&self, ttl: Duration) -> Claim {
         single(self.claim_with(&[&TYPE], &NODE_A, ttl, 10).await)
+    }
+
+    /// [`Self::claim_one`] with [`LONG_LEASE`], for a claim that a later assertion needs held.
+    pub async fn claim_one_long(&self) -> Claim {
+        self.claim_one_ttl(LONG_LEASE).await
+    }
+
+    /// [`Self::claim_one_node`] with [`LONG_LEASE`].
+    pub async fn claim_one_long_node(&self, node: &NodeId) -> Claim {
+        single(self.claim_with(&[&TYPE], node, LONG_LEASE, 10).await)
+    }
+
+    /// Advances a virtual store clock past the expiry of a lease taken with [`LONG_LEASE`]; a real one would wait.
+    pub async fn expire_long_lease(&self) {
+        assert!(self.fixture.is_virtual_time(), "only a virtual clock ends a long lease in a case");
+        self.fixture.advance(LONG_LEASE + self.tick).await
     }
 
     /// Commits; a store error fails the case.

@@ -586,6 +586,7 @@ impl TurnExecutor {
             outcome @ (TurnOutcome::Done | TurnOutcome::Cancelled) => outcome,
         };
         let request = CommitRequest {
+            event: MessageId::random(),
             address: claim.actor.clone(),
             epoch: claim.epoch,
             message_id: claim.message.id.clone(),
@@ -594,6 +595,7 @@ impl TurnExecutor {
             creates: decision.creates,
             sends: decision.sends,
             cancels: decision.cancels,
+            watches: Vec::new(),
         };
         let failure = match self.commit_with_retry(claim, guard, request).await {
             CommitEnd::Abandoned => return,

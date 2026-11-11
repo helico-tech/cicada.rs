@@ -21,10 +21,11 @@ use super::{
     ActorRecord, Backend, CancelResult, Claim, CommitRequest, CommitResult, CreateResult, DeleteResult,
     DeliverNowResult, EnqueueResult, Message, MessageId, MessageStatus, NodeId, NodeRecord, OutcomeRecord,
     OutcomeStatus, OutgoingMessage, Page, PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn,
-    StoreResult, StoreStats, TypeDef,
+    SetWatchResult, StoreResult, StoreStats, TypeDef,
 };
 use crate::address::{ActorAddress, TypeName};
 use crate::time::Timestamp;
+use crate::watch::{Watch, WatchTarget};
 
 /// The shared durable store of a node: clock, type registry, state, mailboxes and the atomic commit, in one
 /// transactional system (PostgreSQL, or SQLite for one host). A host opens one, passes it to
@@ -199,8 +200,26 @@ impl Backend for Store {
         self.backend.children(parent, cursor, limit).await
     }
 
-    async fn delete(&self, address: &ActorAddress) -> StoreResult<DeleteResult> {
-        self.backend.delete(address).await
+    async fn delete(&self, address: &ActorAddress, event: &MessageId) -> StoreResult<DeleteResult> {
+        self.backend.delete(address, event).await
+    }
+
+    async fn watch(&self, target: &WatchTarget, watcher: &ActorAddress) -> StoreResult<SetWatchResult> {
+        self.backend.watch(target, watcher).await
+    }
+
+    async fn unwatch(&self, target: &WatchTarget, watcher: &ActorAddress) -> StoreResult<bool> {
+        self.backend.unwatch(target, watcher).await
+    }
+
+    async fn watches(
+        &self,
+        watcher: Option<&ActorAddress>,
+        target: Option<&WatchTarget>,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> StoreResult<Page<Watch>> {
+        self.backend.watches(watcher, target, cursor, limit).await
     }
 
     async fn enqueue(&self, message: OutgoingMessage) -> StoreResult<EnqueueResult> {

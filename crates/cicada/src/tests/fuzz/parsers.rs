@@ -200,7 +200,7 @@ fn any_instant() -> impl Strategy<Value = Timestamp> {
 }
 
 fn message_at(deliver_at: Timestamp, seq: i64, to: &ActorAddress) -> crate::store::Message {
-    OutgoingMessage::new(to.clone(), "M", json!({})).into_message(deliver_at, seq)
+    OutgoingMessage::new(to.clone(), "M", json!({})).into_message(deliver_at, seq, false)
 }
 
 fn any_address() -> impl Strategy<Value = ActorAddress> {

@@ -9,6 +9,7 @@ use crate::address::{ActorAddress, TypeName};
 use crate::retention::Retention;
 use crate::retry::RetryPolicy;
 use crate::time::{self, MAX_DELAY, MAX_INSTANT, TimeError, Timestamp};
+use crate::watch::WatchChange;
 
 /// An id that is not valid: a [`MessageId`] or [`NodeId`] that is blank. It prints why, e.g. "MessageId must not be
 /// blank".
@@ -175,6 +176,9 @@ pub struct Message {
     pub caused_by: Option<MessageId>,
     /// How long the sender wants the message's record kept once it finished; `None` for the store default.
     pub retention: Option<Retention>,
+    /// True for a notification of a watch ([`Failed`](crate::Failed) or [`Stopped`](crate::Stopped)), which only the
+    /// store writes and marks; a sender cannot set it. A notification that ends `failed` notifies nobody.
+    pub notification: bool,
 }
 
 /// When a new message becomes due. The store resolves it against its own clock, rounding up to microseconds; see
@@ -286,8 +290,8 @@ impl OutgoingMessage {
     }
 
     /// The message as the store holds it once enqueued: due at `deliver_at`, with the store-assigned `seq`, never
-    /// claimed and never failed.
-    pub fn into_message(self, deliver_at: Timestamp, seq: i64) -> Message {
+    /// claimed and never failed; marked as a notification only when the store wrote it as one.
+    pub fn into_message(self, deliver_at: Timestamp, seq: i64, notification: bool) -> Message {
         Message {
             id: self.id,
             to: self.to,
@@ -304,6 +308,7 @@ impl OutgoingMessage {
             retry: self.retry,
             caused_by: self.caused_by,
             retention: self.retention,
+            notification,
         }
     }
 }
@@ -558,6 +563,9 @@ pub enum StateChange {
 /// The single atomic write that ends a turn; see [`super::Backend::commit`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct CommitRequest {
+    /// The id of this event, drawn by the runtime for every commit: the store names the notifications the commit
+    /// writes after it, `<event>.0`, `<event>.1`, … A repeated commit keeps it.
+    pub event: MessageId,
     /// The committing instance.
     pub address: ActorAddress,
     /// The claim's epoch.
@@ -574,12 +582,16 @@ pub struct CommitRequest {
     pub sends: Vec<OutgoingMessage>,
     /// Pending messages of this instance to cancel.
     pub cancels: Vec<MessageId>,
+    /// The watches the turn set and removed, with the committing instance as watcher, in the order of its calls;
+    /// applied before the creates and the sends.
+    pub watches: Vec<WatchChange>,
 }
 
 impl CommitRequest {
-    /// A commit of `outcome` without effects.
+    /// A commit of `outcome` without effects, with a new random event id.
     pub fn new(address: ActorAddress, epoch: i64, message_id: MessageId, outcome: TurnOutcome) -> Self {
         Self {
+            event: MessageId::random(),
             address,
             epoch,
             message_id,
@@ -588,6 +600,7 @@ impl CommitRequest {
             creates: Vec::new(),
             sends: Vec::new(),
             cancels: Vec::new(),
+            watches: Vec::new(),
         }
     }
 }

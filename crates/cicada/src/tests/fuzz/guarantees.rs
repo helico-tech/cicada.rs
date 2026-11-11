@@ -1,4 +1,5 @@
-//! Node simulation: several real nodes under injected store faults, checked against G1, G3, G4, G5, G6 and S8.
+//! Node simulation: several real nodes under injected store faults, checked against G1, G3, G4 (with the notifications
+//! of a watcher), G5, G6 and S8.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -168,6 +169,52 @@ async fn a_recreated_instance_is_a_new_instance() {
     assert_eq!(outcome_of(&events, "m1.0"), Some(&OutcomeStatus::Done), "{events:#?}");
 }
 
+fn notified<'a>(events: &'a [Event], wanted: &str) -> Vec<(&'a str, &'a str)> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Notified { kind, of, .. } if kind == wanted => Some((kind.as_str(), of.as_str())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_watcher_is_told_of_a_failure_a_stop_and_a_delete() {
+    let scenario = Scenario {
+        nodes: 1,
+        steps: vec![
+            send(0, vec![Action::Fail { times: 1 }]),
+            send(1, vec![Action::Stop]),
+            ms(1_000),
+            Step::Delete { node: 0, to: 2 },
+        ],
+        faults: Vec::new(),
+    };
+    let events = run(&scenario).await;
+    check_all(&events).unwrap();
+    assert_eq!(outcome_of(&events, "m0"), Some(&OutcomeStatus::Failed), "{events:#?}");
+    assert_eq!(notified(&events, "Failed"), [("Failed", "m0")], "{events:#?}");
+    let mut stopped = notified(&events, "Stopped");
+    stopped.sort();
+    assert_eq!(stopped, [("Stopped", "script/b"), ("Stopped", "script/c")], "{events:#?}");
+}
+
+/// Scenario: A commit that is repeated.
+#[tokio::test(start_paused = true)]
+async fn a_failed_commit_whose_acknowledgement_is_lost_tells_the_watcher_once() {
+    let scenario = Scenario {
+        nodes: 1,
+        steps: vec![send(0, vec![Action::Fail { times: 1 }]), ms(1_000)],
+        faults: vec![fault(0, Method::Commit, 0, Fault::After)],
+    };
+    let events = run(&scenario).await;
+    check_all(&events).unwrap();
+    assert!(events.iter().any(|e| matches!(e, Event::Fault { method: Method::Commit, .. })), "{events:#?}");
+    assert_eq!(outcome_of(&events, "m0"), Some(&OutcomeStatus::Failed));
+    assert_eq!(notified(&events, "Failed"), [("Failed", "m0")], "one Failed, not two: {events:#?}");
+}
+
 #[test]
 fn one_scenario_with_faults_replays_the_same() {
     let scenario = Scenario {
@@ -219,6 +266,8 @@ fn generated_scenarios_reach_deep_states() {
         mark("dropped", &|e| matches!(e, Event::HandlerEnd { how: HandlerEnd::Dropped, .. }));
         mark("panicked", &|e| matches!(e, Event::HandlerEnd { how: HandlerEnd::Panicked, .. }));
         mark("removed", &|e| matches!(e, Event::Removed { .. }));
+        mark("told of a failure", &|e| matches!(e, Event::Notified { kind, .. } if kind == "Failed"));
+        mark("told of a removal", &|e| matches!(e, Event::Notified { kind, .. } if kind == "Stopped"));
     }
     let floors = [
         ("accepted", 1200),
@@ -236,6 +285,8 @@ fn generated_scenarios_reach_deep_states() {
         ("dropped", 20),
         ("panicked", 30),
         ("removed", 120),
+        ("told of a failure", 150),
+        ("told of a removal", 120),
     ];
     for (name, floor) in floors {
         assert!(marks[name] >= floor, "{name} reached only {} times, wanted {floor}: {marks:#?}", marks[name]);

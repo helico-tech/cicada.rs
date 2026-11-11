@@ -535,7 +535,7 @@ mod tests {
 
     #[derive(Serialize, Deserialize, JsonSchema)]
     #[serde(tag = "type")]
-    #[allow(dead_code)]
+    #[allow(dead_code, clippy::large_enum_variant)]
     enum OnlyFailed {
         Failed(Failed),
         Restart { name: String },

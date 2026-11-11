@@ -6,14 +6,15 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::address::{ActorAddress, TypeName};
-use crate::store::support::{self, check_limit};
+use crate::store::support::{self, Notice, Removal, check_limit};
 use crate::store::{
     ActorRecord, Backend, CancelResult, Claim, Clock, CommitRequest, CommitResult, CreateResult, DeleteResult,
     DeliverNowResult, EnqueueResult, Message, MessageId, MessageStatus, NodeId, NodeRecord, OutcomeRecord,
     OutcomeStatus, OutgoingMessage, Page, PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn,
-    StateChange, StoreError, StoreResult, StoreStats, SystemClock, TurnOutcome, TypeDef,
+    SetWatchResult, StateChange, StoreError, StoreResult, StoreStats, SystemClock, TurnOutcome, TypeDef,
 };
 use crate::time::{self, DEFAULT_RETENTION, Timestamp};
+use crate::watch::{self, StopCause, Watch, WatchTarget};
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -89,6 +90,8 @@ struct State {
     nodes: BTreeMap<String, NodeRecord>,
     messages: HashMap<MessageId, Message>,
     outcomes: HashMap<MessageId, OutcomeRow>,
+    /// The watches as `(target, watcher)`, in that order.
+    watches: BTreeSet<(String, ActorAddress)>,
     last_seq: i64,
     last_epoch: i64,
     last_now: Option<Timestamp>,
@@ -163,11 +166,17 @@ impl InMemoryStore {
         s.outcomes.get(id).filter(|r| self.is_visible(r, now)).map(|r| r.record.clone())
     }
 
-    fn insert(&self, s: &mut State, message: OutgoingMessage, now: Timestamp) -> StoreResult<Message> {
+    fn insert(
+        &self,
+        s: &mut State,
+        message: OutgoingMessage,
+        now: Timestamp,
+        notification: bool,
+    ) -> StoreResult<Message> {
         let deliver_at = message.delivery.resolve(now).map_err(|e| StoreError::Invalid(e.0))?;
         s.outcomes.remove(&message.id); // an expired, not yet swept outcome with the same id
         s.last_seq += 1;
-        let stored = message.into_message(deliver_at, s.last_seq);
+        let stored = message.into_message(deliver_at, s.last_seq, notification);
         let row = s.actors.get_mut(stored.to.as_str()).expect("target exists");
         row.mailbox.insert((stored.deliver_at, stored.seq, stored.id.clone()));
         s.messages.insert(stored.id.clone(), stored.clone());
@@ -252,14 +261,58 @@ impl InMemoryStore {
         seen
     }
 
-    /// Removes `root` and every descendant and purges their mailboxes; returns how many messages were purged.
-    fn remove_tree(&self, s: &mut State, root: &ActorAddress, now: Timestamp) -> usize {
+    /// Removes every instance of `tree` with its mailbox and the watches it holds as a watcher; returns how many
+    /// messages were purged.
+    fn remove_all(&self, s: &mut State, tree: &BTreeSet<ActorAddress>, now: Timestamp) -> usize {
         let mut purged = 0;
-        for address in Self::tree(s, root) {
-            purged += self.purge_mailbox(s, &address, now);
+        for address in tree {
+            purged += self.purge_mailbox(s, address, now);
             s.actors.remove(address.as_str());
         }
+        s.watches.retain(|(_, watcher)| !tree.contains(watcher));
         purged
+    }
+
+    /// The notices of an event: the `Failed` of `failed` (a message that ends `failed`, with its error) for the
+    /// watchers of its failure, and a `Stopped` of each actor of `removed` for the watchers of its address. A watcher
+    /// the event removes gets nothing; one that does not exist gets nothing and loses its watches.
+    fn notices(
+        s: &mut State,
+        failed: Option<(&Message, &str)>,
+        removed: Option<(&Removal, &BTreeSet<ActorAddress>)>,
+    ) -> Vec<Notice> {
+        let mut notices = Vec::new();
+        if let Some((message, error)) = failed {
+            let targets = watch::failure_targets(&message.to);
+            let watchers: BTreeSet<&ActorAddress> =
+                s.watches.iter().filter(|(target, _)| targets.contains(target)).map(|(_, w)| w).collect();
+            notices.extend(watchers.into_iter().map(|w| Notice::failed(message, error, w)));
+        }
+        if let Some((removal, tree)) = removed {
+            for actor in tree {
+                let watchers = s.watches.iter().filter(|(target, _)| target == actor.as_str()).map(|(_, w)| w);
+                notices.extend(watchers.map(|w| removal.notice(actor, w)));
+            }
+        }
+        let gone: BTreeSet<ActorAddress> =
+            notices.iter().map(|n| n.watcher.clone()).filter(|w| !s.actors.contains_key(w.as_str())).collect();
+        s.watches.retain(|(_, watcher)| !gone.contains(watcher));
+        let removed = removed.map(|(_, tree)| tree);
+        notices.retain(|n| !gone.contains(&n.watcher) && !removed.is_some_and(|tree| tree.contains(&n.watcher)));
+        notices
+    }
+
+    /// Writes the notifications of `notices`, named after `event`, into the watchers' mailboxes; one whose id is in use
+    /// is skipped.
+    fn notify(&self, s: &mut State, event: &MessageId, notices: Vec<Notice>, now: Timestamp) -> StoreResult<()> {
+        for message in support::notifications(event, notices) {
+            if self.is_id_in_use(s, &message.id, now) {
+                tracing::warn!("Skipping the notification {} for {}: its id is in use", message.id, message.to);
+                continue;
+            }
+            self.insert(s, message, now, true)?;
+        }
+        Ok(())
     }
 
     fn purge_mailbox(&self, s: &mut State, address: &ActorAddress, now: Timestamp) -> usize {
@@ -414,12 +467,59 @@ impl Backend for InMemoryStore {
         })
     }
 
-    async fn delete(&self, address: &ActorAddress) -> StoreResult<DeleteResult> {
+    async fn delete(&self, address: &ActorAddress, event: &MessageId) -> StoreResult<DeleteResult> {
         self.locked(|s, now| {
             if !s.actors.contains_key(address.as_str()) {
                 return Ok(DeleteResult::Absent);
             }
-            Ok(DeleteResult::Deleted { purged: self.remove_tree(s, address, now) })
+            let tree = Self::tree(s, address);
+            let removal = Removal { root: address, cause: StopCause::Deleted, by: None, caused_by: None };
+            let notices = Self::notices(s, None, Some((&removal, &tree)));
+            let purged = self.remove_all(s, &tree, now);
+            self.notify(s, event, notices, now)?;
+            Ok(DeleteResult::Deleted { purged })
+        })
+    }
+
+    async fn watch(&self, target: &WatchTarget, watcher: &ActorAddress) -> StoreResult<SetWatchResult> {
+        self.locked(|s, _| {
+            if !s.actors.contains_key(watcher.as_str()) {
+                return Ok(SetWatchResult::NoSuchWatcher);
+            }
+            Ok(if s.watches.insert((target.to_string(), watcher.clone())) {
+                SetWatchResult::Created
+            } else {
+                SetWatchResult::Exists
+            })
+        })
+    }
+
+    async fn unwatch(&self, target: &WatchTarget, watcher: &ActorAddress) -> StoreResult<bool> {
+        self.locked(|s, _| Ok(s.watches.remove(&(target.to_string(), watcher.clone()))))
+    }
+
+    async fn watches(
+        &self,
+        watcher: Option<&ActorAddress>,
+        target: Option<&WatchTarget>,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> StoreResult<Page<Watch>> {
+        check_limit(limit)?;
+        let after = cursor.map(support::decode_watch_cursor).transpose()?;
+        let target = target.map(WatchTarget::to_string);
+        self.locked(|s, _| {
+            let mut items = Vec::new();
+            for (t, w) in &s.watches {
+                let past = after.as_ref().is_none_or(|(at, aw)| (t.as_str(), w.as_str()) > (at.as_str(), aw.as_str()));
+                if past && target.as_ref().is_none_or(|x| x == t) && watcher.is_none_or(|x| x == w) {
+                    items.push(support::stored_watch(t, w.as_str())?);
+                    if items.len() > limit {
+                        break;
+                    }
+                }
+            }
+            Ok(support::page_of(items, limit, support::watch_cursor))
         })
     }
 
@@ -431,7 +531,7 @@ impl Backend for InMemoryStore {
             if !s.actors.contains_key(message.to.as_str()) {
                 return Ok(EnqueueResult::NoSuchInstance);
             }
-            Ok(EnqueueResult::Enqueued(self.insert(s, message, now)?))
+            Ok(EnqueueResult::Enqueued(self.insert(s, message, now, false)?))
         })
     }
 
@@ -814,10 +914,23 @@ impl Backend for InMemoryStore {
                 _ => None,
             };
 
+            // 0. the turn's watches, in the order of its calls
+            for change in &commit.watches {
+                let key = (change.target.to_string(), commit.address.clone());
+                if change.set {
+                    s.watches.insert(key);
+                } else {
+                    s.watches.remove(&key);
+                }
+            }
             // 1. outcome, or back to pending
             let message = s.messages.get(&commit.message_id).cloned().expect("claimed message is pending");
             let row = s.actors.get_mut(commit.address.as_str()).expect("lease holder exists");
             row.mailbox.remove(&(message.deliver_at, message.seq, message.id.clone()));
+            let failed = match &commit.outcome {
+                TurnOutcome::Failed(error) if !message.notification => Some((message.clone(), error.clone())),
+                _ => None,
+            };
             match &commit.outcome {
                 TurnOutcome::Rescheduled { error, .. } => {
                     s.last_seq += 1;
@@ -856,9 +969,10 @@ impl Backend for InMemoryStore {
             }
             let mut sent = Vec::with_capacity(commit.sends.len());
             for send in commit.sends {
-                sent.push(self.insert(s, send, now)?);
+                sent.push(self.insert(s, send, now, false)?);
             }
-            // 5. state, 6. release
+            // 5. state, 6. release, 7. the notifications of the event
+            let mut tree = BTreeSet::new();
             let version = match commit.state {
                 StateChange::Unchanged => s.actors[commit.address.as_str()].version,
                 StateChange::NewState(state) => {
@@ -868,14 +982,23 @@ impl Backend for InMemoryStore {
                     row.version
                 }
                 StateChange::Stop => {
-                    let version = s.actors[commit.address.as_str()].version;
-                    self.remove_tree(s, &commit.address, now);
-                    version
+                    tree = Self::tree(s, &commit.address);
+                    s.actors[commit.address.as_str()].version
                 }
             };
+            let removal = Removal {
+                root: &commit.address,
+                cause: StopCause::Stopped,
+                by: Some(&commit.address),
+                caused_by: Some(&commit.message_id),
+            };
+            let failed = failed.as_ref().map(|(m, e)| (m, e.as_str()));
+            let notices = Self::notices(s, failed, (!tree.is_empty()).then_some((&removal, &tree)));
+            self.remove_all(s, &tree, now);
             if let Some(row) = s.actors.get_mut(commit.address.as_str()) {
                 row.clear_lease();
             }
+            self.notify(s, &commit.event, notices, now)?;
             Ok(CommitResult::Committed { version, sent, cancelled })
         })
     }

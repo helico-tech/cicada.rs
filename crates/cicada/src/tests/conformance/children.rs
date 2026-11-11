@@ -150,7 +150,7 @@ pub async fn children_a_delete_removes_every_descendant_purges_their_mailboxes_a
         let messages = [t.send(&a).await, t.send(&b).await, t.send(&c).await, t.send(&c).await];
         let kept = t.send(&other).await;
 
-        assert_eq!(store.delete(&a).await.unwrap(), DeleteResult::Deleted { purged: 4 });
+        assert_eq!(store.delete(&a, &MessageId::random()).await.unwrap(), DeleteResult::Deleted { purged: 4 });
         for gone in [&a, &b, &c] {
             assert_eq!(store.get(gone).await.unwrap(), None, "{gone}");
             assert!(t.pending(gone).await.is_empty(), "{gone}");
@@ -160,7 +160,7 @@ pub async fn children_a_delete_removes_every_descendant_purges_their_mailboxes_a
         }
         assert_eq!(store.get(&other).await.unwrap().expect("stays").state, json!({"keep": 1}));
         assert_eq!(ids(&t.pending(&other).await), [kept.id], "no other actor changed");
-        assert_eq!(store.delete(&b).await.unwrap(), DeleteResult::Absent);
+        assert_eq!(store.delete(&b, &MessageId::random()).await.unwrap(), DeleteResult::Absent);
     })
     .await
 }
@@ -299,7 +299,7 @@ pub async fn children_a_turn_that_runs_on_a_descendant_gets_lease_lost_and_its_m
         let m = t.send(&c).await;
         let running = t.claim_one().await;
         assert_eq!(running.actor, c);
-        assert_eq!(store.delete(&p).await.unwrap(), DeleteResult::Deleted { purged: 1 });
+        assert_eq!(store.delete(&p, &MessageId::random()).await.unwrap(), DeleteResult::Deleted { purged: 1 });
         assert_eq!(status_of(&*store, &m.id).await, Some(OutcomeStatus::Purged), "also the one being handled");
         let result = t
             .commit(CommitRequest {
@@ -339,7 +339,7 @@ pub async fn children_a_delete_racing_commits_that_create_children_leaves_no_orp
                                 Some(peer.commit(request).await.unwrap())
                             }
                             None => {
-                                let deleted = peer.delete(&root).await.unwrap();
+                                let deleted = peer.delete(&root, &MessageId::random()).await.unwrap();
                                 assert!(matches!(deleted, DeleteResult::Deleted { .. }), "{deleted:?}");
                                 None
                             }
@@ -383,7 +383,7 @@ pub async fn children_a_delete_racing_a_send_up_the_tree_from_a_child_that_sorts
                             let up = OutgoingMessage::new(parent.clone(), "Up", json!(0));
                             Err(peer.commit(CommitRequest { sends: vec![up], ..done(&c) }).await.unwrap())
                         } else {
-                            Ok(peer.delete(&parent).await.unwrap())
+                            Ok(peer.delete(&parent, &MessageId::random()).await.unwrap())
                         }
                     }
                 })

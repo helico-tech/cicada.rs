@@ -63,6 +63,7 @@ mod retention;
 mod robustness;
 mod s1_to_s10;
 mod turn_cancel;
+mod watches;
 
 pub use env::*;
 pub use fixture::{FixtureFactory, StoreFixture};
@@ -77,6 +78,7 @@ pub mod cases {
     pub use super::robustness::*;
     pub use super::s1_to_s10::*;
     pub use super::turn_cancel::*;
+    pub use super::watches::*;
 }
 
 /// The runtime of one generated test.
@@ -226,6 +228,21 @@ macro_rules! for_each_case {
             children_a_turn_that_runs_on_a_descendant_gets_lease_lost_and_its_message_is_purged,
             children_a_delete_racing_commits_that_create_children_leaves_no_orphan,
             children_a_delete_racing_a_send_up_the_tree_from_a_child_that_sorts_first_leaves_no_actor_of_the_tree,
+            // watches.rs
+            watches_a_commit_sets_and_removes_watches_of_its_actor_in_the_order_of_the_calls,
+            watches_are_set_removed_and_listed_from_outside_with_both_filters_and_paging,
+            watches_a_failed_commit_writes_one_failed_per_watcher_with_every_field_and_the_mark,
+            watches_a_failed_is_kept_by_the_failed_rule_of_the_retention_of_the_failed_message,
+            watches_a_rescheduled_a_done_and_a_cancelled_commit_write_nothing,
+            watches_a_type_prefix_matches_at_a_dot_and_every_type_matches_and_neither_is_told_of_a_removal,
+            watches_a_stop_and_a_delete_write_one_stopped_per_watcher_of_each_removed_actor,
+            watches_a_watcher_removed_in_the_same_transaction_gets_nothing_and_its_watches_are_gone,
+            watches_removing_an_actor_removes_the_watches_it_holds_and_the_watches_on_it_stay,
+            watches_a_notification_that_fails_writes_nothing_and_a_sender_cannot_mark_a_message,
+            watches_the_notifications_of_one_event_are_numbered_in_order_one_per_watcher_and_actor,
+            watches_an_actor_that_watches_itself_is_told_of_its_failures_and_gets_nothing_when_it_stops,
+            watches_a_delete_racing_a_send_from_a_watcher_that_sorts_first_ends_without_an_error,
+            watches_a_watch_set_while_a_message_of_its_target_fails_ends_without_an_error,
         );
     };
 }
@@ -286,6 +303,7 @@ fn every_case_is_generated() {
         include_str!("retention.rs"),
         include_str!("robustness.rs"),
         include_str!("turn_cancel.rs"),
+        include_str!("watches.rs"),
     ];
     let defined: BTreeSet<&str> = sources
         .iter()

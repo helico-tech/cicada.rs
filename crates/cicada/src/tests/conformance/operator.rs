@@ -187,9 +187,9 @@ pub async fn turns_running_turns_are_valid_leases_by_node_and_prefix_in_address_
         for addr in [&a1, &a2, &a3] {
             t.send(addr).await;
         }
-        let mut by_a = t.claim_with(&[&TYPE], &NODE_A, t.ttl(), 2).await;
+        let mut by_a = t.claim_with(&[&TYPE], &NODE_A, LONG_LEASE, 2).await;
         by_a.sort_by(|x, y| x.actor.as_str().cmp(y.actor.as_str()));
-        let by_b = t.claim_with(&[&TYPE], &NODE_B, t.ttl(), 1).await;
+        let by_b = t.claim_with(&[&TYPE], &NODE_B, LONG_LEASE, 1).await;
         t.send(&idle).await;
 
         let all = store.running_turns(None, "", None, 100).await.unwrap();
@@ -218,7 +218,7 @@ pub async fn turns_running_turns_are_valid_leases_by_node_and_prefix_in_address_
         assert_eq!(store.running_turn(&address("nosuch/x")).await.unwrap(), None);
 
         if t.fixture.is_virtual_time() {
-            t.expire_lease().await;
+            t.expire_long_lease().await;
             assert!(store.running_turns(None, "", None, 100).await.unwrap().items.is_empty(), "expired leases are out");
             assert_eq!(store.running_turn(&a2).await.unwrap(), None);
         }
@@ -237,13 +237,13 @@ pub async fn turns_a_cancel_request_is_recorded_only_under_a_valid_lease_and_rep
         let a = t.new_actor(&TYPE, json!({})).await;
         t.send(&a).await;
         assert!(!store.request_cancel(&a).await.unwrap(), "no lease: nothing to cancel");
-        let c = t.claim_one().await;
+        let c = t.claim_one_long().await;
         assert!(store.request_cancel(&a).await.unwrap());
         assert!(store.running_turn(&a).await.unwrap().expect("running").cancel_requested);
 
         let before = store.running_turn(&a).await.unwrap().expect("running").lease_until;
         t.advance_ticks(1).await;
-        match store.renew(&a, c.epoch, t.ttl()).await.unwrap() {
+        match store.renew(&a, c.epoch, LONG_LEASE).await.unwrap() {
             RenewResult::CancelRequested(until) => assert!(until > before, "the lease is still renewed"),
             other => panic!("expected CancelRequested, got {other:?}"),
         }
@@ -252,7 +252,7 @@ pub async fn turns_a_cancel_request_is_recorded_only_under_a_valid_lease_and_rep
 
         // A later turn is not hit by the old request.
         t.send(&a).await;
-        let next = t.claim_one().await;
+        let next = t.claim_one_long().await;
         assert!(!store.running_turn(&a).await.unwrap().expect("running").cancel_requested);
         assert!(matches!(store.renew(&a, next.epoch, t.ttl()).await.unwrap(), RenewResult::Renewed(_)));
         t.commit_ok(done(&next)).await;
@@ -359,7 +359,7 @@ pub async fn purge_gives_purged_to_pending_messages_keeps_the_running_one_and_th
         let running = t.send(&a).await;
         let queued = t.send(&a).await;
         let delayed = t.send_at(&a, Delivery::After(t.ticks(50))).await;
-        let c = t.claim_one().await;
+        let c = t.claim_one_long().await;
         assert_eq!(store.purge(&a).await.unwrap(), Some(2));
         assert_eq!(status_of(&*store, &queued.id).await, Some(OutcomeStatus::Purged));
         assert_eq!(status_of(&*store, &delayed.id).await, Some(OutcomeStatus::Purged));
@@ -418,7 +418,7 @@ pub async fn deliver_now_refuses_running_finished_and_unknown_messages<B: Fixtur
         let store = t.store();
         let a = t.new_actor(&TYPE, json!({})).await;
         let running = t.send(&a).await;
-        let c = t.claim_one().await;
+        let c = t.claim_one_long().await;
         assert_eq!(store.deliver_now(&running.id).await.unwrap(), DeliverNowResult::Running);
         t.commit_ok(done(&c)).await;
         assert!(matches!(store.deliver_now(&running.id).await.unwrap(), DeliverNowResult::AlreadyFinished(_)));

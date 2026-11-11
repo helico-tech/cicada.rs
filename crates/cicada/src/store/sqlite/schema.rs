@@ -2,15 +2,17 @@
 //! counters and the store clock's high-water mark. All instants are INTEGER microseconds since the epoch; JSON values
 //! are TEXT.
 //!
-//! The schema is versioned with `PRAGMA user_version` and is at version 4: opening a store applies every missing
+//! The schema is versioned with `PRAGMA user_version` and is at version 5: opening a store applies every missing
 //! migration in one transaction and refuses a database written by a newer version. A database without a version is set
 //! up only when it has no tables; one with tables belongs to another program and is refused (ADR 0017). Migrations are
-//! additive so that nodes of the previous version keep working during a rolling deploy, with three exceptions, after
+//! additive so that nodes of the previous version keep working during a rolling deploy, with four exceptions, after
 //! which every old node is stopped before the first new one starts: migration 2 makes `actors.state` required, so a
 //! node of version 1 that writes an actor without a state fails; migration 3 removes every registration and rewrites
 //! `%3A` to `:` in addresses, and the contracts that nodes register again are not those of version 2 (ADR 0021);
 //! migration 4 adds `actors.parent`, and a node of version 3 that keeps running deletes or stops a parent without its
-//! children, which then stay behind (ADR 0019). A node of version 3 that opens the migrated database refuses it.
+//! children, which then stay behind (ADR 0019); migration 5 adds the watches and the mark on a message, and a node of
+//! version 4 that keeps running writes no notification for a message that fails there and leaves the watches of an
+//! actor it removes behind (ADR 0023). A node of the previous version that opens the migrated database refuses it.
 //!
 //! A statement of a migration that violates a constraint (`SQLITE_CONSTRAINT`, such as two old addresses that become
 //! one in migration 3) fails the open with [`StoreError::Invalid`], which names the version it could not reach and
@@ -155,6 +157,20 @@ SELECT address, type, state, version, epoch, lease_owner, lease_until, lease_mes
     &[
         "ALTER TABLE actors ADD COLUMN parent TEXT",
         "CREATE INDEX actors_parent ON actors (parent, address) WHERE parent IS NOT NULL",
+    ],
+    // 5: watches (ADR 0018, ADR 0023). A watch is the pair of a target (an address, a type prefix or `*`) and a
+    // watcher; the primary key serves the lookup of the watchers of an event, `watches_watcher` the listing by watcher
+    // and the removal of a watcher's watches. No foreign keys, as elsewhere. `messages.notification` marks a message the
+    // store wrote as a notification; every existing message is none, and an outcome keeps the mark in its envelope,
+    // where an older envelope without it reads as none. Not additive (see the module docs).
+    &[
+        "CREATE TABLE watches (
+    target  TEXT NOT NULL,
+    watcher TEXT NOT NULL,
+    PRIMARY KEY (target, watcher)
+)",
+        "CREATE INDEX watches_watcher ON watches (watcher, target)",
+        "ALTER TABLE messages ADD COLUMN notification INTEGER NOT NULL DEFAULT 0",
     ],
 ];
 

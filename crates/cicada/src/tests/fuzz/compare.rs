@@ -15,6 +15,9 @@
 //!   therefore moves by rank among the epochs a backend handed to the same address, not by value: `-1` is the epoch
 //!   handed just before the claim's, `1` the one just after, and where there is none, a number never handed to that
 //!   address. It reaches the same claim of the same instance in both backends, or no claim in both.
+//!
+//! The notifications of watches are not special: each backend writes them on its own, named after an event id that
+//! the list gives (`e1`, `e2`, …), and they are compared with the mailboxes and outcomes they land in.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
@@ -28,11 +31,12 @@ use crate::store::sqlite::{SqliteOptions, SqliteStore};
 use crate::store::{
     ActorCreate, ActorRecord, Backend, CancelResult, Claim, CommitRequest, CommitResult, CreateResult, DeleteResult,
     DeliverNowResult, Delivery, EnqueueResult, Message, MessageId, MessageStatus, NodeId, OutcomeRecord, OutcomeStatus,
-    OutgoingMessage, PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn, StateChange, StoreError,
-    StoreResult, TurnOutcome, TypeDef,
+    OutgoingMessage, PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn, SetWatchResult,
+    StateChange, StoreError, StoreResult, TurnOutcome, TypeDef,
 };
 use crate::testing::{InMemoryStore, VirtualClock};
 use crate::time::{self, Timestamp};
+use crate::watch::{Watch, WatchChange, WatchTarget};
 use proptest::prelude::*;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -45,6 +49,10 @@ pub const TYPES: [&str; 3] = ["alpha", "beta", "ghost"];
 pub const ADDRESSES: [&str; 8] =
     ["alpha/0", "alpha/1", "alpha/a_b", "alpha/axb", "beta/0", "ghost/0", "beta/1", "beta/2"];
 
+/// The targets of watches operations choose from: addresses (one that is never created), type prefixes, one that
+/// ends inside a type name and so matches nothing (`alph`), and every type.
+pub const TARGETS: [&str; 8] = ["alpha/0", "beta/1", "beta/2", "ghost/0", "alpha", "beta", "alph", "*"];
+
 /// The prefixes operations choose from, including SQL wildcards.
 pub const PREFIXES: [&str; 10] = ["", "alpha/", "alpha", "alpha/a_", "alpha/a", "b", "%", "alpha/%", "_", "zzz"];
 
@@ -55,8 +63,9 @@ pub const IDS: usize = 40;
 pub const NODES: [&str; 2] = ["n0", "n1"];
 
 /// The cursors used to probe listings: well-formed, wrong and at the limits of the numbers.
-pub const CURSORS: [&str; 10] = [
+pub const CURSORS: [&str; 11] = [
     "",
+    "* beta/0",
     "x",
     "1",
     ":",
@@ -147,6 +156,8 @@ pub struct Commit {
     pub sends: Vec<Send>,
     /// Messages to cancel, counted back from the latest message sent.
     pub cancels: Vec<usize>,
+    /// Watches of the committing instance to set (`true`) or remove, as `(target, set)`; the target into [`TARGETS`].
+    pub watches: Vec<(usize, bool)>,
 }
 
 /// One operation of a list. Indexes pick from the small pools above, so a shrunk list stays valid.
@@ -181,6 +192,19 @@ pub enum Op {
     },
     Delete {
         to: usize,
+    },
+    Watch {
+        target: usize,
+        watcher: usize,
+    },
+    Unwatch {
+        target: usize,
+        watcher: usize,
+    },
+    Watches {
+        watcher: Option<usize>,
+        target: Option<usize>,
+        limit: usize,
     },
     Enqueue(Send),
     ClaimDue {
@@ -273,6 +297,9 @@ impl Op {
             Op::List { .. } => "list",
             Op::Children { .. } => "children",
             Op::Delete { .. } => "delete",
+            Op::Watch { .. } => "watch",
+            Op::Unwatch { .. } => "unwatch",
+            Op::Watches { .. } => "watches",
             Op::Enqueue(_) => "enqueue",
             Op::ClaimDue { .. } => "claim_due",
             Op::Renew { .. } => "renew",
@@ -298,7 +325,7 @@ impl Op {
     }
 
     /// The names of every operation the generator can produce.
-    pub const ALL: [&'static str; 31] = [
+    pub const ALL: [&'static str; 34] = [
         "advance",
         "now",
         "register",
@@ -309,6 +336,9 @@ impl Op {
         "list",
         "children",
         "delete",
+        "watch",
+        "unwatch",
+        "watches",
         "enqueue",
         "claim_due",
         "renew",
@@ -346,6 +376,10 @@ fn id() -> impl Strategy<Value = usize> {
 /// Counts back from the latest: usually something recent, sometimes anything.
 fn recent() -> impl Strategy<Value = usize> {
     prop_oneof![6 => 0usize..4, 1 => 0usize..64]
+}
+
+fn target() -> impl Strategy<Value = usize> {
+    0..TARGETS.len()
 }
 
 fn prefix() -> impl Strategy<Value = usize> {
@@ -455,8 +489,9 @@ fn commit() -> BoxedStrategy<Commit> {
         prop::collection::vec(create(), 0..2),
         prop::collection::vec(send(), 0..3),
         prop::collection::vec(recent(), 0..2),
+        prop::collection::vec((target(), any::<bool>()), 0..2),
     )
-        .prop_map(|(claim, epoch_delta, wrong_message, end, state, creates, sends, cancels)| Commit {
+        .prop_map(|(claim, epoch_delta, wrong_message, end, state, creates, sends, cancels, watches)| Commit {
             claim,
             epoch_delta,
             wrong_message,
@@ -465,6 +500,7 @@ fn commit() -> BoxedStrategy<Commit> {
             creates,
             sends,
             cancels,
+            watches,
         })
         .boxed()
 }
@@ -487,6 +523,10 @@ pub fn op() -> BoxedStrategy<Op> {
         2 => (prefix(), limit()).prop_map(|(prefix, limit)| Op::List { prefix, limit }),
         2 => (address(), limit()).prop_map(|(to, limit)| Op::Children { to, limit }),
         1 => address().prop_map(|to| Op::Delete { to }),
+        2 => (target(), address()).prop_map(|(target, watcher)| Op::Watch { target, watcher }),
+        1 => (target(), address()).prop_map(|(target, watcher)| Op::Unwatch { target, watcher }),
+        1 => (prop::option::of(address()), prop::option::of(target()), limit())
+            .prop_map(|(watcher, target, limit)| Op::Watches { watcher, target, limit }),
         16 => send().prop_map(Op::Enqueue),
         12 => (type_set(), 0..NODES.len(), ttl(), prop_oneof![1 => Just(0usize), 15 => Just(ALL_DUE)])
             .prop_map(|(types, node, ttl, limit)| Op::ClaimDue { types, node, ttl, limit }),
@@ -581,6 +621,10 @@ fn address_at(index: usize) -> ActorAddress {
     ActorAddress::parse(ADDRESSES[index]).expect("a valid address")
 }
 
+fn target_at(index: usize) -> WatchTarget {
+    WatchTarget::parse(TARGETS[index]).expect("a valid target")
+}
+
 fn id_at(index: usize) -> MessageId {
     MessageId::new(format!("m{index}")).expect("a valid id")
 }
@@ -671,6 +715,8 @@ pub struct Side {
     sent: Vec<usize>,
     seq: Ranker,
     epochs: HashMap<String, Ranker>,
+    /// How many events (commits and deletes) the list has sent: their ids are `e1`, `e2`, … in both backends.
+    events: usize,
 }
 
 macro_rules! paged {
@@ -715,7 +761,14 @@ impl Side {
             sent: Vec::new(),
             seq: Ranker::default(),
             epochs: HashMap::new(),
+            events: 0,
         }
+    }
+
+    /// The id of the next event: the same in both backends, and never the id of a message.
+    fn event(&mut self) -> MessageId {
+        self.events += 1;
+        MessageId::new(format!("e{}", self.events)).expect("a valid id")
     }
 
     fn message(&mut self, m: &Message) -> Value {
@@ -735,7 +788,12 @@ impl Side {
             "retry": m.retry.as_ref().map(|r| r.to_json()),
             "causedBy": m.caused_by.as_ref().map(|i| i.as_str().to_owned()),
             "retention": m.retention.as_ref().map(|r| r.to_json()),
+            "notification": m.notification,
         })
+    }
+
+    fn watch(w: &Watch) -> Value {
+        json!([w.target.as_str(), w.watcher.as_str()])
     }
 
     fn outcome(&mut self, o: &OutcomeRecord) -> Value {
@@ -892,11 +950,17 @@ impl Side {
                     |s: &mut Side, m: &MessageStatus| s.status(m)
                 )
             }
-            _ => paged!(
+            5 => paged!(
                 this,
                 cursor,
                 |c: Option<PageCursor>| async move { store.running_turns(None, prefix, c.as_ref(), limit).await },
                 |s: &mut Side, t: &RunningTurn| s.turn(t)
+            ),
+            _ => paged!(
+                this,
+                cursor,
+                |c: Option<PageCursor>| async move { store.watches(None, None, c.as_ref(), limit).await },
+                |_: &mut Side, w: &Watch| Side::watch(w)
             ),
         }
     }
@@ -942,10 +1006,34 @@ impl Side {
                     |_: &mut Side, a: &ActorAddress| json!(a.as_str())
                 )
             }
-            Op::Delete { to } => answer(store.delete(&address_at(*to)).await, |r| match r {
+            Op::Delete { to } => answer(store.delete(&address_at(*to), &self.event()).await, |r| match r {
                 DeleteResult::Deleted { purged } => json!({"deleted": purged}),
                 DeleteResult::Absent => json!("absent"),
             }),
+            Op::Watch { target, watcher } => {
+                answer(store.watch(&target_at(*target), &address_at(*watcher)).await, |r| match r {
+                    SetWatchResult::Created => json!("created"),
+                    SetWatchResult::Exists => json!("exists"),
+                    SetWatchResult::NoSuchWatcher => json!("no-such-watcher"),
+                })
+            }
+            Op::Unwatch { target, watcher } => {
+                answer(store.unwatch(&target_at(*target), &address_at(*watcher)).await, |r| json!(r))
+            }
+            Op::Watches { watcher, target, limit } => {
+                let store_ref = store;
+                let watcher = watcher.map(address_at);
+                let watcher = watcher.as_ref();
+                let target = target.map(target_at);
+                let target = target.as_ref();
+                let this = &mut *self;
+                paged!(
+                    this,
+                    None,
+                    |c: Option<PageCursor>| async move { store_ref.watches(watcher, target, c.as_ref(), *limit).await },
+                    |_: &mut Side, w: &Watch| Side::watch(w)
+                )
+            }
             Op::Enqueue(send) => match store.enqueue(self.outgoing(send, now)).await {
                 Ok(EnqueueResult::Enqueued(m)) => json!({"enqueued": self.message(&m)}),
                 Ok(EnqueueResult::Duplicate(id)) => json!({"duplicate": id.as_str()}),
@@ -1096,6 +1184,7 @@ impl Side {
         let sends: Vec<_> = commit.sends.iter().map(|send| self.outgoing(send, now)).collect();
         let cancels: Vec<_> = commit.cancels.iter().map(|back| self.recent_id(*back)).collect();
         let request = CommitRequest {
+            event: self.event(),
             address: address.clone(),
             epoch,
             message_id: commit.wrong_message.map_or(claimed, id_at),
@@ -1116,6 +1205,11 @@ impl Side {
                 .collect(),
             sends,
             cancels,
+            watches: commit
+                .watches
+                .iter()
+                .map(|(target, set)| WatchChange { target: target_at(*target), set: *set })
+                .collect(),
         };
         match self.store.commit(request).await {
             Ok(CommitResult::Committed { version, sent, cancelled }) => {
@@ -1147,6 +1241,7 @@ impl Side {
             ("stats", Op::Stats { prefix: 0 }),
             ("nextDue", Op::NextDueAt { types: vec![0, 1, 2] }),
             ("running", Op::RunningTurns { node: None, prefix: 0, limit: 2 }),
+            ("watches", Op::Watches { watcher: None, target: None, limit: 2 }),
         ];
         for (name, op) in steps {
             state.insert(name.to_owned(), self.apply(&op, now).await);
@@ -1170,7 +1265,7 @@ impl Side {
     }
 }
 
-const LISTINGS: usize = 6;
+const LISTINGS: usize = 7;
 
 // ---- two backends ----
 
@@ -1261,6 +1356,7 @@ impl Pair {
                     creates: vec![(child, 0, true)],
                     sends: Vec::new(),
                     cancels: Vec::new(),
+                    watches: Vec::new(),
                 }),
             ]
         };
@@ -1275,7 +1371,14 @@ impl Pair {
         ]
         .into_iter()
         .chain(child_create(4, 6, IDS - 2))
-        .chain(child_create(6, 7, IDS - 1));
+        .chain(child_create(6, 7, IDS - 1))
+        // Watches to start from, as lists rarely set one before the event: `beta/0` watches the types under `alpha`,
+        // `alpha/1` watches `beta/1`, and `beta/2` watches every type, so it is told of every failure.
+        .chain([
+            Op::Watch { target: 4, watcher: 4 },
+            Op::Watch { target: 1, watcher: 1 },
+            Op::Watch { target: 7, watcher: 7 },
+        ]);
         for op in &setup.collect::<Vec<_>>() {
             pair.step(0, op).await.expect("the backends agree on the setup");
         }

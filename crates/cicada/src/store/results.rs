@@ -49,6 +49,17 @@ pub enum DeleteResult {
     Absent,
 }
 
+/// Result of setting a watch in the store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SetWatchResult {
+    /// The watch was stored.
+    Created,
+    /// The watch was stored already; nothing changed.
+    Exists,
+    /// The watcher does not exist; nothing was stored.
+    NoSuchWatcher,
+}
+
 /// Result of enqueueing a message.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]

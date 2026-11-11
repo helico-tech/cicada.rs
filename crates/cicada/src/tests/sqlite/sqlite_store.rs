@@ -46,7 +46,7 @@ async fn database_uses_wal_and_has_its_tables() {
     assert_eq!(db.pragma("journal_mode").await, "wal");
     assert_eq!(db.pragma("user_version").await, schema::VERSION.to_string());
     let tables = db.column_names("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").await;
-    assert_eq!(tables, ["actor_types", "actors", "messages", "nodes", "outcomes", "sequences"]);
+    assert_eq!(tables, ["actor_types", "actors", "messages", "nodes", "outcomes", "sequences", "watches"]);
 }
 
 #[tokio::test]
@@ -136,7 +136,7 @@ async fn a_new_path_and_an_empty_file_are_set_up() {
         assert_eq!(db.pragma("journal_mode").await, "wal");
         assert_eq!(db.pragma("user_version").await, schema::VERSION.to_string());
         let tables = db.column_names("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").await;
-        assert_eq!(tables, ["actor_types", "actors", "messages", "nodes", "outcomes", "sequences"]);
+        assert_eq!(tables, ["actor_types", "actors", "messages", "nodes", "outcomes", "sequences", "watches"]);
     }
 }
 

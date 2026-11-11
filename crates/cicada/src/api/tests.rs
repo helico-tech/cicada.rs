@@ -10,6 +10,7 @@ use crate::time::parse_instant;
 
 fn message() -> Message {
     Message {
+        notification: false,
         id: MessageId::new("m1").unwrap(),
         to: ActorAddress::parse("a/b").unwrap(),
         from: None,

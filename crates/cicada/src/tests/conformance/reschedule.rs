@@ -193,7 +193,7 @@ pub async fn reschedule_is_fenced_by_epoch_like_any_commit<B: FixtureFactory>(ba
         let m = t.send(&a).await;
         let stale = t.claim_one().await;
         t.expire_lease().await;
-        let current = t.claim_one_node(&NODE_B).await;
+        let current = t.claim_one_long_node(&NODE_B).await;
         assert_eq!(t.commit(ending(&stale, rescheduled("stale", Delivery::Now))).await, CommitResult::LeaseLost);
         let status = store.status(&m.id).await.unwrap();
         let running = expect_matches!(status, Some(MessageStatus::Running { message, .. }) => message);
@@ -226,7 +226,7 @@ pub async fn reschedule_is_atomic_with_the_commits_sends_and_creates_and_a_rejec
         let other = t.new_actor(&OTHER, json!({})).await;
         let child = address("other/reschedule-child");
         let m = t.send(&a).await;
-        let c = t.claim_one().await;
+        let c = t.claim_one_long().await;
         let rejected = t
             .commit(CommitRequest {
                 sends: vec![OutgoingMessage::new(address("other/absent"), "T", json!(1))],
@@ -287,7 +287,7 @@ pub async fn reschedule_delete_and_stop_purge_a_rescheduled_message<B: FixtureFa
         let m = t.send(&a).await;
         let c = t.claim_one().await;
         t.commit_ok(ending(&c, rescheduled("e1", Delivery::After(Duration::from_secs(86_400))))).await;
-        assert_eq!(store.delete(&a).await.unwrap(), DeleteResult::Deleted { purged: 1 });
+        assert_eq!(store.delete(&a, &MessageId::random()).await.unwrap(), DeleteResult::Deleted { purged: 1 });
         let purged = outcome_record(&*store, &m.id).await.expect("an outcome");
         assert_eq!(purged.status, OutcomeStatus::Purged);
         assert_eq!(purged.envelope.failures, 1);

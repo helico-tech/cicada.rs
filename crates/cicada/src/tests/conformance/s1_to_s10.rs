@@ -142,7 +142,7 @@ pub async fn registry_remove_type_removes_an_unused_type_refuses_one_with_instan
         assert_eq!(list_types(&*store).await, vec![used.clone()]);
 
         // Once its last instance is gone the type can go, and be registered again with another contract.
-        assert!(matches!(store.delete(&a).await.unwrap(), DeleteResult::Deleted { .. }));
+        assert!(matches!(store.delete(&a, &MessageId::random()).await.unwrap(), DeleteResult::Deleted { .. }));
         assert_eq!(store.remove_type(&TYPE).await.unwrap(), RemoveTypeResult::Removed);
         assert!(list_types(&*store).await.is_empty());
         let changed = type_def(&TYPE, "h2");
@@ -312,10 +312,13 @@ pub async fn instances_list_by_prefix_in_address_order_with_paging<B: FixtureFac
 pub async fn instances_delete_of_an_absent_instance_reports_absent<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
-        assert_eq!(store.delete(&address("conformance/none")).await.unwrap(), DeleteResult::Absent);
+        assert_eq!(
+            store.delete(&address("conformance/none"), &MessageId::random()).await.unwrap(),
+            DeleteResult::Absent
+        );
         let a = t.new_actor(&TYPE, json!({})).await;
-        assert_eq!(store.delete(&a).await.unwrap(), DeleteResult::Deleted { purged: 0 });
-        assert_eq!(store.delete(&a).await.unwrap(), DeleteResult::Absent);
+        assert_eq!(store.delete(&a, &MessageId::random()).await.unwrap(), DeleteResult::Deleted { purged: 0 });
+        assert_eq!(store.delete(&a, &MessageId::random()).await.unwrap(), DeleteResult::Absent);
         assert_eq!(store.get(&a).await.unwrap(), None);
     })
     .await
@@ -429,7 +432,7 @@ pub async fn s2_a_send_to_an_absent_instance_rejects_the_whole_commit_and_keeps_
         let store = t.store();
         let a = t.new_actor(&TYPE, json!({"n": 0})).await;
         let m = t.send(&a).await;
-        let claim = t.claim_one().await;
+        let claim = t.claim_one_long().await;
         let child = address("conformance/child");
         let absent = address("conformance/absent");
         let result = t
@@ -539,7 +542,7 @@ pub async fn s2_delete_removes_the_instance_and_purges_its_whole_mailbox<B: Fixt
         let m1 = t.send(&a).await;
         let m2 = t.send_at(&a, Delivery::After(t.ticks(50))).await;
         let claim = t.claim_one().await;
-        assert_eq!(store.delete(&a).await.unwrap(), DeleteResult::Deleted { purged: 2 });
+        assert_eq!(store.delete(&a, &MessageId::random()).await.unwrap(), DeleteResult::Deleted { purged: 2 });
         assert_eq!(store.get(&a).await.unwrap(), None);
         assert!(t.pending(&a).await.is_empty());
         for m in [&m1, &m2] {
@@ -635,7 +638,7 @@ pub async fn s3_every_read_sees_the_preceding_acknowledged_write<B: FixtureFacto
             let m = t.send(&a).await;
             assert_eq!(store.status(&m.id).await.unwrap(), Some(MessageStatus::Pending(m.clone())));
             assert_eq!(t.pending(&a).await, vec![m.clone()]);
-            let c = t.claim_one().await;
+            let c = t.claim_one_long().await;
             assert_eq!(c.state, json!({"v": i}));
             assert_eq!(c.version, i);
             assert_matches!(store.status(&m.id).await.unwrap(), Some(MessageStatus::Running { .. }));
@@ -721,7 +724,7 @@ pub async fn s4_a_valid_lease_excludes_other_claims<B: FixtureFactory>(backend: 
         let store = t.store();
         let a = t.new_actor(&TYPE, json!({})).await;
         let m = t.send(&a).await;
-        let c = t.claim_one_node(&NODE_A).await;
+        let c = t.claim_one_long_node(&NODE_A).await;
         assert_eq!(c.actor, a);
         assert_eq!(c.message.id, m.id);
         assert_eq!(c.message.attempt, 1);
@@ -746,7 +749,7 @@ pub async fn s4_concurrent_claims_from_many_nodes_never_share_an_instance<B: Fix
         for a in &actors {
             t.send(a).await;
         }
-        let ttl = t.ttl();
+        let ttl = LONG_LEASE;
         let claims: Vec<Claim> = t
             .concurrently(12, |i, peer| async move {
                 let node = node(&format!("node-{i}"));
@@ -777,7 +780,7 @@ pub async fn s4_concurrent_claims_of_one_instance_yield_exactly_one_lease<B: Fix
     store_test(backend, async |t| {
         let a = t.new_actor(&TYPE, json!({})).await;
         t.send(&a).await;
-        let ttl = t.ttl();
+        let ttl = LONG_LEASE;
         for round in 0..3 {
             let claims: Vec<Claim> = t
                 .concurrently(16, |i, peer| async move {
@@ -804,7 +807,7 @@ pub async fn s4_an_expired_lease_is_claimed_again_with_a_higher_epoch_and_attemp
         let first = t.claim_one_node(&NODE_A).await;
         t.expire_lease().await;
         assert_matches!(store.status(&m.id).await.unwrap(), Some(MessageStatus::Pending(_)));
-        let second = t.claim_one_node(&NODE_B).await;
+        let second = t.claim_one_long_node(&NODE_B).await;
         assert_eq!(second.message.id, m.id);
         assert_eq!(second.message.attempt, 2);
         assert!(second.epoch > first.epoch);
@@ -847,7 +850,7 @@ pub async fn s4_epochs_stay_monotonic_across_delete_and_re_create<B: FixtureFact
         let a = t.new_actor(&TYPE, json!({})).await;
         t.send(&a).await;
         let old = t.claim_one().await;
-        assert_matches!(store.delete(&a).await.unwrap(), DeleteResult::Deleted { .. });
+        assert_matches!(store.delete(&a, &MessageId::random()).await.unwrap(), DeleteResult::Deleted { .. });
         assert_eq!(store.create(&a, json!({})).await.unwrap(), CreateResult::Created);
         t.send(&a).await;
         let fresh = t.claim_one().await;
@@ -856,7 +859,7 @@ pub async fn s4_epochs_stay_monotonic_across_delete_and_re_create<B: FixtureFact
         assert_eq!(store.renew(&a, old.epoch, t.ttl()).await.unwrap(), RenewResult::LeaseLost);
         t.commit_ok(done(&fresh)).await;
         // Delete and re-create again, now without an outstanding lease.
-        store.delete(&a).await.unwrap();
+        store.delete(&a, &MessageId::random()).await.unwrap();
         store.create(&a, json!({})).await.unwrap();
         t.send(&a).await;
         assert!(t.claim_one().await.epoch > fresh.epoch);
@@ -877,7 +880,7 @@ pub async fn s5_a_stale_epoch_cannot_commit_after_a_re_claim<B: FixtureFactory>(
         let m = t.send(&a).await;
         let stale = t.claim_one_node(&NODE_A).await;
         t.expire_lease().await;
-        let current = t.claim_one_node(&NODE_B).await;
+        let current = t.claim_one_long_node(&NODE_B).await;
         let ghost = address("other/ghost");
         let result = t
             .commit(CommitRequest {
@@ -912,7 +915,7 @@ pub async fn s5_renew_succeeds_only_with_the_current_held_lease<B: FixtureFactor
         let c = t.claim_one().await;
         t.advance_ticks(2).await;
         let renewed =
-            expect_matches!(store.renew(&a, c.epoch, ttl).await.unwrap(), RenewResult::Renewed(until) => until);
+            expect_matches!(store.renew(&a, c.epoch, LONG_LEASE).await.unwrap(), RenewResult::Renewed(until) => until);
         assert!(renewed > c.lease_until);
         t.advance_ticks(3).await; // past the original expiry, within the renewed lease
         assert!(t.claim_node(&NODE_B).await.is_empty(), "a renewed lease stays exclusive");
@@ -1011,7 +1014,7 @@ pub async fn s6_only_the_head_message_is_claimed_one_turn_at_a_time<B: FixtureFa
         }
         let mut handled = Vec::new();
         for _ in 0..5 {
-            let claims = t.claim_limit(10).await;
+            let claims = t.claim_with(&[&TYPE], &NODE_A, LONG_LEASE, 10).await;
             assert_eq!(claims.len(), 1, "one turn per instance even with several due messages");
             assert!(t.claim_node(&NODE_B).await.is_empty());
             handled.push(claims[0].message.id.clone());
@@ -1295,7 +1298,7 @@ pub async fn s7_message_ids_are_unique_across_pending_messages_and_retained_outc
             EnqueueResult::Duplicate(cancelled.id.clone())
         );
         let purged = t.send(&b).await;
-        store.delete(&b).await.unwrap();
+        store.delete(&b, &MessageId::random()).await.unwrap();
         assert_eq!(store.enqueue(with_id(&a, &purged.id)).await.unwrap(), EnqueueResult::Duplicate(purged.id.clone()));
         assert_eq!(outcome_status(&*store, &pending.id).await, Some(OutcomeStatus::Done));
         assert!(t.pending(&a).await.is_empty());
@@ -1345,7 +1348,7 @@ pub async fn s7_cancel_ends_only_pending_messages<B: FixtureFactory>(backend: &B
         let a = t.new_actor(&TYPE, json!({})).await;
         let running = t.send(&a).await;
         let waiting = t.send(&a).await;
-        let claim = t.claim_one().await;
+        let claim = t.claim_one_long().await;
         assert_eq!(store.cancel(&running.id).await.unwrap(), CancelResult::Running);
         let cancelled = expect_matches!(store.cancel(&waiting.id).await.unwrap(), CancelResult::Cancelled(o) => o);
         assert_eq!(cancelled.status, OutcomeStatus::Cancelled);
@@ -1393,7 +1396,7 @@ pub async fn s7_release_expiry_and_lost_commits_keep_the_message_pending<B: Fixt
         t.expire_lease().await;
         let status = store.status(&m.id).await.unwrap();
         assert_eq!(expect_matches!(status, Some(MessageStatus::Pending(p)) => p).attempt, 2);
-        let c3 = t.claim_one_node(&NODE_B).await;
+        let c3 = t.claim_one_long_node(&NODE_B).await;
         assert_eq!(t.commit(done(&c2)).await, CommitResult::LeaseLost);
         let status = store.status(&m.id).await.unwrap();
         assert_eq!(expect_matches!(status, Some(MessageStatus::Running { message, .. }) => message).attempt, 3);
@@ -1777,7 +1780,7 @@ pub async fn stats_count_actors_and_pending_messages_under_a_prefix_and_find_the
             store.stats("other/").await.unwrap(),
             StoreStats { actors: 1, pending: 1, oldest_due: Some(later.deliver_at) }
         );
-        assert_eq!(store.delete(&a).await.unwrap(), DeleteResult::Deleted { purged: 1 });
+        assert_eq!(store.delete(&a, &MessageId::random()).await.unwrap(), DeleteResult::Deleted { purged: 1 });
         assert_eq!(
             store.stats("").await.unwrap(),
             StoreStats { actors: 1, pending: 1, oldest_due: Some(later.deliver_at) }
@@ -1808,7 +1811,7 @@ pub async fn s10_outcomes_are_listed_by_status_prefix_and_since_with_paging_and_
         let cancelled = t.send_at(&a, Delivery::After(t.ticks(100))).await;
         assert!(matches!(store.cancel(&cancelled.id).await.unwrap(), CancelResult::Cancelled(_)));
         let purged = t.send_at(&b, Delivery::After(t.ticks(100))).await;
-        assert!(matches!(store.delete(&b).await.unwrap(), DeleteResult::Deleted { purged: 1 }));
+        assert!(matches!(store.delete(&b, &MessageId::random()).await.unwrap(), DeleteResult::Deleted { purged: 1 }));
         // A record removed at once is hidden from every listing.
         let hidden = enqueue_ok(
             &*store,

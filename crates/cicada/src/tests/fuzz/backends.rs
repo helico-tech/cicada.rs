@@ -51,6 +51,7 @@ fn commit(claim: usize, epoch_delta: i64) -> Commit {
         creates: vec![],
         sends: vec![],
         cancels: vec![],
+        watches: vec![],
     }
 }
 
@@ -207,6 +208,29 @@ async fn past_the_only_epoch_of_an_address_is_no_lease_and_no_claim() {
     finish(pair).await;
 }
 
+/// A failed commit and a delete write the same notifications in both backends, from the watches of the start:
+/// `beta/2` watches every type, `beta/0` the types under `alpha`, and `alpha/1` watches `beta/1`.
+#[tokio::test]
+async fn the_notifications_of_a_failure_and_a_delete_agree() {
+    let mut pair = Pair::memory_and_sqlite().await;
+    agreed(&mut pair, Op::Enqueue(send(0, 0, Due::Now))).await;
+    agreed(&mut pair, claim_all(Duration::from_secs(30))).await;
+    let failed = agreed(&mut pair, Op::Commit(Commit { end: End::Failed, ..commit(0, 0) })).await;
+    assert!(failed.get("committed").is_some(), "{failed}");
+    for watcher in [4, 7] {
+        let pending = agreed(&mut pair, Op::Pending { to: watcher, limit: 100 }).await;
+        let item = &pending[0]["items"][0];
+        assert_eq!((item["type"].clone(), item["notification"].clone()), (json!("Failed"), json!(true)), "{pending}");
+        assert_eq!(item["payload"]["actor"], "alpha/0");
+    }
+    // `beta/1` goes with its child `beta/2`, and the Failed in the mailbox of `beta/2` is purged.
+    assert_eq!(agreed(&mut pair, Op::Delete { to: 6 }).await, json!({"deleted": 1}));
+    let pending = agreed(&mut pair, Op::Pending { to: 1, limit: 100 }).await;
+    let item = &pending[0]["items"][0];
+    assert_eq!((item["type"].clone(), item["payload"]["cause"].clone()), (json!("Stopped"), json!("deleted")));
+    finish(pair).await;
+}
+
 #[test]
 fn generated_lists_reach_every_operation() {
     let mut runner = TestRunner::deterministic();
@@ -262,7 +286,7 @@ fn claims_compare_in_address_order() {
     let claim = |text: &str| {
         let actor = ActorAddress::parse(text).unwrap();
         let at = crate::testing::default_start();
-        let message = OutgoingMessage::new(actor.clone(), "M", serde_json::json!({})).into_message(at, 1);
+        let message = OutgoingMessage::new(actor.clone(), "M", serde_json::json!({})).into_message(at, 1, false);
         Claim { actor, epoch: 1, message, state: serde_json::json!({}), version: 0, claimed_at: at, lease_until: at }
     };
     let order = |list: Vec<Claim>| in_address_order(list).iter().map(|c| c.actor.to_string()).collect::<Vec<_>>();

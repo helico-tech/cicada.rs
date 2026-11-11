@@ -11,14 +11,15 @@ use std::time::Duration;
 use crate::address::{ActorAddress, TypeName};
 use crate::retention::Retention;
 use crate::retry::RetryPolicy;
-use crate::store::support::{self, check_limit};
+use crate::store::support::{self, Notice, Removal, check_limit};
 use crate::store::{
     ActorCreate, ActorRecord, Backend, CancelResult, Claim, CommitRequest, CommitResult, CreateResult, DeleteResult,
     DeliverNowResult, EnqueueResult, Message, MessageId, MessageStatus, NodeId, NodeRecord, OutcomeRecord,
     OutcomeStatus, OutgoingMessage, Page, PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn,
-    StateChange, StoreError, StoreResult, StoreStats, TurnOutcome, TypeDef,
+    SetWatchResult, StateChange, StoreError, StoreResult, StoreStats, TurnOutcome, TypeDef,
 };
 use crate::time::{self, Timestamp};
+use crate::watch::{self, StopCause, Watch, WatchTarget};
 use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
@@ -35,7 +36,8 @@ use crate::store::postgres::listener::NotificationListener;
 use crate::store::postgres::schema;
 
 /// How many times a transaction is re-run after PostgreSQL aborted it for a deadlock or a serialization failure (both
-/// are transient under concurrent commits from several nodes) before the error is reported.
+/// are transient under concurrent commits from several nodes), or after it found a watch set while it wrote an event,
+/// before the error is reported.
 const TRANSACTION_RETRIES: u32 = 8;
 /// Number of idle connections the pool keeps open.
 const MIN_IDLE: u32 = 1;
@@ -92,6 +94,14 @@ macro_rules! transaction {
 /// recursive query would read a single snapshot and could miss a child that a commit it waited for added. These locks
 /// are not in address order, so a removal can deadlock with a commit that sends up or down the tree; the re-run covers
 /// that.
+///
+/// **Watches.** A watch changes only under the lock of its watcher's row: the watcher's own commit holds it, and a
+/// change from outside takes it. A commit that ends a message `failed`, a commit that stops and a delete first read the
+/// watchers of their one actor and lock those rows in the same statement as the other rows they touch, in address
+/// order; the watchers of the descendants of a removal are locked after the tree, in address order among themselves.
+/// Then they read the watches again: a watcher whose row exists and is not locked set its watch in between, and the
+/// transaction is run again; one whose row does not exist is skipped and its watches are removed. All of it comes
+/// before the clock is read. A notification wakes the nodes of its watcher's type as a send does.
 ///
 /// **Clock (S9).** The store clock is the database server's `clock_timestamp()`; the local clock is never used for
 /// due-ness or leases. Each transaction reads it once, *after* taking its row locks, and uses that single value for
@@ -244,8 +254,12 @@ impl PostgresStore {
     /// Whether a failed attempt is re-run: PostgreSQL aborted it for a deadlock or serialization failure, and retries
     /// are left. Waits a little before the next attempt.
     async fn retry(&self, error: &TxError, attempt: &mut u32) -> bool {
-        let TxError::Sql(e) = error else { return false };
-        if !is_transient(e) || *attempt >= TRANSACTION_RETRIES {
+        let transient = match error {
+            TxError::Sql(e) => is_transient(e),
+            TxError::Again(_) => true,
+            TxError::Store(_) | TxError::TimedOut => false,
+        };
+        if !transient || *attempt >= TRANSACTION_RETRIES {
             return false;
         }
         *attempt += 1;
@@ -344,6 +358,8 @@ enum TxError {
     Store(StoreError),
     /// The socket timeout elapsed.
     TimedOut,
+    /// The transaction must run again, as after a deadlock: it found a watch that was set while it wrote an event.
+    Again(String),
 }
 
 impl TxError {
@@ -351,6 +367,9 @@ impl TxError {
         match self {
             TxError::Sql(e) => map_error(e),
             TxError::Store(e) => e,
+            TxError::Again(why) => {
+                StoreError::unavailable(format!("{why}; the transaction ran {} times", TRANSACTION_RETRIES + 1))
+            }
             TxError::TimedOut => StoreError::unavailable(format!(
                 "A transaction took longer than the socket timeout of {socket_timeout:?}"
             )),
@@ -463,6 +482,7 @@ fn message(row: &PgRow) -> Result<Message, TxError> {
         attempt: row.try_get::<i32, _>("attempt")? as u32,
         failures: row.try_get::<i32, _>("failures")? as u32,
         last_error: row.try_get("last_error")?,
+        notification: row.try_get("notification")?,
         // Tolerant: a policy this version cannot decode must not break claims; it reads as no policy.
         retry: row.try_get::<Option<Value>, _>("retry_policy")?.and_then(|v| RetryPolicy::from_stored(&v, &source)),
         caused_by: row.try_get::<Option<String>, _>("caused_by")?.map(message_id).transpose()?,
@@ -641,15 +661,147 @@ async fn lock_tree(tx: &mut Tx, root: &str) -> Result<Vec<String>, TxError> {
     Ok(locked)
 }
 
-/// Removes every instance of `tree`, whose rows the caller has locked, and purges their mailboxes; returns how many
-/// messages were purged.
+/// Removes every instance of `tree`, whose rows the caller has locked, purges their mailboxes and removes the watches
+/// they hold as watchers; returns how many messages were purged.
 async fn remove_tree(tx: &mut Tx, tree: &[String]) -> Result<usize, TxError> {
     let mut purged = 0;
     for addr in tree {
         purged += purge_mailbox(tx, addr).await?;
         sqlx::query("DELETE FROM actors WHERE address = $1").bind(addr).execute(&mut *tx.c).await?;
     }
+    sqlx::query("DELETE FROM watches WHERE watcher = ANY ($1)").bind(tree).execute(&mut *tx.c).await?;
     Ok(purged)
+}
+
+/// Locks the rows of `addresses` that exist, in address order, and returns their addresses.
+async fn lock_rows(tx: &mut Tx, addresses: &[&str]) -> Result<Vec<String>, TxError> {
+    Ok(sqlx::query_scalar("SELECT address FROM actors WHERE address = ANY ($1) ORDER BY address FOR UPDATE")
+        .bind(addresses)
+        .fetch_all(&mut *tx.c)
+        .await?)
+}
+
+/// The watchers of the watches on `targets`, unlocked; the first reading of an event (see the type's docs).
+async fn watchers_of(tx: &mut Tx, targets: &[String]) -> Result<Vec<String>, TxError> {
+    if targets.is_empty() {
+        return Ok(Vec::new());
+    }
+    Ok(sqlx::query_scalar("SELECT DISTINCT watcher FROM watches WHERE target = ANY ($1)")
+        .bind(targets)
+        .fetch_all(&mut *tx.c)
+        .await?)
+}
+
+/// Locks the watchers of the watches on `descendants` that `locked` does not hold yet, in address order, and adds
+/// them to it: the watchers of a removed tree's descendants, after the tree.
+async fn lock_watchers_of(tx: &mut Tx, descendants: &[String], locked: &mut HashSet<String>) -> Result<(), TxError> {
+    let watchers = watchers_of(tx, descendants).await?;
+    let new: Vec<&str> = watchers.iter().map(String::as_str).filter(|w| !locked.contains(*w)).collect();
+    if !new.is_empty() {
+        locked.extend(lock_rows(tx, &new).await?);
+    }
+    Ok(())
+}
+
+/// The watches of an event's targets, as `(target, watcher)`.
+type EventWatches = Vec<(String, String)>;
+
+/// Reads the watches on `targets` again, once every lock is held: a watcher that `locked` does not hold and whose row
+/// exists set its watch in between, and the transaction runs again ([`TxError::Again`]); one whose row does not exist
+/// is returned as gone.
+async fn reread_watches(
+    tx: &mut Tx,
+    targets: &[String],
+    locked: &HashSet<String>,
+) -> Result<(EventWatches, HashSet<String>), TxError> {
+    if targets.is_empty() {
+        return Ok((Vec::new(), HashSet::new()));
+    }
+    let watches: EventWatches =
+        sqlx::query_as("SELECT target, watcher FROM watches WHERE target = ANY ($1) ORDER BY target, watcher")
+            .bind(targets)
+            .fetch_all(&mut *tx.c)
+            .await?;
+    let mut gone = HashSet::new();
+    for (_, watcher) in &watches {
+        if locked.contains(watcher) || gone.contains(watcher) {
+            continue;
+        }
+        let exists: Option<i32> = sqlx::query_scalar("SELECT 1 FROM actors WHERE address = $1")
+            .bind(watcher)
+            .fetch_optional(&mut *tx.c)
+            .await?;
+        if exists.is_some() {
+            return Err(TxError::Again(format!("The watcher {watcher} set a watch while an event was written")));
+        }
+        gone.insert(watcher.clone());
+    }
+    Ok((watches, gone))
+}
+
+/// The notices of an event from the watches of its targets: the `Failed` of `failed` (a message that ends `failed`,
+/// with its error) for the watchers of its failure, and a `Stopped` of each actor of `removed` for the watchers of its
+/// address. A watcher the event removes gets nothing; a gone one gets nothing and loses its watches.
+async fn notices(
+    tx: &mut Tx,
+    watches: &EventWatches,
+    gone: &HashSet<String>,
+    failed: Option<(&Message, &str)>,
+    removed: Option<(&Removal<'_>, &[String])>,
+) -> Result<Vec<Notice>, TxError> {
+    let mut candidates: Vec<(ActorAddress, &str, bool)> = Vec::new();
+    if let Some((message, _)) = failed {
+        let targets = watch::failure_targets(&message.to);
+        let watchers: BTreeSet<&str> =
+            watches.iter().filter(|(t, _)| targets.contains(t)).map(|(_, w)| w.as_str()).collect();
+        candidates.extend(watchers.into_iter().map(|w| (message.to.clone(), w, true)));
+    }
+    if let Some((_, tree)) = removed {
+        for actor in tree {
+            let about = address(actor.clone())?;
+            candidates
+                .extend(watches.iter().filter(|(t, _)| t == actor).map(|(_, w)| (about.clone(), w.as_str(), false)));
+        }
+    }
+    let tree = removed.map_or(&[][..], |(_, tree)| tree);
+    let mut lost = Vec::new();
+    let mut out = Vec::with_capacity(candidates.len());
+    for (about, watcher, is_failure) in candidates {
+        if tree.iter().any(|a| a == watcher) {
+            continue;
+        }
+        if gone.contains(watcher) {
+            lost.push(watcher.to_owned());
+            continue;
+        }
+        let watcher = address(watcher.to_owned())?;
+        out.push(match (failed, removed) {
+            (Some((message, error)), _) if is_failure => Notice::failed(message, error, &watcher),
+            (_, Some((removal, _))) => removal.notice(&about, &watcher),
+            _ => unreachable!("a candidate comes from the failure or the removal"),
+        });
+    }
+    if !lost.is_empty() {
+        sqlx::query("DELETE FROM watches WHERE watcher = ANY ($1)").bind(&lost).execute(&mut *tx.c).await?;
+    }
+    Ok(out)
+}
+
+/// Writes the notifications of `notices`, named after `event`, into the watchers' mailboxes, whose rows the caller has
+/// locked, and wakes the nodes of their types; one whose id is in use is skipped.
+async fn notify(tx: &mut Tx, event: &MessageId, notices: Vec<Notice>) -> Result<(), TxError> {
+    for message in support::notifications(event, notices) {
+        if is_id_in_use(tx, &message.id).await? {
+            tracing::warn!("Skipping the notification {} for {}: its id is in use", message.id, message.to);
+            continue;
+        }
+        if insert(tx, &message, true).await?.is_none() {
+            // Taken since the check: the re-run skips it.
+            return Err(TxError::Again(format!("The id of the notification {} was taken", message.id)));
+        }
+        tx.notify(message.to.type_name().as_str().to_owned());
+    }
+    Ok(())
 }
 
 async fn is_id_in_use(tx: &mut Tx, id: &MessageId) -> Result<bool, TxError> {
@@ -669,16 +821,17 @@ async fn is_id_in_use(tx: &mut Tx, id: &MessageId) -> Result<bool, TxError> {
     Ok(finished.is_some())
 }
 
-/// Inserts `message` into the mailbox of its target, whose row the caller has locked. Returns `None` when the id is in
-/// use; the caller must then roll back, because the message row may already be written.
-async fn insert(tx: &mut Tx, message: &OutgoingMessage) -> Result<Option<Message>, TxError> {
+/// Inserts `message` into the mailbox of its target, whose row the caller has locked, marked as a notification when
+/// `notification`. Returns `None` when the id is in use; the caller must then roll back, because the message row may
+/// already be written.
+async fn insert(tx: &mut Tx, message: &OutgoingMessage, notification: bool) -> Result<Option<Message>, TxError> {
     let now = tx.now().await?;
     let deliver_at = message.delivery.resolve(now).map_err(|e| invalid(e.0))?;
     let seq: Option<i64> = sqlx::query_scalar(
         "INSERT INTO messages
             (id, actor_address, seq, type, payload, sender, correlation_id, headers, deliver_at, attempt, retry_policy,
-             caused_by, retention_policy)
-         VALUES ($1, $2, nextval('message_seq'), $3, $4, $5, $6, $7, $8, 0, $9, $10, $11)
+             caused_by, retention_policy, notification)
+         VALUES ($1, $2, nextval('message_seq'), $3, $4, $5, $6, $7, $8, 0, $9, $10, $11, $12)
          ON CONFLICT (id) DO NOTHING
          RETURNING seq",
     )
@@ -693,6 +846,7 @@ async fn insert(tx: &mut Tx, message: &OutgoingMessage) -> Result<Option<Message
     .bind(message.retry.as_ref().map(RetryPolicy::to_json))
     .bind(message.caused_by.as_ref().map(|id| id.as_str()))
     .bind(message.retention.as_ref().map(Retention::to_json))
+    .bind(notification)
     .fetch_optional(&mut *tx.c)
     .await?;
     let Some(seq) = seq else { return Ok(None) };
@@ -717,7 +871,7 @@ async fn insert(tx: &mut Tx, message: &OutgoingMessage) -> Result<Option<Message
         .bind(message.to.as_str())
         .execute(&mut *tx.c)
         .await?;
-    Ok(Some(message.clone().into_message(deliver_at, seq)))
+    Ok(Some(message.clone().into_message(deliver_at, seq, notification)))
 }
 
 async fn refresh_next_due(tx: &mut Tx, addr: &str) -> Result<(), TxError> {
@@ -952,13 +1106,86 @@ impl Backend for PostgresStore {
         })
     }
 
-    async fn delete(&self, address: &ActorAddress) -> StoreResult<DeleteResult> {
+    async fn delete(&self, address: &ActorAddress, event: &MessageId) -> StoreResult<DeleteResult> {
         transaction!(self, false, |tx| -> DeleteResult {
-            if lock_actor(tx, address.as_str()).await?.is_none() {
+            // The watchers of the actor are read first and locked with it, in address order (see the type's docs).
+            let root = vec![address.to_string()];
+            let watchers = watchers_of(tx, &root).await?;
+            let rows: Vec<&str> =
+                std::iter::once(address.as_str()).chain(watchers.iter().map(String::as_str)).collect();
+            let mut locked: HashSet<String> = lock_rows(tx, &rows).await?.into_iter().collect();
+            if !locked.contains(address.as_str()) {
                 return commit(DeleteResult::Absent);
             }
             let tree = lock_tree(tx, address.as_str()).await?;
-            commit(DeleteResult::Deleted { purged: remove_tree(tx, &tree).await? })
+            locked.extend(tree.iter().cloned());
+            let descendants: Vec<String> = tree.iter().filter(|a| *a != address.as_str()).cloned().collect();
+            lock_watchers_of(tx, &descendants, &mut locked).await?;
+            let (watches, gone) = reread_watches(tx, &tree, &locked).await?;
+            let removal = Removal { root: address, cause: StopCause::Deleted, by: None, caused_by: None };
+            let notices = notices(tx, &watches, &gone, None, Some((&removal, &tree))).await?;
+            let purged = remove_tree(tx, &tree).await?;
+            notify(tx, event, notices).await?;
+            commit(DeleteResult::Deleted { purged })
+        })
+    }
+
+    // ---- watches ----
+
+    async fn watch(&self, target: &WatchTarget, watcher: &ActorAddress) -> StoreResult<SetWatchResult> {
+        transaction!(self, false, |tx| -> SetWatchResult {
+            if lock_actor(tx, watcher.as_str()).await?.is_none() {
+                return commit(SetWatchResult::NoSuchWatcher);
+            }
+            let inserted = sqlx::query(
+                "INSERT INTO watches (target, watcher) VALUES ($1, $2) ON CONFLICT (target, watcher) DO NOTHING",
+            )
+            .bind(target.as_str())
+            .bind(watcher.as_str())
+            .execute(&mut *tx.c)
+            .await?;
+            commit(if inserted.rows_affected() == 1 { SetWatchResult::Created } else { SetWatchResult::Exists })
+        })
+    }
+
+    async fn unwatch(&self, target: &WatchTarget, watcher: &ActorAddress) -> StoreResult<bool> {
+        transaction!(self, false, |tx| -> bool {
+            lock_actor(tx, watcher.as_str()).await?;
+            let removed = sqlx::query("DELETE FROM watches WHERE target = $1 AND watcher = $2")
+                .bind(target.as_str())
+                .bind(watcher.as_str())
+                .execute(&mut *tx.c)
+                .await?;
+            commit(removed.rows_affected() == 1)
+        })
+    }
+
+    async fn watches(
+        &self,
+        watcher: Option<&ActorAddress>,
+        target: Option<&WatchTarget>,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> StoreResult<Page<Watch>> {
+        check_limit(limit)?;
+        let after = cursor.map(support::decode_watch_cursor).transpose()?;
+        let (after_target, after_watcher) = after.unzip();
+        transaction!(self, true, |tx| -> Page<Watch> {
+            let rows: Vec<(String, String)> = sqlx::query_as(
+                "SELECT target, watcher FROM watches
+                 WHERE ($1::text IS NULL OR target = $1) AND ($2::text IS NULL OR watcher = $2)
+                   AND ($3::text IS NULL OR (target, watcher) > ($3, $4))
+                 ORDER BY target, watcher LIMIT $5",
+            )
+            .bind(target.map(WatchTarget::as_str))
+            .bind(watcher.map(ActorAddress::as_str))
+            .bind(after_target.as_deref())
+            .bind(after_watcher.as_deref())
+            .bind(limit as i64 + 1)
+            .fetch_all(&mut *tx.c)
+            .await?;
+            let watches = rows.iter().map(|(t, w)| support::stored_watch(t, w)).collect::<Result<Vec<_>, _>>()?;
+            commit(support::page_of(watches, limit, support::watch_cursor))
         })
     }
 
@@ -973,7 +1200,7 @@ impl Backend for PostgresStore {
                     EnqueueResult::NoSuchInstance
                 });
             };
-            let Some(stored) = insert(tx, &message).await? else {
+            let Some(stored) = insert(tx, &message, false).await? else {
                 return Ok(Done::Rollback(EnqueueResult::Duplicate(message.id.clone())));
             };
             tx.notify(t);
@@ -1609,10 +1836,19 @@ impl Backend for PostgresStore {
             if r.cancels.contains(&r.message_id) {
                 return Err(invalid(format!("A turn cannot cancel its own message {}", r.message_id)));
             }
+            // The watchers of the actor of an event (a failure or a stop) are read first, to be locked with the rest.
+            let failing = matches!(r.outcome, TurnOutcome::Failed(_));
+            let stopping = matches!(r.state, StateChange::Stop);
+            let mut event_targets = if failing { watch::failure_targets(&r.address) } else { Vec::new() };
+            if stopping && !failing {
+                event_targets.push(r.address.to_string());
+            }
+            let watchers = watchers_of(tx, &event_targets).await?;
             // Lock every instance this commit touches, in address order, so that concurrent commits cannot deadlock.
             let touched: BTreeSet<&str> = std::iter::once(r.address.as_str())
                 .chain(r.creates.iter().map(|c| c.address.as_str()))
                 .chain(r.sends.iter().map(|s| s.to.as_str()))
+                .chain(watchers.iter().map(String::as_str))
                 .collect();
             let touched: Vec<&str> = touched.into_iter().collect();
             let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
@@ -1623,7 +1859,9 @@ impl Backend for PostgresStore {
             .await?;
             let mut types = HashMap::new();
             let mut parents = HashMap::new();
+            let mut locked = HashSet::new();
             for (address, t, parent) in rows {
+                locked.insert(address.clone());
                 types.insert(address.clone(), t);
                 parents.insert(address, parent);
             }
@@ -1676,6 +1914,7 @@ impl Backend for PostgresStore {
             for create in creates {
                 if !types.contains_key(create.address.as_str()) {
                     let (t, parent) = create_and_lock(tx, create, create.child.then_some(r.address.as_str())).await?;
+                    locked.insert(create.address.as_str().to_owned());
                     types.insert(create.address.as_str().to_owned(), t);
                     parents.insert(create.address.as_str().to_owned(), parent);
                 }
@@ -1692,11 +1931,27 @@ impl Backend for PostgresStore {
                     &r.address,
                 ))));
             }
-            // A stop removes the tree, the children just created included: locked now, before the clock is read.
+            // A stop removes the tree, the children just created included: locked now, before the clock is read, and
+            // the watchers of its descendants after it.
             let tree = match r.state {
                 StateChange::Stop => lock_tree(tx, r.address.as_str()).await?,
                 _ => Vec::new(),
             };
+            locked.extend(tree.iter().cloned());
+            let descendants: Vec<String> = tree.iter().filter(|a| *a != r.address.as_str()).cloned().collect();
+            lock_watchers_of(tx, &descendants, &mut locked).await?;
+            // The turn's watches, in the order of its calls, under this instance's lock; then the watches of the event
+            // are read again.
+            for change in &r.watches {
+                let sql = if change.set {
+                    "INSERT INTO watches (target, watcher) VALUES ($1, $2) ON CONFLICT (target, watcher) DO NOTHING"
+                } else {
+                    "DELETE FROM watches WHERE target = $1 AND watcher = $2"
+                };
+                sqlx::query(sql).bind(change.target.as_str()).bind(r.address.as_str()).execute(&mut *tx.c).await?;
+            }
+            event_targets.extend(descendants.iter().cloned());
+            let (watches, gone) = reread_watches(tx, &event_targets, &locked).await?;
 
             // Validate before applying the rest (S2); a rejection rolls back the creates and leaves the lease as it is.
             let mut send_ids = HashSet::new();
@@ -1719,6 +1974,10 @@ impl Backend for PostgresStore {
                 .await?
                 .ok_or_else(|| corrupt(format!("the claimed message {} is not pending", r.message_id)))?;
             let claimed_message = message(&row)?;
+            let failed = match &r.outcome {
+                TurnOutcome::Failed(error) if !claimed_message.notification => Some((&claimed_message, error.as_str())),
+                _ => None,
+            };
             match &r.outcome {
                 TurnOutcome::Rescheduled { delivery, error } => {
                     let deliver_at = delivery.resolve(tx.now().await?).map_err(|e| invalid(e.0))?;
@@ -1756,7 +2015,7 @@ impl Backend for PostgresStore {
             let mut sent = Vec::with_capacity(r.sends.len());
             for send in &r.sends {
                 // A concurrent enqueue may have taken the id since the check above: undo everything.
-                let Some(stored) = insert(tx, send).await? else {
+                let Some(stored) = insert(tx, send, false).await? else {
                     return Ok(Done::Rollback(CommitResult::Rejected(format!(
                         "Message id {} is already in use",
                         send.id
@@ -1765,7 +2024,14 @@ impl Backend for PostgresStore {
                 tx.notify(types[send.to.as_str()].clone());
                 sent.push(stored);
             }
-            // 5. state, 6. release
+            // 5. state, 6. release, 7. the notifications of the event
+            let removal = Removal {
+                root: &r.address,
+                cause: StopCause::Stopped,
+                by: Some(&r.address),
+                caused_by: Some(&r.message_id),
+            };
+            let notices = notices(tx, &watches, &gone, failed, stopping.then_some((&removal, &tree[..]))).await?;
             match &r.state {
                 StateChange::Unchanged => {}
                 StateChange::NewState(state) => {
@@ -1781,6 +2047,7 @@ impl Backend for PostgresStore {
                         .fetch_one(&mut *tx.c)
                         .await?;
                     remove_tree(tx, &tree).await?;
+                    notify(tx, &r.event, notices).await?;
                     return commit(CommitResult::Committed { version, sent, cancelled });
                 }
             }
@@ -1795,6 +2062,7 @@ impl Backend for PostgresStore {
             if has_more {
                 tx.notify(types[r.address.as_str()].clone());
             }
+            notify(tx, &r.event, notices).await?;
             commit(CommitResult::Committed { version, sent, cancelled })
         })
     }

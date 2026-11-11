@@ -1,5 +1,6 @@
-//! The upgrades from schema versions 1, 2 and 3: a database built with the migrations of that version, rows written
-//! with SQL as a node of that version left them, then opened by this version.
+//! The upgrades from schema versions 1, 2, 3 and 4: a database built with the migrations of that version, rows written
+//! with SQL as a node of that version left them, then opened by this version. And rows that only a hand can write: two
+//! actors that name each other as parent, a watch whose watcher is gone.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -8,8 +9,12 @@ use crate::actor::contract_of;
 use crate::prelude::*;
 use crate::retry::{Backoff, RetryPolicy};
 use crate::runtime::{RetryResult, SendResult};
-use crate::store::{Backend, DeleteResult, MessageStatus, OutcomeStatus, OutgoingMessage, Store, StoreError, support};
+use crate::store::{
+    Backend, CommitRequest, CommitResult, DeleteResult, MessageStatus, OutcomeStatus, OutgoingMessage, SetWatchResult,
+    Store, StoreError, TurnOutcome, support,
+};
 use crate::time;
+use crate::watch::WatchTarget;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::sqlite::SqliteConnectOptions;
@@ -263,8 +268,11 @@ async fn an_old_literal_colon() {
     )
     .await
     .unwrap();
-    let earlier = OutgoingMessage::new(address("notes/a:b"), "Note", json!({"text": "first"}))
-        .into_message(time::from_micros(0), 1);
+    let earlier = OutgoingMessage::new(address("notes/a:b"), "Note", json!({"text": "first"})).into_message(
+        time::from_micros(0),
+        1,
+        false,
+    );
     let mut envelope = support::envelope_to_json(&earlier);
     envelope["to"] = json!("notes/a%3Ab");
     db.exec(
@@ -430,8 +438,94 @@ async fn a_database_of_schema_version_3_is_opened_and_its_actors_have_no_parent(
     assert_eq!(store.pending(&address("notes/a"), None, 10).await.unwrap().items.len(), 1);
     assert!(store.children(&address("notes/a"), None, 10).await.unwrap().items.is_empty());
     // Every actor is independent: deleting one leaves the other.
-    assert_eq!(store.delete(&address("notes/a")).await.unwrap(), DeleteResult::Deleted { purged: 1 });
+    assert_eq!(
+        store.delete(&address("notes/a"), &MessageId::random()).await.unwrap(),
+        DeleteResult::Deleted { purged: 1 }
+    );
     assert!(store.get(&address("notes/b")).await.unwrap().is_some());
+    store.close().await;
+}
+
+/// Scenario: A database of schema version 4 is opened.
+#[tokio::test]
+async fn a_database_of_schema_version_4_is_opened_and_nothing_in_it_is_a_notification() {
+    let db = Db::at_version(4).await;
+    db.exec(REGISTER, &["notes", &contract_of::<NotesActor>().unwrap().to_json().to_string(), "sha256:notes"])
+        .await
+        .unwrap();
+    db.exec(
+        "INSERT INTO actors (address, type, state, next_due_at, created_at) VALUES ('notes/a', 'notes', '{}', 0, 0)",
+        &[],
+    )
+    .await
+    .unwrap();
+    db.exec(
+        "INSERT INTO messages (id, actor_address, seq, type, payload, headers, deliver_at)
+            VALUES ('m1', 'notes/a', 1, 'Note', '{\"text\":\"x\"}', '{}', 0)",
+        &[],
+    )
+    .await
+    .unwrap();
+    // An outcome as version 4 kept it: its envelope has no mark.
+    let envelope = json!({"id": "m0", "to": "notes/a", "from": null, "type": "Note", "payload": {}, "deliverAt":
+        "2026-01-01T00:00:00Z", "correlationId": null, "headers": {}, "seq": 0, "attempt": 1});
+    db.exec(
+        "INSERT INTO outcomes (message_id, actor_address, status, finished_at, envelope) VALUES ('m0', 'notes/a', 'done', ?, ?)",
+        &[&now_micros(), &envelope.to_string()],
+    )
+    .await
+    .unwrap();
+    db.exec("UPDATE sequences SET value = 1 WHERE name = 'seq'", &[]).await.unwrap();
+
+    let store = db.open().await;
+    assert_eq!(Db::texts(&db.file, "PRAGMA user_version").await, [schema::VERSION.to_string()]);
+    let pending = store.pending(&address("notes/a"), None, 10).await.unwrap().items;
+    assert_eq!(pending.len(), 1, "the message is still there");
+    assert!(!pending[0].notification);
+    let outcome = expect_finished(store.status(&MessageId::new("m0").unwrap()).await.unwrap());
+    assert!(!outcome.envelope.notification, "the outcome is still there and not a notification");
+    assert!(store.watches(None, None, None, 10).await.unwrap().items.is_empty(), "no watch is stored");
+    store.close().await;
+}
+
+fn expect_finished(status: Option<MessageStatus>) -> crate::store::OutcomeRecord {
+    match status {
+        Some(MessageStatus::Finished(outcome)) => outcome,
+        other => panic!("expected an outcome, got {other:?}"),
+    }
+}
+
+/// Scenario: A watcher that is gone.
+#[tokio::test]
+async fn a_watcher_whose_row_was_removed_by_hand_is_skipped_and_its_watch_removed() {
+    let db = Db::at_version(schema::VERSION).await;
+    db.exec(REGISTER, &["notes", &contract_of::<NotesActor>().unwrap().to_json().to_string(), "sha256:notes"])
+        .await
+        .unwrap();
+    let store = db.open().await;
+    let (x, w) = (address("notes/x"), address("notes/w"));
+    for a in [&x, &w] {
+        store.create(a, json!({})).await.unwrap();
+    }
+    assert_eq!(store.watch(&WatchTarget::Actor(x.clone()), &w).await.unwrap(), SetWatchResult::Created);
+    db.exec("DELETE FROM actors WHERE address = 'notes/w'", &[]).await.unwrap();
+
+    let sent = match store.enqueue(OutgoingMessage::new(x.clone(), "Note", json!({"text": "t"}))).await.unwrap() {
+        crate::store::EnqueueResult::Enqueued(m) => m,
+        other => panic!("{other:?}"),
+    };
+    let types = std::collections::BTreeSet::from([x.type_name().clone()]);
+    let claim = store
+        .claim_due(&types, &crate::store::NodeId::new("n").unwrap(), std::time::Duration::from_secs(30), 10)
+        .await
+        .unwrap()
+        .remove(0);
+    let failure =
+        CommitRequest::new(x.clone(), claim.epoch, claim.message.id.clone(), TurnOutcome::Failed("boom".into()));
+    assert!(matches!(store.commit(failure).await.unwrap(), CommitResult::Committed { .. }), "the commit succeeds");
+    assert_eq!(expect_finished(store.status(&sent.id).await.unwrap()).status, OutcomeStatus::Failed);
+    assert!(store.watches(None, None, None, 10).await.unwrap().items.is_empty(), "the watch is removed");
+    assert_eq!(Db::texts(&db.file, "SELECT count(*) FROM messages").await, ["0"], "nothing was written");
     store.close().await;
 }
 
@@ -457,7 +551,10 @@ async fn a_delete_ends_on_two_rows_that_name_each_other() {
     db.exec("UPDATE sequences SET value = 2 WHERE name = 'seq'", &[]).await.unwrap();
 
     let store = db.open().await;
-    assert_eq!(store.delete(&address("notes/a")).await.unwrap(), DeleteResult::Deleted { purged: 2 });
+    assert_eq!(
+        store.delete(&address("notes/a"), &MessageId::random()).await.unwrap(),
+        DeleteResult::Deleted { purged: 2 }
+    );
     assert_eq!(Db::texts(&db.file, "SELECT address FROM actors ORDER BY address").await, ["notes/other"]);
     store.close().await;
 }

@@ -115,6 +115,7 @@ pub(crate) fn message(row: &SqliteRow) -> StoreResult<Message> {
         caused_by: col::<Option<String>>(row, "caused_by")?.map(message_id).transpose()?,
         retention: col::<Option<String>>(row, "retention_policy")?
             .and_then(|t| Retention::from_stored_text(&t, &source)),
+        notification: col::<i64>(row, "notification")? != 0,
         id: message_id(id)?,
     })
 }

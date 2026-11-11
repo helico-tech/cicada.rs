@@ -20,22 +20,22 @@ delete or a stop removes a tree.
 
 ## 2. The stores
 
-- [ ] 2.1 Model and trait [7, 8, 9, 10]: `Message.notification`; the trait sets, removes and lists watches; a
+- [x] 2.1 Model and trait [7, 8, 9, 10]: `Message.notification`; the trait sets, removes and lists watches; a
       commit carries the watch calls of its turn in their order, and the id of its event; `delete` takes the id of
       its event; the docs of the trait say what a failed commit, a stop and a delete write. Every place that builds
       a `Message`, a `CommitRequest` or calls `delete` follows. Verify: `cargo build --workspace`.
-- [ ] 2.2 The in-memory store [7, 8, 9]. Verify: the cases of 2.5 on the in-memory store.
-- [ ] 2.3 SQLite [7, 8, 9, 10]: migration 5 (the table `watches` with its index, the column
+- [x] 2.2 The in-memory store [7, 8, 9]. Verify: the cases of 2.5 on the in-memory store.
+- [x] 2.3 SQLite [7, 8, 9, 10]: migration 5 (the table `watches` with its index, the column
       `messages.notification`, the mark in the envelope of an outcome). The module docs say: schema version 5, not
       additive, and why. Verify: the cases of 2.5; an upgrade test for the scenario "A database of schema version 4
       is opened"; a test for the scenario "A watcher that is gone", with the row removed by hand.
-- [ ] 2.4 PostgreSQL [7, 8, 9, 10]: migration 5 and the same behaviour, with the locks of decision 8: the watchers
+- [x] 2.4 PostgreSQL [7, 8, 9, 10]: migration 5 and the same behaviour, with the locks of decision 8: the watchers
       of the one actor of a failure, a stop or a delete are read first, locked with the other rows in address order
       and read again; a watcher that exists and is not locked runs the transaction again; one that does not exist is
       skipped; all of it before the clock is read; the watchers of descendants after the tree. A notification is
       announced as a send is. Verify, with `CICADA_PG_URL` set: the cases of 2.5, the upgrade test, "A watcher that
       is gone", and the two cases for the locks of decision 12, each run 50 times in one test.
-- [ ] 2.5 Conformance cases in a new file `watches.rs` of `crates/cicada/src/tests/conformance`, one per line:
+- [x] 2.5 Conformance cases in a new file `watches.rs` of `crates/cicada/src/tests/conformance`, one per line:
       a commit sets and removes watches of its actor, in the order of the calls, and a failed commit sets none;
       watches are set, removed and listed from outside, with both filters and paging, and a second set changes
       nothing;
@@ -59,7 +59,7 @@ delete or a stop removes a tree.
       gets a watcher that is never removed, a check that every `failed` outcome of a watched actor has exactly one
       `Failed` for it, and counts a notification as accepted. Verify: `cargo test -p cicada --lib tests::fuzz`
       passes, and so does one run with `PROPTEST_CASES=20000`; the report says how long that run took.
-- [ ] 2.7 The steady conformance case [14]: the last claim of
+- [x] 2.7 The steady conformance case [14]: the last claim of
       `s7_release_expiry_and_lost_commits_keep_the_message_pending` takes a lease that is long on every fixture, and
       so does every other case that claims with the default lease on a real-time fixture and then needs the lease to
       hold. Verify: the report lists the cases that were changed; the PostgreSQL conformance run passes five times

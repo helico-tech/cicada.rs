@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 use crate::address::ActorAddress;
 use crate::retention::{Keep, Retention};
 use crate::store::{
-    Backend, CancelResult, CommitRequest, CommitResult, Delivery, EnqueueResult, Message, MessageStatus, OutcomeStatus,
-    OutgoingMessage, Page, TurnOutcome,
+    Backend, CancelResult, CommitRequest, CommitResult, Delivery, EnqueueResult, Message, MessageId, MessageStatus,
+    OutcomeStatus, OutgoingMessage, Page, TurnOutcome,
 };
 use crate::time::Timestamp;
 use serde_json::json;
@@ -160,7 +160,7 @@ pub async fn retention_cancelled_and_purged_messages_keep_the_store_default<B: F
         assert_matches!(store.cancel(&cancelled.id).await.unwrap(), CancelResult::Cancelled(_));
         assert_eq!(outcome_record(&*store, &cancelled.id).await.expect("an outcome").status, OutcomeStatus::Cancelled);
         let purged = send_kept(t, &a, Some(all), Delivery::After(t.ticks(100))).await;
-        store.delete(&a).await.unwrap();
+        store.delete(&a, &MessageId::random()).await.unwrap();
         assert_eq!(outcome_record(&*store, &purged.id).await.expect("an outcome").status, OutcomeStatus::Purged);
     })
     .await

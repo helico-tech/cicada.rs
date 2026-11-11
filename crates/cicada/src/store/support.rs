@@ -1,5 +1,5 @@
 //! Rules shared by store implementations: the type registry, the creates of a commit, claim arguments, envelope JSON,
-//! retention of outcomes, cursors and pages.
+//! retention of outcomes, the notifications of a watch, cursors and pages.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::Duration;
@@ -8,16 +8,17 @@ use serde_json::Value;
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 use serde_json::{Map, json};
 
-use super::model::{ActorCreate, Message, MessageId, OutcomeStatus, Page, PageCursor, TypeDef};
+use super::model::{
+    ActorCreate, Delivery, Message, MessageId, OutcomeStatus, OutgoingMessage, Page, PageCursor, TypeDef,
+};
 use super::results::RegisterResult;
 use super::{StoreError, StoreResult};
 use crate::address::{ActorAddress, TypeName};
-use crate::retention::Keep;
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
-use crate::retention::Retention;
+use crate::retention::{Keep, Retention};
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 use crate::retry::RetryPolicy;
 use crate::time::{self, MAX_INSTANT, Timestamp};
+use crate::watch::{self, Failed, StopCause, Stopped, Watch, WatchTarget};
 
 // ---- registry ----
 
@@ -120,6 +121,7 @@ pub fn envelope_to_json(message: &Message) -> Value {
         "retry": message.retry.as_ref().map(RetryPolicy::to_json),
         "causedBy": message.caused_by.as_ref().map(|id| id.as_str()),
         "retention": message.retention.as_ref().map(Retention::to_json),
+        "notification": message.notification,
     })
 }
 
@@ -156,6 +158,7 @@ pub fn envelope_from_json(value: &Value) -> StoreResult<Message> {
         retry: o.get("retry").and_then(|r| RetryPolicy::from_stored(r, &source)),
         caused_by: str_field("causedBy").and_then(|s| MessageId::new(s).ok()),
         retention: o.get("retention").and_then(|r| Retention::from_stored(r, &source)),
+        notification: o.get("notification").and_then(Value::as_bool).unwrap_or(false),
         id,
     })
 }
@@ -180,6 +183,137 @@ pub fn headers_to_json(headers: &BTreeMap<String, String>) -> Value {
 pub fn headers_from_json(value: &Value) -> StoreResult<BTreeMap<String, String>> {
     let o = value.as_object().ok_or_else(|| StoreError::Corrupt(format!("headers are not an object: {value}")))?;
     Ok(o.iter().map(|(k, v)| (k.clone(), json_text(v))).collect())
+}
+
+// ---- watches ----
+
+/// One notification of an event, before the store numbered it: about the actor `about`, which went away or whose
+/// message failed, for `watcher`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Notice {
+    /// The actor of the event; the sender of the notification.
+    pub about: ActorAddress,
+    /// Who is told.
+    pub watcher: ActorAddress,
+    message_type: &'static str,
+    payload: Value,
+    caused_by: Option<MessageId>,
+    retention: Option<Retention>,
+}
+
+impl Notice {
+    /// The [`Failed`] of `message`, which ends `failed` with `error`, for `watcher`. It has no `causedBy`, and it is
+    /// kept by the `failed` rule of the message's retention for both of its own outcomes: it holds the payload.
+    pub fn failed(message: &Message, error: &str, watcher: &ActorAddress) -> Self {
+        let failed = Failed {
+            actor: message.to.clone(),
+            message_id: message.id.clone(),
+            message_type: message.message_type.clone(),
+            payload: message.payload.clone(),
+            correlation_id: message.correlation_id.clone(),
+            from: message.from.clone(),
+            error: error.to_owned(),
+            attempts: message.attempt,
+        };
+        let rule = message.retention.as_ref().and_then(|r| r.failed.clone());
+        Self {
+            about: message.to.clone(),
+            watcher: watcher.clone(),
+            message_type: watch::FAILED,
+            payload: serde_json::to_value(failed).expect("a Failed serializes"),
+            caused_by: None,
+            retention: rule.map(|rule| Retention { done: Some(rule.clone()), failed: Some(rule) }),
+        }
+    }
+
+    /// The [`Stopped`] of `actor`, which went away for `cause` in the turn of `by` that handled `caused_by` (both
+    /// `None` for a delete from outside a turn), for `watcher`.
+    pub fn stopped(
+        actor: &ActorAddress,
+        cause: StopCause,
+        by: Option<&ActorAddress>,
+        caused_by: Option<&MessageId>,
+        watcher: &ActorAddress,
+    ) -> Self {
+        let stopped = Stopped { actor: actor.clone(), cause, by: by.cloned() };
+        Self {
+            about: actor.clone(),
+            watcher: watcher.clone(),
+            message_type: watch::STOPPED,
+            payload: serde_json::to_value(stopped).expect("a Stopped serializes"),
+            caused_by: caused_by.cloned(),
+            retention: None,
+        }
+    }
+}
+
+/// The removal of the tree of `root` as the event of a stop or a delete: what the `Stopped` of each removed actor says.
+#[derive(Debug, Clone, Copy)]
+pub struct Removal<'a> {
+    /// The removed actor whose descendants went with it.
+    pub root: &'a ActorAddress,
+    /// The cause for the root: [`StopCause::Stopped`] or [`StopCause::Deleted`]; a descendant's is
+    /// [`StopCause::Parent`].
+    pub cause: StopCause,
+    /// The actor whose turn removed the tree; `None` for a delete from outside a turn.
+    pub by: Option<&'a ActorAddress>,
+    /// The message of that turn; `None` for a delete from outside a turn.
+    pub caused_by: Option<&'a MessageId>,
+}
+
+impl Removal<'_> {
+    /// The `Stopped` of `actor`, one of the removed actors, for `watcher`.
+    pub fn notice(&self, actor: &ActorAddress, watcher: &ActorAddress) -> Notice {
+        let cause = if actor == self.root { self.cause } else { StopCause::Parent };
+        Notice::stopped(actor, cause, self.by, self.caused_by, watcher)
+    }
+}
+
+/// The messages of the notices of the event `event`: in the order of the actor they are about and then of the
+/// watcher, named `<event>.0`, `<event>.1`, … in that order, due now, without headers or retry policy, sent by the
+/// actor they are about. A store writes them marked as notifications.
+pub fn notifications(event: &MessageId, mut notices: Vec<Notice>) -> Vec<OutgoingMessage> {
+    notices.sort_by(|a, b| (&a.about, &a.watcher, a.message_type).cmp(&(&b.about, &b.watcher, b.message_type)));
+    notices.dedup_by(|a, b| (&a.about, &a.watcher, a.message_type) == (&b.about, &b.watcher, b.message_type));
+    notices
+        .into_iter()
+        .enumerate()
+        .map(|(n, notice)| OutgoingMessage {
+            to: notice.watcher,
+            message_type: notice.message_type.to_owned(),
+            payload: notice.payload,
+            id: MessageId::new(format!("{event}.{n}")).expect("an id with a number is not blank"),
+            from: Some(notice.about),
+            delivery: Delivery::Now,
+            correlation_id: None,
+            headers: BTreeMap::new(),
+            retry: None,
+            caused_by: notice.caused_by,
+            retention: notice.retention,
+        })
+        .collect()
+}
+
+/// The watch of a stored row; a target or watcher that does not read is corrupt data.
+pub fn stored_watch(target: &str, watcher: &str) -> StoreResult<Watch> {
+    Ok(Watch {
+        target: WatchTarget::parse(target)
+            .map_err(|e| StoreError::Corrupt(format!("stored watch target '{target}': {e}")))?,
+        watcher: ActorAddress::parse(watcher)
+            .map_err(|e| StoreError::Corrupt(format!("stored watcher '{watcher}': {e}")))?,
+    })
+}
+
+/// The cursor after `watch` in a listing of watches: `target watcher` (neither holds a space).
+pub fn watch_cursor(watch: &Watch) -> PageCursor {
+    PageCursor(format!("{} {}", watch.target, watch.watcher))
+}
+
+/// Decodes a [`watch_cursor`] into `(target, watcher)`.
+pub fn decode_watch_cursor(cursor: &PageCursor) -> StoreResult<(String, String)> {
+    let (target, watcher) =
+        cursor.0.split_once(' ').ok_or_else(|| StoreError::Invalid(format!("Invalid cursor '{cursor}'")))?;
+    Ok((target.to_owned(), watcher.to_owned()))
 }
 
 // ---- retention ----
@@ -304,6 +438,7 @@ mod tests {
             retry: None,
             caused_by: Some(MessageId::new("m0").unwrap()),
             retention: Some(Retention::REMOVE_ON_DONE),
+            notification: true,
         }
     }
 
@@ -322,6 +457,51 @@ mod tests {
         let m = envelope_from_json(&json).unwrap();
         assert_eq!(m.failures, 0);
         assert!(m.retry.is_none() && m.caused_by.is_none() && m.retention.is_none());
+    }
+
+    #[test]
+    fn the_notifications_of_an_event_are_numbered_in_the_order_of_the_actor_and_then_the_watcher() {
+        let a = |text: &str| ActorAddress::parse(text).unwrap();
+        let failed = Message { to: a("x/2"), retention: Some(Retention::REMOVE_ON_FAILED), ..message() };
+        let removal = Removal { root: &a("x/2"), cause: StopCause::Deleted, by: None, caused_by: None };
+        let notices = vec![
+            removal.notice(&a("x/2"), &a("w/b")),
+            Notice::failed(&failed, "boom", &a("w/b")),
+            removal.notice(&a("x/1"), &a("w/b")),
+            removal.notice(&a("x/1"), &a("w/a")),
+            removal.notice(&a("x/1"), &a("w/a")),
+        ];
+        let event = MessageId::new("e1").unwrap();
+        let written = notifications(&event, notices);
+        let order: Vec<(&str, &str, &str, &str)> = written
+            .iter()
+            .map(|m| (m.id.as_str(), m.from.as_ref().unwrap().as_str(), m.to.as_str(), m.message_type.as_str()))
+            .collect();
+        assert_eq!(
+            order,
+            [
+                ("e1.0", "x/1", "w/a", "Stopped"),
+                ("e1.1", "x/1", "w/b", "Stopped"),
+                ("e1.2", "x/2", "w/b", "Failed"),
+                ("e1.3", "x/2", "w/b", "Stopped"),
+            ],
+            "one per watcher, actor and kind"
+        );
+        let failure = &written[2];
+        assert_eq!(failure.retention, Some(Retention { done: Some(Keep::Remove), failed: Some(Keep::Remove) }));
+        assert_eq!((failure.caused_by.as_ref(), failure.payload["messageId"].as_str()), (None, Some("m1")));
+        assert_eq!(written[3].payload, json!({"actor": "x/2", "cause": "deleted", "by": null}));
+        assert!(written.iter().all(|m| m.headers.is_empty() && m.retry.is_none() && m.delivery == Delivery::Now));
+    }
+
+    #[test]
+    fn watch_cursors() {
+        let watch = stored_watch("billing", "w/a").unwrap();
+        let cursor = watch_cursor(&watch);
+        assert_eq!(cursor.0, "billing w/a");
+        assert_eq!(decode_watch_cursor(&cursor).unwrap(), ("billing".to_owned(), "w/a".to_owned()));
+        assert!(decode_watch_cursor(&PageCursor("billing".into())).is_err());
+        assert!(matches!(stored_watch("a//b", "w/a"), Err(StoreError::Corrupt(_))));
     }
 
     #[test]

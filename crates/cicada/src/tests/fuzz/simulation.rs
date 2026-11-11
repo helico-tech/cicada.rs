@@ -3,14 +3,18 @@
 //!
 //! A message's payload is its script, so new behaviour needs a new action and not a new actor. Message ids come from the
 //! position of a send (`m3`, `m3.0`, `m3.0.1`), so no random id enters a run and a repeated run gives an equal log.
+//!
+//! One more actor, the watcher, watches every script actor from the start and is never removed: it is told of every
+//! failure and every removal, and the checks count its notifications.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::prelude::*;
 use crate::runtime::NodeConfig;
-use crate::store::{Backend, CreateResult, Message, NodeId, OutcomeRecord, Page, PageCursor, Store};
+use crate::store::{Backend, CreateResult, Message, NodeId, OutcomeRecord, Page, PageCursor, SetWatchResult, Store};
 use crate::testing::{InMemoryStore, TokioClock, default_start};
+use crate::watch::WatchTarget;
 use proptest::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -304,6 +308,37 @@ impl Actor for ScriptActor {
     }
 }
 
+/// type `watcher`, the singleton `watcher/_`: watches every script actor.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Watcher;
+
+impl ActorRef for Watcher {
+    const TYPE: &'static str = "watcher";
+    type Message = WatcherMsg;
+}
+
+/// The notifications.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type")]
+pub enum WatcherMsg {
+    /// A message to a script actor failed.
+    Failed(crate::Failed),
+    /// A script actor went away.
+    Stopped(crate::Stopped),
+}
+
+/// Handles every notification; the log of the store shows what it got.
+pub struct WatcherActor;
+
+impl Actor for WatcherActor {
+    type Ref = Watcher;
+    type State = NoState;
+
+    async fn handle(&self, _: &mut Turn<Self>, _: WatcherMsg) -> HandlerResult {
+        Ok(())
+    }
+}
+
 // ---- the runner ----
 
 struct Node {
@@ -317,6 +352,8 @@ struct Runner {
     log: Log,
     /// What clients sent: the message and its target.
     sent: Vec<(MessageId, Script, ScriptMsg, SendOptions)>,
+    /// How many deletes clients made: the event of each is named after its number.
+    deletes: usize,
 }
 
 fn empty_state() -> Value {
@@ -339,6 +376,7 @@ impl Runner {
                 .map(|f| f.rule)
                 .collect();
             let store = FaultStore::new(memory.clone(), name.clone(), rules, log.clone());
+            store.name_events();
             let config = NodeConfig {
                 node_id: NodeId::new(name.clone()).expect("a name is not blank"),
                 lease_ttl: LEASE_TTL,
@@ -349,19 +387,24 @@ impl Runner {
             let system = ActorSystem::builder(Store::from_backend(store.clone()))
                 .config(config)
                 .host(ActorType::new(actor))
+                .host(WatcherActor)
                 .build();
             system.start().await.expect("the node starts");
             nodes.push(Node { store, system });
         }
+        let watcher = Watcher.address().expect("a valid address");
+        assert_eq!(memory.create(&watcher, json!({})).await.expect("the store is up"), CreateResult::Created);
         for to in 0..KEYS.len() {
             let address = script(to).address().expect("a valid address");
             let created = memory.create(&address, empty_state()).await.expect("the store is up");
             assert_eq!(created, CreateResult::Created);
+            let watched = memory.watch(&WatchTarget::Actor(address), &watcher).await.expect("the store is up");
+            assert_eq!(watched, SetWatchResult::Created);
         }
         for node in &nodes {
             node.store.arm();
         }
-        Self { memory, nodes, log, sent: Vec::new() }
+        Self { memory, nodes, log, sent: Vec::new(), deletes: 0 }
     }
 
     fn node(&self, index: usize) -> &Node {
@@ -395,7 +438,9 @@ impl Runner {
             }
             Step::Delete { node, to } => {
                 let address = script(*to).address().expect("a valid address");
-                let _ = self.node(*node).store.delete(&address).await;
+                self.deletes += 1;
+                let event = MessageId::new(format!("delete{}", self.deletes)).expect("an id is not blank");
+                let _ = self.node(*node).store.delete(&address, &event).await;
             }
             Step::Cancel { node, back } => {
                 if let Some((id, ..)) = self.earlier(*back) {
@@ -473,9 +518,11 @@ impl Runner {
         let now = self.memory.now().await.expect("the store is up");
         for outcome in self.all_outcomes().await {
             self.log.push(Event::Outcome { id: outcome.message_id.to_string(), status: outcome.status });
+            self.log_notification(&outcome.envelope);
         }
         for message in self.all_pending().await {
             self.log.push(Event::StillPending { id: message.id.to_string(), due: message.deliver_at <= now });
+            self.log_notification(&message);
         }
         for to in 0..KEYS.len() {
             let address = script(to).address().expect("a valid address");
@@ -487,19 +534,42 @@ impl Runner {
     }
 }
 
+impl Runner {
+    /// Logs `message` when it is a notification: what it tells of.
+    fn log_notification(&self, message: &Message) {
+        if !message.notification {
+            return;
+        }
+        let of = match message.message_type.as_str() {
+            "Failed" => &message.payload["messageId"],
+            _ => &message.payload["actor"],
+        };
+        self.log.push(Event::Notified {
+            id: message.id.to_string(),
+            kind: message.message_type.clone(),
+            of: of.as_str().unwrap_or_default().to_owned(),
+        });
+    }
+}
+
 fn scripts_in(actions: &[Action]) -> u32 {
     actions.iter().map(|a| if let Action::Send { actions, .. } = a { 1 + scripts_in(actions) } else { 0 }).sum()
 }
 
-/// How long a drain may take: every script of the scenario, one after the other, at their slowest.
+/// How long a drain may take: every script of the scenario, one after the other, at their slowest, and a notification
+/// of each, and of each delete.
 pub fn drain_bound(scenario: &Scenario) -> Duration {
     let scripts: u32 = scenario
         .steps
         .iter()
         .map(|s| if let Step::Send { actions, .. } = s { 1 + scripts_in(actions) } else { 0 })
         .sum();
+    let deletes = scenario.steps.iter().filter(|s| matches!(s, Step::Delete { .. })).count() as u32;
     let slowest_run = MAX_TURN + 2 * LEASE_TTL + BACKOFF + MAX_FAULT_DELAY;
-    slowest_run * (scripts + 1) * (MAX_ATTEMPTS + 2) + MAX_SEND_DELAY * (scripts + 1)
+    let slowest_notification = 2 * LEASE_TTL + MAX_FAULT_DELAY;
+    slowest_run * (scripts + 1) * (MAX_ATTEMPTS + 2)
+        + MAX_SEND_DELAY * (scripts + 1)
+        + slowest_notification * (scripts + deletes + 1) * (MAX_ATTEMPTS + 2)
 }
 
 /// Runs `scenario` on the current runtime, which must be on paused time, and returns its history.

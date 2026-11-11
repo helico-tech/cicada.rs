@@ -5,6 +5,11 @@
 //!
 //! The gate writes what the *inner* store answered to the [`Log`], including answers the node never received. An
 //! `InMemoryStore` call never yields, so on one thread the extra reads around a call see exactly the state of that call.
+//!
+//! The notifications of a commit or a delete are accepted messages like the sends: the layer finds them by the event id
+//! they are named after. The runtime draws a random event id for every commit; a layer that [names events]
+//! (FaultStore::name_events) names it after the claim instead (`<message>#<epoch>`), so that a replay writes the same
+//! notifications.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -17,9 +22,10 @@ use crate::store::{
     ActorRecord, Backend, CancelResult, Claim, CommitRequest, CommitResult, CreateResult, DeleteResult,
     DeliverNowResult, EnqueueResult, Message, MessageId, MessageStatus, NodeId, NodeRecord, OutcomeRecord,
     OutcomeStatus, OutgoingMessage, Page, PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn,
-    StateChange, StoreError, StoreResult, StoreStats, TurnOutcome, TypeDef,
+    SetWatchResult, StateChange, StoreError, StoreResult, StoreStats, TurnOutcome, TypeDef,
 };
 use crate::time::Timestamp;
+use crate::watch::{Watch, WatchTarget};
 use async_trait::async_trait;
 use futures::stream::BoxStream;
 use serde_json::Value;
@@ -38,6 +44,9 @@ pub enum Method {
     List,
     Children,
     Delete,
+    Watch,
+    Unwatch,
+    Watches,
     Enqueue,
     ClaimDue,
     Renew,
@@ -65,7 +74,7 @@ pub enum Method {
 
 impl Method {
     /// Every method.
-    pub const ALL: [Method; 32] = [
+    pub const ALL: [Method; 35] = [
         Method::Now,
         Method::Register,
         Method::ListTypes,
@@ -75,6 +84,9 @@ impl Method {
         Method::List,
         Method::Children,
         Method::Delete,
+        Method::Watch,
+        Method::Unwatch,
+        Method::Watches,
         Method::Enqueue,
         Method::ClaimDue,
         Method::Renew,
@@ -294,6 +306,15 @@ pub enum Event {
         /// The ids.
         ids: Vec<String>,
     },
+    /// After the drain: a notification, pending or finished.
+    Notified {
+        /// The notification.
+        id: String,
+        /// `Failed` or `Stopped`.
+        kind: String,
+        /// The failed message of a `Failed`, the actor of a `Stopped`.
+        of: String,
+    },
 }
 
 /// The history of a run, shared by the fault layers and the handlers.
@@ -334,6 +355,7 @@ pub struct FaultStore {
     node: String,
     log: Log,
     plan: Mutex<Plan>,
+    name_events: std::sync::atomic::AtomicBool,
 }
 
 impl FaultStore {
@@ -341,7 +363,13 @@ impl FaultStore {
     /// no rule fires, so that a node can start.
     pub fn new(inner: Arc<dyn Backend>, node: impl Into<String>, rules: Vec<Rule>, log: Log) -> Arc<Self> {
         let plan = Mutex::new(Plan { rules, ..Plan::default() });
-        Arc::new(Self { inner, node: node.into(), log, plan })
+        Arc::new(Self { inner, node: node.into(), log, plan, name_events: Default::default() })
+    }
+
+    /// Names the event of every commit after its claim, `<message>#<epoch>`, in place of the random id the runtime
+    /// drew: a replay then writes the same notification ids.
+    pub fn name_events(&self) {
+        self.name_events.store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Starts counting calls and applying the rules.
@@ -424,6 +452,21 @@ impl FaultStore {
         self.log.push(Event::Accepted { id: message.id.to_string(), to: message.to.to_string() });
     }
 
+    /// Logs the notifications that the event `event` wrote as accepted: the pending messages named after it.
+    async fn log_notifications(&self, event: &MessageId) {
+        let prefix = format!("{event}.");
+        let mut cursor = None;
+        while let Ok(page) = self.inner.list_pending("", cursor.as_ref(), Page::<Message>::DEFAULT_SIZE).await {
+            for message in page.items.iter().filter(|m| m.notification && m.id.as_str().starts_with(&prefix)) {
+                self.log_accepted(message);
+            }
+            cursor = page.next;
+            if cursor.is_none() {
+                break;
+            }
+        }
+    }
+
     async fn do_claim(
         &self,
         types: &BTreeSet<TypeName>,
@@ -451,6 +494,13 @@ impl FaultStore {
     }
 
     async fn do_commit(&self, commit: CommitRequest) -> StoreResult<CommitResult> {
+        let commit = if self.name_events.load(std::sync::atomic::Ordering::SeqCst) {
+            let event = MessageId::new(format!("{}#{}", commit.message_id, commit.epoch)).expect("an id is not blank");
+            CommitRequest { event, ..commit }
+        } else {
+            commit
+        };
+        let event = commit.event.clone();
         let (address, epoch, id) = (commit.address.clone(), commit.epoch, commit.message_id.clone());
         let ending = Ending::from(&commit.outcome);
         let stops = matches!(commit.state, StateChange::Stop);
@@ -482,6 +532,7 @@ impl FaultStore {
                 if stops {
                     self.log.push(Event::Removed { address: address.to_string() });
                 }
+                self.log_notifications(&event).await;
             }
             CommitResult::LeaseLost => self.log.push(refused("lease lost".to_owned())),
             CommitResult::Rejected(reason) => self.log.push(refused(format!("rejected: {reason}"))),
@@ -489,12 +540,13 @@ impl FaultStore {
         Ok(answer)
     }
 
-    async fn do_delete(&self, address: &ActorAddress) -> StoreResult<DeleteResult> {
+    async fn do_delete(&self, address: &ActorAddress, event: &MessageId) -> StoreResult<DeleteResult> {
         let before = self.pending_ids(address).await;
-        let answer = self.inner.delete(address).await?;
+        let answer = self.inner.delete(address, event).await?;
         if matches!(answer, DeleteResult::Deleted { .. }) {
             self.log_ended(address, before).await;
             self.log.push(Event::Removed { address: address.to_string() });
+            self.log_notifications(event).await;
         }
         Ok(answer)
     }
@@ -567,8 +619,26 @@ impl Backend for FaultStore {
         self.gate(Method::Children, || self.inner.children(parent, cursor, limit)).await
     }
 
-    async fn delete(&self, address: &ActorAddress) -> StoreResult<DeleteResult> {
-        self.gate(Method::Delete, || self.do_delete(address)).await
+    async fn delete(&self, address: &ActorAddress, event: &MessageId) -> StoreResult<DeleteResult> {
+        self.gate(Method::Delete, || self.do_delete(address, event)).await
+    }
+
+    async fn watch(&self, target: &WatchTarget, watcher: &ActorAddress) -> StoreResult<SetWatchResult> {
+        self.gate(Method::Watch, || self.inner.watch(target, watcher)).await
+    }
+
+    async fn unwatch(&self, target: &WatchTarget, watcher: &ActorAddress) -> StoreResult<bool> {
+        self.gate(Method::Unwatch, || self.inner.unwatch(target, watcher)).await
+    }
+
+    async fn watches(
+        &self,
+        watcher: Option<&ActorAddress>,
+        target: Option<&WatchTarget>,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> StoreResult<Page<Watch>> {
+        self.gate(Method::Watches, || self.inner.watches(watcher, target, cursor, limit)).await
     }
 
     async fn enqueue(&self, message: OutgoingMessage) -> StoreResult<EnqueueResult> {
