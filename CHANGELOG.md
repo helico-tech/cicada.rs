@@ -26,12 +26,13 @@ migration that is not additive, and the contract of every type that was stateles
    `DELETE /types/{name}`), as for any contract change.
 4. Stop every node of the old version: an old node that writes an actor without a state fails on the new schema.
 5. Start the new version, the nodes that host the formerly stateless types first. The first node migrates the schema
-   to version 2, and each node registers its types. Until a node that hosts a formerly stateless type has started,
-   that type is not registered: its actors can be read and deleted and messages to them wait, but a create of one is
-   refused (over HTTP `404`; in a turn on another node the message ends `failed`).
+   to version 2, and each node registers its types. Until a node that hosts a formerly stateless type starts, that
+   type is not registered: its actors can be read and deleted, and messages already in a mailbox wait; a create of
+   one and a send to one from outside a turn are refused (over HTTP `404`), and a turn on another node that creates
+   one ends `failed` without a retry.
 
-Or start on a new database; then steps 1, 2 and 4 are all that is left. There is no way back: 0.3.x does not open a
-migrated database.
+Or start on a new database; then steps 1, 2 and 4 are left, and of step 3 only the change of the state to a struct
+(no reset). There is no way back: 0.3.x does not open a migrated database.
 
 ### Changed (breaking)
 

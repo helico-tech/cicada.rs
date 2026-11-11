@@ -136,8 +136,10 @@ new one starts. The changelog says so for each such release.
 **Version 0.4.0 is such a release.** Its migration 2 (every actor has state, ADR 0018) gives every actor without a
 state the state `{}`, makes the state column required, and removes the registrations of the types that were
 stateless; an old node that writes an actor without a state fails. Stop every node of the old version, then start the
-new ones, the nodes that host the formerly stateless types first: until such a node registers its type again, a create
-of an actor of that type is refused. The changelog of 0.4.0 lists the steps, including the code changes.
+new ones, the nodes that host the formerly stateless types first. Until a node that hosts such a type starts, its
+actors can be read and deleted, and messages already in a mailbox wait; a create of one and a send to one from outside
+a turn are refused (over HTTP `404`), and a turn on another node that creates one ends `failed` without a retry. The
+changelog of 0.4.0 lists the steps, including the code changes.
 
 **Order of a rolling deploy.** For an additive migration: the first node of the new version migrates the database;
 from then on a node of the old version refuses to start (it does not open a schema newer than its own), while old nodes

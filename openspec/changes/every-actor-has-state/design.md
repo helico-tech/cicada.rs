@@ -82,8 +82,8 @@ What follows:
 - The actors of the type stay. Decision 5 gives them the state `{}`, which decodes as `NoState`. Their pending
   messages stay too.
 - Between the migration and the start of a node that hosts the type, the type is not registered. Its actors can be
-  read and deleted, and a message to one of them waits in its mailbox. But a create of an actor of the type is
-  refused: over HTTP as "no such type", and a turn on another node that creates one ends `failed`, without a retry.
+  read and deleted, and messages already in a mailbox wait. A create of one and a send to one from outside a turn are
+  refused (over HTTP `404`), and a turn on another node that creates one ends `failed`, without a retry.
   This window exists only when nodes host different types. A node registers its types before it handles a message,
   so a node that hosts every type has no window. The upgrade note says: start the nodes that host the formerly
   stateless types first.
@@ -257,7 +257,8 @@ For a host (Chorus, Karakuri):
 5. Start the new version, the nodes that host the formerly stateless types first. The first node migrates the schema
    to version 2; each node registers its types.
 
-Or start on a new database; then steps 1, 2 and 4 are all that is left.
+Or start on a new database; then steps 1, 2 and 4 are left, and of step 3 only the change of the state to a struct
+(no reset).
 
 There is no way back: a migrated database is not opened by the old version.
 
