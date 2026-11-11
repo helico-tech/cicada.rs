@@ -44,10 +44,19 @@ child SHALL be refused: the second call returns `TurnError::Invalid`, and a stor
 - **WHEN** a handler calls `create` and then `create_child` for the same address
 - **THEN** the second call returns an error and buffers nothing
 
+#### Scenario: A malformed commit with an epoch that is not current
+
+- **WHEN** a store is given a commit whose creates of one address disagree and whose epoch is not current
+- **THEN** it answers `StoreError::Invalid`, in every store
+
+#### Scenario: An actor names itself
+
+- **WHEN** a turn calls `create_child` for the address of its own actor
+- **THEN** the turn's message ends `failed`
+
 ### Requirement: Removing an actor removes its descendants
 
-Deleting an actor (`Store::delete`, `ActorSystem::delete_actor`, `DELETE /actors/{type}/{key}`) or stopping it
-(`turn.stop()`) SHALL remove the actor and every descendant, with their mailboxes, in one transaction. Actors outside
+Deleting an actor (`ActorSystem::delete_actor`, `DELETE /actors/{type}/{key}`) or stopping it (`turn.stop()`) SHALL remove the actor and every descendant, with their mailboxes, in one transaction. Actors outside
 the tree SHALL not change. Pause, resume and purge SHALL not reach descendants.
 
 #### Scenario: An operator deletes a parent
@@ -69,6 +78,23 @@ the tree SHALL not change. Pause, resume and purge SHALL not reach descendants.
 
 - **WHEN** an actor is deleted while turns of its descendants commit creates of further children
 - **THEN** afterwards no actor exists whose parent is gone
+
+#### Scenario: A removal races with a send up the tree
+
+- **WHEN** a child whose address sorts before its parent's commits a send to its parent while the parent is deleted
+- **THEN** the delete succeeds, the commit was applied before it or answers `LeaseLost`, and no actor of the tree is
+  left
+
+### Requirement: A removal ends on any parent links
+
+A removal SHALL visit each actor once, so that it ends when parent links form a cycle. No call of this version can
+form one; a node of an earlier version that keeps running on a migrated database can.
+
+#### Scenario: Two rows that name each other
+
+- **WHEN** the rows of two actors, written by hand into a SQLite or PostgreSQL database, name each other as parent,
+  and one of them is deleted
+- **THEN** the delete ends and both actors are gone
 
 ### Requirement: A removed descendant ends like a deleted actor
 
@@ -110,8 +136,7 @@ or null for an independent actor.
 
 `GET /actors/{type}/{key}/children?cursor=&limit=` SHALL list the addresses of the actor's direct children in address
 order, paged like the other listings, and answer `404` with problem type `no-such-instance` for an actor that does not
-exist. It is a read route. `Store::children`, `ActorSystem::list_children` and `ActorClient::children` SHALL give the
-same listing.
+exist. It is a read route. `ActorSystem::list_children` and `ActorClient::children` SHALL give the same listing.
 
 #### Scenario: Direct children only
 
@@ -144,7 +169,8 @@ show its parent.
 Both SQL stores SHALL add the parent column and its index in an appended migration. Actors that existed before the
 migration SHALL have no parent.
 
-#### Scenario: A database of the previous version is opened
+#### Scenario: A database of schema version 3 is opened
 
-- **WHEN** a store opens a database of the previous schema version that holds actors
-- **THEN** the database is at the new version, the actors are still there and each has no parent
+- **WHEN** a store opens a database of schema version 3 that holds actors
+- **THEN** the database is at the schema version this store writes, the actors are still there and each has no
+  parent
