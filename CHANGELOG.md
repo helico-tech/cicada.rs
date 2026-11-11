@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.4.0 — unreleased
+## 0.4.0 — 2026-11-11
 
 A breaking release: every actor has state (ADR 0018, its first step). The store schema goes to version 2 with a
 migration that is not additive, and the contract of every type that was stateless gets a new hash. Nodes of 0.3.x and
