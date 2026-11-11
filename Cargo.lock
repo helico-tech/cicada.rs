@@ -428,7 +428,7 @@ dependencies = [
 
 [[package]]
 name = "cicada"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -451,7 +451,7 @@ dependencies = [
 
 [[package]]
 name = "cicada-axum"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "aide",
  "async-trait",
@@ -469,7 +469,7 @@ dependencies = [
 
 [[package]]
 name = "cicada-cli"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -494,7 +494,7 @@ dependencies = [
 
 [[package]]
 name = "cicada-client"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "axum",
  "cicada",
@@ -511,7 +511,7 @@ dependencies = [
 
 [[package]]
 name = "cicada-e2e"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -528,7 +528,7 @@ dependencies = [
 
 [[package]]
 name = "cicada-examples"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -549,7 +549,7 @@ dependencies = [
 
 [[package]]
 name = "cicada-extras"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -565,7 +565,7 @@ dependencies = [
 
 [[package]]
 name = "cicada-otel"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "async-trait",
  "cicada",
@@ -580,7 +580,7 @@ dependencies = [
 
 [[package]]
 name = "cicada-sample-service"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -608,7 +608,7 @@ dependencies = [
 
 [[package]]
 name = "cicada-test"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2783,6 +2783,7 @@ checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
 dependencies = [
  "aws-lc-rs",
  "once_cell",
+ "ring",
  "rustls-pki-types",
  "rustls-webpki",
  "subtle",
@@ -3239,6 +3240,8 @@ dependencies = [
  "log",
  "memchr",
  "percent-encoding",
+ "rustls",
+ "rustls-native-certs",
  "serde",
  "serde_json",
  "sha2 0.10.9",

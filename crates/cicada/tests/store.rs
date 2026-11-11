@@ -1,5 +1,6 @@
 //! A host opens a store through the core and hands it to its systems: SQLite, PostgreSQL (when `CICADA_PG_URL` is
-//! set), two systems on clones of one store, and closing and opening a SQLite file again. Public API only.
+//! set, also asked for TLS), two systems on clones of one store, and closing and opening a SQLite file again. Public
+//! API only.
 
 use std::time::Duration;
 
@@ -104,6 +105,25 @@ async fn a_node_on_postgres_handles_a_message() {
     store.close().await;
     let mut c = sqlx::PgConnection::connect(&url).await.unwrap();
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!("DROP SCHEMA \"{schema}\" CASCADE"))).execute(&mut c).await.unwrap();
+}
+
+/// The feature `postgres` builds the driver with TLS: asked for it, the plain test database fails the open because it
+/// offers none, not because the build lacks it ("SQLx was built without TLS support enabled").
+#[tokio::test(flavor = "multi_thread")]
+async fn postgres_asked_for_tls_fails_on_a_server_without_it() {
+    let Some(url) = std::env::var("CICADA_PG_URL").ok().filter(|u| !u.trim().is_empty()) else {
+        eprintln!("CICADA_PG_URL is unset: skipping a PostgreSQL test");
+        return;
+    };
+    let url = format!("{url}{}sslmode=require", if url.contains('?') { '&' } else { '?' });
+    let schema = format!("tls_{}_{}", std::process::id(), &MessageId::random().as_str()[..8]);
+
+    let Err(error) = Store::postgres(&url, PostgresOptions::for_schema(&schema)).await else {
+        panic!("the test database offers no TLS, so a store that requires it does not open")
+    };
+
+    let message = error.to_string();
+    assert!(message.contains("server does not support TLS"), "{message}");
 }
 
 #[tokio::test]
