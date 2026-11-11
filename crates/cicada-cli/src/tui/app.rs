@@ -35,6 +35,8 @@ pub enum Kind {
     Nodes,
     /// `GET /types`.
     Types,
+    /// `GET /watches`.
+    Watches,
 }
 
 impl Kind {
@@ -47,14 +49,15 @@ impl Kind {
             Kind::Turns => "turns",
             Kind::Nodes => "nodes",
             Kind::Types => "types",
+            Kind::Watches => "watches",
         }
     }
 }
 
 /// The `:` commands, for completion.
-pub const COMMANDS: [&str; 13] = [
-    "actors", "actor", "mailbox", "messages", "message", "outcomes", "turns", "nodes", "node", "types", "type", "help",
-    "quit",
+pub const COMMANDS: [&str; 14] = [
+    "actors", "actor", "mailbox", "messages", "message", "outcomes", "turns", "nodes", "node", "types", "type",
+    "watches", "help", "quit",
 ];
 const STATUSES: [&str; 4] = ["done", "failed", "cancelled", "purged"];
 
@@ -597,6 +600,7 @@ impl App {
             "turns" | "t" => list(Kind::Turns),
             "nodes" | "no" => list(Kind::Nodes),
             "types" | "ty" => list(Kind::Types),
+            "watches" | "wa" => list(Kind::Watches),
             "outcomes" | "o" => match OutcomeStatus::from_wire_name(arg) {
                 Some(status) => Target::List {
                     kind: Kind::Outcomes,
@@ -954,7 +958,7 @@ mod tests {
                 GridRow { item, wide: cells.clone(), cells }
             })
             .collect();
-        Rows { headers: vec!["WHAT"], wide_headers: vec!["WHAT"], rows, finished }
+        Rows { headers: vec!["WHAT"], wide_headers: vec!["WHAT"], rows, finished, more: false }
     }
 
     fn seq_of(effects: &[Effect]) -> u64 {

@@ -152,7 +152,7 @@ fn hints_for(app: &App) -> Vec<(&'static str, &'static str)> {
             ("ctrl-d", "delete"),
         ],
         Target::Message(_) => &[("a", "actor"), ("b", "cause"), ("c", "cancel"), ("r", "retry"), ("n", "deliver now")],
-        Target::List { kind: Kind::Nodes, .. } | Target::Describe(_) => &[],
+        Target::List { kind: Kind::Nodes | Kind::Watches, .. } | Target::Describe(_) => &[],
     };
     hints.extend(specific);
     hints.extend([("< >", "sort"), ("w", "wide")]);
@@ -244,6 +244,11 @@ fn spinner(app: &App) -> &'static str {
     if app.loading() { SPINNER[(app.tick % SPINNER.len() as u64) as usize] } else { " " }
 }
 
+/// `+` when the API holds more rows than the grid shows, as a count of `1000+`.
+fn more(grid: &super::grid::Grid) -> &'static str {
+    if grid.data.more { "+" } else { "" }
+}
+
 fn draw_grid(frame: &mut Frame, app: &mut App, area: Rect) {
     let (wide, spin) = (app.wide, spinner(app));
     let screen = app.stack.last_mut().expect("the stack is never empty");
@@ -253,7 +258,7 @@ fn draw_grid(frame: &mut Frame, app: &mut App, area: Rect) {
             if i > 0 {
                 title.push(" │ ".fg(Color::DarkGray));
             }
-            let text = format!(" {name}[{}] ", grid.shown().len());
+            let text = format!(" {name}[{}{}] ", grid.shown().len(), more(grid));
             title.push(if i == screen.tab {
                 Span::styled(text, Style::new().fg(Color::Black).bg(ACCENT).bold())
             } else {
@@ -262,7 +267,7 @@ fn draw_grid(frame: &mut Frame, app: &mut App, area: Rect) {
         }
     } else if let Some((_, grid)) = screen.tabs.first() {
         title.push(Span::styled(screen.target.title(), Style::new().fg(ACCENT).bold()));
-        title.push(Span::styled(format!("[{}]", grid.shown().len()), theme::bold()));
+        title.push(Span::styled(format!("[{}{}]", grid.shown().len(), more(grid)), theme::bold()));
     }
     let error = screen.error.clone();
     let Some(grid) = screen.grid_mut() else { return };
@@ -464,6 +469,7 @@ const HELP: [Section; 4] = [
             (":turns [prefix]", "running turns"),
             (":nodes", "nodes"),
             (":types", "registered types"),
+            (":watches [prefix]", "watches; enter opens the watcher"),
             (":actor ADDRESS", "one actor"),
             (":mailbox ADDRESS", "one mailbox"),
             (":message ID", "one message"),
@@ -541,9 +547,9 @@ fn draw_help(frame: &mut Frame) {
 
 #[cfg(test)]
 mod tests {
-    use cicada::ActorAddress;
-    use cicada::api::{ActorView, StatsView};
+    use cicada::api::{ActorView, PageView, StatsView, WatchView};
     use cicada::store::MessageId;
+    use cicada::{ActorAddress, WatchTarget};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -582,6 +588,7 @@ mod tests {
             wide_headers: vec!["ID", "STATUS"],
             rows: vec![row("f1", "failed"), row("d1", "done")],
             finished: true,
+            more: false,
         }
     }
 
@@ -685,6 +692,11 @@ mod tests {
 
     /// An app on the screen of `view` (opened with `:actor`) with the data the fetch builds, `children` among it.
     fn actor_screen_of(view: &ActorView, children: &[&str]) -> App {
+        actor_screen_with(view, children, false)
+    }
+
+    /// [`actor_screen_of`], with `more` children than `children`.
+    fn actor_screen_with(view: &ActorView, children: &[&str], more: bool) -> App {
         let mut app = App::new(Some("local".into()), "http://localhost:8080".into());
         app.start();
         for c in format!(":actor {}", view.address).chars() {
@@ -693,7 +705,7 @@ mod tests {
         let effects = app.on_key(key(KeyCode::Enter));
         let seq = effects.iter().find_map(|e| if let Effect::Fetch { seq, .. } = e { Some(*seq) } else { None });
         let children: Vec<ActorAddress> = children.iter().map(|c| ActorAddress::parse(c).unwrap()).collect();
-        let data = fetch::actor_screen(view, None, &[], &[], &children);
+        let data = fetch::actor_screen(view, None, &[], &[], &children, more);
         app.on_result(Fetched::Screen { seq: seq.expect("a fetch"), data });
         app
     }
@@ -727,6 +739,49 @@ mod tests {
         app.on_key(key(KeyCode::Char('j')));
         assert!(opens_actor(&app.on_key(key(KeyCode::Enter)), "batch-items/b1:1"));
         assert!(opens_actor(&app.on_key(key(KeyCode::Esc)), "batches/b1"), "esc goes back");
+    }
+
+    /// The children tab says when there are more children than it shows, as the mailbox fact does.
+    #[test]
+    fn a_tab_of_more_children_than_the_limit_says_so() {
+        let mut app = actor_screen_with(&view("batches/b1", None), &["batch-items/b1:0", "batch-items/b1:1"], true);
+        let text = screen(&mut app, 140, 30);
+        assert!(text.contains("children[2+]"), "{text}");
+        let mut app = actor_screen_of(&view("batches/b1", None), &["batch-items/b1:0"]);
+        assert!(screen(&mut app, 140, 30).contains("children[1]"));
+    }
+
+    /// Scenario: The view of watches.
+    #[test]
+    fn the_view_of_watches_lists_target_and_watcher_and_enter_opens_the_watcher() {
+        let mut app = App::new(Some("local".into()), "http://localhost:8080".into());
+        app.start();
+        for c in ":watches".chars() {
+            app.on_key(key(KeyCode::Char(c)));
+        }
+        let effects = app.on_key(key(KeyCode::Enter));
+        let seq = match &effects[..] {
+            [Effect::Fetch { seq, target: Target::List { kind: Kind::Watches, .. } }] => *seq,
+            other => panic!("{other:?}"),
+        };
+        let watch = |target: &str, watcher: &str| WatchView {
+            target: WatchTarget::parse(target).unwrap(),
+            watcher: ActorAddress::parse(watcher).unwrap(),
+        };
+        let page =
+            PageView { items: vec![watch("*", "dead-letters/_"), watch("worker/w1", "supervisor/a")], next: None };
+        app.on_result(Fetched::Screen { seq, data: ScreenData::Grid(fetch::watch_rows(page, "")) });
+        let text = screen(&mut app, 140, 30);
+        for part in ["watches(all)[2]", "TARGET", "WATCHER", "dead-letters/_", "worker/w1", "supervisor/a"] {
+            assert!(text.contains(part), "{part} missing:\n{text}");
+        }
+        for c in "/worker".chars() {
+            app.on_key(key(KeyCode::Char(c)));
+        }
+        app.on_key(key(KeyCode::Enter));
+        let text = screen(&mut app, 140, 30);
+        assert!(text.contains("watches(all)[1]") && !text.contains("dead-letters/_"), "filtered as typed:\n{text}");
+        assert!(opens_actor(&app.on_key(key(KeyCode::Enter)), "supervisor/a"), "enter opens the watcher");
     }
 
     /// Scenario: An actor on its own.

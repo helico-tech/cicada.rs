@@ -19,7 +19,9 @@ use cicada::time::format_instant;
 use cicada_client::{ActorClient, CancelOutcome};
 use serde_json::json;
 
-use crate::cli::{Cancel, Cli, Command, ConfigCommand, Create, Delete, Describe, Get, Page, Retry, Selection};
+use crate::cli::{
+    Cancel, Cli, Command, ConfigCommand, Create, Delete, Describe, Get, Page, Retry, Selection, WatchArgs,
+};
 use crate::config::{Config, Env, Overrides};
 use crate::output::{Format, list, one, structured};
 
@@ -60,9 +62,21 @@ pub async fn run(cli: Cli, env: &Env, out: &mut dyn Write) -> anyhow::Result<()>
             let verb = if created.created { "created" } else { "exists, left untouched" };
             done(out, format, &format!("actor {} {verb}", created.address), json!(created))
         }
+        Command::Create(Create::Watch(WatchArgs { target, watcher })) => {
+            let created = client.watch(&target, &watcher).await?;
+            let verb = if created { "set" } else { "exists, left untouched" };
+            let text = format!("watch of {watcher} on {target} {verb}");
+            done(out, format, &text, json!({"target": target, "watcher": watcher, "created": created}))
+        }
         Command::Delete(Delete::Actor { actor }) => {
             found(client.delete_actor(&actor).await?.then_some(()), || format!("actor {actor}"))?;
             writeln!(out, "actor {actor} deleted").map_err(Into::into)
+        }
+        Command::Delete(Delete::Watch(WatchArgs { target, watcher })) => {
+            found(client.unwatch(&target, &watcher).await?.then_some(()), || {
+                format!("watch of {watcher} on {target}")
+            })?;
+            writeln!(out, "watch of {watcher} on {target} removed").map_err(Into::into)
         }
         Command::Delete(Delete::Type { name }) => match client.remove_type(&name).await? {
             RemoveTypeResult::Removed => writeln!(out, "type {name} removed").map_err(Into::into),
@@ -194,6 +208,12 @@ async fn get_command(client: &ActorClient, get: Get, format: Format, out: &mut d
         Get::Nodes => list(out, format, &client.nodes().await?),
         Get::Node { id } => one(out, format, &found(client.node(&id).await?, || format!("node {id}"))?),
         Get::Types => list(out, format, &client.types().await?),
+        Get::Watches { watcher, target, page } => {
+            let items = pages(page, async |c| {
+                Ok(client.watches(watcher.as_ref(), target.as_ref(), c, Some(page.limit)).await?)
+            });
+            list(out, format, &items.await?)
+        }
         Get::Type { name } => one(out, format, &found(client.get_type(&name).await?, || format!("type {name}"))?),
     }
 }

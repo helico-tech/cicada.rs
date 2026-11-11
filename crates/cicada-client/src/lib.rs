@@ -39,11 +39,12 @@ use cicada::address::{TypeName, percent};
 use cicada::api::{
     ActorView, BulkRequest, BulkResponse, CreateActorRequest, CreateActorResponse, MailboxMessageView,
     MessageStatusView, MessageView, NodeDetailView, NodeListView, NodeView, OutcomeView, PageView, Problem,
-    PurgeResponse, RunningTurnView, SendRequest, SendResponse, StatsView, TypeListView, TypeView, problem_types,
+    PurgeResponse, RunningTurnView, SendRequest, SendResponse, StatsView, TypeListView, TypeView, WatchRequest,
+    WatchView, problem_types,
 };
 use cicada::store::{MessageId, NodeId, OutcomeStatus, RemoveTypeResult};
 use cicada::time::{Timestamp, format_instant};
-use cicada::{ActorAddress, ActorRef, SendOptions, message};
+use cicada::{ActorAddress, ActorRef, SendOptions, WatchTarget, message};
 use reqwest::{Method, StatusCode, Url};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -613,6 +614,48 @@ impl ActorClient {
         match answer.status {
             StatusCode::OK => Ok(true),
             StatusCode::SERVICE_UNAVAILABLE => Ok(false),
+            _ => Err(answer.failure()),
+        }
+    }
+
+    // ---- watches ----
+
+    /// The stored watches in the order of target and watcher (`GET /watches`): of one `watcher`, of exactly one stored
+    /// `target` (not every target that would match an actor), of both, or all; pass [`PageView::next`] as `cursor` for
+    /// the following page.
+    pub async fn watches(
+        &self,
+        watcher: Option<&ActorAddress>,
+        target: Option<&WatchTarget>,
+        cursor: Option<&str>,
+        limit: Option<usize>,
+    ) -> ClientResult<PageView<WatchView>> {
+        let mut query = listing("", None, cursor, limit);
+        query.extend(watcher.map(|w| ("watcher", w.to_string())));
+        query.extend(target.map(|t| ("target", t.to_string())));
+        self.call(Method::GET, self.url("/watches", &query)?, None).await?.ok()
+    }
+
+    /// Sets the watch of `watcher` on `target` (`PUT /watches`); true when it is new, false when it was set already.
+    /// Errors: `404 no-such-type` when no registered type matches the watcher, `404 no-such-instance` when the watcher
+    /// does not exist, `422 not-a-watcher` when its type does not declare the messages `Failed` and `Stopped`.
+    pub async fn watch(&self, target: &WatchTarget, watcher: &ActorAddress) -> ClientResult<bool> {
+        let body = encode(&WatchRequest { target: target.clone(), watcher: watcher.clone() })?;
+        let answer = self.call(Method::PUT, self.url("/watches", &[])?, Some(body)).await?;
+        match answer.status {
+            StatusCode::CREATED => Ok(true),
+            StatusCode::OK => Ok(false),
+            _ => Err(answer.failure()),
+        }
+    }
+
+    /// Removes the watch of `watcher` on `target` (`DELETE /watches`); false when it was not stored.
+    pub async fn unwatch(&self, target: &WatchTarget, watcher: &ActorAddress) -> ClientResult<bool> {
+        let query = [("target", target.to_string()), ("watcher", watcher.to_string())];
+        let answer = self.call(Method::DELETE, self.url("/watches", &query)?, None).await?;
+        match answer.status {
+            StatusCode::NO_CONTENT => Ok(true),
+            StatusCode::NOT_FOUND => answer.absent::<()>(problem_types::NO_SUCH_WATCH).map(|_| false),
             _ => Err(answer.failure()),
         }
     }

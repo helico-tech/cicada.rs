@@ -12,12 +12,12 @@ use axum::extract::Request;
 use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::IntoResponse;
-use cicada::ActorAddress;
 use cicada::address::TypeName;
 use cicada::api::{BulkRequest, MessageState, problem_types as pt};
 use cicada::prelude::*;
 use cicada::store::{Delivery, MessageId, NodeId, OutcomeStatus, RemoveTypeResult};
 use cicada::time::parse_instant;
+use cicada::{ActorAddress, WatchTarget};
 use cicada_axum::actor_api;
 use cicada_client::{ActorClient, CancelOutcome, ClientError};
 use common::*;
@@ -43,6 +43,33 @@ fn hour() -> SendOptions {
 
 async fn balance(actors: &ActorClient, r: &Account) -> Option<i64> {
     actors.state::<_, AccountState>(r).await.unwrap().map(|s| s.balance)
+}
+
+#[tokio::test]
+async fn watches_are_set_listed_and_removed() {
+    let system = node_with(|b| b.host(AccountActor).host(WatcherActor)).await;
+    let actors = ActorClient::new(serve(actor_api(system)).await);
+    let watcher = Watcher { id: "w".into() };
+    actors.create(&watcher, &NoState {}).await.unwrap();
+    actors.create(&acme(), &AccountState::default()).await.unwrap();
+    let (watcher, target) = (watcher.address().unwrap(), WatchTarget::Actor(acme().address().unwrap()));
+
+    assert!(actors.watch(&target, &watcher).await.unwrap(), "new");
+    assert!(!actors.watch(&WatchTarget::Actor(acme().address().unwrap()), &watcher).await.unwrap(), "set already");
+    assert!(actors.watch(&WatchTarget::Every, &watcher).await.unwrap());
+    let all = actors.watches(None, None, None, None).await.unwrap();
+    let listed: Vec<String> = all.items.iter().map(|w| format!("{} {}", w.target, w.watcher)).collect();
+    assert_eq!(listed, ["* watcher/w", "account/acme:7 watcher/w"]);
+    let page = actors.watches(Some(&watcher), Some(&target), None, Some(1)).await.unwrap();
+    assert_eq!((page.items.len(), page.next), (1, None));
+
+    let account = acme().address().unwrap();
+    assert_problem(actors.watch(&target, &account).await, 422, pt::NOT_A_WATCHER);
+    let absent = ActorAddress::parse("watcher/nosuch").unwrap();
+    assert_problem(actors.watch(&target, &absent).await, 404, pt::NO_SUCH_INSTANCE);
+    assert!(actors.unwatch(&target, &watcher).await.unwrap());
+    assert!(!actors.unwatch(&target, &watcher).await.unwrap(), "not stored any more");
+    assert_eq!(actors.watches(None, None, None, None).await.unwrap().items.len(), 1);
 }
 
 #[tokio::test]

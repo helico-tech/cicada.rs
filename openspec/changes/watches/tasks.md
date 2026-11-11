@@ -85,16 +85,16 @@ delete or a stop removes a tree.
 
 ## 4. HTTP, client, command line and terminal UI
 
-- [ ] 4.1 The routes of `/watches` [4, 9]: `GET` as a read route, `PUT` and `DELETE` as write routes; the problem
+- [x] 4.1 The routes of `/watches` [4, 9]: `GET` as a read route, `PUT` and `DELETE` as write routes; the problem
       types `no-such-watch` and `not-a-watcher`; `notification` in the view of a message; `ActorClient` follows;
       regenerate `docs/openapi.json`. Verify: tests for the scenarios "Setting and removing over HTTP", "Removing a
       watch that does not exist", "An actor is deleted" (over HTTP), "The watches of one watcher", "The watches of
       one target" and "Both filters, and a bad one"; the read-router test; the OpenAPI test; a client test.
-- [ ] 4.2 The command line [9]: `cicada get watches` with `--watcher`, `--target` and the paging flags,
+- [x] 4.2 The command line [9]: `cicada get watches` with `--watcher`, `--target` and the paging flags,
       `cicada create watch --target … --watcher …` and `cicada delete watch`; the output of a message shows whether
       it is a notification. Verify: a case in `tests/cli.rs` for the scenario "The command line", and one for the
       exit code of a delete of a watch that does not exist.
-- [ ] 4.3 The terminal UI [13, 15]: the listing `:watches`, with Enter on a row opening the watcher; the `children`
+- [x] 4.3 The terminal UI [13, 15]: the listing `:watches`, with Enter on a row opening the watcher; the `children`
       tab of an actor says when there are more children than it shows, as the mailbox fact does. Verify: a test with
       `TestBackend` for the scenario "The view of watches", and one for a tab of more children than the limit.
 

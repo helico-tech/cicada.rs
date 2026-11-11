@@ -64,11 +64,15 @@ async fn the_read_router_has_no_route_that_changes_anything() {
     assert_eq!(get(&app, &actor).await.status, StatusCode::OK);
     assert_eq!(get(&app, &format!("{actor}/children")).await.status, StatusCode::OK, "a read route");
     assert!(served.contains(&("get".to_owned(), "/actors/{type}/{key}/children".to_owned())), "{served:?}");
+    assert_eq!(get(&app, "/watches").await.status, StatusCode::OK, "a read route");
+    assert!(served.contains(&("get".to_owned(), "/watches".to_owned())), "{served:?}");
     let refused = [
         call(&app, Method::PUT, &actor, "{}").await,
         call(&app, Method::DELETE, &actor, "").await,
         call(&app, Method::DELETE, "/messages/x", "").await,
         call(&app, Method::DELETE, "/types/counter", "").await,
+        call(&app, Method::PUT, "/watches", r#"{"target": "*", "watcher": "counter/x"}"#).await,
+        call(&app, Method::DELETE, "/watches?target=*&watcher=counter%2Fx", "").await,
     ];
     for reply in refused {
         assert_eq!(reply.status, StatusCode::METHOD_NOT_ALLOWED);

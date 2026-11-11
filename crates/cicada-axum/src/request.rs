@@ -2,9 +2,9 @@
 
 use axum::extract::{OriginalUri, Query, Request};
 use axum::http::{Uri, header};
-use cicada::ActorAddress;
 use cicada::store::{MessageId, NodeId, OutcomeStatus, Page, PageCursor};
 use cicada::time::{MAX_INSTANT, Timestamp, format_instant, parse_instant};
+use cicada::{ActorAddress, WatchTarget};
 use futures::StreamExt;
 use serde::de::DeserializeOwned;
 
@@ -55,6 +55,20 @@ impl Params {
     /// The `node` filter of a listing; an absent or blank value lists every node.
     pub fn node(&self) -> Option<NodeId> {
         self.get("node").and_then(|n| NodeId::new(n).ok())
+    }
+
+    /// The `watcher` of a watch, `None` when absent; a value that is no address is `400`.
+    pub fn watcher(&self) -> Result<Option<ActorAddress>, ApiProblem> {
+        self.get("watcher")
+            .map(|raw| ActorAddress::parse(raw).map_err(|e| ApiProblem::bad_request(format!("watcher: {e}"))))
+            .transpose()
+    }
+
+    /// The `target` of a watch, `None` when absent; a value that is no target is `400`.
+    pub fn target(&self) -> Result<Option<WatchTarget>, ApiProblem> {
+        self.get("target")
+            .map(|raw| WatchTarget::parse(raw).map_err(|e| ApiProblem::bad_request(e.to_string())))
+            .transpose()
     }
 
     /// The `prefix` of the addresses to list; empty for all.

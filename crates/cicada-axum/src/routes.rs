@@ -18,7 +18,7 @@ use axum::routing::{get, post};
 use cicada::api::{
     ActorView, BulkRequest, BulkResponse, CreateActorRequest, CreateActorResponse, HealthView, MailboxMessageView,
     MessageStatusView, MessageView, NodeDetailView, NodeListView, OutcomeView, PageView, Problem, PurgeResponse,
-    RunningTurnView, SendRequest, SendResponse, StatsView, TypeListView, TypeView,
+    RunningTurnView, SendRequest, SendResponse, StatsView, TypeListView, TypeView, WatchRequest, WatchView,
 };
 use schemars::JsonSchema;
 
@@ -113,6 +113,28 @@ struct ListQuery {
 
 #[allow(dead_code)]
 #[derive(JsonSchema)]
+struct WatchesQuery {
+    /// Only the watches of this watcher, `type/key`.
+    watcher: Option<String>,
+    /// Only the watches stored with exactly this target: an address, a type prefix or `*`.
+    target: Option<String>,
+    /// The `next` of the previous page.
+    cursor: Option<String>,
+    /// Items per page, 1 to 1000; 100 by default.
+    limit: Option<u32>,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct WatchQuery {
+    /// The target of the watch: an address, a type prefix or `*`.
+    target: String,
+    /// The watcher, `type/key`.
+    watcher: String,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
 struct StatsQuery {
     /// A prefix of the address: `sync/` is one type, `sync/ac` a key prefix.
     prefix: Option<String>,
@@ -177,7 +199,34 @@ fn routes(access: Access) -> ApiRouter<Arc<Api>> {
             .input::<Path<TypePath>>()
             .response::<200, Json<TypeView>>()
     });
+    let mut watches = get_with(handlers::list_watches, |op| {
+        described(
+            op,
+            "listWatches",
+            "The stored watches in the order of target and watcher, of one watcher and/or exactly one target.",
+        )
+        .input::<Query<WatchesQuery>>()
+        .response::<200, Json<PageView<WatchView>>>()
+    });
     if full {
+        watches = watches
+            .put_with(handlers::put_watch, |op| {
+                described(
+                    op,
+                    "setWatch",
+                    "Sets a watch: the watcher is told when a message to the target fails, and when a watched actor                      goes away. Idempotent. The watcher must exist and declare the messages Failed and Stopped.",
+                )
+                .input::<Json<WatchRequest>>()
+                .response_with::<201, Json<WatchView>, _>(|r| r.description("Set."))
+                .response_with::<200, Json<WatchView>, _>(|r| r.description("It was set already."))
+            })
+            .delete_with(handlers::delete_watch, |op| {
+                no_content(
+                    described(op, "removeWatch", "Removes a watch; 404 when it is not stored.")
+                        .input::<Query<WatchQuery>>(),
+                    "Removed.",
+                )
+            });
         type_by_name = type_by_name.delete_with(handlers::remove_type, |op| {
             no_content(
                 described(
@@ -299,6 +348,7 @@ fn routes(access: Access) -> ApiRouter<Arc<Api>> {
             }),
         )
         .api_route("/types/{name}", type_by_name)
+        .api_route("/watches", watches)
         .api_route(
             "/health",
             get_with(handlers::health, |op| {

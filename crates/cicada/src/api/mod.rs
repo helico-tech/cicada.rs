@@ -25,6 +25,7 @@ use crate::retry::RetryPolicy;
 use crate::runtime::{BulkSelection, NodeHealth};
 use crate::store::{MessageId, NodeId};
 use crate::time::{Timestamp, serde_duration, serde_instant};
+use crate::watch::WatchTarget;
 
 /// A request body whose fields contradict each other, e.g. "Give either deliverAt or delay, not both". The HTTP API
 /// answers it with `400` and this text.
@@ -76,7 +77,7 @@ pub struct ActorView {
 }
 
 /// One page of a listing (`GET /actors`, `GET /actors/{type}/{key}/children`, `GET /actors/{type}/{key}/mailbox`,
-/// `GET /messages`, `GET /outcomes`, `GET /turns`).
+/// `GET /messages`, `GET /outcomes`, `GET /turns`, `GET /watches`).
 ///
 /// Paging: pass [`Self::next`] back as the `cursor` query parameter to get the following page; it is null on the last
 /// page. The page size is the `limit` query parameter (1..1000, default 100).
@@ -244,6 +245,30 @@ pub struct MessageView {
     /// tolerantly like [`Self::retry`].
     #[serde(default, deserialize_with = "lenient_retention")]
     pub retention: Option<Retention>,
+    /// True for a notification of a watch (`Failed` or `Stopped`), which only the store writes; a sender cannot set it.
+    #[serde(default)]
+    pub notification: bool,
+}
+
+/// A stored watch (`GET /watches`, `PUT /watches`): `watcher` is told of the events of `target`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct WatchView {
+    /// What is watched: an address (`type/key`), a type prefix that ends at a dot (`billing` matches `billing` and
+    /// `billing.invoices`), or `*` for every type.
+    pub target: WatchTarget,
+    /// The actor that is told.
+    pub watcher: ActorAddress,
+}
+
+/// Body of `PUT /watches`. The watcher must exist and its type must declare the messages `Failed` and `Stopped`; the
+/// target need not exist.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WatchRequest {
+    /// What to watch: an address, a type prefix or `*`; anything else is `400`.
+    pub target: WatchTarget,
+    /// The actor to tell.
+    pub watcher: ActorAddress,
 }
 
 /// A message of a mailbox listing (`GET /actors/{type}/{key}/mailbox`): the envelope and whether it is running.
@@ -501,6 +526,8 @@ pub mod problem_types {
     pub const NO_SUCH_NODE: &str = "urn:cicada:problem:no-such-node";
     /// 404: no turn is running on the instance (there is no valid lease).
     pub const NO_RUNNING_TURN: &str = "urn:cicada:problem:no-running-turn";
+    /// 404: the watch is not stored.
+    pub const NO_SUCH_WATCH: &str = "urn:cicada:problem:no-such-watch";
     /// 404: route or resource not found.
     pub const NOT_FOUND: &str = "urn:cicada:problem:not-found";
     /// 405: the method is not defined on this path.
@@ -527,6 +554,9 @@ pub mod problem_types {
     pub const UNKNOWN_MESSAGE_TYPE: &str = "urn:cicada:problem:unknown-message-type";
     /// 422: the payload cannot be decoded (hosting node).
     pub const INVALID_PAYLOAD: &str = "urn:cicada:problem:invalid-payload";
+    /// 422: the watcher's type may not watch: its message family does not declare `Failed` and `Stopped` with the
+    /// core's types.
+    pub const NOT_A_WATCHER: &str = "urn:cicada:problem:not-a-watcher";
     /// 503: the store is unreachable or failed.
     pub const STORE_UNAVAILABLE: &str = "urn:cicada:problem:store-unavailable";
     /// 503: the node is stopping or stopped, or its store is unreachable (`/health`).

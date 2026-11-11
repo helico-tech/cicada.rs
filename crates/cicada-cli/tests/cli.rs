@@ -93,6 +93,33 @@ impl Actor for CleanupActor {
     }
 }
 
+/// type `dead-letters`, key `_`: a singleton that takes the notifications of watches.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DeadLetters;
+
+impl ActorRef for DeadLetters {
+    const TYPE: &'static str = "dead-letters";
+    type Message = DeadLettersMsg;
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type")]
+enum DeadLettersMsg {
+    Failed(cicada::Failed),
+    Stopped(cicada::Stopped),
+}
+
+struct DeadLettersActor;
+
+impl Actor for DeadLettersActor {
+    type Ref = DeadLetters;
+    type State = NoState;
+
+    async fn handle(&self, _: &mut Turn<Self>, _: DeadLettersMsg) -> HandlerResult {
+        Ok(())
+    }
+}
+
 /// A started node hosting `account`, served on a random local port; its base URL.
 async fn server_with(wrap: impl FnOnce(Router) -> Router) -> String {
     server_hosting(|node| node.host(AccountActor), wrap).await
@@ -422,6 +449,71 @@ async fn the_children_of_an_actor_are_listed_one_row_each_and_a_child_shows_its_
 
     assert_eq!(cicada(&s, &["delete", "actor", "account/b1"]).await, "actor account/b1 deleted\n");
     assert!(cicada_fails(&s, &["get", "actor", "account/b1:0"]).await.contains("not found"), "the children went too");
+}
+
+/// Scenario: The command line (watches).
+#[tokio::test]
+async fn watches_are_set_listed_and_removed_on_the_command_line() {
+    let s = server_hosting(|node| node.host(AccountActor).host(DeadLettersActor), |app| app).await;
+    cicada(&s, &["create", "actor", "dead-letters/_", "--state", "{}"]).await;
+    let set = cicada(&s, &["create", "watch", "--target", "billing", "--watcher", "dead-letters/_"]).await;
+    assert_eq!(set, "watch of dead-letters/_ on billing set\n");
+    let again = cicada(&s, &["create", "watch", "--target", "billing", "--watcher", "dead-letters/_"]).await;
+    assert!(again.contains("left untouched"), "{again}");
+    cicada(&s, &["create", "watch", "--target", "*", "--watcher", "dead-letters/_"]).await;
+
+    let table = cicada(&s, &["get", "watches"]).await;
+    assert!(table.starts_with("TARGET") && table.contains("WATCHER"), "{table}");
+    let lines = rows(&table);
+    assert_eq!(lines.len(), 2, "{table}");
+    assert!(lines[1].starts_with("billing") && lines[1].contains("dead-letters/_"), "{table}");
+    let filtered = json(&s, &["get", "watches", "--target", "billing", "--watcher", "dead-letters/_"]).await;
+    assert_eq!(filtered, serde_json::json!([{"target": "billing", "watcher": "dead-letters/_"}]));
+    assert_eq!(rows(&cicada(&s, &["get", "watches", "--limit", "1"]).await).len(), 1);
+    assert_eq!(json(&s, &["get", "watches", "--limit", "1", "--all"]).await.as_array().unwrap().len(), 2);
+
+    let absent = cicada_fails(&s, &["create", "watch", "--target", "billing", "--watcher", "account/x"]).await;
+    assert!(absent.contains("404"), "{absent}");
+    cicada(&s, &["create", "actor", "account/x", "--state", "{}"]).await;
+    let refused = cicada_fails(&s, &["create", "watch", "--target", "billing", "--watcher", "account/x"]).await;
+    assert!(refused.contains("422"), "an account cannot watch: {refused}");
+    assert!(Cli::try_parse_from(["cicada", "get", "watches", "--target", "a//b"]).is_err(), "no target");
+
+    let removed = cicada(&s, &["delete", "watch", "--target", "billing", "--watcher", "dead-letters/_"]).await;
+    assert_eq!(removed, "watch of dead-letters/_ on billing removed\n");
+    assert_eq!(rows(&cicada(&s, &["get", "watches"]).await).len(), 1);
+}
+
+/// A watch that is not stored: `run` fails, which the binary turns into exit code 1.
+#[tokio::test]
+async fn deleting_a_watch_that_does_not_exist_fails() {
+    let s = server_hosting(|node| node.host(DeadLettersActor), |app| app).await;
+    let error = cicada_fails(&s, &["delete", "watch", "--target", "billing", "--watcher", "dead-letters/_"]).await;
+    assert_eq!(error, "watch of dead-letters/_ on billing not found");
+}
+
+/// A notification is marked in the view of a message.
+#[tokio::test]
+async fn the_view_of_a_message_shows_whether_it_is_a_notification() {
+    let s = server_hosting(|node| node.host(AccountActor).host(DeadLettersActor), |app| app).await;
+    cicada(&s, &["create", "actor", "dead-letters/_", "--state", "{}"]).await;
+    cicada(&s, &["create", "actor", "account/w", "--state", "{}"]).await;
+    cicada(&s, &["create", "watch", "--target", "account/w", "--watcher", "dead-letters/_"]).await;
+    let id = sent_id(&cicada(&s, &["send", "account/w", "--type", "Explode", "-o", "json"]).await);
+    eventually_status(&s, &id, "failed").await;
+    assert_eq!(json(&s, &["get", "message", &id]).await["message"]["notification"], false);
+    let mut told = Value::Null;
+    for _ in 0..100 {
+        told = json(&s, &["get", "outcomes", "--prefix", "dead-letters/"]).await;
+        if !told.as_array().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let notification = told[0]["id"].as_str().expect("a notification").to_owned();
+    assert_eq!(told[0]["message"]["notification"], true);
+    let wide = cicada(&s, &["get", "message", &notification, "-o", "wide"]).await;
+    assert!(wide.contains("NOTIFICATION") && wide.trim_end().ends_with("true"), "{wide}");
 }
 
 /// A missing actor: `run` fails, which the binary turns into exit code 1.

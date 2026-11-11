@@ -3,7 +3,7 @@
 use anyhow::{anyhow, bail};
 use chrono::Utc;
 use cicada::ActorAddress;
-use cicada::api::{ActorView, MailboxMessageView, OutcomeView, RunningTurnView};
+use cicada::api::{ActorView, MailboxMessageView, OutcomeView, PageView, RunningTurnView, WatchView};
 use cicada::store::RemoveTypeResult;
 use cicada::time::{Timestamp, format_instant};
 use cicada_client::{ActorClient, CancelOutcome};
@@ -28,6 +28,7 @@ pub fn rows<T: Columns>(items: &[T], finished: bool, item: impl Fn(&T) -> Item) 
             .map(|i| GridRow { item: item(i), cells: i.cells(false, now), wide: i.cells(true, now) })
             .collect(),
         finished,
+        more: false,
     }
 }
 
@@ -61,6 +62,7 @@ pub async fn screen(client: &ActorClient, target: &Target) -> anyhow::Result<Scr
                     client.types().await?.into_iter().filter(|t| t.name.starts_with(prefix.as_str())).collect();
                 rows(&types, false, |t| Item::Type(t.name.parse().expect("a served type name parses")))
             }
+            Kind::Watches => watch_rows(client.watches(None, None, None, limit).await?, prefix),
         }),
         Target::Mailbox(actor) => {
             let page = client.mailbox(actor, None, limit).await?.ok_or_else(|| anyhow!("actor {actor} not found"))?;
@@ -148,7 +150,13 @@ pub async fn screen(client: &ActorClient, target: &Target) -> anyhow::Result<Scr
                 })
                 .collect();
             let headers = vec!["SCHEMA", "KIND", "FIELDS"];
-            let grid = Rows { headers: headers.clone(), wide_headers: headers, rows: schema_rows, finished: false };
+            let grid = Rows {
+                headers: headers.clone(),
+                wide_headers: headers,
+                rows: schema_rows,
+                finished: false,
+                more: false,
+            };
             let overview = Overview {
                 subject: Item::Type(name.clone()),
                 facts: vec![
@@ -168,6 +176,14 @@ pub async fn screen(client: &ActorClient, target: &Target) -> anyhow::Result<Scr
     })
 }
 
+/// The rows of a page of watches whose target or watcher starts with `prefix`; a row opens its watcher.
+pub fn watch_rows(page: PageView<WatchView>, prefix: &str) -> Rows {
+    let starts = |text: &str| text.starts_with(prefix);
+    let watches: Vec<_> =
+        page.items.into_iter().filter(|w| starts(w.target.as_str()) || starts(w.watcher.as_str())).collect();
+    Rows { more: page.next.is_some(), ..rows(&watches, false, |w| Item::Actor(w.watcher.clone())) }
+}
+
 async fn actor_overview(client: &ActorClient, actor: &cicada::ActorAddress) -> anyhow::Result<ScreenData> {
     let limit = Some(LIMIT);
     let (view, turn, mailbox, outcomes, children) = tokio::try_join!(
@@ -181,18 +197,20 @@ async fn actor_overview(client: &ActorClient, actor: &cicada::ActorAddress) -> a
     let mailbox = mailbox.map(|p| p.items).unwrap_or_default();
     // The prefix also matches longer addresses; keep this actor's, newest first.
     let outcomes: Vec<OutcomeView> = outcomes.items.into_iter().rev().filter(|o| o.actor == *actor).collect();
+    let more_children = children.as_ref().is_some_and(|p| p.next.is_some());
     let children = children.map(|p| p.items).unwrap_or_default();
-    Ok(actor_screen(&view, turn.as_ref(), &mailbox, &outcomes, &children))
+    Ok(actor_screen(&view, turn.as_ref(), &mailbox, &outcomes, &children, more_children))
 }
 
 /// The screen of an actor: its facts (the parent among them) and state, and the tabs `mailbox`, `outcomes` and
-/// `children`, from what the API answered.
+/// `children`, from what the API answered. `more_children` says that the actor has more children than `children`.
 pub fn actor_screen(
     view: &ActorView,
     turn: Option<&RunningTurnView>,
     mailbox: &[MailboxMessageView],
     outcomes: &[OutcomeView],
     children: &[ActorAddress],
+    more_children: bool,
 ) -> ScreenData {
     let turn_fact = match turn {
         Some(t) if t.cancel_requested => {
@@ -230,7 +248,7 @@ pub fn actor_screen(
     let tabs = vec![
         rows(mailbox, false, |m| Item::Message(m.message.id.clone())),
         rows(outcomes, true, |o| Item::Message(o.id.clone())),
-        rows(children, false, |a| Item::Actor(a.clone())),
+        Rows { more: more_children, ..rows(children, false, |a| Item::Actor(a.clone())) },
     ];
     ScreenData::Overview(overview, tabs)
 }

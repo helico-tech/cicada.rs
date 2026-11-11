@@ -2,10 +2,11 @@
 
 use super::{
     ActorView, BulkResponse, MailboxMessageView, MessageState, MessageStatusView, MessageView, NodeDetailView,
-    NodeView, OutcomeView, PageView, RequestError, RunningTurnView, SendRequest, StatsView, TypeView,
+    NodeView, OutcomeView, PageView, RequestError, RunningTurnView, SendRequest, StatsView, TypeView, WatchView,
 };
 use crate::runtime::{ActorSnapshot, BulkResult, MailboxEntry, NodeInfo, RegisteredType};
 use crate::store::{Delivery, Message, MessageStatus, OutcomeRecord, OutcomeStatus, Page, RunningTurn, StoreStats};
+use crate::watch::Watch;
 
 impl From<Message> for MessageView {
     fn from(m: Message) -> Self {
@@ -25,7 +26,14 @@ impl From<Message> for MessageView {
             retry: m.retry,
             caused_by: m.caused_by,
             retention: m.retention,
+            notification: m.notification,
         }
+    }
+}
+
+impl From<Watch> for WatchView {
+    fn from(w: Watch) -> Self {
+        Self { target: w.target, watcher: w.watcher }
     }
 }
 

@@ -174,6 +174,53 @@ impl Actor for TicketActor {
     }
 }
 
+/// type `watcher`: takes the notifications of watches and notes them; refuses them when its state says so.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Watcher {
+    pub id: String,
+}
+
+impl ActorRef for Watcher {
+    const TYPE: &'static str = "watcher";
+    type Message = WatcherMsg;
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type")]
+pub enum WatcherMsg {
+    Failed(cicada::Failed),
+    Stopped(cicada::Stopped),
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct Seen {
+    #[serde(default)]
+    pub failed: Vec<cicada::Failed>,
+    #[serde(default)]
+    pub stopped: Vec<cicada::Stopped>,
+    /// Fails on every notification.
+    #[serde(default)]
+    pub refuse: bool,
+}
+
+pub struct WatcherActor;
+
+impl Actor for WatcherActor {
+    type Ref = Watcher;
+    type State = Seen;
+
+    async fn handle(&self, turn: &mut Turn<Self>, message: WatcherMsg) -> HandlerResult {
+        if turn.state().refuse {
+            return Err(turn.fail("refused"));
+        }
+        match message {
+            WatcherMsg::Failed(failed) => turn.state_mut().failed.push(failed),
+            WatcherMsg::Stopped(stopped) => turn.state_mut().stopped.push(stopped),
+        }
+        Ok(())
+    }
+}
+
 /// Named latches that `Block` handlers wait on.
 pub mod gates {
     use super::*;

@@ -119,6 +119,35 @@ impl Actor for BeaconActor {
     }
 }
 
+/// type `watcher`: takes the notifications of watches.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Watcher {
+    pub id: String,
+}
+
+impl ActorRef for Watcher {
+    const TYPE: &'static str = "watcher";
+    type Message = WatcherMsg;
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type")]
+pub enum WatcherMsg {
+    Failed(cicada::Failed),
+    Stopped(cicada::Stopped),
+}
+
+pub struct WatcherActor;
+
+impl Actor for WatcherActor {
+    type Ref = Watcher;
+    type State = NoState;
+
+    async fn handle(&self, _turn: &mut Turn<Self>, _message: WatcherMsg) -> HandlerResult {
+        Ok(())
+    }
+}
+
 /// Named latches that `Hold` handlers wait on.
 pub mod gates {
     use super::*;

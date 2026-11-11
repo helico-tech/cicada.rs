@@ -1,9 +1,9 @@
 //! The command line: kubectl-style, verb first.
 
-use cicada::ActorAddress;
 use cicada::address::TypeName;
 use cicada::store::{MessageId, NodeId, OutcomeStatus};
 use cicada::time::{Timestamp, parse_duration, parse_instant};
+use cicada::{ActorAddress, WatchTarget};
 use clap::{Args, Parser, Subcommand};
 
 use crate::output::Format;
@@ -38,10 +38,10 @@ pub enum Command {
     /// Show one resource in full.
     #[command(subcommand)]
     Describe(Describe),
-    /// Create an actor.
+    /// Create an actor or a watch.
     #[command(subcommand)]
     Create(Create),
-    /// Delete an actor or a type registration.
+    /// Delete an actor, a type registration or a watch.
     #[command(subcommand)]
     Delete(Delete),
     /// Send a message to an actor.
@@ -211,6 +211,29 @@ pub enum Get {
         #[arg(value_parser = type_name)]
         name: TypeName,
     },
+    /// The stored watches, in the order of target and watcher.
+    Watches {
+        /// Only the watches of this watcher, `type/key`.
+        #[arg(long, value_parser = address)]
+        watcher: Option<ActorAddress>,
+        /// Only the watches stored with exactly this target: an address, a type prefix or `*`.
+        #[arg(long, value_parser = watch_target)]
+        target: Option<WatchTarget>,
+        /// Paging.
+        #[command(flatten)]
+        page: Page,
+    },
+}
+
+/// The pair that names a watch.
+#[derive(Debug, Args)]
+pub struct WatchArgs {
+    /// What is watched: an address `type/key`, a type prefix (`billing` matches `billing.invoices`), or `*`.
+    #[arg(long, value_parser = watch_target)]
+    pub target: WatchTarget,
+    /// The actor that is told, `type/key`.
+    #[arg(long, value_parser = address)]
+    pub watcher: ActorAddress,
 }
 
 /// `describe` resources.
@@ -254,6 +277,9 @@ pub enum Create {
         #[arg(long, value_parser = json)]
         state: serde_json::Value,
     },
+    /// Set a watch: the watcher is told when a message to the target fails, and when a watched actor goes away. The
+    /// watcher must exist and declare the messages Failed and Stopped; setting a watch again changes nothing.
+    Watch(WatchArgs),
 }
 
 /// `delete` resources.
@@ -271,6 +297,8 @@ pub enum Delete {
         #[arg(value_parser = type_name)]
         name: TypeName,
     },
+    /// Remove a watch.
+    Watch(WatchArgs),
 }
 
 /// `send` arguments.
@@ -386,6 +414,10 @@ fn node_id(text: &str) -> Result<NodeId, String> {
 
 fn type_name(text: &str) -> Result<TypeName, String> {
     TypeName::parse(text).map_err(|e| e.to_string())
+}
+
+fn watch_target(text: &str) -> Result<WatchTarget, String> {
+    WatchTarget::parse(text).map_err(|e| e.to_string())
 }
 
 fn outcome_status(text: &str) -> Result<OutcomeStatus, String> {

@@ -7,7 +7,7 @@ use chrono::Utc;
 use cicada::ActorAddress;
 use cicada::api::{
     ActorView, MailboxMessageView, MessageStatusView, MessageView, NodeDetailView, NodeView, OutcomeView,
-    RunningTurnView, StatsView, TypeView,
+    RunningTurnView, StatsView, TypeView, WatchView,
 };
 use cicada::time::{Timestamp, format_instant};
 use clap::ValueEnum;
@@ -154,9 +154,19 @@ impl Columns for ActorView {
     }
 }
 
+impl Columns for WatchView {
+    fn headers(_: bool) -> Vec<&'static str> {
+        vec!["TARGET", "WATCHER"]
+    }
+    fn cells(&self, _: bool, _: Timestamp) -> Vec<String> {
+        vec![self.target.to_string(), self.watcher.to_string()]
+    }
+}
+
 impl Columns for MessageView {
     fn headers(wide: bool) -> Vec<&'static str> {
-        wide_cols(vec!["ID", "TO", "TYPE", "DUE", "ATTEMPT", "FAILURES"], &["FROM", "CAUSED-BY", "LAST-ERROR"], wide)
+        let extra = ["FROM", "CAUSED-BY", "NOTIFICATION", "LAST-ERROR"];
+        wide_cols(vec!["ID", "TO", "TYPE", "DUE", "ATTEMPT", "FAILURES"], &extra, wide)
     }
     fn cells(&self, wide: bool, now: Timestamp) -> Vec<String> {
         let mut cells = vec![
@@ -171,6 +181,7 @@ impl Columns for MessageView {
             cells.extend([
                 dash(self.from.as_ref()),
                 dash(self.caused_by.as_ref()),
+                self.notification.to_string(),
                 brief(self.last_error.as_deref(), true),
             ]);
         }
@@ -193,7 +204,8 @@ impl Columns for MailboxMessageView {
 
 impl Columns for MessageStatusView {
     fn headers(wide: bool) -> Vec<&'static str> {
-        wide_cols(vec!["ID", "TO", "TYPE", "STATUS", "FAILURES", "FINISHED", "ERROR"], &["NODE", "LEASE-UNTIL"], wide)
+        let extra = ["NODE", "LEASE-UNTIL", "NOTIFICATION"];
+        wide_cols(vec!["ID", "TO", "TYPE", "STATUS", "FAILURES", "FINISHED", "ERROR"], &extra, wide)
     }
     fn cells(&self, wide: bool, now: Timestamp) -> Vec<String> {
         let mut cells = vec![
@@ -206,7 +218,11 @@ impl Columns for MessageStatusView {
             brief(self.error.as_deref().or(self.last_error.as_deref()), wide),
         ];
         if wide {
-            cells.extend([dash(self.node.as_ref()), maybe_when(self.lease_until, true, now)]);
+            cells.extend([
+                dash(self.node.as_ref()),
+                maybe_when(self.lease_until, true, now),
+                self.message.notification.to_string(),
+            ]);
         }
         cells
     }

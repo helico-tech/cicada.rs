@@ -37,6 +37,8 @@ pub struct Rows {
     pub rows: Vec<GridRow>,
     /// True when the rows are finished messages (retry applies, cancel does not).
     pub finished: bool,
+    /// True when the API holds more rows than these: the title says so with a `+`.
+    pub more: bool,
 }
 
 /// A table with its view state.
@@ -172,7 +174,7 @@ mod tests {
 
     fn grid(rows: Vec<GridRow>) -> Grid {
         let mut grid = Grid::default();
-        grid.set(Rows { headers: vec!["ID", "N"], wide_headers: vec!["ID", "N"], rows, finished: false });
+        grid.set(Rows { headers: vec!["ID", "N"], wide_headers: vec!["ID", "N"], rows, finished: false, more: false });
         grid
     }
 

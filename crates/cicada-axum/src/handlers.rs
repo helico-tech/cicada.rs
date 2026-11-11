@@ -11,9 +11,10 @@ use cicada::address::TypeName;
 use cicada::api::{
     ActorView, BulkRequest, BulkResponse, CreateActorRequest, CreateActorResponse, HealthView, MailboxMessageView,
     MessageStatusView, MessageView, NodeDetailView, NodeListView, NodeView, OutcomeView, PageView, PurgeResponse,
-    RunningTurnView, SendRequest, SendResponse, StatsView, TypeListView, TypeView, problem_types,
+    RunningTurnView, SendRequest, SendResponse, StatsView, TypeListView, TypeView, WatchRequest, WatchView,
+    problem_types,
 };
-use cicada::runtime::{BulkResult, RetryResult};
+use cicada::runtime::{BulkResult, RetryResult, WatchResult};
 use cicada::store::{CancelResult, DeleteResult, DeliverNowResult, MessageId, NodeId, RemoveTypeResult};
 use cicada::{ActorAddress, CreateActorResult, SendOptions, SendResult};
 use futures::FutureExt;
@@ -457,6 +458,63 @@ pub(crate) async fn bulk_cancel(State(api): Shared, req: Request) -> Response {
 pub(crate) async fn bulk_retry(State(api): Shared, req: Request) -> Response {
     let instance = request::instance(&req);
     run(instance, async move { bulk(&api, req, async |s| api.system.bulk_retry(s).await).await }).await
+}
+
+// ---- /watches ----
+
+pub(crate) async fn list_watches(State(api): Shared, req: Request) -> Response {
+    let instance = request::instance(&req);
+    run(instance, async move {
+        let params = Params::of(req.uri())?;
+        let (watcher, target) = (params.watcher()?, params.target()?);
+        let page =
+            api.system.watches(watcher.as_ref(), target.as_ref(), params.cursor().as_ref(), params.limit()?).await?;
+        Ok(json(StatusCode::OK, &PageView::of(page, WatchView::from)))
+    })
+    .await
+}
+
+pub(crate) async fn put_watch(State(api): Shared, req: Request) -> Response {
+    let instance = request::instance(&req);
+    run(instance, async move {
+        let body: WatchRequest = request::body(req, api.max_body)
+            .await?
+            .ok_or_else(|| ApiProblem::bad_request(r#"A watch needs a body: {"target": ..., "watcher": ...}"#))?;
+        let view = WatchView { target: body.target.clone(), watcher: body.watcher.clone() };
+        match api.system.watch(&body.target, &body.watcher).await? {
+            WatchResult::Created => Ok(json(StatusCode::CREATED, &view)),
+            WatchResult::Exists => Ok(json(StatusCode::OK, &view)),
+            WatchResult::NoSuchType => Err(no_such_type(&body.watcher).into()),
+            WatchResult::NoSuchInstance => Err(no_such_instance(&body.watcher).into()),
+            WatchResult::NotAWatcher(why) => {
+                Err(unprocessable(problem_types::NOT_A_WATCHER, "Not a watcher", why).into())
+            }
+        }
+    })
+    .await
+}
+
+pub(crate) async fn delete_watch(State(api): Shared, req: Request) -> Response {
+    let instance = request::instance(&req);
+    run(instance, async move {
+        let params = Params::of(req.uri())?;
+        let missing = |name: &str| {
+            ApiProblem::bad_request(format!("A watch to remove is named by target and watcher; {name} is missing"))
+        };
+        let target = params.target()?.ok_or_else(|| missing("target"))?;
+        let watcher = params.watcher()?.ok_or_else(|| missing("watcher"))?;
+        if !api.system.unwatch(&target, &watcher).await? {
+            return Err(ApiProblem::new(
+                StatusCode::NOT_FOUND,
+                problem_types::NO_SUCH_WATCH,
+                "No such watch",
+                format!("{watcher} does not watch {target}"),
+            )
+            .into());
+        }
+        Ok(StatusCode::NO_CONTENT.into_response())
+    })
+    .await
 }
 
 // ---- /nodes ----
