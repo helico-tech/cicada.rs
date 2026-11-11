@@ -19,6 +19,7 @@ use futures::StreamExt;
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyEventKind};
 use ratatui::crossterm::execute;
+use ratatui::crossterm::terminal::is_raw_mode_enabled;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 use self::app::{App, Effect, Fetched};
@@ -29,17 +30,29 @@ const TICK: Duration = Duration::from_millis(250);
 /// How long one TUI request may take.
 const TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Runs the TUI against `target` until the user quits. The terminal is restored on return and on panic.
+/// Runs the TUI against `target` until the user quits. The terminal is restored on return, on error and on panic;
+/// without a terminal it is an error.
 pub async fn run(target: Target) -> anyhow::Result<()> {
     let client = target.client(TIMEOUT)?;
-    let mut terminal = ratatui::init();
+    let mut terminal = match ratatui::try_init() {
+        Ok(terminal) => terminal,
+        Err(e) => {
+            // `try_init` may fail after it enabled raw mode; without raw mode nothing was changed.
+            if is_raw_mode_enabled().unwrap_or(false) {
+                let _ = ratatui::try_restore();
+            }
+            return Err(anyhow::Error::new(e).context("cannot start the terminal UI; it needs a terminal"));
+        }
+    };
     let restore = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = execute!(stdout(), DisableMouseCapture);
         restore(info);
     }));
-    execute!(stdout(), EnableMouseCapture)?;
-    let result = event_loop(&mut terminal, client, App::new(target.context, target.server)).await;
+    let result = match execute!(stdout(), EnableMouseCapture) {
+        Ok(()) => event_loop(&mut terminal, client, App::new(target.context, target.server)).await,
+        Err(e) => Err(e.into()),
+    };
     let _ = execute!(stdout(), DisableMouseCapture);
     ratatui::restore();
     result
