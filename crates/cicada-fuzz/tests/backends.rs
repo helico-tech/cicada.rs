@@ -167,6 +167,7 @@ async fn after_a_tie_a_commit_reaches_the_same_claim_in_both_backends() {
 async fn after_a_tie_a_renew_reaches_the_same_claim_in_both_backends() {
     let mut pair = tied_pair().await;
     let renew = |claim, epoch_delta| Op::Renew { claim, epoch_delta, ttl: Duration::from_secs(30) };
+    // -1 from the second claim of alpha/0 is its first, which is stale; 1 from the first is the second, which is not.
     assert_eq!(agreed(&mut pair, renew(0, -1)).await, json!("lease-lost"));
     assert!(agreed(&mut pair, renew(2, 1)).await.get("renewed").is_some());
     finish(pair).await;

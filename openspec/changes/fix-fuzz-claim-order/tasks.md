@@ -17,12 +17,12 @@ The numbers in brackets are the decisions of `design.md`.
       checked).
 - [x] 1.4 Run `generated_lists_reach_deep_states` and `generated_lists_reach_every_operation`. Verify: both pass; if
       a floor had to change, the report says which and why.
-- [ ] 1.5 A long run: `PROPTEST_CASES=20000 cargo test -p cicada-fuzz --test backends`. Verify: it passes. A new
+- [x] 1.5 A long run: `PROPTEST_CASES=20000 cargo test -p cicada-fuzz --test backends`. Verify: it passes. A new
       difference is not fixed here and its `cc` line is not committed: report it with the line and the shrunk list.
 
 ## 2. Changelog and checks
 
-- [ ] 2.1 `CHANGELOG.md`: one entry under Fixed for the comparison of `cicada-fuzz`. Verify: the section says that
+- [x] 2.1 `CHANGELOG.md`: one entry under Fixed for the comparison of `cicada-fuzz`. Verify: the section says that
       no library crate changed.
-- [ ] 2.2 `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
+- [x] 2.2 `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
       `openspec validate fix-fuzz-claim-order --strict`. Verify: all pass.

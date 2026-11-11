@@ -7,6 +7,18 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.3.2 — unreleased
+
+No library crate changed, only the test crate `cicada-fuzz`: nodes of 0.3.1 and 0.3.2 can share a database.
+
+### Fixed
+
+- The backend comparison of `cicada-fuzz` no longer depends on the order in which a store hands out epochs to
+  different instances. When two instances are due at the same instant, `InMemoryStore` and `SqliteStore` may give
+  out their epochs in another order (S4 promises an order per address only), and a stale or future epoch
+  (`epoch_delta`) then reached different claims in the two. It now moves by rank among the epochs handed to the same
+  address. The list that failed a CI run of 0.3.1 is now a test of its own.
+
 ## 0.3.1 — 2026-11-11
 
 No change to the wire format or the store schema: nodes of 0.3.0 and 0.3.1 can share a database.
