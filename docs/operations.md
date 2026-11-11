@@ -126,7 +126,7 @@ registration until the type is registered again. Change a type in one of two way
 
 ## Upgrading
 
-Stores write schema version 2 and apply any missing migrations in place when they open a database. Migrations are
+Stores write schema version 3 and apply any missing migrations in place when they open a database. Migrations are
 additive, so nodes of the previous version keep working during a rolling deploy, unless a release says otherwise: a
 migration that is not additive breaks the nodes of the previous version, so every old node is stopped before the first
 new one starts. The changelog says so for each such release.
@@ -139,6 +139,18 @@ actors can be read and deleted, and messages already in a mailbox wait; a create
 a turn are refused (over HTTP `404`), and a turn on another node that creates one ends `failed` without a retry. The
 changelog of 0.4.0 lists the steps, including the code changes.
 
+**Version 0.6.0 is such a release.** A key is one name (ADR 0021), so key fields leave every contract and every
+contract hash changes. Its migration 3 removes every registration and rewrites `%3A` to `:` in the address columns:
+a `:` is an ordinary character of a name now, so `account/acme:7` is the address of the name `acme:7`. Before the
+upgrade, find the old keys of two fields that become one name with the query in the changelog of 0.6.0 and delete one
+actor of each pair with the old version; otherwise the migration fails and the database stays at version 2. Stop every
+node of the old version, then start the new ones: the nodes that host a type before the nodes whose turns create
+actors of it, and nodes that only send last. Until a node that hosts a type starts, that type is not registered, with
+the effects described for 0.4.0 above; where two kinds of nodes create actors of each other's types, hold back the
+messages that start such turns until every node is up. Upgrade `ActorClient` users together with the nodes: an old
+client cannot decode the views of a new node. A listing prefix that held `%3A` is written with `:`. The changelog of
+0.6.0 lists the steps, including the code changes and what happens to a ref that changes its shape.
+
 **Order of a rolling deploy.** For an additive migration: the first node of the new version migrates the database;
 from then on a node of the old version refuses to start (it does not open a schema newer than its own), while old nodes
 that are already running keep working. So: start the new nodes, then stop the old ones. Do not restart an old node
@@ -147,7 +159,8 @@ migrated database.
 
 **Upgrade nodes before clients.** Nodes decode request bodies strictly, so a request field a node does not know yet
 is a `400`. `ActorClient` leaves absent optional fields out of request bodies (no `"retry": null`), so a new client
-works against an older node as long as it does not use a newer feature.
+works against an older node as long as it does not use a newer feature. A release whose views lose a field that old
+clients require, as 0.6.0 does, needs its clients upgraded together with the nodes; the changelog says so.
 
 ## Releasing
 

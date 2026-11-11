@@ -28,9 +28,9 @@ state plus a mailbox; it occupies memory only while one message is being handled
 | Node | A service running an `ActorSystem`. Sends messages, serves the HTTP API, and runs turns for the actor types it hosts. |
 | Store | The shared durable backend: mailbox, state store, type registry, the atomic commit, and the only clock. |
 | Actor type | A definition: a ref type with its type name, a state type, a message family, a handler, an unhandled policy. In Rust: an implementation of the `Actor` trait. A type that keeps no data has the state `NoState`, stored as `{}`. |
-| Contract | The published description of a type: type name, key fields, message type names, and the JSON Schemas generated from its types, the state's always among them. Its hash leaves out the schemas' `description`s (doc comments), so a reworded comment keeps the hash (ADR 0017). |
-| Actor instance | One concrete key of a type, explicitly created with its initial state. Owns one state value, never absent and never JSON `null`, and one mailbox (ADR 0018). |
-| Ref | An actor's address. A typed ref struct in code (`ActorRef`); its address text (`sync/acme`) on the wire, in state and in messages. |
+| Contract | The published description of a type: type name, message type names, and the JSON Schemas generated from its types, the state's always among them. It holds nothing of the ref (ADR 0021). Its hash leaves out the schemas' `description`s (doc comments), so a reworded comment keeps the hash (ADR 0017). |
+| Actor instance | One name of a type, explicitly created with its initial state. Owns one state value, never absent and never JSON `null`, and one mailbox (ADR 0018). |
+| Ref | An actor's address: a type name and a key, `type/key`. A typed ref in code (`ActorRef`); its address text (`sync/acme`) on the wire, in state and in messages. The key is one name (ADR 0021): serde writes the ref as one string (a struct with one string field, or a type written as a string itself), or the ref is a unit struct, a singleton with the key `_`. A name is any non-empty text; in the key it keeps `A-Z a-z 0-9 . _ ~ -` and `:` and percent-encodes the rest, so a `:` separates nothing. |
 | Message | A typed envelope addressed to one instance, with a delivery time. |
 | Mailbox | An instance's pending messages, ordered by delivery time. |
 | Turn | One handling of one message: claim, load, run handler, commit. |
@@ -77,9 +77,12 @@ store of the tests (feature `testing`). A host opens one as the public type `Sto
 | S10 Retention | Outcomes are kept for a configured period, which is also the dedup window. A message's retention policy can hide its outcome earlier or keep it longer; a minimal record stays for the whole dedup window. |
 
 The SQL schema (tables `actor_types`, `actors`, `messages`, `outcomes`, plus sequences) is versioned and migrated
-when a store opens a database; it is at version 2. `actors.state` is required in both stores, so a store refuses an
+when a store opens a database; it is at version 3. `actors.state` is required in both stores, so a store refuses an
 instance without a state. Migration 2 gave every instance without a state the state `{}` and removed the registrations
-without a state schema (types that were stateless before ADR 0018); unlike the others it is not additive. The SQLite
+without a state schema (types that were stateless before ADR 0018). Migration 3 removed every registration, because
+key fields left every contract, and rewrote `%3A` to `:` in `actors.address`, `messages.actor_address` and
+`outcomes.actor_address` (ADR 0021); two old addresses that become one stop it. Unlike the others these two are not
+additive. The SQLite
 store sets up only a new or empty database: one without a schema version that already holds tables belongs to another
 program, and opening it fails and leaves it as it was (ADR 0017).
 

@@ -37,7 +37,7 @@ summarised [below](#decisions).
 
 ### Define an actor type
 
-A ref struct names the type and holds the key; an enum with `#[serde(tag = "type")]` holds the messages (the variant name is the
+A ref struct names the type and holds the key, one name; an enum with `#[serde(tag = "type")]` holds the messages (the variant name is the
 type name on the wire); one `handle` matches on the message, so the compiler checks that every message is handled.
 This is [examples/src/sync.rs](examples/src/sync.rs), shortened:
 
@@ -50,7 +50,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Sync {
-    pub tenant: String, // the fields form the key
+    pub tenant: String, // the one name of the actor: its key
 }
 
 impl ActorRef for Sync {
@@ -136,9 +136,50 @@ impl<A: SyncApi> Actor for SyncActor<A> {
 }
 ```
 
-The address of `Sync { tenant: "acme" }` is `sync/acme`. A key is the fields of the ref joined with `:` in declared
-order (`b1:7`); a ref without fields is a singleton with the key `_`. Each value is percent-encoded, so a key holds
-no raw `/` and a `:` is always a separator.
+The address of `Sync { tenant: "acme" }` is `sync/acme`. A key is one name (ADR 0021): serde writes the ref as one
+string — a struct with one string field, as here, or a type that serde writes as a string itself, such as a newtype
+around a `String` — or the ref is a unit struct, a singleton with the key `_`. A field that serde skips does not
+count. A number, a boolean, a character or an enum variant is not a string. A name may hold any text and must not be
+empty: in the address it keeps `A-Z a-z 0-9 . _ ~ -` and `:` and percent-encodes the rest, so `jan@example.com` is
+`users/jan%40example.com` and a key never holds a raw `/`. A `:` separates nothing. A node that hosts a type whose
+ref is not one string does not start, and a send to such a ref fails at the call.
+
+A ref with two parts joins them itself, with a separator its parts cannot hold. It can keep its typed fields and name
+`String` as its serde form, as `BatchItem` in [examples/src/fanout.rs](examples/src/fanout.rs) does:
+
+```rust
+use cicada::prelude::*;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(into = "String", try_from = "String")]
+pub struct BatchItem {
+    pub batch: String,
+    pub index: i32,
+}
+
+impl From<BatchItem> for String {
+    fn from(item: BatchItem) -> Self {
+        format!("{}.{}", item.batch, item.index)
+    }
+}
+
+impl TryFrom<String> for BatchItem {
+    type Error = String;
+
+    fn try_from(name: String) -> Result<Self, String> {
+        let (batch, index) = name.rsplit_once('.').ok_or("not batch.index")?;
+        Ok(Self { batch: batch.into(), index: index.parse().map_err(|_| "not an index")? })
+    }
+}
+# #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+# #[serde(tag = "type")]
+# pub enum BatchItemMsg { ProcessItem }
+# impl ActorRef for BatchItem { const TYPE: &'static str = "batch-items"; type Message = BatchItemMsg; }
+
+let item = BatchItem { batch: "b1".into(), index: 7 };
+assert_eq!(item.address().unwrap().as_str(), "batch-items/b1.7");
+```
 
 Inside a handler, `turn` offers:
 
@@ -330,8 +371,8 @@ request's path and query as `instance`.
 
 | Endpoint | Success | Errors |
 | --- | --- | --- |
-| `PUT /actors/{type}/{key}` body `{state}` — create; `state` is required (`{}` for `NoState`) | 201 created; 200 already exists (untouched) | 400 no body or no `state`; 404 no such type; 422 a `null` state, or a state that cannot be decoded or a non-canonical key (hosting node) |
-| `GET /actors/{type}/{key}` — type, params, state, version, createdAt, paused | 200 | 404 |
+| `PUT /actors/{type}/{key}` body `{state}` — create; `state` is required (`{}` for `NoState`) | 201 created; 200 already exists (untouched) | 400 no body or no `state`; 404 no such type; 422 a `null` state, or a state that cannot be decoded or a name the ref does not accept (hosting node) |
+| `GET /actors/{type}/{key}` — address, type, state, version, createdAt, paused | 200 | 404 |
 | `DELETE /actors/{type}/{key}` — admin delete, purges the mailbox | 204 | 404 |
 | `GET /actors?prefix=&cursor=&limit=` — instance addresses, paged | 200 | |
 | `POST /actors/{type}/{key}/messages` body `{id?, type, payload?, deliverAt? \| delay?, correlationId?, headers?, retry?, retention?}` — send | 202 `{id, deliverAt}`; 200 that id was already accepted (same target and type) | 400 invalid `retry` or `retention` policy; 404 no instance; 409 id already used for another target or type; 422 unknown message type, undecodable payload (hosting node only) |
@@ -354,7 +395,7 @@ request's path and query as `instance`.
 | `GET /nodes` — every node: id, hosted types, started and last seen, status (`alive`, `suspect`, `dead`), `runningTurns` (count) | 200 | |
 | `GET /nodes/{node}` — one node, and the list of its running `turns` | 200 | 404 `no-such-node` |
 | `GET /stats?prefix=` — `{actors, pending, oldestDue}`: the number of actors and pending messages under the prefix, and the delivery time of the oldest message that is due (null when none is). It reads every row under the prefix | 200 | |
-| `GET /types` — type names, key fields, contract hashes, state and message JSON Schemas | 200 | |
+| `GET /types` — type names, contract hashes, state and message JSON Schemas | 200 | |
 | `GET /types/{name}` — one type | 200 | 404 |
 | `DELETE /types/{name}` — removes the type's registration (a node that hosts the type registers it again at its next start) | 204 | 404; 409 actors of the type exist |
 | `GET /openapi.json` — the OpenAPI 3.1 document of this router | 200 | |
@@ -977,7 +1018,7 @@ with `TestActors` on virtual time:
 | `supervision` | Supervision; failed messages become dead letters that an operator redrives. |
 | `sync` | The architecture's example: a paged import, one turn per page, rescheduled hourly. |
 
-Every example has the same shape: a public ref struct per actor type (its fields form the key), a
+Every example has the same shape: a public ref struct per actor type (its one field is the key), a
 message enum with `#[serde(tag = "type")]`, a state struct, and an actor struct whose fields are its dependencies
 (external services, faked in the tests), with one `impl Actor` whose `handle` matches on the message.
 
@@ -1110,6 +1151,7 @@ Decisions, as ADRs in [docs/adr/](docs/adr/):
 | [0016](docs/adr/0016-releases-are-tags.md) | A release is a tag on `main` with one version for the workspace; a release passes all checks first and never moves. |
 | [0017](docs/adr/0017-contracts-ignore-descriptions-and-stores-refuse-foreign-databases.md) | A contract hash leaves out the schemas' descriptions (the published contract keeps them); the SQLite store refuses a database that holds other tables. |
 | [0018](docs/adr/0018-a-smaller-core-layers-and-watches.md) | A smaller core (every actor has state, one-name keys, one turn observer instead of plugins, no public store trait), layers above it (`cicada-app`, `cicada-actors`), JSON Schema checks at the HTTP door, watches and control effects. |
+| [0021](docs/adr/0021-a-key-is-one-name.md) | A key is one name: a ref is written as one string or a unit, a `:` is an ordinary character, contracts hold no key fields, and a database is upgraded in place. |
 
 Design questions and their answers:
 

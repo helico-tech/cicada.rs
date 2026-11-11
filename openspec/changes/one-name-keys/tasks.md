@@ -53,11 +53,11 @@ inside `crates/cicada`.
 
 ## 4. Docs
 
-- [ ] 4.1 `README.md` (how a ref is declared, a ref with two parts, the HTTP table without `params` and `key`),
+- [x] 4.1 `README.md` (how a ref is declared, a ref with two parts, the HTTP table without `params` and `key`),
       `docs/architecture.md` (the address section and its tables) and `docs/operations.md` (schema version 3, the
       upgrade). Verify: `cargo test -p cicada-examples --doc` passes, and none of the three files says that a key
       has several fields or that `:` separates.
-- [ ] 4.2 `CHANGELOG.md`: the section starts with the upgrade steps of the Migration Plan of `design.md`. It holds
+- [x] 4.2 `CHANGELOG.md`: the section starts with the upgrade steps of the Migration Plan of `design.md`. It holds
       the query that finds two keys that become one name, the order to start nodes in and what is refused until
       then, that a ref that changes its shape no longer decodes from what is stored, that clients are upgraded with
       the nodes, and that a listing prefix writes `:`. Then the breaking changes of the proposal. Verify: every step
