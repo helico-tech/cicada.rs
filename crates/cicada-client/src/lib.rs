@@ -243,7 +243,8 @@ impl ActorClient {
             .map_err(|e| ClientError::Body(format!("The state of {} cannot be decoded: {e}", view.address)))
     }
 
-    /// Admin delete (`DELETE /actors/{path}`); purges the mailbox. False when the instance did not exist.
+    /// Admin delete (`DELETE /actors/{path}`): removes the instance and every descendant and purges their mailboxes.
+    /// False when the instance did not exist.
     pub async fn delete_actor(&self, address: &ActorAddress) -> ClientResult<bool> {
         let answer = self.call(Method::DELETE, self.url(&http_path(address)?, &[])?, None).await?;
         match answer.status {
@@ -330,6 +331,23 @@ impl ActorClient {
             wait = wait.saturating_mul(2);
         }
         unreachable!("the last attempt returns")
+    }
+
+    /// The direct children of `address` in address order (`GET /actors/{path}/children`): the actors its turns created
+    /// as children. `None` when the instance does not exist. A client walks a tree level by level.
+    pub async fn children(
+        &self,
+        address: &ActorAddress,
+        cursor: Option<&str>,
+        limit: Option<usize>,
+    ) -> ClientResult<Option<PageView<ActorAddress>>> {
+        let url = self.url(&format!("/actors/{address}/children"), &listing("", None, cursor, limit))?;
+        let answer = self.call(Method::GET, url, None).await?;
+        match answer.status {
+            StatusCode::OK => answer.decode().map(Some),
+            StatusCode::NOT_FOUND => answer.absent(problem_types::NO_SUCH_INSTANCE),
+            _ => Err(answer.failure()),
+        }
     }
 
     /// The mailbox of `address` in delivery order (`GET /actors/{path}/mailbox`), each message marked running or

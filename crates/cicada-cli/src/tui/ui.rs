@@ -140,6 +140,7 @@ fn hints_for(app: &App) -> Vec<(&'static str, &'static str)> {
         Target::List { kind: Kind::Types, .. } | Target::Type(_) => &[("ctrl-d", "remove")],
         Target::Actor(_) => &[
             ("tab", "switch tab"),
+            ("P", "parent"),
             ("m", "mailbox"),
             ("c", "cancel"),
             ("r", "retry"),
@@ -492,6 +493,7 @@ const HELP: [Section; 4] = [
             ("d", "describe"),
             ("m", "mailbox of an actor"),
             ("a  b", "a message's actor, cause"),
+            ("P", "an actor's parent"),
             ("c", "cancel message"),
             ("r", "retry message"),
             ("n", "deliver message now"),
@@ -540,15 +542,16 @@ fn draw_help(frame: &mut Frame) {
 #[cfg(test)]
 mod tests {
     use cicada::ActorAddress;
-    use cicada::api::StatsView;
+    use cicada::api::{ActorView, StatsView};
     use cicada::store::MessageId;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    use ratatui::crossterm::event::{KeyCode, KeyEvent};
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use serde_json::json;
 
     use super::*;
     use crate::tui::app::{Effect, Fact, Fetched, Overview, ScreenData, Summary};
+    use crate::tui::fetch;
     use crate::tui::grid::{GridRow, Rows};
 
     fn screen(app: &mut App, width: u16, height: u16) -> String {
@@ -646,6 +649,7 @@ mod tests {
             pane_follows_selection: false,
             caused_by: None,
             actor: None,
+            parent: None,
         };
         let mut app = loaded(ScreenData::Grid(Rows::default()));
         let screen_state = &mut app.stack[0];
@@ -659,5 +663,85 @@ mod tests {
         {
             assert!(text.contains(part), "{part} missing:\n{text}");
         }
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::from(code)
+    }
+
+    /// The view of the actor `address` with `parent`, as the API serves it.
+    fn view(address: &str, parent: Option<&str>) -> ActorView {
+        let address = ActorAddress::parse(address).unwrap();
+        ActorView {
+            type_name: address.type_name().to_string(),
+            address,
+            state: json!({}),
+            version: 0,
+            created_at: chrono::Utc::now(),
+            paused: false,
+            parent: parent.map(|p| ActorAddress::parse(p).unwrap()),
+        }
+    }
+
+    /// An app on the screen of `view` (opened with `:actor`) with the data the fetch builds, `children` among it.
+    fn actor_screen_of(view: &ActorView, children: &[&str]) -> App {
+        let mut app = App::new(Some("local".into()), "http://localhost:8080".into());
+        app.start();
+        for c in format!(":actor {}", view.address).chars() {
+            app.on_key(key(KeyCode::Char(c)));
+        }
+        let effects = app.on_key(key(KeyCode::Enter));
+        let seq = effects.iter().find_map(|e| if let Effect::Fetch { seq, .. } = e { Some(*seq) } else { None });
+        let children: Vec<ActorAddress> = children.iter().map(|c| ActorAddress::parse(c).unwrap()).collect();
+        let data = fetch::actor_screen(view, None, &[], &[], &children);
+        app.on_result(Fetched::Screen { seq: seq.expect("a fetch"), data });
+        app
+    }
+
+    fn opens_actor(effects: &[Effect], address: &str) -> bool {
+        matches!(effects, [Effect::Fetch { target: Target::Actor(a), .. }] if a.as_str() == address)
+    }
+
+    /// Scenario: Up to the parent.
+    #[test]
+    fn the_screen_of_a_child_names_its_parent_and_p_opens_it() {
+        let mut app = actor_screen_of(&view("batch-items/b1:0", Some("batches/b1")), &[]);
+        let text = screen(&mut app, 140, 30);
+        assert!(text.lines().any(|l| l.contains("Parent") && l.contains("batches/b1")), "{text}");
+        assert!(text.contains("<P>") && text.contains("children[0]"), "{text}");
+        assert!(opens_actor(&app.on_key(key(KeyCode::Char('P'))), "batches/b1"));
+        assert_eq!(app.stack.iter().map(|s| s.target.crumb()).collect::<Vec<_>>(), ["batch-items/b1:0", "batches/b1"]);
+        assert!(opens_actor(&app.on_key(key(KeyCode::Esc)), "batch-items/b1:0"), "esc goes back");
+    }
+
+    /// Scenario: Down to a child.
+    #[test]
+    fn the_children_tab_lists_the_children_in_address_order_and_enter_opens_one() {
+        let mut app = actor_screen_of(&view("batches/b1", None), &["batch-items/b1:0", "batch-items/b1:1"]);
+        app.on_key(key(KeyCode::Tab));
+        app.on_key(key(KeyCode::Tab));
+        let text = screen(&mut app, 140, 30);
+        assert!(text.contains("children[2]"), "{text}");
+        let (first, second) = (text.find("batch-items/b1:0"), text.find("batch-items/b1:1"));
+        assert!(first.is_some() && first < second, "both, in address order:\n{text}");
+        app.on_key(key(KeyCode::Char('j')));
+        assert!(opens_actor(&app.on_key(key(KeyCode::Enter)), "batch-items/b1:1"));
+        assert!(opens_actor(&app.on_key(key(KeyCode::Esc)), "batches/b1"), "esc goes back");
+    }
+
+    /// Scenario: An actor on its own.
+    #[test]
+    fn an_independent_actor_without_children_has_no_parent_and_p_does_nothing() {
+        let mut app = actor_screen_of(&view("solo/x", None), &[]);
+        let text = screen(&mut app, 140, 30);
+        assert!(text.lines().any(|l| l.contains("Parent") && l.contains("none")), "{text}");
+        assert!(text.contains("children[0]"), "{text}");
+        assert!(app.on_key(key(KeyCode::Char('P'))).is_empty());
+        assert_eq!(app.stack.len(), 1);
+
+        // The question before a delete says that the descendants go too.
+        app.on_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
+        let text = screen(&mut app, 140, 30);
+        assert!(text.contains("Delete actor solo/x with all its descendants"), "{text}");
     }
 }

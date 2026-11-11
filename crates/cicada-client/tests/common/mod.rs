@@ -50,6 +50,10 @@ pub enum AccountMsg {
         to: i32,
         amount: i64,
     },
+    /// Creates the account `id` of the same tenant as a child of this one.
+    Open {
+        id: i32,
+    },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -78,6 +82,10 @@ impl Actor for AccountActor {
             AccountMsg::Transfer { to, amount } => {
                 let to = account(turn.self_ref().tenant(), to);
                 turn.send(&to, AccountMsg::Deposit { amount })?;
+            }
+            AccountMsg::Open { id } => {
+                let child = account(turn.self_ref().tenant(), id);
+                turn.create_child(&child, &AccountState::default())?;
             }
         }
         Ok(())

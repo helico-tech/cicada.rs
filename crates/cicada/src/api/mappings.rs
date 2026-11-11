@@ -108,6 +108,7 @@ impl From<ActorSnapshot> for ActorView {
             version: s.version,
             created_at: s.created_at,
             paused: s.paused,
+            parent: s.parent,
         }
     }
 }

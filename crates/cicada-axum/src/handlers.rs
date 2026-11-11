@@ -151,6 +151,21 @@ pub(crate) async fn mailbox(State(api): Shared, req: Request) -> Response {
     .await
 }
 
+pub(crate) async fn children(State(api): Shared, req: Request) -> Response {
+    let instance = request::instance(&req);
+    run(instance, async move {
+        let address = request::address(req.uri())?;
+        let params = Params::of(req.uri())?;
+        let page = api
+            .system
+            .list_children(&address, params.cursor().as_ref(), params.limit()?)
+            .await?
+            .ok_or_else(|| no_such_instance(&address))?;
+        Ok(json(StatusCode::OK, &PageView::of(page, |a| a)))
+    })
+    .await
+}
+
 pub(crate) async fn pause_mailbox(State(api): Shared, req: Request) -> Response {
     let instance = request::instance(&req);
     run(instance, async move {

@@ -101,7 +101,7 @@ pub enum Target {
     },
     /// The mailbox of an actor.
     Mailbox(ActorAddress),
-    /// An actor: facts, state, mailbox and outcomes.
+    /// An actor: facts, state, mailbox, outcomes and children.
     Actor(ActorAddress),
     /// A message: facts, payload and the messages it caused.
     Message(MessageId),
@@ -180,6 +180,8 @@ pub struct Overview {
     pub caused_by: Option<MessageId>,
     /// The actor of this message, for `a`.
     pub actor: Option<ActorAddress>,
+    /// The parent of this actor, for `P`.
+    pub parent: Option<ActorAddress>,
 }
 
 /// The state of the describe view.
@@ -227,7 +229,7 @@ impl Screen {
     fn new(target: Target) -> Self {
         let names: &[&'static str] = match &target {
             Target::List { .. } | Target::Mailbox(_) => &[""],
-            Target::Actor(_) => &["mailbox", "outcomes"],
+            Target::Actor(_) => &["mailbox", "outcomes", "children"],
             Target::Message(_) => &["caused"],
             Target::Node(_) => &["turns"],
             Target::Type(_) => &["schemas"],
@@ -309,7 +311,9 @@ impl Action {
     pub fn question(&self) -> String {
         match self {
             Action::Delete(Item::Type(name)) => format!("Remove the registration of type {name}?"),
-            Action::Delete(item) => format!("Delete {} and purge its mailbox?", label(item)),
+            Action::Delete(item) => {
+                format!("Delete {} with all its descendants and purge their mailboxes?", label(item))
+            }
             Action::Cancel(id) => format!("Cancel message {id}?"),
             Action::StopTurn(actor) => format!("Stop the turn running on {actor}?"),
             Action::Retry(id) => format!("Send message {id} again as a new message?"),
@@ -770,6 +774,11 @@ impl App {
                     return self.push(Target::Message(cause));
                 }
             }
+            KeyCode::Char('P') => {
+                if let Some(parent) = overview.and_then(|o| o.parent) {
+                    return self.push(Target::Actor(parent));
+                }
+            }
             _ => {
                 if let Some(action) = self.action(key) {
                     self.mode = Mode::Confirm { action, yes: false };
@@ -971,6 +980,7 @@ mod tests {
             pane_follows_selection: false,
             caused_by: None,
             actor: None,
+            parent: None,
         };
         let seq = seq_of(&app.push(Target::Actor(actor("account/acme:7"))));
         let tabs = vec![rows(vec![message("p1")], false), rows(vec![message("f1")], true)];

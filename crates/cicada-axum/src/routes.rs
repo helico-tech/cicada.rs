@@ -145,9 +145,18 @@ fn routes(access: Access) -> ApiRouter<Arc<Api>> {
     let full = access == Access::Full;
 
     let mut actor = get_with(handlers::get_actor, |op| {
-        described(op, "getActor", "One actor: its address, type, state and version.")
+        described(op, "getActor", "One actor: its address, type, state, version and parent.")
             .input::<Path<ActorPath>>()
             .response::<200, Json<ActorView>>()
+    });
+    let children = get_with(handlers::children, |op| {
+        described(
+            op,
+            "listChildren",
+            "The direct children of one actor, in address order: the actors its turns created as children.",
+        )
+        .input::<(Path<ActorPath>, Query<PageQuery>)>()
+        .response::<200, Json<PageView<cicada::ActorAddress>>>()
     });
     let mailbox = get_with(handlers::mailbox, |op| {
         described(
@@ -194,7 +203,13 @@ fn routes(access: Access) -> ApiRouter<Arc<Api>> {
             })
             .delete_with(handlers::delete_actor, |op| {
                 no_content(
-                    described(op, "deleteActor", "Deletes an actor and purges its mailbox.").input::<Path<ActorPath>>(),
+                    described(
+                        op,
+                        "deleteActor",
+                        "Deletes an actor and every descendant (its children, theirs, and so on) and purges their \
+                         mailboxes, in one transaction.",
+                    )
+                    .input::<Path<ActorPath>>(),
                     "Deleted.",
                 )
             });
@@ -210,6 +225,7 @@ fn routes(access: Access) -> ApiRouter<Arc<Api>> {
             }),
         )
         .api_route("/actors/{type}/{key}", actor)
+        .api_route("/actors/{type}/{key}/children", children)
         .api_route("/actors/{type}/{key}/mailbox", mailbox)
         .api_route(
             "/actors/{type}/{key}/turn",

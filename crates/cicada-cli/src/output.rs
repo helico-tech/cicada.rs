@@ -138,7 +138,7 @@ impl Columns for ActorAddress {
 
 impl Columns for ActorView {
     fn headers(wide: bool) -> Vec<&'static str> {
-        wide_cols(vec!["ADDRESS", "VERSION", "PAUSED", "AGE"], &["STATE"], wide)
+        wide_cols(vec!["ADDRESS", "VERSION", "PAUSED", "AGE"], &["PARENT", "STATE"], wide)
     }
     fn cells(&self, wide: bool, now: Timestamp) -> Vec<String> {
         let mut cells = vec![
@@ -148,7 +148,7 @@ impl Columns for ActorView {
             when(self.created_at, wide, now),
         ];
         if wide {
-            cells.push(self.state.to_string());
+            cells.extend([dash(self.parent.as_ref()), self.state.to_string()]);
         }
         cells
     }
@@ -341,12 +341,17 @@ mod tests {
             version: 2,
             created_at: now() - Duration::minutes(3),
             paused: false,
+            parent: Some(ActorAddress::parse("tenant/acme").unwrap()),
         };
         assert_eq!(actor.cells(false, now()), ["account/acme:7", "2", "false", "3m"]);
         for wide in [false, true] {
             assert_eq!(ActorView::headers(wide).len(), actor.cells(wide, now()).len());
         }
         assert_eq!(actor.cells(true, now())[3], "2026-11-10T11:57:00Z");
+        assert_eq!(ActorView::headers(true)[4], "PARENT");
+        assert_eq!(actor.cells(true, now())[4], "tenant/acme");
+        let independent = ActorView { parent: None, ..actor.clone() };
+        assert_eq!(independent.cells(true, now())[4], "-");
         assert_eq!(address.cells(false, now()), ["account/acme:7", "account", "acme:7"]);
     }
 

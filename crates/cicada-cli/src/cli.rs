@@ -120,6 +120,15 @@ pub enum Get {
         #[arg(value_parser = address)]
         actor: ActorAddress,
     },
+    /// The direct children of one actor, in address order: the actors its turns created as children.
+    Children {
+        /// The actor, `type/key`.
+        #[arg(value_parser = address)]
+        actor: ActorAddress,
+        /// Paging.
+        #[command(flatten)]
+        page: Page,
+    },
     /// The pending messages of one actor, in delivery order.
     Mailbox {
         /// The actor, `type/key`.
@@ -250,7 +259,7 @@ pub enum Create {
 /// `delete` resources.
 #[derive(Debug, Subcommand)]
 pub enum Delete {
-    /// Delete an actor and purge its mailbox.
+    /// Delete an actor and every descendant (its children, theirs, and so on), and purge their mailboxes.
     Actor {
         /// The actor, `type/key`.
         #[arg(value_parser = address)]
@@ -433,6 +442,14 @@ mod tests {
             let help = config.find_subcommand_mut(name).unwrap().render_long_help().to_string();
             assert!(help.contains("comments in it are not kept"), "{name}: {help}");
         }
+    }
+
+    #[test]
+    fn the_help_of_delete_actor_says_that_the_descendants_go_too() {
+        let mut cli = Cli::command();
+        let delete = cli.find_subcommand_mut("delete").unwrap();
+        let help = delete.find_subcommand_mut("actor").unwrap().render_long_help().to_string();
+        assert!(help.contains("every descendant"), "{help}");
     }
 
     #[test]

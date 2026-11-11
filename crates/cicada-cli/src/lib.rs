@@ -156,6 +156,12 @@ async fn get_command(client: &ActorClient, get: Get, format: Format, out: &mut d
             &pages(page, async |c| Ok(client.list_actors(&prefix, c, Some(page.limit)).await?)).await?,
         ),
         Get::Actor { actor } => one(out, format, &found(client.get_actor(&actor).await?, || format!("actor {actor}"))?),
+        Get::Children { actor, page } => {
+            let items = pages(page, async |c| {
+                found(client.children(&actor, c, Some(page.limit)).await?, || format!("actor {actor}"))
+            });
+            list(out, format, &items.await?)
+        }
         Get::Mailbox { actor, page } => {
             let items = pages(page, async |c| {
                 found(client.mailbox(&actor, c, Some(page.limit)).await?, || format!("actor {actor}"))

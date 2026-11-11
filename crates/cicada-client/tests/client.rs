@@ -322,6 +322,30 @@ async fn delete_purges_and_list_pages() {
 }
 
 #[tokio::test]
+async fn the_children_of_an_actor_are_listed_its_children_name_it_and_a_delete_removes_them() {
+    let (actors, _, _) = client_test(|r| r).await;
+    let parent = account("acme", 1);
+    let address = parent.address().unwrap();
+    actors.create(&parent, &AccountState::default()).await.unwrap();
+    for id in [3, 2] {
+        actors.send(&parent, AccountMsg::Open { id }).await.unwrap();
+    }
+    eventually(async || actors.children(&address, None, None).await.unwrap().unwrap().items.len() == 2).await;
+
+    let first = actors.children(&address, None, Some(1)).await.unwrap().expect("the parent exists");
+    assert_eq!(first.items, [account("acme", 2).address().unwrap()]);
+    let second = actors.children(&address, first.next.as_deref(), Some(1)).await.unwrap().unwrap();
+    assert_eq!(second.items, [account("acme", 3).address().unwrap()]);
+    assert!(second.next.is_none());
+    assert_eq!(actors.get(&account("acme", 2)).await.unwrap().unwrap().parent, Some(address.clone()));
+    assert_eq!(actors.get(&parent).await.unwrap().unwrap().parent, None);
+    assert_eq!(actors.children(&account("nobody", 1).address().unwrap(), None, None).await.unwrap(), None);
+
+    assert!(actors.delete(&parent).await.unwrap());
+    assert_eq!(actors.get(&account("acme", 2)).await.unwrap(), None, "the delete removed the children too");
+}
+
+#[tokio::test]
 async fn send_bodies_leave_out_absent_optional_fields_so_nodes_that_do_not_know_them_yet_accept_them() {
     // A node of an older version decodes request bodies strictly (unknown keys are 400), so a body must not carry
     // "retry": null, or any other absent field, when the caller did not set it.
@@ -402,7 +426,7 @@ async fn outcomes_and_types() {
     assert_eq!(types.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(), ["account", "beacon"]);
     assert_eq!(
         types[0].messages.keys().map(String::as_str).collect::<Vec<_>>(),
-        ["Deposit", "Explode", "Hold", "Transfer"]
+        ["Deposit", "Explode", "Hold", "Open", "Transfer"]
     );
     assert_eq!(types[1].state["type"], "object");
 }

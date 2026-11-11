@@ -55,7 +55,7 @@
             }
           },
           "200": {
-            "description": "One page of a listing (`GET /actors`, `GET /actors/{type}/{key}/mailbox`, `GET /messages`, `GET /outcomes`, `GET\n/turns`).\n\nPaging: pass [`Self::next`] back as the `cursor` query parameter to get the following page; it is null on the last\npage. The page size is the `limit` query parameter (1..1000, default 100).",
+            "description": "One page of a listing (`GET /actors`, `GET /actors/{type}/{key}/children`, `GET /actors/{type}/{key}/mailbox`,\n`GET /messages`, `GET /outcomes`, `GET /turns`).\n\nPaging: pass [`Self::next`] back as the `cursor` query parameter to get the following page; it is null on the last\npage. The page size is the `limit` query parameter (1..1000, default 100).",
             "content": {
               "application/json": {
                 "schema": {
@@ -69,7 +69,7 @@
     },
     "/actors/{type}/{key}": {
       "get": {
-        "summary": "One actor: its address, type, state and version.",
+        "summary": "One actor: its address, type, state, version and parent.",
         "operationId": "getActor",
         "parameters": [
           {
@@ -190,7 +190,7 @@
         }
       },
       "delete": {
-        "summary": "Deletes an actor and purges its mailbox.",
+        "summary": "Deletes an actor and every descendant (its children, theirs, and so on) and purges their mailboxes, in one transaction.",
         "operationId": "deleteActor",
         "parameters": [
           {
@@ -229,6 +229,80 @@
           },
           "204": {
             "description": "Deleted."
+          }
+        }
+      }
+    },
+    "/actors/{type}/{key}/children": {
+      "get": {
+        "summary": "The direct children of one actor, in address order: the actors its turns created as children.",
+        "operationId": "listChildren",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "type",
+            "description": "The type name, e.g. `sync`.",
+            "required": true,
+            "schema": {
+              "description": "The type name, e.g. `sync`.",
+              "type": "string"
+            },
+            "style": "simple"
+          },
+          {
+            "in": "path",
+            "name": "key",
+            "description": "The key: one name, percent-encoded, e.g. `acme`, `acme:7` or `jan%40example.com`; `_` for a singleton.",
+            "required": true,
+            "schema": {
+              "description": "The key: one name, percent-encoded, e.g. `acme`, `acme:7` or `jan%40example.com`; `_` for a singleton.",
+              "type": "string"
+            },
+            "style": "simple"
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "description": "The `next` of the previous page.",
+            "schema": {
+              "description": "The `next` of the previous page.",
+              "type": "string"
+            },
+            "style": "form"
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "description": "Items per page, 1 to 1000; 100 by default.",
+            "schema": {
+              "description": "Items per page, 1 to 1000; 100 by default.",
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "style": "form"
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "An error (RFC 9457).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "One page of a listing (`GET /actors`, `GET /actors/{type}/{key}/children`, `GET /actors/{type}/{key}/mailbox`,\n`GET /messages`, `GET /outcomes`, `GET /turns`).\n\nPaging: pass [`Self::next`] back as the `cursor` query parameter to get the following page; it is null on the last\npage. The page size is the `limit` query parameter (1..1000, default 100).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActorAddressPage"
+                }
+              }
+            }
           }
         }
       }
@@ -295,7 +369,7 @@
             }
           },
           "200": {
-            "description": "One page of a listing (`GET /actors`, `GET /actors/{type}/{key}/mailbox`, `GET /messages`, `GET /outcomes`, `GET\n/turns`).\n\nPaging: pass [`Self::next`] back as the `cursor` query parameter to get the following page; it is null on the last\npage. The page size is the `limit` query parameter (1..1000, default 100).",
+            "description": "One page of a listing (`GET /actors`, `GET /actors/{type}/{key}/children`, `GET /actors/{type}/{key}/mailbox`,\n`GET /messages`, `GET /outcomes`, `GET /turns`).\n\nPaging: pass [`Self::next`] back as the `cursor` query parameter to get the following page; it is null on the last\npage. The page size is the `limit` query parameter (1..1000, default 100).",
             "content": {
               "application/json": {
                 "schema": {
@@ -409,7 +483,7 @@
             }
           },
           "200": {
-            "description": "One page of a listing (`GET /actors`, `GET /actors/{type}/{key}/mailbox`, `GET /messages`, `GET /outcomes`, `GET\n/turns`).\n\nPaging: pass [`Self::next`] back as the `cursor` query parameter to get the following page; it is null on the last\npage. The page size is the `limit` query parameter (1..1000, default 100).",
+            "description": "One page of a listing (`GET /actors`, `GET /actors/{type}/{key}/children`, `GET /actors/{type}/{key}/mailbox`,\n`GET /messages`, `GET /outcomes`, `GET /turns`).\n\nPaging: pass [`Self::next`] back as the `cursor` query parameter to get the following page; it is null on the last\npage. The page size is the `limit` query parameter (1..1000, default 100).",
             "content": {
               "application/json": {
                 "schema": {
@@ -513,7 +587,7 @@
             }
           },
           "200": {
-            "description": "One page of a listing (`GET /actors`, `GET /actors/{type}/{key}/mailbox`, `GET /messages`, `GET /outcomes`, `GET\n/turns`).\n\nPaging: pass [`Self::next`] back as the `cursor` query parameter to get the following page; it is null on the last\npage. The page size is the `limit` query parameter (1..1000, default 100).",
+            "description": "One page of a listing (`GET /actors`, `GET /actors/{type}/{key}/children`, `GET /actors/{type}/{key}/mailbox`,\n`GET /messages`, `GET /outcomes`, `GET /turns`).\n\nPaging: pass [`Self::next`] back as the `cursor` query parameter to get the following page; it is null on the last\npage. The page size is the `limit` query parameter (1..1000, default 100).",
             "content": {
               "application/json": {
                 "schema": {
@@ -595,7 +669,7 @@
             }
           },
           "200": {
-            "description": "One page of a listing (`GET /actors`, `GET /actors/{type}/{key}/mailbox`, `GET /messages`, `GET /outcomes`, `GET\n/turns`).\n\nPaging: pass [`Self::next`] back as the `cursor` query parameter to get the following page; it is null on the last\npage. The page size is the `limit` query parameter (1..1000, default 100).",
+            "description": "One page of a listing (`GET /actors`, `GET /actors/{type}/{key}/children`, `GET /actors/{type}/{key}/mailbox`,\n`GET /messages`, `GET /outcomes`, `GET /turns`).\n\nPaging: pass [`Self::next`] back as the `cursor` query parameter to get the following page; it is null on the last\npage. The page size is the `limit` query parameter (1..1000, default 100).",
             "content": {
               "application/json": {
                 "schema": {
@@ -776,7 +850,7 @@
             }
           },
           "200": {
-            "description": "One page of a listing (`GET /actors`, `GET /actors/{type}/{key}/mailbox`, `GET /messages`, `GET /outcomes`, `GET\n/turns`).\n\nPaging: pass [`Self::next`] back as the `cursor` query parameter to get the following page; it is null on the last\npage. The page size is the `limit` query parameter (1..1000, default 100).",
+            "description": "One page of a listing (`GET /actors`, `GET /actors/{type}/{key}/children`, `GET /actors/{type}/{key}/mailbox`,\n`GET /messages`, `GET /outcomes`, `GET /turns`).\n\nPaging: pass [`Self::next`] back as the `cursor` query parameter to get the following page; it is null on the last\npage. The page size is the `limit` query parameter (1..1000, default 100).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1463,6 +1537,15 @@
             "description": "True while the mailbox is paused: messages queue up, no new turn is claimed.",
             "type": "boolean",
             "default": false
+          },
+          "parent": {
+            "description": "The actor whose turn created this one as a child; null for an independent actor. Deleting or stopping the\nparent removes this actor too.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+            "default": null
           }
         },
         "required": [
@@ -1494,8 +1577,32 @@
           }
         }
       },
+      "ActorAddressPage": {
+        "description": "One page of a listing (`GET /actors`, `GET /actors/{type}/{key}/children`, `GET /actors/{type}/{key}/mailbox`,\n`GET /messages`, `GET /outcomes`, `GET /turns`).\n\nPaging: pass [`Self::next`] back as the `cursor` query parameter to get the following page; it is null on the last\npage. The page size is the `limit` query parameter (1..1000, default 100).",
+        "type": "object",
+        "properties": {
+          "items": {
+            "description": "Items of this page, in the listing's order.",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9._-]*/[^/]+$"
+            }
+          },
+          "next": {
+            "description": "Opaque cursor of the next page, or null when this is the last one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items"
+        ]
+      },
       "MailboxMessageViewPage": {
-        "description": "One page of a listing (`GET /actors`, `GET /actors/{type}/{key}/mailbox`, `GET /messages`, `GET /outcomes`, `GET\n/turns`).\n\nPaging: pass [`Self::next`] back as the `cursor` query parameter to get the following page; it is null on the last\npage. The page size is the `limit` query parameter (1..1000, default 100).",
+        "description": "One page of a listing (`GET /actors`, `GET /actors/{type}/{key}/children`, `GET /actors/{type}/{key}/mailbox`,\n`GET /messages`, `GET /outcomes`, `GET /turns`).\n\nPaging: pass [`Self::next`] back as the `cursor` query parameter to get the following page; it is null on the last\npage. The page size is the `limit` query parameter (1..1000, default 100).",
         "type": "object",
         "properties": {
           "items": {
@@ -2157,30 +2264,6 @@
           }
         }
       },
-      "ActorAddressPage": {
-        "description": "One page of a listing (`GET /actors`, `GET /actors/{type}/{key}/mailbox`, `GET /messages`, `GET /outcomes`, `GET\n/turns`).\n\nPaging: pass [`Self::next`] back as the `cursor` query parameter to get the following page; it is null on the last\npage. The page size is the `limit` query parameter (1..1000, default 100).",
-        "type": "object",
-        "properties": {
-          "items": {
-            "description": "Items of this page, in the listing's order.",
-            "type": "array",
-            "items": {
-              "type": "string",
-              "pattern": "^[a-z][a-z0-9._-]*/[^/]+$"
-            }
-          },
-          "next": {
-            "description": "Opaque cursor of the next page, or null when this is the last one.",
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "items"
-        ]
-      },
       "RunningTurnView": {
         "description": "A turn running now, as listed by `GET /turns` and served by `GET /actors/{type}/{key}/turn`.",
         "type": "object",
@@ -2219,7 +2302,7 @@
         ]
       },
       "MessageViewPage": {
-        "description": "One page of a listing (`GET /actors`, `GET /actors/{type}/{key}/mailbox`, `GET /messages`, `GET /outcomes`, `GET\n/turns`).\n\nPaging: pass [`Self::next`] back as the `cursor` query parameter to get the following page; it is null on the last\npage. The page size is the `limit` query parameter (1..1000, default 100).",
+        "description": "One page of a listing (`GET /actors`, `GET /actors/{type}/{key}/children`, `GET /actors/{type}/{key}/mailbox`,\n`GET /messages`, `GET /outcomes`, `GET /turns`).\n\nPaging: pass [`Self::next`] back as the `cursor` query parameter to get the following page; it is null on the last\npage. The page size is the `limit` query parameter (1..1000, default 100).",
         "type": "object",
         "properties": {
           "items": {
@@ -2242,7 +2325,7 @@
         ]
       },
       "MessageStatusViewPage": {
-        "description": "One page of a listing (`GET /actors`, `GET /actors/{type}/{key}/mailbox`, `GET /messages`, `GET /outcomes`, `GET\n/turns`).\n\nPaging: pass [`Self::next`] back as the `cursor` query parameter to get the following page; it is null on the last\npage. The page size is the `limit` query parameter (1..1000, default 100).",
+        "description": "One page of a listing (`GET /actors`, `GET /actors/{type}/{key}/children`, `GET /actors/{type}/{key}/mailbox`,\n`GET /messages`, `GET /outcomes`, `GET /turns`).\n\nPaging: pass [`Self::next`] back as the `cursor` query parameter to get the following page; it is null on the last\npage. The page size is the `limit` query parameter (1..1000, default 100).",
         "type": "object",
         "properties": {
           "items": {
@@ -2307,7 +2390,7 @@
         }
       },
       "OutcomeViewPage": {
-        "description": "One page of a listing (`GET /actors`, `GET /actors/{type}/{key}/mailbox`, `GET /messages`, `GET /outcomes`, `GET\n/turns`).\n\nPaging: pass [`Self::next`] back as the `cursor` query parameter to get the following page; it is null on the last\npage. The page size is the `limit` query parameter (1..1000, default 100).",
+        "description": "One page of a listing (`GET /actors`, `GET /actors/{type}/{key}/children`, `GET /actors/{type}/{key}/mailbox`,\n`GET /messages`, `GET /outcomes`, `GET /turns`).\n\nPaging: pass [`Self::next`] back as the `cursor` query parameter to get the following page; it is null on the last\npage. The page size is the `limit` query parameter (1..1000, default 100).",
         "type": "object",
         "properties": {
           "items": {
@@ -2615,7 +2698,7 @@
         }
       },
       "RunningTurnViewPage": {
-        "description": "One page of a listing (`GET /actors`, `GET /actors/{type}/{key}/mailbox`, `GET /messages`, `GET /outcomes`, `GET\n/turns`).\n\nPaging: pass [`Self::next`] back as the `cursor` query parameter to get the following page; it is null on the last\npage. The page size is the `limit` query parameter (1..1000, default 100).",
+        "description": "One page of a listing (`GET /actors`, `GET /actors/{type}/{key}/children`, `GET /actors/{type}/{key}/mailbox`,\n`GET /messages`, `GET /outcomes`, `GET /turns`).\n\nPaging: pass [`Self::next`] back as the `cursor` query parameter to get the following page; it is null on the last\npage. The page size is the `limit` query parameter (1..1000, default 100).",
         "type": "object",
         "properties": {
           "items": {

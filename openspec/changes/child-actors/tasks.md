@@ -54,16 +54,16 @@ starts; build from the design.
 
 ## 3. HTTP, client and command line
 
-- [ ] 3.1 `ActorView.parent`, always written; `GET /actors/{type}/{key}/children` as a read route; the description
+- [x] 3.1 `ActorView.parent`, always written; `GET /actors/{type}/{key}/children` as a read route; the description
       of the delete route; `ActorClient::children`; regenerate `docs/openapi.json`. Verify: tests for the scenarios
       "A child", "An independent actor", "Direct children only", "Paging" and "An unknown actor"; the read-router
       test; the OpenAPI test; a client test that lists the children of an actor.
-- [ ] 3.2 `cicada get children ADDR` with the paging flags of the other listings; `PARENT` in the wide table of an
+- [x] 3.2 `cicada get children ADDR` with the paging flags of the other listings; `PARENT` in the wide table of an
       actor, and the parent in its JSON and YAML output; the help of `cicada delete actor` and the question the
       terminal UI asks before a delete say that children go too. Verify: a case in `tests/cli.rs` for the scenario
       "Children as a table", one for exit code 1 when the actor does not exist, and the unit test of the columns.
 
-- [ ] 3.3 The terminal UI [10]: the screen of an actor shows the fact `Parent` and a tab `children` after `mailbox`
+- [x] 3.3 The terminal UI [10]: the screen of an actor shows the fact `Parent` and a tab `children` after `mailbox`
       and `outcomes`, filled from `ActorClient::children`; Enter on a child opens its screen; a key that is still
       free on that screen opens the parent, and the help of the UI names it. Verify: tests with `TestBackend`, like
       the ones the UI has, for the scenarios "Up to the parent", "Down to a child" and "An actor on its own".

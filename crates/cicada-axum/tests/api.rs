@@ -153,7 +153,8 @@ async fn get_returns_address_type_state_and_version_and_no_params() {
     assert_eq!(body["version"], 0);
     instant(&body["createdAt"]);
     let keys: Vec<&str> = body.as_object().unwrap().keys().map(String::as_str).collect();
-    assert_eq!(keys, ["address", "type", "state", "version", "createdAt", "paused"]);
+    assert_eq!(keys, ["address", "type", "state", "version", "createdAt", "paused", "parent"]);
+    assert_eq!(body["parent"], Value::Null, "an actor created over HTTP is independent");
 
     put(&app, "/actors/ping/p", r#"{"state": {}}"#).await;
     assert_eq!(get_json(&app, "/actors/ping/p").await["state"], json!({}));
@@ -177,6 +178,62 @@ async fn delete_answers_204_purges_the_mailbox_then_404() {
     assert_problem(&get(&app, "/actors/counter/a").await, 404, pt::NO_SUCH_INSTANCE);
     assert_eq!(get_json(&app, &format!("/messages/{id}")).await["status"], "purged");
     assert_problem(&delete(&app, "/actors/counter/a").await, 404, pt::NO_SUCH_INSTANCE);
+}
+
+// ---- children ----
+
+/// `counter/a` with the children `counter/b2` and `counter/b1`, and `counter/b1` with the child `counter/c`.
+async fn tree(app: &Router) {
+    put(app, "/actors/counter/a", r#"{"state": {}}"#).await;
+    send_id(app, "/actors/counter/a/messages", r#"{"type": "Spawn", "payload": {"ids": ["b2", "b1"]}}"#).await;
+    eventually(async || get(app, "/actors/counter/b1").await.status == StatusCode::OK).await;
+    send_id(app, "/actors/counter/b1/messages", r#"{"type": "Spawn", "payload": {"ids": ["c"]}}"#).await;
+    eventually(async || get(app, "/actors/counter/c").await.status == StatusCode::OK).await;
+}
+
+/// Scenarios: A child; An independent actor.
+#[tokio::test(start_paused = true)]
+async fn the_view_of_a_child_names_its_parent_and_that_of_an_independent_actor_has_null() {
+    let app = app().await;
+    tree(&app).await;
+    assert_eq!(get_json(&app, "/actors/counter/b1").await["parent"], "counter/a");
+    assert_eq!(get_json(&app, "/actors/counter/c").await["parent"], "counter/b1");
+    assert_eq!(get_json(&app, "/actors/counter/a").await["parent"], Value::Null);
+}
+
+/// Scenarios: Direct children only; Paging.
+#[tokio::test(start_paused = true)]
+async fn children_are_listed_in_address_order_paged_and_only_the_direct_ones() {
+    let app = app().await;
+    tree(&app).await;
+    put(&app, "/actors/counter/a0", r#"{"state": {}}"#).await;
+    let all = get_json(&app, "/actors/counter/a/children").await;
+    assert_eq!(items(&all), &vec![json!("counter/b1"), json!("counter/b2")]);
+    assert_eq!(all["next"], Value::Null);
+    assert_eq!(items(&get_json(&app, "/actors/counter/b1/children").await), &vec![json!("counter/c")]);
+    assert!(items(&get_json(&app, "/actors/counter/c/children").await).is_empty());
+
+    let first = get_json(&app, "/actors/counter/a/children?limit=1").await;
+    assert_eq!(items(&first), &vec![json!("counter/b1")]);
+    let cursor = enc(first["next"].as_str().expect("a next cursor"));
+    let second = get_json(&app, &format!("/actors/counter/a/children?limit=1&cursor={cursor}")).await;
+    assert_eq!(items(&second), &vec![json!("counter/b2")]);
+    assert_eq!(second["next"], Value::Null);
+    assert_problem(&get(&app, "/actors/counter/a/children?limit=0").await, 400, pt::BAD_REQUEST);
+
+    // A delete removes the whole tree.
+    assert_eq!(delete(&app, "/actors/counter/a").await.status, StatusCode::NO_CONTENT);
+    for gone in ["a", "b1", "b2", "c"] {
+        assert_problem(&get(&app, &format!("/actors/counter/{gone}")).await, 404, pt::NO_SUCH_INSTANCE);
+    }
+    assert_eq!(get(&app, "/actors/counter/a0").await.status, StatusCode::OK);
+}
+
+/// Scenario: An unknown actor.
+#[tokio::test(start_paused = true)]
+async fn the_children_of_an_unknown_actor_are_a_404() {
+    let app = app().await;
+    assert_problem(&get(&app, "/actors/counter/missing/children").await, 404, pt::NO_SUCH_INSTANCE);
 }
 
 // ---- GET /actors?prefix= ----
@@ -584,7 +641,7 @@ async fn types_return_the_generated_schemas() {
     assert_eq!(keys, ["name", "hash", "state", "messages"]);
     assert!(counter["hash"].as_str().unwrap().starts_with("sha256:"));
     let messages: Vec<&str> = counter["messages"].as_object().unwrap().keys().map(String::as_str).collect();
-    assert_eq!(messages, ["Add", "Block", "Fail", "Forward"]);
+    assert_eq!(messages, ["Add", "Block", "Fail", "Forward", "Spawn"]);
     assert_eq!(counter["messages"]["Add"]["properties"]["n"]["type"], "integer");
     assert_eq!(counter["state"]["type"], "object");
     assert_eq!(types[1]["state"]["type"], "object");

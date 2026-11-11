@@ -47,6 +47,10 @@ pub enum CounterMsg {
         to: Vec<String>,
         n: i32,
     },
+    /// Creates the counters `ids` as children of this one.
+    Spawn {
+        ids: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -69,6 +73,11 @@ impl Actor for CounterActor {
             CounterMsg::Forward { to, n } => {
                 for id in to {
                     turn.send(&Counter { id }, CounterMsg::Add { n })?;
+                }
+            }
+            CounterMsg::Spawn { ids } => {
+                for id in ids {
+                    turn.create_child(&Counter { id }, &CounterState::default())?;
                 }
             }
         }

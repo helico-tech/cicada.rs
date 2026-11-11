@@ -2,7 +2,8 @@
 
 use anyhow::{anyhow, bail};
 use chrono::Utc;
-use cicada::api::OutcomeView;
+use cicada::ActorAddress;
+use cicada::api::{ActorView, MailboxMessageView, OutcomeView, RunningTurnView};
 use cicada::store::RemoveTypeResult;
 use cicada::time::{Timestamp, format_instant};
 use cicada_client::{ActorClient, CancelOutcome};
@@ -106,6 +107,7 @@ pub async fn screen(client: &ActorClient, target: &Target) -> anyhow::Result<Scr
                 pane_follows_selection: false,
                 caused_by: m.caused_by.clone(),
                 actor: Some(m.to.clone()),
+                parent: None,
             };
             let caused = caused.map(|p| p.items).unwrap_or_default();
             ScreenData::Overview(overview, vec![rows(&caused, false, |s| Item::Message(s.id.clone()))])
@@ -127,6 +129,7 @@ pub async fn screen(client: &ActorClient, target: &Target) -> anyhow::Result<Scr
                 pane_follows_selection: false,
                 caused_by: None,
                 actor: None,
+                parent: None,
             };
             ScreenData::Overview(overview, vec![rows(&detail.turns, false, |t| Item::Turn(t.actor.clone()))])
         }
@@ -157,6 +160,7 @@ pub async fn screen(client: &ActorClient, target: &Target) -> anyhow::Result<Scr
                 pane_follows_selection: true,
                 caused_by: None,
                 actor: None,
+                parent: None,
             };
             ScreenData::Overview(overview, vec![grid])
         }
@@ -166,17 +170,31 @@ pub async fn screen(client: &ActorClient, target: &Target) -> anyhow::Result<Scr
 
 async fn actor_overview(client: &ActorClient, actor: &cicada::ActorAddress) -> anyhow::Result<ScreenData> {
     let limit = Some(LIMIT);
-    let (view, turn, mailbox, outcomes) = tokio::try_join!(
+    let (view, turn, mailbox, outcomes, children) = tokio::try_join!(
         client.get_actor(actor),
         client.turn(actor),
         client.mailbox(actor, None, limit),
         client.outcomes(None, actor.as_str(), None, None, limit),
+        client.children(actor, None, limit),
     )?;
     let view = view.ok_or_else(|| anyhow!("actor {actor} not found"))?;
     let mailbox = mailbox.map(|p| p.items).unwrap_or_default();
     // The prefix also matches longer addresses; keep this actor's, newest first.
     let outcomes: Vec<OutcomeView> = outcomes.items.into_iter().rev().filter(|o| o.actor == *actor).collect();
-    let turn_fact = match &turn {
+    let children = children.map(|p| p.items).unwrap_or_default();
+    Ok(actor_screen(&view, turn.as_ref(), &mailbox, &outcomes, &children))
+}
+
+/// The screen of an actor: its facts (the parent among them) and state, and the tabs `mailbox`, `outcomes` and
+/// `children`, from what the API answered.
+pub fn actor_screen(
+    view: &ActorView,
+    turn: Option<&RunningTurnView>,
+    mailbox: &[MailboxMessageView],
+    outcomes: &[OutcomeView],
+    children: &[ActorAddress],
+) -> ScreenData {
+    let turn_fact = match turn {
         Some(t) if t.cancel_requested => {
             Fact { label: "Turn", value: format!("● stopping {} on {}", t.message_id, t.node), tone: Tone::Bad }
         }
@@ -189,10 +207,15 @@ async fn actor_overview(client: &ActorClient, actor: &cicada::ActorAddress) -> a
     };
     let (mailbox_state, tone) = if view.paused { ("● paused", Tone::Warn) } else { ("● active", Tone::Good) };
     let pending = if mailbox.len() == LIMIT { format!("{LIMIT}+") } else { mailbox.len().to_string() };
+    let parent_fact = match &view.parent {
+        Some(parent) => fact("Parent", parent.to_string()),
+        None => Fact { label: "Parent", value: "none".to_owned(), tone: Tone::Dim },
+    };
     let overview = Overview {
-        subject: Item::Actor(actor.clone()),
+        subject: Item::Actor(view.address.clone()),
         facts: vec![
             fact("Type", &view.type_name),
+            parent_fact,
             fact("Version", view.version.to_string()),
             fact("Created", when(view.created_at)),
             Fact { label: "Mailbox", value: format!("{mailbox_state}, {pending} pending"), tone },
@@ -202,12 +225,14 @@ async fn actor_overview(client: &ActorClient, actor: &cicada::ActorAddress) -> a
         pane_follows_selection: false,
         caused_by: None,
         actor: None,
+        parent: view.parent.clone(),
     };
     let tabs = vec![
-        rows(&mailbox, false, |m| Item::Message(m.message.id.clone())),
-        rows(&outcomes, true, |o| Item::Message(o.id.clone())),
+        rows(mailbox, false, |m| Item::Message(m.message.id.clone())),
+        rows(outcomes, true, |o| Item::Message(o.id.clone())),
+        rows(children, false, |a| Item::Actor(a.clone())),
     ];
-    Ok(ScreenData::Overview(overview, tabs))
+    ScreenData::Overview(overview, tabs)
 }
 
 async fn describe(client: &ActorClient, item: &Item) -> anyhow::Result<Value> {

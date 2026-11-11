@@ -38,6 +38,10 @@ enum AccountMsg {
     Explode,
     /// Never finishes; only a cancel ends its turn.
     Hold,
+    /// Creates the account `name` as a child of this one.
+    Open {
+        name: String,
+    },
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -57,6 +61,7 @@ impl Actor for AccountActor {
             AccountMsg::Deposit { amount } => turn.state_mut().balance += amount,
             AccountMsg::Explode => return Err(HandlerError::msg("boom")),
             AccountMsg::Hold => std::future::pending::<()>().await,
+            AccountMsg::Open { name } => turn.create_child(&Account { name }, &AccountState::default())?,
         }
         Ok(())
     }
@@ -350,7 +355,7 @@ async fn nodes_types_and_health() {
     assert!(rows(&cicada(&s, &["get", "turns"]).await).is_empty());
     assert!(cicada_fails(&s, &["get", "turn", "account/acme:1"]).await.contains("not found"));
 
-    assert_eq!(rows(&cicada(&s, &["get", "types"]).await), ["account  3"]);
+    assert_eq!(rows(&cicada(&s, &["get", "types"]).await), ["account  4"]);
     assert!(rows(&cicada(&s, &["get", "type", "account", "-o", "wide"]).await)[0].starts_with("account  Deposit,"));
     let account = json(&s, &["get", "type", "account"]).await;
     assert_eq!((account["name"].as_str(), account["messages"]["Hold"].is_object()), (Some("account"), true));
@@ -385,6 +390,45 @@ async fn a_running_turn_is_shown_and_cancelled() {
     assert_eq!(cancelled, "turn on actor account/acme:5 asked to cancel\n");
     eventually_status(&s, "h1", "cancelled").await;
     assert!(cicada_fails(&s, &["get", "turn", "account/acme:5"]).await.contains("not found"));
+}
+
+/// Scenario: Children as a table.
+#[tokio::test]
+async fn the_children_of_an_actor_are_listed_one_row_each_and_a_child_shows_its_parent() {
+    let s = server().await;
+    cicada(&s, &["create", "actor", "account/b1", "--state", "{}"]).await;
+    for name in ["b1:1", "b1:0"] {
+        let payload = format!(r#"{{"name":"{name}"}}"#);
+        let id =
+            sent_id(&cicada(&s, &["send", "account/b1", "--type", "Open", "--payload", &payload, "-o", "json"]).await);
+        eventually_status(&s, &id, "done").await;
+    }
+    let table = cicada(&s, &["get", "children", "account/b1"]).await;
+    assert!(table.starts_with("ADDRESS"), "{table}");
+    let lines = rows(&table);
+    assert_eq!(lines.len(), 2, "{table}");
+    assert!(lines[0].starts_with("account/b1:0") && lines[1].starts_with("account/b1:1"), "in address order: {table}");
+    assert_eq!(rows(&cicada(&s, &["get", "children", "account/b1", "--limit", "1"]).await).len(), 1);
+    assert_eq!(
+        json(&s, &["get", "children", "account/b1", "--limit", "1", "--all"]).await.as_array().unwrap().len(),
+        2
+    );
+
+    assert_eq!(json(&s, &["get", "actor", "account/b1:0"]).await["parent"], "account/b1");
+    assert!(cicada(&s, &["describe", "actor", "account/b1:0"]).await.contains("parent: account/b1"));
+    let wide = cicada(&s, &["get", "actor", "account/b1:0", "-o", "wide"]).await;
+    assert!(wide.contains("PARENT") && wide.contains("account/b1 "), "{wide}");
+    assert_eq!(json(&s, &["get", "actor", "account/b1"]).await["parent"], Value::Null);
+
+    assert_eq!(cicada(&s, &["delete", "actor", "account/b1"]).await, "actor account/b1 deleted\n");
+    assert!(cicada_fails(&s, &["get", "actor", "account/b1:0"]).await.contains("not found"), "the children went too");
+}
+
+/// A missing actor: `run` fails, which the binary turns into exit code 1.
+#[tokio::test]
+async fn the_children_of_an_actor_that_does_not_exist_fail() {
+    let s = server().await;
+    assert_eq!(cicada_fails(&s, &["get", "children", "account/nobody:1"]).await, "actor account/nobody:1 not found");
 }
 
 #[tokio::test]

@@ -69,10 +69,14 @@ pub struct ActorView {
     /// True while the mailbox is paused: messages queue up, no new turn is claimed.
     #[serde(default)]
     pub paused: bool,
+    /// The actor whose turn created this one as a child; null for an independent actor. Deleting or stopping the
+    /// parent removes this actor too.
+    #[serde(default)]
+    pub parent: Option<ActorAddress>,
 }
 
-/// One page of a listing (`GET /actors`, `GET /actors/{type}/{key}/mailbox`, `GET /messages`, `GET /outcomes`, `GET
-/// /turns`).
+/// One page of a listing (`GET /actors`, `GET /actors/{type}/{key}/children`, `GET /actors/{type}/{key}/mailbox`,
+/// `GET /messages`, `GET /outcomes`, `GET /turns`).
 ///
 /// Paging: pass [`Self::next`] back as the `cursor` query parameter to get the following page; it is null on the last
 /// page. The page size is the `limit` query parameter (1..1000, default 100).
