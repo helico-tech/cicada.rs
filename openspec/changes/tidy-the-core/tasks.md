@@ -63,7 +63,7 @@ was returned before. No text changes.
 
 ## 4. The answers of a send
 
-- [ ] 4.1 `SendResult::NoSuchType` [3, 5]: `ActorSystem::send_message` answers it when the type of the target is not
+- [x] 4.1 `SendResult::NoSuchType` [3, 5]: `ActorSystem::send_message` answers it when the type of the target is not
       registered. The order of its checks does not change: the check for a known id still runs first. `cicada-axum`
       answers `404 no-such-type` with the problem a create uses. `cicada-client`, `cicada-cli` and the terminal UI
       follow where they name the answers of a send. A retry of a failed message is not changed. Regenerate

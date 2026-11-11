@@ -291,9 +291,10 @@ impl ActorClient {
 
     /// Sends a message given as type name and JSON payload (`POST /actors/{path}/messages`), for callers without the
     /// message types. Retried with the same id on transport errors and `503` (see the crate documentation); the
-    /// policies of `options` are ignored when the id was already accepted. Errors: `404` when the instance does not
-    /// exist, `422` for an unknown type name or (on a node hosting the type) an undecodable payload,
-    /// `409` when the id was accepted for another message, `400` for an invalid envelope.
+    /// policies of `options` are ignored when the id was already accepted. Errors: `404 no-such-type` when no
+    /// registered type matches `to`, `404 no-such-instance` when its type is registered and the instance does not
+    /// exist, `422` for an unknown type name or (on a node hosting the type) an undecodable payload, `409` when the id
+    /// was accepted for another message, `400` for an invalid envelope.
     pub async fn send_message(
         &self,
         to: &ActorAddress,

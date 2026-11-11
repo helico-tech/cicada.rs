@@ -212,6 +212,7 @@ async fn errors_carry_the_servers_problem() {
     );
     assert_problem(actors.create(&Beacon { name: "b".into() }, &AccountState::default()).await, 422, pt::INVALID_STATE);
     assert_problem(actors.send(&acme(), AccountMsg::Deposit { amount: 1 }).await, 404, pt::NO_SUCH_INSTANCE);
+    assert_problem(actors.send_message(&nope, "Deposit", json!({}), SendOptions::new()).await, 404, pt::NO_SUCH_TYPE);
 
     actors.create(&acme(), &AccountState::default()).await.unwrap();
     let address = acme().address().unwrap();

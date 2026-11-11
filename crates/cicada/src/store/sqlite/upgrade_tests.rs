@@ -7,6 +7,7 @@ use std::sync::Arc;
 use crate::actor::contract_of;
 use crate::prelude::*;
 use crate::retry::{Backoff, RetryPolicy};
+use crate::runtime::{RetryResult, SendResult};
 use crate::store::{Backend, DeleteResult, MessageStatus, OutcomeStatus, OutgoingMessage, Store, support};
 use crate::time;
 use serde::{Deserialize, Serialize};
@@ -516,5 +517,59 @@ async fn a_type_that_no_node_hosts_any_more() {
     assert!(matches!(system.delete_actor(&gone).await.unwrap(), DeleteResult::Deleted { .. }));
     assert_eq!(system.get_actor(&gone).await.unwrap(), None);
     system.stop().await;
+    store.close().await;
+}
+
+/// Scenarios: The type is not registered; A retry while the type is not registered.
+#[tokio::test]
+async fn a_send_to_an_actor_whose_type_is_not_registered_answers_no_such_type_and_a_retry_is_accepted() {
+    let db = Db::at_version(2).await;
+    db.exec(REGISTER, &["notes", &v2_contract::<NotesActor>(), "sha256:v2-notes"]).await.unwrap();
+    db.exec(
+        "INSERT INTO actors (address, type, state, next_due_at, created_at) VALUES ('notes/a', 'notes', '{}', 0, 0)",
+        &[],
+    )
+    .await
+    .unwrap();
+    db.exec(
+        "INSERT INTO messages (id, actor_address, seq, type, payload, headers, deliver_at)
+            VALUES ('m1', 'notes/a', 1, 'Nope', '{}', '{}', 0)",
+        &[],
+    )
+    .await
+    .unwrap();
+    db.exec("UPDATE sequences SET value = 1 WHERE name = 'seq'", &[]).await.unwrap();
+
+    // The upgrade removed the registration of `notes` and kept its actor.
+    let store = db.open().await;
+    let sender = ActorSystem::builder(Store::from_backend(store.clone())).build();
+    let notes = address("notes/a");
+    let note = || json!({"text": "x"});
+    assert_eq!(
+        sender.send_message(&notes, "Note", note(), SendOptions::new()).await.unwrap(),
+        SendResult::NoSuchType,
+        "the actor exists, its type is what is missing"
+    );
+
+    // A node that hosts `notes` registers it and fails `m1`; then the registration is gone again, as after the upgrade.
+    let hosting = ActorSystem::builder(Store::from_backend(store.clone())).host(NotesActor).build();
+    hosting.initialize().await.unwrap();
+    assert_eq!(hosting.run_due_turns(10).await.unwrap(), 1);
+    let m1 = MessageId::new("m1").unwrap();
+    assert!(
+        matches!(sender.status(&m1).await.unwrap(), Some(MessageStatus::Finished(o)) if o.status == OutcomeStatus::Failed)
+    );
+    hosting.stop().await;
+    db.exec("DELETE FROM actor_types", &[]).await.unwrap();
+    assert_eq!(sender.send_message(&notes, "Note", note(), SendOptions::new()).await.unwrap(), SendResult::NoSuchType);
+
+    // A retry is no send: it is accepted and waits in the mailbox.
+    let retried = match sender.retry_message(&m1).await.unwrap() {
+        RetryResult::Accepted(m) => m,
+        other => panic!("{other:?}"),
+    };
+    let pending = store.pending(&notes, None, 10).await.unwrap().items;
+    assert_eq!(pending.iter().map(|m| &m.id).collect::<Vec<_>>(), [&retried.id]);
+    sender.stop().await;
     store.close().await;
 }

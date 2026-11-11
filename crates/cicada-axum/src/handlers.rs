@@ -274,6 +274,7 @@ async fn send(api: &Api, address: ActorAddress, req: Request) -> Outcome {
         )
         .into()),
         SendResult::NoSuchInstance => Err(no_such_instance(&address).into()),
+        SendResult::NoSuchType => Err(no_such_type(&address).into()),
         SendResult::UnknownType { message_type, type_name } => Err(unprocessable(
             problem_types::UNKNOWN_MESSAGE_TYPE,
             "Unknown message type",

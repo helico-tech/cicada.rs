@@ -271,7 +271,7 @@ async fn send_errors() {
     let path = "/actors/counter/a/messages";
     let add = r#"{"type": "Add", "payload": {"n": 1}}"#;
     assert_problem(&post(&app, "/actors/counter/missing/messages", add).await, 404, pt::NO_SUCH_INSTANCE);
-    assert_problem(&post(&app, "/actors/nope/x/messages", add).await, 404, pt::NO_SUCH_INSTANCE);
+    assert_problem(&post(&app, "/actors/nope/x/messages", add).await, 404, pt::NO_SUCH_TYPE);
     assert_problem(&post(&app, path, r#"{"type": "Nope", "payload": {}}"#).await, 422, pt::UNKNOWN_MESSAGE_TYPE);
     assert_problem(&post(&app, path, r#"{"type": "Add", "payload": {"n": "x"}}"#).await, 422, pt::INVALID_PAYLOAD);
     for bad in [

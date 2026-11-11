@@ -84,7 +84,7 @@ async fn get_list_delete() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn send_accepted_duplicate_no_such_instance_unknown_type_invalid_payload() {
+async fn send_accepted_duplicate_no_such_instance_no_such_type_unknown_type_invalid_payload() {
     let test = harness().await;
     let system = test.system();
     test.create(&a(), &CounterState::default()).await;
@@ -106,7 +106,7 @@ async fn send_accepted_duplicate_no_such_instance_unknown_type_invalid_payload()
     );
     assert_eq!(
         system.send_message(&parse("x/y"), "Add", json!({}), SendOptions::new()).await.unwrap(),
-        SendResult::NoSuchInstance
+        SendResult::NoSuchType
     );
     assert_eq!(
         system.send_message(&addr, "Nope", json!({}), SendOptions::new()).await.unwrap(),
@@ -119,6 +119,31 @@ async fn send_accepted_duplicate_no_such_instance_unknown_type_invalid_payload()
     test.run_until_idle().await;
     let again = system.send_message(&addr, "Add", json!({"n": 1}), with_id()).await.unwrap();
     assert!(matches!(again, SendResult::Duplicate(_)), "{again:?}");
+}
+
+/// Scenario: A repeated send after the type was removed. The scenarios of an actor whose type is not registered are in
+/// the SQLite upgrade tests, as only an upgrade leaves one.
+#[tokio::test(start_paused = true)]
+async fn a_repeated_send_stays_a_duplicate_after_the_actor_was_deleted_and_its_type_removed() {
+    let test = TestActors::builder().with(|n| n.host(CounterActor)).build().await.unwrap();
+    let system = test.system();
+    test.create(&a(), &CounterState::default()).await;
+    let id = MessageId::random();
+    let with_id = || SendOptions::new().id(id.clone());
+    assert!(matches!(
+        system.send_message(&a().address(), "Add", json!({"n": 1}), with_id()).await.unwrap(),
+        SendResult::Accepted(_)
+    ));
+    test.run_until_idle().await;
+
+    assert!(matches!(system.delete_actor(&a().address()).await.unwrap(), DeleteResult::Deleted { .. }));
+    assert_eq!(system.remove_type(&type_name::<Counter>()).await.unwrap(), RemoveTypeResult::Removed);
+    let repeated = system.send_message(&a().address(), "Add", json!({"n": 1}), with_id()).await.unwrap();
+    assert!(matches!(repeated, SendResult::Duplicate(Some(ref m)) if m.id == id), "{repeated:?}");
+    assert_eq!(
+        system.send_message(&a().address(), "Add", json!({"n": 1}), SendOptions::new()).await.unwrap(),
+        SendResult::NoSuchType
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -237,7 +262,7 @@ async fn a_type_is_removed_only_while_no_actor_of_it_exists_and_is_not_served_af
     assert_eq!(system.create_actor(&address, json!({"total": 0})).await.unwrap(), CreateActorResult::NoSuchType);
     assert_eq!(
         system.send_message(&address, "Add", json!({"n": 1}), SendOptions::new()).await.unwrap(),
-        SendResult::NoSuchInstance
+        SendResult::NoSuchType
     );
     let def = Contract::new(
         name.clone(),

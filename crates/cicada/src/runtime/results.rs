@@ -22,7 +22,7 @@ pub enum CreateActorResult {
 }
 
 /// Result of a send from outside an actor (`POST /actors/{type}/{key}/messages`).
-/// HTTP: `202`, `200`, `409`, `404`, `422`, `422`.
+/// HTTP: `202`, `200`, `409`, `404`, `404`, `422`, `422`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SendResult {
     /// The message was enqueued, with its store-assigned `seq` and effective `deliver_at`.
@@ -32,8 +32,10 @@ pub enum SendResult {
     Duplicate(Option<Message>),
     /// The id was already accepted for a *different* message (another target or type); nothing was enqueued.
     IdConflict(Message),
-    /// The target instance does not exist.
+    /// The target's type is registered, and the target instance does not exist.
     NoSuchInstance,
+    /// No registered type matches the target, whether or not an instance of it exists.
+    NoSuchType,
     /// The target's type does not accept the message type name.
     UnknownType {
         /// The refused type name.

@@ -751,9 +751,10 @@ impl ActorSystem {
     /// Sends a message (`POST /actors/{type}/{key}/messages`). Idempotent on the id within the retention window.
     ///
     /// Checks, in order: the id was not already accepted (then [`SendResult::Duplicate`] for the same target and type,
-    /// whatever else changed, and [`SendResult::IdConflict`] for a different message); a registered
-    /// type matches `to`; it accepts `message_type`; when this node hosts the type, `payload` decodes. Then the store
-    /// enqueues it, refusing an absent instance. Fields beyond the send limits and delivery times out of range are
+    /// whatever else changed, and [`SendResult::IdConflict`] for a different message); a registered type matches `to`
+    /// (else [`SendResult::NoSuchType`], whether or not the instance exists); it accepts `message_type`; when this node
+    /// hosts the type, `payload` decodes. Then the store enqueues it, refusing an absent instance
+    /// ([`SendResult::NoSuchInstance`]). Fields beyond the send limits and delivery times out of range are
     /// [`OpError::Invalid`].
     pub async fn send_message(
         &self,
@@ -773,7 +774,7 @@ impl ActorSystem {
             return Ok(duplicate_of(Some(existing), to, message_type));
         }
         let Some(resolved) = self.inner.resolver.resolve(to).await? else {
-            return Ok(SendResult::NoSuchInstance);
+            return Ok(SendResult::NoSuchType);
         };
         let name = to.type_name();
         if !resolved.contract.accepts(message_type) {
