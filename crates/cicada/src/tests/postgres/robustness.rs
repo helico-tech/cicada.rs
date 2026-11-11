@@ -94,7 +94,7 @@ async fn s2_a_commit_failing_half_way_applies_nothing() {
     let child = ActorAddress::parse("pgr/child").unwrap();
     let mut commit = CommitRequest::new(a(), claim.epoch, claim.message.id, TurnOutcome::Done);
     commit.state = StateChange::NewState(json!(1));
-    commit.creates = vec![ActorCreate { address: child.clone(), state: json!({}) }];
+    commit.creates = vec![ActorCreate { address: child.clone(), state: json!({}), child: false }];
     commit.sends = vec![
         OutgoingMessage::new(target.clone(), "Good", json!(1)),
         OutgoingMessage::new(target.clone(), "Poison", json!(2)),

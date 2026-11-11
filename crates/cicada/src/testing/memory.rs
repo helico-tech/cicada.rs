@@ -29,6 +29,8 @@ struct ActorRow {
     /// The epoch an operator asked to cancel.
     cancel_epoch: Option<i64>,
     paused: bool,
+    /// The instance whose commit created this one as a child.
+    parent: Option<ActorAddress>,
     /// Pending messages ordered by `(deliver_at, seq)`.
     mailbox: BTreeSet<(Timestamp, i64, MessageId)>,
 }
@@ -51,6 +53,7 @@ impl ActorRow {
             version: self.version,
             created_at: self.created_at,
             paused: self.paused,
+            parent: self.parent.clone(),
         }
     }
 
@@ -231,6 +234,34 @@ impl InMemoryStore {
         }
     }
 
+    /// `root` and every descendant, in address order. The set of the addresses seen keeps each once, so the walk ends
+    /// on parent links that form a cycle.
+    fn tree(s: &State, root: &ActorAddress) -> BTreeSet<ActorAddress> {
+        let mut seen = BTreeSet::from([root.clone()]);
+        let mut level = vec![root.clone()];
+        while !level.is_empty() {
+            let next: Vec<ActorAddress> = s
+                .actors
+                .values()
+                .filter(|r| r.parent.as_ref().is_some_and(|p| level.contains(p)) && !seen.contains(&r.address))
+                .map(|r| r.address.clone())
+                .collect();
+            seen.extend(next.iter().cloned());
+            level = next;
+        }
+        seen
+    }
+
+    /// Removes `root` and every descendant and purges their mailboxes; returns how many messages were purged.
+    fn remove_tree(&self, s: &mut State, root: &ActorAddress, now: Timestamp) -> usize {
+        let mut purged = 0;
+        for address in Self::tree(s, root) {
+            purged += self.purge_mailbox(s, &address, now);
+            s.actors.remove(address.as_str());
+        }
+        purged
+    }
+
     fn purge_mailbox(&self, s: &mut State, address: &ActorAddress, now: Timestamp) -> usize {
         let ids: Vec<MessageId> = match s.actors.get_mut(address.as_str()) {
             Some(row) => {
@@ -263,7 +294,13 @@ impl InMemoryStore {
         self.live_outcome(s, id, now).map(MessageStatus::Finished)
     }
 
-    fn create_locked(s: &mut State, address: &ActorAddress, state: Value, now: Timestamp) -> CreateResult {
+    fn create_locked(
+        s: &mut State,
+        address: &ActorAddress,
+        state: Value,
+        parent: Option<&ActorAddress>,
+        now: Timestamp,
+    ) -> CreateResult {
         if !s.types.contains_key(address.type_name().as_str()) {
             return CreateResult::NoSuchType;
         }
@@ -283,6 +320,7 @@ impl InMemoryStore {
                 lease_message: None,
                 cancel_epoch: None,
                 paused: false,
+                parent: parent.cloned(),
                 mailbox: BTreeSet::new(),
             },
         );
@@ -328,7 +366,7 @@ impl Backend for InMemoryStore {
     }
 
     async fn create(&self, address: &ActorAddress, state: Value) -> StoreResult<CreateResult> {
-        self.locked(|s, now| Ok(Self::create_locked(s, address, state, now)))
+        self.locked(|s, now| Ok(Self::create_locked(s, address, state, None, now)))
     }
 
     async fn get(&self, address: &ActorAddress) -> StoreResult<Option<ActorRecord>> {
@@ -356,14 +394,32 @@ impl Backend for InMemoryStore {
         })
     }
 
+    async fn children(
+        &self,
+        parent: &ActorAddress,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> StoreResult<Page<ActorAddress>> {
+        check_limit(limit)?;
+        let after = cursor.map_or("", |c| c.0.as_str());
+        self.locked(|s, _| {
+            let items: Vec<ActorAddress> = s
+                .actors
+                .values()
+                .filter(|r| r.parent.as_ref() == Some(parent) && r.address.as_str() > after)
+                .take(limit + 1)
+                .map(|r| r.address.clone())
+                .collect();
+            Ok(support::page_of(items, limit, |a| PageCursor(a.to_string())))
+        })
+    }
+
     async fn delete(&self, address: &ActorAddress) -> StoreResult<DeleteResult> {
         self.locked(|s, now| {
             if !s.actors.contains_key(address.as_str()) {
                 return Ok(DeleteResult::Absent);
             }
-            let purged = self.purge_mailbox(s, address, now);
-            s.actors.remove(address.as_str());
-            Ok(DeleteResult::Deleted { purged })
+            Ok(DeleteResult::Deleted { purged: self.remove_tree(s, address, now) })
         })
     }
 
@@ -710,6 +766,7 @@ impl Backend for InMemoryStore {
     }
 
     async fn commit(&self, commit: CommitRequest) -> StoreResult<CommitResult> {
+        support::check_creates(&commit.creates)?;
         self.locked(|s, now| {
             let Some(row) = held_lease(s, &commit.address, commit.epoch) else {
                 return Ok(CommitResult::LeaseLost);
@@ -727,6 +784,13 @@ impl Backend for InMemoryStore {
             if let Some(create) = commit.creates.iter().find(|c| !s.types.contains_key(c.address.type_name().as_str()))
             {
                 return Ok(CommitResult::Rejected(format!("Create of {}: its type is not registered", create.address)));
+            }
+            let foreign =
+                commit.creates.iter().filter(|c| c.child).find(|c| {
+                    s.actors.get(c.address.as_str()).is_some_and(|r| r.parent.as_ref() != Some(&commit.address))
+                });
+            if let Some(create) = foreign {
+                return Ok(CommitResult::Rejected(support::foreign_child_reason(&create.address, &commit.address)));
             }
             let mut send_ids = HashSet::new();
             for send in &commit.sends {
@@ -787,7 +851,8 @@ impl Backend for InMemoryStore {
             }
             // 3. creates, 4. sends
             for c in &commit.creates {
-                Self::create_locked(s, &c.address, c.state.clone(), now);
+                let parent = c.child.then_some(&commit.address);
+                Self::create_locked(s, &c.address, c.state.clone(), parent, now);
             }
             let mut sent = Vec::with_capacity(commit.sends.len());
             for send in commit.sends {
@@ -804,8 +869,7 @@ impl Backend for InMemoryStore {
                 }
                 StateChange::Stop => {
                     let version = s.actors[commit.address.as_str()].version;
-                    self.purge_mailbox(s, &commit.address, now);
-                    s.actors.remove(commit.address.as_str());
+                    self.remove_tree(s, &commit.address, now);
                     version
                 }
             };

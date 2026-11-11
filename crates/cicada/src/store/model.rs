@@ -478,6 +478,9 @@ pub struct ActorRecord {
     pub created_at: Timestamp,
     /// True while the mailbox is paused: messages queue up, no new turn is claimed.
     pub paused: bool,
+    /// The actor whose turn created this one as a child, or `None` for an independent actor. It never changes, and
+    /// removing the parent removes this actor too.
+    pub parent: Option<ActorAddress>,
 }
 
 /// What [`ActorSystem::stats`](crate::ActorSystem::stats) counts under an address prefix.
@@ -537,6 +540,8 @@ pub struct ActorCreate {
     pub address: ActorAddress,
     /// Its initial state.
     pub state: Value,
+    /// True for a child of the committing instance (`Turn::create_child`), false for an independent instance.
+    pub child: bool,
 }
 
 /// What a commit does to the committing instance's state.
@@ -546,7 +551,7 @@ pub enum StateChange {
     Unchanged,
     /// Write the state and increase the version by 1.
     NewState(Value),
-    /// Return the instance to absent and purge its remaining mailbox.
+    /// Return the instance and every descendant to absent and purge their remaining mailboxes.
     Stop,
 }
 

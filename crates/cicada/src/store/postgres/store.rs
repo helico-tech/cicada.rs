@@ -86,6 +86,13 @@ macro_rules! transaction {
 /// `FOR UPDATE SKIP LOCKED`, so concurrent claims from many nodes never wait for each other and never share an
 /// instance (S4). Transactions PostgreSQL aborts for a deadlock or serialization failure are re-run, up to 8 times.
 ///
+/// **Trees.** A removal (`delete`, or a commit that stops) locks the instance, then its children, then theirs, each
+/// level with its own statement. A child is created only in a commit that holds its parent's row lock, so once a
+/// level is locked no commit can add a child below it, and the next statement sees every child committed before. One
+/// recursive query would read a single snapshot and could miss a child that a commit it waited for added. These locks
+/// are not in address order, so a removal can deadlock with a commit that sends up or down the tree; the re-run covers
+/// that.
+///
 /// **Clock (S9).** The store clock is the database server's `clock_timestamp()`; the local clock is never used for
 /// due-ness or leases. Each transaction reads it once, *after* taking its row locks, and uses that single value for
 /// every statement (truncated to microseconds, the precision of `timestamptz`). `now()` (the transaction start time)
@@ -486,6 +493,7 @@ fn actor_record(row: &PgRow) -> Result<ActorRecord, TxError> {
         version: row.try_get("version")?,
         created_at: row.try_get("created_at")?,
         paused: row.try_get("paused")?,
+        parent: row.try_get::<Option<String>, _>("parent")?.map(address).transpose()?,
     })
 }
 
@@ -535,10 +543,11 @@ async fn list_types_in(tx: &mut Tx) -> Result<Vec<TypeDef>, TxError> {
 }
 
 async fn get_in(tx: &mut Tx, address: &str) -> Result<Option<ActorRecord>, TxError> {
-    let row = sqlx::query("SELECT address, type, state, version, created_at, paused FROM actors WHERE address = $1")
-        .bind(address)
-        .fetch_optional(&mut *tx.c)
-        .await?;
+    let row =
+        sqlx::query("SELECT address, type, state, version, created_at, paused, parent FROM actors WHERE address = $1")
+            .bind(address)
+            .fetch_optional(&mut *tx.c)
+            .await?;
     row.as_ref().map(actor_record).transpose()
 }
 
@@ -582,24 +591,65 @@ async fn create_in(tx: &mut Tx, address: &ActorAddress, state: &Value) -> Result
     }
 }
 
-/// Creates `create`'s instance unless it exists (idempotent) and locks its row; returns its type. Runs before the
-/// transaction reads its clock, so `created_at` is taken from `clock_timestamp()` directly.
-async fn create_and_lock(tx: &mut Tx, create: &ActorCreate) -> Result<String, TxError> {
+/// Creates `create`'s instance with `parent` unless it exists (idempotent) and locks its row; returns its type and its
+/// parent. Runs before the transaction reads its clock, so `created_at` is taken from `clock_timestamp()` directly.
+async fn create_and_lock(
+    tx: &mut Tx,
+    create: &ActorCreate,
+    parent: Option<&str>,
+) -> Result<(String, Option<String>), TxError> {
     loop {
         sqlx::query(
-            "INSERT INTO actors (address, type, state, created_at) VALUES ($1, $2, $3, clock_timestamp()) \
+            "INSERT INTO actors (address, type, state, parent, created_at) VALUES ($1, $2, $3, $4, clock_timestamp()) \
              ON CONFLICT (address) DO NOTHING",
         )
         .bind(create.address.as_str())
         .bind(create.address.type_name().as_str())
         .bind(&create.state)
+        .bind(parent)
         .execute(&mut *tx.c)
         .await?;
         // Our own row, or the conflicting one once its transaction committed; absent only if it was deleted again.
-        if let Some(t) = lock_actor(tx, create.address.as_str()).await? {
-            return Ok(t);
+        let row: Option<(String, Option<String>)> =
+            sqlx::query_as("SELECT type, parent FROM actors WHERE address = $1 FOR UPDATE")
+                .bind(create.address.as_str())
+                .fetch_optional(&mut *tx.c)
+                .await?;
+        if let Some(row) = row {
+            return Ok(row);
         }
     }
+}
+
+/// Locks the descendants of `root`, whose row the caller has locked, level by level (see the type's docs), and returns
+/// `root` and every descendant in address order. A level leaves out the rows locked already, so the walk ends on
+/// parent links that form a cycle.
+async fn lock_tree(tx: &mut Tx, root: &str) -> Result<Vec<String>, TxError> {
+    let mut locked = vec![root.to_owned()];
+    let mut level = locked.clone();
+    while !level.is_empty() {
+        level = sqlx::query_scalar(
+            "SELECT address FROM actors WHERE parent = ANY ($1) AND address <> ALL ($2) ORDER BY address FOR UPDATE",
+        )
+        .bind(&level)
+        .bind(&locked)
+        .fetch_all(&mut *tx.c)
+        .await?;
+        locked.extend(level.iter().cloned());
+    }
+    locked.sort_unstable();
+    Ok(locked)
+}
+
+/// Removes every instance of `tree`, whose rows the caller has locked, and purges their mailboxes; returns how many
+/// messages were purged.
+async fn remove_tree(tx: &mut Tx, tree: &[String]) -> Result<usize, TxError> {
+    let mut purged = 0;
+    for addr in tree {
+        purged += purge_mailbox(tx, addr).await?;
+        sqlx::query("DELETE FROM actors WHERE address = $1").bind(addr).execute(&mut *tx.c).await?;
+    }
+    Ok(purged)
 }
 
 async fn is_id_in_use(tx: &mut Tx, id: &MessageId) -> Result<bool, TxError> {
@@ -880,14 +930,35 @@ impl Backend for PostgresStore {
         })
     }
 
+    async fn children(
+        &self,
+        parent: &ActorAddress,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> StoreResult<Page<ActorAddress>> {
+        check_limit(limit)?;
+        let after = cursor.map_or("", |c| c.0.as_str());
+        transaction!(self, true, |tx| -> Page<ActorAddress> {
+            let rows: Vec<String> = sqlx::query_scalar(
+                "SELECT address FROM actors WHERE parent = $1 AND address > $2 ORDER BY address LIMIT $3",
+            )
+            .bind(parent.as_str())
+            .bind(after)
+            .bind(limit as i64 + 1)
+            .fetch_all(&mut *tx.c)
+            .await?;
+            let addresses = rows.into_iter().map(address).collect::<Result<Vec<_>, _>>()?;
+            commit(support::page_of(addresses, limit, |a| PageCursor(a.to_string())))
+        })
+    }
+
     async fn delete(&self, address: &ActorAddress) -> StoreResult<DeleteResult> {
         transaction!(self, false, |tx| -> DeleteResult {
             if lock_actor(tx, address.as_str()).await?.is_none() {
                 return commit(DeleteResult::Absent);
             }
-            let purged = purge_mailbox(tx, address.as_str()).await?;
-            sqlx::query("DELETE FROM actors WHERE address = $1").bind(address.as_str()).execute(&mut *tx.c).await?;
-            commit(DeleteResult::Deleted { purged })
+            let tree = lock_tree(tx, address.as_str()).await?;
+            commit(DeleteResult::Deleted { purged: remove_tree(tx, &tree).await? })
         })
     }
 
@@ -1532,6 +1603,7 @@ impl Backend for PostgresStore {
     // ---- commit ----
 
     async fn commit(&self, request: CommitRequest) -> StoreResult<CommitResult> {
+        support::check_creates(&request.creates)?;
         let r = &request;
         transaction!(self, false, |tx| -> CommitResult {
             if r.cancels.contains(&r.message_id) {
@@ -1543,12 +1615,18 @@ impl Backend for PostgresStore {
                 .chain(r.sends.iter().map(|s| s.to.as_str()))
                 .collect();
             let touched: Vec<&str> = touched.into_iter().collect();
-            let rows: Vec<(String, String)> =
-                sqlx::query_as("SELECT address, type FROM actors WHERE address = ANY ($1) ORDER BY address FOR UPDATE")
-                    .bind(&touched)
-                    .fetch_all(&mut *tx.c)
-                    .await?;
-            let mut types: HashMap<String, String> = rows.into_iter().collect();
+            let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
+                "SELECT address, type, parent FROM actors WHERE address = ANY ($1) ORDER BY address FOR UPDATE",
+            )
+            .bind(&touched)
+            .fetch_all(&mut *tx.c)
+            .await?;
+            let mut types = HashMap::new();
+            let mut parents = HashMap::new();
+            for (address, t, parent) in rows {
+                types.insert(address.clone(), t);
+                parents.insert(address, parent);
+            }
             let claimed: Option<Option<String>> = sqlx::query_scalar(
                 "SELECT lease_message FROM actors WHERE address = $1 AND epoch = $2 AND lease_owner IS NOT NULL",
             )
@@ -1597,10 +1675,28 @@ impl Backend for PostgresStore {
             creates.sort_by(|a, b| a.address.as_str().cmp(b.address.as_str()));
             for create in creates {
                 if !types.contains_key(create.address.as_str()) {
-                    let t = create_and_lock(tx, create).await?;
+                    let (t, parent) = create_and_lock(tx, create, create.child.then_some(r.address.as_str())).await?;
                     types.insert(create.address.as_str().to_owned(), t);
+                    parents.insert(create.address.as_str().to_owned(), parent);
                 }
             }
+            // A child create never takes over an instance: one that exists with another parent or none rejects the
+            // commit. Only this commit can create a child of its own instance, whose lock it holds.
+            let foreign =
+                r.creates.iter().filter(|c| c.child).find(|c| {
+                    parents.get(c.address.as_str()).cloned().flatten().as_deref() != Some(r.address.as_str())
+                });
+            if let Some(create) = foreign {
+                return Ok(Done::Rollback(CommitResult::Rejected(support::foreign_child_reason(
+                    &create.address,
+                    &r.address,
+                ))));
+            }
+            // A stop removes the tree, the children just created included: locked now, before the clock is read.
+            let tree = match r.state {
+                StateChange::Stop => lock_tree(tx, r.address.as_str()).await?,
+                _ => Vec::new(),
+            };
 
             // Validate before applying the rest (S2); a rejection rolls back the creates and leaves the lease as it is.
             let mut send_ids = HashSet::new();
@@ -1680,11 +1776,11 @@ impl Backend for PostgresStore {
                         .await?;
                 }
                 StateChange::Stop => {
-                    purge_mailbox(tx, r.address.as_str()).await?;
-                    let version: i64 = sqlx::query_scalar("DELETE FROM actors WHERE address = $1 RETURNING version")
+                    let version: i64 = sqlx::query_scalar("SELECT version FROM actors WHERE address = $1")
                         .bind(r.address.as_str())
                         .fetch_one(&mut *tx.c)
                         .await?;
+                    remove_tree(tx, &tree).await?;
                     return commit(CommitResult::Committed { version, sent, cancelled });
                 }
             }

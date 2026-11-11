@@ -241,7 +241,7 @@ pub async fn reschedule_is_atomic_with_the_commits_sends_and_creates_and_a_rejec
 
         let committed = t
             .commit_ok(CommitRequest {
-                creates: vec![ActorCreate { address: child.clone(), state: json!({}) }],
+                creates: vec![ActorCreate { address: child.clone(), state: json!({}), child: false }],
                 sends: vec![
                     OutgoingMessage::new(other.clone(), "T", json!(1)),
                     OutgoingMessage::new(child.clone(), "T", json!(2)),

@@ -1,4 +1,4 @@
-//! The PostgreSQL schema and its versioned migrations; the schema is at version 3.
+//! The PostgreSQL schema and its versioned migrations; the schema is at version 4.
 //!
 //! The tables of the architecture (`actor_types`, `actors`, `messages`, `outcomes`, `nodes`) plus two sequences for the
 //! store-wide `seq` and epoch counters. JSON values are `jsonb`, instants `timestamptz` (microsecond precision, the
@@ -10,11 +10,13 @@
 //! is refused. When the schema is already current, start runs no DDL at all, so a node may connect as a user without
 //! `CREATE` privileges once the schema was migrated by one that has them.
 //!
-//! Migrations are additive so that nodes of the previous version keep working during a rolling deploy, with two
+//! Migrations are additive so that nodes of the previous version keep working during a rolling deploy, with three
 //! exceptions, after which every old node is stopped before the first new one starts: migration 2 makes `actors.state`
 //! required, so a node of version 1 that writes an actor without a state fails; migration 3 removes every registration
 //! and rewrites `%3A` to `:` in addresses, and the contracts that nodes register again are not those of version 2
-//! (ADR 0021).
+//! (ADR 0021); migration 4 adds `actors.parent`, and a node of version 3 that keeps running deletes or stops a parent
+//! without its children, which then stay behind (ADR 0019). A node of version 3 that opens the migrated database
+//! refuses it.
 //!
 //! A statement of a migration that violates a constraint (SQLSTATE class `23`, such as two old addresses that become one
 //! in migration 3) fails with [`StoreError::Invalid`], which names the version it could not reach and holds
@@ -128,6 +130,14 @@ const MIGRATIONS: &[&[&str]] = &[
         "UPDATE {s}.actors SET address = replace(address, '%3A', ':') WHERE strpos(address, '%3A') > 0",
         "UPDATE {s}.messages SET actor_address = replace(actor_address, '%3A', ':') WHERE strpos(actor_address, '%3A') > 0",
         "UPDATE {s}.outcomes SET actor_address = replace(actor_address, '%3A', ':') WHERE strpos(actor_address, '%3A') > 0",
+    ],
+    // 4: child actors (ADR 0019). `parent` is the instance whose commit created this one as a child, null for an
+    // independent one, so every existing actor is independent. No foreign key: the store removes a tree itself, as
+    // every removed mailbox needs its `purged` outcomes. `actors_parent` serves the listing of children and the walk
+    // of a removal. Not additive (see the module docs).
+    &[
+        r#"ALTER TABLE {s}.actors ADD COLUMN parent text COLLATE "C""#,
+        "CREATE INDEX actors_parent ON {s}.actors (parent, address) WHERE parent IS NOT NULL",
     ],
 ];
 
@@ -264,7 +274,7 @@ mod tests {
     }
 
     #[test]
-    fn the_schema_is_at_version_3() {
-        assert_eq!(VERSION, 3);
+    fn the_schema_is_at_version_4() {
+        assert_eq!(VERSION, 4);
     }
 }

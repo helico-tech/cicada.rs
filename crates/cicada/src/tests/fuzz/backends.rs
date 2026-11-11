@@ -74,7 +74,7 @@ async fn the_list_with_two_instances_due_at_one_instant_agrees() {
         Op::Enqueue(send(0, 0, Due::Now)),
         Op::Commit(Commit {
             end: End::Rescheduled(Due::AtAhead(NS)),
-            creates: vec![(0, 0)],
+            creates: vec![(0, 0, false)],
             sends: vec![send(0, 1, Due::After(NS))],
             ..commit(0, 0)
         }),
@@ -118,7 +118,7 @@ async fn tied_pair() -> Pair {
         // `alpha/1` goes back to its mailbox, and a re-created `alpha/0` gets a message: both are due 1 ns ahead.
         Op::Commit(Commit {
             end: End::Rescheduled(Due::AtAhead(NS)),
-            creates: vec![(0, 0)],
+            creates: vec![(0, 0, false)],
             sends: vec![send(0, 1, Due::After(NS))],
             ..commit(0, 0)
         }),
@@ -296,6 +296,8 @@ async fn generated_lists_reach_deep_states() {
         ("cancel requests", "cancel-requested", 5),
         ("refused requests", "\"error\":\"invalid\"", 300),
     ];
+    // Trees: listings of children that found some, and children removed together with their parent.
+    let tree_marks = [("listed children", 40), ("children removed with their parent", 40)];
     let mut counts = BTreeMap::<&str, usize>::new();
     let mut runner = TestRunner::deterministic();
     for _ in 0..400 {
@@ -307,14 +309,34 @@ async fn generated_lists_reach_deep_states() {
                 continue;
             }
             let now = crate::store::Clock::now(&*pair.clock);
+            let before = parents(&*pair.first.store).await;
             let answer = pair.first.apply(op, now).await.to_string();
             for (name, needle, _) in marks {
                 *counts.entry(name).or_default() += answer.matches(needle).count();
             }
+            if matches!(op, Op::Children { .. }) && answer.contains("\"items\":[\"") {
+                *counts.entry("listed children").or_default() += 1;
+            }
+            let after = parents(&*pair.first.store).await;
+            let removed = |a: &String| !after.contains_key(a);
+            let cascaded = before.iter().filter(|(a, p)| removed(a) && p.as_ref().is_some_and(removed)).count();
+            *counts.entry("children removed with their parent").or_default() += cascaded;
         }
     }
-    for (name, _, floor) in marks {
-        let seen = counts[name];
+    let floors = marks.iter().map(|(name, _, floor)| (*name, *floor)).chain(tree_marks);
+    for (name, floor) in floors {
+        let seen = counts.get(name).copied().unwrap_or(0);
         assert!(seen >= floor, "{name}: reached {seen} times, expected at least {floor}\n{counts:#?}");
     }
+}
+
+/// The parent of every actor of the address pool that exists.
+async fn parents(store: &dyn Backend) -> BTreeMap<String, Option<String>> {
+    let mut out = BTreeMap::new();
+    for text in ADDRESSES {
+        if let Ok(Some(record)) = store.get(&ActorAddress::parse(text).unwrap()).await {
+            out.insert(text.to_owned(), record.parent.map(|p| p.to_string()));
+        }
+    }
+    out
 }

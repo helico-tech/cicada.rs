@@ -41,8 +41,9 @@ use tempfile::TempDir;
 pub const TYPES: [&str; 3] = ["alpha", "beta", "ghost"];
 
 /// The addresses operations choose from: few, so that conflicts are common. `_` is a wildcard in SQL `LIKE`, and two
-/// keys differ only there.
-pub const ADDRESSES: [&str; 6] = ["alpha/0", "alpha/1", "alpha/a_b", "alpha/axb", "beta/0", "ghost/0"];
+/// keys differ only there. The last two start as a tree: `beta/1` a child of `beta/0`, `beta/2` a child of `beta/1`.
+pub const ADDRESSES: [&str; 8] =
+    ["alpha/0", "alpha/1", "alpha/a_b", "alpha/axb", "beta/0", "ghost/0", "beta/1", "beta/2"];
 
 /// The prefixes operations choose from, including SQL wildcards.
 pub const PREFIXES: [&str; 10] = ["", "alpha/", "alpha", "alpha/a_", "alpha/a", "b", "%", "alpha/%", "_", "zzz"];
@@ -140,8 +141,8 @@ pub struct Commit {
     pub end: End,
     /// What happens to the state.
     pub state: StateOp,
-    /// Instances to create, as `(address, state)`.
-    pub creates: Vec<(usize, usize)>,
+    /// Instances to create, as `(address, state, child)`.
+    pub creates: Vec<(usize, usize, bool)>,
     /// Messages to send.
     pub sends: Vec<Send>,
     /// Messages to cancel, counted back from the latest message sent.
@@ -172,6 +173,10 @@ pub enum Op {
     },
     List {
         prefix: usize,
+        limit: usize,
+    },
+    Children {
+        to: usize,
         limit: usize,
     },
     Delete {
@@ -266,6 +271,7 @@ impl Op {
             Op::Create { .. } => "create",
             Op::Get { .. } => "get",
             Op::List { .. } => "list",
+            Op::Children { .. } => "children",
             Op::Delete { .. } => "delete",
             Op::Enqueue(_) => "enqueue",
             Op::ClaimDue { .. } => "claim_due",
@@ -292,7 +298,7 @@ impl Op {
     }
 
     /// The names of every operation the generator can produce.
-    pub const ALL: [&'static str; 30] = [
+    pub const ALL: [&'static str; 31] = [
         "advance",
         "now",
         "register",
@@ -301,6 +307,7 @@ impl Op {
         "create",
         "get",
         "list",
+        "children",
         "delete",
         "enqueue",
         "claim_due",
@@ -418,6 +425,11 @@ fn send() -> BoxedStrategy<Send> {
         .boxed()
 }
 
+/// A create of a commit, as `(address, state, child)`: as often a child create as an independent one.
+fn create() -> impl Strategy<Value = (usize, usize, bool)> {
+    (address(), states(), any::<bool>())
+}
+
 fn epoch_delta() -> impl Strategy<Value = i64> {
     prop_oneof![8 => Just(0i64), 1 => Just(-1i64), 1 => Just(1i64)]
 }
@@ -440,7 +452,7 @@ fn commit() -> BoxedStrategy<Commit> {
         prop::option::weighted(0.05, id()),
         end,
         state,
-        prop::collection::vec((address(), states()), 0..2),
+        prop::collection::vec(create(), 0..2),
         prop::collection::vec(send(), 0..3),
         prop::collection::vec(recent(), 0..2),
     )
@@ -473,6 +485,7 @@ pub fn op() -> BoxedStrategy<Op> {
         3 => (address(), states()).prop_map(|(to, state)| Op::Create { to, state }),
         2 => address().prop_map(|to| Op::Get { to }),
         2 => (prefix(), limit()).prop_map(|(prefix, limit)| Op::List { prefix, limit }),
+        2 => (address(), limit()).prop_map(|(to, limit)| Op::Children { to, limit }),
         1 => address().prop_map(|to| Op::Delete { to }),
         16 => send().prop_map(Op::Enqueue),
         12 => (type_set(), 0..NODES.len(), ttl(), prop_oneof![1 => Just(0usize), 15 => Just(ALL_DUE)])
@@ -779,6 +792,7 @@ impl Side {
             "version": r.version,
             "createdAt": instant(r.created_at),
             "paused": r.paused,
+            "parent": r.parent.as_ref().map(|p| p.as_str().to_owned()),
         })
     }
 
@@ -916,6 +930,18 @@ impl Side {
                 None => Value::Null,
             }),
             Op::List { prefix, limit } => self.listing(0, None, PREFIXES[*prefix], *limit).await,
+            Op::Children { to, limit } => {
+                let store_ref = store;
+                let parent = address_at(*to);
+                let parent = &parent;
+                let this = &mut *self;
+                paged!(
+                    this,
+                    None,
+                    |c: Option<PageCursor>| async move { store_ref.children(parent, c.as_ref(), *limit).await },
+                    |_: &mut Side, a: &ActorAddress| json!(a.as_str())
+                )
+            }
             Op::Delete { to } => answer(store.delete(&address_at(*to)).await, |r| match r {
                 DeleteResult::Deleted { purged } => json!({"deleted": purged}),
                 DeleteResult::Absent => json!("absent"),
@@ -1082,7 +1108,11 @@ impl Side {
             creates: commit
                 .creates
                 .iter()
-                .map(|(to, state)| ActorCreate { address: address_at(*to), state: STATES[*state]() })
+                .map(|(to, state, child)| ActorCreate {
+                    address: address_at(*to),
+                    state: STATES[*state](),
+                    child: *child,
+                })
                 .collect(),
             sends,
             cancels,
@@ -1205,6 +1235,35 @@ impl Pair {
         dir: Option<TempDir>,
     ) -> Self {
         let mut pair = Self { clock, first: Side::new(first), second: Side::new(second), _dir: dir };
+        // A turn of `beta/0` creates `beta/1` as its child, and a turn of `beta/1` creates `beta/2`: a tree to list and
+        // remove from the start, as lists rarely build one themselves.
+        let child_create = |parent: usize, child: usize, id: usize| {
+            let message = Send {
+                to: parent,
+                id,
+                due: Due::Now,
+                payload: 0,
+                from: None,
+                caused_by: None,
+                retry: false,
+                retention: 0,
+                extras: false,
+            };
+            [
+                Op::Enqueue(message),
+                Op::ClaimDue { types: vec![1], node: 0, ttl: Duration::from_secs(30), limit: ALL_DUE },
+                Op::Commit(Commit {
+                    claim: 0,
+                    epoch_delta: 0,
+                    wrong_message: None,
+                    end: End::Done,
+                    state: StateOp::Unchanged,
+                    creates: vec![(child, 0, true)],
+                    sends: Vec::new(),
+                    cancels: Vec::new(),
+                }),
+            ]
+        };
         let setup = [
             Op::Register { ty: 0, variant: 0 },
             Op::Register { ty: 1, variant: 0 },
@@ -1213,8 +1272,11 @@ impl Pair {
             Op::Create { to: 2, state: 1 },
             Op::Create { to: 3, state: 1 },
             Op::Create { to: 4, state: 2 },
-        ];
-        for op in &setup {
+        ]
+        .into_iter()
+        .chain(child_create(4, 6, IDS - 2))
+        .chain(child_create(6, 7, IDS - 1));
+        for op in &setup.collect::<Vec<_>>() {
             pair.step(0, op).await.expect("the backends agree on the setup");
         }
         pair

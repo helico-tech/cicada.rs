@@ -314,6 +314,7 @@ impl SqliteStore {
         c: &mut SqliteConnection,
         address: &ActorAddress,
         state: &Value,
+        parent: Option<&ActorAddress>,
         now: Timestamp,
     ) -> StoreResult<CreateResult> {
         if !Self::type_registered(c, address.type_name()).await? {
@@ -322,11 +323,13 @@ impl SqliteStore {
         let inserted = execute(
             c,
             sqlx::query(
-                "INSERT INTO actors (address, type, state, created_at) VALUES (?, ?, ?, ?) ON CONFLICT (address) DO NOTHING",
+                "INSERT INTO actors (address, type, state, parent, created_at) VALUES (?, ?, ?, ?, ?)
+                 ON CONFLICT (address) DO NOTHING",
             )
             .bind(address.as_str())
             .bind(address.type_name().as_str())
             .bind(json(state))
+            .bind(parent.map(ActorAddress::as_str))
             .bind(micros(now)),
         )
         .await?;
@@ -347,8 +350,10 @@ impl SqliteStore {
     async fn get_in(c: &mut SqliteConnection, address: &ActorAddress) -> StoreResult<Option<ActorRecord>> {
         fetch_optional(
             c,
-            sqlx::query("SELECT address, type, state, version, created_at, paused FROM actors WHERE address = ?")
-                .bind(address.as_str()),
+            sqlx::query(
+                "SELECT address, type, state, version, created_at, paused, parent FROM actors WHERE address = ?",
+            )
+            .bind(address.as_str()),
         )
         .await?
         .map(|row| rows::actor_record(&row))
@@ -357,6 +362,43 @@ impl SqliteStore {
 
     async fn actor_exists(c: &mut SqliteConnection, addr: &str) -> StoreResult<bool> {
         Ok(fetch_optional(c, sqlx::query("SELECT 1 FROM actors WHERE address = ?").bind(addr)).await?.is_some())
+    }
+
+    /// The parent of the instance at `addr`: `None` when it is absent, `Some(None)` when it is independent.
+    async fn parent_of(c: &mut SqliteConnection, addr: &str) -> StoreResult<Option<Option<String>>> {
+        fetch_optional(c, sqlx::query("SELECT parent FROM actors WHERE address = ?").bind(addr))
+            .await?
+            .map(|row| col::<Option<String>>(&row, "parent"))
+            .transpose()
+    }
+
+    /// `root` and every descendant, in address order. `UNION` leaves out the rows found already, so the walk ends on
+    /// parent links that form a cycle; the single writer makes it a consistent snapshot.
+    async fn tree(c: &mut SqliteConnection, root: &ActorAddress) -> StoreResult<Vec<String>> {
+        fetch_all(
+            c,
+            sqlx::query(
+                "WITH RECURSIVE tree (address) AS (
+                     SELECT ?
+                     UNION
+                     SELECT actors.address FROM actors JOIN tree ON actors.parent = tree.address
+                 )
+                 SELECT address FROM tree ORDER BY address",
+            )
+            .bind(root.as_str()),
+            |row| col::<String>(row, "address"),
+        )
+        .await
+    }
+
+    /// Removes `root` and every descendant and purges their mailboxes; returns how many messages were purged.
+    async fn remove_tree(&self, c: &mut SqliteConnection, root: &ActorAddress, now: Timestamp) -> StoreResult<usize> {
+        let mut purged = 0;
+        for addr in Self::tree(c, root).await? {
+            purged += self.purge_mailbox(c, &rows::address(&addr)?, now).await?;
+            execute(c, sqlx::query("DELETE FROM actors WHERE address = ?").bind(&addr)).await?;
+        }
+        Ok(purged)
     }
 
     async fn purge_mailbox(
@@ -725,6 +767,13 @@ impl SqliteStore {
                 return Ok(CommitResult::Rejected(format!("Create of {}: its type is not registered", create.address)));
             }
         }
+        for create in creates.iter().filter(|c| c.child) {
+            if let Some(parent) = Self::parent_of(c, create.address.as_str()).await?
+                && parent.as_deref() != Some(address.as_str())
+            {
+                return Ok(CommitResult::Rejected(support::foreign_child_reason(&create.address, &address)));
+            }
+        }
         let created: HashSet<&ActorAddress> = creates.iter().map(|c| &c.address).collect();
         let mut send_ids = HashSet::new();
         for send in &sends {
@@ -780,7 +829,7 @@ impl SqliteStore {
         }
         // 3. creates, 4. sends
         for create in &creates {
-            Self::create_in(c, &create.address, &create.state, now).await?;
+            Self::create_in(c, &create.address, &create.state, create.child.then_some(&address), now).await?;
         }
         let mut sent = Vec::with_capacity(sends.len());
         for send in sends {
@@ -788,20 +837,14 @@ impl SqliteStore {
         }
         // 5. state, 6. release
         let stop = matches!(state, StateChange::Stop);
-        match state {
-            StateChange::Unchanged => {}
-            StateChange::NewState(state) => {
-                execute(
-                    c,
-                    sqlx::query("UPDATE actors SET state = ?, version = version + 1 WHERE address = ?")
-                        .bind(json(&state))
-                        .bind(address.as_str()),
-                )
-                .await?;
-            }
-            StateChange::Stop => {
-                self.purge_mailbox(c, &address, now).await?;
-            }
+        if let StateChange::NewState(state) = state {
+            execute(
+                c,
+                sqlx::query("UPDATE actors SET state = ?, version = version + 1 WHERE address = ?")
+                    .bind(json(&state))
+                    .bind(address.as_str()),
+            )
+            .await?;
         }
         let version: i64 =
             fetch_optional(c, sqlx::query("SELECT version FROM actors WHERE address = ?").bind(address.as_str()))
@@ -810,7 +853,8 @@ impl SqliteStore {
                 .transpose()?
                 .ok_or_else(|| StoreError::Corrupt(format!("the lease holder {address} vanished")))?;
         if stop {
-            execute(c, sqlx::query("DELETE FROM actors WHERE address = ?").bind(address.as_str())).await?;
+            // The tree is read after the creates, so the children of this commit go with it.
+            self.remove_tree(c, &address, now).await?;
         } else {
             execute(
                 c,
@@ -908,7 +952,7 @@ impl Backend for SqliteStore {
     async fn create(&self, address: &ActorAddress, state: Value) -> StoreResult<CreateResult> {
         let mut tx = self.write().await?;
         let now = tx.now;
-        let result = Self::create_in(tx.conn(), address, &state, now).await;
+        let result = Self::create_in(tx.conn(), address, &state, None, now).await;
         tx.end(result).await
     }
 
@@ -940,6 +984,28 @@ impl Backend for SqliteStore {
         tx.end(result).await
     }
 
+    async fn children(
+        &self,
+        parent: &ActorAddress,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> StoreResult<Page<ActorAddress>> {
+        check_limit(limit)?;
+        let after = cursor.map_or("", |c| c.0.as_str());
+        let mut tx = self.read().await?;
+        let result = fetch_all(
+            tx.conn(),
+            sqlx::query("SELECT address FROM actors WHERE parent = ? AND address > ? ORDER BY address LIMIT ?")
+                .bind(parent.as_str())
+                .bind(after)
+                .bind(limit as i64 + 1),
+            |row| rows::address(&col::<String>(row, "address")?),
+        )
+        .await
+        .map(|items| support::page_of(items, limit, |a| PageCursor(a.to_string())));
+        tx.end(result).await
+    }
+
     async fn delete(&self, address: &ActorAddress) -> StoreResult<DeleteResult> {
         let mut tx = self.write().await?;
         let now = tx.now;
@@ -948,9 +1014,7 @@ impl Backend for SqliteStore {
             if !Self::actor_exists(c, address.as_str()).await? {
                 return Ok(DeleteResult::Absent);
             }
-            let purged = self.purge_mailbox(c, address, now).await?;
-            execute(c, sqlx::query("DELETE FROM actors WHERE address = ?").bind(address.as_str())).await?;
-            Ok(DeleteResult::Deleted { purged })
+            Ok(DeleteResult::Deleted { purged: self.remove_tree(c, address, now).await? })
         }
         .await;
         tx.end(result).await
@@ -1493,6 +1557,7 @@ impl Backend for SqliteStore {
     }
 
     async fn commit(&self, commit: CommitRequest) -> StoreResult<CommitResult> {
+        support::check_creates(&commit.creates)?;
         let mut tx = self.write().await?;
         let now = tx.now;
         let result = self.commit_in(tx.conn(), commit, now).await;

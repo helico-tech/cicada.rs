@@ -377,7 +377,7 @@ pub async fn s2_commit_applies_state_creates_sends_and_outcome_together<B: Fixtu
         let committed = t
             .commit_ok(CommitRequest {
                 state: StateChange::NewState(json!({"n": 1})),
-                creates: vec![ActorCreate { address: child.clone(), state: json!({"child": 1}) }],
+                creates: vec![ActorCreate { address: child.clone(), state: json!({"child": 1}), child: false }],
                 sends: vec![
                     OutgoingMessage {
                         from: Some(a.clone()),
@@ -435,7 +435,7 @@ pub async fn s2_a_send_to_an_absent_instance_rejects_the_whole_commit_and_keeps_
         let result = t
             .commit(CommitRequest {
                 state: StateChange::NewState(json!({"n": 1})),
-                creates: vec![ActorCreate { address: child.clone(), state: json!({}) }],
+                creates: vec![ActorCreate { address: child.clone(), state: json!({}), child: false }],
                 sends: vec![
                     OutgoingMessage::new(child.clone(), "T", json!(1)),
                     OutgoingMessage::new(absent, "T", json!(2)),
@@ -476,8 +476,8 @@ pub async fn s2_creates_are_applied_before_sends_in_one_commit<B: FixtureFactory
         let committed = t
             .commit_ok(CommitRequest {
                 creates: vec![
-                    ActorCreate { address: child.clone(), state: json!({"k": 1}) },
-                    ActorCreate { address: existing.clone(), state: json!({"keep": 2}) },
+                    ActorCreate { address: child.clone(), state: json!({"k": 1}), child: false },
+                    ActorCreate { address: existing.clone(), state: json!({"keep": 2}), child: false },
                 ],
                 sends: vec![OutgoingMessage::new(child.clone(), "Start", json!(0))],
                 ..done(&c)
@@ -882,7 +882,7 @@ pub async fn s5_a_stale_epoch_cannot_commit_after_a_re_claim<B: FixtureFactory>(
         let result = t
             .commit(CommitRequest {
                 state: StateChange::NewState(json!({"n": 666})),
-                creates: vec![ActorCreate { address: ghost.clone(), state: json!({}) }],
+                creates: vec![ActorCreate { address: ghost.clone(), state: json!({}), child: false }],
                 sends: vec![OutgoingMessage::new(target.clone(), "T", json!(1))],
                 ..done(&stale)
             })

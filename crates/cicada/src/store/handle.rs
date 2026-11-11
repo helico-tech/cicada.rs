@@ -190,6 +190,15 @@ impl Backend for Store {
         self.backend.list(prefix, cursor, limit).await
     }
 
+    async fn children(
+        &self,
+        parent: &ActorAddress,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> StoreResult<Page<ActorAddress>> {
+        self.backend.children(parent, cursor, limit).await
+    }
+
     async fn delete(&self, address: &ActorAddress) -> StoreResult<DeleteResult> {
         self.backend.delete(address).await
     }

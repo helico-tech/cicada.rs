@@ -2,13 +2,15 @@
 //! counters and the store clock's high-water mark. All instants are INTEGER microseconds since the epoch; JSON values
 //! are TEXT.
 //!
-//! The schema is versioned with `PRAGMA user_version` and is at version 3: opening a store applies every missing
+//! The schema is versioned with `PRAGMA user_version` and is at version 4: opening a store applies every missing
 //! migration in one transaction and refuses a database written by a newer version. A database without a version is set
 //! up only when it has no tables; one with tables belongs to another program and is refused (ADR 0017). Migrations are
-//! additive so that nodes of the previous version keep working during a rolling deploy, with two exceptions, after
+//! additive so that nodes of the previous version keep working during a rolling deploy, with three exceptions, after
 //! which every old node is stopped before the first new one starts: migration 2 makes `actors.state` required, so a
 //! node of version 1 that writes an actor without a state fails; migration 3 removes every registration and rewrites
-//! `%3A` to `:` in addresses, and the contracts that nodes register again are not those of version 2 (ADR 0021).
+//! `%3A` to `:` in addresses, and the contracts that nodes register again are not those of version 2 (ADR 0021);
+//! migration 4 adds `actors.parent`, and a node of version 3 that keeps running deletes or stops a parent without its
+//! children, which then stay behind (ADR 0019). A node of version 3 that opens the migrated database refuses it.
 //!
 //! A statement of a migration that violates a constraint (`SQLITE_CONSTRAINT`, such as two old addresses that become
 //! one in migration 3) fails the open with [`StoreError::Invalid`], which names the version it could not reach and
@@ -145,6 +147,14 @@ SELECT address, type, state, version, epoch, lease_owner, lease_until, lease_mes
         "UPDATE actors SET address = replace(address, '%3A', ':') WHERE instr(address, '%3A') > 0",
         "UPDATE messages SET actor_address = replace(actor_address, '%3A', ':') WHERE instr(actor_address, '%3A') > 0",
         "UPDATE outcomes SET actor_address = replace(actor_address, '%3A', ':') WHERE instr(actor_address, '%3A') > 0",
+    ],
+    // 4: child actors (ADR 0019). `parent` is the instance whose commit created this one as a child, null for an
+    // independent one, so every existing actor is independent. No foreign key: the store removes a tree itself, as
+    // every removed mailbox needs its `purged` outcomes. `actors_parent` serves the listing of children and the walk
+    // of a removal. Not additive (see the module docs).
+    &[
+        "ALTER TABLE actors ADD COLUMN parent TEXT",
+        "CREATE INDEX actors_parent ON actors (parent, address) WHERE parent IS NOT NULL",
     ],
 ];
 

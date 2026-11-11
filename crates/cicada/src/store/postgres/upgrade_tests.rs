@@ -1,4 +1,4 @@
-//! The upgrades from schema versions 1 and 2: a schema built with the migrations of that version, rows written with
+//! The upgrades from schema versions 1, 2 and 3: a schema built with the migrations of that version, rows written with
 //! SQL as a node of that version left them, then opened by this version. Skipped when `CICADA_PG_URL` is unset.
 
 use std::collections::hash_map::RandomState;
@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::actor::contract_of;
 use crate::prelude::*;
-use crate::store::{Backend, MessageStatus, OutcomeStatus, OutgoingMessage, Store, StoreError, support};
+use crate::store::{Backend, DeleteResult, MessageStatus, OutcomeStatus, OutgoingMessage, Store, StoreError, support};
 use crate::time;
 use futures::FutureExt;
 use serde::{Deserialize, Serialize};
@@ -313,6 +313,60 @@ async fn two_keys_that_become_one_name() {
             db.texts("SELECT address FROM {s}.actors ORDER BY address").await,
             ["pairs/a%3Ab:c", "pairs/a:b%3Ac"]
         );
+    })
+    .await;
+}
+
+/// Scenario: A database of schema version 3 is opened.
+#[tokio::test]
+async fn a_database_of_schema_version_3_is_opened_and_its_actors_have_no_parent() {
+    Old::run(3, async |db| {
+        db.exec(
+            r#"INSERT INTO {s}.actors (address, type, state, next_due_at, created_at)
+                VALUES ('notes/a', 'notes', '{"texts":["kept"]}', now(), now()), ('notes/b', 'notes', '{}', NULL, now());
+               INSERT INTO {s}.messages (id, actor_address, seq, type, payload, headers, deliver_at)
+                VALUES ('m1', 'notes/a', 1, 'Note', '{"text":"x"}', '{}', now());
+               SELECT setval('{s}.message_seq', 1)"#,
+        )
+        .await
+        .unwrap();
+
+        let store = db.open().await;
+        assert_eq!(db.version().await, schema::VERSION);
+        for key in ["a", "b"] {
+            let record = store.get(&address(&format!("notes/{key}"))).await.unwrap().expect("still there");
+            assert_eq!(record.parent, None, "notes/{key}");
+        }
+        assert_eq!(store.get(&address("notes/a")).await.unwrap().unwrap().state, json!({"texts": ["kept"]}));
+        assert_eq!(store.pending(&address("notes/a"), None, 10).await.unwrap().items.len(), 1);
+        assert!(store.children(&address("notes/a"), None, 10).await.unwrap().items.is_empty());
+        // Every actor is independent: deleting one leaves the other.
+        assert_eq!(store.delete(&address("notes/a")).await.unwrap(), DeleteResult::Deleted { purged: 1 });
+        assert!(store.get(&address("notes/b")).await.unwrap().is_some());
+        store.close().await;
+    })
+    .await;
+}
+
+/// Scenario: Two rows that name each other.
+#[tokio::test]
+async fn a_delete_ends_on_two_rows_that_name_each_other() {
+    Old::run(schema::VERSION, async |db| {
+        db.exec(
+            r#"INSERT INTO {s}.actors (address, type, state, parent, created_at)
+                VALUES ('notes/a', 'notes', '{}', 'notes/b', now()), ('notes/b', 'notes', '{}', 'notes/a', now()),
+                       ('notes/c', 'notes', '{}', 'notes/b', now()), ('notes/other', 'notes', '{}', NULL, now());
+               INSERT INTO {s}.messages (id, actor_address, seq, type, payload, headers, deliver_at)
+                VALUES ('m1', 'notes/b', 1, 'Note', '{}', '{}', now()), ('m2', 'notes/c', 2, 'Note', '{}', '{}', now());
+               SELECT setval('{s}.message_seq', 2)"#,
+        )
+        .await
+        .unwrap();
+
+        let store = db.open().await;
+        assert_eq!(store.delete(&address("notes/a")).await.unwrap(), DeleteResult::Deleted { purged: 2 });
+        assert_eq!(db.texts("SELECT address FROM {s}.actors ORDER BY address").await, ["notes/other"]);
+        store.close().await;
     })
     .await;
 }

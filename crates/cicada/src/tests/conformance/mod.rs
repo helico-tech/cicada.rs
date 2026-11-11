@@ -54,6 +54,7 @@ macro_rules! expect_matches {
 }
 
 mod chain;
+mod children;
 mod env;
 mod fixture;
 mod operator;
@@ -69,6 +70,7 @@ pub use fixture::{FixtureFactory, StoreFixture};
 /// Every case of the suite, as an `async fn`, one module per suite.
 pub mod cases {
     pub use super::chain::*;
+    pub use super::children::*;
     pub use super::operator::*;
     pub use super::reschedule::*;
     pub use super::retention::*;
@@ -213,6 +215,17 @@ macro_rules! for_each_case {
             deliver_now_makes_a_delayed_message_due_at_once_with_a_new_seq,
             deliver_now_refuses_running_finished_and_unknown_messages,
             deliver_now_keeps_the_message_order_after_an_enqueue_following_it,
+            // children.rs
+            children_a_commit_creates_a_child_of_the_committing_actor_and_other_creates_have_no_parent,
+            children_are_listed_by_parent_in_address_order_with_paging_and_only_direct_ones,
+            children_a_delete_removes_every_descendant_purges_their_mailboxes_and_reports_the_sum,
+            children_a_stop_removes_the_tree_with_the_children_of_its_commit_and_purges_a_message_sent_to_one,
+            children_a_stop_of_a_child_leaves_its_parent_and_its_siblings,
+            children_a_child_create_of_an_independent_or_foreign_actor_or_of_itself_rejects_the_commit,
+            children_creates_of_one_address_that_disagree_are_invalid_also_when_the_epoch_is_not_current,
+            children_a_turn_that_runs_on_a_descendant_gets_lease_lost_and_its_message_is_purged,
+            children_a_delete_racing_commits_that_create_children_leaves_no_orphan,
+            children_a_delete_racing_a_send_up_the_tree_from_a_child_that_sorts_first_leaves_no_actor_of_the_tree,
         );
     };
 }
@@ -266,6 +279,7 @@ fn every_case_is_generated() {
 
     let sources = [
         include_str!("chain.rs"),
+        include_str!("children.rs"),
         include_str!("s1_to_s10.rs"),
         include_str!("operator.rs"),
         include_str!("reschedule.rs"),

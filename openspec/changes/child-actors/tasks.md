@@ -7,21 +7,21 @@ starts; build from the design.
 
 ## 1. The stores
 
-- [ ] 1.1 Model and trait [1, 2, 4]: `ActorCreate.child`, `ActorRecord.parent`, `Backend::children(parent, cursor,
+- [x] 1.1 Model and trait [1, 2, 4]: `ActorCreate.child`, `ActorRecord.parent`, `Backend::children(parent, cursor,
       limit)`, the shared check `support::check_creates` (creates of one address in one commit must agree; a commit
       runs it first, before the store is read), and the new wording of S2 in the docs of the trait. Every place that
       builds an `ActorCreate` or an `ActorRecord` follows. Verify: `cargo build --workspace`.
-- [ ] 1.2 The in-memory store [2, 3]: the parent on the row, `children`, the removal of descendants in `delete` and
+- [x] 1.2 The in-memory store [2, 3]: the parent on the row, `children`, the removal of descendants in `delete` and
       `Stop` with a set of the addresses it has seen, the rejected child create. Verify: the cases of 1.5 on the
       in-memory store.
-- [ ] 1.3 SQLite [2, 3, 5]: migration 4 (`actors.parent`, the index `actors_parent`), the same behaviour with one
+- [x] 1.3 SQLite [2, 3, 5]: migration 4 (`actors.parent`, the index `actors_parent`), the same behaviour with one
       recursive query that uses `UNION`. The module docs say: schema version 4, not additive, and why. Verify: the
       cases of 1.5; an upgrade test for the scenario "A database of schema version 3 is opened"; a test for the
       scenario "Two rows that name each other", with rows written by hand.
-- [ ] 1.4 PostgreSQL [2, 3, 5]: migration 4, the same behaviour, the tree locked level by level before the clock is
+- [x] 1.4 PostgreSQL [2, 3, 5]: migration 4, the same behaviour, the tree locked level by level before the clock is
       read, a level without the addresses that are locked already. The module docs as for SQLite. Verify, with
       `CICADA_PG_URL` set: the cases of 1.5, the upgrade test and "Two rows that name each other".
-- [ ] 1.5 Conformance cases in a new file `children.rs` of `crates/cicada/src/tests/conformance`, one per line:
+- [x] 1.5 Conformance cases in a new file `children.rs` of `crates/cicada/src/tests/conformance`, one per line:
       a commit creates a child of the committing actor, and other creates have no parent;
       children are listed by parent in address order, with paging, direct children only;
       a delete removes every descendant, purges their mailboxes and reports the sum;
@@ -36,7 +36,7 @@ starts; build from the design.
       a delete that races with a send up the tree, from a child whose address sorts before its parent's, succeeds
       and leaves no actor of the tree.
       Verify: they pass on all three stores, on PostgreSQL with `CICADA_PG_URL` set.
-- [ ] 1.6 The randomised comparison [6]: a create in a generated commit may be a child create, `children` is an
+- [x] 1.6 The randomised comparison [6]: a create in a generated commit may be a child create, `children` is an
       operation of its own, and the parent is part of the state that is compared. Verify:
       `cargo test -p cicada --lib tests::fuzz` passes, and so does one run with `PROPTEST_CASES=20000`; the report
       says how long that run took.

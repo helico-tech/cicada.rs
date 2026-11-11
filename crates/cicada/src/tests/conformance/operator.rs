@@ -52,7 +52,7 @@ pub async fn registry_a_commit_creating_an_unregistered_type_is_rejected_applies
         let result = t
             .commit(CommitRequest {
                 state: crate::store::StateChange::NewState(json!({"n": 2})),
-                creates: vec![ActorCreate { address: ghost.clone(), state: json!({}) }],
+                creates: vec![ActorCreate { address: ghost.clone(), state: json!({}), child: false }],
                 ..done(&c)
             })
             .await;
@@ -89,7 +89,7 @@ pub async fn registry_removing_a_type_racing_a_commit_that_creates_an_instance_o
                     async move {
                         if i == 0 {
                             peer.commit(CommitRequest {
-                                creates: vec![ActorCreate { address: child, state: json!({}) }],
+                                creates: vec![ActorCreate { address: child, state: json!({}), child: false }],
                                 ..done(&c)
                             })
                             .await

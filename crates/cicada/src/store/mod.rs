@@ -94,7 +94,7 @@ impl Clock for SystemClock {
 /// | # | Guarantee |
 /// | --- | --- |
 /// | S1 Durability | An acknowledged write survives process and machine crash. |
-/// | S2 Atomicity | `commit` applies all of its parts or none. `delete` removes instance and mailbox together. |
+/// | S2 Atomicity | `commit` applies all of its parts or none. `delete`, and a commit that stops, remove the instance, its descendants and their mailboxes together. |
 /// | S3 Per-instance linearizability | All operations on one instance and its mailbox have a single order. |
 /// | S4 Lease exclusivity | At most one unexpired lease per instance; every claim issues a greater epoch. |
 /// | S5 Fencing | `commit` and `renew` succeed only with the current epoch. |
@@ -126,9 +126,9 @@ pub(crate) trait Backend: Send + Sync + 'static {
 
     // ---- state store ----
 
-    /// Creates the instance with initial `state`, version 0, no lease and an empty mailbox. Idempotent: an existing
-    /// instance is left untouched. The type is the address's own and must be registered, checked atomically with the
-    /// create: otherwise [`CreateResult::NoSuchType`] and nothing is created.
+    /// Creates the instance with initial `state`, version 0, no lease, no parent and an empty mailbox. Idempotent: an
+    /// existing instance is left untouched. The type is the address's own and must be registered, checked atomically
+    /// with the create: otherwise [`CreateResult::NoSuchType`] and nothing is created.
     async fn create(&self, address: &ActorAddress, state: Value) -> StoreResult<CreateResult>;
 
     /// Snapshot of the instance, or `None` when it is absent.
@@ -138,9 +138,19 @@ pub(crate) trait Backend: Send + Sync + 'static {
     /// at most `limit` per page.
     async fn list(&self, prefix: &str, cursor: Option<&PageCursor>, limit: usize) -> StoreResult<Page<ActorAddress>>;
 
-    /// Admin delete: atomically removes the instance and its whole mailbox; every pending message, including one being
-    /// handled, receives outcome `purged`. Any lease is voided, and every epoch issued after a re-create is greater
-    /// than all earlier ones for this URI.
+    /// The direct children of `parent` (the instances its commits created as children), in ascending address order,
+    /// at most `limit` per page. An empty page when `parent` is absent or has none.
+    async fn children(
+        &self,
+        parent: &ActorAddress,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> StoreResult<Page<ActorAddress>>;
+
+    /// Admin delete: atomically removes the instance, every descendant and their whole mailboxes; every pending
+    /// message, including one being handled, receives outcome `purged`, and [`DeleteResult::Deleted`] counts them over
+    /// the whole tree. Any lease is voided, and every epoch issued after a re-create is greater than all earlier ones
+    /// for this URI. The walk visits each instance once, so it ends on parent links that form a cycle.
     async fn delete(&self, address: &ActorAddress) -> StoreResult<DeleteResult>;
 
     // ---- mailbox ----
@@ -271,13 +281,17 @@ pub(crate) trait Backend: Send + Sync + 'static {
 
     /// Ends the turn for the claimed message, fenced by the epoch (S5). Applies all of the following or nothing (S2),
     /// in this order: the outcome (or the reschedule), the cancels of this instance's pending messages, the creates
-    /// (idempotent), the sends (in order), the state change, the release of the lease.
+    /// (idempotent; a child create gives the new instance the committing instance as its parent), the sends (in
+    /// order), the state change, the release of the lease. A stop removes the instance and every descendant, the
+    /// children this commit created included, and purges their mailboxes, this commit's sends to them included.
     ///
     /// `LeaseLost` when the epoch is not current or the lease is no longer held; `Rejected` when a create names a type
-    /// that is not registered, a send targets an instance that is absent after the creates, or a send id is already in
-    /// use (the lease is then still held).
-    /// [`StoreError::Invalid`] when the message is not the one claimed under the epoch, the cancels contain the turn's
-    /// own message, or the data cannot be stored; nothing is applied then either.
+    /// that is not registered, a child create names an instance that exists with another parent or none, a send
+    /// targets an instance that is absent after the creates, or a send id is already in use (the lease is then still
+    /// held).
+    /// [`StoreError::Invalid`] when creates of one address disagree on being a child (checked first, before the store
+    /// is read, see [`support::check_creates`]), the message is not the one claimed under the epoch, the cancels
+    /// contain the turn's own message, or the data cannot be stored; nothing is applied then either.
     async fn commit(&self, commit: CommitRequest) -> StoreResult<CommitResult>;
 
     // ---- optional ----

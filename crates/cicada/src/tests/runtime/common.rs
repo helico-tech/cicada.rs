@@ -497,6 +497,15 @@ impl<F: Faults> Backend for Faulty<F> {
         self.inner.list(prefix, cursor, limit).await
     }
 
+    async fn children(
+        &self,
+        parent: &ActorAddress,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> StoreResult<Page<ActorAddress>> {
+        self.inner.children(parent, cursor, limit).await
+    }
+
     async fn delete(&self, address: &ActorAddress) -> StoreResult<DeleteResult> {
         self.inner.delete(address).await
     }

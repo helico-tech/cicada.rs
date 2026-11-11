@@ -187,7 +187,7 @@ pub async fn commit_repeating_a_commit_that_already_applied_changes_nothing<B: F
         let c = t.claim_one().await;
         let request = CommitRequest {
             state: StateChange::NewState(json!({"n": 1})),
-            creates: vec![ActorCreate { address: child.clone(), state: json!({"c": 1}) }],
+            creates: vec![ActorCreate { address: child.clone(), state: json!({"c": 1}), child: false }],
             sends: vec![
                 OutgoingMessage::new(b.clone(), "T", json!(1)),
                 OutgoingMessage::new(child.clone(), "T", json!(2)),
@@ -402,7 +402,7 @@ pub async fn s3_a_commit_that_creates_and_sends_to_a_child_is_serialised_with_co
                 async move {
                     if i == 0 {
                         peer.commit(CommitRequest {
-                            creates: vec![ActorCreate { address: child.clone(), state: json!({}) }],
+                            creates: vec![ActorCreate { address: child.clone(), state: json!({}), child: false }],
                             sends: vec![OutgoingMessage::new(child, "FromCommit", json!(0))],
                             ..done(&c)
                         })
@@ -457,6 +457,7 @@ pub async fn closed_after_close_every_operation_fails_as_unavailable<B: FixtureF
             store.create(&address("conformance/closed"), json!({})),
             store.get(&a),
             store.list("", None, 10),
+            store.children(&a, None, 10),
             store.delete(&a),
             store.enqueue(OutgoingMessage::new(a.clone(), "Msg", json!(0))),
             store.claim_due(&types, &node, t.ttl(), 10),

@@ -388,7 +388,7 @@ impl<A: Actor> Turn<A> {
         message::check_not_null("initial state", &state).map_err(TurnError::Invalid)?;
         limits::check_json("initial state", Some(&state)).map_err(TurnError::Invalid)?;
         let address = r.address().map_err(|e| TurnError::Invalid(e.to_string()))?;
-        self.effects.creates.push(ActorCreate { address, state });
+        self.effects.creates.push(ActorCreate { address, state, child: false });
         Ok(())
     }
 

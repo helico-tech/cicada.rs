@@ -1,19 +1,17 @@
-//! Rules shared by store implementations: the type registry, claim arguments, envelope JSON, retention of outcomes,
-//! cursors and pages.
+//! Rules shared by store implementations: the type registry, the creates of a commit, claim arguments, envelope JSON,
+//! retention of outcomes, cursors and pages.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::Duration;
 
 use serde_json::Value;
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 use serde_json::{Map, json};
 
-use super::model::{Message, MessageId, OutcomeStatus, Page, PageCursor, TypeDef};
+use super::model::{ActorCreate, Message, MessageId, OutcomeStatus, Page, PageCursor, TypeDef};
 use super::results::RegisterResult;
 use super::{StoreError, StoreResult};
-#[cfg(any(feature = "sqlite", feature = "postgres"))]
-use crate::address::ActorAddress;
-use crate::address::TypeName;
+use crate::address::{ActorAddress, TypeName};
 use crate::retention::Keep;
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 use crate::retention::Retention;
@@ -36,6 +34,29 @@ pub fn register_again(existing: TypeDef, def: &TypeDef) -> RegisterResult {
     } else {
         RegisterResult::Conflict { reason: hash_conflict_reason(&def.name), existing }
     }
+}
+
+// ---- creates ----
+
+/// Checks that the creates of one commit agree, per address, on being a child: [`StoreError::Invalid`] otherwise. A
+/// commit runs it first, before it reads the store, so the answer does not depend on the lease.
+pub fn check_creates(creates: &[ActorCreate]) -> StoreResult<()> {
+    let mut child_of = HashMap::new();
+    for create in creates {
+        if *child_of.entry(&create.address).or_insert(create.child) != create.child {
+            return Err(StoreError::Invalid(format!(
+                "The creates of {} in one commit disagree on being a child",
+                create.address
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The reason a commit of `parent` is rejected: its child create of `address` meets an instance that exists with
+/// another parent or none.
+pub fn foreign_child_reason(address: &ActorAddress, parent: &ActorAddress) -> String {
+    format!("Child create of {address}: it exists and is not a child of {parent}")
 }
 
 // ---- nodes ----
@@ -326,6 +347,19 @@ mod tests {
         assert_eq!(register_again(def("h1"), &def("h1")), RegisterResult::Registered(def("h1")));
         let conflict = register_again(def("h1"), &def("h2"));
         assert!(matches!(conflict, RegisterResult::Conflict { existing, .. } if existing == def("h1")));
+    }
+
+    #[test]
+    fn creates_of_one_address_must_agree_on_being_a_child() {
+        let create = |key: &str, child: bool| ActorCreate {
+            address: ActorAddress::parse(&format!("a/{key}")).unwrap(),
+            state: json!({}),
+            child,
+        };
+        assert!(check_creates(&[]).is_ok());
+        assert!(check_creates(&[create("x", true), create("x", true), create("y", false)]).is_ok());
+        let error = check_creates(&[create("y", false), create("x", false), create("x", true)]).unwrap_err();
+        assert!(matches!(&error, StoreError::Invalid(m) if m.contains("a/x")), "{error:?}");
     }
 
     #[test]

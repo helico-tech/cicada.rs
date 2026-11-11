@@ -1,5 +1,5 @@
-//! The upgrades from schema versions 1 and 2: a database built with the migrations of that version, rows written with
-//! SQL as a node of that version left them, then opened by this version.
+//! The upgrades from schema versions 1, 2 and 3: a database built with the migrations of that version, rows written
+//! with SQL as a node of that version left them, then opened by this version.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -385,6 +385,7 @@ async fn the_indexes_of_sqlite_survive() {
         migrated,
         [
             "actors_due: CREATE INDEX actors_due ON actors (type, next_due_at) WHERE next_due_at IS NOT NULL AND paused = 0",
+            "actors_parent: CREATE INDEX actors_parent ON actors (parent, address) WHERE parent IS NOT NULL",
             "actors_running: CREATE INDEX actors_running ON actors (address) WHERE lease_owner IS NOT NULL",
         ]
     );
@@ -394,6 +395,71 @@ async fn the_indexes_of_sqlite_survive() {
     assert_eq!(migrated, Db::texts(&file, indexes).await, "as a new database has");
     let columns = "SELECT name || ' ' || type || ' ' || \"notnull\" FROM pragma_table_info('actors') ORDER BY cid";
     assert_eq!(Db::texts(&db.file, columns).await, Db::texts(&file, columns).await);
+}
+
+/// Scenario: A database of schema version 3 is opened.
+#[tokio::test]
+async fn a_database_of_schema_version_3_is_opened_and_its_actors_have_no_parent() {
+    let db = Db::at_version(3).await;
+    db.exec(REGISTER, &["notes", &contract_of::<NotesActor>().unwrap().to_json().to_string(), "sha256:notes"])
+        .await
+        .unwrap();
+    db.exec(
+        "INSERT INTO actors (address, type, state, next_due_at, created_at)
+            VALUES ('notes/a', 'notes', '{\"texts\":[\"kept\"]}', 0, 0), ('notes/b', 'notes', '{}', NULL, 0)",
+        &[],
+    )
+    .await
+    .unwrap();
+    db.exec(
+        "INSERT INTO messages (id, actor_address, seq, type, payload, headers, deliver_at)
+            VALUES ('m1', 'notes/a', 1, 'Note', '{\"text\":\"x\"}', '{}', 0)",
+        &[],
+    )
+    .await
+    .unwrap();
+    db.exec("UPDATE sequences SET value = 1 WHERE name = 'seq'", &[]).await.unwrap();
+
+    let store = db.open().await;
+    assert_eq!(Db::texts(&db.file, "PRAGMA user_version").await, [schema::VERSION.to_string()]);
+    for key in ["a", "b"] {
+        let record = store.get(&address(&format!("notes/{key}"))).await.unwrap().expect("still there");
+        assert_eq!(record.parent, None, "notes/{key}");
+    }
+    assert_eq!(store.get(&address("notes/a")).await.unwrap().unwrap().state, json!({"texts": ["kept"]}));
+    assert_eq!(store.pending(&address("notes/a"), None, 10).await.unwrap().items.len(), 1);
+    assert!(store.children(&address("notes/a"), None, 10).await.unwrap().items.is_empty());
+    // Every actor is independent: deleting one leaves the other.
+    assert_eq!(store.delete(&address("notes/a")).await.unwrap(), DeleteResult::Deleted { purged: 1 });
+    assert!(store.get(&address("notes/b")).await.unwrap().is_some());
+    store.close().await;
+}
+
+/// Scenario: Two rows that name each other.
+#[tokio::test]
+async fn a_delete_ends_on_two_rows_that_name_each_other() {
+    let db = Db::at_version(schema::VERSION).await;
+    db.exec(
+        "INSERT INTO actors (address, type, state, parent, created_at)
+            VALUES ('notes/a', 'notes', '{}', 'notes/b', 0), ('notes/b', 'notes', '{}', 'notes/a', 0),
+                   ('notes/c', 'notes', '{}', 'notes/b', 0), ('notes/other', 'notes', '{}', NULL, 0)",
+        &[],
+    )
+    .await
+    .unwrap();
+    db.exec(
+        "INSERT INTO messages (id, actor_address, seq, type, payload, headers, deliver_at)
+            VALUES ('m1', 'notes/b', 1, 'Note', '{}', '{}', 0), ('m2', 'notes/c', 2, 'Note', '{}', '{}', 0)",
+        &[],
+    )
+    .await
+    .unwrap();
+    db.exec("UPDATE sequences SET value = 2 WHERE name = 'seq'", &[]).await.unwrap();
+
+    let store = db.open().await;
+    assert_eq!(store.delete(&address("notes/a")).await.unwrap(), DeleteResult::Deleted { purged: 2 });
+    assert_eq!(Db::texts(&db.file, "SELECT address FROM actors ORDER BY address").await, ["notes/other"]);
+    store.close().await;
 }
 
 #[tokio::test]
