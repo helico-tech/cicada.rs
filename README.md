@@ -1018,6 +1018,7 @@ Decisions, as ADRs in [docs/adr/](docs/adr/):
 | [0015](docs/adr/0015-operator-actions.md) | Operator actions: node table, cancelling a running turn, pausing and purging a mailbox, retrying a message, bulk actions; the store refuses creates of an unregistered type. |
 | [0016](docs/adr/0016-releases-are-tags.md) | A release is a tag on `main` with one version for the workspace; a release passes all checks first and never moves. |
 | [0017](docs/adr/0017-contracts-ignore-descriptions-and-stores-refuse-foreign-databases.md) | A contract hash leaves out the schemas' descriptions (the published contract keeps them); the SQLite store refuses a database that holds other tables. |
+| [0018](docs/adr/0018-a-smaller-core-layers-and-watches.md) | Proposed: a smaller core (every actor has state, one-name keys, one turn observer instead of plugins, no public store trait), layers above it (`cicada-app`, `cicada-actors`), JSON Schema checks at the HTTP door, watches and control effects. |
 
 Design questions and their answers:
 
