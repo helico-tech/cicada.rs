@@ -96,10 +96,10 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
 
 ## 6. Checks
 
-- [ ] 6.1 Count the tests of each moved suite again and compare with 1.1 (scenario "No test is lost"). Verify: no
+- [x] 6.1 Count the tests of each moved suite again and compare with 1.1 (scenario "No test is lost"). Verify: no
       suite has fewer tests; the report has both columns.
-- [ ] 6.2 `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
+- [x] 6.2 `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
       `openspec validate private-store-trait --strict`. Verify: all pass (scenario "A normal test run").
-- [ ] 6.3 The PostgreSQL tests with `CICADA_PG_URL` set (scenario "A test run with PostgreSQL"), and the
+- [x] 6.3 The PostgreSQL tests with `CICADA_PG_URL` set (scenario "A test run with PostgreSQL"), and the
       end-to-end suite with `CICADA_E2E=1 cargo test -p cicada-e2e -- --nocapture`. Both need Docker. Verify: both
       pass; if Docker cannot be started, leave this task open and say so in the report.

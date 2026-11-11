@@ -32,8 +32,8 @@ use crate::time::Timestamp;
 /// share one backend, so several systems can run on one store.
 ///
 /// Each SQL backend is a cargo feature, and none is on by default: name `sqlite` or `postgres` on the `cicada`
-/// dependency to get [`Store::sqlite`] or [`Store::postgres`]. Tests use the in-memory store of `cicada-test`
-/// ([`Store::memory`]).
+/// dependency to get `Store::sqlite` or `Store::postgres`. Tests use the in-memory store, `Store::memory` (feature
+/// `testing`, which `cicada-test` turns on).
 ///
 /// ```no_run
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -84,6 +84,16 @@ impl Store {
     /// Opens the SQLite store in the file at `path` (feature `sqlite`): one file, WAL, one writer. Sets up a new or
     /// empty file and migrates an older one; refuses a file that holds the tables of another program, and one written
     /// by a newer version.
+    ///
+    /// ```no_run
+    /// # async fn example() -> cicada::store::StoreResult<()> {
+    /// use cicada::Store;
+    /// use cicada::store::SqliteOptions;
+    ///
+    /// let store = Store::sqlite("actors.db", SqliteOptions::default()).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     #[cfg(feature = "sqlite")]
     pub async fn sqlite(path: impl AsRef<Path>, options: SqliteOptions) -> StoreResult<Self> {
         Ok(Self::from_backend(Arc::new(super::sqlite::SqliteStore::open(path, options).await?)))
@@ -98,6 +108,20 @@ impl Store {
     /// Fails with [`StoreError::Invalid`](super::StoreError::Invalid) for invalid options or a URL that is not a
     /// PostgreSQL URL (the message never repeats the URL, which can hold a password), or a database migrated by a newer
     /// version, and with [`StoreError::Unavailable`](super::StoreError::Unavailable) when the database cannot be reached.
+    ///
+    /// ```no_run
+    /// # async fn example() -> Result<(), cicada::store::StoreError> {
+    /// use cicada::store::PostgresOptions;
+    /// use cicada::{ActorSystem, Store};
+    ///
+    /// let store = Store::postgres(
+    ///     "postgres://actors:secret@localhost:5432/actors",
+    ///     PostgresOptions::for_schema("orders"),
+    /// )
+    /// .await?;
+    /// let system = ActorSystem::builder(store.clone()).build();
+    /// # Ok(()) }
+    /// ```
     #[cfg(feature = "postgres")]
     pub async fn postgres(url: &str, options: PostgresOptions) -> StoreResult<Self> {
         Ok(Self::from_backend(Arc::new(super::postgres::PostgresStore::connect(url, options).await?)))

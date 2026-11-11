@@ -82,7 +82,10 @@ async fn a_node_on_sqlite_keeps_the_state_in_the_file() {
 
     system.stop().await;
     store.close().await;
-    assert!(file.is_file());
+    let mut c = sqlx::SqliteConnection::connect(&format!("sqlite://{}", file.display())).await.unwrap();
+    let state: String =
+        sqlx::query_scalar("SELECT state FROM actors WHERE address = 'counter/c1'").fetch_one(&mut c).await.unwrap();
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&state).unwrap(), serde_json::json!({"total": 3}));
 }
 
 #[tokio::test(flavor = "multi_thread")]
