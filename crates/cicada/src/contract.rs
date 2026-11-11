@@ -123,6 +123,14 @@ impl PartialEq for Contract {
     }
 }
 
+/// True when the schemas `a` and `b` are equal as [`Contract::hash`] compares them: with their `description`s left out.
+pub(crate) fn same_schema(a: &Value, b: &Value) -> bool {
+    let (mut a, mut b) = (a.clone(), b.clone());
+    strip_descriptions(&mut a);
+    strip_descriptions(&mut b);
+    canonical_json(&a) == canonical_json(&b)
+}
+
 /// Removes the keyword `description` from `schema` and from every subschema in it. Only keywords that hold schemas are
 /// walked: the keys of `properties` and the like are names (a property named `description` stays), and `const`, `enum`,
 /// `default` and `examples` hold data.

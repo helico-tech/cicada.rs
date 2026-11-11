@@ -6,15 +6,15 @@ delete or a stop removes a tree.
 
 ## 1. The types of a watch
 
-- [ ] 1.1 `Failed`, `Stopped` and the cause [1, 3, 7]: public types of the core with the fields of decision 7,
+- [x] 1.1 `Failed`, `Stopped` and the cause [1, 3, 7]: public types of the core with the fields of decision 7,
       exported at the crate root. `correlationId`, `from` and `by` are always written, `null` when there is none.
       The cause is written into the schema of `Stopped` in place. Verify: a snapshot test pins both JSON Schemas as
       a contract holds them, and a test reads back what it wrote for each, with and without the optional values.
-- [ ] 1.2 `WatchTarget` [2, 9]: one actor, the types under a prefix, or every type; its text form (`type/key`, a
+- [x] 1.2 `WatchTarget` [2, 9]: one actor, the types under a prefix, or every type; its text form (`type/key`, a
       type name, `*`) with a reader that refuses anything else; the rule which targets match the failure of an actor
       and which its removal. Verify: unit tests for the scenarios "A prefix at a dot", "Every type" and "A text that
       is no target", and for the rule that a removal matches the address only.
-- [ ] 1.3 The check of a watcher [1, 5]: a contract may watch when it holds `Failed` and `Stopped` with the schemas
+- [x] 1.3 The check of a watcher [1, 5]: a contract may watch when it holds `Failed` and `Stopped` with the schemas
       of the core's two types, compared as a contract hash compares schemas. Verify: unit tests with a family that
       declares both, one that lacks `Stopped`, and one with a `Failed` of its own.
 

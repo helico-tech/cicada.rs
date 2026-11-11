@@ -30,6 +30,7 @@ pub mod testing;
 mod tests;
 pub mod time;
 pub mod turn;
+pub mod watch;
 
 pub use actor::{Actor, ActorType};
 pub use address::{ActorAddress, ActorRef, TypeName};
@@ -37,6 +38,7 @@ pub use message::NoState;
 pub use runtime::{ActorSystem, CreateActorResult, OpError, SendResult, StartError, StartProblem};
 pub use store::Store;
 pub use turn::{HandlerError, HandlerResult, SendOptions, Turn};
+pub use watch::{Failed, StopCause, Stopped, WatchTarget};
 
 /// Everything needed to define actor types.
 pub mod prelude {
