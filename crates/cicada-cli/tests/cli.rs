@@ -399,3 +399,25 @@ async fn contexts_come_from_the_config_file_and_carry_the_token() {
     assert!(cicada_in(&env, &["--context", "local", "health"]).await.is_ok());
     assert!(cicada_in(&env, &["--context", "nope", "health"]).await.unwrap_err().contains("'nope'"));
 }
+
+/// `cicada tui` without a terminal is an error, not a panic. Skipped where `/dev/tty` opens, so it never takes over a
+/// developer's screen; it runs in CI, which has no terminal.
+#[cfg(unix)]
+#[test]
+fn the_tui_without_a_terminal_fails_cleanly() {
+    if std::fs::File::open("/dev/tty").is_ok() {
+        eprintln!("skipped: a terminal is attached");
+        return;
+    }
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_cicada"))
+        .args(["--server", "http://127.0.0.1:1", "tui"])
+        .env("CICADA_CONFIG", "/nonexistent/cicada/config.toml")
+        .env_remove("CICADA_CONTEXT")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("cicada runs");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(stderr.starts_with("error: cannot start the terminal UI"), "{stderr}");
+    assert!(output.stdout.is_empty(), "stdout: {:?}", String::from_utf8_lossy(&output.stdout));
+}
