@@ -74,7 +74,7 @@ was returned before. No text changes.
 
 ## 5. The stores and the ref reader
 
-- [ ] 5.1 A migration that violates a constraint [8]: in both stores, a statement of a migration (the lists in the
+- [x] 5.1 A migration that violates a constraint [8]: in both stores, a statement of a migration (the lists in the
       two schema modules) that fails with a violated constraint (PostgreSQL SQLSTATE class `23`; SQLite
       `SQLITE_CONSTRAINT` with its extended codes) fails the open with `StoreError::Invalid`, which names the
       schema version it could not reach and holds the database's message. Every other error, and every statement
@@ -82,7 +82,7 @@ was returned before. No text changes.
       modules. Verify: the upgrade test "Two keys that become one name" expects the invalid-store error on SQLite
       and on PostgreSQL (with `CICADA_PG_URL` set), and the database is still at version 2; a test for the scenario
       "A database that is locked while it is migrated" on SQLite; the conformance suite passes on all three stores.
-- [ ] 5.2 A ref that writes a unit [9]: `Writer::unit` in `crates/cicada/src/address/reader.rs` asks whether the ref
+- [x] 5.2 A ref that writes a unit [9]: `Writer::unit` in `crates/cicada/src/address/reader.rs` asks whether the ref
       declares no field to serde, as the check for a struct without fields does. Verify: a test for the scenario "A
       ref whose two serde halves disagree" with the three ways: a `Serialize` written by hand, `into` a unit type
       with `try_from = "String"`, and `serialize_with` on a newtype; a real singleton still has the key `_`.

@@ -3,7 +3,9 @@
 use std::marker::PhantomData;
 
 use cicada::address::{ActorAddress, ActorRef, RefBinding, TypeName, percent};
-use serde::{Deserialize, Serialize};
+use cicada::prelude::*;
+use cicada::testing::TestActors;
+use serde::{Deserialize, Serialize, Serializer};
 
 // ---- percent-encoding ----
 
@@ -348,6 +350,55 @@ impl ActorRef for Marker<Nightly> {
     type Message = Msg;
 }
 
+/// A ref whose `Serialize`, written by hand, writes a unit, while its `Deserialize` reads one field.
+#[derive(Debug, Clone, Deserialize)]
+struct HandWritten {
+    #[allow(dead_code)] // read only by serde: the point of this ref
+    name: String,
+}
+actor_ref!(HandWritten, "hand-written");
+
+impl Serialize for HandWritten {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_unit()
+    }
+}
+
+/// A ref that serde writes `into` a unit type and reads `try_from` a string.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(into = "Nothing", try_from = "String")]
+struct IntoUnit {
+    #[allow(dead_code)] // read only by serde: the point of this ref
+    name: String,
+}
+actor_ref!(IntoUnit, "into-unit");
+
+#[derive(Serialize)]
+struct Nothing;
+
+impl From<IntoUnit> for Nothing {
+    fn from(_: IntoUnit) -> Self {
+        Nothing
+    }
+}
+
+impl TryFrom<String> for IntoUnit {
+    type Error = String;
+
+    fn try_from(name: String) -> Result<Self, String> {
+        Ok(Self { name })
+    }
+}
+
+/// A newtype ref whose field serde writes as a unit with `serialize_with`, and reads as a string.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WithUnit(#[serde(serialize_with = "write_unit")] String);
+actor_ref!(WithUnit, "with-unit");
+
+fn write_unit<S: Serializer>(_: &str, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_unit()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Misnamed {
     id: String,
@@ -480,6 +531,99 @@ fn a_struct_whose_only_field_serde_skips_is_the_singleton() {
     assert_eq!(binding.from_address(&ActorAddress::parse("marker/_").unwrap()).unwrap(), r);
     let other = binding.from_address(&ActorAddress::parse("marker/other").unwrap()).unwrap_err();
     assert!(other.to_string().contains("singleton"), "{other}");
+}
+
+/// Scenario: A ref whose two serde halves disagree.
+#[test]
+fn a_ref_that_writes_a_unit_and_reads_a_string_has_no_address() {
+    let refused = [
+        HandWritten { name: "x".into() }.address().unwrap_err(),
+        IntoUnit { name: "x".into() }.address().unwrap_err(),
+        WithUnit("x".into()).address().unwrap_err(),
+    ];
+    for e in refused {
+        let e = e.to_string();
+        assert!(e.contains("has no address: a ref is written as one string or as a unit"), "{e}");
+        assert!(e.ends_with("but serde writes a unit and does not read one"), "{e}");
+    }
+    // What each reads is one string, so a node that hosts it starts; its use fails.
+    assert!(RefBinding::<HandWritten>::new().is_ok());
+    assert!(RefBinding::<IntoUnit>::new().is_ok());
+    assert!(RefBinding::<WithUnit>::new().is_ok());
+    // A real singleton keeps the key `_`.
+    assert_eq!(Pricing.address().unwrap().as_str(), "pricing/_");
+    assert_eq!(Braces {}.address().unwrap().as_str(), "braces/_");
+}
+
+/// The prober's ref: a singleton.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Probe;
+actor_ref!(Probe, "probe");
+
+/// What each send and create of the prober's turn answered.
+#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+struct Answers {
+    errors: Vec<String>,
+}
+
+/// Sends to and creates refs whose two serde halves disagree.
+struct Prober;
+
+impl Actor for Prober {
+    type Ref = Probe;
+    type State = Answers;
+
+    async fn handle(&self, turn: &mut Turn<Self>, _: Msg) -> HandlerResult {
+        let errors = [
+            turn.send(&HandWritten { name: "x".into() }, Msg::Run).err(),
+            turn.create(&HandWritten { name: "x".into() }, &Hits::default()).err(),
+            turn.send(&IntoUnit { name: "x".into() }, Msg::Run).err(),
+            turn.send(&WithUnit("x".into()), Msg::Run).err(),
+        ];
+        turn.state_mut().errors = errors.into_iter().map(|e| e.map(|e| e.to_string()).unwrap_or_default()).collect();
+        Ok(())
+    }
+}
+
+/// How many messages a receiver handled.
+#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+struct Hits {
+    n: u32,
+}
+
+/// The receiver of `hand-written`.
+struct Receiver;
+
+impl Actor for Receiver {
+    type Ref = HandWritten;
+    type State = Hits;
+
+    async fn handle(&self, turn: &mut Turn<Self>, _: Msg) -> HandlerResult {
+        turn.state_mut().n += 1;
+        Ok(())
+    }
+}
+
+/// Scenario: A ref whose two serde halves disagree, used in a turn.
+#[tokio::test(start_paused = true)]
+async fn a_send_to_a_ref_whose_two_serde_halves_disagree_fails_at_the_call() {
+    let test = TestActors::builder().with(|n| n.host(Prober).host(Receiver)).build().await.expect("the node starts");
+    let singleton = ActorAddress::parse("hand-written/_").unwrap();
+    // `_` is a name its reader accepts, so the actor may exist; a send must not reach it.
+    let created = test.system().create_actor(&singleton, serde_json::json!({"n": 0})).await.unwrap();
+    assert_eq!(created, cicada::CreateActorResult::Created);
+    test.create(&Probe, &Answers::default()).await;
+    let probe = test.send(&Probe, Msg::Run).await;
+    test.run_until_idle().await;
+    assert_eq!(test.outcome(&probe).await.unwrap().status, cicada::store::OutcomeStatus::Done);
+    let answers: Answers = test.state(&Probe).await;
+    assert_eq!(answers.errors.len(), 4);
+    for e in &answers.errors {
+        assert!(e.contains("has no address") && e.contains("serde writes a unit and does not read one"), "{e}");
+    }
+    let reached = test.system().get_actor(&singleton).await.unwrap().unwrap();
+    assert_eq!((reached.state, reached.version), (serde_json::json!({"n": 0}), 0), "no message reached it");
+    assert_eq!(test.list("").await, [singleton, Probe.address().unwrap()], "no actor was created");
 }
 
 #[test]

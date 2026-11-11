@@ -3,7 +3,8 @@
 //! A ref is written as one string or as a unit: a struct of which serde writes one field, whose value is a string; a
 //! type that serde writes as a string itself (a newtype around a `String`, a type that names `String` as its serde
 //! form); or a unit struct or a struct that declares no field to serde, the singleton with the name `_`. A field with
-//! `#[serde(skip)]` does not count; a ref that declares a field and writes none has no name. A number, a boolean, a
+//! `#[serde(skip)]` does not count; a ref that declares a field and writes none has no name, and neither has one that
+//! writes a unit but does not read as one (its `Deserialize` asks for a string). A number, a boolean, a
 //! character and an enum variant are not a string. The reader takes what a ref's `Deserialize` declares: a field's
 //! serde aliases count as more fields, and a reader that takes any form (`deserialize_any`, an untagged enum) is
 //! refused.
@@ -83,7 +84,7 @@ impl de::Error for Error {
 struct Writer {
     /// The field being written; `None` for the ref itself.
     field: Option<&'static str>,
-    /// Whether the ref declares no field to serde: then a struct that writes none is a singleton.
+    /// Whether the ref declares no field to serde: then a unit, or a struct that writes no field, is a singleton.
     singleton: fn() -> bool,
 }
 
@@ -95,9 +96,11 @@ impl Writer {
         }))
     }
 
+    /// A unit is the singleton only for a ref that also reads as one: one that declares no field to serde.
     fn unit(self) -> Result<String, Error> {
         match self.field {
-            None => Ok(ActorAddress::SINGLETON_KEY.to_owned()),
+            None if (self.singleton)() => Ok(ActorAddress::SINGLETON_KEY.to_owned()),
+            None => Err(Error::Refused(format!("{RULE}, but serde writes a unit and does not read one"))),
             Some(_) => self.refuse("a unit"),
         }
     }

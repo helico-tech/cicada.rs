@@ -10,6 +10,11 @@
 //! node of version 1 that writes an actor without a state fails; migration 3 removes every registration and rewrites
 //! `%3A` to `:` in addresses, and the contracts that nodes register again are not those of version 2 (ADR 0021).
 //!
+//! A statement of a migration that violates a constraint (`SQLITE_CONSTRAINT`, such as two old addresses that become
+//! one in migration 3) fails the open with [`StoreError::Invalid`], which names the version it could not reach and
+//! holds SQLite's message: trying again cannot help. Every other error, such as a database that is locked, is
+//! [`StoreError::Unavailable`]. Either way the transaction is rolled back and the database stays at its version.
+//!
 //! SQLite keeps the text of every `CREATE` in `sqlite_master`, so the statement texts are part of the schema.
 
 use std::path::Path;
@@ -182,9 +187,9 @@ async fn apply_up_to(c: &mut SqliteConnection, path: &Path, target: i64) -> Stor
         }
     }
     if current < target {
-        for statements in &MIGRATIONS[current as usize..target as usize] {
+        for (version, statements) in (current + 1..).zip(&MIGRATIONS[current as usize..target as usize]) {
             for statement in *statements {
-                sqlx::raw_sql(*statement).execute(&mut *c).await.map_err(db_error)?;
+                sqlx::raw_sql(*statement).execute(&mut *c).await.map_err(|e| migration_error(version, e))?;
             }
         }
         sqlx::raw_sql(sqlx::AssertSqlSafe(format!("PRAGMA user_version = {target}")))
@@ -193,6 +198,18 @@ async fn apply_up_to(c: &mut SqliteConnection, path: &Path, target: i64) -> Stor
             .map_err(db_error)?;
     }
     Ok(())
+}
+
+/// The error of a statement of migration `version`: a violated constraint (`SQLITE_CONSTRAINT`, 19, with its extended
+/// codes) is [`StoreError::Invalid`], as the data stops the migration and trying again cannot help; anything else is
+/// [`db_error`].
+fn migration_error(version: i64, e: sqlx::Error) -> StoreError {
+    match e.as_database_error() {
+        Some(d) if d.code().and_then(|code| code.parse::<i32>().ok()).is_some_and(|code| code & 0xFF == 19) => {
+            StoreError::Invalid(format!("The database cannot be migrated to schema version {version}: {}", d.message()))
+        }
+        _ => db_error(e),
+    }
 }
 
 /// Sets up the database at `path` as a store of schema version `version` would have: the migrations up to it, in one

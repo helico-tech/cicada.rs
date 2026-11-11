@@ -15,11 +15,18 @@
 //! required, so a node of version 1 that writes an actor without a state fails; migration 3 removes every registration
 //! and rewrites `%3A` to `:` in addresses, and the contracts that nodes register again are not those of version 2
 //! (ADR 0021).
+//!
+//! A statement of a migration that violates a constraint (SQLSTATE class `23`, such as two old addresses that become one
+//! in migration 3) fails with [`StoreError::Invalid`], which names the version it could not reach and holds
+//! PostgreSQL's message: trying again cannot help. Every other error keeps its mapping: a lost connection, a deadlock
+//! and a missing privilege (`42501`) stay [`StoreError::Unavailable`], so a node without `CREATE` privileges that
+//! starts before the one that migrates gets through once the schema is migrated. Either way the transaction is rolled
+//! back and the schema stays at its version.
 
 use crate::store::StoreError;
 use sqlx::{AssertSqlSafe, Connection, PgConnection};
 
-use crate::store::postgres::error::map_error;
+use crate::store::postgres::error::{map_error, sql_state};
 
 /// Ordered migrations; index + 1 is the version. `{s}` is replaced by the quoted schema name. Never edit one.
 const MIGRATIONS: &[&[&str]] = &[
@@ -166,7 +173,10 @@ async fn migrate_up_to(c: &mut PgConnection, schema: &str, target: i32) -> Resul
     }
     for version in current + 1..=target {
         for statement in MIGRATIONS[version as usize - 1] {
-            ddl(&mut tx, &statement.replace("{s}", &s)).await?;
+            sqlx::raw_sql(AssertSqlSafe(statement.replace("{s}", &s)))
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| migration_error(version, e))?;
         }
         sqlx::query(AssertSqlSafe(format!("INSERT INTO {s}.cicada_schema_version (version) VALUES ($1)")))
             .bind(version)
@@ -182,6 +192,18 @@ async fn migrate_up_to(c: &mut PgConnection, schema: &str, target: i32) -> Resul
 #[cfg(test)]
 pub(crate) async fn migrate_to(c: &mut PgConnection, schema: &str, version: i32) -> Result<(), StoreError> {
     migrate_up_to(c, schema, version).await
+}
+
+/// The error of a statement of migration `version`: a violated constraint (SQLSTATE class `23`) is
+/// [`StoreError::Invalid`], as the data stops the migration and trying again cannot help; anything else is
+/// [`map_error`].
+fn migration_error(version: i32, e: sqlx::Error) -> StoreError {
+    match &e {
+        sqlx::Error::Database(db) if sql_state(&e).is_some_and(|state| state.starts_with("23")) => StoreError::Invalid(
+            format!("The database cannot be migrated to schema version {version}: {}", db.message()),
+        ),
+        _ => map_error(e),
+    }
 }
 
 async fn ddl(c: &mut PgConnection, statement: &str) -> Result<(), StoreError> {

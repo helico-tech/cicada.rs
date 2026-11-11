@@ -8,7 +8,7 @@ use crate::actor::contract_of;
 use crate::prelude::*;
 use crate::retry::{Backoff, RetryPolicy};
 use crate::runtime::{RetryResult, SendResult};
-use crate::store::{Backend, DeleteResult, MessageStatus, OutcomeStatus, OutgoingMessage, Store, support};
+use crate::store::{Backend, DeleteResult, MessageStatus, OutcomeStatus, OutgoingMessage, Store, StoreError, support};
 use crate::time;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -342,12 +342,31 @@ async fn two_keys_that_become_one_name() {
     assert_eq!(Db::texts(&db.file, FIND_PAIRS).await, ["pairs/a:b:c"], "the query of the upgrade note finds the pair");
 
     let Err(error) = SqliteStore::open(&db.file, SqliteOptions::default()).await else { panic!("the open succeeded") };
-    assert!(error.to_string().contains("UNIQUE constraint failed: actors.address"), "{error}");
+    let StoreError::Invalid(message) = &error else { panic!("not an invalid store: {error:?}") };
+    assert!(message.starts_with("The database cannot be migrated to schema version 3: "), "{message}");
+    assert!(message.contains("UNIQUE constraint failed: actors.address"), "{message}");
     assert_eq!(Db::texts(&db.file, "PRAGMA user_version").await, ["2"]);
     assert_eq!(
         Db::texts(&db.file, "SELECT address FROM actors ORDER BY address").await,
         ["pairs/a%3Ab:c", "pairs/a:b%3Ac"]
     );
+}
+
+/// Scenario: A database that is locked while it is migrated.
+#[tokio::test]
+async fn a_database_that_is_locked_while_it_is_migrated_is_unavailable_and_migrated_later() {
+    let db = Db::at_version(2).await;
+    let mut writer = Db::raw(&db.file).await;
+    sqlx::raw_sql("BEGIN IMMEDIATE").execute(&mut writer).await.unwrap();
+    let options = || SqliteOptions { busy_timeout: std::time::Duration::from_millis(20), ..SqliteOptions::default() };
+    let Err(error) = SqliteStore::open(&db.file, options()).await else { panic!("the open succeeded") };
+    assert!(error.is_unavailable(), "{error:?}");
+    sqlx::raw_sql("ROLLBACK").execute(&mut writer).await.unwrap();
+    writer.close().await.unwrap();
+    assert_eq!(Db::texts(&db.file, "PRAGMA user_version").await, ["2"]);
+
+    SqliteStore::open(&db.file, options()).await.expect("the lock is gone").close().await;
+    assert_eq!(Db::texts(&db.file, "PRAGMA user_version").await, [schema::VERSION.to_string()]);
 }
 
 #[tokio::test]

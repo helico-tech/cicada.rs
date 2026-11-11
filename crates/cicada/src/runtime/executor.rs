@@ -439,8 +439,8 @@ impl TurnExecutor {
                 self.on_handler_error(info, failure, "timeout".into(), true).await
             }
             // It ended, but only after max_turn (blocking code): still a timeout. Re-running is allowed only when the
-            // handler itself failed; one that returned or vetoed, or a message that did not decode, ends failed(timeout),
-            // not retried.
+            // handler itself failed; one that returned or vetoed, or a message that did not decode, ends
+            // failed(timeout), not retried.
             Ok(run) if overran => {
                 let cause = match run.end {
                     RunEnd::Threw(f) => Some(Box::new(f)),

@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::actor::contract_of;
 use crate::prelude::*;
-use crate::store::{Backend, MessageStatus, OutcomeStatus, OutgoingMessage, Store, support};
+use crate::store::{Backend, MessageStatus, OutcomeStatus, OutgoingMessage, Store, StoreError, support};
 use crate::time;
 use futures::FutureExt;
 use serde::{Deserialize, Serialize};
@@ -305,7 +305,9 @@ async fn two_keys_that_become_one_name() {
         assert_eq!(db.texts(FIND_PAIRS).await, ["pairs/a:b:c"], "the query of the upgrade note finds the pair");
 
         let Err(error) = db.try_open().await else { panic!("the open succeeded") };
-        assert!(error.to_string().contains("actors_pkey"), "{error}");
+        let StoreError::Invalid(message) = &error else { panic!("not an invalid store: {error:?}") };
+        assert!(message.starts_with("The database cannot be migrated to schema version 3: "), "{message}");
+        assert!(message.contains("actors_pkey"), "{message}");
         assert_eq!(db.version().await, 2);
         assert_eq!(
             db.texts("SELECT address FROM {s}.actors ORDER BY address").await,

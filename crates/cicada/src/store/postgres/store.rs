@@ -136,8 +136,9 @@ impl PostgresStore {
     /// `application_name`, `options`, …).
     ///
     /// Fails with [`StoreError::Invalid`] for invalid settings or a URL that is not a PostgreSQL URL (the message never
-    /// repeats the URL, which can hold a password), or a database migrated by a newer version, and with
-    /// [`StoreError::Unavailable`] when the database cannot be reached.
+    /// repeats the URL, which can hold a password), a database migrated by a newer version, or data that a migration's
+    /// constraint refuses (the schema stays at its version), and with [`StoreError::Unavailable`] when the database
+    /// cannot be reached.
     pub async fn connect(url: &str, config: PostgresOptions) -> StoreResult<Self> {
         Self::connect_with(connect_options(url)?, config).await
     }

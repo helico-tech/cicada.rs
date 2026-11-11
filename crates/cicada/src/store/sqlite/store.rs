@@ -178,8 +178,9 @@ impl ReadTx<'_> {
 impl SqliteStore {
     /// Opens (or creates, with its schema) the database file at `path` and migrates it to the current schema version.
     /// A new or empty file is set up. Fails with [`StoreError::Invalid`] when the file was written by a newer schema
-    /// version or holds the tables of another program (it has tables but no schema version; the file is left as it
-    /// was), and with [`StoreError::Unavailable`] when the file cannot be opened.
+    /// version, holds the tables of another program (it has tables but no schema version; the file is left as it
+    /// was), or holds data that a migration's constraint refuses (the file stays at its version), and with
+    /// [`StoreError::Unavailable`] when the file cannot be opened or is locked.
     pub async fn open(path: impl AsRef<Path>, options: SqliteOptions) -> StoreResult<Self> {
         let path = path.as_ref();
         let base = SqliteConnectOptions::new()

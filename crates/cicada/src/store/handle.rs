@@ -83,7 +83,9 @@ impl Store {
 
     /// Opens the SQLite store in the file at `path` (feature `sqlite`): one file, WAL, one writer. Sets up a new or
     /// empty file and migrates an older one; refuses a file that holds the tables of another program, and one written
-    /// by a newer version.
+    /// by a newer version. A migration that violates a constraint of the database fails with
+    /// [`StoreError::Invalid`](super::StoreError::Invalid), which names the schema version it could not reach; the file
+    /// stays at its version.
     ///
     /// ```no_run
     /// # async fn example() -> cicada::store::StoreResult<()> {
@@ -106,8 +108,10 @@ impl Store {
     /// effect.
     ///
     /// Fails with [`StoreError::Invalid`](super::StoreError::Invalid) for invalid options or a URL that is not a
-    /// PostgreSQL URL (the message never repeats the URL, which can hold a password), or a database migrated by a newer
-    /// version, and with [`StoreError::Unavailable`](super::StoreError::Unavailable) when the database cannot be reached.
+    /// PostgreSQL URL (the message never repeats the URL, which can hold a password), a database migrated by a newer
+    /// version, or a migration that violates a constraint of the database (it names the schema version it could not
+    /// reach; the schema stays at its version), and with [`StoreError::Unavailable`](super::StoreError::Unavailable)
+    /// when the database cannot be reached.
     ///
     /// ```no_run
     /// # async fn example() -> Result<(), cicada::store::StoreError> {
