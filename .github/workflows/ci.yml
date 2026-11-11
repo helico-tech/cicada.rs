@@ -43,13 +43,27 @@ jobs:
       # `cargo test --workspace` turns every feature of cicada on, so each feature is also built alone: no feature,
       # only SQLite, only PostgreSQL, only the test support.
       - name: Build cicada with each feature alone
+        shell: bash
+        env:
+          RUSTFLAGS: -D warnings
         run: |
+          set -euo pipefail
           cargo check -p cicada
           cargo check -p cicada --features sqlite
           cargo check -p cicada --features postgres
           cargo check -p cicada --features testing
+      # The trees go to files first, so a `cargo tree` that fails fails the step; the first two greps check that the
+      # trees hold what each feature must build.
       - name: Each store feature builds only its own driver
+        shell: bash
         run: |
-          if cargo tree -p cicada -e normal | grep -q sqlx; then echo "no feature builds sqlx"; exit 1; fi
-          if cargo tree -p cicada -e normal --features sqlite | grep -q sqlx-postgres; then echo "sqlite builds the PostgreSQL driver"; exit 1; fi
-          if cargo tree -p cicada -e normal --features postgres | grep -qE 'sqlx-sqlite|libsqlite3-sys'; then echo "postgres builds the SQLite driver"; exit 1; fi
+          set -euo pipefail
+          trees="${RUNNER_TEMP:-/tmp}"
+          cargo tree -p cicada -e normal > "$trees/none.txt"
+          cargo tree -p cicada -e normal --features sqlite > "$trees/sqlite.txt"
+          cargo tree -p cicada -e normal --features postgres > "$trees/postgres.txt"
+          grep -q sqlx-sqlite "$trees/sqlite.txt" || { echo "sqlite does not build the SQLite driver"; exit 1; }
+          grep -q sqlx-postgres "$trees/postgres.txt" || { echo "postgres does not build the PostgreSQL driver"; exit 1; }
+          if grep -q sqlx "$trees/none.txt"; then echo "no feature builds sqlx"; exit 1; fi
+          if grep -q sqlx-postgres "$trees/sqlite.txt"; then echo "sqlite builds the PostgreSQL driver"; exit 1; fi
+          if grep -qE 'sqlx-sqlite|libsqlite3-sys' "$trees/postgres.txt"; then echo "postgres builds the SQLite driver"; exit 1; fi

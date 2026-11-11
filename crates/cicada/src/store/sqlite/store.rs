@@ -33,7 +33,7 @@ const READERS: usize = 4;
 /// Turns the database file to WAL mode; a property of the file, so it holds for every later connection.
 const SET_WAL: &str = "PRAGMA journal_mode = WAL";
 
-/// Settings of a [`SqliteStore`].
+/// The options of the SQLite store, for [`Store::sqlite`](crate::Store::sqlite). Every field has a usable default.
 #[derive(Clone)]
 pub struct SqliteOptions {
     /// The store clock; pass a virtual clock in tests.

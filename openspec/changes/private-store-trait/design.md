@@ -274,8 +274,12 @@ For a host (Chorus, Karakuri):
    (`features = ["sqlite"]`). `cicada-test` stays a dev-dependency.
 2. Open the store with `Store::sqlite(path, options)` or `Store::postgres(url, options)`, and pass it to
    `ActorSystem::builder`. Replace `Arc<dyn Store>` with `Store`, and `PostgresStoreConfig` with `PostgresOptions`.
-3. Replace calls on the store with calls on the system: `store.now()` with `system.now()`, `store.next_due_at(…)`
-   with `system.next_due_at()`, `store.running_turn(…)` and `store.pending(…)` with the methods of the same name.
+3. Replace calls on the store with calls on the system: `store.now()` with `system.now()`, `store.next_due_at(&types)`
+   with `system.next_due_at()` (it takes no types: it answers for the types the node hosts, and `None` when it hosts
+   none), and `store.running_turn(…)` and `store.pending(…)` with the methods of the same name. What differs: every
+   call on the system returns `OpError`, not `StoreError` (a store failure is `OpError::Store`), and `system.pending`
+   answers an `Option` of a page, `None` when the actor does not exist, where the store answered an empty page.
+   `system.now()`, `system.next_due_at()` and `system.running_turn(…)` answer the same values as the store did.
    `hash_conflict_reason` is now `cicada::store::hash_conflict_reason`.
 4. Replace `system.store().close()` with `store.close()` on the store the host opened.
 5. In tests: `TestActors` is unchanged. Replace `InMemoryStore::default()`, `with_clock(…)` and `new(…)` with
