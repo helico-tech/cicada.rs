@@ -43,7 +43,7 @@ and `create_stateless(&r)` with `create(&r, &NoState {})`.
 
 ## Order
 
-Step 1 of ADR 0018. After `fix-backends-commit-difference`, before `private-store-trait`.
+Step 1 of ADR 0018. After `fix-fuzz-claim-order`, before `private-store-trait`.
 
 ## Impact
 
