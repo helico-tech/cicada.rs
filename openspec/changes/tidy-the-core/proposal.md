@@ -20,6 +20,10 @@ ADR 0018 lists them as tidying.
 - The detail of a `422` for a payload that cannot be decoded says its reason once. Today it repeats itself:
   `Payload of 'Step' cannot be decoded: Payload of 'Step' cannot be decoded: …` (seen on
   `POST /actors/{type}/{key}/messages`, found while `cli-and-tui` was validated).
+- A send to an actor whose type is not registered says what is wrong. Today it answers `404 no-such-instance`,
+  "… does not exist", while the actor exists and its type is the one that is missing (found while
+  `every-actor-has-state` was validated; a formerly stateless type is in that state during an upgrade until a node
+  that hosts it starts).
 
 The simplest version: no alias and no deprecation period. An actor definition loses two lines.
 
