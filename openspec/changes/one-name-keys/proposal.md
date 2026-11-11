@@ -46,7 +46,7 @@ None.
 
 ## Order
 
-Step 3 of ADR 0018. After `private-store-trait`, before `tidy-the-core`.
+Step 3 of ADR 0018. After `postgres-tls`, before `tidy-the-core`.
 
 ## Impact
 
