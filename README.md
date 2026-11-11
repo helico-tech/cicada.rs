@@ -411,7 +411,8 @@ headers = { "X-Tenant" = "ops" }
 
 `cicada config set-context NAME --server URL [--token T] [--header K=V]` adds or replaces a context (the first one also
 becomes current), `config use-context NAME` switches, `config get-contexts` and `config current-context` show them.
-They rewrite the whole file, so comments in it are lost.
+They rewrite the whole file, so comments in it are lost. On Unix the file has mode 0600 after every write, because it
+holds tokens.
 
 **Commands.** Verb first, as in kubectl:
 

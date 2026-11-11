@@ -21,7 +21,7 @@ No change to the library crates, the wire format or the store schema: nodes of 0
   - Named contexts in `~/.config/cicada/config.toml` (or `$XDG_CONFIG_HOME`, or `$CICADA_CONFIG`), each with a server,
     an optional bearer token and headers; `cicada config get-contexts`, `current-context`, `use-context` and
     `set-context`. `--server`, `--token` and `--context` win over `CICADA_SERVER`, `CICADA_TOKEN` and
-    `CICADA_CONTEXT`, which win over the file.
+    `CICADA_CONTEXT`, which win over the file. On Unix the file has mode 0600 after every write.
   - `cicada tui`: a k9s-style terminal UI. Actors, pending messages, outcomes, running turns, nodes and types,
     refreshed every 2 s; overviews of an actor, message, node or type; a live filter, sorting and the mouse; and
     delete, cancel, retry, deliver-now, pause, resume, purge and stop-turn behind a confirmation.

@@ -41,12 +41,18 @@ The bearer token SHALL be `--token`, else `CICADA_TOKEN`, else the context's `to
 ### Requirement: The CLI reads its config file from a fixed path
 
 The config file SHALL be `$CICADA_CONFIG`, else `$XDG_CONFIG_HOME/cicada/config.toml`, else
-`$HOME/.config/cicada/config.toml`. A missing file SHALL count as an empty one.
+`$HOME/.config/cicada/config.toml`. A missing file SHALL count as an empty one. On Unix, a command that writes the
+file SHALL leave it with mode 0600.
 
 #### Scenario: XDG config home
 
 - **WHEN** `CICADA_CONFIG` is unset and `XDG_CONFIG_HOME` is `/x`
 - **THEN** the file read is `/x/cicada/config.toml`
+
+#### Scenario: The file stays private
+
+- **WHEN** on Unix `cicada config set-context` writes the file, which existed with mode 0644
+- **THEN** the file has mode 0600 afterwards
 
 ### Requirement: The CLI has kubectl-style commands for every API operation
 

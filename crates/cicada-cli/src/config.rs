@@ -5,6 +5,7 @@
 //! pure function of the three, so it is tested without touching the real environment.
 
 use std::collections::BTreeMap;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -52,12 +53,24 @@ impl Config {
         }
     }
 
-    /// Writes the whole file to `path`, creating its directory. Comments in an existing file are not kept.
+    /// Writes the whole file to `path`, creating its directory. Comments in an existing file are not kept. On Unix the
+    /// file has mode 0600 afterwards, because it holds tokens; it gets that mode before the text is written.
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
         }
-        std::fs::write(path, toml::to_string_pretty(self)?).with_context(|| format!("cannot write {}", path.display()))
+        let text = toml::to_string_pretty(self)?;
+        let write = || -> std::io::Result<()> {
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create(true).truncate(true);
+            #[cfg(unix)]
+            std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+            let mut file = options.open(path)?;
+            #[cfg(unix)]
+            file.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+            file.write_all(text.as_bytes())
+        };
+        write().with_context(|| format!("cannot write {}", path.display()))
     }
 }
 
@@ -233,6 +246,22 @@ mod tests {
         let file = dir.path().join("sub/config.toml");
         assert_eq!(Config::load(&file).unwrap(), Config::default());
         config().save(&file).unwrap();
+        assert_eq!(Config::load(&file).unwrap(), config());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_file_is_readable_only_by_its_owner() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        let mode = |file: &Path| std::fs::metadata(file).unwrap().permissions().mode() & 0o777;
+        config().save(&file).unwrap();
+        assert_eq!(mode(&file), 0o600, "a new file");
+
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        config().save(&file).unwrap();
+        assert_eq!(mode(&file), 0o600, "an existing file with a wider mode");
         assert_eq!(Config::load(&file).unwrap(), config());
     }
 }
