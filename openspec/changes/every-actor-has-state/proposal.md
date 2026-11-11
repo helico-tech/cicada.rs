@@ -11,7 +11,7 @@ stateless; 41 actor types have state. ADR 0018 decides that every actor has stat
 
 - **BREAKING** `Stateless`, the `ActorState` trait and `create_stateless` (on `Turn` and `ActorSystem`) are removed.
   `Actor::State` is any `Serialize + DeserializeOwned + JsonSchema` type.
-- The core gets `NoState`, an empty struct with braces that refuses unknown fields. It is stored and served as `{}`.
+- The core gets `NoState`, an empty struct with braces that refuses unknown fields. It encodes to `{}`.
 - **BREAKING** State is never absent: not in the store (the column is not null), not in a commit, not in a contract
   (`state_schema` is always there), not over HTTP (an actor's `state` is always an object or another JSON value, never
   null or missing).
@@ -43,14 +43,14 @@ and `create_stateless(&r)` with `create(&r, &NoState {})`.
 
 ## Order
 
-Step 1 of ADR 0018. After `cli-and-tui`, before `private-store-trait`.
+Step 1 of ADR 0018. After `fix-backends-commit-difference`, before `private-store-trait`.
 
 ## Impact
 
 - `crates/cicada` (`message`, `actor`, `turn`, `contract`, `store::model`, `runtime`, `api`), both store backends and
-  their migrations, `cicada-store-conformance`, `cicada-test`, `cicada-axum`, `cicada-client`, `cicada-cli`, the
-  examples, the sample service, `README.md`, `docs/architecture.md`, `docs/operations.md`, `docs/openapi.json` and
-  `CHANGELOG.md`.
+  their migrations, `cicada-store-conformance`, `cicada-test`, `cicada-axum`, `cicada-client`, `cicada-cli`,
+  `cicada-fuzz`, the examples, the sample service, `e2e`, `README.md`, `docs/architecture.md`, `docs/operations.md`,
+  `docs/openapi.json` and `CHANGELOG.md`.
 - Covered by ADR 0018, which becomes Accepted with this change; no further ADR.
 - Chorus and Karakuri must rename `Stateless` and drop `create_stateless`. A database written before this change is
   migrated in place (design, decision 1). Nodes before and after must not share a database: every old node is stopped
