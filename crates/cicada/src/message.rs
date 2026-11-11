@@ -68,8 +68,8 @@ pub fn encode<M: Serialize>(message: &M) -> Result<EncodedMessage, String> {
     }
 }
 
-/// Decodes `payload` as the variant named `message_type`. The error message is the reason recorded for an unhandled
-/// message.
+/// Decodes `payload` as the variant named `message_type`. The error message is the reason recorded for a message
+/// that cannot be decoded.
 pub fn decode<M: DeserializeOwned>(message_type: &str, payload: &Value) -> Result<M, String> {
     let Value::Object(fields) = payload else {
         return Err(format!("Payload of '{message_type}' must be a JSON object"));

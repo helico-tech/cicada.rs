@@ -37,8 +37,6 @@ struct KeeperActor;
 impl Actor for KeeperActor {
     type Ref = Keeper;
     type State = NoState;
-    type Message = KeeperMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: KeeperMsg) -> HandlerResult {
         match message {

@@ -93,8 +93,6 @@ pub struct OrderActor;
 impl Actor for OrderActor {
     type Ref = Order;
     type State = OrderState;
-    type Message = OrderMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: OrderMsg) -> HandlerResult {
         let status = turn.state().status;

@@ -120,8 +120,6 @@ impl Default for DeadLettersActor {
 impl Actor for DeadLettersActor {
     type Ref = DeadLetters;
     type State = DeadLettersState;
-    type Message = DeadLettersMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: DeadLettersMsg) -> HandlerResult {
         match message {

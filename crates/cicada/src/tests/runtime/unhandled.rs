@@ -1,4 +1,4 @@
-//! Messages that cannot be decoded at delivery go to the type's unhandled policy.
+//! A message that cannot be decoded at delivery ends `failed` with the reason, without a retry; no handler runs.
 
 use std::time::Duration;
 
@@ -19,7 +19,7 @@ async fn raw_enqueue(test: &TestActors, message_type: &str, payload: Value) -> M
 }
 
 #[tokio::test(start_paused = true)]
-async fn fail_outcome_failed_with_the_decode_reason() {
+async fn an_undecodable_message_ends_failed_with_the_decode_reason() {
     let test = TestActors::builder().with(|n| n.host(CounterActor)).build().await.unwrap();
     test.create(&a(), &CounterState::default()).await;
     let bad = raw_enqueue(&test, "Add", json!({"n": "x"})).await;
@@ -37,15 +37,28 @@ async fn fail_outcome_failed_with_the_decode_reason() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn drop_policy_outcome_done_and_no_effects() {
-    counter_type!(DropCounter, Unhandled::Drop);
-    let test = TestActors::builder().with(|n| n.host(DropCounter)).build().await.unwrap();
+async fn an_unknown_type_name_fails_and_leaves_the_state_as_it_was() {
+    let test = TestActors::builder().with(|n| n.host(CounterActor)).build().await.unwrap();
+    test.create(&a(), &CounterState::total(7)).await;
+    let unknown = raw_enqueue(&test, "Nope", json!({"n": 1})).await;
+    test.run_until_idle().await;
+    let outcome = test.outcome(&unknown).await.unwrap();
+    assert_eq!(outcome.status, OutcomeStatus::Failed);
+    assert!(outcome.error.as_deref().unwrap().contains("Nope"), "{:?}", outcome.error);
+    assert_eq!(test.state::<_, CounterState>(&a()).await, CounterState::total(7));
+    assert_eq!(test.version(&a()).await, 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_message_after_an_undecodable_one_is_handled() {
+    let test = TestActors::builder().with(|n| n.host(CounterActor)).build().await.unwrap();
     test.create(&a(), &CounterState::default()).await;
     let bad = raw_enqueue(&test, "Add", json!({})).await;
+    let good = test.send(&a(), CounterMsg::Add { n: 2 }).await;
     test.run_until_idle().await;
-    assert_eq!(test.outcome(&bad).await.unwrap().status, OutcomeStatus::Done);
-    assert_eq!(test.state::<_, CounterState>(&a()).await, CounterState::default());
-    assert_eq!(test.version(&a()).await, 0);
+    assert_eq!(test.outcome(&bad).await.unwrap().status, OutcomeStatus::Failed);
+    assert_eq!(test.outcome(&good).await.unwrap().status, OutcomeStatus::Done);
+    assert_eq!(test.state::<_, CounterState>(&a()).await.total, 2);
 }
 
 struct Observer(Events);
@@ -63,7 +76,7 @@ impl Plugin for Observer {
 }
 
 #[tokio::test(start_paused = true)]
-async fn fail_decisions_are_no_failure_no_error_hook_no_retry() {
+async fn an_undecodable_message_is_no_handler_failure_and_is_not_retried() {
     let hook_runs = Events::default();
     let observer = hook_runs.clone();
     let retry = RetryPolicy::new(3, Backoff::fixed(Duration::from_secs(1)).unwrap()).unwrap();
@@ -86,7 +99,8 @@ async fn fail_decisions_are_no_failure_no_error_hook_no_retry() {
     assert_eq!(errors[0], "Unknown message type 'Plain'");
     assert!(errors[1].starts_with("Payload of 'Add' cannot be decoded"), "{}", errors[1]);
     assert_eq!(errors[2], "Payload of 'Add' must be a JSON object");
+    assert!(outcomes.iter().all(|o| o.envelope.attempt == 1), "one attempt each");
     assert!(outcomes.iter().all(|o| o.envelope.failures == 0), "never retried");
-    assert!(hook_runs.all().is_empty(), "a decision, not a failure: no on_handler_error");
+    assert!(hook_runs.all().is_empty(), "no handler ran: no on_handler_error");
     assert_eq!(test.state::<_, CounterState>(&a()).await, CounterState::default());
 }

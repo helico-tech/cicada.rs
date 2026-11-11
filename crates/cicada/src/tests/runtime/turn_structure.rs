@@ -62,8 +62,6 @@ struct SleeperActor(Arc<Counts>);
 impl Actor for SleeperActor {
     type Ref = Sleeper;
     type State = NoState;
-    type Message = SleeperMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
     const MAX_TURN: Option<Duration> = Some(Duration::from_secs(300));
 
     async fn handle(&self, _turn: &mut Turn<Self>, message: SleeperMsg) -> HandlerResult {

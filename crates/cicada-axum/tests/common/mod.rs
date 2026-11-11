@@ -60,8 +60,6 @@ pub struct CounterActor;
 impl Actor for CounterActor {
     type Ref = Counter;
     type State = CounterState;
-    type Message = CounterMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: CounterMsg) -> HandlerResult {
         match message {
@@ -100,8 +98,6 @@ pub struct PingActor;
 impl Actor for PingActor {
     type Ref = Ping;
     type State = NoState;
-    type Message = PingMsg;
-    const UNHANDLED: Unhandled = Unhandled::Drop;
 
     async fn handle(&self, _turn: &mut Turn<Self>, _message: PingMsg) -> HandlerResult {
         Ok(())
@@ -128,8 +124,6 @@ pub struct CleanupActor;
 impl Actor for CleanupActor {
     type Ref = Cleanup;
     type State = NoState;
-    type Message = CleanupMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, _turn: &mut Turn<Self>, _message: CleanupMsg) -> HandlerResult {
         Ok(())
@@ -165,8 +159,6 @@ pub struct TicketActor;
 impl Actor for TicketActor {
     type Ref = Ticket;
     type State = NoState;
-    type Message = PingMsg;
-    const UNHANDLED: Unhandled = Unhandled::Drop;
 
     async fn handle(&self, _turn: &mut Turn<Self>, _message: PingMsg) -> HandlerResult {
         Ok(())

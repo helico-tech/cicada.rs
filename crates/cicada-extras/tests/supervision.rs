@@ -39,8 +39,6 @@ struct MailerActor {
 impl Actor for MailerActor {
     type Ref = Mailer;
     type State = MailerState;
-    type Message = MailerMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: MailerMsg) -> HandlerResult {
         let MailerMsg::SendMail { to } = message;

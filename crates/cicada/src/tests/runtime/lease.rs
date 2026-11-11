@@ -5,11 +5,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use super::common::*;
+use crate::ActorSystem;
 use crate::address::ActorAddress;
 use crate::store::{
     Backend, CommitRequest, CommitResult, MessageStatus, OutcomeStatus, RenewResult, StoreError, StoreResult,
 };
-use crate::{ActorSystem, Unhandled};
 use async_trait::async_trait;
 use tokio::time::Instant;
 
@@ -18,7 +18,7 @@ fn a() -> Counter {
 }
 
 // The counter type with a maximum turn of 5 minutes.
-counter_type!(SlowCounter, Unhandled::Fail, Duration::from_secs(300));
+counter_type!(SlowCounter, Duration::from_secs(300));
 
 fn slow_node(store: impl IntoStore, name: &str) -> ActorSystem {
     node(store, name).host(SlowCounter).build()

@@ -1,7 +1,6 @@
 //! Node start: validation of hosted types and configuration, contract registration.
 //!
-//! A missing handler and a missing unhandled policy are not tested here: a handler is one exhaustive
-//! `match` and `UNHANDLED` is a required associated constant, so both are checked by the compiler (ADR 0003).
+//! A missing handler is not tested here: a handler is one exhaustive `match`, checked by the compiler (ADR 0003).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -59,8 +58,6 @@ macro_rules! other_type {
         impl Actor for $name {
             type Ref = $ref;
             type State = NoState;
-            type Message = OtherMsg;
-            const UNHANDLED: Unhandled = Unhandled::Fail;
 
             async fn handle(&self, _turn: &mut Turn<Self>, _message: OtherMsg) -> HandlerResult {
                 Ok(())
@@ -90,8 +87,6 @@ mod shapes {
             impl Actor for $actor {
                 type Ref = $ref;
                 type State = NoState;
-                type Message = OtherMsg;
-                const UNHANDLED: Unhandled = Unhandled::Fail;
 
                 async fn handle(&self, _turn: &mut Turn<Self>, _message: OtherMsg) -> HandlerResult {
                     Ok(())
@@ -182,8 +177,6 @@ mod shapes {
     impl Actor for RenamedCounterActor {
         type Ref = RenamedCounter;
         type State = CounterState;
-        type Message = CounterMsg;
-        const UNHANDLED: Unhandled = Unhandled::Fail;
 
         async fn handle(&self, _turn: &mut Turn<Self>, _message: CounterMsg) -> HandlerResult {
             Ok(())
@@ -191,7 +184,7 @@ mod shapes {
     }
 }
 
-counter_type!(SameCounter, Unhandled::Fail);
+counter_type!(SameCounter);
 
 /// A `documented` type with state and one message, all in the calling module: `Doc`, `DocState`, `DocMsg`.
 macro_rules! documented_type {
@@ -211,8 +204,6 @@ macro_rules! documented_type {
         impl Actor for DocActor {
             type Ref = Doc;
             type State = DocState;
-            type Message = DocMsg;
-            const UNHANDLED: Unhandled = Unhandled::Fail;
 
             async fn handle(&self, _turn: &mut Turn<Self>, _message: DocMsg) -> HandlerResult {
                 Ok(())

@@ -30,8 +30,6 @@ struct BellActor;
 impl Actor for BellActor {
     type Ref = Bell;
     type State = NoState;
-    type Message = BellMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, _turn: &mut Turn<Self>, _message: BellMsg) -> HandlerResult {
         Ok(())

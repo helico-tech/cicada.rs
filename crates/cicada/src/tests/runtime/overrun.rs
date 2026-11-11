@@ -61,8 +61,6 @@ struct LaggardActor;
 impl Actor for LaggardActor {
     type Ref = Laggard;
     type State = LaggardState;
-    type Message = LaggardMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
     const MAX_TURN: Option<Duration> = Some(MAX_TURN);
 
     async fn handle(&self, turn: &mut Turn<Self>, message: LaggardMsg) -> HandlerResult {

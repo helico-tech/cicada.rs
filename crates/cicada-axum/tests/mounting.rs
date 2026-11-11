@@ -70,7 +70,7 @@ async fn the_system_is_the_in_process_sdk_next_to_the_api() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_non_hosting_node_accepts_any_payload_which_then_ends_as_the_unhandled_policy_says() {
+async fn a_non_hosting_node_accepts_any_payload_which_then_ends_failed_if_it_does_not_decode() {
     let store = memory_store();
     let a = actor_api(node_with(store.clone(), |b| b.host(CounterActor)).await);
     let b = actor_api(node_with(store, |b| b).await);

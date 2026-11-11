@@ -44,8 +44,6 @@ struct BlockerActor;
 impl Actor for BlockerActor {
     type Ref = Blocker;
     type State = NoState;
-    type Message = BlockerMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, _turn: &mut Turn<Self>, message: BlockerMsg) -> HandlerResult {
         match message {

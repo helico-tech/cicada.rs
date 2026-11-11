@@ -102,8 +102,6 @@ struct ChoreActor(Runs);
 impl Actor for ChoreActor {
     type Ref = Chore;
     type State = ChoreState;
-    type Message = ChoreMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: ChoreMsg) -> HandlerResult {
         match message {
@@ -333,8 +331,6 @@ struct TurningPermanent(Runs);
 impl Actor for TurningPermanent {
     type Ref = Chore;
     type State = ChoreState;
-    type Message = ChoreMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: ChoreMsg) -> HandlerResult {
         if let ChoreMsg::Attempt(_) = message {
@@ -563,10 +559,10 @@ async fn max_attempts_1_never_retries() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn load_failures_and_unhandled_fail_decisions_are_not_retried() {
+async fn load_failures_and_undecodable_messages_are_not_retried() {
     let h = Harness::new(vec![]).await;
     let test = &h.test;
-    // Undecodable payload, as accepted by a non-hosting node: policy fail.
+    // Undecodable payload, as accepted by a non-hosting node.
     let mut bad = OutgoingMessage::new(addr(&chore("j")), "Attempt", json!({"failUntil": "x"}));
     bad.retry = Some(exponential4());
     let bad = enqueue(test.store(), bad).await;

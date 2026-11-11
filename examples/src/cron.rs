@@ -109,8 +109,6 @@ pub struct CronJobActor<T> {
 impl<T: CronTask> Actor for CronJobActor<T> {
     type Ref = CronJob;
     type State = CronState;
-    type Message = CronMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
     const MAX_TURN: Option<Duration> = Some(Duration::from_secs(30 * 60));
 
     async fn handle(&self, turn: &mut Turn<Self>, message: CronMsg) -> HandlerResult {

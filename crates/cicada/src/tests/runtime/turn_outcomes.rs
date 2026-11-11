@@ -3,12 +3,12 @@
 use std::time::Duration;
 
 use super::common::*;
+use crate::ActorRef;
 use crate::runtime::SendResult;
 use crate::store::{Backend, MessageStatus, OutcomeStatus, OutgoingMessage};
 use crate::testing::TestActors;
 use crate::time;
 use crate::turn::SendOptions;
-use crate::{ActorRef, Unhandled};
 use serde_json::json;
 
 async fn harness() -> TestActors {
@@ -86,7 +86,7 @@ async fn commit_rejected_by_a_send_to_an_absent_instance_failed_with_reason_no_e
 }
 
 // The counter type with a maximum turn of 30 seconds.
-counter_type!(HalfMinuteCounter, Unhandled::Fail, Duration::from_secs(30));
+counter_type!(HalfMinuteCounter, Duration::from_secs(30));
 
 #[tokio::test(start_paused = true)]
 async fn turn_exceeding_max_turn_failed_timeout_no_effects_handler_not_re_run() {

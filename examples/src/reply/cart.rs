@@ -94,8 +94,6 @@ pub struct CartActor;
 impl Actor for CartActor {
     type Ref = Cart;
     type State = CartState;
-    type Message = CartMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: CartMsg) -> HandlerResult {
         match message {

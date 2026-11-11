@@ -53,8 +53,6 @@ struct NotesActor;
 impl Actor for NotesActor {
     type Ref = Notes;
     type State = NotesState;
-    type Message = NotesMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: NotesMsg) -> HandlerResult {
         let NotesMsg::Note { text } = message;

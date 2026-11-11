@@ -151,8 +151,6 @@ impl SlowActor {
 impl Actor for SlowActor {
     type Ref = Slow;
     type State = SlowState;
-    type Message = SlowMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: SlowMsg) -> HandlerResult {
         match message {
@@ -279,8 +277,6 @@ impl Drop for Running {
 impl Actor for CounterActor {
     type Ref = Counter;
     type State = CounterState;
-    type Message = CounterMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: CounterMsg) -> HandlerResult {
         match message {
@@ -382,8 +378,6 @@ impl RecorderActor {
 impl Actor for RecorderActor {
     type Ref = Recorder;
     type State = RecorderState;
-    type Message = RecorderMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: RecorderMsg) -> HandlerResult {
         match message {
@@ -452,8 +446,6 @@ pub struct FlakyActor;
 impl Actor for FlakyActor {
     type Ref = Flaky;
     type State = FlakyState;
-    type Message = FlakyMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: FlakyMsg) -> HandlerResult {
         match message {

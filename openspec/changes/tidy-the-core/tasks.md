@@ -6,13 +6,13 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
 
 ## 1. The actor definition
 
-- [ ] 1.1 The message type once [4]: remove `Actor::Message`; the bound on `Actor::Ref` is `ActorRef`; `handle`
+- [x] 1.1 The message type once [4]: remove `Actor::Message`; the bound on `Actor::Ref` is `ActorRef`; `handle`
       takes `<Self::Ref as ActorRef>::Message`; `Turn::send_self` and `send_self_with` take the same type; the uses
       in `actor.rs` follow. Remove the line `type Message = …;` from every actor definition of the workspace and
       from the Rust blocks of `README.md`, `docs/operations.md` and `docs/architecture.md`. Verify:
       `cargo test --workspace` passes, and no `impl … Actor for` block in the workspace or in those three files
       holds `type Message`.
-- [ ] 1.2 No unhandled policy [4]: remove `Unhandled`, `Actor::UNHANDLED`, their exports from `lib.rs` and the
+- [x] 1.2 No unhandled policy [4]: remove `Unhandled`, `Actor::UNHANDLED`, their exports from `lib.rs` and the
       prelude, and the drop path of the turn (`RunEnd::DecidedDrop` and what only it used). A message that cannot be
       decoded ends `failed` with the reason, without a retry, and no handler runs. `TurnInfo::unhandled()` stays;
       its doc comment, the table at the top of `plugin.rs`, the doc of `TurnOutcome::Done` and the log line of the

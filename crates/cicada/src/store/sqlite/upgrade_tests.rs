@@ -36,8 +36,6 @@ struct CleanupActor;
 impl Actor for CleanupActor {
     type Ref = Cleanup;
     type State = NoState;
-    type Message = CleanupMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, _: &mut Turn<Self>, _: CleanupMsg) -> HandlerResult {
         Ok(())
@@ -72,8 +70,6 @@ struct NotesActor;
 impl Actor for NotesActor {
     type Ref = Notes;
     type State = NotesState;
-    type Message = NotesMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: NotesMsg) -> HandlerResult {
         let NotesMsg::Note { text } = message;
@@ -104,8 +100,6 @@ struct MakerActor;
 impl Actor for MakerActor {
     type Ref = Maker;
     type State = NoState;
-    type Message = MakerMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: MakerMsg) -> HandlerResult {
         let MakerMsg::MakeNote { name } = message;

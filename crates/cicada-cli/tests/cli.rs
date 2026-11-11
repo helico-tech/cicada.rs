@@ -51,8 +51,6 @@ struct AccountActor;
 impl Actor for AccountActor {
     type Ref = Account;
     type State = AccountState;
-    type Message = AccountMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: AccountMsg) -> HandlerResult {
         match message {
@@ -84,8 +82,6 @@ struct CleanupActor;
 impl Actor for CleanupActor {
     type Ref = Cleanup;
     type State = NoState;
-    type Message = CleanupMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, _: &mut Turn<Self>, _: CleanupMsg) -> HandlerResult {
         Ok(())

@@ -336,12 +336,16 @@ impl<A: Actor> Turn<A> {
     }
 
     /// Buffers `msg` for this instance itself, due now.
-    pub fn send_self(&mut self, msg: impl Into<A::Message>) -> Result<MessageId, TurnError> {
+    pub fn send_self(&mut self, msg: impl Into<<A::Ref as ActorRef>::Message>) -> Result<MessageId, TurnError> {
         self.send_self_with(msg, SendOptions::default())
     }
 
     /// Buffers `msg` for this instance itself with `options`.
-    pub fn send_self_with(&mut self, msg: impl Into<A::Message>, options: SendOptions) -> Result<MessageId, TurnError> {
+    pub fn send_self_with(
+        &mut self,
+        msg: impl Into<<A::Ref as ActorRef>::Message>,
+        options: SendOptions,
+    ) -> Result<MessageId, TurnError> {
         let address = self.info.self_address.clone();
         self.buffer(address, &msg.into(), options)
     }

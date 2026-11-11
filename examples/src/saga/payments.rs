@@ -86,8 +86,6 @@ pub struct PaymentsActor<G> {
 impl<G: PaymentGateway> Actor for PaymentsActor<G> {
     type Ref = Payments;
     type State = NoState;
-    type Message = PaymentsMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: PaymentsMsg) -> HandlerResult {
         match message {

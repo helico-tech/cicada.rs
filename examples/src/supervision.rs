@@ -74,8 +74,6 @@ pub struct MailerActor<S> {
 impl<S: Smtp> Actor for MailerActor<S> {
     type Ref = Mailer;
     type State = MailerState;
-    type Message = MailerMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: MailerMsg) -> HandlerResult {
         match message {

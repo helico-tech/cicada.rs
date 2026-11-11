@@ -83,8 +83,6 @@ struct WorkerActor(Arc<Gauges>);
 impl Actor for WorkerActor {
     type Ref = Worker;
     type State = NoState;
-    type Message = WorkerMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: WorkerMsg) -> HandlerResult {
         let WorkerMsg::Job { millis, first_attempt_only } = message;

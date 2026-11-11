@@ -51,8 +51,6 @@ struct AlarmActor;
 impl Actor for AlarmActor {
     type Ref = Alarm;
     type State = AlarmState;
-    type Message = AlarmMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: AlarmMsg) -> HandlerResult {
         match message {

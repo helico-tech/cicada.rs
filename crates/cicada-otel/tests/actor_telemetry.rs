@@ -54,8 +54,6 @@ struct TracedActor {
 impl Actor for TracedActor {
     type Ref = Traced;
     type State = TracedState;
-    type Message = TracedMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: TracedMsg) -> HandlerResult {
         match message {
@@ -307,8 +305,6 @@ enum StuckMsg {
 impl Actor for Stuck {
     type Ref = StuckRef;
     type State = cicada::NoState;
-    type Message = StuckMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, _: &mut Turn<Self>, _: StuckMsg) -> HandlerResult {
         tokio::time::sleep(std::time::Duration::from_secs(3600)).await;

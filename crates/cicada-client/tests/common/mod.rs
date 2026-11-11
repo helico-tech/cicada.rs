@@ -69,8 +69,6 @@ pub struct AccountActor;
 impl Actor for AccountActor {
     type Ref = Account;
     type State = AccountState;
-    type Message = AccountMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: AccountMsg) -> HandlerResult {
         match message {
@@ -107,8 +105,6 @@ pub struct BeaconActor;
 impl Actor for BeaconActor {
     type Ref = Beacon;
     type State = NoState;
-    type Message = BeaconMsg;
-    const UNHANDLED: Unhandled = Unhandled::Drop;
 
     async fn handle(&self, _turn: &mut Turn<Self>, _message: BeaconMsg) -> HandlerResult {
         Ok(())

@@ -7,7 +7,7 @@
 //! | Handler returns | yes | runs | – | `done` (or the rejection) |
 //! | Handler fails | yes | runs | yes | `failed`, or rescheduled when its retry policy retries it |
 //! | Turn exceeds its maximum duration | yes | cancelled | yes, the failure is a timeout | `failed` (`timeout`), or rescheduled |
-//! | Payload undecodable | yes ([`TurnInfo::unhandled`] set) | – | – | `failed` / `done`, by the unhandled policy |
+//! | Message undecodable | yes ([`TurnInfo::unhandled`] set) | – | – | `failed`, never retried |
 //! | State or own address undecodable at load | – | – | – | `failed` |
 //! | `on_claim` fails | up to the failing hook | – | – | `failed` |
 //! | Lease lost before commit | maybe | maybe | maybe | – (no outcome; the turn is re-run) |
@@ -169,7 +169,8 @@ impl TurnInfo {
         &self.attributes
     }
 
-    /// Why the payload could not be decoded, when the unhandled policy runs instead of a handler.
+    /// Why the message could not be decoded (an unknown type name or a payload that does not fit), when no handler
+    /// runs and the message ends `failed`.
     pub fn unhandled(&self) -> Option<&str> {
         self.unhandled.get().map(String::as_str)
     }

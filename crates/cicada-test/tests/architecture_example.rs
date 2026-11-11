@@ -59,8 +59,6 @@ struct SyncActor;
 impl Actor for SyncActor {
     type Ref = Sync;
     type State = SyncState;
-    type Message = SyncMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
     const MAX_TURN: Option<Duration> = Some(Duration::from_secs(300));
 
     async fn handle(&self, turn: &mut Turn<Self>, message: SyncMsg) -> HandlerResult {
@@ -91,8 +89,6 @@ struct ReportsActor;
 impl Actor for ReportsActor {
     type Ref = Reports;
     type State = ReportsState;
-    type Message = ReportsMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: ReportsMsg) -> HandlerResult {
         let ReportsMsg::SyncFinished { imported } = message;

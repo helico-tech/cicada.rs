@@ -282,8 +282,6 @@ impl ScriptActor {
 impl Actor for ScriptActor {
     type Ref = Script;
     type State = ScriptState;
-    type Message = ScriptMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
     const MAX_TURN: Option<Duration> = Some(MAX_TURN);
 
     async fn handle(&self, turn: &mut Turn<Self>, message: ScriptMsg) -> HandlerResult {

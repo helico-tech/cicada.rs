@@ -98,8 +98,6 @@ pub struct SyncActor<A> {
 impl<A: SyncApi> Actor for SyncActor<A> {
     type Ref = Sync;
     type State = SyncState;
-    type Message = SyncMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail; // mandatory: Fail | Drop | Custom
     const MAX_TURN: Option<Duration> = Some(Duration::from_secs(5 * 60));
 
     async fn handle(&self, turn: &mut Turn<Self>, message: SyncMsg) -> HandlerResult {
@@ -135,8 +133,6 @@ pub struct ReportsActor;
 impl Actor for ReportsActor {
     type Ref = Reports;
     type State = ReportsState;
-    type Message = ReportsMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: ReportsMsg) -> HandlerResult {
         match message {

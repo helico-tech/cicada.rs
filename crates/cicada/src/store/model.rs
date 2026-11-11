@@ -306,7 +306,7 @@ impl OutgoingMessage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum OutcomeStatus {
-    /// The handler returned (or the unhandled policy dropped the message); effects were applied.
+    /// The handler returned; effects were applied.
     Done,
     /// The handler failed, the state could not be decoded, the commit was rejected, or the turn timed out.
     Failed,

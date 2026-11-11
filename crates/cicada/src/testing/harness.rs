@@ -79,8 +79,7 @@ impl TestActorsBuilder {
 /// # struct CounterState { total: i64 }
 /// # struct CounterActor;
 /// # impl Actor for CounterActor {
-/// #     type Ref = Counter; type State = CounterState; type Message = CounterMsg;
-/// #     const UNHANDLED: Unhandled = Unhandled::Fail;
+/// #     type Ref = Counter; type State = CounterState;
 /// #     async fn handle(&self, turn: &mut Turn<Self>, m: CounterMsg) -> HandlerResult {
 /// #         let CounterMsg::Add { amount } = m; turn.state_mut().total += amount; Ok(())
 /// #     }

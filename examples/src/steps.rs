@@ -136,8 +136,6 @@ pub struct OnboardingActor<S> {
 impl<S: OnboardingServices> Actor for OnboardingActor<S> {
     type Ref = Onboarding;
     type State = OnboardingState;
-    type Message = OnboardingMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: OnboardingMsg) -> HandlerResult {
         match message {

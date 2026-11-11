@@ -54,8 +54,6 @@ struct HookedActor {
 impl Actor for HookedActor {
     type Ref = Hooked;
     type State = HookedState;
-    type Message = HookedMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: HookedMsg) -> HandlerResult {
         match message {

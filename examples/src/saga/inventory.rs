@@ -57,8 +57,6 @@ pub struct InventoryActor;
 impl Actor for InventoryActor {
     type Ref = Inventory;
     type State = InventoryState;
-    type Message = InventoryMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: InventoryMsg) -> HandlerResult {
         match message {

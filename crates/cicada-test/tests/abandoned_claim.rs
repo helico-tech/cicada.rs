@@ -31,8 +31,6 @@ struct JobActor(Arc<Mutex<Vec<u32>>>);
 impl Actor for JobActor {
     type Ref = Job;
     type State = NoState;
-    type Message = JobMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, _message: JobMsg) -> HandlerResult {
         self.0.lock().unwrap().push(turn.message().attempt);

@@ -90,8 +90,6 @@ struct TallyActor<const MAX_TURN_MILLIS: u64 = 300_000>(Arc<AtomicI32>);
 impl<const MAX_TURN_MILLIS: u64> Actor for TallyActor<MAX_TURN_MILLIS> {
     type Ref = Tally;
     type State = TallyState;
-    type Message = TallyMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
     const MAX_TURN: Option<Duration> = Some(Duration::from_millis(MAX_TURN_MILLIS));
 
     async fn handle(&self, turn: &mut Turn<Self>, message: TallyMsg) -> HandlerResult {

@@ -9,7 +9,7 @@ use crate::runtime::{BulkSelection, NodeHealth, RetryResult};
 use crate::store::{
     Backend, CommitRequest, CommitResult, DeliverNowResult, MessageStatus, OutcomeStatus, Store, StoreResult,
 };
-use crate::{ActorSystem, SendOptions, Unhandled};
+use crate::{ActorSystem, SendOptions};
 use async_trait::async_trait;
 use tokio::time::{Instant, sleep};
 
@@ -18,7 +18,7 @@ fn a() -> Counter {
 }
 
 // The counter type with a maximum turn of 5 minutes.
-counter_type!(SlowCounter, Unhandled::Fail, Duration::from_secs(300));
+counter_type!(SlowCounter, Duration::from_secs(300));
 
 fn slow_node(store: impl IntoStore, name: &str) -> ActorSystem {
     node(store, name).host(SlowCounter).build()
@@ -424,8 +424,6 @@ struct BlockerActor(Arc<std::sync::atomic::AtomicBool>);
 impl crate::Actor for BlockerActor {
     type Ref = Blocker;
     type State = crate::NoState;
-    type Message = BlockerMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, _turn: &mut crate::Turn<Self>, message: BlockerMsg) -> crate::HandlerResult {
         let BlockerMsg::Block { millis } = message;

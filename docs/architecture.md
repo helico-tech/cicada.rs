@@ -145,8 +145,6 @@ struct SyncActor { api: ApiClient }
 impl Actor for SyncActor {
     type Ref = Sync;
     type State = SyncState;
-    type Message = SyncMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;   // mandatory: Fail | Drop
 
     async fn handle(&self, turn: &mut Turn<Self>, msg: SyncMsg) -> HandlerResult {
         match msg {

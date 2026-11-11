@@ -86,8 +86,6 @@ pub struct CheckoutActor;
 impl Actor for CheckoutActor {
     type Ref = Checkout;
     type State = CheckoutState;
-    type Message = CheckoutMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: CheckoutMsg) -> HandlerResult {
         let status = turn.state().status;

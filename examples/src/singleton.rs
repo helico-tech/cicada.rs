@@ -53,8 +53,6 @@ pub struct CleanupActor<F> {
 impl<F: TempFiles> Actor for CleanupActor<F> {
     type Ref = Cleanup;
     type State = NoState;
-    type Message = CleanupMsg;
-    const UNHANDLED: Unhandled = Unhandled::Drop;
     const MAX_TURN: Option<Duration> = Some(Duration::from_secs(10 * 60));
 
     async fn handle(&self, turn: &mut Turn<Self>, message: CleanupMsg) -> HandlerResult {

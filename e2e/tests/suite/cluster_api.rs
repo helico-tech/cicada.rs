@@ -243,7 +243,7 @@ async fn unknown_type_and_bad_payloads() {
     assert_eq!(refused.status, 422, "a hosting node decodes at send: {refused}");
     assert_eq!(refused.text("/type").as_deref(), Some(problem_types::INVALID_PAYLOAD));
 
-    // The send-only node cannot decode: it accepts, and the hosting node's delivery applies `Unhandled::Fail`.
+    // The send-only node cannot decode: it accepts, and the hosting node's delivery ends it `failed`.
     let accepted = c.send_only.post(&mailbox, bad_payload).await;
     assert_eq!(accepted.status, 202, "a send-only node accepts: {accepted}");
     let id = MessageId::new(accepted.text("/id").unwrap()).unwrap();

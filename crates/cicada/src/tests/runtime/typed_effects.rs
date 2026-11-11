@@ -73,8 +73,6 @@ struct SoloActor;
 impl Actor for SoloActor {
     type Ref = Solo;
     type State = NoState;
-    type Message = NumMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, _: &mut Turn<Self>, _: NumMsg) -> HandlerResult {
         Ok(())
@@ -111,8 +109,6 @@ struct SkipEmptyActor;
 impl Actor for SkipEmptyActor {
     type Ref = SkipEmpty;
     type State = NoState;
-    type Message = JobsMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, _: &mut Turn<Self>, _: JobsMsg) -> HandlerResult {
         Ok(())
@@ -155,8 +151,6 @@ struct NumActor;
 impl Actor for NumActor {
     type Ref = Num;
     type State = NoState;
-    type Message = NumMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: NumMsg) -> HandlerResult {
         let NumMsg::Again { left } = message;
@@ -201,8 +195,6 @@ struct MakerActor;
 impl Actor for MakerActor {
     type Ref = Maker;
     type State = NoState;
-    type Message = MakerMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: MakerMsg) -> HandlerResult {
         match message {
@@ -418,8 +410,6 @@ struct HolderActor;
 impl Actor for HolderActor {
     type Ref = Holder;
     type State = HolderState;
-    type Message = HolderMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, _: HolderMsg) -> HandlerResult {
         let seen = turn.state().item.address()?.to_string();

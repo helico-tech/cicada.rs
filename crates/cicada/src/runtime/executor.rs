@@ -439,7 +439,8 @@ impl TurnExecutor {
                 self.on_handler_error(info, failure, "timeout".into(), true).await
             }
             // It ended, but only after max_turn (blocking code): still a timeout. Re-running is allowed only when the
-            // handler itself failed; one that returned, vetoed or decided ends failed(timeout), not retried.
+            // handler itself failed; one that returned or vetoed, or a message that did not decode, ends failed(timeout),
+            // not retried.
             Ok(run) if overran => {
                 let cause = match run.end {
                     RunEnd::Threw(f) => Some(Box::new(f)),
@@ -450,11 +451,10 @@ impl TurnExecutor {
                 self.on_handler_error(info, failure, "timeout".into(), retryable).await
             }
             Ok(run) => match run.end {
-                RunEnd::DecidedFail(reason) => {
-                    tracing::info!("Unhandled policy of {} failed {}: {reason}", info.self_address, info.message.id);
+                RunEnd::Undecodable(reason) => {
+                    tracing::info!("{} cannot decode {}, which fails: {reason}", info.self_address, info.message.id);
                     Decision::failed(reason)
                 }
-                RunEnd::DecidedDrop => Decision::of(TurnOutcome::Done),
                 RunEnd::Threw(failure) => {
                     let reason = failure.reason();
                     self.on_handler_error(info, failure, reason, true).await

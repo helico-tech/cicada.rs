@@ -31,8 +31,7 @@ pub struct AbandonedClaim {
 /// # enum JobMsg { Run }
 /// # struct JobActor;
 /// # impl Actor for JobActor {
-/// #     type Ref = Job; type State = NoState; type Message = JobMsg;
-/// #     const UNHANDLED: Unhandled = Unhandled::Fail;
+/// #     type Ref = Job; type State = NoState;
 /// #     async fn handle(&self, _: &mut Turn<Self>, _: JobMsg) -> HandlerResult { Ok(()) }
 /// # }
 /// # #[tokio::main(flavor = "current_thread", start_paused = true)]

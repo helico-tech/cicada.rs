@@ -65,7 +65,7 @@ fn kick_retry() -> RetryPolicy {
 
 async fn handle_probe<A>(events: &Events, turn: &mut Turn<A>, message: ProbeMsg) -> HandlerResult
 where
-    A: Actor<Ref = Probe, State = ProbeState, Message = ProbeMsg>,
+    A: Actor<Ref = Probe, State = ProbeState>,
 {
     match message {
         ProbeMsg::Do { fail, sleep_seconds } => {
@@ -94,14 +94,12 @@ where
     Ok(())
 }
 
-/// The probe with the unhandled policy `fail`; its maximum turn is the node's default.
+/// The probe; its maximum turn is the node's default.
 struct ProbeActor(Events);
 
 impl Actor for ProbeActor {
     type Ref = Probe;
     type State = ProbeState;
-    type Message = ProbeMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: ProbeMsg) -> HandlerResult {
         handle_probe(&self.0, turn, message).await
@@ -221,7 +219,7 @@ async fn an_error_hook_sees_the_exceeded_max_turn_of_a_timeout() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn an_undecodable_payload_with_policy_fail_on_claim_sees_it_as_unhandled_no_error_hook() {
+async fn an_undecodable_payload_on_claim_sees_it_as_unhandled_no_error_hook() {
     let events = Events::default();
     let reason = Arc::new(Mutex::new(None));
     let test = probe_test(

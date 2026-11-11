@@ -165,7 +165,7 @@ async fn status_cancel_outcomes_types() {
 }
 
 #[tokio::test]
-async fn a_node_that_does_not_host_the_type_accepts_any_payload_and_the_hosting_node_applies_the_unhandled_policy() {
+async fn a_node_that_does_not_host_the_type_accepts_any_payload_and_the_hosting_node_fails_an_undecodable_one() {
     let store = Store::memory_on(Arc::new(VirtualClock::default()));
     let host = ActorSystem::builder(store.clone()).host(CounterActor).build();
     host.initialize().await.unwrap();

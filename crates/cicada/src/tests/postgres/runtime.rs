@@ -82,8 +82,6 @@ impl PlayerActor {
 impl Actor for PlayerActor {
     type Ref = Player;
     type State = PlayerState;
-    type Message = PlayerMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: PlayerMsg) -> HandlerResult {
         let name = turn.self_ref().name.clone();

@@ -15,7 +15,7 @@ use serde_json::Value;
 
 use crate::address::{ActorAddress, ActorRef, RefBinding, TypeName};
 use crate::contract::Contract;
-use crate::message::{self, FamilyInfo, MessageFamily};
+use crate::message::{self, FamilyInfo};
 use crate::plugin::TurnInfo;
 use crate::runtime::effects::EffectBuffer;
 use crate::runtime::resolver::TypeResolver;
@@ -23,17 +23,8 @@ use crate::schema;
 use crate::store::Claim;
 use crate::turn::{HandlerFailure, HandlerResult, Turn};
 
-/// The mandatory policy for messages that cannot be decoded at delivery (an unknown type name or an invalid payload).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Unhandled {
-    /// End the message `failed` with the decoding error.
-    Fail,
-    /// End the message `done`, without effects.
-    Drop,
-}
-
-/// An actor type: a typed ref bound to a type name, a state, a message family, one handler for the whole family, and
-/// the mandatory unhandled policy.
+/// An actor type: a typed ref bound to a type name and its message family, a state, and one handler for the whole
+/// family.
 ///
 /// ```
 /// use cicada::prelude::*;
@@ -66,8 +57,6 @@ pub enum Unhandled {
 /// impl Actor for CounterActor {
 ///     type Ref = Counter;
 ///     type State = CounterState;
-///     type Message = CounterMsg;
-///     const UNHANDLED: Unhandled = Unhandled::Fail;
 ///
 ///     async fn handle(&self, turn: &mut Turn<Self>, message: CounterMsg) -> HandlerResult {
 ///         match message {
@@ -82,18 +71,16 @@ pub enum Unhandled {
 /// The `match` over the message family replaces a per-message handler registry: the compiler checks that every
 /// message is handled. The value implementing the trait carries the actor's dependencies (clients, configuration),
 /// shared by all its turns.
+///
+/// A message that cannot be decoded at delivery (its type name is not one of the family's, or its payload does not
+/// fit) ends `failed` with the reason, without a retry; no handler runs for it.
 pub trait Actor: Send + Sync + Sized + 'static {
-    /// The typed ref; its type name is the type's identity.
-    type Ref: ActorRef<Message = Self::Message>;
+    /// The typed ref; its type name is the type's identity, and its message family is what the handler takes.
+    type Ref: ActorRef;
     /// The state of an instance: any type that serde encodes and decodes and schemars describes, stored as JSON. A
     /// state is never `null`: a type whose value encodes to `null` (`()`, a unit struct, a top-level `Option`) fails
     /// every create and every turn that writes it. A type that keeps no data uses [`crate::NoState`].
     type State: Serialize + DeserializeOwned + JsonSchema + Send + Sync + 'static;
-    /// The message family: an enum with `#[serde(tag = "type")]`.
-    type Message: MessageFamily;
-
-    /// The mandatory unhandled policy: `Fail` or `Drop`.
-    const UNHANDLED: Unhandled;
 
     /// The maximum duration of one turn; a longer turn ends as `failed` (`timeout`). `None` uses the node default.
     ///
@@ -105,8 +92,15 @@ pub trait Actor: Send + Sync + Sized + 'static {
 
     /// Handles one message. Everything the handler does through `turn` is buffered and committed atomically when it
     /// returns `Ok`; an `Err` discards it and fails the message (retried under its retry policy unless permanent).
-    fn handle(&self, turn: &mut Turn<Self>, message: Self::Message) -> impl Future<Output = HandlerResult> + Send;
+    fn handle(
+        &self,
+        turn: &mut Turn<Self>,
+        message: <Self::Ref as ActorRef>::Message,
+    ) -> impl Future<Output = HandlerResult> + Send;
 }
+
+/// The message family of actor type `A`: the one its ref declares.
+type MessageOf<A> = <<A as Actor>::Ref as ActorRef>::Message;
 
 /// An actor definition ready to be hosted by a node: the actor value, owned or shared.
 pub struct ActorType<A: Actor> {
@@ -140,11 +134,11 @@ impl<A: Actor> From<A> for ActorType<A> {
     }
 }
 
-/// How a handler run ended, or what the unhandled policy decided.
+/// How a handler run ended, or why no handler ran.
 pub(crate) enum RunEnd {
     Returned,
-    DecidedFail(String),
-    DecidedDrop,
+    /// The message could not be decoded: it ends `failed` with this reason, without a retry.
+    Undecodable(String),
     Threw(HandlerFailure),
 }
 
@@ -161,7 +155,7 @@ pub(crate) type RunTurn = Box<dyn FnOnce(Arc<TurnInfo>, Arc<TypeResolver>) -> Bo
 
 /// A loaded turn, ready to run.
 pub(crate) struct Loaded {
-    /// Why the message could not be decoded, when the unhandled policy runs.
+    /// Why the message could not be decoded, when no handler runs.
     pub unhandled: Option<String>,
     pub run: RunTurn,
 }
@@ -197,7 +191,7 @@ fn analyse<A: Actor>() -> Result<Analysis<A>, Vec<String>> {
         problems.push("MAX_TURN must be positive".to_owned());
     }
     let binding = RefBinding::<A::Ref>::new().map_err(|e| problems.push(format!("Ref: {e}"))).ok();
-    let family = FamilyInfo::of::<A::Message>().map_err(|e| problems.push(format!("Messages: {e}"))).ok();
+    let family = FamilyInfo::of::<MessageOf<A>>().map_err(|e| problems.push(format!("Messages: {e}"))).ok();
     let state = schema::root_schema::<A::State>();
     match (binding, family) {
         (Some(binding), Some(family)) if problems.is_empty() => {
@@ -241,7 +235,7 @@ impl<A: Actor> HostedActor for Hosted<A> {
         if !analysis.family.accepts(message_type) {
             return Err(format!("Unknown message type '{message_type}'"));
         }
-        message::decode::<A::Message>(message_type, payload).map(|_| ())
+        message::decode::<MessageOf<A>>(message_type, payload).map(|_| ())
     }
 
     fn address_problem(&self, address: &ActorAddress) -> Option<String> {
@@ -256,7 +250,7 @@ impl<A: Actor> HostedActor for Hosted<A> {
             .binding
             .from_address(&claim.actor)
             .map_err(|e| format!("Address cannot be decoded as {}: {e}", type_name::<A::Ref>()))?;
-        let decoded: Result<A::Message, String> = if analysis.family.accepts(&claim.message.message_type) {
+        let decoded: Result<MessageOf<A>, String> = if analysis.family.accepts(&claim.message.message_type) {
             message::decode(&claim.message.message_type, &claim.message.payload)
         } else {
             Err(format!("Unknown message type '{}'", claim.message.message_type))
@@ -274,10 +268,7 @@ impl<A: Actor> HostedActor for Hosted<A> {
                             Ok(Err(e)) => RunEnd::Threw(HandlerFailure::Error(e)),
                             Err(panic) => RunEnd::Threw(HandlerFailure::Panic(panic_message(&*panic))),
                         },
-                        Err(reason) => match A::UNHANDLED {
-                            Unhandled::Fail => RunEnd::DecidedFail(reason),
-                            Unhandled::Drop => RunEnd::DecidedDrop,
-                        },
+                        Err(reason) => RunEnd::Undecodable(reason),
                     };
                     let (state, assigned, effects) = turn.into_parts();
                     let new_state = assigned.then(|| serde_json::to_value(&state).map_err(|e| e.to_string()));

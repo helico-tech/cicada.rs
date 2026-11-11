@@ -86,8 +86,6 @@ struct PlayerActor {
 impl Actor for PlayerActor {
     type Ref = Player;
     type State = PlayerState;
-    type Message = PlayerMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: PlayerMsg) -> HandlerResult {
         let name = turn.self_ref().name.clone();
@@ -204,7 +202,7 @@ async fn two_nodes_on_one_sqlite_file_play_ping_pong_run_timers_and_recover_a_st
     assert_eq!(state(&store, "ping").await.hits, 20);
     assert_eq!(state(&store, "pong").await.hits, 20);
 
-    // A bad payload sent through the raw path (a node that does not host the type) ends as the unhandled policy says.
+    // A bad payload sent through the raw path (a node that does not host the type) ends `failed`.
     let outsider = ActorSystem::builder(store.clone()).build();
     let sent = outsider
         .send_message(&player("ping").address().unwrap(), "Ball", json!({"hits": "x"}), SendOptions::default())

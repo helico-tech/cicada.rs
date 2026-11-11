@@ -48,8 +48,6 @@ struct PacerActor(Seen);
 impl Actor for PacerActor {
     type Ref = Pacer;
     type State = NoState;
-    type Message = PacerMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: PacerMsg) -> HandlerResult {
         match message {
@@ -115,8 +113,6 @@ struct Dependent {
 impl Actor for Dependent {
     type Ref = Pacer;
     type State = NoState;
-    type Message = PacerMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, _turn: &mut Turn<Self>, message: PacerMsg) -> HandlerResult {
         if let PacerMsg::Work { .. } = message {

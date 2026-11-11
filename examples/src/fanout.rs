@@ -134,8 +134,6 @@ pub struct BatchActor;
 impl Actor for BatchActor {
     type Ref = Batch;
     type State = BatchState;
-    type Message = BatchMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: BatchMsg) -> HandlerResult {
         match message {
@@ -178,8 +176,6 @@ pub struct BatchItemActor<P> {
 impl<P: ItemProcessor> Actor for BatchItemActor<P> {
     type Ref = BatchItem;
     type State = BatchItemState;
-    type Message = BatchItemMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: BatchItemMsg) -> HandlerResult {
         match message {

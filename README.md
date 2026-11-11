@@ -105,8 +105,6 @@ pub struct SyncActor<A> {
 impl<A: SyncApi> Actor for SyncActor<A> {
     type Ref = Sync;
     type State = SyncState;
-    type Message = SyncMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail; // mandatory: Fail | Drop
     const MAX_TURN: Option<Duration> = Some(Duration::from_secs(5 * 60));
 
     async fn handle(&self, turn: &mut Turn<Self>, message: SyncMsg) -> HandlerResult {
@@ -937,8 +935,6 @@ actor never overlap, so state and mailbox never disagree. There is no timer type
 # impl Actor for CheckoutActor {
 #     type Ref = Checkout;
 #     type State = CheckoutState;
-#     type Message = CheckoutMsg;
-#     const UNHANDLED: Unhandled = Unhandled::Fail;
 #     async fn handle(&self, turn: &mut Turn<Self>, msg: CheckoutMsg) -> HandlerResult {
 @@17
 #         Ok(())

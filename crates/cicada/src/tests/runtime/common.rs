@@ -109,7 +109,7 @@ pub fn opt<T: std::fmt::Display>(value: &Option<T>) -> String {
 /// The shared handler of every counter type.
 pub async fn handle_counter<A>(turn: &mut Turn<A>, message: CounterMsg) -> HandlerResult
 where
-    A: Actor<Ref = Counter, State = CounterState, Message = CounterMsg>,
+    A: Actor<Ref = Counter, State = CounterState>,
 {
     match message {
         CounterMsg::Add { n } => {
@@ -187,21 +187,18 @@ where
     Ok(())
 }
 
-/// Defines a counter type with the shared handler, the given unhandled policy and a maximum turn of one minute (or
-/// the one given).
+/// Defines a counter type with the shared handler and a maximum turn of one minute (or the one given).
 macro_rules! counter_type {
-    ($name:ident, $policy:expr) => {
-        $crate::tests::runtime::common::counter_type!($name, $policy, ::std::time::Duration::from_secs(60));
+    ($name:ident) => {
+        $crate::tests::runtime::common::counter_type!($name, ::std::time::Duration::from_secs(60));
     };
-    ($name:ident, $policy:expr, $max_turn:expr) => {
+    ($name:ident, $max_turn:expr) => {
         /// A counter type with the shared handler.
         pub struct $name;
 
         impl $crate::Actor for $name {
             type Ref = $crate::tests::runtime::common::Counter;
             type State = $crate::tests::runtime::common::CounterState;
-            type Message = $crate::tests::runtime::common::CounterMsg;
-            const UNHANDLED: $crate::Unhandled = $policy;
             const MAX_TURN: Option<::std::time::Duration> = Some($max_turn);
 
             async fn handle(
@@ -217,7 +214,7 @@ macro_rules! counter_type {
 
 pub(crate) use counter_type;
 
-counter_type!(CounterActor, Unhandled::Fail);
+counter_type!(CounterActor);
 
 // ---- echo ----
 
@@ -249,8 +246,6 @@ pub struct EchoActor;
 impl Actor for EchoActor {
     type Ref = Echo;
     type State = NoState;
-    type Message = EchoMsg;
-    const UNHANDLED: Unhandled = Unhandled::Drop;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: EchoMsg) -> HandlerResult {
         let EchoMsg::Hello { counter } = message;

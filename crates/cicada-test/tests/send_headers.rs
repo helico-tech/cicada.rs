@@ -49,8 +49,6 @@ fn seen(tag: &str) -> RelayMsg {
 impl Actor for RelayActor {
     type Ref = Relay;
     type State = cicada::NoState;
-    type Message = RelayMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: RelayMsg) -> HandlerResult {
         match message {

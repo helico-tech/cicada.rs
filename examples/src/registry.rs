@@ -95,8 +95,6 @@ pub struct DeviceRegistryActor;
 impl Actor for DeviceRegistryActor {
     type Ref = DeviceRegistry;
     type State = RegistryState;
-    type Message = RegistryMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: RegistryMsg) -> HandlerResult {
         match message {
@@ -131,8 +129,6 @@ pub struct DeviceActor;
 impl Actor for DeviceActor {
     type Ref = Device;
     type State = DeviceState;
-    type Message = DeviceMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: DeviceMsg) -> HandlerResult {
         match message {

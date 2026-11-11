@@ -36,8 +36,6 @@ struct CounterActor;
 impl Actor for CounterActor {
     type Ref = Counter;
     type State = CounterState;
-    type Message = CounterMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: CounterMsg) -> HandlerResult {
         let CounterMsg::Add { n } = message;

@@ -54,8 +54,6 @@ macro_rules! actor {
         impl Actor for $name {
             type Ref = $ref;
             type State = $state;
-            type Message = $msg;
-            const UNHANDLED: Unhandled = Unhandled::Fail;
             async fn handle(&self, _: &mut Turn<Self>, _: $msg) -> HandlerResult {
                 Ok(())
             }

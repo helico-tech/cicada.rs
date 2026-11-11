@@ -65,8 +65,6 @@ pub struct PricingActor<P> {
 impl<P: PriceList> Actor for PricingActor<P> {
     type Ref = Pricing;
     type State = NoState;
-    type Message = PricingMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: PricingMsg) -> HandlerResult {
         match message {

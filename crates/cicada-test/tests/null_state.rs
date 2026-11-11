@@ -39,8 +39,6 @@ struct DraftsActor;
 impl Actor for DraftsActor {
     type Ref = Drafts;
     type State = Option<Draft>;
-    type Message = DraftsMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: DraftsMsg) -> HandlerResult {
         match message {

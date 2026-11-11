@@ -1,10 +1,9 @@
 //! Actor type definitions: what a node checks at start, and the published contract.
 //!
-//! Checked by the compiler instead, so not tested here: a message without a handler and a duplicate handler (one exhaustive
-//! `match`), a missing or doubled unhandled policy (`UNHANDLED` is a required associated constant), a missing type name
-//! (`TYPE` is a required associated constant), and a message field named `type` (serde refuses it: "variant field
-//! name `type` conflicts with internal tag"). A message family is one flat
-//! enum.
+//! Checked by the compiler instead, so not tested here: a message without a handler and a duplicate handler (one
+//! exhaustive `match`), a missing type name (`TYPE` is a required associated constant), and a message field named
+//! `type` (serde refuses it: "variant field name `type` conflicts with internal tag"). A message family is one flat
+//! enum, the one the ref declares.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -47,8 +46,6 @@ struct SyncActor;
 impl Actor for SyncActor {
     type Ref = Sync;
     type State = SyncState;
-    type Message = SyncMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
 
     async fn handle(&self, _turn: &mut Turn<Self>, _message: SyncMsg) -> HandlerResult {
         Ok(())
@@ -60,8 +57,6 @@ struct EmptySync;
 impl Actor for EmptySync {
     type Ref = Sync;
     type State = NoState;
-    type Message = SyncMsg;
-    const UNHANDLED: Unhandled = Unhandled::Drop;
 
     async fn handle(&self, _turn: &mut Turn<Self>, _message: SyncMsg) -> HandlerResult {
         Ok(())
@@ -84,8 +79,6 @@ struct BadActor;
 impl Actor for BadActor {
     type Ref = BadRef;
     type State = NoState;
-    type Message = SyncMsg;
-    const UNHANDLED: Unhandled = Unhandled::Fail;
     const MAX_TURN: Option<Duration> = Some(Duration::ZERO);
 
     async fn handle(&self, _turn: &mut Turn<Self>, _message: SyncMsg) -> HandlerResult {
