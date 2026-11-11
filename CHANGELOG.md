@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.5.1 — unreleased
+## 0.5.1 — 2026-11-11
 
 No change to the wire format or the store schema: nodes of 0.5.0 and 0.5.1 can share a database.
 
@@ -19,9 +19,11 @@ No change to the wire format or the store schema: nodes of 0.5.0 and 0.5.1 can s
   `sslrootcert` names the file of a private or cloud-provider CA, and `sslcert` and `sslkey` those of a client
   certificate. Without `sslmode` in the URL the driver takes `PGSSLMODE`, and without that the default `prefer`,
   which now means TLS without checking the server's certificate when the server offers TLS, and plain text when it
-  does not; once the server has offered TLS, a failed handshake fails the connection. Set the mode on purpose
-  (docs/operations.md, TLS for PostgreSQL). A host that adds a library that builds rustls on `ring` must install a
-  default crypto provider at start. The feature `sqlite` builds no TLS.
+  does not; once the server has offered TLS, a failed handshake fails the connection, and `sslmode=disable` is the
+  way back to plain text. Set the mode on purpose (docs/operations.md, TLS for PostgreSQL). A host that adds a
+  library that builds rustls on `ring` must install a default crypto provider at start. A host with the feature
+  `postgres` now compiles a C library (`aws-lc-sys`), so its build needs a C compiler. The feature `sqlite` builds no
+  TLS.
 
 ## 0.5.0 — 2026-11-11
 
