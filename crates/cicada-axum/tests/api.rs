@@ -38,7 +38,7 @@ async fn create_answers_201_then_200_and_leaves_the_existing_state_untouched() {
 #[tokio::test(start_paused = true)]
 async fn create_without_body_and_the_state_types_defaults() {
     let app = app().await;
-    assert_eq!(put(&app, "/actors/ping/p", "").await.status, StatusCode::CREATED);
+    assert_eq!(put(&app, "/actors/ping/p", r#"{"state": {}}"#).await.status, StatusCode::CREATED);
     assert_eq!(put(&app, "/actors/counter/empty", r#"{"state": {}}"#).await.status, StatusCode::CREATED);
     // The state type is not optional, so a hosting node refuses a missing state.
     assert_eq!(put(&app, "/actors/counter/nostate", "").await.status, StatusCode::UNPROCESSABLE_ENTITY);
@@ -71,8 +71,8 @@ async fn get_returns_type_params_state_and_version() {
     let keys: Vec<&str> = body.as_object().unwrap().keys().map(String::as_str).collect();
     assert_eq!(keys, ["address", "type", "params", "state", "version", "createdAt", "paused"]);
 
-    put(&app, "/actors/ping/p", "").await;
-    assert_eq!(get_json(&app, "/actors/ping/p").await["state"], Value::Null);
+    put(&app, "/actors/ping/p", r#"{"state": {}}"#).await;
+    assert_eq!(get_json(&app, "/actors/ping/p").await["state"], json!({}));
 
     assert_problem(&get(&app, "/actors/counter/missing").await, 404, pt::NO_SUCH_INSTANCE);
 }
@@ -103,7 +103,7 @@ async fn list_is_paged_and_filtered_by_prefix() {
     for n in ["a", "b", "c"] {
         put(&app, &format!("/actors/counter/{n}"), r#"{"state": {}}"#).await;
     }
-    put(&app, "/actors/ping/p", "").await;
+    put(&app, "/actors/ping/p", r#"{"state": {}}"#).await;
 
     let first = get_json(&app, "/actors?prefix=counter/&limit=2").await;
     assert_eq!(items(&first), &vec![json!("counter/a"), json!("counter/b")]);
@@ -246,7 +246,7 @@ async fn pending_of_all_instances_by_uri_each_mailbox_in_delivery_order_paged_an
     for n in ["b", "a"] {
         put(&app, &format!("/actors/counter/{n}"), r#"{"state": {}}"#).await;
     }
-    put(&app, "/actors/ping/p", "").await;
+    put(&app, "/actors/ping/p", r#"{"state": {}}"#).await;
     for (path, n, delay) in [("b", 1, "PT1H"), ("a", 2, "PT2H"), ("a", 3, "PT1H")] {
         post(
             &app,
@@ -487,7 +487,7 @@ async fn types_return_the_generated_schemas() {
     assert_eq!(messages, ["Add", "Block", "Fail", "Forward"]);
     assert_eq!(counter["messages"]["Add"]["properties"]["n"]["type"], "integer");
     assert_eq!(counter["state"]["type"], "object");
-    assert_eq!(types[1]["state"], Value::Null);
+    assert_eq!(types[1]["state"]["type"], "object");
 
     // The list takes no query parameters; one that is sent is ignored.
     assert_eq!(get_json(&app, "/types?uri=nope/x").await, list);

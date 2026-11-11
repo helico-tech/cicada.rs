@@ -2,8 +2,8 @@
 
 use std::collections::BTreeMap;
 
-use cicada::SendOptions;
 use cicada::store::OutcomeStatus;
+use cicada::{NoState, SendOptions};
 use cicada_examples::reply::{
     Cart, CartActor, CartLine, CartMsg, CartState, PriceList, Pricing, PricingActor, PricingMsg,
 };
@@ -40,7 +40,7 @@ fn apple_quote() -> CartMsg {
 #[tokio::test(start_paused = true)]
 async fn the_cart_prices_its_lines_through_request_and_reply() {
     let test = harness().await;
-    test.create_stateless(&Pricing).await;
+    test.create(&Pricing, &NoState {}).await;
     test.create(&cart(), &CartState::default()).await;
     let apple = test.send(&cart(), add_item("apple", 3)).await;
     test.send(&cart(), add_item("pear", 2)).await;
@@ -61,7 +61,7 @@ async fn the_cart_prices_its_lines_through_request_and_reply() {
 #[tokio::test(start_paused = true)]
 async fn an_unsolicited_or_duplicate_reply_is_ignored() {
     let test = harness().await;
-    test.create_stateless(&Pricing).await;
+    test.create(&Pricing, &NoState {}).await;
     test.create(&cart(), &CartState::default()).await;
     test.send(&cart(), apple_quote()).await;
     // With a correlation id that matches no request.
@@ -73,7 +73,7 @@ async fn an_unsolicited_or_duplicate_reply_is_ignored() {
 #[tokio::test(start_paused = true)]
 async fn a_request_from_outside_an_actor_gets_no_reply() {
     let test = harness().await;
-    test.create_stateless(&Pricing).await;
+    test.create(&Pricing, &NoState {}).await;
     let request = test.send(&Pricing, PricingMsg::QuoteRequest { sku: "apple".into(), quantity: 1 }).await;
     assert_eq!(test.run_until_idle().await, 1);
     assert_eq!(test.outcome(&request).await.unwrap().status, OutcomeStatus::Done);

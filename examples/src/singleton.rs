@@ -1,8 +1,8 @@
-//! Example 1 — stateless singleton.
+//! Example 1 — a singleton that keeps no data.
 //!
 //! A ref without fields has exactly one instance: `maintenance.cleanup/_`. It is created once (create
-//! is idempotent, so every node may do it at start) and has no state. What it adds over a plain function is that its
-//! turns never overlap (G1), wherever the message comes from, and that a request survives a node crash.
+//! is idempotent, so every node may do it at start) and keeps no data (`NoState`). What it adds over a plain function
+//! is that its turns never overlap (G1), wherever the message comes from, and that a request survives a node crash.
 
 use std::future::Future;
 use std::time::Duration;
@@ -52,7 +52,7 @@ pub struct CleanupActor<F> {
 
 impl<F: TempFiles> Actor for CleanupActor<F> {
     type Ref = Cleanup;
-    type State = Stateless;
+    type State = NoState;
     type Message = CleanupMsg;
     const UNHANDLED: Unhandled = Unhandled::Drop;
     const MAX_TURN: Option<Duration> = Some(Duration::from_secs(10 * 60));

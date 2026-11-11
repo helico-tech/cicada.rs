@@ -47,7 +47,7 @@ struct PacerActor(Seen);
 
 impl Actor for PacerActor {
     type Ref = Pacer;
-    type State = Stateless;
+    type State = NoState;
     type Message = PacerMsg;
     const UNHANDLED: Unhandled = Unhandled::Fail;
 
@@ -69,7 +69,7 @@ impl Actor for PacerActor {
 async fn harness(seen: &Seen) -> TestActors {
     let actor = PacerActor(seen.clone());
     let test = TestActors::builder().with(move |n| n.host(actor)).build().await.unwrap();
-    test.create_stateless(&pacer()).await;
+    test.create(&pacer(), &NoState {}).await;
     test
 }
 
@@ -114,7 +114,7 @@ struct Dependent {
 
 impl Actor for Dependent {
     type Ref = Pacer;
-    type State = Stateless;
+    type State = NoState;
     type Message = PacerMsg;
     const UNHANDLED: Unhandled = Unhandled::Fail;
 
@@ -140,7 +140,7 @@ async fn types_can_be_built_with_the_tests_virtual_clock_and_time_source() {
         waited: waited.clone(),
     };
     let test = TestActors::builder().with(move |n| n.host(actor)).build().await.unwrap();
-    test.create_stateless(&pacer()).await;
+    test.create(&pacer(), &NoState {}).await;
     test.advance_time_by(Duration::from_secs(300)).await;
     test.send(&pacer(), PacerMsg::Work { seconds: 0, from_end: false }).await;
     test.run_until_idle().await;

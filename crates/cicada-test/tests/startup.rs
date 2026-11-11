@@ -61,7 +61,7 @@ macro_rules! other_type {
 
         impl Actor for $name {
             type Ref = $ref;
-            type State = Stateless;
+            type State = NoState;
             type Message = OtherMsg;
             const UNHANDLED: Unhandled = Unhandled::Fail;
 

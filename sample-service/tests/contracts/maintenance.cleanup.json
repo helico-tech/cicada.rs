@@ -16,6 +16,12 @@
       "type": "object"
     }
   },
-  "state": null,
+  "state": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "The state of an actor type that keeps no data: an empty struct, stored as `{}`. A state with a field does not\ndecode as `NoState`.",
+    "title": "NoState",
+    "type": "object"
+  },
   "type": "maintenance.cleanup"
 }

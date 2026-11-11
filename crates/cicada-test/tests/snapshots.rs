@@ -65,7 +65,7 @@ macro_rules! actor {
 
 actor!(V1, SnapV1, SnapStateV1, SnapV1Msg);
 actor!(V2, SnapV2, SnapStateV2, SnapV2Msg);
-actor!(StatelessV1, SnapV1, Stateless, SnapV1Msg);
+actor!(EmptyV1, SnapV1, NoState, SnapV1Msg);
 
 fn v1() -> Contract {
     contract_of::<V1>().unwrap()
@@ -107,11 +107,11 @@ fn a_changed_contract_fails_naming_every_change() {
 }
 
 #[test]
-fn a_type_that_became_stateless_is_named() {
+fn a_type_that_now_keeps_no_data_has_a_changed_state_schema() {
     let dir = tempfile::tempdir().unwrap();
     check_contracts(dir.path(), &[v1()], false).unwrap();
-    let text = check_contracts(dir.path(), &[contract_of::<StatelessV1>().unwrap()], false).unwrap_err();
-    assert!(text.contains("- state removed (the type is now stateless)"), "{text}");
+    let text = check_contracts(dir.path(), &[contract_of::<EmptyV1>().unwrap()], false).unwrap_err();
+    assert!(text.contains("- state schema changed"), "{text}");
 }
 
 #[test]

@@ -1,13 +1,13 @@
-//! Example 1: the stateless cleanup singleton.
+//! Example 1: the cleanup singleton, which keeps no data.
 
 mod common;
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use cicada::ActorRef;
 use cicada::store::OutcomeStatus;
 use cicada::time::{self, Timestamp};
+use cicada::{ActorRef, NoState};
 use cicada_examples::singleton::{Cleanup, CleanupActor, CleanupMsg, TempFiles};
 use cicada_test::TestActors;
 
@@ -33,8 +33,8 @@ async fn harness(files: &FakeFiles) -> TestActors {
 async fn the_singleton_purges_with_the_message_id_as_idempotency_key() {
     let files = FakeFiles::default();
     let test = harness(&files).await;
-    test.create_stateless(&Cleanup).await;
-    test.create_stateless(&Cleanup).await; // idempotent: every node may create it at start
+    test.create(&Cleanup, &NoState {}).await;
+    test.create(&Cleanup, &NoState {}).await; // idempotent: every node may create it at start
     let purge = test.send(&Cleanup, CleanupMsg::Purge { retention_hours: 6 }).await;
     test.run_until_idle().await;
 
@@ -48,7 +48,7 @@ async fn the_singleton_purges_with_the_message_id_as_idempotency_key() {
 async fn an_invalid_request_fails_only_its_own_message() {
     let files = FakeFiles::default();
     let test = harness(&files).await;
-    test.create_stateless(&Cleanup).await;
+    test.create(&Cleanup, &NoState {}).await;
     let bad = test.send(&Cleanup, CleanupMsg::Purge { retention_hours: -1 }).await;
     // The payload's default: 24 hours.
     let good = test.send_raw(&Cleanup.address().unwrap(), "Purge", serde_json::json!({}), Default::default()).await;

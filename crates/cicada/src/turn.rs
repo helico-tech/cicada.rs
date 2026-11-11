@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use crate::actor::Actor;
 use crate::address::{ActorAddress, ActorRef, RefBinding, to_params};
-use crate::message::{self, ActorState, MessageFamily};
+use crate::message::{self, MessageFamily};
 use crate::plugin::{Attributes, TurnInfo};
 use crate::retention::Retention;
 use crate::retry::RetryPolicy;
@@ -141,7 +141,7 @@ impl fmt::Display for HandlerFailure {
 /// A send, create or cancel of a handler (or hook) that was refused when called.
 #[derive(Debug, thiserror::Error)]
 pub enum TurnError {
-    /// A field is out of bounds, contains a NUL character, or the value cannot be encoded.
+    /// A field is out of bounds, contains a NUL character, the value cannot be encoded, or an initial state is `null`.
     #[error("{0}")]
     Invalid(String),
     /// A send to a raw address was refused: no registered type matches it, or that type does not accept the message
@@ -283,15 +283,15 @@ impl<A: Actor> Turn<A> {
     }
 
     /// Mutable access to the state. Taking it marks the state as written: it is stored at commit and the version is
-    /// increased (for a stateful type).
+    /// increased.
     pub fn state_mut(&mut self) -> &mut A::State {
-        self.state_assigned = !A::State::STATELESS;
+        self.state_assigned = true;
         &mut self.state
     }
 
     /// Replaces the state; written at commit.
     pub fn set_state(&mut self, state: A::State) {
-        self.state_assigned = !A::State::STATELESS;
+        self.state_assigned = true;
         self.state = state;
     }
 
@@ -376,17 +376,14 @@ impl<A: Actor> Turn<A> {
     }
 
     /// Buffers an idempotent create of `r` with `initial_state`. Creates are applied before the turn's sends, so
-    /// create-then-send in one turn works. An existing instance is left untouched.
+    /// create-then-send in one turn works. An existing instance is left untouched. A state that encodes to `null` is
+    /// refused with [`TurnError::Invalid`]; a type that keeps no data is created with [`crate::NoState`].
     pub fn create<R: ActorRef, S: Serialize + ?Sized>(&mut self, r: &R, initial_state: &S) -> Result<(), TurnError> {
         let state = serde_json::to_value(initial_state)
             .map_err(|e| TurnError::Invalid(format!("The initial state cannot be encoded: {e}")))?;
+        message::check_not_null("initial state", &state).map_err(TurnError::Invalid)?;
         limits::check_json("initial state", Some(&state)).map_err(TurnError::Invalid)?;
         self.push_create(r, Some(state))
-    }
-
-    /// Buffers an idempotent create of `r` without state (for a stateless type).
-    pub fn create_stateless<R: ActorRef>(&mut self, r: &R) -> Result<(), TurnError> {
-        self.push_create(r, None)
     }
 
     fn push_create<R: ActorRef>(&mut self, r: &R, state: Option<Value>) -> Result<(), TurnError> {

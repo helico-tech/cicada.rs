@@ -114,7 +114,7 @@ async fn a_typed_send_carries_its_retention_policy_served_with_the_message() {
 }
 
 #[tokio::test]
-async fn stateless_types_and_percent_encoded_parameters() {
+async fn types_that_keep_no_data_and_percent_encoded_parameters() {
     let (actors, _, _) = client_test(|r| r).await;
     let odd = account("a b/c é", 1);
     assert!(actors.create(&odd, &AccountState::default()).await.unwrap().created);
@@ -122,7 +122,7 @@ async fn stateless_types_and_percent_encoded_parameters() {
     assert_eq!(actors.list_actors("account/", None, None).await.unwrap().items, [odd.address().unwrap()]);
 
     let beacon = Beacon { name: "b".into() };
-    assert!(actors.create_stateless(&beacon).await.unwrap().created);
+    assert!(actors.create(&beacon, &NoState {}).await.unwrap().created);
     let blink = actors.send(&beacon, BeaconMsg::Blink).await.unwrap();
     eventually(async || actors.status(&blink.id).await.unwrap().map(|s| s.status) == Some(MessageState::Done)).await;
 }
@@ -361,9 +361,9 @@ async fn send_bodies_leave_out_absent_optional_fields_so_nodes_that_do_not_know_
         .await
         .unwrap();
     assert_eq!(serde_json::from_str::<Value>(&last()).unwrap()["payload"]["note"], Value::Null);
-    // A create without state sends an empty object.
-    actors.create_stateless(&Beacon { name: "x".into() }).await.unwrap();
-    assert_eq!(last(), "{}");
+    // A create of a type that keeps no data sends its empty state.
+    actors.create(&Beacon { name: "x".into() }, &NoState {}).await.unwrap();
+    assert_eq!(last(), r#"{"state":{}}"#);
 }
 
 #[tokio::test]
@@ -405,7 +405,7 @@ async fn outcomes_and_types() {
         types[0].messages.keys().map(String::as_str).collect::<Vec<_>>(),
         ["Deposit", "Explode", "Hold", "Transfer"]
     );
-    assert!(types[1].state.is_none());
+    assert_eq!(types[1].state.as_ref().unwrap()["type"], "object");
 }
 
 #[tokio::test]

@@ -26,8 +26,8 @@
 use std::collections::BTreeMap;
 
 use schemars::JsonSchema;
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::schema;
@@ -104,61 +104,22 @@ impl FamilyInfo {
     }
 }
 
-/// The state of an actor type: any `Serialize + Deserialize + JsonSchema` type, or [`Stateless`].
-pub trait ActorState: Send + Sync + Sized + 'static {
-    /// True for [`Stateless`]: no state in the store and no state schema in the contract.
-    const STATELESS: bool;
+/// The state of an actor type that keeps no data: an empty struct, stored as `{}`. A state with a field does not
+/// decode as `NoState`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NoState {}
 
-    /// Decodes the stored state (`None` for no state).
-    fn decode(json: Option<&Value>) -> Result<Self, String>;
-
-    /// Encodes the state for the store.
-    fn encode(&self) -> Result<Option<Value>, String>;
-
-    /// The JSON Schema of the state, or `None` for a stateless type.
-    fn schema() -> Result<Option<Value>, String>;
-}
-
-impl<T: Serialize + DeserializeOwned + JsonSchema + Send + Sync + 'static> ActorState for T {
-    const STATELESS: bool = false;
-
-    fn decode(json: Option<&Value>) -> Result<Self, String> {
-        serde_json::from_value(json.cloned().unwrap_or(Value::Null)).map_err(|e| e.to_string())
+/// Refuses a state that is JSON `null`; `what` names it in the error ("initial state", "state").
+pub(crate) fn check_not_null(what: &str, state: &Value) -> Result<(), String> {
+    if state.is_null() {
+        return Err(format!("The {what} is null; a state is never null (a type that keeps no data uses NoState)"));
     }
-
-    fn encode(&self) -> Result<Option<Value>, String> {
-        serde_json::to_value(self).map(Some).map_err(|e| e.to_string())
-    }
-
-    fn schema() -> Result<Option<Value>, String> {
-        Ok(Some(schema::root_schema::<T>()))
-    }
-}
-
-/// The state of a stateless actor type: its instances hold no state (null in the store), and its contract has no
-/// state schema.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Stateless;
-
-impl ActorState for Stateless {
-    const STATELESS: bool = true;
-
-    fn decode(_: Option<&Value>) -> Result<Self, String> {
-        Ok(Stateless)
-    }
-
-    fn encode(&self) -> Result<Option<Value>, String> {
-        Ok(None)
-    }
-
-    fn schema() -> Result<Option<Value>, String> {
-        Ok(None)
-    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use serde::Deserialize;
     use serde_json::json;
 
     use super::*;
@@ -200,11 +161,11 @@ mod tests {
     }
 
     #[test]
-    fn stateless_has_no_state() {
-        assert!(Stateless::schema().unwrap().is_none());
-        assert_eq!(Stateless.encode().unwrap(), None);
-        assert!(<Charge as ActorState>::schema().unwrap().is_some());
-        assert!(<Charge as ActorState>::decode(Some(&json!({"amount": 1}))).is_ok());
-        assert!(<Charge as ActorState>::decode(None).is_err());
+    fn no_state_encodes_to_an_empty_object_and_refuses_fields() {
+        assert_eq!(serde_json::to_value(NoState {}).unwrap(), json!({}));
+        assert_eq!(serde_json::from_value::<NoState>(json!({})).unwrap(), NoState {});
+        assert!(serde_json::from_value::<NoState>(json!({"oops": 1})).is_err());
+        assert!(serde_json::from_value::<NoState>(Value::Null).is_err());
+        assert_eq!(schema::root_schema::<NoState>()["type"], "object");
     }
 }

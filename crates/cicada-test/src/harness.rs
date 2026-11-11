@@ -142,17 +142,6 @@ impl TestActors {
         result
     }
 
-    /// Creates `r` without state; panics when the create is refused.
-    pub async fn create_stateless<R: ActorRef>(&self, r: &R) -> CreateActorResult {
-        let result = self.system.create_stateless(r).await.expect("create failed");
-        assert!(
-            matches!(result, CreateActorResult::Created | CreateActorResult::Exists(_)),
-            "Create of {:?} refused: {result:?}",
-            r.address()
-        );
-        result
-    }
-
     /// Sends `msg` to `to` from outside an actor; returns the accepted message and panics when the send is refused.
     pub async fn send<R: ActorRef>(&self, to: &R, msg: impl Into<R::Message>) -> Message {
         self.send_with(to, msg, SendOptions::default()).await

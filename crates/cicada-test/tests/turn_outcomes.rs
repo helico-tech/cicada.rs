@@ -233,14 +233,14 @@ async fn the_sends_of_a_turn_carry_the_turns_message_as_their_cause() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn stateless_type_forwards_and_has_null_state() {
+async fn a_type_that_keeps_no_data_forwards_and_has_an_empty_state() {
     let test = TestActors::builder().with(|n| n.host(CounterActor).host(EchoActor)).build().await.unwrap();
     test.create(&a(), &CounterState::default()).await;
-    test.create_stateless(&Echo::new("e")).await;
+    test.create(&Echo::new("e"), &cicada::NoState {}).await;
     test.send(&Echo::new("e"), EchoMsg::Hello { counter: "a".into() }).await;
     test.run_until_idle().await;
     assert_eq!(test.state::<_, CounterState>(&a()).await.total, 1);
-    assert_eq!(test.state_json(&Echo::new("e")).await, None);
+    assert_eq!(test.state_json(&Echo::new("e")).await, Some(json!({})));
 }
 
 #[tokio::test(start_paused = true)]
@@ -257,9 +257,9 @@ async fn g6_a_failed_message_is_terminal_and_attempt_stays_1() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn payload_json_for_a_stateless_send() {
+async fn payload_json_for_a_send_to_a_type_that_keeps_no_data() {
     let test = TestActors::builder().with(|n| n.host(EchoActor).host(CounterActor)).build().await.unwrap();
-    test.create_stateless(&Echo::new("e")).await;
+    test.create(&Echo::new("e"), &cicada::NoState {}).await;
     test.create(&a(), &CounterState::default()).await;
     let r = test
         .send_raw(&ActorRef::address(&Echo::new("e")).unwrap(), "Hello", json!({"counter": "a"}), SendOptions::new())

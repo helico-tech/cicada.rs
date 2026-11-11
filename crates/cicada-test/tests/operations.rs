@@ -41,16 +41,27 @@ async fn create_created_exists_no_such_type_invalid_state() {
         CreateActorResult::Exists(record) => assert_eq!(record.state.unwrap()["total"], 1),
         other => panic!("{other:?}"),
     }
-    assert_eq!(system.create_actor(&parse("nothing/here"), None).await.unwrap(), CreateActorResult::NoSuchType);
-    let bad = system.create_actor(&Counter::new("b").address(), Some(json!({"total": "x"}))).await.unwrap();
+    assert_eq!(system.create_actor(&parse("nothing/here"), json!({})).await.unwrap(), CreateActorResult::NoSuchType);
+    let bad = system.create_actor(&Counter::new("b").address(), json!({"total": "x"})).await.unwrap();
     assert!(matches!(bad, CreateActorResult::InvalidState(_)), "{bad:?}");
-    // A stateless type takes no state.
+    // A type that keeps no data (NoState) refuses a state with a field.
     let echo = parse("echo/e");
-    assert!(matches!(system.create_actor(&echo, Some(json!({}))).await.unwrap(), CreateActorResult::InvalidState(_)));
-    assert_eq!(system.create_actor(&echo, Some(Value::Null)).await.unwrap(), CreateActorResult::Created);
-    // A state type that cannot be decoded from null needs a state on a hosting node.
-    let c = system.create_actor(&Counter::new("c").address(), None).await.unwrap();
-    assert!(matches!(c, CreateActorResult::InvalidState(_)), "{c:?}");
+    let oops = system.create_actor(&echo, json!({"oops": 1})).await.unwrap();
+    assert!(matches!(oops, CreateActorResult::InvalidState(_)), "{oops:?}");
+    assert_eq!(system.create_actor(&echo, json!({})).await.unwrap(), CreateActorResult::Created);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_create_with_a_null_state_is_refused() {
+    let test = harness().await;
+    let system = test.system();
+    for address in [Counter::new("c").address(), parse("echo/e")] {
+        match system.create_actor(&address, Value::Null).await.unwrap() {
+            CreateActorResult::InvalidState(e) => assert!(e.contains("never null"), "{e}"),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(system.get_actor(&address).await.unwrap(), None);
+    }
 }
 
 #[tokio::test(start_paused = true)]
@@ -175,11 +186,13 @@ async fn a_node_that_does_not_host_the_type_accepts_any_payload_and_the_hosting_
     let bad = accepted(send_only.send_message(&addr, "Add", json!({"n": "x"}), SendOptions::new()).await.unwrap());
     let refused = host.send_message(&addr, "Add", json!({"n": "x"}), SendOptions::new()).await.unwrap();
     assert!(matches!(refused, SendResult::InvalidPayload { .. }), "{refused:?}");
-    // A send-only node also accepts a state it cannot decode (it does not know the state type).
+    // A send-only node also accepts a state it cannot decode (it does not know the state type), but never null.
     assert_eq!(
-        send_only.create_actor(&Counter::new("b").address(), Some(json!({"total": "x"}))).await.unwrap(),
+        send_only.create_actor(&Counter::new("b").address(), json!({"total": "x"})).await.unwrap(),
         CreateActorResult::Created
     );
+    let null = send_only.create_actor(&Counter::new("n").address(), Value::Null).await.unwrap();
+    assert!(matches!(null, CreateActorResult::InvalidState(_)), "{null:?}");
     // Typed sends work from any node.
     accepted(send_only.send(&a(), CounterMsg::Add { n: 2 }).await.unwrap());
     assert_eq!(send_only.run_due_turns(10).await.unwrap(), 0);
@@ -226,7 +239,7 @@ async fn a_type_is_removed_only_while_no_actor_of_it_exists_and_is_not_served_af
 
     // The removed type is gone for the resolver too: no create and no send until it is registered again.
     let address = a().address();
-    assert_eq!(system.create_actor(&address, None).await.unwrap(), CreateActorResult::NoSuchType);
+    assert_eq!(system.create_actor(&address, json!({"total": 0})).await.unwrap(), CreateActorResult::NoSuchType);
     assert_eq!(
         system.send_message(&address, "Add", json!({"n": 1}), SendOptions::new()).await.unwrap(),
         SendResult::NoSuchInstance
@@ -239,6 +252,5 @@ async fn a_type_is_removed_only_while_no_actor_of_it_exists_and_is_not_served_af
     )
     .to_type_def();
     system.store().register(def).await.unwrap();
-    let state = Some(json!({"total": 0}));
-    assert_eq!(system.create_actor(&address, state).await.unwrap(), CreateActorResult::Created);
+    assert_eq!(system.create_actor(&address, json!({"total": 0})).await.unwrap(), CreateActorResult::Created);
 }

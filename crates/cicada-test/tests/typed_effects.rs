@@ -56,7 +56,7 @@ struct NumActor;
 
 impl Actor for NumActor {
     type Ref = Num;
-    type State = Stateless;
+    type State = NoState;
     type Message = NumMsg;
     const UNHANDLED: Unhandled = Unhandled::Fail;
 
@@ -94,7 +94,7 @@ struct MakerActor;
 
 impl Actor for MakerActor {
     type Ref = Maker;
-    type State = Stateless;
+    type State = NoState;
     type Message = MakerMsg;
     const UNHANDLED: Unhandled = Unhandled::Fail;
 
@@ -121,7 +121,7 @@ fn parse(uri: &str) -> ActorAddress {
 
 async fn maker() -> TestActors {
     let test = TestActors::builder().with(|n| n.host(MakerActor)).build().await.unwrap();
-    test.create_stateless(&m()).await;
+    test.create(&m(), &NoState {}).await;
     test
 }
 
@@ -153,12 +153,12 @@ async fn a_handler_send_to_an_unregistered_type_finds_no_instance() {
 async fn a_handler_create_checks_the_initial_state_against_the_created_type() {
     let test =
         TestActors::builder().with(|n| n.host(MakerActor).host(EchoActor).host(CounterActor)).build().await.unwrap();
-    test.create_stateless(&m()).await;
-    let stateless = test.send(&m(), MakerMsg::MakeEcho).await;
+    test.create(&m(), &NoState {}).await;
+    let with_a_field = test.send(&m(), MakerMsg::MakeEcho).await;
     let undecodable = test.send(&m(), MakerMsg::MakeBadCounter).await;
     test.run_until_idle().await;
-    let error = test.outcome(&stateless).await.unwrap().error.unwrap();
-    assert!(error.contains("stateless"), "{error}");
+    let error = test.outcome(&with_a_field).await.unwrap().error.unwrap();
+    assert!(error.contains("cannot be decoded") && error.contains("unknown field"), "{error}");
     let error = test.outcome(&undecodable).await.unwrap().error.unwrap();
     assert!(error.contains("cannot be decoded"), "{error}");
     assert!(!test.exists(&Echo::new("e")).await);
@@ -168,13 +168,13 @@ async fn a_handler_create_checks_the_initial_state_against_the_created_type() {
 #[tokio::test(start_paused = true)]
 async fn a_hosting_node_refuses_to_create_an_instance_under_a_non_canonical_address() {
     let test = TestActors::builder().with(|n| n.host(NumActor)).build().await.unwrap();
-    match test.system().create_actor(&parse("num/007"), None).await.unwrap() {
+    match test.system().create_actor(&parse("num/007"), json!({})).await.unwrap() {
         CreateActorResult::InvalidAddress(e) => assert!(e.contains("num/7"), "{e}"),
         other => panic!("{other:?}"),
     }
-    let seven = test.system().create_actor(&parse("num/seven"), None).await.unwrap();
+    let seven = test.system().create_actor(&parse("num/seven"), json!({})).await.unwrap();
     assert!(matches!(seven, CreateActorResult::InvalidAddress(_)), "{seven:?}");
-    assert_eq!(test.system().create_actor(&parse("num/7"), None).await.unwrap(), CreateActorResult::Created);
+    assert_eq!(test.system().create_actor(&parse("num/7"), json!({})).await.unwrap(), CreateActorResult::Created);
 }
 
 #[tokio::test(start_paused = true)]
@@ -182,7 +182,7 @@ async fn self_is_the_claimed_address_even_when_it_is_not_canonical() {
     let test = TestActors::builder().with(|n| n.host(NumActor)).build().await.unwrap();
     // Created through a node that does not host the type (no canonical check there), e.g. over HTTP.
     let odd = parse("num/007");
-    test.store().create(&odd, None).await.unwrap();
+    test.store().create(&odd, Some(json!({}))).await.unwrap();
     let first = match test.send_raw(&odd, "Again", json!({"left": 2}), SendOptions::new()).await {
         SendResult::Accepted(m) => m,
         other => panic!("{other:?}"),

@@ -652,34 +652,29 @@ impl ActorSystem {
         init.executor.hosted.get(name)
     }
 
-    /// Creates an instance (`PUT /actors/{type}/{key}`). Idempotent: an existing instance is left untouched.
+    /// Creates an instance with its initial `state` (`PUT /actors/{type}/{key}`). Idempotent: an existing instance is
+    /// left untouched.
     ///
-    /// The type is resolved through the TypeRegistry. A node that hosts the type decodes `state` with the state type
-    /// and refuses it when that fails; any node refuses a state for a stateless type.
-    pub async fn create_actor(
-        &self,
-        address: &ActorAddress,
-        state: Option<Value>,
-    ) -> Result<CreateActorResult, OpError> {
+    /// The type is resolved through the TypeRegistry. Any node refuses a state that is `null`; a node that hosts the
+    /// type also decodes `state` with the state type and refuses it when that fails.
+    pub async fn create_actor(&self, address: &ActorAddress, state: Value) -> Result<CreateActorResult, OpError> {
         let init = self.initialized().await?.clone();
-        let Some(resolved) = self.inner.resolver.resolve(address).await? else {
+        if self.inner.resolver.resolve(address).await?.is_none() {
             return Ok(CreateActorResult::NoSuchType);
-        };
-        let name = address.type_name();
-        let given = state.filter(|s| !s.is_null());
-        limits::check_json("state", given.as_ref()).map_err(OpError::Invalid)?;
-        if resolved.contract.state_schema().is_none() && given.is_some() {
-            return Ok(CreateActorResult::InvalidState(format!("{name} is stateless and takes no state")));
         }
-        if let Some(hosted) = self.hosted_for(&init, name) {
+        limits::check_json("state", Some(&state)).map_err(OpError::Invalid)?;
+        if let Err(e) = message::check_not_null("state", &state) {
+            return Ok(CreateActorResult::InvalidState(e));
+        }
+        if let Some(hosted) = self.hosted_for(&init, address.type_name()) {
             if let Some(problem) = hosted.actor.canonical_problem(address) {
                 return Ok(CreateActorResult::InvalidAddress(problem));
             }
-            if let Err(e) = hosted.actor.check_state(given.as_ref()) {
+            if let Err(e) = hosted.actor.check_state(Some(&state)) {
                 return Ok(CreateActorResult::InvalidState(format!("State cannot be decoded: {e}")));
             }
         }
-        Ok(match self.inner.store.create(address, given).await? {
+        Ok(match self.inner.store.create(address, Some(state)).await? {
             CreateResult::Created => CreateActorResult::Created,
             CreateResult::Exists(existing) => CreateActorResult::Exists(existing),
             // The type was removed between the lookup and the insert; the store refused atomically.
@@ -1143,13 +1138,7 @@ impl ActorSystem {
         let address = r.address().map_err(|e| OpError::Invalid(e.to_string()))?;
         let state = serde_json::to_value(initial_state)
             .map_err(|e| OpError::Invalid(format!("The initial state cannot be encoded: {e}")))?;
-        self.create_actor(&address, Some(state)).await
-    }
-
-    /// Creates `r` without state (a stateless type); see [`Self::create_actor`].
-    pub async fn create_stateless<R: ActorRef>(&self, r: &R) -> Result<CreateActorResult, OpError> {
-        let address = r.address().map_err(|e| OpError::Invalid(e.to_string()))?;
-        self.create_actor(&address, None).await
+        self.create_actor(&address, state).await
     }
 
     /// Sends `msg` to `to`, due now; the compiler checks that `to` accepts it. See [`Self::send_message`].

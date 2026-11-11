@@ -29,7 +29,7 @@ pub mod turn;
 
 pub use actor::{Actor, ActorType, Unhandled};
 pub use address::{ActorAddress, ActorRef, TypeName};
-pub use message::Stateless;
+pub use message::NoState;
 pub use runtime::{ActorSystem, CreateActorResult, OpError, SendResult, StartError};
 pub use turn::{HandlerError, HandlerResult, SendOptions, Turn};
 
@@ -39,7 +39,7 @@ pub mod prelude {
 
     pub use crate::actor::{Actor, ActorType, Unhandled};
     pub use crate::address::{ActorAddress, ActorRef};
-    pub use crate::message::Stateless;
+    pub use crate::message::NoState;
     pub use crate::retention::{Keep, Retention};
     pub use crate::retry::{Backoff, RetryPolicy};
     pub use crate::runtime::ActorSystem;

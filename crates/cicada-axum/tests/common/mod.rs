@@ -104,7 +104,7 @@ pub struct PingActor;
 
 impl Actor for PingActor {
     type Ref = Ping;
-    type State = Stateless;
+    type State = NoState;
     type Message = PingMsg;
     const UNHANDLED: Unhandled = Unhandled::Drop;
 

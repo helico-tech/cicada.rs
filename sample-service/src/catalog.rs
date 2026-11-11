@@ -5,7 +5,7 @@ use std::sync::Arc;
 use cicada::actor::contract_of;
 use cicada::contract::Contract;
 use cicada::runtime::ActorSystemBuilder;
-use cicada::{Actor, ActorAddress, ActorRef, ActorType};
+use cicada::{Actor, ActorAddress, ActorRef, ActorType, NoState};
 use cicada_examples::cron::CronJobActor;
 use cicada_examples::fanout::{BatchActor, BatchItemActor};
 use cicada_examples::registry::{DeviceActor, DeviceRegistry, DeviceRegistryActor, RegistryState};
@@ -71,20 +71,16 @@ impl std::fmt::Debug for CatalogType {
 pub struct Singleton {
     /// Its address.
     pub address: ActorAddress,
-    /// Its initial state; `None` for a stateless type.
-    pub initial_state: Option<Value>,
+    /// Its initial state.
+    pub initial_state: Value,
 }
 
 impl Singleton {
-    fn of<R: ActorRef>(r: &R, initial_state: Option<&impl Serialize>) -> Self {
+    fn of<R: ActorRef>(r: &R, initial_state: &impl Serialize) -> Self {
         Self {
             address: r.address().expect("a valid singleton address"),
-            initial_state: initial_state.map(|s| serde_json::to_value(s).expect("an encodable state")),
+            initial_state: serde_json::to_value(initial_state).expect("an encodable state"),
         }
-    }
-
-    fn stateless<R: ActorRef>(r: &R) -> Self {
-        Self::of(r, None::<&()>)
     }
 }
 
@@ -135,11 +131,11 @@ impl Catalog {
             ),
         ];
         let singletons = vec![
-            ("singleton", vec![Singleton::stateless(&Cleanup)]),
-            ("reply", vec![Singleton::stateless(&Pricing)]),
-            ("saga", vec![Singleton::stateless(&Payments)]),
-            ("registry", vec![Singleton::of(&DeviceRegistry, Some(&RegistryState::default()))]),
-            ("supervision", vec![Singleton::of(&DeadLetters, Some(&DeadLettersState::default()))]),
+            ("singleton", vec![Singleton::of(&Cleanup, &NoState {})]),
+            ("reply", vec![Singleton::of(&Pricing, &NoState {})]),
+            ("saga", vec![Singleton::of(&Payments, &NoState {})]),
+            ("registry", vec![Singleton::of(&DeviceRegistry, &RegistryState::default())]),
+            ("supervision", vec![Singleton::of(&DeadLetters, &DeadLettersState::default())]),
         ];
         Self { groups, singletons }
     }

@@ -247,7 +247,7 @@ pub struct EchoActor;
 
 impl Actor for EchoActor {
     type Ref = Echo;
-    type State = Stateless;
+    type State = NoState;
     type Message = EchoMsg;
     const UNHANDLED: Unhandled = Unhandled::Drop;
 

@@ -50,6 +50,7 @@ use super::limits;
 use super::resolver::TypeResolver;
 use crate::actor::{HostedActor, RunEnd, RunResult, panic_message};
 use crate::address::TypeName;
+use crate::message;
 use crate::plugin::{Attributes, ClaimContext, HandlerErrorContext, HookResult, OutcomeContext, Plugin, TurnInfo};
 use crate::store::{
     ActorCreate, Claim, CommitRequest, CommitResult, Delivery, Message, MessageId, OutgoingMessage, RenewResult,
@@ -507,10 +508,12 @@ impl TurnExecutor {
                 None => StateChange::Unchanged,
                 Some(Err(e)) => return Decision::failed(format!("State cannot be encoded: {e}")),
                 Some(Ok(state)) => {
-                    if let Err(e) = limits::check_json("state", state.as_ref()) {
+                    if let Err(e) = message::check_not_null("state", &state)
+                        .and_then(|()| limits::check_json("state", Some(&state)))
+                    {
                         return Decision::failed(format!("State cannot be encoded: {e}"));
                     }
-                    StateChange::NewState(state)
+                    StateChange::NewState(Some(state))
                 }
             }
         };
@@ -534,19 +537,11 @@ impl TurnExecutor {
         for create in &effects.creates {
             let what = format!("type of {}", create.address);
             let resolved = self.retry_read(guard, &what, || self.resolver.resolve(&create.address)).await?;
-            let Some(resolved) = resolved else {
+            if resolved.is_none() {
                 return Ok(Some(format!("Create of {}: its type is not registered", create.address)));
-            };
-            let state = create.state.as_ref().filter(|s| !s.is_null());
-            if resolved.contract.state_schema().is_none() && state.is_some() {
-                return Ok(Some(format!(
-                    "Create of {}: {} is stateless and takes no state",
-                    create.address,
-                    create.address.type_name()
-                )));
             }
             if let Some(target) = self.hosted.get(create.address.type_name())
-                && let Err(e) = target.actor.check_state(state)
+                && let Err(e) = target.actor.check_state(create.state.as_ref())
             {
                 return Ok(Some(format!("Create of {}: the initial state cannot be decoded: {e}", create.address)));
             }

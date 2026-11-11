@@ -4,8 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use cicada::SendOptions;
 use cicada::store::{MessageId, OutcomeRecord, OutcomeStatus};
+use cicada::{NoState, SendOptions};
 use cicada_examples::saga::{
     ChargeResult, GatewayUnavailable, Inventory, InventoryActor, InventoryState, Order, OrderActor, OrderMsg,
     OrderState, OrderStatus, PAYMENT_ATTEMPTS, PaymentGateway, Payments, PaymentsActor, PaymentsMsg, charge_retry,
@@ -78,7 +78,7 @@ async fn harness(gateway: &FakeGateway) -> TestActors {
 }
 
 async fn set_up(test: &TestActors, stock: i32) {
-    test.create_stateless(&Payments).await;
+    test.create(&Payments, &NoState {}).await;
     test.create(&apples(), &InventoryState { available: stock, ..Default::default() }).await;
     test.create(&order(), &OrderState::default()).await;
 }
@@ -169,7 +169,7 @@ async fn the_charges_retry_policy_rides_out_a_transient_gateway_outage_with_one_
 async fn a_charge_sent_without_a_retry_policy_is_not_retried_its_first_outage_is_answered_with_a_decline() {
     let gateway = FakeGateway::new(1);
     let test = harness(&gateway).await;
-    test.create_stateless(&Payments).await;
+    test.create(&Payments, &NoState {}).await;
     test.create(&order(), &OrderState::default()).await;
     let charge = test.send(&Payments, PaymentsMsg::Charge { reply_to: order(), amount_cents: 500 }).await;
     test.advance_time_by(Duration::from_secs(60)).await;
@@ -184,7 +184,7 @@ async fn a_charge_sent_without_a_retry_policy_is_not_retried_its_first_outage_is
 async fn an_invalid_charge_is_vetoed_with_fail_and_not_retried_despite_the_policy() {
     let gateway = FakeGateway::new(0);
     let test = harness(&gateway).await;
-    test.create_stateless(&Payments).await;
+    test.create(&Payments, &NoState {}).await;
     test.create(&order(), &OrderState::default()).await;
     let charge = PaymentsMsg::Charge { reply_to: order(), amount_cents: 0 };
     let charge = test.send_with(&Payments, charge, SendOptions::new().retry(charge_retry())).await;

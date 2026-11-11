@@ -50,7 +50,7 @@ fn seen(tag: &str) -> RelayMsg {
 
 impl Actor for RelayActor {
     type Ref = Relay;
-    type State = cicada::Stateless;
+    type State = cicada::NoState;
     type Message = RelayMsg;
     const UNHANDLED: Unhandled = Unhandled::Fail;
 
@@ -119,8 +119,8 @@ async fn harness(plugins: Vec<Adds>) -> (TestActors, Seen, Arc<Mutex<Vec<String>
         .build()
         .await
         .unwrap();
-    test.create_stateless(&relay("a")).await;
-    test.create_stateless(&relay("b")).await;
+    test.create(&relay("a"), &cicada::NoState {}).await;
+    test.create(&relay("b"), &cicada::NoState {}).await;
     (test, seen, errors)
 }
 

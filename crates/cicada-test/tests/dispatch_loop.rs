@@ -77,7 +77,7 @@ struct WorkerActor(Arc<Gauges>);
 
 impl Actor for WorkerActor {
     type Ref = Worker;
-    type State = Stateless;
+    type State = NoState;
     type Message = WorkerMsg;
     const UNHANDLED: Unhandled = Unhandled::Fail;
 
@@ -133,7 +133,7 @@ async fn concurrency_is_bounded_by_the_per_node_limit() {
         .build();
     system.start().await.unwrap();
     for id in 0..12 {
-        system.create_stateless(&Worker { id }).await.unwrap();
+        system.create(&Worker { id }, &NoState {}).await.unwrap();
         system.send(&Worker { id }, WorkerMsg::Job { millis: 100, first_attempt_only: false }).await.unwrap();
     }
     eventually(5 * SECOND, || async { gauges.done.load(Ordering::SeqCst) == 12 }).await;
@@ -220,7 +220,7 @@ async fn graceful_stop_lets_running_turns_finish_within_the_grace_period() {
     let store = Arc::new(InMemoryStore::default());
     let system = system(store.clone()).host(WorkerActor(gauges.clone())).build();
     system.start().await.unwrap();
-    system.create_stateless(&Worker { id: 1 }).await.unwrap();
+    system.create(&Worker { id: 1 }, &NoState {}).await.unwrap();
     let m = accepted(
         system.send(&Worker { id: 1 }, WorkerMsg::Job { millis: 300, first_attempt_only: false }).await.unwrap(),
     );
@@ -240,7 +240,7 @@ async fn turns_still_running_after_the_grace_period_are_cancelled_and_their_leas
         .host(WorkerActor(gauges.clone()))
         .build();
     first.start().await.unwrap();
-    first.create_stateless(&Worker { id: 1 }).await.unwrap();
+    first.create(&Worker { id: 1 }, &NoState {}).await.unwrap();
     let m = accepted(
         first.send(&Worker { id: 1 }, WorkerMsg::Job { millis: 60_000, first_attempt_only: true }).await.unwrap(),
     );

@@ -222,11 +222,6 @@ impl ActorClient {
         self.create_actor(&address_of(r)?, Some(state)).await
     }
 
-    /// Creates `r` without state (for stateless types); see [`Self::create_actor`].
-    pub async fn create_stateless<R: ActorRef>(&self, r: &R) -> ClientResult<CreateActorResponse> {
-        self.create_actor(&address_of(r)?, None).await
-    }
-
     /// Snapshot of the instance at `address` (`GET /actors/{path}`), or `None` when it does not exist.
     pub async fn get_actor(&self, address: &ActorAddress) -> ClientResult<Option<ActorView>> {
         let answer = self.call(Method::GET, self.url(&http_path(address)?, &[])?, None).await?;

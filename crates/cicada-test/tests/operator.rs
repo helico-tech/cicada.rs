@@ -427,7 +427,7 @@ struct BlockerActor(Arc<std::sync::atomic::AtomicBool>);
 
 impl cicada::Actor for BlockerActor {
     type Ref = Blocker;
-    type State = cicada::Stateless;
+    type State = cicada::NoState;
     type Message = BlockerMsg;
     const UNHANDLED: Unhandled = Unhandled::Fail;
 
@@ -448,7 +448,7 @@ async fn blocking_code_runs_until_it_returns_and_then_the_commit_is_cancelled() 
     config.heartbeat_interval = Some(Duration::from_millis(50));
     let system = ActorSystem::builder(store.clone()).config(config).host(BlockerActor(returned.clone())).build();
     let blocker = Blocker { id: "b".into() };
-    system.create_stateless(&blocker).await.unwrap();
+    system.create(&blocker, &cicada::NoState {}).await.unwrap();
     let m = accepted(system.send(&blocker, BlockerMsg::Block { millis: 500 }).await.unwrap());
     let runner = run_one(&system);
     let address = cicada::ActorRef::address(&blocker).unwrap();

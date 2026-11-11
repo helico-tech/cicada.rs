@@ -351,7 +351,7 @@ async fn removing_a_type_races_with_creates_without_leaving_an_actor_of_a_remove
         let address = who.address().unwrap();
         let create = tokio::spawn({
             let (creator, address) = (creator.clone(), address.clone());
-            async move { creator.create_actor(&address, Some(state)).await }
+            async move { creator.create_actor(&address, state).await }
         });
         let remove = tokio::spawn({
             let (remover, name) = (remover.clone(), name.clone());

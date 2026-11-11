@@ -304,7 +304,7 @@ enum StuckMsg {
 
 impl Actor for Stuck {
     type Ref = StuckRef;
-    type State = cicada::Stateless;
+    type State = cicada::NoState;
     type Message = StuckMsg;
     const UNHANDLED: Unhandled = Unhandled::Fail;
 
@@ -332,7 +332,7 @@ async fn the_span_of_a_turn_that_never_commits_is_marked_abandoned() {
         .build();
     system.start().await.unwrap();
     let stuck = StuckRef { id: "s".into() };
-    system.create_stateless(&stuck).await.unwrap();
+    system.create(&stuck, &cicada::NoState {}).await.unwrap();
     system.send(&stuck, StuckMsg::Wait).await.unwrap();
     while system.running_turns() == 0 {
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;

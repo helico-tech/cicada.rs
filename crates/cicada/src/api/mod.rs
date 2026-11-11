@@ -514,7 +514,7 @@ pub mod problem_types {
     pub const REQUEST_TOO_LARGE: &str = "urn:cicada:problem:request-too-large";
     /// 500: an unexpected error in the node; not retryable as such.
     pub const INTERNAL_ERROR: &str = "urn:cicada:problem:internal-error";
-    /// 422: the state cannot be decoded (hosting node) or the type is stateless.
+    /// 422: the state is `null`, or it cannot be decoded (hosting node).
     pub const INVALID_STATE: &str = "urn:cicada:problem:invalid-state";
     /// 422: the target type does not accept this message type name.
     pub const UNKNOWN_MESSAGE_TYPE: &str = "urn:cicada:problem:unknown-message-type";

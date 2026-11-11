@@ -314,7 +314,7 @@ async fn an_error_from_decoding_the_ref_fails_the_message_instead_of_crash_loopi
     let memory = virtual_store();
     let system = f.node(memory.clone(), "n1");
     let cursed = ActorAddress::parse("tally/cursed").unwrap();
-    match system.create_actor(&cursed, None).await.unwrap() {
+    match system.create_actor(&cursed, json!({})).await.unwrap() {
         CreateActorResult::InvalidAddress(e) => assert!(e.contains("not allowed"), "{e}"),
         other => panic!("refused by a hosting node, was {other:?}"),
     }
@@ -418,7 +418,7 @@ async fn sends_and_creates_from_outside_refuse_nul_characters_in_payload_and_sta
     let payload = json!({"headers": {"x": "a\u{0}b"}});
     let e = system.send_message(&addr(&t()), "Tag", payload, SendOptions::new()).await.unwrap_err();
     assert!(matches!(e, OpError::Invalid(_)), "{e:?}");
-    let e = system.create_actor(&addr(&tally("u")), Some(json!({"note": "a\u{0}b"}))).await.unwrap_err();
+    let e = system.create_actor(&addr(&tally("u")), json!({"note": "a\u{0}b"})).await.unwrap_err();
     assert!(matches!(e, OpError::Invalid(_)), "{e:?}");
 }
 

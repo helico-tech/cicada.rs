@@ -63,7 +63,7 @@ struct SleeperActor(Arc<Counts>);
 
 impl Actor for SleeperActor {
     type Ref = Sleeper;
-    type State = Stateless;
+    type State = NoState;
     type Message = SleeperMsg;
     const UNHANDLED: Unhandled = Unhandled::Fail;
     const MAX_TURN: Option<Duration> = Some(Duration::from_secs(300));
@@ -119,7 +119,7 @@ async fn a_lease_keeper_that_fails_unexpectedly_cancels_the_handler_and_abandons
     let faulty = Faulty::new(memory.clone(), BrokenRenew { broken: AtomicBool::new(true), slow_commit: false });
     let n1 = sleeper_node(faulty, "n1", &counts);
     let n2 = sleeper_node(memory.clone(), "n2", &counts);
-    n1.create_stateless(&s()).await.unwrap();
+    n1.create(&s(), &NoState {}).await.unwrap();
     let m = accepted(n1.send(&s(), SleeperMsg::Slumber { seconds: 20 }).await.unwrap());
 
     // The first heartbeat (10 s) panics: the turn ends without the panic escaping to the caller.
@@ -147,7 +147,7 @@ async fn with_a_working_keeper_the_same_turn_runs_to_its_outcome() {
     let memory = virtual_store();
     let faulty = Faulty::new(memory.clone(), BrokenRenew { broken: AtomicBool::new(false), slow_commit: false });
     let n1 = sleeper_node(faulty, "n1", &counts);
-    n1.create_stateless(&s()).await.unwrap();
+    n1.create(&s(), &NoState {}).await.unwrap();
     // Longer than the TTL: needs renewals.
     let m = accepted(n1.send(&s(), SleeperMsg::Slumber { seconds: 45 }).await.unwrap());
     assert_eq!(n1.run_due_turns(1).await.unwrap(), 1);
@@ -161,7 +161,7 @@ async fn a_keeper_that_fails_during_the_commit_does_not_cancel_it_the_stores_fen
     let memory = virtual_store();
     let faulty = Faulty::new(memory.clone(), BrokenRenew { broken: AtomicBool::new(true), slow_commit: true });
     let n1 = sleeper_node(faulty, "n1", &counts);
-    n1.create_stateless(&s()).await.unwrap();
+    n1.create(&s(), &NoState {}).await.unwrap();
     let m = accepted(n1.send(&s(), SleeperMsg::Slumber { seconds: 1 }).await.unwrap());
     assert_eq!(n1.run_due_turns(1).await.unwrap(), 1);
     assert_eq!(counts.cancelled.load(Ordering::SeqCst), 0);

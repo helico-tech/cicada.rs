@@ -55,11 +55,11 @@ impl Actor for SyncActor {
     }
 }
 
-struct StatelessSync;
+struct EmptySync;
 
-impl Actor for StatelessSync {
+impl Actor for EmptySync {
     type Ref = Sync;
-    type State = Stateless;
+    type State = NoState;
     type Message = SyncMsg;
     const UNHANDLED: Unhandled = Unhandled::Drop;
 
@@ -83,7 +83,7 @@ struct BadActor;
 
 impl Actor for BadActor {
     type Ref = BadRef;
-    type State = Stateless;
+    type State = NoState;
     type Message = SyncMsg;
     const UNHANDLED: Unhandled = Unhandled::Fail;
     const MAX_TURN: Option<Duration> = Some(Duration::ZERO);
@@ -125,10 +125,14 @@ async fn a_bad_ref_and_a_zero_max_turn_are_reported() {
 }
 
 #[tokio::test]
-async fn the_stateless_variant_has_no_state_schema() {
-    let def = registered(StatelessSync).await;
-    assert_eq!(def.contract["state"], serde_json::Value::Null);
-    assert!(Contract::of(&def).unwrap().state_schema().is_none());
+async fn a_type_that_keeps_no_data_has_the_schema_of_an_empty_object() {
+    let def = registered(EmptySync).await;
+    let state = &def.contract["state"];
+    assert_eq!(state["type"], "object");
+    assert_eq!(state["title"], "NoState");
+    assert!(state.get("properties").is_none_or(|p| p == &serde_json::json!({})), "no properties: {state}");
+    assert_eq!(state["additionalProperties"], false, "NoState refuses unknown fields");
+    assert_eq!(Contract::of(&def).unwrap().state_schema(), Some(state));
 }
 
 #[tokio::test]
@@ -154,7 +158,7 @@ async fn contract_snapshot_and_stable_hash() {
 #[tokio::test]
 async fn a_different_state_type_changes_the_hash() {
     let stateful = registered(SyncActor).await;
-    let stateless = registered(StatelessSync).await;
-    assert_ne!(stateful.contract_hash, stateless.contract_hash);
-    assert!(stateless.contract.get("messages").is_some());
+    let empty = registered(EmptySync).await;
+    assert_ne!(stateful.contract_hash, empty.contract_hash);
+    assert!(empty.contract.get("messages").is_some());
 }

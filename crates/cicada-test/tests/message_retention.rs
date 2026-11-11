@@ -36,7 +36,7 @@ struct KeeperActor;
 
 impl Actor for KeeperActor {
     type Ref = Keeper;
-    type State = Stateless;
+    type State = NoState;
     type Message = KeeperMsg;
     const UNHANDLED: Unhandled = Unhandled::Fail;
 
@@ -59,7 +59,7 @@ impl Actor for KeeperActor {
 
 async fn harness() -> TestActors {
     let test = TestActors::builder().with(|n| n.host(KeeperActor)).build().await.unwrap();
-    test.create_stateless(&keeper()).await;
+    test.create(&keeper(), &NoState {}).await;
     test
 }
 

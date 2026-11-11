@@ -1,7 +1,7 @@
 use cicada::prelude::*;
 use serde::{Deserialize, Serialize};
 
-/// The pricing service, a stateless singleton.
+/// The pricing service, a singleton that keeps no data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Pricing;
 
@@ -64,7 +64,7 @@ pub struct PricingActor<P> {
 
 impl<P: PriceList> Actor for PricingActor<P> {
     type Ref = Pricing;
-    type State = Stateless;
+    type State = NoState;
     type Message = PricingMsg;
     const UNHANDLED: Unhandled = Unhandled::Fail;
 

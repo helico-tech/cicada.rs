@@ -100,7 +100,7 @@ pub struct BeaconActor;
 
 impl Actor for BeaconActor {
     type Ref = Beacon;
-    type State = Stateless;
+    type State = NoState;
     type Message = BeaconMsg;
     const UNHANDLED: Unhandled = Unhandled::Drop;
 

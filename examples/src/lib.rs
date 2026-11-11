@@ -2,7 +2,7 @@
 //!
 //! | Module | Pattern |
 //! | --- | --- |
-//! | [`singleton`] | Example 1: a stateless singleton (`maintenance.cleanup/_`) whose turns never overlap. |
+//! | [`singleton`] | Example 1: a singleton that keeps no data (`maintenance.cleanup/_`) whose turns never overlap. |
 //! | [`timer`] | Example 2: a timer / timeout with a generation number; a stale timeout is ignored. |
 //! | [`cron`] | Example 3: a cron job; each tick does the work and arms the next one in the same commit. |
 //! | [`reply`] | Example 4: request and reply; the responder replies to `message.from` with the correlation id. |

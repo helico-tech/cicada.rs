@@ -8,14 +8,18 @@ use std::time::Duration;
 
 use futures::FutureExt;
 use futures::future::BoxFuture;
+use schemars::JsonSchema;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::address::{ActorAddress, ActorRef, RefBinding, TypeName};
 use crate::contract::Contract;
-use crate::message::{self, ActorState, FamilyInfo, MessageFamily};
+use crate::message::{self, FamilyInfo, MessageFamily};
 use crate::plugin::TurnInfo;
 use crate::runtime::effects::EffectBuffer;
 use crate::runtime::resolver::TypeResolver;
+use crate::schema;
 use crate::store::Claim;
 use crate::turn::{HandlerFailure, HandlerResult, Turn};
 
@@ -28,8 +32,8 @@ pub enum Unhandled {
     Drop,
 }
 
-/// An actor type: a typed ref bound to a type name, an optional state, a message family, one handler for the whole
-/// family, and the mandatory unhandled policy.
+/// An actor type: a typed ref bound to a type name, a state, a message family, one handler for the whole family, and
+/// the mandatory unhandled policy.
 ///
 /// ```
 /// use cicada::prelude::*;
@@ -81,8 +85,10 @@ pub enum Unhandled {
 pub trait Actor: Send + Sync + Sized + 'static {
     /// The typed ref; its type name is the type's identity.
     type Ref: ActorRef<Message = Self::Message>;
-    /// The state, or [`crate::message::Stateless`].
-    type State: ActorState;
+    /// The state of an instance: any type that serde encodes and decodes and schemars describes, stored as JSON. A
+    /// state is never `null`: a type whose value encodes to `null` (`()`, a unit struct, a top-level `Option`) fails
+    /// every create and every turn that writes it. A type that keeps no data uses [`crate::NoState`].
+    type State: Serialize + DeserializeOwned + JsonSchema + Send + Sync + 'static;
     /// The message family: an enum with `#[serde(tag = "type")]`.
     type Message: MessageFamily;
 
@@ -147,7 +153,7 @@ pub(crate) struct RunResult {
     pub end: RunEnd,
     pub effects: EffectBuffer,
     /// The encoded new state, when the handler assigned it.
-    pub new_state: Option<Result<Option<Value>, String>>,
+    pub new_state: Option<Result<Value, String>>,
 }
 
 /// Runs a loaded turn with its info and resolver.
@@ -192,12 +198,12 @@ fn analyse<A: Actor>() -> Result<Analysis<A>, Vec<String>> {
     }
     let binding = RefBinding::<A::Ref>::new().map_err(|e| problems.push(format!("Ref: {e}"))).ok();
     let family = FamilyInfo::of::<A::Message>().map_err(|e| problems.push(format!("Messages: {e}"))).ok();
-    let state = A::State::schema().map_err(|e| problems.push(format!("State schema: {e}"))).ok();
-    match (binding, family, state) {
-        (Some(binding), Some(family), Some(state)) if problems.is_empty() => {
+    let state = schema::root_schema::<A::State>();
+    match (binding, family) {
+        (Some(binding), Some(family)) if problems.is_empty() => {
             let key_fields = binding.key_fields().iter().map(|f| (*f).to_owned()).collect();
             let contract =
-                Arc::new(Contract::new(binding.type_name().clone(), key_fields, state, family.schemas.clone()));
+                Arc::new(Contract::new(binding.type_name().clone(), key_fields, Some(state), family.schemas.clone()));
             Ok(Analysis { binding, family, contract })
         }
         _ => Err(problems),
@@ -229,7 +235,7 @@ impl<A: Actor> HostedActor for Hosted<A> {
     }
 
     fn check_state(&self, state: Option<&Value>) -> Result<(), String> {
-        A::State::decode(state).map(|_| ())
+        decode_state::<A::State>(state).map(|_| ())
     }
 
     fn check_payload(&self, message_type: &str, payload: &Value) -> Result<(), String> {
@@ -253,7 +259,8 @@ impl<A: Actor> HostedActor for Hosted<A> {
 
     fn load(&self, claim: &Claim) -> Result<Loaded, String> {
         let analysis = self.analysis.as_ref().map_err(|p| p.join("; "))?;
-        let state = A::State::decode(claim.state.as_ref()).map_err(|e| format!("State cannot be decoded: {e}"))?;
+        let state =
+            decode_state::<A::State>(claim.state.as_ref()).map_err(|e| format!("State cannot be decoded: {e}"))?;
         let self_ref = analysis
             .binding
             .from_address(&claim.actor)
@@ -282,12 +289,17 @@ impl<A: Actor> HostedActor for Hosted<A> {
                         },
                     };
                     let (state, assigned, effects) = turn.into_parts();
-                    let new_state = assigned.then(|| state.encode());
+                    let new_state = assigned.then(|| serde_json::to_value(&state).map_err(|e| e.to_string()));
                     RunResult { end, effects, new_state }
                 })
             }),
         })
     }
+}
+
+/// Decodes a stored state as `S`.
+fn decode_state<S: DeserializeOwned>(state: Option<&Value>) -> Result<S, String> {
+    serde_json::from_value(state.cloned().unwrap_or(Value::Null)).map_err(|e| e.to_string())
 }
 
 /// The message of a panic payload.

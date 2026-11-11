@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use super::order::{Order, OrderMsg};
 
-/// The payment service, a stateless singleton and saga participant.
+/// The payment service, a singleton that keeps no data and a saga participant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Payments;
 
@@ -85,7 +85,7 @@ pub struct PaymentsActor<G> {
 
 impl<G: PaymentGateway> Actor for PaymentsActor<G> {
     type Ref = Payments;
-    type State = Stateless;
+    type State = NoState;
     type Message = PaymentsMsg;
     const UNHANDLED: Unhandled = Unhandled::Fail;
 

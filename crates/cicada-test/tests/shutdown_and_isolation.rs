@@ -47,7 +47,7 @@ struct BlockerActor;
 
 impl Actor for BlockerActor {
     type Ref = Blocker;
-    type State = Stateless;
+    type State = NoState;
     type Message = BlockerMsg;
     const UNHANDLED: Unhandled = Unhandled::Fail;
 
@@ -102,7 +102,7 @@ async fn a_blocking_handler_does_not_starve_the_heartbeat() {
             ..NodeConfig::default()
         })
         .build();
-    node.create_stateless(&blocker("b")).await.unwrap();
+    node.create(&blocker("b"), &NoState {}).await.unwrap();
     node.start().await.unwrap();
     let m = accepted(node.send(&blocker("b"), BlockerMsg::Block { millis: 1_500 }).await.unwrap());
     eventually(TEN_SECONDS, || async {
@@ -131,7 +131,7 @@ async fn stop_does_not_hang_on_a_handler_that_ignores_cancellation() {
             ..NodeConfig::default()
         })
         .build();
-    node.create_stateless(&blocker("s")).await.unwrap();
+    node.create(&blocker("s"), &NoState {}).await.unwrap();
     node.start().await.unwrap();
     // A blocked thread holds up the runtime's shutdown at the end of the test,
     // so it blocks for 3 s only.
@@ -155,7 +155,7 @@ async fn stopping_right_after_a_claim_never_leaves_a_lease_behind() {
             .config(NodeConfig { poll_interval: Duration::from_millis(5), ..NodeConfig::default() })
             .build();
         let r = blocker(&format!("r{round}"));
-        node.create_stateless(&r).await.unwrap();
+        node.create(&r, &NoState {}).await.unwrap();
         let m = accepted(node.send(&r, BlockerMsg::Nap { millis: 10_000 }).await.unwrap());
         node.start().await.unwrap();
         eventually(TEN_SECONDS, || async {

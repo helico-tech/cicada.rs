@@ -5,17 +5,17 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
 
 ## 1. `NoState` replaces `Stateless`
 
-- [ ] 1.1 `cicada::message`: add `NoState` with `deny_unknown_fields` [4]; remove `Stateless` and `ActorState`; give
+- [x] 1.1 `cicada::message`: add `NoState` with `deny_unknown_fields` [4]; remove `Stateless` and `ActorState`; give
       `Actor::State` the bound `Serialize + DeserializeOwned + JsonSchema + Send + Sync + 'static`; export `NoState`
       from the crate root and the prelude. The doc comment of `Actor::State` says that a state is never `null` and
       points to `NoState`. Verify: unit tests that `NoState {}` encodes to `{}` and that `{"oops": 1}` does not
       decode as `NoState`.
-- [ ] 1.2 Remove `create_stateless` from `Turn`, `ActorSystem`, `ActorClient` and `TestActors`. Replace every
+- [x] 1.2 Remove `create_stateless` from `Turn`, `ActorSystem`, `ActorClient` and `TestActors`. Replace every
       `Stateless` and `create_stateless` in the tests, the examples, the sample service, `cicada-fuzz` and `e2e`
       with `NoState` and `create(&r, &NoState {})`. Delete the three snapshots of formerly stateless types in
       `sample-service/tests/contracts` and let the test write them again [9]. Verify: `cargo test --workspace`, and
       no match for `Stateless` or `create_stateless` in the `.rs` files outside `target/`.
-- [ ] 1.3 A state is never `null` [2]: `Turn::create` returns `TurnError::Invalid`, `ActorSystem::create_actor`
+- [x] 1.3 A state is never `null` [2]: `Turn::create` returns `TurnError::Invalid`, `ActorSystem::create_actor`
       returns `InvalidState`, and a turn that ends with a `null` state ends its message as `failed`. Remove the
       refusal "is stateless and takes no state" from `create_actor` and `check_typed_effects`. Verify: tests on
       virtual time with `TestActors` for the scenarios "A turn creates with a null state" and "A turn sets a null

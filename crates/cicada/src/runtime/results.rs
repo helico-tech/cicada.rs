@@ -15,8 +15,8 @@ pub enum CreateActorResult {
     Exists(ActorRecord),
     /// No registered type matches the address.
     NoSuchType,
-    /// The initial state was refused: it cannot be decoded (checked on nodes that host the type), or the type is
-    /// stateless and a state was given (checked on every node).
+    /// The initial state was refused: it is `null` (checked on every node), or it cannot be decoded (checked on nodes
+    /// that host the type).
     InvalidState(String),
     /// The address cannot be an instance of its type, checked on nodes that host the type: its key does
     /// not decode as the ref, or are not in the canonical form the ref writes (`x/007` for an integer).
