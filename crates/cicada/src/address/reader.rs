@@ -2,8 +2,10 @@
 //!
 //! A ref is written as one string or as a unit: a struct of which serde writes one field, whose value is a string; a
 //! type that serde writes as a string itself (a newtype around a `String`, a type that names `String` as its serde
-//! form); or a unit struct, the singleton with the name `_`. A field that serde skips does not count. A number, a
-//! boolean, a character and an enum variant are not a string.
+//! form); or a unit struct or a struct of which serde writes no field, the singleton with the name `_`. A field that
+//! serde skips does not count. A number, a boolean, a character and an enum variant are not a string. The reader
+//! takes what a ref's `Deserialize` declares: a field's serde aliases count as more fields, and a reader that takes
+//! any form (`deserialize_any`, an untagged enum) is refused.
 //!
 //! [`name_of`] takes the name out of a ref through its `Serialize`, [`from_name`] puts it back through its
 //! `Deserialize`, and [`check`] tells from what that `Deserialize` asks for whether a ref is one string, before any
@@ -194,7 +196,7 @@ impl ser::Serializer for Writer {
     }
 }
 
-/// The fields of a ref struct, of which serde writes one.
+/// The fields of a ref struct, of which serde writes one, or none for a singleton.
 struct OneName(Option<String>);
 
 impl ser::SerializeStruct for OneName {
@@ -210,7 +212,7 @@ impl ser::SerializeStruct for OneName {
     }
 
     fn end(self) -> Result<String, Error> {
-        self.0.ok_or_else(|| Error::Refused(format!("{RULE}, but serde writes a struct without fields")))
+        Ok(self.0.unwrap_or_else(|| ActorAddress::SINGLETON_KEY.to_owned()))
     }
 }
 
@@ -238,10 +240,17 @@ impl Reader<'_> {
     }
 
     fn unit<'de, V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
-        match (self.field, self.name) {
-            (Some(_), _) => self.refuse("a unit"),
-            (None, None | Some(ActorAddress::SINGLETON_KEY)) => visitor.visit_unit(),
-            (None, Some(name)) => Err(Error::Refused(format!(
+        match self.field {
+            Some(_) => self.refuse("a unit"),
+            None => self.singleton().and_then(|()| visitor.visit_unit()),
+        }
+    }
+
+    /// Fails unless the name is the key of a singleton; the probe passes.
+    fn singleton(self) -> Result<(), Error> {
+        match self.name {
+            None | Some(ActorAddress::SINGLETON_KEY) => Ok(()),
+            Some(name) => Err(Error::Refused(format!(
                 "the ref is a singleton, its key is {}, not {name}",
                 ActorAddress::SINGLETON_KEY
             ))),
@@ -310,7 +319,7 @@ impl<'de> de::Deserializer<'de> for Reader<'_> {
             (None, &[field]) => {
                 visitor.visit_map(OneField { field, value: Some(Reader { field: Some(field), ..self }) })
             }
-            (None, []) => self.refuse("a struct without fields"),
+            (None, []) => self.singleton().and_then(|()| visitor.visit_map(OneField { field: "", value: None })),
             (None, fields) => self.refuse(&format!("the fields {}", fields.join(", "))),
         }
     }
@@ -325,7 +334,7 @@ impl<'de> de::Deserializer<'de> for Reader<'_> {
     }
 }
 
-/// The one entry of a ref struct: its field and the name.
+/// The one entry of a ref struct: its field and the name; no entry when `value` is `None`.
 struct OneField<'a> {
     field: &'static str,
     value: Option<Reader<'a>>,
@@ -380,6 +389,17 @@ mod tests {
         assert_eq!(from_name::<Cleanup>("_").unwrap(), Cleanup);
         assert!(from_name::<Cleanup>("other").unwrap_err().contains("singleton"));
         assert!(check::<Cleanup>().is_ok());
+    }
+
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct Braces {}
+
+    #[test]
+    fn a_struct_without_fields_is_the_singleton() {
+        assert_eq!(name_of(&Braces {}).unwrap(), "_");
+        assert_eq!(from_name::<Braces>("_").unwrap(), Braces {});
+        assert!(from_name::<Braces>("other").unwrap_err().contains("singleton"));
+        assert!(check::<Braces>().is_ok());
     }
 
     #[test]

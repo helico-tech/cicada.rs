@@ -260,3 +260,101 @@ async fn a_send_to_a_ref_that_is_not_one_string_fails_at_the_call_and_the_turn_g
     let outcome = test.outcome(&poke).await.unwrap();
     assert_eq!(outcome.status, OutcomeStatus::Done, "{:?}", outcome.error);
 }
+
+// ---- a ref that changed its shape, read where it is held ----
+
+/// A ref that had the fields `batch` and `index` and is now written as `batch.index`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(into = "String", try_from = "String")]
+struct Item {
+    batch: String,
+    index: i32,
+}
+
+impl From<Item> for String {
+    fn from(item: Item) -> Self {
+        format!("{}.{}", item.batch, item.index)
+    }
+}
+
+impl TryFrom<String> for Item {
+    type Error = String;
+
+    fn try_from(name: String) -> Result<Self, String> {
+        let (batch, index) = name.rsplit_once('.').ok_or("not batch.index")?;
+        Ok(Self { batch: batch.to_owned(), index: index.parse().map_err(|_| "not an index")? })
+    }
+}
+
+impl ActorRef for Item {
+    const TYPE: &'static str = "items";
+    type Message = JobsMsg;
+}
+
+/// Reads an `Item` in its new form or in the object form it had before.
+fn item_old_or_new<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Item, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OldOrNew {
+        New(Item),
+        Old { batch: String, index: i32 },
+    }
+    Ok(match OldOrNew::deserialize(d)? {
+        OldOrNew::New(item) => item,
+        OldOrNew::Old { batch, index } => Item { batch, index },
+    })
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct HolderState {
+    #[serde(deserialize_with = "item_old_or_new")]
+    #[schemars(with = "String")]
+    item: Item,
+    #[serde(default)]
+    seen: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Holder {
+    name: String,
+}
+
+impl ActorRef for Holder {
+    const TYPE: &'static str = "holders";
+    type Message = HolderMsg;
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type")]
+enum HolderMsg {
+    Look,
+}
+
+struct HolderActor;
+
+impl Actor for HolderActor {
+    type Ref = Holder;
+    type State = HolderState;
+    type Message = HolderMsg;
+    const UNHANDLED: Unhandled = Unhandled::Fail;
+
+    async fn handle(&self, turn: &mut Turn<Self>, _: HolderMsg) -> HandlerResult {
+        let seen = turn.state().item.address()?.to_string();
+        turn.state_mut().seen = seen;
+        Ok(())
+    }
+}
+
+/// The second way of the upgrade note of 0.6.0: the old form of a ref is read where the ref is held.
+#[tokio::test(start_paused = true)]
+async fn the_old_form_of_a_ref_is_read_with_deserialize_with_on_the_field_that_holds_it() {
+    let test = TestActors::builder().with(|n| n.host(HolderActor)).build().await.unwrap();
+    let holder = Holder { name: "h".into() };
+    let old = json!({"item": {"batch": "b1", "index": 7}});
+    assert_eq!(test.system().create_actor(&holder.address().unwrap(), old).await.unwrap(), CreateActorResult::Created);
+    let look = test.send(&holder, HolderMsg::Look).await;
+    test.run_until_idle().await;
+    assert_eq!(test.outcome(&look).await.unwrap().status, OutcomeStatus::Done);
+    // The turn wrote the state back, with the ref in its new form.
+    assert_eq!(test.state_json(&holder).await.unwrap(), json!({"item": "b1.7", "seen": "items/b1.7"}));
+}

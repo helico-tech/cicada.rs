@@ -161,6 +161,11 @@ mod shapes {
         }
     }
 
+    /// A struct with braces and no fields: a singleton, as a unit struct is.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub(super) struct Braces {}
+    shape!(Braces, BracesActor, "braces");
+
     /// The ref of `counter` with its one field under another name.
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub(super) struct RenamedCounter {
@@ -330,6 +335,22 @@ async fn a_node_whose_ref_is_not_one_string_does_not_start_and_names_the_ref() {
 async fn a_node_starts_with_a_ref_that_skips_a_field_or_writes_its_parts_as_one_string() {
     let system = ActorSystem::builder(store()).host(shapes::NamedActor).host(shapes::BatchItemActor).build();
     system.initialize().await.expect("the node starts");
+}
+
+/// Scenario: A struct without fields.
+#[tokio::test]
+async fn a_struct_without_fields_is_a_singleton() {
+    assert_eq!(shapes::Braces {}.address().unwrap().as_str(), "braces/_");
+    let system = ActorSystem::builder(store()).host(shapes::BracesActor).build();
+    system.initialize().await.expect("the node starts");
+    let create = async |key: &str| {
+        system.create_actor(&format!("braces/{key}").parse().unwrap(), serde_json::json!({})).await.unwrap()
+    };
+    match create("other").await {
+        crate::CreateActorResult::InvalidAddress(e) => assert!(e.contains("singleton"), "{e}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(create("_").await, crate::CreateActorResult::Created);
 }
 
 /// Scenario: Changing a ref's fields.

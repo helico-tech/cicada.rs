@@ -138,11 +138,13 @@ impl<A: SyncApi> Actor for SyncActor<A> {
 
 The address of `Sync { tenant: "acme" }` is `sync/acme`. A key is one name (ADR 0021): serde writes the ref as one
 string — a struct with one string field, as here, or a type that serde writes as a string itself, such as a newtype
-around a `String` — or the ref is a unit struct, a singleton with the key `_`. A field that serde skips does not
-count. A number, a boolean, a character or an enum variant is not a string. A name may hold any text and must not be
-empty: in the address it keeps `A-Z a-z 0-9 . _ ~ -` and `:` and percent-encodes the rest, so `jan@example.com` is
-`users/jan%40example.com` and a key never holds a raw `/`. A `:` separates nothing. A node that hosts a type whose
-ref is not one string does not start, and a send to such a ref fails at the call.
+around a `String` — or the ref is a unit struct or a struct without fields, a singleton with the key `_`. A field that
+serde skips does not count. A number, a boolean, a character or an enum variant is not a string. A ref's one field
+cannot have a serde alias, and a ref cannot use a reader that takes more than one form (`deserialize_any`, `from` an
+untagged enum): the start check counts what the reader declares. A name may hold any text and must not be empty: in the
+address it keeps `A-Z a-z 0-9 . _ ~ -` and `:` and percent-encodes the rest, so `jan@example.com` is
+`users/jan%40example.com` and a key never holds a raw `/`. A `:` separates nothing. A node that hosts a type whose ref
+is not one string does not start, and a send to such a ref fails at the call.
 
 A ref with two parts joins them itself, with a separator its parts cannot hold. It can keep its typed fields and name
 `String` as its serde form, as `BatchItem` in [examples/src/fanout.rs](examples/src/fanout.rs) does:
@@ -1151,6 +1153,8 @@ Decisions, as ADRs in [docs/adr/](docs/adr/):
 | [0016](docs/adr/0016-releases-are-tags.md) | A release is a tag on `main` with one version for the workspace; a release passes all checks first and never moves. |
 | [0017](docs/adr/0017-contracts-ignore-descriptions-and-stores-refuse-foreign-databases.md) | A contract hash leaves out the schemas' descriptions (the published contract keeps them); the SQLite store refuses a database that holds other tables. |
 | [0018](docs/adr/0018-a-smaller-core-layers-and-watches.md) | A smaller core (every actor has state, one-name keys, one turn observer instead of plugins, no public store trait), layers above it (`cicada-app`, `cicada-actors`), JSON Schema checks at the HTTP door, watches and control effects. |
+| [0019](docs/adr/0019-child-actors.md) | Child actors: an actor may have a parent, the actor whose turn created it, and removing the parent removes what it owns. |
+| [0020](docs/adr/0020-the-change-loop.md) | The change loop: one order of changes, each described with the owner one ahead, built and validated in the background, and released when it lands. |
 | [0021](docs/adr/0021-a-key-is-one-name.md) | A key is one name: a ref is written as one string or a unit, a `:` is an ordinary character, contracts hold no key fields, and a database is upgraded in place. |
 
 Design questions and their answers:

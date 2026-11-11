@@ -4,7 +4,9 @@ Described with the owner on 2026-11-11 (change loop, Describe), while `private-s
 decision below is made by the owner unless it says otherwise. Reviewed twice. After the first review the rule of
 decision 1 is stated as serde sees it, decision 4 names the whole effect of its window and rewrites less, and
 decision 6 was added. After the second the shapes of decision 1 are listed, the specs name the schema versions they
-are about, and the upgrade steps say what happens to a ref that changes its shape.
+are about, and the upgrade steps say what happens to a ref that changes its shape. After the build, fix round 1 (the
+owner's decisions) makes a struct without fields a singleton again, keeps the start check with its limits, and
+corrects how the old form of a ref is read.
 
 `private-store-trait` lands first and moves the stores into `cicada`, so "both stores" below means their modules
 there.
@@ -64,13 +66,18 @@ A ref keeps its shape. What counts is what serde does with it:
   string, such as a newtype around one or a `Uuid`;
 - a type that serde writes as a string itself: a newtype around a `String`, or a type that names `String` as its
   serde form;
-- a unit struct, for a singleton with the key `_`.
+- a unit struct, or a struct of which serde writes no field (`struct X {}`), for a singleton with the key `_`, as in
+  0.5.1.
 
 Only a string counts. A number, a boolean, a single character and an enum variant are refused, although the last
 two work as a key field today: they are typed parts of a key, and a caller formats those itself.
 
 The refs of this repository with one `String` field or none do not change. A small reader replaces the serde bridge
 of `params.rs`: it takes the one string out of a ref and puts it back.
+
+The check at start counts what the ref's `Deserialize` declares. So a ref's one field cannot have a serde alias (an
+alias counts as a second field), and a ref cannot use a reader that takes more than one form, such as one that calls
+`deserialize_any` or reads `from` an untagged enum. The owner accepted these limits in fix round 1.
 
 A ref with two parts joins them itself. It can hold one string and build it in a constructor, or keep its typed
 fields and tell serde how to write itself as one string:
@@ -195,11 +202,13 @@ changes, and the spelling of an address is a rule that others must follow).
 - **A ref that changes its shape no longer decodes from what is stored.** Refs travel inside states and messages as
   JSON, such as `reply_to: Order` in the saga example. A ref that goes from two fields to one, or from a number to a
   string, is written differently, so a state or a pending message from before fails to decode and its turn ends
-  `failed`. → The Migration Plan says so: let such actors finish and drain their mailboxes before the upgrade, or
-  give the ref a reader that accepts the old form too. A ref that keeps its one string field, as Chorus's does, is
-  not touched.
-- **A listing prefix that holds `%3A` stops matching**, because the stored spelling is `:` now. → The upgrade note
-  says to write `:`.
+  `failed`. → The Migration Plan says so. The plain way is to let such actors finish and drain their mailboxes with
+  the old version. Where that is not possible, the old form is read where the ref is held: `deserialize_with` on the
+  field of the state or the message that holds the ref, not on the ref itself, whose reader takes one form only. A
+  ref that keeps its one string field, as Chorus's does, is not touched.
+- **A listing prefix that holds the encoded colon itself stops matching**, because the stored spelling is `:` now:
+  `x%3A` given to `ActorSystem::list_actors` in code, or `%253A` in a URL. Over HTTP a query value is URL-decoded
+  first, so `?prefix=x%3A` arrives as `x:` and still matches. → The upgrade note says so and says to write `:`.
 - **A host joins two parts in a way that is not unique**, such as a tenant and an id with a separator that a tenant
   name may hold. → That is the host's choice now; the README says to pick a separator the parts cannot hold.
 - **A ref that is not one string compiles**, and fails when its node starts or at the first send. → The message
@@ -213,13 +222,19 @@ changes, and the spelling of an address is a rule that others must follow).
 
 For a host (Chorus, Karakuri):
 
-1. A ref with two or more fields gets one string and joins its parts itself. To keep reaching the actors that
-   exist, join with `:` in the old order of the fields. A field that is not a string becomes one. Such a ref is then
-   written differently inside states and messages: let its actors finish and drain their mailboxes with the old
-   version, or give the ref a reader that also accepts the old form.
+1. A ref with two or more fields gets one string and joins its parts itself. To keep reaching the actors that exist,
+   join with `:` in the old order of the fields. A field that is not a string becomes one. Such a ref is then written
+   differently inside states and messages. The plain way is to let its actors finish and drain their mailboxes with the
+   old version. Where that is not possible, read the old form where the ref is held: `deserialize_with` on the field of
+   the state or the message that holds the ref, not on the ref itself. A ref's one field cannot have a serde alias, and
+   a ref cannot use a reader that takes more than one form (`deserialize_any`, `from` an untagged enum): the start check
+   counts what the reader declares.
 2. Replace `ActorAddress::of(type, values)` with the form that takes one name, and `key_values()` with `name()`.
    Drop `to_params`, `from_params`, `RefBinding::key_fields`, the key argument of `Contract::new`,
    `Contract::key_fields`, `Contract::params_of`, `TypeView.key`, `ActorView.params` and `ActorSnapshot.params`.
+   Then check the refs before the database is migrated: a ref that is not one string stops a node at start, which is
+   after its store has migrated the database. Run the tests (a test on `TestActors` hosts the types and runs the same
+   check), or start a node on a new database.
 3. Upgrade every user of `cicada-client` together with the nodes.
 4. Stop every node of the old version.
 5. Start the new version, the nodes that host a type before the nodes whose turns create actors of it, and nodes

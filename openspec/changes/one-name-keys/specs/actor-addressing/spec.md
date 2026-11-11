@@ -65,8 +65,8 @@ registration of a name with a different contract SHALL conflict.
 ### Requirement: A ref is written as one string or as a unit
 
 A ref SHALL be a type that serde writes as one string or as a unit: a struct of which serde writes one field, whose
-value is a string; a type that serde writes as a string itself; or a unit struct. A field that serde skips SHALL NOT
-count.
+value is a string; a type that serde writes as a string itself; a unit struct; or a struct without fields. A field
+that serde skips SHALL NOT count. A unit struct and a struct without fields SHALL be a singleton with the key `_`.
 
 #### Scenario: A field that serde skips
 
@@ -83,6 +83,12 @@ count.
 
 - **WHEN** a ref is a newtype around the `String` `acme`, for the type `sync`
 - **THEN** its address is `sync/acme`
+
+#### Scenario: A struct without fields
+
+- **WHEN** a ref of type `braces` is a struct with braces and no fields
+- **THEN** its address is `braces/_`, a node that hosts the type starts, and an address of the type with another key
+  is refused
 
 #### Scenario: A ref with typed parts that writes itself as a string
 

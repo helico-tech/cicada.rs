@@ -143,12 +143,15 @@ changelog of 0.4.0 lists the steps, including the code changes.
 contract hash changes. Its migration 3 removes every registration and rewrites `%3A` to `:` in the address columns:
 a `:` is an ordinary character of a name now, so `account/acme:7` is the address of the name `acme:7`. Before the
 upgrade, find the old keys of two fields that become one name with the query in the changelog of 0.6.0 and delete one
-actor of each pair with the old version; otherwise the migration fails and the database stays at version 2. Stop every
+actor of each pair with the old version; otherwise the migration fails and the database stays at version 2: on
+SQLite the store does not open, and on PostgreSQL it reports the store unavailable, so a node that retries an
+unavailable store keeps retrying. Stop every
 node of the old version, then start the new ones: the nodes that host a type before the nodes whose turns create
 actors of it, and nodes that only send last. Until a node that hosts a type starts, that type is not registered, with
 the effects described for 0.4.0 above; where two kinds of nodes create actors of each other's types, hold back the
 messages that start such turns until every node is up. Upgrade `ActorClient` users together with the nodes: an old
-client cannot decode the views of a new node. A listing prefix that held `%3A` is written with `:`. The changelog of
+client cannot decode the views of a new node. A prefix that holds the encoded colon itself (`x%3A` in code,
+`%253A` in a URL) is written with `:`. The changelog of
 0.6.0 lists the steps, including the code changes and what happens to a ref that changes its shape.
 
 **Order of a rolling deploy.** For an additive migration: the first node of the new version migrates the database;

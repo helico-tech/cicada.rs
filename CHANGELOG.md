@@ -16,19 +16,25 @@ additive. Nodes of 0.5.x and 0.6.0 must not share a database.
 
 ### Upgrading
 
-1. A ref with two or more fields gets one string and joins its parts itself, with a separator its parts cannot hold.
-   To keep reaching the actors that exist, join with `:` in the old order of the fields: the address
-   `account/acme:7` of the old ref `{tenant: "acme", id: 7}` is the address of the name `acme:7`. A field that is not
-   a string (a number, a boolean, a character, an enum variant) becomes one. A ref can also keep its typed fields and
-   name `String` as its serde form (`#[serde(into = "String", try_from = "String")]`; README, Define an actor type).
-   Such a ref is written differently inside states and messages, where refs travel as JSON (such as `reply_to: Order`
-   in the saga example), so a state or a pending message from before no longer decodes and its turn ends `failed`:
-   let its actors finish and drain their mailboxes with the old version, or give the ref a reader that also accepts
-   the old form. A ref that keeps its one string field is not touched.
+1. A ref with two or more fields gets one string and joins its parts itself, with a separator its parts cannot hold. To
+   keep reaching the actors that exist, join with `:` in the old order of the fields: the address `account/acme:7` of
+   the old ref `{tenant: "acme", id: 7}` is the address of the name `acme:7`. A field that is not a string (a number, a
+   boolean, a character, an enum variant) becomes one. A ref can also keep its typed fields and name `String` as its
+   serde form (`#[serde(into = "String", try_from = "String")]`; README, Define an actor type). Such a ref is written
+   differently inside states and messages, where refs travel as JSON (such as `reply_to: Order` in the saga example), so
+   a state or a pending message from before no longer decodes and its turn ends `failed`. The plain way is to let its
+   actors finish and drain their mailboxes with the old version. Where that is not possible, read the old form where the
+   ref is held: `deserialize_with` on the field of the state or the message that holds the ref, not on the ref itself. A
+   ref's one field cannot have a serde alias, and a ref cannot use a reader that takes more than one form
+   (`deserialize_any`, `from` an untagged enum): the start check counts what the reader declares. A ref that keeps its
+   one string field is not touched.
 2. In the code, replace `ActorAddress::of(type, values)` with `ActorAddress::of(type, name)`, which takes one name,
    and `key_values()` with `name()`. Drop `to_params`, `from_params`, `RefBinding::key_fields`, the key argument of
    `Contract::new`, `Contract::key_fields`, `Contract::params_of`, `TypeView.key`, `ActorView.params` and
    `ActorSnapshot.params`. Contract snapshot files of an earlier version keep passing: a `key` entry is ignored.
+   Then check every ref before the database is migrated: a ref that is not one string stops a node at start, which
+   is after its store has migrated the database. Run the tests (a test on `TestActors` hosts the types and runs the
+   same check), or start a node on a new database.
 3. Upgrade every user of `cicada-client` together with the nodes: a client of 0.5.x cannot decode the view of an actor
    or a type from a node of 0.6.0, because its types require `params` and `key`.
 4. With the old version, find the keys of two fields that become one name, such as (`a:b`, `c`) and (`a`, `b:c`),
@@ -41,7 +47,10 @@ additive. Nodes of 0.5.x and 0.6.0 must not share a database.
 
    Delete one actor of each pair with the old version (`DELETE /actors/{type}/{key}`); an actor cannot be renamed.
    Otherwise the migration fails on the primary key of `actors` with the database's own error, and the database stays
-   at version 2. Outcomes are not checked: those of two actors deleted before merge under one address.
+   at version 2. Both stores report it as unavailable (`StoreError::Unavailable`). On SQLite the open fails and the
+   node does not start; the sample node exits. On PostgreSQL a node that retries an unavailable store keeps retrying:
+   the sample node logs "PostgreSQL unavailable" every second until its start timeout of 60 s. Outcomes are not
+   checked: those of two actors deleted before merge under one address.
 5. Stop every node of the old version: a node of 0.5.x does not open a database of version 3, and a running one
    refuses the contracts that the new nodes register.
 6. Start the new version: the nodes that host a type before the nodes whose turns create actors of it, and nodes that
@@ -56,19 +65,22 @@ additive. Nodes of 0.5.x and 0.6.0 must not share a database.
 Or start on a new database; then steps 1 to 3 are left. There is no way back: 0.5.x does not open a migrated
 database.
 
-A listing prefix (`GET /actors?prefix=`, `/messages`, `/outcomes`, `/turns`, `/stats`) that holds `%3A` stops
-matching, because the stored spelling of a colon is `:` now: write `:`.
+A listing prefix that holds the encoded colon itself stops matching, because the stored spelling of a colon is `:`
+now: `x%3A` given to `ActorSystem::list_actors` (or another listing) in code, or `%253A` in a URL. Over HTTP a query
+value is URL-decoded first, so `?prefix=x%3A` arrives as `x:` and still matches. Write `:`.
 
 ### Changed (breaking)
 
-- A ref holds one name. What counts is what serde does with it: a struct of which serde writes one field, whose value
-  is a string (a `String`, a newtype around one, a `Uuid`; a field that serde skips does not count, so a
-  `PhantomData` with `#[serde(skip)]` is fine); a type that serde writes as a string itself (a newtype around a
-  `String`, or one that names `String` as its serde form); or a unit struct, a singleton with the key `_`, as before.
-  Only a string counts: a number, a boolean, a single character and an enum variant are refused, although the last
-  two worked as a key field before. A node that hosts a type whose ref is not one string does not start, and the error
-  names the ref and what its `Deserialize` asks for. `ActorRef::address` fails for a ref that serde does not write as
-  one string, so a send to it or a create of it fails at the call (`TurnError::Invalid`) and the turn can go on.
+- A ref holds one name. What counts is what serde does with it: a struct of which serde writes one field, whose value is
+  a string (a `String`, a newtype around one, a `Uuid`; a field that serde skips does not count, so a `PhantomData` with
+  `#[serde(skip)]` is fine); a type that serde writes as a string itself (a newtype around a `String`, or one that names
+  `String` as its serde form); or a unit struct or a struct without fields, a singleton with the key `_`, as before.
+  Only a string counts: a number, a boolean, a single character and an enum variant are refused, although the last two
+  worked as a key field before. A ref's one field cannot have a serde alias, and a ref cannot use a reader that takes
+  more than one form (`deserialize_any`, `from` an untagged enum): the start check counts what the reader declares. A
+  node that hosts a type whose ref is not one string does not start, and the error names the ref and what its
+  `Deserialize` asks for. `ActorRef::address` fails for a ref that serde does not write as one string, so a send to it
+  or a create of it fails at the call (`TurnError::Invalid`) and the turn can go on.
 - A name may hold any text and must not be empty. In an address it is percent-encoded as before, except that `:` is
   now written as it is: `percent::encode` keeps `A-Z a-z 0-9 . _ ~ -` and `:`. A `:` separates nothing, so an old
   address such as `account/acme:7` stays valid as the one name `acme:7`, and `ActorAddress::parse` reads `a%3Ab` as
