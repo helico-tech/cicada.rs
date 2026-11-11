@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.8.0 — unreleased
+## 0.8.0 — 2026-11-11
 
 A breaking release: child actors (ADR 0019). An actor may have a parent, the actor whose turn created it with
 `turn.create_child`, and deleting or stopping an actor removes every descendant with it. The guarantee S2 changes, the
