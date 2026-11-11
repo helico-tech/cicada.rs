@@ -131,7 +131,7 @@ registration until the type is registered again. Change a type in one of two way
 
 ## Upgrading
 
-Stores write schema version 3 and apply any missing migrations in place when they open a database. Migrations are
+Stores write schema version 4 and apply any missing migrations in place when they open a database. Migrations are
 additive, so nodes of the previous version keep working during a rolling deploy, unless a release says otherwise: a
 migration that is not additive breaks the nodes of the previous version, so every old node is stopped before the first
 new one starts. The changelog says so for each such release.
@@ -160,6 +160,19 @@ messages that start such turns until every node is up. Upgrade `ActorClient` use
 client cannot decode the views of a new node. A prefix that holds the encoded colon itself (`x%3A` in code,
 `%253A` in a URL) is written with `:`. The changelog of
 0.6.0 lists the steps, including the code changes and what happens to a ref that changes its shape.
+
+**Version 0.8.0 is such a release.** An actor may have a parent (ADR 0019), and a delete or a stop removes the actor's
+descendants with it. Its migration 4 adds the column `actors.parent` and an index on it; every existing actor is
+independent. A node of 0.7.0 that opens the migrated database refuses it, but one that is still running does not
+notice: its deletes and stops remove one row and leave the children behind, as orphans that never go away. So stop
+every node of the old version, then start the new ones. Upgrade `ActorClient` users together with the nodes: the
+view of an actor has the field `parent`.
+
+**Switching a type to `create_child`.** An actor created with `turn.create` stays independent: a later `create_child`
+of it by its creator does not adopt it, but fails the creator's message (the commit is rejected, and a handler cannot
+test for that). So switch a parent type from `create` to `create_child` only when no parent of it is left that created
+actors the old way: start its data anew, or let those parents finish first. New parents can use `create_child` from
+the start.
 
 **Order of a rolling deploy.** For an additive migration: the first node of the new version migrates the database;
 from then on a node of the old version refuses to start (it does not open a schema newer than its own), while old nodes
@@ -205,7 +218,20 @@ When the next change lands, add a section `## X.Y.Z — unreleased` to the chang
   lost or released lease counts.
 - **Stuck instances.** An instance whose state no longer decodes fails every turn: its messages end `failed` one by
   one. Fix the state type (add `#[serde(default)]`), or delete and re-create the instance (`DELETE`, then
-  `PUT /actors/{type}/{key}`; the delete purges its mailbox).
+  `PUT /actors/{type}/{key}`; the delete purges its mailbox and removes its descendants).
+- **What a delete removes.** `DELETE /actors/{type}/{key}` (`cicada delete actor`) removes the actor and every
+  descendant: the actors its turns created with `create_child`, theirs, and so on, in one transaction. Every pending
+  message of them ends `purged`, a turn running on one commits nothing, and the delete counts the purged messages of
+  the whole tree. Actors created with `create` are independent and stay. See what an actor owns first with
+  `GET /actors/{type}/{key}/children` (`cicada get children`, or the `children` tab of an actor in `cicada tui`), one
+  level at a time.
+- **A large tree** is removed in one transaction that writes one `purged` outcome per pending message of every
+  descendant; on SQLite it holds the single writer meanwhile. On PostgreSQL a removal that takes longer than
+  `socket_timeout` (30 s) cannot finish: every delete of the tree answers `503 store-unavailable`, and a `stop()` of
+  its root fails and is handled again and again. There are two ways out: remove the tree from the leaves up, listing
+  each level with `GET /actors/{type}/{key}/children` and deleting the deepest actors first, or raise `socket_timeout`
+  (`PostgresOptions`) for the node that runs the removal. A tree of many thousands of actors with full mailboxes is
+  better removed bottom-up by its own code.
 - **Store down.** Nothing proceeds and HTTP answers 503 `store-unavailable`; `ActorClient` retries sends with the same
   id. Nodes recover on their own when the store returns: the dispatch loop retries claims after `poll_interval`, and
   the PostgreSQL wake-up listener reconnects with a back-off (from 250 ms, doubling up to 30 s),
@@ -248,7 +274,7 @@ PostgreSQL (`PostgresOptions`, feature `postgres`):
 | `schema` | `public` | Created on start when absent. Separate schemas let environments or tests share a database. |
 | `retention` | 7 days | Outcome retention and the dedup window of message ids. |
 | `max_pool_size` | 20 | At least `concurrency + 4`; see [Sizing](#sizing). |
-| `socket_timeout` | 30 s | Longest single transaction attempt; then it fails and its connection is closed, so a dead peer without a TCP reset cannot block a claim, commit or stop. Zero disables it. |
+| `socket_timeout` | 30 s | Longest single transaction attempt; then it fails and its connection is closed, so a dead peer without a TCP reset cannot block a claim, commit or stop. It also bounds the largest tree a delete or a stop can remove ([On call](#on-call)). Zero disables it. |
 
 Connection parameters (`sslmode`, `sslrootcert`, `application_name`, `options`, …) go in the URL of
 `Store::postgres(url, options)`; it is the one way to open the store, and a setting a URL cannot carry is added to

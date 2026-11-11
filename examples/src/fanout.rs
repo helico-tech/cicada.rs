@@ -3,6 +3,9 @@
 //! The parent creates one child per item and sends each its work in the same turn (creates are applied before sends,
 //! so create-then-send works). The children run in parallel — on any node that hosts them — reply with their result
 //! and stop. The parent counts the replies in its state, keyed by child index so a duplicate reply counts once.
+//!
+//! The items are created with `create_child`, so the batch is their parent: deleting or stopping the batch removes the
+//! items that have not reported yet, with their mailboxes, in the same transaction (ADR 0019).
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -72,7 +75,7 @@ impl BatchState {
     }
 }
 
-/// One item of a [`Batch`]; lives only until it reported its result.
+/// One item of a [`Batch`], a child of it; lives only until it reported its result, or until its batch is removed.
 ///
 /// A key is one name, so this ref keeps its two typed parts and names `String` as its serde form: the item `7` of the
 /// batch `b1` is written as `b1.7` and has the address `batch-items/b1.7`. The index comes after the last `.`, so a
@@ -144,7 +147,7 @@ impl Actor for BatchActor {
                 let batch = turn.self_ref().id.clone();
                 for (index, input) in (0..).zip(&items) {
                     let child = BatchItem { batch: batch.clone(), index };
-                    turn.create(&child, &BatchItemState { input: input.clone() })?;
+                    turn.create_child(&child, &BatchItemState { input: input.clone() })?;
                     turn.send(&child, BatchItemMsg::ProcessItem)?;
                 }
                 let state = turn.state_mut();

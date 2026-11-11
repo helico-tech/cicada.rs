@@ -7,6 +7,55 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.8.0 — unreleased
+
+A breaking release: child actors (ADR 0019). An actor may have a parent, the actor whose turn created it with
+`turn.create_child`, and deleting or stopping an actor removes every descendant with it. The guarantee S2 changes, the
+store schema goes to version 4 with a migration that is not additive, and the public types of an actor gain a field.
+Nodes of 0.7.0 and 0.8.0 must not share a database.
+
+### Upgrading
+
+1. Stop every node of 0.7.0, then start the nodes of 0.8.0; the first one migrates the store to schema version 4. A
+   node of 0.7.0 that opens the migrated database refuses it, but one that is still running does not notice: it deletes
+   or stops a parent without its children, which then stay behind for good. Rolling back the code needs a database from
+   before the migration, as for every schema version.
+2. Use `turn.create_child` where an actor should go with its creator; `turn.create` keeps creating an independent
+   actor, so nothing changes for code that does not ask for it. Switch an existing type to `create_child` for new
+   parents only: an actor created with `create` stays independent, and a parent that creates it again with
+   `create_child` fails its message (the commit is rejected). Start its data anew, or let the parents that created
+   actors the old way finish first (operations guide, Upgrading).
+3. Code that builds `ActorRecord`, `ActorSnapshot` or `ActorView` by hand adds the field `parent` (`None` for an
+   independent actor). Nothing else needs a code change: `create`, `delete_actor` and `stop` compile unchanged.
+4. Upgrade `ActorClient` users together with the nodes: the view of an actor has `parent`.
+
+### Changed (breaking)
+
+- Deleting an actor (`ActorSystem::delete_actor`, `DELETE /actors/{type}/{key}`, `cicada delete actor`) or stopping it
+  (`turn.stop()`) also removes every descendant (its children, theirs, and so on) in the same transaction. Their
+  pending messages end `purged`, a turn running on one of them commits nothing, and `DeleteResult::Deleted.purged`
+  counts the messages of the whole tree. S2 says so: `delete`, and a commit that stops, remove the instance, its
+  descendants and their mailboxes together. Actors created with `create` are independent and are not affected.
+- The view of an actor names its parent: `ActorRecord`, `ActorSnapshot` and `ActorView` gain the field `parent`, an
+  address or `None`; over HTTP `parent` is always written, `null` for an independent actor.
+- An appended migration (version 4) adds the nullable column `actors.parent` and the index `actors_parent (parent,
+  address)`, in both stores; every existing actor is independent. A node of 0.7.0 refuses the migrated database, and
+  one that keeps running would delete a parent without its children, so every old node is stopped first.
+
+### Added
+
+- `Turn::create_child(&ref, &state)` creates an actor whose parent is the actor that runs the turn, with the arguments
+  and checks of `Turn::create`. A child of the same parent that exists already is left untouched; an actor that exists
+  with another parent or with none is never taken over: the commit is rejected and the message ends `failed` with a
+  reason that names the actor. A turn that creates one address both ways gets `TurnError::Invalid` at the second call.
+- `GET /actors/{type}/{key}/children?cursor=&limit=` (on both routers), `ActorSystem::list_children`,
+  `ActorClient::children` and `cicada get children ADDR` list the direct children of an actor in address order, paged;
+  an unknown actor is a `404 no-such-instance`. `cicada get actor -o wide` shows the column `PARENT`.
+- The terminal UI shows the parent of an actor (or none), lists its direct children in a tab `children`, opens a child
+  with Enter and the parent with `P`; its question before a delete says that the descendants go too.
+- The `fanout` example creates its items with `create_child`, so deleting a batch removes the items that have not
+  reported yet.
+
 ## 0.7.0 — 2026-11-11
 
 A breaking release of the API: the core is tidied (ADR 0018, its fourth step; ADR 0022). An actor definition says its

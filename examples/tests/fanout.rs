@@ -4,6 +4,8 @@ mod common;
 
 use std::collections::BTreeMap;
 
+use cicada::ActorRef;
+use cicada::store::{DeleteResult, OutcomeStatus};
 use cicada_examples::fanout::{
     Batch, BatchActor, BatchItem, BatchItemActor, BatchMsg, BatchState, BatchStatus, ItemProcessor,
 };
@@ -20,6 +22,10 @@ impl ItemProcessor for Length {
 
 fn batch() -> Batch {
     Batch { id: "b-1".into() }
+}
+
+fn item(index: i32) -> BatchItem {
+    BatchItem { batch: "b-1".into(), index }
 }
 
 fn start(items: &[&str]) -> BatchMsg {
@@ -67,6 +73,24 @@ async fn while_running_the_children_are_instances_of_their_own() {
     assert_eq!(batch_state(&test, &batch()).await.status, BatchStatus::Running);
     test.run_until_idle().await;
     assert_eq!(batch_state(&test, &batch()).await.status, BatchStatus::Completed);
+}
+
+#[tokio::test(start_paused = true)]
+async fn deleting_a_batch_removes_its_items_and_purges_their_work() {
+    let test = harness().await;
+    test.create(&batch(), &BatchState::default()).await;
+    test.send(&batch(), start(&["x", "y"])).await;
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1); // only the parent's turn
+    let address = batch().address().unwrap();
+    let children = test.system().list_children(&address, None, 10).await.unwrap().expect("the batch exists").items;
+    assert_eq!(children, [item(0).address().unwrap(), item(1).address().unwrap()]);
+    let work = test.pending(&item(0)).await.remove(0);
+
+    let deleted = test.system().delete_actor(&address).await.unwrap();
+    assert_eq!(deleted, DeleteResult::Deleted { purged: 2 }, "the work of both items");
+    assert!(common::list(&test, "batch-items/").await.is_empty(), "the items are gone with their batch");
+    assert_eq!(test.outcome(&work).await.map(|o| o.status), Some(OutcomeStatus::Purged));
+    assert_eq!(test.run_until_idle().await, 0, "nothing is left to run");
 }
 
 #[tokio::test(start_paused = true)]

@@ -70,15 +70,15 @@ starts; build from the design.
 
 ## 4. Example and docs
 
-- [ ] 4.1 The `fanout` example creates its items with `create_child`. Verify: a test that deleting a batch removes
+- [x] 4.1 The `fanout` example creates its items with `create_child`. Verify: a test that deleting a batch removes
       its items.
-- [ ] 4.2 `docs/architecture.md` (the term *parent* in the domain language, S2, what a turn's create and stop do,
+- [x] 4.2 `docs/architecture.md` (the term *parent* in the domain language, S2, what a turn's create and stop do,
       the schema), `README.md` (the turn API, the routes, the command line, the terminal UI) and `docs/operations.md`: what a delete
       removes; a large tree, the limit of `socket_timeout` on PostgreSQL and the two ways out [Risks]; "Version
       0.8.0 is such a release", with every old node stopped first and why [5]; when a host may switch a type to
       `create_child` [8]. Verify: `cargo test -p cicada-examples --doc` passes, and every risk of `design.md` that
       names the docs is in them.
-- [ ] 4.3 `CHANGELOG.md`, a section `0.8.0 — unreleased`, and the version `0.8.0` in `Cargo.toml`: the section
+- [x] 4.3 `CHANGELOG.md`, a section `0.8.0 — unreleased`, and the version `0.8.0` in `Cargo.toml`: the section
       starts with the upgrade steps (stop every old node, then start the new ones; switch a type to `create_child`
       for new parents only), then the breaking changes of the proposal. Verify: every step of the Migration Plan of
       `design.md` and every **BREAKING** line of the proposal is in the section.

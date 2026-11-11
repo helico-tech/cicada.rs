@@ -198,7 +198,8 @@ Inside a handler, `turn` offers:
 - `send_to(&address, &msg, options).await` and `send_raw(&address, type, payload, options).await` for raw addresses
   such as `message().from`; the type name is checked against the type registry when called;
 - `cancel(&id)` (a pending message of this instance gets `cancelled` at commit; keep the id a send returns to replace
-  a scheduled message), `create(&ref, &initial_state)` (applied before the turn's sends), `stop()`, and
+  a scheduled message), `create(&ref, &initial_state)` and `create_child(&ref, &initial_state)` (applied before the
+  turn's sends; see [Child actors](#child-actors)), `stop()` (removes this instance and its descendants at commit), and
   `fail(reason)`, used as `return Err(turn.fail("declined"))` (ends the message `failed` now, never retried).
 
 Effects are buffered and committed atomically. A handler that returns `Err` (any error converts with `?`) or panics
@@ -217,6 +218,36 @@ turn that ends with such a state ends its message `failed`, without a retry, and
 **Blocking code.** Handlers run as futures on the tokio runtime. The turn timeout, a lost lease and a node stop cancel
 a handler at its next `.await`; code that does not yield (blocking I/O, `std::thread::sleep`, heavy computation) runs
 on until it returns and holds a runtime worker thread meanwhile. Run it with `tokio::task::spawn_blocking`.
+
+### Child actors
+
+An actor may have a **parent** (ADR 0019). `turn.create_child(&ref, &state)` creates an actor whose parent is the
+actor that runs the turn; `turn.create` and every create from outside a turn (`ActorSystem::create`, `PUT`) create an
+independent one. The parent is stored with the child and never changes, and the address stays `type/key`. Deleting an
+actor (`delete_actor`, `DELETE /actors/{type}/{key}`) or stopping it (`turn.stop()`) removes it and every descendant
+(its children, theirs, and so on) in one transaction: their pending messages end `purged`, and a turn running on one
+commits nothing. Pause, resume and purge apply to one actor only.
+
+A child create of a child of the same parent that exists already leaves it untouched, as every create does. It never
+takes over an actor: one that exists as an independent actor or as a child of another one makes the commit fail, and
+the turn's message ends `failed`, as for a send to an absent actor. A turn that creates one address both ways gets
+`TurnError::Invalid` at the second call. The `fanout` example creates its items as children, so deleting a batch
+removes the items that have not reported yet.
+
+```rust
+# use cicada::prelude::*;
+# use cicada_examples::fanout::{BatchActor, BatchItem, BatchItemState};
+# fn start(turn: &mut Turn<BatchActor>) -> HandlerResult {
+let item = BatchItem { batch: turn.self_ref().id.clone(), index: 0 };
+turn.create_child(&item, &BatchItemState { input: "x".into() })?; // removed with this batch
+# Ok(())
+# }
+```
+
+`ActorSystem::get_actor` and `GET /actors/{type}/{key}` name the parent (`parent`, null for an independent actor);
+`ActorSystem::list_children`, `ActorClient::children`, `GET /actors/{type}/{key}/children` and `cicada get children`
+list the direct children in address order, one level at a time. A large tree is one large transaction; see the
+operations guide, On call.
 
 ### Run it in an axum service
 
@@ -378,8 +409,9 @@ request's path and query as `instance`.
 | Endpoint | Success | Errors |
 | --- | --- | --- |
 | `PUT /actors/{type}/{key}` body `{state}` — create; `state` is required (`{}` for `NoState`) | 201 created; 200 already exists (untouched) | 400 no body or no `state`; 404 no such type; 422 a `null` state, or a state that cannot be decoded or a name the ref does not accept (hosting node) |
-| `GET /actors/{type}/{key}` — address, type, state, version, createdAt, paused | 200 | 404 |
-| `DELETE /actors/{type}/{key}` — admin delete, purges the mailbox | 204 | 404 |
+| `GET /actors/{type}/{key}` — address, type, state, version, createdAt, paused, parent (null for an independent actor) | 200 | 404 |
+| `DELETE /actors/{type}/{key}` — admin delete of the actor and every descendant, purges their mailboxes | 204 | 404 |
+| `GET /actors/{type}/{key}/children?cursor=&limit=` — the direct children's addresses, in address order, paged | 200 | 404 |
 | `GET /actors?prefix=&cursor=&limit=` — instance addresses, paged | 200 | |
 | `POST /actors/{type}/{key}/messages` body `{id?, type, payload?, deliverAt? \| delay?, correlationId?, headers?, retry?, retention?}` — send | 202 `{id, deliverAt}`; 200 that id was already accepted (same target and type) | 400 invalid `retry` or `retention` policy; 404 `no-such-type` when no registered type matches the target, also when the actor exists; 404 `no-such-instance` when its type is registered and the actor does not exist; 409 id already used for another target or type; 422 unknown message type, undecodable payload (hosting node only) |
 | `GET /actors/{type}/{key}/mailbox?cursor=&limit=` — pending mailbox in delivery order, each with `attempt`, `failures`, `lastError`, `retry` and `state` (`running` or `pending`) | 200 | 404 |
@@ -469,6 +501,7 @@ holds tokens.
 ```sh
 cicada get actors --prefix account/                                  # one page of --limit (100); --all reads every page
 cicada get actor account/acme:7 -o json                              # the API's view; -o yaml, -o wide, or a table
+cicada get children batches/b1                                       # the direct children, one row each
 cicada send account/acme:7 --type Deposit --payload '{"amount":5}'   # prints the message id
 cicada get outcomes --status failed --since 2026-11-10T00:00:00Z
 cicada retry messages --prefix account/ --type Deposit               # bulk: --id ID (repeatable) or a filter
@@ -477,9 +510,9 @@ cicada retry messages --prefix account/ --type Deposit               # bulk: --i
 | Command | What |
 | --- | --- |
 | `get actors\|messages\|outcomes\|turns [--prefix P]`, `get nodes\|types` | Listings; also `outcomes --status S --since T` and `turns --node N` |
-| `get actor\|mailbox\|turn ADDR`, `get message\|caused ID`, `get node ID`, `get type NAME` | One item; a mailbox; the running turn; what a message caused |
+| `get actor\|children\|mailbox\|turn ADDR`, `get message\|caused ID`, `get node ID`, `get type NAME` | One item (`-o wide` shows an actor's `PARENT`); an actor's direct children; a mailbox; the running turn; what a message caused |
 | `describe actor\|message\|node\|type X` | One item in full, as YAML unless `-o json` |
-| `create actor ADDR --state JSON`, `delete actor ADDR`, `delete type NAME` | Create (`--state '{}'` for `NoState`) or delete an actor; remove a type's registration |
+| `create actor ADDR --state JSON`, `delete actor ADDR`, `delete type NAME` | Create (`--state '{}'` for `NoState`) or delete an actor with its descendants; remove a type's registration |
 | `send ADDR --type T [--payload JSON] [--id ID] [--delay PT5S \| --at INSTANT] [--correlation-id C] [--header K=V]` | Send a message |
 | `cancel message ID`, `cancel turn ADDR`, `retry message ID`, `deliver-now ID` | One message; stop a running turn |
 | `cancel messages`, `retry messages`, with `--id ID…` or `--prefix P [--type T]` | Bulk, at most 1000 per call |
@@ -502,16 +535,18 @@ Requests run beside the screen, so a slow node never freezes it. Status words ar
 | `enter`, `esc`, `q` | Open the selected row; clear the filter or go back; `q` on the first screen and `ctrl-c` quit |
 | `j` `k` `↑` `↓`, `g` `G`, `pgup` `pgdn` | Move |
 | `/`, `<` `>`, `s`, `w` | Filter rows as you type; sort column; sort order; wide columns |
-| `tab` | The next tab of an overview (an actor's mailbox and outcomes) |
+| `tab` | The next tab of an overview (an actor's mailbox, outcomes and children) |
 | `d` | Describe: the item as YAML; `t` switches to JSON, `w` wraps |
-| `m`, `a`, `b` | An actor's mailbox; a message's actor; its cause |
+| `m`, `a`, `b`, `P` | An actor's mailbox; a message's actor; its cause; an actor's parent |
 | `c`, `r`, `n` | Cancel, retry, deliver now a message |
 | `p`, `u`, `x` | Pause, resume, purge an actor's mailbox |
 | `ctrl-k`, `ctrl-d` | Stop the running turn; delete an actor or remove a type |
 | `ctrl-r`, `?` | Refresh now; help |
 
-An action applies to the selected row, else to the item the screen shows, and runs only after a confirmation whose
-default is No (`y` confirms). The mouse wheel moves, a click selects a row, a click on the selected row opens it and a
+The screen of an actor shows its parent (or none) and lists its direct children in the tab `children`: Enter on a
+child opens the child's screen, `P` the parent's and Esc goes back, so the tree is walked one level per screen. An
+action applies to the selected row, else to the item the screen shows, and runs only after a confirmation whose
+default is No (`y` confirms); the question before a delete says that the descendants go too. The mouse wheel moves, a click selects a row, a click on the selected row opens it and a
 click on a column header sorts by it. Sending messages and bulk actions are CLI only.
 
 ## Testing with `TestActors`

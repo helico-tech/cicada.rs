@@ -30,11 +30,12 @@ state plus a mailbox; it occupies memory only while one message is being handled
 | Actor type | A definition: a ref type with its type name and its message family, a state type, and a handler that takes the messages of that family. In Rust: an implementation of the `Actor` trait. A type that keeps no data has the state `NoState`, stored as `{}`. A message the type cannot decode fails; there is no policy for it (ADR 0018). |
 | Contract | The published description of a type: type name, message type names, and the JSON Schemas generated from its types, the state's always among them. It holds nothing of the ref (ADR 0021). Its hash leaves out the schemas' `description`s (doc comments), so a reworded comment keeps the hash (ADR 0017). |
 | Actor instance | One name of a type, explicitly created with its initial state. Owns one state value, never absent and never JSON `null`, and one mailbox (ADR 0018). |
+| Parent | The actor whose turn created an actor as a child (`turn.create_child`). Stored with the child and fixed for life; none for an independent actor (`turn.create`, or a create from outside a turn). Removing an actor, by a delete or by its own stop, removes its children, theirs, and so on: its descendants (ADR 0019). The address stays `type/key`. |
 | Ref | An actor's address: a type name and a key, `type/key`. A typed ref in code (`ActorRef`); its address text (`sync/acme`) on the wire, in state and in messages. The key is one name (ADR 0021): serde writes the ref as one string (a struct with one string field, or a type written as a string itself), or the ref is a unit struct or a struct that declares no field to serde, a singleton with the key `_`; a ref that writes a unit and reads a string has no address. A name is any non-empty text; in the key it keeps `A-Z a-z 0-9 . _ ~ -` and `:` and percent-encodes the rest, so a `:` separates nothing. |
 | Message | A typed envelope addressed to one instance, with a delivery time. |
 | Mailbox | An instance's pending messages, ordered by delivery time. |
 | Turn | One handling of one message: claim, load, run handler, commit. |
-| Effects | What a handler produces: new state, sends, creates, cancels, stop. Buffered until commit. |
+| Effects | What a handler produces: new state, sends, creates (independent or child), cancels, stop. Buffered until commit. |
 | Commit | The single atomic write that applies a turn's effects and completes its message. |
 | Lease | A node's exclusive, time-limited right to run a turn for one instance. |
 | Epoch | Per-instance counter, increased on every claim. The fencing token for commits. |
@@ -66,7 +67,7 @@ store of the tests (feature `testing`). A host opens one as the public type `Sto
 | # | Guarantee |
 | --- | --- |
 | S1 Durability | An acknowledged write survives process and machine crash. |
-| S2 Atomicity | `commit` applies all of its parts or none. `delete` removes instance and mailbox together. |
+| S2 Atomicity | `commit` applies all of its parts or none. `delete`, and a commit that stops, remove the instance, its descendants and their mailboxes together. |
 | S3 Per-instance linearizability | All operations on one instance and its mailbox have a single order. A read after an acknowledged write sees it. |
 | S4 Lease exclusivity | At most one unexpired lease per instance. Each claim issues an epoch greater than any earlier one for that address, also across delete and re-create. |
 | S5 Fencing | `commit` and `renew` succeed only with the current epoch. |
@@ -77,12 +78,15 @@ store of the tests (feature `testing`). A host opens one as the public type `Sto
 | S10 Retention | Outcomes are kept for a configured period, which is also the dedup window. A message's retention policy can hide its outcome earlier or keep it longer; a minimal record stays for the whole dedup window. |
 
 The SQL schema (tables `actor_types`, `actors`, `messages`, `outcomes`, plus sequences) is versioned and migrated
-when a store opens a database; it is at version 3. `actors.state` is required in both stores, so a store refuses an
+when a store opens a database; it is at version 4. `actors.state` is required in both stores, so a store refuses an
 instance without a state. Migration 2 gave every instance without a state the state `{}` and removed the registrations
 without a state schema (types that were stateless before ADR 0018). Migration 3 removed every registration, because
 key fields left every contract, and rewrote `%3A` to `:` in `actors.address`, `messages.actor_address` and
-`outcomes.actor_address` (ADR 0021); two old addresses that become one stop it. Unlike the others these two are not
-additive. The SQLite
+`outcomes.actor_address` (ADR 0021); two old addresses that become one stop it. Migration 4 added the nullable column
+`actors.parent` and the index `actors_parent (parent, address)` (ADR 0019); every existing actor is independent. It
+has no foreign key: the store removes a tree itself, as every removed mailbox needs its `purged` outcomes. Unlike the
+first, these three are not additive: every node of the previous version is stopped before the first new one starts (a
+node of version 3 that keeps running deletes a parent without its children). The SQLite
 store sets up only a new or empty database: one without a schema version that already holds tables belongs to another
 program, and opening it fails and leaves it as it was (ADR 0017).
 
@@ -96,6 +100,13 @@ program, and opening it fails and leaves it as it was (ADR 0017).
 3. **Run.** The handler runs as a future. Effects are buffered in the `Turn`. The node renews the lease by heartbeat.
 4. **Commit.** One write, fenced by the epoch: outcome (or reschedule), cancels, creates, sends, state, lease release.
 
+A create in a turn is independent (`turn.create`) or makes a child of the actor that runs the turn
+(`turn.create_child`). Either is idempotent and leaves an existing actor untouched, but a child create never takes
+over an actor: one that exists with another parent, or with none, rejects the commit. Creates of one address in one
+turn must agree on being a child; the second call fails (`TurnError::Invalid`). A stop removes the actor and every
+descendant, the children created in the same turn included, and purges their mailboxes, the turn's own sends to them
+included. A turn running on a removed descendant loses its lease and commits nothing.
+
 | Situation | Message outcome | Effects |
 | --- | --- | --- |
 | Handler returns `Ok` | `done` | Applied atomically |
@@ -103,11 +114,11 @@ program, and opening it fails and leaves it as it was (ADR 0017).
 | Handler fails (no retry left, or permanent), or state cannot be decoded | `failed`, error recorded | None |
 | Message cannot be decoded (unknown type name, payload that does not fit) | `failed`, reason recorded, never retried | None |
 | Handler returns, but its new state cannot be encoded or is JSON `null` | `failed`, error recorded, never retried | None |
-| Commit rejected: a send targets an absent instance | `failed`, reason recorded | None |
+| Commit rejected: a send targets an absent instance, or a child create names an actor that exists with another parent or none | `failed`, reason recorded | None |
 | Turn exceeds its maximum duration and is cut off | As a failing handler: retried by the policy, else `failed` (`timeout`) | None |
 | Handler returned, but only after its maximum duration (blocking code) | `failed` (`timeout`), never retried | None |
 | Node dies or loses the lease before commit | None; message stays pending | None |
-| Instance stopped or deleted | `purged` for all still-pending messages | — |
+| Instance stopped or deleted, or an ancestor of it | `purged` for all still-pending messages, including one being handled | — |
 | Admin cancels a pending message | `cancelled` | — |
 | Admin cancels a running turn, before its handler ended | `cancelled` at the owning node's next heartbeat, no retry; the mailbox moves on. A handler stops at its next `.await`; blocking code runs until it returns, and the commit is then `cancelled` rather than done (`on_outcome` sees it, `on_handler_error` does not run). A request after the handler ended is ignored (G6) | None |
 | Admin purges a mailbox | `purged` for every pending message except one being handled | — |
