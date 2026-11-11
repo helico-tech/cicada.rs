@@ -17,6 +17,9 @@ ADR 0018 lists them as tidying.
 - **BREAKING** `Actor::Message` is removed. A handler takes the message type of its ref.
 - **BREAKING** `Unhandled` and `Actor::UNHANDLED` are removed. A message that cannot be decoded ends `failed`.
 - **BREAKING** Constructors that returned `Result<_, String>` return a typed error.
+- The detail of a `422` for a payload that cannot be decoded says its reason once. Today it repeats itself:
+  `Payload of 'Step' cannot be decoded: Payload of 'Step' cannot be decoded: …` (seen on
+  `POST /actors/{type}/{key}/messages`, found while `cli-and-tui` was validated).
 
 The simplest version: no alias and no deprecation period. An actor definition loses two lines.
 

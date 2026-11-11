@@ -17,6 +17,8 @@ without a doc comment is only a warning.
   gone.
 - `missing_docs` becomes an error.
 - The README shrinks to an overview that points into the guides.
+- Every spec in `openspec/specs/` gets a real Purpose. Eleven still hold the placeholder that archiving wrote, so
+  `openspec validate --specs --strict` fails for them. A Purpose is edited in the main spec, not through a delta.
 
 The simplest version: plain Markdown in the repository, checked by `cargo test`.
 
