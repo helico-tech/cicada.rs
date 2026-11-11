@@ -132,7 +132,7 @@ pub struct Send {
 pub struct Commit {
     /// Which claim, counted back from the latest.
     pub claim: usize,
-    /// Added to the claim's epoch, for a stale or a future one.
+    /// Moves the claim's epoch by rank among the epochs handed to its address, for a stale or a future one.
     pub epoch_delta: i64,
     /// Commit for another message than the claimed one; an id below [`IDS`].
     pub wrong_message: Option<usize>,

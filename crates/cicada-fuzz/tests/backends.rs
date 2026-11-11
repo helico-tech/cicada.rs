@@ -130,7 +130,11 @@ async fn tied_pair() -> Pair {
     for store in [&pair.first.store, &pair.second.store] {
         orders.push(lease_epoch(&**store, 0, US).await < lease_epoch(&**store, 1, US).await);
     }
-    assert_ne!(orders[0], orders[1], "the backends hand out the epochs of alpha/0 and alpha/1 in another order");
+    assert_ne!(
+        orders[0], orders[1],
+        "the stores now order the tie of alpha/0 and alpha/1 alike; the architecture leaves that order free, so these \
+         tests need another way to make the backends hand out epochs in two orders"
+    );
     run(&mut pair, &[Op::SetPaused { to: 1, paused: true }, Op::Advance(US), claim_all(Duration::from_secs(30))]).await;
     pair
 }
@@ -185,6 +189,21 @@ async fn after_a_tie_a_release_reaches_the_same_claim_in_both_backends() {
     let mut pair = tied_pair().await;
     assert_eq!(agreed(&mut pair, Op::Release { claim: 2, epoch_delta: 1 }).await, json!("released"));
     assert_eq!(agreed(&mut pair, Op::RunningTurn { to: 0 }).await, Value::Null);
+    finish(pair).await;
+}
+
+#[tokio::test]
+async fn past_the_only_epoch_of_an_address_is_no_lease_and_no_claim() {
+    let mut pair = Pair::memory_and_sqlite().await;
+    for op in [Op::Enqueue(send(0, 0, Due::Now)), claim_all(Duration::from_secs(30))] {
+        agreed(&mut pair, op).await;
+    }
+    // With one claim of alpha/0, -1 and 1 reach numbers never handed to it: they neither hit nor close that claim.
+    for epoch_delta in [-1, 1] {
+        assert_eq!(agreed(&mut pair, Op::Commit(commit(0, epoch_delta))).await, json!("lease-lost"));
+        assert_eq!(agreed(&mut pair, Op::Release { claim: 0, epoch_delta }).await, json!("released"));
+    }
+    assert!(agreed(&mut pair, Op::Commit(commit(0, 0))).await.get("committed").is_some());
     finish(pair).await;
 }
 
