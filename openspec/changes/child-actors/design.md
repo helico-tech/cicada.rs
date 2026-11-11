@@ -145,8 +145,6 @@ Decided by the main session.
 - **The texts that say what a delete does change with it**: the description of the delete route in the OpenAPI
   document, the doc comments of `ActorSystem::delete_actor` and `Turn::stop`, the help of `cicada delete actor`, the
   question the terminal UI asks before a delete, and S2 in `docs/architecture.md`.
-- **The terminal UI shows no tree and no parent** (proposal, Out of scope). It lists an actor's facts by hand, so a
-  parent there would be code without a requirement (first review).
 - **ADR 0019 is accepted and committed.** It names the store trait `Store` in places, as it was called then; the
   trait is `Backend` now. The ADR is not rewritten.
 - **The main session deletes the branch `feat/child-actors` before it starts the builder** (owner, 2026-11-11). The
@@ -176,6 +174,26 @@ a child is its parent, which deletes it and creates it again as a child. The des
 
 Not chosen: a parent address on a create, so that a restart could keep the parent (decision 1: it needs a check
 that the parent exists and, on PostgreSQL, a lock on it).
+
+### 10. The terminal UI shows the parent and the children of an actor
+
+The owner, 2026-11-11, after the change was ready: "Terminal UI should show parent and maybe even a hierarchy if
+possible". Which form, decided by the main session.
+
+The screen of an actor gets a fact `Parent`, with the parent's address or "none", and a third tab `children` next to
+`mailbox` and `outcomes`, with the direct children in address order. Enter on a child opens the child's screen, as
+Enter on a row does everywhere. A key opens the parent's screen, as `a` opens the actor of a message. Esc goes back.
+So a user walks the tree up and down, one level per screen.
+
+| Option | What it adds | What it costs |
+| --- | --- | --- |
+| The parent and a tab of children (chosen) | The tree can be walked with the screens the UI has | One more request per refresh of an actor's screen |
+| The parent only | The way up | No way down |
+| The whole tree on one screen, with folding | The shape at a glance | A new kind of screen, and one request per actor of the tree on every refresh |
+
+The whole tree on one screen is not chosen: the API lists direct children only (listing all descendants in one call
+is out of scope), and the UI refreshes its screen every 2 seconds, so a tree of a thousand actors would be a
+thousand requests each time.
 
 ## Risks / Trade-offs
 

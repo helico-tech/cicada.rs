@@ -164,6 +164,29 @@ show its parent.
 - **WHEN** an operator runs `cicada get children batches/b1`
 - **THEN** the output is one row per child address
 
+### Requirement: The terminal UI shows the parent and the children of an actor
+
+The screen of an actor in `cicada tui` SHALL show the parent of the actor, or that it has none, and SHALL list its
+direct children in a tab of their own, in address order. The user SHALL be able to open the screen of the parent with
+a key, and the screen of a child with Enter on its row; Esc SHALL go back.
+
+#### Scenario: Up to the parent
+
+- **WHEN** the user opens the screen of a child and presses the key for the parent
+- **THEN** the screen of the child names its parent, and the key shows the screen of the parent
+
+#### Scenario: Down to a child
+
+- **WHEN** the user opens the screen of an actor with two children, goes to the tab of children and presses Enter on
+  the second row
+- **THEN** the tab lists both children in address order, and Enter shows the screen of the second child
+
+#### Scenario: An actor on its own
+
+- **WHEN** the user opens the screen of an independent actor without children
+- **THEN** the screen says that it has no parent, the tab of children is empty, and the key for the parent does
+  nothing
+
 ### Requirement: The stores migrate to the parent column
 
 Both SQL stores SHALL add the parent column and its index in an appended migration. Actors that existed before the

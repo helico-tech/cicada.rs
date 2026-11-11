@@ -63,12 +63,17 @@ starts; build from the design.
       terminal UI asks before a delete say that children go too. Verify: a case in `tests/cli.rs` for the scenario
       "Children as a table", one for exit code 1 when the actor does not exist, and the unit test of the columns.
 
+- [ ] 3.3 The terminal UI [10]: the screen of an actor shows the fact `Parent` and a tab `children` after `mailbox`
+      and `outcomes`, filled from `ActorClient::children`; Enter on a child opens its screen; a key that is still
+      free on that screen opens the parent, and the help of the UI names it. Verify: tests with `TestBackend`, like
+      the ones the UI has, for the scenarios "Up to the parent", "Down to a child" and "An actor on its own".
+
 ## 4. Example and docs
 
 - [ ] 4.1 The `fanout` example creates its items with `create_child`. Verify: a test that deleting a batch removes
       its items.
 - [ ] 4.2 `docs/architecture.md` (the term *parent* in the domain language, S2, what a turn's create and stop do,
-      the schema), `README.md` (the turn API, the routes, the command line) and `docs/operations.md`: what a delete
+      the schema), `README.md` (the turn API, the routes, the command line, the terminal UI) and `docs/operations.md`: what a delete
       removes; a large tree, the limit of `socket_timeout` on PostgreSQL and the two ways out [Risks]; "Version
       0.8.0 is such a release", with every old node stopped first and why [5]; when a host may switch a type to
       `create_child` [8]. Verify: `cargo test -p cicada-examples --doc` passes, and every risk of `design.md` that

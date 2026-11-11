@@ -23,6 +23,8 @@ that moment. ADR 0019 decides on a parent link.
 - **BREAKING** An appended migration adds the nullable column `actors.parent` and an index on it, in both stores.
   A node of the previous version that opens the migrated database refuses it. One that is still running would
   delete a parent without its children, so every old node is stopped before the first new one starts.
+- The terminal UI shows the parent of an actor and a tab with its direct children. From there a user opens the
+  parent or a child, and so walks the tree.
 - The `fanout` example creates its items as children.
 
 The simplest version: one nullable column and one rule for delete and stop. Addresses stay `type/key`.
@@ -45,7 +47,8 @@ OpenAPI document is regenerated, as those specs already ask.
 - Setting a parent from outside a turn, changing a parent, or adopting an existing actor.
 - Pause, resume and purge of a whole tree, and bulk actions by parent.
 - Listing all descendants in one call, or only the actors without a parent. A client walks the tree level by level.
-- A tree view in the terminal UI.
+- The whole tree on one screen of the terminal UI. Its actor screen shows one level: the parent and the direct
+  children.
 - A background or batched removal for very large trees.
 
 ## Order
