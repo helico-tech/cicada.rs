@@ -7,6 +7,25 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.3.1 — unreleased
+
+No change to the library crates, the wire format or the store schema: nodes of 0.3.0 and 0.3.1 can share a database.
+
+### Added
+
+- `cicada-cli`, the binary `cicada`: a command line and terminal UI for any node that serves `actor_api()`
+  (`actor_api_read()` for the commands that only read). It talks to the node only over HTTP, through `cicada-client`.
+  - kubectl-style commands, verb first: `get`, `describe`, `create`, `delete`, `send`, `cancel`, `retry`,
+    `deliver-now`, `pause`, `resume`, `purge`, `stats`, `health`. Output as a table, `-o wide`, `-o json` or
+    `-o yaml`; `--all` follows the cursor to the last page. A missing item or an error response is exit code 1.
+  - Named contexts in `~/.config/cicada/config.toml` (or `$XDG_CONFIG_HOME`, or `$CICADA_CONFIG`), each with a server,
+    an optional bearer token and headers; `cicada config get-contexts`, `current-context`, `use-context` and
+    `set-context`. `--server`, `--token` and `--context` win over `CICADA_SERVER`, `CICADA_TOKEN` and
+    `CICADA_CONTEXT`, which win over the file.
+  - `cicada tui`: a k9s-style terminal UI. Actors, pending messages, outcomes, running turns, nodes and types,
+    refreshed every 2 s; overviews of an actor, message, node or type; a live filter, sorting and the mouse; and
+    delete, cancel, retry, deliver-now, pause, resume, purge and stop-turn behind a confirmation.
+
 ## 0.3.0 — 2026-11-09
 
 A breaking release (ADR 0017). Every contract hash changes, so nodes of 0.2.0 and 0.3.0 must not share a database: a
