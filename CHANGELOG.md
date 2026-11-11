@@ -7,6 +7,66 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.5.0 — unreleased
+
+A breaking release: the store trait leaves the public API (ADR 0018, its second step). A host opens one public type,
+`Store`, and the two SQL stores move into `cicada`, each behind a cargo feature. Nothing changes in the database: no
+migration, and nodes of 0.4.0 and 0.5.0 can share one.
+
+### Upgrading
+
+1. `Cargo.toml`: drop `cicada-store-sqlite` or `cicada-store-postgres`, and name the feature on `cicada`:
+   `cicada = { git = "…", tag = "v0.5.0", features = ["sqlite"] }` (or `["postgres"]`, or both). `cicada-test` stays a
+   dev-dependency.
+2. Open the store with `Store::sqlite(path, options)` or `Store::postgres(url, options)` (`cicada::Store`), and pass it
+   to `ActorSystem::builder`. Replace `Arc<dyn Store>` with `Store`, and `PostgresStoreConfig` with `PostgresOptions`
+   (`cicada::store::PostgresOptions`; `SqliteOptions` is `cicada::store::SqliteOptions`).
+3. Replace calls on the store with calls on the system: `store.now()` with `system.now()`, `store.next_due_at(…)` with
+   `system.next_due_at()`, `store.running_turn(…)` and `store.pending(…)` with the methods of the same name.
+   `hash_conflict_reason` is now `cicada::store::hash_conflict_reason`.
+4. Replace `system.store().close()` with `store.close()` on the store the host opened.
+5. In tests: `TestActors` is unchanged. Replace `InMemoryStore::default()`, `with_clock(…)` and `new(…)` with
+   `Store::memory()`, `Store::memory_on(…)` and `Store::memory_with(…)`; read a state with `system.get_actor(…)`
+   instead of `store.get(…)`; replace a `store.claim_due(…)` that plays a crashed node with `claim_and_abandon`.
+
+### Changed (breaking)
+
+- The `Store` trait is private to `cicada` (named `Backend` inside it), and so are the types only a backend needs:
+  `CommitRequest`, `CommitResult`, `Claim`, `ActorCreate`, `StateChange`, `OutgoingMessage`, `NodeRecord`, the results
+  of store-only calls (`CreateResult`, `EnqueueResult`, `RegisterResult`, `RenewResult`), the schema modules of the
+  stores (`schema::VERSION`), `is_listening` and `cicada::store::support`. The compiler enforces it: code outside the
+  core can neither implement a store nor call one.
+- `Store` (`cicada::Store`, also `cicada::store::Store`) is a public type that a host cannot look into: it holds one
+  backend and is cheap to clone, and its clones share the backend. `Store::sqlite(path, options)` (feature `sqlite`)
+  and `Store::postgres(url, options)` (feature `postgres`) open one; `close()` releases it for every clone.
+  `ActorSystem::builder` takes a `Store`.
+- `ActorSystem::store()` is removed. The host closes the store it opened; after `close` every operation fails as
+  unavailable and HTTP answers `503 store-unavailable`.
+- The SQLite and PostgreSQL stores live in `cicada`, behind the features `sqlite` and `postgres`. No feature is on by
+  default: without one the crate builds and opens no store. The crates `cicada-store-sqlite` and
+  `cicada-store-postgres` are removed, and with them the names `SqliteStore` and `PostgresStore`.
+- PostgreSQL is opened from a URL only: `connect_with` and the re-exported sqlx types (`PgConnectOptions`,
+  `PgSslMode`) are removed, so no type of the SQL driver is in the public API. `PostgresStoreConfig` is renamed
+  `PostgresOptions` and keeps its fields.
+- The in-memory store, the test clocks and `TestActors` live in `cicada::testing`, behind the feature `testing`, which
+  `cicada-test` turns on. `cicada-test` exports them under the names they had, so a test on `TestActors` changes no
+  import. The name `InMemoryStore` is removed: `Store::memory()`, `Store::memory_on(clock)` and
+  `Store::memory_with(clock, retention)` open the in-memory store. `TestActors::store()` returns the `Store`.
+- The crates `cicada-store-conformance` and `cicada-fuzz` are removed. The conformance suite, the randomised tests and
+  the runtime tests that need the store trait are test code of `cicada`: `cargo test -p cicada` runs the conformance
+  cases for the in-memory store and SQLite, and for PostgreSQL when `CICADA_PG_URL` is set. A long randomised run is
+  `PROPTEST_CASES=100000 cargo test -p cicada --lib tests::fuzz`.
+
+### Added
+
+- `ActorSystem::now()`, the store's time, and `ActorSystem::next_due_at()`, the earliest time at which a message of a
+  type the node hosts may become claimable (paused actors left out).
+- `claim_and_abandon(store, types, lease, limit)` (`cicada::testing`, exported by `cicada-test`) plays a node that claims
+  a turn and dies: it claims what is due as a node of its own, commits nothing and returns an `AbandonedClaim` per
+  claim, so the message is claimed again when the lease runs out.
+- `cicada::store::hash_conflict_reason`, the one function of the old `store::support` that stays public.
+- A conformance case pins that every operation of a closed store fails as unavailable, on every backend.
+
 ## 0.4.0 — 2026-11-11
 
 A breaking release: every actor has state (ADR 0018, its first step). The store schema goes to version 2 with a

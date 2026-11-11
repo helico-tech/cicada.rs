@@ -23,14 +23,11 @@ summarised [below](#decisions).
 
 | Crate | Contents |
 | --- | --- |
-| `cicada` | Addressing (`ActorAddress`, `ActorRef`, `TypeName`), the definition API (the `Actor` trait), the runtime and dispatch loop (`ActorSystem`) with per-message retry (`RetryPolicy`) and retention (`Retention`), the `Store` trait, plugin hooks, contracts and JSON Schemas, the HTTP wire model (`cicada::api`). No HTTP server. |
-| `cicada-store-sqlite` | `SqliteStore` (sqlx): one file, WAL, one writer. For a single node or a few processes on one host. |
-| `cicada-store-postgres` | `PostgresStore` (sqlx): `FOR UPDATE SKIP LOCKED` claims, `LISTEN/NOTIFY` wake-ups. For many nodes. |
-| `cicada-store-conformance` | The shared suite (S1–S10 and robustness cases) every store must pass, as a macro. |
+| `cicada` | Addressing (`ActorAddress`, `ActorRef`, `TypeName`), the definition API (the `Actor` trait), the runtime and dispatch loop (`ActorSystem`) with per-message retry (`RetryPolicy`) and retention (`Retention`), the store (`Store`), plugin hooks, contracts and JSON Schemas, the HTTP wire model (`cicada::api`). No HTTP server. Each store is a cargo feature, none on by default: `sqlite` (`Store::sqlite`: one file, WAL, one writer; for a single node or a few processes on one host) and `postgres` (`Store::postgres`: `FOR UPDATE SKIP LOCKED` claims, `LISTEN/NOTIFY` wake-ups; for many nodes). The feature `testing` is the test support that `cicada-test` exports. |
 | `cicada-axum` | `actor_api()` (the whole API), `actor_api_read()` (only what reads) and `actor_health()` (a public readiness check) as axum routers. |
 | `cicada-client` | `ActorClient`: typed HTTP client (reqwest) for remote callers, idempotent sends. |
 | `cicada-cli` | The binary `cicada`: kubectl-style commands and a k9s-style terminal UI over the HTTP API; see [Command line and terminal UI](#command-line-and-terminal-ui). |
-| `cicada-test` | `TestActors`, `InMemoryStore`, virtual time, contract snapshots and state samples. |
+| `cicada-test` | `TestActors` on the in-memory store (`Store::memory`), virtual time, `claim_and_abandon` (a node that dies), contract snapshots and state samples. |
 | `cicada-extras` | Building blocks on the public API, no core changes: `CrashLoopGuard`, dead letters (`DeadLettersActor`, `FailureWatcher`), `Schedule`. |
 | `cicada-otel` | `ActorTelemetry`: OpenTelemetry traces and metrics per turn, a plugin on the OpenTelemetry API. |
 | `examples` (`cicada-examples`) | Ten worked examples, each tested with `TestActors`; see [Examples](#examples). |
@@ -267,11 +264,14 @@ async fn shutdown_signal() {
   `start` then runs the dispatch loop, the retention sweep and, on PostgreSQL, the collection of wake-ups.
 - `system.stop()` stops claiming, lets running turns finish within `shutdown_grace_period` (30 s), then cancels the
   rest and releases their leases. While it stops, `/health` and `/ready` answer `503`. `stop` is idempotent.
-- The store is the caller's: `ActorSystem` never closes it. Open it before `start` and close it after `stop`.
-  `PostgresStore::connect(url, config)` accepts the libpq form of `DATABASE_URL`
-  (`postgres://user:pass@host:5432/db?sslmode=require`), and `connect_with(PgConnectOptions, config)` takes sqlx
-  options built by the caller (TLS client certificates and the like). `SqliteStore::open(path, options)` sets up a
-  new or empty file and refuses a SQLite file that holds the tables of another program.
+- The store is the caller's: `ActorSystem` never closes it and does not hand it back. Open it before `start` and
+  close it after `stop`; a closed store fails every operation as unavailable (HTTP `503`). A `Store` is cheap to
+  clone, and clones share one backend, so several systems can run on one store. Name the store's feature on the
+  dependency (`cicada = { …, features = ["sqlite"] }`, or `"postgres"`, or both); without one the crate opens no
+  store. `Store::postgres(url, options)` takes the libpq form of `DATABASE_URL`
+  (`postgres://user:pass@host:5432/db?sslmode=require`); every connection setting goes in the URL.
+  `Store::sqlite(path, options)` sets up a new or empty file and refuses a SQLite file that holds the tables of
+  another program.
 - A node hosting no types still serves the whole API (create, send, query) for every registered type.
 - `actor_api(system)` and `actor_health(system, path)` are plain routers with no fallback: `merge` them or `nest`
   them under a prefix, and wrap them in your own layers. They need nothing installed on the app: they read and write
@@ -517,9 +517,12 @@ assert!(test.failures().await.is_empty());
 
 `TestActors` also offers `send_with`, `send_raw` (the raw result, refusals included),
 `run_until_idle_max`, `pending_at`, `list(prefix)`, `exists`, `state_json`, `version`, `outcome(&message)`, `now`,
-`clock`, and `system()` / `store()` for anything else (every `ActorSystem` call). The builder's `with(|node| …)`
-configures the node like `ActorSystem::builder` (hosted types, plugins, `default_max_turn`, …); `start_at` and
-`retention` set the store's start time and retention. Nothing runs in the background: turns run only inside
+`clock`, `system()` for anything else (every `ActorSystem` call) and `store()`, the in-memory `Store`, to build a
+second system on it. The builder's `with(|node| …)` configures the node like `ActorSystem::builder` (hosted types,
+plugins, `default_max_turn`, …); `start_at` and `retention` set the store's start time and retention. A test that
+plays a node which claims a turn and dies calls `claim_and_abandon(test.store(), &types, lease, limit)`: the message
+is claimed again, as its next attempt, once the lease runs out. A test without `TestActors` opens the in-memory store
+with `Store::memory()`, `Store::memory_on(clock)` or `Store::memory_with(clock, retention)`. Nothing runs in the background: turns run only inside
 `run_until_idle` and `advance_time_by`.
 
 A dependency that needs a clock or a timer of its own (a rate limiter, a cache with expiry) uses `tokio::time`, which
@@ -950,9 +953,9 @@ Node settings are the fields of `NodeConfig`, passed to the builder:
 Handlers run on the tokio runtime that called `start`; there is no separate handler pool (see
 [Blocking code](#define-an-actor-type)).
 
-Store settings: outcome **retention 7 days** (`SqliteOptions::retention`, `PostgresStoreConfig::retention`), also the
+Store settings: outcome **retention 7 days** (`SqliteOptions::retention`, `PostgresOptions::retention`), also the
 dedup window. SQLite: `SqliteOptions { clock, retention, busy_timeout: 5 s }`. PostgreSQL:
-`PostgresStoreConfig { schema: "public", retention, max_pool_size: 20, socket_timeout: 30 s }` (deadlocks and
+`PostgresOptions { schema: "public", retention, max_pool_size: 20, socket_timeout: 30 s }` (deadlocks and
 serialization failures are re-run). [docs/operations.md](docs/operations.md) says how to size them.
 
 ## Examples
@@ -1011,11 +1014,14 @@ cargo build --workspace
 cargo test --workspace                     # unit, runtime, SQLite, HTTP and README tests
 cargo clippy --workspace --all-targets
 docker compose up -d postgres              # PostgreSQL on port 55432
-CICADA_PG_URL=postgres://cicada:cicada@localhost:55432/cicada cargo test -p cicada-store-postgres
+CICADA_PG_URL=postgres://cicada:cicada@localhost:55432/cicada cargo test -p cicada
+PROPTEST_CASES=100000 cargo test -p cicada --lib tests::fuzz   # a long randomised run
 ```
 
-Tests that need PostgreSQL are skipped when `CICADA_PG_URL` is unset. Every store backend runs the conformance suite
-of `cicada-store-conformance`.
+Tests that need PostgreSQL are skipped when `CICADA_PG_URL` is unset. Every store backend runs the conformance suite,
+which is test code of `cicada` (`crates/cicada/src/tests/conformance`), as are the randomised tests and the runtime
+tests that need the store backends, which are private to the crate. `cargo test --workspace` turns every feature of
+`cicada` on; CI also builds it with each feature alone.
 
 ## Using a release in another project
 
@@ -1024,11 +1030,13 @@ published to a registry (`publish = false`), so they are git dependencies. Name 
 
 ```toml
 [workspace.dependencies]
-cicada = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.4.0" }
+cicada = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.4.0", features = ["postgres"] }
 cicada-axum = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.4.0" }
-cicada-store-postgres = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.4.0" }
 cicada-test = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.4.0" }
 ```
+
+Name the store's feature on `cicada`: `postgres`, `sqlite`, or both. None is on by default, and each builds only its
+own driver; without one the crate builds and opens no store. `cicada-test` turns on the test support itself.
 
 Every Cicada crate must come from the same tag; mixing tags gives two copies of the same types. In a project that is
 not a workspace, put the same lines in `[dependencies]`, and `cicada-test` in `[dev-dependencies]`, with
@@ -1136,8 +1144,8 @@ Design notes:
 - **Telemetry.** The OpenTelemetry SDK for Rust exports every span it drops, so the span of a turn that never commits
   is ended and exported with `cicada.outcome` = `abandoned` (issue 0600). The W3C propagator's empty `tracestate` is
   left out.
-- **PostgreSQL settings.** Connection parameters go in the URL, and `PostgresStore::connect_with(PgConnectOptions,
-  config)` takes sqlx options for the rest (issue 0501). `socket_timeout` bounds a whole transaction attempt (the
+- **PostgreSQL settings.** Connection parameters go in the URL; no type of the SQL driver is in the public API, so a
+  setting a URL cannot carry is added to `PostgresOptions` when a host needs it (ADR 0018). `socket_timeout` bounds a whole transaction attempt (the
   connection is then closed), not every read, because sqlx has no per-read timeout.
 - **Cancelling `run_due_turns`.** Dropping its future cancels the turns like a node stop after the grace period: the
   worker is stopped first, then the lease is released only when the handler had not ended, and claims that arrive

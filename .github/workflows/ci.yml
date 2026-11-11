@@ -36,7 +36,20 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
-      # The service container allows 100 connections; the PostgreSQL conformance fixture runs at most 4 cases at once.
+      # The service container allows 100 connections; the PostgreSQL tests of cicada hold at most 4 databases at once.
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      # `cargo test --workspace` turns every feature of cicada on, so each feature is also built alone: no feature,
+      # only SQLite, only PostgreSQL, only the test support.
+      - name: Build cicada with each feature alone
+        run: |
+          cargo check -p cicada
+          cargo check -p cicada --features sqlite
+          cargo check -p cicada --features postgres
+          cargo check -p cicada --features testing
+      - name: Each store feature builds only its own driver
+        run: |
+          if cargo tree -p cicada -e normal | grep -q sqlx; then echo "no feature builds sqlx"; exit 1; fi
+          if cargo tree -p cicada -e normal --features sqlite | grep -q sqlx-postgres; then echo "sqlite builds the PostgreSQL driver"; exit 1; fi
+          if cargo tree -p cicada -e normal --features postgres | grep -qE 'sqlx-sqlite|libsqlite3-sys'; then echo "postgres builds the SQLite driver"; exit 1; fi

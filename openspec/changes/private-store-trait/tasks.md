@@ -80,17 +80,17 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
 
 ## 5. CI and docs
 
-- [ ] 5.1 `.github/workflows/ci.yml`: a step that builds `cicada` with no feature, with `sqlite`, with `postgres`
+- [x] 5.1 `.github/workflows/ci.yml`: a step that builds `cicada` with no feature, with `sqlite`, with `postgres`
       and with `testing`, each alone, and checks with `cargo tree` that the `sqlite` build lists no PostgreSQL
       driver and the `postgres` build no SQLite driver [11]. Verify: the same commands pass locally; they cover the
       scenarios "Only SQLite", "Only PostgreSQL" and "No feature" (these are checked by CI steps, not by a Rust
       test; name the steps in the report).
-- [ ] 5.2 `README.md` (the dependency lines with a feature, opening a store, the test section, the crate list),
+- [x] 5.2 `README.md` (the dependency lines with a feature, opening a store, the test section, the crate list),
       `docs/architecture.md` (the crate table and the paragraph on store requirements), `docs/operations.md`
       (opening a store, `PostgresOptions`), `AGENTS.md` (the map and the test commands) and `openspec/config.yaml`
       (the rule that names `cicada-store-conformance`). Verify: `cargo test -p cicada-examples --doc` passes, and
       none of these files names a removed crate.
-- [ ] 5.3 `CHANGELOG.md`: the section starts with the upgrade steps of the Migration Plan of `design.md`, then the
+- [x] 5.3 `CHANGELOG.md`: the section starts with the upgrade steps of the Migration Plan of `design.md`, then the
       breaking changes of the proposal. Verify: every step of the plan and every **BREAKING** line of the proposal
       is in the section.
 

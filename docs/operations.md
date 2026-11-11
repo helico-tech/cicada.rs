@@ -1,7 +1,7 @@
 # Operating Cicada for Rust
 
 How to size, deploy, upgrade and watch Cicada nodes. The design is in [architecture.md](architecture.md), the API and
-the settings in the [README](../README.md). Settings are `NodeConfig`, `PostgresStoreConfig` and `SqliteOptions`, handlers are tokio
+the settings in the [README](../README.md). Settings are `NodeConfig`, `PostgresOptions` and `SqliteOptions`, handlers are tokio
 futures, logs go through `tracing`, and the host owns the store and the node's life cycle.
 
 ## Sizing
@@ -13,7 +13,7 @@ futures, logs go through `tracing`, and the host owns the store and the node's l
   heartbeats and the dispatch loop stall too: leases expire and turns are run twice. A handler that is still running
   a while after its maximum turn or after its lease was lost is logged as a warning (`… it does not yield (blocking
   code? use spawn_blocking)`).
-- **PostgreSQL pool** (`PostgresStoreConfig::max_pool_size`, default 20): a running turn uses a connection for its
+- **PostgreSQL pool** (`PostgresOptions::max_pool_size`, default 20): a running turn uses a connection for its
   claim, heartbeat and commit, and HTTP requests use the same pool. Keep it at least `concurrency + 4`. A pool that is
   too small delays lease renewals, and a renewal that waits too long makes the node give up the turn. Mind the server
   side too: `nodes × max_pool_size` plus up to two connections per node for the wake-up listener (`LISTEN` and its
@@ -73,7 +73,7 @@ futures, logs go through `tracing`, and the host owns the store and the node's l
 - **Rolling deploys** work as long as the contracts stay equal: a node refuses to start when a type's contract
   differs from the registered one. Check that in CI with contract snapshots (`cicada_test::assert_contracts_match`,
   README, Testing) and keep stored states readable with state samples (`assert_state_decodes`).
-- **Schema migrations** run when a store is opened (`SqliteStore::open`, `PostgresStore::connect`), so the first
+- **Schema migrations** run when a store is opened (`Store::sqlite`, `Store::postgres`), so the first
   node of a new version migrates the database. On PostgreSQL concurrent starts serialise on an advisory lock, and a current schema runs no DDL, so a node may connect
   as a user without `CREATE` once the schema was migrated. A store does not open a schema newer than its own (`StoreError::Invalid`). Start the new nodes
   first, then stop the old ones, and do not restart old nodes after the migration; a release whose migration is not
@@ -218,7 +218,7 @@ worth an alert:
 
 ## Store tuning
 
-PostgreSQL (`PostgresStoreConfig`):
+PostgreSQL (`PostgresOptions`, feature `postgres`):
 
 | Setting | Default | Notes |
 | --- | --- | --- |
@@ -227,12 +227,13 @@ PostgreSQL (`PostgresStoreConfig`):
 | `max_pool_size` | 20 | At least `concurrency + 4`; see [Sizing](#sizing). |
 | `socket_timeout` | 30 s | Longest single transaction attempt; then it fails and its connection is closed, so a dead peer without a TCP reset cannot block a claim, commit or stop. Zero disables it. |
 
-Connection parameters (`sslmode`, `sslrootcert`, `application_name`, `options`, …) go in the URL;
-`PostgresStore::connect_with(PgConnectOptions, config)` takes sqlx options for anything a URL cannot carry. Store time
+Connection parameters (`sslmode`, `sslrootcert`, `application_name`, `options`, …) go in the URL of
+`Store::postgres(url, options)`; it is the one way to open the store, and a setting a URL cannot carry is added to
+`PostgresOptions` when a host needs it. Store time
 is the server's `clock_timestamp()`, read after each transaction's row locks, so run PostgreSQL with a disciplined
 clock (NTP).
 
-SQLite (`SqliteOptions`):
+SQLite (`SqliteOptions`, feature `sqlite`):
 
 | Setting | Default | Notes |
 | --- | --- | --- |

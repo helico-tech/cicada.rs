@@ -8,12 +8,13 @@ covers sizing, deploying, upgrading and watching nodes.
 
 ```sh
 cargo build --workspace
-cargo test --workspace                 # unit, runtime, SQLite, HTTP and README tests
+cargo test --workspace                 # unit, runtime, SQLite, HTTP and README tests; every feature of cicada on
 cargo test -p cicada-examples --doc    # only the Rust blocks of README.md and docs/operations.md
 cargo clippy --workspace --all-targets
 cargo fmt --all                        # rustfmt.toml: 120 columns; CI checks it
-CICADA_PG_URL=postgres://cicada:cicada@localhost:55432/cicada cargo test -p cicada-store-postgres   # needs PostgreSQL
-PROPTEST_CASES=100000 cargo test -p cicada-fuzz   # a long randomised run; a short one is part of cargo test --workspace
+cargo check -p cicada [--features sqlite|postgres|testing]   # the core with no feature or one alone; CI builds each
+CICADA_PG_URL=postgres://cicada:cicada@localhost:55432/cicada cargo test -p cicada   # with the PostgreSQL tests
+PROPTEST_CASES=100000 cargo test -p cicada --lib tests::fuzz   # a long randomised run; a short one is part of cargo test
 CICADA_E2E=1 cargo test -p cicada-e2e -- --nocapture   # E2E and fault tests in Docker, ~3 min; see e2e/README.md
 ```
 
@@ -24,14 +25,12 @@ PostgreSQL for tests: `docker compose up -d postgres` (port 55432). Tests that n
 
 | Path | What |
 | --- | --- |
-| `crates/cicada` | Core: `address`, `message`, `actor` (the `Actor` trait), `turn`, `plugin`, `runtime` (node, executor), `store` (trait, model, support), `contract`, `schema`, `retry`, `retention`, `time`, `api` (HTTP wire model) |
-| `crates/cicada-test` | `InMemoryStore`, `TokioClock`, `TestActors` harness |
-| `crates/cicada-store-*` | Store backends and the conformance suite |
+| `crates/cicada` | Core: `address`, `message`, `actor` (the `Actor` trait), `turn`, `plugin`, `runtime` (node, executor), `store` (`Store`, the private `Backend` trait, model, support; `sqlite` and `postgres` behind their features), `testing` (feature `testing`: in-memory store, clocks, `TestActors`), `contract`, `schema`, `retry`, `retention`, `time`, `api` (HTTP wire model), `tests` (the conformance suite, the store, fuzz and runtime tests that need the private trait) |
+| `crates/cicada-test` | Exports `TestActors`, the clocks and `claim_and_abandon`; contract snapshots and state samples |
 | `crates/cicada-axum` | HTTP API routers |
 | `crates/cicada-client` | Typed HTTP client |
 | `crates/cicada-cli` | The `cicada` command line and terminal UI, over HTTP |
 | `crates/cicada-otel`, `crates/cicada-extras` | Plugins and building blocks |
-| `crates/cicada-fuzz` | Randomised tests: parsers, backend comparison, node simulation under faults |
 | `examples/`, `sample-service/` | Worked examples; a runnable node |
 | `e2e/` | End-to-end and fault tests against sample nodes in Docker |
 | `docs/` | Architecture, ADRs and the operations guide |
@@ -44,7 +43,9 @@ PostgreSQL for tests: `docker compose up -d postgres` (port 55432). Tests that n
   Kotlin implementation (ADR 0008). A change to a guarantee or a wire format needs an ADR; a schema change is an
   appended migration.
 - Tests for runtime behaviour run on virtual time: `#[tokio::test(start_paused = true)]` with `TestActors`.
-- Store backends must pass `cicada-store-conformance`.
+- Store backends must pass the conformance suite (`crates/cicada/src/tests/conformance`). The backend trait is
+  private to `cicada` (ADR 0018): a test that calls it lives in `crates/cicada/src/tests`, one that needs only the
+  public API in a `tests/` folder.
 - Releases are tags on `main`; [docs/operations.md](docs/operations.md), Releasing, has the steps. Tag a release when
   its change is implemented, every check in Releasing has passed, and the work is committed on `main`; never move or
   delete a tag that has a GitHub Release.

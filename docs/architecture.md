@@ -57,8 +57,11 @@ earlier run may have got part-way.
 
 ## Store requirements
 
-Every backend implements the `cicada::store::Store` trait and passes the conformance suite in
-`cicada-store-conformance`.
+The backends are PostgreSQL and SQLite, each a cargo feature of `cicada` (`postgres`, `sqlite`), and the in-memory
+store of the tests (feature `testing`). A host opens one as the public type `Store` (`Store::postgres`,
+`Store::sqlite`, `Store::memory`) and reads what it holds through `ActorSystem`; the backend trait is private to
+`cicada`, so a store is not an extension point (ADR 0018). Every backend passes the conformance suite, test code of
+`cicada` (`crates/cicada/src/tests/conformance`).
 
 | # | Guarantee |
 | --- | --- |
@@ -156,17 +159,13 @@ impl Actor for SyncActor {
 
 | Crate | Contents |
 | --- | --- |
-| `cicada` | Addressing, definition API, runtime and dispatch loop, store trait and model, contracts and schemas, retry and retention policies, the HTTP wire model (`api`, shared by server and client) |
-| `cicada-test` | `InMemoryStore`, clocks, `TestActors`, contract snapshots and state samples |
-| `cicada-store-conformance` | The S1–S10 suite every store runs |
-| `cicada-store-sqlite` | `SqliteStore` (sqlx): one file, WAL, one writer |
-| `cicada-store-postgres` | `PostgresStore` (sqlx): `FOR UPDATE SKIP LOCKED` claims, `LISTEN/NOTIFY` wake-ups |
+| `cicada` | Addressing, definition API, runtime and dispatch loop, the store (`Store` and its model; the backend trait is private), contracts and schemas, retry and retention policies, the HTTP wire model (`api`, shared by server and client). Behind features: the SQLite store (`sqlite`; sqlx, one file, WAL, one writer), the PostgreSQL store (`postgres`; sqlx, `FOR UPDATE SKIP LOCKED` claims, `LISTEN/NOTIFY` wake-ups) and the test support (`testing`: the in-memory store, clocks, `TestActors`, `claim_and_abandon`). Its tests hold the S1–S10 conformance suite every backend runs and the randomised tests: parsers, backend comparison, and a node simulation under injected faults |
+| `cicada-test` | Exports the test support of `cicada` (`TestActors`, clocks, `claim_and_abandon`); contract snapshots and state samples |
 | `cicada-axum` | `actor_api()`, `actor_api_read()` and `actor_health()` as axum routers, and the OpenAPI document |
 | `cicada-client` | Typed HTTP client (reqwest) |
 | `cicada-cli` | The binary `cicada`: commands and a terminal UI over the HTTP API, through `cicada-client`; no library crate depends on it |
 | `cicada-otel` | OpenTelemetry plugin |
 | `cicada-extras` | Schedules (interval, daily), crash-loop guard, failure watcher, dead letters |
-| `cicada-fuzz` | Randomised tests: parsers, backend comparison, and a node simulation under injected faults. Test-only |
 | `examples` | Worked examples with tests |
 | `sample-service` | A runnable node (binary) with the examples, used by end-to-end tests |
 | `e2e` (`cicada-e2e`) | End-to-end and fault tests: sample nodes in Docker on PostgreSQL and SQLite, driven over HTTP (`CICADA_E2E=1`) |
