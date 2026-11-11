@@ -7,6 +7,19 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.5.1 — unreleased
+
+No change to the wire format or the store schema: nodes of 0.5.0 and 0.5.1 can share a database.
+
+### Fixed
+
+- A store on PostgreSQL opens over TLS. The feature `postgres` builds the driver with TLS (rustls, trusting the
+  certificate store of the operating system), so a URL with `sslmode=require`, `verify-ca` or `verify-full` no longer
+  fails with "SQLx was built without TLS support enabled", and `sslrootcert`, `sslcert` and `sslkey` name files. A URL
+  without `sslmode` uses the default `prefer`, which now means TLS without checking the server's certificate when the
+  server offers TLS, and plain text when it does not; set the mode on purpose (docs/operations.md, TLS for
+  PostgreSQL). The feature `sqlite` builds no TLS.
+
 ## 0.5.0 — 2026-11-11
 
 A breaking release: the store trait leaves the public API (ADR 0018, its second step). A host opens one public type,

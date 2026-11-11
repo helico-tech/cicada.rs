@@ -229,7 +229,7 @@ PostgreSQL (`PostgresOptions`, feature `postgres`):
 
 Connection parameters (`sslmode`, `sslrootcert`, `application_name`, `options`, …) go in the URL of
 `Store::postgres(url, options)`; it is the one way to open the store, and a setting a URL cannot carry is added to
-`PostgresOptions` when a host needs it. Store time
+`PostgresOptions` when a host needs it. For TLS see [TLS for PostgreSQL](#tls-for-postgresql). Store time
 is the server's `clock_timestamp()`, read after each transaction's row locks, so run PostgreSQL with a disciplined
 clock (NTP).
 
@@ -244,6 +244,24 @@ SQLite (`SqliteOptions`, feature `sqlite`):
 The file runs in WAL mode with `synchronous = FULL`. Keep it on a local disk, not a network file system. Store time
 never steps back (a persisted high-water mark), but a wall clock that jumps forward moves it forward too: leases
 expire early and delayed messages fall due early, so run the host with NTP slewing.
+
+### TLS for PostgreSQL
+
+The feature `postgres` builds the driver with TLS (rustls); there is nothing else to switch on. Ask for TLS with
+`sslmode` in the URL:
+
+- `disable`, `allow`: plain text; the driver never tries TLS.
+- `prefer` (the default): TLS without checking the server's certificate when the server offers TLS, plain text when
+  it does not.
+- `require`: TLS or no connection; the server's certificate is not checked.
+- `verify-ca`: as `require`, and the certificate must be signed by a trusted CA.
+- `verify-full`: as `verify-ca`, and the certificate must name the host of the URL.
+
+The trusted CAs are those in the certificate store of the operating system and those in the PEM file that
+`sslrootcert` names (`…?sslmode=verify-full&sslrootcert=/etc/ssl/db-ca.pem`). A database rarely has a certificate of
+a public CA, so install its CA on the host or name the file. `sslcert` and `sslkey` name the files of a client
+certificate and its key, for a server that asks for one. The default `prefer` neither insists on TLS nor checks the
+server, so set the mode on purpose: `sslmode=verify-full`, or at least `require`.
 
 ## Telemetry
 

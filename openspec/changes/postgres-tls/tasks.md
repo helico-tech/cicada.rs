@@ -16,7 +16,7 @@ The numbers in brackets are the decisions of `design.md`.
 
 ## 2. Docs and checks
 
-- [ ] 2.1 `docs/operations.md`: a paragraph on TLS for PostgreSQL [6]; `README.md`: a pointer to it where it shows
+- [x] 2.1 `docs/operations.md`: a paragraph on TLS for PostgreSQL [6]; `README.md`: a pointer to it where it shows
       how to open PostgreSQL; `CHANGELOG.md`: one entry under Fixed, with the sentence on the default mode. Verify:
       `cargo test -p cicada-examples --doc` passes.
 - [ ] 2.2 `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` with

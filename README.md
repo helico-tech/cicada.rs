@@ -269,7 +269,8 @@ async fn shutdown_signal() {
   clone, and clones share one backend, so several systems can run on one store. Name the store's feature on the
   dependency (`cicada = { …, features = ["sqlite"] }`, or `"postgres"`, or both); without one the crate opens no
   store. `Store::postgres(url, options)` takes the libpq form of `DATABASE_URL`
-  (`postgres://user:pass@host:5432/db?sslmode=require`); every connection setting goes in the URL.
+  (`postgres://user:pass@host:5432/db?sslmode=require`); every connection setting goes in the URL. TLS is built in:
+  set `sslmode` on purpose ([docs/operations.md, TLS for PostgreSQL](docs/operations.md#tls-for-postgresql)).
   `Store::sqlite(path, options)` sets up a new or empty file and refuses a SQLite file that holds the tables of
   another program.
 - A node hosting no types still serves the whole API (create, send, query) for every registered type.
