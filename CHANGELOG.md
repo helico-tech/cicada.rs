@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.7.0 — unreleased
+## 0.7.0 — 2026-11-11
 
 A breaking release of the API: the core is tidied (ADR 0018, its fourth step; ADR 0022). An actor definition says its
 message type once and has no unhandled policy, functions of the core return named errors, a start error holds a
