@@ -368,11 +368,11 @@ fn address(text: &str) -> Result<ActorAddress, String> {
 }
 
 fn message_id(text: &str) -> Result<MessageId, String> {
-    MessageId::new(text)
+    MessageId::new(text).map_err(|e| e.to_string())
 }
 
 fn node_id(text: &str) -> Result<NodeId, String> {
-    NodeId::new(text)
+    NodeId::new(text).map_err(|e| e.to_string())
 }
 
 fn type_name(text: &str) -> Result<TypeName, String> {

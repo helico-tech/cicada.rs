@@ -249,7 +249,7 @@ async fn send(api: &Api, address: ActorAddress, req: Request) -> Outcome {
     let body: SendRequest = request::body(req, api.max_body)
         .await?
         .ok_or_else(|| ApiProblem::bad_request("A send needs a JSON body with a type"))?;
-    let delivery = body.delivery().map_err(ApiProblem::bad_request)?;
+    let delivery = body.delivery().map_err(|e| ApiProblem::bad_request(e.to_string()))?;
     let id = body.id.unwrap_or_else(MessageId::random);
     let options = SendOptions {
         delivery,
@@ -280,12 +280,10 @@ async fn send(api: &Api, address: ActorAddress, req: Request) -> Outcome {
             format!("{type_name} does not accept message type '{message_type}'"),
         )
         .into()),
-        SendResult::InvalidPayload { message_type, error } => Err(unprocessable(
-            problem_types::INVALID_PAYLOAD,
-            "Invalid payload",
-            format!("Payload of '{message_type}' cannot be decoded: {error}"),
-        )
-        .into()),
+        // The error names the message type and says why already.
+        SendResult::InvalidPayload { error, .. } => {
+            Err(unprocessable(problem_types::INVALID_PAYLOAD, "Invalid payload", error).into())
+        }
     }
 }
 
@@ -431,7 +429,7 @@ async fn bulk(
     let body: BulkRequest = request::body(req, api.max_body)
         .await?
         .ok_or_else(|| ApiProblem::bad_request("A bulk action needs a JSON body with ids or a filter"))?;
-    let selection = body.selection().map_err(ApiProblem::bad_request)?;
+    let selection = body.selection().map_err(|e| ApiProblem::bad_request(e.to_string()))?;
     Ok(json(StatusCode::OK, &BulkResponse::from(act(selection).await?)))
 }
 

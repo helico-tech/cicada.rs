@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use cicada::actor::contract_of;
+use cicada::actor::{DefinitionError, contract_of};
 use cicada::contract::Contract;
 use cicada::runtime::ActorSystemBuilder;
 use cicada::{Actor, ActorAddress, ActorRef, ActorType, NoState};
@@ -29,7 +29,7 @@ pub const GROUPS: [&str; 11] =
 /// One actor type of the catalog, with its generic parameters erased.
 pub struct CatalogType {
     type_name: &'static str,
-    contract: fn() -> Result<Contract, Vec<String>>,
+    contract: fn() -> Result<Contract, DefinitionError>,
     host: Box<dyn Fn(ActorSystemBuilder) -> ActorSystemBuilder + Send + Sync>,
 }
 
@@ -50,7 +50,7 @@ impl CatalogType {
     }
 
     /// The contract a node hosting this type registers.
-    pub fn contract(&self) -> Result<Contract, Vec<String>> {
+    pub fn contract(&self) -> Result<Contract, DefinitionError> {
         (self.contract)()
     }
 

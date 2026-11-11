@@ -8,6 +8,11 @@ use sha2::{Digest, Sha256};
 use crate::address::TypeName;
 use crate::store::TypeDef;
 
+/// JSON that is not a contract; it prints why, e.g. "Not a contract: no state schema".
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
+pub struct ContractError(String);
+
 /// The published description of an actor type: its name, the JSON Schema of its state and one JSON Schema per message
 /// type name. It holds nothing of the type's ref: a key is one name (ADR 0021).
 ///
@@ -85,18 +90,19 @@ impl Contract {
 
     /// Parses a contract from its JSON form. A contract without a state schema (`state` absent or `null`) is refused.
     /// A `key` entry, which an earlier version wrote, is ignored, so such a contract reads as the same contract.
-    pub fn from_json(json: &Value) -> Result<Self, String> {
-        let o = json.as_object().ok_or("Not a contract: not an object")?;
+    pub fn from_json(json: &Value) -> Result<Self, ContractError> {
+        let not = |why: &str| ContractError(format!("Not a contract: {why}"));
+        let o = json.as_object().ok_or_else(|| not("not an object"))?;
         let type_name = o
             .get("type")
             .and_then(Value::as_str)
-            .ok_or("Not a contract: no type")
-            .and_then(|t| TypeName::parse(t).map_err(|_| "Not a contract: bad type name"))?;
-        let state_schema = o.get("state").filter(|s| !s.is_null()).cloned().ok_or("Not a contract: no state schema")?;
+            .ok_or_else(|| not("no type"))
+            .and_then(|t| TypeName::parse(t).map_err(|_| not("bad type name")))?;
+        let state_schema = o.get("state").filter(|s| !s.is_null()).cloned().ok_or_else(|| not("no state schema"))?;
         let messages = o
             .get("messages")
             .and_then(Value::as_object)
-            .ok_or("Not a contract: no messages")?
+            .ok_or_else(|| not("no messages"))?
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
@@ -104,7 +110,7 @@ impl Contract {
     }
 
     /// Parses the contract of a registry entry, keeping its registered hash.
-    pub fn of(def: &TypeDef) -> Result<Self, String> {
+    pub fn of(def: &TypeDef) -> Result<Self, ContractError> {
         let mut contract = Self::from_json(&def.contract)?;
         contract.hash = def.contract_hash.clone();
         Ok(contract)
@@ -244,9 +250,9 @@ mod tests {
     fn a_contract_without_a_state_schema_is_refused() {
         let mut json = contract(json!({"type": "object"}), json!({"type": "object"})).to_json();
         json["state"] = Value::Null;
-        assert_eq!(Contract::from_json(&json).unwrap_err(), "Not a contract: no state schema");
+        assert_eq!(Contract::from_json(&json).unwrap_err().to_string(), "Not a contract: no state schema");
         json.as_object_mut().unwrap().remove("state");
-        assert_eq!(Contract::from_json(&json).unwrap_err(), "Not a contract: no state schema");
+        assert_eq!(Contract::from_json(&json).unwrap_err().to_string(), "Not a contract: no state schema");
     }
 
     #[test]

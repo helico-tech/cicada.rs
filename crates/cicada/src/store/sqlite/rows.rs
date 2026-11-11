@@ -44,7 +44,7 @@ pub(crate) fn type_name(text: &str) -> StoreResult<TypeName> {
 }
 
 pub(crate) fn message_id(id: String) -> StoreResult<MessageId> {
-    MessageId::new(id).map_err(StoreError::Corrupt)
+    MessageId::new(id).map_err(|e| StoreError::Corrupt(e.to_string()))
 }
 
 fn count(value: i64, what: &str) -> StoreResult<u32> {
@@ -70,7 +70,7 @@ pub(crate) fn actor_record(row: &SqliteRow) -> StoreResult<ActorRecord> {
 }
 
 pub(crate) fn node_id(id: String) -> StoreResult<NodeId> {
-    NodeId::new(id).map_err(StoreError::Corrupt)
+    NodeId::new(id).map_err(|e| StoreError::Corrupt(e.to_string()))
 }
 
 pub(crate) fn node_record(row: &SqliteRow) -> StoreResult<NodeRecord> {

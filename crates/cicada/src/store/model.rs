@@ -10,6 +10,12 @@ use crate::retention::Retention;
 use crate::retry::RetryPolicy;
 use crate::time::{self, MAX_DELAY, MAX_INSTANT, TimeError, Timestamp};
 
+/// An id that is not valid: a [`MessageId`] or [`NodeId`] that is blank. It prints why, e.g. "MessageId must not be
+/// blank".
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
+pub struct IdError(String);
+
 macro_rules! string_id {
     ($(#[$doc:meta])* $name:ident, $what:literal) => {
         $(#[$doc])*
@@ -19,10 +25,10 @@ macro_rules! string_id {
 
         impl $name {
             /// Wraps `value`; fails when it is blank.
-            pub fn new(value: impl Into<String>) -> Result<Self, String> {
+            pub fn new(value: impl Into<String>) -> Result<Self, IdError> {
                 let value = value.into();
                 if value.trim().is_empty() {
-                    return Err(concat!($what, " must not be blank").to_owned());
+                    return Err(IdError(concat!($what, " must not be blank").to_owned()));
                 }
                 Ok(Self(value))
             }
@@ -34,9 +40,9 @@ macro_rules! string_id {
         }
 
         impl TryFrom<String> for $name {
-            type Error = String;
+            type Error = IdError;
 
-            fn try_from(value: String) -> Result<Self, String> {
+            fn try_from(value: String) -> Result<Self, IdError> {
                 Self::new(value)
             }
         }
@@ -606,5 +612,14 @@ mod tests {
         assert!(MessageId::new(" ").is_err());
         assert!(serde_json::from_str::<MessageId>("\"\"").is_err());
         assert_eq!(MessageId::new("a").unwrap().as_str(), "a");
+    }
+
+    #[test]
+    fn a_blank_id_is_an_id_error() {
+        let e: IdError = MessageId::new("   ").unwrap_err();
+        assert_eq!(e.to_string(), "MessageId must not be blank");
+        assert_eq!(NodeId::try_from(String::new()).unwrap_err().to_string(), "NodeId must not be blank");
+        let source: &dyn std::error::Error = &e;
+        assert_eq!(anyhow::Error::from(e.clone()).to_string(), source.to_string());
     }
 }

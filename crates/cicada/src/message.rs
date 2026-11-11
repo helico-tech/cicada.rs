@@ -35,6 +35,18 @@ use crate::schema;
 /// The JSON property that carries a message's type name inside the family's own serde form.
 pub const TYPE_TAG: &str = "type";
 
+/// A message that cannot be encoded or decoded, or a type that is not a message family. It prints why, e.g.
+/// "Payload of 'Add' cannot be decoded: invalid type: string \"x\", expected i64".
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
+pub struct MessageError(String);
+
+impl MessageError {
+    pub(crate) fn new(message: impl Into<String>) -> Self {
+        Self(message.into())
+    }
+}
+
 /// The root of an actor's messages: an enum with `#[serde(tag = "type")]` deriving `Serialize`, `Deserialize` and
 /// `JsonSchema`. Implemented for every such type.
 pub trait MessageFamily: Serialize + DeserializeOwned + JsonSchema + Send + Sync + 'static {}
@@ -51,28 +63,28 @@ pub struct EncodedMessage {
 }
 
 /// Encodes a message of a family into its type name and payload.
-pub fn encode<M: Serialize>(message: &M) -> Result<EncodedMessage, String> {
-    let value = serde_json::to_value(message).map_err(|e| format!("Message cannot be encoded: {e}"))?;
-    let Value::Object(mut fields) = value else {
-        return Err(format!(
+pub fn encode<M: Serialize>(message: &M) -> Result<EncodedMessage, MessageError> {
+    let value = serde_json::to_value(message).map_err(|e| MessageError(format!("Message cannot be encoded: {e}")))?;
+    let not_a_family = || {
+        MessageError(format!(
             "{} is not a message family: it must be an enum with #[serde(tag = \"type\")]",
             std::any::type_name::<M>()
-        ));
+        ))
+    };
+    let Value::Object(mut fields) = value else {
+        return Err(not_a_family());
     };
     match fields.remove(TYPE_TAG) {
         Some(Value::String(message_type)) => Ok(EncodedMessage { message_type, payload: Value::Object(fields) }),
-        _ => Err(format!(
-            "{} is not a message family: it must be an enum with #[serde(tag = \"type\")]",
-            std::any::type_name::<M>()
-        )),
+        _ => Err(not_a_family()),
     }
 }
 
 /// Decodes `payload` as the variant named `message_type`. The error message is the reason recorded for a message
 /// that cannot be decoded.
-pub fn decode<M: DeserializeOwned>(message_type: &str, payload: &Value) -> Result<M, String> {
+pub fn decode<M: DeserializeOwned>(message_type: &str, payload: &Value) -> Result<M, MessageError> {
     let Value::Object(fields) = payload else {
-        return Err(format!("Payload of '{message_type}' must be a JSON object"));
+        return Err(MessageError(format!("Payload of '{message_type}' must be a JSON object")));
     };
     let mut tagged = Map::with_capacity(fields.len() + 1);
     tagged.insert(TYPE_TAG.to_owned(), Value::String(message_type.to_owned()));
@@ -82,7 +94,7 @@ pub fn decode<M: DeserializeOwned>(message_type: &str, payload: &Value) -> Resul
         }
     }
     serde_json::from_value(Value::Object(tagged))
-        .map_err(|e| format!("Payload of '{message_type}' cannot be decoded: {e}"))
+        .map_err(|e| MessageError(format!("Payload of '{message_type}' cannot be decoded: {e}")))
 }
 
 /// What the runtime knows of a message family: its type names and the JSON Schema of each.
@@ -94,7 +106,7 @@ pub struct FamilyInfo {
 
 impl FamilyInfo {
     /// Analyses the family `M`; fails when it is not an enum tagged with `type`.
-    pub fn of<M: MessageFamily>() -> Result<Self, String> {
+    pub fn of<M: MessageFamily>() -> Result<Self, MessageError> {
         Ok(Self { schemas: schema::message_schemas::<M>()? })
     }
 

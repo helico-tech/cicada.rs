@@ -359,7 +359,7 @@ impl<A: Actor> Turn<A> {
         msg: &M,
         options: SendOptions,
     ) -> Result<MessageId, TurnError> {
-        let encoded = message::encode(msg).map_err(TurnError::Invalid)?;
+        let encoded = message::encode(msg).map_err(|e| TurnError::Invalid(e.to_string()))?;
         self.send_raw(to, &encoded.message_type, encoded.payload, options).await
     }
 
@@ -426,7 +426,7 @@ impl<A: Actor> Turn<A> {
         msg: &M,
         options: SendOptions,
     ) -> Result<MessageId, TurnError> {
-        let encoded = message::encode(msg).map_err(TurnError::Invalid)?;
+        let encoded = message::encode(msg).map_err(|e| TurnError::Invalid(e.to_string()))?;
         let options = self.with_turn_headers(options);
         let id = check_send(&encoded.message_type, &encoded.payload, &options)?;
         self.push_send(to, encoded.message_type, encoded.payload, id.clone(), options);

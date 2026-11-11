@@ -235,7 +235,7 @@ impl<A: Actor> HostedActor for Hosted<A> {
         if !analysis.family.accepts(message_type) {
             return Err(format!("Unknown message type '{message_type}'"));
         }
-        message::decode::<MessageOf<A>>(message_type, payload).map(|_| ())
+        message::decode::<MessageOf<A>>(message_type, payload).map(|_| ()).map_err(|e| e.to_string())
     }
 
     fn address_problem(&self, address: &ActorAddress) -> Option<String> {
@@ -251,7 +251,7 @@ impl<A: Actor> HostedActor for Hosted<A> {
             .from_address(&claim.actor)
             .map_err(|e| format!("Address cannot be decoded as {}: {e}", type_name::<A::Ref>()))?;
         let decoded: Result<MessageOf<A>, String> = if analysis.family.accepts(&claim.message.message_type) {
-            message::decode(&claim.message.message_type, &claim.message.payload)
+            message::decode(&claim.message.message_type, &claim.message.payload).map_err(|e| e.to_string())
         } else {
             Err(format!("Unknown message type '{}'", claim.message.message_type))
         };
@@ -295,8 +295,23 @@ pub(crate) fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
     }
 }
 
+/// An actor definition that a node cannot host: its ref, its message family or its `MAX_TURN` is malformed. It holds
+/// one reason per fault and prints them joined with "; ".
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{}", .reasons.join("; "))]
+pub struct DefinitionError {
+    reasons: Vec<String>,
+}
+
+impl DefinitionError {
+    /// The reasons, one per fault, as a node that hosts the type reports them when it starts.
+    pub fn reasons(&self) -> &[String] {
+        &self.reasons
+    }
+}
+
 /// The contract of actor type `A`, as a node hosting it registers it: name, state schema and message schemas.
 /// Fails with the type's problems when it is invalid (see [`crate::runtime::StartError`]).
-pub fn contract_of<A: Actor>() -> Result<Contract, Vec<String>> {
-    analyse::<A>().map(|a| a.contract.as_ref().clone())
+pub fn contract_of<A: Actor>() -> Result<Contract, DefinitionError> {
+    analyse::<A>().map(|a| a.contract.as_ref().clone()).map_err(|reasons| DefinitionError { reasons })
 }

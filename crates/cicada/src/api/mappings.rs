@@ -2,7 +2,7 @@
 
 use super::{
     ActorView, BulkResponse, MailboxMessageView, MessageState, MessageStatusView, MessageView, NodeDetailView,
-    NodeView, OutcomeView, PageView, RunningTurnView, SendRequest, StatsView, TypeView,
+    NodeView, OutcomeView, PageView, RequestError, RunningTurnView, SendRequest, StatsView, TypeView,
 };
 use crate::runtime::{ActorSnapshot, BulkResult, MailboxEntry, NodeInfo, RegisteredType};
 use crate::store::{Delivery, Message, MessageStatus, OutcomeRecord, OutcomeStatus, Page, RunningTurn, StoreStats};
@@ -176,9 +176,9 @@ impl<T> PageView<T> {
 impl SendRequest {
     /// The delivery time this send asks for: [`Self::deliver_at`], [`Self::delay`] or now. Fails when both are given;
     /// the range of the time is checked by the send itself.
-    pub fn delivery(&self) -> Result<Delivery, String> {
+    pub fn delivery(&self) -> Result<Delivery, RequestError> {
         match (self.deliver_at, self.delay) {
-            (Some(_), Some(_)) => Err("Give either deliverAt or delay, not both".to_owned()),
+            (Some(_), Some(_)) => Err(RequestError("Give either deliverAt or delay, not both".to_owned())),
             (Some(at), None) => Ok(Delivery::At(at)),
             (None, Some(after)) => Ok(Delivery::After(after)),
             (None, None) => Ok(Delivery::Now),

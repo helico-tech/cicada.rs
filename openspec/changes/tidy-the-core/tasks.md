@@ -31,12 +31,12 @@ Every error type of this group is a public struct that holds its text, as `Addre
 `std::error::Error`, `Display`, `Debug`, `Clone`, `PartialEq` and `Eq`, has a doc comment, and prints the text that
 was returned before. No text changes.
 
-- [ ] 2.1 `RetryError`, `RetentionError` and `IdError` [1]: `RetryPolicy::new`, `Backoff::exponential`,
+- [x] 2.1 `RetryError`, `RetentionError` and `IdError` [1]: `RetryPolicy::new`, `Backoff::exponential`,
       `Backoff::fixed`, `Keep::keep_for`, `Keep::last`, `MessageId::new`, `NodeId::new`, and the `TryFrom` behind
       the serde forms of all of them. The callers in the workspace follow. Verify: tests for the scenarios "A retry
       policy without attempts", "A blank message id", "A retention of zero messages" and "An error read from JSON";
       the existing tests of the texts pass unchanged.
-- [ ] 2.2 `MessageError`, `ContractError` and `DefinitionError` [1, 4]: `message::encode`, `message::decode`,
+- [x] 2.2 `MessageError`, `ContractError` and `DefinitionError` [1, 4]: `message::encode`, `message::decode`,
       `FamilyInfo::of`, `schema::message_schemas`, `Contract::from_json`, `Contract::of` and `actor::contract_of`.
       `DefinitionError` holds the list of reasons, gives them to a caller, and prints them joined with "; ".
       `cicada-axum` stops putting "Payload of '…' cannot be decoded: " in front of the reason of a `422`. The
@@ -44,7 +44,7 @@ was returned before. No text changes.
       scenarios "A payload that does not decode", "A contract that is not an object", "A malformed actor
       definition" and, over HTTP, "A send with a payload that does not fit" (the detail holds "cannot be decoded"
       exactly once).
-- [ ] 2.3 `RequestError`, and the limit checks [1]: `BulkRequest::selection` and the `delivery` of a send request
+- [x] 2.3 `RequestError`, and the limit checks [1]: `BulkRequest::selection` and the `delivery` of a send request
       return a `RequestError`; the texts of the `400` answers that `cicada-axum` builds from them do not change.
       `runtime::limits::check`, `check_envelope` and `check_json` become `pub(crate)`; the constants of that module
       stay public. Verify: the existing tests of the request helpers and of the limits pass, and

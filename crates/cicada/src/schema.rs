@@ -9,7 +9,7 @@ use schemars::JsonSchema;
 use schemars::generate::SchemaSettings;
 use serde_json::{Map, Value};
 
-use crate::message::TYPE_TAG;
+use crate::message::{MessageError, TYPE_TAG};
 
 const DRAFT: &str = "https://json-schema.org/draft/2020-12/schema";
 
@@ -22,10 +22,12 @@ pub fn root_schema<T: JsonSchema>() -> Value {
 
 /// One schema per type name of the message family `M` (an enum with `#[serde(tag = "type")]`), each without the
 /// tag property, as a standalone document titled with the type name.
-pub fn message_schemas<M: JsonSchema>() -> Result<BTreeMap<String, Value>, String> {
+pub fn message_schemas<M: JsonSchema>() -> Result<BTreeMap<String, Value>, MessageError> {
     let family = std::any::type_name::<M>();
     let not_tagged = || {
-        format!("{family}: the message family must be an enum with #[serde(tag = \"type\")] whose variants are objects")
+        MessageError::new(format!(
+            "{family}: the message family must be an enum with #[serde(tag = \"type\")] whose variants are objects"
+        ))
     };
     let generator = SchemaSettings::draft2020_12().into_generator();
     let root = generator.into_root_schema_for::<M>().to_value();
@@ -89,7 +91,7 @@ pub fn message_schemas<M: JsonSchema>() -> Result<BTreeMap<String, Value>, Strin
             );
         }
         if schemas.insert(name.clone(), normalise(Value::Object(document))).is_some() {
-            return Err(format!("{family}: message type '{name}' is declared twice"));
+            return Err(MessageError::new(format!("{family}: message type '{name}' is declared twice")));
         }
     }
     Ok(schemas)

@@ -285,7 +285,7 @@ impl ActorClient {
         msg: impl Into<R::Message>,
         options: SendOptions,
     ) -> ClientResult<SendReceipt> {
-        let encoded = message::encode(&msg.into()).map_err(ClientError::Invalid)?;
+        let encoded = message::encode(&msg.into()).map_err(|e| ClientError::Invalid(e.to_string()))?;
         self.send_message(&address_of(to)?, &encoded.message_type, encoded.payload, options).await
     }
 

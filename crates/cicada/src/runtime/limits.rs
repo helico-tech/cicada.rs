@@ -23,7 +23,7 @@ pub const MAX_HEADER_NAME_LENGTH: usize = 200;
 pub const MAX_HEADER_VALUE_LENGTH: usize = 4_000;
 
 /// Checks the fields of one send, naming the first field that is out of bounds. Lengths count characters.
-pub fn check(
+pub(crate) fn check(
     id: &MessageId,
     message_type: &str,
     correlation_id: Option<&str>,
@@ -45,7 +45,7 @@ pub fn check(
 }
 
 /// Checks a send's envelope and payload.
-pub fn check_envelope(
+pub(crate) fn check_envelope(
     id: &MessageId,
     message_type: &str,
     payload: &Value,
@@ -57,7 +57,7 @@ pub fn check_envelope(
 }
 
 /// Checks that no string and no object key in `value` contains a NUL character.
-pub fn check_json(what: &str, value: Option<&Value>) -> Result<(), String> {
+pub(crate) fn check_json(what: &str, value: Option<&Value>) -> Result<(), String> {
     match value {
         Some(v) if contains_nul(v) => Err(format!("The {what} contains a NUL character")),
         _ => Ok(()),

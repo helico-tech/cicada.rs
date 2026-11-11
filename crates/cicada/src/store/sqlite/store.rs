@@ -654,7 +654,8 @@ impl SqliteStore {
         .await?;
         Ok(Some(match running {
             Some(row) => MessageStatus::Running {
-                node: NodeId::new(col::<String>(&row, "lease_owner")?).map_err(StoreError::Corrupt)?,
+                node: NodeId::new(col::<String>(&row, "lease_owner")?)
+                    .map_err(|e| StoreError::Corrupt(e.to_string()))?,
                 lease_until: instant(col(&row, "lease_until")?),
                 message,
             },

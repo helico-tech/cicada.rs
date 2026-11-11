@@ -8,6 +8,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::actor::{DefinitionError, contract_of};
 use crate::contract::{Contract, canonical_json};
 use crate::prelude::*;
 use crate::store::{Backend, Store, TypeDef};
@@ -86,6 +87,34 @@ impl Actor for BadActor {
     }
 }
 
+/// A message "family" that is a plain struct, not a tagged enum.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct NotAFamily {
+    n: i64,
+}
+
+/// A ref whose type name is malformed and whose family is not a tagged enum.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WorseRef {
+    name: String,
+}
+
+impl ActorRef for WorseRef {
+    const TYPE: &'static str = "Worse Type";
+    type Message = NotAFamily;
+}
+
+struct WorseActor;
+
+impl Actor for WorseActor {
+    type Ref = WorseRef;
+    type State = NoState;
+
+    async fn handle(&self, _turn: &mut Turn<Self>, _message: NotAFamily) -> HandlerResult {
+        Ok(())
+    }
+}
+
 fn store() -> Store {
     Store::memory_on(Arc::new(VirtualClock::default()))
 }
@@ -115,6 +144,16 @@ async fn a_bad_ref_and_a_zero_max_turn_are_reported() {
     let problems = problems(BadActor).await;
     assert!(problems.iter().any(|p| p.contains("Ref:")), "{problems:?}");
     assert!(problems.iter().any(|p| p.contains("MAX_TURN must be positive")), "{problems:?}");
+}
+
+#[test]
+fn a_malformed_definition_is_a_definition_error_with_a_reason_per_fault() {
+    let e: DefinitionError = contract_of::<WorseActor>().unwrap_err();
+    assert_eq!(e.reasons().len(), 2, "{e}");
+    assert!(e.reasons()[0].starts_with("Ref: "), "{e}");
+    assert!(e.reasons()[1].starts_with("Messages: "), "{e}");
+    assert_eq!(e.to_string(), e.reasons().join("; "));
+    assert!(contract_of::<SyncActor>().is_ok());
 }
 
 #[tokio::test]

@@ -429,7 +429,7 @@ fn type_name(text: String) -> Result<TypeName, TxError> {
 }
 
 fn message_id(text: String) -> Result<MessageId, TxError> {
-    MessageId::new(text).map_err(corrupt)
+    MessageId::new(text).map_err(|e| corrupt(e.to_string()))
 }
 
 fn type_def(row: &PgRow) -> Result<TypeDef, TxError> {
@@ -489,7 +489,7 @@ fn actor_record(row: &PgRow) -> Result<ActorRecord, TxError> {
 }
 
 fn node_id(text: String) -> Result<NodeId, TxError> {
-    NodeId::new(text).map_err(corrupt)
+    NodeId::new(text).map_err(|e| corrupt(e.to_string()))
 }
 
 fn node_record(row: &PgRow) -> Result<NodeRecord, TxError> {
@@ -788,9 +788,11 @@ async fn status_in(tx: &mut Tx, id: &MessageId) -> Result<Option<MessageStatus>,
         let owner: Option<String> = row.try_get("lease_owner")?;
         let until: Option<Timestamp> = row.try_get("lease_until")?;
         return Ok(Some(match (owner, until) {
-            (Some(owner), Some(lease_until)) => {
-                MessageStatus::Running { message, node: NodeId::new(owner).map_err(corrupt)?, lease_until }
-            }
+            (Some(owner), Some(lease_until)) => MessageStatus::Running {
+                message,
+                node: NodeId::new(owner).map_err(|e| corrupt(e.to_string()))?,
+                lease_until,
+            },
             _ => MessageStatus::Pending(message),
         }));
     }

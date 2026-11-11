@@ -24,8 +24,8 @@ use serde_json::Value;
 pub use handle::Store;
 pub(crate) use model::{ActorCreate, Claim, CommitRequest, NodeRecord, OutgoingMessage, StateChange};
 pub use model::{
-    ActorRecord, Delivery, Message, MessageId, MessageStatus, NodeId, OutcomeRecord, OutcomeStatus, Page, PageCursor,
-    RunningTurn, StoreStats, TurnOutcome, TypeDef,
+    ActorRecord, Delivery, IdError, Message, MessageId, MessageStatus, NodeId, OutcomeRecord, OutcomeStatus, Page,
+    PageCursor, RunningTurn, StoreStats, TurnOutcome, TypeDef,
 };
 #[cfg(feature = "postgres")]
 pub use postgres::PostgresOptions;

@@ -294,6 +294,20 @@ async fn send_errors() {
     assert_eq!(not_allowed.headers[header::ALLOW], "GET, PUT, DELETE");
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_payload_that_does_not_decode_is_refused_with_its_reason_said_once() {
+    let app = app().await;
+    put(&app, "/actors/counter/a", r#"{"state": {}}"#).await;
+    let refused = post(&app, "/actors/counter/a/messages", r#"{"type": "Add", "payload": {"n": "x"}}"#).await;
+    assert_problem(&refused, 422, pt::INVALID_PAYLOAD);
+    let detail = refused.json()["detail"].as_str().unwrap().to_owned();
+    assert!(detail.starts_with("Payload of 'Add' cannot be decoded: "), "{detail}");
+    assert_eq!(detail.matches("cannot be decoded").count(), 1, "{detail}");
+    let not_object = post(&app, "/actors/counter/a/messages", r#"{"type": "Add", "payload": [1]}"#).await;
+    assert_problem(&not_object, 422, pt::INVALID_PAYLOAD);
+    assert_eq!(not_object.json()["detail"], "Payload of 'Add' must be a JSON object");
+}
+
 // ---- GET /actors/{path}/messages ----
 
 #[tokio::test(start_paused = true)]

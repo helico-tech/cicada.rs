@@ -7,6 +7,11 @@ use serde::{Deserialize, Serialize};
 use crate::store::OutcomeStatus;
 use crate::time::{MAX_DELAY, format_duration, serde_duration};
 
+/// A retention rule out of its bounds; it prints why, e.g. "retention count must be in 1..10000, was 0".
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
+pub struct RetentionError(String);
+
 /// How long a message's record is kept once it has finished: part of the message's delivery, set by its **sender**
 /// next to the delivery time and retry policy, and stored with the message.
 ///
@@ -111,15 +116,18 @@ enum RawKeep {
 }
 
 impl TryFrom<RawKeep> for Keep {
-    type Error = String;
+    type Error = RetentionError;
 
-    fn try_from(raw: RawKeep) -> Result<Self, String> {
+    fn try_from(raw: RawKeep) -> Result<Self, RetentionError> {
         match raw {
             RawKeep::Remove {} => Ok(Keep::Remove),
             RawKeep::For { age } => Keep::keep_for(age),
             RawKeep::Last { count } => {
                 if !(1..=Keep::MAX_COUNT as i64).contains(&count) {
-                    return Err(format!("retention count must be in 1..{}, was {count}", Keep::MAX_COUNT));
+                    return Err(RetentionError(format!(
+                        "retention count must be in 1..{}, was {count}",
+                        Keep::MAX_COUNT
+                    )));
                 }
                 Ok(Keep::Last { count: count as u32 })
             }
@@ -132,22 +140,25 @@ impl Keep {
     pub const MAX_COUNT: u32 = 10_000;
 
     /// [`Keep::For`] with a checked age.
-    pub fn keep_for(age: Duration) -> Result<Self, String> {
+    pub fn keep_for(age: Duration) -> Result<Self, RetentionError> {
         if age.is_zero() {
-            return Err(format!("retention age must be a positive duration, was {}", format_duration(age)));
+            return Err(RetentionError(format!(
+                "retention age must be a positive duration, was {}",
+                format_duration(age)
+            )));
         }
         if age > MAX_DELAY {
-            return Err(format!(
+            return Err(RetentionError(format!(
                 "retention age must not exceed {}, was {}",
                 format_duration(MAX_DELAY),
                 format_duration(age)
-            ));
+            )));
         }
         Ok(Keep::For { age })
     }
 
     /// [`Keep::Last`] with a checked count.
-    pub fn last(count: u32) -> Result<Self, String> {
+    pub fn last(count: u32) -> Result<Self, RetentionError> {
         Keep::try_from(RawKeep::Last { count: count as i64 })
     }
 }
@@ -213,6 +224,16 @@ mod tests {
         let last: Retention = serde_json::from_value(json!({"done": {"kind": "last", "count": 3}})).unwrap();
         assert_eq!(last.done, Some(Keep::Last { count: 3 }));
         assert_eq!(serde_json::to_value(&last).unwrap(), json!({"done": {"kind": "last", "count": 3}, "failed": null}));
+    }
+
+    #[test]
+    fn a_retention_of_zero_messages_is_a_retention_error() {
+        let e: RetentionError = Keep::last(0).unwrap_err();
+        assert_eq!(e.to_string(), "retention count must be in 1..10000, was 0");
+        let e: RetentionError = Keep::keep_for(Duration::ZERO).unwrap_err();
+        assert_eq!(e.to_string(), "retention age must be a positive duration, was PT0S");
+        let e = serde_json::from_value::<Retention>(json!({"done": {"kind": "last", "count": 0}})).unwrap_err();
+        assert!(e.to_string().contains("retention count must be in 1..10000, was 0"), "{e}");
     }
 
     #[test]

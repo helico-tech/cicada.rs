@@ -6,6 +6,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::time::{MAX_DELAY, format_duration, serde_duration};
 
+/// A retry policy or backoff out of its bounds; it prints why, e.g. "retry maxAttempts must be in 1..100, was 0".
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
+pub struct RetryError(String);
+
 /// How the runtime retries one message: part of the message's delivery, set by its **sender** next to the delivery
 /// time, and stored with the message. Without a policy nothing is retried: a failed handler run ends the message
 /// `failed`.
@@ -38,11 +43,15 @@ struct RawRetryPolicy {
 }
 
 impl TryFrom<RawRetryPolicy> for RetryPolicy {
-    type Error = String;
+    type Error = RetryError;
 
-    fn try_from(raw: RawRetryPolicy) -> Result<Self, String> {
+    fn try_from(raw: RawRetryPolicy) -> Result<Self, RetryError> {
         if !(1..=Self::MAX_ATTEMPTS as i64).contains(&raw.max_attempts) {
-            return Err(format!("retry maxAttempts must be in 1..{}, was {}", Self::MAX_ATTEMPTS, raw.max_attempts));
+            return Err(RetryError(format!(
+                "retry maxAttempts must be in 1..{}, was {}",
+                Self::MAX_ATTEMPTS,
+                raw.max_attempts
+            )));
         }
         Ok(Self { max_attempts: raw.max_attempts as u32, backoff: raw.backoff })
     }
@@ -54,7 +63,7 @@ impl RetryPolicy {
 
     /// A policy of `max_attempts` handler runs with `backoff`; fails when `max_attempts` is outside
     /// `1..=`[`Self::MAX_ATTEMPTS`].
-    pub fn new(max_attempts: u32, backoff: Backoff) -> Result<Self, String> {
+    pub fn new(max_attempts: u32, backoff: Backoff) -> Result<Self, RetryError> {
         RetryPolicy::try_from(RawRetryPolicy { max_attempts: max_attempts as i64, backoff })
     }
 
@@ -153,9 +162,9 @@ fn default_factor() -> f64 {
 }
 
 impl TryFrom<RawBackoff> for Backoff {
-    type Error = String;
+    type Error = RetryError;
 
-    fn try_from(raw: RawBackoff) -> Result<Self, String> {
+    fn try_from(raw: RawBackoff) -> Result<Self, RetryError> {
         match raw {
             RawBackoff::Exponential { initial, factor, max } => Backoff::exponential(initial, factor, max),
             RawBackoff::Fixed { delay } => Backoff::fixed(delay),
@@ -163,40 +172,40 @@ impl TryFrom<RawBackoff> for Backoff {
     }
 }
 
-fn check_delay(name: &str, value: Duration) -> Result<(), String> {
+fn check_delay(name: &str, value: Duration) -> Result<(), RetryError> {
     if value.is_zero() {
-        return Err(format!("backoff {name} must be a positive duration, was {}", format_duration(value)));
+        return Err(RetryError(format!("backoff {name} must be a positive duration, was {}", format_duration(value))));
     }
     if value > MAX_DELAY {
-        return Err(format!(
+        return Err(RetryError(format!(
             "backoff {name} must not exceed {}, was {}",
             format_duration(MAX_DELAY),
             format_duration(value)
-        ));
+        )));
     }
     Ok(())
 }
 
 impl Backoff {
     /// An exponential backoff; fails when a bound is violated.
-    pub fn exponential(initial: Duration, factor: f64, max: Duration) -> Result<Self, String> {
+    pub fn exponential(initial: Duration, factor: f64, max: Duration) -> Result<Self, RetryError> {
         check_delay("initial", initial)?;
         check_delay("max", max)?;
         if !(factor.is_finite() && factor >= 1.0) {
-            return Err(format!("backoff factor must be a finite number >= 1, was {factor}"));
+            return Err(RetryError(format!("backoff factor must be a finite number >= 1, was {factor}")));
         }
         if max < initial {
-            return Err(format!(
+            return Err(RetryError(format!(
                 "backoff max ({}) must not be shorter than initial ({})",
                 format_duration(max),
                 format_duration(initial)
-            ));
+            )));
         }
         Ok(Backoff::Exponential { initial, factor, max })
     }
 
     /// A fixed backoff; fails when `delay` is zero or longer than [`MAX_DELAY`].
-    pub fn fixed(delay: Duration) -> Result<Self, String> {
+    pub fn fixed(delay: Duration) -> Result<Self, RetryError> {
         check_delay("delay", delay)?;
         Ok(Backoff::Fixed { delay })
     }
@@ -312,6 +321,28 @@ mod tests {
         ] {
             assert!(serde_json::from_value::<RetryPolicy>(bad.clone()).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_policy_without_attempts_is_a_retry_error() {
+        let fixed = Backoff::fixed(Duration::from_secs(1)).unwrap();
+        let e: RetryError = RetryPolicy::new(0, fixed).unwrap_err();
+        assert_eq!(e.to_string(), "retry maxAttempts must be in 1..100, was 0");
+        let e: RetryError = Backoff::fixed(Duration::ZERO).unwrap_err();
+        assert_eq!(e.to_string(), "backoff delay must be a positive duration, was PT0S");
+        let anyhow: anyhow::Error = Backoff::exponential(Duration::from_secs(2), 2.0, Duration::from_secs(1))
+            .map_err(anyhow::Error::from)
+            .unwrap_err();
+        assert_eq!(anyhow.to_string(), "backoff max (PT1S) must not be shorter than initial (PT2S)");
+    }
+
+    #[test]
+    fn an_error_read_from_json_holds_the_text() {
+        let e = serde_json::from_value::<RetryPolicy>(
+            json!({"maxAttempts": 0, "backoff": {"kind": "fixed", "delay": "PT1S"}}),
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("retry maxAttempts must be in 1..100, was 0"), "{e}");
     }
 
     #[test]

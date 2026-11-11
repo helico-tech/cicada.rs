@@ -26,6 +26,12 @@ use crate::runtime::{BulkSelection, NodeHealth};
 use crate::store::{MessageId, NodeId};
 use crate::time::{Timestamp, serde_duration, serde_instant};
 
+/// A request body whose fields contradict each other, e.g. "Give either deliverAt or delay, not both". The HTTP API
+/// answers it with `400` and this text.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
+pub struct RequestError(String);
+
 /// Body of `PUT /actors/{type}/{key}`. The state is required: a body without it, or an empty body, is a `400`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -146,11 +152,13 @@ impl BulkRequest {
     }
 
     /// The selection this request asks for; fails unless it gives either ids or a filter.
-    pub fn selection(&self) -> Result<BulkSelection, String> {
+    pub fn selection(&self) -> Result<BulkSelection, RequestError> {
         match (&self.ids, &self.prefix, &self.message_type) {
-            (None, None, None) => Err("Give either ids or a filter (prefix, messageType)".to_owned()),
+            (None, None, None) => Err(RequestError("Give either ids or a filter (prefix, messageType)".to_owned())),
             (Some(_), None, None) => Ok(BulkSelection::Ids(self.ids.clone().unwrap_or_default())),
-            (Some(_), _, _) => Err("Give either ids or a filter (prefix, messageType), not both".to_owned()),
+            (Some(_), _, _) => {
+                Err(RequestError("Give either ids or a filter (prefix, messageType), not both".to_owned()))
+            }
             (None, prefix, message_type) => Ok(BulkSelection::Filter {
                 prefix: prefix.clone().unwrap_or_default(),
                 message_type: message_type.clone(),

@@ -608,11 +608,11 @@ impl App {
             },
             "message" | "msg" => match MessageId::new(arg) {
                 Ok(id) => Target::Message(id),
-                Err(e) => return self.refuse(e),
+                Err(e) => return self.refuse(e.to_string()),
             },
             "node" => match NodeId::new(arg) {
                 Ok(id) => Target::Node(id),
-                Err(e) => return self.refuse(e),
+                Err(e) => return self.refuse(e.to_string()),
             },
             "type" => match TypeName::parse(arg) {
                 Ok(name) => Target::Type(name),

@@ -1169,7 +1169,7 @@ impl ActorSystem {
         options: SendOptions,
     ) -> Result<SendResult, OpError> {
         let address = to.address().map_err(|e| OpError::Invalid(e.to_string()))?;
-        let encoded = message::encode(&msg.into()).map_err(OpError::Invalid)?;
+        let encoded = message::encode(&msg.into()).map_err(|e| OpError::Invalid(e.to_string()))?;
         self.send_message(&address, &encoded.message_type, encoded.payload, options).await
     }
 
@@ -1180,7 +1180,7 @@ impl ActorSystem {
         msg: &M,
         options: SendOptions,
     ) -> Result<SendResult, OpError> {
-        let encoded = message::encode(msg).map_err(OpError::Invalid)?;
+        let encoded = message::encode(msg).map_err(|e| OpError::Invalid(e.to_string()))?;
         self.send_message(to, &encoded.message_type, encoded.payload, options).await
     }
 }

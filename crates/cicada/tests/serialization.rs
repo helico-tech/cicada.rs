@@ -189,9 +189,19 @@ fn decode_round_trips_and_ignores_unknown_keys_and_a_stray_type_key() {
 fn decode_failures() {
     assert!(message::decode::<CodecMsg>("Nope", &json!({})).is_err());
     assert!(message::decode::<CodecMsg>("Draw", &json!([])).is_err());
-    let e = message::decode::<CodecMsg>("Draw", &json!({"count": 2})).unwrap_err();
+    let e = message::decode::<CodecMsg>("Draw", &json!({"count": 2})).unwrap_err().to_string();
     assert!(e.starts_with("Payload of 'Draw' cannot be decoded"), "{e}");
     assert!(message::decode::<CodecMsg>("Draw", &json!({"shape": {"type": "circle", "radius": "x"}})).is_err());
+}
+
+#[test]
+fn a_payload_that_does_not_decode_is_a_message_error() {
+    let payload = json!({"shape": {"type": "circle", "radius": 1.0}, "count": "two"});
+    let e: message::MessageError = message::decode::<CodecMsg>("Draw", &payload).unwrap_err();
+    assert!(e.to_string().contains("'Draw'"), "{e}");
+    assert_eq!(e.to_string().matches("cannot be decoded").count(), 1, "{e}");
+    let e: anyhow::Error = message::encode(&Inner { n: 1 }).map_err(anyhow::Error::from).unwrap_err();
+    assert!(e.to_string().contains("is not a message family"), "{e}");
 }
 
 #[test]
