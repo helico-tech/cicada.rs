@@ -11,6 +11,10 @@
 //! - Which instances one claim takes among those that are due, and in which order, is free: S6 promises an order per
 //!   instance only. The backends would then hold different leases, so a claim always asks for every due instance
 //!   ([`ALL_DUE`]), or for none, and the claims are compared sorted by address.
+//! - Because of that, the epochs of different instances can come in another order in each backend. An `epoch_delta`
+//!   therefore moves by rank among the epochs a backend handed to the same address, not by value: `-1` is the epoch
+//!   handed just before the claim's, `1` the one just after, and where there is none, a number never handed to that
+//!   address. It reaches the same claim of the same instance in both backends, or no claim in both.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
@@ -648,6 +652,8 @@ pub struct Side {
     pub store: Arc<dyn Store>,
     /// Claims that no commit or release has used yet.
     claims: Vec<Claim>,
+    /// Per address, the epochs of every claim, in the order they came.
+    handed: HashMap<String, Vec<i64>>,
     sent: Vec<usize>,
     seq: Ranker,
     epochs: HashMap<String, Ranker>,
@@ -688,7 +694,14 @@ macro_rules! paged {
 impl Side {
     /// A backend at the start of a list.
     pub fn new(store: Arc<dyn Store>) -> Self {
-        Self { store, claims: Vec::new(), sent: Vec::new(), seq: Ranker::default(), epochs: HashMap::new() }
+        Self {
+            store,
+            claims: Vec::new(),
+            handed: HashMap::new(),
+            sent: Vec::new(),
+            seq: Ranker::default(),
+            epochs: HashMap::new(),
+        }
     }
 
     fn message(&mut self, m: &Message) -> Value {
@@ -775,12 +788,25 @@ impl Side {
     /// The open claim an operation refers to, counted back from the latest, with its epoch moved by `delta`; `None`
     /// when no claim is open. A claim stays open until a commit or a release has used it, so later operations reach a
     /// turn that is still running. Its lease can still have expired: stale epochs come from that and from `delta`.
+    ///
+    /// `delta` moves by rank among the epochs handed to the claim's address. Past the first or the last of them it
+    /// moves on from there by value, to a number never handed to that address.
     fn claimed(&self, back: usize, delta: i64) -> Option<(ActorAddress, i64, MessageId)> {
         if self.claims.is_empty() {
             return None;
         }
         let claim = &self.claims[self.claims.len() - 1 - back % self.claims.len()];
-        Some((claim.actor.clone(), claim.epoch + delta, claim.message.id.clone()))
+        let handed = &self.handed[claim.actor.as_str()];
+        let rank = handed.iter().position(|e| *e == claim.epoch).expect("an open claim's epoch was handed") as i64;
+        let (to, last) = (rank + delta, handed.len() as i64 - 1);
+        let epoch = if to < 0 {
+            handed[0] + to
+        } else if to > last {
+            handed[last as usize] + (to - last)
+        } else {
+            handed[to as usize]
+        };
+        Some((claim.actor.clone(), epoch, claim.message.id.clone()))
     }
 
     /// The id of a message sent earlier in the list, counted back from the latest; while nothing was sent, some id.
@@ -906,6 +932,7 @@ impl Side {
                         let mut answers = Vec::new();
                         for claim in &claims {
                             answers.push(self.claim(claim));
+                            self.handed.entry(claim.actor.to_string()).or_default().push(claim.epoch);
                         }
                         self.claims.extend(claims);
                         Value::from(answers)
@@ -1021,6 +1048,8 @@ impl Side {
         }
     }
 
+    /// Closes the open claim of `address` with the epoch that was sent: through [`Side::claimed`], the same claim in
+    /// both backends, or none in both.
     fn close_claim(&mut self, address: &ActorAddress, epoch: i64) {
         self.claims.retain(|c| !(c.actor == *address && c.epoch == epoch));
     }

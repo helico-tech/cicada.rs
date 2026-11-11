@@ -1,13 +1,17 @@
 //! `InMemoryStore` and `SqliteStore` give equivalent answers to the same operations, and the comparison itself works.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Duration;
 
 use cicada::address::ActorAddress;
-use cicada::store::{Claim, OutgoingMessage, StoreError};
-use cicada_fuzz::compare::{Op, Pair, Ranker, error_kind, in_address_order, op, ops};
+use cicada::store::{Claim, OutgoingMessage, RenewResult, Store, StoreError};
+use cicada_fuzz::compare::{
+    self, ADDRESSES, ALL_DUE, Commit, Due, End, Op, Pair, Ranker, StateOp, error_kind, in_address_order, op, ops,
+};
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;
 use proptest::test_runner::TestRunner;
+use serde_json::{Value, json};
 
 /// How many lists a normal `cargo test` runs; `PROPTEST_CASES` overrides it.
 const DEFAULT_CASES: u32 = 256;
@@ -31,6 +35,156 @@ proptest! {
             return Err(TestCaseError::fail(difference.to_string()));
         }
     }
+}
+
+fn send(to: usize, id: usize, due: Due) -> compare::Send {
+    compare::Send { to, id, due, payload: 0, from: None, caused_by: None, retry: false, retention: 0, extras: false }
+}
+
+fn commit(claim: usize, epoch_delta: i64) -> Commit {
+    Commit {
+        claim,
+        epoch_delta,
+        wrong_message: None,
+        end: End::Done,
+        state: StateOp::Unchanged,
+        creates: vec![],
+        sends: vec![],
+        cancels: vec![],
+    }
+}
+
+fn claim_all(ttl: Duration) -> Op {
+    Op::ClaimDue { types: vec![0, 1], node: 0, ttl, limit: ALL_DUE }
+}
+
+const NS: Duration = Duration::from_nanos(1);
+const US: Duration = Duration::from_micros(1);
+
+/// The list `backends_agree` found in the CI of 0.3.1, shrunk. `alpha/0` and `alpha/1` are due at one instant and the
+/// backends hand out their epochs in another order; `epoch_delta: -1` then closed different claims in the two.
+#[tokio::test]
+async fn the_list_with_two_instances_due_at_one_instant_agrees() {
+    let list = [
+        Op::Enqueue(send(1, 18, Due::After(Duration::ZERO))),
+        claim_all(US),
+        Op::Enqueue(send(0, 0, Due::Now)),
+        Op::Delete { to: 0 },
+        Op::Enqueue(send(0, 0, Due::Now)),
+        Op::Enqueue(send(0, 0, Due::Now)),
+        Op::Commit(Commit {
+            end: End::Rescheduled(Due::AtAhead(NS)),
+            creates: vec![(0, 0)],
+            sends: vec![send(0, 1, Due::After(NS))],
+            ..commit(0, 0)
+        }),
+        Op::Advance(US),
+        claim_all(US),
+        Op::SetPaused { to: 1, paused: true },
+        Op::Advance(US),
+        claim_all(US),
+        Op::Commit(commit(0, -1)),
+        Op::Commit(commit(2, 0)),
+    ];
+    Pair::memory_and_sqlite().await.run(&list).await.unwrap_or_else(|difference| panic!("{difference}"));
+}
+
+/// The epoch of the lease `address` holds in `store`: the small number that renews it. Renewed with the claim's ttl at
+/// the claim's instant, the lease stays as it was.
+async fn lease_epoch(store: &dyn Store, address: usize, ttl: Duration) -> i64 {
+    let address = ActorAddress::parse(ADDRESSES[address]).unwrap();
+    for epoch in 1..=8 {
+        if let Ok(RenewResult::Renewed(_)) = store.renew(&address, epoch, ttl).await {
+            return epoch;
+        }
+    }
+    panic!("{address} holds no lease")
+}
+
+/// Both backends after `alpha/0` and `alpha/1` were due at one instant and claimed together, each backend handing
+/// out their epochs in its own order, and after `alpha/0` alone was claimed again. The open claims, counted back from
+/// the latest: 0 is the second claim of `alpha/0`, 1 the claim of `alpha/1`, 2 the first claim of `alpha/0`.
+async fn tied_pair() -> Pair {
+    async fn run(pair: &mut Pair, ops: &[Op]) {
+        for (number, op) in ops.iter().enumerate() {
+            pair.step(number, op).await.unwrap_or_else(|difference| panic!("{difference}"));
+        }
+    }
+    let mut pair = Pair::memory_and_sqlite().await;
+    let to_one_instant = [
+        Op::Enqueue(send(1, 18, Due::After(Duration::ZERO))),
+        claim_all(US),
+        Op::Delete { to: 0 },
+        // `alpha/1` goes back to its mailbox, and a re-created `alpha/0` gets a message: both are due 1 ns ahead.
+        Op::Commit(Commit {
+            end: End::Rescheduled(Due::AtAhead(NS)),
+            creates: vec![(0, 0)],
+            sends: vec![send(0, 1, Due::After(NS))],
+            ..commit(0, 0)
+        }),
+        Op::Advance(US),
+        claim_all(US),
+    ];
+    run(&mut pair, &to_one_instant).await;
+    let mut orders = Vec::new();
+    for store in [&pair.first.store, &pair.second.store] {
+        orders.push(lease_epoch(&**store, 0, US).await < lease_epoch(&**store, 1, US).await);
+    }
+    assert_ne!(orders[0], orders[1], "the backends hand out the epochs of alpha/0 and alpha/1 in another order");
+    run(&mut pair, &[Op::SetPaused { to: 1, paused: true }, Op::Advance(US), claim_all(Duration::from_secs(30))]).await;
+    pair
+}
+
+/// Runs `op` on both backends and returns the answer they agree on.
+async fn agreed(pair: &mut Pair, op: Op) -> Value {
+    let now = cicada::store::Clock::now(&*pair.clock);
+    let first = pair.first.apply(&op, now).await;
+    let second = pair.second.apply(&op, now).await;
+    assert_eq!(first, second, "backends differ at {op:?}");
+    first
+}
+
+async fn finish(pair: Pair) {
+    pair.run(&[]).await.unwrap_or_else(|difference| panic!("{difference}"));
+}
+
+#[tokio::test]
+async fn after_a_tie_a_commit_reaches_the_same_claim_in_both_backends() {
+    // -1 from the second claim of alpha/0 is its first: stale, and closed in both.
+    let mut pair = tied_pair().await;
+    assert_eq!(agreed(&mut pair, Op::Commit(commit(0, -1))).await, json!("lease-lost"));
+    // So alpha/1 and the second claim of alpha/0 are open, and 2 back is the second claim of alpha/0.
+    assert!(agreed(&mut pair, Op::Commit(commit(2, 0))).await.get("committed").is_some());
+    finish(pair).await;
+
+    // 1 from the first claim of alpha/0 is its second, which holds the lease.
+    let mut pair = tied_pair().await;
+    assert!(agreed(&mut pair, Op::Commit(commit(2, 1))).await.get("committed").is_some());
+    finish(pair).await;
+}
+
+#[tokio::test]
+async fn after_a_tie_a_renew_reaches_the_same_claim_in_both_backends() {
+    let mut pair = tied_pair().await;
+    let renew = |claim, epoch_delta| Op::Renew { claim, epoch_delta, ttl: Duration::from_secs(30) };
+    assert_eq!(agreed(&mut pair, renew(0, -1)).await, json!("lease-lost"));
+    assert!(agreed(&mut pair, renew(2, 1)).await.get("renewed").is_some());
+    finish(pair).await;
+}
+
+#[tokio::test]
+async fn after_a_tie_a_release_reaches_the_same_claim_in_both_backends() {
+    // -1 from the second claim of alpha/0 releases nothing and closes its first claim in both.
+    let mut pair = tied_pair().await;
+    assert_eq!(agreed(&mut pair, Op::Release { claim: 0, epoch_delta: -1 }).await, json!("released"));
+    assert!(agreed(&mut pair, Op::Commit(commit(2, 0))).await.get("committed").is_some());
+    finish(pair).await;
+
+    // 1 from the first claim of alpha/0 releases the lease of its second.
+    let mut pair = tied_pair().await;
+    assert_eq!(agreed(&mut pair, Op::Release { claim: 2, epoch_delta: 1 }).await, json!("released"));
+    assert_eq!(agreed(&mut pair, Op::RunningTurn { to: 0 }).await, Value::Null);
+    finish(pair).await;
 }
 
 #[test]
