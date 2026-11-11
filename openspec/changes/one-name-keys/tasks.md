@@ -66,8 +66,8 @@ inside `crates/cicada`.
 
 ## 5. Checks
 
-- [ ] 5.1 `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
+- [x] 5.1 `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
       `openspec validate one-name-keys --strict`. Verify: all pass.
-- [ ] 5.2 The PostgreSQL tests with `CICADA_PG_URL` set, and the end-to-end suite with
+- [x] 5.2 The PostgreSQL tests with `CICADA_PG_URL` set, and the end-to-end suite with
       `CICADA_E2E=1 cargo test -p cicada-e2e -- --nocapture`. Both need Docker. Verify: both pass; if Docker cannot
       be started, leave this task open and say so in the report.
