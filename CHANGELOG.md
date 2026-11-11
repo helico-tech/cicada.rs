@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.5.0 — unreleased
+## 0.5.0 — 2026-11-11
 
 A breaking release: the store trait leaves the public API (ADR 0018, its second step). A host opens one public type,
 `Store`, and the two SQL stores move into `cicada`, each behind a cargo feature. Nothing changes in the database: no
