@@ -105,9 +105,9 @@ was returned before. No text changes.
 
 ## 7. Checks
 
-- [ ] 7.1 `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace`,
+- [x] 7.1 `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace`,
       `cargo check -p cicada` with no feature and with each of `sqlite`, `postgres` and `testing` alone, and
       `openspec validate tidy-the-core --strict`. Verify: all pass.
-- [ ] 7.2 The PostgreSQL tests with `CICADA_PG_URL` set, and the end-to-end suite with
+- [x] 7.2 The PostgreSQL tests with `CICADA_PG_URL` set, and the end-to-end suite with
       `CICADA_E2E=1 cargo test -p cicada-e2e -- --nocapture`. Both need Docker. Verify: both pass; if Docker cannot
       be started, leave this task open and say so in the report.
