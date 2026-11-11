@@ -252,16 +252,24 @@ The feature `postgres` builds the driver with TLS (rustls); there is nothing els
 
 - `disable`, `allow`: plain text; the driver never tries TLS.
 - `prefer` (the default): TLS without checking the server's certificate when the server offers TLS, plain text when
-  it does not.
+  it does not. Once the server has offered TLS, a failed handshake fails the connection; it does not go back to plain
+  text (`sslmode=disable` does).
 - `require`: TLS or no connection; the server's certificate is not checked.
 - `verify-ca`: as `require`, and the certificate must be signed by a trusted CA.
 - `verify-full`: as `verify-ca`, and the certificate must name the host of the URL.
 
-The trusted CAs are those in the certificate store of the operating system and those in the PEM file that
-`sslrootcert` names (`…?sslmode=verify-full&sslrootcert=/etc/ssl/db-ca.pem`). A database rarely has a certificate of
-a public CA, so install its CA on the host or name the file. `sslcert` and `sslkey` name the files of a client
-certificate and its key, for a server that asks for one. The default `prefer` neither insists on TLS nor checks the
+The trusted CAs are the built-in list of public CAs (webpki-roots) and those in the PEM file that `sslrootcert` names
+(`…?sslmode=verify-full&sslrootcert=/etc/ssl/db-ca.pem`); the certificate store of the operating system is not read.
+A database rarely has a certificate of a public CA: one with a private or cloud-provider CA needs `sslrootcert`.
+`sslcert` and `sslkey` name the files of a client certificate and its key, for a server that asks for one. For each of
+the four that the URL does not name, the driver reads `PGSSLMODE`, `PGSSLROOTCERT`, `PGSSLCERT` or `PGSSLKEY` from the
+environment, so the default mode can come from there. The default `prefer` neither insists on TLS nor checks the
 server, so set the mode on purpose: `sslmode=verify-full`, or at least `require`.
+
+The crates of Cicada build rustls on the crypto provider `aws-lc-rs`; a host that adds a library that builds rustls on
+`ring` has two providers, and must install a default at start
+(`rustls::crypto::aws_lc_rs::default_provider().install_default()`), or every call that leaves the choice to rustls
+panics.
 
 ## Telemetry
 

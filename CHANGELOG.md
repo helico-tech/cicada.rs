@@ -13,12 +13,15 @@ No change to the wire format or the store schema: nodes of 0.5.0 and 0.5.1 can s
 
 ### Fixed
 
-- A store on PostgreSQL opens over TLS. The feature `postgres` builds the driver with TLS (rustls, trusting the
-  certificate store of the operating system), so a URL with `sslmode=require`, `verify-ca` or `verify-full` no longer
-  fails with "SQLx was built without TLS support enabled", and `sslrootcert`, `sslcert` and `sslkey` name files. A URL
-  without `sslmode` uses the default `prefer`, which now means TLS without checking the server's certificate when the
-  server offers TLS, and plain text when it does not; set the mode on purpose (docs/operations.md, TLS for
-  PostgreSQL). The feature `sqlite` builds no TLS.
+- A store on PostgreSQL opens over TLS. The feature `postgres` builds the driver with TLS: rustls on the crypto
+  provider `aws-lc-rs`, the one of `cicada-client`, trusting the built-in list of public CAs. A URL with
+  `sslmode=require`, `verify-ca` or `verify-full` no longer fails with "SQLx was built without TLS support enabled";
+  `sslrootcert` names the file of a private or cloud-provider CA, and `sslcert` and `sslkey` those of a client
+  certificate. Without `sslmode` in the URL the driver takes `PGSSLMODE`, and without that the default `prefer`,
+  which now means TLS without checking the server's certificate when the server offers TLS, and plain text when it
+  does not; once the server has offered TLS, a failed handshake fails the connection. Set the mode on purpose
+  (docs/operations.md, TLS for PostgreSQL). A host that adds a library that builds rustls on `ring` must install a
+  default crypto provider at start. The feature `sqlite` builds no TLS.
 
 ## 0.5.0 — 2026-11-11
 
