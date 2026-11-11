@@ -27,10 +27,10 @@ state plus a mailbox; it occupies memory only while one message is being handled
 | --- | --- |
 | Node | A service running an `ActorSystem`. Sends messages, serves the HTTP API, and runs turns for the actor types it hosts. |
 | Store | The shared durable backend: mailbox, state store, type registry, the atomic commit, and the only clock. |
-| Actor type | A definition: a ref type with its type name, a state type, a message family, a handler, an unhandled policy. In Rust: an implementation of the `Actor` trait. A type that keeps no data has the state `NoState`, stored as `{}`. |
+| Actor type | A definition: a ref type with its type name and its message family, a state type, and a handler that takes the messages of that family. In Rust: an implementation of the `Actor` trait. A type that keeps no data has the state `NoState`, stored as `{}`. A message the type cannot decode fails; there is no policy for it (ADR 0018). |
 | Contract | The published description of a type: type name, message type names, and the JSON Schemas generated from its types, the state's always among them. It holds nothing of the ref (ADR 0021). Its hash leaves out the schemas' `description`s (doc comments), so a reworded comment keeps the hash (ADR 0017). |
 | Actor instance | One name of a type, explicitly created with its initial state. Owns one state value, never absent and never JSON `null`, and one mailbox (ADR 0018). |
-| Ref | An actor's address: a type name and a key, `type/key`. A typed ref in code (`ActorRef`); its address text (`sync/acme`) on the wire, in state and in messages. The key is one name (ADR 0021): serde writes the ref as one string (a struct with one string field, or a type written as a string itself), or the ref is a unit struct or a struct that declares no field to serde, a singleton with the key `_`. A name is any non-empty text; in the key it keeps `A-Z a-z 0-9 . _ ~ -` and `:` and percent-encodes the rest, so a `:` separates nothing. |
+| Ref | An actor's address: a type name and a key, `type/key`. A typed ref in code (`ActorRef`); its address text (`sync/acme`) on the wire, in state and in messages. The key is one name (ADR 0021): serde writes the ref as one string (a struct with one string field, or a type written as a string itself), or the ref is a unit struct or a struct that declares no field to serde, a singleton with the key `_`; a ref that writes a unit and reads a string has no address. A name is any non-empty text; in the key it keeps `A-Z a-z 0-9 . _ ~ -` and `:` and percent-encodes the rest, so a `:` separates nothing. |
 | Message | A typed envelope addressed to one instance, with a delivery time. |
 | Mailbox | An instance's pending messages, ordered by delivery time. |
 | Turn | One handling of one message: claim, load, run handler, commit. |
@@ -90,8 +90,9 @@ program, and opening it fails and leaves it as it was (ADR 0017).
 
 1. **Claim.** A node atomically takes the lease of an instance that has a due head message and no valid lease. Epoch
    and `attempt` each increase by 1.
-2. **Load.** State, the own ref and the message are decoded. If the payload cannot be decoded, the unhandled policy
-   runs instead of the handler.
+2. **Load.** State, the own ref and the message are decoded. If the message cannot be decoded (a type name the family
+   does not have, or a payload that does not fit), no handler runs: the message ends `failed` with the reason, never
+   retried, and the state stays as it was.
 3. **Run.** The handler runs as a future. Effects are buffered in the `Turn`. The node renews the lease by heartbeat.
 4. **Commit.** One write, fenced by the epoch: outcome (or reschedule), cancels, creates, sends, state, lease release.
 
@@ -100,6 +101,7 @@ program, and opening it fails and leaves it as it was (ADR 0017).
 | Handler returns `Ok` | `done` | Applied atomically |
 | Handler returns `Err` or panics, retry policy with attempts left, failure not permanent | None; the same message returns to pending after the backoff, `failures` + 1, `lastError` set | None |
 | Handler fails (no retry left, or permanent), or state cannot be decoded | `failed`, error recorded | None |
+| Message cannot be decoded (unknown type name, payload that does not fit) | `failed`, reason recorded, never retried | None |
 | Handler returns, but its new state cannot be encoded or is JSON `null` | `failed`, error recorded, never retried | None |
 | Commit rejected: a send targets an absent instance | `failed`, reason recorded | None |
 | Turn exceeds its maximum duration and is cut off | As a failing handler: retried by the policy, else `failed` (`timeout`) | None |
@@ -133,7 +135,7 @@ struct Sync { tenant: String }
 
 impl ActorRef for Sync {
     const TYPE: &'static str = "sync";
-    type Message = SyncMsg;
+    type Message = SyncMsg;   // the message family, declared once: the handler takes it
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]

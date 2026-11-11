@@ -89,7 +89,7 @@ was returned before. No text changes.
 
 ## 6. Docs
 
-- [ ] 6.1 `README.md` (the definition API without the two lines; in the HTTP table the send row says `404
+- [x] 6.1 `README.md` (the definition API without the two lines; in the HTTP table the send row says `404
       no-such-type` for a type that is not registered; the table of ADRs gets the row of 0022, and the row of 0003
       no longer says that `UNHANDLED` is required; the notes on handlers), `docs/architecture.md` (the definition
       API, the load step of a turn, the term *actor type*) and `docs/operations.md` (a migration that violates a
@@ -97,7 +97,7 @@ was returned before. No text changes.
       0003 and ADR 0012 get a line under Status that points to ADR 0018 for `UNHANDLED`. Verify:
       `cargo test -p cicada-examples --doc` passes; none of the three files names `UNHANDLED`, `Unhandled` or
       `type Message` outside the table of ADRs.
-- [ ] 6.2 `CHANGELOG.md`, a section `0.7.0 — unreleased`, and the version `0.7.0` in `Cargo.toml`: the section
+- [x] 6.2 `CHANGELOG.md`, a section `0.7.0 — unreleased`, and the version `0.7.0` in `Cargo.toml`: the section
       starts with the seven upgrade steps of the Migration Plan of `design.md`, then the breaking changes of the
       proposal, then what stays as it is (the text errors of `cicada-extras` and `cicada-test`). Verify: every step
       of the plan, every risk of `design.md` that names the upgrade note or the changelog, and every **BREAKING**

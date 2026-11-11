@@ -37,8 +37,10 @@ summarised [below](#decisions).
 
 ### Define an actor type
 
-A ref struct names the type and holds the key, one name; an enum with `#[serde(tag = "type")]` holds the messages (the variant name is the
-type name on the wire); one `handle` matches on the message, so the compiler checks that every message is handled.
+A ref struct names the type, holds the key, one name, and names the messages: an enum with `#[serde(tag = "type")]`
+(the variant name is the type name on the wire). The actor's one `handle` takes that enum and matches on it, so the
+compiler checks that every message is handled. A message that cannot be decoded when it is delivered (a type name the
+enum does not have, or a payload that does not fit) ends `failed` with the reason, without a retry, and no handler runs.
 This is [examples/src/sync.rs](examples/src/sync.rs), shortened:
 
 ```rust
@@ -137,8 +139,9 @@ impl<A: SyncApi> Actor for SyncActor<A> {
 The address of `Sync { tenant: "acme" }` is `sync/acme`. A key is one name (ADR 0021): serde writes the ref as one
 string — a struct with one string field, as here, or a type that serde writes as a string itself, such as a newtype
 around a `String` — or the ref is a unit struct or a struct that declares no field to serde, a singleton with the key
-`_`. A field with `#[serde(skip)]` does not count, and a ref that declares a field and writes none has no address. A
-number, a boolean, a character or an enum variant is not a string. A ref's one field cannot have a serde alias, and a
+`_`. A field with `#[serde(skip)]` does not count, and a ref that declares a field and writes none has no address,
+nor has one that writes a unit and reads a string. A number, a boolean, a character or an enum variant is not a
+string. A ref's one field cannot have a serde alias, and a
 ref cannot use a reader that takes more than one form (`deserialize_any`, `from` an untagged enum): the start check
 counts what the reader declares. A name may hold any text and must not be empty: in the address it keeps
 `A-Z a-z 0-9 . _ ~ -` and `:` and percent-encodes the rest, so `jan@example.com` is `users/jan%40example.com` and a key
@@ -302,7 +305,9 @@ async fn shutdown_signal() {
 ```
 
 - `system.start()` validates the hosted types and registers their contracts. An invalid type, a contract that differs
-  from the one already registered for its type name, fails the start with a `StartError` that lists every problem.
+  from the one already registered for its type name, fails the start with a `StartError` that lists every problem, a
+  `StartProblem` each: a contract conflict is `StartProblem::ContractConflict`, with the type name and both hashes, and
+  every other problem holds its sentence.
   `start` then runs the dispatch loop, the retention sweep and, on PostgreSQL, the collection of wake-ups.
 - `system.stop()` stops claiming, lets running turns finish within `shutdown_grace_period` (30 s), then cancels the
   rest and releases their leases. While it stops, `/health` and `/ready` answer `503`. `stop` is idempotent.
@@ -376,7 +381,7 @@ request's path and query as `instance`.
 | `GET /actors/{type}/{key}` — address, type, state, version, createdAt, paused | 200 | 404 |
 | `DELETE /actors/{type}/{key}` — admin delete, purges the mailbox | 204 | 404 |
 | `GET /actors?prefix=&cursor=&limit=` — instance addresses, paged | 200 | |
-| `POST /actors/{type}/{key}/messages` body `{id?, type, payload?, deliverAt? \| delay?, correlationId?, headers?, retry?, retention?}` — send | 202 `{id, deliverAt}`; 200 that id was already accepted (same target and type) | 400 invalid `retry` or `retention` policy; 404 no instance; 409 id already used for another target or type; 422 unknown message type, undecodable payload (hosting node only) |
+| `POST /actors/{type}/{key}/messages` body `{id?, type, payload?, deliverAt? \| delay?, correlationId?, headers?, retry?, retention?}` — send | 202 `{id, deliverAt}`; 200 that id was already accepted (same target and type) | 400 invalid `retry` or `retention` policy; 404 `no-such-type` when no registered type matches the target, also when the actor exists; 404 `no-such-instance` when its type is registered and the actor does not exist; 409 id already used for another target or type; 422 unknown message type, undecodable payload (hosting node only) |
 | `GET /actors/{type}/{key}/mailbox?cursor=&limit=` — pending mailbox in delivery order, each with `attempt`, `failures`, `lastError`, `retry` and `state` (`running` or `pending`) | 200 | 404 |
 | `POST /actors/{type}/{key}/mailbox/pause` — pause: messages queue up, no new turn is started, a running turn finishes | 204 | 404 |
 | `POST /actors/{type}/{key}/mailbox/resume` — resume a paused actor | 204 | 404 |
@@ -691,9 +696,9 @@ message; deleting or stopping the instance purges it.
 - **The receiver's veto.** A handler that returns `HandlerError::permanent(reason)` (or `turn.fail(reason)`, the same
   thing) ends the message `failed` at once with that reason, whatever the policy. `HandlerError::permanent_from(err)`
   keeps the cause.
-- **Not retried:** undecodable state, the unhandled policies `Fail` and `Drop` (decisions, not failures: no
-  `on_handler_error` either), a failing `on_claim` hook, and commits rejected by the store (e.g. a send to an absent
-  instance).
+- **Not retried:** undecodable state, a message that cannot be decoded (no handler runs, so no `on_handler_error`
+  either; it ends `failed` with the reason), a failing `on_claim` hook, and commits rejected by the store (e.g. a send to
+  an absent instance).
 - **Timeouts.** A run cut off at its maximum turn is a failure retried per policy. A handler that blocks its thread
   past the maximum (code that does not yield) is waited for; it is retried only if it then fails with an ordinary
   error. If it returns `Ok` or vetoes, the message ends `failed` with `timeout`, never re-run.
@@ -1134,7 +1139,7 @@ Decisions, as ADRs in [docs/adr/](docs/adr/):
 | --- | --- |
 | [0001](docs/adr/0001-port-keeps-the-contract.md) | Superseded by 0008. |
 | [0002](docs/adr/0002-crate-stack.md) | Crate stack: tokio, axum 0.8, sqlx 0.9 (one store per backend), serde, schemars, chrono, thiserror/anyhow, async-trait, reqwest, tracing and opentelemetry. |
-| [0003](docs/adr/0003-actor-definition-api.md) | Actor definitions: a ref struct implementing `ActorRef`, a tagged serde enum, and the `Actor` trait with a required `UNHANDLED` and one `handle`; no proc macro. |
+| [0003](docs/adr/0003-actor-definition-api.md) | Actor definitions: a ref struct implementing `ActorRef`, a tagged serde enum, and the `Actor` trait with one `handle`; no proc macro. Its unhandled policy is gone (0018). |
 | [0004](docs/adr/0004-shared-store-schema.md) | Superseded by 0008. |
 | [0005](docs/adr/0005-reuse-the-console.md) | Superseded by 0011. |
 | [0006](docs/adr/0006-console-in-sensus-design.md) | Superseded by 0011. |
@@ -1153,6 +1158,7 @@ Decisions, as ADRs in [docs/adr/](docs/adr/):
 | [0019](docs/adr/0019-child-actors.md) | Child actors: an actor may have a parent, the actor whose turn created it, and removing the parent removes what it owns. |
 | [0020](docs/adr/0020-the-change-loop.md) | The change loop: one order of changes, each described with the owner one ahead, built and validated in the background, and released when it lands. |
 | [0021](docs/adr/0021-a-key-is-one-name.md) | A key is one name: a ref is written as one string or a unit, a `:` is an ordinary character, contracts hold no key fields, and a database is upgraded in place. |
+| [0022](docs/adr/0022-typed-errors-and-no-such-type.md) | Typed errors: a named error per module, a start error with a problem per cause (a contract conflict is its own case), a send to an unregistered type answers `404 no-such-type`, and a migration that violates a constraint is an invalid store. |
 
 Design questions and their answers:
 
@@ -1169,9 +1175,10 @@ Design questions and their answers:
 
 Design notes:
 
-- **Definitions are checked by the compiler.** One `handle` with an exhaustive `match`, and a required
-  `const UNHANDLED` (ADR 0003). Handlers return `Result<(), HandlerError>`: `HandlerError::permanent` / `turn.fail(..)`
-  refuse further retries, and a panic is caught and treated as a failure (`panic: …`). `Attributes` are keyed by type.
+- **Definitions are checked by the compiler.** One `handle` with an exhaustive `match` over the messages its ref
+  names, which are declared once, on the ref (ADR 0003, ADR 0018). Handlers return `Result<(), HandlerError>`:
+  `HandlerError::permanent` / `turn.fail(..)` refuse further retries, and a panic is caught and treated as a failure
+  (`panic: …`). `Attributes` are keyed by type.
 - **The host owns the node.** The host builds an `ActorSystem`, calls `start` and `stop` itself, merges `actor_api()`
   into its router, and owns the store. `actor_api()` takes the `ActorSystem` itself, so it cannot be mounted without a
   node.
@@ -1181,7 +1188,9 @@ Design notes:
   as a warning.
 - **Validation at construction.** `CrashLoopGuard::new(0)` and `DeadLettersActor::with_capacity(0)` return an `Err`
   instead of failing node start (a plugin has no validation hook). `RetryPolicy::new`, `Backoff::*`, `Keep::last`,
-  `Keep::keep_for` and `Schedule::*` return `Result` too.
+  `Keep::keep_for` and `Schedule::*` return `Result` too. A function of the core returns a named error of its module
+  (`RetryError`, `RetentionError`, `IdError`, `MessageError`, `ContractError`, `DefinitionError`, `RequestError`) that
+  implements `std::error::Error`, so `?` carries it into `anyhow` or an error of the host (ADR 0022).
 - **Plain `Timestamp` and `MessageId` in state.** chrono's serde form is the contract's instant format, and both types
   have JSON Schemas, so states and messages hold them without attributes (issue 0701). `RetryPolicy` and `Retention`
   have JSON Schemas too (issue 0200).

@@ -7,6 +7,80 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.7.0 — unreleased
+
+A breaking release of the API: the core is tidied (ADR 0018, its fourth step; ADR 0022). An actor definition says its
+message type once and has no unhandled policy, functions of the core return named errors, a start error holds a
+problem per cause, and four errors say what is wrong. No schema change and no contract change: nodes of 0.6.0 and
+0.7.0 can share a database (but see step 2 for a type that said `Unhandled::Drop`).
+
+### Upgrading
+
+1. In every actor definition, remove `type Message = …;` and `const UNHANDLED: Unhandled = …;`. The handler takes the
+   message type of the ref, as before. Generic code that named `A::Message` names `<A::Ref as ActorRef>::Message`.
+2. A type that said `Unhandled::Drop`: expect `failed` for a message that cannot be decoded, where it ended `done`
+   before; there is no way to opt out. Nodes of 0.6.0 and 0.7.0 end such a message differently (`done` on an old node,
+   `failed` on a new one), so upgrade every node that hosts such a type together.
+3. Where a function's error was handled as a `String`, print the error, or keep it as the named type of its module
+   (`RetryError`, `RetentionError`, `IdError`, `MessageError`, `ContractError`, `DefinitionError`, `RequestError`).
+   `runtime::limits::check`, `check_envelope` and `check_json` are no longer public.
+4. Match on `StartProblem` instead of comparing texts: a contract conflict is `StartProblem::ContractConflict`, with
+   the type name and both hashes. `hash_conflict_reason` is gone.
+5. A caller of `send_message` handles `SendResult::NoSuchType`. A client that tells `no-such-instance` from
+   `no-such-type` gets the second for a send to an actor whose type is not registered; both are a `404`.
+6. A node that retried its store at start stops on a migration that violates a constraint; read the reason, fix the
+   data and start it again.
+7. A ref whose `Serialize` writes a unit while its `Deserialize` reads a string has no address any more; make the two
+   agree.
+
+### Changed (breaking)
+
+- `Actor::Message` is removed: the message type is declared once, on the ref (`ActorRef::Message`). A handler takes
+  `<Self::Ref as ActorRef>::Message`, and so do `Turn::send_self` and `send_self_with`.
+- `Unhandled` and `Actor::UNHANDLED` are removed, from the crate root and the prelude too. A message that cannot be
+  decoded (a type name the family does not have, or a payload that does not fit) ends `failed` with the reason, without
+  a retry, and no handler runs: what `Unhandled::Fail` did. `TurnInfo::unhandled()` stays and still gives a plugin the
+  reason.
+- Functions that returned a text as their error return a named error type of their module. It holds the text, prints
+  it as before and implements `std::error::Error`, so `?` carries it into `anyhow` or an error of the host:
+  `RetryError` (`RetryPolicy::new`, `Backoff::exponential`, `Backoff::fixed`), `RetentionError` (`Keep::keep_for`,
+  `Keep::last`), `IdError` (`MessageId::new`, `NodeId::new` and their `TryFrom<String>`), `MessageError`
+  (`message::encode`, `message::decode`, `FamilyInfo::of`, `schema::message_schemas`), `ContractError`
+  (`Contract::from_json`, `Contract::of`), `DefinitionError` (`actor::contract_of`; it gives its reasons with
+  `reasons()` and prints them joined with "; ") and `RequestError` (`BulkRequest::selection`,
+  `SendRequest::delivery`).
+- `runtime::limits::check`, `check_envelope` and `check_json` are no longer public; nothing outside the core called
+  them. The limits themselves, the constants of that module, stay public.
+- `StartError.problems` is a list of `StartProblem` (exported next to `StartError`), an enum open to new cases with
+  two: `ContractConflict { actor, type_name, registered_hash, node_hash, reason }` and `Other(sentence)` for a setting
+  out of range, a plugin installed twice, a malformed definition (one problem per reason), a type hosted twice, a store
+  failure while registering and a node that is not new. `StartError` can still be cloned and prints what it printed
+  before. `store::hash_conflict_reason` is no longer public.
+- A send to an actor whose type is not registered answers `SendResult::NoSuchType`, over HTTP `404 no-such-type`, as
+  a create of such an actor does; before it answered `404 no-such-instance`, "… does not exist", although the actor
+  may exist. `no-such-instance` stays for a registered type that has no such actor. The check for a known id still
+  runs first, so a repeated send answers as a duplicate while its message is pending or its outcome is still shown. A
+  retry of a failed message is no send: it is accepted whether or not the type is registered, and waits in the mailbox.
+
+### Fixed
+
+- The detail of a `422 invalid-payload` says its reason once: `Payload of 'Add' cannot be decoded: …`, no longer
+  `Payload of 'Add' cannot be decoded: Payload of 'Add' cannot be decoded: …`.
+- A statement of a migration that violates a constraint of the database (SQLite `SQLITE_CONSTRAINT`, PostgreSQL
+  SQLSTATE class `23`), such as two keys that become one name in migration 3, fails the open with
+  `StoreError::Invalid`, which names the schema version it could not reach and holds the database's message; the
+  database stays at its version. Before it was `StoreError::Unavailable`, which tells a node to try again. A lost
+  connection, a locked database, a deadlock and a missing privilege stay `Unavailable`.
+- A ref whose `Serialize` writes a unit while its `Deserialize` reads a string (a `Serialize` written by hand, `into` a
+  unit type with `try_from = "String"`, `serialize_with` on a newtype) has no address: a send to it or a create of it
+  fails at the call (`TurnError::Invalid`). Before it got the address of a singleton, `type/_`, for every value.
+
+### Unchanged
+
+- The text errors of `cicada-extras` (`CrashLoopGuard::new`, `DeadLettersActor::with_capacity`) and of `cicada-test`
+  (`check_contracts`, `check_state_decodes`) stay as they are, and so do `AddressError`, `TimeError` and the text in
+  `TurnError::Invalid`.
+
 ## 0.6.0 — 2026-11-11
 
 A breaking release: a key is one name (ADR 0018, its third step; ADR 0021). A ref is written as one string, or is a

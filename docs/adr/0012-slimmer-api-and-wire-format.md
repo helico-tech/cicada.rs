@@ -4,7 +4,8 @@ Date: 2026-11-09
 
 ## Status
 
-Accepted
+Accepted. ADR 0018 removes `Unhandled` and `UNHANDLED`: there is no unhandled policy, a message that cannot be decoded
+fails.
 
 ## Context
 

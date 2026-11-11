@@ -4,7 +4,8 @@ Date: 2026-10-07
 
 ## Status
 
-Accepted
+Accepted. ADR 0018 removes the required `UNHANDLED` and the unhandled policy: a message that cannot be decoded fails.
+The message type is declared once, on the ref.
 
 ## Context
 

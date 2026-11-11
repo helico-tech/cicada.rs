@@ -78,6 +78,11 @@ futures, logs go through `tracing`, and the host owns the store and the node's l
   as a user without `CREATE` once the schema was migrated. A store does not open a schema newer than its own (`StoreError::Invalid`). Start the new nodes
   first, then stop the old ones, and do not restart old nodes after the migration; a release whose migration is not
   additive needs every old node stopped first (see [Upgrading](#upgrading)).
+- **A migration that violates a constraint** of the database (two old keys that become one name in migration 3) fails
+  the open on both stores with `StoreError::Invalid`, which names the schema version it could not reach and holds the
+  database's message. The database stays at its version, and a node stops instead of retrying, as trying again cannot
+  help: fix the data and start it again. A lost connection, a locked SQLite file, a PostgreSQL deadlock and a missing
+  privilege stay `StoreError::Unavailable`, which a node may retry.
 - **Send-only nodes** (a node that hosts nothing) serve the whole API for every registered type and are a safe place
   for public traffic: they never run turns.
 - **Probes.** The API's `GET /health` usually sits behind the host's authentication layer, where a probe has no
@@ -136,16 +141,18 @@ state the state `{}`, makes the state column required, and removes the registrat
 stateless; an old node that writes an actor without a state fails. Stop every node of the old version, then start the
 new ones, the nodes that host the formerly stateless types first. Until a node that hosts such a type starts, its
 actors can be read and deleted, and messages already in a mailbox wait; a create of one and a send to one from outside
-a turn are refused (over HTTP `404`), and a turn on another node that creates one ends `failed` without a retry. The
+a turn are refused (over HTTP `404 no-such-type`), a retry of a failed message of one is accepted and waits, and a turn
+on another node that creates one ends `failed` without a retry. The
 changelog of 0.4.0 lists the steps, including the code changes.
 
 **Version 0.6.0 is such a release.** A key is one name (ADR 0021), so key fields leave every contract and every
 contract hash changes. Its migration 3 removes every registration and rewrites `%3A` to `:` in the address columns:
 a `:` is an ordinary character of a name now, so `account/acme:7` is the address of the name `acme:7`. Before the
 upgrade, find the old keys of two fields that become one name with the query in the changelog of 0.6.0 and delete one
-actor of each pair with the old version; otherwise the migration fails and the database stays at version 2: on
-SQLite the store does not open, and on PostgreSQL it reports the store unavailable, so a node that retries an
-unavailable store keeps retrying. Stop every
+actor of each pair with the old version; otherwise the migration fails and the database stays at version 2. A store
+of 0.7.0 or later reports that on both stores as an invalid store that names schema version 3 and holds the database's
+message, and a node stops; a store of 0.6.0 reported it as unavailable (on SQLite the store did not open), so a node
+that retried an unavailable store kept retrying. Stop every
 node of the old version, then start the new ones: the nodes that host a type before the nodes whose turns create
 actors of it, and nodes that only send last. Until a node that hosts a type starts, that type is not registered, with
 the effects described for 0.4.0 above; where two kinds of nodes create actors of each other's types, hold back the
