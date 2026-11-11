@@ -65,7 +65,8 @@ problem per cause, and four errors say what is wrong. No schema change and no co
 ### Fixed
 
 - The detail of a `422 invalid-payload` says its reason once: `Payload of 'Add' cannot be decoded: …`, no longer
-  `Payload of 'Add' cannot be decoded: Payload of 'Add' cannot be decoded: …`.
+  `Payload of 'Add' cannot be decoded: Payload of 'Add' cannot be decoded: …`. For a payload that is not a JSON object
+  it is `Payload of 'Add' must be a JSON object`, no longer with `Payload of 'Add' cannot be decoded: ` in front.
 - A statement of a migration that violates a constraint of the database (SQLite `SQLITE_CONSTRAINT`, PostgreSQL
   SQLSTATE class `23`), such as two keys that become one name in migration 3, fails the open with
   `StoreError::Invalid`, which names the schema version it could not reach and holds the database's message; the

@@ -255,6 +255,13 @@ mod tests {
         assert_eq!(Contract::from_json(&json).unwrap_err().to_string(), "Not a contract: no state schema");
     }
 
+    /// Scenario: A contract that is not an object.
+    #[test]
+    fn a_contract_that_is_not_an_object_is_a_contract_error() {
+        let e: ContractError = Contract::from_json(&json!(5)).unwrap_err();
+        assert_eq!(e.to_string(), "Not a contract: not an object");
+    }
+
     #[test]
     fn the_json_form_of_a_type_that_keeps_no_data_has_its_state_schema() {
         let schema = crate::schema::root_schema::<crate::NoState>();
