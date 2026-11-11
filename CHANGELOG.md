@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.6.0 — unreleased
+## 0.6.0 — 2026-11-11
 
 A breaking release: a key is one name (ADR 0018, its third step; ADR 0021). A ref is written as one string, or is a
 unit struct for a singleton; a `:` is an ordinary character of a name; contracts and the views of actors and types
