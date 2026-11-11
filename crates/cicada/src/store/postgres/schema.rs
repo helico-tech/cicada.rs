@@ -1,4 +1,4 @@
-//! The PostgreSQL schema and its versioned migrations; the schema is at version 2.
+//! The PostgreSQL schema and its versioned migrations; the schema is at version 3.
 //!
 //! The tables of the architecture (`actor_types`, `actors`, `messages`, `outcomes`, `nodes`) plus two sequences for the
 //! store-wide `seq` and epoch counters. JSON values are `jsonb`, instants `timestamptz` (microsecond precision, the
@@ -10,9 +10,11 @@
 //! is refused. When the schema is already current, start runs no DDL at all, so a node may connect as a user without
 //! `CREATE` privileges once the schema was migrated by one that has them.
 //!
-//! Migrations are additive so that nodes of the previous version keep working during a rolling deploy, with one
-//! exception: migration 2 makes `actors.state` required, so a node of version 1 that writes an actor without a state
-//! fails, and every old node is stopped before the first new one starts.
+//! Migrations are additive so that nodes of the previous version keep working during a rolling deploy, with two
+//! exceptions, after which every old node is stopped before the first new one starts: migration 2 makes `actors.state`
+//! required, so a node of version 1 that writes an actor without a state fails; migration 3 removes every registration
+//! and rewrites `%3A` to `:` in addresses, and the contracts that nodes register again are not those of version 2
+//! (ADR 0021).
 
 use crate::store::StoreError;
 use sqlx::{AssertSqlSafe, Connection, PgConnection};
@@ -108,6 +110,17 @@ const MIGRATIONS: &[&[&str]] = &[
         "UPDATE {s}.actors SET state = '{}'::jsonb WHERE state IS NULL OR state = 'null'::jsonb",
         "DELETE FROM {s}.actor_types WHERE contract->'state' IS NULL OR contract->'state' = 'null'::jsonb",
         "ALTER TABLE {s}.actors ALTER COLUMN state SET NOT NULL",
+    ],
+    // 3: a key is one name (ADR 0021). Key fields leave every contract, so every hash changes: every registration is
+    // removed, and a node that hosts a type registers it again when it starts. A `:` in a name is written as it is, so
+    // `%3A` becomes `:` in the address columns that SQL matches on; the other stored addresses are read through
+    // `ActorAddress::parse`, which writes the new spelling. Two old addresses that become one fail the migration on
+    // the primary key of `actors`. Not additive (see the module docs).
+    &[
+        "DELETE FROM {s}.actor_types",
+        "UPDATE {s}.actors SET address = replace(address, '%3A', ':') WHERE strpos(address, '%3A') > 0",
+        "UPDATE {s}.messages SET actor_address = replace(actor_address, '%3A', ':') WHERE strpos(actor_address, '%3A') > 0",
+        "UPDATE {s}.outcomes SET actor_address = replace(actor_address, '%3A', ':') WHERE strpos(actor_address, '%3A') > 0",
     ],
 ];
 
@@ -229,7 +242,7 @@ mod tests {
     }
 
     #[test]
-    fn the_schema_is_at_version_2() {
-        assert_eq!(VERSION, 2);
+    fn the_schema_is_at_version_3() {
+        assert_eq!(VERSION, 3);
     }
 }

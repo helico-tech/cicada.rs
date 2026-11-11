@@ -1,17 +1,21 @@
-//! The upgrade from schema version 1: a schema built with the migrations of that version, rows written with SQL as a
-//! node of that version left them, then opened by this version. Skipped when `CICADA_PG_URL` is unset.
+//! The upgrades from schema versions 1 and 2: a schema built with the migrations of that version, rows written with
+//! SQL as a node of that version left them, then opened by this version. Skipped when `CICADA_PG_URL` is unset.
 
 use std::collections::hash_map::RandomState;
 use std::future::Future;
 use std::hash::{BuildHasher, Hasher};
 use std::panic::AssertUnwindSafe;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use crate::address::ActorAddress;
-use crate::store::Backend;
+use crate::actor::contract_of;
+use crate::prelude::*;
+use crate::store::{Backend, MessageStatus, OutcomeStatus, OutgoingMessage, Store, support};
+use crate::time;
 use futures::FutureExt;
-use serde_json::{Value, json};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 use sqlx::{AssertSqlSafe, Connection, PgConnection};
 
 use crate::store::postgres::schema::{self, quote};
@@ -21,19 +25,68 @@ use crate::store::postgres::{PostgresOptions, PostgresStore};
 
 static SCHEMAS: AtomicU32 = AtomicU32::new(0);
 
-/// A fresh schema of schema version 1 in the test database.
-struct V1 {
+/// type `notes`, a type with state; its names held a literal colon as `%3A` before version 3.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Notes {
+    name: String,
+}
+
+impl ActorRef for Notes {
+    const TYPE: &'static str = "notes";
+    type Message = NotesMsg;
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type")]
+enum NotesMsg {
+    Note { text: String },
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+struct NotesState {
+    #[serde(default)]
+    texts: Vec<String>,
+}
+
+struct NotesActor;
+
+impl Actor for NotesActor {
+    type Ref = Notes;
+    type State = NotesState;
+    type Message = NotesMsg;
+    const UNHANDLED: Unhandled = Unhandled::Fail;
+
+    async fn handle(&self, turn: &mut Turn<Self>, message: NotesMsg) -> HandlerResult {
+        let NotesMsg::Note { text } = message;
+        turn.state_mut().texts.push(text);
+        Ok(())
+    }
+}
+
+/// The contract of `NotesActor` as version 2 registered it: with the fields of its key, so with another hash.
+fn v2_notes_contract() -> String {
+    let mut contract = contract_of::<NotesActor>().unwrap().to_json();
+    contract["key"] = json!(["name"]);
+    contract.to_string()
+}
+
+/// The query of the upgrade note in `CHANGELOG.md` (0.6.0) that finds two keys that become one name.
+const FIND_PAIRS: &str = "SELECT replace(address, '%3A', ':') AS address, count(*) AS actors FROM {s}.actors
+    GROUP BY replace(address, '%3A', ':') HAVING count(*) > 1";
+
+/// A fresh schema of an older schema version in the test database.
+struct Old {
     url: String,
     name: String,
 }
 
-impl V1 {
+impl Old {
     async fn connect(url: &str) -> PgConnection {
         PgConnection::connect_with(&PgConnectOptions::from_str(url).unwrap()).await.expect("test database reachable")
     }
 
-    /// Runs `test` on a fresh schema of version 1 and drops the schema afterwards, also when `test` fails.
-    async fn run<F: Future<Output = ()>>(test: impl FnOnce(V1) -> F) {
+    /// Runs `test` on a fresh schema of `version` and drops the schema afterwards, also when `test` fails.
+    async fn run<F: Future<Output = ()>>(version: i32, test: impl FnOnce(Old) -> F) {
         let Some(url) = std::env::var("CICADA_PG_URL").ok().filter(|u| !u.trim().is_empty()) else {
             eprintln!("CICADA_PG_URL is unset: skipping a PostgreSQL test");
             return;
@@ -43,8 +96,8 @@ impl V1 {
         let n = SCHEMAS.fetch_add(1, Ordering::SeqCst);
         let name = format!("upgrade_{}_{n}_{random:06x}", std::process::id());
         let mut c = Self::connect(&url).await;
-        schema::migrate_to(&mut c, &name, 1).await.unwrap();
-        let result = AssertUnwindSafe(test(V1 { url: url.clone(), name: name.clone() })).catch_unwind().await;
+        schema::migrate_to(&mut c, &name, version).await.unwrap();
+        let result = AssertUnwindSafe(test(Old { url: url.clone(), name: name.clone() })).catch_unwind().await;
         sqlx::raw_sql(AssertSqlSafe(format!("DROP SCHEMA {} CASCADE", quote(&name)))).execute(&mut c).await.unwrap();
         c.close().await.unwrap();
         if let Err(panic) = result {
@@ -64,6 +117,15 @@ impl V1 {
         result
     }
 
+    /// The first column of every row of `sql`, as text; `{s}` is replaced by the quoted schema.
+    async fn texts(&self, sql: &str) -> Vec<String> {
+        let mut c = Self::connect(&self.url).await;
+        let sql = format!("SELECT x::text FROM ({}) AS q (x)", sql.replace("{s}", &quote(&self.name)));
+        let rows = sqlx::query_scalar(AssertSqlSafe(sql)).fetch_all(&mut c).await.unwrap();
+        c.close().await.unwrap();
+        rows
+    }
+
     async fn version(&self) -> i32 {
         let mut c = Self::connect(&self.url).await;
         let sql = format!("SELECT max(version) FROM {}.cicada_schema_version", quote(&self.name));
@@ -72,9 +134,13 @@ impl V1 {
         version
     }
 
-    async fn open(&self) -> PostgresStore {
+    async fn try_open(&self) -> Result<PostgresStore, crate::store::StoreError> {
         let config = PostgresOptions { schema: self.name.clone(), max_pool_size: 2, ..Default::default() };
-        PostgresStore::connect(&self.url, config).await.expect("the store opens")
+        PostgresStore::connect(&self.url, config).await
+    }
+
+    async fn open(&self) -> PostgresStore {
+        self.try_open().await.expect("the store opens")
     }
 }
 
@@ -84,7 +150,7 @@ fn address(text: &str) -> ActorAddress {
 
 #[tokio::test]
 async fn instances_with_and_without_a_state() {
-    V1::run(async |db| {
+    Old::run(1, async |db| {
         assert_eq!(db.version().await, 1);
         db.exec(
             r#"INSERT INTO {s}.actor_types (name, contract, contract_hash)
@@ -101,14 +167,14 @@ async fn instances_with_and_without_a_state() {
             assert_eq!((record.state, record.version), (state, version), "x/{key}");
         }
         store.close().await;
-        assert_eq!(db.version().await, 2);
+        assert_eq!(db.version().await, schema::VERSION);
     })
     .await;
 }
 
 #[tokio::test]
 async fn the_store_refuses_a_missing_state() {
-    V1::run(async |db| {
+    Old::run(1, async |db| {
         db.exec(
             r#"INSERT INTO {s}.actor_types (name, contract, contract_hash)
                 VALUES ('x', '{"type":"x","key":["id"],"state":{},"messages":{}}', 'sha256:x')"#,
@@ -128,25 +194,125 @@ async fn the_store_refuses_a_missing_state() {
 }
 
 #[tokio::test]
-async fn a_type_with_state_keeps_its_registration() {
-    V1::run(async |db| {
-        let kept = r#"{"type":"kept","key":[],"state":{"type":"object"},"messages":{}}"#;
+async fn every_registration_is_removed_and_every_actor_and_message_kept() {
+    for version in [1, 2] {
+        Old::run(version, async |db| {
+            db.exec(&format!(
+                r#"INSERT INTO {{s}}.actor_types (name, contract, contract_hash) VALUES
+                    ('notes', '{}', 'sha256:v2'),
+                    ('stateless', '{{"type":"stateless","key":[],"state":null,"messages":{{}}}}', 'sha256:s');
+                   INSERT INTO {{s}}.actors (address, type, state, created_at) VALUES ('notes/a', 'notes', '{{}}', now());
+                   INSERT INTO {{s}}.messages (id, actor_address, seq, type, payload, headers, deliver_at)
+                    VALUES ('m1', 'notes/a', 1, 'Note', '{{"text":"x"}}', '{{}}', now())"#,
+                v2_notes_contract()
+            ))
+            .await
+            .unwrap();
+
+            let store = db.open().await;
+            assert!(store.list_types().await.unwrap().is_empty(), "from version {version}");
+            assert!(store.get(&address("notes/a")).await.unwrap().is_some(), "from version {version}");
+            assert_eq!(store.pending(&address("notes/a"), None, 10).await.unwrap().items.len(), 1);
+            store.close().await;
+        })
+        .await;
+    }
+}
+
+/// Scenario: An old literal colon.
+#[tokio::test]
+async fn an_old_literal_colon() {
+    Old::run(2, async |db| {
+        let earlier = OutgoingMessage::new(address("notes/a:b"), "Note", json!({"text": "first"}))
+            .into_message(time::from_micros(0), 1);
+        let mut envelope = support::envelope_to_json(&earlier);
+        envelope["to"] = json!("notes/a%3Ab");
         db.exec(&format!(
-            r#"INSERT INTO {{s}}.actor_types (name, contract, contract_hash) VALUES
-                ('kept', '{kept}', 'sha256:kept'),
-                ('stateless', '{{"type":"stateless","key":[],"state":null,"messages":{{}}}}', 'sha256:s'),
-                ('older', '{{"type":"older","key":[],"messages":{{}}}}', 'sha256:o')"#
+            r#"INSERT INTO {{s}}.actor_types (name, contract, contract_hash) VALUES ('notes', '{contract}', 'sha256:v2');
+               INSERT INTO {{s}}.actors (address, type, state, next_due_at, created_at)
+                VALUES ('notes/a%3Ab', 'notes', '{{}}', now(), now());
+               INSERT INTO {{s}}.messages (id, actor_address, seq, type, payload, headers, deliver_at)
+                VALUES ('m2', 'notes/a%3Ab', 2, 'Note', '{{"text":"later"}}', '{{}}', now());
+               SELECT setval('{{s}}.message_seq', 2);
+               INSERT INTO {{s}}.outcomes (message_id, actor_address, status, finished_at, envelope)
+                VALUES ('{id}', 'notes/a%3Ab', 'done', now(), '{envelope}')"#,
+            contract = v2_notes_contract(),
+            id = earlier.id,
         ))
         .await
         .unwrap();
 
-        let store = db.open().await;
-        let types = store.list_types().await.unwrap();
-        let names: Vec<&str> = types.iter().map(|t| t.name.as_str()).collect();
-        assert_eq!(names, ["kept"], "the registrations without a state schema are removed");
-        assert_eq!(types[0].contract_hash, "sha256:kept");
-        assert_eq!(types[0].contract, serde_json::from_str::<Value>(kept).unwrap());
+        let store = Arc::new(db.open().await);
+        let moved = address("notes/a:b");
+        assert_eq!(store.get(&moved).await.unwrap().unwrap().address.as_str(), "notes/a:b");
+        let mailbox = store.pending(&moved, None, 10).await.unwrap().items;
+        assert_eq!(mailbox.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["m2"]);
+        let outcomes = store.outcomes(None, "notes/a:b", time::from_micros(0), None, 10).await.unwrap().items;
+        let found: Vec<_> = outcomes.iter().map(|o| (&o.message_id, o.actor.as_str())).collect();
+        assert_eq!(found, [(&earlier.id, "notes/a:b")]);
+        assert_eq!(outcomes[0].envelope.to, moved);
+        for column in
+            ["SELECT address FROM {s}.actors", "SELECT actor_address FROM {s}.messages", "SELECT actor_address FROM {s}.outcomes"]
+        {
+            assert_eq!(db.texts(column).await, ["notes/a:b"], "{column}");
+        }
+
+        let system = ActorSystem::builder(Store::from_backend(store.clone())).host(NotesActor).build();
+        system.initialize().await.expect("the node starts");
+        assert_eq!(system.run_due_turns(10).await.unwrap(), 1);
+        match system.status(&MessageId::new("m2").unwrap()).await.unwrap() {
+            Some(MessageStatus::Finished(outcome)) => assert_eq!(outcome.status, OutcomeStatus::Done, "{outcome:?}"),
+            other => panic!("not handled: {other:?}"),
+        }
+        assert_eq!(system.get_actor(&moved).await.unwrap().unwrap().state, json!({"texts": ["later"]}));
+        system.stop().await;
         store.close().await;
+    })
+    .await;
+}
+
+/// Scenario: A sender with a literal colon.
+#[tokio::test]
+async fn a_sender_with_a_literal_colon() {
+    Old::run(2, async |db| {
+        db.exec(
+            r#"INSERT INTO {s}.actors (address, type, state, created_at) VALUES ('notes/x', 'notes', '{}', now());
+               INSERT INTO {s}.messages (id, actor_address, seq, type, payload, sender, headers, deliver_at)
+                VALUES ('m1', 'notes/x', 1, 'Note', '{"text":"x"}', 'notes/a%3Ab', '{}', now())"#,
+        )
+        .await
+        .unwrap();
+
+        let store = db.open().await;
+        match store.status(&MessageId::new("m1").unwrap()).await.unwrap() {
+            Some(MessageStatus::Pending(message)) => assert_eq!(message.from, Some(address("notes/a:b"))),
+            other => panic!("not pending: {other:?}"),
+        }
+        assert_eq!(db.texts("SELECT sender FROM {s}.messages").await, ["notes/a%3Ab"], "the column is left alone");
+        store.close().await;
+    })
+    .await;
+}
+
+/// Scenario: Two keys that become one name.
+#[tokio::test]
+async fn two_keys_that_become_one_name() {
+    Old::run(2, async |db| {
+        db.exec(
+            r#"INSERT INTO {s}.actors (address, type, state, created_at)
+                VALUES ('pairs/a%3Ab:c', 'pairs', '{}', now()), ('pairs/a:b%3Ac', 'pairs', '{}', now())"#,
+        )
+        .await
+        .unwrap();
+        assert_eq!(db.texts(FIND_PAIRS).await, ["pairs/a:b:c"], "the query of the upgrade note finds the pair");
+
+        let Err(error) = db.try_open().await else { panic!("the open succeeded") };
+        assert!(error.to_string().contains("actors_pkey"), "{error}");
+        assert_eq!(db.version().await, 2);
+        assert_eq!(
+            db.texts("SELECT address FROM {s}.actors ORDER BY address").await,
+            ["pairs/a%3Ab:c", "pairs/a:b%3Ac"]
+        );
     })
     .await;
 }

@@ -38,10 +38,10 @@ inside `crates/cicada`.
 
 ## 3. The upgrade
 
-- [ ] 3.1 Migration 3 in both stores [4]: remove every row of `actor_types`; rewrite `%3A` to `:` in
+- [x] 3.1 Migration 3 in both stores [4]: remove every row of `actor_types`; rewrite `%3A` to `:` in
       `actors.address`, `messages.actor_address` and `outcomes.actor_address`, only in rows that hold `%3A`. Update
       the module docs of both schema files: schema version 3, not additive. Verify: the tests of 3.2.
-- [ ] 3.2 Tests of the upgrade, on databases built with the helper that applies migrations up to a version, in
+- [x] 3.2 Tests of the upgrade, on databases built with the helper that applies migrations up to a version, in
       SQLite and in PostgreSQL (with `CICADA_PG_URL` set): "An old literal colon", "A sender with a literal colon",
       "Two keys that become one name" (the open fails and the database is still at version 2 with both actors), and
       of `actor-state` "Instances with and without a state" (the schema version is the one this store writes) and

@@ -2,12 +2,13 @@
 //! counters and the store clock's high-water mark. All instants are INTEGER microseconds since the epoch; JSON values
 //! are TEXT.
 //!
-//! The schema is versioned with `PRAGMA user_version` and is at version 2: opening a store applies every missing
+//! The schema is versioned with `PRAGMA user_version` and is at version 3: opening a store applies every missing
 //! migration in one transaction and refuses a database written by a newer version. A database without a version is set
 //! up only when it has no tables; one with tables belongs to another program and is refused (ADR 0017). Migrations are
-//! additive so that nodes of the previous version keep working during a rolling deploy, with one exception: migration
-//! 2 makes `actors.state` required, so a node of version 1 that writes an actor without a state fails, and every old
-//! node is stopped before the first new one starts.
+//! additive so that nodes of the previous version keep working during a rolling deploy, with two exceptions, after
+//! which every old node is stopped before the first new one starts: migration 2 makes `actors.state` required, so a
+//! node of version 1 that writes an actor without a state fails; migration 3 removes every registration and rewrites
+//! `%3A` to `:` in addresses, and the contracts that nodes register again are not those of version 2 (ADR 0021).
 //!
 //! SQLite keeps the text of every `CREATE` in `sqlite_master`, so the statement texts are part of the schema.
 
@@ -128,6 +129,17 @@ SELECT address, type, state, version, epoch, lease_owner, lease_until, lease_mes
         "ALTER TABLE actors_v2 RENAME TO actors",
         "CREATE INDEX actors_due ON actors (type, next_due_at) WHERE next_due_at IS NOT NULL AND paused = 0",
         "CREATE INDEX actors_running ON actors (address) WHERE lease_owner IS NOT NULL",
+    ],
+    // 3: a key is one name (ADR 0021). Key fields leave every contract, so every hash changes: every registration is
+    // removed, and a node that hosts a type registers it again when it starts. A `:` in a name is written as it is, so
+    // `%3A` becomes `:` in the address columns that SQL matches on; the other stored addresses are read through
+    // `ActorAddress::parse`, which writes the new spelling. Two old addresses that become one fail the migration on
+    // the primary key of `actors`. Not additive (see the module docs).
+    &[
+        "DELETE FROM actor_types",
+        "UPDATE actors SET address = replace(address, '%3A', ':') WHERE instr(address, '%3A') > 0",
+        "UPDATE messages SET actor_address = replace(actor_address, '%3A', ':') WHERE instr(actor_address, '%3A') > 0",
+        "UPDATE outcomes SET actor_address = replace(actor_address, '%3A', ':') WHERE instr(actor_address, '%3A') > 0",
     ],
 ];
 
