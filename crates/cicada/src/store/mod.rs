@@ -33,7 +33,6 @@ pub use results::{CancelResult, DeleteResult, DeliverNowResult, RemoveTypeResult
 pub(crate) use results::{CommitResult, CreateResult, EnqueueResult, RegisterResult, RenewResult};
 #[cfg(feature = "sqlite")]
 pub use sqlite::SqliteOptions;
-pub use support::hash_conflict_reason;
 
 use crate::address::{ActorAddress, TypeName};
 use crate::time::Timestamp;

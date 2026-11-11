@@ -45,12 +45,41 @@ const PAGE_OF_TURNS: usize = 1000;
 pub const BULK_LIMIT: usize = 1000;
 
 /// A node could not start: an invalid actor type, an invalid configuration, or a contract conflict in the
-/// TypeRegistry.
+/// TypeRegistry. It prints one line per problem.
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("Actor system cannot start:\n{}", .problems.iter().map(|p| format!("- {p}")).collect::<Vec<_>>().join("\n"))]
 pub struct StartError {
-    /// Every problem found.
-    pub problems: Vec<String>,
+    /// Every problem found, one per cause.
+    pub problems: Vec<StartProblem>,
+}
+
+/// One problem that stopped a node from starting. A contract conflict is a case of its own, so that a host can
+/// recognise it; every other problem holds its sentence. New cases may be added: match with a `_` arm.
+///
+/// Printed, a problem is the sentence a node reports: a conflict as "`actor`: `reason` (registered `type_name`
+/// `registered_hash`, this node `node_hash`)".
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum StartProblem {
+    /// A hosted type's contract differs from the one registered under its type name.
+    #[error("{actor}: {reason} (registered {type_name} {registered_hash}, this node {node_hash})")]
+    ContractConflict {
+        /// The Rust type name of the actor.
+        actor: String,
+        /// The type name.
+        type_name: TypeName,
+        /// The hash of the registered contract.
+        registered_hash: String,
+        /// The hash of the contract of this node.
+        node_hash: String,
+        /// Why the contracts conflict.
+        reason: String,
+    },
+    /// Any other problem: a setting out of range, a plugin installed twice, a malformed actor definition (one problem
+    /// per reason), a type hosted twice, a store failure while registering, or a node that is not new. The sentence
+    /// names what is wrong, and the actor when there is one.
+    #[error("{0}")]
+    Other(String),
 }
 
 /// Life-cycle states of a node.
@@ -337,16 +366,18 @@ impl ActorSystem {
 
     async fn do_initialize(&self) -> Result<Arc<Initialized>, StartError> {
         let inner = &self.inner;
-        let mut problems = inner.config.validate();
+        let mut problems: Vec<StartProblem> = inner.config.validate().into_iter().map(StartProblem::Other).collect();
         let mut names: Vec<&str> = inner.plugins.iter().map(|p| p.name()).collect();
         names.sort_unstable();
         for pair in names.windows(2) {
             if pair[0] == pair[1] {
-                problems.push(format!("Plugin {} is installed more than once on the node", pair[0]));
+                problems
+                    .push(StartProblem::Other(format!("Plugin {} is installed more than once on the node", pair[0])));
             }
         }
         for hosted in &inner.hosted {
-            problems.extend(hosted.problems().into_iter().map(|p| format!("{}: {p}", hosted.name())));
+            problems
+                .extend(hosted.problems().into_iter().map(|p| StartProblem::Other(format!("{}: {p}", hosted.name()))));
         }
         if !problems.is_empty() {
             return Err(StartError { problems });
@@ -355,7 +386,7 @@ impl ActorSystem {
         for hosted in &inner.hosted {
             let name = hosted.type_name().expect("a valid type has a name").clone();
             if types.contains_key(&name) {
-                problems.push(format!("{}: type {name} is hosted twice", hosted.name()));
+                problems.push(StartProblem::Other(format!("{}: type {name} is hosted twice", hosted.name())));
                 continue;
             }
             let max_turn = hosted.max_turn().unwrap_or(inner.config.default_max_turn);
@@ -368,14 +399,17 @@ impl ActorSystem {
             let def = hosted.actor.contract().expect("a valid type has a contract").to_type_def();
             match inner.store.register(def.clone()).await {
                 Ok(RegisterResult::Registered(_)) => {}
-                Ok(RegisterResult::Conflict { existing, reason }) => problems.push(format!(
-                    "{}: {reason} (registered {} {}, this node {})",
-                    hosted.actor.name(),
-                    existing.name,
-                    existing.contract_hash,
-                    def.contract_hash
-                )),
-                Err(e) => problems.push(format!("{}: registering the contract failed: {e}", hosted.actor.name())),
+                Ok(RegisterResult::Conflict { existing, reason }) => problems.push(StartProblem::ContractConflict {
+                    actor: hosted.actor.name().to_owned(),
+                    type_name: existing.name,
+                    registered_hash: existing.contract_hash,
+                    node_hash: def.contract_hash,
+                    reason,
+                }),
+                Err(e) => problems.push(StartProblem::Other(format!(
+                    "{}: registering the contract failed: {e}",
+                    hosted.actor.name()
+                ))),
             }
         }
         if !problems.is_empty() {
@@ -400,7 +434,9 @@ impl ActorSystem {
     pub async fn start(&self) -> Result<(), StartError> {
         let mut lifecycle = self.inner.lifecycle.lock().await;
         if self.state() != NodeState::New {
-            return Err(StartError { problems: vec![format!("Actor system is {}", self.state())] });
+            return Err(StartError {
+                problems: vec![StartProblem::Other(format!("Actor system is {}", self.state()))],
+            });
         }
         let init = self.initialized().await?.clone();
         self.inner.stopping.store(false, Ordering::SeqCst);

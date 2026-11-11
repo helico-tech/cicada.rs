@@ -34,7 +34,7 @@ pub mod turn;
 pub use actor::{Actor, ActorType};
 pub use address::{ActorAddress, ActorRef, TypeName};
 pub use message::NoState;
-pub use runtime::{ActorSystem, CreateActorResult, OpError, SendResult, StartError};
+pub use runtime::{ActorSystem, CreateActorResult, OpError, SendResult, StartError, StartProblem};
 pub use store::Store;
 pub use turn::{HandlerError, HandlerResult, SendOptions, Turn};
 

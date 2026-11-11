@@ -53,7 +53,7 @@ was returned before. No text changes.
 
 ## 3. Start problems
 
-- [ ] 3.1 `StartProblem` [2]: a public enum, open to new cases (`#[non_exhaustive]`), with two cases: a contract
+- [x] 3.1 `StartProblem` [2]: a public enum, open to new cases (`#[non_exhaustive]`), with two cases: a contract
       conflict (the Rust type name of the actor, the type name, the registered hash, the hash of this node, the
       reason) and any other problem with its sentence. `StartError.problems` is a list of them; `StartError` stays
       `Clone` and prints what it prints today. `hash_conflict_reason` is no longer public. Export `StartProblem`

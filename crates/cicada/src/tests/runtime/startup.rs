@@ -12,7 +12,7 @@ use crate::runtime::{NodeConfig, NodeState};
 use crate::schema;
 use crate::store::{Backend, NodeId, Store};
 use crate::testing::VirtualClock;
-use crate::{ActorSystem, StartError};
+use crate::{ActorSystem, StartError, StartProblem};
 use serde::{Deserialize, Serialize};
 
 fn store() -> Store {
@@ -290,9 +290,72 @@ mod doc_with_description {
     documented_type!();
 }
 
-fn single(e: &StartError) -> &str {
+/// The printed text of the one problem of `e`.
+fn single(e: &StartError) -> String {
     assert_eq!(e.problems.len(), 1, "{:?}", e.problems);
-    &e.problems[0]
+    e.problems[0].to_string()
+}
+
+/// Scenarios: A contract conflict; The printed text of a conflict.
+#[tokio::test]
+async fn a_contract_conflict_is_a_problem_of_its_own_with_the_type_name_and_both_hashes() {
+    let store = store();
+    ActorSystem::builder(store.clone()).host(CounterActor).build().initialize().await.unwrap();
+    let e = ActorSystem::builder(store).host(OtherActor).build().initialize().await.unwrap_err();
+    let registered = crate::actor::contract_of::<CounterActor>().unwrap();
+    let this_node = crate::actor::contract_of::<OtherActor>().unwrap();
+    let [StartProblem::ContractConflict { actor, type_name, registered_hash, node_hash, reason }] = &e.problems[..]
+    else {
+        panic!("one contract conflict: {:?}", e.problems);
+    };
+    assert_eq!(actor, std::any::type_name::<OtherActor>());
+    assert_eq!(type_name.as_str(), "counter");
+    assert_eq!(registered_hash, registered.hash());
+    assert_eq!(node_hash, this_node.hash());
+    assert_eq!(reason, "Type counter is registered with a different contract");
+    let line = single(&e);
+    assert!(line.starts_with(&format!("{}: ", std::any::type_name::<OtherActor>())), "{line}");
+    assert!(line.contains(registered.hash()) && line.contains(this_node.hash()), "{line}");
+    assert_eq!(e.to_string(), format!("Actor system cannot start:\n- {line}"));
+    let copy = e.clone();
+    assert_eq!(copy.problems, e.problems);
+}
+
+/// Scenario: A store that fails while registering.
+#[tokio::test]
+async fn a_store_that_fails_while_registering_is_one_problem_that_names_the_actor() {
+    let store = store();
+    store.close().await;
+    let e = ActorSystem::builder(store).host(CounterActor).build().initialize().await.unwrap_err();
+    assert!(matches!(&e.problems[..], [StartProblem::Other(_)]), "{:?}", e.problems);
+    let line = single(&e);
+    assert!(line.starts_with(std::any::type_name::<CounterActor>()), "{line}");
+    assert!(line.contains("registering the contract failed"), "{line}");
+}
+
+/// Scenario: Two problems at once.
+#[tokio::test]
+async fn a_setting_out_of_range_and_a_malformed_definition_are_two_problems() {
+    let e = ActorSystem::builder(store())
+        .config(NodeConfig { concurrency: 0, ..NodeConfig::default() })
+        .host(shapes::NumberActor)
+        .build()
+        .initialize()
+        .await
+        .unwrap_err();
+    assert_eq!(e.problems.len(), 2, "{:?}", e.problems);
+    assert_eq!(e.problems[0], StartProblem::Other("concurrency must be at least 1".to_owned()));
+    assert!(matches!(&e.problems[1], StartProblem::Other(s) if s.contains("Ref:")), "{:?}", e.problems);
+}
+
+/// Scenario: A node that is started twice.
+#[tokio::test(start_paused = true)]
+async fn a_node_that_is_started_twice_reports_its_state() {
+    let system = ActorSystem::builder(store()).host(CounterActor).build();
+    system.start().await.unwrap();
+    let e = system.start().await.unwrap_err();
+    assert_eq!(e.problems, vec![StartProblem::Other("Actor system is STARTED".to_owned())]);
+    system.stop().await;
 }
 
 #[tokio::test]

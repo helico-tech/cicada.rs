@@ -24,7 +24,7 @@ use crate::time::{self, MAX_INSTANT, Timestamp};
 // ---- registry ----
 
 /// The reason of the conflict for `name` registered with a different contract.
-pub fn hash_conflict_reason(name: &TypeName) -> String {
+pub(crate) fn hash_conflict_reason(name: &TypeName) -> String {
     format!("Type {name} is registered with a different contract")
 }
 

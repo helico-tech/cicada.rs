@@ -128,7 +128,7 @@ async fn registered<A: Actor>(actor: A) -> TypeDef {
 
 async fn problems<A: Actor>(actor: A) -> Vec<String> {
     let e: StartError = ActorSystem::builder(store()).host(actor).build().initialize().await.unwrap_err();
-    e.problems
+    e.problems.iter().map(ToString::to_string).collect()
 }
 
 #[tokio::test]
