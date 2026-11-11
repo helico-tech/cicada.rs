@@ -7,6 +7,59 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.4.0 — unreleased
+
+A breaking release: every actor has state (ADR 0018, its first step). The store schema goes to version 2 with a
+migration that is not additive, and the contract of every type that was stateless gets a new hash. Nodes of 0.3.x and
+0.4.0 must not share a database.
+
+### Upgrading
+
+1. In the code, replace `Stateless` with `NoState` and `create_stateless(&r)` with `create(&r, &NoState {})` (on
+   `Turn`, `ActorSystem`, `ActorClient` and `TestActors`), and give every create over HTTP a `state`:
+   `{"state": {}}` for a `NoState` type, `cicada create actor ADDR --state '{}'` on the command line.
+2. Delete the contract snapshot files of the formerly stateless types; the next test run writes them again. A snapshot
+   with `"state": null` is no longer a contract, so `assert_contracts_match` fails on it, also with
+   `CICADA_UPDATE_CONTRACTS=true`.
+3. A type whose state encodes to `null` (`()`, a unit struct, a top-level `Option`) cannot be upgraded in place:
+   change its state to a struct and, with the old version, reset the type (delete its actors, then
+   `DELETE /types/{name}`), as for any contract change.
+4. Stop every node of the old version: an old node that writes an actor without a state fails on the new schema.
+5. Start the new version, the nodes that host the formerly stateless types first. The first node migrates the schema
+   to version 2, and each node registers its types. Until a node that hosts a formerly stateless type has started,
+   that type is not registered: its actors can be read and deleted and messages to them wait, but a create of one is
+   refused (over HTTP `404`; in a turn on another node the message ends `failed`).
+
+Or start on a new database; then steps 1, 2 and 4 are all that is left. There is no way back: 0.3.x does not open a
+migrated database.
+
+### Changed (breaking)
+
+- `Stateless`, the `ActorState` trait and `create_stateless` (on `Turn`, `ActorSystem`, `ActorClient` and
+  `TestActors`) are removed. `Actor::State` is any `Serialize + DeserializeOwned + JsonSchema + Send + Sync` type.
+- `NoState` (`cicada::NoState`, also in the prelude) is the state of a type that keeps no data: an empty struct, stored
+  as `{}`. It refuses unknown fields, so a node that hosts the type refuses a state such as `{"oops": 1}`.
+- State is never absent. In the store the column is `NOT NULL`; `Claim.state`, `ActorRecord.state`,
+  `ActorCreate.state` and `StateChange::NewState` hold a `Value`, and `Store::create` takes one. A contract always has
+  a state schema: `Contract::new` and `Contract::state_schema` use a `Value`, and `Contract::from_json` refuses a
+  contract whose `state` is absent or `null`. On the wire `ActorView.state`, `TypeView.state` and
+  `CreateActorRequest.state` are a `Value` and always written; `ActorSnapshot.state` is a `Value` too, and
+  `CreateActorRequest` no longer implements `Default`.
+- Schema version 2 (both stores): migration 2 gives every actor without a state, or with the state `null`, the state
+  `{}`, makes the column `NOT NULL` and removes the registration of every type without a state schema, so that a node
+  that hosts such a type registers it again at start. It is not additive (see Upgrading).
+- `PUT /actors/{type}/{key}` needs a state: an empty body or a body without `state` is a `400`.
+  `ActorSystem::create_actor` and `ActorClient::create_actor` take a `Value`. `cicada create actor` needs `--state`.
+- A state that is JSON `null` is refused everywhere: `Turn::create` returns `TurnError::Invalid`,
+  `ActorSystem::create_actor` returns `CreateActorResult::InvalidState` on every node (`422 invalid-state` over HTTP),
+  and a turn that ends with a `null` state ends its message `failed`, without a retry, and keeps the stored state.
+- The contract hash of every type that was stateless changes, because its contract gains a state schema.
+- A turn of a `NoState` type that takes `state_mut()` or calls `set_state` writes the state and increases the version,
+  as for any other type.
+- The command line's types table drops the column that said whether a type has state, and the terminal UI drops the
+  "Stateful" fact of a type. `describe_changes` (`cicada-test`) reports any change of the state schema as "state
+  schema changed".
+
 ## 0.3.2 — 2026-11-11
 
 No library crate changed, only the test crate `cicada-fuzz`: nodes of 0.3.1 and 0.3.2 can share a database.

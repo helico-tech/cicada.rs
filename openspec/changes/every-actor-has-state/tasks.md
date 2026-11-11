@@ -60,12 +60,12 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
 
 ## 3. Docs
 
-- [ ] 3.1 `README.md` (the turn API, the HTTP table, the test harness, the examples table), `docs/architecture.md`
+- [x] 3.1 `README.md` (the turn API, the HTTP table, the test harness, the examples table), `docs/architecture.md`
       (state is never absent; the schema) and `docs/operations.md` (schema version 2; the Upgrading section says
       that a release may need every old node stopped first, and that this one does). Verify:
       `cargo test -p cicada-examples --doc` passes, and no match for `Stateless`, `create_stateless` or "stateless"
       is left in these three files except where they describe the upgrade.
-- [ ] 3.2 `CHANGELOG.md`: the section of this version starts with the upgrade note, taken from the Migration Plan
+- [x] 3.2 `CHANGELOG.md`: the section of this version starts with the upgrade note, taken from the Migration Plan
       of `design.md` (the code changes; delete the contract snapshots of stateless types; a state type that encodes
       to `null` is changed to a struct and its type reset; stop every old node; start the hosts of the formerly
       stateless types first), then the breaking changes of the proposal. Verify: every step of the Migration Plan

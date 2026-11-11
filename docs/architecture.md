@@ -27,9 +27,9 @@ state plus a mailbox; it occupies memory only while one message is being handled
 | --- | --- |
 | Node | A service running an `ActorSystem`. Sends messages, serves the HTTP API, and runs turns for the actor types it hosts. |
 | Store | The shared durable backend: mailbox, state store, type registry, the atomic commit, and the only clock. |
-| Actor type | A definition: a ref type with its type name, an optional state type, a message family, a handler, an unhandled policy. In Rust: an implementation of the `Actor` trait. |
-| Contract | The published description of a type: type name, key fields, message type names, and the JSON Schemas generated from its types. Its hash leaves out the schemas' `description`s (doc comments), so a reworded comment keeps the hash (ADR 0017). |
-| Actor instance | One concrete key of a type, explicitly created. Owns one state value and one mailbox. |
+| Actor type | A definition: a ref type with its type name, a state type, a message family, a handler, an unhandled policy. In Rust: an implementation of the `Actor` trait. A type that keeps no data has the state `NoState`, stored as `{}`. |
+| Contract | The published description of a type: type name, key fields, message type names, and the JSON Schemas generated from its types, the state's always among them. Its hash leaves out the schemas' `description`s (doc comments), so a reworded comment keeps the hash (ADR 0017). |
+| Actor instance | One concrete key of a type, explicitly created with its initial state. Owns one state value, never absent and never JSON `null`, and one mailbox (ADR 0018). |
 | Ref | An actor's address. A typed ref struct in code (`ActorRef`); its address text (`sync/acme`) on the wire, in state and in messages. |
 | Message | A typed envelope addressed to one instance, with a delivery time. |
 | Mailbox | An instance's pending messages, ordered by delivery time. |
@@ -74,8 +74,11 @@ Every backend implements the `cicada::store::Store` trait and passes the conform
 | S10 Retention | Outcomes are kept for a configured period, which is also the dedup window. A message's retention policy can hide its outcome earlier or keep it longer; a minimal record stays for the whole dedup window. |
 
 The SQL schema (tables `actor_types`, `actors`, `messages`, `outcomes`, plus sequences) is versioned and migrated
-when a store opens a database. The SQLite store sets up only a new or empty database: one without a schema version that
-already holds tables belongs to another program, and opening it fails and leaves it as it was (ADR 0017).
+when a store opens a database; it is at version 2. `actors.state` is required in both stores, so a store refuses an
+instance without a state. Migration 2 gave every instance without a state the state `{}` and removed the registrations
+without a state schema (types that were stateless before ADR 0018); unlike the others it is not additive. The SQLite
+store sets up only a new or empty database: one without a schema version that already holds tables belongs to another
+program, and opening it fails and leaves it as it was (ADR 0017).
 
 ## Turn semantics
 
@@ -91,6 +94,7 @@ already holds tables belongs to another program, and opening it fails and leaves
 | Handler returns `Ok` | `done` | Applied atomically |
 | Handler returns `Err` or panics, retry policy with attempts left, failure not permanent | None; the same message returns to pending after the backoff, `failures` + 1, `lastError` set | None |
 | Handler fails (no retry left, or permanent), or state cannot be decoded | `failed`, error recorded | None |
+| Handler returns, but its new state cannot be encoded or is JSON `null` | `failed`, error recorded, never retried | None |
 | Commit rejected: a send targets an absent instance | `failed`, reason recorded | None |
 | Turn exceeds its maximum duration and is cut off | As a failing handler: retried by the policy, else `failed` (`timeout`) | None |
 | Handler returned, but only after its maximum duration (blocking code) | `failed` (`timeout`), never retried | None |

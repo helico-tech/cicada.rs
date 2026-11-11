@@ -156,13 +156,17 @@ Inside a handler, `turn` offers:
 - `send_to(&address, &msg, options).await` and `send_raw(&address, type, payload, options).await` for raw addresses
   such as `message().from`; the type name is checked against the type registry when called;
 - `cancel(&id)` (a pending message of this instance gets `cancelled` at commit; keep the id a send returns to replace
-  a scheduled message), `create(&ref, &initial_state)` / `create_stateless(&ref)` (applied before the turn's sends),
-  `stop()`, and `fail(reason)`, used as `return Err(turn.fail("declined"))` (ends the message `failed` now, never
-  retried).
+  a scheduled message), `create(&ref, &initial_state)` (applied before the turn's sends), `stop()`, and
+  `fail(reason)`, used as `return Err(turn.fail("declined"))` (ends the message `failed` now, never retried).
 
 Effects are buffered and committed atomically. A handler that returns `Err` (any error converts with `?`) or panics
 commits `failed` and nothing else — unless the message carries a [retry policy](#retry). Sends refuse fields beyond
-the send limits with `TurnError::Invalid`, which the handler may handle. A stateless type has `type State = Stateless`.
+the send limits with `TurnError::Invalid`, which the handler may handle.
+
+**Every actor has state.** A type that keeps no data has `type State = NoState`, an empty struct stored as `{}`; it is
+created with `create(&ref, &NoState {})`. A state is never `null`: a create with a state that encodes to `null` (`()`,
+a unit struct, a top-level `Option`) is refused (`TurnError::Invalid` in a turn, `422 invalid-state` over HTTP), and a
+turn that ends with such a state ends its message `failed`, without a retry, and keeps the stored state. Use a struct.
 
 **Times in long turns.** A `delay` counts from the commit; an `at` is absolute. In a turn that runs for 70 s,
 `SendOptions::new().at(turn.now() + 1 minute)` is due 10 s *before* the commit, so it runs right after it: use
@@ -327,7 +331,7 @@ request's path and query as `instance`.
 
 | Endpoint | Success | Errors |
 | --- | --- | --- |
-| `PUT /actors/{type}/{key}` body `{state?}` — create | 201 created; 200 already exists (untouched) | 404 no such type; 422 state cannot be decoded, a state for a stateless type, or a non-canonical key (hosting node) |
+| `PUT /actors/{type}/{key}` body `{state}` — create; `state` is required (`{}` for `NoState`) | 201 created; 200 already exists (untouched) | 400 no body or no `state`; 404 no such type; 422 a `null` state, or a state that cannot be decoded or a non-canonical key (hosting node) |
 | `GET /actors/{type}/{key}` — type, params, state, version, createdAt, paused | 200 | 404 |
 | `DELETE /actors/{type}/{key}` — admin delete, purges the mailbox | 204 | 404 |
 | `GET /actors?prefix=&cursor=&limit=` — instance addresses, paged | 200 | |
@@ -429,7 +433,7 @@ cicada retry messages --prefix account/ --type Deposit               # bulk: --i
 | `get actors\|messages\|outcomes\|turns [--prefix P]`, `get nodes\|types` | Listings; also `outcomes --status S --since T` and `turns --node N` |
 | `get actor\|mailbox\|turn ADDR`, `get message\|caused ID`, `get node ID`, `get type NAME` | One item; a mailbox; the running turn; what a message caused |
 | `describe actor\|message\|node\|type X` | One item in full, as YAML unless `-o json` |
-| `create actor ADDR [--state JSON]`, `delete actor ADDR`, `delete type NAME` | Create or delete an actor; remove a type's registration |
+| `create actor ADDR --state JSON`, `delete actor ADDR`, `delete type NAME` | Create (`--state '{}'` for `NoState`) or delete an actor; remove a type's registration |
 | `send ADDR --type T [--payload JSON] [--id ID] [--delay PT5S \| --at INSTANT] [--correlation-id C] [--header K=V]` | Send a message |
 | `cancel message ID`, `cancel turn ADDR`, `retry message ID`, `deliver-now ID` | One message; stop a running turn |
 | `cancel messages`, `retry messages`, with `--id ID…` or `--prefix P [--type T]` | Bulk, at most 1000 per call |
@@ -513,7 +517,7 @@ assert_eq!(test.state::<_, ReportsState>(&reports).await.runs, vec![25, 25, 25])
 assert!(test.failures().await.is_empty());
 ```
 
-`TestActors` also offers `create_stateless`, `send_with`, `send_raw` (the raw result, refusals included),
+`TestActors` also offers `send_with`, `send_raw` (the raw result, refusals included),
 `run_until_idle_max`, `pending_at`, `list(prefix)`, `exists`, `state_json`, `version`, `outcome(&message)`, `now`,
 `clock`, and `system()` / `store()` for anything else (every `ActorSystem` call). The builder's `with(|node| …)`
 configures the node like `ActorSystem::builder` (hosted types, plugins, `default_max_turn`, …); `start_at` and
@@ -960,7 +964,7 @@ with `TestActors` on virtual time:
 
 | Module | Pattern |
 | --- | --- |
-| `singleton` | A stateless singleton (`maintenance.cleanup/_`) whose turns never overlap. |
+| `singleton` | A singleton that keeps no data (`maintenance.cleanup/_`, `NoState`) whose turns never overlap. |
 | `timer` | A timer / timeout: a delayed self-send, cancelled by its id. |
 | `cron` | A cron job; each tick does the work and arms the next one in the same commit. |
 | `reply` | Request and reply; the responder replies to `message().from` with the correlation id. |
@@ -1098,7 +1102,7 @@ Decisions, as ADRs in [docs/adr/](docs/adr/):
 | [0015](docs/adr/0015-operator-actions.md) | Operator actions: node table, cancelling a running turn, pausing and purging a mailbox, retrying a message, bulk actions; the store refuses creates of an unregistered type. |
 | [0016](docs/adr/0016-releases-are-tags.md) | A release is a tag on `main` with one version for the workspace; a release passes all checks first and never moves. |
 | [0017](docs/adr/0017-contracts-ignore-descriptions-and-stores-refuse-foreign-databases.md) | A contract hash leaves out the schemas' descriptions (the published contract keeps them); the SQLite store refuses a database that holds other tables. |
-| [0018](docs/adr/0018-a-smaller-core-layers-and-watches.md) | Proposed: a smaller core (every actor has state, one-name keys, one turn observer instead of plugins, no public store trait), layers above it (`cicada-app`, `cicada-actors`), JSON Schema checks at the HTTP door, watches and control effects. |
+| [0018](docs/adr/0018-a-smaller-core-layers-and-watches.md) | A smaller core (every actor has state, one-name keys, one turn observer instead of plugins, no public store trait), layers above it (`cicada-app`, `cicada-actors`), JSON Schema checks at the HTTP door, watches and control effects. |
 
 Design questions and their answers:
 

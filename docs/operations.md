@@ -78,7 +78,8 @@ futures, logs go through `tracing`, and the host owns the store and the node's l
 - **Schema migrations** run when a store is opened (`SqliteStore::open`, `PostgresStore::connect`), so the first
   node of a new version migrates the database. On PostgreSQL concurrent starts serialise on an advisory lock, and a current schema runs no DDL, so a node may connect
   as a user without `CREATE` once the schema was migrated. A store does not open a schema newer than its own (`StoreError::Invalid`). Start the new nodes
-  first, then stop the old ones, and do not restart old nodes after the migration (see [Upgrading](#upgrading)).
+  first, then stop the old ones, and do not restart old nodes after the migration; a release whose migration is not
+  additive needs every old node stopped first (see [Upgrading](#upgrading)).
 - **Send-only nodes** (a node that hosts nothing) serve the whole API for every registered type and are a safe place
   for public traffic: they never run turns.
 - **Probes.** The API's `GET /health` usually sits behind the host's authentication layer, where a probe has no
@@ -127,13 +128,22 @@ registration until the type is registered again. Change a type in one of two way
 
 ## Upgrading
 
-Stores write schema version 1 and apply any missing migrations in place when they open a database. Migrations are
-additive, so nodes of the previous version keep working during a rolling deploy.
+Stores write schema version 2 and apply any missing migrations in place when they open a database. Migrations are
+additive, so nodes of the previous version keep working during a rolling deploy, unless a release says otherwise: a
+migration that is not additive breaks the nodes of the previous version, so every old node is stopped before the first
+new one starts. The changelog says so for each such release.
 
-**Order of a rolling deploy.** The first node of the new version migrates the database; from then on a node of the
-old version refuses to start (it does not open a schema newer than its own), while old nodes that are already running
-keep working. So: start the new nodes, then stop the old ones. Do not restart an old node after the migration (a
-crash-looping or rescheduled old pod will not come back), and do not roll back against a migrated database.
+**Version 0.4.0 is such a release.** Its migration 2 (every actor has state, ADR 0018) gives every actor without a
+state the state `{}`, makes the state column required, and removes the registrations of the types that were
+stateless; an old node that writes an actor without a state fails. Stop every node of the old version, then start the
+new ones, the nodes that host the formerly stateless types first: until such a node registers its type again, a create
+of an actor of that type is refused. The changelog of 0.4.0 lists the steps, including the code changes.
+
+**Order of a rolling deploy.** For an additive migration: the first node of the new version migrates the database;
+from then on a node of the old version refuses to start (it does not open a schema newer than its own), while old nodes
+that are already running keep working. So: start the new nodes, then stop the old ones. Do not restart an old node
+after the migration (a crash-looping or rescheduled old pod will not come back), and do not roll back against a
+migrated database.
 
 **Upgrade nodes before clients.** Nodes decode request bodies strictly, so a request field a node does not know yet
 is a `400`. `ActorClient` leaves absent optional fields out of request bodies (no `"retry": null`), so a new client
