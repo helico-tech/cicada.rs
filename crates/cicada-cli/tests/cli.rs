@@ -1,6 +1,7 @@
 //! The `cicada` commands against a real `actor_api()` server on a local port, in real time.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use axum::Router;
@@ -9,7 +10,7 @@ use axum::http::{StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use cicada::prelude::*;
-use cicada::runtime::NodeConfig;
+use cicada::runtime::{ActorSystemBuilder, NodeConfig};
 use cicada_axum::actor_api;
 use cicada_cli::cli::Cli;
 use cicada_cli::config::Env;
@@ -64,8 +65,44 @@ impl Actor for AccountActor {
     }
 }
 
+/// type `maintenance.cleanup`, key `_`: a singleton that keeps no data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Cleanup;
+
+impl ActorRef for Cleanup {
+    const TYPE: &'static str = "maintenance.cleanup";
+    type Message = CleanupMsg;
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type")]
+enum CleanupMsg {
+    Run,
+}
+
+struct CleanupActor;
+
+impl Actor for CleanupActor {
+    type Ref = Cleanup;
+    type State = NoState;
+    type Message = CleanupMsg;
+    const UNHANDLED: Unhandled = Unhandled::Fail;
+
+    async fn handle(&self, _: &mut Turn<Self>, _: CleanupMsg) -> HandlerResult {
+        Ok(())
+    }
+}
+
 /// A started node hosting `account`, served on a random local port; its base URL.
 async fn server_with(wrap: impl FnOnce(Router) -> Router) -> String {
+    server_hosting(|node| node.host(AccountActor), wrap).await
+}
+
+/// A started node hosting what `host` adds, served on a random local port behind `wrap`; its base URL.
+async fn server_hosting(
+    host: impl FnOnce(ActorSystemBuilder) -> ActorSystemBuilder,
+    wrap: impl FnOnce(Router) -> Router,
+) -> String {
     let store = Arc::new(InMemoryStore::default());
     // A short heartbeat, so a cancelled turn ends within the wait of `eventually_status`.
     let config = NodeConfig {
@@ -73,7 +110,7 @@ async fn server_with(wrap: impl FnOnce(Router) -> Router) -> String {
         heartbeat_interval: Some(Duration::from_millis(200)),
         ..NodeConfig::default()
     };
-    let system = ActorSystem::builder(store).config(config).host(AccountActor).build();
+    let system = host(ActorSystem::builder(store).config(config)).build();
     system.start().await.expect("the node starts");
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a free port");
     let address = listener.local_addr().unwrap();
@@ -297,7 +334,7 @@ async fn missing_items_and_api_errors_fail_with_a_message() {
     assert_eq!(cicada_fails(&s, &["pause", "account/nobody:1"]).await, "actor account/nobody:1 not found");
     assert!(cicada_fails(&s, &["cancel", "turn", "account/nobody:1"]).await.contains("no turn is running"));
 
-    let unknown_type = cicada_fails(&s, &["create", "actor", "ghost/x"]).await;
+    let unknown_type = cicada_fails(&s, &["create", "actor", "ghost/x", "--state", "{}"]).await;
     assert!(unknown_type.starts_with("404 "), "{unknown_type}");
     cicada(&s, &["create", "actor", "account/acme:3", "--state", "{}"]).await;
     let bad_message = cicada_fails(&s, &["send", "account/acme:3", "--type", "Nope"]).await;
@@ -318,8 +355,8 @@ async fn nodes_types_and_health() {
     assert!(rows(&cicada(&s, &["get", "turns"]).await).is_empty());
     assert!(cicada_fails(&s, &["get", "turn", "account/acme:1"]).await.contains("not found"));
 
-    assert!(rows(&cicada(&s, &["get", "types"]).await)[0].starts_with("account  tenant:id  true      3"));
-    assert!(rows(&cicada(&s, &["get", "type", "account"]).await)[0].starts_with("account  tenant:id  true      3"));
+    assert_eq!(rows(&cicada(&s, &["get", "types"]).await), ["account  tenant:id  3"]);
+    assert!(rows(&cicada(&s, &["get", "type", "account", "-o", "wide"]).await)[0].starts_with("account  tenant:id  "));
     let account = json(&s, &["get", "type", "account"]).await;
     assert_eq!((account["name"].as_str(), account["messages"]["Hold"].is_object()), (Some("account"), true));
     assert_eq!(cicada_fails(&s, &["get", "type", "ghost"]).await, "type ghost not found");
@@ -364,6 +401,33 @@ async fn a_listing_shows_one_page_unless_all() {
     assert_eq!(rows(&cicada(&s, &["get", "actors", "--limit", "2"]).await).len(), 2);
     assert_eq!(rows(&cicada(&s, &["get", "actors", "--limit", "2", "--all"]).await).len(), 3);
     assert_eq!(json(&s, &["get", "actors", "--limit", "1", "--all"]).await.as_array().unwrap().len(), 3);
+}
+
+/// A node hosting `maintenance.cleanup` that counts the requests it gets; its base URL and the count.
+async fn counting_cleanup_server() -> (String, Arc<AtomicUsize>) {
+    let requests = Arc::new(AtomicUsize::new(0));
+    let counter = requests.clone();
+    let count = middleware::from_fn(move |request: Request, next: Next| {
+        counter.fetch_add(1, Ordering::SeqCst);
+        next.run(request)
+    });
+    (server_hosting(|node| node.host(CleanupActor), |app| app.layer(count)).await, requests)
+}
+
+#[tokio::test]
+async fn the_command_line_without_a_state_names_it_and_sends_no_request() {
+    let (s, requests) = counting_cleanup_server().await;
+    let error = cicada_fails(&s, &["create", "actor", "maintenance.cleanup/_"]).await;
+    assert!(error.contains("--state"), "{error}");
+    assert_eq!(requests.load(Ordering::SeqCst), 0, "no request reached the node");
+}
+
+#[tokio::test]
+async fn the_command_line_with_a_state_creates_the_actor_with_it() {
+    let (s, _) = counting_cleanup_server().await;
+    let created = cicada(&s, &["create", "actor", "maintenance.cleanup/_", "--state", "{}"]).await;
+    assert_eq!(created, "actor maintenance.cleanup/_ created\n");
+    assert_eq!(json(&s, &["get", "actor", "maintenance.cleanup/_"]).await["state"], serde_json::json!({}));
 }
 
 async fn require_token(request: Request, next: Next) -> Response {

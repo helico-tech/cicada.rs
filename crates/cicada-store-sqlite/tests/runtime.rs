@@ -179,7 +179,7 @@ async fn eventually<F: Future<Output = bool>>(mut condition: impl FnMut() -> F) 
 
 async fn state(store: &Arc<dyn Store>, name: &str) -> PlayerState {
     let record = store.get(&player(name).address().unwrap()).await.unwrap().expect("the player exists");
-    serde_json::from_value(record.state.expect("a state")).unwrap()
+    serde_json::from_value(record.state).unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

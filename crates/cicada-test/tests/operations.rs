@@ -38,7 +38,7 @@ async fn create_created_exists_no_such_type_invalid_state() {
     let system = test.system();
     assert_eq!(system.create(&a(), &CounterState::total(1)).await.unwrap(), CreateActorResult::Created);
     match system.create(&a(), &CounterState::total(2)).await.unwrap() {
-        CreateActorResult::Exists(record) => assert_eq!(record.state.unwrap()["total"], 1),
+        CreateActorResult::Exists(record) => assert_eq!(record.state["total"], 1),
         other => panic!("{other:?}"),
     }
     assert_eq!(system.create_actor(&parse("nothing/here"), json!({})).await.unwrap(), CreateActorResult::NoSuchType);
@@ -162,7 +162,7 @@ async fn status_cancel_outcomes_types() {
     let expected = Contract::new(
         type_name::<Counter>(),
         vec!["id".into()],
-        Some(schema::root_schema::<CounterState>()),
+        schema::root_schema::<CounterState>(),
         schema::message_schemas::<CounterMsg>().unwrap(),
     );
     assert_eq!(*types[0].contract, expected);
@@ -247,7 +247,7 @@ async fn a_type_is_removed_only_while_no_actor_of_it_exists_and_is_not_served_af
     let def = Contract::new(
         name.clone(),
         vec!["id".into()],
-        Some(schema::root_schema::<CounterState>()),
+        schema::root_schema::<CounterState>(),
         schema::message_schemas::<CounterMsg>().unwrap(),
     )
     .to_type_def();

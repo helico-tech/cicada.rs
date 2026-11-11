@@ -148,7 +148,7 @@ impl Columns for ActorView {
             when(self.created_at, wide, now),
         ];
         if wide {
-            cells.push(dash(self.state.as_ref()));
+            cells.push(self.state.to_string());
         }
         cells
     }
@@ -274,7 +274,7 @@ impl Columns for NodeDetailView {
 
 impl Columns for TypeView {
     fn headers(wide: bool) -> Vec<&'static str> {
-        wide_cols(vec!["NAME", "KEY", "STATEFUL", "MESSAGES"], &["HASH"], wide)
+        wide_cols(vec!["NAME", "KEY", "MESSAGES"], &["HASH"], wide)
     }
     fn cells(&self, wide: bool, _: Timestamp) -> Vec<String> {
         let messages = if wide {
@@ -282,7 +282,7 @@ impl Columns for TypeView {
         } else {
             self.messages.len().to_string()
         };
-        let mut cells = vec![self.name.clone(), self.key.join(":"), self.state.is_some().to_string(), messages];
+        let mut cells = vec![self.name.clone(), self.key.join(":"), messages];
         if wide {
             cells.push(self.hash.clone());
         }
@@ -338,7 +338,7 @@ mod tests {
             address: address.clone(),
             type_name: "account".into(),
             params: Default::default(),
-            state: Some(serde_json::json!({"balance": 5})),
+            state: serde_json::json!({"balance": 5}),
             version: 2,
             created_at: now() - Duration::minutes(3),
             paused: false,

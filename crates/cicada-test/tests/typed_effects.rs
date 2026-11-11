@@ -182,7 +182,7 @@ async fn self_is_the_claimed_address_even_when_it_is_not_canonical() {
     let test = TestActors::builder().with(|n| n.host(NumActor)).build().await.unwrap();
     // Created through a node that does not host the type (no canonical check there), e.g. over HTTP.
     let odd = parse("num/007");
-    test.store().create(&odd, Some(json!({}))).await.unwrap();
+    test.store().create(&odd, json!({})).await.unwrap();
     let first = match test.send_raw(&odd, "Again", json!({"left": 2}), SendOptions::new()).await {
         SendResult::Accepted(m) => m,
         other => panic!("{other:?}"),

@@ -450,7 +450,7 @@ pub struct Claim {
     /// The head message, with `attempt` already incremented for this claim.
     pub message: Message,
     /// The instance's state.
-    pub state: Option<Value>,
+    pub state: Value,
     /// The instance's version.
     pub version: i64,
     /// Store time at the claim; the handler's `now`.
@@ -465,7 +465,7 @@ pub struct ActorRecord {
     /// The instance.
     pub address: ActorAddress,
     /// Its state.
-    pub state: Option<Value>,
+    pub state: Value,
     /// Starts at 0 and increases by 1 with every commit that writes state.
     pub version: i64,
     /// Store time of creation.
@@ -530,7 +530,7 @@ pub struct ActorCreate {
     /// The instance to create.
     pub address: ActorAddress,
     /// Its initial state.
-    pub state: Option<Value>,
+    pub state: Value,
 }
 
 /// What a commit does to the committing instance's state.
@@ -538,8 +538,8 @@ pub struct ActorCreate {
 pub enum StateChange {
     /// Leave state and version untouched.
     Unchanged,
-    /// Write the state (`None` clears it) and increase the version by 1.
-    NewState(Option<Value>),
+    /// Write the state and increase the version by 1.
+    NewState(Value),
     /// Return the instance to absent and purge its remaining mailbox.
     Stop,
 }

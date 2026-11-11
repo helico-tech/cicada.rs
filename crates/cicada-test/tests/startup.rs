@@ -267,7 +267,7 @@ async fn start_registers_contracts_and_a_failed_start_leaves_the_node_unstarted(
     let expected = Contract::new(
         type_name::<Counter>(),
         vec!["id".into()],
-        Some(schema::root_schema::<CounterState>()),
+        schema::root_schema::<CounterState>(),
         schema::message_schemas::<CounterMsg>().unwrap(),
     );
     assert_eq!(types[0].contract_hash, expected.hash());

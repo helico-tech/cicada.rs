@@ -62,7 +62,7 @@ pub(crate) fn type_def(row: &SqliteRow) -> StoreResult<TypeDef> {
 pub(crate) fn actor_record(row: &SqliteRow) -> StoreResult<ActorRecord> {
     Ok(ActorRecord {
         address: address(&col::<String>(row, "address")?)?,
-        state: col::<Option<String>>(row, "state")?.map(|s| parse_json(&s, "state")).transpose()?,
+        state: parse_json(&col::<String>(row, "state")?, "state")?,
         version: col(row, "version")?,
         created_at: instant(col(row, "created_at")?),
         paused: col::<i64>(row, "paused")? != 0,

@@ -173,7 +173,7 @@ pub(crate) trait HostedActor: Send + Sync {
     fn type_name(&self) -> Option<&TypeName>;
     fn contract(&self) -> Option<&Arc<Contract>>;
     fn max_turn(&self) -> Option<Duration>;
-    fn check_state(&self, state: Option<&Value>) -> Result<(), String>;
+    fn check_state(&self, state: &Value) -> Result<(), String>;
     fn check_payload(&self, message_type: &str, payload: &Value) -> Result<(), String>;
     fn canonical_problem(&self, address: &ActorAddress) -> Option<String>;
     fn load(&self, claim: &Claim) -> Result<Loaded, String>;
@@ -203,7 +203,7 @@ fn analyse<A: Actor>() -> Result<Analysis<A>, Vec<String>> {
         (Some(binding), Some(family)) if problems.is_empty() => {
             let key_fields = binding.key_fields().iter().map(|f| (*f).to_owned()).collect();
             let contract =
-                Arc::new(Contract::new(binding.type_name().clone(), key_fields, Some(state), family.schemas.clone()));
+                Arc::new(Contract::new(binding.type_name().clone(), key_fields, state, family.schemas.clone()));
             Ok(Analysis { binding, family, contract })
         }
         _ => Err(problems),
@@ -234,7 +234,7 @@ impl<A: Actor> HostedActor for Hosted<A> {
         A::MAX_TURN
     }
 
-    fn check_state(&self, state: Option<&Value>) -> Result<(), String> {
+    fn check_state(&self, state: &Value) -> Result<(), String> {
         decode_state::<A::State>(state).map(|_| ())
     }
 
@@ -259,8 +259,7 @@ impl<A: Actor> HostedActor for Hosted<A> {
 
     fn load(&self, claim: &Claim) -> Result<Loaded, String> {
         let analysis = self.analysis.as_ref().map_err(|p| p.join("; "))?;
-        let state =
-            decode_state::<A::State>(claim.state.as_ref()).map_err(|e| format!("State cannot be decoded: {e}"))?;
+        let state = decode_state::<A::State>(&claim.state).map_err(|e| format!("State cannot be decoded: {e}"))?;
         let self_ref = analysis
             .binding
             .from_address(&claim.actor)
@@ -298,8 +297,8 @@ impl<A: Actor> HostedActor for Hosted<A> {
 }
 
 /// Decodes a stored state as `S`.
-fn decode_state<S: DeserializeOwned>(state: Option<&Value>) -> Result<S, String> {
-    serde_json::from_value(state.cloned().unwrap_or(Value::Null)).map_err(|e| e.to_string())
+fn decode_state<S: DeserializeOwned>(state: &Value) -> Result<S, String> {
+    S::deserialize(state).map_err(|e| e.to_string())
 }
 
 /// The message of a panic payload.

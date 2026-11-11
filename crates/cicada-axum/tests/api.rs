@@ -5,6 +5,7 @@ mod common;
 use axum::Router;
 use axum::http::{StatusCode, header};
 use cicada::api::problem_types as pt;
+use cicada::prelude::*;
 use cicada::store::Store;
 use cicada::time::{Timestamp, parse_instant};
 use cicada_axum::actor_api;
@@ -35,20 +36,86 @@ async fn create_answers_201_then_200_and_leaves_the_existing_state_untouched() {
     assert_eq!(get_json(&app, "/actors/counter/a").await["state"]["total"], 5);
 }
 
+// ---- a state is required and never null ----
+
+const CLEANUP: &str = "/actors/maintenance.cleanup/_";
+
+/// A node hosting `counter` and `maintenance.cleanup`, whose state is `NoState`.
+async fn cleanup_node() -> ActorSystem {
+    node_with(memory_store(), |b| b.host(CounterActor).host(CleanupActor)).await
+}
+
+/// Asserts that a refused create left no instance at `path`.
+async fn absent(app: &Router, path: &str) {
+    assert_problem(&get(app, path).await, 404, pt::NO_SUCH_INSTANCE);
+}
+
 #[tokio::test(start_paused = true)]
-async fn create_without_body_and_the_state_types_defaults() {
-    let app = app().await;
-    assert_eq!(put(&app, "/actors/ping/p", r#"{"state": {}}"#).await.status, StatusCode::CREATED);
+async fn a_create_over_http_with_a_state() {
+    let app = actor_api(cleanup_node().await);
+    assert_eq!(put(&app, CLEANUP, r#"{"state": {}}"#).await.status, StatusCode::CREATED);
+    assert_eq!(get_json(&app, CLEANUP).await["state"], json!({}));
     assert_eq!(put(&app, "/actors/counter/empty", r#"{"state": {}}"#).await.status, StatusCode::CREATED);
-    // The state type is not optional, so a hosting node refuses a missing state.
-    assert_eq!(put(&app, "/actors/counter/nostate", "").await.status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(put(&app, "/actors/counter/nostate", "{}").await.status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_create_over_http_without_a_body_is_a_bad_request() {
+    let app = actor_api(cleanup_node().await);
+    let reply = put(&app, CLEANUP, "").await;
+    assert_problem(&reply, 400, pt::BAD_REQUEST);
+    assert!(reply.text.contains("state"), "{}", reply.text);
+    absent(&app, CLEANUP).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_create_over_http_without_the_state_field_is_a_bad_request() {
+    let app = actor_api(cleanup_node().await);
+    let reply = put(&app, CLEANUP, "{}").await;
+    assert_problem(&reply, 400, pt::BAD_REQUEST);
+    assert!(reply.text.contains("missing field `state`"), "{}", reply.text);
+    absent(&app, CLEANUP).await;
+    assert_problem(&put(&app, "/actors/counter/a", "{}").await, 400, pt::BAD_REQUEST);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_null_state_over_http_is_an_invalid_state() {
+    let app = actor_api(cleanup_node().await);
+    for path in ["/actors/counter/a", CLEANUP] {
+        assert_problem(&put(&app, path, r#"{"state": null}"#).await, 422, pt::INVALID_STATE);
+        absent(&app, path).await;
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_state_with_a_field_for_a_type_that_keeps_no_data_is_an_invalid_state() {
+    let app = actor_api(cleanup_node().await);
+    assert_problem(&put(&app, CLEANUP, r#"{"state": {"oops": 1}}"#).await, 422, pt::INVALID_STATE);
+    absent(&app, CLEANUP).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_actor_of_a_type_that_keeps_no_data_has_an_empty_state() {
+    let system = cleanup_node().await;
+    system.create(&Cleanup, &NoState {}).await.unwrap();
+    let app = actor_api(system);
+    let body = get_json(&app, CLEANUP).await;
+    assert_eq!(body["state"], json!({}));
+    assert_eq!(body["version"], 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_type_that_keeps_no_data_has_the_schema_of_an_object_without_properties() {
+    let app = actor_api(cleanup_node().await);
+    let state = get_json(&app, "/types/maintenance.cleanup").await["state"].clone();
+    assert_eq!(state["type"], "object", "{state}");
+    assert!(state.get("properties").is_none_or(|p| p == &json!({})), "{state}");
+    assert_eq!(state["additionalProperties"], false, "{state}");
 }
 
 #[tokio::test(start_paused = true)]
 async fn create_errors() {
     let app = app().await;
-    assert_problem(&put(&app, "/actors/nope/a", "{}").await, 404, pt::NO_SUCH_TYPE);
+    assert_problem(&put(&app, "/actors/nope/a", r#"{"state": {}}"#).await, 404, pt::NO_SUCH_TYPE);
     assert_problem(&put(&app, "/actors/counter/a", r#"{"state": {"total": "many"}}"#).await, 422, pt::INVALID_STATE);
     assert_problem(&put(&app, "/actors/ping/p", r#"{"state": {"x": 1}}"#).await, 422, pt::INVALID_STATE);
     assert_problem(&put(&app, "/actors/counter/a", r#"{"state": "#).await, 400, pt::BAD_REQUEST);

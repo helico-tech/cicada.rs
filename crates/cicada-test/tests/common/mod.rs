@@ -220,7 +220,7 @@ counter_type!(CounterActor, Unhandled::Fail);
 
 // ---- echo ----
 
-/// type `echo`, key `{name}`: a stateless type that forwards `Add(1)` to a counter.
+/// type `echo`, key `{name}`: a type that keeps no data (`NoState`) and forwards `Add(1)` to a counter.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Echo {
     pub name: String,
@@ -338,7 +338,7 @@ pub async fn settle() {
 /// The state of `address` decoded as `S`.
 pub async fn state_of<S: serde::de::DeserializeOwned>(store: &dyn Store, address: &ActorAddress) -> S {
     let record = store.get(address).await.unwrap().unwrap_or_else(|| panic!("{address} does not exist"));
-    serde_json::from_value(record.state.unwrap_or(Value::Null)).unwrap()
+    serde_json::from_value(record.state).unwrap()
 }
 
 // ---- hooks ----
@@ -468,7 +468,7 @@ impl<F: Faults> Store for Faulty<F> {
         self.faults.list_types(&*self.inner).await
     }
 
-    async fn create(&self, address: &ActorAddress, state: Option<Value>) -> StoreResult<CreateResult> {
+    async fn create(&self, address: &ActorAddress, state: Value) -> StoreResult<CreateResult> {
         self.inner.create(address, state).await
     }
 

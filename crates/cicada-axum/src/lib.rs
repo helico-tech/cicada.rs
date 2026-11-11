@@ -4,7 +4,7 @@
 //!
 //! | Method and path | Success | Errors |
 //! | --- | --- | --- |
-//! | `PUT /actors/{type}/{key}` body `{state?}` | 201 created, 200 exists | 404 no type, 422 bad state or address |
+//! | `PUT /actors/{type}/{key}` body `{state}` | 201 created, 200 exists | 400 no body or no state, 404 no type, 422 null or bad state, bad address |
 //! | `GET /actors/{type}/{key}` | 200 | 404 |
 //! | `DELETE /actors/{type}/{key}` | 204 | 404 |
 //! | `GET /actors?prefix=&cursor=&limit=` | 200 | |

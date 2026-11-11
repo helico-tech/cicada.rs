@@ -116,7 +116,7 @@ impl<F: StoreFixture> Env<F> {
     }
 
     /// Creates a new instance of `ty` with `state` and returns its address.
-    pub async fn new_actor(&self, ty: &TypeName, state: Option<Value>) -> ActorAddress {
+    pub async fn new_actor(&self, ty: &TypeName, state: Value) -> ActorAddress {
         let id = format!("a{}", self.next());
         self.new_actor_named(ty, &id, state).await
     }
@@ -127,7 +127,7 @@ impl<F: StoreFixture> Env<F> {
     }
 
     /// Creates the instance of `ty` with the key `id` and `state`, and returns its address. Registers `ty` first.
-    pub async fn new_actor_named(&self, ty: &TypeName, id: &str, state: Option<Value>) -> ActorAddress {
+    pub async fn new_actor_named(&self, ty: &TypeName, id: &str, state: Value) -> ActorAddress {
         self.register_type(ty).await;
         let address = ActorAddress::of(ty, [id]).expect("a valid address");
         assert_eq!(self.store().create(&address, state).await.unwrap(), CreateResult::Created);

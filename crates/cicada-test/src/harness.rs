@@ -253,9 +253,9 @@ impl TestActors {
         self.store.get(&r.address().expect("a valid ref")).await.expect("store failed").is_some()
     }
 
-    /// The raw state of `r`, or `None` when it is absent or has no state.
+    /// The raw state of `r`, or `None` when it is absent.
     pub async fn state_json<R: ActorRef>(&self, r: &R) -> Option<Value> {
-        self.store.get(&r.address().expect("a valid ref")).await.expect("store failed").and_then(|rec| rec.state)
+        self.store.get(&r.address().expect("a valid ref")).await.expect("store failed").map(|rec| rec.state)
     }
 
     /// The state of `r` decoded as `S`; panics when the instance is absent.
@@ -263,7 +263,7 @@ impl TestActors {
         let address = r.address().expect("a valid ref");
         let record =
             self.store.get(&address).await.expect("store failed").unwrap_or_else(|| panic!("{address} does not exist"));
-        serde_json::from_value(record.state.unwrap_or(Value::Null)).expect("state decodes")
+        serde_json::from_value(record.state).expect("state decodes")
     }
 
     /// The state version of `r`; panics when the instance is absent.

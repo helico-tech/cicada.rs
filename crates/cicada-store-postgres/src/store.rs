@@ -549,7 +549,7 @@ async fn lock_actor(tx: &mut Tx, addr: &str) -> Result<Option<String>, TxError> 
         .await?)
 }
 
-async fn create_in(tx: &mut Tx, address: &ActorAddress, state: &Option<Value>) -> Result<CreateResult, TxError> {
+async fn create_in(tx: &mut Tx, address: &ActorAddress, state: &Value) -> Result<CreateResult, TxError> {
     // Holds the type's registration in place until this transaction ends, so that `remove_type` either sees the new
     // instance or runs before this create (then the registration is gone and this create is refused).
     let registered: Option<i32> = sqlx::query_scalar("SELECT 1 FROM actor_types WHERE name = $1 FOR SHARE")
@@ -847,7 +847,7 @@ impl Store for PostgresStore {
         })
     }
 
-    async fn create(&self, address: &ActorAddress, state: Option<Value>) -> StoreResult<CreateResult> {
+    async fn create(&self, address: &ActorAddress, state: Value) -> StoreResult<CreateResult> {
         transaction!(self, false, |tx| -> CreateResult { commit(create_in(tx, address, &state).await?) })
     }
 

@@ -263,7 +263,7 @@ fn claims_compare_in_address_order() {
         let actor = ActorAddress::parse(text).unwrap();
         let at = cicada_test::default_start();
         let message = OutgoingMessage::new(actor.clone(), "M", serde_json::json!({})).into_message(at, 1);
-        Claim { actor, epoch: 1, message, state: None, version: 0, claimed_at: at, lease_until: at }
+        Claim { actor, epoch: 1, message, state: serde_json::json!({}), version: 0, claimed_at: at, lease_until: at }
     };
     let order = |list: Vec<Claim>| in_address_order(list).iter().map(|c| c.actor.to_string()).collect::<Vec<_>>();
     assert_eq!(order(vec![claim("b/1"), claim("a/1")]), order(vec![claim("a/1"), claim("b/1")]));

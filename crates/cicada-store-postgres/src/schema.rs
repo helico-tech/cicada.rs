@@ -1,4 +1,4 @@
-//! The PostgreSQL schema and its versioned migrations.
+//! The PostgreSQL schema and its versioned migrations; the schema is at version 2.
 //!
 //! The tables of the architecture (`actor_types`, `actors`, `messages`, `outcomes`, `nodes`) plus two sequences for the
 //! store-wide `seq` and epoch counters. JSON values are `jsonb`, instants `timestamptz` (microsecond precision, the
@@ -10,7 +10,9 @@
 //! is refused. When the schema is already current, start runs no DDL at all, so a node may connect as a user without
 //! `CREATE` privileges once the schema was migrated by one that has them.
 //!
-//! Migrations are additive so that nodes of the previous version keep working during a rolling deploy.
+//! Migrations are additive so that nodes of the previous version keep working during a rolling deploy, with one
+//! exception: migration 2 makes `actors.state` required, so a node of version 1 that writes an actor without a state
+//! fails, and every old node is stopped before the first new one starts.
 
 use cicada::store::StoreError;
 use sqlx::{AssertSqlSafe, Connection, PgConnection};
@@ -99,6 +101,14 @@ const MIGRATIONS: &[&[&str]] = &[
         "CREATE SEQUENCE {s}.message_seq",
         "CREATE SEQUENCE {s}.epoch_seq",
     ],
+    // 2: every actor has a state (ADR 0018). A state that is absent or JSON null becomes `{}`; a registration whose
+    // contract has no state schema (a stateless type) is removed, so that a node hosting the type registers it again
+    // with its new contract; `actors.state` becomes NOT NULL. Not additive (see the module docs).
+    &[
+        "UPDATE {s}.actors SET state = '{}'::jsonb WHERE state IS NULL OR state = 'null'::jsonb",
+        "DELETE FROM {s}.actor_types WHERE contract->'state' IS NULL OR contract->'state' = 'null'::jsonb",
+        "ALTER TABLE {s}.actors ALTER COLUMN state SET NOT NULL",
+    ],
 ];
 
 /// The schema version this code writes.
@@ -110,6 +120,11 @@ pub(crate) async fn migrate(c: &mut PgConnection, schema: &str) -> Result<(), St
     if current_version(c, schema).await? == Some(VERSION) {
         return Ok(());
     }
+    migrate_up_to(c, schema, VERSION).await
+}
+
+/// Applies the migrations up to `target`; [`migrate`] with every migration.
+async fn migrate_up_to(c: &mut PgConnection, schema: &str, target: i32) -> Result<(), StoreError> {
     let s = quote(schema);
     let mut tx = c.begin().await.map_err(map_error)?;
     sqlx::query("SELECT pg_advisory_xact_lock($1)")
@@ -136,7 +151,7 @@ pub(crate) async fn migrate(c: &mut PgConnection, schema: &str) -> Result<(), St
             "Database schema version {current} is newer than supported ({VERSION})"
         )));
     }
-    for version in current + 1..=VERSION {
+    for version in current + 1..=target {
         for statement in MIGRATIONS[version as usize - 1] {
             ddl(&mut tx, &statement.replace("{s}", &s)).await?;
         }
@@ -147,6 +162,13 @@ pub(crate) async fn migrate(c: &mut PgConnection, schema: &str) -> Result<(), St
             .map_err(map_error)?;
     }
     tx.commit().await.map_err(map_error)
+}
+
+/// Sets up `schema` as a store of schema version `version` would have: the migrations up to it. For tests of an
+/// upgrade.
+#[cfg(test)]
+pub(crate) async fn migrate_to(c: &mut PgConnection, schema: &str, version: i32) -> Result<(), StoreError> {
+    migrate_up_to(c, schema, version).await
 }
 
 async fn ddl(c: &mut PgConnection, statement: &str) -> Result<(), StoreError> {
@@ -207,7 +229,7 @@ mod tests {
     }
 
     #[test]
-    fn the_schema_is_at_version_1() {
-        assert_eq!(VERSION, 1);
+    fn the_schema_is_at_version_2() {
+        assert_eq!(VERSION, 2);
     }
 }

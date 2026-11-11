@@ -24,38 +24,38 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
 
 ## 2. A state is never absent: store, contract, wire and command line
 
-- [ ] 2.1 Store model and trait [8]: `Claim.state`, `ActorRecord.state` and `ActorCreate.state` are a `Value`,
+- [x] 2.1 Store model and trait [8]: `Claim.state`, `ActorRecord.state` and `ActorCreate.state` are a `Value`,
       `StateChange::NewState` holds a `Value`, `Store::create` takes a `Value`. Follow in `InMemoryStore`,
       `SqliteStore`, `PostgresStore`, `cicada-store-conformance`, `cicada-fuzz` and the runtime. Verify: the
       conformance suite passes for the in-memory and the SQLite store, `cargo test -p cicada-fuzz` passes, and
       `CICADA_PG_URL=postgres://cicada:cicada@localhost:55432/cicada cargo test -p cicada-store-postgres` passes.
-- [ ] 2.2 Migration 2 in both stores [1, 5]: states that are SQL `NULL` or JSON `null` become `{}`; registrations
+- [x] 2.2 Migration 2 in both stores [1, 5]: states that are SQL `NULL` or JSON `null` become `{}`; registrations
       whose contract has no state schema are removed; `actors.state` is `NOT NULL` without a default (SQLite rebuilds
       the table and creates `actors_due` and `actors_running` again). Update the module docs of both `schema.rs`
       files: schema version 2, and this migration is not additive. Verify: the tests of 2.3.
-- [ ] 2.3 Tests of the upgrade [10]: a helper under `#[cfg(test)]` in each SQL store crate applies the migrations up
+- [x] 2.3 Tests of the upgrade [10]: a helper under `#[cfg(test)]` in each SQL store crate applies the migrations up
       to a given version. With a version-1 database built by it, test in SQLite and in PostgreSQL: "Instances with
       and without a state", "The store refuses a missing state" and "A type with state keeps its registration"; in
       SQLite also "The indexes of SQLite survive". With a real `ActorSystem` on a migrated SQLite file, test "A
       stateless type is upgraded in place" (the node starts, the type is registered again, the actor has `{}`, the
       pending message is handled) and "A type that no node hosts any more". Verify: these tests pass, the
       PostgreSQL ones with `CICADA_PG_URL` set.
-- [ ] 2.4 `Contract` [1, 8]: the state schema is a `Value` in `new`, `state_schema()` and the JSON form;
+- [x] 2.4 `Contract` [1, 8]: the state schema is a `Value` in `new`, `state_schema()` and the JSON form;
       `from_json` refuses a contract whose `state` is absent or `null`; `describe_changes` in
       `cicada-test/src/snapshots.rs` follows. Verify: unit tests for both refusals and for the JSON form of a
       `NoState` type.
-- [ ] 2.5 Wire model, HTTP and client [3, 8]: `CreateActorRequest.state` is required; `ActorView.state`,
+- [x] 2.5 Wire model, HTTP and client [3, 8]: `CreateActorRequest.state` is required; `ActorView.state`,
       `TypeView.state` and `ActorSnapshot.state` are a `Value`; `PUT /actors/{type}/{key}` answers `400` for an empty
       body and for a body without `state`; `ActorClient::create_actor` takes a `Value`. Regenerate
       `docs/openapi.json`. Verify: tests in `cicada-axum` for the scenarios "A create over HTTP with a state",
       "without a body", "without the state field", "A null state over HTTP", "A state with a field for a type that
       keeps no data", "An actor of a type that keeps no data" and "A type that keeps no data" (`GET /types/{name}`);
       the OpenAPI test passes.
-- [ ] 2.6 `cicada-cli` [6]: `--state` is required in `cicada create actor`; the TUI drops the "Stateful" fact and the
+- [x] 2.6 `cicada-cli` [6]: `--state` is required in `cicada create actor`; the TUI drops the "Stateful" fact and the
       types table drops its state column; the code for a missing state goes. Verify: tests in `tests/cli.rs` for
       "The command line without a state" (an error that names `--state`, and no request reaches the node) and "The
       command line with a state"; the `TestBackend` tests pass.
-- [ ] 2.7 `e2e` [8]: every create in the suite sends a `state`. Verify: `cargo test -p cicada-e2e --no-run` builds;
+- [x] 2.7 `e2e` [8]: every create in the suite sends a `state`. Verify: `cargo test -p cicada-e2e --no-run` builds;
       the suite itself runs in 4.2.
 
 ## 3. Docs

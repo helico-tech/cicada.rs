@@ -132,12 +132,13 @@ pub async fn screen(client: &ActorClient, target: &Target) -> anyhow::Result<Scr
         }
         Target::Type(name) => {
             let view = client.get_type(name).await?.ok_or_else(|| anyhow!("type {name} not found"))?;
-            let mut panes: Vec<(String, Value)> = view.state.iter().map(|s| ("state".to_owned(), s.clone())).collect();
+            let mut panes: Vec<(String, Value)> = vec![("state".to_owned(), view.state.clone())];
             panes.extend(view.messages.iter().map(|(n, s)| (n.clone(), s.clone())));
             let schema_rows = panes
                 .iter()
-                .map(|(n, schema)| {
-                    let kind = if n == "state" && view.state.is_some() { "state" } else { "message" };
+                .enumerate()
+                .map(|(i, (n, schema))| {
+                    let kind = if i == 0 { "state" } else { "message" };
                     let fields = schema.get("properties").and_then(Value::as_object).map_or(0, |p| p.len()).to_string();
                     let cells = vec![n.clone(), kind.to_owned(), fields];
                     GridRow { item: Item::Schema(n.clone()), wide: cells.clone(), cells }
@@ -150,7 +151,6 @@ pub async fn screen(client: &ActorClient, target: &Target) -> anyhow::Result<Scr
                 facts: vec![
                     fact("Name", &view.name),
                     fact("Key", if view.key.is_empty() { "(singleton)".to_owned() } else { view.key.join(":") }),
-                    fact("Stateful", if view.state.is_some() { "yes" } else { "no" }),
                     fact("Messages", view.messages.len().to_string()),
                     Fact { label: "Hash", value: short_hash(&view.hash), tone: Tone::Dim },
                 ],
@@ -205,7 +205,7 @@ async fn actor_overview(client: &ActorClient, actor: &cicada::ActorAddress) -> a
             Fact { label: "Mailbox", value: format!("{mailbox_state}, {pending} pending"), tone },
             turn_fact,
         ],
-        panes: vec![("state".to_owned(), view.state.clone().unwrap_or(Value::Null))],
+        panes: vec![("state".to_owned(), view.state.clone())],
         pane_follows_selection: false,
         caused_by: None,
         actor: None,

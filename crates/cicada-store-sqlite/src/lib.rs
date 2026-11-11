@@ -18,3 +18,6 @@ pub mod schema;
 mod store;
 
 pub use store::{SqliteOptions, SqliteStore};
+
+#[cfg(test)]
+mod upgrade_tests;

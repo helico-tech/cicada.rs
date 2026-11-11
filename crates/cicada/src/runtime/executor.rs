@@ -513,7 +513,7 @@ impl TurnExecutor {
                     {
                         return Decision::failed(format!("State cannot be encoded: {e}"));
                     }
-                    StateChange::NewState(Some(state))
+                    StateChange::NewState(state)
                 }
             }
         };
@@ -541,7 +541,7 @@ impl TurnExecutor {
                 return Ok(Some(format!("Create of {}: its type is not registered", create.address)));
             }
             if let Some(target) = self.hosted.get(create.address.type_name())
-                && let Err(e) = target.actor.check_state(create.state.as_ref())
+                && let Err(e) = target.actor.check_state(&create.state)
             {
                 return Ok(Some(format!("Create of {}: the initial state cannot be decoded: {e}", create.address)));
             }

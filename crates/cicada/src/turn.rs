@@ -383,10 +383,6 @@ impl<A: Actor> Turn<A> {
             .map_err(|e| TurnError::Invalid(format!("The initial state cannot be encoded: {e}")))?;
         message::check_not_null("initial state", &state).map_err(TurnError::Invalid)?;
         limits::check_json("initial state", Some(&state)).map_err(TurnError::Invalid)?;
-        self.push_create(r, Some(state))
-    }
-
-    fn push_create<R: ActorRef>(&mut self, r: &R, state: Option<Value>) -> Result<(), TurnError> {
         let binding = RefBinding::<R>::new().map_err(|e| TurnError::Invalid(e.to_string()))?;
         let address = binding.to_address(r).map_err(|e| TurnError::Invalid(e.to_string()))?;
         self.effects.creates.push(ActorCreate { address, state });

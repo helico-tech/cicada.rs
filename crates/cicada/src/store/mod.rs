@@ -116,7 +116,7 @@ pub trait Store: Send + Sync + 'static {
     /// Creates the instance with initial `state`, version 0, no lease and an empty mailbox. Idempotent: an existing
     /// instance is left untouched. The type is the address's own and must be registered, checked atomically with the
     /// create: otherwise [`CreateResult::NoSuchType`] and nothing is created.
-    async fn create(&self, address: &ActorAddress, state: Option<Value>) -> StoreResult<CreateResult>;
+    async fn create(&self, address: &ActorAddress, state: Value) -> StoreResult<CreateResult>;
 
     /// Snapshot of the instance, or `None` when it is absent.
     async fn get(&self, address: &ActorAddress) -> StoreResult<Option<ActorRecord>>;

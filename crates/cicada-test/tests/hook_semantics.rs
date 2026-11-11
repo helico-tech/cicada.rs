@@ -273,7 +273,7 @@ impl Plugin for ReasonReader {
 async fn state_that_cannot_be_decoded_is_a_load_failure_only_on_outcome_fires() {
     let events = Events::default();
     let test = probe_test(ProbeActor(events.clone()), MINUTE, vec![Arc::new(Recorder(events.clone()))]).await;
-    test.store().create(&addr(&p("p")), Some(json!({"log": "not a list"}))).await.unwrap();
+    test.store().create(&addr(&p("p")), json!({"log": "not a list"})).await.unwrap();
     let m = test.send(&p("p"), ProbeMsg::Do { fail: true, sleep_seconds: 0 }).await;
     test.run_until_idle().await;
     assert_eq!(test.outcome(&m).await.unwrap().status, OutcomeStatus::Failed);

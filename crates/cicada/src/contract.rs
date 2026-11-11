@@ -8,11 +8,11 @@ use sha2::{Digest, Sha256};
 use crate::address::{ActorAddress, TypeName};
 use crate::store::TypeDef;
 
-/// The published description of an actor type: its name and key fields, the JSON Schema of its state (`None` for a stateless
-/// type) and one JSON Schema per message type name.
+/// The published description of an actor type: its name and key fields, the JSON Schema of its state and one JSON
+/// Schema per message type name.
 ///
 /// Its JSON form ([`Self::to_json`]) is what the TypeRegistry stores and `GET /types` serves:
-/// `{"type": "sync", "key": ["tenant"], "state": {...} | null, "messages": {"FetchPage": {...}, "Run": {...}}}`.
+/// `{"type": "sync", "key": ["tenant"], "state": {...}, "messages": {"FetchPage": {...}, "Run": {...}}}`.
 /// It keeps the schemas' `description`s (doc comments). [`Self::hash`] is the SHA-256 of the canonical JSON without
 /// them (ADR 0017), so a doc comment change keeps the hash; two nodes registering the same name must produce the same
 /// hash.
@@ -20,7 +20,7 @@ use crate::store::TypeDef;
 pub struct Contract {
     type_name: TypeName,
     key_fields: Vec<String>,
-    state_schema: Option<Value>,
+    state_schema: Value,
     message_schemas: BTreeMap<String, Value>,
     hash: String,
 }
@@ -30,7 +30,7 @@ impl Contract {
     pub fn new(
         type_name: TypeName,
         key_fields: Vec<String>,
-        state_schema: Option<Value>,
+        state_schema: Value,
         message_schemas: BTreeMap<String, Value>,
     ) -> Self {
         let mut contract = Self { type_name, key_fields, state_schema, message_schemas, hash: String::new() };
@@ -65,9 +65,9 @@ impl Contract {
         self.key_fields.iter().cloned().zip(address.key_values()).collect()
     }
 
-    /// The JSON Schema of the state, or `None` for a stateless type.
-    pub fn state_schema(&self) -> Option<&Value> {
-        self.state_schema.as_ref()
+    /// The JSON Schema of the state.
+    pub fn state_schema(&self) -> &Value {
+        &self.state_schema
     }
 
     /// JSON Schema per message type name, sorted by name.
@@ -100,7 +100,7 @@ impl Contract {
         TypeDef { name: self.type_name.clone(), contract: self.to_json(), contract_hash: self.hash.clone() }
     }
 
-    /// Parses a contract from its JSON form.
+    /// Parses a contract from its JSON form. A contract without a state schema (`state` absent or `null`) is refused.
     pub fn from_json(json: &Value) -> Result<Self, String> {
         let o = json.as_object().ok_or("Not a contract: not an object")?;
         let type_name = o
@@ -115,7 +115,7 @@ impl Contract {
             .iter()
             .map(|f| f.as_str().map(str::to_owned).ok_or("Not a contract: bad key"))
             .collect::<Result<Vec<_>, _>>()?;
-        let state_schema = o.get("state").filter(|s| !s.is_null()).cloned();
+        let state_schema = o.get("state").filter(|s| !s.is_null()).cloned().ok_or("Not a contract: no state schema")?;
         let messages = o
             .get("messages")
             .and_then(Value::as_object)
@@ -238,16 +238,35 @@ mod tests {
     fn contract_round_trip() {
         let mut messages = BTreeMap::new();
         messages.insert("Run".to_owned(), json!({"type": "object"}));
-        let c = Contract::new(TypeName::parse("sync").unwrap(), vec!["tenant".to_owned()], None, messages);
+        let c = Contract::new(TypeName::parse("sync").unwrap(), vec!["tenant".to_owned()], json!({}), messages);
         let parsed = Contract::from_json(&c.to_json()).unwrap();
         assert_eq!(parsed.hash(), c.hash());
         assert!(parsed.accepts("Run"));
-        assert_eq!(c.to_json()["state"], Value::Null);
+        assert_eq!(c.to_json()["state"], json!({}));
+    }
+
+    #[test]
+    fn a_contract_without_a_state_schema_is_refused() {
+        let mut json = contract(json!({"type": "object"}), json!({"type": "object"})).to_json();
+        json["state"] = Value::Null;
+        assert_eq!(Contract::from_json(&json).unwrap_err(), "Not a contract: no state schema");
+        json.as_object_mut().unwrap().remove("state");
+        assert_eq!(Contract::from_json(&json).unwrap_err(), "Not a contract: no state schema");
+    }
+
+    #[test]
+    fn the_json_form_of_a_type_that_keeps_no_data_has_its_state_schema() {
+        let schema = crate::schema::root_schema::<crate::NoState>();
+        let c = contract(schema.clone(), json!({"type": "object"}));
+        assert_eq!(c.to_json()["state"], schema);
+        assert_eq!(schema["type"], "object");
+        assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(Contract::from_json(&c.to_json()).unwrap().state_schema(), &schema);
     }
 
     fn contract(state: Value, message: Value) -> Contract {
         let messages = BTreeMap::from([("Run".to_owned(), message)]);
-        Contract::new(TypeName::parse("sync").unwrap(), vec!["tenant".to_owned()], Some(state), messages)
+        Contract::new(TypeName::parse("sync").unwrap(), vec!["tenant".to_owned()], state, messages)
     }
 
     /// A state schema with a description at every place where schemars nests schemas, all set to `text`.
@@ -315,7 +334,7 @@ mod tests {
 
         let named = |schema: Value| {
             let messages = BTreeMap::from([("description".to_owned(), schema)]);
-            Contract::new(TypeName::parse("sync").unwrap(), vec![], None, messages)
+            Contract::new(TypeName::parse("sync").unwrap(), vec![], json!({}), messages)
         };
         assert_ne!(named(json!({"type": "object"})).hash(), named(json!({"type": "string"})).hash());
         assert!(named(json!({"type": "object"})).accepts("description"));

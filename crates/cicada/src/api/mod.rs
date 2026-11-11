@@ -26,13 +26,12 @@ use crate::runtime::{BulkSelection, NodeHealth};
 use crate::store::{MessageId, NodeId};
 use crate::time::{Timestamp, serde_duration, serde_instant};
 
-/// Body of `PUT /actors/{type}/{key}`. An empty request body means "no state" as well.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+/// Body of `PUT /actors/{type}/{key}`. The state is required: a body without it, or an empty body, is a `400`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CreateActorRequest {
-    /// Initial state; absent or null for no state.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub state: Option<Value>,
+    /// Initial state; never null. A type that keeps no data takes `{}`.
+    pub state: Value,
 }
 
 /// Response of `PUT /actors/{type}/{key}`: `201` when [`Self::created`], `200` when the instance already existed (unchanged).
@@ -55,8 +54,8 @@ pub struct ActorView {
     pub type_name: String,
     /// The values of the key, by field name.
     pub params: BTreeMap<String, String>,
-    /// Current state, or null.
-    pub state: Option<Value>,
+    /// Current state; never null.
+    pub state: Value,
     /// Number of commits that wrote state.
     pub version: i64,
     /// Store time of creation.
@@ -437,8 +436,8 @@ pub struct TypeView {
     pub key: Vec<String>,
     /// The contract hash (`sha256:…`).
     pub hash: String,
-    /// JSON Schema of the state, or null for a stateless type.
-    pub state: Option<Value>,
+    /// JSON Schema of the state.
+    pub state: Value,
     /// JSON Schema per message type name.
     pub messages: BTreeMap<String, Value>,
 }

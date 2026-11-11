@@ -99,7 +99,7 @@ pub enum PingMsg {
     Hello,
 }
 
-/// A stateless type.
+/// A type that keeps no data.
 pub struct PingActor;
 
 impl Actor for PingActor {
@@ -109,6 +109,34 @@ impl Actor for PingActor {
     const UNHANDLED: Unhandled = Unhandled::Drop;
 
     async fn handle(&self, _turn: &mut Turn<Self>, _message: PingMsg) -> HandlerResult {
+        Ok(())
+    }
+}
+
+/// type `maintenance.cleanup`, key `_`: a singleton that keeps no data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Cleanup;
+
+impl ActorRef for Cleanup {
+    const TYPE: &'static str = "maintenance.cleanup";
+    type Message = CleanupMsg;
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type")]
+pub enum CleanupMsg {
+    Run,
+}
+
+pub struct CleanupActor;
+
+impl Actor for CleanupActor {
+    type Ref = Cleanup;
+    type State = NoState;
+    type Message = CleanupMsg;
+    const UNHANDLED: Unhandled = Unhandled::Fail;
+
+    async fn handle(&self, _turn: &mut Turn<Self>, _message: CleanupMsg) -> HandlerResult {
         Ok(())
     }
 }
@@ -235,7 +263,7 @@ impl Store for FlakyStore {
         self.check()?;
         self.inner.list_types().await
     }
-    async fn create(&self, address: &ActorAddress, state: Option<Value>) -> StoreResult<CreateResult> {
+    async fn create(&self, address: &ActorAddress, state: Value) -> StoreResult<CreateResult> {
         self.inner.create(address, state).await
     }
     async fn get(&self, address: &ActorAddress) -> StoreResult<Option<ActorRecord>> {

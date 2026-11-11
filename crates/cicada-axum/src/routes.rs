@@ -183,10 +183,14 @@ fn routes(access: Access) -> ApiRouter<Arc<Api>> {
         });
         actor = actor
             .put_with(handlers::put_actor, |op| {
-                described(op, "createActor", "Creates an actor. An existing one is left untouched.")
-                    .input::<(Path<ActorPath>, Json<CreateActorRequest>)>()
-                    .response_with::<201, Json<CreateActorResponse>, _>(|r| r.description("Created."))
-                    .response_with::<200, Json<CreateActorResponse>, _>(|r| r.description("It already existed."))
+                described(
+                    op,
+                    "createActor",
+                    "Creates an actor with its initial state. An existing one is left untouched.",
+                )
+                .input::<(Path<ActorPath>, Json<CreateActorRequest>)>()
+                .response_with::<201, Json<CreateActorResponse>, _>(|r| r.description("Created."))
+                .response_with::<200, Json<CreateActorResponse>, _>(|r| r.description("It already existed."))
             })
             .delete_with(handlers::delete_actor, |op| {
                 no_content(

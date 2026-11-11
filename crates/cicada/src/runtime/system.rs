@@ -670,11 +670,11 @@ impl ActorSystem {
             if let Some(problem) = hosted.actor.canonical_problem(address) {
                 return Ok(CreateActorResult::InvalidAddress(problem));
             }
-            if let Err(e) = hosted.actor.check_state(Some(&state)) {
+            if let Err(e) = hosted.actor.check_state(&state) {
                 return Ok(CreateActorResult::InvalidState(format!("State cannot be decoded: {e}")));
             }
         }
-        Ok(match self.inner.store.create(address, Some(state)).await? {
+        Ok(match self.inner.store.create(address, state).await? {
             CreateResult::Created => CreateActorResult::Created,
             CreateResult::Exists(existing) => CreateActorResult::Exists(existing),
             // The type was removed between the lookup and the insert; the store refused atomically.

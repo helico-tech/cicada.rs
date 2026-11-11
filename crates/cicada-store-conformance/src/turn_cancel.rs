@@ -22,8 +22,8 @@ pub async fn turn_cancel_pending_messages_of_the_instance_are_cancelled_in_the_c
 ) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
-        let b = t.new_actor(&OTHER, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
+        let b = t.new_actor(&OTHER, json!({})).await;
         let head = t.send(&a).await;
         let later = t.send_at(&a, Delivery::After(t.ticks(50))).await;
         let later_still = t.send_at(&a, Delivery::After(t.ticks(60))).await;
@@ -56,7 +56,7 @@ pub async fn turn_cancel_pending_messages_of_the_instance_are_cancelled_in_the_c
 /// turn cancel - a cancelled due message is no longer claimed
 pub async fn turn_cancel_a_cancelled_due_message_is_no_longer_claimed<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let first = t.send(&a).await;
         let due = t.send(&a).await;
         let third = t.send(&a).await;
@@ -74,7 +74,7 @@ pub async fn turn_cancel_the_turns_own_message_cannot_be_cancelled_and_nothing_i
 ) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let m = t.send(&a).await;
         let other = t.send(&a).await;
         let c = t.claim_one().await;
@@ -92,7 +92,7 @@ pub async fn turn_cancel_the_turns_own_message_cannot_be_cancelled_and_nothing_i
 pub async fn turn_cancel_a_rejected_or_fenced_commit_cancels_nothing<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         t.send(&a).await;
         let keep = t.send_at(&a, Delivery::After(t.ticks(50))).await;
         let c = t.claim_one().await;
@@ -123,7 +123,7 @@ pub async fn turn_cancel_with_a_stop_the_cancelled_message_is_cancelled_and_the_
 ) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         t.send(&a).await;
         let cancelled = t.send_at(&a, Delivery::After(t.ticks(50))).await;
         let purged = t.send_at(&a, Delivery::After(t.ticks(60))).await;

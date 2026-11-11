@@ -60,7 +60,7 @@ pub struct ActorSnapshot {
     /// The values of its key, by field name.
     pub params: BTreeMap<String, String>,
     /// Its state.
-    pub state: Option<Value>,
+    pub state: Value,
     /// Its version.
     pub version: i64,
     /// Store time of creation.

@@ -544,7 +544,7 @@ impl Store for FaultStore {
         self.gate(Method::RemoveType, || self.inner.remove_type(name)).await
     }
 
-    async fn create(&self, address: &ActorAddress, state: Option<Value>) -> StoreResult<CreateResult> {
+    async fn create(&self, address: &ActorAddress, state: Value) -> StoreResult<CreateResult> {
         self.gate(Method::Create, || self.inner.create(address, state)).await
     }
 
@@ -737,7 +737,7 @@ mod tests {
     async fn layer(rules: Vec<Rule>) -> (Arc<InMemoryStore>, Arc<FaultStore>, Log) {
         let memory = Arc::new(InMemoryStore::new(Arc::new(TokioClock::new(default_start())), Duration::from_secs(600)));
         memory.register(type_def()).await.unwrap();
-        memory.create(&address(), None).await.unwrap();
+        memory.create(&address(), serde_json::json!({})).await.unwrap();
         memory.enqueue(outgoing("m1")).await.unwrap();
         let log = Log::default();
         let store = FaultStore::new(memory.clone(), "n1", rules, log.clone());

@@ -35,7 +35,7 @@ async fn outcome_status(store: &dyn Store, id: &MessageId) -> Option<OutcomeStat
     outcome_record(store, id).await.map(|o| o.status)
 }
 
-async fn state_of(store: &dyn Store, a: &ActorAddress) -> Option<serde_json::Value> {
+async fn state_of(store: &dyn Store, a: &ActorAddress) -> serde_json::Value {
     store.get(a).await.unwrap().expect("the instance").state
 }
 
@@ -133,7 +133,7 @@ pub async fn registry_remove_type_removes_an_unused_type_refuses_one_with_instan
         for def in [&used, &unused, &short] {
             store.register(def.clone()).await.unwrap();
         }
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         assert_eq!(store.remove_type(&TYPE).await.unwrap(), RemoveTypeResult::InUse);
         assert_eq!(list_types(&*store).await, vec![short.clone(), used.clone(), unused.clone()]);
         assert_eq!(store.remove_type(&OTHER).await.unwrap(), RemoveTypeResult::Removed);
@@ -180,7 +180,7 @@ pub async fn registry_nodes_removing_one_type_concurrently_remove_it_once_and_a_
                     let (name, target) = (name.clone(), target.clone());
                     async move {
                         if i == 0 {
-                            peer.create(&target, None).await.unwrap();
+                            peer.create(&target, json!({})).await.unwrap();
                             None
                         } else {
                             Some(peer.remove_type(&name).await.unwrap())
@@ -238,17 +238,17 @@ pub async fn instances_create_then_get_returns_the_initial_snapshot<B: FixtureFa
     store_test(backend, async |t| {
         let store = t.store();
         let before = store.now().await.unwrap();
-        let a = t.new_actor(&TYPE, Some(json!({"n": 1}))).await;
+        let a = t.new_actor(&TYPE, json!({"n": 1})).await;
         let after = store.now().await.unwrap();
         let rec = store.get(&a).await.unwrap().expect("the instance");
         assert_eq!(rec.address, a);
         assert_eq!(rec.address.type_name(), &*TYPE);
-        assert_eq!(rec.state, Some(json!({"n": 1})));
+        assert_eq!(rec.state, json!({"n": 1}));
         assert_eq!(rec.version, 0);
         assert!(rec.created_at >= before && rec.created_at <= after);
         assert_eq!(store.get(&address("conformance/absent")).await.unwrap(), None);
-        let b = t.new_actor(&TYPE, None).await;
-        assert_eq!(state_of(&*store, &b).await, None);
+        let b = t.new_actor(&TYPE, json!({})).await;
+        assert_eq!(state_of(&*store, &b).await, json!({}));
     })
     .await
 }
@@ -257,18 +257,18 @@ pub async fn instances_create_then_get_returns_the_initial_snapshot<B: FixtureFa
 pub async fn instances_create_is_idempotent_and_leaves_the_existing_instance_untouched<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, Some(json!({"n": 1}))).await;
+        let a = t.new_actor(&TYPE, json!({"n": 1})).await;
         let m = t.send(&a).await;
         let c = t.claim_one().await;
-        t.commit_ok(CommitRequest { state: StateChange::NewState(Some(json!({"n": 2}))), ..done(&c) }).await;
+        t.commit_ok(CommitRequest { state: StateChange::NewState(json!({"n": 2})), ..done(&c) }).await;
         t.send(&a).await;
         let existing = expect_matches!(
-            store.create(&a, Some(json!({"n": 99}))).await.unwrap(),
+            store.create(&a, json!({"n": 99})).await.unwrap(),
             CreateResult::Exists(existing) => existing
         );
-        assert_eq!(existing.state, Some(json!({"n": 2})));
+        assert_eq!(existing.state, json!({"n": 2}));
         assert_eq!(existing.version, 1);
-        assert_eq!(state_of(&*store, &a).await, Some(json!({"n": 2})));
+        assert_eq!(state_of(&*store, &a).await, json!({"n": 2}));
         assert_eq!(t.pending(&a).await.len(), 1);
         assert_eq!(outcome_status(&*store, &m.id).await, Some(OutcomeStatus::Done));
     })
@@ -281,10 +281,10 @@ pub async fn instances_list_by_prefix_in_address_order_with_paging<B: FixtureFac
         let store = t.store();
         let mut wanted = Vec::new();
         for i in 1..=23 {
-            wanted.push(t.new_actor_named(&TYPE, &format!("w{i:02}"), None).await);
+            wanted.push(t.new_actor_named(&TYPE, &format!("w{i:02}"), json!({})).await);
         }
-        t.new_actor_named(&OTHER, "x", None).await;
-        t.new_actor_named(&type_name("conformance2"), "y", None).await;
+        t.new_actor_named(&OTHER, "x", json!({})).await;
+        t.new_actor_named(&type_name("conformance2"), "y", json!({})).await;
         let mut seen: Vec<ActorAddress> = Vec::new();
         let mut cursor: Option<PageCursor> = None;
         let mut pages = 0;
@@ -313,7 +313,7 @@ pub async fn instances_delete_of_an_absent_instance_reports_absent<B: FixtureFac
     store_test(backend, async |t| {
         let store = t.store();
         assert_eq!(store.delete(&address("conformance/none")).await.unwrap(), DeleteResult::Absent);
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         assert_eq!(store.delete(&a).await.unwrap(), DeleteResult::Deleted { purged: 0 });
         assert_eq!(store.delete(&a).await.unwrap(), DeleteResult::Absent);
         assert_eq!(store.get(&a).await.unwrap(), None);
@@ -332,12 +332,12 @@ pub async fn s1_acknowledged_writes_survive_a_restart<B: FixtureFactory>(backend
             return;
         }
         t.store().register(type_def(&TYPE, "h1")).await.unwrap();
-        let a = t.new_actor(&TYPE, Some(json!({"n": 1}))).await;
+        let a = t.new_actor(&TYPE, json!({"n": 1})).await;
         let done_msg = t.send(&a).await;
         let c1 = t.claim_one().await;
-        t.commit_ok(CommitRequest { state: StateChange::NewState(Some(json!({"n": 2}))), ..done(&c1) }).await;
+        t.commit_ok(CommitRequest { state: StateChange::NewState(json!({"n": 2})), ..done(&c1) }).await;
         let pending_msg = t.send_at(&a, Delivery::After(t.ticks(100))).await;
-        let b = t.new_actor(&TYPE, None).await;
+        let b = t.new_actor(&TYPE, json!({})).await;
         let claimed_then_released = t.send(&b).await;
         let c2 = t.claim_one().await;
         t.store().release(&c2.actor, c2.epoch).await.unwrap();
@@ -347,7 +347,7 @@ pub async fn s1_acknowledged_writes_survive_a_restart<B: FixtureFactory>(backend
         let store = t.store();
         assert_eq!(list_types(&*store).await, vec![type_def(&TYPE, "h1")]);
         let rec = store.get(&a).await.unwrap().expect("the instance");
-        assert_eq!(rec.state, Some(json!({"n": 2})));
+        assert_eq!(rec.state, json!({"n": 2}));
         assert_eq!(rec.version, 1);
         assert_eq!(t.pending(&a).await, vec![pending_msg.clone()]);
         assert_eq!(outcome_status(&*store, &done_msg.id).await, Some(OutcomeStatus::Done));
@@ -369,15 +369,15 @@ pub async fn s1_acknowledged_writes_survive_a_restart<B: FixtureFactory>(backend
 pub async fn s2_commit_applies_state_creates_sends_and_outcome_together<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, Some(json!({"n": 0}))).await;
-        let other = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({"n": 0})).await;
+        let other = t.new_actor(&TYPE, json!({})).await;
         let m = t.send(&a).await;
         let claim = t.claim_one().await;
         let child = address("conformance/child");
         let committed = t
             .commit_ok(CommitRequest {
-                state: StateChange::NewState(Some(json!({"n": 1}))),
-                creates: vec![ActorCreate { address: child.clone(), state: Some(json!({"child": 1})) }],
+                state: StateChange::NewState(json!({"n": 1})),
+                creates: vec![ActorCreate { address: child.clone(), state: json!({"child": 1}) }],
                 sends: vec![
                     OutgoingMessage {
                         from: Some(a.clone()),
@@ -396,9 +396,9 @@ pub async fn s2_commit_applies_state_creates_sends_and_outcome_together<B: Fixtu
         assert_eq!(committed.version, 1);
         assert_eq!(committed.sent.len(), 2);
         let rec = store.get(&a).await.unwrap().expect("the instance");
-        assert_eq!(rec.state, Some(json!({"n": 1})));
+        assert_eq!(rec.state, json!({"n": 1}));
         assert_eq!(rec.version, 1);
-        assert_eq!(state_of(&*store, &child).await, Some(json!({"child": 1})));
+        assert_eq!(state_of(&*store, &child).await, json!({"child": 1}));
         let hello = t.pending(&other).await;
         assert_eq!(hello.len(), 1);
         let hello = &hello[0];
@@ -427,15 +427,15 @@ pub async fn s2_a_send_to_an_absent_instance_rejects_the_whole_commit_and_keeps_
 ) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, Some(json!({"n": 0}))).await;
+        let a = t.new_actor(&TYPE, json!({"n": 0})).await;
         let m = t.send(&a).await;
         let claim = t.claim_one().await;
         let child = address("conformance/child");
         let absent = address("conformance/absent");
         let result = t
             .commit(CommitRequest {
-                state: StateChange::NewState(Some(json!({"n": 1}))),
-                creates: vec![ActorCreate { address: child.clone(), state: None }],
+                state: StateChange::NewState(json!({"n": 1})),
+                creates: vec![ActorCreate { address: child.clone(), state: json!({}) }],
                 sends: vec![
                     OutgoingMessage::new(child.clone(), "T", json!(1)),
                     OutgoingMessage::new(absent, "T", json!(2)),
@@ -446,7 +446,7 @@ pub async fn s2_a_send_to_an_absent_instance_rejects_the_whole_commit_and_keeps_
         let reason = expect_matches!(result, CommitResult::Rejected(reason) => reason);
         assert!(!reason.trim().is_empty());
         // Nothing applied.
-        assert_eq!(state_of(&*store, &a).await, Some(json!({"n": 0})));
+        assert_eq!(state_of(&*store, &a).await, json!({"n": 0}));
         assert_eq!(version_of(&*store, &a).await, 0);
         assert_eq!(store.get(&child).await.unwrap(), None);
         assert_eq!(outcome_record(&*store, &m.id).await, None);
@@ -458,7 +458,7 @@ pub async fn s2_a_send_to_an_absent_instance_rejects_the_whole_commit_and_keeps_
         let outcome = outcome_record(&*store, &m.id).await.expect("an outcome");
         assert_eq!(outcome.status, OutcomeStatus::Failed);
         assert_eq!(outcome.error, Some(reason));
-        assert_eq!(state_of(&*store, &a).await, Some(json!({"n": 0})));
+        assert_eq!(state_of(&*store, &a).await, json!({"n": 0}));
     })
     .await
 }
@@ -467,17 +467,17 @@ pub async fn s2_a_send_to_an_absent_instance_rejects_the_whole_commit_and_keeps_
 pub async fn s2_creates_are_applied_before_sends_in_one_commit<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         t.send(&a).await;
         let child = address("other/kid");
         t.register_type(&OTHER).await;
-        let existing = t.new_actor(&TYPE, Some(json!({"keep": 1}))).await;
+        let existing = t.new_actor(&TYPE, json!({"keep": 1})).await;
         let c = t.claim_one().await;
         let committed = t
             .commit_ok(CommitRequest {
                 creates: vec![
-                    ActorCreate { address: child.clone(), state: Some(json!({"k": 1})) },
-                    ActorCreate { address: existing.clone(), state: Some(json!({"keep": 2})) },
+                    ActorCreate { address: child.clone(), state: json!({"k": 1}) },
+                    ActorCreate { address: existing.clone(), state: json!({"keep": 2}) },
                 ],
                 sends: vec![OutgoingMessage::new(child.clone(), "Start", json!(0))],
                 ..done(&c)
@@ -487,8 +487,8 @@ pub async fn s2_creates_are_applied_before_sends_in_one_commit<B: FixtureFactory
         assert_eq!(committed.sent[0].to, child);
         let rec = store.get(&child).await.unwrap().expect("the child");
         assert_eq!(rec.address.type_name(), &*OTHER);
-        assert_eq!(rec.state, Some(json!({"k": 1})));
-        assert_eq!(state_of(&*store, &existing).await, Some(json!({"keep": 1})), "create in a commit is idempotent");
+        assert_eq!(rec.state, json!({"k": 1}));
+        assert_eq!(state_of(&*store, &existing).await, json!({"keep": 1}), "create in a commit is idempotent");
         assert_eq!(t.claim_one_types(&[&OTHER]).await.message.message_type, "Start");
     })
     .await
@@ -497,8 +497,8 @@ pub async fn s2_creates_are_applied_before_sends_in_one_commit<B: FixtureFactory
 /// S2 - a send reusing a message id rejects the commit
 pub async fn s2_a_send_reusing_a_message_id_rejects_the_commit<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
-        let a = t.new_actor(&TYPE, None).await;
-        let b = t.new_actor(&OTHER, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
+        let b = t.new_actor(&OTHER, json!({})).await;
         let finished = t.send(&b).await;
         t.commit_ok(done(&t.claim_one_types(&[&OTHER]).await)).await;
         let pending_b = t.send_at(&b, Delivery::After(t.ticks(50))).await;
@@ -533,8 +533,8 @@ pub async fn s2_a_send_reusing_a_message_id_rejects_the_commit<B: FixtureFactory
 pub async fn s2_delete_removes_the_instance_and_purges_its_whole_mailbox<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, Some(json!({"n": 1}))).await;
-        let keep = t.new_actor(&OTHER, None).await;
+        let a = t.new_actor(&TYPE, json!({"n": 1})).await;
+        let keep = t.new_actor(&OTHER, json!({})).await;
         let kept = t.send(&keep).await;
         let m1 = t.send(&a).await;
         let m2 = t.send_at(&a, Delivery::After(t.ticks(50))).await;
@@ -569,8 +569,8 @@ pub async fn s2_delete_removes_the_instance_and_purges_its_whole_mailbox<B: Fixt
 pub async fn s2_stop_removes_the_instance_and_purges_the_rest_of_its_mailbox<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, Some(json!({"n": 1}))).await;
-        let other = t.new_actor(&OTHER, None).await;
+        let a = t.new_actor(&TYPE, json!({"n": 1})).await;
+        let other = t.new_actor(&OTHER, json!({})).await;
         let current = t.send(&a).await;
         let later = t.send_at(&a, Delivery::After(t.ticks(50))).await;
         let claim = t.claim_one().await;
@@ -595,7 +595,7 @@ pub async fn s2_stop_removes_the_instance_and_purges_the_rest_of_its_mailbox<B: 
         assert_eq!(t.pending(&other).await, vec![committed.sent[1].clone()]);
         assert!(t.claim().await.is_empty());
         // Re-create starts from scratch.
-        assert_eq!(store.create(&a, None).await.unwrap(), CreateResult::Created);
+        assert_eq!(store.create(&a, json!({})).await.unwrap(), CreateResult::Created);
         assert_eq!(version_of(&*store, &a).await, 0);
         assert!(t.pending(&a).await.is_empty());
     })
@@ -606,12 +606,12 @@ pub async fn s2_stop_removes_the_instance_and_purges_the_rest_of_its_mailbox<B: 
 pub async fn s2_a_failed_outcome_keeps_state_and_records_the_error_and_envelope<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, Some(json!({"n": 1}))).await;
+        let a = t.new_actor(&TYPE, json!({"n": 1})).await;
         let m = t.send_payload(&a, json!({"p": 7})).await;
         let claim = t.claim_one().await;
         let committed = t.commit_ok(ending(&claim, TurnOutcome::Failed("boom".into()))).await;
         assert_eq!(committed.version, 0);
-        assert_eq!(state_of(&*store, &a).await, Some(json!({"n": 1})));
+        assert_eq!(state_of(&*store, &a).await, json!({"n": 1}));
         let o = outcome_record(&*store, &m.id).await.expect("an outcome");
         assert_eq!(o.status, OutcomeStatus::Failed);
         assert_eq!(o.error.as_deref(), Some("boom"));
@@ -630,17 +630,17 @@ pub async fn s2_a_failed_outcome_keeps_state_and_records_the_error_and_envelope<
 pub async fn s3_every_read_sees_the_preceding_acknowledged_write<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, Some(json!({"v": 0}))).await;
+        let a = t.new_actor(&TYPE, json!({"v": 0})).await;
         for i in 0..5 {
             let m = t.send(&a).await;
             assert_eq!(store.status(&m.id).await.unwrap(), Some(MessageStatus::Pending(m.clone())));
             assert_eq!(t.pending(&a).await, vec![m.clone()]);
             let c = t.claim_one().await;
-            assert_eq!(c.state, Some(json!({"v": i})));
+            assert_eq!(c.state, json!({"v": i}));
             assert_eq!(c.version, i);
             assert_matches!(store.status(&m.id).await.unwrap(), Some(MessageStatus::Running { .. }));
-            t.commit_ok(CommitRequest { state: StateChange::NewState(Some(json!({"v": i + 1}))), ..done(&c) }).await;
-            assert_eq!(state_of(&*store, &a).await, Some(json!({"v": i + 1})));
+            t.commit_ok(CommitRequest { state: StateChange::NewState(json!({"v": i + 1})), ..done(&c) }).await;
+            assert_eq!(state_of(&*store, &a).await, json!({"v": i + 1}));
             assert_eq!(version_of(&*store, &a).await, i + 1);
             let status = store.status(&m.id).await.unwrap();
             assert_eq!(expect_matches!(status, Some(MessageStatus::Finished(o)) => o).status, OutcomeStatus::Done);
@@ -655,7 +655,7 @@ pub async fn s3_every_read_sees_the_preceding_acknowledged_write<B: FixtureFacto
 /// S3 - concurrent enqueues to one instance get distinct seqs in one order
 pub async fn s3_concurrent_enqueues_to_one_instance_get_distinct_seqs_in_one_order<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let sent: Vec<Message> = t
             .concurrently(8, |worker, peer| {
                 let a = a.clone();
@@ -701,7 +701,7 @@ pub async fn s3_concurrent_creates_of_one_instance_create_it_once<B: FixtureFact
         let results = t
             .concurrently(10, |i, peer| {
                 let a = a.clone();
-                async move { peer.create(&a, Some(json!({"by": i}))).await.unwrap() }
+                async move { peer.create(&a, json!({"by": i})).await.unwrap() }
             })
             .await;
         assert_eq!(results.iter().filter(|r| **r == CreateResult::Created).count(), 1);
@@ -719,7 +719,7 @@ pub async fn s3_concurrent_creates_of_one_instance_create_it_once<B: FixtureFact
 pub async fn s4_a_valid_lease_excludes_other_claims<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let m = t.send(&a).await;
         let c = t.claim_one_node(&NODE_A).await;
         assert_eq!(c.actor, a);
@@ -741,7 +741,7 @@ pub async fn s4_concurrent_claims_from_many_nodes_never_share_an_instance<B: Fix
     store_test(backend, async |t| {
         let mut actors = Vec::new();
         for _ in 0..30 {
-            actors.push(t.new_actor(&TYPE, None).await);
+            actors.push(t.new_actor(&TYPE, json!({})).await);
         }
         for a in &actors {
             t.send(a).await;
@@ -775,7 +775,7 @@ pub async fn s4_concurrent_claims_from_many_nodes_never_share_an_instance<B: Fix
 /// S4 - concurrent claims of one instance yield exactly one lease
 pub async fn s4_concurrent_claims_of_one_instance_yield_exactly_one_lease<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         t.send(&a).await;
         let ttl = t.ttl();
         for round in 0..3 {
@@ -799,7 +799,7 @@ pub async fn s4_concurrent_claims_of_one_instance_yield_exactly_one_lease<B: Fix
 pub async fn s4_an_expired_lease_is_claimed_again_with_a_higher_epoch_and_attempt<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let m = t.send(&a).await;
         let first = t.claim_one_node(&NODE_A).await;
         t.expire_lease().await;
@@ -818,7 +818,7 @@ pub async fn s4_an_expired_lease_is_claimed_again_with_a_higher_epoch_and_attemp
 pub async fn s4_epochs_increase_with_every_claim_of_an_instance<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let mut epochs = Vec::new();
         for _ in 0..3 {
             t.send(&a).await;
@@ -844,11 +844,11 @@ pub async fn s4_epochs_increase_with_every_claim_of_an_instance<B: FixtureFactor
 pub async fn s4_epochs_stay_monotonic_across_delete_and_re_create<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         t.send(&a).await;
         let old = t.claim_one().await;
         assert_matches!(store.delete(&a).await.unwrap(), DeleteResult::Deleted { .. });
-        assert_eq!(store.create(&a, None).await.unwrap(), CreateResult::Created);
+        assert_eq!(store.create(&a, json!({})).await.unwrap(), CreateResult::Created);
         t.send(&a).await;
         let fresh = t.claim_one().await;
         assert!(fresh.epoch > old.epoch);
@@ -857,7 +857,7 @@ pub async fn s4_epochs_stay_monotonic_across_delete_and_re_create<B: FixtureFact
         t.commit_ok(done(&fresh)).await;
         // Delete and re-create again, now without an outstanding lease.
         store.delete(&a).await.unwrap();
-        store.create(&a, None).await.unwrap();
+        store.create(&a, json!({})).await.unwrap();
         t.send(&a).await;
         assert!(t.claim_one().await.epoch > fresh.epoch);
     })
@@ -872,8 +872,8 @@ pub async fn s4_epochs_stay_monotonic_across_delete_and_re_create<B: FixtureFact
 pub async fn s5_a_stale_epoch_cannot_commit_after_a_re_claim<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, Some(json!({"n": 0}))).await;
-        let target = t.new_actor(&OTHER, None).await;
+        let a = t.new_actor(&TYPE, json!({"n": 0})).await;
+        let target = t.new_actor(&OTHER, json!({})).await;
         let m = t.send(&a).await;
         let stale = t.claim_one_node(&NODE_A).await;
         t.expire_lease().await;
@@ -881,14 +881,14 @@ pub async fn s5_a_stale_epoch_cannot_commit_after_a_re_claim<B: FixtureFactory>(
         let ghost = address("other/ghost");
         let result = t
             .commit(CommitRequest {
-                state: StateChange::NewState(Some(json!({"n": 666}))),
-                creates: vec![ActorCreate { address: ghost.clone(), state: None }],
+                state: StateChange::NewState(json!({"n": 666})),
+                creates: vec![ActorCreate { address: ghost.clone(), state: json!({}) }],
                 sends: vec![OutgoingMessage::new(target.clone(), "T", json!(1))],
                 ..done(&stale)
             })
             .await;
         assert_eq!(result, CommitResult::LeaseLost);
-        assert_eq!(state_of(&*store, &a).await, Some(json!({"n": 0})));
+        assert_eq!(state_of(&*store, &a).await, json!({"n": 0}));
         assert_eq!(store.get(&ghost).await.unwrap(), None);
         assert!(t.pending(&target).await.is_empty());
         let status = store.status(&m.id).await.unwrap();
@@ -896,8 +896,8 @@ pub async fn s5_a_stale_epoch_cannot_commit_after_a_re_claim<B: FixtureFactory>(
             expect_matches!(status, Some(MessageStatus::Running { message, .. }) => message).id,
             current.message.id
         );
-        t.commit_ok(CommitRequest { state: StateChange::NewState(Some(json!({"n": 1}))), ..done(&current) }).await;
-        assert_eq!(state_of(&*store, &a).await, Some(json!({"n": 1})));
+        t.commit_ok(CommitRequest { state: StateChange::NewState(json!({"n": 1})), ..done(&current) }).await;
+        assert_eq!(state_of(&*store, &a).await, json!({"n": 1}));
     })
     .await
 }
@@ -907,7 +907,7 @@ pub async fn s5_renew_succeeds_only_with_the_current_held_lease<B: FixtureFactor
     store_test(backend, async |t| {
         let store = t.store();
         let ttl = t.ttl();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         t.send(&a).await;
         let c = t.claim_one().await;
         t.advance_ticks(2).await;
@@ -937,7 +937,7 @@ pub async fn s5_renew_succeeds_only_with_the_current_held_lease<B: FixtureFactor
 pub async fn s5_commit_after_release_or_a_second_commit_loses_the_lease<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         t.send(&a).await;
         let c = t.claim_one().await;
         store.release(&a, c.epoch).await.unwrap();
@@ -957,7 +957,7 @@ pub async fn s5_racing_stale_and_current_commits_produce_exactly_one_outcome<B: 
     store_test(backend, async |t| {
         let store = t.store();
         for round in 0..5 {
-            let a = t.new_actor(&TYPE, Some(json!({"n": 0}))).await;
+            let a = t.new_actor(&TYPE, json!({"n": 0})).await;
             let m = t.send(&a).await;
             let stale = t.claim_one_node(&NODE_A).await;
             t.expire_lease().await;
@@ -966,15 +966,14 @@ pub async fn s5_racing_stale_and_current_commits_produce_exactly_one_outcome<B: 
                 .concurrently(2, |i, peer| {
                     let c = if i == 0 { stale.clone() } else { current.clone() };
                     async move {
-                        let request =
-                            CommitRequest { state: StateChange::NewState(Some(json!({"n": i + 1}))), ..done(&c) };
+                        let request = CommitRequest { state: StateChange::NewState(json!({"n": i + 1})), ..done(&c) };
                         peer.commit(request).await.unwrap()
                     }
                 })
                 .await;
             assert_eq!(results[0], CommitResult::LeaseLost, "round {round}");
             assert_matches!(&results[1], CommitResult::Committed { .. });
-            assert_eq!(state_of(&*store, &a).await, Some(json!({"n": 2})));
+            assert_eq!(state_of(&*store, &a).await, json!({"n": 2}));
             assert_eq!(outcome_status(&*store, &m.id).await, Some(OutcomeStatus::Done));
         }
     })
@@ -985,7 +984,7 @@ pub async fn s5_racing_stale_and_current_commits_produce_exactly_one_outcome<B: 
 pub async fn s5_committing_a_message_other_than_the_claimed_one_is_a_programming_error<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         t.send(&a).await;
         let other = t.send(&a).await;
         let c = t.claim_one().await;
@@ -1005,7 +1004,7 @@ pub async fn s5_committing_a_message_other_than_the_claimed_one_is_a_programming
 /// S6 - only the head message is claimed, one turn at a time
 pub async fn s6_only_the_head_message_is_claimed_one_turn_at_a_time<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let mut msgs = Vec::new();
         for _ in 0..5 {
             msgs.push(t.send(&a).await);
@@ -1045,7 +1044,7 @@ pub async fn s6_equal_deliver_at_keeps_enqueue_order<B: FixtureFactory>(backend:
         if !t.require_virtual_time() {
             return;
         }
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let at = plus(t.store().now().await.unwrap(), t.ticks(3));
         let mut msgs = Vec::new();
         for _ in 0..6 {
@@ -1061,8 +1060,8 @@ pub async fn s6_equal_deliver_at_keeps_enqueue_order<B: FixtureFactory>(backend:
 /// S6 - sends from one turn with equal deliverAt keep send order
 pub async fn s6_sends_from_one_turn_with_equal_deliver_at_keep_send_order<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
-        let a = t.new_actor(&TYPE, None).await;
-        let b = t.new_actor(&OTHER, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
+        let b = t.new_actor(&OTHER, json!({})).await;
         t.send(&a).await;
         let sends = (1..=5)
             .map(|i| OutgoingMessage {
@@ -1090,7 +1089,7 @@ pub async fn s6_sends_from_one_turn_with_equal_deliver_at_keep_send_order<B: Fix
 /// S6 - a message is never claimed before its deliverAt
 pub async fn s6_a_message_is_never_claimed_before_its_deliver_at<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let m = t.send_at(&a, Delivery::After(t.ticks(10))).await;
         assert!(t.claim().await.is_empty());
         assert_eq!(t.store().next_due_at(&type_set(&[&TYPE])).await.unwrap(), Some(m.deliver_at));
@@ -1108,7 +1107,7 @@ pub async fn s6_due_exactly_at_deliver_at_and_not_one_microsecond_earlier<B: Fix
         if !t.require_virtual_time() {
             return;
         }
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let m = t.send_at(&a, Delivery::After(t.ticks(10))).await;
         t.advance(t.ticks(10) - Duration::from_micros(1)).await;
         assert!(t.claim().await.is_empty());
@@ -1122,7 +1121,7 @@ pub async fn s6_due_exactly_at_deliver_at_and_not_one_microsecond_earlier<B: Fix
 /// S6 - an earlier scheduled message overtakes a later pending one
 pub async fn s6_an_earlier_scheduled_message_overtakes_a_later_pending_one<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let late = t.send_at(&a, Delivery::After(t.ticks(10))).await;
         let early = t.send_at(&a, Delivery::After(t.ticks(5))).await;
         assert_eq!(t.pending(&a).await, vec![early.clone(), late.clone()]);
@@ -1139,7 +1138,7 @@ pub async fn s6_an_earlier_scheduled_message_overtakes_a_later_pending_one<B: Fi
 pub async fn s6_a_past_deliver_at_is_clamped_to_now_and_does_not_jump_the_queue<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let first = t.send(&a).await;
         t.advance_ticks(1).await;
         let before = store.now().await.unwrap();
@@ -1163,7 +1162,7 @@ pub async fn s6_due_ness_follows_the_new_head_after_commit_cancel_and_enqueue<B:
     store_test(backend, async |t| {
         let store = t.store();
         let types = type_set(&[&TYPE]);
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let head = t.send(&a).await;
         let future = t.send_at(&a, Delivery::After(t.ticks(10))).await;
         t.commit_ok(done(&t.claim_one().await)).await;
@@ -1184,7 +1183,7 @@ pub async fn s6_due_ness_follows_the_new_head_after_commit_cancel_and_enqueue<B:
 /// S6 - pending lists the mailbox in delivery order across pages
 pub async fn s6_pending_lists_the_mailbox_in_delivery_order_across_pages<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let now = t.send(&a).await;
         let in5 = t.send_at(&a, Delivery::After(t.ticks(5))).await;
         let in2 = t.send_at(&a, Delivery::After(t.ticks(2))).await;
@@ -1222,15 +1221,15 @@ pub async fn s6_pending_of_all_instances_by_prefix_instance_by_instance_in_deliv
 ) {
     store_test(backend, async |t| {
         let store = t.store();
-        let b = t.new_actor_named(&TYPE, "b", None).await;
-        let a = t.new_actor_named(&TYPE, "a", None).await;
-        let other = t.new_actor_named(&OTHER, "o", None).await;
+        let b = t.new_actor_named(&TYPE, "b", json!({})).await;
+        let a = t.new_actor_named(&TYPE, "a", json!({})).await;
+        let other = t.new_actor_named(&OTHER, "o", json!({})).await;
         let b_now = t.send(&b).await;
         let a_later = t.send_at(&a, Delivery::After(t.ticks(3))).await;
         let a_now = t.send(&a).await;
         let a_soon = t.send_at(&a, Delivery::After(t.tick)).await;
         let other_now = t.send(&other).await;
-        t.new_actor_named(&TYPE, "empty", None).await;
+        t.new_actor_named(&TYPE, "empty", json!({})).await;
 
         let expected = vec![a_now.id.clone(), a_soon.id.clone(), a_later.id.clone(), b_now.id.clone()];
         for page_size in [1, 2, 3, 100] {
@@ -1273,8 +1272,8 @@ fn with_id(to: &ActorAddress, id: &MessageId) -> OutgoingMessage {
 pub async fn s7_message_ids_are_unique_across_pending_messages_and_retained_outcomes<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
-        let b = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
+        let b = t.new_actor(&TYPE, json!({})).await;
         let pending = t.send(&a).await;
         assert_eq!(
             store.enqueue(with_id(&a, &pending.id)).await.unwrap(),
@@ -1307,7 +1306,7 @@ pub async fn s7_message_ids_are_unique_across_pending_messages_and_retained_outc
 /// S7 - concurrent enqueues of one id accept exactly one
 pub async fn s7_concurrent_enqueues_of_one_id_accept_exactly_one<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         for _ in 0..3 {
             let id = MessageId::random();
             let results = t
@@ -1333,7 +1332,7 @@ pub async fn s7_a_send_to_an_absent_instance_is_refused_and_does_not_consume_the
         let id = MessageId::random();
         assert_eq!(store.enqueue(with_id(&a, &id)).await.unwrap(), EnqueueResult::NoSuchInstance);
         assert_eq!(store.status(&id).await.unwrap(), None);
-        store.create(&a, None).await.unwrap();
+        store.create(&a, json!({})).await.unwrap();
         assert_matches!(store.enqueue(with_id(&a, &id)).await.unwrap(), EnqueueResult::Enqueued(_));
     })
     .await
@@ -1343,7 +1342,7 @@ pub async fn s7_a_send_to_an_absent_instance_is_refused_and_does_not_consume_the
 pub async fn s7_cancel_ends_only_pending_messages<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let running = t.send(&a).await;
         let waiting = t.send(&a).await;
         let claim = t.claim_one().await;
@@ -1367,7 +1366,7 @@ pub async fn s7_cancel_ends_only_pending_messages<B: FixtureFactory>(backend: &B
 pub async fn s7_cancelling_a_claimed_message_whose_lease_expired_fences_the_stale_turn<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let m = t.send(&a).await;
         let claim = t.claim_one().await;
         t.expire_lease().await;
@@ -1384,7 +1383,7 @@ pub async fn s7_cancelling_a_claimed_message_whose_lease_expired_fences_the_stal
 pub async fn s7_release_expiry_and_lost_commits_keep_the_message_pending<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let m = t.send(&a).await;
         let c1 = t.claim_one().await;
         store.release(&a, c1.epoch).await.unwrap();
@@ -1425,7 +1424,7 @@ pub async fn s7_concurrent_workers_process_every_message_exactly_once_serially_a
         let store = t.store();
         let mut actors = Vec::new();
         for _ in 0..6 {
-            actors.push(t.new_actor(&TYPE, None).await);
+            actors.push(t.new_actor(&TYPE, json!({})).await);
         }
         let per_actor = 15;
         // Concurrent producers.
@@ -1465,8 +1464,7 @@ pub async fn s7_concurrent_workers_process_every_message_exactly_once_serially_a
                         workers.processed.lock().unwrap().push((c.actor.clone(), c.message.seq));
                         tokio::task::yield_now().await;
                         workers.in_flight.lock().unwrap().remove(&c.actor);
-                        let request =
-                            CommitRequest { state: StateChange::NewState(Some(json!(c.message.seq))), ..done(&c) };
+                        let request = CommitRequest { state: StateChange::NewState(json!(c.message.seq)), ..done(&c) };
                         assert_matches!(peer.commit(request).await.unwrap(), CommitResult::Committed { .. });
                         workers.uncommitted.lock().unwrap().remove(&c.message.id);
                         workers.remaining.fetch_sub(1, Ordering::SeqCst);
@@ -1498,7 +1496,7 @@ pub async fn s7_concurrent_workers_process_every_message_exactly_once_serially_a
 /// S8 - a released lease is claimable again at once
 pub async fn s8_a_released_lease_is_claimable_again_at_once<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let m = t.send(&a).await;
         let c = t.claim_one_node(&NODE_A).await;
         t.store().release(&a, c.epoch).await.unwrap();
@@ -1514,7 +1512,7 @@ pub async fn s8_every_due_instance_is_eventually_claimed_under_small_limits<B: F
     store_test(backend, async |t| {
         let mut actors = HashSet::new();
         for _ in 0..17 {
-            actors.insert(t.new_actor(&TYPE, None).await);
+            actors.insert(t.new_actor(&TYPE, json!({})).await);
         }
         for a in &actors {
             t.send(a).await;
@@ -1537,8 +1535,8 @@ pub async fn s8_every_due_instance_is_eventually_claimed_under_small_limits<B: F
 /// S8 - claimDue only returns the requested types
 pub async fn s8_claim_due_only_returns_the_requested_types<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
-        let a = t.new_actor(&TYPE, None).await;
-        let b = t.new_actor(&OTHER, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
+        let b = t.new_actor(&OTHER, json!({})).await;
         t.send(&a).await;
         t.send(&b).await;
         assert_eq!(t.claim_one_types(&[&OTHER]).await.actor, b);
@@ -1555,8 +1553,8 @@ pub async fn s8_next_due_at_reports_when_an_instance_becomes_claimable<B: Fixtur
         let store = t.store();
         let types = type_set(&[&TYPE]);
         assert_eq!(store.next_due_at(&types).await.unwrap(), None);
-        let a = t.new_actor(&TYPE, None).await;
-        let b = t.new_actor(&OTHER, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
+        let b = t.new_actor(&OTHER, json!({})).await;
         let later = t.send_at(&a, Delivery::After(t.ticks(20))).await;
         t.send_at(&b, Delivery::After(t.ticks(2))).await;
         assert_eq!(store.next_due_at(&types).await.unwrap(), Some(later.deliver_at));
@@ -1564,7 +1562,7 @@ pub async fn s8_next_due_at_reports_when_an_instance_becomes_claimable<B: Fixtur
         assert_eq!(store.next_due_at(&types).await.unwrap(), Some(sooner.deliver_at));
         assert!(store.next_due_at(&type_set(&[&OTHER])).await.unwrap().expect("a due time") < sooner.deliver_at);
         assert_eq!(store.next_due_at(&BTreeSet::new()).await.unwrap(), None);
-        let c = t.new_actor(&TYPE, None).await;
+        let c = t.new_actor(&TYPE, json!({})).await;
         t.send(&c).await;
         let claim = t.claim_one().await;
         // A leased instance becomes claimable again no earlier than its lease expiry.
@@ -1583,7 +1581,7 @@ pub async fn s8_next_due_at_reports_when_an_instance_becomes_claimable<B: Fixtur
 pub async fn s9_due_ness_delays_and_leases_are_judged_by_the_store_clock<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let t0 = store.now().await.unwrap();
         let m = t.send_at(&a, Delivery::After(t.ticks(3))).await;
         let t1 = store.now().await.unwrap();
@@ -1626,7 +1624,7 @@ pub async fn s9_store_time_never_goes_backwards<B: FixtureFactory>(backend: &B) 
 pub async fn s10_outcomes_are_retained_for_the_retention_period_then_removed<B: FixtureFactory>(backend: &B) {
     store_test_with(backend, tick_retention(backend), DEFAULT_TIMEOUT, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let m = t.send(&a).await;
         t.commit_ok(done(&t.claim_one().await)).await;
         let cancelled = t.send(&a).await;
@@ -1650,7 +1648,7 @@ pub async fn s10_outcomes_are_retained_for_the_retention_period_then_removed<B: 
 pub async fn s10_a_message_id_can_be_reused_once_its_outcome_expired<B: FixtureFactory>(backend: &B) {
     store_test_with(backend, tick_retention(backend), DEFAULT_TIMEOUT, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let m = t.send(&a).await;
         t.commit_ok(done(&t.claim_one().await)).await;
         t.advance_ticks(RETENTION_TICKS + 1).await;
@@ -1698,8 +1696,8 @@ async fn collect_failures(store: &dyn Store, prefix: &str, since: Timestamp) -> 
 pub async fn s10_failures_are_listed_by_prefix_and_since_with_paging_within_retention<B: FixtureFactory>(backend: &B) {
     store_test_with(backend, tick_retention(backend), DEFAULT_TIMEOUT, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
-        let b = t.new_actor(&OTHER, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
+        let b = t.new_actor(&OTHER, json!({})).await;
         let start = store.now().await.unwrap();
         let mut failed_a = Vec::new();
         for _ in 0..4 {
@@ -1748,8 +1746,8 @@ pub async fn stats_count_actors_and_pending_messages_under_a_prefix_and_find_the
         let store = t.store();
         let none = StoreStats { actors: 0, pending: 0, oldest_due: None };
         assert_eq!(store.stats("").await.unwrap(), none);
-        let a = t.new_actor(&TYPE, None).await;
-        let b = t.new_actor(&OTHER, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
+        let b = t.new_actor(&OTHER, json!({})).await;
         assert_eq!(store.stats("").await.unwrap(), StoreStats { actors: 2, ..none });
         let first = t.send(&a).await;
         let second = t.send(&a).await;
@@ -1796,8 +1794,8 @@ pub async fn s10_outcomes_are_listed_by_status_prefix_and_since_with_paging_and_
 ) {
     store_test_with(backend, tick_retention(backend), DEFAULT_TIMEOUT, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
-        let b = t.new_actor(&OTHER, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
+        let b = t.new_actor(&OTHER, json!({})).await;
         let start = store.now().await.unwrap();
         let mut done_ids = Vec::new();
         for _ in 0..3 {

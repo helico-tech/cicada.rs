@@ -241,9 +241,9 @@ pub enum Create {
         /// The actor, `type/key`.
         #[arg(value_parser = address)]
         actor: ActorAddress,
-        /// Initial state as JSON; none for a stateless type.
+        /// Initial state as JSON; `'{}'` for a type that keeps no data.
         #[arg(long, value_parser = json)]
-        state: Option<serde_json::Value>,
+        state: serde_json::Value,
     },
 }
 

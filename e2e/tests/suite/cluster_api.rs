@@ -70,8 +70,9 @@ async fn types_with_json_schemas_on_every_node() {
         assert!(slow.hash.starts_with("sha256:"));
         let sleep = &slow.messages["Sleep"];
         assert!(sleep.pointer("/properties/millis").is_some(), "Sleep schema: {sleep}");
-        assert!(slow.state.as_ref().and_then(|s| s.get("properties")).is_some(), "state schema: {:?}", slow.state);
-        assert!(types["payments"].state.is_none(), "a stateless type has no state schema");
+        assert!(slow.state.get("properties").is_some(), "state schema: {}", slow.state);
+        let payments = &types["payments"].state;
+        assert_eq!(payments["title"], "NoState", "a type that keeps no data has the schema of NoState: {payments}");
         hashes.push(types.into_iter().map(|(name, t)| (name, t.hash)).collect::<BTreeMap<_, _>>());
     }
     // Every node answers from the shared registry, also the send-only one that hosts nothing.

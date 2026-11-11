@@ -54,8 +54,8 @@ pub async fn reschedule_the_same_message_stays_pending_with_its_failure_recorded
 ) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
-        let from = t.new_actor(&OTHER, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
+        let from = t.new_actor(&OTHER, json!({})).await;
         let sent = enqueue_ok(
             &*store,
             OutgoingMessage {
@@ -103,7 +103,7 @@ pub async fn reschedule_the_message_queues_again_behind_due_messages_and_is_not_
             return;
         }
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let m = t.send(&a).await;
         let c = t.claim_one().await;
         let behind = t.send(&a).await; // due now, enqueued while m was running
@@ -154,7 +154,7 @@ pub async fn reschedule_the_message_gets_exactly_one_final_outcome_carrying_its_
 ) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let since = store.now().await.unwrap();
         let m = t.send(&a).await;
         t.commit_ok(ending(&t.claim_one().await, rescheduled("e1", Delivery::Now))).await;
@@ -189,7 +189,7 @@ pub async fn reschedule_the_message_gets_exactly_one_final_outcome_carrying_its_
 pub async fn reschedule_is_fenced_by_epoch_like_any_commit<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let m = t.send(&a).await;
         let stale = t.claim_one().await;
         t.expire_lease().await;
@@ -222,8 +222,8 @@ pub async fn reschedule_is_atomic_with_the_commits_sends_and_creates_and_a_rejec
 ) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
-        let other = t.new_actor(&OTHER, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
+        let other = t.new_actor(&OTHER, json!({})).await;
         let child = address("other/reschedule-child");
         let m = t.send(&a).await;
         let c = t.claim_one().await;
@@ -241,7 +241,7 @@ pub async fn reschedule_is_atomic_with_the_commits_sends_and_creates_and_a_rejec
 
         let committed = t
             .commit_ok(CommitRequest {
-                creates: vec![ActorCreate { address: child.clone(), state: None }],
+                creates: vec![ActorCreate { address: child.clone(), state: json!({}) }],
                 sends: vec![
                     OutgoingMessage::new(other.clone(), "T", json!(1)),
                     OutgoingMessage::new(child.clone(), "T", json!(2)),
@@ -263,7 +263,7 @@ pub async fn reschedule_is_atomic_with_the_commits_sends_and_creates_and_a_rejec
 pub async fn reschedule_a_rescheduled_message_can_be_cancelled<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let m = t.send(&a).await;
         let c = t.claim_one().await;
         t.commit_ok(ending(&c, rescheduled("e1", Delivery::After(Duration::from_secs(86_400))))).await;
@@ -283,7 +283,7 @@ pub async fn reschedule_a_rescheduled_message_can_be_cancelled<B: FixtureFactory
 pub async fn reschedule_delete_and_stop_purge_a_rescheduled_message<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let m = t.send(&a).await;
         let c = t.claim_one().await;
         t.commit_ok(ending(&c, rescheduled("e1", Delivery::After(Duration::from_secs(86_400))))).await;
@@ -293,7 +293,7 @@ pub async fn reschedule_delete_and_stop_purge_a_rescheduled_message<B: FixtureFa
         assert_eq!(purged.envelope.failures, 1);
 
         // A rescheduling commit that also stops the instance purges the message it rescheduled.
-        let b = t.new_actor(&TYPE, None).await;
+        let b = t.new_actor(&TYPE, json!({})).await;
         let n = t.send(&b).await;
         let c = t.claim_one().await;
         t.commit_ok(CommitRequest { state: StateChange::Stop, ..ending(&c, rescheduled("boom", Delivery::Now)) }).await;
@@ -307,13 +307,13 @@ pub async fn reschedule_delete_and_stop_purge_a_rescheduled_message<B: FixtureFa
 pub async fn reschedule_the_id_stays_in_use_while_the_message_is_rescheduled<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let m = t.send(&a).await;
         let c = t.claim_one().await;
         t.commit_ok(ending(&c, rescheduled("e1", Delivery::After(Duration::from_secs(86_400))))).await;
         let reuse = OutgoingMessage { id: m.id.clone(), ..OutgoingMessage::new(a.clone(), "Msg", json!(9)) };
         assert_eq!(store.enqueue(reuse.clone()).await.unwrap(), EnqueueResult::Duplicate(m.id.clone()));
-        let sender = t.new_actor(&OTHER, None).await;
+        let sender = t.new_actor(&OTHER, json!({})).await;
         t.send(&sender).await;
         let c = t.claim_one_types(&[&OTHER]).await;
         assert_matches!(t.commit(CommitRequest { sends: vec![reuse], ..done(&c) }).await, CommitResult::Rejected(_));
@@ -326,7 +326,7 @@ pub async fn reschedule_the_id_stays_in_use_while_the_message_is_rescheduled<B: 
 /// reschedule - failures and lastError are durable
 pub async fn reschedule_failures_and_last_error_are_durable<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let m = t.send(&a).await;
         let c = t.claim_one().await;
         t.commit_ok(ending(&c, rescheduled("persisted", Delivery::After(Duration::from_secs(86_400))))).await;
@@ -350,7 +350,7 @@ pub async fn retry_policy_stored_with_the_message_and_returned_everywhere_retain
     store_test(backend, async |t| {
         let store = t.store();
         let policy = policy();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let sent = enqueue_ok(
             &*store,
             OutgoingMessage { retry: Some(policy.clone()), ..OutgoingMessage::new(a.clone(), "Msg", json!({"x": 1})) },
@@ -369,7 +369,7 @@ pub async fn retry_policy_stored_with_the_message_and_returned_everywhere_retain
         assert_eq!(c.message.id, sent.id);
         assert_eq!(c.message.retry.as_ref(), Some(&policy));
         // A commit's sends carry their policies too.
-        let b = t.new_actor(&OTHER, None).await;
+        let b = t.new_actor(&OTHER, json!({})).await;
         let forwarded = OutgoingMessage {
             from: Some(a.clone()),
             retry: Some(policy.clone()),
@@ -397,7 +397,7 @@ pub async fn retry_policy_stored_with_the_message_and_returned_everywhere_retain
 pub async fn retry_policy_survives_reschedule_and_reopen<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let policy = policy();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let sent = enqueue_ok(
             &*t.store(),
             OutgoingMessage { retry: Some(policy.clone()), ..OutgoingMessage::new(a.clone(), "Msg", json!({"x": 1})) },

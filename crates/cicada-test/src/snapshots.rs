@@ -90,11 +90,8 @@ pub fn describe_changes(old: &Contract, new: &Contract) -> Vec<String> {
             new.key_fields().join(", ")
         ));
     }
-    match (old.state_schema(), new.state_schema()) {
-        (None, Some(_)) => changes.push("state added (the type was stateless)".to_owned()),
-        (Some(_), None) => changes.push("state removed (the type is now stateless)".to_owned()),
-        (Some(a), Some(b)) if a != b => changes.push("state schema changed".to_owned()),
-        _ => {}
+    if old.state_schema() != new.state_schema() {
+        changes.push("state schema changed".to_owned());
     }
     let (old_m, new_m) = (old.message_schemas(), new.message_schemas());
     changes.extend(new_m.keys().filter(|k| !old_m.contains_key(*k)).map(|k| format!("message type added: {k}")));

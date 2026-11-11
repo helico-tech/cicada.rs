@@ -524,8 +524,9 @@ pub fn ops() -> impl Strategy<Value = Vec<Op>> {
 /// A claim limit above the number of addresses: every due instance is claimed.
 pub const ALL_DUE: usize = 100;
 
-/// The states operations choose from.
-pub const STATES: [fn() -> Option<Value>; 3] = [|| None, || Some(json!({})), || Some(json!({"n": 1, "text": "é"}))];
+/// The states operations choose from: an empty object, an object with values a backend might not round-trip, and a
+/// state that is not an object.
+pub const STATES: [fn() -> Value; 3] = [|| json!({}), || json!({"n": 1, "text": "é"}), || json!([1, null])];
 
 /// The payloads operations choose from, with values a backend might not round-trip.
 pub const PAYLOADS: [fn() -> Value; 7] = [

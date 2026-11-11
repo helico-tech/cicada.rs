@@ -206,9 +206,9 @@ async fn a_503_on_send_is_retried() {
 async fn errors_carry_the_servers_problem() {
     let (actors, _, _) = client_test(|r| r).await;
     let nope = ActorAddress::parse("nope/x").unwrap();
-    assert_problem(actors.create_actor(&nope, None).await, 404, pt::NO_SUCH_TYPE);
+    assert_problem(actors.create_actor(&nope, json!({})).await, 404, pt::NO_SUCH_TYPE);
     assert_problem(
-        actors.create_actor(&acme().address().unwrap(), Some(json!({"balance": "lots"}))).await,
+        actors.create_actor(&acme().address().unwrap(), json!({"balance": "lots"})).await,
         422,
         pt::INVALID_STATE,
     );
@@ -405,7 +405,7 @@ async fn outcomes_and_types() {
         types[0].messages.keys().map(String::as_str).collect::<Vec<_>>(),
         ["Deposit", "Explode", "Hold", "Transfer"]
     );
-    assert_eq!(types[1].state.as_ref().unwrap()["type"], "object");
+    assert_eq!(types[1].state["type"], "object");
 }
 
 #[tokio::test]

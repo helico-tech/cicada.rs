@@ -173,7 +173,7 @@ const POLL: Duration = Duration::from_millis(200);
 async fn state(store: &dyn Store, name: &str) -> PlayerState {
     let address = player(name).address().unwrap();
     let record = store.get(&address).await.unwrap().expect("player exists");
-    serde_json::from_value(record.state.expect("player has state")).unwrap()
+    serde_json::from_value(record.state).unwrap()
 }
 
 fn accepted(result: SendResult) -> cicada::store::Message {

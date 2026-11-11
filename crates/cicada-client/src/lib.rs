@@ -197,12 +197,8 @@ impl ActorClient {
 
     /// Creates the instance at `address` with `state` (`PUT /actors/{path}`). Idempotent: an existing instance is left
     /// untouched and reported with `created == false`. Errors: `404` when no type matches, `422` when the state is
-    /// refused.
-    pub async fn create_actor(
-        &self,
-        address: &ActorAddress,
-        state: Option<Value>,
-    ) -> ClientResult<CreateActorResponse> {
+    /// refused (it is `null`, or the node hosts the type and cannot decode it).
+    pub async fn create_actor(&self, address: &ActorAddress, state: Value) -> ClientResult<CreateActorResponse> {
         let body = encode(&CreateActorRequest { state })?;
         let answer = self.call(Method::PUT, self.url(&http_path(address)?, &[])?, Some(body)).await?;
         match answer.status {
@@ -219,7 +215,7 @@ impl ActorClient {
     ) -> ClientResult<CreateActorResponse> {
         let state = serde_json::to_value(state)
             .map_err(|e| ClientError::Invalid(format!("The initial state cannot be encoded: {e}")))?;
-        self.create_actor(&address_of(r)?, Some(state)).await
+        self.create_actor(&address_of(r)?, state).await
     }
 
     /// Snapshot of the instance at `address` (`GET /actors/{path}`), or `None` when it does not exist.
@@ -242,7 +238,7 @@ impl ActorClient {
         let Some(view) = self.get(r).await? else {
             return Ok(None);
         };
-        serde_json::from_value(view.state.unwrap_or(Value::Null))
+        serde_json::from_value(view.state)
             .map(Some)
             .map_err(|e| ClientError::Body(format!("The state of {} cannot be decoded: {e}", view.address)))
     }

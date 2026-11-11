@@ -162,7 +162,7 @@ impl From<&RegisteredType> for TypeView {
             name: t.name().as_str().to_owned(),
             key: t.contract.key_fields().to_vec(),
             hash: t.definition.contract_hash.clone(),
-            state: t.contract.state_schema().cloned(),
+            state: t.contract.state_schema().clone(),
             messages: t.contract.message_schemas().clone(),
         }
     }

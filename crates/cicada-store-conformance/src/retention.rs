@@ -62,7 +62,7 @@ pub async fn retention_the_policy_is_stored_with_the_message_and_kept_in_its_env
     backend: &B,
 ) {
     store_test(backend, async |t| {
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let policy = Retention { done: Some(Keep::For { age: t.ticks(100) }), failed: Some(Keep::Last { count: 3 }) };
         let m = send_kept(t, &a, Some(policy.clone()), Delivery::Now).await;
         assert_eq!(m.retention.as_ref(), Some(&policy));
@@ -97,7 +97,7 @@ pub async fn retention_remove_on_done_hides_the_record_at_once_drops_its_content
 ) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let removed = send_kept(t, &a, Some(Retention::REMOVE_ON_DONE), Delivery::Now).await;
         finish(t, &removed, TurnOutcome::Done).await;
         assert_eq!(store.status(&removed.id).await.unwrap(), None, "gone from status");
@@ -111,7 +111,7 @@ pub async fn retention_remove_on_done_hides_the_record_at_once_drops_its_content
 /// retention - a removed id cannot be reused by a commit's send
 pub async fn retention_a_removed_id_cannot_be_reused_by_a_commits_send<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let removed = send_kept(t, &a, Some(Retention::REMOVE_ON_DONE), Delivery::Now).await;
         finish(t, &removed, TurnOutcome::Done).await;
         t.send(&a).await;
@@ -131,7 +131,7 @@ pub async fn retention_remove_on_failed_hides_a_failure_from_failures_and_the_ot
 ) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let since = store.now().await.unwrap();
         let failed = send_kept(t, &a, Some(Retention::REMOVE_ON_FAILED), Delivery::Now).await;
         let done_msg = send_kept(t, &a, Some(Retention::REMOVE_ON_FAILED), Delivery::Now).await;
@@ -154,7 +154,7 @@ pub async fn retention_remove_on_failed_hides_a_failure_from_failures_and_the_ot
 pub async fn retention_cancelled_and_purged_messages_keep_the_store_default<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let all = Retention { done: Some(Keep::Remove), failed: Some(Keep::Remove) };
         let cancelled = send_kept(t, &a, Some(all.clone()), Delivery::After(t.ticks(100))).await;
         assert_matches!(store.cancel(&cancelled.id).await.unwrap(), CancelResult::Cancelled(_));
@@ -173,7 +173,7 @@ pub async fn retention_keep_for_a_time_shorter_than_the_store_retention<B: Fixtu
             return;
         }
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let m = send_kept(
             t,
             &a,
@@ -213,7 +213,7 @@ pub async fn retention_keep_for_longer_than_the_store_retention<B: FixtureFactor
             return;
         }
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let m = send_kept(
             t,
             &a,
@@ -246,8 +246,8 @@ pub async fn retention_keep_last_n_per_instance_and_outcome_leaving_other_polici
 ) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
-        let b = t.new_actor(&OTHER, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
+        let b = t.new_actor(&OTHER, json!({})).await;
         let last2 = Retention { done: Some(Keep::Last { count: 2 }), failed: Some(Keep::Last { count: 1 }) };
         let plain = send_kept(t, &a, None, Delivery::Now).await;
         finish(t, &plain, TurnOutcome::Done).await;
@@ -294,7 +294,7 @@ pub async fn retention_the_sweep_keeps_hidden_records_as_duplicates_and_visible_
             return;
         }
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let short =
             send_kept(t, &a, Some(Retention { done: Some(Keep::For { age: t.tick }), failed: None }), Delivery::Now)
                 .await;

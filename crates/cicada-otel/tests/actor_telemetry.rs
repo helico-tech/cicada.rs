@@ -221,7 +221,7 @@ async fn a_turn_that_fails_before_on_claim_still_gets_a_span() {
     let t = Telemetry::new().await;
     // State that does not decode: on_claim never runs, on_outcome does.
     let address = cicada::ActorAddress::parse("traced/bad").unwrap();
-    t.test.store().create(&address, Some(json!("not a state"))).await.unwrap();
+    t.test.store().create(&address, json!("not a state")).await.unwrap();
     t.test.send_raw(&address, "Hop", json!({ "left": 0 }), SendOptions::new()).await;
     t.test.run_until_idle().await;
     let spans = t.spans();

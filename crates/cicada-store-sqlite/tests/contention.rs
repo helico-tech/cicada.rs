@@ -50,9 +50,9 @@ async fn assert_failed_commit_applies_nothing(store: &impl Store, claim: Claim) 
     let a = instance("a");
     let target = instance("target");
     store.register(cicada_store_conformance::type_def(target.type_name(), "test")).await.unwrap();
-    store.create(&target, None).await.unwrap();
+    store.create(&target, json!({})).await.unwrap();
     let commit = CommitRequest {
-        state: StateChange::NewState(Some(json!(1))),
+        state: StateChange::NewState(json!(1)),
         sends: vec![
             OutgoingMessage::new(target.clone(), "Good", json!(1)),
             OutgoingMessage::new(target.clone(), "Poison", json!(2)),
@@ -77,7 +77,7 @@ async fn s2_a_commit_failing_half_way_applies_nothing() {
     let store = db.open(Arc::new(VirtualClock::default())).await;
     let a = instance("a");
     store.register(cicada_store_conformance::type_def(a.type_name(), "test")).await.unwrap();
-    store.create(&a, None).await.unwrap();
+    store.create(&a, json!({})).await.unwrap();
     store.enqueue(OutgoingMessage::new(a.clone(), "M", json!(0))).await.unwrap();
     install_poison_trigger(&db).await;
     let claim = claim_one(&store).await;
@@ -91,7 +91,7 @@ async fn a_write_that_times_out_on_another_process_lock_leaves_the_writer_transa
     let store = open_with(&db.file, Arc::new(VirtualClock::default()), Duration::from_millis(50)).await;
     let a = instance("a");
     store.register(cicada_store_conformance::type_def(a.type_name(), "test")).await.unwrap();
-    store.create(&a, None).await.unwrap();
+    store.create(&a, json!({})).await.unwrap();
     store.enqueue(OutgoingMessage::new(a.clone(), "M", json!(0))).await.unwrap();
     install_poison_trigger(&db).await;
     {
@@ -120,7 +120,7 @@ async fn two_stores_on_one_file_contend_for_the_write_lock_without_losing_atomic
     let second = Arc::new(db.open(clock.clone()).await);
     let a = instance("a");
     first.register(cicada_store_conformance::type_def(a.type_name(), "test")).await.unwrap();
-    first.create(&a, None).await.unwrap();
+    first.create(&a, json!({})).await.unwrap();
     let total = 200;
     let tasks: Vec<_> = [first.clone(), second.clone()]
         .into_iter()
@@ -157,7 +157,7 @@ async fn a_cancelled_write_leaves_no_transaction_open() {
     let store = Arc::new(open_with(&db.file, Arc::new(VirtualClock::default()), Duration::from_secs(5)).await);
     let a = instance("a");
     store.register(cicada_store_conformance::type_def(a.type_name(), "test")).await.unwrap();
-    store.create(&a, None).await.unwrap();
+    store.create(&a, json!({})).await.unwrap();
     let mut other = db.raw().await;
     sqlx::raw_sql("BEGIN IMMEDIATE").execute(&mut other).await.unwrap();
     // The write waits on the other connection's lock and is cancelled while it waits.

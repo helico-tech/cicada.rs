@@ -19,7 +19,7 @@ use serde_json::Value;
 
 struct ActorRow {
     address: ActorAddress,
-    state: Option<Value>,
+    state: Value,
     version: i64,
     created_at: Timestamp,
     epoch: i64,
@@ -263,7 +263,7 @@ impl InMemoryStore {
         self.live_outcome(s, id, now).map(MessageStatus::Finished)
     }
 
-    fn create_locked(s: &mut State, address: &ActorAddress, state: Option<Value>, now: Timestamp) -> CreateResult {
+    fn create_locked(s: &mut State, address: &ActorAddress, state: Value, now: Timestamp) -> CreateResult {
         if !s.types.contains_key(address.type_name().as_str()) {
             return CreateResult::NoSuchType;
         }
@@ -327,7 +327,7 @@ impl Store for InMemoryStore {
         })
     }
 
-    async fn create(&self, address: &ActorAddress, state: Option<Value>) -> StoreResult<CreateResult> {
+    async fn create(&self, address: &ActorAddress, state: Value) -> StoreResult<CreateResult> {
         self.locked(|s, now| Ok(Self::create_locked(s, address, state, now)))
     }
 

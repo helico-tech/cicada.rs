@@ -312,7 +312,7 @@ impl SqliteStore {
     async fn create_in(
         c: &mut SqliteConnection,
         address: &ActorAddress,
-        state: Option<&Value>,
+        state: &Value,
         now: Timestamp,
     ) -> StoreResult<CreateResult> {
         if !Self::type_registered(c, address.type_name()).await? {
@@ -325,7 +325,7 @@ impl SqliteStore {
             )
             .bind(address.as_str())
             .bind(address.type_name().as_str())
-            .bind(state.map(json))
+            .bind(json(state))
             .bind(micros(now)),
         )
         .await?;
@@ -539,7 +539,7 @@ impl SqliteStore {
             query = query.bind(t.as_str());
         }
         let candidates = fetch_all(c, query.bind(n).bind(n).bind(limit as i64), |row| {
-            Ok((col::<String>(row, "address")?, col::<Option<String>>(row, "state")?, col::<i64>(row, "version")?))
+            Ok((col::<String>(row, "address")?, col::<String>(row, "state")?, col::<i64>(row, "version")?))
         })
         .await?;
         let lease_until = time::truncate(time::add(now, ttl).map_err(invalid)?);
@@ -580,7 +580,7 @@ impl SqliteStore {
                 actor: rows::address(&addr)?,
                 epoch,
                 message: claimed,
-                state: state.map(|s| rows::parse_json(&s, "state")).transpose()?,
+                state: rows::parse_json(&state, "state")?,
                 version,
                 claimed_at: now,
                 lease_until,
@@ -778,7 +778,7 @@ impl SqliteStore {
         }
         // 3. creates, 4. sends
         for create in &creates {
-            Self::create_in(c, &create.address, create.state.as_ref(), now).await?;
+            Self::create_in(c, &create.address, &create.state, now).await?;
         }
         let mut sent = Vec::with_capacity(sends.len());
         for send in sends {
@@ -792,7 +792,7 @@ impl SqliteStore {
                 execute(
                     c,
                     sqlx::query("UPDATE actors SET state = ?, version = version + 1 WHERE address = ?")
-                        .bind(state.as_ref().map(json))
+                        .bind(json(&state))
                         .bind(address.as_str()),
                 )
                 .await?;
@@ -903,10 +903,10 @@ impl Store for SqliteStore {
         tx.end(result).await
     }
 
-    async fn create(&self, address: &ActorAddress, state: Option<Value>) -> StoreResult<CreateResult> {
+    async fn create(&self, address: &ActorAddress, state: Value) -> StoreResult<CreateResult> {
         let mut tx = self.write().await?;
         let now = tx.now;
-        let result = Self::create_in(tx.conn(), address, state.as_ref(), now).await;
+        let result = Self::create_in(tx.conn(), address, &state, now).await;
         tx.end(result).await
     }
 

@@ -21,7 +21,7 @@ async fn status_of(store: &dyn cicada::store::Store, id: &MessageId) -> Option<O
     outcome_record(store, id).await.map(|o| o.status)
 }
 
-async fn state_of(store: &dyn cicada::store::Store, a: &cicada::address::ActorAddress) -> Option<serde_json::Value> {
+async fn state_of(store: &dyn cicada::store::Store, a: &cicada::address::ActorAddress) -> serde_json::Value {
     store.get(a).await.unwrap().expect("exists").state
 }
 
@@ -30,7 +30,7 @@ pub async fn registry_a_create_of_an_unregistered_type_is_refused_and_creates_no
     store_test(backend, async |t| {
         let store = t.store();
         let a = address("nosuch/x");
-        assert_eq!(store.create(&a, None).await.unwrap(), CreateResult::NoSuchType);
+        assert_eq!(store.create(&a, json!({})).await.unwrap(), CreateResult::NoSuchType);
         assert_eq!(store.get(&a).await.unwrap(), None);
         assert!(t.claim_types(&[&type_name("nosuch")]).await.is_empty());
     })
@@ -45,14 +45,14 @@ pub async fn registry_a_commit_creating_an_unregistered_type_is_rejected_applies
 ) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, Some(json!({"n": 1}))).await;
+        let a = t.new_actor(&TYPE, json!({"n": 1})).await;
         let m = t.send(&a).await;
         let c = t.claim_one().await;
         let ghost = address("nosuch/g");
         let result = t
             .commit(CommitRequest {
-                state: cicada::store::StateChange::NewState(Some(json!({"n": 2}))),
-                creates: vec![ActorCreate { address: ghost.clone(), state: None }],
+                state: cicada::store::StateChange::NewState(json!({"n": 2})),
+                creates: vec![ActorCreate { address: ghost.clone(), state: json!({}) }],
                 ..done(&c)
             })
             .await;
@@ -61,7 +61,7 @@ pub async fn registry_a_commit_creating_an_unregistered_type_is_rejected_applies
             other => panic!("expected Rejected, got {other:?}"),
         }
         assert_eq!(store.get(&ghost).await.unwrap(), None, "nothing created");
-        assert_eq!(state_of(&*store, &a).await, Some(json!({"n": 1})), "nothing applied");
+        assert_eq!(state_of(&*store, &a).await, json!({"n": 1}), "nothing applied");
         t.commit_ok(ending(&c, TurnOutcome::Failed("rejected".into()))).await; // the lease is still held
         assert_eq!(status_of(&*store, &m.id).await, Some(OutcomeStatus::Failed));
     })
@@ -80,7 +80,7 @@ pub async fn registry_removing_a_type_racing_a_commit_that_creates_an_instance_o
             let name = type_name(&format!("racy{round}"));
             let child = address(&format!("{name}/c"));
             t.register_type(&name).await;
-            let a = t.new_actor(&TYPE, None).await;
+            let a = t.new_actor(&TYPE, json!({})).await;
             t.send(&a).await;
             let c = t.claim_one().await;
             let results = t
@@ -89,7 +89,7 @@ pub async fn registry_removing_a_type_racing_a_commit_that_creates_an_instance_o
                     async move {
                         if i == 0 {
                             peer.commit(CommitRequest {
-                                creates: vec![ActorCreate { address: child, state: None }],
+                                creates: vec![ActorCreate { address: child, state: json!({}) }],
                                 ..done(&c)
                             })
                             .await
@@ -180,10 +180,10 @@ pub async fn turns_running_turns_are_valid_leases_by_node_and_prefix_in_address_
 ) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a1 = t.new_actor_named(&TYPE, "a1", None).await;
-        let a2 = t.new_actor_named(&TYPE, "a2", None).await;
-        let a3 = t.new_actor_named(&TYPE, "a3", None).await;
-        let idle = t.new_actor_named(&TYPE, "b", None).await;
+        let a1 = t.new_actor_named(&TYPE, "a1", json!({})).await;
+        let a2 = t.new_actor_named(&TYPE, "a2", json!({})).await;
+        let a3 = t.new_actor_named(&TYPE, "a3", json!({})).await;
+        let idle = t.new_actor_named(&TYPE, "b", json!({})).await;
         for addr in [&a1, &a2, &a3] {
             t.send(addr).await;
         }
@@ -234,7 +234,7 @@ pub async fn turns_a_cancel_request_is_recorded_only_under_a_valid_lease_and_rep
 ) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         t.send(&a).await;
         assert!(!store.request_cancel(&a).await.unwrap(), "no lease: nothing to cancel");
         let c = t.claim_one().await;
@@ -267,7 +267,7 @@ pub async fn turns_a_request_made_for_an_earlier_epoch_has_no_effect_on_a_later_
             return;
         }
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         t.send(&a).await;
         let stale = t.claim_one().await;
         assert!(store.request_cancel(&a).await.unwrap());
@@ -287,7 +287,7 @@ pub async fn turns_a_cancelled_commit_is_fenced_by_its_epoch_and_moves_the_mailb
             return;
         }
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         t.send(&a).await;
         let stale = t.claim_one().await;
         t.expire_lease().await;
@@ -304,7 +304,7 @@ pub async fn turns_a_cancelled_commit_is_fenced_by_its_epoch_and_moves_the_mailb
 pub async fn pause_a_paused_actor_is_not_claimed_and_keeps_queueing_until_resumed<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         assert!(store.set_paused(&a, true).await.unwrap());
         assert!(store.get(&a).await.unwrap().expect("exists").paused);
         let m = t.send(&a).await;
@@ -324,8 +324,8 @@ pub async fn pause_a_running_turn_of_a_paused_actor_finishes_and_other_actors_ar
 ) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
-        let other = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
+        let other = t.new_actor(&TYPE, json!({})).await;
         let running = t.send(&a).await;
         let c = t.claim_one().await;
         assert!(store.set_paused(&a, true).await.unwrap());
@@ -355,7 +355,7 @@ pub async fn purge_gives_purged_to_pending_messages_keeps_the_running_one_and_th
 ) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, Some(json!({"n": 1}))).await;
+        let a = t.new_actor(&TYPE, json!({"n": 1})).await;
         let running = t.send(&a).await;
         let queued = t.send(&a).await;
         let delayed = t.send_at(&a, Delivery::After(t.ticks(50))).await;
@@ -363,7 +363,7 @@ pub async fn purge_gives_purged_to_pending_messages_keeps_the_running_one_and_th
         assert_eq!(store.purge(&a).await.unwrap(), Some(2));
         assert_eq!(status_of(&*store, &queued.id).await, Some(OutcomeStatus::Purged));
         assert_eq!(status_of(&*store, &delayed.id).await, Some(OutcomeStatus::Purged));
-        assert_eq!(state_of(&*store, &a).await, Some(json!({"n": 1})), "the instance stays");
+        assert_eq!(state_of(&*store, &a).await, json!({"n": 1}), "the instance stays");
         t.commit_ok(done(&c)).await;
         assert_eq!(status_of(&*store, &running.id).await, Some(OutcomeStatus::Done), "the running one finishes");
         assert_eq!(store.purge(&a).await.unwrap(), Some(0));
@@ -379,7 +379,7 @@ pub async fn purge_of_a_message_whose_lease_expired_fences_the_stale_turn<B: Fix
             return;
         }
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let m = t.send(&a).await;
         let stale = t.claim_one().await;
         t.expire_lease().await;
@@ -395,7 +395,7 @@ pub async fn purge_of_a_message_whose_lease_expired_fences_the_stale_turn<B: Fix
 pub async fn deliver_now_makes_a_delayed_message_due_at_once_with_a_new_seq<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let later = t.send_at(&a, Delivery::After(t.ticks(100))).await;
         let delayed = t.send_at(&a, Delivery::After(t.ticks(200))).await;
         assert!(t.claim().await.is_empty(), "nothing is due yet");
@@ -416,7 +416,7 @@ pub async fn deliver_now_makes_a_delayed_message_due_at_once_with_a_new_seq<B: F
 pub async fn deliver_now_refuses_running_finished_and_unknown_messages<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let running = t.send(&a).await;
         let c = t.claim_one().await;
         assert_eq!(store.deliver_now(&running.id).await.unwrap(), DeliverNowResult::Running);
@@ -431,7 +431,7 @@ pub async fn deliver_now_refuses_running_finished_and_unknown_messages<B: Fixtur
 pub async fn deliver_now_keeps_the_message_order_after_an_enqueue_following_it<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let first = t.send_at(&a, Delivery::After(t.ticks(100))).await;
         let DeliverNowResult::Delivered(_) = store.deliver_now(&first.id).await.unwrap() else {
             panic!("delivered");

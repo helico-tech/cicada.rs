@@ -176,7 +176,11 @@ fn problems_and_create_requests() {
         serde_json::to_string(&p).unwrap(),
         r#"{"type":"urn:cicada:problem:bad-request","title":"Bad request","status":400,"detail":null,"instance":"/actors"}"#
     );
-    assert_eq!(serde_json::to_string(&CreateActorRequest::default()).unwrap(), "{}");
+    assert_eq!(serde_json::to_string(&CreateActorRequest { state: json!({}) }).unwrap(), r#"{"state":{}}"#);
     assert!(serde_json::from_str::<CreateActorRequest>(r#"{"stat": 1}"#).is_err());
-    assert_eq!(serde_json::from_str::<CreateActorRequest>(r#"{"state": null}"#).unwrap().state, None);
+    assert!(
+        serde_json::from_str::<CreateActorRequest>("{}").unwrap_err().to_string().contains("missing field `state`")
+    );
+    // Null decodes, so that the node can refuse it as an invalid state (422) rather than a malformed body.
+    assert_eq!(serde_json::from_str::<CreateActorRequest>(r#"{"state": null}"#).unwrap().state, Value::Null);
 }

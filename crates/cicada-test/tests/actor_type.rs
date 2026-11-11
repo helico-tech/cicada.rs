@@ -132,7 +132,7 @@ async fn a_type_that_keeps_no_data_has_the_schema_of_an_empty_object() {
     assert_eq!(state["title"], "NoState");
     assert!(state.get("properties").is_none_or(|p| p == &serde_json::json!({})), "no properties: {state}");
     assert_eq!(state["additionalProperties"], false, "NoState refuses unknown fields");
-    assert_eq!(Contract::of(&def).unwrap().state_schema(), Some(state));
+    assert_eq!(Contract::of(&def).unwrap().state_schema(), state);
 }
 
 #[tokio::test]

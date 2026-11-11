@@ -321,8 +321,8 @@ struct Runner {
     sent: Vec<(MessageId, Script, ScriptMsg, SendOptions)>,
 }
 
-fn empty_state() -> Option<Value> {
-    Some(json!({ "ids": [] }))
+fn empty_state() -> Value {
+    json!({ "ids": [] })
 }
 
 impl Runner {
@@ -479,8 +479,7 @@ impl Runner {
         for to in 0..KEYS.len() {
             let address = script(to).address().expect("a valid address");
             if let Some(record) = self.memory.get(&address).await.expect("the store is up") {
-                let state: ScriptState =
-                    serde_json::from_value(record.state.unwrap_or(Value::Null)).expect("the state decodes");
+                let state: ScriptState = serde_json::from_value(record.state).expect("the state decodes");
                 self.log.push(Event::State { address: address.to_string(), ids: state.ids });
             }
         }

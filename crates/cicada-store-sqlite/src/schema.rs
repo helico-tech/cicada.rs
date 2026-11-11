@@ -2,10 +2,12 @@
 //! counters and the store clock's high-water mark. All instants are INTEGER microseconds since the epoch; JSON values
 //! are TEXT.
 //!
-//! The schema is versioned with `PRAGMA user_version`: opening a store applies every missing migration in one
-//! transaction and refuses a database written by a newer version. A database without a version is set up only when it
-//! has no tables; one with tables belongs to another program and is refused (ADR 0017). Migrations are additive so that nodes of the previous
-//! version keep working during a rolling deploy.
+//! The schema is versioned with `PRAGMA user_version` and is at version 2: opening a store applies every missing
+//! migration in one transaction and refuses a database written by a newer version. A database without a version is set
+//! up only when it has no tables; one with tables belongs to another program and is refused (ADR 0017). Migrations are
+//! additive so that nodes of the previous version keep working during a rolling deploy, with one exception: migration
+//! 2 makes `actors.state` required, so a node of version 1 that writes an actor without a state fails, and every old
+//! node is stopped before the first new one starts.
 //!
 //! SQLite keeps the text of every `CREATE` in `sqlite_master`, so the statement texts are part of the schema.
 
@@ -97,6 +99,36 @@ const MIGRATIONS: &[&[&str]] = &[
         "CREATE TABLE sequences (name TEXT PRIMARY KEY, value INTEGER NOT NULL)",
         "INSERT INTO sequences (name, value) VALUES ('seq', 0), ('epoch', 0), ('clock', 0)",
     ],
+    // 2: every actor has a state (ADR 0018). A state that is absent or JSON null becomes `{}`. A registration whose
+    // contract has no state schema (a stateless type) is removed, so that a node hosting the type registers it again
+    // with its new contract. `actors.state` becomes NOT NULL: SQLite cannot add that to a column, so the table is
+    // rebuilt with the same columns and its indexes are created again. Not additive (see the module docs).
+    &[
+        "UPDATE actors SET state = '{}' WHERE state IS NULL OR json_type(state) = 'null'",
+        "DELETE FROM actor_types WHERE json_extract(contract, '$.state') IS NULL",
+        "CREATE TABLE actors_v2 (
+    address       TEXT PRIMARY KEY,
+    type          TEXT NOT NULL,
+    state         TEXT NOT NULL,
+    version       INTEGER NOT NULL DEFAULT 0,
+    epoch         INTEGER NOT NULL DEFAULT 0,
+    lease_owner   TEXT,
+    lease_until   INTEGER,
+    lease_message TEXT,
+    cancel_epoch  INTEGER,
+    paused        INTEGER NOT NULL DEFAULT 0,
+    next_due_at   INTEGER,
+    created_at    INTEGER NOT NULL
+)",
+        "INSERT INTO actors_v2 (address, type, state, version, epoch, lease_owner, lease_until, lease_message, cancel_epoch,
+    paused, next_due_at, created_at)
+SELECT address, type, state, version, epoch, lease_owner, lease_until, lease_message, cancel_epoch, paused, next_due_at,
+    created_at FROM actors",
+        "DROP TABLE actors",
+        "ALTER TABLE actors_v2 RENAME TO actors",
+        "CREATE INDEX actors_due ON actors (type, next_due_at) WHERE next_due_at IS NOT NULL AND paused = 0",
+        "CREATE INDEX actors_running ON actors (address) WHERE lease_owner IS NOT NULL",
+    ],
 ];
 
 /// The schema version this code writes.
@@ -111,6 +143,11 @@ pub(crate) async fn migrate(conn: &mut Conn, path: &Path) -> StoreResult<()> {
 }
 
 async fn apply(c: &mut SqliteConnection, path: &Path) -> StoreResult<()> {
+    apply_up_to(c, path, VERSION).await
+}
+
+/// Applies the migrations up to `target`; [`apply`] with every migration.
+async fn apply_up_to(c: &mut SqliteConnection, path: &Path, target: i64) -> StoreResult<()> {
     let current: i64 = sqlx::query("PRAGMA user_version").fetch_one(&mut *c).await.map_err(db_error)?.get(0);
     if current > VERSION {
         return Err(StoreError::Invalid(format!(
@@ -132,16 +169,29 @@ async fn apply(c: &mut SqliteConnection, path: &Path) -> StoreResult<()> {
             )));
         }
     }
-    if current < VERSION {
-        for statements in &MIGRATIONS[current as usize..] {
+    if current < target {
+        for statements in &MIGRATIONS[current as usize..target as usize] {
             for statement in *statements {
                 sqlx::raw_sql(*statement).execute(&mut *c).await.map_err(db_error)?;
             }
         }
-        sqlx::raw_sql(sqlx::AssertSqlSafe(format!("PRAGMA user_version = {VERSION}")))
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!("PRAGMA user_version = {target}")))
             .execute(&mut *c)
             .await
             .map_err(db_error)?;
     }
     Ok(())
+}
+
+/// Sets up the database at `path` as a store of schema version `version` would have: the migrations up to it, in one
+/// transaction. For tests of an upgrade.
+#[cfg(test)]
+pub(crate) async fn migrate_to(path: &Path, version: i64) -> StoreResult<()> {
+    let options = sqlx::sqlite::SqliteConnectOptions::new().filename(path).create_if_missing(true);
+    let mut conn = Conn::connect(&options).await?;
+    conn.begin(Mode::Write).await.map_err(db_error)?;
+    let result = apply_up_to(conn.raw(), path, version).await;
+    let result = conn.end(result).await;
+    conn.close().await;
+    result
 }

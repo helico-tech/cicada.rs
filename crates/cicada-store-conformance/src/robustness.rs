@@ -29,7 +29,7 @@ pub async fn time_a_delivery_time_beyond_the_supported_range_is_refused_and_noth
 ) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         for delivery in too_late() {
             let message = OutgoingMessage { delivery, ..OutgoingMessage::new(a.clone(), "Msg", json!(1)) };
             assert_matches!(store.enqueue(message).await, Err(StoreError::Invalid(_)), "{delivery:?}");
@@ -60,7 +60,7 @@ pub async fn time_a_delivery_time_beyond_the_supported_range_is_refused_and_noth
 pub async fn time_the_latest_supported_delivery_time_is_stored_exactly_and_never_due<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let max = time::parse_instant("9999-12-31T23:59:59.999999Z").unwrap();
         assert_eq!(max, MAX_INSTANT);
         let m = t.send_at(&a, Delivery::At(max)).await;
@@ -80,7 +80,7 @@ pub async fn time_a_sub_microsecond_delivery_time_is_rounded_up_never_down<B: Fi
         if !t.require_virtual_time() {
             return;
         }
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let now = t.store().now().await.unwrap();
         let at = t.send_at(&a, Delivery::At(plus(now, Duration::from_nanos(500)))).await;
         let after = t.send_at(&a, Delivery::After(Duration::from_nanos(1))).await;
@@ -100,7 +100,7 @@ pub async fn time_store_time_stays_monotonic_when_the_underlying_clock_steps_bac
             return;
         }
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let first = t.send(&a).await;
         let t1 = store.now().await.unwrap();
         t.fixture.step_back(Duration::from_secs(3600)).await;
@@ -133,7 +133,7 @@ pub async fn s4_a_lease_is_valid_strictly_before_lease_until_and_expired_at_it<B
             return;
         }
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let m = t.send(&a).await;
         let c = t.claim_one().await;
         let now = store.now().await.unwrap();
@@ -156,7 +156,7 @@ pub async fn s4_a_lease_is_valid_strictly_before_lease_until_and_expired_at_it<B
 pub async fn s5_renew_and_commit_still_work_after_expiry_as_long_as_nobody_re_claimed<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let m = t.send(&a).await;
         let c = t.claim_one().await;
         t.expire_lease().await;
@@ -180,14 +180,14 @@ pub async fn commit_repeating_a_commit_that_already_applied_changes_nothing<B: F
     // same epoch and message id. It must neither apply twice nor fail in a way that re-runs the handler.
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, Some(json!({"n": 0}))).await;
-        let b = t.new_actor(&OTHER, None).await;
+        let a = t.new_actor(&TYPE, json!({"n": 0})).await;
+        let b = t.new_actor(&OTHER, json!({})).await;
         let child = address("other/repeated-child");
         let m = t.send(&a).await;
         let c = t.claim_one().await;
         let request = CommitRequest {
-            state: StateChange::NewState(Some(json!({"n": 1}))),
-            creates: vec![ActorCreate { address: child.clone(), state: Some(json!({"c": 1})) }],
+            state: StateChange::NewState(json!({"n": 1})),
+            creates: vec![ActorCreate { address: child.clone(), state: json!({"c": 1}) }],
             sends: vec![
                 OutgoingMessage::new(b.clone(), "T", json!(1)),
                 OutgoingMessage::new(child.clone(), "T", json!(2)),
@@ -205,7 +205,7 @@ pub async fn commit_repeating_a_commit_that_already_applied_changes_nothing<B: F
         let m2 = t.send(&a).await;
         let c2 = t.claim_one().await;
         assert_eq!(
-            t.commit(CommitRequest { state: StateChange::NewState(Some(json!({"n": 9}))), ..done(&c) }).await,
+            t.commit(CommitRequest { state: StateChange::NewState(json!({"n": 9})), ..done(&c) }).await,
             CommitResult::LeaseLost
         );
         t.commit_ok(CommitRequest { state: StateChange::Stop, ..done(&c2) }).await;
@@ -219,7 +219,7 @@ pub async fn commit_repeating_a_commit_that_already_applied_changes_nothing<B: F
 /// S6 - equal deliverAt keeps enqueue order on any clock
 pub async fn s6_equal_deliver_at_keeps_enqueue_order_on_any_clock<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let at = plus(t.store().now().await.unwrap(), t.ticks(5));
         let mut msgs = Vec::new();
         for _ in 0..6 {
@@ -241,7 +241,7 @@ pub async fn s6_equal_deliver_at_keeps_enqueue_order_on_any_clock<B: FixtureFact
 /// G5 - a message is never claimed before its deliverAt on any clock
 pub async fn g5_a_message_is_never_claimed_before_its_deliver_at_on_any_clock<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
-        let a = t.new_actor(&TYPE, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
         let mut msgs = Vec::new();
         for i in 1..=4 {
             msgs.push(t.send_at(&a, Delivery::After(t.ticks(i))).await);
@@ -277,8 +277,8 @@ enum Raced {
 pub async fn s7_a_commit_and_a_concurrent_enqueue_racing_for_one_id_accept_exactly_one<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         for round in 0..10 {
-            let a = t.new_actor(&TYPE, None).await;
-            let b = t.new_actor(&OTHER, None).await;
+            let a = t.new_actor(&TYPE, json!({})).await;
+            let b = t.new_actor(&OTHER, json!({})).await;
             t.send(&a).await;
             let c = t.claim_one().await;
             let id = MessageId::random();
@@ -319,9 +319,9 @@ pub async fn s7_a_commit_and_a_concurrent_enqueue_racing_for_one_id_accept_exact
 pub async fn s7_two_commits_racing_for_one_send_id_accept_exactly_one<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
         for round in 0..10 {
-            let a1 = t.new_actor(&TYPE, None).await;
-            let a2 = t.new_actor(&TYPE, None).await;
-            let b = t.new_actor(&OTHER, None).await;
+            let a1 = t.new_actor(&TYPE, json!({})).await;
+            let a2 = t.new_actor(&TYPE, json!({})).await;
+            let b = t.new_actor(&OTHER, json!({})).await;
             t.send(&a1).await;
             t.send(&a2).await;
             let claims = t.claim_limit(2).await;
@@ -351,8 +351,8 @@ pub async fn s7_cancel_racing_a_commit_that_sends_the_same_id_never_loses_the_me
     store_test(backend, async |t| {
         let store = t.store();
         for round in 0..10 {
-            let a = t.new_actor(&TYPE, None).await;
-            let b = t.new_actor(&OTHER, None).await;
+            let a = t.new_actor(&TYPE, json!({})).await;
+            let b = t.new_actor(&OTHER, json!({})).await;
             t.send(&a).await;
             let c = t.claim_one().await;
             let id = MessageId::random();
@@ -393,7 +393,7 @@ pub async fn s3_a_commit_that_creates_and_sends_to_a_child_is_serialised_with_co
     store_test(backend, async |t| {
         t.register_type(&OTHER).await;
         for round in 0..8 {
-            let parent = t.new_actor(&TYPE, None).await;
+            let parent = t.new_actor(&TYPE, json!({})).await;
             t.send(&parent).await;
             let c = t.claim_one().await;
             let child = address(&format!("other/race-{round}"));
@@ -402,14 +402,14 @@ pub async fn s3_a_commit_that_creates_and_sends_to_a_child_is_serialised_with_co
                 async move {
                     if i == 0 {
                         peer.commit(CommitRequest {
-                            creates: vec![ActorCreate { address: child.clone(), state: None }],
+                            creates: vec![ActorCreate { address: child.clone(), state: json!({}) }],
                             sends: vec![OutgoingMessage::new(child, "FromCommit", json!(0))],
                             ..done(&c)
                         })
                         .await
                         .unwrap();
                     } else {
-                        peer.create(&child, None).await.unwrap();
+                        peer.create(&child, json!({})).await.unwrap();
                         for k in 0..3 {
                             peer.enqueue(OutgoingMessage::new(child.clone(), "External", json!(k))).await.unwrap();
                         }

@@ -107,9 +107,11 @@ pub(crate) async fn put_actor(State(api): Shared, req: Request) -> Response {
     let instance = request::instance(&req);
     run(instance, async move {
         let address = request::address(req.uri())?;
-        let body: CreateActorRequest = request::body(req, api.max_body).await?.unwrap_or_default();
+        let body: CreateActorRequest = request::body(req, api.max_body).await?.ok_or_else(|| {
+            ApiProblem::bad_request(r#"A create needs a body with the initial state: {"state": ...}"#)
+        })?;
         let response = |created| CreateActorResponse { address: address.clone(), created };
-        match api.system.create_actor(&address, body.state.unwrap_or_default()).await? {
+        match api.system.create_actor(&address, body.state).await? {
             CreateActorResult::Created => Ok(json(StatusCode::CREATED, &response(true))),
             CreateActorResult::Exists(_) => Ok(json(StatusCode::OK, &response(false))),
             CreateActorResult::NoSuchType => Err(no_such_type(&address).into()),

@@ -27,3 +27,6 @@ pub use config::PostgresStoreConfig;
 /// sqlx connect options, for [`PostgresStore::connect_with`].
 pub use sqlx::postgres::{PgConnectOptions, PgSslMode};
 pub use store::PostgresStore;
+
+#[cfg(test)]
+mod upgrade_tests;

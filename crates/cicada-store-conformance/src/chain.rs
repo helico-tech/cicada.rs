@@ -30,8 +30,8 @@ pub async fn chain_caused_by_is_stored_with_the_message_and_returned_everywhere_
 ) {
     store_test(backend, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
-        let b = t.new_actor(&OTHER, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
+        let b = t.new_actor(&OTHER, json!({})).await;
         let root = t.send(&a).await;
         assert_eq!(root.caused_by, None, "a send from outside has no cause");
         let c = t.claim_one().await;
@@ -81,8 +81,8 @@ fn single_message(mut messages: Vec<Message>) -> Message {
 /// chain - causedBy survives reschedule and reopen
 pub async fn chain_caused_by_survives_reschedule_and_reopen<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
-        let a = t.new_actor(&TYPE, None).await;
-        let b = t.new_actor(&OTHER, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
+        let b = t.new_actor(&OTHER, json!({})).await;
         let root = t.send(&a).await;
         let child = caused(&b, &root.id, Some(&a));
         let c = t.claim_one().await;
@@ -132,8 +132,8 @@ pub async fn chain_caused_by_lists_one_level_of_pending_and_retained_visible_mes
 ) {
     store_test_with(backend, backend.tick() * 10, DEFAULT_TIMEOUT, async |t| {
         let store = t.store();
-        let a = t.new_actor(&TYPE, None).await;
-        let b = t.new_actor(&OTHER, None).await;
+        let a = t.new_actor(&TYPE, json!({})).await;
+        let b = t.new_actor(&OTHER, json!({})).await;
         let root = t.send(&a).await;
         let kid = |n: &str, retention| OutgoingMessage {
             id: MessageId::new(format!("kid-{n}")).unwrap(),
