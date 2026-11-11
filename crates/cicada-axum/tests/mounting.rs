@@ -13,7 +13,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post as post_route;
 use cicada::api::problem_types as pt;
 use cicada::runtime::NodeConfig;
-use cicada::store::NodeId;
+use cicada::store::{NodeId, Store};
 use cicada::{ActorSystem, SendResult};
 use cicada_axum::{PROBLEM_JSON, actor_api, actor_health};
 use common::*;
@@ -126,8 +126,8 @@ async fn the_api_works_behind_bearer_authentication_under_a_route_prefix() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn actor_health_serves_readiness_outside_authentication_and_503_while_the_store_is_down() {
-    let store = FlakyStore::new();
+async fn actor_health_serves_readiness_outside_authentication_and_503_after_the_store_is_closed() {
+    let store = memory_store();
     let system = node(store.clone()).await;
     let app = Router::new()
         .merge(actor_health(system.clone(), "/ready"))
@@ -138,7 +138,7 @@ async fn actor_health_serves_readiness_outside_authentication_and_503_while_the_
     assert_eq!(ready.status, StatusCode::OK);
     assert_eq!(ready.json()["status"], "up");
     assert_eq!(get(&app, "/probes/readyz").await.status, StatusCode::OK);
-    store.set_down(true);
+    store.close().await;
     let down = get(&app, "/ready").await;
     assert_eq!(down.status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(down.content_type(), PROBLEM_JSON);

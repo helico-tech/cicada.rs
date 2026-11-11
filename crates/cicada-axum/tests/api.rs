@@ -563,8 +563,8 @@ async fn types_return_the_generated_schemas() {
 // ---- GET /health and store failures ----
 
 #[tokio::test(start_paused = true)]
-async fn health_is_200_and_503_while_the_store_is_unavailable_as_are_sends() {
-    let store = FlakyStore::new();
+async fn health_is_200_and_503_after_the_store_is_closed_as_are_sends() {
+    let store = memory_store();
     let system = node(store.clone()).await;
     let node_id = system.node_id().to_string();
     let app = actor_api(system);
@@ -572,12 +572,10 @@ async fn health_is_200_and_503_while_the_store_is_unavailable_as_are_sends() {
     let health = get_json(&app, "/health").await;
     assert_eq!(health, json!({"status": "up", "node": node_id, "state": "STARTED"}));
 
-    store.set_down(true);
+    store.close().await;
     assert_problem(&get(&app, "/health").await, 503, pt::UNHEALTHY);
     let send = post(&app, "/actors/counter/a/messages", r#"{"type": "Add", "payload": {"n": 1}}"#).await;
     assert_problem(&send, 503, pt::STORE_UNAVAILABLE);
-    store.set_down(false);
-    assert_eq!(get(&app, "/health").await.status, StatusCode::OK);
 }
 
 // ---- paths ----
@@ -634,5 +632,6 @@ async fn the_store_outlives_the_router() {
     let app = actor_api(node(store.clone()).await);
     put(&app, "/actors/counter/a", r#"{"state": {}}"#).await;
     drop(app);
-    assert_eq!(store.list("", None, 10).await.unwrap().items.len(), 1);
+    let system = ActorSystem::builder(store).build();
+    assert_eq!(system.list_actors("", None, 10).await.unwrap().items.len(), 1);
 }

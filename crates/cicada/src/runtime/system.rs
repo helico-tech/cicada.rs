@@ -1122,6 +1122,22 @@ impl ActorSystem {
         Ok(self.inner.store.request_cancel(address).await?)
     }
 
+    /// The store's time: the one clock of every node (S9).
+    pub async fn now(&self) -> Result<Timestamp, OpError> {
+        Ok(self.inner.store.now().await?)
+    }
+
+    /// The earliest store time at which an instance of a type this node hosts may become claimable: the delivery time
+    /// of the head of its mailbox, or the end of its lease when that is later. `None` when no message is pending.
+    /// Paused instances do not count.
+    pub async fn next_due_at(&self) -> Result<Option<Timestamp>, OpError> {
+        let types = self.hosted_types();
+        if types.is_empty() {
+            return Ok(None);
+        }
+        Ok(self.inner.store.next_due_at(&types).await?)
+    }
+
     /// True when the node is running (or usable) and the store is reachable (`GET /health`).
     pub async fn health(&self) -> bool {
         !matches!(self.state(), NodeState::Stopping | NodeState::Stopped) && self.inner.store.now().await.is_ok()

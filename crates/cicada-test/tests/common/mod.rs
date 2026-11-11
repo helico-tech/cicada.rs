@@ -400,6 +400,10 @@ pub fn failure_kind(failure: &HandlerFailure) -> &'static str {
 /// The operations a test can intercept; each default delegates to the real store.
 #[async_trait]
 pub trait Faults: Send + Sync + 'static {
+    async fn now(&self, inner: &dyn Store) -> StoreResult<Timestamp> {
+        inner.now().await
+    }
+
     async fn list_types(&self, inner: &dyn Store) -> StoreResult<Vec<TypeDef>> {
         inner.list_types().await
     }
@@ -453,7 +457,7 @@ impl<F: Faults> Faulty<F> {
 #[async_trait]
 impl<F: Faults> Store for Faulty<F> {
     async fn now(&self) -> StoreResult<Timestamp> {
-        self.inner.now().await
+        self.faults.now(&*self.inner).await
     }
 
     async fn register(&self, def: TypeDef) -> StoreResult<RegisterResult> {

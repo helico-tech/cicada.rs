@@ -1,22 +1,17 @@
-//! Actor types, a flaky store and HTTP helpers shared by the API tests.
+//! Actor types, nodes and HTTP helpers shared by the API tests.
 #![allow(dead_code)]
 
-use std::collections::{BTreeSet, HashMap};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{HeaderMap, Method, Request, StatusCode, header};
-use cicada::address::{ActorAddress, TypeName};
 use cicada::prelude::*;
 use cicada::runtime::{ActorSystemBuilder, NodeConfig};
 use cicada::store::*;
-use cicada::time::Timestamp;
 use cicada_test::{InMemoryStore, TokioClock, default_start};
-use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::watch;
@@ -201,203 +196,6 @@ pub async fn eventually(mut condition: impl AsyncFnMut() -> bool) {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     panic!("Condition not met within 10 s");
-}
-
-// ---- a store that fails on demand ----
-
-/// How [`FlakyStore::get`] fails.
-#[derive(Debug, Clone, Copy)]
-pub enum Failure {
-    Unavailable,
-    Corrupt,
-    Panic,
-}
-
-/// A store whose clock, resolution and enqueue fail while [`Self::set_down`] is set, and whose `get` fails as
-/// [`Self::fail_get`] says.
-pub struct FlakyStore {
-    inner: InMemoryStore,
-    down: AtomicBool,
-    get_failure: Mutex<Option<Failure>>,
-}
-
-impl FlakyStore {
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self {
-            inner: InMemoryStore::with_clock(Arc::new(TokioClock::new(default_start()))),
-            down: AtomicBool::new(false),
-            get_failure: Mutex::new(None),
-        })
-    }
-
-    pub fn set_down(&self, down: bool) {
-        self.down.store(down, Ordering::SeqCst);
-    }
-
-    pub fn fail_get(&self, failure: Option<Failure>) {
-        *self.get_failure.lock().unwrap() = failure;
-    }
-
-    fn check(&self) -> StoreResult<()> {
-        if self.down.load(Ordering::SeqCst) {
-            return Err(StoreError::unavailable("store down"));
-        }
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl Store for FlakyStore {
-    async fn now(&self) -> StoreResult<Timestamp> {
-        self.check()?;
-        self.inner.now().await
-    }
-    async fn register(&self, def: TypeDef) -> StoreResult<RegisterResult> {
-        self.inner.register(def).await
-    }
-    async fn remove_type(&self, name: &TypeName) -> StoreResult<RemoveTypeResult> {
-        self.inner.remove_type(name).await
-    }
-
-    async fn list_types(&self) -> StoreResult<Vec<TypeDef>> {
-        self.check()?;
-        self.inner.list_types().await
-    }
-    async fn create(&self, address: &ActorAddress, state: Value) -> StoreResult<CreateResult> {
-        self.inner.create(address, state).await
-    }
-    async fn get(&self, address: &ActorAddress) -> StoreResult<Option<ActorRecord>> {
-        let failure = *self.get_failure.lock().unwrap();
-        match failure {
-            None => self.inner.get(address).await,
-            Some(Failure::Unavailable) => Err(StoreError::unavailable("connection refused")),
-            Some(Failure::Corrupt) => Err(StoreError::Corrupt("stored state is corrupt".into())),
-            Some(Failure::Panic) => panic!("a bug"),
-        }
-    }
-    async fn list(&self, prefix: &str, cursor: Option<&PageCursor>, limit: usize) -> StoreResult<Page<ActorAddress>> {
-        self.inner.list(prefix, cursor, limit).await
-    }
-    async fn delete(&self, address: &ActorAddress) -> StoreResult<DeleteResult> {
-        self.inner.delete(address).await
-    }
-    async fn enqueue(&self, message: OutgoingMessage) -> StoreResult<EnqueueResult> {
-        self.check()?;
-        self.inner.enqueue(message).await
-    }
-    async fn claim_due(
-        &self,
-        types: &BTreeSet<TypeName>,
-        node: &NodeId,
-        ttl: Duration,
-        limit: usize,
-    ) -> StoreResult<Vec<Claim>> {
-        self.inner.claim_due(types, node, ttl, limit).await
-    }
-    async fn renew(&self, address: &ActorAddress, epoch: i64, ttl: Duration) -> StoreResult<RenewResult> {
-        self.inner.renew(address, epoch, ttl).await
-    }
-    async fn release(&self, address: &ActorAddress, epoch: i64) -> StoreResult<()> {
-        self.inner.release(address, epoch).await
-    }
-    async fn next_due_at(&self, types: &BTreeSet<TypeName>) -> StoreResult<Option<Timestamp>> {
-        self.inner.next_due_at(types).await
-    }
-    async fn pending(
-        &self,
-        address: &ActorAddress,
-        cursor: Option<&PageCursor>,
-        limit: usize,
-    ) -> StoreResult<Page<Message>> {
-        self.inner.pending(address, cursor, limit).await
-    }
-    async fn list_pending(
-        &self,
-        prefix: &str,
-        cursor: Option<&PageCursor>,
-        limit: usize,
-    ) -> StoreResult<Page<Message>> {
-        self.inner.list_pending(prefix, cursor, limit).await
-    }
-    async fn cancel(&self, id: &MessageId) -> StoreResult<CancelResult> {
-        self.inner.cancel(id).await
-    }
-    async fn status(&self, id: &MessageId) -> StoreResult<Option<MessageStatus>> {
-        self.inner.status(id).await
-    }
-    async fn outcomes(
-        &self,
-        status: Option<OutcomeStatus>,
-        prefix: &str,
-        since: Timestamp,
-        cursor: Option<&PageCursor>,
-        limit: usize,
-    ) -> StoreResult<Page<OutcomeRecord>> {
-        self.inner.outcomes(status, prefix, since, cursor, limit).await
-    }
-    async fn caused_by(
-        &self,
-        id: &MessageId,
-        cursor: Option<&PageCursor>,
-        limit: usize,
-    ) -> StoreResult<Page<MessageStatus>> {
-        self.inner.caused_by(id, cursor, limit).await
-    }
-
-    async fn stats(&self, prefix: &str) -> StoreResult<StoreStats> {
-        self.inner.stats(prefix).await
-    }
-    async fn sweep_expired(&self) -> StoreResult<u64> {
-        self.inner.sweep_expired().await
-    }
-    async fn commit(&self, commit: CommitRequest) -> StoreResult<CommitResult> {
-        self.inner.commit(commit).await
-    }
-
-    async fn deliver_now(&self, id: &MessageId) -> StoreResult<DeliverNowResult> {
-        self.inner.deliver_now(id).await
-    }
-
-    async fn set_paused(&self, address: &ActorAddress, paused: bool) -> StoreResult<bool> {
-        self.inner.set_paused(address, paused).await
-    }
-
-    async fn purge(&self, address: &ActorAddress) -> StoreResult<Option<u64>> {
-        self.inner.purge(address).await
-    }
-
-    async fn heartbeat_node(&self, id: &NodeId, hosted: &BTreeSet<TypeName>) -> StoreResult<()> {
-        self.inner.heartbeat_node(id, hosted).await
-    }
-
-    async fn list_nodes(&self) -> StoreResult<Vec<NodeRecord>> {
-        self.inner.list_nodes().await
-    }
-
-    async fn remove_node(&self, id: &NodeId) -> StoreResult<()> {
-        self.inner.remove_node(id).await
-    }
-
-    async fn running_turns(
-        &self,
-        node: Option<&NodeId>,
-        prefix: &str,
-        cursor: Option<&PageCursor>,
-        limit: usize,
-    ) -> StoreResult<Page<RunningTurn>> {
-        self.inner.running_turns(node, prefix, cursor, limit).await
-    }
-
-    async fn running_turn(&self, address: &ActorAddress) -> StoreResult<Option<RunningTurn>> {
-        self.inner.running_turn(address).await
-    }
-
-    async fn request_cancel(&self, address: &ActorAddress) -> StoreResult<bool> {
-        self.inner.request_cancel(address).await
-    }
-    fn wake_ups(&self, types: &BTreeSet<TypeName>) -> Option<BoxStream<'static, ()>> {
-        self.inner.wake_ups(types)
-    }
 }
 
 // ---- HTTP ----

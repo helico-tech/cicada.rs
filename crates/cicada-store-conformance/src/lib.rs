@@ -164,6 +164,7 @@ macro_rules! __for_each_case {
             s7_two_commits_racing_for_one_send_id_accept_exactly_one,
             s7_cancel_racing_a_commit_that_sends_the_same_id_never_loses_the_message,
             s3_a_commit_that_creates_and_sends_to_a_child_is_serialised_with_concurrent_writes_to_that_child,
+            closed_after_close_every_operation_fails_as_unavailable,
             // reschedule.rs
             reschedule_the_same_message_stays_pending_with_its_failure_recorded_and_no_outcome,
             reschedule_the_message_queues_again_behind_due_messages_and_is_not_due_before_its_delay,

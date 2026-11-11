@@ -5,20 +5,20 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
 
 ## 1. Count, and prepare what needs no move
 
-- [ ] 1.1 Before anything moves, count the tests of each suite that will move: the conformance cases per backend,
+- [x] 1.1 Before anything moves, count the tests of each suite that will move: the conformance cases per backend,
       `cicada-fuzz`, `cicada-store-sqlite`, `cicada-store-postgres` (with `CICADA_PG_URL` set), the 11 test files of
       `cicada-test` that need the trait, and `crates/cicada/tests/store_support.rs` and `retry_policy.rs`. Verify: the
       numbers are in the report, with the commands that gave them (`cargo test -p … -- --list`).
-- [ ] 1.2 `ActorSystem::now()` and `ActorSystem::next_due_at()` [12]. Verify: tests on virtual time with
+- [x] 1.2 `ActorSystem::now()` and `ActorSystem::next_due_at()` [12]. Verify: tests on virtual time with
       `TestActors` for the scenarios "The store's time", "A message that is due later", "Nothing pending" and "A
       paused actor".
-- [ ] 1.3 A conformance case for "a closed store fails every operation as unavailable" [6]. Verify: it passes for
+- [x] 1.3 A conformance case for "a closed store fails every operation as unavailable" [6]. Verify: it passes for
       the in-memory store, SQLite and, with `CICADA_PG_URL` set, PostgreSQL (scenario "Every backend").
-- [ ] 1.4 `cicada-axum` without `FlakyStore` [6, 11]: the `503` tests close the store; a panic and corrupt data as
+- [x] 1.4 `cicada-axum` without `FlakyStore` [6, 11]: the `503` tests close the store; a panic and corrupt data as
       `500` become unit tests of the error mapping and of the wrapper that catches a panic; `store.list` becomes
       `system.list_actors`. Verify: tests for the scenarios "A request after the store is closed" and "Health after
       the store is closed", and the two unit tests, pass.
-- [ ] 1.5 A test of `ActorSystem::health` on the fault wrapper: unhealthy while the store fails, healthy again when
+- [x] 1.5 A test of `ActorSystem::health` on the fault wrapper: unhealthy while the store fails, healthy again when
       it is back [6]. Verify: the test passes.
 
 ## 2. The stores and the harness move into `cicada`

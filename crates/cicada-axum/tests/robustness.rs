@@ -6,6 +6,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
 use cicada::api::problem_types as pt;
+use cicada::store::Store;
 use cicada_axum::{ApiConfig, actor_api, actor_api_with};
 use common::*;
 use serde_json::{Value, json};
@@ -341,19 +342,15 @@ async fn a_retried_message_is_pending_with_its_failures_last_error_and_policy_li
 }
 
 #[tokio::test(start_paused = true)]
-async fn store_failures_answer_503_and_unexpected_errors_500() {
-    let store = FlakyStore::new();
+async fn a_request_after_the_store_is_closed_answers_503() {
+    // A panic and corrupt data as `500` are unit tests of the error mapping (`problem.rs`, `handlers.rs`).
+    let store = memory_store();
     let app = actor_api(node(store.clone()).await);
-    store.fail_get(Some(Failure::Unavailable));
-    assert_status(&get(&app, "/actors/counter/x").await, 503, pt::STORE_UNAVAILABLE);
-    store.fail_get(Some(Failure::Panic));
-    let panicked = get(&app, "/actors/counter/x").await;
-    assert_status(&panicked, 500, pt::INTERNAL_ERROR);
-    assert_eq!(panicked.json()["instance"], "/actors/counter/x");
-    store.fail_get(Some(Failure::Corrupt));
-    assert_status(&get(&app, "/actors/counter/x").await, 500, pt::INTERNAL_ERROR);
-    store.fail_get(None);
     assert_eq!(get(&app, "/actors/counter/x").await.status, StatusCode::NOT_FOUND);
+    store.close().await;
+    let unavailable = get(&app, "/actors/counter/x").await;
+    assert_status(&unavailable, 503, pt::STORE_UNAVAILABLE);
+    assert_eq!(unavailable.json()["instance"], "/actors/counter/x");
 }
 
 #[tokio::test(start_paused = true)]

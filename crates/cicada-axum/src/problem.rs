@@ -131,3 +131,31 @@ fn body<T: Serialize>(status: StatusCode, content_type: &'static str, value: &T)
     let bytes = serde_json::to_vec(value).expect("wire types always serialize");
     (status, [(header::CONTENT_TYPE, HeaderValue::from_static(content_type))], bytes).into_response()
 }
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+
+    /// The status and the body of `response`, which must be a problem.
+    pub(crate) async fn problem_of(response: Response) -> (StatusCode, Problem) {
+        let status = response.status();
+        assert_eq!(response.headers()[header::CONTENT_TYPE], PROBLEM_JSON);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.expect("the body is readable");
+        (status, serde_json::from_slice(&bytes).expect("a problem"))
+    }
+
+    #[tokio::test]
+    async fn the_store_errors_map_to_400_503_and_500() {
+        let cases = [
+            (StoreError::Invalid("out of range".into()), 400, problem_types::BAD_REQUEST),
+            (StoreError::unavailable("closed"), 503, problem_types::STORE_UNAVAILABLE),
+            (StoreError::Corrupt("stored state is corrupt".into()), 500, problem_types::INTERNAL_ERROR),
+        ];
+        for (error, status, problem_type) in cases {
+            let (actual, problem) = problem_of(ApiError::Op(OpError::Store(error)).render("/actors/counter/x")).await;
+            assert_eq!(actual.as_u16(), status);
+            assert_eq!(problem.problem_type, problem_type);
+            assert_eq!(problem.instance.as_deref(), Some("/actors/counter/x"));
+        }
+    }
+}

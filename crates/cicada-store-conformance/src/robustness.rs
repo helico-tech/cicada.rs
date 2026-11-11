@@ -429,3 +429,60 @@ pub async fn s3_a_commit_that_creates_and_sends_to_a_child_is_serialised_with_co
     })
     .await
 }
+
+/// closed - after close, every operation of the store fails as unavailable
+pub async fn closed_after_close_every_operation_fails_as_unavailable<B: FixtureFactory>(backend: &B) {
+    store_test(backend, async |t| {
+        let store = t.store();
+        let a = t.new_actor(&TYPE, json!({})).await;
+        let m = t.send(&a).await;
+        let c = t.claim_one().await;
+        let (types, node) = (type_set(&[&TYPE]), NODE_A.clone());
+        let since = store.now().await.unwrap();
+        store.close().await;
+
+        macro_rules! unavailable {
+            ($($call:expr),* $(,)?) => {$(
+                match $call.await {
+                    Err(e) => assert!(e.is_unavailable(), "{}: expected unavailable, got {e:?}", stringify!($call)),
+                    Ok(value) => panic!("{}: expected unavailable, got {value:?}", stringify!($call)),
+                }
+            )*};
+        }
+        unavailable!(
+            store.now(),
+            store.register(type_def(&OTHER, "closed")),
+            store.list_types(),
+            store.remove_type(&OTHER),
+            store.create(&address("conformance/closed"), json!({})),
+            store.get(&a),
+            store.list("", None, 10),
+            store.delete(&a),
+            store.enqueue(OutgoingMessage::new(a.clone(), "Msg", json!(0))),
+            store.claim_due(&types, &node, t.ttl(), 10),
+            store.renew(&a, c.epoch, t.ttl()),
+            store.next_due_at(&types),
+            store.pending(&a, None, 10),
+            store.list_pending("", None, 10),
+            store.deliver_now(&m.id),
+            store.cancel(&m.id),
+            store.set_paused(&a, true),
+            store.purge(&a),
+            store.status(&m.id),
+            store.outcomes(None, "", since, None, 10),
+            store.caused_by(&m.id, None, 10),
+            store.stats(""),
+            store.sweep_expired(),
+            store.heartbeat_node(&node, &types),
+            store.list_nodes(),
+            store.remove_node(&node),
+            store.running_turns(None, "", None, 10),
+            store.running_turn(&a),
+            store.request_cancel(&a),
+            store.commit(done(&c)),
+        );
+        // `release` reports nothing; on a closed store it returns without panicking or hanging.
+        let _ = store.release(&a, c.epoch).await;
+    })
+    .await
+}

@@ -319,6 +319,34 @@ async fn the_loop_survives_store_failures() {
     stop_all(&[&system]).await;
 }
 
+/// A store whose clock fails while `down` is set.
+struct Outage {
+    down: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait]
+impl Faults for Outage {
+    async fn now(&self, inner: &dyn Store) -> StoreResult<cicada::time::Timestamp> {
+        if self.down.load(Ordering::SeqCst) {
+            return Err(StoreError::unavailable("store down"));
+        }
+        inner.now().await
+    }
+}
+
+#[tokio::test]
+async fn a_node_is_unhealthy_while_its_store_fails_and_healthy_again_when_it_is_back() {
+    let store = Faulty::new(Arc::new(InMemoryStore::default()), Outage { down: false.into() });
+    let system = system(store.clone()).host(CounterActor).build();
+    system.start().await.unwrap();
+    assert!(system.health().await);
+    store.faults.down.store(true, Ordering::SeqCst);
+    assert!(!system.health().await);
+    store.faults.down.store(false, Ordering::SeqCst);
+    assert!(system.health().await);
+    stop_all(&[&system]).await;
+}
+
 #[tokio::test]
 async fn life_cycle_start_once_stop_is_idempotent_a_send_only_node_needs_no_loop() {
     let store = Arc::new(InMemoryStore::default());

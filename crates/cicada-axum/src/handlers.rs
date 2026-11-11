@@ -548,3 +548,21 @@ pub(crate) async fn health(State(api): Shared, req: Request) -> Response {
     })
     .await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::problem::tests::problem_of;
+
+    async fn panicking() -> Outcome {
+        panic!("a bug")
+    }
+
+    #[tokio::test]
+    async fn a_handler_that_panics_answers_500_with_its_instance() {
+        let (status, problem) = problem_of(run("/actors/counter/x".to_owned(), panicking()).await).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(problem.problem_type, problem_types::INTERNAL_ERROR);
+        assert_eq!(problem.instance.as_deref(), Some("/actors/counter/x"));
+    }
+}
