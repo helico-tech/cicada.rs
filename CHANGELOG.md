@@ -7,11 +7,22 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.3.1 — unreleased
+## 0.3.1 — 2026-11-11
 
-No change to the library crates, the wire format or the store schema: nodes of 0.3.0 and 0.3.1 can share a database.
+No change to the wire format or the store schema: nodes of 0.3.0 and 0.3.1 can share a database.
+
+### Fixed
+
+- A duration whose parts sum out of range is a parse error, also over HTTP (the `delay` of a send, a retry or
+  retention policy). Before, a debug build panicked and a release build let the sum wrap, so a crafted duration could
+  be accepted as a small one.
 
 ### Added
+
+- `cicada-fuzz`, a test-only crate of randomised tests: the parsers, a comparison of the store backends, and a node
+  simulation under injected store faults. A short run is part of `cargo test --workspace`;
+  `PROPTEST_CASES=100000 cargo test -p cicada-fuzz` is a long one. For repeatable runs, the three `tokio::select!`
+  calls of the runtime are now `biased`.
 
 - `cicada-cli`, the binary `cicada`: a command line and terminal UI for any node that serves `actor_api()`
   (`actor_api_read()` for the commands that only read). It talks to the node only over HTTP, through `cicada-client`.

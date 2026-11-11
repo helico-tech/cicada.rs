@@ -1022,10 +1022,10 @@ published to a registry (`publish = false`), so they are git dependencies. Name 
 
 ```toml
 [workspace.dependencies]
-cicada = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.3.0" }
-cicada-axum = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.3.0" }
-cicada-store-postgres = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.3.0" }
-cicada-test = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.3.0" }
+cicada = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.3.1" }
+cicada-axum = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.3.1" }
+cicada-store-postgres = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.3.1" }
+cicada-test = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.3.1" }
 ```
 
 Every Cicada crate must come from the same tag; mixing tags gives two copies of the same types. In a project that is
