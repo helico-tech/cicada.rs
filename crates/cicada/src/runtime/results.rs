@@ -65,6 +65,8 @@ pub struct ActorSnapshot {
     pub created_at: Timestamp,
     /// True while the mailbox is paused.
     pub paused: bool,
+    /// The actor whose turn created this one as a child (`Turn::create_child`); `None` for an independent actor.
+    pub parent: Option<ActorAddress>,
 }
 
 /// How long ago a node last reported itself, in the store's clock; display only.

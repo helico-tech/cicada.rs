@@ -719,7 +719,7 @@ impl ActorSystem {
         })
     }
 
-    /// Address, state and version of an instance (`GET /actors/{type}/{key}`).
+    /// Address, state, version and parent of an instance (`GET /actors/{type}/{key}`).
     pub async fn get_actor(&self, address: &ActorAddress) -> Result<Option<ActorSnapshot>, OpError> {
         let Some(record) = self.inner.store.get(address).await? else {
             return Ok(None);
@@ -730,12 +730,29 @@ impl ActorSystem {
             version: record.version,
             created_at: record.created_at,
             paused: record.paused,
+            parent: record.parent,
         }))
     }
 
-    /// Admin delete (`DELETE /actors/{type}/{key}`): removes the instance and purges its mailbox.
+    /// Admin delete (`DELETE /actors/{type}/{key}`): removes the instance and every descendant (the actors its turns
+    /// created with [`Turn::create_child`](crate::Turn::create_child), theirs, and so on) in one transaction, and purges
+    /// their mailboxes. [`DeleteResult::Deleted`] counts the purged messages of the whole tree.
     pub async fn delete_actor(&self, address: &ActorAddress) -> Result<DeleteResult, OpError> {
         Ok(self.inner.store.delete(address).await?)
+    }
+
+    /// The direct children of `address` in address order, paged (`GET /actors/{type}/{key}/children`); `None` when
+    /// the instance is absent. A client walks a tree level by level.
+    pub async fn list_children(
+        &self,
+        address: &ActorAddress,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> Result<Option<Page<ActorAddress>>, OpError> {
+        if self.inner.store.get(address).await?.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(self.inner.store.children(address, cursor, limit).await?))
     }
 
     /// Instance URIs starting with `prefix`, paged (`GET /actors?prefix=`).

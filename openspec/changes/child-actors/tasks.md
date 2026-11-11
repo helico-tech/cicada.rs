@@ -43,7 +43,7 @@ starts; build from the design.
 
 ## 2. The runtime
 
-- [ ] 2.1 `Turn::create_child` [2, 7], with the arguments and checks of `Turn::create`; a second create of one
+- [x] 2.1 `Turn::create_child` [2, 7], with the arguments and checks of `Turn::create`; a second create of one
       address that disagrees returns `TurnError::Invalid` and buffers nothing; `ActorSnapshot.parent`;
       `ActorSystem::list_children`; the doc comments of `ActorSystem::delete_actor` and `Turn::stop` say that
       descendants go too. Verify, on virtual time with `TestActors`: tests for the scenarios "A child is created",

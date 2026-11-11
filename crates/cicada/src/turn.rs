@@ -379,16 +379,50 @@ impl<A: Actor> Turn<A> {
         Ok(id)
     }
 
-    /// Buffers an idempotent create of `r` with `initial_state`. Creates are applied before the turn's sends, so
-    /// create-then-send in one turn works. An existing instance is left untouched. A state that encodes to `null` is
-    /// refused with [`TurnError::Invalid`]; a type that keeps no data is created with [`crate::NoState`].
+    /// Buffers an idempotent create of `r` with `initial_state`, as an independent actor: it has no parent, and
+    /// removing this instance leaves it. Creates are applied before the turn's sends, so create-then-send in one turn
+    /// works. An existing instance is left untouched. A state that encodes to `null` is refused with
+    /// [`TurnError::Invalid`]; a type that keeps no data is created with [`crate::NoState`]. Fails with
+    /// [`TurnError::Invalid`] too when this turn creates `r` with [`Self::create_child`] already.
     pub fn create<R: ActorRef, S: Serialize + ?Sized>(&mut self, r: &R, initial_state: &S) -> Result<(), TurnError> {
+        self.buffer_create(r, initial_state, false)
+    }
+
+    /// Buffers an idempotent create of `r` with `initial_state`, as a child of this instance: its parent is this
+    /// instance, for life, and deleting or stopping this instance removes it too, with its own descendants (ADR 0019).
+    /// It takes the arguments of [`Self::create`] and is checked the same way, and it is applied before the turn's
+    /// sends as well.
+    ///
+    /// A child of this instance that exists already is left untouched. An actor that exists with another parent, or
+    /// with none (created with [`Self::create`] or from outside a turn), is never taken over: the commit is rejected
+    /// and the turn's message ends `failed`, as for a send to an absent actor; so is a create of this instance itself.
+    /// Fails with [`TurnError::Invalid`] when this turn creates `r` with [`Self::create`] already.
+    pub fn create_child<R: ActorRef, S: Serialize + ?Sized>(
+        &mut self,
+        r: &R,
+        initial_state: &S,
+    ) -> Result<(), TurnError> {
+        self.buffer_create(r, initial_state, true)
+    }
+
+    fn buffer_create<R: ActorRef, S: Serialize + ?Sized>(
+        &mut self,
+        r: &R,
+        initial_state: &S,
+        child: bool,
+    ) -> Result<(), TurnError> {
         let state = serde_json::to_value(initial_state)
             .map_err(|e| TurnError::Invalid(format!("The initial state cannot be encoded: {e}")))?;
         message::check_not_null("initial state", &state).map_err(TurnError::Invalid)?;
         limits::check_json("initial state", Some(&state)).map_err(TurnError::Invalid)?;
         let address = r.address().map_err(|e| TurnError::Invalid(e.to_string()))?;
-        self.effects.creates.push(ActorCreate { address, state, child: false });
+        if self.effects.creates.iter().any(|c| c.address == address && c.child != child) {
+            let (first, second) = if child { ("create", "create_child") } else { ("create_child", "create") };
+            return Err(TurnError::Invalid(format!(
+                "{address} is created with {first} in this turn already; {second} of it would disagree"
+            )));
+        }
+        self.effects.creates.push(ActorCreate { address, state, child });
         Ok(())
     }
 
@@ -409,7 +443,9 @@ impl<A: Actor> Turn<A> {
         Ok(())
     }
 
-    /// Deletes this instance at commit; its remaining mailbox (including this turn's self-sends) is purged.
+    /// Deletes this instance at commit, with every descendant: the actors it created with [`Self::create_child`],
+    /// theirs, and so on, the children of this turn included. Their remaining mailboxes are purged, this turn's sends
+    /// to itself and to them included, and a turn running on a descendant commits nothing.
     pub fn stop(&mut self) {
         self.effects.stop = true;
     }
