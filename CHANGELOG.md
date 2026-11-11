@@ -27,7 +27,8 @@ Nodes of 0.7.0 and 0.8.0 must not share a database.
    actors the old way finish first (operations guide, Upgrading).
 3. Code that builds `ActorRecord`, `ActorSnapshot` or `ActorView` by hand adds the field `parent` (`None` for an
    independent actor). Nothing else needs a code change: `create`, `delete_actor` and `stop` compile unchanged.
-4. Upgrade `ActorClient` users together with the nodes: the view of an actor has `parent`.
+4. `ActorClient` users need not be upgraded together with the nodes: a client of 0.7.0 ignores the new field `parent`
+   of an actor's view. Listing children needs a client of 0.8.0.
 
 ### Changed (breaking)
 

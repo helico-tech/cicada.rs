@@ -165,8 +165,8 @@ client cannot decode the views of a new node. A prefix that holds the encoded co
 descendants with it. Its migration 4 adds the column `actors.parent` and an index on it; every existing actor is
 independent. A node of 0.7.0 that opens the migrated database refuses it, but one that is still running does not
 notice: its deletes and stops remove one row and leave the children behind, as orphans that never go away. So stop
-every node of the old version, then start the new ones. Upgrade `ActorClient` users together with the nodes: the
-view of an actor has the field `parent`.
+every node of the old version, then start the new ones. Clients of 0.7.0 keep working: they ignore the new field
+`parent` of an actor's view.
 
 **Switching a type to `create_child`.** An actor created with `turn.create` stays independent: a later `create_child`
 of it by its creator does not adopt it, but fails the creator's message (the commit is rejected, and a handler cannot
