@@ -7,13 +7,15 @@ context: |
   Read docs/architecture.md first and follow it: it is the reference for behaviour (guarantees G1-G6, store
   requirements S1-S10, the HTTP contract), and it wins over openspec/specs/ if they differ. Decisions are in docs/adr/.
   Priorities, in order: simplicity, ease of use, correctness. Throughput is not a goal.
-  A change with only a proposal.md is an idea or a finding that is not started; write its specs, design and tasks when
-  it is next.
+  Changes go through the change loop (ADR 0020, .claude/skills/change-loop). A change with only a proposal.md is an
+  idea or a finding that is not started. Its design and specs are written together with the owner when it is next, one
+  change ahead of the one being built. Its tasks.md is written last, after a review, and means: ready to build.
 
 rules:
   proposal:
     - Start with the simplest version that meets the requirements
     - Always state what is out of scope
+    - Add an Order section that names the change before it and the change after it
   design:
     - A change to a guarantee or a wire format needs a new ADR in docs/adr/ and an update of docs/architecture.md
     - A schema change is an appended migration

@@ -44,6 +44,11 @@ None.
 - Installing or publishing the binary (packages, Homebrew). The workspace stays `publish = false`.
 - Shell completion scripts.
 
+## Order
+
+The first one: it is built and has one docs task left. Before `every-actor-has-state`. It is not a step of ADR 0018,
+but step 9 (`cicada-app`) needs it archived.
+
 ## Impact
 
 - New crate `crates/cicada-cli`, added to the workspace. New dependencies: `clap`, `ratatui`, `crossterm`, `toml`,

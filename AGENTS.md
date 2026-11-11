@@ -29,12 +29,14 @@ PostgreSQL for tests: `docker compose up -d postgres` (port 55432). Tests that n
 | `crates/cicada-store-*` | Store backends and the conformance suite |
 | `crates/cicada-axum` | HTTP API routers |
 | `crates/cicada-client` | Typed HTTP client |
+| `crates/cicada-cli` | The `cicada` command line and terminal UI, over HTTP |
 | `crates/cicada-otel`, `crates/cicada-extras` | Plugins and building blocks |
 | `crates/cicada-fuzz` | Randomised tests: parsers, backend comparison, node simulation under faults |
 | `examples/`, `sample-service/` | Worked examples; a runnable node |
 | `e2e/` | End-to-end and fault tests against sample nodes in Docker |
 | `docs/` | Architecture, ADRs and the operations guide |
 | `openspec/` | Specs, changes in progress and finished changes |
+| `.claude/skills/change-loop/` | The change loop: the skill, the briefs of its agents and the status script |
 
 ## Rules
 
@@ -54,13 +56,19 @@ PostgreSQL for tests: `docker compose up -d postgres` (port 55432). Tests that n
 ## Specs and changes: OpenSpec
 
 Specs, changes, designs and tasks live in `openspec/` ([OpenSpec](https://github.com/Fission-AI/OpenSpec), ADR 0010).
+Work on them goes through the change loop (ADR 0020).
 
 - `openspec/specs/`: what the system does, one folder per capability. It grows as changes are archived;
   `docs/architecture.md` stays the reference for behaviour.
 - `openspec/changes/<name>/`: a change: `proposal.md`, `design.md`, `tasks.md` and spec deltas. A change with only a
-  `proposal.md` is not started.
+  `proposal.md` is not started. `tasks.md` is written last: a change that has one is agreed and ready to build.
+- Every proposal has an `Order` section that names the change before it, so the open changes form one line.
+  `python3 .claude/skills/change-loop/status.py` prints the line and the state of each change.
 - `openspec/changes/archive/`: finished changes, and the old epics and issues (`2026-11-09-work-tracker-history/`).
-- Flow: `/opsx:explore` to think it through, `/opsx:propose` to write the change, `/opsx:apply` to build it,
-  `/opsx:archive` when done. Project rules for these are in `openspec/config.yaml`.
-- Out-of-scope findings become a change with only a `proposal.md`.
+- Flow: the owner starts the loop with `/change-loop`. The main session describes the next change together with the
+  owner, one change ahead, and has it reviewed before its tasks are written. A subagent builds the first ready change
+  in a worktree under `.claude/worktrees/`, a second one validates it, and the owner decides whether it lands. Every
+  landed change is a release. A change is built through this loop unless the owner says otherwise. The rules for the
+  artifacts are in `openspec/config.yaml`.
+- Out-of-scope findings become a change with only a `proposal.md` and an `Order` section.
 - Use the CLI (`openspec list`, `openspec show`, `openspec validate`) to read and check them.

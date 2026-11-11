@@ -113,19 +113,24 @@ test. A table maps each of G1–G6 and S1–S10 to the tests that prove it, and 
 
 ### Order of work
 
-Each step is one OpenSpec change that leaves the workspace green:
+Each step is one OpenSpec change that leaves the workspace green. The change is named after the colon, and its
+proposal has an Order section that names the change before it:
 
-1. Every actor has state.
-2. The store trait leaves the public API.
-3. A key is one name.
-4. Tidying: typed errors, one unhandled policy, the message type declared once.
-5. Watches.
-6. Control effects.
-7. One observer instead of plugins.
-8. JSON Schema at the HTTP door.
-9. `cicada-app`.
-10. `cicada-actors`: supervisor, dead letters, topic.
-11. Docs.
+1. Every actor has state: `every-actor-has-state`.
+2. The store trait leaves the public API: `private-store-trait`.
+3. A key is one name: `one-name-keys`.
+4. Tidying: typed errors, one unhandled policy, the message type declared once: `tidy-the-core`.
+5. Watches: `watches`.
+6. Control effects: `control-effects`.
+7. One observer instead of plugins: `turn-observer`.
+8. JSON Schema at the HTTP door: `json-schema-at-the-http-door`.
+9. `cicada-app`: `cicada-app`.
+10. `cicada-actors`: supervisor, dead letters, topic: `cicada-actors`.
+11. Docs: `docs-per-layer`.
+
+Two changes outside this list have a place in it. `child-actors` (ADR 0019) is built between steps 4 and 5: watches
+and control effects must know that removing an actor removes its children. `cli-and-tui` is archived before step 9,
+which moves the command line into `cicada-app`.
 
 ## Left to the changes
 

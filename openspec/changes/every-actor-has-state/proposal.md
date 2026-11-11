@@ -11,12 +11,15 @@ stateless; 41 actor types have state. ADR 0018 decides that every actor has stat
 
 - **BREAKING** `Stateless`, the `ActorState` trait and `create_stateless` (on `Turn` and `ActorSystem`) are removed.
   `Actor::State` is any `Serialize + DeserializeOwned + JsonSchema` type.
-- The core gets `NoState`, an empty struct with braces. It is stored and served as `{}`.
+- The core gets `NoState`, an empty struct with braces that refuses unknown fields. It is stored and served as `{}`.
 - **BREAKING** State is never absent: not in the store (the column is not null), not in a commit, not in a contract
   (`state_schema` is always there), not over HTTP (an actor's `state` is always an object or another JSON value, never
   null or missing).
-- An appended migration sets the state of existing rows without one to `{}` and makes the column not null, in both
-  stores.
+- An appended migration sets the state of existing rows without one to `{}`, makes the column not null and removes
+  the registration of every type without a state schema, in both stores. A node registers such a type again at
+  start, so a database is upgraded in place.
+- **BREAKING** `PUT /actors/{type}/{key}` and `cicada create actor` need a state. A state that is JSON `null` is
+  refused everywhere.
 - **BREAKING** The contract hash of every type that was stateless changes, because its contract gains a state schema.
 
 The simplest version: no compatibility shim and no alias for `Stateless`. Callers replace `Stateless` with `NoState`
@@ -38,11 +41,17 @@ and `create_stateless(&r)` with `create(&r, &NoState {})`.
 - Changing how state is decoded or evolved (`#[serde(default)]` stays the rule).
 - The other steps of ADR 0018 (keys, the store trait, watches and the rest).
 
+## Order
+
+Step 1 of ADR 0018. After `cli-and-tui`, before `private-store-trait`.
+
 ## Impact
 
 - `crates/cicada` (`message`, `actor`, `turn`, `contract`, `store::model`, `runtime`, `api`), both store backends and
-  their migrations, `cicada-store-conformance`, `cicada-test`, `cicada-axum`, `cicada-client`, the examples, the sample
-  service, `README.md`, `docs/architecture.md`, `docs/openapi.json` and `CHANGELOG.md`.
-- Covered by ADR 0018; no further ADR.
+  their migrations, `cicada-store-conformance`, `cicada-test`, `cicada-axum`, `cicada-client`, `cicada-cli`, the
+  examples, the sample service, `README.md`, `docs/architecture.md`, `docs/operations.md`, `docs/openapi.json` and
+  `CHANGELOG.md`.
+- Covered by ADR 0018, which becomes Accepted with this change; no further ADR.
 - Chorus and Karakuri must rename `Stateless` and drop `create_stateless`. A database written before this change is
-  migrated; nodes before and after must not share one, because the hashes of formerly stateless types differ.
+  migrated in place (design, decision 1). Nodes before and after must not share a database: every old node is stopped
+  first.
