@@ -17,7 +17,7 @@ use super::limits;
 use super::resolver::{RegisteredType, TypeResolver};
 use super::results::{
     ActorSnapshot, BulkResult, BulkSelection, CreateActorResult, MailboxEntry, NodeHealth, NodeInfo, OpError,
-    RetryResult, SendResult,
+    RetryResult, SendResult, WatchResult,
 };
 use crate::actor::{Actor, ActorType, HostedActor};
 use crate::address::{ActorAddress, ActorRef, TypeName};
@@ -26,10 +26,11 @@ use crate::plugin::Plugin;
 use crate::store::{
     Backend, CancelResult, Claim, CreateResult, DeleteResult, DeliverNowResult, EnqueueResult, Message, MessageId,
     MessageStatus, NodeId, OutcomeRecord, OutcomeStatus, OutgoingMessage, Page, PageCursor, RegisterResult,
-    RemoveTypeResult, RunningTurn, Store, StoreError, StoreStats,
+    RemoveTypeResult, RunningTurn, SetWatchResult, Store, StoreError, StoreStats,
 };
 use crate::time::{self, MAX_INSTANT, Timestamp};
 use crate::turn::SendOptions;
+use crate::watch::{self, Watch, WatchTarget};
 
 const MIN_SLEEP: Duration = Duration::from_millis(1);
 /// How often a node refreshes its row in the node table.
@@ -736,9 +737,52 @@ impl ActorSystem {
 
     /// Admin delete (`DELETE /actors/{type}/{key}`): removes the instance and every descendant (the actors its turns
     /// created with [`Turn::create_child`](crate::Turn::create_child), theirs, and so on) in one transaction, and purges
-    /// their mailboxes. [`DeleteResult::Deleted`] counts the purged messages of the whole tree.
+    /// their mailboxes. [`DeleteResult::Deleted`] counts the purged messages of the whole tree. The watchers of each
+    /// removed actor get a [`Stopped`](crate::Stopped) in the same transaction, and the dispatch loop is woken for them.
     pub async fn delete_actor(&self, address: &ActorAddress) -> Result<DeleteResult, OpError> {
-        Ok(self.inner.store.delete(address, &MessageId::random()).await?)
+        let result = self.inner.store.delete(address, &MessageId::random()).await?;
+        if matches!(result, DeleteResult::Deleted { .. }) {
+            self.wake_up();
+        }
+        Ok(result)
+    }
+
+    /// Sets the watch of `watcher` on `target` from outside a turn (`PUT /watches`; ADR 0023). Idempotent. Refused when
+    /// no registered type matches the watcher ([`WatchResult::NoSuchType`]), when the watcher does not exist
+    /// ([`WatchResult::NoSuchInstance`]), and when its type's message family does not declare `Failed(cicada::Failed)`
+    /// and `Stopped(cicada::Stopped)` ([`WatchResult::NotAWatcher`]). The target is not checked: it need not exist.
+    pub async fn watch(&self, target: &WatchTarget, watcher: &ActorAddress) -> Result<WatchResult, OpError> {
+        let Some(registered) = self.inner.resolver.resolve(watcher).await? else {
+            return Ok(WatchResult::NoSuchType);
+        };
+        if self.inner.store.get(watcher).await?.is_none() {
+            return Ok(WatchResult::NoSuchInstance);
+        }
+        if let Some(problem) = watch::watcher_problem(&registered.contract) {
+            return Ok(WatchResult::NotAWatcher(problem));
+        }
+        Ok(match self.inner.store.watch(target, watcher).await? {
+            SetWatchResult::Created => WatchResult::Created,
+            SetWatchResult::Exists => WatchResult::Exists,
+            SetWatchResult::NoSuchWatcher => WatchResult::NoSuchInstance,
+        })
+    }
+
+    /// Removes the watch of `watcher` on `target` (`DELETE /watches`); false when it was not stored.
+    pub async fn unwatch(&self, target: &WatchTarget, watcher: &ActorAddress) -> Result<bool, OpError> {
+        Ok(self.inner.store.unwatch(target, watcher).await?)
+    }
+
+    /// The stored watches in the order of target and watcher, paged (`GET /watches`): of one `watcher`, of exactly one
+    /// stored `target` (not every target that would match an actor), of both, or all.
+    pub async fn watches(
+        &self,
+        watcher: Option<&ActorAddress>,
+        target: Option<&WatchTarget>,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> Result<Page<Watch>, OpError> {
+        Ok(self.inner.store.watches(watcher, target, cursor, limit).await?)
     }
 
     /// The direct children of `address` in address order, paged (`GET /actors/{type}/{key}/children`); `None` when

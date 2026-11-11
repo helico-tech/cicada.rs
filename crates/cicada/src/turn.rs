@@ -19,6 +19,7 @@ use crate::runtime::limits;
 use crate::runtime::resolver::TypeResolver;
 use crate::store::{ActorCreate, Delivery, Message, MessageId, OutgoingMessage, StoreError};
 use crate::time::{self, Timestamp};
+use crate::watch::{IntoWatchTarget, WatchChange};
 
 /// The result of a handler.
 pub type HandlerResult = Result<(), HandlerError>;
@@ -138,10 +139,11 @@ impl fmt::Display for HandlerFailure {
     }
 }
 
-/// A send, create or cancel of a handler (or hook) that was refused when called.
+/// A send, create, cancel or watch of a handler (or hook) that was refused when called.
 #[derive(Debug, thiserror::Error)]
 pub enum TurnError {
-    /// A field is out of bounds, contains a NUL character, the value cannot be encoded, or an initial state is `null`.
+    /// A field is out of bounds, contains a NUL character, the value cannot be encoded, or an initial state is `null`;
+    /// or a watch whose target is no target, or of an actor whose type may not watch.
     #[error("{0}")]
     Invalid(String),
     /// A send to a raw address was refused: no registered type matches it, or that type does not accept the message
@@ -256,11 +258,19 @@ pub struct Turn<A: Actor> {
     state_assigned: bool,
     pub(crate) effects: EffectBuffer,
     resolver: Arc<TypeResolver>,
+    /// Why this actor's type may not watch; `None` when it may.
+    watch_problem: Option<String>,
 }
 
 impl<A: Actor> Turn<A> {
-    pub(crate) fn new(info: Arc<TurnInfo>, self_ref: A::Ref, state: A::State, resolver: Arc<TypeResolver>) -> Self {
-        Self { info, self_ref, state, state_assigned: false, effects: EffectBuffer::default(), resolver }
+    pub(crate) fn new(
+        info: Arc<TurnInfo>,
+        self_ref: A::Ref,
+        state: A::State,
+        resolver: Arc<TypeResolver>,
+        watch_problem: Option<String>,
+    ) -> Self {
+        Self { info, self_ref, state, state_assigned: false, effects: EffectBuffer::default(), resolver, watch_problem }
     }
 
     pub(crate) fn into_parts(self) -> (A::State, bool, EffectBuffer) {
@@ -440,6 +450,36 @@ impl<A: Actor> Turn<A> {
         if self.effects.sends.len() == before && !self.effects.cancels.contains(id) {
             self.effects.cancels.push(id.clone());
         }
+        Ok(())
+    }
+
+    /// Watches `target` from this instance at commit (ADR 0023): a typed ref, an address, a [`WatchTarget`] or its text
+    /// (`billing.invoices/acme`, a type prefix such as `billing`, or `*` for every type). From then on the store puts a
+    /// [`Failed`](crate::Failed) into this instance's mailbox when a message to a matching actor ends `failed`, and a
+    /// [`Stopped`](crate::Stopped) when the watched actor itself goes away; a watch on a type prefix or on every type
+    /// tells of failures only. The target need not exist, and the watch survives its delete and re-create.
+    ///
+    /// Buffered and applied by the commit before the turn's creates and sends, in the order of the calls; a turn that
+    /// fails sets none. Setting a watch that exists changes nothing. Fails with [`TurnError::Invalid`] for a text that is
+    /// no target, and when this actor's message family does not declare `Failed(cicada::Failed)` and
+    /// `Stopped(cicada::Stopped)`; the turn can go on.
+    ///
+    /// [`WatchTarget`]: crate::WatchTarget
+    pub fn watch(&mut self, target: impl IntoWatchTarget) -> Result<(), TurnError> {
+        let target = target.into_watch_target().map_err(|e| TurnError::Invalid(e.to_string()))?;
+        if let Some(problem) = &self.watch_problem {
+            return Err(TurnError::Invalid(problem.clone()));
+        }
+        self.effects.watches.push(WatchChange { target, set: true });
+        Ok(())
+    }
+
+    /// Removes this instance's watch of `target` at commit, in the order of the calls with [`Self::watch`], so the last
+    /// call for a target stands. A watch it does not hold is ignored. Fails with [`TurnError::Invalid`] for a text that is
+    /// no target.
+    pub fn unwatch(&mut self, target: impl IntoWatchTarget) -> Result<(), TurnError> {
+        let target = target.into_watch_target().map_err(|e| TurnError::Invalid(e.to_string()))?;
+        self.effects.watches.push(WatchChange { target, set: false });
         Ok(())
     }
 

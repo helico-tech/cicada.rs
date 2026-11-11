@@ -21,6 +21,22 @@ pub enum CreateActorResult {
     InvalidAddress(String),
 }
 
+/// Result of setting a watch from outside a turn (`PUT /watches`). HTTP: `201`, `200`, `404`, `404`, `422`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WatchResult {
+    /// The watch was stored.
+    Created,
+    /// The watch was stored already; nothing changed.
+    Exists,
+    /// No registered type matches the watcher.
+    NoSuchType,
+    /// The watcher does not exist.
+    NoSuchInstance,
+    /// The watcher's type may not watch: its message family does not declare `Failed(cicada::Failed)` and
+    /// `Stopped(cicada::Stopped)`. Why.
+    NotAWatcher(String),
+}
+
 /// Result of a send from outside an actor (`POST /actors/{type}/{key}/messages`).
 /// HTTP: `202`, `200`, `409`, `404`, `404`, `422`, `422`.
 #[derive(Debug, Clone, PartialEq)]

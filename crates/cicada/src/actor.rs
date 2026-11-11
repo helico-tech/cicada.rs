@@ -177,6 +177,8 @@ struct Analysis<A: Actor> {
     binding: RefBinding<A::Ref>,
     family: FamilyInfo,
     contract: Arc<Contract>,
+    /// Why the type may not watch, or `None` when its family holds `Failed` and `Stopped`.
+    watch_problem: Option<String>,
 }
 
 struct Hosted<A: Actor> {
@@ -196,7 +198,8 @@ fn analyse<A: Actor>() -> Result<Analysis<A>, Vec<String>> {
     match (binding, family) {
         (Some(binding), Some(family)) if problems.is_empty() => {
             let contract = Arc::new(Contract::new(binding.type_name().clone(), state, family.schemas.clone()));
-            Ok(Analysis { binding, family, contract })
+            let watch_problem = crate::watch::watcher_problem(&contract);
+            Ok(Analysis { binding, family, contract, watch_problem })
         }
         _ => Err(problems),
     }
@@ -257,11 +260,12 @@ impl<A: Actor> HostedActor for Hosted<A> {
         };
         let unhandled = decoded.as_ref().err().cloned();
         let actor = self.actor.clone();
+        let watch_problem = analysis.watch_problem.clone();
         Ok(Loaded {
             unhandled,
             run: Box::new(move |info, resolver| {
                 Box::pin(async move {
-                    let mut turn = Turn::<A>::new(info, self_ref, state, resolver);
+                    let mut turn = Turn::<A>::new(info, self_ref, state, resolver, watch_problem);
                     let end = match decoded {
                         Ok(message) => match AssertUnwindSafe(actor.handle(&mut turn, message)).catch_unwind().await {
                             Ok(Ok(())) => RunEnd::Returned,

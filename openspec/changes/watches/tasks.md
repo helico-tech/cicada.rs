@@ -54,7 +54,7 @@ delete or a stop removes a tree.
       the watcher's address, one per watcher and actor;
       an actor that watches itself is told of its failures and gets nothing when it stops.
       Verify: they pass on all three stores, on PostgreSQL with `CICADA_PG_URL` set.
-- [ ] 2.6 The randomised comparison and the simulation [12]: the comparison sets and removes watches, in a commit and
+- [x] 2.6 The randomised comparison and the simulation [12]: the comparison sets and removes watches, in a commit and
       from outside, lists them, and compares them and the notifications with their ids; the simulation under faults
       gets a watcher that is never removed, a check that every `failed` outcome of a watched actor has exactly one
       `Failed` for it, and counts a notification as accepted. Verify: `cargo test -p cicada --lib tests::fuzz`
@@ -67,7 +67,7 @@ delete or a stop removes a tree.
 
 ## 3. The runtime
 
-- [ ] 3.1 In a turn [8, 9]: `Turn::watch` and `Turn::unwatch`, buffered and applied by the commit before the other
+- [x] 3.1 In a turn [8, 9]: `Turn::watch` and `Turn::unwatch`, buffered and applied by the commit before the other
       effects; `watch` fails at the call when the target is no target or the actor's own type may not watch. The
       runtime draws the id of the event for every commit and every delete, and wakes its loop after a commit that
       ended a message as `failed` or stopped its actor, and after a delete. Verify, on virtual time with
@@ -77,7 +77,7 @@ delete or a stop removes a tree.
       succeeds", "An actor stops itself", "A child is removed with a parent that stops", "Two actors that watch each
       other", "A target that does not exist yet", "The target is deleted and created again" and "A delete wakes the
       watcher".
-- [ ] 3.2 From outside [6, 9]: `ActorSystem::watch`, `unwatch` and `watches`, with the refusals of decision 6. A
+- [x] 3.2 From outside [6, 9]: `ActorSystem::watch`, `unwatch` and `watches`, with the refusals of decision 6. A
       retry of a failed notification is an ordinary message. Verify: tests for the scenarios "A watcher that does
       not exist", "A watcher whose type is not registered", "A watcher whose type lacks a message", "A watcher with
       a `Failed` of its own", "A failed notification is sent again from outside", "A sender cannot mark a message"

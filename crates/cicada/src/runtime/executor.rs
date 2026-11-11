@@ -57,6 +57,7 @@ use crate::store::{
     RenewResult, StateChange, Store, StoreError, TurnOutcome,
 };
 use crate::turn::HandlerFailure;
+use crate::watch::WatchChange;
 
 const RENEW_RETRY: Duration = Duration::from_secs(1);
 const STUCK_AFTER: Duration = Duration::from_secs(5);
@@ -93,6 +94,7 @@ struct Decision {
     creates: Vec<ActorCreate>,
     sends: Vec<OutgoingMessage>,
     cancels: Vec<MessageId>,
+    watches: Vec<WatchChange>,
     /// The handler's failure reason when the turn failed: the fallback if the retry's reschedule is refused.
     handler_failure: Option<String>,
 }
@@ -109,6 +111,7 @@ impl Decision {
             creates: Vec::new(),
             sends: Vec::new(),
             cancels: Vec::new(),
+            watches: Vec::new(),
             handler_failure: None,
         }
     }
@@ -523,6 +526,7 @@ impl TurnExecutor {
             creates: effects.creates,
             sends: effects.sends,
             cancels: effects.cancels,
+            watches: effects.watches,
             handler_failure: None,
         }
     }
@@ -585,6 +589,8 @@ impl TurnExecutor {
             },
             outcome @ (TurnOutcome::Done | TurnOutcome::Cancelled) => outcome,
         };
+        // A stop removes actors, and a failure is an event too: either may write notifications to watchers here.
+        let notifies = matches!(outcome, TurnOutcome::Failed(_)) || matches!(decision.state, StateChange::Stop);
         let request = CommitRequest {
             event: MessageId::random(),
             address: claim.actor.clone(),
@@ -595,7 +601,7 @@ impl TurnExecutor {
             creates: decision.creates,
             sends: decision.sends,
             cancels: decision.cancels,
-            watches: Vec::new(),
+            watches: decision.watches,
         };
         let failure = match self.commit_with_retry(claim, guard, request).await {
             CommitEnd::Abandoned => return,
@@ -608,7 +614,7 @@ impl TurnExecutor {
                 _ => TurnOutcome::Failed(sanitize(&format!("Commit refused: {reason}"))),
             },
             CommitEnd::Answered(CommitResult::Committed { sent, .. }) => {
-                return self.outcome(info, &outcome, &sent).await;
+                return self.outcome(info, &outcome, &sent, notifies).await;
             }
             CommitEnd::Answered(CommitResult::LeaseLost) => {
                 tracing::info!("Commit of {} for {} rejected: lease lost", claim.actor, claim.message.id);
@@ -619,7 +625,9 @@ impl TurnExecutor {
         // Rejected or refused: nothing was applied and the lease is still held; record the failure without effects.
         let request = CommitRequest::new(claim.actor.clone(), claim.epoch, claim.message.id.clone(), failure.clone());
         match self.commit_with_retry(claim, guard, request).await {
-            CommitEnd::Answered(CommitResult::Committed { sent, .. }) => self.outcome(info, &failure, &sent).await,
+            CommitEnd::Answered(CommitResult::Committed { sent, .. }) => {
+                self.outcome(info, &failure, &sent, true).await
+            }
             CommitEnd::Answered(other) => {
                 tracing::warn!("Failure commit of {} for {}: {other:?}", claim.actor, claim.message.id)
             }
@@ -678,10 +686,10 @@ impl TurnExecutor {
         }
     }
 
-    /// After a successful commit: wakes the node for the messages sent (and for a rescheduled message, which may be
-    /// due at once), then runs the `on_outcome` hooks.
-    async fn outcome(&self, info: &TurnInfo, outcome: &TurnOutcome, sent: &[Message]) {
-        if !sent.is_empty() || !outcome.is_final() {
+    /// After a successful commit: wakes the node for the messages sent, for a rescheduled message (which may be due at
+    /// once) and for the notifications of a failure or a stop (`notifies`), then runs the `on_outcome` hooks.
+    async fn outcome(&self, info: &TurnInfo, outcome: &TurnOutcome, sent: &[Message], notifies: bool) {
+        if !sent.is_empty() || !outcome.is_final() || notifies {
             self.wake.notify_one();
         }
         for plugin in &self.plugins {

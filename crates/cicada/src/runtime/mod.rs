@@ -10,6 +10,6 @@ mod system;
 pub use resolver::RegisteredType;
 pub use results::{
     ActorSnapshot, BulkResult, BulkSelection, CreateActorResult, MailboxEntry, NodeHealth, NodeInfo, OpError,
-    RetryResult, SendResult,
+    RetryResult, SendResult, WatchResult,
 };
 pub use system::{ActorSystem, ActorSystemBuilder, BULK_LIMIT, NodeConfig, NodeState, StartError, StartProblem};
