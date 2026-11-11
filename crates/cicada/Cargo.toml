@@ -1,11 +1,18 @@
 [package]
 name = "cicada"
-description = "Durable actors on a shared SQL store: addressing, definition API, runtime and store interfaces."
+description = "Durable actors on a shared SQL store: addressing, definition API, runtime and the SQLite and PostgreSQL stores."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+
+[features]
+# None is on by default: a host names the store it uses and builds only that driver.
+sqlite = ["dep:sqlx", "sqlx/sqlite"]
+postgres = ["dep:sqlx", "sqlx/postgres"]
+# The in-memory store, the test clocks and `TestActors`; turned on by `cicada-test`.
+testing = []
 
 [dependencies]
 anyhow.workspace = true
@@ -16,6 +23,7 @@ schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+sqlx = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
@@ -23,6 +31,10 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+# The crate itself with every feature, so that its unit tests and its tests in `tests/` run on every store.
+cicada = { path = ".", features = ["sqlite", "postgres", "testing"] }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

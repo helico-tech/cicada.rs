@@ -8,14 +8,14 @@ use std::panic::AssertUnwindSafe;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use cicada::address::ActorAddress;
-use cicada::store::Store;
+use crate::address::ActorAddress;
+use crate::store::Store;
 use futures::FutureExt;
 use serde_json::{Value, json};
 use sqlx::{AssertSqlSafe, Connection, PgConnection};
 
-use crate::schema::{self, quote};
-use crate::{PgConnectOptions, PostgresStore, PostgresStoreConfig};
+use crate::store::postgres::schema::{self, quote};
+use crate::store::postgres::{PgConnectOptions, PostgresStore, PostgresStoreConfig};
 
 static SCHEMAS: AtomicU32 = AtomicU32::new(0);
 

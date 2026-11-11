@@ -24,6 +24,8 @@ pub mod retry;
 pub mod runtime;
 pub mod schema;
 pub mod store;
+#[cfg(feature = "testing")]
+pub mod testing;
 pub mod time;
 pub mod turn;
 

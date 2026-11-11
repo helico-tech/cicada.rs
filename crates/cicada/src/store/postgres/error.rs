@@ -1,6 +1,6 @@
 //! Mapping of sqlx errors to [`StoreError`].
 
-use cicada::store::StoreError;
+use crate::store::StoreError;
 
 /// The SQLSTATE of a database error.
 pub(crate) fn sql_state(e: &sqlx::Error) -> Option<String> {

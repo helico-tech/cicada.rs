@@ -8,18 +8,18 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use async_trait::async_trait;
-use cicada::address::{ActorAddress, TypeName};
-use cicada::retention::Retention;
-use cicada::retry::RetryPolicy;
-use cicada::store::support::{self, check_limit};
-use cicada::store::{
+use crate::address::{ActorAddress, TypeName};
+use crate::retention::Retention;
+use crate::retry::RetryPolicy;
+use crate::store::support::{self, check_limit};
+use crate::store::{
     ActorCreate, ActorRecord, CancelResult, Claim, CommitRequest, CommitResult, CreateResult, DeleteResult,
     DeliverNowResult, EnqueueResult, Message, MessageId, MessageStatus, NodeId, NodeRecord, OutcomeRecord,
     OutcomeStatus, OutgoingMessage, Page, PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn,
     StateChange, Store, StoreError, StoreResult, StoreStats, TurnOutcome, TypeDef,
 };
-use cicada::time::{self, Timestamp};
+use crate::time::{self, Timestamp};
+use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use serde_json::Value;
@@ -29,10 +29,10 @@ use sqlx::postgres::{PgPoolOptions, PgRow};
 use sqlx::{AssertSqlSafe, PgPool, Postgres, Row};
 use tokio::sync::broadcast::error::RecvError;
 
-use crate::config::PostgresStoreConfig;
-use crate::error::{is_transient, map_error};
-use crate::listener::NotificationListener;
-use crate::schema;
+use crate::store::postgres::config::PostgresStoreConfig;
+use crate::store::postgres::error::{is_transient, map_error};
+use crate::store::postgres::listener::NotificationListener;
+use crate::store::postgres::schema;
 
 /// How many times a transaction is re-run after PostgreSQL aborted it for a deadlock or a serialization failure (both
 /// are transient under concurrent commits from several nodes) before the error is reported.

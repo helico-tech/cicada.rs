@@ -4,17 +4,17 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use cicada::address::{ActorAddress, ActorRef};
-use cicada::runtime::{ActorSystemBuilder, CreateActorResult, SendResult, StartError};
-use cicada::store::{Message, MessageStatus, OutcomeRecord, OutcomeStatus, PageCursor, Store};
-use cicada::time::{self, Timestamp};
-use cicada::{ActorSystem, SendOptions};
+use crate::address::{ActorAddress, ActorRef};
+use crate::runtime::{ActorSystemBuilder, CreateActorResult, SendResult, StartError};
+use crate::store::{Message, MessageStatus, OutcomeRecord, OutcomeStatus, PageCursor, Store};
+use crate::time::{self, Timestamp};
+use crate::{ActorSystem, SendOptions};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use crate::clock::{TokioClock, default_start};
-use crate::memory::InMemoryStore;
+use crate::testing::clock::{TokioClock, default_start};
+use crate::testing::memory::InMemoryStore;
 
 const DEFAULT_MAX_TURNS: usize = 10_000;
 
@@ -89,7 +89,7 @@ impl TestActorsBuilder {
 /// # }
 /// # #[tokio::main(flavor = "current_thread", start_paused = true)]
 /// # async fn main() {
-/// use cicada_test::TestActors;
+/// use cicada::testing::TestActors;
 ///
 /// let test = TestActors::builder().with(|node| node.host(CounterActor)).build().await.unwrap();
 /// let counter = Counter { id: "c1".into() };
@@ -108,7 +108,7 @@ pub struct TestActors {
 impl TestActors {
     /// A builder; see [`TestActorsBuilder`].
     pub fn builder() -> TestActorsBuilder {
-        TestActorsBuilder { start: default_start(), retention: cicada::time::DEFAULT_RETENTION, configure: Vec::new() }
+        TestActorsBuilder { start: default_start(), retention: crate::time::DEFAULT_RETENTION, configure: Vec::new() }
     }
 
     /// The node under test. It is initialized but not started.
@@ -128,7 +128,7 @@ impl TestActors {
 
     /// Current virtual store time.
     pub fn now(&self) -> Timestamp {
-        time::truncate(cicada::store::Clock::now(&*self.clock))
+        time::truncate(crate::store::Clock::now(&*self.clock))
     }
 
     /// Creates `r` with `initial_state`; panics when the create is refused.

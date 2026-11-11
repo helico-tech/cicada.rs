@@ -9,7 +9,7 @@ use tokio::sync::{broadcast, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
 
-use crate::store::CONNECTION_TIMEOUT;
+use crate::store::postgres::store::CONNECTION_TIMEOUT;
 
 /// First delay before the listener reconnects after losing its connection; doubles up to [`MAX_RECONNECT_DELAY`].
 const RECONNECT_DELAY: Duration = Duration::from_millis(250);

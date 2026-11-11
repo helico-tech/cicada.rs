@@ -23,18 +23,18 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
 
 ## 2. The stores and the harness move into `cicada`
 
-- [ ] 2.1 `crates/cicada/Cargo.toml`: the features `sqlite`, `postgres` and `testing`, none on by default; sqlx as
+- [x] 2.1 `crates/cicada/Cargo.toml`: the features `sqlite`, `postgres` and `testing`, none on by default; sqlx as
       an optional dependency with only the part each feature needs; `cicada` as a dev-dependency of itself with
       the three features [3, 10, 11]. Verify: `cargo check -p cicada` passes with no feature, with `sqlite`, with
       `postgres` and with `testing`, each alone.
-- [ ] 2.2 Move the code of `cicada-store-sqlite` and `cicada-store-postgres` into `cicada::store`, each behind its
+- [x] 2.2 Move the code of `cicada-store-sqlite` and `cicada-store-postgres` into `cicada::store`, each behind its
       feature, and `InMemoryStore`, `TokioClock`, `VirtualClock`, `TestActors` and its builder into
       `cicada::testing` behind `testing` [1, 2, 7, 10]. `cicada-test` turns `testing` on and exports
       `TestActors`, `TestActorsBuilder`, `TokioClock`, `VirtualClock` and `default_start` under the names they have
       today; the snapshot helpers stay in `cicada-test`. Verify: `cargo test --workspace` passes, and a test of a
       crate that names no backend feature (`cicada-extras`) runs on `TestActors` with unchanged imports (scenario
       "A test on the harness").
-- [ ] 2.3 `claim_and_abandon(store, types, lease, limit)` in `cicada::testing`, exported by `cicada-test` [13].
+- [x] 2.3 `claim_and_abandon(store, types, lease, limit)` in `cicada::testing`, exported by `cicada-test` [13].
       Verify: a test for the scenario "A node that claims a turn and dies" passes, and
       `crates/cicada-extras/tests/crash_loop_guard.rs` uses the helper and passes.
 

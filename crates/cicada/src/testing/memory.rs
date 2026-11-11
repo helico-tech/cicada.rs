@@ -5,16 +5,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use async_trait::async_trait;
-use cicada::address::{ActorAddress, TypeName};
-use cicada::store::support::{self, check_limit};
-use cicada::store::{
+use crate::address::{ActorAddress, TypeName};
+use crate::store::support::{self, check_limit};
+use crate::store::{
     ActorRecord, CancelResult, Claim, Clock, CommitRequest, CommitResult, CreateResult, DeleteResult, DeliverNowResult,
     EnqueueResult, Message, MessageId, MessageStatus, NodeId, NodeRecord, OutcomeRecord, OutcomeStatus,
     OutgoingMessage, Page, PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn, StateChange, Store,
     StoreError, StoreResult, StoreStats, SystemClock, TurnOutcome, TypeDef,
 };
-use cicada::time::{self, DEFAULT_RETENTION, Timestamp};
+use crate::time::{self, DEFAULT_RETENTION, Timestamp};
+use async_trait::async_trait;
 use serde_json::Value;
 
 struct ActorRow {

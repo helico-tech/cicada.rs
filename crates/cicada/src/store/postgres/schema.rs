@@ -14,10 +14,10 @@
 //! exception: migration 2 makes `actors.state` required, so a node of version 1 that writes an actor without a state
 //! fails, and every old node is stopped before the first new one starts.
 
-use cicada::store::StoreError;
+use crate::store::StoreError;
 use sqlx::{AssertSqlSafe, Connection, PgConnection};
 
-use crate::error::map_error;
+use crate::store::postgres::error::map_error;
 
 /// Ordered migrations; index + 1 is the version. `{s}` is replaced by the quoted schema name. Never edit one.
 const MIGRATIONS: &[&[&str]] = &[

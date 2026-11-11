@@ -433,11 +433,14 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "cicada",
  "futures",
  "schemars",
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "sqlx",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
@@ -651,7 +654,6 @@ dependencies = [
  "serde_json",
  "sqlx",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -668,7 +670,6 @@ dependencies = [
  "sqlx",
  "tempfile",
  "tokio",
- "tracing",
 ]
 
 [[package]]

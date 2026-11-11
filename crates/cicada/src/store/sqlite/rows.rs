@@ -1,14 +1,14 @@
 //! Mapping between rows and the store model: instants as INTEGER microseconds, JSON as TEXT.
 
-use cicada::address::{ActorAddress, TypeName};
-use cicada::retention::Retention;
-use cicada::retry::RetryPolicy;
-use cicada::store::support;
-use cicada::store::{
+use crate::address::{ActorAddress, TypeName};
+use crate::retention::Retention;
+use crate::retry::RetryPolicy;
+use crate::store::support;
+use crate::store::{
     ActorRecord, Message, MessageId, NodeId, NodeRecord, OutcomeRecord, OutcomeStatus, RunningTurn, StoreError,
     StoreResult, TypeDef,
 };
-use cicada::time::{self, Timestamp};
+use crate::time::{self, Timestamp};
 use serde_json::Value;
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Decode, Row, Sqlite, Type};

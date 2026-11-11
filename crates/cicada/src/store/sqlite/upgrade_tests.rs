@@ -4,15 +4,15 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use cicada::actor::contract_of;
-use cicada::prelude::*;
-use cicada::store::{DeleteResult, MessageStatus, OutcomeStatus, Store};
+use crate::actor::contract_of;
+use crate::prelude::*;
+use crate::store::{DeleteResult, MessageStatus, OutcomeStatus, Store};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::{AssertSqlSafe, Connection, Row, SqliteConnection};
 
-use crate::{SqliteOptions, SqliteStore, schema};
+use crate::store::sqlite::{SqliteOptions, SqliteStore, schema};
 
 /// type `maintenance.cleanup`, key `_`: stateless in version 1, `NoState` now.
 #[derive(Debug, Clone, Serialize, Deserialize)]

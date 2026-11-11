@@ -1,15 +1,15 @@
-//! Settings of a [`crate::PostgresStore`].
+//! Settings of a [`crate::store::postgres::PostgresStore`].
 
 use std::time::Duration;
 
-use cicada::store::StoreError;
-use cicada::time::DEFAULT_RETENTION;
+use crate::store::StoreError;
+use crate::time::DEFAULT_RETENTION;
 
-/// Settings of a [`crate::PostgresStore`]. Every field has a usable default.
+/// Settings of a [`crate::store::postgres::PostgresStore`]. Every field has a usable default.
 ///
 /// ```
 /// use std::time::Duration;
-/// use cicada_store_postgres::PostgresStoreConfig;
+/// use cicada::store::postgres::PostgresStoreConfig;
 ///
 /// let config = PostgresStoreConfig { schema: "orders".into(), max_pool_size: 20, ..Default::default() };
 /// assert_eq!(config.socket_timeout, Duration::from_secs(30));
@@ -102,7 +102,7 @@ mod tests {
 
     #[test]
     fn the_default_pool_has_room_for_a_nodes_default_concurrency_plus_heartbeats_and_http() {
-        let concurrency = cicada::runtime::NodeConfig::default().concurrency;
+        let concurrency = crate::runtime::NodeConfig::default().concurrency;
         assert!(PostgresStoreConfig::default().max_pool_size as usize > concurrency);
     }
 

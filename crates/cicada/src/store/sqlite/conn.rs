@@ -7,7 +7,7 @@
 //! A future dropped mid-transaction (a cancelled caller) leaves the connection marked as possibly open, and the next
 //! `BEGIN` rolls that transaction back first.
 
-use cicada::store::{StoreError, StoreResult};
+use crate::store::{StoreError, StoreResult};
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::{Connection, SqliteConnection};
 

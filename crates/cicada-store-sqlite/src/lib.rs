@@ -1,23 +1,4 @@
-//! SQLite store for Cicada: one file, WAL, one writer.
-//!
-//! [`SqliteStore`] versions its schema with `PRAGMA user_version` and migrates an older database file when it opens it.
-//! It sets up a new or empty file and refuses one that holds the tables of another program.
-//!
-//! ```no_run
-//! # async fn example() -> cicada::store::StoreResult<()> {
-//! use cicada_store_sqlite::{SqliteOptions, SqliteStore};
-//!
-//! let store = SqliteStore::open("actors.db", SqliteOptions::default()).await?;
-//! # Ok(())
-//! # }
-//! ```
+//! SQLite store for Cicada. The store lives in `cicada::store::sqlite` (feature `sqlite`); this crate re-exports it
+//! until it is removed.
 
-mod conn;
-mod rows;
-pub mod schema;
-mod store;
-
-pub use store::{SqliteOptions, SqliteStore};
-
-#[cfg(test)]
-mod upgrade_tests;
+pub use cicada::store::sqlite::{SqliteOptions, SqliteStore, schema};

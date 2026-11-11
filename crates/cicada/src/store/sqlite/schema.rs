@@ -13,10 +13,10 @@
 
 use std::path::Path;
 
-use cicada::store::{StoreError, StoreResult};
+use crate::store::{StoreError, StoreResult};
 use sqlx::{Row, SqliteConnection};
 
-use crate::conn::{Conn, Mode, db_error};
+use crate::store::sqlite::conn::{Conn, Mode, db_error};
 
 /// Ordered migrations; index + 1 is the version. Never edit one, append a new one.
 const MIGRATIONS: &[&[&str]] = &[

@@ -2,7 +2,11 @@
 //! system. Every implementation must pass the S1–S10 conformance suite (`cicada-store-conformance`).
 
 mod model;
+#[cfg(feature = "postgres")]
+pub mod postgres;
 mod results;
+#[cfg(feature = "sqlite")]
+pub mod sqlite;
 pub mod support;
 
 use std::collections::BTreeSet;

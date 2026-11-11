@@ -1,12 +1,11 @@
 //! The crash-loop guard.
 
-use std::collections::BTreeSet;
 use std::time::Duration;
 
 use cicada::prelude::*;
-use cicada::store::{NodeId, OutcomeStatus, Store};
+use cicada::store::OutcomeStatus;
 use cicada_extras::CrashLoopGuard;
-use cicada_test::TestActors;
+use cicada_test::{TestActors, claim_and_abandon};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,8 +61,7 @@ async fn harness(limit: u32) -> TestActors {
 
 /// A node that claims the head message and dies before committing: its lease simply expires.
 async fn crash(test: &TestActors) {
-    let types: BTreeSet<_> = test.system().hosted_types();
-    let claims = test.store().claim_due(&types, &NodeId::new("doomed").unwrap(), Duration::from_secs(30), 1).await;
+    let claims = claim_and_abandon(&**test.store(), &test.system().hosted_types(), Duration::from_secs(30), 1).await;
     assert_eq!(claims.unwrap().len(), 1);
     tokio::time::sleep(Duration::from_secs(31)).await; // only time passes: no turn runs meanwhile
 }

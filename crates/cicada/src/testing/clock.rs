@@ -3,8 +3,8 @@
 use std::sync::Mutex;
 use std::time::Duration;
 
-use cicada::store::Clock;
-use cicada::time::{self, Timestamp};
+use crate::store::Clock;
+use crate::time::{self, Timestamp};
 
 /// The default start of virtual time: a fixed, round instant so tests are reproducible.
 pub fn default_start() -> Timestamp {
