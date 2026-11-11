@@ -94,10 +94,14 @@ Resolving the target:
    an error. Without a server from steps 1 and no context, the command fails and says how to set one.
 3. The token is `--token`, else `CICADA_TOKEN`, else the context's `token`. Headers come only from the context.
 
-A missing config file is the same as an empty one. The file holds tokens, so on Unix every save leaves it with mode
-0600, also when it existed with a wider mode; other platforms keep their defaults. Resolution is a pure function of the flags, an environment map and
+A missing config file is the same as an empty one. Resolution is a pure function of the flags, an environment map and
 the parsed file, so it is tested without touching the real environment. `config set-context` and `use-context` rewrite
 the whole file (`toml::to_string_pretty`); comments in it are not kept, and the command's help says so.
+
+The file holds tokens. A save writes the text to a new file in the same directory (`tempfile`, mode 0600 on Unix) and
+renames it over the old one. The old file stays whole until the new one is complete, a reader that has the old file
+open never reads the new token, and a failed save removes the new file. On Unix the result has mode 0600, also when
+the old file had a wider mode; other platforms keep their defaults.
 
 ### 4. Output: one `Columns` trait
 

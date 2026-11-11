@@ -52,7 +52,7 @@ file SHALL leave it with mode 0600.
 #### Scenario: The file stays private
 
 - **WHEN** on Unix `cicada config set-context` writes the file, which existed with mode 0644
-- **THEN** the file has mode 0600 afterwards
+- **THEN** the file has mode 0600 afterwards, and a reader that opened the old file before reads only the old text
 
 ### Requirement: The CLI has kubectl-style commands for every API operation
 

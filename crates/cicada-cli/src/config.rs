@@ -53,22 +53,22 @@ impl Config {
         }
     }
 
-    /// Writes the whole file to `path`, creating its directory. Comments in an existing file are not kept. On Unix the
-    /// file has mode 0600 afterwards, because it holds tokens; it gets that mode before the text is written.
+    /// Writes the whole file to `path`, creating its directory. Comments in an existing file are not kept.
+    ///
+    /// The text goes to a new file in the same directory, which is then renamed over `path`: the old file stays whole
+    /// until the new one is complete, and a reader that has the old one open never sees the new text. The new file is
+    /// created with mode 0600 on Unix (`tempfile`'s default), because it holds tokens, and is removed when the save
+    /// fails.
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
-        }
+        let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
         let text = toml::to_string_pretty(self)?;
         let write = || -> std::io::Result<()> {
-            let mut options = std::fs::OpenOptions::new();
-            options.write(true).create(true).truncate(true);
-            #[cfg(unix)]
-            std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-            let mut file = options.open(path)?;
-            #[cfg(unix)]
-            file.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
-            file.write_all(text.as_bytes())
+            let mut file = tempfile::Builder::new().prefix(".cicada-config").tempfile_in(dir)?;
+            file.write_all(text.as_bytes())?;
+            file.as_file().sync_all()?;
+            file.persist(path)?;
+            Ok(())
         };
         write().with_context(|| format!("cannot write {}", path.display()))
     }
@@ -263,5 +263,55 @@ mod tests {
         config().save(&file).unwrap();
         assert_eq!(mode(&file), 0o600, "an existing file with a wider mode");
         assert_eq!(Config::load(&file).unwrap(), config());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_reader_of_the_old_file_never_reads_the_new_text() {
+        use std::io::Read as _;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        let old = "[contexts.old]\nserver = \"http://old\"\n";
+        std::fs::write(&file, old).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let mut reader = std::fs::File::open(&file).unwrap();
+
+        config().save(&file).unwrap();
+        let mut seen = String::new();
+        reader.read_to_string(&mut seen).unwrap();
+        assert_eq!(seen, old, "the old descriptor still reads the old file");
+        assert_eq!(Config::load(&file).unwrap(), config());
+    }
+
+    /// The names in `dir`.
+    fn names(dir: &Path) -> Vec<String> {
+        std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect()
+    }
+
+    #[test]
+    fn a_save_over_a_file_keeps_its_other_contexts_and_leaves_no_temporary_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        config().save(&file).unwrap();
+        let mut changed = Config::load(&file).unwrap();
+        changed.contexts.insert("c".into(), Context { server: "http://c".into(), ..Context::default() });
+        changed.save(&file).unwrap();
+
+        let saved = Config::load(&file).unwrap();
+        assert_eq!(saved.contexts.keys().collect::<Vec<_>>(), ["a", "b", "c"]);
+        assert_eq!(saved.contexts["a"], config().contexts["a"], "with its token and headers");
+        assert_eq!(names(dir.path()), ["config.toml"]);
+    }
+
+    #[test]
+    fn a_failed_save_leaves_no_temporary_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        std::fs::create_dir(&file).unwrap(); // a directory cannot be replaced by a file
+        std::fs::write(file.join("keep"), "").unwrap();
+        let error = config().save(&file).unwrap_err().to_string();
+        assert!(error.contains("cannot write"), "{error}");
+        assert_eq!(names(dir.path()), ["config.toml"]);
     }
 }
