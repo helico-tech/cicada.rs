@@ -33,7 +33,9 @@ A value that Cicada formats as text SHALL parse back to an equal value.
 ### Requirement: Backends agree
 
 For the same list of store operations on the same virtual clock, the in-memory store and the SQLite store SHALL give
-equivalent results and end in equivalent states.
+equivalent results and end in equivalent states. The comparison SHALL NOT depend on the order in which a backend
+hands out epochs to different instances: an operation that uses a claim, or an epoch before or after it, SHALL reach
+the same claim of the same instance in both backends.
 
 #### Scenario: A random list of operations
 
@@ -54,6 +56,12 @@ equivalent results and end in equivalent states.
 
 - **WHEN** both backends refuse an operation with the same kind of store error and different text
 - **THEN** the results count as equivalent
+
+#### Scenario: Two instances are due at the same instant
+
+- **WHEN** two instances are due at the same instant, the backends hand out their epochs in a different order, and a
+  later operation commits, renews or releases with the epoch before or after a claim's own
+- **THEN** both backends get a request for the same claim of the same instance, and their answers are equivalent
 
 ### Requirement: Faults are injected per node
 
