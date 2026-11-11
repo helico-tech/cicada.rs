@@ -2,10 +2,11 @@
 //!
 //! A ref is written as one string or as a unit: a struct of which serde writes one field, whose value is a string; a
 //! type that serde writes as a string itself (a newtype around a `String`, a type that names `String` as its serde
-//! form); or a unit struct or a struct of which serde writes no field, the singleton with the name `_`. A field that
-//! serde skips does not count. A number, a boolean, a character and an enum variant are not a string. The reader
-//! takes what a ref's `Deserialize` declares: a field's serde aliases count as more fields, and a reader that takes
-//! any form (`deserialize_any`, an untagged enum) is refused.
+//! form); or a unit struct or a struct that declares no field to serde, the singleton with the name `_`. A field with
+//! `#[serde(skip)]` does not count; a ref that declares a field and writes none has no name. A number, a boolean, a
+//! character and an enum variant are not a string. The reader takes what a ref's `Deserialize` declares: a field's
+//! serde aliases count as more fields, and a reader that takes any form (`deserialize_any`, an untagged enum) is
+//! refused.
 //!
 //! [`name_of`] takes the name out of a ref through its `Serialize`, [`from_name`] puts it back through its
 //! `Deserialize`, and [`check`] tells from what that `Deserialize` asks for whether a ref is one string, before any
@@ -21,9 +22,15 @@ use super::ActorAddress;
 /// The rule a ref breaks, at the start of every refusal.
 const RULE: &str = "a ref is written as one string or as a unit";
 
-/// The name of `r`: the string serde writes for it, or `_` for a unit struct.
-pub(crate) fn name_of<R: Serialize + ?Sized>(r: &R) -> Result<String, String> {
-    r.serialize(Writer { field: None }).map_err(|e| e.to_string())
+/// The name of `r`: the string serde writes for it, or `_` for a singleton.
+pub(crate) fn name_of<R: Serialize + DeserializeOwned>(r: &R) -> Result<String, String> {
+    r.serialize(Writer { field: None, singleton: is_singleton::<R> }).map_err(|e| e.to_string())
+}
+
+/// True when the `Deserialize` of `R` declares no field: a unit struct, a struct with braces and no fields, or one
+/// whose only fields have `#[serde(skip)]`. The probe of [`check`] reads such a ref without a name.
+fn is_singleton<R: DeserializeOwned>() -> bool {
+    R::deserialize(Reader { name: None, field: None }).is_ok()
 }
 
 /// The ref of type `R` that serde reads from `name`.
@@ -76,6 +83,8 @@ impl de::Error for Error {
 struct Writer {
     /// The field being written; `None` for the ref itself.
     field: Option<&'static str>,
+    /// Whether the ref declares no field to serde: then a struct that writes none is a singleton.
+    singleton: fn() -> bool,
 }
 
 impl Writer {
@@ -180,7 +189,7 @@ impl ser::Serializer for Writer {
 
     fn serialize_struct(self, _: &'static str, _: usize) -> Result<Self::SerializeStruct, Error> {
         match self.field {
-            None => Ok(OneName(None)),
+            None => Ok(OneName { name: None, skipped: None, writer: self }),
             Some(_) => self.refuse("a struct"),
         }
     }
@@ -197,22 +206,37 @@ impl ser::Serializer for Writer {
 }
 
 /// The fields of a ref struct, of which serde writes one, or none for a singleton.
-struct OneName(Option<String>);
+struct OneName {
+    name: Option<String>,
+    /// The first field that serde skipped for this value (`skip_serializing_if`).
+    skipped: Option<&'static str>,
+    writer: Writer,
+}
 
 impl ser::SerializeStruct for OneName {
     type Ok = String;
     type Error = Error;
 
     fn serialize_field<T: Serialize + ?Sized>(&mut self, key: &'static str, value: &T) -> Result<(), Error> {
-        if self.0.is_some() {
+        if self.name.is_some() {
             return Err(Error::Refused(format!("{RULE}, but serde writes a second field {key}")));
         }
-        self.0 = Some(value.serialize(Writer { field: Some(key) })?);
+        self.name = Some(value.serialize(Writer { field: Some(key), ..self.writer })?);
+        Ok(())
+    }
+
+    fn skip_field(&mut self, key: &'static str) -> Result<(), Error> {
+        self.skipped.get_or_insert(key);
         Ok(())
     }
 
     fn end(self) -> Result<String, Error> {
-        Ok(self.0.unwrap_or_else(|| ActorAddress::SINGLETON_KEY.to_owned()))
+        match (self.name, self.skipped) {
+            (Some(name), _) => Ok(name),
+            (None, Some(key)) => Err(Error::Refused(format!("{RULE}, but serde skips its field {key}"))),
+            (None, None) if (self.writer.singleton)() => Ok(ActorAddress::SINGLETON_KEY.to_owned()),
+            (None, None) => Err(Error::Refused(format!("{RULE}, but serde writes none of the fields it declares"))),
+        }
     }
 }
 
@@ -412,7 +436,7 @@ mod tests {
 
     #[test]
     fn a_string_itself_is_one_name() {
-        assert_eq!(name_of("acme").unwrap(), "acme");
+        assert_eq!(name_of(&"acme".to_owned()).unwrap(), "acme");
         assert_eq!(from_name::<String>("acme").unwrap(), "acme");
         assert!(check::<String>().is_ok());
         assert!(check::<u32>().unwrap_err().contains("asks for a number"));

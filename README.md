@@ -138,13 +138,14 @@ impl<A: SyncApi> Actor for SyncActor<A> {
 
 The address of `Sync { tenant: "acme" }` is `sync/acme`. A key is one name (ADR 0021): serde writes the ref as one
 string — a struct with one string field, as here, or a type that serde writes as a string itself, such as a newtype
-around a `String` — or the ref is a unit struct or a struct without fields, a singleton with the key `_`. A field that
-serde skips does not count. A number, a boolean, a character or an enum variant is not a string. A ref's one field
-cannot have a serde alias, and a ref cannot use a reader that takes more than one form (`deserialize_any`, `from` an
-untagged enum): the start check counts what the reader declares. A name may hold any text and must not be empty: in the
-address it keeps `A-Z a-z 0-9 . _ ~ -` and `:` and percent-encodes the rest, so `jan@example.com` is
-`users/jan%40example.com` and a key never holds a raw `/`. A `:` separates nothing. A node that hosts a type whose ref
-is not one string does not start, and a send to such a ref fails at the call.
+around a `String` — or the ref is a unit struct or a struct that declares no field to serde, a singleton with the key
+`_`. A field with `#[serde(skip)]` does not count, and a ref that declares a field and writes none has no address. A
+number, a boolean, a character or an enum variant is not a string. A ref's one field cannot have a serde alias, and a
+ref cannot use a reader that takes more than one form (`deserialize_any`, `from` an untagged enum): the start check
+counts what the reader declares. A name may hold any text and must not be empty: in the address it keeps
+`A-Z a-z 0-9 . _ ~ -` and `:` and percent-encodes the rest, so `jan@example.com` is `users/jan%40example.com` and a key
+never holds a raw `/`. A `:` separates nothing. A node that hosts a type whose ref is not one string does not start,
+and a send to such a ref fails at the call.
 
 A ref with two parts joins them itself, with a separator its parts cannot hold. It can keep its typed fields and name
 `String` as its serde form, as `BatchItem` in [examples/src/fanout.rs](examples/src/fanout.rs) does:

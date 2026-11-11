@@ -337,7 +337,7 @@ async fn a_node_starts_with_a_ref_that_skips_a_field_or_writes_its_parts_as_one_
     system.initialize().await.expect("the node starts");
 }
 
-/// Scenario: A struct without fields.
+/// Scenario: A struct that declares no field to serde.
 #[tokio::test]
 async fn a_struct_without_fields_is_a_singleton() {
     assert_eq!(shapes::Braces {}.address().unwrap().as_str(), "braces/_");

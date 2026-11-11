@@ -32,13 +32,14 @@ use crate::message::MessageFamily;
 /// ```
 ///
 /// A ref is one of three shapes, as serde sees it: a struct of which serde writes one field, whose value is a string (a
-/// `String`, a newtype around one, a `Uuid`; a field that serde skips does not count); a type that serde writes as a
-/// string itself (a newtype around a `String`, or `#[serde(into = "String", try_from = "String")]`); or a unit struct
-/// or a struct without fields, the ref of a singleton (`cleanup/_`). A number, a boolean, a character and an enum
-/// variant are not a string. The one field cannot have a serde alias, and a ref cannot use a reader that takes more
-/// than one form (`deserialize_any`, `from` an untagged enum): the check counts what the reader declares. A ref with
-/// two parts joins them itself, with a separator the parts cannot hold. A node that hosts the type checks the shape
-/// when it starts; [`Self::address`] fails for a ref that does not write one string.
+/// `String`, a newtype around one, a `Uuid`; a field with `#[serde(skip)]` does not count); a type that serde writes as
+/// a string itself (a newtype around a `String`, or `#[serde(into = "String", try_from = "String")]`); or a unit struct
+/// or a struct that declares no field to serde, the ref of a singleton (`cleanup/_`); a ref that declares a field and
+/// writes none has no address. A number, a boolean, a character and an enum variant are not a string. The one field
+/// cannot have a serde alias, and a ref cannot use a reader that takes more than one form (`deserialize_any`, `from` an
+/// untagged enum): the check counts what the reader declares. A ref with two parts joins them itself, with a separator
+/// the parts cannot hold. A node that hosts the type checks the shape when it starts; [`Self::address`] fails for a ref
+/// that does not write one string.
 ///
 /// The compiler checks every typed send against [`Self::Message`]: `turn.send(&Sync { .. }, msg)` only accepts a
 /// message of the sync family.

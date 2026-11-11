@@ -72,15 +72,16 @@ value is URL-decoded first, so `?prefix=x%3A` arrives as `x:` and still matches.
 ### Changed (breaking)
 
 - A ref holds one name. What counts is what serde does with it: a struct of which serde writes one field, whose value is
-  a string (a `String`, a newtype around one, a `Uuid`; a field that serde skips does not count, so a `PhantomData` with
-  `#[serde(skip)]` is fine); a type that serde writes as a string itself (a newtype around a `String`, or one that names
-  `String` as its serde form); or a unit struct or a struct without fields, a singleton with the key `_`, as before.
-  Only a string counts: a number, a boolean, a single character and an enum variant are refused, although the last two
-  worked as a key field before. A ref's one field cannot have a serde alias, and a ref cannot use a reader that takes
-  more than one form (`deserialize_any`, `from` an untagged enum): the start check counts what the reader declares. A
-  node that hosts a type whose ref is not one string does not start, and the error names the ref and what its
-  `Deserialize` asks for. `ActorRef::address` fails for a ref that serde does not write as one string, so a send to it
-  or a create of it fails at the call (`TurnError::Invalid`) and the turn can go on.
+  a string (a `String`, a newtype around one, a `Uuid`; a field with `#[serde(skip)]` does not count, so such a
+  `PhantomData` is fine); a type that serde writes as a string itself (a newtype around a `String`, or one that names
+  `String` as its serde form); or a unit struct or a struct that declares no field to serde, a singleton with the key
+  `_`, as before. A ref that declares a field and writes none (`skip_serializing`, or `skip_serializing_if` when it
+  skips) has no address. Only a string counts: a number, a boolean, a single character and an enum variant are refused,
+  although the last two worked as a key field before. A ref's one field cannot have a serde alias, and a ref cannot use
+  a reader that takes more than one form (`deserialize_any`, `from` an untagged enum): the start check counts what the
+  reader declares. A node that hosts a type whose ref is not one string does not start, and the error names the ref and
+  what its `Deserialize` asks for. `ActorRef::address` fails for a ref that serde does not write as one string, so a
+  send to it or a create of it fails at the call (`TurnError::Invalid`) and the turn can go on.
 - A name may hold any text and must not be empty. In an address it is percent-encoded as before, except that `:` is
   now written as it is: `percent::encode` keeps `A-Z a-z 0-9 . _ ~ -` and `:`. A `:` separates nothing, so an old
   address such as `account/acme:7` stays valid as the one name `acme:7`, and `ActorAddress::parse` reads `a%3Ab` as
@@ -90,8 +91,8 @@ value is URL-decoded first, so `?prefix=x%3A` arrives as `x:` and still matches.
 - `to_params`, `from_params` and the serde bridge behind them (`address/params.rs`) are removed; a small reader takes
   the one string out of a ref and puts it back. `RefBinding` holds no list of fields: `key_fields()` is removed, and
   `RefBinding::new` checks the ref by what its `Deserialize` asks for.
-- A contract no longer lists key fields: not in `Contract::new`, not in its JSON form (`{"type", "state",
-  "messages"}`), not in its hash. Every contract hash changes; renaming the one field of a ref keeps the hash.
+- A contract no longer lists key fields: not in `Contract::new`, not in its JSON form (`type`, `state` and
+  `messages`), not in its hash. Every contract hash changes; renaming the one field of a ref keeps the hash.
   `Contract::key_fields` and `Contract::params_of` are removed. `Contract::from_json` ignores a `key` entry, so a
   contract of an earlier version reads as the same contract.
 - `TypeView.key` (`GET /types`, `GET /types/{name}`), `ActorView.params` (`GET /actors/{type}/{key}`) and

@@ -5,8 +5,9 @@ decision below is made by the owner unless it says otherwise. Reviewed twice. Af
 decision 1 is stated as serde sees it, decision 4 names the whole effect of its window and rewrites less, and
 decision 6 was added. After the second the shapes of decision 1 are listed, the specs name the schema versions they
 are about, and the upgrade steps say what happens to a ref that changes its shape. After the build, fix round 1 (the
-owner's decisions) makes a struct without fields a singleton again, keeps the start check with its limits, and
-corrects how the old form of a ref is read.
+owner's decisions) makes a struct that declares no field to serde a singleton again, keeps the start check with its
+limits, and corrects how the old form of a ref is read. Fix round 2 narrows the singleton to a struct that declares no
+field: one that declares a field and writes none has no address.
 
 `private-store-trait` lands first and moves the stores into `cicada`, so "both stores" below means their modules
 there.
@@ -61,13 +62,15 @@ Non-Goals:
 
 A ref keeps its shape. What counts is what serde does with it:
 
-- a struct of which serde writes one field, whose value is a string. A field that serde skips does not count, so
-  Chorus's `Named<A>` with its `PhantomData` is a ref. The field may be a `String` or a type that serde writes as a
+- a struct of which serde writes one field, whose value is a string. A field with `#[serde(skip)]` does not count,
+  so Chorus's `Named<A>` with its `PhantomData` is a ref. The field may be a `String` or a type that serde writes as a
   string, such as a newtype around one or a `Uuid`;
 - a type that serde writes as a string itself: a newtype around a `String`, or a type that names `String` as its
   serde form;
-- a unit struct, or a struct of which serde writes no field (`struct X {}`), for a singleton with the key `_`, as in
-  0.5.1.
+- a unit struct, or a struct that declares no field to serde (`struct X {}`, or one whose only fields have
+  `#[serde(skip)]`), for a singleton with the key `_`, as in 0.5.1. A ref that declares a field and writes none
+  (`skip_serializing`, or `skip_serializing_if` when it skips) has no address, so it never stands for `_` by
+  mistake.
 
 Only a string counts. A number, a boolean, a single character and an enum variant are refused, although the last
 two work as a key field today: they are typed parts of a key, and a caller formats those itself.

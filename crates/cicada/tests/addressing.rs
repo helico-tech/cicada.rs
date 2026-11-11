@@ -306,6 +306,48 @@ struct Letter {
 }
 actor_ref!(Letter, "letter");
 
+/// A ref whose one field serde skips when it is empty.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SkipEmpty {
+    #[serde(skip_serializing_if = "String::is_empty")]
+    name: String,
+}
+actor_ref!(SkipEmpty, "skip-empty");
+
+/// A ref whose one field is an `Option` that serde skips when it is `None`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SkipNone {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+}
+actor_ref!(SkipNone, "skip-none");
+
+/// A ref whose one field serde never writes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct NeverWritten {
+    #[serde(skip_serializing)]
+    #[allow(dead_code)] // read only by serde, which never writes it: the point of this ref
+    name: String,
+}
+actor_ref!(NeverWritten, "never-written");
+
+/// A struct with braces and no fields: a singleton.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct Braces {}
+actor_ref!(Braces, "braces");
+
+/// A struct whose only field has `#[serde(skip)]`: a singleton, as in 0.5.1.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct Marker<A> {
+    #[serde(skip)]
+    kind: PhantomData<A>,
+}
+
+impl ActorRef for Marker<Nightly> {
+    const TYPE: &'static str = "marker";
+    type Message = Msg;
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Misnamed {
     id: String,
@@ -399,6 +441,45 @@ fn a_ref_whose_field_is_not_a_string_is_refused() {
     let e = RefBinding::<Letter>::new().err().unwrap().to_string();
     assert!(e.contains("field c asks for a character"), "{e}");
     assert!(Letter { c: 'x' }.address().is_err());
+}
+
+#[test]
+fn a_ref_whose_field_serde_skips_when_empty_has_no_address_then() {
+    let e = SkipEmpty { name: String::new() }.address().unwrap_err().to_string();
+    assert!(e.contains("SkipEmpty has no address") && e.contains("serde skips its field name"), "{e}");
+    assert_eq!(SkipEmpty { name: "x".into() }.address().unwrap().as_str(), "skip-empty/x");
+}
+
+#[test]
+fn a_ref_whose_option_serde_skips_when_none_has_no_address_then() {
+    let e = SkipNone { name: None }.address().unwrap_err().to_string();
+    assert!(e.contains("SkipNone has no address") && e.contains("serde skips its field name"), "{e}");
+}
+
+#[test]
+fn a_ref_whose_field_serde_never_writes_has_no_address() {
+    let e = NeverWritten { name: "x".into() }.address().unwrap_err().to_string();
+    assert!(e.contains("NeverWritten has no address") && e.contains("writes none of the fields it declares"), "{e}");
+}
+
+/// Scenario: A struct that declares no field to serde.
+#[test]
+fn a_struct_with_braces_and_no_fields_is_the_singleton() {
+    assert_eq!(Braces {}.address().unwrap().as_str(), "braces/_");
+    let binding = RefBinding::<Braces>::new().expect("a node that hosts the type starts");
+    assert_eq!(binding.from_address(&ActorAddress::parse("braces/_").unwrap()).unwrap(), Braces {});
+    let other = binding.from_address(&ActorAddress::parse("braces/other").unwrap()).unwrap_err();
+    assert!(other.to_string().contains("singleton"), "{other}");
+}
+
+#[test]
+fn a_struct_whose_only_field_serde_skips_is_the_singleton() {
+    let r = Marker::<Nightly> { kind: PhantomData };
+    assert_eq!(r.address().unwrap().as_str(), "marker/_");
+    let binding = RefBinding::<Marker<Nightly>>::new().expect("a node that hosts the type starts");
+    assert_eq!(binding.from_address(&ActorAddress::parse("marker/_").unwrap()).unwrap(), r);
+    let other = binding.from_address(&ActorAddress::parse("marker/other").unwrap()).unwrap_err();
+    assert!(other.to_string().contains("singleton"), "{other}");
 }
 
 #[test]

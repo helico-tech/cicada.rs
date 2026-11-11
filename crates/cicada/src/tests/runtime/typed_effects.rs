@@ -93,6 +93,57 @@ impl ActorRef for Pair {
     type Message = JobsMsg;
 }
 
+/// A ref whose one field serde skips when it is empty.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SkipEmpty {
+    #[serde(skip_serializing_if = "String::is_empty")]
+    name: String,
+}
+
+impl ActorRef for SkipEmpty {
+    const TYPE: &'static str = "skip-empty";
+    type Message = JobsMsg;
+}
+
+/// Hosts `SkipEmpty`: its node starts, and a ref with an empty name still has no address.
+struct SkipEmptyActor;
+
+impl Actor for SkipEmptyActor {
+    type Ref = SkipEmpty;
+    type State = NoState;
+    type Message = JobsMsg;
+    const UNHANDLED: Unhandled = Unhandled::Fail;
+
+    async fn handle(&self, _: &mut Turn<Self>, _: JobsMsg) -> HandlerResult {
+        Ok(())
+    }
+}
+
+/// A ref whose one field is an `Option` that serde skips when it is `None`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SkipNone {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+}
+
+impl ActorRef for SkipNone {
+    const TYPE: &'static str = "skip-none";
+    type Message = JobsMsg;
+}
+
+/// A ref whose one field serde never writes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct NeverWritten {
+    #[serde(skip_serializing)]
+    #[allow(dead_code)] // read only by serde, which never writes it: the point of this ref
+    name: String,
+}
+
+impl ActorRef for NeverWritten {
+    const TYPE: &'static str = "never-written";
+    type Message = JobsMsg;
+}
+
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type")]
 enum NumMsg {
@@ -141,6 +192,8 @@ enum MakerMsg {
     MakeBadCounter,
     /// Sends to a `Pair`, which fails at the call; ends `done` only then.
     PokePair,
+    /// Creates a ref of each kind that declares a field and writes none; ends `done` only when each fails at the call.
+    MakeUnwritten,
 }
 
 struct MakerActor;
@@ -163,6 +216,19 @@ impl Actor for MakerActor {
                 Err(TurnError::Invalid(e)) if e.contains("Pair has no address") => {}
                 other => return Err(turn.fail(format!("expected a refused send, got {other:?}"))),
             },
+            MakerMsg::MakeUnwritten => {
+                let created = [
+                    turn.create(&SkipEmpty { name: String::new() }, &NoState {}),
+                    turn.create(&SkipNone { name: None }, &NoState {}),
+                    turn.create(&NeverWritten { name: "n".into() }, &NoState {}),
+                ];
+                for result in created {
+                    match result {
+                        Err(TurnError::Invalid(e)) if e.contains("has no address") => {}
+                        other => return Err(turn.fail(format!("expected a refused create, got {other:?}"))),
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -259,6 +325,23 @@ async fn a_send_to_a_ref_that_is_not_one_string_fails_at_the_call_and_the_turn_g
     test.run_until_idle().await;
     let outcome = test.outcome(&poke).await.unwrap();
     assert_eq!(outcome.status, OutcomeStatus::Done, "{:?}", outcome.error);
+}
+
+/// A ref that declares a field and writes none has no address: a create fails at the call, in a turn and from outside,
+/// also on a node that hosts the type.
+#[tokio::test(start_paused = true)]
+async fn a_ref_that_declares_a_field_and_writes_none_fails_at_the_call() {
+    let test = TestActors::builder().with(|n| n.host(MakerActor).host(SkipEmptyActor)).build().await.unwrap();
+    test.create(&m(), &NoState {}).await;
+    let make = test.send(&m(), MakerMsg::MakeUnwritten).await;
+    test.run_until_idle().await;
+    let outcome = test.outcome(&make).await.unwrap();
+    assert_eq!(outcome.status, OutcomeStatus::Done, "{:?}", outcome.error);
+    match test.system().create(&SkipEmpty { name: String::new() }, &NoState {}).await {
+        Err(crate::OpError::Invalid(e)) => assert!(e.contains("skips its field name"), "{e}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(test.system().get_actor(&parse("skip-empty/_")).await.unwrap(), None);
 }
 
 // ---- a ref that changed its shape, read where it is held ----

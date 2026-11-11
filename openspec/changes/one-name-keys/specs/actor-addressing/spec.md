@@ -65,13 +65,14 @@ registration of a name with a different contract SHALL conflict.
 ### Requirement: A ref is written as one string or as a unit
 
 A ref SHALL be a type that serde writes as one string or as a unit: a struct of which serde writes one field, whose
-value is a string; a type that serde writes as a string itself; a unit struct; or a struct without fields. A field
-that serde skips SHALL NOT count. A unit struct and a struct without fields SHALL be a singleton with the key `_`.
+value is a string; a type that serde writes as a string itself; a unit struct; or a struct that declares no field to
+serde. A field with `#[serde(skip)]` SHALL NOT count. A unit struct and a struct that declares no field to serde SHALL
+be a singleton with the key `_`. A ref that declares a field to serde and writes none SHALL have no address.
 
 #### Scenario: A field that serde skips
 
-- **WHEN** a ref has a `name` that is a `String` and a second field that serde skips, and the name is `nightly`, for
-  the type `cron`
+- **WHEN** a ref has a `name` that is a `String` and a second field with `#[serde(skip)]`, and the name is `nightly`,
+  for the type `cron`
 - **THEN** its address is `cron/nightly`, and a node that hosts the type starts
 
 #### Scenario: A field that is a newtype of a string
@@ -84,11 +85,17 @@ that serde skips SHALL NOT count. A unit struct and a struct without fields SHAL
 - **WHEN** a ref is a newtype around the `String` `acme`, for the type `sync`
 - **THEN** its address is `sync/acme`
 
-#### Scenario: A struct without fields
+#### Scenario: A struct that declares no field to serde
 
-- **WHEN** a ref of type `braces` is a struct with braces and no fields
+- **WHEN** a ref of type `braces` is a struct with braces and no fields, or a struct whose only field has
+  `#[serde(skip)]`
 - **THEN** its address is `braces/_`, a node that hosts the type starts, and an address of the type with another key
   is refused
+
+#### Scenario: A ref that declares a field and writes none
+
+- **WHEN** the one field of a ref has `skip_serializing`, or has `skip_serializing_if` and is skipped for this value
+- **THEN** the ref has no address, and a send to it or a create of it fails at the call
 
 #### Scenario: A ref with typed parts that writes itself as a string
 
