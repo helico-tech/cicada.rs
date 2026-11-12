@@ -11,10 +11,10 @@ use crate::retention::Retention;
 use crate::retry::RetryPolicy;
 use crate::store::support::{self, Notice, Removal, check_limit};
 use crate::store::{
-    ActorRecord, Backend, CancelResult, Claim, Clock, CommitRequest, CommitResult, ControlEffect, CreateResult,
-    DeleteResult, DeliverNowResult, EnqueueResult, Message, MessageId, MessageStatus, NodeId, NodeRecord,
-    OutcomeRecord, OutcomeStatus, OutgoingMessage, Page, PageCursor, RegisterResult, RemoveTypeResult, RenewResult,
-    RunningTurn, SetWatchResult, StateChange, StoreError, StoreResult, StoreStats, SystemClock, TurnOutcome, TypeDef,
+    ActorRecord, Backend, CancelResult, Claim, Clock, CommitRequest, CommitResult, CreateResult, DeleteResult,
+    DeliverNowResult, EnqueueResult, Message, MessageId, MessageStatus, NodeId, NodeRecord, OutcomeRecord,
+    OutcomeStatus, OutgoingMessage, Page, PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn,
+    SetWatchResult, StateChange, StoreError, StoreResult, StoreStats, SystemClock, TurnOutcome, TypeDef,
 };
 use crate::time::{self, DEFAULT_RETENTION, Timestamp};
 use crate::watch::{self, Watch, WatchTarget};
@@ -880,6 +880,7 @@ impl SqliteStore {
         commit: CommitRequest,
         now: Timestamp,
     ) -> StoreResult<CommitResult> {
+        let targets: Vec<ActorAddress> = commit.deletes().cloned().collect();
         let CommitRequest {
             event,
             address,
@@ -913,7 +914,7 @@ impl SqliteStore {
         }
         // The trees of the deletes, read before anything is written: deletes come before the creates and the sends.
         let mut deleted = BTreeSet::new();
-        for target in controls.iter().filter(|c| c.effect == ControlEffect::Delete).map(|c| &c.actor) {
+        for target in &targets {
             if deleted.contains(target) || !Self::actor_exists(c, target.as_str()).await? {
                 continue;
             }
