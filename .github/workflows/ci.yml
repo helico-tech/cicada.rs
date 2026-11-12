@@ -30,6 +30,9 @@ jobs:
     env:
       CICADA_PG_URL: postgres://cicada:cicada@localhost:55432/cicada
       CARGO_TERM_COLOR: always
+      # File and line in backtraces, no full debug info: the test binaries of the workspace outgrew the runner's disk,
+      # and the linker died with a bus error (release 0.13.0).
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
