@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use crate::address::{ActorAddress, TypeName};
@@ -73,12 +73,21 @@ pub struct Env<F: StoreFixture> {
     /// The suite's unit of time.
     pub tick: Duration,
     counter: AtomicU64,
+    /// The peers of [`Self::concurrently`], opened once and reused by every later call of the case.
+    peers: Mutex<Vec<Arc<dyn Backend>>>,
 }
 
 impl<F: StoreFixture> Env<F> {
     /// An environment over `fixture`.
     pub fn new(fixture: F, tick: Duration) -> Self {
-        Self { fixture, tick, counter: AtomicU64::new(0) }
+        Self { fixture, tick, counter: AtomicU64::new(0), peers: Mutex::new(Vec::new()) }
+    }
+
+    /// Closes every handle and opens the same backend again ([`StoreFixture::reopen`]), and forgets the peers of
+    /// [`Self::concurrently`], which the reopen closed.
+    pub async fn reopen(&mut self) {
+        self.peers.get_mut().unwrap_or_else(|e| e.into_inner()).clear();
+        self.fixture.reopen().await;
     }
 
     /// The store under test (a new handle after a reopen).
@@ -255,15 +264,25 @@ impl<F: StoreFixture> Env<F> {
 
     /// Runs `count` copies of `block` concurrently on the runtime's worker threads, each with its own peer handle,
     /// and returns their results in order. A panic in one copy fails the case.
+    ///
+    /// The peers are opened when a call first needs them and reused by every later call of the case, so a case holds
+    /// as many peers as its largest call, however many rounds it runs: on PostgreSQL every peer is a store with a
+    /// connection of its own, and the suite is sized for at most 16 per case.
     pub async fn concurrently<T, Fut>(&self, count: usize, block: impl Fn(usize, Arc<dyn Backend>) -> Fut) -> Vec<T>
     where
         Fut: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
-        let mut peers = Vec::with_capacity(count);
-        for _ in 0..count {
-            peers.push(self.fixture.peer().await);
+        let opened = self.peers.lock().unwrap_or_else(|e| e.into_inner()).len();
+        let mut new = Vec::new();
+        for _ in opened..count {
+            new.push(self.fixture.peer().await);
         }
+        let peers: Vec<Arc<dyn Backend>> = {
+            let mut cached = self.peers.lock().unwrap_or_else(|e| e.into_inner());
+            cached.extend(new);
+            cached[..count].to_vec()
+        };
         let handles: Vec<_> = peers.into_iter().enumerate().map(|(i, peer)| tokio::spawn(block(i, peer))).collect();
         let mut out = Vec::with_capacity(count);
         for handle in handles {

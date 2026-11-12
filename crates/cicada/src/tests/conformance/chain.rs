@@ -96,7 +96,7 @@ pub async fn chain_caused_by_survives_reschedule_and_reopen<B: FixtureFactory>(b
             "kept by the reschedule"
         );
         if t.fixture.supports_reopen() {
-            t.fixture.reopen().await;
+            t.reopen().await;
         }
         let status = t.store().status(&child.id).await.unwrap();
         assert_eq!(
@@ -109,7 +109,7 @@ pub async fn chain_caused_by_survives_reschedule_and_reopen<B: FixtureFactory>(b
         assert_eq!(c.message.caused_by.as_ref(), Some(&root.id));
         t.commit_ok(ending(&c, TurnOutcome::Failed("boom".into()))).await;
         if t.fixture.supports_reopen() {
-            t.fixture.reopen().await;
+            t.reopen().await;
         }
         let outcome = outcome_record(&*t.store(), &child.id).await.expect("an outcome");
         assert_eq!(outcome.envelope.caused_by.as_ref(), Some(&root.id), "kept with the outcome");

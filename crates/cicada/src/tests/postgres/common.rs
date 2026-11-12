@@ -49,8 +49,9 @@ macro_rules! test_db {
 pub(crate) use test_db;
 
 /// How many PostgreSQL tests hold a database at once. Every PostgreSQL test of the crate runs in one test binary, so
-/// they share this limit; with it the connections of the tests (a conformance case opens up to 16 peers with a pool of
-/// 1 each) stay below the 100 connections of the docker-compose and CI databases.
+/// they share this limit. A conformance case holds its store's pool (4 connections) and at most 16 peers with a pool
+/// of 1 each, which it opens once and reuses in every round (`Env::concurrently`), so four tests at once stay below
+/// the 100 connections of the CI database, PostgreSQL's default. The docker-compose database allows 500.
 const PARALLEL_TESTS: usize = 4;
 
 static RUNNING: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(PARALLEL_TESTS)));

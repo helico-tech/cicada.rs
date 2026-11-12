@@ -331,7 +331,7 @@ pub async fn reschedule_failures_and_last_error_are_durable<B: FixtureFactory>(b
         let c = t.claim_one().await;
         t.commit_ok(ending(&c, rescheduled("persisted", Delivery::After(Duration::from_secs(86_400))))).await;
         if t.fixture.supports_reopen() {
-            t.fixture.reopen().await;
+            t.reopen().await;
             let again = pending_message(&*t.store(), &m.id).await;
             assert_eq!(again.failures, 1);
             assert_eq!(again.last_error.as_deref(), Some("persisted"));
@@ -409,7 +409,7 @@ pub async fn retry_policy_survives_reschedule_and_reopen<B: FixtureFactory>(back
         assert_eq!(again.retry.as_ref(), Some(&policy), "kept by the reschedule");
         assert_eq!(again.failures, 1);
         if t.fixture.supports_reopen() {
-            t.fixture.reopen().await;
+            t.reopen().await;
             assert_eq!(pending_message(&*t.store(), &sent.id).await.retry.as_ref(), Some(&policy));
             let pending = t.pending(&a).await;
             assert_eq!(pending.len(), 1);
@@ -419,7 +419,7 @@ pub async fn retry_policy_survives_reschedule_and_reopen<B: FixtureFactory>(back
         assert_eq!(last.message.retry.as_ref(), Some(&policy));
         t.commit_ok(ending(&last, TurnOutcome::Failed("final".into()))).await;
         if t.fixture.supports_reopen() {
-            t.fixture.reopen().await;
+            t.reopen().await;
         }
         let store = t.store();
         let outcome = outcome_record(&*store, &sent.id).await.expect("an outcome");

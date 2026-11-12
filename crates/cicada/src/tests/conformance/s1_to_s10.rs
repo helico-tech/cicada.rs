@@ -345,7 +345,7 @@ pub async fn s1_acknowledged_writes_survive_a_restart<B: FixtureFactory>(backend
         let c2 = t.claim_one().await;
         t.store().release(&c2.actor, c2.epoch).await.unwrap();
 
-        t.fixture.reopen().await;
+        t.reopen().await;
 
         let store = t.store();
         assert_eq!(list_types(&*store).await, vec![type_def(&TYPE, "h1")]);
