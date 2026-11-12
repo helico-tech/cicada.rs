@@ -15,7 +15,7 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
       stored, a panic outside the handler, an observer that is not touched), on virtual time with `TestActors`; a
       conformance case that a failed commit writes the cause it was given, on all three stores; the scenario "A
       watcher with a `Failed` of its own" still passes for a `Failed` without a cause.
-- [ ] 1.2 The create by address [3]: `Turn::create_raw` and `Turn::create_child_raw`, with the checks of decision 3
+- [x] 1.2 The create by address [3]: `Turn::create_raw` and `Turn::create_child_raw`, with the checks of decision 3
       (`TurnError::Invalid` for a type that is not registered and, on a hosting node, for an address or a state the
       type cannot read; `TurnError::Store` for a failed read of the registry). Verify: tests for every scenario of
       `create-by-address`, on virtual time, with a node that hosts the type and one that does not.

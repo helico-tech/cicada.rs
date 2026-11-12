@@ -16,6 +16,7 @@ use crate::message::{self, MessageFamily};
 use crate::retention::Retention;
 use crate::retry::RetryPolicy;
 use crate::runtime::effects::EffectBuffer;
+use crate::runtime::executor::HostedTypes;
 use crate::runtime::limits;
 use crate::runtime::resolver::TypeResolver;
 use crate::store::{ActorCreate, Control, ControlEffect, Delivery, Message, MessageId, OutgoingMessage, StoreError};
@@ -160,7 +161,8 @@ impl fmt::Display for HandlerFailure {
 pub enum TurnError {
     /// A field is out of bounds, contains a NUL character, the value cannot be encoded, or an initial state is `null`;
     /// or a watch whose target is no target, or of an actor whose type may not watch; or a delete of the turn's own
-    /// actor, or of an actor the turn creates already.
+    /// actor, or of an actor the turn creates already; or a create by address whose type is not registered, or whose
+    /// address or state a node that hosts the type cannot read.
     #[error("{0}")]
     Invalid(String),
     /// A send to a raw address was refused: no registered type matches it, or that type does not accept the message
@@ -174,7 +176,7 @@ pub enum TurnError {
         /// Why.
         reason: String,
     },
-    /// The TypeRegistry could not be read to check a raw send.
+    /// The TypeRegistry could not be read to check a send or a create by address.
     #[error(transparent)]
     Store(#[from] StoreError),
 }
@@ -274,6 +276,8 @@ pub(crate) struct TurnInfo {
     pub(crate) send_headers: BTreeMap<String, String>,
     /// The local time at which the claim was sent.
     pub(crate) claim_sent: Instant,
+    /// The types the node hosts: a create by address checks its address and state against them.
+    pub(crate) hosted: HostedTypes,
 }
 
 impl TurnInfo {
@@ -447,6 +451,49 @@ impl<A: Actor> Turn<A> {
         self.buffer_create(r, initial_state, true)
     }
 
+    /// Buffers an idempotent create of the actor at `address` with the state `initial_state`, given as JSON, as an
+    /// independent actor: [`Self::create`] for an address, for a caller that does not know the type of the actor when
+    /// it is compiled, such as a supervisor (ADR 0028). It is applied and checked as [`Self::create`] is, and fails
+    /// with [`TurnError::Invalid`] for a state that is `null`.
+    ///
+    /// The type of the address is looked up in the TypeRegistry at the call: one that is not registered fails with
+    /// [`TurnError::Invalid`], and a read of the registry that fails with [`TurnError::Store`], which says nothing of
+    /// the address. A node that hosts the type also refuses, with [`TurnError::Invalid`], an address the type cannot
+    /// read and a state it cannot decode, as [`ActorSystem::create_actor`](crate::ActorSystem::create_actor) does. A
+    /// node that does not host the type cannot check either: an actor created with an address or a state its type
+    /// cannot read fails every message with the cause `state`.
+    pub async fn create_raw(&mut self, address: &ActorAddress, initial_state: Value) -> Result<(), TurnError> {
+        self.buffer_create_raw(address, initial_state, false).await
+    }
+
+    /// [`Self::create_raw`] as a child of this instance: [`Self::create_child`] for an address and a state given as
+    /// JSON. An actor that exists with another parent, or with none, rejects the commit.
+    pub async fn create_child_raw(&mut self, address: &ActorAddress, initial_state: Value) -> Result<(), TurnError> {
+        self.buffer_create_raw(address, initial_state, true).await
+    }
+
+    async fn buffer_create_raw(&mut self, address: &ActorAddress, state: Value, child: bool) -> Result<(), TurnError> {
+        message::check_not_null("initial state", &state).map_err(TurnError::Invalid)?;
+        limits::check_json("initial state", Some(&state)).map_err(TurnError::Invalid)?;
+        if self.resolver.resolve(address).await?.is_none() {
+            return Err(TurnError::Invalid(format!(
+                "Create of {address}: no registered actor type {}",
+                address.type_name()
+            )));
+        }
+        if let Some(hosted) = self.info.hosted.get(address.type_name()) {
+            if let Some(problem) = hosted.actor.address_problem(address) {
+                return Err(TurnError::Invalid(format!("Create of {address}: {problem}")));
+            }
+            if let Err(e) = hosted.actor.check_state(&state) {
+                return Err(TurnError::Invalid(format!(
+                    "Create of {address}: the initial state cannot be decoded: {e}"
+                )));
+            }
+        }
+        self.push_create(address.clone(), state, child)
+    }
+
     fn buffer_create<R: ActorRef, S: Serialize + ?Sized>(
         &mut self,
         r: &R,
@@ -458,6 +505,11 @@ impl<A: Actor> Turn<A> {
         message::check_not_null("initial state", &state).map_err(TurnError::Invalid)?;
         limits::check_json("initial state", Some(&state)).map_err(TurnError::Invalid)?;
         let address = r.address().map_err(|e| TurnError::Invalid(e.to_string()))?;
+        self.push_create(address, state, child)
+    }
+
+    /// Buffers a create whose state was checked; fails when this turn creates `address` the other way already.
+    fn push_create(&mut self, address: ActorAddress, state: Value, child: bool) -> Result<(), TurnError> {
         if self.effects.creates.iter().any(|c| c.address == address && c.child != child) {
             let (first, second) = if child { ("create", "create_child") } else { ("create_child", "create") };
             return Err(TurnError::Invalid(format!(

@@ -442,7 +442,7 @@ impl ActorSystem {
         let executor = Arc::new(TurnExecutor {
             store: inner.store.clone(),
             resolver: inner.resolver.clone(),
-            hosted: types,
+            hosted: Arc::new(types),
             observers: inner.observers.clone(),
             max_lost_claims: inner.config.max_lost_claims,
             lease,

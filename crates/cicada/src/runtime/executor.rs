@@ -84,6 +84,12 @@ pub(crate) struct HostedType {
     pub max_turn: Duration,
 }
 
+impl std::fmt::Debug for HostedType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HostedType").field("actor", &self.actor.name()).field("max_turn", &self.max_turn).finish()
+    }
+}
+
 /// Lease settings of the turns of one node.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct LeaseSettings {
@@ -223,10 +229,13 @@ impl HandlerPhase {
     }
 }
 
+/// The types a node hosts, by name.
+pub(crate) type HostedTypes = Arc<HashMap<TypeName, HostedType>>;
+
 pub(crate) struct TurnExecutor {
     pub store: Store,
     pub resolver: Arc<TypeResolver>,
-    pub hosted: HashMap<TypeName, HostedType>,
+    pub hosted: HostedTypes,
     /// The node's observers, in the order they were added.
     pub observers: Observers,
     /// The claim limit: a message with this many lost claims ends `failed` without running.
@@ -277,6 +286,7 @@ impl TurnExecutor {
             now: claim.claimed_at,
             send_headers: observed.headers().clone(),
             claim_sent,
+            hosted: self.hosted.clone(),
         });
         let guard = Arc::new(LeaseGuard::new(self.deadline(claim_sent)));
         let phase = Arc::new(HandlerPhase::new());

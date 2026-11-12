@@ -89,6 +89,8 @@ enum SubjectMsg {
     },
     /// Returns a new state that cannot be encoded.
     Unencodable,
+    /// Creates `subject/made` by address and passes an error on with `?`.
+    CreateByAddress,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -151,6 +153,9 @@ impl Actor for SubjectActor {
                     .map_err(HandlerError::new)?;
             }
             SubjectMsg::Unencodable => turn.state_mut().unencodable = true,
+            SubjectMsg::CreateByAddress => {
+                turn.create_raw(&ActorAddress::parse("subject/made")?, json!({})).await?;
+            }
         }
         Ok(())
     }
@@ -435,6 +440,9 @@ async fn a_failed_read_of_the_store_that_the_handler_passes_on_is_the_cause_node
     let (cause, error) = flaky.fail(SubjectMsg::ForwardWrapped { to: "subject/t".into() }).await;
     assert_eq!(cause, FailureCause::Node, "wrapped");
     assert!(error.starts_with("forwarding the work: "), "{error}");
+    let (cause, error) = flaky.fail(SubjectMsg::CreateByAddress).await;
+    assert_eq!(cause, FailureCause::Node, "a create by address whose read of the registry fails: TurnError::Store");
+    assert!(error.contains("registry unreachable"), "{error}");
     // With a store that works, a send the registry refuses is the fault of the handler that passes it on.
     let m = accepted(flaky.system.send(&subject("s"), SubjectMsg::Forward { to: "ghost/g".into() }).await.unwrap());
     while flaky.system.run_due_turns(10).await.unwrap() > 0 {}
