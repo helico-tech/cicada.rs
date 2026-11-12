@@ -40,7 +40,8 @@ mark it as running; a child that is running SHALL be left as it is.
 
 A supervisor SHALL act on `StartChild`, `Restarted` and `Escalate` only when it sent them itself. From anybody else
 they SHALL end `done` and change nothing. A `StartChild` for an address that is not one of its children SHALL change
-nothing.
+nothing. A supervisor SHALL act on a `Failed` or a `Stopped` only when the store marked it as a notification; one
+that a client sent SHALL end `done` and change nothing.
 
 #### Scenario: An escalation sent by a client
 
@@ -56,6 +57,16 @@ nothing.
 
 - **WHEN** a supervisor sends itself `StartChild` for an address that its state does not hold
 - **THEN** nothing is created
+
+#### Scenario: A `Failed` sent by a client
+
+- **WHEN** a client sends a supervisor a `Failed` with the cause `handler` about one of its children
+- **THEN** the message ends `done`, and nothing changes: the child is not restarted
+
+#### Scenario: A `Stopped` sent by a client
+
+- **WHEN** a client sends a supervisor a `Stopped` about one of its children
+- **THEN** the message ends `done`, and nothing changes: the supervisor still holds and watches the child
 
 ### Requirement: A start is tried again, and then the child is given up without a restart above
 

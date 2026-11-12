@@ -52,6 +52,7 @@ pub enum DeadLettersMsg {
         message_id: MessageId,
     },
     /// A message ended `failed`: it is recorded as a letter, unless it is a message of the dead-letters actor itself.
+    /// Only a notification that the store wrote counts: one that a client sent records nothing.
     Failed(Failed),
     /// Ignored.
     Stopped(Stopped),
@@ -150,7 +151,13 @@ impl Actor for DeadLettersActor {
     async fn handle(&self, turn: &mut Turn<Self>, message: DeadLettersMsg) -> HandlerResult {
         match message {
             DeadLettersMsg::Failed(failed) => {
-                if &failed.actor != turn.self_address() && !turn.state().letters.contains_key(&failed.message_id) {
+                // A `Failed` from a client is no failure: a letter of it could make a redrive send what the client
+                // chose, in the name of this actor.
+                let notified = turn.message().notification;
+                if notified
+                    && &failed.actor != turn.self_address()
+                    && !turn.state().letters.contains_key(&failed.message_id)
+                {
                     self.record(turn, failed);
                 }
             }

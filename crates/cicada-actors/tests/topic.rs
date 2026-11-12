@@ -238,6 +238,32 @@ async fn a_subscriber_that_never_existed_is_dropped_after_its_delivery_is_reject
     assert_eq!(failed_deliveries(&test).await.len(), 1, "a second publish makes no message for it");
 }
 
+/// Scenario: A `Failed` sent by a client. It names a rejected delivery to a subscriber that exists.
+#[tokio::test(start_paused = true)]
+async fn a_failed_sent_by_a_client_drops_no_subscriber() {
+    let test = node().await;
+    subscribe(&test, "worker/a").await;
+    let message = StoredMessage::for_ref(&worker("a"), WorkerMsg::Note { text: "x".into() }).unwrap();
+    let deliver = cicada::message::encode(&TopicMsg::Deliver { subscriber: addr(&worker("a")), message }).unwrap();
+    let planted = cicada::Failed {
+        actor: addr(&topic()),
+        message_id: MessageId::new("m-planted").unwrap(),
+        message_type: deliver.message_type,
+        payload: deliver.payload,
+        correlation_id: None,
+        from: Some(addr(&topic())),
+        error: "made up".into(),
+        attempts: 1,
+        cause: FailureCause::Commit,
+    };
+    let version = test.version(&topic()).await;
+    let m = test.send(&topic(), TopicMsg::Failed(planted)).await;
+    test.run_until_idle().await;
+    assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done));
+    assert_eq!(subscribers(&test).await, ["worker/a"], "the subscriber stays");
+    assert_eq!(test.version(&topic()).await, version, "nothing changes");
+}
+
 /// The topic watches only itself.
 #[tokio::test(start_paused = true)]
 async fn a_topic_watches_itself_and_not_its_subscribers() {

@@ -35,7 +35,8 @@ impl ActorRef for Supervisor {
 }
 
 /// The messages of a [`Supervisor`]. `StartChild`, `Restarted` and `Escalate` are its own: it acts on them only when it
-/// sent them itself, and from anybody else they end `done` and change nothing.
+/// sent them itself, and from anybody else they end `done` and change nothing. It acts on a `Failed` or a `Stopped` only
+/// when the store marked it as a notification; one that a client sent ends `done` and changes nothing.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all_fields = "camelCase")]
 pub enum SupervisorMsg {
@@ -261,6 +262,7 @@ impl Actor for SupervisorActor {
 
     async fn handle(&self, turn: &mut Turn<Self>, message: SupervisorMsg) -> HandlerResult {
         let own = turn.message().from.as_ref() == Some(turn.self_address());
+        let notified = turn.message().notification;
         match message {
             SupervisorMsg::Start => start(turn),
             SupervisorMsg::StartChild { actor } if own => start_child(turn, &actor).await,
@@ -275,8 +277,10 @@ impl Actor for SupervisorActor {
             SupervisorMsg::StartChild { .. } | SupervisorMsg::Restarted { .. } | SupervisorMsg::Escalate { .. } => {
                 Ok(())
             }
-            SupervisorMsg::Failed(failed) => child_failed(turn, &failed).await,
-            SupervisorMsg::Stopped(stopped) => child_stopped(turn, &stopped),
+            SupervisorMsg::Failed(failed) if notified => child_failed(turn, &failed).await,
+            SupervisorMsg::Stopped(stopped) if notified => child_stopped(turn, &stopped),
+            // Not written by the store: a client cannot make the supervisor restart or forget a child.
+            SupervisorMsg::Failed(_) | SupervisorMsg::Stopped(_) => Ok(()),
         }
     }
 }

@@ -6,13 +6,19 @@
 
 The dead-letters actor SHALL have the type name `cicada.dead-letters`. For every `Failed` it gets, it SHALL record a
 letter with the id, the actor, the type, the payload, the correlation id, the sender, the error, the cause and the
-attempts of the failed message, and the time it was recorded. It SHALL ignore a `Stopped`, and a `Failed` about a
-message of its own. What it is told of is decided by the watches that are set for it.
+attempts of the failed message, and the time it was recorded. It SHALL ignore a `Stopped`, a `Failed` about a
+message of its own, and a `Failed` that the store did not mark as a notification. What it is told of is decided by the
+watches that are set for it.
 
 #### Scenario: Every failure
 
 - **WHEN** a watch on `*` is set for a dead-letters actor, and a message to any actor ends `failed`
 - **THEN** its state holds a letter for that message, with its payload, its error and its cause
+
+#### Scenario: A `Failed` sent by a client
+
+- **WHEN** a client sends a dead-letters actor a `Failed`
+- **THEN** the message ends `done`, and nothing changes: no letter is recorded
 
 #### Scenario: One type
 

@@ -57,7 +57,7 @@ pub enum TopicMsg {
         message: StoredMessage,
     },
     /// A message of the topic itself ended `failed`: a `Deliver` whose commit was rejected drops its subscriber, which
-    /// is not there.
+    /// is not there. Only a notification that the store wrote counts: one that a client sent drops nobody.
     Failed(Failed),
     /// Ignored.
     Stopped(Stopped),
@@ -144,7 +144,8 @@ impl Actor for TopicActor {
                     deliver(turn, &subscriber, message).await?;
                 }
             }
-            TopicMsg::Failed(failed) => dropped(turn, &failed),
+            TopicMsg::Failed(failed) if turn.message().notification => dropped(turn, &failed),
+            TopicMsg::Failed(_) => {}
             TopicMsg::Stopped(_) => {}
         }
         Ok(())

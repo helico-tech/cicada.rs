@@ -231,6 +231,8 @@ system.send(&supervisor, SupervisorMsg::Start).await?;
   itself; from anybody else (a client, a redrive of a dead letter) they end `done` and change nothing. Otherwise a
   send over HTTP, or the redrive of an `Escalate` that dead letters recorded, could make a supervisor above restart
   a tree.
+- **A `Failed` or a `Stopped` counts only when the store marked it as a notification** (decided by the main session on 2026-11-12, on a question of the builder): one that a client
+  sends ends `done` and changes nothing, so that a client cannot make a supervisor restart or forget a child.
 - A node that hosts the type of a child checks its entry when the child starts (decision 3). On another node a
   wrong entry is created, its child fails with the cause `state`, and the supervisor gives up on it (decision 5).
   The docs advise to host a supervisor where its children's types are hosted, so that a wrong entry is found at the
@@ -363,6 +365,8 @@ Not chosen:
   as messages of the actor; they would repeat what the core has.
 - A watch on `*` covers the actor itself. Its own failures (a `Redrive` to an actor that is gone) are no dead
   letters, and the watcher of today skips them too.
+- **A `Failed` that is not a notification records no letter** (decided by the main session on 2026-11-12, on a question of the builder): otherwise a client could plant a letter that a
+  later `Redrive` sends in the name of the dead-letters actor.
 - It keeps at most its capacity of letters (1,000 unless the type is built with another); the oldest go first, as
   today.
 - **A redrive:** the letter records the id of the new message. A letter that was sent again is not sent a second
@@ -401,6 +405,7 @@ A topic sends each published message to its subscribers.
 - **A `Deliver` counts only from the topic itself,** and it sends only to a current subscriber: one from anybody
   else ends `done` and sends nothing, and a publish that was queued before an `Unsubscribe` delivers nothing to
   that address after it. A client cannot make a topic send to an address of its choice.
+- **A `Failed` that is not a notification drops no subscriber** (decided by the main session on 2026-11-12, on a question of the builder).
 - A failed `Deliver` has the cause `commit`, so a supervisor above a topic would not restart it for that.
 - One subscriber gets the messages of a topic in the order they were published, as long as the clock of the store
   does not step back (decision 5), and except for a delivery that was tried again after a failed read of the

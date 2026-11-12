@@ -1402,7 +1402,8 @@ system.send(&supervisor, SupervisorMsg::Start).await?;
   lives: each `Start`, and each restart from above, tries it for 63 seconds and escalates again. A child that stopped
   itself comes back when a supervisor above restarts its supervisor.
 - **Its own messages.** `StartChild`, `Restarted` and `Escalate` count only when the supervisor sent them itself: from a
-  client, or redriven from dead letters, they end `done` and change nothing.
+  client, or redriven from dead letters, they end `done` and change nothing. A `Failed` or a `Stopped` counts only
+  when the store wrote it as a notification, so a client cannot make a supervisor restart or forget a child.
 - **Where to host it.** Host a supervisor on nodes that host the types of its children. Such a node checks an entry
   when the child starts: an address or a state the type cannot read is refused, and the child is given up at once. On
   another node a wrong entry is created, its child fails with the cause `state`, and the supervisor gives it up then.
@@ -1437,7 +1438,8 @@ system.watch(&WatchTarget::Every, &DeadLetters::default().address()?).await?;
 Over HTTP and on the command line the watch is `PUT /watches` or `cicada create watch --target '*' --watcher
 cicada.dead-letters/_`. A letter holds the failed message (its actor, type, payload, correlation id and sender), its
 error, its cause, its attempts and when it was recorded. The actor keeps at most its capacity of letters, 1,000 unless
-built with another, and drops the oldest first. Its own failures are no letters.
+built with another, and drops the oldest first. Its own failures are no letters, and neither is a `Failed` that a client
+sent: only a notification counts.
 
 - `Redrive { messageId }` sends the failed message again, once: to the same actor, with the same type, payload and
   correlation id, from the dead-letters actor. The letter holds the id of the new message (`redrivenAs`), and a message
@@ -1478,7 +1480,8 @@ system.send_with(&orders, shipped, SendOptions::new().correlation_id("c1")).awai
   of the publish. A subscriber gets the messages in the order they were published, unless a delivery was tried again.
   A `Deliver` from anybody else, or for an address that is no longer a subscriber, sends nothing.
 - A subscriber that is gone fails its own delivery and nobody else's (the cause `commit`). The topic watches itself,
-  not its subscribers: it is told of that failure and drops the subscriber.
+  not its subscribers: it is told of that failure and drops the subscriber. A `Failed` that a client sent drops
+  nobody.
 - A delivery whose send is refused at the call (no registered type for the address, or a type that does not take the
   message) is refused for good, sends nothing, and keeps the subscriber; an address that never gets a type costs one
   failed `Deliver` for each publish until it is unsubscribed. A delivery whose read of the store fails is tried again,

@@ -63,14 +63,15 @@ The operations guide, "Upgrading", has the same steps with more detail.
   restarts (3 in 60 seconds by default) it gives the child up and fails a message of its own as a handler does, so that
   a supervisor above restarts it; a child it cannot start or read fails a message that is refused for good. A child
   that stops itself or that somebody deletes is forgotten. `StartChild`, `Restarted` and `Escalate` count only from
-  the supervisor itself.
+  the supervisor itself, and a `Failed` or a `Stopped` only when the store wrote it as a notification.
 - Dead letters (`DeadLettersActor`, `cicada.dead-letters`): told of failed messages by a watch, with a capacity
   (1,000 by default), `Redrive` (once; it records the id of the new message, or why nothing was sent) and `Discard`.
-  Its own failures are no letters.
+  Its own failures are no letters, and neither is a `Failed` that is not a notification.
 - The topic (`TopicActor`, `cicada.topic`): `Subscribe`, `Unsubscribe` and `Publish`; each publish is delivered to each
   subscriber in a turn of its own, with the correlation id of the publish. A subscriber that is gone fails its own
-  delivery and is dropped through the topic's watch on itself; a delivery that is refused at the call fails for good
-  and keeps the subscriber; one whose read of the store fails is tried again.
+  delivery and is dropped through the topic's watch on itself, never for a `Failed` that is not a notification; a
+  delivery that is refused at the call fails for good and keeps the subscriber; one whose read of the store fails is
+  tried again.
 - `StoredMessage`: a message an actor keeps to send later, a type name and a JSON payload, built from a typed ref
   (`StoredMessage::for_ref`), so that a message of the wrong family does not compile. `Child::start` and
   `TopicMsg::publish` build one too.

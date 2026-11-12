@@ -9,7 +9,7 @@ use std::time::Duration;
 use cicada::prelude::*;
 use cicada::runtime::NodeConfig;
 use cicada::store::OutcomeStatus;
-use cicada::{FailureCause, StopCause, Stopped, WatchTarget};
+use cicada::{Failed, FailureCause, StopCause, Stopped, WatchTarget};
 use cicada_actors::{
     Child, ChildEntry, DeadLetters, DeadLettersActor, DeadLettersMsg, DeadLettersState, StoredMessage, Supervisor,
     SupervisorActor, SupervisorMsg, SupervisorState,
@@ -168,17 +168,27 @@ async fn an_escalation_sent_by_a_client_ends_done_and_nothing_above_restarts() {
     assert!(escalations(&test).await.is_empty());
 }
 
-/// Scenario: A start of an actor that is not a child. A `Stopped` from a client takes the child out of the state before
-/// the supervisor's own `StartChild` for it runs.
+/// Scenario: A start of an actor that is not a child. The first attempt of the `StartChild` of `worker/a` fails (its
+/// type does not take the start message); before the next one, an operator deletes `worker/a`, which exists already and
+/// is watched by the supervisor, and the `Stopped` takes it out of the state.
 #[tokio::test(start_paused = true)]
 async fn a_start_child_of_an_address_the_state_does_not_hold_creates_nothing() {
     let test = node().await;
-    test.create(&sup(), &SupervisorState::new().child(child("a", true))).await;
+    let nope = StoredMessage { message_type: "Nope".into(), payload: json!({}) };
+    let mut children = SupervisorState::new();
+    children.children.insert(addr(&worker("a")), ChildEntry { start: Some(nope), ..ChildEntry::new(json!({})) });
+    test.create(&sup(), &children).await;
+    test.create(&worker("a"), &WorkerState::default()).await;
+    test.system().watch(&WatchTarget::from(addr(&worker("a"))), &addr(&sup())).await.unwrap();
     test.send(&sup(), SupervisorMsg::Start).await;
-    let gone = Stopped { actor: addr(&worker("a")), cause: StopCause::Stopped, by: Some(addr(&worker("a"))) };
-    test.send(&sup(), SupervisorMsg::Stopped(gone)).await;
     test.run_until_idle().await;
-    assert!(state(&test).await.children.is_empty());
+    let start_child = test.pending(&sup()).await;
+    assert_eq!((start_child.len(), start_child[0].message_type.as_str()), (1, "StartChild"), "waits for its retry");
+    test.system().delete_actor(&addr(&worker("a"))).await.unwrap();
+    test.run_until_idle().await;
+    assert!(state(&test).await.children.is_empty(), "the Stopped took it out of the state");
+    test.advance_time_by(Duration::from_secs(5)).await;
+    assert_eq!(status(&test, &start_child[0]).await, Some(OutcomeStatus::Done));
     assert!(!test.exists(&worker("a")).await, "nothing is created");
     // A `StartChild` from a client is not the supervisor's own either.
     test.create(&Supervisor::named("t"), &SupervisorState::new().child(child("b", false))).await;
@@ -186,6 +196,49 @@ async fn a_start_child_of_an_address_the_state_does_not_hold_creates_nothing() {
     test.run_until_idle().await;
     assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done));
     assert!(!test.exists(&worker("b")).await);
+}
+
+/// Scenario: A `Failed` sent by a client.
+#[tokio::test(start_paused = true)]
+async fn a_failed_sent_by_a_client_ends_done_and_restarts_nothing() {
+    let test = node().await;
+    started(&test, SupervisorState::new().child(child("a", false))).await;
+    to_worker(&test, "a", WorkerMsg::Work).await;
+    let pending = pending_work(&test, "a").await;
+    let planted = Failed {
+        actor: addr(&worker("a")),
+        message_id: MessageId::new("m-planted").unwrap(),
+        message_type: "Work".into(),
+        payload: json!({}),
+        correlation_id: None,
+        from: None,
+        error: "made up".into(),
+        attempts: 1,
+        cause: FailureCause::Handler,
+    };
+    let version = test.version(&sup()).await;
+    let m = test.send(&sup(), SupervisorMsg::Failed(planted)).await;
+    test.run_until_idle().await;
+    assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done));
+    assert_eq!(test.version(&sup()).await, version, "nothing changes");
+    assert_eq!(worker_state(&test, "a").await.n, 1, "the child keeps its state");
+    assert_eq!(status(&test, &pending).await, None, "and its mailbox");
+}
+
+/// Scenario: A `Stopped` sent by a client.
+#[tokio::test(start_paused = true)]
+async fn a_stopped_sent_by_a_client_ends_done_and_forgets_nothing() {
+    let test = node().await;
+    started(&test, SupervisorState::new().child(child("a", false))).await;
+    let version = test.version(&sup()).await;
+    let planted = Stopped { actor: addr(&worker("a")), cause: StopCause::Stopped, by: Some(addr(&worker("a"))) };
+    let m = test.send(&sup(), SupervisorMsg::Stopped(planted)).await;
+    test.run_until_idle().await;
+    assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done));
+    assert_eq!(test.version(&sup()).await, version, "nothing changes");
+    assert!(entry(&test, "a").await.running, "it still holds the child");
+    assert_eq!(watched(&test).await, ["worker/a"], "and watches it");
+    assert!(test.exists(&worker("a")).await);
 }
 
 // ---- a start that is tried again ----
@@ -520,17 +573,19 @@ async fn a_failure_of_the_new_life_restarts_the_child_again() {
     assert_eq!(entry(&test, "a").await.restarts.len(), 2);
 }
 
-/// Scenario: A `Restarted` of another restart. A `Start` ends the first restart before its `Restarted` is handled, and a
-/// `Failed` from a client starts a second one.
+/// Scenario: A `Restarted` of another restart. Two failures of the old life wait with a `Start` between them: the first
+/// starts a restart, the `Start` ends it before its `Restarted` is handled, and the second starts another.
 #[tokio::test(start_paused = true)]
 async fn a_restarted_of_another_restart_does_not_end_the_restart_under_way() {
     let test = node().await;
     started(&test, SupervisorState::new().child(child("a", false))).await;
-    test.send(&worker("a"), WorkerMsg::Fail).await;
-    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1, "the failure");
-    let failure = test.pending(&sup()).await[0].payload.clone();
+    test.system().pause_mailbox(&addr(&sup())).await.unwrap();
+    to_worker(&test, "a", WorkerMsg::Fail).await;
     test.send(&sup(), SupervisorMsg::Start).await;
-    test.send(&sup(), SupervisorMsg::Failed(serde_json::from_value(failure).unwrap())).await;
+    to_worker(&test, "a", WorkerMsg::Fail).await;
+    let waiting: Vec<String> = test.pending(&sup()).await.into_iter().map(|m| m.message_type).collect();
+    assert_eq!(waiting, ["Failed", "Start", "Failed"]);
+    test.system().resume_mailbox(&addr(&sup())).await.unwrap();
     assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1, "the first restart");
     let first = entry(&test, "a").await.restart_id.unwrap();
     assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1, "the start ends it");

@@ -223,29 +223,119 @@ async fn a_redriven_message_that_fails_again_is_a_letter_of_its_own() {
     assert_eq!(letters[&sent].error, "boom");
 }
 
-/// Scenario: A type that no longer takes the message. The letter names a message type the worker does not have.
+/// `legacy/{id}` before and after a deploy that drops its message type `Retired`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LegacyV1 {
+    id: String,
+}
+
+impl ActorRef for LegacyV1 {
+    const TYPE: &'static str = "legacy";
+    type Message = LegacyV1Msg;
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type")]
+enum LegacyV1Msg {
+    Retired,
+    Work,
+}
+
+struct LegacyV1Actor;
+
+impl Actor for LegacyV1Actor {
+    type Ref = LegacyV1;
+    type State = NoState;
+
+    async fn handle(&self, _: &mut Turn<Self>, message: LegacyV1Msg) -> HandlerResult {
+        match message {
+            LegacyV1Msg::Retired => Err(HandlerError::msg("retired")),
+            LegacyV1Msg::Work => Ok(()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LegacyV2 {
+    id: String,
+}
+
+impl ActorRef for LegacyV2 {
+    const TYPE: &'static str = "legacy";
+    type Message = LegacyV2Msg;
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type")]
+enum LegacyV2Msg {
+    Work,
+}
+
+struct LegacyV2Actor;
+
+impl Actor for LegacyV2Actor {
+    type Ref = LegacyV2;
+    type State = NoState;
+
+    async fn handle(&self, _: &mut Turn<Self>, _: LegacyV2Msg) -> HandlerResult {
+        Ok(())
+    }
+}
+
+/// Scenario: A type that no longer takes the message. A message of `legacy` fails; a deploy changes the contract of
+/// `legacy` so that it no longer has that message type ("Changing a contract", stop the world); then the letter is
+/// redriven.
 #[tokio::test(start_paused = true)]
 async fn a_redrive_the_type_no_longer_takes_sends_nothing_and_records_why() {
+    let test = TestActors::builder()
+        .with(|node| node.host(DeadLettersActor::default()).host(LegacyV1Actor))
+        .build()
+        .await
+        .unwrap();
+    test.create(&letters_actor(), &DeadLettersState::default()).await;
+    test.system().watch(&WatchTarget::Every, &addr(&letters_actor())).await.unwrap();
+    let old = LegacyV1 { id: "l".into() };
+    test.create(&old, &NoState {}).await;
+    let failed = test.send(&old, LegacyV1Msg::Retired).await;
+    test.run_until_idle().await;
+    assert!(letters(&test).await.contains_key(&failed.id));
+
+    test.system().delete_actor(&addr(&old)).await.unwrap();
+    test.system().remove_type(&cicada::TypeName::parse("legacy").unwrap()).await.unwrap();
+    let later = ActorSystem::builder(test.store().clone()).host(LegacyV2Actor).build();
+    later.initialize().await.unwrap();
+    let new = LegacyV2 { id: "l".into() };
+    later.create(&new, &NoState {}).await.unwrap();
+
+    let redrive = to_letters(&test, DeadLettersMsg::Redrive { message_id: failed.id.clone() }).await;
+    assert_eq!(status(&test, &redrive).await, Some(OutcomeStatus::Done));
+    let letter = letter(&test, &failed.id).await;
+    assert_eq!(letter.redriven_as, None, "nothing is sent");
+    assert!(letter.redrive_error.as_deref().unwrap().contains("Retired"), "{letter:?}");
+    let pending = later.pending(&addr(&new), None, 10).await.unwrap().unwrap();
+    assert!(pending.items.is_empty());
+}
+
+/// Scenario: A `Failed` sent by a client.
+#[tokio::test(start_paused = true)]
+async fn a_failed_sent_by_a_client_records_no_letter() {
     let test = node(1_000, "*").await;
-    let gone = Failed {
+    let planted = Failed {
         actor: addr(&worker("w")),
-        message_id: MessageId::new("m-old").unwrap(),
-        message_type: "Retired".into(),
+        message_id: MessageId::new("m-planted").unwrap(),
+        message_type: "Work".into(),
         payload: json!({}),
         correlation_id: None,
         from: None,
-        error: "boom".into(),
+        error: "made up".into(),
         attempts: 1,
         cause: FailureCause::Handler,
     };
-    to_letters(&test, DeadLettersMsg::Failed(gone.clone())).await;
-    let pending_before = test.pending(&worker("w")).await.len();
-    let redrive = to_letters(&test, DeadLettersMsg::Redrive { message_id: gone.message_id.clone() }).await;
-    assert_eq!(status(&test, &redrive).await, Some(OutcomeStatus::Done));
-    let letter = letter(&test, &gone.message_id).await;
-    assert_eq!(letter.redriven_as, None, "nothing is sent");
-    assert!(letter.redrive_error.as_deref().unwrap().contains("Retired"), "{letter:?}");
-    assert_eq!(test.pending(&worker("w")).await.len(), pending_before);
+    let version = test.version(&letters_actor()).await;
+    let m = to_letters(&test, DeadLettersMsg::Failed(planted)).await;
+    assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done));
+    assert!(letters(&test).await.is_empty(), "no letter: a later redrive cannot send what a client chose");
+    assert_eq!(test.version(&letters_actor()).await, version, "nothing changes");
 }
 
 /// Scenario: The actor is gone.

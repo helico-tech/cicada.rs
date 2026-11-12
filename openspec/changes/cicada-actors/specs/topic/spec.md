@@ -93,3 +93,13 @@ and keep the subscriber. A delivery whose read of the store fails SHALL be tried
 - **WHEN** an address that names no actor is subscribed and a message is published
 - **THEN** its delivery ends `failed` with the cause `commit`, the topic then drops it, and a second publish makes
   no message for it
+
+### Requirement: Only a notification drops a subscriber
+
+A topic SHALL drop a subscriber only for a `Failed` that the store marked as a notification. A `Failed` that a client
+sent SHALL end `done` and change nothing.
+
+#### Scenario: A `Failed` sent by a client
+
+- **WHEN** a client sends a topic a `Failed` about a rejected delivery to one of its subscribers
+- **THEN** the message ends `done`, and nothing changes: the subscriber stays
