@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.9.0 — unreleased
+## 0.9.0 — 2026-11-12
 
 A breaking release: watches (ADR 0018, ADR 0023). An actor can watch another actor, the actors of a type, or every
 actor, and is told with a message in its mailbox when a message to a watched actor ends `failed` and when a watched
