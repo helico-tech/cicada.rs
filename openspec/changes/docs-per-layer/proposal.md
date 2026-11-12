@@ -26,6 +26,9 @@ To decide in the design:
 
 - What stays in the README.
 - Whether `docs/operations.md` stays one file or joins the guide of the app layer.
+- The check of the command line help for drift. The help of a binary depends on the name it was called with and
+  on the feature `tui` of `cicada-app`, which is on in a build of the workspace and off in a build of the crate
+  alone (found when `cicada-app` was reviewed).
 
 ## Capabilities
 
