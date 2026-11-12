@@ -497,9 +497,9 @@ impl<A: Actor> Turn<A> {
     /// fail for it.
     ///
     /// Control effects are buffered and applied by the commit together with the turn's other effects, or not at all,
-    /// by kind and not in the order of the calls: watches, deletes, creates, purges, pauses and resumes, then sends. So a
-    /// turn can create an actor, pause it and send it a message that waits. After a pause and a resume of one actor the
-    /// last call stands. Fails with [`TurnError::Invalid`] for a ref that has no address.
+    /// by kind and not in the order of the calls: watches, deletes, creates, purges, pauses and resumes, then sends.
+    /// So a turn can create an actor, pause it and send it a message that waits. After a pause and a resume of one
+    /// actor the last call stands. Fails with [`TurnError::Invalid`] for a ref that has no address.
     pub fn pause<R: ActorRef>(&mut self, actor: &R) -> Result<(), TurnError> {
         self.control(ControlEffect::Pause, &address_of(actor)?)
     }
@@ -509,8 +509,9 @@ impl<A: Actor> Turn<A> {
         self.control(ControlEffect::Pause, actor)
     }
 
-    /// Resumes `actor` at commit, as [`ActorSystem::resume_mailbox`](crate::ActorSystem::resume_mailbox) does: its turns
-    /// are claimed again. Applied as [`Self::pause`] is; after a pause and a resume of one actor the last call stands.
+    /// Resumes `actor` at commit, as [`ActorSystem::resume_mailbox`](crate::ActorSystem::resume_mailbox) does: its
+    /// turns are claimed again. Applied as [`Self::pause`] is; after a pause and a resume of one actor the last call
+    /// stands.
     pub fn resume<R: ActorRef>(&mut self, actor: &R) -> Result<(), TurnError> {
         self.control(ControlEffect::Resume, &address_of(actor)?)
     }

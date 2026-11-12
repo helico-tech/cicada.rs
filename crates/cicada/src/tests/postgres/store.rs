@@ -331,3 +331,53 @@ async fn a_hidden_record_is_minimal_without_payload_headers_correlation_id_or_er
     }
     db.cleanup().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_resume_by_a_commit_wakes_the_nodes_of_the_type_and_a_pause_does_not() {
+    use crate::store::{Control, ControlEffect};
+    let db = test_db!("s");
+    let listening = db.open().await;
+    let writer = db.open().await;
+    let (mut received, collector) = collect_wake_ups(&listening, type_name());
+    wait_listening(&listening).await;
+    let short = Duration::from_millis(300);
+    let long = Duration::from_secs(2);
+    let a = addr("pg/a");
+    let b = addr("pg-other/b");
+    writer.register(crate::tests::conformance::type_def(a.type_name(), "test")).await.unwrap();
+    writer.create(&a, json!({})).await.unwrap();
+    writer.register(crate::tests::conformance::type_def(b.type_name(), "test")).await.unwrap();
+    writer.create(&b, json!({})).await.unwrap();
+    assert!(writer.set_paused(&a, true).await.unwrap());
+    assert!(matches!(
+        writer.enqueue(OutgoingMessage::new(a.clone(), "T", json!(1))).await,
+        Ok(EnqueueResult::Enqueued(_))
+    ));
+    assert!(some_within(&mut received, long).await, "enqueue notifies");
+    while received.try_recv().is_ok() {}
+    let node = NodeId::new("w").unwrap();
+    let ttl = Duration::from_secs(10);
+    let absent = addr("pg/absent");
+    let steps = [
+        (ControlEffect::Pause, a.clone(), false, "a pause by a commit does not notify"),
+        (ControlEffect::Resume, absent, false, "a resume of an actor that is not there does not notify"),
+        (ControlEffect::Resume, a.clone(), true, "a resume by a commit notifies"),
+    ];
+    for (effect, actor, notifies, what) in steps {
+        assert!(matches!(
+            writer.enqueue(OutgoingMessage::new(b.clone(), "T", json!(1))).await,
+            Ok(EnqueueResult::Enqueued(_))
+        ));
+        let claim_b = writer.claim_due(&types(other()), &node, ttl, 1).await.unwrap().remove(0);
+        let mut commit = CommitRequest::new(claim_b.actor, claim_b.epoch, claim_b.message.id, TurnOutcome::Done);
+        commit.controls = vec![Control { effect, actor }];
+        assert!(matches!(writer.commit(commit).await, Ok(CommitResult::Committed { .. })));
+        if notifies {
+            assert!(some_within(&mut received, long).await, "{what}");
+        } else {
+            assert!(none_within(&mut received, short).await, "{what}");
+        }
+    }
+    collector.abort();
+    db.cleanup().await;
+}

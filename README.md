@@ -227,9 +227,9 @@ on until it returns and holds a runtime worker thread meanwhile. Run it with `to
 An actor may have a **parent** (ADR 0019). `turn.create_child(&ref, &state)` creates an actor whose parent is the
 actor that runs the turn; `turn.create` and every create from outside a turn (`ActorSystem::create`, `PUT`) create an
 independent one. The parent is stored with the child and never changes, and the address stays `type/key`. Deleting an
-actor (`delete_actor`, `DELETE /actors/{type}/{key}`, `turn.delete`) or stopping it (`turn.stop()`) removes it and every descendant
-(its children, theirs, and so on) in one transaction: their pending messages end `purged`, and a turn running on one
-commits nothing. Pause, resume and purge apply to one actor only.
+actor (`delete_actor`, `DELETE /actors/{type}/{key}`, `turn.delete`) or stopping it (`turn.stop()`) removes it and
+every descendant (its children, theirs, and so on) in one transaction: their pending messages end `purged`, and a turn
+running on one commits nothing. Pause, resume and purge apply to one actor only.
 
 A child create of a child of the same parent that exists already leaves it untouched, as every create does. It never
 takes over an actor: one that exists as an independent actor or as a child of another one makes the commit fail, and

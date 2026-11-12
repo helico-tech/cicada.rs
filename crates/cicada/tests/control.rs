@@ -627,3 +627,25 @@ async fn a_delete_by_a_turn_wakes_the_node_of_the_watcher() {
     system.stop().await;
     store.close().await;
 }
+
+/// Scenario: A resume wakes the node, for a turn that a started node runs by hand (`run_due_turns`). Its dispatch
+/// loop did not run the turn, so only the wake-up after the commit tells it.
+#[tokio::test(start_paused = true)]
+async fn a_resume_by_a_turn_that_a_node_runs_by_hand_wakes_its_dispatch_loop() {
+    let (system, store) = started().await;
+    let elsewhere = ActorSystem::builder(store.clone()).host(UnitActor(Arc::default())).build();
+    for key in ["boss", "w"] {
+        system.create(&unit(key), &Notes::default()).await.unwrap();
+    }
+    system.pause_mailbox(&address("w")).await.unwrap();
+    system.send(&unit("w"), UnitMsg::Work).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(10)).await; // the dispatch loop sleeps for its poll interval now
+    elsewhere.send(&unit("boss"), run(vec![Op::Resume { to: to("w") }])).await.unwrap(); // does not wake `system`
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    assert!(state_of(&system, "boss").await.notes.is_empty());
+    assert_eq!(system.run_due_turns(1).await.unwrap(), 1, "the turn of boss, run by hand");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(state_of(&system, "w").await.notes, ["work"], "handled at once, not after the next poll");
+    system.stop().await;
+    store.close().await;
+}

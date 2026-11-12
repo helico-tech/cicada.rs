@@ -269,9 +269,9 @@ When the next change lands, add a section `## X.Y.Z — unreleased` to the chang
   each level with `GET /actors/{type}/{key}/children` and deleting the deepest actors first, or raise `socket_timeout`
   (`PostgresOptions`) for the node that runs the removal. A tree of many thousands of actors with full mailboxes is
   better removed bottom-up by its own code. A turn that deletes the root of a large tree is such a removal too, in its
-own commit, as a `stop()` is. One more reason: on PostgreSQL the watchers of the removed root are locked
-  for the whole removal, so a turn running on one of them cannot renew its lease meanwhile; a removal that takes
-  nearly as long as the lease costs that turn its lease, and its handler runs again.
+  own commit, as a `stop()` is. One more reason: on PostgreSQL the watchers of the removed root are locked for the
+  whole removal, so a turn running on one of them cannot renew its lease meanwhile; a removal that takes nearly as long
+  as the lease costs that turn its lease, and its handler runs again.
 - **Store down.** Nothing proceeds and HTTP answers 503 `store-unavailable`; `ActorClient` retries sends with the same
   id. Nodes recover on their own when the store returns: the dispatch loop retries claims after `poll_interval`, and
   the PostgreSQL wake-up listener reconnects with a back-off (from 250 ms, doubling up to 30 s),

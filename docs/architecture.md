@@ -131,18 +131,19 @@ Creates come before purges, pauses and resumes, and those before sends, so a tur
 paused, or empty a mailbox and put a first message into it. Calls of one turn on one actor have one result: the same
 effect twice is applied once, of a pause and a resume the last call stands, and a delete after a create of the same
 actor fails at the call. A turn that creates an actor Y and deletes an actor of which Y is a descendant ends with a new
-Y, in either order of the calls: the old Y goes with the tree. When one commit removes an actor for more than one reason, an actor the turn names in a
-delete reads `deleted`, the turn's own actor `stopped`, and every other `parent`; a watcher the commit removes gets
-nothing, also when the commit creates it again.
+Y, in either order of the calls: the old Y goes with the tree. When one commit removes an actor for more than one
+reason, an actor the turn names in a delete reads `deleted`, the turn's own actor `stopped`, and every other `parent`;
+a watcher the commit removes gets nothing, also when the commit creates it again.
 
 A watch is set and removed by the turn of its watcher (`turn.watch`, `turn.unwatch`, applied before the creates and
 sends, in the order of the calls) or from outside, where the watcher must exist (ADR 0023). When a message ends
 `failed`, the same transaction puts a `Failed` into the mailbox of every watcher of the actor's address, of a prefix of
-its type and of `*`; when a turn stops its actor, or a delete from outside or by a turn removes one, a `Stopped` goes to every watcher of the
-address of each removed actor, as a type target tells of failures only. A rescheduled, done or cancelled message tells
-nobody, and neither does a notification that fails, so two actors that watch each other cannot loop. A watcher that
-does not exist, or that the same event removes, gets nothing; a notification never fails the commit of the watched
-actor. The notifications of one event are written in the order of the actor they are about and then of the watcher.
+its type and of `*`; when a turn stops its actor, or a delete from outside or by a turn removes one, a `Stopped` goes
+to every watcher of the address of each removed actor, as a type target tells of failures only. A rescheduled, done or
+cancelled message tells nobody, and neither does a notification that fails, so two actors that watch each other cannot
+loop. A watcher that does not exist, or that the same event removes, gets nothing; a notification never fails the
+commit of the watched actor. The notifications of one event are written in the order of the actor they are about and
+then of the watcher.
 
 | Situation | Message outcome | Effects |
 | --- | --- | --- |

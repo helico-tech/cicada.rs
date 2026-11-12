@@ -180,7 +180,17 @@ Two more rules for PostgreSQL (first review):
   created the actor between the lock and the create, the delete would see nothing and the create would leave that
   other actor in place: the commit would succeed with a state that no order of the two gives. So for an address
   that a commit both deletes and creates, the store first makes sure that it holds the lock of a row at that
-  address, as a create already does, and only then removes what is there and creates the new actor.
+  address, as a create already does, and only then ends what is there and starts the new actor.
+- **A restart of an actor that is there keeps its row** (decided by the main session on the builder's report and the
+  validator's probes, 2026-11-12). Under the lock it holds, PostgreSQL ends the old life in the row and starts the
+  new one in it: the old mailbox is purged, the descendants are removed, the watches the actor held as a watcher go,
+  and every column is set as a create sets it (state, version, parent, creation time, no lease, no cancel request,
+  not paused, nothing due). Why: a commit that waits for the lock of that row, such as one that sends to the actor,
+  would under READ COMMITTED skip a deleted row and not yet see the inserted one, and so reject a send to an actor
+  that never went away. Not chosen: a delete and an insert, with a re-run of the waiting commit when it finds its
+  target gone. The result is the same on all three stores (the in-memory store and SQLite, with one writer, delete
+  the row and create a new one); the conformance case "a restart of an actor that is there starts a new life in
+  every field" pins it.
 - **A restart of an actor that is not there removes nothing** (second review). The row that the store inserts to
   hold the lock is its own. Nothing was removed, so no `Stopped` goes to the watchers of that address, in any
   store.

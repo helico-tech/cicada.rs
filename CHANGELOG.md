@@ -31,9 +31,9 @@ get clearer words. No schema and no contract changes.
   another actor, by a purge or a delete. The sentence on leases is exact: a lease ends only with its turn or with its
   actor.
 - A commit applies, in this order: the watches of the turn, the outcome, the cancels, the deletes, the creates, the
-  purges, the pauses and resumes, the sends, the state, the release of the lease and last the notifications. Deletes before
-  creates give the restart; creates before pauses let a turn create an actor that starts paused; purges before sends
-  let it empty a mailbox and put a first message into it.
+  purges, the pauses and resumes, the sends, the state, the release of the lease and last the notifications. Deletes
+  before creates give the restart; creates before pauses let a turn create an actor that starts paused; purges before
+  sends let it empty a mailbox and put a first message into it.
 
 ### Added
 
@@ -51,8 +51,9 @@ get clearer words. No schema and no contract changes.
   It may pause, resume and purge its own actor. Of a pause and a resume of one actor, the last call stands; the same
   effect twice is applied once.
 - The node logs each control effect of a commit it saw succeed, at the info level, with the acting actor, the effect
-  and the target (`Turn of … for …: delete …`), and wakes its dispatch loop after it, so that a resumed actor and a
-  notified watcher are handled at once on every store. On PostgreSQL a resume by a commit wakes the nodes of the type.
+  and the target (`Turn of … for …: delete …`), and wakes its dispatch loop after it, so that a resumed actor and
+  a notified watcher are handled at once on every store. On PostgreSQL a resume by a commit wakes the nodes of the
+  type.
 - ADR 0024 records the rules and why a restart is not the forced release that ADR 0015 refused: the message of the turn
   that loses its actor ends `purged` and is never handled again.
 

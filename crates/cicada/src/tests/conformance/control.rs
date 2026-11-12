@@ -7,7 +7,7 @@ use std::sync::LazyLock;
 use crate::address::{ActorAddress, TypeName};
 use crate::store::{
     ActorCreate, Backend, CommitRequest, CommitResult, Control, ControlEffect, CreateResult, DeleteResult, Message,
-    MessageId, OutcomeStatus, OutgoingMessage, SetWatchResult, StateChange, StoreError, TurnOutcome,
+    MessageId, OutcomeStatus, OutgoingMessage, RenewResult, SetWatchResult, StateChange, StoreError, TurnOutcome,
 };
 use crate::watch::{StopCause, Stopped, WatchChange, WatchTarget};
 use serde_json::{Value, json};
@@ -431,8 +431,8 @@ pub async fn control_the_watches_of_the_commit_are_set_before_its_deletes<B: Fix
     .await
 }
 
-/// control - the watchers of an actor a commit deletes read `deleted`, with `by` and `causedBy`, and the watchers of its
-/// descendants read `parent`
+/// control - the watchers of an actor a commit deletes read `deleted`, with `by` and `causedBy`, and the watchers of
+/// its descendants read `parent`
 pub async fn control_a_deleted_actors_watchers_read_deleted_with_by_and_caused_by_and_its_descendants_parent<
     B: FixtureFactory,
 >(
@@ -650,6 +650,225 @@ pub async fn control_a_restart_of_an_actor_that_is_not_there_racing_a_create_end
             let state = store.get(&x).await.unwrap().expect("x").state;
             assert_eq!(state, json!({"restart": true}), "round {round}: the turn's create stands");
         }
+    })
+    .await
+}
+
+/// control - a restart of an actor that is there starts a new life in every field: the state, the version, the parent
+/// (a root restarted as a child, a child as a root, a child under another parent), the creation time, the lease, the
+/// cancel request, the pause, the mailbox and when it is due, the children and the watches it held
+pub async fn control_a_restart_of_an_actor_that_is_there_starts_a_new_life_in_every_field<B: FixtureFactory>(
+    backend: &B,
+) {
+    store_test(backend, async |t| {
+        let store = t.store();
+        let p = t.new_actor_named(&TYPE, "p", json!({})).await;
+        let q = t.new_actor_named(&TYPE, "q", json!({})).await;
+        let x = t.new_actor_named(&OTHER, "x", json!({"n": 1})).await;
+        let w = watcher(t, "a").await;
+        let far = watcher(t, "far").await;
+        // The old life: version 1, a child, a watch it holds, a watch on it, a running turn with a cancel request, a
+        // pending message, paused.
+        let y = other("y");
+        let c = turn_of(t, &x).await;
+        let changed = CommitRequest {
+            state: StateChange::NewState(json!({"n": 5})),
+            creates: vec![child(&y, json!({}))],
+            ..done(&c)
+        };
+        assert_eq!(t.commit_ok(changed).await.version, 1);
+        watch(&*store, &x, &w).await;
+        watch(&*store, &far, &x).await;
+        let running = t.send(&x).await;
+        let waiting = t.send(&x).await;
+        let on_x = single(t.claim_with(&[&OTHER], &NODE_B, LONG_LEASE, 10).await);
+        assert_eq!(on_x.message.id, running.id);
+        assert!(store.request_cancel(&x).await.unwrap(), "a cancel request");
+        assert!(store.running_turn(&x).await.unwrap().expect("runs").cancel_requested);
+        assert!(store.set_paused(&x, true).await.unwrap());
+        let before = store.get(&x).await.unwrap().unwrap();
+        assert_eq!((before.version, before.paused, before.parent.clone()), (1, true, None));
+        t.advance_ticks(1).await; // the new life is created later than the old one
+
+        // p restarts x as its child, with a send: a root becomes a child.
+        let c = turn_of(t, &p).await;
+        let restart = CommitRequest {
+            event: event("e1"),
+            controls: vec![delete(&x)],
+            creates: vec![child(&x, json!({"n": 2}))],
+            sends: vec![to(&x)],
+            ..done(&c)
+        };
+        let committed = t.commit_ok(restart).await;
+        let after = store.get(&x).await.unwrap().expect("a new x");
+        assert_eq!(after.state, json!({"n": 2}), "state");
+        assert_eq!(after.version, 0, "version");
+        assert!(!after.paused, "paused");
+        assert_eq!(after.parent, Some(p.clone()), "parent: a root becomes a child of the committing actor");
+        let committed_at = outcome_record(&*store, &c.message.id).await.expect("done").finished_at;
+        assert!(after.created_at > before.created_at, "created_at: {:?}, {:?}", before.created_at, after.created_at);
+        assert_eq!(after.created_at, committed_at, "created_at is the time of the commit, as for a create");
+        assert_eq!(status_of(&*store, &running.id).await, Some(OutcomeStatus::Purged), "the message being handled");
+        assert_eq!(status_of(&*store, &waiting.id).await, Some(OutcomeStatus::Purged), "the pending message");
+        assert_eq!(ids(&t.pending(&x).await), ids(&committed.sent), "the mailbox");
+        assert_eq!(store.running_turn(&x).await.unwrap(), None, "no turn runs on the new life");
+        assert_eq!(store.renew(&x, on_x.epoch, LONG_LEASE).await.unwrap(), RenewResult::LeaseLost, "renew");
+        let late = CommitRequest { state: StateChange::NewState(json!({"late": 1})), ..done(&on_x) };
+        assert_eq!(t.commit(late).await, CommitResult::LeaseLost, "the old turn commits nothing");
+        assert_eq!(store.get(&x).await.unwrap().expect("x").state, json!({"n": 2}));
+        assert_eq!(store.get(&y).await.unwrap(), None, "the descendant");
+        assert!(store.children(&x, None, 10).await.unwrap().items.is_empty(), "children of the new life");
+        assert_eq!(store.children(&p, None, 10).await.unwrap().items, std::slice::from_ref(&x), "children of p");
+        assert!(store.watches(Some(&x), None, None, 10).await.unwrap().items.is_empty(), "the watches it held");
+        let on = store.watches(None, Some(&WatchTarget::Actor(x.clone())), None, 10).await.unwrap().items;
+        assert_eq!(on.len(), 1, "the watch on it stays");
+        let got = notifications(t, &w).await;
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].id.as_str(), "e1.0");
+        assert_eq!(stopped_of(&got[0]), Stopped { actor: x.clone(), cause: StopCause::Deleted, by: Some(p.clone()) });
+        assert_eq!(got[0].caused_by.as_ref(), Some(&c.message.id));
+        assert!(notifications(t, &x).await.is_empty(), "the new life has no notification");
+        let listed = store.list("", None, 100).await.unwrap().items;
+        assert_eq!(listed.iter().filter(|a| **a == x).count(), 1, "listed once: {listed:?}");
+        assert!(!listed.contains(&y), "{listed:?}");
+        // The new life is due, its claim has a greater epoch, and no cancel request is left.
+        let turn = single(t.claim_with(&[&OTHER], &NODE_B, LONG_LEASE, 10).await);
+        assert_eq!(turn.actor, x);
+        assert!(turn.epoch > on_x.epoch, "S4: {} after {}", turn.epoch, on_x.epoch);
+        assert_eq!((turn.version, turn.state.clone()), (0, json!({"n": 2})));
+        assert!(!store.running_turn(&x).await.unwrap().expect("runs").cancel_requested, "no cancel request");
+        assert_matches!(store.renew(&x, turn.epoch, LONG_LEASE).await.unwrap(), RenewResult::Renewed(_));
+        assert_eq!(t.commit(done(&on_x)).await, CommitResult::LeaseLost, "the old turn, again");
+        t.commit_ok(done(&turn)).await;
+
+        // q restarts x as a root: a child becomes a root.
+        let c = turn_of(t, &q).await;
+        let again =
+            CommitRequest { controls: vec![delete(&x)], creates: vec![independent(&x, json!({"n": 3}))], ..done(&c) };
+        t.commit_ok(again).await;
+        let record = store.get(&x).await.unwrap().expect("x");
+        assert_eq!((record.state, record.parent), (json!({"n": 3}), None), "a child becomes a root");
+        assert!(store.children(&p, None, 10).await.unwrap().items.is_empty());
+        // p restarts it as its child, then q restarts it as its own child: a child under another parent.
+        let c = turn_of(t, &p).await;
+        let mine = CommitRequest { controls: vec![delete(&x)], creates: vec![child(&x, json!({"n": 4}))], ..done(&c) };
+        t.commit_ok(mine).await;
+        assert_eq!(store.get(&x).await.unwrap().expect("x").parent, Some(p.clone()));
+        let c = turn_of(t, &q).await;
+        let theirs =
+            CommitRequest { controls: vec![delete(&x)], creates: vec![child(&x, json!({"n": 5}))], ..done(&c) };
+        t.commit_ok(theirs).await;
+        assert_eq!(store.get(&x).await.unwrap().expect("x").parent, Some(q.clone()), "under another parent");
+        assert!(store.children(&p, None, 10).await.unwrap().items.is_empty());
+        assert_eq!(store.children(&q, None, 10).await.unwrap().items, std::slice::from_ref(&x));
+
+        // A restart without a send of an actor with a pending message leaves nothing due; a later send is claimed.
+        let old = t.send(&x).await;
+        let c = turn_of(t, &p).await;
+        let quiet =
+            CommitRequest { controls: vec![delete(&x)], creates: vec![independent(&x, json!({"n": 6}))], ..done(&c) };
+        t.commit_ok(quiet).await;
+        assert_eq!(status_of(&*store, &old.id).await, Some(OutcomeStatus::Purged));
+        assert!(t.claim_types(&[&OTHER]).await.is_empty(), "nothing is due");
+        let new = t.send(&x).await;
+        assert_eq!(t.claim_one_types(&[&OTHER]).await.message.id, new.id);
+    })
+    .await
+}
+
+/// control - a create of a descendant of a deleted actor makes a new independent actor, and a stopping turn that
+/// restarts its child takes the new child with it, unless it restarts it as an independent actor
+pub async fn control_a_descendant_of_a_deleted_actor_created_again_and_a_restart_in_a_stopping_turn<
+    B: FixtureFactory,
+>(
+    backend: &B,
+) {
+    store_test(backend, async |t| {
+        let store = t.store();
+        let w = watcher(t, "a").await;
+        let p = t.new_actor_named(&TYPE, "p", json!({})).await;
+        let x = t.new_actor_named(&OTHER, "x", json!({})).await;
+        let (y, z) = (other("y"), other("z"));
+        with_children(t, &x, &[&y]).await;
+        with_children(t, &y, &[&z]).await;
+        for on in [&x, &y, &z] {
+            watch(&*store, on, &w).await;
+        }
+        let old = t.send(&y).await;
+        // p deletes x and creates y, a descendant of x, as an independent actor, and sends to it.
+        let c = turn_of(t, &p).await;
+        let committed = t
+            .commit_ok(CommitRequest {
+                event: event("e1"),
+                controls: vec![delete(&x)],
+                creates: vec![independent(&y, json!({"new": 1}))],
+                sends: vec![to(&y)],
+                ..done(&c)
+            })
+            .await;
+        assert_eq!(store.get(&x).await.unwrap(), None);
+        assert_eq!(store.get(&z).await.unwrap(), None);
+        let record = store.get(&y).await.unwrap().expect("a new y");
+        assert_eq!((record.state, record.version, record.parent), (json!({"new": 1}), 0, None));
+        assert_eq!(status_of(&*store, &old.id).await, Some(OutcomeStatus::Purged));
+        assert_eq!(ids(&t.pending(&y).await), ids(&committed.sent));
+        let mut got = stopped_at(t, &w).await;
+        got.sort_by(|a, b| a.0.cmp(&b.0));
+        let removed = [(x.clone(), StopCause::Deleted), (y.clone(), StopCause::Parent), (z.clone(), StopCause::Parent)];
+        assert_eq!(got, removed);
+        let turn = t.claim_one_types(&[&OTHER]).await;
+        assert_eq!(turn.actor, y);
+        t.commit_ok(done(&turn)).await;
+
+        // A turn that restarts its child as its child, sends to it and stops: everything goes.
+        let q = t.new_actor_named(&TYPE, "q", json!({})).await;
+        let (k1, k2, g) = (other("k1"), other("k2"), other("g"));
+        with_children(t, &q, &[&k1, &k2]).await;
+        with_children(t, &k1, &[&g]).await;
+        let v = watcher(t, "b").await;
+        for on in [&q, &k1, &k2, &g] {
+            watch(&*store, on, &v).await;
+        }
+        let c = turn_of(t, &q).await;
+        let m = t
+            .commit_ok(CommitRequest {
+                controls: vec![delete(&k1)],
+                creates: vec![child(&k1, json!({"again": 1}))],
+                sends: vec![to(&k1)],
+                state: StateChange::Stop,
+                ..done(&c)
+            })
+            .await;
+        for gone in [&q, &k1, &k2, &g] {
+            assert_eq!(store.get(gone).await.unwrap(), None, "{gone}");
+        }
+        assert_eq!(status_of(&*store, &m.sent[0].id).await, Some(OutcomeStatus::Purged), "the send to the new child");
+        let mut got = stopped_at(t, &v).await;
+        got.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut expected = vec![
+            (q.clone(), StopCause::Stopped),
+            (k1.clone(), StopCause::Deleted),
+            (k2.clone(), StopCause::Parent),
+            (g.clone(), StopCause::Parent),
+        ];
+        expected.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(got, expected);
+
+        // A turn that restarts its child as an independent actor and stops: the new actor stays.
+        let r = t.new_actor_named(&TYPE, "r", json!({})).await;
+        let k3 = other("k3");
+        with_children(t, &r, &[&k3]).await;
+        let c = turn_of(t, &r).await;
+        t.commit_ok(CommitRequest {
+            controls: vec![delete(&k3)],
+            creates: vec![independent(&k3, json!({"free": 1}))],
+            state: StateChange::Stop,
+            ..done(&c)
+        })
+        .await;
+        assert_eq!(store.get(&r).await.unwrap(), None);
+        let record = store.get(&k3).await.unwrap().expect("k3 stays");
+        assert_eq!((record.state, record.parent), (json!({"free": 1}), None));
     })
     .await
 }

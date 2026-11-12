@@ -111,13 +111,13 @@ impl Clock for SystemClock {
 /// notifications into the mailboxes of watchers, in their own transaction: a commit that ends a message `failed` (a
 /// [`Failed`](crate::Failed) for each watcher of the actor's address, of a prefix of its type at a dot, or of `*`,
 /// unless the message is itself a notification), and a commit that stops or deletes and a delete (a
-/// [`Stopped`](crate::Stopped) for each watcher of the address of each removed actor). Each watcher gets one notification per actor; a watcher that
-/// does not exist, or that the same event removes, gets nothing, and the watches of a watcher that does not exist are
-/// removed. Removing an actor removes the watches it holds as a watcher; the watches on it as a target stay. The
-/// notifications of one event are written last, in the order of the actor they are about and then of the watcher,
-/// named after the event's id with their number (`<event>.0`, …), and marked as notifications
-/// ([`Message::notification`]). One whose id is in use is skipped. A watch changes only under the lock of its watcher's
-/// row.
+/// [`Stopped`](crate::Stopped) for each watcher of the address of each removed actor). Each watcher gets one
+/// notification per actor; a watcher that does not exist, or that the same event removes, gets nothing, and the
+/// watches of a watcher that does not exist are removed. Removing an actor removes the watches it holds as a watcher;
+/// the watches on it as a target stay. The notifications of one event are written last, in the order of the actor they
+/// are about and then of the watcher, named after the event's id with their number (`<event>.0`, …), and marked as
+/// notifications ([`Message::notification`]). One whose id is in use is skipped. A watch changes only under the lock of
+/// its watcher's row.
 #[async_trait]
 pub(crate) trait Backend: Send + Sync + 'static {
     // ---- clock ----

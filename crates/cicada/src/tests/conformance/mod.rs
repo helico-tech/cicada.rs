@@ -262,6 +262,8 @@ macro_rules! for_each_case {
             control_a_commit_that_deletes_its_own_actor_or_pauses_and_resumes_one_actor_is_invalid,
             control_two_actors_that_restart_each_others_neighbours_while_a_third_sends_to_them_end_without_an_error,
             control_a_restart_of_an_actor_that_is_not_there_racing_a_create_ends_with_the_state_of_the_restart,
+            control_a_restart_of_an_actor_that_is_there_starts_a_new_life_in_every_field,
+            control_a_descendant_of_a_deleted_actor_created_again_and_a_restart_in_a_stopping_turn,
         );
     };
 }

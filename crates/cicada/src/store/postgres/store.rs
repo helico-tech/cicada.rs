@@ -86,16 +86,17 @@ macro_rules! transaction {
 /// one instance are serialised (S3); `commit` locks the committing instance together with every instance it sends to,
 /// creates, pauses, resumes, purges or deletes, in address order, which avoids deadlocks between commits. A commit
 /// that deletes and creates one address restarts it in its row (a new life), so a transaction waiting for that row
-/// finds the actor; for an address that is absent, the row it inserts to hold the lock is the create. `claim_due` locks candidates with
-/// `FOR UPDATE SKIP LOCKED`, so concurrent claims from many nodes never wait for each other and never share an
-/// instance (S4). Transactions PostgreSQL aborts for a deadlock or serialization failure are re-run, up to 8 times.
+/// finds the actor; for an address that is absent, the row it inserts to hold the lock is the create. `claim_due`
+/// locks candidates with `FOR UPDATE SKIP LOCKED`, so concurrent claims from many nodes never wait for each other and
+/// never share an instance (S4). Transactions PostgreSQL aborts for a deadlock or serialization failure are re-run,
+/// up to 8 times.
 ///
-/// **Trees.** A removal (`delete`, or a commit that stops or deletes) locks the instance, then its children, then theirs, each
-/// level with its own statement. A child is created only in a commit that holds its parent's row lock, so once a
-/// level is locked no commit can add a child below it, and the next statement sees every child committed before. One
-/// recursive query would read a single snapshot and could miss a child that a commit it waited for added. These locks
-/// are not in address order, so a removal can deadlock with a commit that sends up or down the tree; the re-run covers
-/// that.
+/// **Trees.** A removal (`delete`, or a commit that stops or deletes) locks the instance, then its children, then
+/// theirs, each level with its own statement. A child is created only in a commit that holds its parent's row lock, so
+/// once a level is locked no commit can add a child below it, and the next statement sees every child committed
+/// before. One recursive query would read a single snapshot and could miss a child that a commit it waited for added.
+/// These locks are not in address order, so a removal can deadlock with a commit that sends up or down the tree; the
+/// re-run covers that.
 ///
 /// **Watches.** A watch changes only under the lock of its watcher's row: the watcher's own commit holds it, and a
 /// change from outside takes it. A commit that ends a message `failed`, stops or deletes, and a delete, first read the
