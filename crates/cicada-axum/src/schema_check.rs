@@ -3,20 +3,21 @@
 //!
 //! The validator is `jsonschema`, on draft 2020-12. It asserts no `format`, whatever draft a schema names, and loads
 //! nothing from outside the schema document: no file and no network. A schema it cannot compile is not enforced at the
-//! door, and a warning names it once in the life of the process; the sample checks fail on it. The check asks whether a
-//! value matches and, when it does not, for the first place that does not match, never for a list: a list of places
-//! costs memory in proportion to the mismatches (decision 8). Every value is checked on a thread of its own with a large
-//! stack, as the validator recurses per level of a type that refers to itself (decision 11).
+//! door, and a warning names it once in the life of the process; the sample checks fail on it. The door asks only
+//! whether a value matches (`is_valid`) and names no place: finding a place can cost time and memory without bound for a
+//! type with several shapes (decision 8). The sample checks, which run on a developer's own samples, name the first
+//! place. Every value is checked on a thread of its own with a large stack, as the validator recurses per level of a
+//! type that refers to itself (decision 11).
 
 use std::collections::HashSet;
 use std::sync::{LazyLock, Mutex};
 
-use jsonschema::{Draft, Retrieve, Uri, ValidationError};
+use jsonschema::{Draft, Retrieve, Uri, ValidationError, Validator};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-/// What the validator says of a value.
+/// What the validator says of a sample.
 #[derive(Debug, PartialEq)]
 enum Verdict {
     /// The value matches the schema.
@@ -42,54 +43,38 @@ impl Retrieve for NoRetriever {
 /// payload or a state of 126 levels. It is address space: only the pages the check touches are used.
 const CHECK_STACK: usize = 64 << 20;
 
-/// Checks `value` against `schema` on a scoped thread of its own with [`CHECK_STACK`] of stack, so that no nesting the
-/// parser lets through overflows the stack of a thread of the runtime, whatever the type. Nothing is skipped.
-fn verdict(schema: &Value, value: &Value) -> Verdict {
+/// Runs `work` on a scoped thread of its own with [`CHECK_STACK`] of stack, so that no nesting the parser lets through
+/// overflows the stack of a thread of the runtime, whatever the type. A thread that cannot be started fails the request
+/// (500), as the check must not be skipped.
+fn on_own_stack<T: Send>(work: impl FnOnce() -> T + Send) -> T {
     std::thread::scope(|scope| {
         let thread = std::thread::Builder::new().name("cicada-schema-check".to_owned()).stack_size(CHECK_STACK);
-        // A thread that cannot be started fails the request (500), as the check must not be skipped.
-        let handle = thread.spawn_scoped(scope, || verdict_here(schema, value)).expect("a thread to check a value");
+        let handle = thread.spawn_scoped(scope, work).expect("a thread to check a value");
         handle.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic))
     })
 }
 
-/// Checks `value` against `schema` on the calling thread: whether it matches, and when it does not, the first place.
-fn verdict_here(schema: &Value, value: &Value) -> Verdict {
+/// The validator of `schema`: draft 2020-12, no format asserted, nothing loaded. `Err` with why it cannot be used.
+fn validator(schema: &Value) -> Result<Validator, String> {
     let options =
         jsonschema::options().with_draft(Draft::Draft202012).should_validate_formats(false).with_retriever(NoRetriever);
-    let validator = match options.build(schema) {
-        Ok(validator) => validator,
-        // One line: a reason may hold line breaks.
-        Err(e) => return Verdict::Unusable(e.to_string().split_whitespace().collect::<Vec<_>>().join(" ")),
-    };
-    if validator.is_valid(value) {
-        return Verdict::Matches;
-    }
-    match validator.validate(value) {
-        Ok(()) => Verdict::Matches,
-        Err(error) => Verdict::DoesNotMatch(place(&error)),
-    }
+    // One line: a reason may hold line breaks.
+    options.build(schema).map_err(|e| e.to_string().split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
-/// The place of a mismatch: "at /path: reason", "the top level" for the value itself. It names no address of the schema
-/// and no path into it.
-fn place(error: &ValidationError) -> String {
-    let path = error.instance_path().to_string();
-    let at = if path.is_empty() { "the top level" } else { &path };
-    format!("at {at}: {error}")
+/// Whether `value` matches `schema`, on a stack of its own; `Err` with why the schema cannot be used. Only `is_valid`:
+/// it builds no error, so its cost is linear in the value whatever the type.
+fn matches(schema: &Value, value: &Value) -> Result<bool, String> {
+    on_own_stack(|| validator(schema).map(|validator| validator.is_valid(value)))
 }
 
-/// The check of the door: `Err` with the first place of `value` that does not match `schema`. A schema that cannot be
+/// The check of the door: true when `value` matches `schema`. It names no place (decision 8). A schema that cannot be
 /// used lets `value` through; the first time, a warning names it with `what` ("message type 'Add' of counter").
-pub(crate) fn check(schema: &Value, value: &Value, what: &str) -> Result<(), String> {
-    match verdict(schema, value) {
-        Verdict::Matches => Ok(()),
-        Verdict::DoesNotMatch(place) => Err(place),
-        Verdict::Unusable(why) => {
-            warn_once(schema, what, &why);
-            Ok(())
-        }
-    }
+pub(crate) fn check(schema: &Value, value: &Value, what: &str) -> bool {
+    matches(schema, value).unwrap_or_else(|why| {
+        warn_once(schema, what, &why);
+        true
+    })
 }
 
 /// Logs that the schema of `what` cannot be used, once for each schema text in the life of the process; true when it
@@ -103,9 +88,37 @@ fn warn_once(schema: &Value, what: &str, why: &str) -> bool {
     first
 }
 
+/// The check of a sample, on a stack of its own: whether it matches and, when it does not, the first place. Finding the
+/// place can take long for a deep value of a type with several shapes; a sample is a developer's own, in a test.
+fn verdict(schema: &Value, value: &Value) -> Verdict {
+    on_own_stack(|| {
+        let validator = match validator(schema) {
+            Ok(validator) => validator,
+            Err(why) => return Verdict::Unusable(why),
+        };
+        if validator.is_valid(value) {
+            return Verdict::Matches;
+        }
+        match validator.validate(value) {
+            Ok(()) => Verdict::Matches,
+            Err(error) => Verdict::DoesNotMatch(place(&error)),
+        }
+    })
+}
+
+/// The place of a mismatch: "at /path: reason", "the top level" for the value itself. It names no address of the schema
+/// and no path into it.
+fn place(error: &ValidationError) -> String {
+    let path = error.instance_path().to_string();
+    let at = if path.is_empty() { "the top level" } else { &path };
+    format!("at {at}: {error}")
+}
+
 /// Panics unless `sample` (`{"type": "Add", ...}`, a message of the family `M` in its own serde form) passes the
 /// registered schema of its message type and decodes as `M`, as the HTTP door and a node that hosts the type check
-/// it. The panic says which of the two refused the sample and why; a schema that the validator cannot use fails too.
+/// it. The panic says which of the two refused the sample and why, and for the schema the first place that does not
+/// match, which the door does not name; finding it can take long for a deep value of a type with several shapes (an
+/// enum with data, an `Option` of a struct). A schema that the validator cannot use fails too.
 ///
 /// Feed it what the clients of a type send over HTTP, and what the type itself serialises:
 ///
@@ -141,8 +154,9 @@ pub fn assert_message_sample<M: JsonSchema + DeserializeOwned>(sample: &Value) {
 }
 
 /// Panics unless `sample` passes the state schema of `S` and decodes as `S`, as the HTTP door and a node that hosts
-/// the type check the state of a create. The panic says which of the two refused the sample and why; a schema that
-/// the validator cannot use fails too.
+/// the type check the state of a create. The panic says which of the two refused the sample and why, and for the schema
+/// the first place that does not match, which the door does not name; finding it can take long for a deep value of a
+/// type with several shapes. A schema that the validator cannot use fails too.
 ///
 /// ```
 /// # use schemars::JsonSchema;
@@ -260,7 +274,7 @@ mod tests {
         for schema in refs {
             let why = unusable(&schema);
             assert!(why.contains("not present in a registry"), "{why}");
-            assert_eq!(check(&schema, &json!({"n": 1}), "message type 'Read' of files"), Ok(()));
+            assert!(check(&schema, &json!({"n": 1}), "message type 'Read' of files"));
         }
         let accepted = listener.accept();
         std::fs::remove_dir_all(&dir).unwrap();
@@ -272,7 +286,7 @@ mod tests {
     fn a_schema_with_a_pattern_the_validator_does_not_know_is_not_enforced_and_warned_about_once() {
         let schema = object(json!({"code": {"type": "string", "pattern": "["}}));
         assert!(unusable(&schema).contains("is not a \"regex\""));
-        assert_eq!(check(&schema, &json!({"code": 5}), "message type 'Code' of codes"), Ok(()));
+        assert!(check(&schema, &json!({"code": 5}), "message type 'Code' of codes"));
         assert!(!warn_once(&schema, "message type 'Code' of codes", "again"), "warned once already");
         let other = object(json!({"other": {"type": "string", "pattern": "["}}));
         assert!(warn_once(&other, "message type 'Other' of codes", "a schema of its own"));
@@ -313,7 +327,7 @@ mod tests {
     /// Scenarios: A value at the deepest level the parser allows; A type with several schema steps between its levels
     /// (decision 11). Three such types, at 21 and 24 levels (where a check on a default stack ended the process in a
     /// test build) and at 126, the deepest payload or state a request body holds; as a state and as a payload, matching
-    /// and not. Through the check function, on a thread with the default stack of 2 MiB.
+    /// and not. Through the check of the door and that of the sample checks, on a thread with the default stack of 2 MiB.
     #[test]
     fn a_value_is_checked_on_a_stack_of_its_own_whatever_its_type_and_depth() {
         fn shape<T: Shape>() {
@@ -322,6 +336,7 @@ mod tests {
             for levels in [21, 24, 126] {
                 for ok in [true, false] {
                     for (schema, value) in [(&state, build::<T>(levels, ok)), (&put, payload::<T>(levels, ok))] {
+                        assert_eq!(check(schema, &value, T::NAME), ok, "the door: {} at {levels} levels", T::NAME);
                         match verdict(schema, &value) {
                             Verdict::Matches => assert!(ok, "{} at {levels} levels matches", T::NAME),
                             Verdict::DoesNotMatch(place) => assert!(!ok, "{} at {levels} levels: {place}", T::NAME),

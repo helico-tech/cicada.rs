@@ -229,11 +229,11 @@ async fn a_node_that_does_not_host_the_type_accepts_any_payload_and_the_hosting_
 struct Calls(std::sync::Mutex<Vec<(Value, Value)>>);
 
 impl Calls {
-    /// A check that records its call and answers `answer`.
-    fn check(&self, answer: Result<(), &'static str>) -> impl Fn(&Value, &Value) -> Result<(), String> + Send + Sync {
+    /// A check that records its call and answers `matches`.
+    fn check(&self, matches: bool) -> impl Fn(&Value, &Value) -> bool + Send + Sync {
         move |schema: &Value, value: &Value| {
             self.0.lock().unwrap().push((schema.clone(), value.clone()));
-            answer.map_err(str::to_owned)
+            matches
         }
     }
 
@@ -242,6 +242,10 @@ impl Calls {
     }
 }
 
+/// The sentence of a refusal by the schema of a payload of `Add` to a counter, and of a state of a counter.
+const ADD_REFUSED: &str = "Payload of 'Add' does not match the registered schema; GET /types/counter has it";
+const STATE_REFUSED: &str = "State does not match the registered schema; GET /types/counter has it";
+
 #[tokio::test(start_paused = true)]
 async fn the_check_gets_the_schema_of_the_message_type_or_the_state_and_the_value() {
     let test = harness().await;
@@ -249,7 +253,7 @@ async fn the_check_gets_the_schema_of_the_message_type_or_the_state_and_the_valu
     test.create(&a(), &CounterState::default()).await;
     let calls = Calls::default();
     let sent = system
-        .send_message_checked(&a().address(), "Add", json!({"n": 1}), SendOptions::new(), &calls.check(Ok(())))
+        .send_message_checked(&a().address(), "Add", json!({"n": 1}), SendOptions::new(), &calls.check(true))
         .await
         .unwrap();
     accepted(sent);
@@ -258,11 +262,12 @@ async fn the_check_gets_the_schema_of_the_message_type_or_the_state_and_the_valu
 
     let calls = Calls::default();
     let b = Counter::new("b").address();
-    let created = system.create_actor_checked(&b, json!({"total": 2}), &calls.check(Ok(()))).await.unwrap();
+    let created = system.create_actor_checked(&b, json!({"total": 2}), &calls.check(true)).await.unwrap();
     assert_eq!(created, CreateActorResult::Created);
     assert_eq!(calls.all(), vec![(schema::root_schema::<CounterState>(), json!({"total": 2}))]);
 }
 
+/// A refusal names no place; a value that the decoder takes gets the sentence alone, on either node.
 #[tokio::test(start_paused = true)]
 async fn a_refusal_of_the_check_stores_nothing_on_a_node_that_hosts_the_type_or_not() {
     let test = harness().await;
@@ -271,23 +276,15 @@ async fn a_refusal_of_the_check_stores_nothing_on_a_node_that_hosts_the_type_or_
     for system in [test.system(), &send_only] {
         let calls = Calls::default();
         let refused = system
-            .send_message_checked(
-                &a().address(),
-                "Add",
-                json!({"n": 1}),
-                SendOptions::new(),
-                &calls.check(Err("at /n: no")),
-            )
+            .send_message_checked(&a().address(), "Add", json!({"n": 1}), SendOptions::new(), &calls.check(false))
             .await
             .unwrap();
-        let error = "Payload of 'Add' does not match the schema: at /n: no".to_owned();
-        assert_eq!(refused, SendResult::InvalidPayload { message_type: "Add".into(), error });
+        assert_eq!(refused, SendResult::InvalidPayload { message_type: "Add".into(), error: ADD_REFUSED.into() });
         assert!(test.pending(&a()).await.is_empty());
 
         let b = Counter::new("b").address();
-        let refused = system.create_actor_checked(&b, json!({"total": 2}), &calls.check(Err("at /total: no"))).await;
-        let error = "State does not match the schema: at /total: no".to_owned();
-        assert_eq!(refused.unwrap(), CreateActorResult::InvalidState(error));
+        let refused = system.create_actor_checked(&b, json!({"total": 2}), &calls.check(false)).await;
+        assert_eq!(refused.unwrap(), CreateActorResult::InvalidState(STATE_REFUSED.into()));
         assert_eq!(system.get_actor(&b).await.unwrap(), None);
         assert_eq!(calls.all().len(), 2);
     }
@@ -299,7 +296,7 @@ async fn the_check_is_not_called_for_a_repeated_id_an_unknown_type_an_unknown_me
     let system = test.system();
     test.create(&a(), &CounterState::default()).await;
     let calls = Calls::default();
-    let check = calls.check(Err("never asked"));
+    let check = calls.check(false);
     let (to, id) = (a().address(), MessageId::random());
     let first = system.send_message(&to, "Add", json!({"n": 1}), SendOptions::new().id(id.clone())).await;
     let first = accepted(first.unwrap());
@@ -319,61 +316,73 @@ async fn the_check_is_not_called_for_a_repeated_id_an_unknown_type_an_unknown_me
     assert!(calls.all().is_empty(), "{:?}", calls.all());
 }
 
+/// On a node that hosts the type the check runs first; when it refuses, the decoder's reason follows its sentence, and
+/// when it accepts, the decoder alone answers.
 #[tokio::test(start_paused = true)]
-async fn on_a_node_that_hosts_the_type_the_check_runs_before_the_decoder() {
+async fn on_a_node_that_hosts_the_type_the_check_runs_before_the_decoder_whose_reason_it_adds() {
     let test = harness().await;
     let system = test.system();
+    let send_only = ActorSystem::builder(test.store().clone()).build();
     test.create(&a(), &CounterState::default()).await;
     let (refuse, accept) = (Calls::default(), Calls::default());
-    let (refuse, accept) = (refuse.check(Err("at /n: no")), accept.check(Ok(())));
+    let (refuse, accept) = (refuse.check(false), accept.check(true));
     let to = a().address();
-    let send = |check| system.send_message_checked(&to, "Add", json!({"n": "x"}), SendOptions::new(), check);
     let error = |result: SendResult| match result {
         SendResult::InvalidPayload { error, .. } => error,
         other => panic!("{other:?}"),
     };
-    assert_eq!(error(send(&refuse).await.unwrap()), "Payload of 'Add' does not match the schema: at /n: no");
-    assert!(error(send(&accept).await.unwrap()).starts_with("Payload of 'Add' cannot be decoded"));
+    let send = |system: &ActorSystem, check| {
+        let system = system.clone();
+        let to = to.clone();
+        async move { system.send_message_checked(&to, "Add", json!({"n": "x"}), SendOptions::new(), check).await }
+    };
+    let both = error(send(system, &refuse).await.unwrap());
+    assert!(both.starts_with(&format!("{ADD_REFUSED}. Payload of 'Add' cannot be decoded: ")), "{both}");
+    assert_eq!(error(send(&send_only, &refuse).await.unwrap()), ADD_REFUSED);
+    assert!(error(send(system, &accept).await.unwrap()).starts_with("Payload of 'Add' cannot be decoded"));
 
     let b = Counter::new("b").address();
-    let create = |check| system.create_actor_checked(&b, json!({"total": "x"}), check);
     let state_error = |result: CreateActorResult| match result {
         CreateActorResult::InvalidState(e) => e,
         other => panic!("{other:?}"),
     };
-    assert!(state_error(create(&refuse).await.unwrap()).starts_with("State does not match the schema"));
-    assert!(state_error(create(&accept).await.unwrap()).starts_with("State cannot be decoded"));
+    let both = state_error(system.create_actor_checked(&b, json!({"total": "x"}), &refuse).await.unwrap());
+    assert!(both.starts_with(&format!("{STATE_REFUSED}. State cannot be decoded: ")), "{both}");
+    let alone = state_error(send_only.create_actor_checked(&b, json!({"total": "x"}), &refuse).await.unwrap());
+    assert_eq!(alone, STATE_REFUSED);
+    let decoder = state_error(system.create_actor_checked(&b, json!({"total": "x"}), &accept).await.unwrap());
+    assert!(decoder.starts_with("State cannot be decoded"), "{decoder}");
     assert!(test.pending(&a()).await.is_empty());
 }
 
-/// http-schema-check, Scenario: A very long value (the cut of the core).
+/// http-schema-check, Scenarios: A very long value; A very long value that only the decoder refuses (the cut of the
+/// core). The decoder of a hosting node quotes a text where it wants a number.
 #[tokio::test(start_paused = true)]
-async fn the_detail_of_a_refusal_by_the_check_or_the_decoder_is_cut_at_its_limit_with_a_mark() {
+async fn the_detail_of_a_refusal_is_cut_at_its_limit_with_a_mark() {
     let test = harness().await;
     let system = test.system();
     test.create(&a(), &CounterState::default()).await;
-    let long = |_: &Value, _: &Value| Err(format!("at /n: '{}' does not match", "é".repeat(200_000)));
-    let sent = system.send_message_checked(&a().address(), "Add", json!({"n": 1}), SendOptions::new(), &long).await;
-    let SendResult::InvalidPayload { error, .. } = sent.unwrap() else { panic!("refused") };
-    assert_eq!(error.chars().count(), crate::runtime::MAX_REFUSAL_DETAIL);
-    assert!(error.starts_with("Payload of 'Add' does not match the schema: at /n: 'éé") && error.ends_with(" … (cut)"));
-    let created = system.create_actor_checked(&Counter::new("b").address(), json!({"total": 1}), &long).await;
-    let CreateActorResult::InvalidState(error) = created.unwrap() else { panic!("refused") };
-    assert_eq!(error.chars().count(), crate::runtime::MAX_REFUSAL_DETAIL);
-    assert!(error.starts_with("State does not match the schema: ") && error.ends_with(" … (cut)"), "{error:.80}");
-
-    // The decoder of a hosting node quotes a text where it wants a number; its detail is cut the same way.
-    let accept = |_: &Value, _: &Value| Ok(());
     let long = json!("é".repeat(200_000));
-    let sent =
-        system.send_message_checked(&a().address(), "Add", json!({"n": long}), SendOptions::new(), &accept).await;
-    let SendResult::InvalidPayload { error, .. } = sent.unwrap() else { panic!("refused") };
-    assert_eq!(error.chars().count(), crate::runtime::MAX_REFUSAL_DETAIL);
-    assert!(error.starts_with("Payload of 'Add' cannot be decoded: ") && error.ends_with(" … (cut)"), "{error:.80}");
-    let created = system.create_actor_checked(&Counter::new("b").address(), json!({"total": long}), &accept).await;
-    let CreateActorResult::InvalidState(error) = created.unwrap() else { panic!("refused") };
-    assert_eq!(error.chars().count(), crate::runtime::MAX_REFUSAL_DETAIL);
-    assert!(error.starts_with("State cannot be decoded: ") && error.ends_with(" … (cut)"), "{error:.80}");
+    for (check, start) in [
+        (false, format!("{ADD_REFUSED}. Payload of 'Add' cannot be decoded: ")),
+        (true, "Payload of 'Add' cannot be decoded: ".to_owned()),
+    ] {
+        let check = move |_: &Value, _: &Value| check;
+        let to = a().address();
+        let sent = system.send_message_checked(&to, "Add", json!({"n": long}), SendOptions::new(), &check).await;
+        let SendResult::InvalidPayload { error, .. } = sent.unwrap() else { panic!("refused") };
+        assert_eq!(error.chars().count(), crate::runtime::MAX_REFUSAL_DETAIL);
+        assert!(error.starts_with(&start) && error.ends_with(" … (cut)"), "{error:.120}");
+    }
+    for (check, start) in
+        [(false, format!("{STATE_REFUSED}. State cannot be decoded: ")), (true, "State cannot be decoded: ".to_owned())]
+    {
+        let check = move |_: &Value, _: &Value| check;
+        let created = system.create_actor_checked(&Counter::new("b").address(), json!({"total": long}), &check).await;
+        let CreateActorResult::InvalidState(error) = created.unwrap() else { panic!("refused") };
+        assert_eq!(error.chars().count(), crate::runtime::MAX_REFUSAL_DETAIL);
+        assert!(error.starts_with(&start) && error.ends_with(" … (cut)"), "{error:.120}");
+    }
 }
 
 #[tokio::test(start_paused = true)]

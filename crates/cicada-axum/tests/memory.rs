@@ -1,7 +1,9 @@
-//! A refused request costs memory in proportion to its size (http-schema-check). A counting allocator measures the most
-//! bytes held at once: during the check of a value alone (through the sample check of a state, which copies nothing),
-//! and during a request that the door refuses at the check, above the same request refused before the check. A test
-//! binary of its own, with one test, so that no other test allocates meanwhile.
+//! A refused request costs time and memory in proportion to its size (http-schema-check). A counting allocator measures
+//! the most bytes held at once while the door refuses a request at the check (and, on a node that hosts the type, the
+//! decoder after it), above the same request refused before the check, on a node that hosts the types and on one that
+//! does not; each refusal is timed. A test binary of its own, with one test, so that no other test allocates meanwhile.
+
+use std::time::{Duration, Instant};
 
 use axum::Router;
 use axum::body::Body;
@@ -31,6 +33,18 @@ struct Line {
     quantity: u32,
 }
 
+/// The same lines in a part that may be left out: an `anyOf` in the schema.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct Basket {
+    id: String,
+    batch: Option<Batch>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct Batch {
+    lines: Vec<Line>,
+}
+
 /// A list that refers to itself through an `Option`.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct Node {
@@ -38,59 +52,52 @@ struct Node {
     next: Option<Box<Node>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Orders {
-    id: String,
-}
-
-impl ActorRef for Orders {
-    const TYPE: &'static str = "orders";
-    type Message = OrderMsg;
-}
-
+/// Operators whose variants share the names of their fields: a `oneOf` at every level.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "type")]
-enum OrderMsg {
-    Place { order: Order },
+#[serde(tag = "op")]
+enum Expr {
+    Lit { v: i64 },
+    Add { l: Box<Expr>, r: Box<Expr> },
+    Mul { l: Box<Expr>, r: Box<Expr> },
+    Sub { l: Box<Expr>, r: Box<Expr> },
 }
 
-struct OrderActor;
+/// A test type whose state is `S` and whose message `Put` carries a `v` of type `V`.
+macro_rules! test_type {
+    ($ref:ident, $msg:ident, $actor:ident, $name:literal, $state:ty, $value:ty) => {
+        #[derive(Debug, Clone, Serialize, Deserialize)]
+        struct $ref {
+            id: String,
+        }
 
-impl Actor for OrderActor {
-    type Ref = Orders;
-    type State = Order;
+        impl ActorRef for $ref {
+            const TYPE: &'static str = $name;
+            type Message = $msg;
+        }
 
-    async fn handle(&self, _turn: &mut Turn<Self>, _message: OrderMsg) -> HandlerResult {
-        Ok(())
-    }
+        #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+        #[serde(tag = "type")]
+        enum $msg {
+            Put { v: $value },
+        }
+
+        struct $actor;
+
+        impl Actor for $actor {
+            type Ref = $ref;
+            type State = $state;
+
+            async fn handle(&self, _turn: &mut Turn<Self>, _message: $msg) -> HandlerResult {
+                Ok(())
+            }
+        }
+    };
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Nodes {
-    id: String,
-}
-
-impl ActorRef for Nodes {
-    const TYPE: &'static str = "nodes";
-    type Message = NodeMsg;
-}
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "type")]
-enum NodeMsg {
-    Grow { node: Node },
-}
-
-struct NodeActor;
-
-impl Actor for NodeActor {
-    type Ref = Nodes;
-    type State = Node;
-
-    async fn handle(&self, _turn: &mut Turn<Self>, _message: NodeMsg) -> HandlerResult {
-        Ok(())
-    }
-}
+test_type!(Orders, OrderMsg, OrderActor, "orders", Order, Order);
+test_type!(Baskets, BasketMsg, BasketActor, "baskets", Basket, Basket);
+test_type!(Nodes, NodeMsg, NodeActor, "nodes", Node, Node);
+test_type!(Calcs, CalcMsg, CalcActor, "calcs", Expr, Expr);
 
 fn object(fields: Vec<(&str, Value)>) -> Value {
     Value::Object(fields.into_iter().map(|(k, v)| (k.to_owned(), v)).collect::<Map<_, _>>())
@@ -101,22 +108,40 @@ fn order() -> Value {
     object(vec![("id", json!("o-1")), ("lines", Value::Array(vec![json!(0); 520_000])), ("note", Value::Null)])
 }
 
-/// 100 levels of a list that refers to itself, each with 2,000 texts where numbers are wanted.
-fn node() -> Value {
-    let level = |next: Value| object(vec![("items", Value::Array(vec![json!("x"); 2_000])), ("next", next)]);
-    let mut node = level(Value::Null);
-    for _ in 1..100 {
-        node = level(node);
+/// A basket whose optional batch has 520,000 numbers where lines are wanted.
+fn basket() -> Value {
+    object(vec![("id", json!("b-1")), ("batch", object(vec![("lines", Value::Array(vec![json!(0); 520_000]))]))])
+}
+
+/// 100 levels of a list that refers to itself, each with 2,000 items: wrong ones in every level, or below the first
+/// level only (in the optional part).
+fn node(first_level_matches: bool) -> Value {
+    let level = |item: Value, next: Value| object(vec![("items", Value::Array(vec![item; 2_000])), ("next", next)]);
+    let mut node = level(json!("x"), Value::Null);
+    for depth in 1..100 {
+        let item = if first_level_matches && depth == 99 { json!(1) } else { json!("x") };
+        node = level(item, node);
     }
     node
 }
 
-/// The most bytes held at once while `work` runs, above what was held before.
-async fn most<T>(work: impl Future<Output = T>) -> (usize, T) {
+/// An expression `depth` deep with one wrong leaf.
+fn expr(depth: usize) -> Value {
+    let lit = |v: Value| object(vec![("op", json!("Lit")), ("v", v)]);
+    let mut value = lit(json!("x"));
+    for i in 0..depth {
+        value = object(vec![("op", json!(["Add", "Mul", "Sub"][i % 3])), ("l", value), ("r", lit(json!(1)))]);
+    }
+    value
+}
+
+/// The most bytes held at once while `work` runs, above what was held before, and how long it took.
+async fn measure<T>(work: impl Future<Output = T>) -> (usize, Duration, T) {
     let before = ALLOCATOR.current_usage();
     ALLOCATOR.reset_peak_usage();
+    let start = Instant::now();
     let result = work.await;
-    (ALLOCATOR.peak_usage() - before, result)
+    (ALLOCATOR.peak_usage() - before, start.elapsed(), result)
 }
 
 /// Sends `body` and returns the status and the detail.
@@ -129,71 +154,70 @@ async fn call(app: &Router, method: &str, uri: &str, body: String) -> (u16, Stri
     (status, problem["detail"].as_str().unwrap_or_default().to_owned())
 }
 
-/// Scenario: A request with many mismatches. The check holds at most a few times the body, alone and within a request,
-/// for a payload and a state; with the first validator it held about 470 times the body.
+/// Scenarios: A request with many mismatches; A small nested value with one mistake. The check adds at most a few
+/// times the body (and what compiling the schema takes) and answers within seconds, on both nodes, for a payload and a
+/// state. Asking the validator for a place held hundreds of MiB for these, and took minutes for the expression.
 #[tokio::test]
-async fn a_refused_request_costs_memory_in_proportion_to_its_size() {
-    std::panic::set_hook(Box::new(|_| {})); // the sample checks refuse by panicking
-    // The check of a value alone: the sample check of a state copies nothing before the check.
-    for (what, value) in [("an order", order()), ("a deep list", node())] {
-        let size = value.to_string().len();
-        let (held, refused) = most(async {
-            let sample = std::panic::AssertUnwindSafe(|| {
-                if what == "an order" {
-                    cicada_axum::assert_state_sample::<Order>(&value)
-                } else {
-                    cicada_axum::assert_state_sample::<Node>(&value)
-                }
-            });
-            std::panic::catch_unwind(sample).is_err()
-        })
-        .await;
-        assert!(refused, "{what} is refused");
-        println!("the check alone of {what} of {size} bytes held at most {held} bytes");
-        assert!(held < 4 * size, "the check alone of {what} held {held} bytes for {size}");
-    }
-
-    // A request: the same body refused before the check (an unknown message type, a type that is not registered) and
-    // at the check. What the check adds is the difference.
-    let system = ActorSystem::builder(Store::memory()).host(OrderActor).host(NodeActor).build();
-    system.initialize().await.unwrap(); // checks and decodes at the door, runs no turn
-    let app = cicada_axum::actor_api(system);
-    let empty_order = object(vec![("id", json!("o-1")), ("lines", json!([])), ("note", Value::Null)]);
+async fn a_refused_request_costs_time_and_memory_in_proportion_to_its_size() {
+    let store = Store::memory();
+    let host =
+        ActorSystem::builder(store.clone()).host(OrderActor).host(BasketActor).host(NodeActor).host(CalcActor).build();
+    host.initialize().await.unwrap(); // checks and decodes at the door, runs no turn
+    let other = ActorSystem::builder(store).build();
+    let nodes = [("the hosting node", cicada_axum::actor_api(host)), ("the other node", cicada_axum::actor_api(other))];
     let created = |state: Value| object(vec![("state", state)]).to_string();
-    assert_eq!(call(&app, "PUT", "/actors/orders/o", created(empty_order)).await.0, 201);
-    assert_eq!(call(&app, "PUT", "/actors/nodes/n", created(json!({"items": []}))).await.0, 201);
-    let send = |message_type: &str, field: &str, value: Value| {
-        object(vec![("type", json!(message_type)), ("payload", object(vec![(field, value)]))]).to_string()
-    };
-    let cases = [
-        (
-            "an order as a payload",
-            "POST",
-            "/actors/orders/o/messages",
-            "/actors/orders/o/messages",
-            send("Nope", "order", order()),
-            send("Place", "order", order()),
-        ),
-        ("an order as a state", "PUT", "/actors/ghosts/p", "/actors/orders/p", created(order()), created(order())),
-        (
-            "a deep list as a payload",
-            "POST",
-            "/actors/nodes/n/messages",
-            "/actors/nodes/n/messages",
-            send("Nope", "node", node()),
-            send("Grow", "node", node()),
-        ),
-        ("a deep list as a state", "PUT", "/actors/ghosts/m", "/actors/nodes/m", created(node()), created(node())),
+    let small = [
+        ("orders", object(vec![("id", json!("o")), ("lines", json!([])), ("note", Value::Null)])),
+        ("baskets", object(vec![("id", json!("b")), ("batch", Value::Null)])),
+        ("nodes", json!({"items": []})),
+        ("calcs", json!({"op": "Lit", "v": 1})),
     ];
-    for (what, method, before_uri, uri, before_body, body) in cases {
-        let size = body.len();
-        let (before, (status, _)) = most(call(&app, method, before_uri, before_body)).await;
-        assert!(status == 422 || status == 404, "{what} is refused before the check: {status}");
-        let (held, (status, detail)) = most(call(&app, method, uri, body)).await;
-        assert_eq!(status, 422, "{what}: {detail}");
-        assert!(detail.contains("does not match the schema"), "{what}: {detail}");
-        let added = held.saturating_sub(before);
-        println!("{what}, a body of {size} bytes: refused before the check {before}, at the check {held} bytes");
-        assert!(added < 4 * size, "the check of {what} added {added} bytes for a body of {size}");
+    for (name, state) in small {
+        assert_eq!(call(&nodes[0].1, "PUT", &format!("/actors/{name}/a"), created(state)).await.0, 201);
+    }
+    let send = |message_type: &str, value: Value| {
+        object(vec![("type", json!(message_type)), ("payload", object(vec![("v", value)]))]).to_string()
+    };
+    type Case = (&'static str, &'static str, fn() -> Value);
+    let cases: [Case; 5] = [
+        ("an order of 520,000 wrong lines", "orders", order),
+        ("an optional batch of 520,000 wrong lines", "baskets", basket),
+        ("100 levels of a list, wrong in every level", "nodes", || node(false)),
+        ("100 levels of a list, wrong below the first level", "nodes", || node(true)),
+        ("an expression 30 deep with one wrong leaf", "calcs", || expr(30)),
+    ];
+    for (what, name, value) in cases {
+        for (node, app) in &nodes {
+            let kinds = [
+                (
+                    "a payload",
+                    "POST",
+                    format!("/actors/{name}/a/messages"),
+                    send("Nope", value()),
+                    send("Put", value()),
+                ),
+                ("a state", "PUT", format!("/actors/ghosts/{name}"), created(value()), created(value())),
+            ];
+            for (kind, method, before_uri, before_body, body) in kinds {
+                let uri = if kind == "a state" { format!("/actors/{name}/new") } else { before_uri.clone() };
+                let size = body.len();
+                let (before, _, (status, _)) = measure(call(app, method, &before_uri, before_body)).await;
+                assert!(status == 422 || status == 404, "{what} as {kind} is refused before the check: {status}");
+                let (held, took, (status, detail)) = measure(call(app, method, &uri, body)).await;
+                let case = format!("{what} as {kind} on {node}");
+                assert_eq!(status, 422, "{case}: {detail:.300}");
+                assert!(detail.contains("does not match the registered schema; GET /types/"), "{case}: {detail:.300}");
+                let added = held.saturating_sub(before);
+                println!("{case}, a body of {size} bytes: {took:?}; held {before} before the check, {held} at it");
+                // A hosting node also decodes, and its decoder copies a payload as JSON values first: linear, about
+                // 17 times the text of a list of short items. The check itself adds next to nothing.
+                let times = if *node == "the hosting node" && kind == "a payload" { 24 } else { 4 };
+                assert!(
+                    added < times * size + (1 << 20),
+                    "{case}: the refusal added {added} bytes for a body of {size}"
+                );
+                assert!(took < Duration::from_secs(10), "{case}: the refusal took {took:?}");
+            }
+        }
     }
 }

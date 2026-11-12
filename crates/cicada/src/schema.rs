@@ -14,13 +14,13 @@ use crate::message::{MessageError, TYPE_TAG};
 
 const DRAFT: &str = "https://json-schema.org/draft/2020-12/schema";
 
-/// Checks a payload or a state against its registered schema: `check(schema, value)`, `Err` with the reason, such as
-/// `at /n: "x" is not of type "integer"`. [`ActorSystem::send_message_checked`] and
-/// [`ActorSystem::create_actor_checked`] take one from their caller and put the reason into their refusal.
+/// Checks a payload or a state against its registered schema: `check(schema, value)`, true when it matches. It names no
+/// place: finding one can cost without bound for a type with several shapes (ADR 0026, decision 8 of the change).
+/// [`ActorSystem::send_message_checked`] and [`ActorSystem::create_actor_checked`] take one from their caller.
 ///
 /// [`ActorSystem::send_message_checked`]: crate::ActorSystem::send_message_checked
 /// [`ActorSystem::create_actor_checked`]: crate::ActorSystem::create_actor_checked
-pub type SchemaCheck<'a> = &'a (dyn Fn(&Value, &Value) -> Result<(), String> + Send + Sync);
+pub type SchemaCheck<'a> = &'a (dyn Fn(&Value, &Value) -> bool + Send + Sync);
 
 /// The schema of `T` as a standalone document: `$schema`, `title`, the body and the `$defs` it uses.
 pub fn root_schema<T: JsonSchema>() -> Value {

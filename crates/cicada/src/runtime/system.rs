@@ -719,14 +719,16 @@ impl ActorSystem {
     /// type also decodes `state` with the state type and refuses it when that fails. The state is not checked against
     /// its schema; [`Self::create_actor_checked`] is this call with that check.
     pub async fn create_actor(&self, address: &ActorAddress, state: Value) -> Result<CreateActorResult, OpError> {
-        self.create_actor_checked(address, state, &|_, _| Ok(())).await
+        self.create_actor_checked(address, state, &|_, _| true).await
     }
 
     /// [`Self::create_actor`] with `check`, which gets the state schema of the registered contract and `state`. It runs
     /// on every node, after the registered type and the `null` check, and before what only a node that hosts the type
     /// checks (the address, then the decoder), so a state that does not match gets the same answer on every node. Its
-    /// refusal is [`CreateActorResult::InvalidState`], "State does not match the schema: " and its reason (cut at
-    /// [`MAX_REFUSAL_DETAIL`] characters), and nothing is created. The HTTP door of `cicada-axum` calls this (ADR 0026).
+    /// refusal is [`CreateActorResult::InvalidState`], "State does not match the registered schema; GET /types/`type`
+    /// has it", to which a node that hosts the type adds the decoder's reason when the decoder refuses the state too
+    /// (cut at [`MAX_REFUSAL_DETAIL`] characters); nothing is created. The HTTP door of `cicada-axum` calls this (ADR
+    /// 0026).
     pub async fn create_actor_checked(
         &self,
         address: &ActorAddress,
@@ -741,10 +743,15 @@ impl ActorSystem {
         if let Err(e) = message::check_not_null("state", &state) {
             return Ok(CreateActorResult::InvalidState(e));
         }
-        if let Err(reason) = check(resolved.contract.state_schema(), &state) {
-            return Ok(CreateActorResult::InvalidState(refusal(format!("State does not match the schema: {reason}"))));
-        }
         let hosted = self.hosted_for(&init, address.type_name());
+        if !check(resolved.contract.state_schema(), &state) {
+            let mut error =
+                format!("State does not match the registered schema; GET /types/{} has it", address.type_name());
+            if let Some(Err(e)) = hosted.map(|h| h.actor.check_state(&state)) {
+                error = format!("{error}. State cannot be decoded: {e}");
+            }
+            return Ok(CreateActorResult::InvalidState(refusal(error)));
+        }
         if let Some(problem) = hosted.and_then(|h| h.actor.address_problem(address)) {
             return Ok(CreateActorResult::InvalidAddress(problem));
         }
@@ -865,14 +872,15 @@ impl ActorSystem {
         payload: Value,
         options: SendOptions,
     ) -> Result<SendResult, OpError> {
-        self.send_message_checked(to, message_type, payload, options, &|_, _| Ok(())).await
+        self.send_message_checked(to, message_type, payload, options, &|_, _| true).await
     }
 
     /// [`Self::send_message`] with `check`, which gets the registered schema of `message_type` and `payload`. It runs on
     /// every node, after the repeated id, the registered type and the message type, and on a node that hosts the type
     /// before the decoder. Its refusal is [`SendResult::InvalidPayload`], "Payload of '`message_type`' does not match
-    /// the schema: " and its reason (cut at [`MAX_REFUSAL_DETAIL`] characters), and nothing is stored. The HTTP door of
-    /// `cicada-axum` calls this (ADR 0026).
+    /// the registered schema; GET /types/`type` has it", to which a node that hosts the type adds the decoder's reason
+    /// when the decoder refuses the payload too (cut at [`MAX_REFUSAL_DETAIL`] characters); nothing is stored. The HTTP
+    /// door of `cicada-axum` calls this (ADR 0026).
     pub async fn send_message_checked(
         &self,
         to: &ActorAddress,
@@ -898,9 +906,15 @@ impl ActorSystem {
         let Some(schema) = resolved.contract.message_schemas().get(message_type) else {
             return Ok(SendResult::UnknownType { message_type: message_type.to_owned(), type_name: name.clone() });
         };
-        if let Err(reason) = check(schema, &payload) {
-            let error = refusal(format!("Payload of '{message_type}' does not match the schema: {reason}"));
-            return Ok(SendResult::InvalidPayload { message_type: message_type.to_owned(), error });
+        if !check(schema, &payload) {
+            let mut error =
+                format!("Payload of '{message_type}' does not match the registered schema; GET /types/{name} has it");
+            if let Some(h) = self.hosted_for(&init, name)
+                && let Err(e) = h.actor.check_payload(message_type, &payload)
+            {
+                error = format!("{error}. {e}");
+            }
+            return Ok(SendResult::InvalidPayload { message_type: message_type.to_owned(), error: refusal(error) });
         }
         let hosted = self.hosted_for(&init, name).is_some();
         if let Some(h) = self.hosted_for(&init, name)
