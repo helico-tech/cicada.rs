@@ -141,10 +141,10 @@ SHALL notify nobody.
 
 ### Requirement: A watcher is told when a watched actor goes away
 
-When an actor that is watched by its address is stopped by its own turn, deleted from outside a turn, or removed
-with its parent, the same transaction SHALL put one `Stopped` message into the mailbox of each watcher. It SHALL hold the actor, the cause
-(`stopped`, `deleted` or `parent`) and the actor whose turn removed it, which is absent for a removal from outside a
-turn.
+When an actor that is watched by its address is stopped by its own turn, deleted from outside a turn or by the turn
+of another actor, or removed with its parent, the same transaction SHALL put one `Stopped` message into the mailbox
+of each watcher. It SHALL hold the actor, the cause (`stopped`, `deleted` or `parent`) and the actor whose turn
+removed it, which is absent for a removal from outside a turn.
 
 #### Scenario: An actor stops itself
 
@@ -156,6 +156,12 @@ turn.
 
 - **WHEN** a watched actor is deleted over HTTP
 - **THEN** each watcher has one `Stopped` message with the cause `deleted`, and `by` has the value null
+
+#### Scenario: An actor is deleted by a turn
+
+- **WHEN** a turn of another actor deletes a watched actor
+- **THEN** each watcher has one `Stopped` message with the cause `deleted`, `by` is the actor whose turn deleted it,
+  and its `causedBy` is the message of that turn
 
 #### Scenario: A delete wakes the watcher
 
