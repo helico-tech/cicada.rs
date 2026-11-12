@@ -15,7 +15,7 @@ cicada.workspace = true
 # Both stores, and the terminal UI so that a build of the workspace has every feature of cicada-app on.
 cicada-app = { workspace = true, features = ["sqlite", "postgres", "tui"] }
 cicada-examples.workspace = true
-cicada-extras.workspace = true
+cicada-actors.workspace = true
 cicada-otel.workspace = true
 opentelemetry.workspace = true
 # OTLP over HTTP/protobuf (port 4318). The blocking reqwest

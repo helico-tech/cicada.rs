@@ -1,20 +1,32 @@
 //! Example 9 — supervision and dead letters.
 //!
-//! A failed message is terminal and never blocks its mailbox; the store keeps it in the failures list. Supervision is
-//! built on that list with `cicada-extras`: a [`FailureWatcher`](cicada_extras::FailureWatcher) job copies every
-//! failure into the [`DeadLetters`](cicada_extras::DeadLetters) actor, where an operator redrives or discards it with a
-//! message. This mailer fails while its mail server is down; once the server is back, its dead letters are redriven
-//! (see `tests/supervision.rs`). In a service:
+//! A failed message is terminal and never blocks its mailbox. Two ready-made actors of `cicada-actors` act on it: the
+//! [`DeadLetters`](cicada_actors::DeadLetters) actor, told of every failure by a watch on `*`, keeps the failed message,
+//! and an operator redrives or discards it with a message; a [`Supervisor`](cicada_actors::Supervisor) restarts its
+//! child when the child fails through a fault of its own. This mailer fails while its mail server is down: its
+//! supervisor restarts it, and once the server is back its dead letters are redriven (see `tests/supervision.rs`). A
+//! restart empties the mailbox of the child and gives it the state of its entry again. In a service:
 //!
 //! ```no_run
-//! # use std::time::Duration;
-//! # use cicada::ActorSystem;
-//! # use cicada_examples::supervision::{MailerActor, Smtp};
-//! # use cicada_extras::{DeadLettersActor, FailureWatcher};
-//! # async fn run(store: cicada::Store, smtp: impl Smtp) -> Result<(), cicada::StartError> {
-//! let system = ActorSystem::builder(store).host(MailerActor { smtp }).host(DeadLettersActor::default()).build();
+//! # use cicada::{ActorRef, ActorSystem, WatchTarget};
+//! # use cicada_actors::{
+//! #     Child, DeadLetters, DeadLettersActor, DeadLettersState, Supervisor, SupervisorActor, SupervisorMsg,
+//! #     SupervisorState,
+//! # };
+//! # use cicada_examples::supervision::{Mailer, MailerActor, MailerState, Smtp};
+//! # async fn run(store: cicada::Store, smtp: impl Smtp) -> Result<(), Box<dyn std::error::Error>> {
+//! let system = ActorSystem::builder(store)
+//!     .host(MailerActor { smtp })
+//!     .host(DeadLettersActor::default())
+//!     .host(SupervisorActor)
+//!     .build();
 //! system.start().await?;
-//! let watcher = FailureWatcher::new(system.clone()).start(Duration::from_secs(10)); // abort() it on shutdown
+//! system.create(&DeadLetters::default(), &DeadLettersState::default()).await?;
+//! system.watch(&WatchTarget::Every, &DeadLetters::default().address()?).await?;
+//! let mailer = Child::new(&Mailer { id: "m".into() }, &MailerState::default())?;
+//! let supervisor = Supervisor::named("mailers");
+//! system.create(&supervisor, &SupervisorState::new().child(mailer)).await?;
+//! system.send(&supervisor, SupervisorMsg::Start).await?;
 //! # Ok(()) }
 //! ```
 
@@ -65,7 +77,8 @@ pub trait Smtp: Send + Sync + 'static {
     fn send(&self, to: &str) -> impl Future<Output = Result<(), SmtpError>> + Send;
 }
 
-/// The mailer type. A message that fails ends `failed`: it has no retry policy, so it becomes a dead letter.
+/// The mailer type. A message that fails ends `failed`: it has no retry policy, so it becomes a dead letter, and the
+/// failure of its handler is a fault of the mailer, which its supervisor restarts.
 pub struct MailerActor<S> {
     /// The mail server.
     pub smtp: S,

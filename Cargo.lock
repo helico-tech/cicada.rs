@@ -599,10 +599,10 @@ dependencies = [
  "async-trait",
  "axum",
  "cicada",
+ "cicada-actors",
  "cicada-app",
  "cicada-axum",
  "cicada-client",
- "cicada-extras",
  "cicada-otel",
  "cicada-test",
  "schemars",
@@ -611,22 +611,6 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "cicada-extras"
-version = "0.13.0"
-dependencies = [
- "chrono",
- "cicada",
- "cicada-axum",
- "cicada-test",
- "schemars",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -651,11 +635,11 @@ dependencies = [
  "axum",
  "chrono",
  "cicada",
+ "cicada-actors",
  "cicada-app",
  "cicada-axum",
  "cicada-client",
  "cicada-examples",
- "cicada-extras",
  "cicada-otel",
  "cicada-test",
  "opentelemetry",

@@ -593,6 +593,20 @@ async fn outcomes_list_finished_messages_with_envelope_and_error() {
     assert_problem(&get(&app, "/outcomes?status=").await, 400, pt::BAD_REQUEST);
 }
 
+/// Scenario: The failed outcomes, and Scenario: The old route. Failed messages are the outcomes of status `failed`;
+/// there is no route of their own.
+#[tokio::test(start_paused = true)]
+async fn failed_messages_are_listed_as_outcomes_and_there_is_no_route_for_failures() {
+    let app = app().await;
+    put(&app, "/actors/counter/a", r#"{"state": {}}"#).await;
+    let failed =
+        send_id(&app, "/actors/counter/a/messages", r#"{"type": "Fail", "payload": {"reason": "kaput"}}"#).await;
+    eventually(async || !items(&get_json(&app, "/outcomes?status=failed").await).is_empty()).await;
+    let page = get_json(&app, "/outcomes?status=failed").await;
+    assert!(items(&page).iter().any(|o| o["id"] == failed.as_str()), "{page}");
+    assert_eq!(get(&app, "/failures").await.status, StatusCode::NOT_FOUND);
+}
+
 // ---- lost claims ----
 
 /// A store with the counter type registered (by a node that never starts), and a node that hosts nothing, so that

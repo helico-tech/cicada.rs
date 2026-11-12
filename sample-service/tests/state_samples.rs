@@ -4,11 +4,12 @@
 
 use std::path::PathBuf;
 
+use cicada::FailureCause;
 use cicada::store::MessageId;
 use cicada::time::Timestamp;
+use cicada_actors::{DeadLetter, DeadLettersState, Schedule};
 use cicada_examples::cron::CronState;
 use cicada_examples::timer::{CheckoutState, CheckoutStatus};
-use cicada_extras::{DeadLetter, DeadLettersState, Schedule};
 use cicada_test::{assert_state_decodes, record_state_sample};
 use serde_json::json;
 
@@ -48,21 +49,25 @@ fn cron() {
     assert_state_decodes::<CronState>(&dir);
 }
 
+/// The samples of the dead letters start again with 0.14.0: their contract changed, and the letters of 0.13.0 are lost
+/// in the upgrade (the operations guide, "Upgrading to 0.14.0").
 #[test]
 fn dead_letters() {
     let dir = dir("dead-letters");
     let letter = DeadLetter {
-        failed_message_id: "m-1".into(),
-        actor: "mailers/m".into(),
+        actor: "mailers/m".parse().unwrap(),
         message_type: "SendMail".into(),
-        payload: json!("x"),
+        payload: json!({"to": "a@example.test"}),
         correlation_id: None,
-        error: Some("smtp down".into()),
-        failed_at: t(),
-        redriven_as: None,
+        from: None,
+        error: "smtp down".into(),
+        cause: FailureCause::Handler,
+        attempts: 1,
+        recorded_at: t(),
+        redriven_as: Some(MessageId::new("m-2").unwrap()),
         redrive_error: None,
     };
-    let state = DeadLettersState { letters: [("m-1".to_owned(), letter)].into() };
+    let state = DeadLettersState { letters: [(MessageId::new("m-1").unwrap(), letter)].into() };
     record_state_sample(&dir, "one-letter", &state);
     assert_state_decodes::<DeadLettersState>(&dir);
 }

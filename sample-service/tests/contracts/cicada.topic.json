@@ -1,0 +1,277 @@
+{
+  "messages": {
+    "Deliver": {
+      "$defs": {
+        "StoredMessage": {
+          "description": "A message an actor keeps to send later (ADR 0028): its type name and its JSON payload, as a store holds a message.\nThe actor that keeps it knows where it goes, so it holds no address. Build one with `StoredMessage::for_ref`.",
+          "properties": {
+            "payload": {
+              "description": "The payload: the fields of the variant, without the type tag."
+            },
+            "type": {
+              "description": "The type name: the variant of the family.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Sends the message to one subscriber, when it is still a subscriber. Sent by the topic to itself, with a retry\npolicy.",
+      "properties": {
+        "message": {
+          "$ref": "#/$defs/StoredMessage",
+          "description": "The message."
+        },
+        "subscriber": {
+          "description": "The subscriber.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "subscriber",
+        "message"
+      ],
+      "title": "Deliver",
+      "type": "object"
+    },
+    "Failed": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The notification of a message to a watched actor that ended `failed`: what the failed message was and why it\nfailed. Its type name is `Failed`. A watcher's message family declares it as `Failed(cicada::Failed)`.\n\nIts schema is part of every watcher's contract; a snapshot test pins it.",
+      "properties": {
+        "actor": {
+          "description": "The actor the failed message was for: the actor of the event, not the target of the watch.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": "string"
+        },
+        "attempts": {
+          "description": "How often the message was claimed: its `attempt`.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cause": {
+          "description": "What failed: the handler, the node, the message, the state, the commit, or the claim limit.",
+          "oneOf": [
+            {
+              "const": "handler",
+              "description": "The handler returned an error or panicked, and no retry is left; or it returned a new state that cannot be\nstored.",
+              "type": "string"
+            },
+            {
+              "const": "node",
+              "description": "The node or the store failed around the turn: a read the node needed failed, also one the handler passed on,\nor a panic outside the handler.",
+              "type": "string"
+            },
+            {
+              "const": "refused",
+              "description": "The handler refused the message for good (a permanent failure).",
+              "type": "string"
+            },
+            {
+              "const": "timeout",
+              "description": "The turn ran past its maximum duration.",
+              "type": "string"
+            },
+            {
+              "const": "message",
+              "description": "The message cannot be decoded.",
+              "type": "string"
+            },
+            {
+              "const": "state",
+              "description": "The state or the address of the actor cannot be read by its type.",
+              "type": "string"
+            },
+            {
+              "const": "commit",
+              "description": "The effects of the turn were refused, or its commit was rejected or refused.",
+              "type": "string"
+            },
+            {
+              "const": "claim-limit",
+              "description": "The message reached the claim limit (ADR 0025).",
+              "type": "string"
+            }
+          ]
+        },
+        "correlationId": {
+          "description": "The correlation id of the failed message; null when it has none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "error": {
+          "description": "The error it failed with.",
+          "type": "string"
+        },
+        "from": {
+          "description": "The sender of the failed message; null for a message sent from outside a turn.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "messageId": {
+          "description": "The id of the failed message.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "messageType": {
+          "description": "The type name of the failed message.",
+          "type": "string"
+        },
+        "payload": {
+          "description": "The payload of the failed message."
+        }
+      },
+      "required": [
+        "actor",
+        "messageId",
+        "messageType",
+        "payload",
+        "error",
+        "attempts",
+        "cause"
+      ],
+      "title": "Failed",
+      "type": "object"
+    },
+    "Publish": {
+      "$defs": {
+        "StoredMessage": {
+          "description": "A message an actor keeps to send later (ADR 0028): its type name and its JSON payload, as a store holds a message.\nThe actor that keeps it knows where it goes, so it holds no address. Build one with `StoredMessage::for_ref`.",
+          "properties": {
+            "payload": {
+              "description": "The payload: the fields of the variant, without the type tag."
+            },
+            "type": {
+              "description": "The type name: the variant of the family.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Sends the topic one `Deliver` for each subscriber, with the correlation id of the publish.",
+      "properties": {
+        "message": {
+          "$ref": "#/$defs/StoredMessage",
+          "description": "The message for the subscribers."
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "title": "Publish",
+      "type": "object"
+    },
+    "Stopped": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The notification of a watched actor that went away. Its type name is `Stopped`. A watcher's message family declares\nit as `Stopped(cicada::Stopped)`. Only a watch on the actor's own address tells of it.\n\nIts schema is part of every watcher's contract; a snapshot test pins it.",
+      "properties": {
+        "actor": {
+          "description": "The actor that went away.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": "string"
+        },
+        "by": {
+          "description": "The actor whose turn removed it: the actor itself when it stopped, the stopping ancestor when it went with it;\nnull for a removal from outside a turn.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cause": {
+          "description": "Why it went away.",
+          "oneOf": [
+            {
+              "const": "stopped",
+              "description": "Its own turn stopped it.",
+              "type": "string"
+            },
+            {
+              "const": "deleted",
+              "description": "It was deleted from outside a turn.",
+              "type": "string"
+            },
+            {
+              "const": "parent",
+              "description": "It was removed with its parent (ADR 0019).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "required": [
+        "actor",
+        "cause"
+      ],
+      "title": "Stopped",
+      "type": "object"
+    },
+    "Subscribe": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Adds a subscriber, and watches the topic itself.",
+      "properties": {
+        "subscriber": {
+          "description": "The subscriber.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "subscriber"
+      ],
+      "title": "Subscribe",
+      "type": "object"
+    },
+    "Unsubscribe": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Removes a subscriber.",
+      "properties": {
+        "subscriber": {
+          "description": "The subscriber.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "subscriber"
+      ],
+      "title": "Unsubscribe",
+      "type": "object"
+    }
+  },
+  "state": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "The state of a [`Topic`]: its subscribers, in the order they subscribed, each once.",
+    "properties": {
+      "subscribers": {
+        "default": [],
+        "description": "The subscribers.",
+        "items": {
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "title": "TopicState",
+    "type": "object"
+  },
+  "type": "cicada.topic"
+}

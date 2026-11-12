@@ -18,6 +18,6 @@ pub mod e2e;
 pub mod fakes;
 pub mod telemetry;
 
-pub use app::{NodeInfo, Sample, Watcher};
+pub use app::{NodeInfo, Sample};
 pub use catalog::Catalog;
 pub use config::{ConfigError, OLD_VARIABLES, SampleConfig, refuse_old_variables};

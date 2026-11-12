@@ -45,7 +45,7 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
 
 ## 3. What uses the old crate
 
-- [ ] 3.1 `cicada-extras` goes [12]: the crate leaves the workspace; the examples and the sample service use
+- [x] 3.1 `cicada-extras` goes [12]: the crate leaves the workspace; the examples and the sample service use
       `cicada-actors`; the supervision example is built on dead letters with a watch on `*` and a supervisor with a
       child that fails; the sample service hosts the three types, creates `cicada.dead-letters/_` and its watch in
       `on_start`, and loses `FailureWatcher` and `FAILURE_WATCHER_INTERVAL`, also in the end-to-end compose file.
@@ -53,7 +53,7 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
       --include='*.toml' --include='*.yml' --include='Dockerfile' .` finds nothing outside `target` and
       `openspec/changes/archive`; the tests of the examples and of the sample service pass;
       `cargo test -p cicada-e2e --no-run` passes.
-- [ ] 3.2 Failures as an outcomes query: the requirement of `outcomes-listing` that is removed has no code of its own
+- [x] 3.2 Failures as an outcomes query: the requirement of `outcomes-listing` that is removed has no code of its own
       left; `GET /failures` still answers `404`. Verify: tests for the two scenarios of the delta of
       `outcomes-listing`.
 

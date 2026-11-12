@@ -6,6 +6,7 @@ use std::sync::Arc;
 use cicada::actor::{DefinitionError, contract_of};
 use cicada::contract::Contract;
 use cicada::{Actor, ActorAddress, ActorRef, ActorType, NoState};
+use cicada_actors::{DeadLetters, DeadLettersActor, DeadLettersState, SupervisorActor, TopicActor};
 use cicada_app::App;
 use cicada_examples::cron::CronJobActor;
 use cicada_examples::fanout::{BatchActor, BatchItemActor};
@@ -16,7 +17,6 @@ use cicada_examples::singleton::{Cleanup, CleanupActor};
 use cicada_examples::steps::OnboardingActor;
 use cicada_examples::sync::{ReportsActor, SyncActor};
 use cicada_examples::timer::CheckoutActor;
-use cicada_extras::{DeadLetters, DeadLettersActor, DeadLettersState};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -111,6 +111,8 @@ impl Catalog {
             CatalogType::of(DeviceRegistryActor),
             CatalogType::of(DeviceActor),
             CatalogType::of(DeadLettersActor::default()),
+            CatalogType::of(SupervisorActor),
+            CatalogType::of(TopicActor),
             CatalogType::of(SyncActor { api: fakes.sync_api }),
             CatalogType::of(ReportsActor),
             CatalogType::of(SlowActor::new(node_id, effects.clone())),
@@ -123,7 +125,7 @@ impl Catalog {
             Singleton::of(&Pricing, &NoState {}),
             Singleton::of(&Payments, &NoState {}),
             Singleton::of(&DeviceRegistry, &RegistryState::default()),
-            Singleton::of(&DeadLetters, &DeadLettersState::default()),
+            Singleton::of(&DeadLetters::default(), &DeadLettersState::default()),
         ];
         Self { types, singletons }
     }

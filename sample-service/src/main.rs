@@ -1,7 +1,7 @@
 //! The sample node: `cicada-sample-service serve` (or `worker`, or an operator command), configured by the flags and
 //! variables of `cicada-app` and the few of its own (see `SampleConfig::from_vars`). SIGTERM or SIGINT stops a node in
 //! good order: the node stops claiming and lets running turns finish within the grace period while the API still
-//! answers, then the HTTP server stops, the store is closed, the failure watcher stops and telemetry is flushed.
+//! answers, then the HTTP server stops, the store is closed and telemetry is flushed.
 
 use std::ffi::OsString;
 use std::process::ExitCode;
@@ -15,7 +15,7 @@ async fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().collect();
     let env: Env =
         std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))).collect();
-    let Sample { app, watcher } = match Sample::new(&args, &env) {
+    let Sample { app } = match Sample::new(&args, &env) {
         Ok(sample) => sample,
         Err(e) => {
             eprintln!("error: {e}");
@@ -39,7 +39,6 @@ async fn main() -> ExitCode {
         None => app,
     };
     let code = app.run_async().await;
-    watcher.abort();
     if let Some(t) = telemetry {
         t.shutdown().await;
     }

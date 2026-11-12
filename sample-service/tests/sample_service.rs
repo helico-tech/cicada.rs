@@ -11,11 +11,11 @@ use std::time::{Duration, Instant};
 use cicada::ActorRef;
 use cicada::api::MessageState;
 use cicada::prelude::*;
+use cicada_actors::{DeadLetters, DeadLettersState};
 use cicada_app::{AppError, Env};
 use cicada_client::ActorClient;
 use cicada_examples::registry::DeviceRegistry;
 use cicada_examples::saga::{Inventory, InventoryMsg, InventoryState, Order, OrderMsg, OrderState, OrderStatus};
-use cicada_extras::{DeadLetters, DeadLettersState};
 use cicada_sample_service::e2e::{
     Counter, CounterMsg, CounterState, EffectLog, Flaky, FlakyMsg, FlakyState, Recorder, RecorderMsg, RecorderState,
     Slow, SlowMsg, SlowState, flaky_retry,
@@ -39,7 +39,6 @@ fn env(db: &std::path::Path) -> Env {
         ("CICADA_STORE", &db.display().to_string()),
         ("CICADA_NODE_ID", "test-node"),
         ("CICADA_POLL_INTERVAL", "50ms"),
-        ("FAILURE_WATCHER_INTERVAL", "100ms"),
     ])
 }
 
@@ -71,7 +70,6 @@ struct Node {
     api: ActorClient,
     stop: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<Result<(), AppError>>>,
-    watcher: cicada_sample_service::Watcher,
 }
 
 impl Node {
@@ -80,7 +78,7 @@ impl Node {
         let mut line = vec!["cicada-sample-service", "serve", "--listen", "127.0.0.1:0"];
         line.extend(flags);
         let line = args(&line);
-        let Sample { app, watcher } = Sample::new(&line, env).expect("the sample's variables");
+        let Sample { app } = Sample::new(&line, env).expect("the sample's variables");
         let out = Out::default();
         let (stop, stopped) = oneshot::channel::<()>();
         let task = tokio::spawn(app.run_with(line, env.clone(), out.clone(), async move {
@@ -99,18 +97,24 @@ impl Node {
         };
         let token = env.get("API_TOKEN").map(String::as_str);
         let api = ActorClient::with_client(&base, authorized(token));
-        Self { base, http: reqwest::Client::new(), api, stop: Some(stop), task: Some(task), watcher }
+        Self { base, http: reqwest::Client::new(), api, stop: Some(stop), task: Some(task) }
     }
 
     async fn get(&self, path: &str) -> reqwest::Response {
         self.http.get(format!("{}{path}", self.base)).send().await.unwrap()
     }
 
+    /// The stored watches as `(target, watcher)`, over HTTP.
+    async fn watches(&self) -> Vec<(String, String)> {
+        let page: serde_json::Value = self.get("/watches").await.json().await.unwrap();
+        let text = |w: &serde_json::Value, key: &str| w[key].as_str().unwrap().to_owned();
+        page["items"].as_array().unwrap().iter().map(|w| (text(w, "target"), text(w, "watcher"))).collect()
+    }
+
     /// Stops the node, as SIGTERM does.
     async fn stop(mut self) {
         let _ = self.stop.take().unwrap().send(());
         self.task.take().unwrap().await.unwrap().expect("served until the stop");
-        self.watcher.abort();
     }
 }
 
@@ -150,19 +154,13 @@ fn temp_db() -> TempDb {
 
 #[test]
 fn the_sample_reads_its_own_variables() {
-    let config = SampleConfig::from_vars(&vars(&[
-        ("API_TOKEN", "secret"),
-        ("FAILURE_WATCHER_INTERVAL", "2s"),
-        ("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel:4318"),
-    ]))
-    .unwrap();
+    let config =
+        SampleConfig::from_vars(&vars(&[("API_TOKEN", "secret"), ("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel:4318")]))
+            .unwrap();
     assert_eq!(config.api_token.as_deref(), Some("secret"));
-    assert_eq!(config.failure_watcher_interval, Duration::from_secs(2));
     assert!(config.telemetry);
     assert!(!format!("{config:?}").contains("secret"));
     assert_eq!(SampleConfig::from_vars(&vars(&[])).unwrap(), SampleConfig::default());
-    let invalid = SampleConfig::from_vars(&vars(&[("FAILURE_WATCHER_INTERVAL", "soon")])).unwrap_err();
-    assert_eq!(invalid.0, "FAILURE_WATCHER_INTERVAL: not a duration: soon");
 }
 
 /// An old variable stops the start of a node, and the error names the new one.
@@ -188,7 +186,9 @@ async fn every_type_runs_on_one_node_and_the_singletons_are_created_at_start() {
         let api = &node.api;
         assert!(api.health().await.unwrap());
         assert!(api.get(&DeviceRegistry).await.unwrap().is_some());
-        assert!(api.get(&DeadLetters).await.unwrap().is_some());
+        assert!(api.get(&DeadLetters::default()).await.unwrap().is_some());
+        let watches = node.watches().await;
+        assert!(watches.contains(&("*".to_owned(), "cicada.dead-letters/_".to_owned())), "{watches:?}");
         let expected = Catalog::new("x", EffectLog::new()).types().len();
         assert_eq!(api.types().await.unwrap().len(), expected);
         let info: serde_json::Value = node.get("/").await.json().await.unwrap();
@@ -302,13 +302,14 @@ async fn flaky_messages_are_retried_and_final_failures_reach_the_dead_letters() 
         assert_eq!(status.message.retry, None);
 
         eventually("dead letters recorded", || async {
-            api.state::<_, DeadLettersState>(&DeadLetters)
+            api.state::<_, DeadLettersState>(&DeadLetters::default())
                 .await
                 .unwrap()
-                .is_some_and(|s| s.letters.contains_key(failing.id.as_str()))
+                .is_some_and(|s| s.letters.contains_key(&failing.id))
         })
         .await;
-        assert_eq!(api.state::<_, DeadLettersState>(&DeadLetters).await.unwrap().unwrap().letters.len(), 2);
+        let letters = api.state::<_, DeadLettersState>(&DeadLetters::default()).await.unwrap().unwrap().letters;
+        assert_eq!(letters.len(), 2);
     })
     .await;
 }
@@ -341,7 +342,10 @@ async fn a_send_only_node_accepts_sends_for_types_other_nodes_registered() {
     with_node(env(&db.path), &e2e_only, async |node| {
         let info: serde_json::Value = node.get("/").await.json().await.unwrap();
         assert_eq!(info["types"].as_array().unwrap().len(), 4, "{info}");
-        assert!(node.api.get(&DeadLetters).await.unwrap().is_none(), "no singleton of a type it does not host");
+        assert!(
+            node.api.get(&DeadLetters::default()).await.unwrap().is_none(),
+            "no singleton of a type it does not host"
+        );
         node.api.create(&counter, &CounterState::default()).await.unwrap();
     })
     .await;

@@ -1,15 +1,18 @@
 {
   "letters": {
     "m-1": {
-      "failedMessageId": "m-1",
       "actor": "mailers/m",
-      "type": "SendMail",
-      "payload": "x",
+      "messageType": "SendMail",
+      "payload": {
+        "to": "a@example.test"
+      },
       "correlationId": null,
+      "from": null,
       "error": "smtp down",
-      "failedAt": "2026-10-03T12:00:00Z",
-      "redrivenAs": null,
-      "redriveError": null
+      "cause": "handler",
+      "attempts": 1,
+      "recordedAt": "2026-10-03T12:00:00Z",
+      "redrivenAs": "m-2"
     }
   }
 }

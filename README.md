@@ -1272,35 +1272,24 @@ system.send_with(&Sync { tenant: "acme".into() }, SyncMsg::Run, options).await?;
 
 `cicada-extras` holds building blocks that use only the public API (observers and the operations of `ActorSystem`).
 
-**Dead letters.** A failed message stays in the failures list for the outcome retention. `FailureWatcher` (a job, not
-an actor: handlers cannot read `/outcomes`) copies each failure into the `DeadLetters` singleton
-(`cicada.dead-letters/_`, hosted as `DeadLettersActor`), which keeps them past the retention, at most `capacity`
-(oldest dropped first):
+**Dead letters.** `DeadLettersActor` (`cicada.dead-letters/_`) keeps failed messages, told of them by a watch:
 
 <!-- doctest
-# use std::sync::Arc;
-# use std::time::Duration;
-@@2
-# async fn node(store: cicada::Store) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-@@5
+@@3
+# async fn node(store: cicada::Store) -> Result<(), Box<dyn std::error::Error>> {
+@@4
 # Ok(())
 # }
 -->
 ```rust
-use cicada::ActorSystem;
-use cicada_extras::{DeadLettersActor, FailureWatcher};
+use cicada::{ActorRef, ActorSystem, WatchTarget};
+use cicada_actors::{DeadLetters, DeadLettersActor, DeadLettersState};
 
 let system = ActorSystem::builder(store).host(DeadLettersActor::with_capacity(1_000)? /* , … */).build();
 system.start().await?;
-let watcher = FailureWatcher::new(system.clone()).prefix("orders/").start(Duration::from_secs(10));
-// … on shutdown: watcher.abort();
+system.create(&DeadLetters::default(), &DeadLettersState::default()).await?;
+system.watch(&WatchTarget::Every, &DeadLetters::default().address()?).await?;
 ```
-
-The watcher works through an `ActorSystem`; a process that hosts no types can run one on a send-only node. Every node
-may run one: each failure is forwarded with an id derived from the failed message's id, so the store's send dedup
-records it once. Act on a letter with a message: `Redrive { failed_message_id }` sends it again (same target,
-type, payload, correlation id; once), `Discard { failed_message_id }` forgets it — over HTTP,
-`POST /actors/cicada/dead-letters/messages {"type": "Redrive", "payload": {"failedMessageId": "…"}}`.
 
 **Timers.** A timer is a delayed self-send. To stop or move it, keep the id of the pending message in state and
 cancel it with `turn.cancel`: the cancel, the state change and any new timer commit together, and the turns of one
@@ -1356,7 +1345,7 @@ for the `Tick` chain:
 
 ```rust
 use cicada::time::Timestamp;
-use cicada_extras::Schedule;
+use cicada_actors::Schedule;
 
 let t: Timestamp = "2026-10-02T10:15:30Z".parse().unwrap();
 assert_eq!(Schedule::every(3600).unwrap().next(t), "2026-10-02T11:00:00Z".parse::<Timestamp>().unwrap());
@@ -1425,7 +1414,6 @@ without authentication. It reads three variables of its own:
 | Variable | Meaning | Default |
 | --- | --- | --- |
 | `API_TOKEN` | when set, the HTTP API requires `Authorization: Bearer <token>` (`/` and `/ready` stay public) | — |
-| `FAILURE_WATCHER_INTERVAL` | poll interval of the dead-letter watcher, on a node that hosts `cicada.dead-letters` | `10s` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | when set, a node exports traces and metrics there over OTLP (`ActorTelemetry`); only HTTP/protobuf, so `OTEL_EXPORTER_OTLP_PROTOCOL` must be unset or `http/protobuf` | — |
 
 Its actors record the node id, so it reads `CICADA_NODE_ID` itself; a `--node-id` flag that differs from it fails the

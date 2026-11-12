@@ -1,8 +1,8 @@
 //! The sample node on `cicada-app`: every type of the [`Catalog`], picked with `--types`, its routes and its bearer
-//! token through `App::http`, and its singletons and failure watcher through `App::on_start`.
+//! token through `App::http`, and its singletons and the watch of its dead letters through `App::on_start`.
 
 use std::ffi::OsString;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::{Query, Request, State};
@@ -12,11 +12,10 @@ use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;
 use cicada::runtime::NodeConfig;
 use cicada::store::NodeId;
-use cicada::{ActorRef, ActorSystem, CreateActorResult};
+use cicada::{ActorRef, ActorSystem, CreateActorResult, WatchTarget};
+use cicada_actors::DeadLetters;
 use cicada_app::{App, Env, node_command};
-use cicada_extras::{DeadLetters, FailureWatcher};
 use serde::{Deserialize, Serialize};
-use tokio::task::JoinHandle;
 
 use crate::catalog::{Catalog, Singleton};
 use crate::config::{ConfigError, SampleConfig, node_id, refuse_old_variables};
@@ -31,30 +30,11 @@ pub struct NodeInfo {
     pub types: Vec<String>,
 }
 
-/// The sample node: its `App`, and the failure watcher that its `on_start` may start.
+/// The sample node: its `App`.
 #[derive(Debug)]
 pub struct Sample {
     /// The binary, ready to run.
     pub app: App,
-    /// The failure watcher, once started; abort it when the run of `app` returned.
-    pub watcher: Watcher,
-}
-
-/// The failure watcher of a node that hosts the dead letters.
-#[derive(Debug, Clone, Default)]
-pub struct Watcher(Arc<Mutex<Option<JoinHandle<()>>>>);
-
-impl Watcher {
-    fn set(&self, handle: JoinHandle<()>) {
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(handle);
-    }
-
-    /// Stops the watcher, when it was started.
-    pub fn abort(&self) {
-        if let Some(handle) = self.0.lock().unwrap_or_else(PoisonError::into_inner).take() {
-            handle.abort();
-        }
-    }
 }
 
 impl Sample {
@@ -78,26 +58,17 @@ impl Sample {
             app = t.add_to(app);
         }
         let token = config.api_token.clone();
-        let watcher = Watcher::default();
-        let started = watcher.clone();
         let singletons = catalog.singletons().to_vec();
-        let interval = config.failure_watcher_interval;
         let app = app
             .http(move |api, system| routes(api, system, effects, token))
-            .on_start(move |system| async move { start(system, node_id, singletons, interval, started).await });
-        Ok(Self { app, watcher })
+            .on_start(move |system| async move { start(system, node_id, singletons).await });
+        Ok(Self { app })
     }
 }
 
-/// The work after the start: the node id check, the singletons of the hosted types, and the failure watcher when the
-/// node hosts the dead letters.
-async fn start(
-    system: ActorSystem,
-    node_id: NodeId,
-    singletons: Vec<Singleton>,
-    interval: std::time::Duration,
-    watcher: Watcher,
-) -> anyhow::Result<()> {
+/// The work after the start: the node id check, the singletons of the hosted types, and the watch on every type of
+/// `cicada.dead-letters/_` when the node hosts the dead letters.
+async fn start(system: ActorSystem, node_id: NodeId, singletons: Vec<Singleton>) -> anyhow::Result<()> {
     if system.node_id() != &node_id {
         anyhow::bail!(
             "the node runs as {} while the actors of the sample record {node_id}: set CICADA_NODE_ID, not --node-id",
@@ -112,7 +83,7 @@ async fn start(
         }
     }
     if hosted.iter().any(|t| t.as_str() == DeadLetters::TYPE) {
-        watcher.set(FailureWatcher::new(system.clone()).start(interval));
+        system.watch(&WatchTarget::Every, &DeadLetters::default().address()?).await?;
     }
     let types: Vec<&str> = hosted.iter().map(|t| t.as_str()).collect();
     let hosting = if types.is_empty() { "nothing (send-only)".to_owned() } else { types.join(", ") };

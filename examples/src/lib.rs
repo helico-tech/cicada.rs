@@ -10,7 +10,7 @@
 //! | [`steps`] | Example 6: durable steps; every step is its own turn, so a committed step never runs again. |
 //! | [`fanout`] | Example 7: fan-out and fan-in; one child per item, the parent counts the replies. |
 //! | [`registry`] | Example 8: a registry actor that keeps the refs of the instances it created. |
-//! | [`supervision`] | Example 9: supervision; failed messages become dead letters that an operator redrives. |
+//! | [`supervision`] | Example 9: a supervisor restarts a child at fault; dead letters keep what failed, to redrive. |
 //! | [`sync`] | The architecture's example: a paged import, one turn per page, rescheduled hourly. |
 //!
 //! Every example has the same shape: a public ref struct per actor type (its one field is the key), a

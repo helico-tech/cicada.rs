@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use cicada::store::OutcomeStatus;
 use cicada::time::{self, Timestamp};
+use cicada_actors::Schedule;
 use cicada_examples::cron::{CronJob, CronJobActor, CronMsg, CronState, CronTask, TaskError};
-use cicada_extras::Schedule;
 use cicada_test::TestActors;
 
 const MINUTE: Duration = Duration::from_secs(60);

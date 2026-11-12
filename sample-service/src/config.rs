@@ -2,10 +2,8 @@
 //! of `cicada-app` (`CICADA_…`).
 
 use std::fmt;
-use std::time::Duration;
 
 use cicada::store::NodeId;
-use cicada::time::parse_duration;
 use cicada_app::Env;
 
 /// An invalid environment variable; the message names it.
@@ -53,39 +51,22 @@ pub fn refuse_old_variables(env: &Env) -> Result<(), ConfigError> {
 /// | Variable | Meaning | Default |
 /// | --- | --- | --- |
 /// | `API_TOKEN` | when set, the HTTP API requires `Authorization: Bearer <token>` | — |
-/// | `FAILURE_WATCHER_INTERVAL` | poll interval of the dead-letter watcher, on a node that hosts `cicada.dead-letters` | `10s` |
 /// | `OTEL_EXPORTER_OTLP_ENDPOINT` | when set, a node exports traces and metrics there over OTLP/HTTP (`ActorTelemetry`); see [`crate::telemetry`] | — |
 ///
 /// `Debug` leaves out the API token.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Default, PartialEq)]
 pub struct SampleConfig {
     /// When set, the HTTP API requires `Authorization: Bearer <token>`.
     pub api_token: Option<String>,
-    /// Poll interval of the dead-letter watcher.
-    pub failure_watcher_interval: Duration,
     /// Whether a node exports traces and metrics over OTLP.
     pub telemetry: bool,
-}
-
-impl Default for SampleConfig {
-    fn default() -> Self {
-        Self { api_token: None, failure_watcher_interval: Duration::from_secs(10), telemetry: false }
-    }
 }
 
 impl SampleConfig {
     /// Reads the configuration from `env`. Blank values count as unset.
     pub fn from_vars(env: &Env) -> Result<Self, ConfigError> {
-        let defaults = Self::default();
-        let interval = match value(env, "FAILURE_WATCHER_INTERVAL") {
-            Some(v) => {
-                env_duration(v).ok_or_else(|| ConfigError(format!("FAILURE_WATCHER_INTERVAL: not a duration: {v}")))?
-            }
-            None => defaults.failure_watcher_interval,
-        };
         Ok(Self {
             api_token: value(env, "API_TOKEN").map(str::to_owned),
-            failure_watcher_interval: interval,
             telemetry: value(env, "OTEL_EXPORTER_OTLP_ENDPOINT").is_some(),
         })
     }
@@ -95,7 +76,6 @@ impl fmt::Debug for SampleConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SampleConfig")
             .field("auth", &self.api_token.is_some())
-            .field("failure_watcher_interval", &self.failure_watcher_interval)
             .field("telemetry", &self.telemetry)
             .finish()
     }
@@ -110,21 +90,4 @@ pub fn node_id(env: &Env) -> NodeId {
 /// The value of variable `name`, trimmed; `None` when it is unset or blank.
 fn value<'a>(env: &'a Env, name: &str) -> Option<&'a str> {
     env.get(name).map(|v| v.trim()).filter(|v| !v.is_empty())
-}
-
-/// A duration from the environment: the short form `250ms`, `5s`, `2m` or `1h` (one whole number and a unit), or
-/// ISO-8601 (`PT5S`).
-fn env_duration(text: &str) -> Option<Duration> {
-    let digits = text.find(|c: char| !c.is_ascii_digit()).unwrap_or(text.len());
-    let (number, unit) = text.split_at(digits);
-    let Ok(number) = number.parse::<u64>() else {
-        return parse_duration(text).ok();
-    };
-    match unit {
-        "ms" => Some(Duration::from_millis(number)),
-        "s" => Some(Duration::from_secs(number)),
-        "m" => number.checked_mul(60).map(Duration::from_secs),
-        "h" => number.checked_mul(3600).map(Duration::from_secs),
-        _ => None,
-    }
 }

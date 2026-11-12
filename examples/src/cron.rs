@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use cicada::prelude::*;
 use cicada::time::Timestamp;
-use cicada_extras::Schedule;
+use cicada_actors::Schedule;
 use serde::{Deserialize, Serialize};
 
 /// A named recurring job.

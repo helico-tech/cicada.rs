@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 
 use cicada::store::MessageId;
 use cicada::time::Timestamp;
+use cicada_actors::Schedule;
 use cicada_axum::{assert_message_sample, assert_state_sample};
 use cicada_examples::cron::{CronMsg, CronState};
 use cicada_examples::fanout::{BatchItemMsg, BatchItemState, BatchMsg, BatchState, BatchStatus};
@@ -16,7 +17,6 @@ use cicada_examples::steps::{OnboardingMsg, OnboardingState, OnboardingStep};
 use cicada_examples::supervision::{MailerMsg, MailerState};
 use cicada_examples::sync::{ReportsMsg, ReportsState, SyncMsg, SyncState};
 use cicada_examples::timer::{CheckoutMsg, CheckoutState, CheckoutStatus};
-use cicada_extras::Schedule;
 use schemars::JsonSchema;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
