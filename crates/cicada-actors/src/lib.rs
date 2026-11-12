@@ -3,17 +3,20 @@
 //! | Item | Type name | What |
 //! | --- | --- | --- |
 //! | [`SupervisorActor`] | `cicada.supervisor` | Starts its children, watches them, and restarts one that is at fault |
+//! | [`DeadLettersActor`] | `cicada.dead-letters` | Keeps failed messages, told by a watch; redrives or discards one |
 //! | [`StoredMessage`] | | A message an actor keeps to send later: a type name and a JSON payload, built from a typed ref |
 //! | [`Schedule`] | | When a recurring job runs next |
 //!
 //! A message an actor of this crate keeps is a [`StoredMessage`]: the actor knows where it goes, so it holds no
 //! address. Its typed helper checks the message against the family of a ref when the code is compiled.
 
+pub mod dead_letters;
 mod error;
 mod schedule;
 mod stored;
 pub mod supervisor;
 
+pub use dead_letters::{DeadLetter, DeadLetters, DeadLettersActor, DeadLettersMsg, DeadLettersState};
 pub use error::EncodeError;
 pub use schedule::{Schedule, ScheduleError};
 pub use stored::StoredMessage;

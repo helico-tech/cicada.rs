@@ -32,7 +32,7 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
       and the rule that its own messages count only from itself. Verify: tests for every scenario of `supervisor`, on
       virtual time with `TestActors`, among them a supervisor that is the child of another, a clock that stands still,
       and a type that is registered ten seconds after the start.
-- [ ] 2.3 Dead letters [8]: `cicada.dead-letters` with its capacity, `Failed`, `Redrive` (once, and what it records)
+- [x] 2.3 Dead letters [8]: `cicada.dead-letters` with its capacity, `Failed`, `Redrive` (once, and what it records)
       and `Discard`, ignoring its own failures. `FailureWatcher` is not moved. Verify: tests for every scenario of
       `dead-letters`, on virtual time.
 - [ ] 2.4 The topic [9]: `cicada.topic` with `Subscribe`, `Unsubscribe`, `Publish`, `Deliver` (sent by the topic

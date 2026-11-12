@@ -10,7 +10,10 @@ use cicada::prelude::*;
 use cicada::runtime::NodeConfig;
 use cicada::store::OutcomeStatus;
 use cicada::{FailureCause, StopCause, Stopped, WatchTarget};
-use cicada_actors::{Child, ChildEntry, StoredMessage, Supervisor, SupervisorActor, SupervisorMsg, SupervisorState};
+use cicada_actors::{
+    Child, ChildEntry, DeadLetters, DeadLettersActor, DeadLettersMsg, DeadLettersState, StoredMessage, Supervisor,
+    SupervisorActor, SupervisorMsg, SupervisorState,
+};
 use cicada_test::{TestActors, claim_and_abandon};
 use common::*;
 use serde::{Deserialize, Serialize};
@@ -731,4 +734,35 @@ async fn a_restart_whose_create_is_refused_deletes_the_child_and_gives_it_up_wit
     assert_eq!(failed.len(), 1, "{failed:?}");
     assert_eq!(failed[0].cause, FailureCause::Refused, "nobody restarts for it");
     assert!(failed[0].error.starts_with("cannot start worker/a: ") && failed[0].error.contains("too large"));
+}
+
+/// Scenario: A redrive of an escalation.
+#[tokio::test(start_paused = true)]
+async fn a_redrive_of_an_escalation_by_dead_letters_ends_done_and_restarts_nothing() {
+    let test = TestActors::builder()
+        .with(|node| node.host(SupervisorActor).host(WorkerActor).host(DeadLettersActor::default()))
+        .build()
+        .await
+        .unwrap();
+    test.create(&DeadLetters::default(), &DeadLettersState::default()).await;
+    test.system().watch(&WatchTarget::Every, &addr(&DeadLetters::default())).await.unwrap();
+    let outer = Supervisor::named("outer");
+    let inner = Child::new(&sup(), &SupervisorState::new().child(child("a", false))).unwrap();
+    test.create(&outer, &SupervisorState::new().child(inner.start(SupervisorMsg::Start).unwrap())).await;
+    test.send(&outer, SupervisorMsg::Start).await;
+    test.run_until_idle().await;
+    for _ in 0..4 {
+        to_worker(&test, "a", WorkerMsg::Fail).await;
+    }
+    let restarts = |state: SupervisorState| state.children[&addr(&sup())].restarts.len();
+    assert_eq!(restarts(test.state(&outer).await), 1, "the escalation restarted the supervisor");
+    let letters: DeadLettersState = test.state(&DeadLetters::default()).await;
+    let (id, _) = letters.letters.iter().find(|(_, l)| l.message_type == "Escalate").expect("a letter of the Escalate");
+    test.send(&DeadLetters::default(), DeadLettersMsg::Redrive { message_id: id.clone() }).await;
+    test.run_until_idle().await;
+    let letters: DeadLettersState = test.state(&DeadLetters::default()).await;
+    let redriven = letters.letters[id].redriven_as.clone().expect("redriven");
+    let outcome = test.system().outcome(&redriven).await.unwrap().expect("an outcome");
+    assert_eq!(outcome.status, OutcomeStatus::Done, "the redriven Escalate ends done");
+    assert_eq!(restarts(test.state(&outer).await), 1, "nothing is restarted");
 }
