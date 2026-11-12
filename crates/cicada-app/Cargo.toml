@@ -1,0 +1,53 @@
+[package]
+name = "cicada-app"
+description = "Turns a set of Cicada actors into a binary with serve, worker and the operator commands; builds the binary cicada."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "cicada"
+path = "src/main.rs"
+
+[features]
+# None is on by default. A host names the store it uses, as with the core; the plain `cicada` binary opens no store.
+sqlite = ["cicada/sqlite"]
+postgres = ["cicada/postgres"]
+# The terminal UI of the operator commands (`tui`).
+tui = ["dep:crossterm", "dep:ratatui"]
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+chrono.workspace = true
+cicada.workspace = true
+cicada-axum.workspace = true
+cicada-client.workspace = true
+clap = { workspace = true, features = ["string"] }
+crossterm = { workspace = true, optional = true }
+futures.workspace = true
+ratatui = { workspace = true, optional = true }
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_norway.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+# The crate itself with both stores, so that its tests serve on SQLite and PostgreSQL; `tui` stays off, so that
+# `cargo test -p cicada-app` builds the crate without the terminal UI.
+cicada-app = { path = ".", features = ["sqlite", "postgres"] }
+cicada-test.workspace = true
+schemars.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

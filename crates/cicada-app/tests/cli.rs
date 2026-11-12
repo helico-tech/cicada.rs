@@ -1,4 +1,7 @@
-//! The `cicada` commands against a real `actor_api()` server on a local port, in real time.
+//! The operator commands against a real `actor_api()` server on a local port, in real time, through `App::run_with`
+//! as the binary `cicada` runs them.
+
+mod common;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -11,12 +14,12 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use cicada::prelude::*;
 use cicada::runtime::{ActorSystemBuilder, NodeConfig};
+use cicada_app::{App, AppError, Env};
 use cicada_axum::actor_api;
-use cicada_cli::cli::Cli;
-use cicada_cli::config::Env;
-use clap::Parser;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use crate::common::{no_config, run};
 
 /// An account of a tenant, named `tenant:id`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -150,17 +153,19 @@ async fn server() -> String {
     server_with(|app| app).await
 }
 
-/// An environment whose config file does not exist, so the user's own config never leaks into a test.
-fn no_config() -> Env {
-    Env::from([("CICADA_CONFIG".to_owned(), "/nonexistent/cicada/config.toml".to_owned())])
+/// Runs `cicada <args>` with `env`; its output, or the error as text, as the binary prints it after `error: `.
+async fn cicada_in(env: &Env, args: &[&str]) -> Result<String, String> {
+    let all: Vec<&str> = std::iter::once("cicada").chain(args.iter().copied()).collect();
+    run(App::new(), env, &all).await.map_err(|e| e.to_string())
 }
 
-/// Runs `cicada <args>` with `env`; its output, or the error as text.
-async fn cicada_in(env: &Env, args: &[&str]) -> Result<String, String> {
-    let cli = Cli::try_parse_from(std::iter::once("cicada").chain(args.iter().copied())).map_err(|e| e.to_string())?;
-    let mut out = Vec::new();
-    cicada_cli::run(cli, env, &mut out).await.map_err(|e| cicada_cli::error_text(&e))?;
-    Ok(String::from_utf8(out).unwrap())
+/// Runs `cicada <args>` and expects a command line that cannot be used (exit code 2); its message.
+async fn usage_error(args: &[&str]) -> String {
+    let all: Vec<&str> = std::iter::once("cicada").chain(args.iter().copied()).collect();
+    match run(App::new(), &no_config(), &all).await {
+        Err(AppError::Usage(message)) => message,
+        other => panic!("{args:?}: not a usage error: {other:?}"),
+    }
 }
 
 /// Runs `cicada --server <server> <args>` and expects it to succeed.
@@ -499,7 +504,7 @@ async fn watches_are_set_listed_and_removed_on_the_command_line() {
     cicada(&s, &["create", "actor", "account/x", "--state", "{}"]).await;
     let refused = cicada_fails(&s, &["create", "watch", "--target", "billing", "--watcher", "account/x"]).await;
     assert!(refused.contains("422"), "an account cannot watch: {refused}");
-    assert!(Cli::try_parse_from(["cicada", "get", "watches", "--target", "a//b"]).is_err(), "no target");
+    assert!(usage_error(&["get", "watches", "--target", "a//b"]).await.contains("--target"), "no target");
 
     let removed = cicada(&s, &["delete", "watch", "--target", "billing", "--watcher", "dead-letters/_"]).await;
     assert_eq!(removed, "watch of dead-letters/_ on billing removed\n");
@@ -646,9 +651,97 @@ async fn contexts_come_from_the_config_file_and_carry_the_token() {
     assert!(cicada_in(&env, &["--context", "nope", "health"]).await.unwrap_err().contains("'nope'"));
 }
 
-/// `cicada tui` without a terminal is an error, not a panic. Skipped where `/dev/tty` opens, so it never takes over a
-/// developer's screen; it runs in CI, which has no terminal.
+/// Scenario: The name in a hint. The help and the usage errors name it too.
+#[tokio::test]
+async fn the_hints_the_help_and_the_usage_errors_name_the_binary_as_it_was_called() {
+    let error = run(App::new(), &no_config(), &["/usr/local/bin/myapp", "get", "actors"]).await.unwrap_err();
+    assert_eq!(error.exit_code(), 1, "{error}");
+    assert!(error.to_string().contains("`myapp config set-context`"), "{error}");
+    assert!(!error.to_string().contains("cicada config"), "{error}");
+
+    let help = run(App::new(), &no_config(), &["myapp", "--help"]).await.unwrap();
+    assert!(help.contains("Usage: myapp [OPTIONS] <COMMAND>"), "{help}");
+    let Err(AppError::Usage(usage)) = run(App::new(), &no_config(), &["myapp", "nope"]).await else {
+        panic!("a usage error")
+    };
+    assert!(usage.contains("unrecognized subcommand 'nope'") && usage.contains("Usage: myapp"), "{usage}");
+
+    let env = Env::from([("CICADA_CONFIG".to_owned(), "/nonexistent/c.toml".to_owned())]);
+    let current = run(App::new(), &env, &["myapp", "config", "current-context"]).await.unwrap_err().to_string();
+    assert!(current.contains("`myapp config use-context`"), "{current}");
+}
+
+/// Scenario: The version.
+#[tokio::test]
+async fn the_version_is_the_hosts_text_or_the_crates() {
+    let given = run(App::new().version("myapp 1.2.3"), &no_config(), &["myapp", "--version"]).await.unwrap();
+    assert_eq!(given, "myapp 1.2.3\n");
+    let given = run(App::new().version("myapp 1.2.3"), &no_config(), &["myapp", "get", "-V"]).await.unwrap();
+    assert_eq!(given, "myapp 1.2.3\n", "every command takes it");
+    let own = run(App::new(), &no_config(), &["myapp", "--version"]).await.unwrap();
+    assert_eq!(own, format!("cicada-app {}\n", env!("CARGO_PKG_VERSION")));
+}
+
+/// Scenario: The version of the plain binary.
+#[test]
+fn the_plain_binary_prints_cicada_and_its_version() {
+    let output =
+        std::process::Command::new(env!("CARGO_BIN_EXE_cicada")).arg("--version").output().expect("cicada runs");
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), format!("cicada {}\n", env!("CARGO_PKG_VERSION")));
+}
+
+/// cli, Scenario: A path that is a symlink.
 #[cfg(unix)]
+#[tokio::test]
+async fn a_config_path_that_is_a_symlink_is_written_through() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let real = dir.path().join("dotfiles/cicada.toml");
+    std::fs::create_dir_all(real.parent().unwrap()).unwrap();
+    std::fs::write(&real, "[contexts.old]\nserver = \"http://old\"\n").unwrap();
+    std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let link = dir.path().join("config.toml");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let env = Env::from([("CICADA_CONFIG".to_owned(), link.display().to_string())]);
+
+    cicada_in(&env, &["config", "set-context", "local", "--server", "http://localhost:8080"]).await.unwrap();
+    assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the path is still a symlink");
+    let text = std::fs::read_to_string(&real).unwrap();
+    assert!(text.contains("[contexts.local]") && text.contains("[contexts.old]"), "{text}");
+    assert_eq!(std::fs::metadata(&real).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(cicada_in(&env, &["config", "current-context"]).await.unwrap(), "local\n");
+}
+
+/// cli, Scenario: A relative link, and one whose target is not there.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_relative_link_to_a_file_that_is_not_there_gets_its_target_next_to_the_link() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("links")).unwrap();
+    let link = dir.path().join("links/config.toml");
+    std::os::unix::fs::symlink("../store/cicada.toml", &link).unwrap();
+    let env = Env::from([("CICADA_CONFIG".to_owned(), link.display().to_string())]);
+
+    cicada_in(&env, &["config", "set-context", "local", "--server", "http://localhost:8080"]).await.unwrap();
+    assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the path is still a symlink");
+    let target = dir.path().join("store/cicada.toml");
+    assert!(std::fs::read_to_string(&target).unwrap().contains("[contexts.local]"), "relative to the link's folder");
+    assert_eq!(cicada_in(&env, &["config", "current-context"]).await.unwrap(), "local\n");
+}
+
+/// cli, Scenario: Built without the feature (runs with `cargo test -p cicada-app`).
+#[cfg(not(feature = "tui"))]
+#[tokio::test]
+async fn without_the_feature_tui_is_a_command_the_binary_does_not_know() {
+    let usage = usage_error(&["--server", "http://127.0.0.1:1", "tui"]).await;
+    assert!(usage.contains("unrecognized subcommand 'tui'"), "{usage}");
+}
+
+/// cli, Scenario: Built with the feature. `cicada tui` without a terminal is an error, not a panic, which shows that the
+/// terminal UI starts. Skipped where `/dev/tty` opens, so it never takes over a developer's screen; it runs in CI, which
+/// has no terminal.
+#[cfg(all(unix, feature = "tui"))]
 #[test]
 fn the_tui_without_a_terminal_fails_cleanly() {
     if std::fs::File::open("/dev/tty").is_ok() {

@@ -1,12 +1,4 @@
-//! The `cicada` command line and terminal UI for the Cicada HTTP API (`cicada_axum::actor_api`).
-//!
-//! It talks to a node only over HTTP, through [`cicada_client::ActorClient`]. The server comes from `--server`,
-//! `CICADA_SERVER` or a context of the config file (see [`config`]); [`run`] executes one parsed command.
-
-pub mod cli;
-pub mod config;
-pub mod output;
-pub mod tui;
+//! The operator commands: one parsed [`Cli`] run against a node over HTTP, through [`ActorClient`].
 
 use std::io::Write;
 use std::time::Duration;
@@ -19,15 +11,16 @@ use cicada::time::format_instant;
 use cicada_client::{ActorClient, CancelOutcome};
 use serde_json::json;
 
+use crate::Env;
 use crate::cli::{
     Cancel, Cli, Command, ConfigCommand, Create, Delete, Describe, Get, Page, Retry, Selection, WatchArgs,
 };
-use crate::config::{Config, Env, Overrides};
-use crate::output::{Format, list, one, structured};
+use crate::config::{self, Config, Overrides};
+use crate::output::{self, Format, list, one, structured};
 
 /// `error` and its causes, each cause only when the text so far does not already hold it (a `ClientError` repeats
 /// its source in its own message).
-pub fn error_text(error: &anyhow::Error) -> String {
+pub(crate) fn error_text(error: &anyhow::Error) -> String {
     let mut text = error.to_string();
     for cause in error.chain().skip(1).map(ToString::to_string) {
         if !text.contains(&cause) {
@@ -40,15 +33,17 @@ pub fn error_text(error: &anyhow::Error) -> String {
 /// How long a CLI request may take.
 const TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Runs `cli` with the environment `env`, writing results to `out`. Any error means exit code 1.
-pub async fn run(cli: Cli, env: &Env, out: &mut dyn Write) -> anyhow::Result<()> {
+/// Runs `cli` with the environment `env`, writing results to `out`; `name` is the binary as it was called, for the
+/// hints. Any error means exit code 1.
+pub(crate) async fn run(cli: Cli, name: &str, env: &Env, out: &mut (dyn Write + Send)) -> anyhow::Result<()> {
     if let Command::Config(command) = cli.command {
-        return config_command(command, cli.server, cli.token, env, out);
+        return config_command(command, cli.server, cli.token, name, env, out);
     }
     let flags = Overrides { context: cli.context, server: cli.server, token: cli.token };
-    let target = config::resolve(&flags, env, &Config::load(&config::path(env)?)?)?;
+    let target = config::resolve(&flags, env, &Config::load(&config::path(env)?)?, name)?;
+    #[cfg(feature = "tui")]
     if let Command::Tui = cli.command {
-        return tui::run(target).await;
+        return crate::tui::run(target).await;
     }
     let client = target.client(TIMEOUT)?;
     let format = cli.output.unwrap_or(Format::Table);
@@ -105,7 +100,7 @@ pub async fn run(cli: Cli, env: &Env, out: &mut dyn Write) -> anyhow::Result<()>
         }
         Command::Cancel(Cancel::Message { id }) => match client.cancel(&id).await? {
             CancelOutcome::Cancelled => writeln!(out, "message {id} cancelled").map_err(Into::into),
-            CancelOutcome::Running => bail!("message {id} is running; stop its turn with `cicada cancel turn`"),
+            CancelOutcome::Running => bail!("message {id} is running; stop its turn with `{name} cancel turn`"),
             CancelOutcome::AlreadyFinished => bail!("message {id} has already finished"),
             CancelOutcome::NotFound => bail!("message {id} not found"),
         },
@@ -158,48 +153,67 @@ pub async fn run(cli: Cli, env: &Env, out: &mut dyn Write) -> anyhow::Result<()>
             }
             writeln!(out, "{} is healthy", target.server).map_err(Into::into)
         }
-        Command::Config(_) | Command::Tui => unreachable!("handled above"),
+        Command::Config(_) => unreachable!("handled above"),
+        #[cfg(feature = "tui")]
+        Command::Tui => unreachable!("handled above"),
     }
 }
 
-async fn get_command(client: &ActorClient, get: Get, format: Format, out: &mut dyn Write) -> anyhow::Result<()> {
+// The closures given to `pages` copy references into `async move` blocks: the future of a command must be `Send`, which
+// the compiler cannot prove for an async closure that borrows.
+async fn get_command(
+    client: &ActorClient,
+    get: Get,
+    format: Format,
+    out: &mut (dyn Write + Send),
+) -> anyhow::Result<()> {
     match get {
-        Get::Actors { prefix, page } => list(
-            out,
-            format,
-            &pages(page, async |c| Ok(client.list_actors(&prefix, c, Some(page.limit)).await?)).await?,
-        ),
+        Get::Actors { prefix, page } => {
+            let prefix = &prefix;
+            let items =
+                pages(page, |c| async move { Ok(client.list_actors(prefix, c.as_deref(), Some(page.limit)).await?) });
+            list(out, format, &items.await?)
+        }
         Get::Actor { actor } => one(out, format, &found(client.get_actor(&actor).await?, || format!("actor {actor}"))?),
         Get::Children { actor, page } => {
-            let items = pages(page, async |c| {
-                found(client.children(&actor, c, Some(page.limit)).await?, || format!("actor {actor}"))
+            let actor = &actor;
+            let items = pages(page, |c| async move {
+                found(client.children(actor, c.as_deref(), Some(page.limit)).await?, || format!("actor {actor}"))
             });
             list(out, format, &items.await?)
         }
         Get::Mailbox { actor, page } => {
-            let items = pages(page, async |c| {
-                found(client.mailbox(&actor, c, Some(page.limit)).await?, || format!("actor {actor}"))
+            let actor = &actor;
+            let items = pages(page, |c| async move {
+                found(client.mailbox(actor, c.as_deref(), Some(page.limit)).await?, || format!("actor {actor}"))
             });
             list(out, format, &items.await?)
         }
-        Get::Messages { prefix, page } => list(
-            out,
-            format,
-            &pages(page, async |c| Ok(client.list_pending(&prefix, c, Some(page.limit)).await?)).await?,
-        ),
+        Get::Messages { prefix, page } => {
+            let prefix = &prefix;
+            let items =
+                pages(page, |c| async move { Ok(client.list_pending(prefix, c.as_deref(), Some(page.limit)).await?) });
+            list(out, format, &items.await?)
+        }
         Get::Message { id } => one(out, format, &found(client.status(&id).await?, || format!("message {id}"))?),
         Get::Caused { id, page } => {
-            let items = pages(page, async |c| {
-                found(client.caused_by(&id, c, Some(page.limit)).await?, || format!("message {id}"))
+            let id = &id;
+            let items = pages(page, |c| async move {
+                found(client.caused_by(id, c.as_deref(), Some(page.limit)).await?, || format!("message {id}"))
             });
             list(out, format, &items.await?)
         }
         Get::Outcomes { status, prefix, since, page } => {
-            let items = pages(page, async |c| Ok(client.outcomes(status, &prefix, since, c, Some(page.limit)).await?));
+            let prefix = &prefix;
+            let items = pages(page, |c| async move {
+                Ok(client.outcomes(status, prefix, since, c.as_deref(), Some(page.limit)).await?)
+            });
             list(out, format, &items.await?)
         }
         Get::Turns { node, prefix, page } => {
-            let items = pages(page, async |c| Ok(client.turns(node.as_ref(), &prefix, c, Some(page.limit)).await?));
+            let (node, prefix) = (node.as_ref(), &prefix);
+            let items =
+                pages(page, |c| async move { Ok(client.turns(node, prefix, c.as_deref(), Some(page.limit)).await?) });
             list(out, format, &items.await?)
         }
         Get::Turn { actor } => {
@@ -209,9 +223,12 @@ async fn get_command(client: &ActorClient, get: Get, format: Format, out: &mut d
         Get::Node { id } => one(out, format, &found(client.node(&id).await?, || format!("node {id}"))?),
         Get::Types => list(out, format, &client.types().await?),
         Get::Watches { watcher, target, page } => {
-            let items = pages(page, async |c| {
-                Ok(client.watches(watcher.as_ref(), target.as_ref(), c, Some(page.limit)).await?)
-            });
+            let (watcher, target) = (watcher.as_ref(), target.as_ref());
+            let items =
+                pages(
+                    page,
+                    |c| async move { Ok(client.watches(watcher, target, c.as_deref(), Some(page.limit)).await?) },
+                );
             list(out, format, &items.await?)
         }
         Get::Type { name } => one(out, format, &found(client.get_type(&name).await?, || format!("type {name}"))?),
@@ -222,7 +239,7 @@ async fn describe_command(
     client: &ActorClient,
     describe: Describe,
     format: Format,
-    out: &mut dyn Write,
+    out: &mut (dyn Write + Send),
 ) -> anyhow::Result<()> {
     let format = if format == Format::Json { Format::Json } else { Format::Yaml };
     match describe {
@@ -243,6 +260,7 @@ fn config_command(
     command: ConfigCommand,
     server: Option<String>,
     token: Option<String>,
+    name: &str,
     env: &Env,
     out: &mut dyn Write,
 ) -> anyhow::Result<()> {
@@ -261,8 +279,9 @@ fn config_command(
             write!(out, "{}", output::table(&["CURRENT", "NAME", "SERVER"], &rows))?;
         }
         ConfigCommand::CurrentContext => {
-            let name =
-                config.current_context.context("no current context; set one with `cicada config use-context`")?;
+            let name = config
+                .current_context
+                .with_context(|| format!("no current context; set one with `{name} config use-context`"))?;
             writeln!(out, "{name}")?;
         }
         ConfigCommand::UseContext { name } => {
@@ -285,15 +304,16 @@ fn config_command(
     Ok(())
 }
 
-/// The items of one page, or of every page with `--all`.
-async fn pages<T>(
-    page: Page,
-    mut fetch: impl AsyncFnMut(Option<&str>) -> anyhow::Result<PageView<T>>,
-) -> anyhow::Result<Vec<T>> {
+/// The items of one page, or of every page with `--all`; `fetch` gets the cursor of the page.
+async fn pages<T, F, Fut>(page: Page, mut fetch: F) -> anyhow::Result<Vec<T>>
+where
+    F: FnMut(Option<String>) -> Fut,
+    Fut: Future<Output = anyhow::Result<PageView<T>>>,
+{
     let mut items = Vec::new();
     let mut cursor: Option<String> = None;
     loop {
-        let next = fetch(cursor.as_deref()).await?;
+        let next = fetch(cursor.take()).await?;
         items.extend(next.items);
         match next.next {
             Some(next) if page.all => cursor = Some(next),
@@ -308,7 +328,7 @@ fn found<T>(value: Option<T>, what: impl FnOnce() -> String) -> anyhow::Result<T
 }
 
 /// The result of an action: `text` for a table, `value` for JSON or YAML.
-fn done(out: &mut dyn Write, format: Format, text: &str, value: serde_json::Value) -> anyhow::Result<()> {
+fn done(out: &mut (dyn Write + Send), format: Format, text: &str, value: serde_json::Value) -> anyhow::Result<()> {
     match format {
         Format::Table | Format::Wide => writeln!(out, "{text}").map_err(Into::into),
         Format::Json | Format::Yaml => structured(out, format, &value),

@@ -1,4 +1,5 @@
-//! The command line: kubectl-style, verb first.
+//! The operator commands: kubectl-style, verb first. [`crate::command`] adds `serve` and `worker` for a binary that
+//! hosts types.
 
 use cicada::address::TypeName;
 use cicada::store::{MessageId, NodeId, OutcomeStatus};
@@ -88,6 +89,7 @@ pub enum Command {
     #[command(subcommand)]
     Config(ConfigCommand),
     /// Browse and act in a terminal UI.
+    #[cfg(feature = "tui")]
     Tui,
 }
 

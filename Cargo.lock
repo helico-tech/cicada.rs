@@ -469,7 +469,7 @@ dependencies = [
 
 [[package]]
 name = "cicada"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -491,8 +491,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "cicada-app"
+version = "0.13.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "chrono",
+ "cicada",
+ "cicada-app",
+ "cicada-axum",
+ "cicada-client",
+ "cicada-test",
+ "clap",
+ "crossterm",
+ "futures",
+ "ratatui",
+ "reqwest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_norway",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "cicada-axum"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "aide",
  "async-trait",
@@ -511,33 +541,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "cicada-cli"
-version = "0.12.0"
-dependencies = [
- "anyhow",
- "axum",
- "chrono",
- "cicada",
- "cicada-axum",
- "cicada-client",
- "cicada-test",
- "clap",
- "crossterm",
- "futures",
- "ratatui",
- "reqwest",
- "schemars",
- "serde",
- "serde_json",
- "serde_norway",
- "tempfile",
- "tokio",
- "toml",
-]
-
-[[package]]
 name = "cicada-client"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "axum",
  "cicada",
@@ -554,7 +559,7 @@ dependencies = [
 
 [[package]]
 name = "cicada-e2e"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -571,7 +576,7 @@ dependencies = [
 
 [[package]]
 name = "cicada-examples"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -592,7 +597,7 @@ dependencies = [
 
 [[package]]
 name = "cicada-extras"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "chrono",
  "cicada",
@@ -608,7 +613,7 @@ dependencies = [
 
 [[package]]
 name = "cicada-otel"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "cicada",
  "cicada-test",
@@ -622,12 +627,13 @@ dependencies = [
 
 [[package]]
 name = "cicada-sample-service"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "anyhow",
  "axum",
  "chrono",
  "cicada",
+ "cicada-app",
  "cicada-axum",
  "cicada-client",
  "cicada-examples",
@@ -650,7 +656,7 @@ dependencies = [
 
 [[package]]
 name = "cicada-test"
-version = "0.12.0"
+version = "0.13.0"
 dependencies = [
  "anyhow",
  "async-trait",

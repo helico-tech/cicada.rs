@@ -5,7 +5,7 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
 
 ## 1. The crate, with the command line in it
 
-- [ ] 1.1 The crate `cicada-app` [3, 5, 10]: a new member of the workspace with the modules of `cicada-cli` (the
+- [x] 1.1 The crate `cicada-app` [3, 5, 10]: a new member of the workspace with the modules of `cicada-cli` (the
       command line, its config, its output, and the terminal UI behind the feature `tui`) and the binary `cicada`.
       The features `sqlite`, `postgres` and `tui`; none is on by default. The crate `cicada-cli` leaves the
       workspace, and its tests move. The sample service names `cicada-app` with all three features from this task
@@ -13,7 +13,7 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
       command line and of the terminal UI in the new crate; `cargo check -p cicada-app` passes with no feature and
       with each alone; and `grep -rn "cicada-cli\|cicada_cli" --include='*.toml' --include='*.rs' .` finds nothing
       outside `target`.
-- [ ] 1.2 The name, the version and the config file [1, 11]: the help, the usage errors and the hints name the
+- [x] 1.2 The name, the version and the config file [1, 11]: the help, the usage errors and the hints name the
       binary as it was called; `--version` prints the host's text, or `cicada-app` and its version; the plain binary
       prints `cicada` and its version; a `cicada config` command writes through a symlink. Verify: tests for the
       scenarios "The name in a hint", "The version", "The version of the plain binary", and of `cli` "A path that

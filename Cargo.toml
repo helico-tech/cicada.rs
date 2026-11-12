@@ -7,14 +7,14 @@ members = [
     "crates/cicada-client",
     "crates/cicada-otel",
     "crates/cicada-extras",
-    "crates/cicada-cli",
+    "crates/cicada-app",
     "examples",
     "sample-service",
     "e2e",
 ]
 
 [workspace.package]
-version = "0.12.0"
+version = "0.13.0"
 edition = "2024"
 rust-version = "1.94"
 license = "MIT OR Apache-2.0"
@@ -28,7 +28,7 @@ cicada-axum = { path = "crates/cicada-axum" }
 cicada-client = { path = "crates/cicada-client" }
 cicada-otel = { path = "crates/cicada-otel" }
 cicada-extras = { path = "crates/cicada-extras" }
-cicada-cli = { path = "crates/cicada-cli" }
+cicada-app = { path = "crates/cicada-app" }
 cicada-examples = { path = "examples" }
 
 aide = { version = "=0.16.0-alpha.4", features = ["axum", "axum-json", "axum-query"] }

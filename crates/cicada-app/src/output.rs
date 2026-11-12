@@ -35,7 +35,7 @@ pub trait Columns {
 }
 
 /// Writes `items` in `format`: a table, or a JSON / YAML array.
-pub fn list<T: Columns + Serialize>(out: &mut dyn Write, format: Format, items: &[T]) -> anyhow::Result<()> {
+pub fn list<T: Columns + Serialize>(out: &mut (dyn Write + Send), format: Format, items: &[T]) -> anyhow::Result<()> {
     match format {
         Format::Table | Format::Wide => {
             let wide = format == Format::Wide;
@@ -49,7 +49,7 @@ pub fn list<T: Columns + Serialize>(out: &mut dyn Write, format: Format, items: 
 }
 
 /// Writes one item in `format`; a table has one row.
-pub fn one<T: Columns + Serialize>(out: &mut dyn Write, format: Format, item: &T) -> anyhow::Result<()> {
+pub fn one<T: Columns + Serialize>(out: &mut (dyn Write + Send), format: Format, item: &T) -> anyhow::Result<()> {
     match format {
         Format::Table | Format::Wide => list(out, format, std::slice::from_ref(item)),
         Format::Json | Format::Yaml => structured(out, format, item),
@@ -57,7 +57,11 @@ pub fn one<T: Columns + Serialize>(out: &mut dyn Write, format: Format, item: &T
 }
 
 /// Writes `value` as pretty JSON, or as YAML for any other format.
-pub fn structured<T: Serialize + ?Sized>(out: &mut dyn Write, format: Format, value: &T) -> anyhow::Result<()> {
+pub fn structured<T: Serialize + ?Sized>(
+    out: &mut (dyn Write + Send),
+    format: Format,
+    value: &T,
+) -> anyhow::Result<()> {
     if format == Format::Json {
         writeln!(out, "{}", serde_json::to_string_pretty(value)?)?;
     } else {

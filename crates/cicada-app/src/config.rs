@@ -14,8 +14,7 @@ use cicada_client::ActorClient;
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 
-/// Environment variables, by name; the process environment in `main`, a literal map in tests.
-pub type Env = BTreeMap<String, String>;
+use crate::Env;
 
 /// The config file.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -58,20 +57,42 @@ impl Config {
     /// The text goes to a new file in the same directory, which is then renamed over `path`: the old file stays whole
     /// until the new one is complete, and a reader that has the old one open never sees the new text. The new file is
     /// created with mode 0600 on Unix (`tempfile`'s default), because it holds tokens, and is removed when the save
-    /// fails.
+    /// fails. When `path` is a symlink, all of this happens to the file it points to, which is created when it is not
+    /// there yet, and the link stays a link.
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
-        let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        let target = link_target(path).with_context(|| format!("cannot follow {}", path.display()))?;
+        let dir = target.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
         std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
         let text = toml::to_string_pretty(self)?;
         let write = || -> std::io::Result<()> {
             let mut file = tempfile::Builder::new().prefix(".cicada-config").tempfile_in(dir)?;
             file.write_all(text.as_bytes())?;
             file.as_file().sync_all()?;
-            file.persist(path)?;
+            file.persist(&target)?;
             Ok(())
         };
-        write().with_context(|| format!("cannot write {}", path.display()))
+        write().with_context(|| format!("cannot write {}", target.display()))
     }
+}
+
+/// The file that `path` names after following its symlinks, each relative one from the folder of its link; `path`
+/// itself when it is no link. The last target need not exist.
+fn link_target(path: &Path) -> std::io::Result<PathBuf> {
+    let mut path = path.to_path_buf();
+    // As many links as Linux follows before it gives up (ELOOP).
+    for _ in 0..40 {
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                let link = std::fs::read_link(&path)?;
+                path = match path.parent() {
+                    Some(dir) if link.is_relative() => dir.join(link),
+                    _ => link,
+                };
+            }
+            _ => return Ok(path),
+        }
+    }
+    Err(std::io::Error::other("too many levels of symbolic links"))
 }
 
 /// The config file's path: `$CICADA_CONFIG`, else `$XDG_CONFIG_HOME/cicada/config.toml`, else
@@ -113,8 +134,9 @@ pub struct Target {
     pub headers: BTreeMap<String, String>,
 }
 
-/// Resolves the target: each of server, context and token from the flag, else the environment, else the file.
-pub fn resolve(flags: &Overrides, env: &Env, config: &Config) -> anyhow::Result<Target> {
+/// Resolves the target: each of server, context and token from the flag, else the environment, else the file. `bin` is
+/// the binary as it was called, for the hint.
+pub fn resolve(flags: &Overrides, env: &Env, config: &Config, bin: &str) -> anyhow::Result<Target> {
     let from_env = |name: &str| env.get(name).filter(|v| !v.is_empty()).cloned();
     let name = flags.context.clone().or_else(|| from_env("CICADA_CONTEXT")).or_else(|| config.current_context.clone());
     let context = match &name {
@@ -124,7 +146,7 @@ pub fn resolve(flags: &Overrides, env: &Env, config: &Config) -> anyhow::Result<
     let server =
         flags.server.clone().or_else(|| from_env("CICADA_SERVER")).or_else(|| context.map(|c| c.server.clone()));
     let Some(server) = server else {
-        bail!("no server: pass --server, set CICADA_SERVER, or add a context with `cicada config set-context`");
+        bail!("no server: pass --server, set CICADA_SERVER, or add a context with `{bin} config set-context`");
     };
     Ok(Target {
         context: name,
@@ -182,7 +204,7 @@ mod tests {
 
     #[test]
     fn the_file_alone_gives_the_current_context() {
-        let target = resolve(&Overrides::default(), &Env::new(), &config()).unwrap();
+        let target = resolve(&Overrides::default(), &Env::new(), &config(), "cicada").unwrap();
         assert_eq!(target.context.as_deref(), Some("a"));
         assert_eq!(target.server, "http://a");
         assert_eq!(target.token.as_deref(), Some("ta"));
@@ -192,39 +214,39 @@ mod tests {
     #[test]
     fn a_flag_wins_over_the_environment_and_the_environment_over_the_file() {
         let e = env(&[("CICADA_SERVER", "http://env"), ("CICADA_TOKEN", "te")]);
-        let target = resolve(&Overrides::default(), &e, &config()).unwrap();
+        let target = resolve(&Overrides::default(), &e, &config(), "cicada").unwrap();
         assert_eq!((target.server.as_str(), target.token.as_deref()), ("http://env", Some("te")));
 
         let flags = Overrides { server: Some("http://flag".into()), token: Some("tf".into()), ..Overrides::default() };
-        let target = resolve(&flags, &e, &config()).unwrap();
+        let target = resolve(&flags, &e, &config(), "cicada").unwrap();
         assert_eq!((target.server.as_str(), target.token.as_deref()), ("http://flag", Some("tf")));
     }
 
     #[test]
     fn the_context_comes_from_the_flag_else_the_environment() {
         let e = env(&[("CICADA_CONTEXT", "b")]);
-        assert_eq!(resolve(&Overrides::default(), &e, &config()).unwrap().server, "http://b");
+        assert_eq!(resolve(&Overrides::default(), &e, &config(), "cicada").unwrap().server, "http://b");
         let flags = Overrides { context: Some("a".into()), ..Overrides::default() };
-        assert_eq!(resolve(&flags, &e, &config()).unwrap().server, "http://a");
+        assert_eq!(resolve(&flags, &e, &config(), "cicada").unwrap().server, "http://a");
     }
 
     #[test]
     fn an_unknown_context_is_an_error() {
         let flags = Overrides { context: Some("nope".into()), ..Overrides::default() };
-        let error = resolve(&flags, &Env::new(), &config()).unwrap_err().to_string();
+        let error = resolve(&flags, &Env::new(), &config(), "cicada").unwrap_err().to_string();
         assert!(error.contains("'nope'"), "{error}");
     }
 
     #[test]
     fn no_server_anywhere_says_how_to_set_one() {
-        let error = resolve(&Overrides::default(), &Env::new(), &Config::default()).unwrap_err().to_string();
+        let error = resolve(&Overrides::default(), &Env::new(), &Config::default(), "cicada").unwrap_err().to_string();
         assert!(error.contains("--server") && error.contains("CICADA_SERVER"), "{error}");
     }
 
     #[test]
     fn a_server_flag_needs_no_config() {
         let flags = Overrides { server: Some("http://x".into()), ..Overrides::default() };
-        let target = resolve(&flags, &Env::new(), &Config::default()).unwrap();
+        let target = resolve(&flags, &Env::new(), &Config::default(), "cicada").unwrap();
         assert_eq!(target, Target { context: None, server: "http://x".into(), token: None, headers: BTreeMap::new() });
     }
 

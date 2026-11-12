@@ -91,12 +91,14 @@ fn spawn(client: &ActorClient, tx: &UnboundedSender<Fetched>, effect: Effect) {
         let result = match effect {
             Effect::Fetch { seq, target } => match fetch::screen(&client, &target).await {
                 Ok(data) => Fetched::Screen { seq, data },
-                Err(e) => Fetched::Failed { seq: Some(seq), error: crate::error_text(&e) },
+                Err(e) => Fetched::Failed { seq: Some(seq), error: crate::operator::error_text(&e) },
             },
-            Effect::Summary => Fetched::Summary(fetch::summary(&client).await.map_err(|e| crate::error_text(&e))),
+            Effect::Summary => {
+                Fetched::Summary(fetch::summary(&client).await.map_err(|e| crate::operator::error_text(&e)))
+            }
             Effect::Act(action) => match fetch::act(&client, &action).await {
                 Ok(text) => Fetched::Done { action, text },
-                Err(e) => Fetched::Failed { seq: None, error: crate::error_text(&e) },
+                Err(e) => Fetched::Failed { seq: None, error: crate::operator::error_text(&e) },
             },
             Effect::Quit => return,
         };
