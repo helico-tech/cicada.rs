@@ -168,6 +168,10 @@ pub struct Message {
     pub attempt: u32,
     /// Number of failed handler runs that were retried under the message's `retry` policy.
     pub failures: u32,
+    /// Number of claims of the message that were lost: another claim took their place although their turn neither
+    /// committed nor gave the lease back (its node died, its lease ran out, or its commit could not get through). The
+    /// claim that replaces such a lease counts it (ADR 0025); it never goes back. 0 for a new message.
+    pub lost_claims: u32,
     /// The error of the most recent failed run that was retried.
     pub last_error: Option<String>,
     /// The retry policy its sender attached, or `None` (no retry).
@@ -290,7 +294,7 @@ impl OutgoingMessage {
     }
 
     /// The message as the store holds it once enqueued: due at `deliver_at`, with the store-assigned `seq`, never
-    /// claimed and never failed; marked as a notification only when the store wrote it as one.
+    /// claimed, never failed and without lost claims; marked as a notification only when the store wrote it as one.
     pub fn into_message(self, deliver_at: Timestamp, seq: i64, notification: bool) -> Message {
         Message {
             id: self.id,
@@ -304,6 +308,7 @@ impl OutgoingMessage {
             seq,
             attempt: 0,
             failures: 0,
+            lost_claims: 0,
             last_error: None,
             retry: self.retry,
             caused_by: self.caused_by,
@@ -458,7 +463,8 @@ pub struct Claim {
     pub actor: ActorAddress,
     /// Fencing token; pass it to renew, release and commit.
     pub epoch: i64,
-    /// The head message, with `attempt` already incremented for this claim.
+    /// The head message, with `attempt` already incremented for this claim, and `lost_claims` for a lease of it that
+    /// this claim replaced.
     pub message: Message,
     /// The instance's state.
     pub state: Value,

@@ -1,4 +1,4 @@
-//! The PostgreSQL schema and its versioned migrations; the schema is at version 5.
+//! The PostgreSQL schema and its versioned migrations; the schema is at version 6.
 //!
 //! The tables of the architecture (`actor_types`, `actors`, `messages`, `outcomes`, `nodes`) plus two sequences for the
 //! store-wide `seq` and epoch counters. JSON values are `jsonb`, instants `timestamptz` (microsecond precision, the
@@ -10,15 +10,18 @@
 //! is refused. When the schema is already current, start runs no DDL at all, so a node may connect as a user without
 //! `CREATE` privileges once the schema was migrated by one that has them.
 //!
-//! Migrations are additive so that nodes of the previous version keep working during a rolling deploy, with four
+//! Migrations are additive so that nodes of the previous version keep working during a rolling deploy, with five
 //! exceptions, after which every old node is stopped before the first new one starts: migration 2 makes `actors.state`
 //! required, so a node of version 1 that writes an actor without a state fails; migration 3 removes every registration
 //! and rewrites `%3A` to `:` in addresses, and the contracts that nodes register again are not those of version 2
 //! (ADR 0021); migration 4 adds `actors.parent`, and a node of version 3 that keeps running deletes or stops a parent
 //! without its children, which then stay behind (ADR 0019); migration 5 adds the watches and the mark on a message,
 //! and a node of version 4 that keeps running writes no notification for a message that fails there and leaves the
-//! watches of an actor it removes behind (ADR 0023). A node of the previous version that opens the migrated database
-//! refuses it.
+//! watches of an actor it removes behind (ADR 0023); migration 6 adds the count of lost claims, and a node of version
+//! 5 that keeps running counts no lost claim, and its statements that read with `*` fail on the changed table, as a
+//! prepared statement must not change its result type (ADR 0025). A node of the previous version that opens the
+//! migrated database refuses it. From version 6 on the store names the columns it reads, so a later migration that
+//! only adds a column with a default can be additive again.
 //!
 //! A statement of a migration that violates a constraint (SQLSTATE class `23`, such as two old addresses that become one
 //! in migration 3) fails with [`StoreError::Invalid`], which names the version it could not reach and holds
@@ -155,6 +158,11 @@ const MIGRATIONS: &[&[&str]] = &[
         "CREATE INDEX watches_watcher ON {s}.watches (watcher, target)",
         "ALTER TABLE {s}.messages ADD COLUMN notification boolean NOT NULL DEFAULT false",
     ],
+    // 6: the claim limit (ADR 0025). `messages.lost_claims` counts the claims of a message that another claim replaced
+    // although their turn neither committed nor gave the lease back; the claim that replaces such a lease adds 1. Every
+    // existing message has none, and an outcome keeps the count in its envelope, where an older envelope without it
+    // reads as 0. Not additive (see the module docs).
+    &["ALTER TABLE {s}.messages ADD COLUMN lost_claims integer NOT NULL DEFAULT 0"],
 ];
 
 /// The schema version this code writes.
@@ -290,7 +298,7 @@ mod tests {
     }
 
     #[test]
-    fn the_schema_is_at_version_5() {
-        assert_eq!(VERSION, 5);
+    fn the_schema_is_at_version_6() {
+        assert_eq!(VERSION, 6);
     }
 }

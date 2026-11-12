@@ -448,6 +448,60 @@ macro_rules! retained {
     };
 }
 
+// `MESSAGE_COLUMNS`: the columns of `messages` that [`message`] reads, each after the table prefix (`""` or `"m."`).
+// `OUTCOME_COLUMNS`: the columns of `outcomes` that [`outcome`] reads. Statements name their columns and never read
+// with `*`, so a statement that a connection has prepared keeps working when a migration adds a column (ADR 0025).
+
+macro_rules! message_columns {
+    () => {
+        message_columns!("")
+    };
+    ($p:literal) => {
+        concat!(
+            $p,
+            "id, ",
+            $p,
+            "actor_address, ",
+            $p,
+            "seq, ",
+            $p,
+            "type, ",
+            $p,
+            "payload, ",
+            $p,
+            "sender, ",
+            $p,
+            "correlation_id, ",
+            $p,
+            "headers, ",
+            $p,
+            "deliver_at, ",
+            $p,
+            "attempt, ",
+            $p,
+            "failures, ",
+            $p,
+            "lost_claims, ",
+            $p,
+            "last_error, ",
+            $p,
+            "retry_policy, ",
+            $p,
+            "caused_by, ",
+            $p,
+            "retention_policy, ",
+            $p,
+            "notification"
+        )
+    };
+}
+
+macro_rules! outcome_columns {
+    () => {
+        "message_id, actor_address, status, error, finished_at, envelope"
+    };
+}
+
 // ---- mapping ----
 
 fn address(text: String) -> Result<ActorAddress, TxError> {
@@ -484,6 +538,7 @@ fn message(row: &PgRow) -> Result<Message, TxError> {
         seq: row.try_get("seq")?,
         attempt: row.try_get::<i32, _>("attempt")? as u32,
         failures: row.try_get::<i32, _>("failures")? as u32,
+        lost_claims: row.try_get::<i32, _>("lost_claims")? as u32,
         last_error: row.try_get("last_error")?,
         notification: row.try_get("notification")?,
         // Tolerant: a policy this version cannot decode must not break claims; it reads as no policy.
@@ -960,10 +1015,14 @@ async fn finish(
 }
 
 async fn purge_mailbox(tx: &mut Tx, addr: &str) -> Result<usize, TxError> {
-    let rows = sqlx::query("SELECT * FROM messages WHERE actor_address = $1 ORDER BY deliver_at, seq")
-        .bind(addr)
-        .fetch_all(&mut *tx.c)
-        .await?;
+    let rows = sqlx::query(concat!(
+        "SELECT ",
+        message_columns!(),
+        " FROM messages WHERE actor_address = $1 ORDER BY deliver_at, seq"
+    ))
+    .bind(addr)
+    .fetch_all(&mut *tx.c)
+    .await?;
     let pending = rows.iter().map(message).collect::<Result<Vec<_>, _>>()?;
     for m in &pending {
         finish(tx, m, OutcomeStatus::Purged, None).await?;
@@ -990,10 +1049,14 @@ async fn purge_in(tx: &mut Tx, addr: &str, own: Option<&str>) -> Result<Option<u
         None if owner.is_some() && until.is_some_and(|until| until > now) => lease_message,
         None => None,
     };
-    let rows = sqlx::query("SELECT * FROM messages WHERE actor_address = $1 ORDER BY deliver_at, seq")
-        .bind(addr)
-        .fetch_all(&mut *tx.c)
-        .await?;
+    let rows = sqlx::query(concat!(
+        "SELECT ",
+        message_columns!(),
+        " FROM messages WHERE actor_address = $1 ORDER BY deliver_at, seq"
+    ))
+    .bind(addr)
+    .fetch_all(&mut *tx.c)
+    .await?;
     let pending = rows.iter().map(message).collect::<Result<Vec<_>, _>>()?;
     let mut purged: u64 = 0;
     for m in pending.iter().filter(|m| held.as_deref() != Some(m.id.as_str())) {
@@ -1015,23 +1078,30 @@ async fn purge_in(tx: &mut Tx, addr: &str, own: Option<&str>) -> Result<Option<u
 
 async fn live_outcome(tx: &mut Tx, id: &MessageId) -> Result<Option<OutcomeRecord>, TxError> {
     let (cutoff, now) = (tx.cutoff().await?, tx.now().await?);
-    let row = sqlx::query(concat!("SELECT * FROM outcomes WHERE message_id = $1 AND ", visible!(2, 3)))
-        .bind(id.as_str())
-        .bind(cutoff)
-        .bind(now)
-        .fetch_optional(&mut *tx.c)
-        .await?;
+    let row = sqlx::query(concat!(
+        "SELECT ",
+        outcome_columns!(),
+        " FROM outcomes WHERE message_id = $1 AND ",
+        visible!(2, 3)
+    ))
+    .bind(id.as_str())
+    .bind(cutoff)
+    .bind(now)
+    .fetch_optional(&mut *tx.c)
+    .await?;
     row.as_ref().map(outcome).transpose()
 }
 
 async fn status_in(tx: &mut Tx, id: &MessageId) -> Result<Option<MessageStatus>, TxError> {
     let now = tx.now().await?;
-    let row = sqlx::query(
-        "SELECT m.*, a.lease_owner, a.lease_until FROM messages m
+    let row = sqlx::query(concat!(
+        "SELECT ",
+        message_columns!("m."),
+        ", a.lease_owner, a.lease_until FROM messages m
          LEFT JOIN actors a ON a.address = m.actor_address AND a.lease_message = m.id AND a.lease_owner IS NOT NULL
              AND a.lease_until > $1
-         WHERE m.id = $2",
-    )
+         WHERE m.id = $2"
+    ))
     .bind(now)
     .bind(id.as_str())
     .fetch_optional(&mut *tx.c)
@@ -1271,7 +1341,8 @@ impl Backend for PostgresStore {
             // SKIP LOCKED never waits, so reading the clock first is safe here.
             let now = tx.now().await?;
             let candidates = sqlx::query(
-                "SELECT address, type, state, version FROM actors
+                "SELECT address, type, state, version, CASE WHEN lease_owner IS NOT NULL THEN lease_message END AS lost
+                 FROM actors
                  WHERE next_due_at <= $1 AND NOT paused AND type = ANY ($2)
                    AND (lease_owner IS NULL OR lease_until <= $1)
                  ORDER BY next_due_at
@@ -1287,11 +1358,22 @@ impl Backend for PostgresStore {
             let mut claims = Vec::with_capacity(candidates.len());
             for candidate in &candidates {
                 let addr: String = candidate.try_get("address")?;
-                let head =
-                    sqlx::query("SELECT * FROM messages WHERE actor_address = $1 ORDER BY deliver_at, seq LIMIT 1")
-                        .bind(&addr)
-                        .fetch_optional(&mut *tx.c)
+                // A lease that ran out and that nothing cleared: its claim is lost (ADR 0025). The table holds only
+                // pending messages, so a message that is gone counts nothing.
+                if let Some(lost) = candidate.try_get::<Option<String>, _>("lost")? {
+                    sqlx::query("UPDATE messages SET lost_claims = lost_claims + 1 WHERE id = $1")
+                        .bind(lost)
+                        .execute(&mut *tx.c)
                         .await?;
+                }
+                let head = sqlx::query(concat!(
+                    "SELECT ",
+                    message_columns!(),
+                    " FROM messages WHERE actor_address = $1 ORDER BY deliver_at, seq LIMIT 1"
+                ))
+                .bind(&addr)
+                .fetch_optional(&mut *tx.c)
+                .await?;
                 let head = head.as_ref().map(message).transpose()?;
                 let Some(head) = head.filter(|h| h.deliver_at <= now) else {
                     return Err(corrupt(format!("next_due_at out of sync for {addr}")));
@@ -1401,17 +1483,23 @@ impl Backend for PostgresStore {
         transaction!(self, true, |tx| -> Page<Message> {
             let rows = match after {
                 None => {
-                    sqlx::query("SELECT * FROM messages WHERE actor_address = $1 ORDER BY deliver_at, seq LIMIT $2")
-                        .bind(address.as_str())
-                        .bind(limit as i64 + 1)
-                        .fetch_all(&mut *tx.c)
-                        .await?
+                    sqlx::query(concat!(
+                        "SELECT ",
+                        message_columns!(),
+                        " FROM messages WHERE actor_address = $1 ORDER BY deliver_at, seq LIMIT $2"
+                    ))
+                    .bind(address.as_str())
+                    .bind(limit as i64 + 1)
+                    .fetch_all(&mut *tx.c)
+                    .await?
                 }
                 Some((at, seq)) => {
-                    sqlx::query(
-                        "SELECT * FROM messages WHERE actor_address = $1 AND (deliver_at, seq) > ($2, $3)
-                         ORDER BY deliver_at, seq LIMIT $4",
-                    )
+                    sqlx::query(concat!(
+                        "SELECT ",
+                        message_columns!(),
+                        " FROM messages WHERE actor_address = $1 AND (deliver_at, seq) > ($2, $3)
+                         ORDER BY deliver_at, seq LIMIT $4"
+                    ))
                     .bind(address.as_str())
                     .bind(lower_bound(time::from_micros(at)))
                     .bind(seq)
@@ -1437,11 +1525,13 @@ impl Backend for PostgresStore {
             // A range on actor_address walks the mailbox index (actor_address, deliver_at, seq) in order; no sort.
             let rows = match &after {
                 None => {
-                    sqlx::query(
-                        "SELECT * FROM messages
+                    sqlx::query(concat!(
+                        "SELECT ",
+                        message_columns!(),
+                        " FROM messages
                          WHERE actor_address >= $1 AND actor_address < $2 AND starts_with(actor_address, $3)
-                         ORDER BY actor_address, deliver_at, seq LIMIT $4",
-                    )
+                         ORDER BY actor_address, deliver_at, seq LIMIT $4"
+                    ))
                     .bind(prefix)
                     .bind(upper_bound(prefix))
                     .bind(prefix)
@@ -1450,12 +1540,14 @@ impl Backend for PostgresStore {
                     .await?
                 }
                 Some((addr, at, seq)) => {
-                    sqlx::query(
-                        "SELECT * FROM messages
+                    sqlx::query(concat!(
+                        "SELECT ",
+                        message_columns!(),
+                        " FROM messages
                          WHERE actor_address >= $1 AND actor_address < $2 AND starts_with(actor_address, $3)
                            AND (actor_address, deliver_at, seq) > ($4, $5, $6)
-                         ORDER BY actor_address, deliver_at, seq LIMIT $7",
-                    )
+                         ORDER BY actor_address, deliver_at, seq LIMIT $7"
+                    ))
                     .bind(prefix)
                     .bind(upper_bound(prefix))
                     .bind(prefix)
@@ -1485,7 +1577,7 @@ impl Backend for PostgresStore {
             // Read again under the instance lock: the message may have left the mailbox in the meantime.
             let row = match t {
                 Some(_) => {
-                    sqlx::query("SELECT * FROM messages WHERE id = $1")
+                    sqlx::query(concat!("SELECT ", message_columns!(), " FROM messages WHERE id = $1"))
                         .bind(id.as_str())
                         .fetch_optional(&mut *tx.c)
                         .await?
@@ -1541,7 +1633,7 @@ impl Backend for PostgresStore {
             // Read again under the instance lock: the message may have left the mailbox in the meantime.
             let row = match t {
                 Some(_) => {
-                    sqlx::query("SELECT * FROM messages WHERE id = $1")
+                    sqlx::query(concat!("SELECT ", message_columns!(), " FROM messages WHERE id = $1"))
                         .bind(id.as_str())
                         .fetch_optional(&mut *tx.c)
                         .await?
@@ -1619,7 +1711,9 @@ impl Backend for PostgresStore {
             let (cutoff, now) = (tx.cutoff().await?, tx.now().await?);
             // Without a status the condition is left out (a null status parameter would hide the partial index).
             let base = concat!(
-                "SELECT * FROM outcomes
+                "SELECT ",
+                outcome_columns!(),
+                " FROM outcomes
                  WHERE finished_at >= $1 AND ",
                 visible!(2, 3),
                 " AND actor_address >= $4 AND actor_address < $5 AND starts_with(actor_address, $6)"
@@ -2037,7 +2131,7 @@ impl Backend for PostgresStore {
             }
 
             // 1. outcome, or back to pending
-            let row = sqlx::query("SELECT * FROM messages WHERE id = $1")
+            let row = sqlx::query(concat!("SELECT ", message_columns!(), " FROM messages WHERE id = $1"))
                 .bind(r.message_id.as_str())
                 .fetch_optional(&mut *tx.c)
                 .await?
@@ -2070,11 +2164,15 @@ impl Backend for PostgresStore {
             let mut cancelled = Vec::new();
             let mut seen = HashSet::new();
             for id in r.cancels.iter().filter(|id| seen.insert(*id)) {
-                let row = sqlx::query("SELECT * FROM messages WHERE id = $1 AND actor_address = $2")
-                    .bind(id.as_str())
-                    .bind(r.address.as_str())
-                    .fetch_optional(&mut *tx.c)
-                    .await?;
+                let row = sqlx::query(concat!(
+                    "SELECT ",
+                    message_columns!(),
+                    " FROM messages WHERE id = $1 AND actor_address = $2"
+                ))
+                .bind(id.as_str())
+                .bind(r.address.as_str())
+                .fetch_optional(&mut *tx.c)
+                .await?;
                 if let Some(row) = row {
                     finish(tx, &message(&row)?, OutcomeStatus::Cancelled, None).await?;
                     cancelled.push(id.clone());

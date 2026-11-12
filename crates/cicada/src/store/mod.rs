@@ -199,6 +199,11 @@ pub(crate) trait Backend: Send + Sync + 'static {
     /// Claims up to `limit` instances of `types` that have a due head message and no valid lease, for `node`. Per
     /// claimed instance, atomically: a new, greater epoch; the lease set to `store now + ttl`; the head message's
     /// `attempt` increased by 1. Paused instances are not claimed.
+    ///
+    /// A claim of an instance that still holds a lease that ran out, which no commit, release, cancel or purge cleared,
+    /// replaces a lost claim (ADR 0025): it adds 1 to the [`Message::lost_claims`] of the message of that lease, when
+    /// that message is still pending, in the same transaction. That is always the head it claims, which it returns
+    /// with the new count. Nothing else changes the count.
     async fn claim_due(
         &self,
         types: &BTreeSet<TypeName>,
@@ -209,11 +214,11 @@ pub(crate) trait Backend: Send + Sync + 'static {
 
     /// Extends the lease to `store now + ttl`; succeeds only with the current epoch while the lease is held. Reports
     /// [`RenewResult::CancelRequested`] when [`Self::request_cancel`] recorded this epoch; the lease is renewed either
-    /// way.
+    /// way. It counts no lost claim.
     async fn renew(&self, address: &ActorAddress, epoch: i64, ttl: Duration) -> StoreResult<RenewResult>;
 
-    /// Gives up the lease without an outcome. The message stays pending with its incremented `attempt`. A no-op unless
-    /// `epoch` is current and held.
+    /// Gives up the lease without an outcome. The message stays pending with its incremented `attempt`, and the claim
+    /// is not lost: the lease is cleared, so the next claim counts nothing. A no-op unless `epoch` is current and held.
     async fn release(&self, address: &ActorAddress, epoch: i64) -> StoreResult<()>;
 
     /// The earliest store time at which an instance of `types` may become claimable: the minimum of their head's
@@ -322,7 +327,8 @@ pub(crate) trait Backend: Send + Sync + 'static {
     /// parent), the purges, the pauses and resumes, the sends (in order), the state change, the release of the lease,
     /// and last the notifications of the event, named after [`CommitRequest::event`]. A stop removes the instance and
     /// every descendant, the children this commit created included, and purges their mailboxes, this commit's sends
-    /// to them included.
+    /// to them included. A commit changes no [`Message::lost_claims`]: an outcome keeps the count of its message, and a
+    /// reschedule carries it along.
     ///
     /// Each control effect does what the call from outside a turn does ([`Self::set_paused`], [`Self::purge`],
     /// [`Self::delete`]), and nothing to an instance that is absent when it is applied. A purge leaves the message

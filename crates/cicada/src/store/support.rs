@@ -163,6 +163,7 @@ pub fn envelope_to_json(message: &Message) -> Value {
         "seq": message.seq,
         "attempt": message.attempt,
         "failures": message.failures,
+        "lostClaims": message.lost_claims,
         "lastError": message.last_error,
         "retry": message.retry.as_ref().map(RetryPolicy::to_json),
         "causedBy": message.caused_by.as_ref().map(|id| id.as_str()),
@@ -200,6 +201,7 @@ pub fn envelope_from_json(value: &Value) -> StoreResult<Message> {
         seq: o.get("seq").and_then(Value::as_i64).ok_or_else(|| corrupt("has no seq"))?,
         attempt: o.get("attempt").and_then(Value::as_u64).unwrap_or(0) as u32,
         failures: o.get("failures").and_then(Value::as_u64).unwrap_or(0) as u32,
+        lost_claims: o.get("lostClaims").and_then(Value::as_u64).unwrap_or(0) as u32,
         last_error: str_field("lastError").map(str::to_owned),
         retry: o.get("retry").and_then(|r| RetryPolicy::from_stored(r, &source)),
         caused_by: str_field("causedBy").and_then(|s| MessageId::new(s).ok()),
@@ -492,6 +494,7 @@ mod tests {
             seq: 3,
             attempt: 1,
             failures: 0,
+            lost_claims: 2,
             last_error: None,
             retry: None,
             caused_by: Some(MessageId::new("m0").unwrap()),
@@ -513,7 +516,7 @@ mod tests {
         let json = json!({"id": "m1", "to": "a/b", "from": null, "type": "Run", "payload": {},
             "deliverAt": "2026-01-01T00:00:00Z", "correlationId": null, "headers": {}, "seq": 1, "attempt": 0});
         let m = envelope_from_json(&json).unwrap();
-        assert_eq!(m.failures, 0);
+        assert_eq!((m.failures, m.lost_claims), (0, 0), "an envelope without lostClaims reads as 0");
         assert!(m.retry.is_none() && m.caused_by.is_none() && m.retention.is_none());
     }
 

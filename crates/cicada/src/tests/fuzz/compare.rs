@@ -19,6 +19,9 @@
 //! Commits carry control effects on the addresses of the pool, and some restart one (a delete and a create of one
 //! address), so that deletes meet creates, sends, watches and trees.
 //!
+//! A message is compared with its count of lost claims, so a claim of an actor whose lease ran out (a step past the
+//! ttl, and no commit or release) is compared with the count it adds.
+//!
 //! The notifications of watches are not special: each backend writes them on its own, named after an event id that
 //! the list gives (`e1`, `e2`, …), and they are compared with the mailboxes and outcomes they land in.
 
@@ -809,6 +812,7 @@ impl Side {
             "seq": self.seq.token(m.seq),
             "attempt": m.attempt,
             "failures": m.failures,
+            "lostClaims": m.lost_claims,
             "lastError": m.last_error,
             "retry": m.retry.as_ref().map(|r| r.to_json()),
             "causedBy": m.caused_by.as_ref().map(|i| i.as_str().to_owned()),

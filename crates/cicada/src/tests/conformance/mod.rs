@@ -58,6 +58,7 @@ mod children;
 mod control;
 mod env;
 mod fixture;
+mod lost_claims;
 mod operator;
 mod reschedule;
 mod retention;
@@ -74,6 +75,7 @@ pub mod cases {
     pub use super::chain::*;
     pub use super::children::*;
     pub use super::control::*;
+    pub use super::lost_claims::*;
     pub use super::operator::*;
     pub use super::reschedule::*;
     pub use super::retention::*;
@@ -264,6 +266,14 @@ macro_rules! for_each_case {
             control_a_restart_of_an_actor_that_is_not_there_racing_a_create_ends_with_the_state_of_the_restart,
             control_a_restart_of_an_actor_that_is_there_starts_a_new_life_in_every_field,
             control_a_descendant_of_a_deleted_actor_created_again_and_a_restart_in_a_stopping_turn,
+            // lost_claims.rs
+            lost_claims_a_lease_that_runs_out_and_is_replaced_counts_one_lost_claim,
+            lost_claims_a_lease_that_ran_out_and_is_not_replaced_counts_nothing,
+            lost_claims_a_release_is_not_counted_nor_a_release_with_an_old_epoch_or_a_second_one,
+            lost_claims_a_committed_retry_is_not_counted_and_the_count_stays_over_it,
+            lost_claims_a_commit_after_the_lease_ran_out_succeeds_and_counts_nothing,
+            lost_claims_the_message_of_a_lost_claim_is_cancelled_or_purged_and_the_next_one_has_none,
+            lost_claims_the_message_in_an_outcome_keeps_its_count,
         );
     };
 }
@@ -319,6 +329,7 @@ fn every_case_is_generated() {
         include_str!("chain.rs"),
         include_str!("children.rs"),
         include_str!("control.rs"),
+        include_str!("lost_claims.rs"),
         include_str!("s1_to_s10.rs"),
         include_str!("operator.rs"),
         include_str!("reschedule.rs"),

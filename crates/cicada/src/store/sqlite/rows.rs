@@ -110,6 +110,7 @@ pub(crate) fn message(row: &SqliteRow) -> StoreResult<Message> {
         seq: col(row, "seq")?,
         attempt: count(col(row, "attempt")?, "attempt")?,
         failures: count(col(row, "failures")?, "failures")?,
+        lost_claims: count(col(row, "lost_claims")?, "lost_claims")?,
         last_error: col(row, "last_error")?,
         retry: col::<Option<String>>(row, "retry_policy")?.and_then(|t| RetryPolicy::from_stored_text(&t, &source)),
         caused_by: col::<Option<String>>(row, "caused_by")?.map(message_id).transpose()?,

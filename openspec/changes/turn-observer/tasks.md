@@ -6,19 +6,19 @@ a commit carries the control effects of its turn.
 
 ## 1. The stores
 
-- [ ] 1.1 Model and trait [8, 9]: `Message.lost_claims`, 0 for a new message; `lostClaims` in the envelope of an
+- [x] 1.1 Model and trait [8, 9]: `Message.lost_claims`, 0 for a new message; `lostClaims` in the envelope of an
       outcome, read as 0 when it is missing; the docs of `claim_due` say when it counts a lost claim, and those of
       `release`, `renew` and `commit` that they do not. Every place that builds a `Message` follows. Verify:
       `cargo build --workspace`.
-- [ ] 1.2 The in-memory store [9]: a claim adds 1 to the `lost_claims` of the message of the lease it replaces, when
+- [x] 1.2 The in-memory store [9]: a claim adds 1 to the `lost_claims` of the message of the lease it replaces, when
       that message is still pending. Verify: the cases of 1.5 on the in-memory store.
-- [ ] 1.3 SQLite [9]: migration 6 (the column `messages.lost_claims`, 0 for every message that exists) and the same
+- [x] 1.3 SQLite [9]: migration 6 (the column `messages.lost_claims`, 0 for every message that exists) and the same
       behaviour. The module docs say: schema version 6, not additive, and why. Verify: the cases of 1.5, and an
       upgrade test for the scenario "A database of schema version 5 is opened".
-- [ ] 1.4 PostgreSQL [9, 14]: migration 6 and the same behaviour; every statement that reads with `SELECT *` lists
+- [x] 1.4 PostgreSQL [9, 14]: migration 6 and the same behaviour; every statement that reads with `SELECT *` lists
       its columns. Verify, with `CICADA_PG_URL` set: the cases of 1.5, the upgrade test, and
       `grep -n "SELECT \*" crates/cicada/src/store/postgres` finds nothing.
-- [ ] 1.5 Conformance cases in a new file `lost_claims.rs` of `crates/cicada/src/tests/conformance`, one per line,
+- [x] 1.5 Conformance cases in a new file `lost_claims.rs` of `crates/cicada/src/tests/conformance`, one per line,
       with the helpers of the suite for a lease that runs out:
       a lease runs out and the actor is claimed again: the claim returns the message with `attempt` 2 and
       `lost_claims` 1, and after one more loss with 3 and 2;
@@ -29,12 +29,12 @@ a commit carries the control effects of its turn.
       the message of a lost claim is cancelled: the next message of the actor is claimed with 0;
       the message in an outcome keeps its count.
       Verify: they pass on all three stores, on PostgreSQL with `CICADA_PG_URL` set.
-- [ ] 1.6 A column under an open store [14]: one test per SQL store for the two scenarios of `store-backends`: the
+- [x] 1.6 A column under an open store [14]: one test per SQL store for the two scenarios of `store-backends`: the
       store creates an actor, sends, claims, commits and lists; a column with a default is added to each table of
       the schema on another connection; the store does the same again. If SQLite fails it, its statements list their
       columns too. Verify: both pass, the one for PostgreSQL with `CICADA_PG_URL` set and failing when one statement
       is put back to `SELECT *`; the report says what SQLite needed.
-- [ ] 1.7 The randomised comparison [12]: it compares `lost_claims` with the rest of a message, and its lists reach
+- [x] 1.7 The randomised comparison [12]: it compares `lost_claims` with the rest of a message, and its lists reach
       a claim of an actor whose lease ran out. Verify: `cargo test -p cicada --lib tests::fuzz` passes; the report
       says how many generated lists reach such a claim.
 

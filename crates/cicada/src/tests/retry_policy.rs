@@ -107,6 +107,7 @@ fn message(retry: Option<RetryPolicy>) -> Message {
         seq: 1,
         attempt: 1,
         failures: 0,
+        lost_claims: 0,
         last_error: None,
         retry,
         caused_by: None,

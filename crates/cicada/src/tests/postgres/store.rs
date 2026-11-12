@@ -381,3 +381,28 @@ async fn a_resume_by_a_commit_wakes_the_nodes_of_the_type_and_a_pause_does_not()
     collector.abort();
     db.cleanup().await;
 }
+
+/// Scenario: A column is added under an open store on PostgreSQL. With one connection, every statement of the second
+/// round runs on the connection that prepared it in the first.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_store_that_is_open_keeps_working_when_a_column_is_added_to_every_table() {
+    use crate::tests::added_column::{ADDED_COLUMN, operations};
+
+    let db = test_db!("col");
+    let store = db.open_with(PostgresOptions { max_pool_size: 1, ..db.config() }).await;
+    operations(&*store, "1").await;
+    let mut c = db.connect().await;
+    let tables: Vec<String> = sqlx::query_scalar(
+        "SELECT table_name::text FROM information_schema.tables WHERE table_schema = $1 ORDER BY table_name",
+    )
+    .bind(&db.schema)
+    .fetch_all(&mut c)
+    .await
+    .unwrap();
+    assert!(tables.len() >= 6, "{tables:?}");
+    for table in &tables {
+        db.sql(&format!("ALTER TABLE \"{}\".\"{table}\" ADD COLUMN {ADDED_COLUMN}", db.schema)).await;
+    }
+    operations(&*store, "2").await;
+    db.cleanup().await;
+}

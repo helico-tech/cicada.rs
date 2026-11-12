@@ -1,4 +1,4 @@
-//! The upgrades from schema versions 1, 2, 3 and 4: a schema built with the migrations of that version, rows written
+//! The upgrades from schema versions 1 to 5: a schema built with the migrations of that version, rows written
 //! with SQL as a node of that version left them, then opened by this version. And rows that only a hand can write: two
 //! actors that name each other as parent, a watch whose watcher is gone. Skipped when `CICADA_PG_URL` is unset.
 
@@ -381,6 +381,37 @@ async fn a_database_of_schema_version_4_is_opened_and_nothing_in_it_is_a_notific
         let outcome = expect_finished(store.status(&MessageId::new("m0").unwrap()).await.unwrap());
         assert!(!outcome.envelope.notification, "the outcome is still there and not a notification");
         assert!(store.watches(None, None, None, 10).await.unwrap().items.is_empty(), "no watch is stored");
+        store.close().await;
+    })
+    .await;
+}
+
+/// Scenario: A database of schema version 5 is opened.
+#[tokio::test]
+async fn a_database_of_schema_version_5_is_opened_and_no_message_has_a_lost_claim() {
+    Old::run(5, async |db| {
+        // An outcome as version 5 kept it: its envelope has no count.
+        db.exec(
+            r#"INSERT INTO {s}.actors (address, type, state, next_due_at, created_at)
+                VALUES ('notes/a', 'notes', '{}', now(), now());
+               INSERT INTO {s}.messages (id, actor_address, seq, type, payload, headers, deliver_at, attempt)
+                VALUES ('m1', 'notes/a', 1, 'Note', '{"text":"x"}', '{}', now(), 7);
+               INSERT INTO {s}.outcomes (message_id, actor_address, status, finished_at, envelope)
+                VALUES ('m0', 'notes/a', 'done', now(), '{"id": "m0", "to": "notes/a", "from": null, "type": "Note",
+                    "payload": {}, "deliverAt": "2026-01-01T00:00:00Z", "correlationId": null, "headers": {},
+                    "seq": 0, "attempt": 3, "notification": false}');
+               SELECT setval('{s}.message_seq', 1)"#,
+        )
+        .await
+        .unwrap();
+
+        let store = db.open().await;
+        assert_eq!(db.version().await, schema::VERSION);
+        let pending = store.pending(&address("notes/a"), None, 10).await.unwrap().items;
+        assert_eq!(pending.len(), 1, "the message is still there");
+        assert_eq!((pending[0].attempt, pending[0].lost_claims), (7, 0));
+        let outcome = expect_finished(store.status(&MessageId::new("m0").unwrap()).await.unwrap());
+        assert_eq!((outcome.envelope.attempt, outcome.envelope.lost_claims), (3, 0), "the outcome reads as none");
         store.close().await;
     })
     .await;

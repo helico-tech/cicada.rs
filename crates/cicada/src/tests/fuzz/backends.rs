@@ -354,13 +354,15 @@ async fn generated_lists_reach_deep_states() {
         ("children removed with their parent", 40),
         ("commits with control effects", 150),
         ("lists that restart an actor", 40),
+        ("claims that count a lost claim", 40),
+        ("lists that count a lost claim", 20),
     ];
     let mut counts = BTreeMap::<&str, usize>::new();
     let mut runner = TestRunner::deterministic();
     for _ in 0..400 {
         let list = ops().new_tree(&mut runner).unwrap().current();
         let mut pair = Pair::memory_twice().await;
-        let mut restarted = false;
+        let (mut restarted, mut lost) = (false, false);
         for op in &list {
             if let Op::Advance(by) = op {
                 pair.clock.advance_by(*by);
@@ -368,7 +370,12 @@ async fn generated_lists_reach_deep_states() {
             }
             let now = crate::store::Clock::now(&*pair.clock);
             let before = parents(&*pair.first.store).await;
+            let lost_before = lost_claims(&*pair.first.store).await;
             let answer = pair.first.apply(op, now).await.to_string();
+            if matches!(op, Op::ClaimDue { .. }) && lost_claims(&*pair.first.store).await > lost_before {
+                *counts.entry("claims that count a lost claim").or_default() += 1;
+                lost = true;
+            }
             for (name, needle, _) in marks {
                 *counts.entry(name).or_default() += answer.matches(needle).count();
             }
@@ -389,8 +396,14 @@ async fn generated_lists_reach_deep_states() {
             }
         }
         *counts.entry("lists that restart an actor").or_default() += usize::from(restarted);
+        *counts.entry("lists that count a lost claim").or_default() += usize::from(lost);
     }
     eprintln!("of 400 generated lists, {} restart an actor that is there", counts["lists that restart an actor"]);
+    eprintln!(
+        "of 400 generated lists, {} claim an actor whose lease ran out and count a lost claim ({} such claims)",
+        counts.get("lists that count a lost claim").copied().unwrap_or(0),
+        counts.get("claims that count a lost claim").copied().unwrap_or(0)
+    );
     let floors = marks.iter().map(|(name, _, floor)| (*name, *floor)).chain(tree_marks);
     for (name, floor) in floors {
         let seen = counts.get(name).copied().unwrap_or(0);
@@ -403,6 +416,12 @@ fn restarts(commit: &Commit) -> impl Iterator<Item = usize> + '_ {
     let deleted = commit.controls.iter().filter(|(effect, _)| *effect == ControlEffect::Delete).map(|(_, to)| *to);
     let deleted = deleted.chain(commit.restart.map(|(to, _, _)| to));
     deleted.filter(|to| commit.creates.iter().chain(&commit.restart).any(|(created, _, _)| created == to))
+}
+
+/// The sum of the lost claims of every pending message: only a claim that replaces a lost one makes it grow.
+async fn lost_claims(store: &dyn Backend) -> u64 {
+    let page = store.list_pending("", None, 10_000).await.expect("the pending messages");
+    page.items.iter().map(|m| u64::from(m.lost_claims)).sum()
 }
 
 /// The parent of every actor of the address pool that exists.

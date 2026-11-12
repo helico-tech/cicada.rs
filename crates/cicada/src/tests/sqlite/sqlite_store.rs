@@ -245,3 +245,20 @@ async fn a_hidden_record_is_minimal_without_payload_headers_correlation_id_or_er
         assert_eq!((&envelope["type"], &envelope["to"]), (&json!("M"), &json!(a.as_str())), "type and target stay");
     }
 }
+
+/// Scenario: A column is added under an open store on SQLite.
+#[tokio::test]
+async fn a_store_that_is_open_keeps_working_when_a_column_is_added_to_every_table() {
+    use crate::tests::added_column::{ADDED_COLUMN, operations};
+
+    let db = TempDb::new();
+    let store = db.open(Arc::new(VirtualClock::default())).await;
+    operations(&store, "1").await;
+    let tables = db.column_names("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").await;
+    assert!(tables.len() >= 7, "{tables:?}");
+    for table in &tables {
+        db.exec(&format!("ALTER TABLE {table} ADD COLUMN {ADDED_COLUMN}")).await;
+    }
+    operations(&store, "2").await;
+    store.close().await;
+}

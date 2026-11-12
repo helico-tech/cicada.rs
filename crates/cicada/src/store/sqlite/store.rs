@@ -106,6 +106,23 @@ fn invalid(e: impl std::fmt::Display) -> StoreError {
     StoreError::Invalid(e.to_string())
 }
 
+// `message_columns!()`: the columns of `messages` that `rows::message` reads; `outcome_columns!()`: those of `outcomes`
+// that `rows::outcome` reads. Statements name their columns and never read with `*`: sqlx keeps the columns of the
+// statement it prepared first, and a column added under an open store would crash its worker (ADR 0025).
+
+macro_rules! message_columns {
+    () => {
+        "id, actor_address, seq, type, payload, sender, correlation_id, headers, deliver_at, attempt, failures, \
+         lost_claims, last_error, retry_policy, caused_by, retention_policy, notification"
+    };
+}
+
+macro_rules! outcome_columns {
+    () => {
+        "message_id, actor_address, status, error, finished_at, envelope"
+    };
+}
+
 /// The columns of a running turn; `cancel_requested` is true only for the current epoch.
 const RUNNING_TURN: &str = "address, lease_message, lease_owner, lease_until, (cancel_epoch IS NOT NULL AND cancel_epoch = epoch) AS cancel_requested";
 
@@ -290,11 +307,13 @@ impl SqliteStore {
     // ---- registry ----
 
     async fn register_in(c: &mut SqliteConnection, def: TypeDef) -> StoreResult<RegisterResult> {
-        let existing =
-            fetch_optional(c, sqlx::query("SELECT * FROM actor_types WHERE name = ?").bind(def.name.as_str()))
-                .await?
-                .map(|row| rows::type_def(&row))
-                .transpose()?;
+        let existing = fetch_optional(
+            c,
+            sqlx::query("SELECT name, contract, contract_hash FROM actor_types WHERE name = ?").bind(def.name.as_str()),
+        )
+        .await?
+        .map(|row| rows::type_def(&row))
+        .transpose()?;
         if let Some(existing) = existing {
             return Ok(support::register_again(existing, &def));
         }
@@ -481,8 +500,12 @@ impl SqliteStore {
     ) -> StoreResult<usize> {
         let pending = fetch_all(
             c,
-            sqlx::query("SELECT * FROM messages WHERE actor_address = ? ORDER BY deliver_at, seq")
-                .bind(address.as_str()),
+            sqlx::query(concat!(
+                "SELECT ",
+                message_columns!(),
+                " FROM messages WHERE actor_address = ? ORDER BY deliver_at, seq"
+            ))
+            .bind(address.as_str()),
             rows::message,
         )
         .await?;
@@ -521,8 +544,12 @@ impl SqliteStore {
         };
         let pending = fetch_all(
             c,
-            sqlx::query("SELECT * FROM messages WHERE actor_address = ? ORDER BY deliver_at, seq")
-                .bind(address.as_str()),
+            sqlx::query(concat!(
+                "SELECT ",
+                message_columns!(),
+                " FROM messages WHERE actor_address = ? ORDER BY deliver_at, seq"
+            ))
+            .bind(address.as_str()),
             rows::message,
         )
         .await?;
@@ -703,7 +730,8 @@ impl SqliteStore {
     ) -> StoreResult<Vec<Claim>> {
         let n = micros(now);
         let sql = format!(
-            "SELECT address, type, state, version FROM actors
+            "SELECT address, type, state, version, CASE WHEN lease_owner IS NULL THEN NULL ELSE lease_message END AS lost
+             FROM actors
              WHERE type IN {} AND next_due_at <= ? AND paused = 0
                AND (lease_owner IS NULL OR lease_until <= ?)
              ORDER BY next_due_at LIMIT ?",
@@ -714,16 +742,31 @@ impl SqliteStore {
             query = query.bind(t.as_str());
         }
         let candidates = fetch_all(c, query.bind(n).bind(n).bind(limit as i64), |row| {
-            Ok((col::<String>(row, "address")?, col::<String>(row, "state")?, col::<i64>(row, "version")?))
+            Ok((
+                col::<String>(row, "address")?,
+                col::<String>(row, "state")?,
+                col::<i64>(row, "version")?,
+                col::<Option<String>>(row, "lost")?,
+            ))
         })
         .await?;
         let lease_until = time::truncate(time::add(now, ttl).map_err(invalid)?);
         let mut claims = Vec::with_capacity(candidates.len());
-        for (addr, state, version) in candidates {
+        for (addr, state, version, lost) in candidates {
+            // A lease that ran out and that nothing cleared: its claim is lost (ADR 0025). The table holds only pending
+            // messages, so a message that is gone counts nothing.
+            if let Some(lost) = lost {
+                execute(c, sqlx::query("UPDATE messages SET lost_claims = lost_claims + 1 WHERE id = ?").bind(lost))
+                    .await?;
+            }
             let head = fetch_optional(
                 c,
-                sqlx::query("SELECT * FROM messages WHERE actor_address = ? ORDER BY deliver_at, seq LIMIT 1")
-                    .bind(addr.as_str()),
+                sqlx::query(concat!(
+                    "SELECT ",
+                    message_columns!(),
+                    " FROM messages WHERE actor_address = ? ORDER BY deliver_at, seq LIMIT 1"
+                ))
+                .bind(addr.as_str()),
             )
             .await?
             .map(|row| rows::message(&row))
@@ -787,10 +830,12 @@ impl SqliteStore {
     ) -> StoreResult<Option<OutcomeRecord>> {
         fetch_optional(
             c,
-            sqlx::query(
-                "SELECT * FROM outcomes WHERE message_id = ?
-                   AND (CASE WHEN visible_until IS NULL THEN finished_at > ? ELSE visible_until > ? END)",
-            )
+            sqlx::query(concat!(
+                "SELECT ",
+                outcome_columns!(),
+                " FROM outcomes WHERE message_id = ?
+                   AND (CASE WHEN visible_until IS NULL THEN finished_at > ? ELSE visible_until > ? END)"
+            ))
             .bind(id.as_str())
             .bind(self.cutoff(now))
             .bind(micros(now)),
@@ -801,10 +846,13 @@ impl SqliteStore {
     }
 
     async fn message_in(c: &mut SqliteConnection, id: &MessageId) -> StoreResult<Option<Message>> {
-        fetch_optional(c, sqlx::query("SELECT * FROM messages WHERE id = ?").bind(id.as_str()))
-            .await?
-            .map(|row| rows::message(&row))
-            .transpose()
+        fetch_optional(
+            c,
+            sqlx::query(concat!("SELECT ", message_columns!(), " FROM messages WHERE id = ?")).bind(id.as_str()),
+        )
+        .await?
+        .map(|row| rows::message(&row))
+        .transpose()
     }
 
     async fn status_in(
@@ -986,9 +1034,13 @@ impl SqliteStore {
         for id in cancels.iter().filter(|id| seen.insert(*id)) {
             let pending = fetch_optional(
                 c,
-                sqlx::query("SELECT * FROM messages WHERE id = ? AND actor_address = ?")
-                    .bind(id.as_str())
-                    .bind(address.as_str()),
+                sqlx::query(concat!(
+                    "SELECT ",
+                    message_columns!(),
+                    " FROM messages WHERE id = ? AND actor_address = ?"
+                ))
+                .bind(id.as_str())
+                .bind(address.as_str()),
             )
             .await?
             .map(|row| rows::message(&row))
@@ -1111,7 +1163,12 @@ impl Backend for SqliteStore {
 
     async fn list_types(&self) -> StoreResult<Vec<TypeDef>> {
         let mut tx = self.read().await?;
-        let result = fetch_all(tx.conn(), sqlx::query("SELECT * FROM actor_types ORDER BY name"), rows::type_def).await;
+        let result = fetch_all(
+            tx.conn(),
+            sqlx::query("SELECT name, contract, contract_hash FROM actor_types ORDER BY name"),
+            rows::type_def,
+        )
+        .await;
         tx.end(result).await
     }
 
@@ -1400,10 +1457,12 @@ impl Backend for SqliteStore {
         let mut tx = self.read().await?;
         let result = fetch_all(
             tx.conn(),
-            sqlx::query(
-                "SELECT * FROM messages WHERE actor_address = ? AND (deliver_at > ? OR (deliver_at = ? AND seq > ?))
-                 ORDER BY deliver_at, seq LIMIT ?",
-            )
+            sqlx::query(concat!(
+                "SELECT ",
+                message_columns!(),
+                " FROM messages WHERE actor_address = ? AND (deliver_at > ? OR (deliver_at = ? AND seq > ?))
+                 ORDER BY deliver_at, seq LIMIT ?"
+            ))
             .bind(address.as_str())
             .bind(after_at)
             .bind(after_at)
@@ -1425,10 +1484,12 @@ impl Backend for SqliteStore {
         check_limit(limit)?;
         let after = cursor.map(support::decode_pending_cursor).transpose()?;
         let query = match &after {
-            None => sqlx::query(
-                "SELECT * FROM messages WHERE actor_address >= ? AND substr(actor_address, 1, ?) = ?
-                 ORDER BY actor_address, deliver_at, seq LIMIT ?",
-            )
+            None => sqlx::query(concat!(
+                "SELECT ",
+                message_columns!(),
+                " FROM messages WHERE actor_address >= ? AND substr(actor_address, 1, ?) = ?
+                 ORDER BY actor_address, deliver_at, seq LIMIT ?"
+            ))
             .bind(prefix)
             .bind(prefix_len(prefix))
             .bind(prefix)
@@ -1436,11 +1497,13 @@ impl Backend for SqliteStore {
             Some((addr, at, seq)) => {
                 // The lower bound lets the scan start in the mailbox index; substr() keeps the prefix filter exact.
                 let lower_bound = if addr.as_str() >= prefix { addr.as_str() } else { prefix };
-                sqlx::query(
-                    "SELECT * FROM messages WHERE actor_address >= ? AND substr(actor_address, 1, ?) = ?
+                sqlx::query(concat!(
+                    "SELECT ",
+                    message_columns!(),
+                    " FROM messages WHERE actor_address >= ? AND substr(actor_address, 1, ?) = ?
                        AND (actor_address > ? OR (actor_address = ? AND (deliver_at > ? OR (deliver_at = ? AND seq > ?))))
-                     ORDER BY actor_address, deliver_at, seq LIMIT ?",
-                )
+                     ORDER BY actor_address, deliver_at, seq LIMIT ?"
+                ))
                 .bind(lower_bound)
                 .bind(prefix_len(prefix))
                 .bind(prefix)
@@ -1488,12 +1551,16 @@ impl Backend for SqliteStore {
         let now = tx.now;
         // Without a status the condition is left out, so that `outcomes_failures` or `outcomes_finished` serves the order.
         let sql = format!(
-            "SELECT * FROM outcomes
+            concat!(
+                "SELECT ",
+                outcome_columns!(),
+                " FROM outcomes
              WHERE {}finished_at >= ?
                AND (CASE WHEN visible_until IS NULL THEN finished_at > ? ELSE visible_until > ? END)
                AND substr(actor_address, 1, ?) = ?
                AND (finished_at > ? OR (finished_at = ? AND message_id > ?))
-             ORDER BY finished_at, message_id LIMIT ?",
+             ORDER BY finished_at, message_id LIMIT ?"
+            ),
             if status.is_some() { "status = ? AND " } else { "" }
         );
         let mut query = sqlx::query(AssertSqlSafe(sql));
@@ -1714,7 +1781,12 @@ impl Backend for SqliteStore {
 
     async fn list_nodes(&self) -> StoreResult<Vec<NodeRecord>> {
         let mut tx = self.read().await?;
-        let result = fetch_all(tx.conn(), sqlx::query("SELECT * FROM nodes ORDER BY id"), rows::node_record).await;
+        let result = fetch_all(
+            tx.conn(),
+            sqlx::query("SELECT id, hosted, started_at, last_seen FROM nodes ORDER BY id"),
+            rows::node_record,
+        )
+        .await;
         tx.end(result).await
     }
 

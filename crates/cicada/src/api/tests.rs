@@ -22,6 +22,7 @@ fn message() -> Message {
         seq: 3,
         attempt: 0,
         failures: 0,
+        lost_claims: 0,
         last_error: None,
         retry: Some(RetryPolicy::new(2, Backoff::fixed(Duration::from_secs(3600)).unwrap()).unwrap()),
         caused_by: None,

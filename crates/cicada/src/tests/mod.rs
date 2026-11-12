@@ -2,6 +2,7 @@
 //! the SQLite and PostgreSQL stores, the randomised tests and the runtime tests that inject faults or write to a
 //! store directly. The tests that need only the public API are in `tests/` and in the other crates.
 
+mod added_column;
 pub(crate) mod conformance;
 mod fuzz;
 pub(crate) mod postgres;

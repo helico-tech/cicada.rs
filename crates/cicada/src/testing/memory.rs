@@ -596,6 +596,12 @@ impl Backend for InMemoryStore {
                 s.last_epoch += 1;
                 let epoch = s.last_epoch;
                 let row = s.actors.get_mut(&key).expect("candidate exists");
+                // A lease that ran out and that nothing cleared: its claim is lost (ADR 0025).
+                if row.lease_owner.is_some()
+                    && let Some(lost) = row.lease_message.as_ref().and_then(|id| s.messages.get_mut(id))
+                {
+                    lost.lost_claims += 1;
+                }
                 let head_id = row.head().expect("due head").2.clone();
                 let message = s.messages.get_mut(&head_id).expect("head message exists");
                 message.attempt += 1;
