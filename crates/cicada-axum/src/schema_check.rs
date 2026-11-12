@@ -1,13 +1,13 @@
 //! The check of a payload or a state against its registered JSON Schema at the HTTP door (ADR 0026), and the sample
 //! checks that test a type against both its schema and its decoder.
 //!
-//! The validator is `jsonschema`, on draft 2020-12. It asserts no `format`, whatever draft a schema names, and loads
-//! nothing from outside the schema document: no file and no network. A schema it cannot compile is not enforced at the
-//! door, and a warning names it once in the life of the process; the sample checks fail on it. The door asks only
-//! whether a value matches (`is_valid`) and names no place: finding a place can cost time and memory without bound for a
-//! type with several shapes (decision 8). The sample checks, which run on a developer's own samples, name the first
-//! place. Every value is checked on a thread of its own with a large stack, as the validator recurses per level of a
-//! type that refers to itself (decision 11).
+//! The validator is `jsonschema`, on draft 2020-12 for the root of a schema. It asserts no `format`, whatever draft a
+//! schema names, and loads nothing from outside the schema document: no file and no network. A schema it cannot compile
+//! is not enforced at the door, and a warning names it once in the life of the process; the sample checks fail on it.
+//! The door asks only whether a value matches (`is_valid`) and names no place: finding a place can cost time and memory
+//! without bound for a type with several shapes (decision 8). The sample checks, which run on a developer's own
+//! samples, name the first place. Every value is checked on a thread of its own with a large stack, as the validator
+//! recurses per level of a type that refers to itself (decision 11).
 
 use std::collections::HashSet;
 use std::sync::{LazyLock, Mutex};
@@ -292,7 +292,8 @@ mod tests {
         assert!(warn_once(&other, "message type 'Other' of codes", "a schema of its own"));
     }
 
-    /// Formats are notes whatever draft the schema names, and a schema is read as draft 2020-12 whatever it names.
+    /// Formats are notes whatever draft the schema names, and a schema is read as draft 2020-12 whatever its root
+    /// names.
     #[test]
     fn a_date_that_is_not_a_date_passes_as_no_format_is_asserted_whatever_the_draft() {
         for draft in [DRAFT, "http://json-schema.org/draft-07/schema#", "http://json-schema.org/draft-04/schema#"] {

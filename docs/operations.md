@@ -200,8 +200,8 @@ the changelog of 0.11.0 lists the code changes.
 their type on every node (ADR 0026), so nodes of 0.11.0 and 0.12.0 can share a database; during a rolling deploy a node
 of 0.11.0 still answers as before. A client gets `422 invalid-payload` or `422 invalid-state` where it got `202` or
 `201` in two cases: what it sends serde accepts and the schema refuses (a field under its `#[serde(alias)]`, a form
-that only a hand-written `Deserialize` takes), or it sent anything at all to a node that does not host the type. Before
-the nodes are upgraded:
+that only a hand-written `Deserialize` takes), or it sent anything that does not match its schema to a node that does
+not host the type. Before the nodes are upgraded:
 
 1. Add `cicada_axum::assert_message_sample` and `assert_state_sample` to the tests of each type, with what the type
    serialises and with what clients send over HTTP ([The schema check](../README.md#the-schema-check)).

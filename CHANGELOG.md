@@ -22,8 +22,8 @@ and 0.12.0 can share a database, and during a rolling deploy a node of 0.11.0 st
    clients send (a field under its `#[serde(alias)]`), stop sending it. When it is what the type itself writes (a field
    with `#[serde(with)]` and no `#[schemars(with)]`), the schema is wrong: making it right changes the contract of the
    type, so follow "Changing a contract" in the operations guide. There is no switch that turns the check off.
-3. A client that sent such a form to a node that hosts the type, or anything at all to a node that does not, now gets
-   `422` where it got `202` (or `201` for a create). Clients need no upgrade.
+3. A client that sent such a form to a node that hosts the type, or anything that does not match its schema to a node
+   that does not, now gets `422` where it got `202` (or `201` for a create). Clients need no upgrade.
 
 ### Changed (breaking)
 
@@ -72,8 +72,9 @@ and 0.12.0 can share a database, and during a rolling deploy a node of 0.11.0 st
   registered schema and decode as the type, or the test fails, saying which of the two refused it and why, for the
   schema with the first place that does not match (which the door does not name; it can be slow for a deep value of a
   type with several shapes). A schema that the validator cannot use fails too.
-- `cicada-axum` depends on the JSON Schema validator `jsonschema` 0.61 without its default features (draft 2020-12,
-  set for every schema; no format asserted; no fetching), with 26 crates new to the workspace; no other crate does.
+- `cicada-axum` depends on the JSON Schema validator `jsonschema` 0.61 without its default features (draft 2020-12, set
+  for the root of every schema; no format asserted; no fetching), with 26 crates new to the workspace; no other crate
+  does.
 - ADR 0026 records the check, the status it keeps, the check of a create and what the door does where a schema and
   serde disagree.
 

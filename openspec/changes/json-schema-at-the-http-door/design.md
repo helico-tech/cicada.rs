@@ -128,8 +128,9 @@ the fifth round: of the two, only `jsonschema` has a yes-or-no check that is pub
 The check never loads anything from outside the schema document: no file and no network. Without its default features
 `jsonschema` has no way to fetch, and the check gives it a retriever that refuses every address all the same; the
 standard metaschemas are built in. A schema that refers outside itself is a schema the validator cannot use (decision
-6). The check sets draft 2020-12, so a schema is read as 2020-12 whatever `$schema` it names, and a `$schema` the
-validator does not know is not fetched.
+6). The check sets draft 2020-12, so a schema is read as 2020-12 whatever `$schema` its root names, and a `$schema` the
+validator does not know is not fetched. A part with an `$id` and a `$schema` of its own is read as the draft it names;
+only a hand-written `JsonSchema` produces one, and the door is then no stricter than that schema.
 
 ### 4. Formats are not asserted
 
@@ -263,11 +264,11 @@ the steps of the schema between two levels of the type, not by the depth alone. 
 
 The check of the door as it is, `is_valid` of `jsonschema`, needs at 126 levels at most 455 KiB in a test build for the
 three shapes the validation found widest for `boon` (`chain`, `stack`, `wide`; about 2.7 KiB a level, matching or not)
-and at most 87 KiB in a release build; the validator measured 2.0 MiB in a test build for a type with 48 newtypes
-between two levels, more than a default stack. History of the earlier rounds: with `boon` a level took about 42 KiB in
-a test build for a list under an `Option` or a tagged enum and 86 to 103 KiB for a type with newtypes or several groups
-between its levels (12.9 MiB at 126 levels for the widest), and `validate` of `jsonschema`, which named a place, took
-up to 1.35 MiB at 126 levels for those three shapes.
+and at most 87 KiB in a release build; the validator measured 2,004 KiB in a test build (1,988 KiB for a value that does
+not match) for a type with 48 newtypes between two levels, almost a whole default stack of 2,048 KiB. History of the
+earlier rounds: with `boon` a level took about 42 KiB in a test build for a list under an `Option` or a tagged enum and
+86 to 103 KiB for a type with newtypes or several groups between its levels (12.9 MiB at 126 levels for the widest), and
+`validate` of `jsonschema`, which named a place, took up to 1.35 MiB at 126 levels for those three shapes.
 
 Every value is checked on a scoped thread of its own with a stack of 64 MiB, chosen as five times what the widest shape
 needed with `boon`; for the door as it is, that is about 32 times the widest type the validation found (2.0 MiB) and
@@ -317,8 +318,8 @@ a node of 0.11.0 still answers as before.
 2. A sample that fails only the schema shows a type whose schema and serde disagree. When it is a form that only
    some clients send (an alias), stop sending it. When it is what the type itself writes, the schema is wrong:
    making it right changes the contract of the type, so follow "Changing a contract" in the operations guide.
-3. A client that sent such a form to a node that hosts the type, or anything at all to a node that does not, now
-   gets `422` where it got `202`.
+3. A client that sent such a form to a node that hosts the type, or anything that does not match its schema to a node
+   that does not, now gets `422` where it got `202`.
 
 ## Open Questions
 
