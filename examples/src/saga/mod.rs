@@ -7,7 +7,7 @@
 //!
 //! Participants reply to a typed ref carried in the command (`reply_to: Order`), so the compiler checks the replies.
 //!
-//! With the `ActorTelemetry` plugin installed, the turns of one order form one trace: every message a turn sends
+//! With the `ActorTelemetry` observer on the node, the turns of one order form one trace: every message a turn sends
 //! carries its trace context, without any code here.
 //!
 //! [`Payments`] shows per-message retry: the *sender* decides how a charge is retried (see [`charge_retry`]).

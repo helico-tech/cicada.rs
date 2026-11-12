@@ -5,13 +5,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::common::*;
-use crate::plugin::{HandlerErrorContext, HookResult, OutcomeContext, Plugin};
+use crate::observer::{ObservedTurn, TurnEnd, TurnObserver, TurnStart};
 use crate::prelude::*;
 use crate::runtime::{NodeConfig, SendResult};
 use crate::store::{Backend, Delivery, MessageStatus, NodeId, OutcomeStatus, OutgoingMessage, TurnOutcome};
 use crate::testing::TestActors;
 use crate::time::{self, MAX_DELAY, Timestamp};
-use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -177,11 +176,15 @@ struct Harness {
 }
 
 impl Harness {
-    async fn new(plugins: Vec<Arc<dyn Plugin>>) -> Self {
-        Self::configured(plugins, None, None).await
+    async fn new(observers: Vec<Arc<dyn TurnObserver>>) -> Self {
+        Self::configured(observers, None, None).await
     }
 
-    async fn configured(plugins: Vec<Arc<dyn Plugin>>, max_turn: Option<Duration>, start: Option<Timestamp>) -> Self {
+    async fn configured(
+        observers: Vec<Arc<dyn TurnObserver>>,
+        max_turn: Option<Duration>,
+        start: Option<Timestamp>,
+    ) -> Self {
         let runs = Runs::default();
         let actor = ChoreActor(runs.clone());
         let mut builder = TestActors::builder().with(move |n| {
@@ -189,8 +192,8 @@ impl Harness {
             if let Some(default_max_turn) = max_turn {
                 n = n.config(NodeConfig { default_max_turn, ..NodeConfig::default() });
             }
-            for plugin in plugins {
-                n = n.install(plugin);
+            for observer in observers {
+                n = n.observe(observer);
             }
             n
         });
@@ -450,66 +453,59 @@ async fn a_handler_forwards_the_incoming_policy_with_message_retry() {
     assert_eq!(record.envelope.failures, 1);
 }
 
-struct DecisionObserver(Events);
-
-#[async_trait]
-impl Plugin for DecisionObserver {
-    fn name(&self) -> &str {
-        "Observer"
-    }
-
-    async fn on_handler_error(&self, ctx: &HandlerErrorContext<'_>) -> HookResult {
-        let run = ctx.info().message().failures + 1;
-        self.0.push(format!(
-            "{run}:willRetry={}:delay={}:{}",
-            ctx.will_retry(),
-            opt(&ctx.retry_delay().map(|d| format!("{d:?}"))),
-            ctx.error().reason()
-        ));
-        Ok(())
-    }
+/// An observer that writes the run and the outcome of every end: `<run>:<outcome>`, see [`outcome_text`].
+fn decision_observer(seen: &Events) -> Arc<dyn TurnObserver> {
+    let seen = seen.clone();
+    Arc::new(OnEnd::new(move |message, end| {
+        seen.push(format!("{}:{}", message.failures + 1, outcome_text(end.outcome())));
+    }))
 }
 
 #[tokio::test(start_paused = true)]
-async fn error_hooks_see_the_runtimes_decision_for_every_failed_run() {
+async fn observers_see_the_runtimes_decision_for_every_failed_run() {
     let seen = Events::default();
-    let h = Harness::new(vec![Arc::new(DecisionObserver(seen.clone()))]).await;
+    let h = Harness::new(vec![decision_observer(&seen)]).await;
     let original = h.send(fail_until(99), Some(fixed(3, secs(1)))).await;
     let unretried = h.send(fail_until(1), None).await;
     h.test.advance_time_by(secs(60)).await;
     assert_eq!(
         seen.all(),
         vec![
-            "1:willRetry=true:delay=1s:flaky 1",
-            "1:willRetry=false:delay=null:flaky 1",
-            "2:willRetry=true:delay=1s:flaky 2",
-            "3:willRetry=false:delay=null:flaky 3",
+            "1:Rescheduled(delivery=After(delay=1s), error=flaky 1)",
+            "1:Failed(error=flaky 1)",
+            "2:Rescheduled(delivery=After(delay=1s), error=flaky 2)",
+            "3:Failed(error=flaky 3)",
         ]
     );
     let record = h.test.outcome(&original).await.unwrap();
     assert_eq!(record.status, OutcomeStatus::Failed);
     assert_eq!(record.envelope.failures, 2);
     assert_eq!(h.test.outcome(&unretried).await.unwrap().status, OutcomeStatus::Failed);
-    // A hook only observes: nothing but the retries was committed, and handler effects never.
+    // An observer only observes: nothing but the retries was committed, and handler effects never.
     assert_eq!(h.test.state::<_, ChoreState>(&chore("j")).await, ChoreState::default());
     assert!(h.test.pending(&chore("j")).await.is_empty());
 }
 
+/// Panics at the start of every turn and at its end.
 struct Broken;
 
-#[async_trait]
-impl Plugin for Broken {
-    fn name(&self) -> &str {
-        "Broken"
+impl TurnObserver for Broken {
+    fn turn_started(&self, turn: &mut TurnStart<'_>) -> Box<dyn ObservedTurn> {
+        if turn.message().failures == 0 {
+            panic!("observer bug at the start");
+        }
+        Box::new(Broken)
     }
+}
 
-    async fn on_handler_error(&self, _ctx: &HandlerErrorContext<'_>) -> HookResult {
-        anyhow::bail!("hook bug")
+impl ObservedTurn for Broken {
+    fn turn_ended(self: Box<Self>, _end: &TurnEnd<'_>) {
+        panic!("observer bug at the end")
     }
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_failing_error_hook_is_ignored_and_the_runtimes_decision_stands() {
+async fn a_panicking_observer_is_ignored_and_the_runtimes_decision_stands() {
     let h = Harness::new(vec![Arc::new(Broken)]).await;
     let unretried = h.send(fail_until(1), None).await;
     let retried = h.send(fail_until(1), Some(fixed(2, secs(1)))).await;
@@ -522,28 +518,22 @@ async fn a_failing_error_hook_is_ignored_and_the_runtimes_decision_stands() {
     assert_eq!(record.envelope.failures, 1);
 }
 
-struct OutcomeObserver(Events);
-
-#[async_trait]
-impl Plugin for OutcomeObserver {
-    fn name(&self) -> &str {
-        "Observer"
-    }
-
-    async fn on_outcome(&self, ctx: &OutcomeContext<'_>) -> HookResult {
-        let kind = match ctx.outcome().status() {
+/// An observer that writes the run, the kind of the outcome and its error of every end.
+fn outcome_observer(seen: &Events) -> Arc<dyn TurnObserver> {
+    let seen = seen.clone();
+    Arc::new(OnEnd::new(move |message, end| {
+        let kind = match end.outcome().status() {
             None => "rescheduled",
             Some(status) => status.wire_name(),
         };
-        self.0.push(format!("{}:{kind}:{}", ctx.info().message().failures + 1, opt(&ctx.outcome().error())));
-        Ok(())
-    }
+        seen.push(format!("{}:{kind}:{}", message.failures + 1, opt(&end.outcome().error())));
+    }))
 }
 
 #[tokio::test(start_paused = true)]
-async fn on_outcome_sees_each_retried_run_and_the_final_outcome() {
+async fn an_observer_sees_each_retried_run_and_the_final_outcome() {
     let seen = Events::default();
-    let h = Harness::new(vec![Arc::new(OutcomeObserver(seen.clone()))]).await;
+    let h = Harness::new(vec![outcome_observer(&seen)]).await;
     h.send(fail_until(99), Some(fixed(3, secs(1)))).await;
     h.test.advance_time_by(secs(60)).await;
     assert_eq!(seen.all(), vec!["1:rescheduled:flaky 1", "2:rescheduled:flaky 2", "3:failed:flaky 3"]);
@@ -648,26 +638,18 @@ async fn a_failure_whose_text_contains_a_nul_character_is_still_retried_with_the
     assert_eq!(record.envelope.last_error.as_deref(), Some("flaky\u{FFFD}1"));
 }
 
-struct OutcomeRecorder(Arc<Mutex<Vec<TurnOutcome>>>);
-
-#[async_trait]
-impl Plugin for OutcomeRecorder {
-    fn name(&self) -> &str {
-        "Observer"
-    }
-
-    async fn on_outcome(&self, ctx: &OutcomeContext<'_>) -> HookResult {
-        self.0.lock().unwrap().push(ctx.outcome().clone());
-        Ok(())
-    }
+/// An observer that keeps the outcome of every end.
+fn outcome_recorder(seen: &Arc<Mutex<Vec<TurnOutcome>>>) -> Arc<dyn TurnObserver> {
+    let seen = seen.clone();
+    Arc::new(OnEnd::new(move |_, end| seen.lock().unwrap().push(end.outcome().clone())))
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_refused_retry_leaves_state_and_mailbox_untouched_and_on_outcome_sees_the_handlers_failure() {
+async fn a_refused_retry_leaves_state_and_mailbox_untouched_and_the_observer_sees_the_handlers_failure() {
     // Near MAX_INSTANT the store refuses the reschedule, so the reason says "commit refused". Nothing of the refused
     // commit is applied.
     let seen = Arc::new(Mutex::new(Vec::new()));
-    let h = Harness::configured(vec![Arc::new(OutcomeRecorder(seen.clone()))], None, Some(year_9500())).await;
+    let h = Harness::configured(vec![outcome_recorder(&seen)], None, Some(year_9500())).await;
     let original = h.send(fail_until(99), Some(fixed(5, MAX_DELAY))).await;
     h.test.run_until_idle().await;
     assert_eq!(h.attempts(), vec![1]);
@@ -683,9 +665,9 @@ async fn a_refused_retry_leaves_state_and_mailbox_untouched_and_on_outcome_sees_
 }
 
 #[tokio::test(start_paused = true)]
-async fn on_outcome_sees_the_truncated_last_error_of_a_retry() {
+async fn an_observer_sees_the_truncated_last_error_of_a_retry() {
     let seen = Arc::new(Mutex::new(Vec::new()));
-    let h = Harness::new(vec![Arc::new(OutcomeRecorder(seen.clone()))]).await;
+    let h = Harness::new(vec![outcome_recorder(&seen)]).await;
     h.send(AttemptSpec { error_length: 5_000, ..fail_until(1) }, Some(fixed(2, secs(1)))).await;
     h.test.run_until_idle().await;
     let seen = seen.lock().unwrap().clone();

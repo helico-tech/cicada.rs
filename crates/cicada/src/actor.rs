@@ -16,12 +16,11 @@ use serde_json::Value;
 use crate::address::{ActorAddress, ActorRef, RefBinding, TypeName};
 use crate::contract::Contract;
 use crate::message::{self, FamilyInfo};
-use crate::plugin::TurnInfo;
 use crate::runtime::effects::EffectBuffer;
 use crate::runtime::resolver::TypeResolver;
 use crate::schema;
 use crate::store::Claim;
-use crate::turn::{HandlerFailure, HandlerResult, Turn};
+use crate::turn::{HandlerFailure, HandlerResult, Turn, TurnInfo};
 
 /// An actor type: a typed ref bound to a type name and its message family, a state, and one handler for the whole
 /// family.
@@ -155,8 +154,6 @@ pub(crate) type RunTurn = Box<dyn FnOnce(Arc<TurnInfo>, Arc<TypeResolver>) -> Bo
 
 /// A loaded turn, ready to run.
 pub(crate) struct Loaded {
-    /// Why the message could not be decoded, when no handler runs.
-    pub unhandled: Option<String>,
     pub run: RunTurn,
 }
 
@@ -258,11 +255,9 @@ impl<A: Actor> HostedActor for Hosted<A> {
         } else {
             Err(format!("Unknown message type '{}'", claim.message.message_type))
         };
-        let unhandled = decoded.as_ref().err().cloned();
         let actor = self.actor.clone();
         let watch_problem = analysis.watch_problem.clone();
         Ok(Loaded {
-            unhandled,
             run: Box::new(move |info, resolver| {
                 Box::pin(async move {
                     let mut turn = Turn::<A>::new(info, self_ref, state, resolver, watch_problem);

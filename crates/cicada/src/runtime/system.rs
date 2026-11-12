@@ -22,7 +22,7 @@ use super::results::{
 use crate::actor::{Actor, ActorType, HostedActor};
 use crate::address::{ActorAddress, ActorRef, TypeName};
 use crate::message::{self, MessageFamily};
-use crate::plugin::Plugin;
+use crate::observer::{Observers, TurnObserver};
 use crate::store::{
     Backend, CancelResult, Claim, CreateResult, DeleteResult, DeliverNowResult, EnqueueResult, Message, MessageId,
     MessageStatus, NodeId, OutcomeRecord, OutcomeStatus, OutgoingMessage, Page, PageCursor, RegisterResult,
@@ -76,9 +76,9 @@ pub enum StartProblem {
         /// Why the contracts conflict.
         reason: String,
     },
-    /// Any other problem: a setting out of range, a plugin installed twice, a malformed actor definition (one problem
-    /// per reason), a type hosted twice, a store failure while registering, or a node that is not new. The sentence
-    /// names what is wrong, and the actor when there is one.
+    /// Any other problem: a setting out of range, a malformed actor definition (one problem per reason), a type hosted
+    /// twice, a store failure while registering, or a node that is not new. The sentence names what is wrong, and the
+    /// actor when there is one.
     #[error("{0}")]
     Other(String),
 }
@@ -206,7 +206,7 @@ pub struct ActorSystemBuilder {
     store: Store,
     config: NodeConfig,
     hosted: Vec<Arc<dyn HostedActor>>,
-    plugins: Vec<Arc<dyn Plugin>>,
+    observers: Observers,
 }
 
 impl ActorSystemBuilder {
@@ -216,9 +216,11 @@ impl ActorSystemBuilder {
         self
     }
 
-    /// Installs `plugin` on this node, for every type it hosts. Pass an `Arc` to share one plugin value.
-    pub fn install(mut self, plugin: impl Plugin) -> Self {
-        self.plugins.push(Arc::new(plugin));
+    /// Adds `observer` to this node: it is told when each turn of every type the node hosts starts and ends, and has no
+    /// say in them (see [`crate::observer`]). Each call adds one; they are called in the order they were added. Pass
+    /// an `Arc` to keep a handle.
+    pub fn observe(mut self, observer: impl TurnObserver) -> Self {
+        self.observers.push(Arc::new(observer));
         self
     }
 
@@ -236,7 +238,7 @@ impl ActorSystemBuilder {
                 store: self.store,
                 config: self.config,
                 hosted: self.hosted,
-                plugins: self.plugins,
+                observers: self.observers,
                 resolver,
                 initialized: OnceCell::new(),
                 lifecycle: Mutex::new(Lifecycle::default()),
@@ -269,7 +271,7 @@ struct Inner {
     store: Store,
     config: NodeConfig,
     hosted: Vec<Arc<dyn HostedActor>>,
-    plugins: Vec<Arc<dyn Plugin>>,
+    observers: Observers,
     resolver: Arc<TypeResolver>,
     initialized: OnceCell<Arc<Initialized>>,
     lifecycle: Mutex<Lifecycle>,
@@ -320,7 +322,7 @@ impl fmt::Debug for ActorSystem {
 impl ActorSystem {
     /// A builder for a node on `store`.
     pub fn builder(store: Store) -> ActorSystemBuilder {
-        ActorSystemBuilder { store, config: NodeConfig::default(), hosted: Vec::new(), plugins: Vec::new() }
+        ActorSystemBuilder { store, config: NodeConfig::default(), hosted: Vec::new(), observers: Observers::default() }
     }
 
     /// The store, for the tests of this crate.
@@ -368,14 +370,6 @@ impl ActorSystem {
     async fn do_initialize(&self) -> Result<Arc<Initialized>, StartError> {
         let inner = &self.inner;
         let mut problems: Vec<StartProblem> = inner.config.validate().into_iter().map(StartProblem::Other).collect();
-        let mut names: Vec<&str> = inner.plugins.iter().map(|p| p.name()).collect();
-        names.sort_unstable();
-        for pair in names.windows(2) {
-            if pair[0] == pair[1] {
-                problems
-                    .push(StartProblem::Other(format!("Plugin {} is installed more than once on the node", pair[0])));
-            }
-        }
         for hosted in &inner.hosted {
             problems
                 .extend(hosted.problems().into_iter().map(|p| StartProblem::Other(format!("{}: {p}", hosted.name()))));
@@ -422,7 +416,7 @@ impl ActorSystem {
             store: inner.store.clone(),
             resolver: inner.resolver.clone(),
             hosted: types,
-            plugins: inner.plugins.clone(),
+            observers: inner.observers.clone(),
             lease,
             wake: inner.wake.clone(),
         });

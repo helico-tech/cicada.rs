@@ -40,7 +40,7 @@ a commit carries the control effects of its turn.
 
 ## 2. The observer
 
-- [ ] 2.1 The trait and the node [1, 2, 3, 4, 5, 6]: the module `observer` with `TurnObserver`, `ObservedTurn`,
+- [x] 2.1 The trait and the node [1, 2, 3, 4, 5, 6]: the module `observer` with `TurnObserver`, `ObservedTurn`,
       `TurnStart` and `TurnEnd` in place of `plugin`; `ActorSystemBuilder::observe`; the node calls the observers as
       decision 3 says and catches their panics; the headers of decision 4. `Plugin`, `HookResult`, the three
       contexts, `TurnInfo`, `Attributes`, `install` and `Turn::attributes` are removed, `HandlerFailure` is private,
@@ -54,11 +54,11 @@ a commit carries the control effects of its turn.
       "Headers reach every send", "A send's own header wins", "Two observers add the same header", "A header that
       is too long", "A header that a message refuses", "A message that is full" and "A notification has no observer
       headers", and of `turn-management` "A handler is cancelled" with an observer.
-- [ ] 2.2 `cicada-otel` [7]: `ActorTelemetry` is a `TurnObserver`; the `exception` event comes from the outcome; a
+- [x] 2.2 `cicada-otel` [7]: `ActorTelemetry` is a `TurnObserver`; the `exception` event comes from the outcome; a
       dropped value ends its span as `abandoned`. Verify: tests for the scenarios "A span per turn", "A handler
       fails and is retried" (of the telemetry), "State that cannot be decoded" (of the telemetry) and "A turn that
       commits nothing"; the tests the crate has pass.
-- [ ] 2.3 `cicada-extras` and the sample service [6, 13]: `CrashLoopGuard`, `CrashLoopError` and their test are
+- [x] 2.3 `cicada-extras` and the sample service [6, 13]: `CrashLoopGuard`, `CrashLoopError` and their test are
       removed; the sample service adds its telemetry with `observe` and no longer reads `CRASH_LOOP_LIMIT`. Verify:
       `cargo test -p cicada-extras` and `cargo build --workspace` pass, and
       `grep -rn "CrashLoopGuard\|CRASH_LOOP_LIMIT" crates sample-service e2e examples` finds nothing.

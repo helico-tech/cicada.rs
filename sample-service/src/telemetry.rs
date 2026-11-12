@@ -45,8 +45,8 @@ impl Telemetry {
         Ok(Self { tracer_provider, meter_provider })
     }
 
-    /// The node plugin that records turns through these providers.
-    pub fn plugin(&self) -> ActorTelemetry {
+    /// The node observer that records turns through these providers.
+    pub fn observer(&self) -> ActorTelemetry {
         ActorTelemetry::new(&self.tracer_provider, &self.meter_provider)
     }
 

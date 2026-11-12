@@ -3,11 +3,9 @@
 use std::time::Duration;
 
 use super::common::*;
-use crate::plugin::{HandlerErrorContext, HookResult, Plugin};
 use crate::prelude::*;
 use crate::store::{Message, OutcomeStatus, OutgoingMessage};
 use crate::testing::TestActors;
-use async_trait::async_trait;
 use serde_json::{Value, json};
 
 fn a() -> Counter {
@@ -61,27 +59,12 @@ async fn the_message_after_an_undecodable_one_is_handled() {
     assert_eq!(test.state::<_, CounterState>(&a()).await.total, 2);
 }
 
-struct Observer(Events);
-
-#[async_trait]
-impl Plugin for Observer {
-    fn name(&self) -> &str {
-        "Observer"
-    }
-
-    async fn on_handler_error(&self, ctx: &HandlerErrorContext<'_>) -> HookResult {
-        self.0.push(ctx.info().message().message_type.clone());
-        Ok(())
-    }
-}
-
 #[tokio::test(start_paused = true)]
 async fn an_undecodable_message_is_no_handler_failure_and_is_not_retried() {
-    let hook_runs = Events::default();
-    let observer = hook_runs.clone();
+    let events = Events::default();
+    let observer = Recorder::new(&events);
     let retry = RetryPolicy::new(3, Backoff::fixed(Duration::from_secs(1)).unwrap()).unwrap();
-    let test =
-        TestActors::builder().with(move |n| n.host(CounterActor).install(Observer(observer))).build().await.unwrap();
+    let test = TestActors::builder().with(move |n| n.host(CounterActor).observe(observer)).build().await.unwrap();
     test.create(&a(), &CounterState::default()).await;
     let mut ids = Vec::new();
     for (t, payload) in [("Plain", json!({})), ("Add", json!({"n": "x"})), ("Add", json!([]))] {
@@ -101,6 +84,8 @@ async fn an_undecodable_message_is_no_handler_failure_and_is_not_retried() {
     assert_eq!(errors[2], "Payload of 'Add' must be a JSON object");
     assert!(outcomes.iter().all(|o| o.envelope.attempt == 1), "one attempt each");
     assert!(outcomes.iter().all(|o| o.envelope.failures == 0), "never retried");
-    assert!(hook_runs.all().is_empty(), "no handler ran: no on_handler_error");
+    let ends: Vec<String> = events.all().into_iter().filter(|e| e.starts_with("end:")).collect();
+    assert_eq!(ends.len(), 3, "{ends:?}");
+    assert!(ends.iter().all(|e| e.starts_with("end:Failed(")), "failed, not rescheduled: {ends:?}");
     assert_eq!(test.state::<_, CounterState>(&a()).await, CounterState::default());
 }

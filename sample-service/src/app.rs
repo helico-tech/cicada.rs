@@ -16,7 +16,7 @@ use cicada::runtime::NodeConfig;
 use cicada::store::{NodeId, PostgresOptions, SqliteOptions};
 use cicada::{ActorSystem, CreateActorResult};
 use cicada_axum::{actor_api, actor_health};
-use cicada_extras::{CrashLoopGuard, FailureWatcher};
+use cicada_extras::FailureWatcher;
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -80,11 +80,7 @@ impl SampleNode {
             builder = t.host(builder);
         }
         if let Some(t) = &telemetry {
-            builder = builder.install(t.plugin());
-        }
-        if let Some(limit) = config.crash_loop_limit {
-            builder =
-                builder.install(CrashLoopGuard::new(limit).map_err(|e| anyhow::anyhow!("CRASH_LOOP_LIMIT: {e}"))?);
+            builder = builder.observe(t.observer());
         }
         let system = builder.build();
         let started = async {

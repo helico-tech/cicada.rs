@@ -943,56 +943,70 @@ Every message sent from a turn records the id of the message that turn handled a
 follow a message back to what started it, one `GET /messages/{id}` at a time. `GET /messages/{id}/caused` goes the
 other way, one level down; a tool that wants the tree calls it again for each child.
 
-## Plugins
+## Observers
 
-A plugin observes a turn through three async hooks of the `Plugin` trait: `on_claim` (after load, before the
-handler), `on_handler_error` (sees the failure and the retry decision) and `on_outcome` (after a successful commit).
-A plugin never changes what a turn commits: only the handler does. The one exception: in `on_claim` a plugin may add
-headers to the messages the turn sends (`ClaimContext::send_headers`), which is how tracing travels. The one thing a
-plugin can decide is to refuse a turn, by returning `Err` from `on_claim`; the message then ends `failed`. The plugin value is its configuration; the
-turn's `Attributes` (a bag keyed by type) carry data from one hook to the next and to the handler.
+An observer watches the turns of a node start and end, and has no say in them (ADR 0018). It implements
+`TurnObserver`: `turn_started` is called once a message is claimed, before anything is decoded or run, and returns an
+`ObservedTurn`, whose `turn_ended` is told the committed outcome and the messages the commit sent once the commit
+succeeded. A value that is dropped without that call means that the node saw no commit of the turn succeed: its lease
+was lost or ran out, its node stopped, its commit did not get through, or its actor was deleted. An observer that cares
+keeps a flag and implements `Drop`. Both are plain functions that run in the turn, so they must not block.
+
+An observer cannot refuse a turn or change what it commits. It may add headers to the messages the turn sends
+(`TurnStart::add_send_header`), which is how tracing travels, and a header never fails a send: one that the limits of a
+message refuse is left out when it is added, and a send takes its own headers first and then those of the observers, in
+the order of their names, as long as the message stays within 64 headers. A send's own header keeps its value. A panic
+in an observer is caught and logged, and the turn goes on as if that observer were not there. The handler reads nothing
+an observer made.
 
 <!-- doctest
-@@1
-# use std::sync::Arc;
+@@2
 # use cicada::ActorSystem;
 # use cicada_examples::sync::ReportsActor;
-@@17
+@@22
 # fn node(store: cicada::Store) {
 @@4
 # }
 -->
 ```rust
-use cicada::plugin::{HookResult, OutcomeContext, Plugin};
+use cicada::observer::{ObservedTurn, TurnEnd, TurnObserver, TurnStart};
+use cicada::store::MessageId;
 
 struct Audit {
     prefix: String,
 }
 
-#[async_trait::async_trait]
-impl Plugin for Audit {
-    fn name(&self) -> &str {
-        "Audit"
-    }
+struct AuditedTurn {
+    prefix: String,
+    message: MessageId,
+}
 
-    async fn on_outcome(&self, ctx: &OutcomeContext<'_>) -> HookResult {
-        println!("{}: {} -> {:?}", self.prefix, ctx.info().message().id, ctx.outcome());
-        Ok(())
+impl TurnObserver for Audit {
+    fn turn_started(&self, turn: &mut TurnStart<'_>) -> Box<dyn ObservedTurn> {
+        Box::new(AuditedTurn { prefix: self.prefix.clone(), message: turn.message().id.clone() })
+    }
+}
+
+impl ObservedTurn for AuditedTurn {
+    fn turn_ended(self: Box<Self>, end: &TurnEnd<'_>) {
+        println!("{}: {} -> {:?}", self.prefix, self.message, end.outcome());
     }
 }
 
 let system = ActorSystem::builder(store)
-    .install(Audit { prefix: "node".into() }) // for every hosted type
+    .observe(Audit { prefix: "node".into() }) // for every hosted type
     .host(ReportsActor)
     .build();
 ```
 
-Plugins run in installation order, and a name is installed at most once per node. Pass an `Arc` to share one plugin
-value. The table of which hook runs in which situation is in the `cicada::plugin` docs.
+A node takes any number of observers and calls them in the order they were added, at the start and at the end; of two
+that add a header of one name, the one added later wins. Pass an `Arc` to keep a handle. `()` is an `ObservedTurn` that
+is told nothing, for an observer that only adds headers. The table of which call comes in which situation is in the
+`cicada::observer` docs.
 
 ### OpenTelemetry
 
-`cicada-otel` adds OpenTelemetry tracing and metrics as a plugin. It depends on the OpenTelemetry API only; the
+`cicada-otel` adds OpenTelemetry tracing and metrics as an observer. It depends on the OpenTelemetry API only; the
 service brings the SDK and exporters (`opentelemetry_sdk`, `opentelemetry-otlp`) and installs them as the global
 providers, or passes them to `ActorTelemetry::new(&tracer_provider, &meter_provider)`:
 
@@ -1009,16 +1023,17 @@ providers, or passes them to `ActorTelemetry::new(&tracer_provider, &meter_provi
 ```rust
 use cicada_otel::{ActorTelemetry, current_trace_headers};
 
-let system = ActorSystem::builder(store).install(ActorTelemetry::global()).build(); // the global providers
+let system = ActorSystem::builder(store).observe(ActorTelemetry::global()).build(); // the global providers
 // Outside an actor, the caller's trace context goes into the message's headers:
 let options = SendOptions { headers: current_trace_headers(), ..SendOptions::new() };
 system.send_with(&Sync { tenant: "acme".into() }, SyncMsg::Run, options).await?;
 ```
 
-- **A span per turn**, `process <type name>` (kind `CONSUMER`), with `messaging.*` and `cicada.*` attributes (actor,
-  message type, attempt, failures, outcome, messages sent). `failed` turns have status `ERROR`; a handler error is an
-  exception event, also when the message is retried. A turn that never commits (lost lease, node stopped mid-turn)
-  ends its span with `cicada.outcome` = `abandoned`.
+- **A span per turn**, `process <type name>` (kind `CONSUMER`), from the claim to the commit, with `messaging.*` and
+  `cicada.*` attributes (actor, message type, attempt, failures, outcome, messages sent). `failed` turns have status
+  `ERROR`, and a turn that ends `failed` or is rescheduled has an `exception` event with the error. A turn of which the
+  node saw no commit succeed (lost lease, node stopped mid-turn, a commit that did not get through) ends its span with
+  `cicada.outcome` = `abandoned` and no `exception` event, also when its handler failed.
 - **One trace across actors.** The span's parent is the trace context in the message's headers (W3C `traceparent`).
   Every message a turn sends carries the turn's trace context automatically, so the turns of a chain form one trace
   with no code in the handlers. A send that sets `traceparent` itself keeps its own. From outside an actor, use
@@ -1029,33 +1044,7 @@ system.send_with(&Sync { tenant: "acme".into() }, SyncMsg::Run, options).await?;
 
 ## Extras
 
-`cicada-extras` holds building blocks that use only the public API (plugin hooks and the operations of
-`ActorSystem`).
-
-**Crash-loop guard.** A message that kills its node (out of memory, `std::process::exit`, an abort) is otherwise
-claimed again forever. `CrashLoopGuard` counts the claims of a message that ended without a commit
-(`attempt - failures - 1`) and, at the limit, fails the message in `on_claim` before the handler runs:
-
-<!-- doctest
-# use std::sync::Arc;
-# use cicada::ActorSystem;
-@@1
-# fn node(store: cicada::Store) -> Result<(), String> {
-@@4
-# Ok(())
-# }
--->
-```rust
-use cicada_extras::CrashLoopGuard;
-
-let system = ActorSystem::builder(store)
-    .install(CrashLoopGuard::new(5)?) // CrashLoopGuard::default() is 5
-    .build();
-```
-
-The message ends `failed` (`on_claim of plugin CrashLoopGuard failed: crash loop: 5 claims without a commit`), is never
-retried and shows under `/outcomes?status=failed`. Every claim without a commit counts, also a lease lost to a long pause or released
-by a stopping node, so keep the limit above what rolling deploys during long turns can cause.
+`cicada-extras` holds building blocks that use only the public API (observers and the operations of `ActorSystem`).
 
 **Dead letters.** A failed message stays in the failures list for the outcome retention. `FailureWatcher` (a job, not
 an actor: handlers cannot read `/outcomes`) copies each failure into the `DeadLetters` singleton

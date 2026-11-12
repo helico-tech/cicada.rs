@@ -16,7 +16,11 @@
 //!
 //! **Retry.** When the handler fails or exceeds its maximum turn, the message's own retry policy decides: with a
 //! policy, attempts left and a failure that is not permanent, the commit is a reschedule after the backoff, else
-//! `failed`. The `on_handler_error` hooks then see that decision.
+//! `failed`.
+//!
+//! **Observers.** The node's observers are told that a turn starts once it is claimed, before anything is decoded, and
+//! the values they return are told the outcome once its commit succeeded (the `failed` that replaced a rejected or
+//! refused commit included); without such a commit they are dropped (see [`crate::observer`]).
 //!
 //! **Cancel.** An operator's cancel request ([`crate::store::Backend::request_cancel`]) reaches the keeper through its next
 //! renewal. If the handler has not ended, the keeper aborts *work* and the turn commits `cancelled`, without effects
@@ -28,10 +32,10 @@
 //! never released for a re-run (G6): every later failure ends in a `failed` outcome or, when the outcome cannot be
 //! committed, in abandoning the turn without release.
 //!
-//! **Task structure.** Each turn is one task that spawns three children: *work* (load, `on_claim`, the handler under
-//! its timeout, checks), *keeper* (heartbeat and local-deadline watchdog; it aborts *work* when the lease is
-//! lost) and *overtime* (a warning about handlers that ignore cancellation). The turn task awaits *work*, then commits
-//! while the keeper keeps renewing.
+//! **Task structure.** Each turn is one task that tells the observers it starts and spawns three children: *work*
+//! (load, the handler under its timeout, checks), *keeper* (heartbeat and local-deadline watchdog; it aborts *work*
+//! when the lease is lost) and *overtime* (a warning about handlers that ignore cancellation). The turn task awaits
+//! *work*, then commits while the keeper keeps renewing.
 
 use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
@@ -51,12 +55,12 @@ use super::resolver::TypeResolver;
 use crate::actor::{HostedActor, RunEnd, RunResult, panic_message};
 use crate::address::TypeName;
 use crate::message;
-use crate::plugin::{Attributes, ClaimContext, HandlerErrorContext, HookResult, OutcomeContext, Plugin, TurnInfo};
+use crate::observer::{Observed, Observers};
 use crate::store::{
     ActorCreate, Backend, Claim, CommitRequest, CommitResult, Control, Delivery, Message, MessageId, OutgoingMessage,
     RenewResult, StateChange, Store, StoreError, TurnOutcome,
 };
-use crate::turn::HandlerFailure;
+use crate::turn::{HandlerFailure, TurnInfo};
 use crate::watch::WatchChange;
 
 const RENEW_RETRY: Duration = Duration::from_secs(1);
@@ -208,8 +212,8 @@ pub(crate) struct TurnExecutor {
     pub store: Store,
     pub resolver: Arc<TypeResolver>,
     pub hosted: HashMap<TypeName, HostedType>,
-    /// The node's plugins, in installation order.
-    pub plugins: Vec<Arc<dyn Plugin>>,
+    /// The node's observers, in the order they were added.
+    pub observers: Observers,
     pub lease: LeaseSettings,
     /// Wakes the node's dispatch loop: after a commit that sent messages, wrote notifications or had control effects,
     /// or one that may have applied unacknowledged.
@@ -227,13 +231,12 @@ impl TurnExecutor {
             let _ = self.store.release(&claim.actor, claim.epoch).await;
             return;
         };
+        let observed = self.observers.start(&claim.actor, &claim.message, claim.claimed_at);
         let info = Arc::new(TurnInfo {
             self_address: claim.actor.clone(),
             message: claim.message.clone(),
             now: claim.claimed_at,
-            attributes: Attributes::default(),
-            send_headers: Mutex::default(),
-            unhandled: std::sync::OnceLock::new(),
+            send_headers: observed.headers().clone(),
             claim_sent,
         });
         let guard = Arc::new(LeaseGuard::new(claim_sent + self.lease.ttl - self.lease.safety_margin()));
@@ -242,7 +245,7 @@ impl TurnExecutor {
         let mut work = tokio::spawn(self.clone().decide_or_fail(
             hosted.clone(),
             claim.clone(),
-            info.clone(),
+            info,
             guard.clone(),
             phase.clone(),
         ));
@@ -279,7 +282,7 @@ impl TurnExecutor {
                 if guard.is_lost() {
                 } else if phase.cancelled() {
                     // An operator's cancel request came first: honour it instead of handing the turn to another node.
-                    self.commit(&claim, &info, Decision::of(TurnOutcome::Cancelled), &guard).await;
+                    self.commit(&claim, Decision::of(TurnOutcome::Cancelled), &guard, observed).await;
                 } else if phase.handler_ended() {
                     tracing::info!(
                         "Turn of {} for {} cancelled after its handler ended; the lease is not released but expires",
@@ -294,7 +297,7 @@ impl TurnExecutor {
         match decision {
             None => tracing::info!("Turn of {} for {} abandoned: {}", claim.actor, claim.message.id, guard.reason()),
             // The heartbeat keeps running while the commit is retried.
-            Some(decision) => self.commit(&claim, &info, decision, &guard).await,
+            Some(decision) => self.commit(&claim, decision, &guard, observed).await,
         }
         keeper.abort();
         overtime.abort();
@@ -418,15 +421,6 @@ impl TurnExecutor {
             Ok(loaded) => loaded,
             Err(reason) => return Decision::failed(reason),
         };
-        if let Some(reason) = &loaded.unhandled {
-            let _ = info.unhandled.set(reason.clone());
-        }
-
-        for plugin in &self.plugins {
-            if let Err(e) = guarded(plugin.on_claim(&ClaimContext { info })).await {
-                return Decision::failed(format!("on_claim of plugin {} failed: {e}", plugin.name()));
-            }
-        }
 
         // Run.
         let started = Instant::now();
@@ -439,22 +433,18 @@ impl TurnExecutor {
         // A handler that only blocked its thread past max_turn returns its value: judge the duration ourselves.
         let overran = started.elapsed() > hosted.max_turn;
         match ended {
-            // Cut off at max_turn: a handler failure, retried under the message's policy, seen by the error hooks.
+            // Cut off at max_turn: a handler failure, retried under the message's policy.
             Err(_) => {
-                let failure = HandlerFailure::Timeout { max_turn: hosted.max_turn, cause: None };
-                self.on_handler_error(info, failure, "timeout".into(), true).await
+                let failure = HandlerFailure::Timeout { max_turn: hosted.max_turn };
+                handler_failed(info, failure, "timeout".into(), true)
             }
             // It ended, but only after max_turn (blocking code): still a timeout. Re-running is allowed only when the
             // handler itself failed; one that returned or vetoed, or a message that did not decode, ends
             // failed(timeout), not retried.
             Ok(run) if overran => {
-                let cause = match run.end {
-                    RunEnd::Threw(f) => Some(Box::new(f)),
-                    _ => None,
-                };
-                let retryable = cause.as_ref().is_some_and(|c| !c.is_permanent());
-                let failure = HandlerFailure::Timeout { max_turn: hosted.max_turn, cause };
-                self.on_handler_error(info, failure, "timeout".into(), retryable).await
+                let retryable = matches!(&run.end, RunEnd::Threw(f) if !f.is_permanent());
+                let failure = HandlerFailure::Timeout { max_turn: hosted.max_turn };
+                handler_failed(info, failure, "timeout".into(), retryable)
             }
             Ok(run) => match run.end {
                 RunEnd::Undecodable(reason) => {
@@ -463,41 +453,11 @@ impl TurnExecutor {
                 }
                 RunEnd::Threw(failure) => {
                     let reason = failure.reason();
-                    self.on_handler_error(info, failure, reason, true).await
+                    handler_failed(info, failure, reason, true)
                 }
                 RunEnd::Returned => self.after_return(run, guard).await,
             },
         }
-    }
-
-    /// The handler failed; its effects are discarded. The message's retry policy decides between a reschedule and
-    /// `failed`; then every `on_handler_error` hook sees that decision. A failing hook is logged and ignored.
-    async fn on_handler_error(
-        &self,
-        info: &TurnInfo,
-        failure: HandlerFailure,
-        reason: String,
-        retryable: bool,
-    ) -> Decision {
-        tracing::debug!("Handler of {} failed on {}: {failure}", info.self_address, info.message.id);
-        let failed_runs = info.message.failures + 1; // including this one
-        let retry_delay = match &info.message.retry {
-            Some(policy) if retryable && !failure.is_permanent() && policy.retries_after(failed_runs) => {
-                Some(policy.backoff().delay(failed_runs).min(crate::time::MAX_DELAY))
-            }
-            _ => None,
-        };
-        for plugin in &self.plugins {
-            let ctx = HandlerErrorContext { info, error: &failure, retry_delay };
-            if let Err(e) = guarded(plugin.on_handler_error(&ctx)).await {
-                tracing::warn!("on_handler_error of plugin {} failed; ignored: {e}", plugin.name());
-            }
-        }
-        let outcome = match retry_delay {
-            Some(delay) => TurnOutcome::Rescheduled { delivery: Delivery::After(delay), error: reason.clone() },
-            None => TurnOutcome::Failed(reason.clone()),
-        };
-        Decision { handler_failure: Some(reason), ..Decision::of(outcome) }
     }
 
     async fn after_return(&self, run: RunResult, guard: &LeaseGuard) -> Decision {
@@ -582,7 +542,9 @@ impl TurnExecutor {
         }
     }
 
-    async fn commit(&self, claim: &Claim, info: &TurnInfo, decision: Decision, guard: &LeaseGuard) {
+    /// Commits `decision`, or the `failed` that replaces it when the store rejects or refuses it, and tells `observed`
+    /// the outcome once a commit succeeded; otherwise `observed` is dropped.
+    async fn commit(&self, claim: &Claim, decision: Decision, guard: &LeaseGuard, observed: Observed) {
         // Every backend can store the reason (PostgreSQL refuses NUL characters in text). A rescheduled message carries
         // its `lastError` along, so that one is also bounded.
         let outcome = match decision.outcome {
@@ -637,7 +599,9 @@ impl TurnExecutor {
                         control.actor
                     );
                 }
-                return self.outcome(info, &outcome, &sent, notifies).await;
+                self.wake_after(&outcome, &sent, notifies);
+                observed.ended(&outcome, &sent);
+                return;
             }
             CommitEnd::Answered(CommitResult::LeaseLost) => {
                 tracing::info!("Commit of {} for {} rejected: lease lost", claim.actor, claim.message.id);
@@ -649,7 +613,8 @@ impl TurnExecutor {
         let request = CommitRequest::new(claim.actor.clone(), claim.epoch, claim.message.id.clone(), failure.clone());
         match self.commit_with_retry(claim, guard, request).await {
             CommitEnd::Answered(CommitResult::Committed { sent, .. }) => {
-                self.outcome(info, &failure, &sent, true).await
+                self.wake_after(&failure, &sent, true);
+                observed.ended(&failure, &sent);
             }
             CommitEnd::Answered(other) => {
                 tracing::warn!("Failure commit of {} for {}: {other:?}", claim.actor, claim.message.id)
@@ -711,18 +676,30 @@ impl TurnExecutor {
 
     /// After a successful commit: wakes the node for the messages sent, for a rescheduled message (which may be due at
     /// once), and for the notifications of a failure, a stop or a delete and the messages a resume makes due
-    /// (`notifies`), then runs the `on_outcome` hooks.
-    async fn outcome(&self, info: &TurnInfo, outcome: &TurnOutcome, sent: &[Message], notifies: bool) {
+    /// (`notifies`).
+    fn wake_after(&self, outcome: &TurnOutcome, sent: &[Message], notifies: bool) {
         if !sent.is_empty() || !outcome.is_final() || notifies {
             self.wake.notify_one();
         }
-        for plugin in &self.plugins {
-            let ctx = OutcomeContext { info, outcome, sent };
-            if let Err(e) = guarded(plugin.on_outcome(&ctx)).await {
-                tracing::warn!("on_outcome of plugin {} failed; ignored: {e}", plugin.name());
-            }
-        }
     }
+}
+
+/// The handler failed; its effects are discarded. The message's retry policy decides between a reschedule and
+/// `failed`.
+fn handler_failed(info: &TurnInfo, failure: HandlerFailure, reason: String, retryable: bool) -> Decision {
+    tracing::debug!("Handler of {} failed on {}: {failure}", info.self_address, info.message.id);
+    let failed_runs = info.message.failures + 1; // including this one
+    let retry_delay = match &info.message.retry {
+        Some(policy) if retryable && !failure.is_permanent() && policy.retries_after(failed_runs) => {
+            Some(policy.backoff().delay(failed_runs).min(crate::time::MAX_DELAY))
+        }
+        _ => None,
+    };
+    let outcome = match retry_delay {
+        Some(delay) => TurnOutcome::Rescheduled { delivery: Delivery::After(delay), error: reason.clone() },
+        None => TurnOutcome::Failed(reason.clone()),
+    };
+    Decision { handler_failure: Some(reason), ..Decision::of(outcome) }
 }
 
 /// Logs a warning when the handler is still running a while after its maximum turn duration: it does not yield.
@@ -736,15 +713,6 @@ async fn overtime_warning(work: AbortHandle, claim: Claim, max_turn: Duration) {
             claim.actor,
             claim.message.id
         );
-    }
-}
-
-/// Runs a hook, turning a panic into an error.
-async fn guarded(hook: impl Future<Output = HookResult>) -> Result<(), String> {
-    match AssertUnwindSafe(hook).catch_unwind().await {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(e)) => Err(format!("{e:#}")),
-        Err(panic) => Err(format!("panic: {}", panic_message(&*panic))),
     }
 }
 

@@ -4,7 +4,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::common::*;
-use crate::plugin::{HandlerErrorContext, HookResult, OutcomeContext, Plugin};
 use crate::runtime::{BulkSelection, NodeHealth, RetryResult};
 use crate::store::{
     Backend, CommitRequest, CommitResult, DeliverNowResult, MessageStatus, OutcomeStatus, Store, StoreResult,
@@ -28,25 +27,6 @@ fn slow_node(store: impl IntoStore, name: &str) -> ActorSystem {
 fn run_one(system: &ActorSystem) -> tokio::task::JoinHandle<usize> {
     let system = system.clone();
     tokio::spawn(async move { system.run_due_turns(1).await.unwrap() })
-}
-
-struct RecordHooks(Events);
-
-#[async_trait]
-impl Plugin for RecordHooks {
-    fn name(&self) -> &str {
-        "record"
-    }
-
-    async fn on_handler_error(&self, _: &HandlerErrorContext<'_>) -> HookResult {
-        self.0.push("on_handler_error");
-        Ok(())
-    }
-
-    async fn on_outcome(&self, ctx: &OutcomeContext<'_>) -> HookResult {
-        self.0.push(format!("on_outcome:{}", outcome_text(ctx.outcome())));
-        Ok(())
-    }
 }
 
 /// Delays every commit by `0`, as a slow store would.
@@ -107,11 +87,12 @@ async fn a_node_heartbeats_every_10_seconds_also_when_it_hosts_nothing() {
 
 // ---- turn cancel ----
 
+/// turn-management, Scenario: A handler is cancelled (with an observer).
 #[tokio::test(start_paused = true)]
-async fn cancel_takes_effect_within_one_heartbeat_with_no_effects_and_on_outcome_only() {
+async fn cancel_takes_effect_within_one_heartbeat_with_no_effects_and_the_observer_is_told_cancelled() {
     let memory = virtual_store();
     let events = Events::default();
-    let system = node(memory.clone(), "n1").host(SlowCounter).install(RecordHooks(events.clone())).build();
+    let system = node(memory.clone(), "n1").host(SlowCounter).observe(Recorder::new(&events)).build();
     system.create(&a(), &CounterState::total(1)).await.unwrap();
     let running = accepted(system.send(&a(), CounterMsg::Sleep { millis: 300_000 }).await.unwrap());
     let next = accepted(system.send(&a(), CounterMsg::Add { n: 1 }).await.unwrap());
@@ -133,7 +114,7 @@ async fn cancel_takes_effect_within_one_heartbeat_with_no_effects_and_on_outcome
     assert_eq!(outcome.status, OutcomeStatus::Cancelled);
     assert_eq!(outcome.error, None);
     assert_eq!(state_of::<CounterState>(&memory, &a().address()).await.total, 1, "no effects");
-    assert_eq!(events.all(), ["on_outcome:Cancelled"], "on_handler_error is not called");
+    assert_eq!(events.all(), ["start:Sleep:1", "end:Cancelled:sent=0"]);
     assert_eq!(system.running_turn(&a().address()).await.unwrap(), None);
 
     // The mailbox moves on to the next message, in a new epoch.

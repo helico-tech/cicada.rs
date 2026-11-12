@@ -5,13 +5,14 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::time::Instant;
+
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::actor::Actor;
 use crate::address::{ActorAddress, ActorRef};
 use crate::message::{self, MessageFamily};
-use crate::plugin::{Attributes, TurnInfo};
 use crate::retention::Retention;
 use crate::retry::RetryPolicy;
 use crate::runtime::effects::EffectBuffer;
@@ -90,20 +91,18 @@ impl fmt::Debug for HandlerError {
     }
 }
 
-/// How a handler run failed, as `on_handler_error` hooks see it.
+/// How a handler run failed.
 #[derive(Debug)]
-pub enum HandlerFailure {
+pub(crate) enum HandlerFailure {
     /// The handler returned an error.
     Error(HandlerError),
     /// The handler panicked.
     Panic(String),
     /// The handler ran longer than its type's maximum turn duration and was cancelled (or only ended after it, in
-    /// code that does not yield; then `cause` is its own failure, if it failed).
+    /// code that does not yield).
     Timeout {
         /// The maximum turn duration that was exceeded.
         max_turn: Duration,
-        /// The handler's own failure when it failed only after overrunning.
-        cause: Option<Box<HandlerFailure>>,
     },
 }
 
@@ -111,11 +110,6 @@ impl HandlerFailure {
     /// True for a permanent failure (the receiver's veto).
     pub fn is_permanent(&self) -> bool {
         matches!(self, HandlerFailure::Error(e) if e.is_permanent())
-    }
-
-    /// True for a turn timeout.
-    pub fn is_timeout(&self) -> bool {
-        matches!(self, HandlerFailure::Timeout { .. })
     }
 
     /// The reason the failure is recorded with: the handler's error, `panic: …`, or `timeout`.
@@ -139,7 +133,7 @@ impl fmt::Display for HandlerFailure {
     }
 }
 
-/// A send, create, cancel, watch or control effect of a handler (or hook) that was refused when called.
+/// A send, create, cancel, watch or control effect of a handler that was refused when called.
 #[derive(Debug, thiserror::Error)]
 pub enum TurnError {
     /// A field is out of bounds, contains a NUL character, the value cannot be encoded, or an initial state is `null`;
@@ -177,8 +171,8 @@ pub struct SendOptions {
     pub delivery: Delivery,
     /// Opaque string passed through unchanged.
     pub correlation_id: Option<String>,
-    /// Headers passed through unchanged. A plugin may add headers to a turn's sends (trace context); a header set
-    /// here wins over one of the same name from a plugin.
+    /// Headers passed through unchanged. An observer may add headers to a turn's sends (trace context); a header set
+    /// here wins over one of the same name from an observer.
     pub headers: BTreeMap<String, String>,
     /// The new message's retry policy; `None`: a failed handler run of it ends it `failed`.
     pub retry: Option<RetryPolicy>,
@@ -244,6 +238,26 @@ pub(crate) fn check_delivery(delivery: &Delivery) -> Result<(), TurnError> {
         Delivery::Now => Ok(()),
         Delivery::At(t) => Delivery::at(t).map(|_| ()).map_err(|e| TurnError::Invalid(e.0)),
         Delivery::After(d) => Delivery::after(d).map(|_| ()).map_err(|e| TurnError::Invalid(e.0)),
+    }
+}
+
+/// What the runtime knows of a turn when it runs: the claim, and the headers its observers added for its sends.
+#[derive(Debug)]
+pub(crate) struct TurnInfo {
+    pub(crate) self_address: ActorAddress,
+    pub(crate) message: Message,
+    /// Store time at the claim.
+    pub(crate) now: Timestamp,
+    /// The headers of the observers, for every send of the turn.
+    pub(crate) send_headers: BTreeMap<String, String>,
+    /// The local time at which the claim was sent.
+    pub(crate) claim_sent: Instant,
+}
+
+impl TurnInfo {
+    /// `now` plus the local time that passed since the claim was sent.
+    fn current_time(&self) -> Timestamp {
+        time::add(self.now, self.claim_sent.elapsed()).unwrap_or(self.now)
     }
 }
 
@@ -324,11 +338,6 @@ impl<A: Actor> Turn<A> {
         self.info.current_time()
     }
 
-    /// The typed key-value bag shared with plugins, valid for this turn only.
-    pub fn attributes(&self) -> &Attributes {
-        &self.info.attributes
-    }
-
     /// Buffers `msg` for `to`, due now. The compiler checks that `to` accepts `msg`; the recipient must exist at
     /// commit, or the whole turn fails. Returns the new message's id.
     pub fn send<R: ActorRef>(&mut self, to: &R, msg: impl Into<R::Message>) -> Result<MessageId, TurnError> {
@@ -383,8 +392,8 @@ impl<A: Actor> Turn<A> {
         payload: Value,
         options: SendOptions,
     ) -> Result<MessageId, TurnError> {
-        let options = self.with_turn_headers(options);
         let id = check_send(message_type, &payload, &options)?;
+        let options = self.with_turn_headers(to, options);
         self.resolver.check_send(to, message_type).await?;
         self.push_send(to.clone(), message_type.to_owned(), payload, id.clone(), options);
         Ok(id)
@@ -601,17 +610,30 @@ impl<A: Actor> Turn<A> {
         options: SendOptions,
     ) -> Result<MessageId, TurnError> {
         let encoded = message::encode(msg).map_err(|e| TurnError::Invalid(e.to_string()))?;
-        let options = self.with_turn_headers(options);
         let id = check_send(&encoded.message_type, &encoded.payload, &options)?;
+        let options = self.with_turn_headers(&to, options);
         self.push_send(to, encoded.message_type, encoded.payload, id.clone(), options);
         Ok(id)
     }
 
-    /// Adds the headers that plugins set for this turn's sends; the send's own headers win.
-    fn with_turn_headers(&self, mut options: SendOptions) -> SendOptions {
-        let turn_headers = self.info.send_headers.lock().unwrap_or_else(|e| e.into_inner());
-        for (name, value) in turn_headers.iter() {
-            options.headers.entry(name.clone()).or_insert_with(|| value.clone());
+    /// Adds the headers that observers set for this turn's sends to a send to `to` whose own headers were checked: its
+    /// own win, and the rest go in the order of their names as long as the message stays within the most headers it may
+    /// have. One that does not fit is left out, with a warning; it never fails the send.
+    fn with_turn_headers(&self, to: &ActorAddress, mut options: SendOptions) -> SendOptions {
+        for (name, value) in &self.info.send_headers {
+            if options.headers.contains_key(name) {
+                continue;
+            }
+            if options.headers.len() >= limits::MAX_HEADERS {
+                tracing::warn!(
+                    actor = %self.info.self_address,
+                    message = %self.info.message.id,
+                    "The header '{name}' of an observer is left out of a send to {to}: the message has {} headers",
+                    limits::MAX_HEADERS
+                );
+                continue;
+            }
+            options.headers.insert(name.clone(), value.clone());
         }
         options
     }

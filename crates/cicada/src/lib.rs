@@ -18,7 +18,7 @@ pub mod address;
 pub mod api;
 pub mod contract;
 pub mod message;
-pub mod plugin;
+pub mod observer;
 pub mod retention;
 pub mod retry;
 pub mod runtime;

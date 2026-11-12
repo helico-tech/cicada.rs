@@ -1,4 +1,4 @@
-//! OpenTelemetry traces and metrics for Cicada turns: the [`ActorTelemetry`] plugin.
+//! OpenTelemetry traces and metrics for Cicada turns: the [`ActorTelemetry`] observer.
 //!
 //! Uses the OpenTelemetry API only; the service brings the SDK and its exporters.
 //!
@@ -6,14 +6,16 @@
 //! `messaging.system` = `cicada`, `messaging.operation.name` = `process`, `messaging.destination.name` (the type name),
 //! `messaging.message.id`, `messaging.message.conversation_id` (the correlation id), and `cicada.actor`,
 //! `cicada.message.type`, `cicada.attempt`, `cicada.failures`, `cicada.outcome` (`done`, `failed`, `rescheduled`),
-//! `cicada.sent` (messages the commit enqueued). A failed turn has status `ERROR` with the failure reason; a handler
-//! error is recorded as an `exception` event, also when the message is retried. Its parent is the trace context in the
-//! message's headers (W3C `traceparent`/`tracestate`, or whatever the configured propagator reads). Every message a
-//! turn sends carries the turn's trace context, so the turns of a chain of messages form one trace without any code in
-//! the handlers; code outside an actor puts its context on a send with [`current_trace_headers`]. A turn that never
-//! commits (its lease was lost, or its node stopped mid-turn) has no outcome; the OpenTelemetry SDK for Rust exports
-//! every span it drops, so its span is ended when the turn ends, with `cicada.outcome` `abandoned` and status unset.
-//! The re-run gets its own span.
+//! `cicada.sent` (messages the commit enqueued). A turn that ends `failed` has status `ERROR` with the error, and a turn
+//! that ends `failed` or is rescheduled has an `exception` event with the error: a failure of the handler, a timeout, a
+//! message or a state that cannot be decoded, or a rejected commit. Its parent is the trace context in the message's
+//! headers (W3C `traceparent`/`tracestate`, or whatever the configured propagator reads). Every message a turn sends
+//! carries the turn's trace context, so the turns of a chain of messages form one trace without any code in the
+//! handlers; code outside an actor puts its context on a send with [`current_trace_headers`]. A turn of which the node
+//! saw no commit succeed (its lease was lost, its node stopped mid-turn, its commit did not get through) has no
+//! outcome; the OpenTelemetry SDK for Rust exports every span it drops, so its span is ended when the node drops the
+//! turn, with `cicada.outcome` `abandoned`, status unset and no `exception` event, also when its handler failed. The
+//! re-run gets its own span.
 //!
 //! **Metrics.** `cicada.turn.duration` (histogram, seconds, claim to commit) and `cicada.message.lag` (histogram,
 //! seconds, from the message's due time to its claim), both with `cicada.actor.type` (the type name) and
@@ -25,17 +27,15 @@
 //! use cicada_otel::ActorTelemetry;
 //!
 //! // The global tracer, meter and propagator; or ActorTelemetry::new(&tracer_provider, &meter_provider).
-//! let system = ActorSystem::builder(store).install(ActorTelemetry::global()).build();
+//! let system = ActorSystem::builder(store).observe(ActorTelemetry::global()).build();
 //! # }
 //! ```
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
-use async_trait::async_trait;
-use cicada::plugin::{ClaimContext, HandlerErrorContext, HookResult, OutcomeContext, Plugin, TurnInfo};
+use cicada::observer::{ObservedTurn, TurnEnd, TurnObserver, TurnStart};
 use cicada::store::TurnOutcome;
 use opentelemetry::global::{self, BoxedTracer, ObjectSafeTracerProvider};
 use opentelemetry::metrics::{Histogram, Meter, MeterProvider};
@@ -59,7 +59,7 @@ const FAILURES: &str = "cicada.failures";
 const OUTCOME: &str = "cicada.outcome";
 const SENT: &str = "cicada.sent";
 
-/// OpenTelemetry traces and metrics for turns, installed on a node (or on one type); see the [crate] documentation.
+/// OpenTelemetry traces and metrics for turns, an observer of a node; see the [crate] documentation.
 pub struct ActorTelemetry {
     tracer: BoxedTracer,
     duration: Histogram<f64>,
@@ -118,17 +118,18 @@ impl ActorTelemetry {
         headers.0
     }
 
-    fn start_span(&self, info: &TurnInfo) -> TurnSpan {
-        let message = info.message();
+    /// The span of the turn that starts, as the child of the trace context in its message's headers.
+    fn start_span(&self, turn: &TurnStart<'_>) -> Context {
+        let message = turn.message();
         let parent =
             self.with_propagator_do(|p| p.extract_with_context(&Context::new(), &HeaderReader(&message.headers)));
-        let type_name = info.type_name().as_str().to_owned();
+        let type_name = turn.type_name().as_str().to_owned();
         let mut attributes = vec![
             KeyValue::new(MESSAGING_SYSTEM, "cicada"),
             KeyValue::new(MESSAGING_OPERATION, "process"),
             KeyValue::new(MESSAGING_DESTINATION, type_name.clone()),
             KeyValue::new(MESSAGING_MESSAGE_ID, message.id.to_string()),
-            KeyValue::new(ACTOR, info.self_address().to_string()),
+            KeyValue::new(ACTOR, turn.actor().to_string()),
             KeyValue::new(MESSAGE_TYPE, message.message_type.clone()),
             KeyValue::new(ATTEMPT, i64::from(message.attempt)),
             KeyValue::new(FAILURES, i64::from(message.failures)),
@@ -142,8 +143,7 @@ impl ActorTelemetry {
             .with_kind(SpanKind::Consumer)
             .with_attributes(attributes)
             .start_with_context(&self.tracer, &parent);
-        let cx = Context::new().with_span(span);
-        TurnSpan { cx, started: Instant::now(), ended: Arc::new(AtomicBool::new(false)) }
+        Context::new().with_span(span)
     }
 }
 
@@ -154,65 +154,28 @@ impl Default for ActorTelemetry {
     }
 }
 
-#[async_trait]
-impl Plugin for ActorTelemetry {
-    fn name(&self) -> &str {
-        "ActorTelemetry"
-    }
-
-    async fn on_claim(&self, ctx: &ClaimContext<'_>) -> HookResult {
-        let info = ctx.info();
-        let turn = self.start_span(info);
+impl TurnObserver for ActorTelemetry {
+    fn turn_started(&self, turn: &mut TurnStart<'_>) -> Box<dyn ObservedTurn> {
+        let cx = self.start_span(turn);
         // The messages this turn sends are children of its span.
-        ctx.send_headers(self.inject(&turn.cx));
-        info.attributes().insert(Abandoned { cx: turn.cx.clone(), ended: turn.ended.clone() });
-        info.attributes().insert(turn);
-        let message = info.message();
-        let lag = (info.now() - message.deliver_at).to_std().unwrap_or_default();
+        for (name, value) in self.inject(&cx) {
+            turn.add_send_header(name, value);
+        }
+        let message = turn.message();
+        let (type_name, message_type) = (turn.type_name().as_str().to_owned(), message.message_type.clone());
+        let lag = (turn.claimed_at() - message.deliver_at).to_std().unwrap_or_default();
         self.lag.record(
             lag.as_secs_f64(),
-            &[
-                KeyValue::new(ACTOR_TYPE, info.type_name().as_str().to_owned()),
-                KeyValue::new(MESSAGE_TYPE, message.message_type.clone()),
-            ],
+            &[KeyValue::new(ACTOR_TYPE, type_name.clone()), KeyValue::new(MESSAGE_TYPE, message_type.clone())],
         );
-        Ok(())
-    }
-
-    async fn on_handler_error(&self, ctx: &HandlerErrorContext<'_>) -> HookResult {
-        if let Some(turn) = ctx.info().attributes().get::<TurnSpan>() {
-            turn.cx.span().add_event("exception", vec![KeyValue::new("exception.message", ctx.error().to_string())]);
-        }
-        Ok(())
-    }
-
-    async fn on_outcome(&self, ctx: &OutcomeContext<'_>) -> HookResult {
-        let info = ctx.info();
-        // No span when the turn failed before on_claim (state that does not decode): start one now.
-        let turn = info.attributes().get::<TurnSpan>().unwrap_or_else(|| self.start_span(info));
-        let span = turn.cx.span();
-        let name = match ctx.outcome() {
-            TurnOutcome::Done => "done",
-            TurnOutcome::Failed(error) => {
-                span.set_status(Status::error(error.clone()));
-                "failed"
-            }
-            TurnOutcome::Rescheduled { .. } => "rescheduled",
-            TurnOutcome::Cancelled => "cancelled",
-        };
-        span.set_attribute(KeyValue::new(OUTCOME, name));
-        span.set_attribute(KeyValue::new(SENT, ctx.sent().len() as i64));
-        turn.ended.store(true, Ordering::SeqCst);
-        span.end();
-        self.duration.record(
-            turn.started.elapsed().as_secs_f64(),
-            &[
-                KeyValue::new(ACTOR_TYPE, info.type_name().as_str().to_owned()),
-                KeyValue::new(MESSAGE_TYPE, info.message().message_type.clone()),
-                KeyValue::new(OUTCOME, name),
-            ],
-        );
-        Ok(())
+        Box::new(TurnSpan {
+            cx,
+            started: Instant::now(),
+            duration: self.duration.clone(),
+            type_name,
+            message_type,
+            ended: false,
+        })
     }
 }
 
@@ -225,32 +188,54 @@ pub fn current_trace_headers() -> BTreeMap<String, String> {
     headers.0
 }
 
-/// A turn's span (in its context) and when it started.
-#[derive(Clone)]
+/// A turn's span (in its context), when it started and what its duration is recorded with. Dropped without an end, it
+/// ends the span with `cicada.outcome = abandoned`: the SDK exports every span it drops, so it is exported and marked.
 struct TurnSpan {
     cx: Context,
     started: Instant,
-    ended: Arc<AtomicBool>,
+    duration: Histogram<f64>,
+    type_name: String,
+    message_type: String,
+    ended: bool,
 }
 
-/// Ends the span of a turn that never reached `on_outcome` (its lease was lost, or the node stopped mid-turn) with
-/// `cicada.outcome = abandoned`, when the turn's attributes are dropped. The SDK exports every span it drops, so it is
-/// exported and marked.
-struct Abandoned {
-    cx: Context,
-    ended: Arc<AtomicBool>,
-}
-
-impl Clone for Abandoned {
-    fn clone(&self) -> Self {
-        // Attributes hand out copies; only the copy in the bag marks the span (copies never outlive the turn's end).
-        Self { cx: self.cx.clone(), ended: Arc::new(AtomicBool::new(true)) }
+impl ObservedTurn for TurnSpan {
+    fn turn_ended(mut self: Box<Self>, end: &TurnEnd<'_>) {
+        let span = self.cx.span();
+        let exception = |error: &str| {
+            span.add_event("exception", vec![KeyValue::new("exception.message", error.to_owned())]);
+        };
+        let name = match end.outcome() {
+            TurnOutcome::Done => "done",
+            TurnOutcome::Failed(error) => {
+                exception(error);
+                span.set_status(Status::error(error.clone()));
+                "failed"
+            }
+            TurnOutcome::Rescheduled { error, .. } => {
+                exception(error);
+                "rescheduled"
+            }
+            TurnOutcome::Cancelled => "cancelled",
+        };
+        span.set_attribute(KeyValue::new(OUTCOME, name));
+        span.set_attribute(KeyValue::new(SENT, end.sent().len() as i64));
+        span.end();
+        self.duration.record(
+            self.started.elapsed().as_secs_f64(),
+            &[
+                KeyValue::new(ACTOR_TYPE, self.type_name.clone()),
+                KeyValue::new(MESSAGE_TYPE, self.message_type.clone()),
+                KeyValue::new(OUTCOME, name),
+            ],
+        );
+        self.ended = true;
     }
 }
 
-impl Drop for Abandoned {
+impl Drop for TurnSpan {
     fn drop(&mut self) {
-        if !self.ended.swap(true, Ordering::SeqCst) {
+        if !self.ended {
             let span = self.cx.span();
             span.set_attribute(KeyValue::new(OUTCOME, "abandoned"));
             span.end();

@@ -1,10 +1,9 @@
-//! `ClaimContext::send_headers`: headers a plugin adds in `on_claim` to every message the turn sends.
+//! `TurnStart::add_send_header`: headers an observer adds when a turn starts to every message the turn sends.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use async_trait::async_trait;
-use cicada::plugin::{ClaimContext, HookResult, Plugin};
+use cicada::observer::{ObservedTurn, TurnObserver, TurnStart};
 use cicada::prelude::*;
 use cicada::turn::TurnError;
 use cicada_test::TestActors;
@@ -80,35 +79,31 @@ impl Actor for RelayActor {
     }
 }
 
-/// Adds the given headers to every send of a turn.
+/// Adds the given headers to every send of a turn, and is told nothing.
 struct Adds {
-    name: &'static str,
     headers: Vec<(&'static str, &'static str)>,
 }
 
-#[async_trait]
-impl Plugin for Adds {
-    fn name(&self) -> &str {
-        self.name
-    }
-
-    async fn on_claim(&self, ctx: &ClaimContext<'_>) -> HookResult {
-        ctx.send_headers(self.headers.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())));
-        Ok(())
+impl TurnObserver for Adds {
+    fn turn_started(&self, turn: &mut TurnStart<'_>) -> Box<dyn ObservedTurn> {
+        for (name, value) in &self.headers {
+            turn.add_send_header(*name, *value);
+        }
+        Box::new(())
     }
 }
 
 type Seen = Arc<Mutex<BTreeMap<String, BTreeMap<String, String>>>>;
 
-async fn harness(plugins: Vec<Adds>) -> (TestActors, Seen, Arc<Mutex<Vec<String>>>) {
+async fn harness(observers: Vec<Adds>) -> (TestActors, Seen, Arc<Mutex<Vec<String>>>) {
     let seen = Seen::default();
     let errors = Arc::new(Mutex::new(Vec::new()));
     let actor = RelayActor { seen: seen.clone(), errors: errors.clone() };
     let test = TestActors::builder()
         .with(move |mut node| {
             node = node.host(actor);
-            for plugin in plugins {
-                node = node.install(plugin);
+            for observer in observers {
+                node = node.observe(observer);
             }
             node
         })
@@ -121,11 +116,11 @@ async fn harness(plugins: Vec<Adds>) -> (TestActors, Seen, Arc<Mutex<Vec<String>
 }
 
 fn run_header() -> Adds {
-    Adds { name: "Run", headers: vec![("x-run", "r1")] }
+    Adds { headers: vec![("x-run", "r1")] }
 }
 
 #[tokio::test(start_paused = true)]
-async fn every_kind_of_send_from_the_handler_carries_the_plugin_header() {
+async fn every_kind_of_send_from_the_handler_carries_the_observer_header() {
     let (test, seen, _) = harness(vec![run_header()]).await;
     test.send(&relay("a"), RelayMsg::Fan).await;
     test.run_until_idle().await;
@@ -138,7 +133,7 @@ async fn every_kind_of_send_from_the_handler_carries_the_plugin_header() {
 
 #[tokio::test(start_paused = true)]
 async fn a_send_keeps_its_own_value_of_a_header_and_still_gets_the_others() {
-    let both = Adds { name: "Both", headers: vec![("x-run", "r1"), ("x-other", "o1")] };
+    let both = Adds { headers: vec![("x-run", "r1"), ("x-other", "o1")] };
     let (test, seen, _) = harness(vec![both]).await;
     test.send(&relay("a"), RelayMsg::Own).await;
     test.run_until_idle().await;
@@ -148,8 +143,8 @@ async fn a_send_keeps_its_own_value_of_a_header_and_still_gets_the_others() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn the_headers_of_two_plugins_both_arrive() {
-    let second = Adds { name: "Second", headers: vec![("x-second", "s1")] };
+async fn the_headers_of_two_observers_both_arrive() {
+    let second = Adds { headers: vec![("x-second", "s1")] };
     let (test, seen, _) = harness(vec![run_header(), second]).await;
     test.send(&relay("a"), RelayMsg::Fan).await;
     test.run_until_idle().await;
@@ -167,17 +162,17 @@ async fn a_message_sent_from_outside_does_not_get_the_header() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn plugin_headers_count_toward_the_header_limit() {
+async fn an_observer_header_never_fails_a_send_and_is_left_out_of_a_full_message() {
     let (test, seen, errors) = harness(vec![run_header()]).await;
-    // 63 own headers plus the plugin's one is 64: allowed.
+    // 63 own headers plus the observer's one is 64: it fits.
     test.send(&relay("a"), RelayMsg::Many { count: 63 }).await;
     test.run_until_idle().await;
-    assert!(errors.lock().unwrap().is_empty());
-    assert_eq!(seen.lock().unwrap()["many"].len(), 64);
-    // 64 own headers plus the plugin's one is 65: refused.
+    let headers = seen.lock().unwrap()["many"].clone();
+    assert_eq!((headers.len(), headers.get("x-run").map(String::as_str)), (64, Some("r1")));
+    // 64 own headers: the send succeeds with its own, and the observer's one is left out.
     test.send(&relay("a"), RelayMsg::Many { count: 64 }).await;
     test.run_until_idle().await;
-    let errors = errors.lock().unwrap();
-    assert_eq!(errors.len(), 1, "{errors:?}");
-    assert!(errors[0].contains("At most 64 headers"), "{errors:?}");
+    assert!(errors.lock().unwrap().is_empty(), "{errors:?}");
+    let headers = seen.lock().unwrap()["many"].clone();
+    assert_eq!((headers.len(), headers.contains_key("x-run")), (64, false));
 }

@@ -38,10 +38,15 @@ pub(crate) fn check(
         return Err(format!("At most {MAX_HEADERS} headers are allowed, got {}", headers.len()));
     }
     for (name, value) in headers {
-        field("header name", name, MAX_HEADER_NAME_LENGTH)?;
-        field(&format!("header '{name}'"), value, MAX_HEADER_VALUE_LENGTH)?;
+        check_header(name, value)?;
     }
     Ok(())
+}
+
+/// Checks the name and the value of one header, naming the one that is out of bounds.
+pub(crate) fn check_header(name: &str, value: &str) -> Result<(), String> {
+    field("header name", name, MAX_HEADER_NAME_LENGTH)?;
+    field(&format!("header '{name}'"), value, MAX_HEADER_VALUE_LENGTH)
 }
 
 /// Checks a send's envelope and payload.

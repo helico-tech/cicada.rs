@@ -3,16 +3,12 @@
 //! re-run. A run that was cut off at its maximum turn is a timeout retried per policy.
 //! Real time: blocking code does not advance tokio's paused clock.
 
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::common::*;
 use crate::ActorSystem;
-use crate::plugin::{HandlerErrorContext, HookResult, Plugin};
 use crate::prelude::*;
 use crate::store::{Backend, Message, MessageStatus, OutcomeStatus, Store};
-use crate::turn::HandlerFailure;
-use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 const MAX_TURN: Duration = Duration::from_millis(200);
@@ -84,34 +80,6 @@ impl Actor for LaggardActor {
     }
 }
 
-#[derive(Default, Clone)]
-struct Observer {
-    seen: Events,
-    causes: Arc<Mutex<Vec<Option<String>>>>,
-}
-
-#[async_trait]
-impl Plugin for Observer {
-    fn name(&self) -> &str {
-        "Observer"
-    }
-
-    async fn on_handler_error(&self, ctx: &HandlerErrorContext<'_>) -> HookResult {
-        self.seen.push(format!(
-            "{}:willRetry={}:{}",
-            failure_kind(ctx.error()),
-            ctx.will_retry(),
-            ctx.error().reason()
-        ));
-        let cause = match ctx.error() {
-            HandlerFailure::Timeout { cause, .. } => cause.as_ref().map(|c| c.reason()),
-            _ => None,
-        };
-        self.causes.lock().unwrap().push(cause);
-        Ok(())
-    }
-}
-
 fn policy() -> RetryPolicy {
     RetryPolicy::new(3, Backoff::fixed(Duration::from_secs(60)).unwrap()).unwrap()
 }
@@ -119,16 +87,21 @@ fn policy() -> RetryPolicy {
 struct Scenario {
     system: ActorSystem,
     memory: Store,
-    observer: Observer,
+    /// The ends an observer is told.
+    ends: Events,
 }
 
 impl Scenario {
     async fn new() -> Self {
         let memory = Store::memory();
-        let observer = Observer::default();
-        let system = ActorSystem::builder(memory.clone()).host(LaggardActor).install(observer.clone()).build();
+        let ends = Events::default();
+        let observer = OnEnd::new({
+            let ends = ends.clone();
+            move |_, end| ends.push(outcome_text(end.outcome()))
+        });
+        let system = ActorSystem::builder(memory.clone()).host(LaggardActor).observe(observer).build();
         system.create(&slow(), &LaggardState::default()).await.unwrap();
-        Self { system, memory, observer }
+        Self { system, memory, ends }
     }
 
     async fn accepted(&self, message: LaggardMsg) -> Message {
@@ -165,7 +138,7 @@ async fn a_handler_that_returned_after_overrunning_ends_failed_timeout_and_is_no
     let m = s.accepted(LaggardMsg::Stuck { millis: BLOCK, how: Ending::Return }).await;
     s.run().await;
     s.assert_timed_out_for_good(&m).await;
-    assert_eq!(s.observer.seen.all(), vec!["TurnTimeoutException:willRetry=false:timeout"]);
+    assert_eq!(s.ends.all(), vec!["Failed(error=timeout)"]);
     assert_eq!(state_of::<LaggardState>(&s.memory, &addr(&slow())).await, LaggardState::default(), "effects discarded");
 }
 
@@ -178,7 +151,7 @@ async fn a_permanent_failure_after_overrunning_is_not_retried() {
     let vetoed = s.accepted(LaggardMsg::Stuck { millis: BLOCK, how: Ending::Fail }).await;
     s.run().await;
     s.assert_timed_out_for_good(&vetoed).await;
-    assert_eq!(s.observer.seen.all(), vec!["TurnTimeoutException:willRetry=false:timeout"; 2]);
+    assert_eq!(s.ends.all(), vec!["Failed(error=timeout)"; 2]);
 }
 
 #[tokio::test]
@@ -187,9 +160,7 @@ async fn a_handler_that_failed_after_overrunning_is_a_timeout_retried_per_policy
     let m = s.accepted(LaggardMsg::Stuck { millis: BLOCK, how: Ending::Throw }).await;
     s.run().await;
     s.assert_retried_after_timeout(&m).await;
-    assert_eq!(s.observer.seen.all(), vec!["TurnTimeoutException:willRetry=true:timeout"]);
-    // The handler's own error is kept as the timeout's cause.
-    assert_eq!(*s.observer.causes.lock().unwrap(), vec![Some("broke after blocking".to_owned())]);
+    assert_eq!(s.ends.all(), vec!["Rescheduled(delivery=After(delay=60s), error=timeout)"]);
 }
 
 #[tokio::test]
@@ -198,5 +169,5 @@ async fn a_run_cut_off_at_max_turn_is_a_timeout_retried_per_policy() {
     let m = s.accepted(LaggardMsg::Doze { millis: 10_000 }).await;
     s.run().await;
     s.assert_retried_after_timeout(&m).await;
-    assert_eq!(s.observer.seen.all(), vec!["TurnTimeoutException:willRetry=true:timeout"]);
+    assert_eq!(s.ends.all(), vec!["Rescheduled(delivery=After(delay=60s), error=timeout)"]);
 }

@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::address::{ActorAddress, TypeName};
+use crate::observer::{ObservedTurn, TurnEnd, TurnObserver, TurnStart};
 use crate::prelude::*;
 use crate::runtime::{ActorSystemBuilder, NodeConfig, SendResult};
 use crate::store::{
@@ -18,7 +19,7 @@ use crate::store::{
 };
 use crate::testing::{TokioClock, default_start};
 use crate::time::{self, Timestamp};
-use crate::turn::{HandlerFailure, TurnError};
+use crate::turn::TurnError;
 use crate::watch::{Watch, WatchTarget};
 use crate::{ActorSystem, Turn};
 use async_trait::async_trait;
@@ -338,7 +339,7 @@ pub async fn state_of<S: serde::de::DeserializeOwned>(store: &dyn Backend, addre
     serde_json::from_value(record.state).unwrap()
 }
 
-// ---- hooks ----
+// ---- observers ----
 
 /// A shared event log.
 #[derive(Debug, Clone, Default)]
@@ -383,12 +384,88 @@ pub fn outcome_text(outcome: &TurnOutcome) -> String {
     }
 }
 
-/// The kind of a handler failure: `TurnTimeoutException`, `Error`, `Panic`.
-pub fn failure_kind(failure: &HandlerFailure) -> &'static str {
-    match failure {
-        HandlerFailure::Timeout { .. } => "TurnTimeoutException",
-        HandlerFailure::Error(_) => "Error",
-        HandlerFailure::Panic(_) => "Panic",
+/// An observer that writes what it is told into its events, each with its label and a colon in front when it has one:
+/// `start:<message type>:<attempt>` when a turn starts, `end:<outcome>:sent=<count>` when it ends (see
+/// [`outcome_text`]), and `dropped:<message type>` when its value is dropped without an end.
+#[derive(Clone, Default)]
+pub struct Recorder {
+    pub events: Events,
+    pub label: &'static str,
+}
+
+impl Recorder {
+    pub fn new(events: &Events) -> Self {
+        Self { events: events.clone(), label: "" }
+    }
+
+    pub fn labelled(label: &'static str, events: &Events) -> Self {
+        Self { events: events.clone(), label }
+    }
+
+    fn push(events: &Events, label: &str, event: String) {
+        events.push(if label.is_empty() { event } else { format!("{label}:{event}") });
+    }
+}
+
+impl TurnObserver for Recorder {
+    fn turn_started(&self, turn: &mut TurnStart<'_>) -> Box<dyn ObservedTurn> {
+        let message = turn.message();
+        Self::push(&self.events, self.label, format!("start:{}:{}", message.message_type, message.attempt));
+        Box::new(RecordedTurn {
+            events: self.events.clone(),
+            label: self.label,
+            message_type: message.message_type.clone(),
+            ended: false,
+        })
+    }
+}
+
+struct RecordedTurn {
+    events: Events,
+    label: &'static str,
+    message_type: String,
+    ended: bool,
+}
+
+impl ObservedTurn for RecordedTurn {
+    fn turn_ended(mut self: Box<Self>, end: &TurnEnd<'_>) {
+        self.ended = true;
+        let event = format!("end:{}:sent={}", outcome_text(end.outcome()), end.sent().len());
+        Recorder::push(&self.events, self.label, event);
+    }
+}
+
+impl Drop for RecordedTurn {
+    fn drop(&mut self) {
+        if !self.ended {
+            Recorder::push(&self.events, self.label, format!("dropped:{}", self.message_type));
+        }
+    }
+}
+
+/// What [`OnEnd`] calls at every end.
+type EndFn = Arc<dyn Fn(&Message, &TurnEnd<'_>) + Send + Sync>;
+
+/// An observer that hands every end to its function, with the message as it was claimed.
+pub struct OnEnd(EndFn);
+
+impl OnEnd {
+    pub fn new(f: impl Fn(&Message, &TurnEnd<'_>) + Send + Sync + 'static) -> Self {
+        Self(Arc::new(f))
+    }
+}
+
+impl TurnObserver for OnEnd {
+    fn turn_started(&self, turn: &mut TurnStart<'_>) -> Box<dyn ObservedTurn> {
+        Box::new(EndingTurn(self.0.clone(), turn.message().clone()))
+    }
+}
+
+struct EndingTurn(EndFn, Message);
+
+impl ObservedTurn for EndingTurn {
+    fn turn_ended(self: Box<Self>, end: &TurnEnd<'_>) {
+        (self.0)(&self.1, end)
     }
 }
 

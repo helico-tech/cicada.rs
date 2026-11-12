@@ -159,7 +159,7 @@ pub struct Message {
     pub deliver_at: Timestamp,
     /// Optional opaque string, passed through unchanged.
     pub correlation_id: Option<String>,
-    /// String map for plugins (e.g. a trace id), passed through unchanged.
+    /// String map for observers and senders (e.g. a trace id), passed through unchanged.
     pub headers: BTreeMap<String, String>,
     /// Store-assigned, strictly increasing across the whole store; the tie-breaker for equal `deliver_at`. A
     /// rescheduled message gets a new one.
@@ -265,7 +265,7 @@ pub struct OutgoingMessage {
     pub delivery: Delivery,
     /// Opaque string passed through.
     pub correlation_id: Option<String>,
-    /// Plugin headers passed through.
+    /// Headers passed through, such as those an observer adds.
     pub headers: BTreeMap<String, String>,
     /// The sender's retry policy.
     pub retry: Option<RetryPolicy>,

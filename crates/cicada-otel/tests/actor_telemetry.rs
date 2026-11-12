@@ -1,4 +1,4 @@
-//! The telemetry plugin, against the SDK's in-memory exporters.
+//! The telemetry observer, against the SDK's in-memory exporters.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -90,11 +90,11 @@ impl Telemetry {
         let metrics = InMemoryMetricExporter::default();
         let meter_provider =
             SdkMeterProvider::builder().with_reader(PeriodicReader::builder(metrics.clone()).build()).build();
-        let plugin =
+        let telemetry =
             ActorTelemetry::new(&tracer_provider, &meter_provider).with_propagator(TraceContextPropagator::new());
         let seen = Seen::default();
         let actor = TracedActor { seen: seen.clone() };
-        let test = TestActors::builder().with(move |node| node.host(actor).install(plugin)).build().await.unwrap();
+        let test = TestActors::builder().with(move |node| node.host(actor).observe(telemetry)).build().await.unwrap();
         Self { test, spans, metrics, meter_provider, seen }
     }
 
@@ -166,6 +166,19 @@ async fn one_consumer_span_per_turn_with_the_messaging_attributes() {
     assert_eq!(span.parent_span_id, SpanId::INVALID, "a message without trace headers starts a trace");
 }
 
+/// Scenario: A span per turn.
+#[tokio::test(start_paused = true)]
+async fn a_span_per_turn_and_the_span_of_a_sent_message_is_a_child_of_the_turn_that_sent_it() {
+    let t = Telemetry::new().await;
+    t.test.create(&traced(), &TracedState::default()).await;
+    t.test.send(&traced(), TracedMsg::Hop { left: 1 }).await;
+    t.test.run_until_idle().await;
+    let spans = t.spans();
+    assert_eq!(spans.len(), 2);
+    assert_eq!(str_attr(&spans[0], "cicada.outcome").as_deref(), Some("done"));
+    assert_eq!(spans[1].parent_span_id, spans[0].span_context.span_id());
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_chain_of_turns_is_one_trace_without_the_handlers_passing_headers() {
     let t = Telemetry::new().await;
@@ -194,8 +207,15 @@ async fn the_parent_comes_from_the_message_headers_also_when_the_name_is_not_low
     assert_eq!(spans[0].parent_span_id.to_string(), "b7ad6b7169203331");
 }
 
+/// The `exception` event of `span`, with its message.
+fn exception_message(span: &SpanData) -> Option<String> {
+    let exception = span.events.iter().find(|e| e.name == "exception")?;
+    attribute(&exception.attributes, "exception.message").map(|v| v.as_str().into_owned())
+}
+
+/// Scenario: A handler fails and is retried (of the telemetry).
 #[tokio::test(start_paused = true)]
-async fn a_failed_turn_has_error_status_a_retried_one_records_the_exception() {
+async fn a_failed_turn_has_error_status_and_a_retried_and_a_failed_one_record_the_exception() {
     let t = Telemetry::new().await;
     t.test.create(&traced(), &TracedState::default()).await;
     let retry = RetryPolicy::new(2, Backoff::fixed(Duration::from_secs(1)).unwrap()).unwrap();
@@ -206,19 +226,19 @@ async fn a_failed_turn_has_error_status_a_retried_one_records_the_exception() {
     let (first, second) = (&spans[0], &spans[1]);
     assert_eq!(str_attr(first, "cicada.outcome").as_deref(), Some("rescheduled"));
     assert_eq!(first.status, Status::Unset);
-    let exception = first.events.iter().find(|e| e.name == "exception").expect("an exception event");
-    assert!(attribute(&exception.attributes, "exception.message").unwrap().as_str().contains("boom"));
+    assert_eq!(exception_message(first).as_deref(), Some("boom"), "the error of the reschedule");
     assert_eq!(str_attr(second, "cicada.outcome").as_deref(), Some("failed"));
     let Status::Error { description } = &second.status else { panic!("not an error: {:?}", second.status) };
     assert!(description.contains("boom"), "{description}");
+    assert_eq!(exception_message(second).as_deref(), Some("boom"), "the error of the failure");
     assert_eq!(long_attr(second, "cicada.failures"), Some(1));
 }
 
+/// Scenario: State that cannot be decoded (of the telemetry).
 #[tokio::test(start_paused = true)]
-async fn a_turn_that_fails_before_on_claim_still_gets_a_span() {
+async fn a_turn_whose_state_cannot_be_decoded_gets_a_span_from_its_claim_with_the_error_and_an_exception() {
     let t = Telemetry::new().await;
-    // State that does not decode, planted by a node that does not host the type (it checks only for null): on_claim
-    // never runs, on_outcome does.
+    // State that does not decode, planted by a node that does not host the type (it checks only for null).
     let address = cicada::ActorAddress::parse("traced/bad").unwrap();
     let planter = ActorSystem::builder(t.test.store().clone()).build();
     assert_eq!(planter.create_actor(&address, json!("not a state")).await.unwrap(), CreateActorResult::Created);
@@ -228,6 +248,9 @@ async fn a_turn_that_fails_before_on_claim_still_gets_a_span() {
     assert_eq!(spans.len(), 1);
     assert_eq!(str_attr(&spans[0], "cicada.outcome").as_deref(), Some("failed"));
     assert!(matches!(spans[0].status, Status::Error { .. }));
+    let exception = exception_message(&spans[0]).expect("an exception event");
+    assert!(exception.starts_with("State cannot be decoded"), "{exception}");
+    assert_eq!(long_attr(&spans[0], "cicada.attempt"), Some(1), "the span starts at the claim");
 }
 
 #[tokio::test(start_paused = true)]
@@ -245,7 +268,7 @@ async fn turn_duration_and_lag_are_recorded_per_type_message_type_and_outcome() 
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_sent_message_carries_the_turns_traceparent_only_with_the_plugin() {
+async fn a_sent_message_carries_the_turns_traceparent_only_with_the_observer() {
     let t = Telemetry::new().await;
     t.test.create(&traced(), &TracedState::default()).await;
     t.test.send(&traced(), TracedMsg::Hop { left: 1 }).await;
@@ -317,11 +340,11 @@ async fn the_span_of_a_turn_that_never_commits_is_marked_abandoned() {
     let spans = InMemorySpanExporter::default();
     let tracer_provider = SdkTracerProvider::builder().with_simple_exporter(spans.clone()).build();
     let meter_provider = SdkMeterProvider::builder().build();
-    let plugin = ActorTelemetry::new(&tracer_provider, &meter_provider);
+    let telemetry = ActorTelemetry::new(&tracer_provider, &meter_provider);
     let store = cicada::Store::memory();
     let system = ActorSystem::builder(store)
         .host(Stuck)
-        .install(plugin)
+        .observe(telemetry)
         .config(cicada::runtime::NodeConfig {
             poll_interval: std::time::Duration::from_millis(10),
             shutdown_cancel_timeout: std::time::Duration::from_secs(2),
@@ -346,4 +369,29 @@ async fn the_span_of_a_turn_that_never_commits_is_marked_abandoned() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     };
     assert_eq!(str_attr(&span, "cicada.outcome").as_deref(), Some("abandoned"));
+    assert_eq!(span.status, Status::Unset);
+}
+
+/// Scenario: A turn that commits nothing.
+#[tokio::test(start_paused = true)]
+async fn the_span_of_a_turn_that_loses_its_lease_ends_abandoned_without_an_error() {
+    let spans = InMemorySpanExporter::default();
+    let tracer_provider = SdkTracerProvider::builder().with_simple_exporter(spans.clone()).build();
+    let meter_provider = SdkMeterProvider::builder().build();
+    let telemetry = ActorTelemetry::new(&tracer_provider, &meter_provider);
+    let test = TestActors::builder().with(move |node| node.host(Stuck).observe(telemetry)).build().await.unwrap();
+    let stuck = StuckRef { id: "s".into() };
+    test.create(&stuck, &cicada::NoState {}).await;
+    test.send(&stuck, StuckMsg::Wait).await;
+    let system = test.system().clone();
+    let runner = tokio::spawn(async move { system.run_due_turns(1).await.unwrap() });
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    // Deleting the actor ends the lease of its turn: the next renewal finds it lost.
+    test.system().delete_actor(&stuck.address().unwrap()).await.unwrap();
+    assert_eq!(runner.await.unwrap(), 1);
+    let spans = spans.get_finished_spans().unwrap();
+    assert_eq!(spans.len(), 1);
+    assert_eq!(str_attr(&spans[0], "cicada.outcome").as_deref(), Some("abandoned"));
+    assert_eq!(spans[0].status, Status::Unset);
+    assert_eq!(exception_message(&spans[0]), None);
 }

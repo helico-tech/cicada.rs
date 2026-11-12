@@ -10,7 +10,6 @@ use std::time::Duration;
 
 use super::common::*;
 use crate::address::{ActorAddress, TypeName};
-use crate::plugin::{ClaimContext, HookResult, Plugin};
 use crate::prelude::*;
 use crate::runtime::{CreateActorResult, NodeConfig, OpError};
 use crate::store::{
@@ -64,6 +63,8 @@ fn t() -> Tally {
 enum TallyMsg {
     /// Counts a run and changes state.
     Bump,
+    /// Waits `secs` in a sleep that a cancellation ends, then counts a run.
+    Linger { secs: u64 },
     /// Counts a run, creates `child` and sends it a `Bump`.
     Hatch { child: String },
     /// Counts a run and sends `Bump` to `target`, which does not exist: the commit is rejected.
@@ -97,6 +98,10 @@ impl<const MAX_TURN_MILLIS: u64> Actor for TallyActor<MAX_TURN_MILLIS> {
             TallyMsg::Bump => {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 turn.state_mut().runs += 1;
+            }
+            TallyMsg::Linger { secs } => {
+                tokio::time::sleep(Duration::from_secs(secs)).await;
+                self.0.fetch_add(1, Ordering::SeqCst);
             }
             TallyMsg::Hatch { child } => {
                 self.0.fetch_add(1, Ordering::SeqCst);
@@ -151,10 +156,6 @@ impl Fixture {
 
     fn node(&self, store: impl IntoStore, name: &str) -> ActorSystem {
         node(store, name).host(self.tally_type()).build()
-    }
-
-    fn node_with(&self, store: impl IntoStore, name: &str, plugin: impl Plugin) -> ActorSystem {
-        node(store, name).host(self.tally_type()).install(plugin).build()
     }
 }
 
@@ -222,21 +223,6 @@ async fn a_store_read_that_fails_briefly_after_the_handler_returned_is_retried()
     assert_eq!(tally_state(&memory, &tally("child")).await.runs, 1);
 }
 
-/// Sleeps in `on_claim`.
-struct Stalling;
-
-#[async_trait]
-impl Plugin for Stalling {
-    fn name(&self) -> &str {
-        "Stalling"
-    }
-
-    async fn on_claim(&self, _ctx: &ClaimContext<'_>) -> HookResult {
-        tokio::time::sleep(Duration::from_secs(10)).await;
-        Ok(())
-    }
-}
-
 /// Reading the TypeRegistry takes 10 s while `stall` is set (a slow database).
 #[derive(Default)]
 struct StallingRegistry {
@@ -285,9 +271,9 @@ async fn cancelling_a_turn_after_its_handler_returned_does_not_release_the_lease
 async fn cancelling_a_turn_before_its_handler_returned_releases_the_lease() {
     let f = Fixture::new();
     let memory = virtual_store();
-    let system = f.node_with(memory.clone(), "n1", Stalling);
+    let system = f.node(memory.clone(), "n1");
     system.create(&t(), &TallyState::default()).await.unwrap();
-    let m = accepted_by(&system, TallyMsg::Bump).await;
+    let m = accepted_by(&system, TallyMsg::Linger { secs: 10 }).await;
     let job = tokio::spawn({
         let system = system.clone();
         async move { system.run_due_turns(1).await }
@@ -299,7 +285,7 @@ async fn cancelling_a_turn_before_its_handler_returned_releases_the_lease() {
     assert_eq!(f.runs(), 0);
     assert!(
         matches!(memory.status(&m.id).await.unwrap(), Some(MessageStatus::Pending(_))),
-        "released at once: no handler ran"
+        "released at once: the handler had not ended"
     );
 }
 
