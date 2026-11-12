@@ -339,6 +339,7 @@ mod tests {
             id: s(id),
             attempt,
             failures: 0,
+            lost_claims: 0,
             retry: None,
             deliver_at: default_start(),
             at: default_start(),
@@ -349,18 +350,21 @@ mod tests {
     fn retried(event: Event, failures_so_far: u32, max_attempts: u32) -> Event {
         let policy = RetryPolicy::new(max_attempts, Backoff::fixed(Duration::from_secs(1)).unwrap()).unwrap();
         match event {
-            Event::Claimed { node, address, epoch, id, attempt, deliver_at, at, head, .. } => Event::Claimed {
-                node,
-                address,
-                epoch,
-                id,
-                attempt,
-                failures: failures_so_far,
-                retry: Some(policy),
-                deliver_at,
-                at,
-                head,
-            },
+            Event::Claimed { node, address, epoch, id, attempt, lost_claims, deliver_at, at, head, .. } => {
+                Event::Claimed {
+                    node,
+                    address,
+                    epoch,
+                    id,
+                    attempt,
+                    lost_claims,
+                    failures: failures_so_far,
+                    retry: Some(policy),
+                    deliver_at,
+                    at,
+                    head,
+                }
+            }
             other => other,
         }
     }
@@ -503,20 +507,31 @@ mod tests {
     #[test]
     fn g5_refuses_a_claim_before_the_delivery_time() {
         let early = match claimed(1, "m", 1) {
-            Event::Claimed { node, address, epoch, id, attempt, failures, retry, deliver_at, head, .. } => {
-                Event::Claimed {
-                    node,
-                    address,
-                    epoch,
-                    id,
-                    attempt,
-                    failures,
-                    retry,
-                    deliver_at: deliver_at + chrono::Duration::seconds(1),
-                    at: deliver_at,
-                    head,
-                }
-            }
+            Event::Claimed {
+                node,
+                address,
+                epoch,
+                id,
+                attempt,
+                failures,
+                lost_claims,
+                retry,
+                deliver_at,
+                head,
+                ..
+            } => Event::Claimed {
+                node,
+                address,
+                epoch,
+                id,
+                attempt,
+                failures,
+                lost_claims,
+                retry,
+                deliver_at: deliver_at + chrono::Duration::seconds(1),
+                at: deliver_at,
+                head,
+            },
             other => other,
         };
         failure(g5(&[early]), "G5", "before it was due");
@@ -525,20 +540,21 @@ mod tests {
     #[test]
     fn g5_refuses_a_claim_that_is_not_the_head() {
         let log = [match claimed(1, "m", 1) {
-            Event::Claimed { node, address, epoch, id, attempt, failures, retry, deliver_at, at, .. } => {
-                Event::Claimed {
-                    node,
-                    address,
-                    epoch,
-                    id,
-                    attempt,
-                    failures,
-                    retry,
-                    deliver_at,
-                    at,
-                    head: Some(s("older")),
-                }
-            }
+            Event::Claimed {
+                node, address, epoch, id, attempt, failures, lost_claims, retry, deliver_at, at, ..
+            } => Event::Claimed {
+                node,
+                address,
+                epoch,
+                id,
+                attempt,
+                failures,
+                lost_claims,
+                retry,
+                deliver_at,
+                at,
+                head: Some(s("older")),
+            },
             other => other,
         }];
         failure(g5(&log), "G5", "the head is");

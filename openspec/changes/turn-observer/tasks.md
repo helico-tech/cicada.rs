@@ -82,6 +82,18 @@ a commit carries the control effects of its turn.
       checks that the message has `lostClaims` 0 afterwards. Verify: the suite compiles (`cargo test -p cicada-e2e
       --no-run`); it runs in 6.2. If no test stops a node that way, say so in the report and add none.
 
+- [x] 3.4 A claim that arrives too late [15, validation]: a node that receives a claim after its local lease deadline
+      calls no observer, loads and runs nothing, and releases it; a release that fails is logged as such. Verify: the
+      test for the scenario "A claim that arrives too late", which fails without the change; the conformance case of
+      a release with an old epoch that leaves the newer lease as it is, on all three stores; the scenario of the
+      simulation with a claim delayed by 8 s passes unchanged.
+- [x] 3.5 A claim with less than a heartbeat left [15, validation, second round]: the keeper makes its first renewal at
+      once when the lease it starts with has less than one heartbeat left. Verify: the test for the scenario "A claim
+      that arrives shortly before its deadline", which fails without the change.
+- [x] 3.6 Outages in the simulation [12, validation]: on top of its other faults, a generated scenario has up to three
+      outages, each failing many renewals in a row on every node. Verify: the test of the fixed 200 scenarios asserts
+      at least 10 that reach the limit and at least 10 that run a message after a lost claim below it.
+
 ## 4. HTTP, client, command line and terminal UI
 
 - [x] 4.1 `lostClaims` in the view of a message [9]: `MessageView` and its mapping, read as 0 when it is missing;

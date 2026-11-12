@@ -287,6 +287,11 @@ the notifications are written by a commit (`watches`, decision 8).
   learn the new end: a message may end `failed` with the error of the limit only when its log shows at least two
   claims of it that another claim replaced without a commit or a release, and no handler ran for the claim that
   failed it. Every other check holds as it is.
+- Validation: the simulation also generates outages on top of its other faults. From its `nth` renewal on, every
+  node fails many renewals in a row (15 to 59), so that turns lose their lease and messages lose claims. Without them
+  too few generated scenarios reached the limit (1 of the fixed 200). The test of the fixed 200 asserts at least 10
+  that reach the limit, and at least 10 in which a handler runs for a message with a lost claim below the limit. A
+  limit drawn per scenario (1 or 2) was not chosen: it changes the spec of `randomized-testing`.
 
 ### 13. The sample service
 
@@ -326,6 +331,19 @@ observed.
   the message. The default limit of 5 must not fail messages because the store was slow.
 - Leave the lease to run out, as before this decision. The node drops the turn at once because its deadline passed,
   and the claim that replaces the lease counts it as lost.
+
+Validation, second round: a claim with less than a heartbeat of its lease left is renewed at once. A claim that
+arrives shortly before its deadline still starts its handler, and the first renewal comes one heartbeat later; the
+deadline passes first, the turn is dropped and the claim counts as lost. So the keeper makes its first renewal at
+once when the lease it starts with has less than one heartbeat left, and otherwise waits one heartbeat, as before.
+Nothing else in the keeper changes: a renewal that fails is retried as before, and a lease that the store reports lost
+ends the turn as before.
+
+- **Renew at once (chosen).** It saves the turn.
+- Give back every claim with less than a heartbeat left. Simple, but it throws away claims that a renewal saves, and
+  under a slow store a short handler that finishes in time today would never run.
+- Leave it, and give back only a claim that arrives after its deadline. The default limit would still fail healthy
+  messages under a slow store.
 
 ## Risks / Trade-offs
 

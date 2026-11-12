@@ -2,7 +2,9 @@
 //! no commit, release, cancel or purge cleared, adds 1 to the `lost_claims` of the message of that lease. Nothing else
 //! changes it, and an outcome keeps it.
 
-use crate::store::{Backend, CancelResult, Delivery, Message, MessageId, MessageStatus, OutcomeStatus, TurnOutcome};
+use crate::store::{
+    Backend, CancelResult, Delivery, Message, MessageId, MessageStatus, OutcomeStatus, RenewResult, TurnOutcome,
+};
 use serde_json::json;
 
 use crate::tests::conformance::env::*;
@@ -72,6 +74,43 @@ pub async fn lost_claims_a_release_is_not_counted_nor_a_release_with_an_old_epoc
         let third = t.claim_one().await;
         assert_eq!((third.message.attempt, third.message.lost_claims), (3, 0));
         assert_eq!(waiting(&*store, &m.id).await.lost_claims, 0);
+    })
+    .await
+}
+
+/// lost claims - a release with an epoch that is no longer current leaves the newer lease as it is: its holder still runs,
+/// nobody else can claim, and it renews and commits (design decision 15 gives back late claims on this)
+pub async fn lost_claims_a_release_with_an_old_epoch_leaves_the_newer_lease_as_it_is<B: FixtureFactory>(backend: &B) {
+    store_test(backend, async |t| {
+        let store = t.store();
+        let a = t.new_actor(&TYPE, json!({})).await;
+        let m = t.send(&a).await;
+        let late = t.claim_one().await;
+        t.expire_lease().await;
+        let current = t.claim_one_long_node(&NODE_B).await;
+        assert_eq!((current.message.attempt, current.message.lost_claims), (2, 1));
+        store.release(&a, late.epoch).await.unwrap(); // the late node gives its claim back: its epoch is not current
+        match store.status(&m.id).await.unwrap() {
+            Some(MessageStatus::Running { node, .. }) => assert_eq!(node, *NODE_B, "the newer lease stands"),
+            other => panic!("the newer lease is gone: {other:?}"),
+        }
+        assert!(t.claim().await.is_empty(), "nobody else can claim the instance");
+        assert!(store.running_turn(&a).await.unwrap().is_some());
+        assert_matches!(store.renew(&a, current.epoch, LONG_LEASE).await.unwrap(), RenewResult::Renewed(_));
+        t.commit_ok(done(&current)).await;
+        let outcome = outcome_record(&*store, &m.id).await.expect("an outcome");
+        assert_eq!(
+            (outcome.status, outcome.envelope.attempt, outcome.envelope.lost_claims),
+            (OutcomeStatus::Done, 2, 1)
+        );
+        // Releases of earlier epochs while a later claim holds the lease change nothing either.
+        let next = t.send(&a).await;
+        let c = t.claim_one_long().await;
+        store.release(&a, late.epoch).await.unwrap();
+        store.release(&a, current.epoch).await.unwrap();
+        assert!(t.claim().await.is_empty(), "still held");
+        t.commit_ok(done(&c)).await;
+        assert_eq!(outcome_record(&*store, &next.id).await.expect("done").envelope.lost_claims, 0);
     })
     .await
 }

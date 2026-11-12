@@ -346,6 +346,7 @@ worth an alert:
 | warn | `Handler of … is still running … it does not yield` | Blocking code in a handler; move it to `spawn_blocking`. |
 | error | `Turn of … panicked …`, `A turn task failed` | A panic outside the handler (the runtime): a bug. A handler's own panic is an ordinary handler failure (`panic: …`). |
 | warn | `Message … has N lost claims, as many as the claim limit allows: it fails without running` | A message reached the [claim limit](#the-claim-limit): its turns kept dying, or ran beside one that did. |
+| warn | `Claim of … for … arrived after its lease deadline; it is given back` | The store answered a claim so late that its lease had run out: nothing ran, and the claim is not lost. Often it means a slow or overloaded store. When it adds that giving it back failed, the lease runs out and the claim counts as lost. |
 | warn | `An observer panicked when the turn started; it is left out of this turn: …`, `… when the turn ended: …`, `… when its turn was dropped: …` | An observer has a bug; the turn went on as if that observer were not there. |
 | warn | `A header of an observer is left out of the sends of the turn: …`, `The header '…' of an observer is left out of a send to …` | A header that the limits of a message refuse, or that did not fit into a message of 64 headers; a trace breaks at that message. |
 | warn | `Retention sweep failed`, `Store wake-ups ended; falling back to polling` | The node keeps working, slower or with more stored data. |

@@ -131,13 +131,19 @@ succeeded: the start and then the end.
 
 A node that receives a claim after the local deadline of its lease (the time the claim was sent, plus the lease TTL,
 less the safety margin) SHALL NOT call an observer, load or run anything for it, and SHALL release it, so that the
-claim is not lost.
+claim is not lost. A node that receives a claim with less than one heartbeat of its lease left SHALL renew the lease
+at once, not one heartbeat later.
 
 #### Scenario: A claim that arrives too late
 
 - **WHEN** the answer of a claim arrives after its lease deadline
 - **THEN** the node releases the claim, its handler does not run, and the next claim of the message has the same
   `lostClaims` as before
+
+#### Scenario: A claim that arrives shortly before its deadline
+
+- **WHEN** the answer of a claim arrives with less than a heartbeat of its lease left
+- **THEN** the node renews the lease at once, the handler runs to the end and commits, and no claim is lost
 
 ### Requirement: The limit of lost claims is set on the node
 

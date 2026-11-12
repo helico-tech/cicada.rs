@@ -1,14 +1,14 @@
 //! Node simulation: several real nodes under injected store faults, checked against G1, G3, G4 (with the notifications
 //! of a watcher), G5, G6, S8 and the claim limit.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use crate::store::OutcomeStatus;
 use crate::tests::fuzz::checks::check_all;
 use crate::tests::fuzz::faults::{Ending, Event, Fault, HandlerEnd, Method, Rule};
-use crate::tests::fuzz::simulation::{Action, PlannedFault, Scenario, Step, run, scenario, simulate};
+use crate::tests::fuzz::simulation::{Action, CLAIM_LIMIT, PlannedFault, Scenario, Step, run, scenario, simulate};
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;
 use proptest::test_runner::{Config, TestCaseError, TestRunner};
@@ -19,6 +19,22 @@ const DEFAULT_CASES: u32 = 2_000;
 fn config() -> Config {
     let cases = std::env::var("PROPTEST_CASES").ok().and_then(|c| c.parse().ok()).unwrap_or(DEFAULT_CASES);
     Config { cases, ..Config::default() }
+}
+
+/// True when a handler of the run started for a claim of a message with lost claims below the limit.
+fn runs_after_a_lost_claim(events: &[Event]) -> bool {
+    let claims: BTreeSet<(&str, u32)> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Claimed { id, attempt, lost_claims, .. } if (1..CLAIM_LIMIT).contains(lost_claims) => {
+                Some((id.as_str(), *attempt))
+            }
+            _ => None,
+        })
+        .collect();
+    events
+        .iter()
+        .any(|e| matches!(e, Event::HandlerStart { id, attempt, .. } if claims.contains(&(id.as_str(), *attempt))))
 }
 
 /// True when a message of the run failed at the claim limit.
@@ -337,10 +353,16 @@ fn generated_scenarios_reach_deep_states() {
         mark("removed", &|e| matches!(e, Event::Removed { .. }));
         mark("told of a failure", &|e| matches!(e, Event::Notified { kind, .. } if kind == "Failed"));
         mark("told of a removal", &|e| matches!(e, Event::Notified { kind, .. } if kind == "Stopped"));
+        mark("bursts", &|e| matches!(e, Event::Fault { fault: Fault::Burst(_), .. }));
         *marks.entry("removed by another actor").or_insert(0) += removed_by_another(&events);
         *marks.entry("scenarios at the claim limit").or_insert(0) += usize::from(reaches_the_limit(&events));
+        *marks.entry("scenarios that run a message after a lost claim").or_insert(0) +=
+            usize::from(runs_after_a_lost_claim(&events));
     }
-    eprintln!("of 200 generated scenarios, {} reach the claim limit", marks["scenarios at the claim limit"]);
+    eprintln!(
+        "of 200 generated scenarios, {} reach the claim limit and {} run a message after a lost claim below it",
+        marks["scenarios at the claim limit"], marks["scenarios that run a message after a lost claim"]
+    );
     let floors = [
         ("accepted", 1200),
         ("done", 900),
@@ -360,7 +382,9 @@ fn generated_scenarios_reach_deep_states() {
         ("told of a failure", 150),
         ("told of a removal", 120),
         ("removed by another actor", 20),
-        ("scenarios at the claim limit", 1),
+        ("scenarios at the claim limit", 10),
+        ("scenarios that run a message after a lost claim", 10),
+        ("bursts", 30),
     ];
     for (name, floor) in floors {
         assert!(marks[name] >= floor, "{name} reached only {} times, wanted {floor}: {marks:#?}", marks[name]);

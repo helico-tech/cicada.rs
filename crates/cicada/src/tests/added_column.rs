@@ -173,18 +173,78 @@ const STORE_SOURCES: [(&str, &str); 8] = [
     ("postgres/config.rs", include_str!("../store/postgres/config.rs")),
 ];
 
-/// The places in `source` where a statement reads with `*`: in the select list of a `SELECT` (up to its `FROM` or the
-/// end of the string literal, `count(*)` aside) or after `RETURNING`. Comment lines do not count.
-fn star_reads(source: &str) -> Vec<String> {
+/// The texts of the statements in `source`, comment lines left out: each string literal outside a `concat!`, and the
+/// literals of each `concat!` joined into one text, with a space for each other part of it (such as
+/// `message_columns!()`), so that a statement built from pieces is read as a whole.
+fn statement_texts(source: &str) -> Vec<String> {
     let source: String =
         source.lines().filter(|l| !l.trim_start().starts_with("//")).map(|l| format!("{l}\n")).collect();
+    let chars: Vec<char> = source.chars().collect();
+    let (mut texts, mut group, mut depth, mut i) = (Vec::new(), None::<(String, usize)>, 0usize, 0);
+    while i < chars.len() {
+        let rest: String = chars[i..chars.len().min(i + 8)].iter().collect();
+        if rest.starts_with("concat!(") && group.is_none() {
+            depth += 1;
+            group = Some((String::new(), depth));
+            i += 8;
+            continue;
+        }
+        let raw = rest.starts_with('r') && rest[1..].trim_start_matches('#').starts_with('"');
+        if chars[i] == '"' || raw {
+            // A string literal: plain with escapes, or raw with as many `#` as it opens with.
+            let hashes = if raw { chars[i + 1..].iter().take_while(|c| **c == '#').count() } else { 0 };
+            let mut j = i + if raw { 2 + hashes } else { 1 };
+            let mut literal = String::new();
+            loop {
+                if !raw && chars[j] == '\\' {
+                    literal.push(chars[j + 1]);
+                    j += 2;
+                } else if chars[j] == '"' && chars[j + 1..].iter().take(hashes).all(|c| *c == '#') {
+                    break;
+                } else {
+                    literal.push(chars[j]);
+                    j += 1;
+                }
+            }
+            match &mut group {
+                Some((text, _)) => text.push_str(&literal),
+                None => texts.push(literal),
+            }
+            i = j + 1 + hashes;
+            continue;
+        }
+        match chars[i] {
+            '(' => depth += 1,
+            ')' => {
+                if group.as_ref().is_some_and(|(_, opened)| *opened == depth) {
+                    texts.push(group.take().expect("open").0);
+                }
+                depth = depth.saturating_sub(1);
+            }
+            c if !c.is_whitespace() && c != ',' => {
+                if let Some((text, _)) = &mut group {
+                    text.push(' ');
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    texts
+}
+
+/// The places in `source` where a statement reads with `*`: in the select list of a `SELECT` (up to its `FROM` or the
+/// end of the statement, `count(*)` aside) or after `RETURNING`.
+fn star_reads(source: &str) -> Vec<String> {
     let mut found = Vec::new();
-    for keyword in ["SELECT", "RETURNING"] {
-        for (start, _) in source.match_indices(keyword) {
-            let rest = &source[start..];
-            let end = [rest.find("FROM"), rest.find('"')].into_iter().flatten().min().unwrap_or(rest.len());
-            if rest[..end].replace("count(*)", "").contains('*') {
-                found.push(rest[..end].lines().next().unwrap_or_default().to_owned());
+    for text in statement_texts(source) {
+        for keyword in ["SELECT", "RETURNING"] {
+            for (start, _) in text.match_indices(keyword) {
+                let rest = &text[start..];
+                let list = &rest[..rest.find("FROM").unwrap_or(rest.len())];
+                if list.replace("count(*)", "").contains('*') {
+                    found.push(list.split_whitespace().collect::<Vec<_>>().join(" "));
+                }
             }
         }
     }
@@ -198,10 +258,19 @@ fn no_statement_of_a_sql_store_reads_with_a_star() {
     for (file, source) in STORE_SOURCES {
         assert_eq!(star_reads(source), Vec::<String>::new(), "{file}");
     }
+    // The scan reads the statements: those of the stores, each `concat!` as one text.
+    for (file, source) in [STORE_SOURCES[0], STORE_SOURCES[4]] {
+        let texts = statement_texts(source);
+        let reads = texts.iter().filter(|t| t.contains("SELECT") && t.contains("FROM messages")).count();
+        assert!(reads >= 10, "{file}: {reads} reads of messages");
+        assert!(texts.iter().any(|t| t.starts_with("SELECT") && t.contains("  FROM messages WHERE id = ")), "{file}");
+    }
     let samples = [
         r#"query("SELECT * FROM messages WHERE id = ?")"#,
         r#"query("SELECT m.*, a.lease_owner FROM messages m")"#,
         "concat!(\"SELECT *\",\n \" FROM outcomes\")",
+        r#"query(concat!("SELECT ", "*", " FROM messages WHERE id = $1"))"#,
+        r##"query(concat!(r#"SELECT "#, message_columns!("m."), ", *", visible!(2, 3), " FROM messages m"))"##,
         r#"query("UPDATE actors SET paused = $1 RETURNING *")"#,
     ];
     for sample in samples {
@@ -209,5 +278,6 @@ fn no_statement_of_a_sql_store_reads_with_a_star() {
     }
     assert!(star_reads(r#"query("SELECT count(*) AS n FROM actors").execute(&mut *tx.c)"#).is_empty());
     assert!(star_reads(r#"concat!("SELECT ", message_columns!(), " FROM messages")"#).is_empty());
+    assert!(star_reads(r#"query("SELECT pg_notify($1, $2)").execute(&mut *tx.c); let w = "*";"#).is_empty());
     assert!(star_reads("/// a statement (`SELECT … FOR UPDATE`) reads `*`\n").is_empty(), "a comment");
 }

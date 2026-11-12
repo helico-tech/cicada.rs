@@ -270,6 +270,7 @@ macro_rules! for_each_case {
             lost_claims_a_lease_that_runs_out_and_is_replaced_counts_one_lost_claim,
             lost_claims_a_lease_that_ran_out_and_is_not_replaced_counts_nothing,
             lost_claims_a_release_is_not_counted_nor_a_release_with_an_old_epoch_or_a_second_one,
+            lost_claims_a_release_with_an_old_epoch_leaves_the_newer_lease_as_it_is,
             lost_claims_a_committed_retry_is_not_counted_and_the_count_stays_over_it,
             lost_claims_a_commit_after_the_lease_ran_out_succeeds_and_counts_nothing,
             lost_claims_the_message_of_a_lost_claim_is_cancelled_or_purged_and_the_next_one_has_none,

@@ -343,9 +343,11 @@ async fn a_commit_of_the_limit_that_does_not_succeed_tells_nobody_and_the_next_c
     assert_eq!(events.all(), vec!["start:Run:5", "end:Failed(error=claim limit: 4 lost claims):sent=0"]);
 }
 
-/// The answers of claims arrive after the lease they asked for has run out while `slow` is set: a store that answers
-/// late.
-struct SlowClaims(AtomicBool);
+/// The answer of a claim arrives `delay` after the claim was made while `slow` is set: a store that answers late.
+struct SlowClaims {
+    slow: AtomicBool,
+    delay: Duration,
+}
 
 #[async_trait]
 impl Faults for SlowClaims {
@@ -358,8 +360,8 @@ impl Faults for SlowClaims {
         limit: usize,
     ) -> StoreResult<Vec<crate::store::Claim>> {
         let claims = inner.claim_due(types, node, ttl, limit).await?;
-        if self.0.load(Ordering::SeqCst) {
-            sleep(ttl + Duration::from_secs(1)).await;
+        if self.slow.load(Ordering::SeqCst) {
+            sleep(self.delay).await;
         }
         Ok(claims)
     }
@@ -371,7 +373,8 @@ async fn a_claim_that_arrives_after_its_lease_deadline_is_given_back_and_counts_
     let memory = virtual_store();
     let events = Events::default();
     let runs = Arc::new(AtomicU32::new(0));
-    let slow = Faulty::new(memory.clone(), SlowClaims(AtomicBool::new(true)));
+    let slow =
+        Faulty::new(memory.clone(), SlowClaims { slow: AtomicBool::new(true), delay: LEASE + Duration::from_secs(1) });
     let system = node(slow.clone(), "n1").host(JobActor(runs.clone())).observe(Recorder::new(&events)).build();
     system.create(&job("j"), &JobState::default()).await.unwrap();
     let m = accepted(system.send(&job("j"), run()).await.unwrap());
@@ -387,11 +390,29 @@ async fn a_claim_that_arrives_after_its_lease_deadline_is_given_back_and_counts_
     };
     assert_eq!((pending.attempt, pending.lost_claims), (2, 1), "the abandoned claim is lost, the late one not");
 
-    slow.faults.0.store(false, Ordering::SeqCst);
+    slow.faults.slow.store(false, Ordering::SeqCst);
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1);
     let outcome = outcome_of(&memory, &m.id).await.expect("an outcome");
     assert_eq!(outcome.status, OutcomeStatus::Done);
     assert_eq!((outcome.envelope.attempt, outcome.envelope.lost_claims), (3, 1), "the same lost claims as before");
+    assert_eq!(runs.load(Ordering::SeqCst), 1);
+}
+
+/// Scenario: A claim that arrives shortly before its deadline. The answer comes 25 s after the claim, with 4 s of the
+/// local deadline left (lease 30 s, less a margin of 1 s) and less than the heartbeat of 10 s: the keeper renews at
+/// once, and the handler of 15 s runs to the end and commits.
+#[tokio::test(start_paused = true)]
+async fn a_claim_that_arrives_with_less_than_a_heartbeat_left_is_renewed_at_once_and_its_turn_commits() {
+    let memory = virtual_store();
+    let runs = Arc::new(AtomicU32::new(0));
+    let slow = Faulty::new(memory.clone(), SlowClaims { slow: AtomicBool::new(true), delay: Duration::from_secs(25) });
+    let system = node(slow.clone(), "n1").host(JobActor(runs.clone())).build();
+    system.create(&job("j"), &JobState::default()).await.unwrap();
+    let m = accepted(system.send(&job("j"), JobMsg::Run { secs: 15, fail_runs: 0 }).await.unwrap());
+    assert_eq!(system.run_due_turns(1).await.unwrap(), 1);
+    let outcome = outcome_of(&memory, &m.id).await.expect("the turn committed");
+    assert_eq!(outcome.status, OutcomeStatus::Done);
+    assert_eq!((outcome.envelope.attempt, outcome.envelope.lost_claims), (1, 0), "no claim is lost");
     assert_eq!(runs.load(Ordering::SeqCst), 1);
 }
 

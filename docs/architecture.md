@@ -189,7 +189,8 @@ then commits while the keeper keeps renewing. Cancellation is tokio's: an aborte
 a handler blocked in synchronous code keeps its turn until it returns. Blocking work belongs in `spawn_blocking`. A cancelled turn (node stop after the grace period,
 or a dropped `run_due_turns` future) aborts *work*, waits for it to stop, and releases its lease only if the handler
 had not ended. A claim the store answers after its caller is gone is released, never left to expire, and so is a
-claim whose answer arrives after its local lease deadline: nothing runs under it, and it is not a lost claim.
+claim whose answer arrives after its local lease deadline: nothing runs under it, and it is not a lost claim. A claim
+that arrives with less than one heartbeat of its lease left runs, and its keeper renews it at once.
 
 An admin cancel of a running turn is recorded by the store as the turn's epoch and read by the keeper at its next renewal, so it takes up to one heartbeat. The keeper aborts *work*, waits for it to stop and commits `cancelled` itself, fenced by its epoch, so G1 and G3 hold and no other node runs the message meanwhile. Whether the cancel request or the handler's end came first is decided once, by one atomic flag: a request that lost is ignored and the turn commits normally. No request can reach a later turn, because each stores the epoch it was for. A lease ends only with its turn or with its actor: no operation takes it away from a running turn (ADR 0015), and a delete, from outside or by a turn, ends it with the actor, whose message ends `purged` and is never handled again (ADR 0024).
 

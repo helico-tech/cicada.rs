@@ -697,8 +697,26 @@ fn planned_fault() -> impl Strategy<Value = PlannedFault> {
         .prop_map(|(node, method, nth, fault)| PlannedFault { node, rule: Rule { method, nth, fault } })
 }
 
-/// A whole scenario.
+/// A store that the nodes cannot reach for a while: on every node, many renewals in a row fail, from its `nth`
+/// renewal on, so that turns lose their lease and messages lose claims, up to the claim limit.
+fn outage() -> impl Strategy<Value = Vec<PlannedFault>> {
+    (nth(), 15u32..60).prop_map(|(nth, calls)| {
+        let rule = Rule { method: Method::Renew, nth, fault: Fault::Burst(calls) };
+        (0..3).map(|node| PlannedFault { node, rule }).collect()
+    })
+}
+
+/// A whole scenario: faults of any kind, and some outages on top.
 pub fn scenario() -> impl Strategy<Value = Scenario> {
-    (1usize..=3, proptest::collection::vec(step(), 1..30), proptest::collection::vec(planned_fault(), 0..10))
-        .prop_map(|(nodes, steps, faults)| Scenario { nodes, steps, faults })
+    (
+        1usize..=3,
+        proptest::collection::vec(step(), 1..30),
+        proptest::collection::vec(planned_fault(), 0..10),
+        proptest::collection::vec(outage(), 0..4),
+    )
+        .prop_map(|(nodes, steps, faults, outages)| Scenario {
+            nodes,
+            steps,
+            faults: faults.into_iter().chain(outages.into_iter().flatten()).collect(),
+        })
 }

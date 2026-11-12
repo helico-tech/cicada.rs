@@ -65,7 +65,8 @@ over HTTP gains `lostClaims`. Nodes of 0.10.0 and 0.11.0 must not share a databa
   the claim limit fails is told to the observers after its commit, start and end together.
 - A node gives back a claim whose answer arrives after the local deadline of its lease, without calling an observer
   or running anything, so that a slow store costs the message no lost claim. Before, the turn was dropped at once and
-  its lease left to run out.
+  its lease left to run out. A claim that arrives with less than one heartbeat of its lease left is renewed at once
+  instead of one heartbeat later, after its deadline.
 - ADR 0025 records the claim limit, what counts as a lost claim and why a release does not.
 
 ### Telemetry
@@ -100,7 +101,8 @@ over HTTP gains `lostClaims`. Nodes of 0.10.0 and 0.11.0 must not share a databa
 - New conformance cases for the count of lost claims on all three stores, upgrade tests from schema version 5, the
   randomised comparison of the stores compares the count (155 of 400 generated lists reach such a claim), and the
   simulation of nodes under faults runs its nodes with a claim limit of 2 and checks that a message fails at the limit
-  only after two lost claims and without a handler run for that claim.
+  only after two lost claims and without a handler run for that claim. Its scenarios have outages, renewals that fail
+  in a row on every node, so that they reach the limit.
 
 ## 0.10.0 — 2026-11-12
 

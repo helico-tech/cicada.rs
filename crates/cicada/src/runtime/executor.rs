@@ -28,7 +28,8 @@
 //!
 //! **A claim that arrives too late.** A claim whose answer comes after its local lease deadline starts nothing (no
 //! observer, no load, no handler) and is released: left to run out, it would be a lost claim of its message, and a
-//! slow store is not a fault of the message.
+//! slow store is not a fault of the message. A claim that arrives with less than one heartbeat of its lease left runs,
+//! and the keeper renews it at once instead of one heartbeat later, after its deadline.
 //!
 //! **Cancel.** An operator's cancel request ([`crate::store::Backend::request_cancel`]) reaches the keeper through its next
 //! renewal. If the handler has not ended, the keeper aborts *work* and the turn commits `cancelled`, without effects
@@ -245,12 +246,19 @@ impl TurnExecutor {
         // left to run out, so that a slow store costs the message no lost claim. A release with an epoch that is no
         // longer current changes nothing.
         if Instant::now() >= self.deadline(claim_sent) {
-            tracing::warn!(
-                "Claim of {} for {} arrived after its lease deadline; it is given back",
-                claim.actor,
-                claim.message.id
-            );
-            let _ = self.store.release(&claim.actor, claim.epoch).await;
+            match self.store.release(&claim.actor, claim.epoch).await {
+                Ok(()) => tracing::warn!(
+                    "Claim of {} for {} arrived after its lease deadline; it is given back",
+                    claim.actor,
+                    claim.message.id
+                ),
+                Err(e) => tracing::warn!(
+                    "Claim of {} for {} arrived after its lease deadline, and giving it back failed; the lease will run \
+                     out, and the next claim counts it as lost: {e}",
+                    claim.actor,
+                    claim.message.id
+                ),
+            }
             return;
         }
         if self.max_lost_claims.is_some_and(|max| claim.message.lost_claims >= max) {
@@ -379,7 +387,9 @@ impl TurnExecutor {
             }
         };
         let heartbeat = async {
-            let mut wait = self.lease.heartbeat;
+            // A claim that arrived with less than a heartbeat of its lease left is renewed at once: one heartbeat later
+            // its deadline would have passed, and the claim would be lost (design decision 15).
+            let mut wait = if guard.remaining() < self.lease.heartbeat { Duration::ZERO } else { self.lease.heartbeat };
             loop {
                 sleep(wait).await;
                 let sent = Instant::now();

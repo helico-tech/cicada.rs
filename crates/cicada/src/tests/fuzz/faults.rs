@@ -124,6 +124,9 @@ pub enum Fault {
     Delay(Duration),
     /// This call and every later one from this node fail: a crash, or a network split that does not heal.
     Dead,
+    /// This call and the next calls of the same method fail, this many in all, with nothing applied: a store that is
+    /// unreachable for a while. Renewals that fail in a row lose a lease, so that messages lose claims.
+    Burst(u32),
 }
 
 /// Applies `fault` to the `nth` call (from 0) of `method`.
@@ -212,6 +215,8 @@ pub enum Event {
         attempt: u32,
         /// The message's failed runs that were retried so far.
         failures: u32,
+        /// The message's lost claims, this claim's count included.
+        lost_claims: u32,
         /// The message's retry policy.
         retry: Option<RetryPolicy>,
         /// The message's delivery time.
@@ -348,6 +353,8 @@ impl Log {
 struct Plan {
     rules: Vec<Rule>,
     calls: BTreeMap<Method, u32>,
+    /// The calls of a method that a [`Fault::Burst`] still fails.
+    bursts: BTreeMap<Method, u32>,
     armed: bool,
     dead: bool,
 }
@@ -397,8 +404,17 @@ impl FaultStore {
         let count = plan.calls.entry(method).or_default();
         let nth = *count;
         *count += 1;
-        let fault = plan.rules.iter().find(|r| r.method == method && r.nth == nth)?.fault;
+        let fault = match plan.bursts.get_mut(&method).filter(|left| **left > 0) {
+            Some(left) => {
+                *left -= 1;
+                Fault::Before
+            }
+            None => plan.rules.iter().find(|r| r.method == method && r.nth == nth)?.fault,
+        };
         plan.dead = fault == Fault::Dead;
+        if let Fault::Burst(calls) = fault {
+            plan.bursts.insert(method, calls.saturating_sub(1));
+        }
         drop(plan);
         self.log.push(Event::Fault { node: self.node.clone(), method, nth, fault });
         Some(fault)
@@ -412,7 +428,9 @@ impl FaultStore {
     {
         match self.fault_of(method) {
             None => call().await,
-            Some(Fault::Before | Fault::Dead) => Err(StoreError::unavailable("injected: not applied")),
+            Some(Fault::Before | Fault::Dead | Fault::Burst(_)) => {
+                Err(StoreError::unavailable("injected: not applied"))
+            }
             Some(Fault::After) => {
                 let _ = call().await;
                 Err(StoreError::unavailable("injected: applied, acknowledgement lost"))
@@ -510,6 +528,7 @@ impl FaultStore {
                 id: claim.message.id.to_string(),
                 attempt: claim.message.attempt,
                 failures: claim.message.failures,
+                lost_claims: claim.message.lost_claims,
                 retry: claim.message.retry.clone(),
                 deliver_at: claim.message.deliver_at,
                 at: claim.claimed_at,
@@ -939,6 +958,27 @@ mod tests {
         store.enqueue(outgoing("a")).await.unwrap();
         assert_eq!(started.elapsed(), Duration::from_secs(7));
         assert!(memory.status(&MessageId::new("a").unwrap()).await.unwrap().is_some());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn burst_fails_this_call_and_the_next_ones_of_the_method_until_its_count_is_used_up() {
+        let (memory, store, log) = layer(vec![rule(Method::Enqueue, 1, Fault::Burst(3))]).await;
+        assert!(matches!(store.enqueue(outgoing("a")).await.unwrap(), EnqueueResult::Enqueued(_)));
+        store.now().await.expect("another method is not affected");
+        for id in ["b", "c", "d"] {
+            assert_eq!(store.enqueue(outgoing(id)).await.unwrap_err().to_string(), NOT_APPLIED, "{id}");
+            assert_eq!(memory.status(&MessageId::new(id).unwrap()).await.unwrap(), None, "{id}");
+        }
+        assert!(matches!(store.enqueue(outgoing("e")).await.unwrap(), EnqueueResult::Enqueued(_)));
+        let faults: Vec<(u32, Fault)> = log
+            .events()
+            .into_iter()
+            .filter_map(|e| match e {
+                Event::Fault { nth, fault, .. } => Some((nth, fault)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(faults, [(1, Fault::Burst(3)), (2, Fault::Before), (3, Fault::Before)]);
     }
 
     #[tokio::test(start_paused = true)]
