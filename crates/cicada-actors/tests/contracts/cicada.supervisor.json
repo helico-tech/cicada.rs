@@ -1,0 +1,328 @@
+{
+  "messages": {
+    "Escalate": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Fails, so that the watchers of the supervisor are told: as a handler fails when `restart` is set (a supervisor\nabove restarts this one), else refused for good. Sent by the supervisor to itself when it gives up on a child.",
+      "properties": {
+        "actor": {
+          "description": "The child it gave up on.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": "string"
+        },
+        "error": {
+          "description": "The error the message fails with.",
+          "type": "string"
+        },
+        "restart": {
+          "description": "True after too many restarts; false for a child that cannot be started or read.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "actor",
+        "error",
+        "restart"
+      ],
+      "title": "Escalate",
+      "type": "object"
+    },
+    "Failed": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The notification of a message to a watched actor that ended `failed`: what the failed message was and why it\nfailed. Its type name is `Failed`. A watcher's message family declares it as `Failed(cicada::Failed)`.\n\nIts schema is part of every watcher's contract; a snapshot test pins it.",
+      "properties": {
+        "actor": {
+          "description": "The actor the failed message was for: the actor of the event, not the target of the watch.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": "string"
+        },
+        "attempts": {
+          "description": "How often the message was claimed: its `attempt`.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cause": {
+          "description": "What failed: the handler, the node, the message, the state, the commit, or the claim limit.",
+          "oneOf": [
+            {
+              "const": "handler",
+              "description": "The handler returned an error or panicked, and no retry is left; or it returned a new state that cannot be\nstored.",
+              "type": "string"
+            },
+            {
+              "const": "node",
+              "description": "The node or the store failed around the turn: a read the node needed failed, also one the handler passed on,\nor a panic outside the handler.",
+              "type": "string"
+            },
+            {
+              "const": "refused",
+              "description": "The handler refused the message for good (a permanent failure).",
+              "type": "string"
+            },
+            {
+              "const": "timeout",
+              "description": "The turn ran past its maximum duration.",
+              "type": "string"
+            },
+            {
+              "const": "message",
+              "description": "The message cannot be decoded.",
+              "type": "string"
+            },
+            {
+              "const": "state",
+              "description": "The state or the address of the actor cannot be read by its type.",
+              "type": "string"
+            },
+            {
+              "const": "commit",
+              "description": "The effects of the turn were refused, or its commit was rejected or refused.",
+              "type": "string"
+            },
+            {
+              "const": "claim-limit",
+              "description": "The message reached the claim limit (ADR 0025).",
+              "type": "string"
+            }
+          ]
+        },
+        "correlationId": {
+          "description": "The correlation id of the failed message; null when it has none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "error": {
+          "description": "The error it failed with.",
+          "type": "string"
+        },
+        "from": {
+          "description": "The sender of the failed message; null for a message sent from outside a turn.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "messageId": {
+          "description": "The id of the failed message.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "messageType": {
+          "description": "The type name of the failed message.",
+          "type": "string"
+        },
+        "payload": {
+          "description": "The payload of the failed message."
+        }
+      },
+      "required": [
+        "actor",
+        "messageId",
+        "messageType",
+        "payload",
+        "error",
+        "attempts",
+        "cause"
+      ],
+      "title": "Failed",
+      "type": "object"
+    },
+    "Restarted": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Ends the restart of a child whose id the supervisor kept. Sent by the supervisor to itself in a restart.",
+      "properties": {
+        "actor": {
+          "description": "The child.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "actor"
+      ],
+      "title": "Restarted",
+      "type": "object"
+    },
+    "Start": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Starts every child of the state that is not running, each in a turn of its own; ends a restart that is under\nway of every child that is running, and takes back one that was given up. A second `Start` starts what the\nfirst could not.",
+      "properties": {},
+      "title": "Start",
+      "type": "object"
+    },
+    "StartChild": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Starts one child: in one commit, creates it as a child of the supervisor with the state of its entry, watches\nit, sends it its start message and marks it as running. Sent by the supervisor to itself, with a retry policy.",
+      "properties": {
+        "actor": {
+          "description": "The child.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "actor"
+      ],
+      "title": "StartChild",
+      "type": "object"
+    },
+    "Stopped": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The notification of a watched actor that went away. Its type name is `Stopped`. A watcher's message family declares\nit as `Stopped(cicada::Stopped)`. Only a watch on the actor's own address tells of it.\n\nIts schema is part of every watcher's contract; a snapshot test pins it.",
+      "properties": {
+        "actor": {
+          "description": "The actor that went away.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": "string"
+        },
+        "by": {
+          "description": "The actor whose turn removed it: the actor itself when it stopped, the stopping ancestor when it went with it;\nnull for a removal from outside a turn.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cause": {
+          "description": "Why it went away.",
+          "oneOf": [
+            {
+              "const": "stopped",
+              "description": "Its own turn stopped it.",
+              "type": "string"
+            },
+            {
+              "const": "deleted",
+              "description": "It was deleted from outside a turn.",
+              "type": "string"
+            },
+            {
+              "const": "parent",
+              "description": "It was removed with its parent (ADR 0019).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "required": [
+        "actor",
+        "cause"
+      ],
+      "title": "Stopped",
+      "type": "object"
+    }
+  },
+  "state": {
+    "$defs": {
+      "ChildEntry": {
+        "description": "What a supervisor holds for one child: how to start it, and what it knows of it.",
+        "properties": {
+          "givenUp": {
+            "default": false,
+            "description": "True when the supervisor gave up on the child.",
+            "type": "boolean"
+          },
+          "lastError": {
+            "description": "Why it gave up.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "restartId": {
+            "description": "The id of the `Restarted` of a restart that is under way; while it is set, failures of the child are ignored.",
+            "minLength": 1,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "restarts": {
+            "default": [],
+            "description": "The times of its restarts (store time) within the window of the limit.",
+            "items": {
+              "format": "date-time",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "running": {
+            "default": false,
+            "description": "True while a life of the child that the supervisor started is running.",
+            "type": "boolean"
+          },
+          "start": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/StoredMessage"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The message sent to the child after each start and restart; none when absent."
+          },
+          "state": {
+            "description": "The state the child is created with, at its start and at each restart."
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "type": "object"
+      },
+      "StoredMessage": {
+        "description": "A message an actor keeps to send later (ADR 0028): its type name and its JSON payload, as a store holds a message.\nThe actor that keeps it knows where it goes, so it holds no address. Build one with `StoredMessage::for_ref`.",
+        "properties": {
+          "payload": {
+            "description": "The payload: the fields of the variant, without the type tag."
+          },
+          "type": {
+            "description": "The type name: the variant of the family.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "payload"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "The state of a [`Supervisor`]: its children, fixed for its life, and its restart limit. Build it with\n`SupervisorState::new`.",
+    "properties": {
+      "children": {
+        "additionalProperties": false,
+        "default": {},
+        "description": "The children by address.",
+        "patternProperties": {
+          "^[a-z][a-z0-9._-]*/[^/]+$": {
+            "$ref": "#/$defs/ChildEntry"
+          }
+        },
+        "type": "object"
+      },
+      "maxRestarts": {
+        "default": 3,
+        "description": "The most restarts of one child within [`Self::within_seconds`]; one failure more gives the child up.",
+        "format": "uint32",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "withinSeconds": {
+        "default": 60,
+        "description": "The window of the restart limit, in seconds.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": "integer"
+      }
+    },
+    "title": "SupervisorState",
+    "type": "object"
+  },
+  "type": "cicada.supervisor"
+}

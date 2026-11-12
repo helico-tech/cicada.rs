@@ -83,28 +83,8 @@ fn default_within_seconds() -> u64 {
     DEFAULT_WITHIN_SECONDS
 }
 
-/// The state of a [`Supervisor`]: its children, fixed for its life, and its restart limit.
-///
-/// ```
-/// # use cicada::prelude::*;
-/// # use serde::{Deserialize, Serialize};
-/// # #[derive(Debug, Clone, Serialize, Deserialize)]
-/// # struct Worker { id: String }
-/// # impl ActorRef for Worker { const TYPE: &'static str = "worker"; type Message = WorkerMsg; }
-/// # #[derive(Debug, Serialize, Deserialize, JsonSchema)]
-/// # #[serde(tag = "type")]
-/// # enum WorkerMsg { Begin { batch: u32 } }
-/// # #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
-/// # struct WorkerState { done: u32 }
-/// use cicada_actors::{Child, SupervisorState};
-///
-/// let worker = Worker { id: "w1".into() };
-/// let state = SupervisorState::new()
-///     .child(Child::new(&worker, &WorkerState::default())?.start(WorkerMsg::Begin { batch: 7 })?)
-///     .restart_limit(5, std::time::Duration::from_secs(120));
-/// assert_eq!(state.children.len(), 1);
-/// # Ok::<(), cicada_actors::EncodeError>(())
-/// ```
+/// The state of a [`Supervisor`]: its children, fixed for its life, and its restart limit. Build it with
+/// `SupervisorState::new`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SupervisorState {
@@ -121,6 +101,27 @@ pub struct SupervisorState {
 
 impl SupervisorState {
     /// A state without children and with the default limit: 3 restarts within 60 seconds.
+    ///
+    /// ```
+    /// # use cicada::prelude::*;
+    /// # use serde::{Deserialize, Serialize};
+    /// # #[derive(Debug, Clone, Serialize, Deserialize)]
+    /// # struct Worker { id: String }
+    /// # impl ActorRef for Worker { const TYPE: &'static str = "worker"; type Message = WorkerMsg; }
+    /// # #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+    /// # #[serde(tag = "type")]
+    /// # enum WorkerMsg { Begin { batch: u32 } }
+    /// # #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+    /// # struct WorkerState { done: u32 }
+    /// use cicada_actors::{Child, SupervisorState};
+    ///
+    /// let worker = Worker { id: "w1".into() };
+    /// let state = SupervisorState::new()
+    ///     .child(Child::new(&worker, &WorkerState::default())?.start(WorkerMsg::Begin { batch: 7 })?)
+    ///     .restart_limit(5, std::time::Duration::from_secs(120));
+    /// assert_eq!(state.children.len(), 1);
+    /// # Ok::<(), cicada_actors::EncodeError>(())
+    /// ```
     pub fn new() -> Self {
         Self { children: BTreeMap::new(), max_restarts: DEFAULT_MAX_RESTARTS, within_seconds: DEFAULT_WITHIN_SECONDS }
     }

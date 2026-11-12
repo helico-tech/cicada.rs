@@ -39,7 +39,7 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
       itself, with the retry policy, the correlation id of the publish, only to a current subscriber), the watch on
       itself and the drop of a subscriber that is not there, and a refused send failing for good. Verify: tests for
       every scenario of `topic`, on virtual time.
-- [ ] 2.5 The wire formats [10]: contract snapshots of the three types (`assert_contracts_match`), and sample checks
+- [x] 2.5 The wire formats [10]: contract snapshots of the three types (`assert_contracts_match`), and sample checks
       (`assert_message_sample`, `assert_state_sample`) for what the helpers and the actors write. Verify: the
       snapshots are committed and pass; the sample checks pass.
 
