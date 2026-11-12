@@ -69,7 +69,8 @@ created.
 ### Requirement: A repeated send is answered before it is checked
 
 A send that names the id of a message that is pending, or whose outcome is still shown, SHALL NOT be checked
-against the schema. It SHALL get the answer of a repeated send.
+against the schema. It SHALL get the answer of a repeated send. The limits of an envelope and of a value SHALL be
+checked before the repeated id, so a repeat beyond a limit SHALL be refused with `400`.
 
 #### Scenario: A repeat of a message that does not match
 
@@ -86,6 +87,12 @@ against the schema. It SHALL get the answer of a repeated send.
 
 - **WHEN** a client sends a payload that does not match, without an id
 - **THEN** the answer is `422 invalid-payload`
+
+#### Scenario: A repeat beyond the depth limit
+
+- **WHEN** a `Failed` notification of a payload 64 levels deep, which the store writes 65 levels deep, is pending, and
+  a client sends a message with its id, its type and its payload
+- **THEN** the answer is `400`, not the answer of a repeated send
 
 ### Requirement: A hosting node also decodes, with the same answer
 
@@ -149,7 +156,7 @@ that do not match, nor to the number of shapes the value could have at each leve
 #### Scenario: A request with many mismatches
 
 - **WHEN** a client sends a payload, or creates an actor with a state, of about 1 MiB with 520,000 values of the wrong
-  kind, also inside an optional part, or 100 levels of a type that refers to itself with wrong values below the first
+  kind, also inside an optional part, or 64 levels of a type that refers to itself with wrong values below the first
   level, to a node that hosts the type and to one that does not
 - **THEN** the answer is `422` within seconds, and the check adds at most a few times the size of the body to what the
   request holds
@@ -188,25 +195,6 @@ validator cannot use SHALL NOT be enforced: the request goes on as if it matched
 - **WHEN** the registered state schema of a type cannot be compiled, and a client creates an actor of that type
 - **THEN** the actor is created
 
-### Requirement: A value at the deepest level the parser allows is checked like any other
-
-A payload or a state as deep as the JSON parser of a request body lets through SHALL be checked against its schema like
-any other value, on every node, and the check SHALL NOT end the process.
-
-#### Scenario: A value at the deepest level the parser allows
-
-- **WHEN** a client sends a payload of 126 levels of a type that refers to itself, in a body of 127 levels, once
-  matching the schema and once with mismatches at every level, to a node that hosts the type and to one that does not
-- **THEN** both nodes answer `202` for the first, which is then handled, and `422 invalid-payload` with the same detail
-  for the second, and a body one level deeper is `400`
-
-#### Scenario: A type with several schema steps between its levels
-
-- **WHEN** a client sends a payload and creates an actor with a state of a type that has six newtypes between two of
-  its levels, at 24 levels and at the deepest level the parser allows, once matching and once not, to a node that
-  hosts the type and to one that does not, both served on a runtime whose threads have their default stack
-- **THEN** both nodes answer `202` and `201` for the matching ones and `422` for the others, and the process goes on
-
 ### Requirement: A host can test its samples against the schema and the decoder
 
 `cicada-axum` SHALL offer `assert_message_sample` and `assert_state_sample`. Each SHALL fail unless its sample
@@ -238,3 +226,22 @@ schema with the first place that does not match, and SHALL fail when the schema 
 
 - **WHEN** a test gives a sample of a type whose schema the validator cannot compile
 - **THEN** it fails, and says so
+
+### Requirement: A value at the depth limit is checked like any other
+
+A payload or a state 64 levels deep SHALL be checked against its schema like any other value, on every node, and the
+check SHALL NOT end the process. The schema check SHALL keep running on a thread of its own, as a schema can be deep.
+
+#### Scenario: A value at the depth limit
+
+- **WHEN** a client sends a payload of 64 levels of a type that refers to itself, once matching the schema and once
+  with mismatches at every level, to a node that hosts the type and to one that does not
+- **THEN** both nodes answer `202` for the first, which is then handled, and `422 invalid-payload` with the same detail
+  for the second, and a payload one level deeper is `400`
+
+#### Scenario: A type with several schema steps between its levels
+
+- **WHEN** a client sends a payload and creates an actor with a state of a type that has six newtypes between two of
+  its levels, at 24 levels and at 64, once matching and once not, to a node that hosts the type and to one that does
+  not, both served on a runtime whose threads have their default stack
+- **THEN** both nodes answer `202` and `201` for the matching ones and `422` for the others, and the process goes on

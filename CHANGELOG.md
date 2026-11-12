@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.16.0 — unreleased
+## 0.16.0 — 2026-11-12
 
 A breaking release: a payload and a state hold at most 64 levels of arrays and objects (ADR 0029). A deeper value
 could end a node: it overflowed a stack on its way through the check, the store or the decoder, and the process ended

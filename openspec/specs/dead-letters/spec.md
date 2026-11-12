@@ -39,6 +39,29 @@ watches that are set for it.
 - **WHEN** a message ends `failed`
 - **THEN** the letter is recorded by the next turn of the dead-letters actor, with no timer in between
 
+### Requirement: A payload too deep for a letter is not kept
+
+A `Failed` whose payload is too deep to be kept in a letter (deeper than 61 levels) SHALL fail the turn that would
+record it, with the cause `handler`, and no letter SHALL be recorded for it.
+
+#### Scenario: The deepest payload a letter keeps
+
+- **WHEN** a message with a payload 61 levels deep ends `failed`
+- **THEN** the dead-letters actor holds a letter for it with that payload
+
+#### Scenario: A payload too deep for a letter
+
+- **WHEN** a message with a payload 62 levels deep ends `failed`
+- **THEN** the turn of the dead-letters actor that gets its `Failed` ends `failed` with the cause `handler` and an
+  error that names the depth, no letter is recorded, and the next failure is recorded as before
+
+#### Scenario: A deep letter from before
+
+- **WHEN** a dead-letters actor holds a letter, written before this release, whose payload is 70 levels deep, and a
+  message ends `failed`
+- **THEN** the turn of the dead-letters actor fails and records no letter; after an operator sends `Discard` for the
+  deep letter, which ends `done`, the next failure is recorded
+
 ### Requirement: Dead letters keep at most their capacity
 
 The dead-letters actor SHALL keep at most its capacity of letters, 1,000 unless the type is built with another, and
