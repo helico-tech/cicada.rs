@@ -241,13 +241,17 @@ impl<R: ActorRef> fmt::Debug for Child<R> {
 
 /// The supervisor type. It has no settings: the children and the limit are in the state of each supervisor.
 ///
+/// **A restart empties the mailbox of the child**: its pending messages end `purged`, no dead letter is written for
+/// them, and the child gets the state of its entry again. So supervise actors whose state can be built again from the
+/// state of their entry; dead letters and a topic are not such actors, a supervisor is.
+///
 /// A supervisor restarts a child whose message failed through a fault of the child: the cause `handler` or `timeout`.
 /// A restart is one commit: it deletes the child, creates it again with the state of its entry, sends it its start
-/// message and sends itself `Restarted`. **A restart empties the mailbox of the child** (its messages end `purged`)
-/// and gives it the state of its entry again. One incident is one restart: until its `Restarted` comes, failures of
-/// the child are ignored. A child whose state or address its type cannot read (the cause `state`) is given up and
-/// shown; every other cause restarts nothing. After too many restarts it gives up on the child and fails a message of
-/// its own, so that a supervisor above it restarts it.
+/// message and sends itself `Restarted`. One incident is one restart: until its `Restarted` comes, failures of the
+/// child are ignored. A child whose state or address its type cannot read (the cause `state`) is given up and shown;
+/// every other cause restarts nothing. After too many restarts it gives up on the child and fails a message of its
+/// own, so that a supervisor above it restarts it. Host it on nodes that host the types of its children: they check an
+/// entry when the child starts.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SupervisorActor;
 

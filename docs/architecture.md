@@ -34,11 +34,12 @@ state plus a mailbox; it occupies memory only while one message is being handled
 | Ref | An actor's address: a type name and a key, `type/key`. A typed ref in code (`ActorRef`); its address text (`sync/acme`) on the wire, in state and in messages. The key is one name (ADR 0021): serde writes the ref as one string (a struct with one string field, or a type written as a string itself), or the ref is a unit struct or a struct that declares no field to serde, a singleton with the key `_`; a ref that writes a unit and reads a string has no address. A name is any non-empty text; in the key it keeps `A-Z a-z 0-9 . _ ~ -` and `:` and percent-encodes the rest, so a `:` separates nothing. |
 | Watch | A stored pair of a target and a watcher (ADR 0018, ADR 0023). The target is one actor (`type/key`), the types under a prefix that ends at a dot (`billing` matches `billing` and `billing.invoices`, not `billings`), or every type (`*`); it need not exist, and the watch survives its delete and re-create. A turn sets and removes the watches of its own actor (`turn.watch`, `turn.unwatch`); `ActorSystem`, HTTP and the command line do so from outside. |
 | Watcher | The actor a watch tells. Its message family declares `Failed(cicada::Failed)` and `Stopped(cicada::Stopped)`, or a watch of it is refused. Removing a watcher removes its watches; the watches on it as a target stay. |
-| Notification | A `Failed` or a `Stopped` that the store writes into a watcher's mailbox in the transaction of the event, one per watcher and actor, marked (`notification`) and named after the event's id (`<event>.0`, `<event>.1`, …). A `Failed` says that a message to a watched actor ended `failed`; a `Stopped`, that an actor watched by its address went away (`stopped`, `deleted`, or with its `parent`). A notification that fails tells nobody. |
+| Notification | A `Failed` or a `Stopped` that the store writes into a watcher's mailbox in the transaction of the event, one per watcher and actor, marked (`notification`) and named after the event's id (`<event>.0`, `<event>.1`, …). A `Failed` says that a message to a watched actor ended `failed`, and its cause; a `Stopped`, that an actor watched by its address went away (`stopped`, `deleted`, or with its `parent`). A notification that fails tells nobody. |
+| Cause | Why a message ended `failed`, in its `Failed` (ADR 0028): `handler`, `node`, `refused`, `timeout`, `message`, `state`, `commit` or `claim-limit`. The node decides it where it decides that the message fails and hands it to the store with the commit (see Turn semantics). A closed set: a new value changes the contract of every type that watches. An observer is not told it. |
 | Message | A typed envelope addressed to one instance, with a delivery time. The store counts its claims (`attempt`), its failed runs that were retried (`failures`) and its lost claims (`lostClaims`). |
 | Mailbox | An instance's pending messages, ordered by delivery time. |
 | Turn | One handling of one message: claim, load, run handler, commit. |
-| Effects | What a handler produces: new state, sends, creates (independent or child), cancels, watches, stop, and control effects: pause, resume, purge and delete of another actor, and pause, resume and purge of its own (ADR 0024). Buffered until commit. |
+| Effects | What a handler produces: new state, sends, creates (independent or child, by a typed ref or by an address), cancels, watches, stop, and control effects: pause, resume, purge and delete of another actor, and pause, resume and purge of its own (ADR 0024). Buffered until commit. |
 | Commit | The single atomic write that applies a turn's effects, completes its message and writes the notifications of its event. It applies them in a fixed order: watches, outcome, cancels, deletes, creates, purges, pauses and resumes, sends, state, release of the lease, notifications. |
 | Lease | A node's exclusive, time-limited right to run a turn for one instance. |
 | Epoch | Per-instance counter, increased on every claim. The fencing token for commits. |
@@ -118,7 +119,12 @@ another program, and opening it fails and leaves it as it was (ADR 0017).
 A create in a turn is independent (`turn.create`) or makes a child of the actor that runs the turn
 (`turn.create_child`). Either is idempotent and leaves an existing actor untouched, but a child create never takes
 over an actor: one that exists with another parent, or with none, rejects the commit. Creates of one address in one
-turn must agree on being a child; the second call fails (`TurnError::Invalid`). A stop removes the actor and every
+turn must agree on being a child; the second call fails (`TurnError::Invalid`). `turn.create_raw` and
+`turn.create_child_raw` are the same creates for an address and a state given as JSON, for a turn that does not know the
+type when it is compiled (ADR 0028). At the call the type of the address must be registered (`TurnError::Invalid`
+otherwise; `TurnError::Store` when the registry cannot be read), and a node that hosts the type refuses an address or a
+state that the type cannot read, as `create_actor` does from outside a turn. Another node cannot check them: an actor
+created there with an address or a state its type cannot read fails every message with the cause `state`. A stop removes the actor and every
 descendant, the children created in the same turn included, and purges their mailboxes, the turn's own sends to them
 included. A turn running on a removed descendant loses its lease and commits nothing.
 
@@ -176,6 +182,26 @@ then of the watcher.
 
 Every row that ends a message `failed` tells the actor's watchers with a `Failed`, unless the message is itself a
 notification; every row that removes actors tells the watchers of each removed actor with a `Stopped`.
+
+Every `failed` has exactly one cause, which its `Failed` holds (ADR 0028). The node decides it where it decides that the
+message fails, and hands it to the store with the commit; the outcome and an observer get the error only:
+
+| Way of failing | Cause |
+| --- | --- |
+| The handler returned an error or panicked, and no retry is left | `handler` |
+| The same, but the store could not schedule the retry | `handler` |
+| The handler returned an error that is not permanent and whose chain of causes holds a `TurnError::Store` or a `StoreError` | `node` |
+| A read of the store the node needed failed, or a panic outside the handler | `node` |
+| The handler refused the message for good, whatever its error holds | `refused` |
+| The turn ran past its maximum duration, whatever the handler did | `timeout` |
+| The message cannot be decoded | `message` |
+| The state or the address cannot be read by the type | `state` |
+| The handler returned a new state that cannot be stored (it does not encode, or it is `null`) | `handler` |
+| The effects of the turn were refused, or its commit was rejected or refused | `commit` |
+| The claim limit | `claim-limit` |
+
+`node` keeps a failure of the store apart from `handler`: every `send_raw` and `create_raw` reads the registry, and a
+handler that passes such an error on would otherwise look like a handler that failed.
 
 ### How the runtime maps to tokio
 
@@ -238,7 +264,7 @@ impl Actor for SyncActor {
 | `cicada-client` | Typed HTTP client (reqwest) |
 | `cicada-app` | Layer 2 (ADR 0018, ADR 0027): `App` turns a set of actor types into a binary with `serve` (the node and the HTTP API at the root, with a public `/ready` outside the host's router), `worker` (the node only) and the operator commands, which go over HTTP through `cicada-client`; settings from flags and `CICADA_…` variables over the host's `NodeConfig`. It only composes `cicada`, `cicada-axum` and `cicada-client`, and builds the binary `cicada` (no hosted type, so neither `serve` nor `worker`). Features `sqlite`, `postgres` and `tui` (the terminal UI), none on by default |
 | `cicada-otel` | OpenTelemetry observer (`ActorTelemetry`) |
-| `cicada-extras` | Schedules (interval, daily), failure watcher, dead letters |
+| `cicada-actors` | Layer 3 (ADR 0018, ADR 0028): ready-made actors on the public API only, each under a fixed type name: a supervisor (`cicada.supervisor`) that restarts a child at fault once per incident and escalates by failing a message of its own, dead letters (`cicada.dead-letters`) told of failures by a watch, and a topic (`cicada.topic`) that delivers to each subscriber in a turn of its own; `StoredMessage`, a message an actor keeps as a type name and a payload; `Schedule` (interval, daily) |
 | `examples` | Worked examples with tests |
 | `sample-service` | A runnable node (binary) on `cicada-app` with the examples, used by end-to-end tests |
 | `e2e` (`cicada-e2e`) | End-to-end and fault tests: sample nodes in Docker on PostgreSQL and SQLite, driven over HTTP (`CICADA_E2E=1`) |

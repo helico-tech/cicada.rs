@@ -7,6 +7,81 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.14.0 — unreleased
+
+A breaking release: the ready-made actors (ADR 0018, ADR 0028). The new crate `cicada-actors` replaces
+`cicada-extras` with a supervisor, dead letters and a topic, each an ordinary actor on the public API under a fixed
+type name. A `Failed` says why its message failed, and a turn can create an actor by its address. No schema of the
+store changes, but the schema of `Failed` does, so this is not a rolling deploy for a system that has a type that
+watches, or dead letters.
+
+### Upgrading
+
+1. Replace `cicada-extras` by `cicada-actors`. `Schedule` keeps its name (`cicada_actors::Schedule`). Drop
+   `FailureWatcher`: a watch replaces it (step 3).
+2. A type that watches: its contract changes with `Failed`. Let it handle the notifications in its mailbox (a `Failed`
+   of 0.13.0 has no cause, and a watcher of 0.14.0 cannot decode it), then follow "Changing a contract" of the
+   operations guide for it. A handler that builds a `Failed` by hand adds the cause.
+3. Dead letters: their contract changes too, and their letters are lost.
+   1. Save the letters if they matter: `cicada get actor cicada.dead-letters/_ -o json`.
+   2. Stop every node. While a node of 0.13.0 runs, its `FailureWatcher` creates the actor again after it is deleted.
+   3. Start one node of 0.14.0 that does not host the type (`serve --types none`). Delete the actor and then the
+      registration: `cicada delete actor cicada.dead-letters/_`, `cicada delete type cicada.dead-letters`. A node that
+      hosts the type refuses to start until that is done.
+   4. Start the other nodes, create the actor again and set its watch on `*`
+      (`cicada create watch --target '*' --watcher cicada.dead-letters/_`).
+4. A supervisor and a topic are new; nothing moves. They watch, so create them only when no node of 0.13.0 is left.
+
+The operations guide, "Upgrading", has the same steps with more detail.
+
+### Changed (breaking)
+
+- A new crate `cicada-actors` (layer 3) replaces `cicada-extras`. It uses only the public API of the layers below.
+  `FailureWatcher`, which polled the failed outcomes on a timer, is gone: dead letters are told of a failure by a watch,
+  in the transaction of the failure. `CrashLoopGuard` went with 0.11.0; the claim limit replaces it.
+- A `Failed` says why its message failed: its new field `cause` (`cicada::FailureCause`, kebab-case on the wire) is
+  `handler`, `node`, `refused`, `timeout`, `message`, `state`, `commit` or `claim-limit`. Every failed message has
+  exactly one; the node decides it where it decides that the message fails, by the table in the architecture. A failed
+  read of the store is `node`, also when a handler passes it on or wraps it, so that an outage of the store restarts no
+  healthy child. The schema of `Failed` is part of the contract of every type that watches, so each such type gets a
+  new contract. `TurnOutcome`, which an observer gets, does not change.
+- The dead letters have a new contract and live in `cicada-actors`: the ref `DeadLetters` has a name
+  (`DeadLetters::default()` is `cicada.dead-letters/_`), `RecordFailure` is gone (the actor takes `Failed` and
+  `Stopped`), `Redrive` and `Discard` take `messageId`, and the state keeps the letters by the id of the failed message,
+  each with the sender, the error, the cause, the attempts and the time it was recorded (`recordedAt`).
+- The sample service hosts the three ready-made actors, creates `cicada.dead-letters/_` and its watch on every type at
+  the start, and no longer reads `FAILURE_WATCHER_INTERVAL`; `Sample` has no `watcher`, and the type `Watcher` is
+  gone.
+
+### Added
+
+- The supervisor (`SupervisorActor`, `cicada.supervisor`): it starts the children of its state, each in a turn of its
+  own and tried again for 63 seconds, creates them as its own children and watches them. It restarts a child whose
+  message failed with the cause `handler` or `timeout`, in one commit (delete, create, start message, `Restarted` to
+  itself), once for one incident, as told by the order of its own mailbox; a restart empties the mailbox of the child.
+  It gives up on a child whose state cannot be read (`state`), and does nothing for the other causes. After too many
+  restarts (3 in 60 seconds by default) it gives the child up and fails a message of its own as a handler does, so that
+  a supervisor above restarts it; a child it cannot start or read fails a message that is refused for good. A child
+  that stops itself or that somebody deletes is forgotten. `StartChild`, `Restarted` and `Escalate` count only from
+  the supervisor itself.
+- Dead letters (`DeadLettersActor`, `cicada.dead-letters`): told of failed messages by a watch, with a capacity
+  (1,000 by default), `Redrive` (once; it records the id of the new message, or why nothing was sent) and `Discard`.
+  Its own failures are no letters.
+- The topic (`TopicActor`, `cicada.topic`): `Subscribe`, `Unsubscribe` and `Publish`; each publish is delivered to each
+  subscriber in a turn of its own, with the correlation id of the publish. A subscriber that is gone fails its own
+  delivery and is dropped through the topic's watch on itself; a delivery that is refused at the call fails for good
+  and keeps the subscriber; one whose read of the store fails is tried again.
+- `StoredMessage`: a message an actor keeps to send later, a type name and a JSON payload, built from a typed ref
+  (`StoredMessage::for_ref`), so that a message of the wrong family does not compile. `Child::start` and
+  `TopicMsg::publish` build one too.
+- `Turn::create_raw` and `Turn::create_child_raw`: a create by address with a JSON state, for a turn that does not
+  know the type when it is compiled. A type that is not registered is `TurnError::Invalid`, a failed read of the
+  registry `TurnError::Store`; a node that hosts the type refuses an address or a state it cannot read.
+- The contracts of the three actors are pinned by snapshots in `crates/cicada-actors/tests/contracts`, and sample
+  checks cover what their helpers and the actors write.
+- ADR 0028 records the cause in a `Failed`, how a supervisor tells the lives of a child apart and how it escalates, and
+  that a stored message holds no address.
+
 ## 0.13.0 — 2026-11-12
 
 A breaking release: the app layer (ADR 0018, ADR 0027). The new crate `cicada-app` turns a set of actor types into a

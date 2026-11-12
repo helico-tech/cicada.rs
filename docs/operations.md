@@ -162,7 +162,9 @@ registration until the type is registered again. Change a type in one of two way
   refused with `409` while an actor of the type exists. Start the new version, which registers its contract.
 
 A type that starts to watch adds the variants `Failed(cicada::Failed)` and `Stopped(cicada::Stopped)` to its message
-family, so its contract changes like any other: deploy it in one of the two ways above.
+family, so its contract changes like any other: deploy it in one of the two ways above. The schema of `Failed` is part
+of the contract of every type that watches; it gained the field `cause` in 0.14.0, and a new value of the cause would
+change it again (ADR 0028).
 
 ## Upgrading
 
@@ -210,8 +212,8 @@ transaction of the event (ADR 0023). Its migration 5 adds the table `watches` an
 no existing message is a notification and no watch is stored. A node of 0.8.0 that opens the migrated database refuses
 it, but one that is still running does not notice: a message that fails there tells no watcher, and an actor it removes
 keeps its watches as a watcher. So stop every node of the old version, then start the new ones. Clients of 0.8.0 keep
-working: they ignore the new field `notification` of a message's view. A host that runs `FailureWatcher` keeps it until
-`cicada-actors` replaces it with a watch.
+working: they ignore the new field `notification` of a message's view. A host that ran `FailureWatcher` kept it until
+0.14.0, which replaces it with a watch.
 
 **Version 0.10.0 changes no schema.** A turn can pause, resume, purge and delete another actor (ADR 0024); its commit
 applies those effects, and an actor on a node of 0.9.0 is paused or deleted as it would be from outside. So nodes of
@@ -249,6 +251,34 @@ Clients need no upgrade.
 from `cicada-cli` into `cicada-app` and is still the binary `cicada`; install it with `--features tui` for the
 terminal UI. A deployment of the sample service renames its variables (README, Sample service); a node of it refuses
 to start while one of the old ones is set.
+
+**Version 0.14.0 changes no schema of the store, but it changes a wire format.** A `Failed` holds its cause (ADR
+0028), so the contract of every type that watches changes, and `cicada-actors` replaces `cicada-extras`, whose dead
+letters get a new contract. A system without a type that watches and without dead letters can deploy it rolling: nodes
+of 0.13.0 and 0.14.0 share a database, and clients need no upgrade. A system with either cannot; follow the steps:
+
+1. **The crate.** Replace `cicada-extras` by `cicada-actors` in the manifests. `Schedule` keeps its name
+   (`cicada_actors::Schedule`). Drop `FailureWatcher` and the task that ran it: a watch replaces it (step 3).
+2. **A type that watches.** Its contract changes with `Failed`. A `Failed` that a node of 0.13.0 wrote has no cause, and
+   a watcher of 0.14.0 cannot decode it: that message ends `failed`, and a notification that fails tells nobody. So
+   first let the watchers handle the notifications in their mailboxes (`GET /stats?prefix=<type>/` shows none
+   pending), then follow [Changing a contract](#changing-a-contract) for each such type. A handler that builds a
+   `Failed` by hand adds the cause.
+3. **Dead letters.** Their contract changes too, and the letters of 0.13.0 are lost:
+   1. Save the letters if they matter: `cicada get actor cicada.dead-letters/_ -o json`.
+   2. Stop every node. While a node of 0.13.0 runs, its `FailureWatcher` creates the actor again after it is deleted.
+   3. Start one node of 0.14.0 that does not host the type (`serve --types none`). Delete the actor and then the
+      registration: `cicada delete actor cicada.dead-letters/_`, then `cicada delete type cicada.dead-letters`. A node
+      that hosts the type refuses to start until that is done: its contract conflicts with the registered one.
+   4. Start the other nodes, create the actor again (`DeadLetters::default()` with `DeadLettersState::default()`, or
+      `cicada create actor cicada.dead-letters/_ --state '{}'`) and set its watch on every type: `ActorSystem::watch`, or
+      `cicada create watch --target '*' --watcher cicada.dead-letters/_`.
+4. **A supervisor and a topic** are new: nothing moves. Both watch, so create them only when no node of 0.13.0 is left:
+   such a node writes a `Failed` without a cause. Host a supervisor on nodes that host the types of its children, so
+   that a wrong entry is refused when the child starts (README, Ready-made actors).
+
+The sample service no longer reads `FAILURE_WATCHER_INTERVAL`: a node that hosts the dead letters creates them and their
+watch at the start.
 
 **Switching a type to `create_child`.** An actor created with `turn.create` stays independent: a later `create_child`
 of it by its creator does not adopt it, but fails the creator's message (the commit is rejected, and a handler cannot
@@ -292,9 +322,12 @@ When the next change lands, add a section `## X.Y.Z — unreleased` to the chang
 - **Health.** `GET /health` is 200 while the node runs and its store answers, 503 otherwise (also while it stops).
   Use it for readiness; for liveness, prefer a check that does not fail when only the database is down.
 - **Failures.** `GET /outcomes?status=failed&since=…` lists failed messages with envelope and error, kept for the outcome
-  retention (7 days). Without `status` it lists every finished message. For longer, host `DeadLettersActor` and run
-  `FailureWatcher` (`cicada-extras`): failures become dead letters that an operator redrives or discards with a
-  message. A watcher of `*` is told of every failure without polling, in the transaction of the failure.
+  retention (7 days). Without `status` it lists every finished message. For longer, host `DeadLettersActor`
+  (`cicada-actors`) and watch every type for it: failures become dead letters, each with its cause, that an operator
+  redrives or discards with a message. A watcher of `*` is told of every failure without polling, in the transaction
+  of the failure. A supervisor that gives up on a child fails a message of its own (`restart limit: …` with the cause
+  `handler`, or `cannot start …` and `cannot read …` with the cause `refused`), so dead letters show it; a `Start` to
+  the supervisor takes the child back.
 - **Watches.** `GET /watches` (`cicada get watches`, `:watches` in `cicada tui`) lists them by target and watcher. A
   watcher of every type (`*`) gets a `Failed` in its mailbox for every failure of the system, and on PostgreSQL every
   commit that ends a message `failed` locks its row; failures are the rare case, and removals do not reach it, as a

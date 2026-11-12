@@ -28,7 +28,7 @@ summarised [below](#decisions).
 | `cicada-client` | `ActorClient`: typed HTTP client (reqwest) for remote callers, idempotent sends. |
 | `cicada-app` | `App`: a set of actor types as a binary with `serve` (the node and the HTTP API), `worker` (the node only) and the operator commands, configured by flags and `CICADA_…` variables; see [Run it as a binary](#run-it-as-a-binary). It builds the binary `cicada`: kubectl-style commands and a k9s-style terminal UI over the HTTP API; see [Command line and terminal UI](#command-line-and-terminal-ui). The stores are its features `sqlite` and `postgres`, the terminal UI its feature `tui`; none is on by default. |
 | `cicada-test` | `TestActors` on the in-memory store (`Store::memory`), virtual time, `claim_and_abandon` (a node that dies), contract snapshots and state samples. |
-| `cicada-extras` | Building blocks on the public API, no core changes: dead letters (`DeadLettersActor`, `FailureWatcher`), `Schedule`. |
+| `cicada-actors` | Ready-made actors on the public API, each under a fixed type name: a supervisor (`SupervisorActor`), dead letters (`DeadLettersActor`) and a topic (`TopicActor`); `StoredMessage` and `Schedule`. See [Ready-made actors](#ready-made-actors). |
 | `cicada-otel` | `ActorTelemetry`: OpenTelemetry traces and metrics per turn, an observer on the OpenTelemetry API. |
 | `examples` (`cicada-examples`) | Ten worked examples, each tested with `TestActors`; see [Examples](#examples). |
 | `sample-service` | A runnable node on `cicada-app` hosting the examples; see [Sample service](#sample-service). |
@@ -247,6 +247,25 @@ turn.create_child(&item, &BatchItemState { input: "x".into() })?; // removed wit
 # }
 ```
 
+A turn that does not know the type of an actor when it is compiled, such as a supervisor, creates it by its address
+with a state given as JSON: `turn.create_raw(&address, state)` and `turn.create_child_raw(&address, state)` behave as
+`create` and `create_child`. The type of the address must be registered (`TurnError::Invalid` otherwise, and
+`TurnError::Store` when the registry cannot be read). A node that hosts the type also refuses an address or a state the
+type cannot read; another node cannot check them, and an actor created with such a state fails every message with the
+cause `state`.
+
+<!-- doctest
+# use cicada::prelude::*;
+# async fn hire<A: Actor>(turn: &mut Turn<A>) -> HandlerResult {
+@@2
+# Ok(())
+# }
+-->
+```rust
+let worker = ActorAddress::parse("worker/w1")?;
+turn.create_child_raw(&worker, serde_json::json!({"done": 0})).await?; // checked against the registry now
+```
+
 `ActorSystem::get_actor` and `GET /actors/{type}/{key}` name the parent (`parent`, null for an independent actor);
 `ActorSystem::list_children`, `ActorClient::children`, `GET /actors/{type}/{key}/children` and `cicada get children`
 list the direct children in address order, one level at a time. A large tree is one large transaction; see the
@@ -321,11 +340,28 @@ The store writes a notification in the transaction of its event, one per watcher
 
 - A **`Failed`** when a message ends `failed`, for the watchers of the actor's address, of a prefix of its type and of
   `*`. It holds the actor, the failed message's id, type, payload, correlation id and sender (`from`), the error and the
-  attempts, and is kept as long as the failure is: by the `failed` rule of the failed message's retention. A message
-  that is retried, done or cancelled tells nobody.
+  attempts, and its cause, and is kept as long as the failure is: by the `failed` rule of the failed message's
+  retention. A message that is retried, done or cancelled tells nobody.
 - A **`Stopped`** when an actor watched by its address stops itself, is deleted, or goes with its parent: `cause` is
   `stopped`, `deleted` or `parent`, and `by` the actor whose turn removed it, `null` for a delete from outside. A watch
   on a type prefix or on `*` tells of failures only.
+
+The **cause** of a `Failed` says why the message failed (ADR 0028). The node decides it where it decides that the
+message fails:
+
+| Cause | The message failed because |
+| --- | --- |
+| `handler` | its handler returned an error or panicked, and no retry is left, also when the store could not schedule the retry; or the handler returned a new state that cannot be stored |
+| `node` | a read of the store the node needed failed, also one the handler passed on (an error whose chain of causes holds a `TurnError::Store` or a `StoreError`), or the node panicked outside the handler |
+| `refused` | its handler refused it for good (`turn.fail`, `HandlerError::permanent`), whatever the error holds |
+| `timeout` | the turn ran past its maximum duration, whatever the handler did |
+| `message` | the message cannot be decoded |
+| `state` | the state or the address of the actor cannot be read by its type |
+| `commit` | the effects of the turn were refused, or its commit was rejected |
+| `claim-limit` | it reached the claim limit |
+
+The set is closed: a cause added later changes the contract of every type that watches, as adding the field did in
+0.14.0. An observer is not told the cause.
 
 A notification that fails tells nobody, so two actors that watch each other cannot loop; one sent again from outside
 (`retry`) is an ordinary message. A watcher that does not exist, or that the same event removes, gets nothing, and the
@@ -1268,11 +1304,118 @@ system.send_with(&Sync { tenant: "acme".into() }, SyncMsg::Run, options).await?;
 - **Metrics:** `cicada.turn.duration` (claim to commit) and `cicada.message.lag` (due time to claim), histograms in
   seconds by `cicada.actor.type` and `cicada.message.type`; the duration also by `cicada.outcome`.
 
-## Extras
+## Ready-made actors
 
-`cicada-extras` holds building blocks that use only the public API (observers and the operations of `ActorSystem`).
+`cicada-actors` holds actors that use only the public API of the core (ADR 0018, ADR 0028). Each has a fixed type name;
+a node hosts it like any other type, and the host creates its instances.
 
-**Dead letters.** `DeadLettersActor` (`cicada.dead-letters/_`) keeps failed messages, told of them by a watch:
+| Actor | Type name | Key | What it does |
+| --- | --- | --- | --- |
+| `SupervisorActor` | `cicada.supervisor` | any name | Starts its children, watches them, and restarts one that is at fault. |
+| `DeadLettersActor` | `cicada.dead-letters` | any name, `_` by convention | Keeps failed messages, told of them by a watch; an operator redrives or discards one. |
+| `TopicActor` | `cicada.topic` | the name of the topic | Sends each published message to all of its subscribers. |
+
+A message that one of them keeps to send later is a `StoredMessage`: a type name and a JSON payload,
+`{"type": …, "payload": …}`. The actor knows where it goes, so it holds no address. `StoredMessage::for_ref(&worker,
+WorkerMsg::Begin { batch: 7 })` builds one from a typed ref and a message, so a message of the wrong family does not
+compile. The contracts of the three types are wire formats; `crates/cicada-actors/tests/contracts` pins them.
+
+### Supervisor
+
+**A restart empties the mailbox of the child.** Its pending messages end `purged`, no dead letter is written for them,
+and the child gets the state of its entry again. So supervise only actors whose state can be built again from the state
+of their entry. Dead letters and a topic are not such actors: a restart would lose their letters, their subscribers and
+the watch that was set for them from outside. A supervisor may be supervised.
+
+<!-- doctest
+# use cicada::prelude::*;
+# use serde::{Deserialize, Serialize};
+# #[derive(Debug, Clone, Serialize, Deserialize)]
+# struct Worker { id: String }
+# impl ActorRef for Worker { const TYPE: &'static str = "worker"; type Message = WorkerMsg; }
+# #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+# #[serde(tag = "type")]
+# enum WorkerMsg { Begin { batch: u32 } }
+# #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+# struct WorkerState { done: u32 }
+# #[derive(Debug, Clone, Serialize, Deserialize)]
+# struct Mailer;
+# impl ActorRef for Mailer { const TYPE: &'static str = "mailer"; type Message = MailerMsg; }
+# #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+# #[serde(tag = "type")]
+# enum MailerMsg { Send { to: String } }
+@@2
+# async fn start(system: ActorSystem, worker: Worker, mailer: Mailer) -> Result<(), Box<dyn std::error::Error>> {
+@@7
+# Ok(())
+# }
+-->
+```rust
+use cicada::NoState;
+use cicada_actors::{Child, Supervisor, SupervisorMsg, SupervisorState};
+
+let supervisor = Supervisor::named("imports"); // hosted as SupervisorActor
+let state = SupervisorState::new()
+    .child(Child::new(&worker, &WorkerState::default())?.start(WorkerMsg::Begin { batch: 7 })?)
+    .child(Child::new(&mailer, &NoState {})?);
+system.create(&supervisor, &state).await?;
+system.send(&supervisor, SupervisorMsg::Start).await?;
+```
+
+- **Start.** `Start` starts each child of the state that is not running, each in a turn of its own (`StartChild`): it
+  creates the child as its own child with the state of its entry (`turn.create_child_raw`), watches it, and sends it
+  its start message. A child that exists already, under another parent or with none, fails its own start with the
+  cause `commit`, and the others start. A start is tried again for 63 seconds (7 attempts, the waits doubling from one
+  second), so a type whose node is still starting is found; after that the supervisor gives the child up. A second
+  `Start` starts what the first could not, ends a restart whose `Restarted` was purged, and takes back a child that
+  was given up and still runs. The children are those of the state; a host that needs another set creates another
+  supervisor.
+- **What a failure of a child does**, by the cause of its `Failed`:
+
+  | Cause | The supervisor |
+  | --- | --- |
+  | `handler`, `timeout` | restarts the child: the child is at fault |
+  | `state` | gives the child up and keeps its state, and escalates without a restart above |
+  | `refused`, `message` | does nothing: the message is at fault |
+  | `commit` | does nothing: another actor is missing, or somebody made a mistake |
+  | `node` | does nothing: the store or the node failed, not the child |
+  | `claim-limit` | does nothing: the message that killed a node may be another one |
+
+  A child whose state its type cannot read is given up, also when a restart would have helped: mostly it comes from a
+  deploy that reads states more strictly, and a restart would reset every supervised actor of that type. The rule is
+  fixed, and there is one strategy: restart the one child.
+- **One incident is one restart.** A restart is one commit: it deletes the child, creates it again, sends it its start
+  message and sends the supervisor `Restarted`. Until that `Restarted` is handled, the supervisor ignores failures of
+  the child, so a child with five failed messages in its backlog is restarted once. This needs no clock, but on
+  PostgreSQL a step back of the database's clock can turn one incident into two restarts. A short outage of the store
+  while the supervisor handles a failure loses that restart; the child keeps running until it fails again.
+- **The restart limit.** At most `maxRestarts` restarts of one child within `withinSeconds`: 3 in 60 seconds, or
+  `SupervisorState::restart_limit`. One failure more gives the child up (it keeps running, without a supervisor) and
+  fails a message of the supervisor as a handler fails, with the error `restart limit: <child> failed <n> times in
+  <within>: <error>`: a supervisor above restarts this one, with its whole tree. A child that cannot be started, or
+  whose state cannot be read, fails a message with `cannot start <child>: …` or `cannot read <child>: …` that is
+  refused for good: nobody restarts for it, and dead letters and the watchers of the supervisor see it. A `Start`
+  takes such a child back.
+- **A child that goes away.** A child that stops itself, or that somebody else deletes, is forgotten, also while a
+  restart of it is under way; it may handle its start message once more before the supervisor deletes that new life.
+  A child that cannot exist (its type was removed, its entry is wrong) cannot be taken away while its supervisor
+  lives: each `Start`, and each restart from above, tries it for 63 seconds and escalates again. A child that stopped
+  itself comes back when a supervisor above restarts its supervisor.
+- **Its own messages.** `StartChild`, `Restarted` and `Escalate` count only when the supervisor sent them itself: from a
+  client, or redriven from dead letters, they end `done` and change nothing.
+- **Where to host it.** Host a supervisor on nodes that host the types of its children. Such a node checks an entry
+  when the child starts: an address or a state the type cannot read is refused, and the child is given up at once. On
+  another node a wrong entry is created, its child fails with the cause `state`, and the supervisor gives it up then.
+  The state of a child and its start message are stored as JSON: when the type of the child changes so that they no
+  longer fit, a restart deletes the child and cannot create it again, and the supervisor gives it up.
+
+A supervisor is one actor: it handles the failures of its children one after the other.
+
+### Dead letters
+
+`DeadLettersActor` keeps failed messages as letters. The host creates the actor and sets its watch: on every type, or
+on the types it cares for. It is told of each failure by a `Failed` in its mailbox, in the transaction of the failure,
+with no timer:
 
 <!-- doctest
 @@3
@@ -1290,6 +1433,59 @@ system.start().await?;
 system.create(&DeadLetters::default(), &DeadLettersState::default()).await?;
 system.watch(&WatchTarget::Every, &DeadLetters::default().address()?).await?;
 ```
+
+Over HTTP and on the command line the watch is `PUT /watches` or `cicada create watch --target '*' --watcher
+cicada.dead-letters/_`. A letter holds the failed message (its actor, type, payload, correlation id and sender), its
+error, its cause, its attempts and when it was recorded. The actor keeps at most its capacity of letters, 1,000 unless
+built with another, and drops the oldest first. Its own failures are no letters.
+
+- `Redrive { messageId }` sends the failed message again, once: to the same actor, with the same type, payload and
+  correlation id, from the dead-letters actor. The letter holds the id of the new message (`redrivenAs`), and a message
+  that fails again is a letter of its own. When the type of the actor no longer takes the message, nothing is sent and
+  the letter says why (`redriveError`). When the actor is gone, the `Redrive` itself ends `failed` with the cause
+  `commit`, and the letter stays as it was.
+- `Discard { messageId }` forgets a letter. Over HTTP: `POST /actors/cicada.dead-letters/_/messages` with
+  `{"type": "Redrive", "payload": {"messageId": "…"}}`.
+
+### Topic
+
+`TopicActor` keeps subscribers and sends each published message to all of them, each in a turn of its own:
+
+<!-- doctest
+# use cicada::prelude::*;
+# use serde::{Deserialize, Serialize};
+# #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+# #[serde(tag = "type")]
+# enum OrderMsg { Shipped { id: u32 } }
+@@2
+# async fn publish(system: ActorSystem, shipping: ActorAddress) -> Result<(), Box<dyn std::error::Error>> {
+@@6
+# Ok(())
+# }
+-->
+```rust
+use cicada::SendOptions;
+use cicada_actors::{Topic, TopicMsg, TopicState};
+
+let orders = Topic::named("orders"); // hosted as TopicActor
+system.create(&orders, &TopicState::default()).await?;
+system.send(&orders, TopicMsg::Subscribe { subscriber: shipping }).await?;
+let shipped = TopicMsg::publish(OrderMsg::Shipped { id: 7 })?; // any message of a family
+system.send_with(&orders, shipped, SendOptions::new().correlation_id("c1")).await?;
+```
+
+- `Publish` makes one `Deliver` for each subscriber, which the topic sends itself and which carries the correlation id
+  of the publish. A subscriber gets the messages in the order they were published, unless a delivery was tried again.
+  A `Deliver` from anybody else, or for an address that is no longer a subscriber, sends nothing.
+- A subscriber that is gone fails its own delivery and nobody else's (the cause `commit`). The topic watches itself,
+  not its subscribers: it is told of that failure and drops the subscriber.
+- A delivery whose send is refused at the call (no registered type for the address, or a type that does not take the
+  message) is refused for good, sends nothing, and keeps the subscriber; an address that never gets a type costs one
+  failed `Deliver` for each publish until it is unsubscribed. A delivery whose read of the store fails is tried again,
+  as a start of a supervisor is.
+- One turn for each subscriber and each publish: a topic with many subscribers is slow.
+
+### Timers and schedules
 
 **Timers.** A timer is a delayed self-send. To stop or move it, keep the id of the pending message in state and
 cancel it with `turn.cancel`: the cancel, the state change and any new timer commit together, and the turns of one
@@ -1339,7 +1535,7 @@ match msg {
 }
 ```
 
-**Schedules.** `Schedule` (`Schedule::every(seconds)`, aligned to the epoch, and `Schedule::daily(hour, minute)`, UTC) gives a cron
+**Schedules.** `cicada_actors::Schedule` (`Schedule::every(seconds)`, aligned to the epoch, and `Schedule::daily(hour, minute)`, UTC) gives a cron
 actor its next slot; it is serializable, so it can live in state. See [examples/src/cron.rs](examples/src/cron.rs)
 for the `Tick` chain:
 
@@ -1395,7 +1591,7 @@ with `TestActors` on virtual time:
 | `steps` | Durable steps; every step is its own turn, so a committed step never runs again. |
 | `fanout` | Fan-out and fan-in; one child per item, the parent counts the replies. |
 | `registry` | A registry actor that keeps the refs of the instances it created. |
-| `supervision` | Supervision; failed messages become dead letters that an operator redrives. |
+| `supervision` | A supervisor restarts a mailer that fails; dead letters keep the failed mail, to redrive it. |
 | `sync` | The architecture's example: a paged import, one turn per page, rescheduled hourly. |
 
 Every example has the same shape: a public ref struct per actor type (its one field is the key), a
@@ -1408,8 +1604,9 @@ message enum with `#[serde(tag = "type")]`, a state struct, and an actor struct 
 `sample-service/Dockerfile`) hosting the examples and the end-to-end actors; see [sample-service/](sample-service/).
 `cicada-sample-service serve --store actors.db` runs it; it takes the flags and variables of
 [Run it as a binary](#run-it-as-a-binary), picks its types with `--types` (`CICADA_TYPES`, type names such as
-`e2e.counter`), and creates the singletons of the types it hosts at the start. `GET /` names the node and its types,
-without authentication. It reads three variables of its own:
+`e2e.counter`), and creates the singletons of the types it hosts at the start. It hosts the three ready-made actors; a
+node that hosts the dead letters creates `cicada.dead-letters/_` and its watch on every type at the start. `GET /` names
+the node and its types, without authentication. It reads two variables of its own:
 
 | Variable | Meaning | Default |
 | --- | --- | --- |
@@ -1543,6 +1740,7 @@ Decisions, as ADRs in [docs/adr/](docs/adr/):
 | [0025](docs/adr/0025-the-claim-limit.md) | The claim limit: a message counts its lost claims (a claim that another claim replaced although its turn neither committed nor gave the lease back), a node fails a message with as many as its limit (5 by default) through a commit that tells its watchers, and G4 that names the limit. |
 | [0026](docs/adr/0026-the-schema-check-at-the-http-door.md) | The schema check at the HTTP door: a send and a create over HTTP are checked against the registered schema on every node and refused with `422` (not `400` as 0018 said), a hosting node still decodes, a repeated send is answered first, no format is asserted, a schema the validator cannot use is not enforced, and JSON that code sends is not checked. |
 | [0027](docs/adr/0027-the-app-layer.md) | The app layer: `serve` takes `--types` too, a binary without types has neither `serve` nor `worker`, `App` has no authentication of its own and `serve` listens on `127.0.0.1:8080` unless told otherwise, the node stops before the HTTP server, every setting has a flag and a `CICADA_…` variable, and `cicada-cli` goes into `cicada-app`, with the terminal UI and each store as features that are off by default. |
+| [0028](docs/adr/0028-the-ready-made-actors.md) | The ready-made actors: a `Failed` holds its cause, a turn creates an actor by its address, a supervisor restarts a child at fault once per incident by the order of its own mailbox and escalates by failing a message of its own (as a handler for too many restarts, refused for good for a child it cannot start), a stored message holds no address, and a topic delivers to each subscriber in a turn of its own. |
 
 Design questions and their answers:
 

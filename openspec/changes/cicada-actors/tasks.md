@@ -59,13 +59,13 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
 
 ## 4. Docs
 
-- [ ] 4.1 `docs/architecture.md`: the cause in a `Failed` (the table of decision 1), the two creates by address
+- [x] 4.1 `docs/architecture.md`: the cause in a `Failed` (the table of decision 1), the two creates by address
       among the calls of a turn, and the crate table. `README.md`: the three actors with an example each, what a
       restart loses and which actors may be supervised, where to host a supervisor, the cause of a `Failed`, the
       creates by address, and the row of ADR 0028. `docs/operations.md`: the upgrade to 0.14.0 by the Migration Plan
       of `design.md`, step by step, with a type that watches and with dead letters. `AGENTS.md`: the map. Verify:
       `cargo test -p cicada-examples --doc` passes, and every risk of `design.md` that names the docs is in them.
-- [ ] 4.2 `CHANGELOG.md`, a section `0.14.0 — unreleased`, and the version `0.14.0` in `Cargo.toml`: the steps of
+- [x] 4.2 `CHANGELOG.md`, a section `0.14.0 — unreleased`, and the version `0.14.0` in `Cargo.toml`: the steps of
       the Migration Plan first, then the breaking changes of the proposal. Verify: every step of the plan and every
       **BREAKING** line of the proposal is in the section.
 
