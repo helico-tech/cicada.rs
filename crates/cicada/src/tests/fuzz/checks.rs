@@ -1,5 +1,5 @@
 //! Checks of G1, G3, G4, G5, G6 and S8 (see `docs/architecture.md`) on the history of a run, G4 also for the
-//! notifications of the watcher.
+//! notifications of the watcher, and of the claim limit (ADR 0025).
 //!
 //! The order of the log is the order things happened in: the run is on one thread.
 
@@ -10,6 +10,7 @@ use crate::retry::RetryPolicy;
 use crate::store::OutcomeStatus;
 
 use crate::tests::fuzz::faults::{Ending, Event, HandlerEnd};
+use crate::tests::fuzz::simulation::CLAIM_LIMIT;
 
 /// A guarantee that did not hold.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +39,7 @@ pub fn check_all(events: &[Event]) -> Result<(), Violation> {
     g4_notifications(events)?;
     g5(events)?;
     g6(events)?;
+    claim_limit(events)?;
     s8(events)
 }
 
@@ -251,6 +253,54 @@ pub fn g6(events: &[Event]) -> Result<(), Violation> {
                 }
             }
             _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// The claim limit: a message ends `failed` with the error of the limit only when at least [`CLAIM_LIMIT`] earlier
+/// claims of it were lost, and no handler ran for the claim that failed it.
+///
+/// A claim is lost, as the store counts it, when the next claim of its instance comes while its lease was not cleared:
+/// no commit and no release of its epoch, no removal of the instance and no end of its message (a cancel or a purge
+/// voids the lease) came in between.
+pub fn claim_limit(events: &[Event]) -> Result<(), Violation> {
+    // The open claim of each instance, as (epoch, message), and the lost claims of each message.
+    let mut open: BTreeMap<&str, (i64, &str)> = BTreeMap::new();
+    let mut lost: BTreeMap<&str, u32> = BTreeMap::new();
+    let mut attempts: BTreeMap<(&str, i64), u32> = BTreeMap::new();
+    let mut started: BTreeSet<(&str, u32)> = BTreeSet::new();
+    for event in events {
+        match event {
+            Event::Claimed { address, epoch, id, attempt, .. } => {
+                if let Some((_, previous)) = open.insert(address, (*epoch, id)) {
+                    *lost.entry(previous).or_default() += 1;
+                }
+                attempts.insert((address, *epoch), *attempt);
+            }
+            Event::Committed { address, epoch, .. } | Event::Released { address, epoch, .. } => {
+                if open.get(address.as_str()).is_some_and(|(open, _)| open == epoch) {
+                    open.remove(address.as_str());
+                }
+            }
+            Event::Removed { address } => {
+                open.remove(address.as_str());
+            }
+            Event::Ended { id } => open.retain(|_, (_, message)| message != id),
+            Event::HandlerStart { id, attempt, .. } => {
+                started.insert((id, *attempt));
+            }
+            _ => {}
+        }
+        if let Event::Committed { address, epoch, id, ending: Ending::ClaimLimit, .. } = event {
+            let count = lost.get(id.as_str()).copied().unwrap_or(0);
+            if count < CLAIM_LIMIT {
+                return broken("claim limit", format!("{id} failed at the claim limit after {count} lost claims"));
+            }
+            let attempt = attempts.get(&(address.as_str(), *epoch)).copied().unwrap_or(0);
+            if started.contains(&(id.as_str(), attempt)) {
+                return broken("claim limit", format!("{id} failed at the claim limit after its handler ran"));
+            }
         }
     }
     Ok(())
@@ -604,6 +654,54 @@ mod tests {
     #[test]
     fn g4_refuses_a_failed_for_a_message_that_did_not_fail() {
         failure(g4_notifications(&[accepted("m"), outcome("m"), notified("e.0", "m")]), "G4", "no failed outcome");
+    }
+
+    /// A log of `m` that `claims` claims lost, one after the other, and that the claim after them failed at the limit,
+    /// with a handler run of that claim when `ran`.
+    fn failed_at_the_limit(claims: u32, ran: bool) -> Vec<Event> {
+        let mut log = vec![accepted("m")];
+        for n in 1..=claims {
+            log.extend([claimed(i64::from(n), "m", n), start("m", n), end("m", n, HandlerEnd::Dropped)]);
+        }
+        let last = claims + 1;
+        log.push(claimed(i64::from(last), "m", last));
+        if ran {
+            log.extend([start("m", last), end("m", last, HandlerEnd::Returned)]);
+        }
+        log.extend([committed(i64::from(last), "m", Ending::ClaimLimit), ended("m"), failed_outcome("m")]);
+        log
+    }
+
+    /// Scenario: A scenario that reaches the limit (its log).
+    #[test]
+    fn the_claim_limit_accepts_a_failure_after_two_lost_claims_without_a_handler_run() {
+        claim_limit(&failed_at_the_limit(2, false)).unwrap();
+    }
+
+    /// Scenario: A failure by the limit that is not allowed.
+    #[test]
+    fn the_claim_limit_refuses_a_failure_after_one_lost_claim() {
+        failure(claim_limit(&failed_at_the_limit(1, false)), "claim limit", "after 1 lost claims");
+    }
+
+    #[test]
+    fn the_claim_limit_refuses_a_failure_after_a_handler_ran_for_that_claim() {
+        failure(claim_limit(&failed_at_the_limit(2, true)), "claim limit", "after its handler ran");
+    }
+
+    #[test]
+    fn the_claim_limit_does_not_count_claims_that_were_committed_released_or_ended() {
+        let log = [
+            claimed(1, "m", 1),
+            committed(1, "m", Ending::Rescheduled),
+            claimed(2, "m", 2),
+            released(2),
+            claimed(3, "m", 3),
+            Event::Removed { address: s(A) },
+            claimed(4, "m", 4),
+            committed(4, "m", Ending::ClaimLimit),
+        ];
+        failure(claim_limit(&log), "claim limit", "after 0 lost claims");
     }
 
     #[test]

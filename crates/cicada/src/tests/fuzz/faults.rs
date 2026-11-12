@@ -157,6 +157,8 @@ pub enum Ending {
     Done,
     /// Outcome `failed`.
     Failed,
+    /// Outcome `failed` with the error of the claim limit (ADR 0025), which no handler of the simulation returns.
+    ClaimLimit,
     /// Outcome `cancelled`.
     Cancelled,
     /// Back in the mailbox.
@@ -167,6 +169,7 @@ impl From<&TurnOutcome> for Ending {
     fn from(outcome: &TurnOutcome) -> Self {
         match outcome {
             TurnOutcome::Done => Ending::Done,
+            TurnOutcome::Failed(error) if error.starts_with("claim limit: ") => Ending::ClaimLimit,
             TurnOutcome::Failed(_) => Ending::Failed,
             TurnOutcome::Cancelled => Ending::Cancelled,
             TurnOutcome::Rescheduled { .. } => Ending::Rescheduled,

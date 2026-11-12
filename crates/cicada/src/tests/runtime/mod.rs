@@ -5,6 +5,7 @@ mod common;
 
 mod actor_type;
 mod after_handler;
+mod claim_limit;
 mod dispatch_loop;
 mod lease;
 mod lease_robustness;

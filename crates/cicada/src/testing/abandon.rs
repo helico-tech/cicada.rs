@@ -19,6 +19,10 @@ pub struct AbandonedClaim {
 /// own, with a lease of `lease`, and commits nothing. The messages stay pending; once the lease runs out a running node
 /// claims each again, as its next attempt, as after a crash. Works on every backend.
 ///
+/// Each such claim is lost (ADR 0025): the claim that replaces it adds 1 to the message's `lost_claims`, and a node
+/// fails a message at its claim limit ([`NodeConfig::max_lost_claims`](crate::runtime::NodeConfig::max_lost_claims), 5 by
+/// default) instead of running it. A test that abandons one message that often sees it end `failed`.
+///
 /// ```
 /// # use std::time::Duration;
 /// # use cicada::prelude::*;

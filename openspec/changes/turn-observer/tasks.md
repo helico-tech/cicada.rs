@@ -65,7 +65,7 @@ a commit carries the control effects of its turn.
 
 ## 3. The claim limit
 
-- [ ] 3.1 The node [10, 11]: `NodeConfig::max_lost_claims`, `Some(5)` by default, with `Some(0)` a start problem;
+- [x] 3.1 The node [10, 11]: `NodeConfig::max_lost_claims`, `Some(5)` by default, with `Some(0)` a start problem;
       the check before any observer is called and before anything is decoded; the commit as `failed` with the error
       of decision 11; the observers told after that commit. The docs of `claim_and_abandon` say that it loses a
       claim. Verify, on virtual time with `TestActors`: tests for the scenarios "A message whose turns keep dying",
@@ -73,7 +73,7 @@ a commit carries the control effects of its turn.
       "The retry policy is not asked", "The mailbox moves on", "A watcher is told", "An observer is told after the
       commit", "The commit of the limit does not succeed", "The message is sent again", "The default", "No limit"
       and "A limit of zero".
-- [ ] 3.2 The simulation [12]: its nodes run with a limit of 2, and its checks accept a failure by the limit only
+- [x] 3.2 The simulation [12]: its nodes run with a limit of 2, and its checks accept a failure by the limit only
       after two lost claims and without a handler run for that claim. Verify: unit tests of the checks for the
       scenarios "A scenario that reaches the limit" and "A failure by the limit that is not allowed";
       `cargo test -p cicada --lib tests::fuzz` passes, and so does one run with `PROPTEST_CASES=20000`; the report

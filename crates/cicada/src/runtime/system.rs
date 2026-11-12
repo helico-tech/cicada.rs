@@ -153,6 +153,13 @@ pub struct NodeConfig {
     pub shutdown_cancel_timeout: Duration,
     /// How often expired outcomes are swept from the store. Default 1 h.
     pub sweep_interval: Duration,
+    /// The claim limit (ADR 0025): a message with this many lost claims ends `failed` with the error
+    /// `claim limit: <n> lost claims` when this node claims it, without running its handler, and its watchers are told.
+    /// A claim is lost when another claim takes its place although its turn neither committed nor gave the lease back:
+    /// its node died, its lease ran out, or its commit could not get through. A node that stops in good order and
+    /// gives its claims back loses none. `None` turns the limit off; `Some(0)` is a start problem. Default `Some(5)`.
+    /// Every node of a system should have the same; each applies its own.
+    pub max_lost_claims: Option<u32>,
 }
 
 impl Default for NodeConfig {
@@ -167,6 +174,7 @@ impl Default for NodeConfig {
             shutdown_grace_period: Duration::from_secs(30),
             shutdown_cancel_timeout: Duration::from_secs(5),
             sweep_interval: Duration::from_secs(3600),
+            max_lost_claims: Some(5),
         }
     }
 }
@@ -196,6 +204,9 @@ impl NodeConfig {
         }
         if self.sweep_interval.is_zero() {
             problems.push("sweep_interval must be positive".to_owned());
+        }
+        if self.max_lost_claims == Some(0) {
+            problems.push("max_lost_claims must be at least 1, or None for no limit".to_owned());
         }
         problems
     }
@@ -417,6 +428,7 @@ impl ActorSystem {
             resolver: inner.resolver.clone(),
             hosted: types,
             observers: inner.observers.clone(),
+            max_lost_claims: inner.config.max_lost_claims,
             lease,
             wake: inner.wake.clone(),
         });

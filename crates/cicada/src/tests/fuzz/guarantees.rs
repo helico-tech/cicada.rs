@@ -1,7 +1,8 @@
 //! Node simulation: several real nodes under injected store faults, checked against G1, G3, G4 (with the notifications
-//! of a watcher), G5, G6 and S8.
+//! of a watcher), G5, G6, S8 and the claim limit.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use crate::store::OutcomeStatus;
@@ -20,6 +21,15 @@ fn config() -> Config {
     Config { cases, ..Config::default() }
 }
 
+/// True when a message of the run failed at the claim limit.
+fn reaches_the_limit(events: &[Event]) -> bool {
+    events.iter().any(|e| matches!(e, Event::Committed { ending: Ending::ClaimLimit, .. }))
+}
+
+/// The scenarios run and those that reached the claim limit, for the line the run prints at its end.
+static RUN: AtomicU32 = AtomicU32::new(0);
+static AT_THE_LIMIT: AtomicU32 = AtomicU32::new(0);
+
 proptest! {
     #![proptest_config(config())]
 
@@ -28,6 +38,11 @@ proptest! {
         let events = simulate(&scenario);
         if let Err(violation) = check_all(&events) {
             return Err(TestCaseError::fail(violation.to_string()));
+        }
+        let limited = AT_THE_LIMIT.fetch_add(u32::from(reaches_the_limit(&events)), Ordering::SeqCst)
+            + u32::from(reaches_the_limit(&events));
+        if RUN.fetch_add(1, Ordering::SeqCst) + 1 == config().cases {
+            eprintln!("of {} generated scenarios, {limited} reach the claim limit", config().cases);
         }
     }
 }
@@ -133,19 +148,24 @@ async fn a_lost_acknowledgement_does_not_run_the_handler_again() {
     assert_eq!(outcome_of(&events, "m0"), Some(&OutcomeStatus::Done));
 }
 
+/// The first claim of node 0 is delayed so that node 1 takes the message. The delay ends while node 1 still holds the
+/// lease: a claim that arrived after the lease it asked for had run out would lose that lease at once, and with the
+/// dead node's that is two lost claims, the claim limit of the simulation.
 #[tokio::test(start_paused = true)]
 async fn the_work_of_a_dead_node_moves_to_another_node() {
     let scenario = Scenario {
         nodes: 2,
         steps: vec![ms(1_000), send(1, vec![sleep_action(2_000)]), ms(5_000)],
         faults: vec![
-            fault(0, Method::ClaimDue, 0, Fault::Delay(Duration::from_secs(8))),
+            fault(0, Method::ClaimDue, 0, Fault::Delay(Duration::from_secs(2))),
             fault(1, Method::Renew, 0, Fault::Dead),
         ],
     };
     let events = run(&scenario).await;
     check_all(&events).unwrap();
     assert_eq!(outcome_of(&events, "m0"), Some(&OutcomeStatus::Done), "{events:#?}");
+    let claims = events.iter().filter(|e| matches!(e, Event::Claimed { id, .. } if id == "m0")).count();
+    assert_eq!(claims, 2, "node 1, then node 0: {events:#?}");
 }
 
 /// Found by the first long run. A delete ends the instance while a handler still runs, and a new instance at that address
@@ -236,6 +256,23 @@ async fn a_restart_whose_acknowledgement_is_lost_is_applied_once_and_ends_the_ru
     );
 }
 
+/// Scenario: A scenario that reaches the limit. The renewals of one node fail while two turns of one message run, so
+/// both lose their lease; the third claim fails the message at the limit of 2, without running its handler.
+#[tokio::test(start_paused = true)]
+async fn a_message_whose_two_claims_lose_their_lease_fails_at_the_claim_limit() {
+    let scenario = Scenario {
+        nodes: 1,
+        steps: vec![send(0, vec![sleep_action(5_000)]), ms(10_000)],
+        faults: (0..30).map(|n| fault(0, Method::Renew, n, Fault::Before)).collect(),
+    };
+    let events = run(&scenario).await;
+    check_all(&events).unwrap();
+    assert_eq!(outcome_of(&events, "m0"), Some(&OutcomeStatus::Failed), "{events:#?}");
+    assert!(reaches_the_limit(&events), "{events:#?}");
+    let runs = events.iter().filter(|e| matches!(e, Event::HandlerStart { .. })).count();
+    assert_eq!(runs, 2, "two runs lost their lease, the third claim ran nothing: {events:#?}");
+}
+
 #[test]
 fn one_scenario_with_faults_replays_the_same() {
     let scenario = Scenario {
@@ -306,7 +343,9 @@ fn generated_scenarios_reach_deep_states() {
         mark("told of a failure", &|e| matches!(e, Event::Notified { kind, .. } if kind == "Failed"));
         mark("told of a removal", &|e| matches!(e, Event::Notified { kind, .. } if kind == "Stopped"));
         *marks.entry("removed by another actor").or_insert(0) += removed_by_another(&events);
+        *marks.entry("scenarios at the claim limit").or_insert(0) += usize::from(reaches_the_limit(&events));
     }
+    eprintln!("of 200 generated scenarios, {} reach the claim limit", marks["scenarios at the claim limit"]);
     let floors = [
         ("accepted", 1200),
         ("done", 900),
@@ -326,6 +365,7 @@ fn generated_scenarios_reach_deep_states() {
         ("told of a failure", 150),
         ("told of a removal", 120),
         ("removed by another actor", 20),
+        ("scenarios at the claim limit", 1),
     ];
     for (name, floor) in floors {
         assert!(marks[name] >= floor, "{name} reached only {} times, wanted {floor}: {marks:#?}", marks[name]);

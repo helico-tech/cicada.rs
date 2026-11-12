@@ -38,6 +38,8 @@ pub const BACKOFF: Duration = Duration::from_secs(1);
 pub const MAX_ATTEMPTS: u32 = 3;
 /// The longest injected delay. It is longer than the lease, so that a commit can arrive after the lease expired.
 pub const MAX_FAULT_DELAY: Duration = Duration::from_secs(8);
+/// The claim limit of every node: low, so that generated scenarios reach it.
+pub const CLAIM_LIMIT: u32 = 2;
 
 /// How long outcomes are kept: far longer than a run, so that none disappears before the check.
 const RETENTION: Duration = Duration::from_secs(365 * 24 * 3600);
@@ -393,6 +395,7 @@ impl Runner {
                 node_id: NodeId::new(name.clone()).expect("a name is not blank"),
                 lease_ttl: LEASE_TTL,
                 poll_interval: Duration::from_millis(200),
+                max_lost_claims: Some(CLAIM_LIMIT),
                 ..NodeConfig::default()
             };
             let actor = ScriptActor { node: name, log: log.clone() };

@@ -22,6 +22,10 @@
 //! the values they return are told the outcome once its commit succeeded (the `failed` that replaced a rejected or
 //! refused commit included); without such a commit they are dropped (see [`crate::observer`]).
 //!
+//! **Claim limit.** A claimed message with as many lost claims as the node's limit is not decoded or run (ADR 0025): the
+//! turn commits it `failed` with the error `claim limit: <n> lost claims`, fenced by its epoch, without asking its retry
+//! policy, and only once that commit succeeded are the observers told its start and its end.
+//!
 //! **Cancel.** An operator's cancel request ([`crate::store::Backend::request_cancel`]) reaches the keeper through its next
 //! renewal. If the handler has not ended, the keeper aborts *work* and the turn commits `cancelled`, without effects
 //! and fenced by its epoch; the lease is kept throughout, so no other turn can start (G1). If the handler already
@@ -214,6 +218,8 @@ pub(crate) struct TurnExecutor {
     pub hosted: HashMap<TypeName, HostedType>,
     /// The node's observers, in the order they were added.
     pub observers: Observers,
+    /// The claim limit: a message with this many lost claims ends `failed` without running.
+    pub max_lost_claims: Option<u32>,
     pub lease: LeaseSettings,
     /// Wakes the node's dispatch loop: after a commit that sent messages, wrote notifications or had control effects,
     /// or one that may have applied unacknowledged.
@@ -231,6 +237,9 @@ impl TurnExecutor {
             let _ = self.store.release(&claim.actor, claim.epoch).await;
             return;
         };
+        if self.max_lost_claims.is_some_and(|max| claim.message.lost_claims >= max) {
+            return self.fail_at_claim_limit(&claim, claim_sent).await;
+        }
         let observed = self.observers.start(&claim.actor, &claim.message, claim.claimed_at);
         let info = Arc::new(TurnInfo {
             self_address: claim.actor.clone(),
@@ -301,6 +310,37 @@ impl TurnExecutor {
         }
         keeper.abort();
         overtime.abort();
+    }
+
+    /// Fails a message that reached the claim limit, without decoding or running it: commits `failed` with the error of
+    /// the limit, fenced by the claim's epoch, and then tells the observers the start and the end. When that commit does
+    /// not succeed they are told nothing, and the next claim finds one more lost claim.
+    async fn fail_at_claim_limit(&self, claim: &Claim, claim_sent: Instant) {
+        let lost = claim.message.lost_claims;
+        tracing::warn!(
+            actor = %claim.actor,
+            message = %claim.message.id,
+            lost_claims = lost,
+            "Message {} to {} has {lost} lost claims, as many as the claim limit allows: it fails without running",
+            claim.message.id,
+            claim.actor
+        );
+        let outcome = TurnOutcome::Failed(format!("claim limit: {lost} lost claims"));
+        let guard = LeaseGuard::new(claim_sent + self.lease.ttl - self.lease.safety_margin());
+        let request = CommitRequest::new(claim.actor.clone(), claim.epoch, claim.message.id.clone(), outcome.clone());
+        match self.commit_with_retry(claim, &guard, request).await {
+            CommitEnd::Answered(CommitResult::Committed { sent, .. }) => {
+                self.wake_after(&outcome, &sent, true);
+                self.observers.start(&claim.actor, &claim.message, claim.claimed_at).ended(&outcome, &sent);
+            }
+            CommitEnd::Answered(other) => {
+                tracing::info!("Claim-limit commit of {} for {}: {other:?}", claim.actor, claim.message.id)
+            }
+            CommitEnd::Refused(reason) => {
+                tracing::error!("Claim-limit commit of {} for {} refused: {reason}", claim.actor, claim.message.id)
+            }
+            CommitEnd::Abandoned => {}
+        }
     }
 
     /// The keeper: renews the lease, aborts `work` when it is lost, and aborts it when a renewal brings a cancel request
