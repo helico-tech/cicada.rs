@@ -74,13 +74,13 @@ pub async fn retention_the_policy_is_stored_with_the_message_and_kept_in_its_env
         let c = t.claim_one().await;
         t.commit_ok(ending(&c, TurnOutcome::Rescheduled { delivery: Delivery::Now, error: "e".into() })).await;
         if t.fixture.supports_reopen() {
-            t.fixture.reopen().await;
+            t.reopen().await;
         }
         let c = t.claim_one().await;
         assert_eq!(c.message.retention.as_ref(), Some(&policy));
         t.commit_ok(done(&c)).await;
         if t.fixture.supports_reopen() {
-            t.fixture.reopen().await;
+            t.reopen().await;
         }
         let outcome = outcome_record(&*t.store(), &m.id).await.expect("an outcome");
         assert_eq!(outcome.envelope.retention.as_ref(), Some(&policy));

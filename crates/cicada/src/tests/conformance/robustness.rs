@@ -119,7 +119,7 @@ pub async fn time_store_time_stays_monotonic_when_the_underlying_clock_steps_bac
         t.commit_ok(done(&c2)).await;
         assert_eq!(ids(&t.pending(&a).await), vec![delayed.id.clone()]);
         if t.fixture.supports_reopen() {
-            t.fixture.reopen().await;
+            t.reopen().await;
             assert!(t.store().now().await.unwrap() >= t1, "store time stays monotonic across a restart");
         }
     })

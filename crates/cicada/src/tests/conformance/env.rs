@@ -36,6 +36,10 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 /// second of real time on PostgreSQL, which a slow machine can use up between two calls.
 pub const LONG_LEASE: Duration = Duration::from_secs(3600);
 
+/// The most peers a case may hold; [`Env::concurrently`] panics above it, on every fixture. On PostgreSQL every peer
+/// is a connection, and `PARALLEL_TESTS` in `tests/postgres/common.rs` is sized for this many per case.
+pub const MAX_PEERS: usize = 16;
+
 /// Runs `block` against a fresh fixture with the long retention and the default timeout, closing the fixture
 /// afterwards.
 pub async fn store_test<B: FixtureFactory>(backend: &B, block: impl AsyncFnOnce(&mut Env<B::Fixture>)) {
@@ -266,13 +270,14 @@ impl<F: StoreFixture> Env<F> {
     /// and returns their results in order. A panic in one copy fails the case.
     ///
     /// The peers are opened when a call first needs them and reused by every later call of the case, so a case holds
-    /// as many peers as its largest call, however many rounds it runs: on PostgreSQL every peer is a store with a
-    /// connection of its own, and the suite is sized for at most 16 per case.
+    /// as many peers as its largest call, however many rounds it runs. A `count` above [`MAX_PEERS`] panics: on
+    /// PostgreSQL every peer is a store with a connection of its own.
     pub async fn concurrently<T, Fut>(&self, count: usize, block: impl Fn(usize, Arc<dyn Backend>) -> Fut) -> Vec<T>
     where
         Fut: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
+        assert!(count <= MAX_PEERS, "concurrently({count}) needs more than the {MAX_PEERS} peers a case may hold");
         let opened = self.peers.lock().unwrap_or_else(|e| e.into_inner()).len();
         let mut new = Vec::new();
         for _ in opened..count {
