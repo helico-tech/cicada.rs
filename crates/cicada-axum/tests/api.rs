@@ -355,8 +355,8 @@ async fn send_errors() {
     assert_eq!(not_allowed.headers[header::ALLOW], "GET, PUT, DELETE");
 }
 
-/// undecodable-messages, Scenario: A send with a payload that does not fit. The schema refuses it, and the hosting node
-/// adds the decoder's reason, once.
+/// undecodable-messages, Scenario: A send with a payload that does not fit. The schema refuses it on the hosting node,
+/// which says so once and runs no decoder.
 #[tokio::test(start_paused = true)]
 async fn a_payload_that_does_not_fit_is_refused_with_its_reason_said_once() {
     let app = app().await;
@@ -365,14 +365,11 @@ async fn a_payload_that_does_not_fit_is_refused_with_its_reason_said_once() {
     assert_problem(&refused, 422, pt::INVALID_PAYLOAD);
     let detail = refused.json()["detail"].as_str().unwrap().to_owned();
     let schema = "Payload of 'Add' does not match the registered schema; GET /types/counter has it";
-    assert_eq!(
-        detail,
-        format!(r#"{schema}. Payload of 'Add' cannot be decoded: invalid type: string "x", expected i32"#)
-    );
-    assert_eq!(detail.matches("cannot be decoded").count(), 1, "{detail}");
+    assert_eq!(detail, schema);
+    assert_eq!((detail.matches("does not match").count(), detail.matches("'Add'").count()), (1, 1), "{detail}");
     let not_object = post(&app, "/actors/counter/a/messages", r#"{"type": "Add", "payload": [1]}"#).await;
     assert_problem(&not_object, 422, pt::INVALID_PAYLOAD);
-    assert_eq!(not_object.json()["detail"], format!("{schema}. Payload of 'Add' must be a JSON object"));
+    assert_eq!(not_object.json()["detail"], schema);
 }
 
 // ---- GET /actors/{path}/messages ----

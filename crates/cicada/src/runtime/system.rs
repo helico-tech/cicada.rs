@@ -726,9 +726,8 @@ impl ActorSystem {
     /// on every node, after the registered type and the `null` check, and before what only a node that hosts the type
     /// checks (the address, then the decoder), so a state that does not match gets the same answer on every node. Its
     /// refusal is [`CreateActorResult::InvalidState`], "State does not match the registered schema; GET /types/`type`
-    /// has it", to which a node that hosts the type adds the decoder's reason when the decoder refuses the state too
-    /// (cut at [`MAX_REFUSAL_DETAIL`] characters); nothing is created. The HTTP door of `cicada-axum` calls this (ADR
-    /// 0026).
+    /// has it", on every node, and nothing else runs: no decoder, and nothing is created. The HTTP door of `cicada-axum`
+    /// calls this (ADR 0026).
     pub async fn create_actor_checked(
         &self,
         address: &ActorAddress,
@@ -745,11 +744,8 @@ impl ActorSystem {
         }
         let hosted = self.hosted_for(&init, address.type_name());
         if !check(resolved.contract.state_schema(), &state) {
-            let mut error =
+            let error =
                 format!("State does not match the registered schema; GET /types/{} has it", address.type_name());
-            if let Some(Err(e)) = hosted.map(|h| h.actor.check_state(&state)) {
-                error = format!("{error}. State cannot be decoded: {e}");
-            }
             return Ok(CreateActorResult::InvalidState(refusal(error)));
         }
         if let Some(problem) = hosted.and_then(|h| h.actor.address_problem(address)) {
@@ -878,9 +874,8 @@ impl ActorSystem {
     /// [`Self::send_message`] with `check`, which gets the registered schema of `message_type` and `payload`. It runs on
     /// every node, after the repeated id, the registered type and the message type, and on a node that hosts the type
     /// before the decoder. Its refusal is [`SendResult::InvalidPayload`], "Payload of '`message_type`' does not match
-    /// the registered schema; GET /types/`type` has it", to which a node that hosts the type adds the decoder's reason
-    /// when the decoder refuses the payload too (cut at [`MAX_REFUSAL_DETAIL`] characters); nothing is stored. The HTTP
-    /// door of `cicada-axum` calls this (ADR 0026).
+    /// the registered schema; GET /types/`type` has it", on every node, and nothing else runs: no decoder, and nothing is
+    /// stored. The HTTP door of `cicada-axum` calls this (ADR 0026).
     pub async fn send_message_checked(
         &self,
         to: &ActorAddress,
@@ -907,13 +902,8 @@ impl ActorSystem {
             return Ok(SendResult::UnknownType { message_type: message_type.to_owned(), type_name: name.clone() });
         };
         if !check(schema, &payload) {
-            let mut error =
+            let error =
                 format!("Payload of '{message_type}' does not match the registered schema; GET /types/{name} has it");
-            if let Some(h) = self.hosted_for(&init, name)
-                && let Err(e) = h.actor.check_payload(message_type, &payload)
-            {
-                error = format!("{error}. {e}");
-            }
             return Ok(SendResult::InvalidPayload { message_type: message_type.to_owned(), error: refusal(error) });
         }
         let hosted = self.hosted_for(&init, name).is_some();

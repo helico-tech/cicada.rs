@@ -1,6 +1,6 @@
-//! A refused request costs time and memory in proportion to its size (http-schema-check). A counting allocator measures
-//! the most bytes held at once while the door refuses a request at the check (and, on a node that hosts the type, the
-//! decoder after it), above the same request refused before the check, on a node that hosts the types and on one that
+//! A refusal by the schema costs time and memory in proportion to the size of the request (http-schema-check). A
+//! counting allocator measures the most bytes held at once while the door refuses a request at the check, after which
+//! nothing else runs, above the same request refused before the check, on a node that hosts the types and on one that
 //! does not; each refusal is timed. A test binary of its own, with one test, so that no other test allocates meanwhile.
 
 use std::time::{Duration, Instant};
@@ -52,6 +52,15 @@ struct Node {
     next: Option<Box<Node>>,
 }
 
+/// An untagged enum whose variants share a field: the decoder of serde tries every variant at every level.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+enum Tree {
+    Leaf(i64),
+    Pair { l: Box<Tree>, r: Box<Tree> },
+    Note { l: Box<Tree>, note: Option<String> },
+}
+
 /// Operators whose variants share the names of their fields: a `oneOf` at every level.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "op")]
@@ -98,6 +107,7 @@ test_type!(Orders, OrderMsg, OrderActor, "orders", Order, Order);
 test_type!(Baskets, BasketMsg, BasketActor, "baskets", Basket, Basket);
 test_type!(Nodes, NodeMsg, NodeActor, "nodes", Node, Node);
 test_type!(Calcs, CalcMsg, CalcActor, "calcs", Expr, Expr);
+test_type!(Trees, TreeMsg, TreeActor, "trees", Tree, Tree);
 
 fn object(fields: Vec<(&str, Value)>) -> Value {
     Value::Object(fields.into_iter().map(|(k, v)| (k.to_owned(), v)).collect::<Map<_, _>>())
@@ -123,6 +133,15 @@ fn node(first_level_matches: bool) -> Value {
         node = level(item, node);
     }
     node
+}
+
+/// A tree `depth` deep with one wrong leaf.
+fn tree(depth: usize) -> Value {
+    let mut value = json!("x");
+    for _ in 0..depth {
+        value = object(vec![("l", value), ("r", json!(1))]);
+    }
+    value
 }
 
 /// An expression `depth` deep with one wrong leaf.
@@ -156,12 +175,18 @@ async fn call(app: &Router, method: &str, uri: &str, body: String) -> (u16, Stri
 
 /// Scenarios: A request with many mismatches; A small nested value with one mistake. The check adds at most a few
 /// times the body (and what compiling the schema takes) and answers within seconds, on both nodes, for a payload and a
-/// state. Asking the validator for a place held hundreds of MiB for these, and took minutes for the expression.
+/// state. Asking the validator for a place held hundreds of MiB for these and took minutes for the expression, and the
+/// decoder of a hosting node took seconds for the tree, doubling per level.
 #[tokio::test]
 async fn a_refused_request_costs_time_and_memory_in_proportion_to_its_size() {
     let store = Store::memory();
-    let host =
-        ActorSystem::builder(store.clone()).host(OrderActor).host(BasketActor).host(NodeActor).host(CalcActor).build();
+    let host = ActorSystem::builder(store.clone())
+        .host(OrderActor)
+        .host(BasketActor)
+        .host(NodeActor)
+        .host(CalcActor)
+        .host(TreeActor)
+        .build();
     host.initialize().await.unwrap(); // checks and decodes at the door, runs no turn
     let other = ActorSystem::builder(store).build();
     let nodes = [("the hosting node", cicada_axum::actor_api(host)), ("the other node", cicada_axum::actor_api(other))];
@@ -171,6 +196,7 @@ async fn a_refused_request_costs_time_and_memory_in_proportion_to_its_size() {
         ("baskets", object(vec![("id", json!("b")), ("batch", Value::Null)])),
         ("nodes", json!({"items": []})),
         ("calcs", json!({"op": "Lit", "v": 1})),
+        ("trees", json!(1)),
     ];
     for (name, state) in small {
         assert_eq!(call(&nodes[0].1, "PUT", &format!("/actors/{name}/a"), created(state)).await.0, 201);
@@ -179,12 +205,13 @@ async fn a_refused_request_costs_time_and_memory_in_proportion_to_its_size() {
         object(vec![("type", json!(message_type)), ("payload", object(vec![("v", value)]))]).to_string()
     };
     type Case = (&'static str, &'static str, fn() -> Value);
-    let cases: [Case; 5] = [
+    let cases: [Case; 6] = [
         ("an order of 520,000 wrong lines", "orders", order),
         ("an optional batch of 520,000 wrong lines", "baskets", basket),
         ("100 levels of a list, wrong in every level", "nodes", || node(false)),
         ("100 levels of a list, wrong below the first level", "nodes", || node(true)),
         ("an expression 30 deep with one wrong leaf", "calcs", || expr(30)),
+        ("an untagged tree 24 deep with one wrong leaf", "trees", || tree(24)),
     ];
     for (what, name, value) in cases {
         for (node, app) in &nodes {
@@ -209,13 +236,7 @@ async fn a_refused_request_costs_time_and_memory_in_proportion_to_its_size() {
                 assert!(detail.contains("does not match the registered schema; GET /types/"), "{case}: {detail:.300}");
                 let added = held.saturating_sub(before);
                 println!("{case}, a body of {size} bytes: {took:?}; held {before} before the check, {held} at it");
-                // A hosting node also decodes, and its decoder copies a payload as JSON values first: linear, about
-                // 17 times the text of a list of short items. The check itself adds next to nothing.
-                let times = if *node == "the hosting node" && kind == "a payload" { 24 } else { 4 };
-                assert!(
-                    added < times * size + (1 << 20),
-                    "{case}: the refusal added {added} bytes for a body of {size}"
-                );
+                assert!(added < 4 * size + (1 << 20), "{case}: the refusal added {added} bytes for a body of {size}");
                 assert!(took < Duration::from_secs(10), "{case}: the refusal took {took:?}");
             }
         }

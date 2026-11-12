@@ -140,10 +140,10 @@ async fn wait_for(app: &Router, id: &str, status: &str) {
     eventually(async || get_json(app, &format!("/messages/{id}")).await["status"] == status).await;
 }
 
-/// Scenarios: A node that does not host the type; A node that hosts the type. The same status and problem type on both;
-/// the hosting node's detail adds the decoder's reason, the other node's names no place.
+/// Scenarios: A node that does not host the type; A node that hosts the type. The same answer and detail on both, which
+/// names no place: after a refusal by the schema the hosting node runs no decoder.
 #[tokio::test(start_paused = true)]
-async fn a_payload_that_does_not_match_is_refused_by_every_node_and_the_hosting_node_adds_the_decoders_reason() {
+async fn a_payload_that_does_not_match_is_refused_by_every_node_with_the_same_detail_and_not_stored() {
     let n = nodes().await;
     let other = post(&n.other, SEND, r#"{"id": "m-other", "type": "Add", "payload": {"n": "x"}}"#).await;
     assert_problem(&other, 422, pt::INVALID_PAYLOAD);
@@ -152,8 +152,7 @@ async fn a_payload_that_does_not_match_is_refused_by_every_node_and_the_hosting_
 
     let host = post(&n.host, SEND, r#"{"id": "m-host", "type": "Add", "payload": {"n": "x"}}"#).await;
     assert_problem(&host, 422, pt::INVALID_PAYLOAD);
-    let decoder = r#"Payload of 'Add' cannot be decoded: invalid type: string "x", expected i32"#;
-    assert_eq!(detail(&host), format!("{}. {decoder}", refused_payload("Add", "counter")));
+    assert_eq!(detail(&host), detail(&other));
     assert_problem(&get(&n.host, "/messages/m-host").await, 404, pt::NO_SUCH_MESSAGE);
 }
 
@@ -176,20 +175,19 @@ async fn a_field_that_the_type_does_not_know_is_refused() {
     assert_eq!(detail(&other), refused_payload("Strict", "form"));
     let host = post(&n.host, "/actors/form/f/messages", body).await;
     assert_problem(&host, 422, pt::INVALID_PAYLOAD);
-    let decoder = "Payload of 'Strict' cannot be decoded: unknown field `extra`, expected `n`";
-    assert_eq!(detail(&host), format!("{}. {decoder}", refused_payload("Strict", "form")));
+    assert_eq!(detail(&host), detail(&other));
 }
 
-/// Scenario: A required field is missing: refused by both nodes, named by the hosting node's decoder.
+/// Scenario: A required field is missing: refused by both nodes with the same detail.
 #[tokio::test(start_paused = true)]
-async fn a_missing_required_field_is_refused_and_named_by_the_hosting_node() {
+async fn a_missing_required_field_is_refused_by_every_node() {
     let n = nodes().await;
     let other = post(&n.other, SEND, r#"{"type": "Add", "payload": {}}"#).await;
     assert_problem(&other, 422, pt::INVALID_PAYLOAD);
     assert_eq!(detail(&other), refused_payload("Add", "counter"));
     let host = post(&n.host, SEND, r#"{"type": "Add", "payload": {}}"#).await;
     assert_problem(&host, 422, pt::INVALID_PAYLOAD);
-    assert!(detail(&host).ends_with("cannot be decoded: missing field `n`"), "{}", detail(&host));
+    assert_eq!(detail(&host), detail(&other));
 }
 
 /// Scenario: A message type the contract does not have.
@@ -304,8 +302,8 @@ async fn a_state_schema_that_cannot_be_used_is_not_enforced() {
 }
 
 /// The order of a create (design decision 1): the schema before what only a hosting node checks, so a state that does
-/// not match gets the same status and problem type on every node, the hosting node's detail with the decoder's reason;
-/// an address that only a hosting node can judge is judged after it.
+/// not match gets the same answer and detail on every node; an address that only a hosting node can judge is judged
+/// after it.
 #[tokio::test(start_paused = true)]
 async fn a_state_that_does_not_match_gets_the_same_answer_on_every_node_also_under_an_address_the_ref_refuses() {
     let n = nodes().await;
@@ -315,14 +313,13 @@ async fn a_state_that_does_not_match_gets_the_same_answer_on_every_node_also_und
     assert_problem(&host, 422, pt::INVALID_STATE);
     assert_problem(&other, 422, pt::INVALID_STATE);
     assert_eq!(detail(&other), refused_state("maintenance.cleanup"));
-    let decoder = "State cannot be decoded: unknown field `oops`, there are no fields";
-    assert_eq!(detail(&host), format!("{}. {decoder}", refused_state("maintenance.cleanup")));
+    assert_eq!(detail(&host), detail(&other));
     assert_problem(&put(&n.host, path, r#"{"state": {}}"#).await, 422, pt::INVALID_ADDRESS);
     assert_problem(&get(&n.other, path).await, 404, pt::NO_SUCH_INSTANCE);
 }
 
 /// Scenarios: A very long value; A very long value that only the decoder refuses. The schema's sentence quotes nothing
-/// of the value; the decoder's reason may, and is cut.
+/// of the value; the reason of the decoder, for a value the schema allows, may, and is cut.
 #[tokio::test(start_paused = true)]
 async fn the_detail_of_a_very_long_value_quotes_none_of_it_or_is_cut_with_a_mark() {
     let n = nodes().await;
@@ -335,13 +332,7 @@ async fn the_detail_of_a_very_long_value_quotes_none_of_it_or_is_cut_with_a_mark
     }
     let body = json!({"type": "Add", "payload": {"n": "x".repeat(200_000)}}).to_string();
     assert_eq!(detail(&post(&n.other, SEND, &body).await), refused_payload("Add", "counter"));
-    let detail_of_host = detail(&post(&n.host, SEND, &body).await);
-    assert_eq!(detail_of_host.chars().count(), cicada::runtime::MAX_REFUSAL_DETAIL);
-    let start = format!(
-        r#"{}. Payload of 'Add' cannot be decoded: invalid type: string "xxx"#,
-        refused_payload("Add", "counter")
-    );
-    assert!(detail_of_host.starts_with(&start) && detail_of_host.ends_with(" … (cut)"), "{detail_of_host:.200}");
+    assert_eq!(detail(&post(&n.host, SEND, &body).await), refused_payload("Add", "counter"));
     let body = json!({"type": "Paint", "payload": {"shade": "q".repeat(200_000)}}).to_string();
     let reply = post(&n.host, "/actors/form/f/messages", &body).await;
     assert_problem(&reply, 422, pt::INVALID_PAYLOAD);
@@ -383,8 +374,7 @@ async fn a_value_at_the_deepest_level_the_parser_allows_is_checked_like_any_othe
     assert_problem(&host, 422, pt::INVALID_PAYLOAD);
     assert_problem(&other, 422, pt::INVALID_PAYLOAD);
     assert_eq!(detail(&other), refused_payload("Nest", "form"));
-    let decoder = r#"Payload of 'Nest' cannot be decoded: invalid type: string "x", expected i32"#;
-    assert_eq!(detail(&host), format!("{}. {decoder}", refused_payload("Nest", "form")));
+    assert_eq!(detail(&host), detail(&other));
     // One level deeper is more than the parser takes.
     assert_problem(&post(&n.other, path, &nest(125, "1")).await, 400, pt::BAD_REQUEST);
 }
