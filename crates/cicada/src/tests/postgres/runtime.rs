@@ -110,7 +110,10 @@ impl Actor for PlayerActor {
                 }
                 turn.state_mut().slow += 1;
             }
-            PlayerMsg::Ping => turn.state_mut().pings += 1,
+            PlayerMsg::Ping => {
+                self.guarded(&name).await; // recorded, so that the test of serial turns under load sees an overlap
+                turn.state_mut().pings += 1;
+            }
         }
         Ok(())
     }

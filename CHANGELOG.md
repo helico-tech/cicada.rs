@@ -34,6 +34,10 @@ the workspace of Cicada and reaches only its crates.
     `Schedule`.
 - The table of the ADRs and the design questions moved from the README to `docs/adr/README.md`, where a change adds
   its ADR's row from now on; the design notes and the known limitations moved to `docs/architecture.md`.
+- "Building and testing" in the README keeps four commands. The rest now lives only in [AGENTS.md](AGENTS.md): the
+  test of `cicada-app` alone, clippy, the long randomised run (`PROPTEST_CASES`), that the PostgreSQL tests are
+  skipped without `CICADA_PG_URL`, the conformance suite, and that CI builds `cicada` and `cicada-app` with each
+  feature alone.
 - The operations guide, the architecture, `AGENTS.md`, the rules of `openspec/config.yaml` and the proposal of
   `value-depth-limit` point into the guides instead of the README.
 - The contract snapshots of the ready-made actors moved from `crates/cicada-actors/tests/contracts` to

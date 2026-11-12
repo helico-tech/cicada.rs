@@ -101,6 +101,14 @@ fn the_contracts_of_the_three_types_match_their_references() {
     }
 }
 
+/// A temporary folder that holds the reference of `contract`, as the main test writes it, so that the scenarios below
+/// do not depend on the files in `docs/reference/contracts`, which a first run with the update variable writes.
+fn folder_with(contract: &Contract) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(format!("{}.json", contract.type_name())), reference_text(contract)).unwrap();
+    dir
+}
+
 /// `contract` with `edit` applied to its JSON.
 fn edited(contract: &Contract, edit: impl FnOnce(&mut Value)) -> Contract {
     let mut json = contract.to_json();
@@ -117,7 +125,8 @@ fn a_renamed_field_of_the_state_of_the_supervisor_names_the_change() {
         let children = properties.remove("children").expect("the state has children");
         properties.insert("kids".into(), children);
     });
-    let error = check_references(&contracts_dir(), &[renamed], false).unwrap_err();
+    let dir = folder_with(&supervisor);
+    let error = check_references(dir.path(), &[renamed], false).unwrap_err();
     assert!(error.contains("cicada.supervisor") && error.contains("state schema changed"), "{error}");
     assert!(error.contains("CICADA_UPDATE_CONTRACTS=true"), "{error}");
 }
@@ -130,11 +139,10 @@ fn a_reworded_doc_comment_of_the_topic_fails_and_the_update_writes_the_new_text(
         json["messages"]["Publish"]["description"] = json!("Publishes a message, reworded.");
     });
     assert_eq!(reworded.hash(), topic.hash(), "a description is not in the hash");
-    let error = check_references(&contracts_dir(), std::slice::from_ref(&reworded), false).unwrap_err();
+    let dir = folder_with(&topic);
+    let error = check_references(dir.path(), std::slice::from_ref(&reworded), false).unwrap_err();
     assert!(error.contains("cicada.topic") && error.contains("a description (doc comment) changed"), "{error}");
 
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::copy(contracts_dir().join("cicada.topic.json"), dir.path().join("cicada.topic.json")).unwrap();
     check_references(dir.path(), std::slice::from_ref(&reworded), true).unwrap();
     let rewritten = std::fs::read_to_string(dir.path().join("cicada.topic.json")).unwrap();
     assert!(rewritten.contains("Publishes a message, reworded."), "{rewritten}");

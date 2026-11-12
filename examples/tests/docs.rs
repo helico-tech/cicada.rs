@@ -114,8 +114,6 @@ fn every_guarantee_names_tests_that_exist() {
     let architecture = read(&root.join("docs/architecture.md"));
     let problems = check_guarantees(&table, &architecture, &root);
     assert!(problems.is_empty(), "The table of guarantees is wrong:\n  {}", problems.join("\n  "));
-    let rows = rows(&table);
-    assert_eq!(rows.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), REQUIRED, "one row each, in order");
 }
 
 /// A root with one Rust file, `tests.rs`, holding `functions`, and a table whose every row names `tests.rs::t` but the
@@ -163,6 +161,17 @@ fn a_guarantee_of_the_architecture_without_a_row_is_named() {
         check_guarantees(&without_tests, ARCHITECTURE, dir.path()),
         ["S5: the row names no test (`path::function`)"]
     );
+}
+
+/// A guarantee that the architecture gains passes once the table has a row for it that names a test.
+#[test]
+fn a_guarantee_added_to_the_architecture_and_the_table_passes() {
+    let (dir, table) = fixture(&["t", "s5_case"]);
+    let architecture = format!("{ARCHITECTURE}| S11 Something new | … |\n");
+    let with_row = format!("{table}| S11 Something new | What it holds. | `tests.rs::t` |\n");
+    assert_eq!(check_guarantees(&with_row, &architecture, dir.path()), Vec::<String>::new());
+    let twice = format!("{with_row}| S11 Something new | Again. | `tests.rs::t` |\n");
+    assert_eq!(check_guarantees(&twice, &architecture, dir.path()), ["S11 has 2 rows in docs/guarantees.md"]);
 }
 
 /// Scenario: A table that cannot be read.
