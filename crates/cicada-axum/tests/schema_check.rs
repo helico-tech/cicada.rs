@@ -10,7 +10,6 @@ use axum::Router;
 use cicada::api::problem_types as pt;
 use cicada::prelude::*;
 use cicada::retention::Retention;
-use cicada::store::{MessageStatus, OutcomeStatus};
 use cicada::time::Timestamp;
 use cicada_axum::actor_api;
 use common::*;
@@ -464,29 +463,29 @@ fn nest(levels: usize, item: &str) -> String {
     format!(r#"{{"type": "Nest", "payload": {{"node": {node}}}}}"#)
 }
 
-/// Scenario: A value at the deepest level the parser allows (decision 11). The body has 127 levels, the most the JSON
-/// parser of a request lets through, so the payload has 126; it is checked on a stack of its own on both nodes, and the
-/// hosting node then decodes it and handles it.
+/// Scenario: A value at the depth limit (ADR 0029). The payload has 64 levels, the most the door takes; it is checked on
+/// a stack of its own on both nodes, and the hosting node then decodes it and handles it. One level deeper is `400`,
+/// before the schema check.
 #[tokio::test(start_paused = true)]
-async fn a_value_at_the_deepest_level_the_parser_allows_is_checked_like_any_other() {
+async fn a_value_at_the_depth_limit_is_checked_like_any_other_and_one_level_deeper_is_400() {
     let n = nodes().await;
     put(&n.host, "/actors/form/f", r#"{"state": {}}"#).await;
     let path = "/actors/form/f/messages";
     for app in [&n.other, &n.host] {
-        let id = MessageId::new(send_id(app, path, &nest(124, "1")).await).unwrap();
-        // Read through the node: the view of the message over HTTP nests the payload deeper than a parser takes.
-        eventually(async || {
-            let status = n.other_system.status(&id).await.unwrap();
-            matches!(status, Some(MessageStatus::Finished(ref o)) if o.status == OutcomeStatus::Done)
-        })
-        .await;
+        let id = send_id(app, path, &nest(62, "1")).await;
+        wait_for(app, &id, "done").await; // the view of the message is two levels deeper, which a parser reads
     }
-    let host = post(&n.host, path, &nest(124, r#""x""#)).await;
-    let other = post(&n.other, path, &nest(124, r#""x""#)).await;
+    let host = post(&n.host, path, &nest(62, r#""x""#)).await;
+    let other = post(&n.other, path, &nest(62, r#""x""#)).await;
     assert_problem(&host, 422, pt::INVALID_PAYLOAD);
     assert_problem(&other, 422, pt::INVALID_PAYLOAD);
     assert_eq!(detail(&other), refused_payload("Nest", "form"));
     assert_eq!(detail(&host), detail(&other));
-    // One level deeper is more than the parser takes.
-    assert_problem(&post(&n.other, path, &nest(125, "1")).await, 400, pt::BAD_REQUEST);
+    for app in [&n.other, &n.host] {
+        for item in ["1", r#""x""#] {
+            let deeper = post(app, path, &nest(63, item)).await;
+            assert_problem(&deeper, 400, pt::BAD_REQUEST);
+            assert_eq!(detail(&deeper), "The payload is nested deeper than 64 levels");
+        }
+    }
 }

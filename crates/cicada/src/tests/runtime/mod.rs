@@ -21,3 +21,4 @@ mod turn_outcomes;
 mod turn_structure;
 mod typed_effects;
 mod unhandled;
+mod value_depth;

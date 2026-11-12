@@ -39,13 +39,14 @@ impl Retrieve for NoRetriever {
 }
 
 /// The stack of the thread that checks a value (decision 11). The stack the validator needs per level is set by the
-/// steps of the schema between two levels of a type that refers to itself; the JSON parser of a request lets through a
-/// payload or a state of 126 levels. It is address space: only the pages the check touches are used.
+/// steps of the schema between two levels of a type that refers to itself, and a schema can be deep; the door takes a
+/// payload or a state of at most 64 levels (ADR 0029), and a sample can be deeper. It is address space: only the pages
+/// the check touches are used.
 const CHECK_STACK: usize = 64 << 20;
 
-/// Runs `work` on a scoped thread of its own with [`CHECK_STACK`] of stack, so that no nesting the parser lets through
-/// overflows the stack of a thread of the runtime, whatever the type. A thread that cannot be started fails the request
-/// (500), as the check must not be skipped.
+/// Runs `work` on a scoped thread of its own with [`CHECK_STACK`] of stack, so that no value the door or a sample check
+/// takes overflows the stack of a thread of the runtime, whatever the type. A thread that cannot be started fails the
+/// request (500), as the check must not be skipped.
 fn on_own_stack<T: Send>(work: impl FnOnce() -> T + Send) -> T {
     std::thread::scope(|scope| {
         let thread = std::thread::Builder::new().name("cicada-schema-check".to_owned()).stack_size(CHECK_STACK);
@@ -325,17 +326,17 @@ mod tests {
         assert!(took < std::time::Duration::from_secs(30), "the check took {took:?}");
     }
 
-    /// Scenarios: A value at the deepest level the parser allows; A type with several schema steps between its levels
-    /// (decision 11). Three such types, at 21 and 24 levels (where, with the first validator, a check on a default stack
-    /// ended the process in a test build) and at 126, the deepest payload or state a request body holds; as a state and
-    /// as a payload, matching and not. Through the check of the door and that of the sample checks, on a thread with the
-    /// default stack of 2 MiB.
+    /// Scenarios: A value at the depth limit; A type with several schema steps between its levels (decision 11). Three
+    /// such types, at 21 and 24 levels (where, with the first validator, a check on a default stack ended the process in
+    /// a test build), at 64, the deepest payload or state the door takes, and at 126, which a sample can hold; as a state
+    /// and as a payload, matching and not. Through the check of the door and that of the sample checks, on a thread with
+    /// the default stack of 2 MiB.
     #[test]
     fn a_value_is_checked_on_a_stack_of_its_own_whatever_its_type_and_depth() {
         fn shape<T: Shape>() {
             let state = cicada::schema::root_schema::<T>();
             let put = cicada::schema::message_schemas::<PutMsg<T>>().unwrap().remove("Put").unwrap();
-            for levels in [21, 24, 126] {
+            for levels in [21, 24, 64, 126] {
                 for ok in [true, false] {
                     for (schema, value) in [(&state, build::<T>(levels, ok)), (&put, payload::<T>(levels, ok))] {
                         assert_eq!(check(schema, &value, T::NAME), ok, "the door: {} at {levels} levels", T::NAME);

@@ -259,6 +259,38 @@ async fn bulk_retry_skips_ineligible_messages_without_counting_them() {
     assert_eq!(by_filter.json(), json!({"affected": 0, "more": false}), "already retried");
 }
 
+/// A value `levels` deep: a chain of arrays around a number, built without recursion.
+fn nested(levels: usize) -> serde_json::Value {
+    (0..levels).fold(json!(1), |inner, _| serde_json::Value::Array(vec![inner]))
+}
+
+/// Scenario: A retried notification at the limit (value-depth). A message with a payload of 64 levels fails; the store
+/// writes its `Failed` one level deeper, 65, and the watcher fails that too. A retry of the notification would write a
+/// message beyond the limit: `409`, and nothing is written.
+#[tokio::test(start_paused = true)]
+async fn a_retry_of_a_notification_beyond_the_depth_limit_is_not_retryable() {
+    let system = node_with(memory_store(), |b| b.host(CounterActor).host(WatcherActor)).await;
+    let app = actor_api(system);
+    put(&app, "/actors/counter/a", r#"{"state": {}}"#).await;
+    put(&app, "/actors/watcher/w", r#"{"state": {"refuse": true}}"#).await;
+    assert_eq!(put(&app, "/watches", r#"{"target": "counter/a", "watcher": "watcher/w"}"#).await.status, 201);
+    // `extra` is no field of `Fail`, which neither the schema nor the decoder refuses: a payload 64 levels deep.
+    let body = json!({"type": "Fail", "payload": {"reason": "no", "extra": nested(63)}}).to_string();
+    let failed = send_id(&app, "/actors/counter/a/messages", &body).await;
+    let page = eventually_json(&app, "/outcomes?status=failed&prefix=watcher/", |v| !items(v).is_empty()).await;
+    let notification = items(&page)[0]["id"].as_str().unwrap().to_owned();
+    assert_eq!(items(&page)[0]["message"]["payload"]["messageId"], failed.as_str());
+
+    let reply = post(&app, &format!("/messages/{notification}/retry"), "").await;
+    assert_problem(&reply, 409, pt::MESSAGE_NOT_RETRYABLE);
+    let detail = format!("Message {notification} cannot be retried: The payload is nested deeper than 64 levels");
+    assert_eq!(reply.json()["detail"], detail.as_str());
+    let caused = get_json(&app, &format!("/messages/{notification}/caused")).await;
+    assert!(items(&caused).is_empty(), "nothing is written");
+    let retried = post(&app, &format!("/messages/{failed}/retry"), "").await;
+    assert_eq!(retried.status, StatusCode::ACCEPTED, "the failed message itself is within the limit");
+}
+
 #[tokio::test(start_paused = true)]
 async fn the_read_router_serves_the_read_routes() {
     let system = node(memory_store()).await;

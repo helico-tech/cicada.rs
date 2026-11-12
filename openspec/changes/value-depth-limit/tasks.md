@@ -7,20 +7,20 @@ written as the section "Tests of values from before" of `design.md` says. Runtim
 
 ## 1. The limit
 
-- [ ] 1.1 The check [1, 2]: `runtime::limits::MAX_DEPTH = 64`, and `check_json` finds a NUL character and measures the
+- [x] 1.1 The check [1, 2]: `runtime::limits::MAX_DEPTH = 64`, and `check_json` finds a NUL character and measures the
       depth in one walk that stops at the first level beyond the limit, with the error `The <what> is nested deeper
       than 64 levels`. Verify: unit tests for 64 levels accepted and 65 refused (arrays, objects, mixed), a scalar,
       a NUL character at depth, and the scenario "A very deep value" (built without a walk that calls itself, leaked).
-- [ ] 1.2 Where it is refused [2]: a send and a create from outside a turn (`OpError::Invalid`), in a turn by a typed
+- [x] 1.2 Where it is refused [2]: a send and a create from outside a turn (`OpError::Invalid`), in a turn by a typed
       ref and as raw JSON (`TurnError::Invalid`), and the new state of a turn (`failed`, cause `handler`); the error
       of a new state that a check refuses (`null`, NUL, too deep) starts with `State cannot be stored:`. Verify: the
       scenarios of the requirement "A payload and a state are at most 64 levels deep" except the HTTP ones, and "A deep
       value sent from code".
-- [ ] 1.3 The retry [2]: `RetryResult::TooDeep` with its detail, answered `409 message-not-retryable` by
+- [x] 1.3 The retry [2]: `RetryResult::TooDeep` with its detail, answered `409 message-not-retryable` by
       `cicada-axum`; `bulk_retry` skips it. Verify: the scenarios "A retry of a deep message from before" and "A bulk
       retry" at `ActorSystem` in `crates/cicada/src/tests`, and "A retried notification at the limit" over HTTP; the
       OpenAPI document, regenerated if it changes.
-- [ ] 1.4 Values from before [3]: nothing changes when a value is read. Verify: the scenarios of the requirement
+- [x] 1.4 Values from before [3]: nothing changes when a value is read. Verify: the scenarios of the requirement
       "Values stored before keep working", in `crates/cicada/src/tests` through the private backend.
 
 ## 2. HTTP

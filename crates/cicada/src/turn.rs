@@ -159,8 +159,8 @@ impl fmt::Display for HandlerFailure {
 /// A send, create, cancel, watch or control effect of a handler that was refused when called.
 #[derive(Debug, thiserror::Error)]
 pub enum TurnError {
-    /// A field is out of bounds, contains a NUL character, the value cannot be encoded, or an initial state is `null`;
-    /// or a watch whose target is no target, or of an actor whose type may not watch; or a delete of the turn's own
+    /// A field is out of bounds, contains a NUL character, the value cannot be encoded, a payload or an initial state is
+    /// nested deeper than [`MAX_DEPTH`](crate::runtime::limits::MAX_DEPTH), or an initial state is `null`; or a watch whose target is no target, or of an actor whose type may not watch; or a delete of the turn's own
     /// actor, or of an actor the turn creates already; or a create by address whose type is not registered, or whose
     /// address or state a node that hosts the type cannot read.
     #[error("{0}")]
@@ -291,7 +291,9 @@ impl TurnInfo {
 /// single atomic commit; nothing is visible before that.
 ///
 /// Every send checks its envelope when called and fails with [`TurnError::Invalid`] (which the handler can handle)
-/// for fields beyond the send limits and for NUL characters.
+/// for fields beyond the send limits, for NUL characters and for a payload nested deeper than
+/// [`MAX_DEPTH`](crate::runtime::limits::MAX_DEPTH); every create checks its state the same way. A new state beyond
+/// these limits ends the turn's message `failed`, with an error that starts with `State cannot be stored:`.
 pub struct Turn<A: Actor> {
     pub(crate) info: Arc<TurnInfo>,
     self_ref: A::Ref,

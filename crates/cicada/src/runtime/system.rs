@@ -716,8 +716,9 @@ impl ActorSystem {
     /// left untouched.
     ///
     /// The type is resolved through the TypeRegistry. Any node refuses a state that is `null`; a node that hosts the
-    /// type also decodes `state` with the state type and refuses it when that fails. The state is not checked against
-    /// its schema; [`Self::create_actor_checked`] is this call with that check.
+    /// type also decodes `state` with the state type and refuses it when that fails. A state with a NUL character or
+    /// nested deeper than [`MAX_DEPTH`](super::limits::MAX_DEPTH) is [`OpError::Invalid`]. The state is not checked
+    /// against its schema; [`Self::create_actor_checked`] is this call with that check.
     pub async fn create_actor(&self, address: &ActorAddress, state: Value) -> Result<CreateActorResult, OpError> {
         self.create_actor_checked(address, state, &|_, _| true).await
     }
@@ -858,8 +859,9 @@ impl ActorSystem {
     /// whatever else changed, and [`SendResult::IdConflict`] for a different message); a registered type matches `to`
     /// (else [`SendResult::NoSuchType`], whether or not the instance exists); it accepts `message_type`; when this node
     /// hosts the type, `payload` decodes. Then the store enqueues it, refusing an absent instance
-    /// ([`SendResult::NoSuchInstance`]). Fields beyond the send limits and delivery times out of range are
-    /// [`OpError::Invalid`]. The payload is not checked against its schema; [`Self::send_message_checked`] is this call
+    /// ([`SendResult::NoSuchInstance`]). Fields beyond the send limits, a payload with a NUL character or nested deeper
+    /// than [`MAX_DEPTH`](super::limits::MAX_DEPTH), and delivery times out of range are [`OpError::Invalid`], before
+    /// the repeated id. The payload is not checked against its schema; [`Self::send_message_checked`] is this call
     /// with that check.
     pub async fn send_message(
         &self,
@@ -1052,7 +1054,8 @@ impl ActorSystem {
 
     /// Sends a message that ended `failed` or `cancelled` again (`POST /messages/{id}/retry`): a new message with a new
     /// id and `caused_by` the original, otherwise equal in target, type, payload, correlation id, headers, retry and
-    /// retention. A retry is not idempotent: every call sends another message.
+    /// retention. A retry is not idempotent: every call sends another message. A stored payload nested deeper than
+    /// [`MAX_DEPTH`](super::limits::MAX_DEPTH) is not sent again: [`RetryResult::TooDeep`].
     pub async fn retry_message(&self, id: &MessageId) -> Result<RetryResult, OpError> {
         let original = match self.inner.store.status(id).await? {
             None => return Ok(RetryResult::NotFound),
@@ -1065,6 +1068,9 @@ impl ActorSystem {
                 status => return Ok(RetryResult::NotRetryable { state: status.wire_name().to_owned() }),
             },
         };
+        if let Err(why) = limits::check_depth("payload", &original.payload) {
+            return Ok(RetryResult::TooDeep(why));
+        }
         let to = original.to.clone();
         let outgoing = OutgoingMessage {
             correlation_id: original.correlation_id,
@@ -1126,7 +1132,7 @@ impl ActorSystem {
     }
 
     /// Retries at most [`BULK_LIMIT`] messages (`POST /messages/bulk-retry`), each as [`Self::retry_message`] does; ones
-    /// that are not eligible are skipped and not counted. With a filter it walks the `failed` outcomes and also skips one
+    /// that are not eligible, also one whose payload is too deep, are skipped and not counted. With a filter it walks the `failed` outcomes and also skips one
     /// already retried (it has a `caused_by` child), so that calling again until `more` is false does not send a message
     /// twice. Not one transaction: a store failure half way reports it as an error, with the work done so far kept.
     pub async fn bulk_retry(&self, selection: BulkSelection) -> Result<BulkResult, OpError> {

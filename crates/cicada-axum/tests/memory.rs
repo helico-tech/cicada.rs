@@ -123,13 +123,15 @@ fn basket() -> Value {
     object(vec![("id", json!("b-1")), ("batch", object(vec![("lines", Value::Array(vec![json!(0); 520_000]))]))])
 }
 
-/// 100 levels of a list that refers to itself, each with 2,000 items: wrong ones in every level, or below the first
-/// level only (in the optional part).
+/// 62 levels of a list that refers to itself, each with 2,000 items: wrong ones in every level, or below the first
+/// level only (in the optional part). With its innermost list of items it is 63 levels deep, so the payload `{"v": …}`
+/// has 64, the most the door takes (ADR 0029).
 fn node(first_level_matches: bool) -> Value {
+    const LEVELS: usize = 62;
     let level = |item: Value, next: Value| object(vec![("items", Value::Array(vec![item; 2_000])), ("next", next)]);
     let mut node = level(json!("x"), Value::Null);
-    for depth in 1..100 {
-        let item = if first_level_matches && depth == 99 { json!(1) } else { json!("x") };
+    for depth in 1..LEVELS {
+        let item = if first_level_matches && depth == LEVELS - 1 { json!(1) } else { json!("x") };
         node = level(item, node);
     }
     node
@@ -208,8 +210,8 @@ async fn a_refused_request_costs_time_and_memory_in_proportion_to_its_size() {
     let cases: [Case; 6] = [
         ("an order of 520,000 wrong lines", "orders", order),
         ("an optional batch of 520,000 wrong lines", "baskets", basket),
-        ("100 levels of a list, wrong in every level", "nodes", || node(false)),
-        ("100 levels of a list, wrong below the first level", "nodes", || node(true)),
+        ("a list in a payload of 64 levels, wrong in every level", "nodes", || node(false)),
+        ("a list in a payload of 64 levels, wrong below the first level", "nodes", || node(true)),
         ("an expression 30 deep with one wrong leaf", "calcs", || expr(30)),
         ("an untagged tree 24 deep with one wrong leaf", "trees", || tree(24)),
     ];

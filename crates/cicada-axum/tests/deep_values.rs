@@ -1,6 +1,7 @@
-//! A value of any depth the parser allows is checked like any other (decision 11): three types with several schema steps
+//! A value at the depth limit (ADR 0029) is checked like any other, decoded and handled: types with several schema steps
 //! between their levels, through the HTTP door served by `axum::serve` on a multi-thread runtime with its default worker
-//! stacks, as a host runs it, on a node that hosts the types and on one that does not.
+//! stacks, as a host runs it, on a node that hosts the types and on one that does not. In a debug build, as hosts run
+//! their tests.
 
 mod common;
 
@@ -9,6 +10,7 @@ use std::net::SocketAddr;
 
 use cicada::api::problem_types as pt;
 use cicada::prelude::*;
+use cicada::runtime::limits::MAX_DEPTH;
 use cicada::{ActorSystem, Store};
 use common::shapes::{Chain, PutMsg, Shape, Stack, Wide, build, payload};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -78,12 +80,12 @@ fn with(key: &str, value: Value, more: Vec<(&str, Value)>) -> String {
     Value::Object(fields).to_string()
 }
 
-/// A state and a payload of shape `T` at 21, 24 and 126 levels, matching and not, on both nodes.
+/// A state and a payload of shape `T` at 21, 24 and 64 levels, matching and not, on both nodes.
 async fn shape<T: Shape>(host: SocketAddr, other: SocketAddr) {
     let name = T::NAME;
     let (status, body) = http(host, "PUT", &format!("/actors/{name}/a"), &with("state", T::leaf(true), vec![])).await;
     assert_eq!(status, 201, "{body}");
-    for levels in [21, 24, 126] {
+    for levels in [21, 24, MAX_DEPTH] {
         for ok in [true, false] {
             for (node, to) in [("host", host), ("other", other)] {
                 let case = format!("{name} at {levels} levels, matching {ok}, on {node}");
@@ -109,8 +111,8 @@ async fn shape<T: Shape>(host: SocketAddr, other: SocketAddr) {
     }
 }
 
-/// Scenarios: A value at the deepest level the parser allows; A type with several schema steps between its levels.
-/// The hosting node is initialised and not started: it checks and decodes at the door, and runs no turn.
+/// Scenario: A type with several schema steps between its levels. The hosting node is initialised and not started: it
+/// checks and decodes at the door, and runs no turn.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_value_is_checked_on_a_stack_of_its_own_on_both_nodes_whatever_its_type_and_depth() {
     let store = Store::memory();

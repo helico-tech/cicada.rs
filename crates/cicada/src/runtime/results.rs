@@ -127,7 +127,7 @@ pub struct MailboxEntry {
     pub running: bool,
 }
 
-/// Result of [`super::ActorSystem::retry_message`]. HTTP: `202`, `404`, `404`, `409`.
+/// Result of [`super::ActorSystem::retry_message`]. HTTP: `202`, `404`, `404`, `409`, `409`.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum RetryResult {
@@ -142,6 +142,10 @@ pub enum RetryResult {
         /// The message's current state, e.g. `running`.
         state: String,
     },
+    /// The stored payload is nested deeper than [`MAX_DEPTH`](super::limits::MAX_DEPTH): it was written before the
+    /// limit (ADR 0029), or it is a `Failed` notification about a payload at the limit. Nothing was enqueued. Why: "The
+    /// payload is nested deeper than 64 levels".
+    TooDeep(String),
 }
 
 /// Which messages a bulk action applies to.
@@ -170,8 +174,8 @@ pub struct BulkResult {
 /// A failed operation of [`super::ActorSystem`].
 #[derive(Debug, thiserror::Error)]
 pub enum OpError {
-    /// The request is invalid: a field out of bounds, a NUL character, a delivery time out of range, a bad cursor.
-    /// HTTP `400`.
+    /// The request is invalid: a field out of bounds, a NUL character, a payload or a state nested deeper than
+    /// [`MAX_DEPTH`](super::limits::MAX_DEPTH), a delivery time out of range, a bad cursor. HTTP `400`.
     #[error("{0}")]
     Invalid(String),
     /// The store failed.

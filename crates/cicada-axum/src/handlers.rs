@@ -425,6 +425,13 @@ pub(crate) async fn retry_message(State(api): Shared, Path(id): Path<String>, re
                 format!("Message {id} is {state}; only failed or cancelled messages can be retried"),
             )
             .into()),
+            RetryResult::TooDeep(why) => Err(ApiProblem::new(
+                StatusCode::CONFLICT,
+                problem_types::MESSAGE_NOT_RETRYABLE,
+                "Message cannot be retried",
+                format!("Message {id} cannot be retried: {why}"),
+            )
+            .into()),
         }
     })
     .await

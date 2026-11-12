@@ -567,7 +567,7 @@ impl TurnExecutor {
                     if let Err(e) = message::check_not_null("state", &state)
                         .and_then(|()| limits::check_json("state", Some(&state)))
                     {
-                        return Decision::failed(FailureCause::Handler, format!("State cannot be encoded: {e}"));
+                        return Decision::failed(FailureCause::Handler, format!("State cannot be stored: {e}"));
                     }
                     StateChange::NewState(state)
                 }

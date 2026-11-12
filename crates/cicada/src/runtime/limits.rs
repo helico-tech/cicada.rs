@@ -1,7 +1,8 @@
-//! Limits on the envelope fields of a send. Within them every backend stores a message without error; beyond them a
-//! send is refused before it reaches the store, the same way on every backend: from outside an actor as a bad request
-//! (`400`), inside a turn with a [`crate::turn::TurnError::Invalid`] at the call. No field, and no string or key of a
-//! payload or state, may contain a NUL character (PostgreSQL text and JSONB cannot hold one).
+//! Limits on the envelope fields of a send and on a payload or a state. Within them every backend stores a message
+//! without error; beyond them a send is refused before it reaches the store, the same way on every backend: from outside
+//! an actor as a bad request (`400`), inside a turn with a [`crate::turn::TurnError::Invalid`] at the call. No field,
+//! and no string or key of a payload or state, may contain a NUL character (PostgreSQL text and JSONB cannot hold one),
+//! and a payload or a state holds at most [`MAX_DEPTH`] arrays and objects inside each other (ADR 0029).
 
 use std::collections::BTreeMap;
 
@@ -21,6 +22,9 @@ pub const MAX_HEADERS: usize = 64;
 pub const MAX_HEADER_NAME_LENGTH: usize = 200;
 /// Longest header value.
 pub const MAX_HEADER_VALUE_LENGTH: usize = 4_000;
+/// Deepest payload or state: the most arrays and objects inside each other. `{"a": {"b": 1}}` is 2 deep, a scalar 0.
+/// A view of a value at this depth is at most 69 levels deep, which every JSON parser that allows 128 reads (ADR 0029).
+pub const MAX_DEPTH: usize = 64;
 
 /// Checks the fields of one send, naming the first field that is out of bounds. Lengths count characters.
 pub(crate) fn check(
@@ -61,20 +65,58 @@ pub(crate) fn check_envelope(
     check_json("payload", Some(payload))
 }
 
-/// Checks that no string and no object key in `value` contains a NUL character.
+/// Checks that no string and no object key in `value` contains a NUL character, and that it is at most [`MAX_DEPTH`]
+/// deep, naming the first problem it meets. One walk, which stops at the first level beyond the limit, so it refuses a
+/// value of any depth without overflowing a stack.
 pub(crate) fn check_json(what: &str, value: Option<&Value>) -> Result<(), String> {
-    match value {
-        Some(v) if contains_nul(v) => Err(format!("The {what} contains a NUL character")),
+    match value.map(|v| walk(v, 0, true)) {
+        Some(Err(problem)) => Err(problem.text(what)),
         _ => Ok(()),
     }
 }
 
-fn contains_nul(value: &Value) -> bool {
+/// Checks only that `value` is at most [`MAX_DEPTH`] deep: a stored payload that an operator retries was checked for a
+/// NUL character when it was written.
+pub(crate) fn check_depth(what: &str, value: &Value) -> Result<(), String> {
+    walk(value, 0, false).map_err(|problem| problem.text(what))
+}
+
+/// What [`walk`] found.
+enum Problem {
+    Nul,
+    TooDeep,
+}
+
+impl Problem {
+    fn text(&self, what: &str) -> String {
+        match self {
+            Problem::Nul => format!("The {what} contains a NUL character"),
+            Problem::TooDeep => format!("The {what} is nested deeper than {MAX_DEPTH} levels"),
+        }
+    }
+}
+
+/// Walks `value`, which is inside `depth` arrays and objects, looking for a NUL character when `nul` is set. It calls
+/// itself at most `MAX_DEPTH` times: a container inside `MAX_DEPTH` others is refused before its items are walked.
+fn walk(value: &Value, depth: usize, nul: bool) -> Result<(), Problem> {
+    let nested = |depth: usize| if depth < MAX_DEPTH { Ok(depth + 1) } else { Err(Problem::TooDeep) };
     match value {
-        Value::Object(o) => o.iter().any(|(k, v)| k.contains('\0') || contains_nul(v)),
-        Value::Array(a) => a.iter().any(contains_nul),
-        Value::String(s) => s.contains('\0'),
-        _ => false,
+        Value::Object(o) => {
+            let inner = nested(depth)?;
+            for (k, v) in o {
+                if nul && k.contains('\0') {
+                    return Err(Problem::Nul);
+                }
+                walk(v, inner, nul)?;
+            }
+            Ok(())
+        }
+        Value::Array(a) => {
+            let inner = nested(depth)?;
+            a.iter().try_for_each(|v| walk(v, inner, nul))
+        }
+        Value::String(s) if nul && s.contains('\0') => Err(Problem::Nul),
+        _ => Ok(()),
     }
 }
 
@@ -106,5 +148,77 @@ mod tests {
         assert!(check_json("payload", Some(&json!({"a": ["x\u{0}"]}))).is_err());
         assert!(check_json("payload", Some(&json!({"a\u{0}": 1}))).is_err());
         assert!(check_json("payload", Some(&json!({"a": 1}))).is_ok());
+    }
+
+    /// A value `levels` deep: `wrap` puts one more level around the innermost value `leaf`, without recursion.
+    fn nested(levels: usize, leaf: Value, wrap: impl Fn(usize, Value) -> Value) -> Value {
+        (0..levels).fold(leaf, |inner, level| wrap(level, inner))
+    }
+
+    fn in_array(_: usize, inner: Value) -> Value {
+        Value::Array(vec![json!(1), inner])
+    }
+
+    fn in_object(_: usize, inner: Value) -> Value {
+        json!({"a": 1, "next": inner})
+    }
+
+    fn mixed(level: usize, inner: Value) -> Value {
+        if level % 2 == 0 { in_array(level, inner) } else { in_object(level, inner) }
+    }
+
+    /// Scenario of the limit (value-depth): 64 levels are accepted and 65 refused, in arrays, in objects and in both.
+    #[test]
+    fn a_value_of_64_levels_is_accepted_and_one_of_65_refused() {
+        type Wrap = fn(usize, Value) -> Value;
+        for (shape, wrap) in [("arrays", in_array as Wrap), ("objects", in_object), ("mixed", mixed)] {
+            // The innermost level is a container of its own: `[]`, then 63 more around it.
+            let at_limit = nested(MAX_DEPTH - 1, json!([]), wrap);
+            assert_eq!(check_json("payload", Some(&at_limit)), Ok(()), "{shape}");
+            assert_eq!(check_depth("state", &at_limit), Ok(()), "{shape}");
+            let beyond = wrap(0, at_limit);
+            let refused = "The payload is nested deeper than 64 levels";
+            assert_eq!(check_json("payload", Some(&beyond)).unwrap_err(), refused, "{shape}");
+            assert_eq!(check_depth("state", &beyond).unwrap_err(), "The state is nested deeper than 64 levels");
+        }
+        assert_eq!(check_json("payload", Some(&nested(MAX_DEPTH, json!(1), in_object))), Ok(()), "a scalar is 0 deep");
+        assert!(check_json("payload", Some(&nested(MAX_DEPTH, json!({}), in_object))).is_err());
+    }
+
+    #[test]
+    fn a_scalar_is_0_deep_and_an_empty_container_1() {
+        for scalar in [json!(null), json!(true), json!(1.5), json!("x")] {
+            assert_eq!(check_json("state", Some(&scalar)), Ok(()));
+        }
+        assert_eq!(check_json("state", None), Ok(()));
+        let one_deep = |v: Value| nested(MAX_DEPTH - 1, v, in_array);
+        assert_eq!(check_json("state", Some(&one_deep(json!([])))), Ok(()));
+        assert!(check_json("state", Some(&one_deep(json!([[]])))).is_err());
+    }
+
+    /// A NUL character at the limit is found, in a string and in a key; the depth check alone ignores it.
+    #[test]
+    fn a_nul_character_at_depth_is_found() {
+        for leaf in [json!(["x\u{0}"]), json!({"a\u{0}": 1})] {
+            let deep = nested(MAX_DEPTH - 1, leaf, mixed);
+            assert_eq!(check_json("payload", Some(&deep)).unwrap_err(), "The payload contains a NUL character");
+            assert_eq!(check_depth("payload", &deep), Ok(()));
+        }
+    }
+
+    /// Scenario: A very deep value. 100,000 levels are refused on a thread with a stack of 256 KiB, naming the limit.
+    /// The value is built without recursion and leaked: serde_json drops it with a walk that calls itself, which would
+    /// overflow.
+    #[test]
+    fn a_value_100000_levels_deep_is_refused_on_a_small_stack() {
+        let check = || {
+            let value = nested(100_000, json!(1), |_, inner| Value::Array(vec![inner]));
+            let refused = (check_json("payload", Some(&value)), check_depth("payload", &value));
+            std::mem::forget(value);
+            refused
+        };
+        let refused = std::thread::Builder::new().stack_size(256 << 10).spawn(check).unwrap().join().unwrap();
+        let expected = Err("The payload is nested deeper than 64 levels".to_owned());
+        assert_eq!(refused, (expected.clone(), expected));
     }
 }
