@@ -28,6 +28,7 @@ cicada-client.workspace = true
 clap = { workspace = true, features = ["string"] }
 crossterm = { workspace = true, optional = true }
 futures.workspace = true
+http-body.workspace = true
 ratatui = { workspace = true, optional = true }
 reqwest.workspace = true
 serde.workspace = true

@@ -11,7 +11,7 @@ use crate::output::Format;
 
 /// Talk to a Cicada node over its HTTP API.
 #[derive(Debug, Parser)]
-#[command(name = "cicada", version, about, propagate_version = true)]
+#[command(name = "cicada", version, propagate_version = true)]
 pub struct Cli {
     /// The context of the config file to use.
     #[arg(long, global = true, help_heading = "Global options")]

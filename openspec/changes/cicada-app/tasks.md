@@ -22,7 +22,7 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
 
 ## 2. `App`
 
-- [ ] 2.1 The settings [2, 3, 4]: the flags and variables of the store, the address, the types and the node; the
+- [x] 2.1 The settings [2, 3, 4]: the flags and variables of the store, the address, the types and the node; the
       order of a flag, its variable, the host's `NodeConfig` and the default; durations; which store a value names;
       a value that is not a SQLite file is never printed. Verify: unit tests for the scenarios "A SQLite file",
       "PostgreSQL from a variable", "A flag wins", "No store", "An address of another kind", "A PostgreSQL address
