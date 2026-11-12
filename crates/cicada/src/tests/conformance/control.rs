@@ -2,7 +2,7 @@
 //! purges its own, together with its other effects or not at all; each effect does what the call from outside a turn
 //! does, and nothing to an actor that is not there; deletes come before creates, so a commit can restart an actor.
 
-use std::sync::{Arc, LazyLock};
+use std::sync::LazyLock;
 
 use crate::address::{ActorAddress, TypeName};
 use crate::store::{
@@ -558,7 +558,6 @@ pub async fn control_two_actors_that_restart_each_others_neighbours_while_a_thir
 ) {
     store_test(backend, async |t| {
         let store = t.store();
-        let peers: Vec<Arc<dyn Backend>> = vec![t.fixture.peer().await, t.fixture.peer().await, t.fixture.peer().await];
         for round in 0..ROUNDS {
             // The restarts lock the trees of the neighbours level by level after their ordered locks, while the send
             // locks both neighbours: the commits cross on them.
@@ -584,16 +583,13 @@ pub async fn control_two_actors_that_restart_each_others_neighbours_while_a_thir
             };
             let requests =
                 [restart(&ca, &nb), restart(&cb, &na), CommitRequest { sends: vec![to(&na), to(&nb)], ..done(&cs) }];
-            let handles: Vec<_> = requests
-                .into_iter()
-                .zip(&peers)
-                .map(|(request, peer)| {
-                    let peer = peer.clone();
-                    tokio::spawn(async move { peer.commit(request).await })
+            let results = t
+                .concurrently(requests.len(), |i, peer| {
+                    let request = requests[i].clone();
+                    async move { peer.commit(request).await }
                 })
-                .collect();
-            for handle in handles {
-                let result = handle.await.expect("the task ends");
+                .await;
+            for result in results {
                 assert_matches!(result, Ok(CommitResult::Committed { .. }), "round {round}");
             }
             for n in [&na, &nb] {
@@ -620,7 +616,6 @@ pub async fn control_a_restart_of_an_actor_that_is_not_there_racing_a_create_end
 ) {
     store_test(backend, async |t| {
         let store = t.store();
-        let peers: Vec<Arc<dyn Backend>> = vec![t.fixture.peer().await, t.fixture.peer().await];
         t.register_type(&OTHER).await;
         let p = t.new_actor_named(&TYPE, "p", json!({})).await;
         for round in 0..ROUNDS {
@@ -632,16 +627,26 @@ pub async fn control_a_restart_of_an_actor_that_is_not_there_racing_a_create_end
                 creates: vec![independent(&x, json!({"restart": true}))],
                 ..done(&c)
             };
-            let (turn, outside) = (peers[0].clone(), peers[1].clone());
-            let committed = tokio::spawn(async move { turn.commit(restart).await });
-            let x_outside = x.clone();
-            let created = tokio::spawn(async move { outside.create(&x_outside, json!({"outside": true})).await });
-            assert_matches!(committed.await.expect("ends"), Ok(CommitResult::Committed { .. }), "round {round}");
-            assert_matches!(
-                created.await.expect("ends"),
-                Ok(CreateResult::Created | CreateResult::Exists(_)),
-                "round {round}"
-            );
+            let results = t
+                .concurrently(2, |i, peer| {
+                    let (restart, x) = (restart.clone(), x.clone());
+                    async move {
+                        if i == 0 {
+                            Err(peer.commit(restart).await)
+                        } else {
+                            Ok(peer.create(&x, json!({"outside": true})).await)
+                        }
+                    }
+                })
+                .await;
+            for result in results {
+                match result {
+                    Err(commit) => assert_matches!(commit, Ok(CommitResult::Committed { .. }), "round {round}"),
+                    Ok(create) => {
+                        assert_matches!(create, Ok(CreateResult::Created | CreateResult::Exists(_)), "round {round}")
+                    }
+                }
+            }
             let state = store.get(&x).await.unwrap().expect("x").state;
             assert_eq!(state, json!({"restart": true}), "round {round}: the turn's create stands");
         }
