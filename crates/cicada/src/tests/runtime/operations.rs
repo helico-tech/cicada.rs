@@ -346,6 +346,23 @@ async fn on_a_node_that_hosts_the_type_the_check_runs_before_the_decoder() {
     assert!(test.pending(&a()).await.is_empty());
 }
 
+/// http-schema-check, Scenario: A very long value (the cut of the core).
+#[tokio::test(start_paused = true)]
+async fn the_detail_of_a_refusal_by_the_check_is_cut_at_its_limit_with_a_mark() {
+    let test = harness().await;
+    let system = test.system();
+    test.create(&a(), &CounterState::default()).await;
+    let long = |_: &Value, _: &Value| Err(format!("at /n: '{}' does not match", "é".repeat(200_000)));
+    let sent = system.send_message_checked(&a().address(), "Add", json!({"n": 1}), SendOptions::new(), &long).await;
+    let SendResult::InvalidPayload { error, .. } = sent.unwrap() else { panic!("refused") };
+    assert_eq!(error.chars().count(), crate::runtime::MAX_REFUSAL_DETAIL);
+    assert!(error.starts_with("Payload of 'Add' does not match the schema: at /n: 'éé") && error.ends_with(" … (cut)"));
+    let created = system.create_actor_checked(&Counter::new("b").address(), json!({"total": 1}), &long).await;
+    let CreateActorResult::InvalidState(error) = created.unwrap() else { panic!("refused") };
+    assert_eq!(error.chars().count(), crate::runtime::MAX_REFUSAL_DETAIL);
+    assert!(error.starts_with("State does not match the schema: ") && error.ends_with(" … (cut)"), "{error:.80}");
+}
+
 #[tokio::test(start_paused = true)]
 async fn delivery_time_is_store_time_and_a_past_instant_is_clamped() {
     let test = TestActors::builder().with(|n| n.host(CounterActor)).build().await.unwrap();

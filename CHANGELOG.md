@@ -28,16 +28,19 @@ and 0.12.0 can share a database, and during a rolling deploy a node of 0.11.0 st
 ### Changed (breaking)
 
 - A payload or a state that serde accepts and the schema refuses is refused over HTTP from now on, by every node: a
-  field under a `#[serde(alias)]`, a form that only a hand-written `Deserialize` takes. A node that does not host a type
-  refuses what it accepted until now. A type whose schema refuses what the type itself writes gets `422` for every
-  send of the typed client; it needs a right schema, which is a contract change.
+  field under a `#[serde(alias)]`, a form that only a hand-written `Deserialize` takes, a payload that repeats `"type"`
+  for a family that denies unknown fields (the decoder drops the key, the schema does not allow it). A node that does
+  not host a type refuses what it accepted until now. A type whose schema refuses what the type itself writes gets
+  `422` for every send of the typed client; it needs a right schema, which is a contract change.
 - The status stays `422`, as for a payload that did not decode, where ADR 0018 said `400`: in this API `422` is what a
   client sent that the system cannot take, and `400` a request that cannot be read (ADR 0026).
 - `POST /actors/{type}/{key}/messages` checks the payload against the schema of its message type, and
   `PUT /actors/{type}/{key}` the state against the state schema of the registered contract, on every node. A refusal is
   `422 invalid-payload` or `422 invalid-state` and stores nothing; its detail names the message type (or the state)
   and up to five places that do not match, each with its path and the reason, and says when there are more:
-  `Payload of 'Add' does not match the schema: at /n: want integer, but got string`. A node that hosts the type then
+  `Payload of 'Add' does not match the schema: at /n: want integer, but got string`. Under an enum with data the reasons
+  of the variant that the value names come first. The detail is cut at 2,000 characters (`MAX_REFUSAL_DETAIL`) and then
+  ends with ` … (cut)`, as a reason may quote the value. A node that hosts the type then
   decodes with serde as before, with the same answer and the detail `… cannot be decoded: …`, so the detail of a
   payload that does not fit names the schema now. A payload that is not an object reads `… at the top level: want
   object, but got array` instead of `… must be a JSON object`.
@@ -52,9 +55,12 @@ and 0.12.0 can share a database, and during a rolling deploy a node of 0.11.0 st
 
 - `ActorSystem::send_message_checked` and `ActorSystem::create_actor_checked` take a `SchemaCheck` from their caller
   (`cicada::schema::SchemaCheck`, `check(schema, value)`) and run it where a hosting node decodes: after the repeated
-  id, the registered type and the message type, and for a create after the `null` check and the address. Its refusal
-  is `SendResult::InvalidPayload` or `CreateActorResult::InvalidState` with "… does not match the schema: " and its
-  reason. `send_message` and `create_actor` are these with a check that accepts everything. The core has no validator.
+  id, the registered type and the message type, and for a create after the `null` check and before the address and
+  the decoder, so that a state that does not match gets the same answer on every node; a node that hosts a singleton
+  answered `invalid-address` for a create of another name with a bad state, and answers `invalid-state` now. Its
+  refusal is `SendResult::InvalidPayload` or `CreateActorResult::InvalidState` with "… does not match the schema: "
+  and its reason, cut at `cicada::runtime::MAX_REFUSAL_DETAIL` (2,000) characters. `send_message` and
+  `create_actor` are these with a check that accepts everything. The core has no validator.
 - `cicada_axum::assert_message_sample::<M>(&sample)` and `assert_state_sample::<S>(&sample)`: a sample must pass the
   registered schema and decode as the type, or the test fails, saying which of the two refused it and why. A schema
   that the validator cannot use fails too.

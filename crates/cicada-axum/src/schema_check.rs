@@ -64,13 +64,20 @@ fn verdict(schema: &Value, value: &Value) -> Verdict {
 }
 
 /// The leaves of the validator's tree of errors, in its order: at most five, each "at /path: reason", then "and 3 more"
-/// when there are more. A leaf names no address of the schema and no path into it.
+/// when there are more. A leaf names no address of the schema and no path into it. Under an `anyOf` or a `oneOf` (an
+/// enum with data, an `Option`), the alternatives that the value cannot be come last (see [`names_another`]), so the
+/// reasons of the variant that the value names come first.
 fn places(error: &ValidationError) -> String {
     fn leaves<'e, 's, 'v>(error: &'e ValidationError<'s, 'v>, found: &mut Vec<&'e ValidationError<'s, 'v>>) {
         if error.causes.is_empty() {
             found.push(error);
         }
-        error.causes.iter().for_each(|cause| leaves(cause, found));
+        let mut causes: Vec<_> = error.causes.iter().collect();
+        if matches!(error.kind, ErrorKind::AnyOf | ErrorKind::OneOf(_)) {
+            let part = error.instance_location.to_string();
+            causes.sort_by_key(|alternative| names_another(alternative, &part)); // stable: the validator's order stays
+        }
+        causes.into_iter().for_each(|cause| leaves(cause, found));
     }
     let mut found = Vec::new();
     leaves(error, &mut found);
@@ -91,6 +98,20 @@ fn places(error: &ValidationError) -> String {
         text.push(format!("and {} more", found.len() - MOST_PLACES));
     }
     text.join("; ")
+}
+
+/// True when the errors of an `anyOf` or `oneOf` alternative for the part at `part` show that the value is another
+/// variant: its tag names another one (a `const` or `enum` on a property of the part fails, as for an internally or
+/// adjacently tagged enum), the part is not of the alternative's kind (a unit variant's text, the `null` of an
+/// `Option`), or it holds a property that the alternative does not allow (the key of an externally tagged enum).
+fn names_another(alternative: &ValidationError, part: &str) -> bool {
+    let at = alternative.instance_location.to_string();
+    let on_a_property = at.strip_prefix(part).and_then(|rest| rest.strip_prefix('/')).is_some_and(|p| !p.contains('/'));
+    match alternative.kind {
+        ErrorKind::Const { .. } | ErrorKind::Enum { .. } if on_a_property => true,
+        ErrorKind::Type { .. } | ErrorKind::AdditionalProperties { .. } if at == part => true,
+        _ => alternative.causes.iter().any(|cause| names_another(cause, part)),
+    }
 }
 
 /// The check of the door: `Err` with the places of `value` that do not match `schema`. A schema that cannot be used
@@ -272,6 +293,43 @@ mod tests {
         assert!(!warn_once(&schema, "message type 'Code' of codes", "again"), "warned once already");
         let other = object(json!({"other": {"type": "string", "pattern": "(?<=a)b"}}));
         assert!(warn_once(&other, "message type 'Other' of codes", "a schema of its own"));
+    }
+
+    /// The reasons of the variant that the value names come first, before those of the variants it cannot be.
+    #[test]
+    fn the_reasons_of_the_variant_that_the_value_names_come_first() {
+        #[derive(serde::Deserialize, JsonSchema)]
+        #[serde(tag = "kind")]
+        #[allow(dead_code)]
+        enum Shape {
+            Circle { r: f64 },
+            Square { side: f64 },
+            Triangle { a: f64, b: f64 },
+            Hexagon { s: f64 },
+            Dot,
+        }
+        #[derive(serde::Deserialize, JsonSchema)]
+        #[serde(rename_all = "camelCase")]
+        #[allow(dead_code)]
+        enum Outer {
+            Dot,
+            Circle { r: f64 },
+            Square { side: f64 },
+        }
+        #[derive(serde::Deserialize, JsonSchema)]
+        #[allow(dead_code)]
+        struct Draw {
+            shape: Shape,
+            outer: Option<Outer>,
+        }
+        let schema = cicada::schema::root_schema::<Draw>();
+        let places = refused(&schema, &json!({"shape": {"kind": "Hexagon", "s": "x"}}));
+        assert!(places.starts_with("at /shape/s: want number, but got string; "), "{places}");
+        assert!(places.ends_with("and 3 more"), "the other variants follow: {places}");
+        let places = refused(&schema, &json!({"shape": {"kind": "Triangle", "a": "x"}}));
+        assert!(places.starts_with("at /shape: missing properties 'b'; at /shape/a: want number"), "{places}");
+        let places = refused(&schema, &json!({"shape": {"kind": "Dot"}, "outer": {"square": {"side": "x"}}}));
+        assert!(places.starts_with("at /outer/square/side: want number, but got string; "), "{places}");
     }
 
     #[test]

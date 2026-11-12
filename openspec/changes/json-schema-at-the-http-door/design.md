@@ -81,6 +81,9 @@ pub async fn create_actor_checked(&self, address: &ActorAddress, state: Value, c
 the checked ones with the validator. The core runs the check at the place where a hosting node decodes: for a send
 after the repeated id, the registered type and the message type; for a create after the registered type and the
 `null` check. A refusal is `SendResult::InvalidPayload` or `CreateActorResult::InvalidState`, as for the decoder.
+In a create the check also comes before what only a hosting node checks, the address and then the decoder, so that a
+state that does not match gets the same answer on every node (validation: decided by the main session on the
+validator's report, 2026-11-12).
 
 - **A check handed to the core (chosen, review).** The core keeps the one order of its checks, and the door reads
   nothing twice. The validator itself stays private to `cicada-axum` (second review); the crate's public part is
@@ -169,7 +172,12 @@ hosting node would accept a payload it cannot decode.
 The detail of a schema refusal names the message type (or "state"), then up to five places that do not match, each
 with its path in the payload and the reason, and says when there are more. A validator reports a tree: a field of
 an optional struct fails under an `anyOf`. The places are the leaves of that tree, in the validator's order
-(review). The detail holds no address of the schema and no path into it; "expected a string" is fine.
+(review), except that under an `anyOf` or a `oneOf` the alternatives that the value cannot be come last: those whose
+tag names another variant (a `const` or `enum` on a property of the part fails), whose kind does not fit the part, or
+that do not allow a property it holds. So the reasons of the variant that an enum with data names come first, before
+"and N more" (validation). The detail holds no address of the schema and no path into it; "expected a string" is fine.
+A reason may quote the value, so the detail is cut at 2,000 characters and then ends with the mark " … (cut)"
+(validation).
 
 ### 9. The sample checks are in `cicada-axum`
 

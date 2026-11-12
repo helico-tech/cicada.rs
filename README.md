@@ -606,10 +606,14 @@ not the node hosts the type (ADR 0026): the payload against the schema of its me
 against the state schema. One that does not match is refused with `422 invalid-payload` or `422 invalid-state`, and
 nothing is stored. A node that hosts the type then decodes it with serde as well, with the same answer. The detail
 says which check refused it, and where: `Payload of 'Add' does not match the schema: at /n: want integer, but got
-string` names up to five places and says when there are more; `Payload of 'Add' cannot be decoded: …` is serde's.
+string` names up to five places and says when there are more, the reasons of the variant that an enum with data names
+first, and is cut at 2,000 characters with the mark ` … (cut)`; `Payload of 'Add' cannot be decoded: …` is serde's.
 
 The order of the checks stays: a send that repeats the id of a message that is pending, or whose outcome is still
 shown, is answered as a repeat (`200`) before it is checked; an unknown message type is `422 unknown-message-type`.
+In a create the schema comes before what only a hosting node checks, so a state that does not match gets the same
+answer on every node; a name that the ref does not accept (`422 invalid-address`) is judged after it, by a hosting
+node.
 
 What the door does not check:
 
@@ -623,11 +627,12 @@ What the door does not check:
 
 The schema and serde come from the same type, but can disagree. A payload that serde accepts and the schema refuses is
 refused at the door: a field sent under its `#[serde(alias)]`, a form that only a hand-written `Deserialize` takes,
-or what the type itself writes when a field has `#[serde(with)]` and no `#[schemars(with)]`. In the last case every
-send of the typed client is refused, there is no switch, and the way out is a right schema, a contract change (see
-[Changing a contract](docs/operations.md#changing-a-contract)). The other way round, a payload that only serde refuses
-passes a node that does not host the type and fails in its turn. Test what clients send, and what the types write, with
-the sample checks of `cicada-axum`; each fails, naming which of the two refused the sample and why:
+a payload that repeats `"type"` for a family that denies unknown fields (the decoder drops it, the schema does not
+allow it), or what the type itself writes when a field has `#[serde(with)]` and no `#[schemars(with)]`. In the last
+case every send of the typed client is refused, there is no switch, and the way out is a right schema, a contract
+change (see [Changing a contract](docs/operations.md#changing-a-contract)). The other way round, a payload that only
+serde refuses passes a node that does not host the type and fails in its turn. Test what clients send, and what the
+types write, with the sample checks of `cicada-axum`; each fails, naming which of the two refused the sample and why:
 
 <!-- doctest
 @@2

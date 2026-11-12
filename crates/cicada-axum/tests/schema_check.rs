@@ -17,8 +17,8 @@ use schemars::{Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-/// type `form`: messages that deny unknown fields or carry an instant, and a state whose schema the validator cannot
-/// use.
+/// type `form`: messages that deny unknown fields, carry an instant or a text with a pattern, and a state whose schema
+/// the validator cannot use.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Form {
     id: String,
@@ -32,8 +32,16 @@ impl ActorRef for Form {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", deny_unknown_fields)]
 enum FormMsg {
-    Strict { n: i32 },
-    At { at: Timestamp },
+    Strict {
+        n: i32,
+    },
+    At {
+        at: Timestamp,
+    },
+    Code {
+        #[schemars(pattern(r"^[a-z]{1,8}$"))]
+        code: String,
+    },
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -64,7 +72,8 @@ impl Actor for FormActor {
     }
 }
 
-/// The routers of a node that hosts `counter` and `form` and of one that does not, on one store, with `counter/a`.
+/// The routers of a node that hosts `counter`, `form` and `maintenance.cleanup` and of one that does not, on one
+/// store, with `counter/a`.
 struct Nodes {
     host: Router,
     other: Router,
@@ -73,7 +82,7 @@ struct Nodes {
 
 async fn nodes() -> Nodes {
     let store = memory_store();
-    let host = actor_api(node_with(store.clone(), |b| b.host(CounterActor).host(FormActor)).await);
+    let host = actor_api(node_with(store.clone(), |b| b.host(CounterActor).host(FormActor).host(CleanupActor)).await);
     let other_system = node_with(store, |b| b).await;
     let other = actor_api(other_system.clone());
     assert_eq!(put(&host, "/actors/counter/a", r#"{"state": {}}"#).await.status, 201);
@@ -173,6 +182,18 @@ async fn a_repeat_of_a_pending_message_that_does_not_match_is_answered_as_a_repe
     assert_eq!(repeat.status, 200, "{}", repeat.text);
 }
 
+/// Scenario: A repeat of a message that does not match, whose outcome is still shown: a repeat too, unchecked.
+#[tokio::test(start_paused = true)]
+async fn a_repeat_of_a_message_whose_outcome_is_still_shown_is_answered_as_a_repeat() {
+    let n = nodes().await;
+    let (to, id) = (ActorAddress::parse("counter/a").unwrap(), MessageId::new("m3").unwrap());
+    let sent = n.other_system.send_message(&to, "Add", json!({"n": "x"}), SendOptions::new().id(id)).await.unwrap();
+    assert!(matches!(sent, cicada::SendResult::Accepted(_)), "{sent:?}");
+    wait_for(&n.other, "m3", "failed").await; // the hosting node cannot decode it; its outcome stays shown
+    let repeat = post(&n.other, SEND, r#"{"id": "m3", "type": "Add", "payload": {"n": "x"}}"#).await;
+    assert_eq!(repeat.status, 200, "{}", repeat.text);
+}
+
 /// Scenario: A repeat of a message whose outcome is hidden.
 #[tokio::test(start_paused = true)]
 async fn a_repeat_of_a_message_whose_outcome_retention_hides_is_checked() {
@@ -233,4 +254,39 @@ async fn a_state_schema_that_cannot_be_used_is_not_enforced() {
     assert_eq!(put(&n.other, "/actors/form/g", r#"{"state": {"code": 5}}"#).await.status, 201);
     let state: Value = get_json(&n.other, "/actors/form/g").await["state"].clone();
     assert_eq!(state, json!({"code": 5}));
+}
+
+/// The order of a create (design decision 1): the schema before what only a hosting node checks, so a state that does
+/// not match gets the same answer on every node; an address that only a hosting node can judge is judged after it.
+#[tokio::test(start_paused = true)]
+async fn a_state_that_does_not_match_gets_the_same_answer_on_every_node_also_under_an_address_the_ref_refuses() {
+    let n = nodes().await;
+    let path = "/actors/maintenance.cleanup/x";
+    let host = put(&n.host, path, r#"{"state": {"oops": 1}}"#).await;
+    let other = put(&n.other, path, r#"{"state": {"oops": 1}}"#).await;
+    assert_problem(&host, 422, pt::INVALID_STATE);
+    assert_problem(&other, 422, pt::INVALID_STATE);
+    assert_eq!(detail(&host), detail(&other));
+    assert_eq!(
+        detail(&host),
+        "State does not match the schema: at the top level: additionalProperties 'oops' not allowed"
+    );
+    assert_problem(&put(&n.host, path, r#"{"state": {}}"#).await, 422, pt::INVALID_ADDRESS);
+    assert_problem(&get(&n.other, path).await, 404, pt::NO_SUCH_INSTANCE);
+}
+
+/// Scenario: A very long value.
+#[tokio::test(start_paused = true)]
+async fn the_detail_of_a_very_long_value_is_cut_with_a_mark() {
+    let n = nodes().await;
+    put(&n.host, "/actors/form/f", r#"{"state": {}}"#).await;
+    let body = json!({"type": "Code", "payload": {"code": "A".repeat(200_000)}}).to_string();
+    for app in [&n.other, &n.host] {
+        let reply = post(app, "/actors/form/f/messages", &body).await;
+        assert_problem(&reply, 422, pt::INVALID_PAYLOAD);
+        let detail = detail(&reply);
+        assert_eq!(detail.chars().count(), cicada::runtime::MAX_REFUSAL_DETAIL);
+        assert!(detail.starts_with("Payload of 'Code' does not match the schema: at /code: 'AAA"), "{detail:.80}");
+        assert!(detail.ends_with(" … (cut)"), "{}", &detail[detail.len() - 40..]);
+    }
 }

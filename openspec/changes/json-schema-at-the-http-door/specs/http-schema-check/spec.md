@@ -109,7 +109,8 @@ refused it.
 
 The detail of a refusal by the schema SHALL name the message type, or the state, and up to five places of the
 payload that do not match, each with its path in the payload and the reason, and SHALL say when there are more. It
-SHALL NOT hold the address of the schema or a path into it.
+SHALL NOT hold the address of the schema or a path into it. It SHALL be at most 2,000 characters: a longer one SHALL
+be cut and SHALL end with a mark that says so.
 
 #### Scenario: Two places that do not match
 
@@ -125,6 +126,12 @@ SHALL NOT hold the address of the schema or a path into it.
 
 - **WHEN** a client sends a payload with eight fields of the wrong kind
 - **THEN** the detail names five of them and says that there are more
+
+#### Scenario: A very long value
+
+- **WHEN** a client sends a payload whose text field of 200,000 characters does not match the field's pattern
+- **THEN** the answer is `422 invalid-payload`, and the detail is 2,000 characters long and ends with the mark that it
+  was cut
 
 ### Requirement: The check uses nothing outside the schema, and asserts no format
 
