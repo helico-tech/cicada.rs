@@ -41,8 +41,9 @@ pub(crate) struct WorkerArgs {
 /// The flags that `serve` and `worker` share.
 #[derive(Debug, Clone, Default, Args)]
 pub(crate) struct NodeArgs {
-    /// Which store: a postgres:// or postgresql:// address, sqlite:FILE, or the path of a SQLite file
-    /// [env: CICADA_STORE]
+    /// Which store: a postgres:// or postgresql:// address, sqlite:FILE, or the path of a SQLite file. PostgreSQL that
+    /// does not answer is tried again for about a minute; one try can take seconds, and a wrong password is tried again
+    /// like an unreachable database [env: CICADA_STORE]
     #[arg(long, value_name = "STORE", help_heading = "Store")]
     pub store: Option<String>,
     /// The schema, on PostgreSQL [env: CICADA_STORE_SCHEMA] [default: public]
@@ -322,7 +323,7 @@ fn pick_types(kind: Kind, value: &str, hosted: &[&'static str]) -> Result<Vec<&'
     }
     let names: Vec<&str> = value.split(',').map(str::trim).collect();
     if names.iter().any(|name| name.is_empty()) {
-        return Err(format!("an empty name in '{value}'"));
+        return Err(format!("an empty name in '{value}'; this binary hosts {}", hosted.join(", ")));
     }
     let unknown: Vec<&str> = names.iter().copied().filter(|name| !hosted.contains(name)).collect();
     if !unknown.is_empty() {
@@ -666,7 +667,7 @@ mod tests {
     #[test]
     fn an_empty_name_is_refused_and_a_name_twice_counts_once() {
         let error = try_read(Kind::Worker, &["--store", "a.db", "--types", "a,,b"], &Env::new(), None, &HOSTED);
-        assert!(error.unwrap_err().contains("an empty name"));
+        assert_eq!(error.unwrap_err(), "--types: an empty name in 'a,,b'; this binary hosts a, b");
         assert_eq!(read(Kind::Worker, &["--store", "a.db", "--types", "a,a"], &Env::new(), None, &HOSTED).types, ["a"]);
     }
 

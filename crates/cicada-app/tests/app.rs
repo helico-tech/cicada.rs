@@ -459,6 +459,15 @@ async fn a_mistyped_address_creates_no_file_and_is_not_printed() {
     assert!(error.contains("postgres://") && !error.contains("secret"), "{error}");
 }
 
+/// An address given without `--store` is an argument clap does not know; its password stays out of the error.
+#[tokio::test]
+async fn a_usage_error_hides_the_password_of_an_address() {
+    let line = ["myapp", "serve", "postgres://u:pw@h/db"];
+    let Err(AppError::Usage(error)) = run(counter_app(), &no_config(), &line).await else { panic!("a usage error") };
+    assert!(error.contains("'postgres://u:***@h/db'"), "{error}");
+    assert!(!error.contains("pw"), "{error}");
+}
+
 /// A node setting that can be read and is not valid fails the start: exit code 1.
 #[tokio::test]
 async fn a_setting_that_is_not_valid_fails_the_start() {

@@ -124,7 +124,7 @@ pub(crate) async fn serve(
         store.close().await;
         return Err(AppError::Failed(anyhow!(e).context("cannot write to the output")));
     }
-    tracing::info!("Listening on http://{address}");
+    tracing::info!("Serving the HTTP API on {address}");
     let served = serve_until_stopped(listener, routes, &system, &stop, DRAIN).await;
     system.stop().await; // at once when the stop stopped it; else the server failed first
     store.close().await;
@@ -202,8 +202,10 @@ fn postgres_options(settings: &Settings) -> cicada::store::PostgresOptions {
     options
 }
 
-/// Calls `open` until it gives a store or an error other than "unavailable", every [`STORE_RETRY`] for up to
-/// [`STORE_WAIT`]: containers start in any order. On tokio's clock, so a test runs it on virtual time.
+/// Calls `open` until it gives a store or an error other than "unavailable", [`STORE_RETRY`] after each try, and starts
+/// no try after [`STORE_WAIT`]: containers start in any order. A try itself can take seconds (about 10 s for an address
+/// that does not answer), so the whole wait can be longer than [`STORE_WAIT`]; the store counts a wrong password as
+/// unavailable, so it is tried again too. On tokio's clock, so a test runs it on virtual time.
 #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
 async fn wait_for_store<F, Fut>(mut open: F) -> Result<Store, StoreError>
 where

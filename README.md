@@ -454,7 +454,8 @@ myapp get actors --server http://127.0.0.1:8080             # an operator comman
   its own**: without a layer of the host, the API can change and delete everything. `App::http` gets the router of the
   API and the node and returns the router to serve; a layer covers what was merged before it, not what is merged after
   it. `/ready` is answered by `App` outside that router: no layer covers it, and a route `/ready` of the host is never
-  reached. A route that the API already has fails the command before the node starts.
+  reached. A route that the API already has makes axum panic: its message goes to standard error, and the command
+  fails with it before the node starts.
 - `worker` hosts the types and serves nothing; it has no `/ready`. `--types` picks the types of a node: `all` (the
   default), or type names with commas; `serve --types none` serves the API and hosts nothing.
 - The operator commands are those of the [command line](#command-line-and-terminal-ui), over HTTP, also in a binary
@@ -499,9 +500,11 @@ default of the library ([Configuration](#configuration)):
 | `--max-lost-claims` | `CICADA_MAX_LOST_CLAIMS` | `max_lost_claims`: a number, or `off` |
 
 A duration is a whole number with `ms`, `s`, `m`, `h` or `d` (`250ms`, `5s`, `7d`), or ISO 8601 (`PT5S`, `P7D`). On
-PostgreSQL, `serve` and `worker` try again every second for up to 60 s while the store answers that it is
-unavailable, as containers start in any order. A store whose feature the binary was built without fails the command
-and names the feature.
+PostgreSQL, `serve` and `worker` try again while the store answers that it is unavailable, as containers start in any
+order: a second after each try, and no new try after a minute. One try can take seconds (about 10 s for an address
+that does not answer), so the wait is about a minute and can be longer, and a wrong password counts as unavailable and
+is tried again like an unreachable database. A store whose feature the binary was built without fails the command and
+names the feature.
 
 ### Run it in an axum service
 

@@ -45,9 +45,12 @@ futures, logs go through `tracing`, and the host owns the store and the node's l
   `App::http`: it can change and delete everything, so open it to a network only behind one. `serve` and `worker`
   refuse `--token`, which belongs to the operator commands, so it cannot look like protection. `/ready` stays public.
   Set the same `--retention` (`CICADA_RETENTION`, 7 days by default) on every node of a system: it is how long
-  outcomes are kept and the window in which a message id is known. On PostgreSQL a node waits up to 60 s for a database
-  that is not there yet, so containers may start in any order. Exit codes: 0 after a stop, 2 for a command line or a
-  variable that cannot be used, 1 for a node that cannot start.
+  outcomes are kept and the window in which a message id is known. On PostgreSQL a node waits about a minute for a
+  database that is not there yet, so containers may start in any order: it tries again a second after each try and
+  starts no try after a minute, but one try can take seconds (about 10 s for an address that does not answer), so a
+  node that gives up may do so after more than a minute. A wrong password counts as unavailable and is tried again for
+  the whole wait, like an unreachable database; the warnings in the log name the error. Exit codes: 0 after a stop, 2
+  for a command line or a variable that cannot be used, 1 for a node that cannot start.
 - **Graceful stop.** `serve` and `worker` stop on `SIGTERM` and `SIGINT`. `serve` stops the node first: it claims no
   more and lets running turns finish within the grace period, while the API keeps answering and `/ready` answers
   `503`; then the HTTP server stops, requests still open get 5 s and are cut off after that, and the store is closed.

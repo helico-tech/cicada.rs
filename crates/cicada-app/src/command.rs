@@ -78,7 +78,7 @@ pub(crate) fn parse(args: &[OsString], node: bool) -> Result<Parsed, String> {
                 ErrorKind::DisplayHelp => Ok(Parsed::Help(e.render().to_string())),
                 ErrorKind::DisplayVersion => Ok(Parsed::Version),
                 ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
-                    Err(format!("a command is missing\n\n{}", e.render().to_string().trim_end()))
+                    Err(hide_passwords(&format!("a command is missing\n\n{}", e.render().to_string().trim_end())))
                 }
                 _ => Err(usage(&e)),
             };
@@ -119,11 +119,38 @@ fn refuse_operator_flags(command: &str, top: &ArgMatches, sub: &ArgMatches) -> R
     ))
 }
 
-/// The text of a clap error without its leading `error: ` and its trailing newline.
+/// The text of a clap error without its leading `error: ` and its trailing newline, and without passwords: clap quotes
+/// what it cannot use, such as an address given without `--store`.
 fn usage(error: &clap::Error) -> String {
     let text = error.render().to_string();
     let text = text.strip_prefix("error: ").unwrap_or(&text);
-    text.trim_end().to_owned()
+    hide_passwords(text.trim_end())
+}
+
+/// `text` with the password of every address in it that has one (`scheme://user:secret@host` becomes
+/// `scheme://user:***@host`).
+pub(crate) fn hide_passwords(text: &str) -> String {
+    let mut hidden = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(i) = rest.find("://") {
+        let (before, after) = rest.split_at(i + 3);
+        hidden.push_str(before);
+        let end = after
+            .find(|c: char| c.is_whitespace() || matches!(c, '/' | '?' | '#' | '\'' | '"' | '`'))
+            .unwrap_or(after.len());
+        let authority = &after[..end];
+        match authority.rfind('@').and_then(|at| authority[..at].find(':').map(|colon| (colon, at))) {
+            Some((colon, at)) => {
+                hidden.push_str(&authority[..=colon]);
+                hidden.push_str("***");
+                hidden.push_str(&authority[at..]);
+            }
+            None => hidden.push_str(authority),
+        }
+        rest = &after[end..];
+    }
+    hidden.push_str(rest);
+    hidden
 }
 
 #[cfg(test)]
@@ -132,6 +159,16 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<OsString> {
         list.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn the_password_of_an_address_is_hidden() {
+        assert_eq!(
+            hide_passwords("unexpected argument 'postgres://u:pw@h:5432/db?sslmode=require' found"),
+            "unexpected argument 'postgres://u:***@h:5432/db?sslmode=require' found"
+        );
+        assert_eq!(hide_passwords("a://x:p@q@h b://n@h c://h:1 d://u:@h"), "a://x:***@h b://n@h c://h:1 d://u:***@h");
+        assert_eq!(hide_passwords("no address here"), "no address here");
     }
 
     #[test]

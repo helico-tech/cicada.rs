@@ -49,9 +49,11 @@ changes; nodes of 0.12.0 and 0.13.0 can share a database.
 - The store from `--store` or `CICADA_STORE`: `postgres://…` or `postgresql://…`, `sqlite:FILE`, or the path of a
   SQLite file. Another value with `://`, or one that starts with `postgres:`, is refused and never printed, as it may
   hold a password. `--store-schema`, `--store-pool-size` (by default the larger of 20 and the concurrency plus 4) and
-  `--retention`, each with a variable `CICADA_…`. On PostgreSQL, `serve` and `worker` wait up to 60 s for a store that
-  answers "unavailable". The stores are the features `sqlite` and `postgres` of `cicada-app`, none on by default; a
-  store whose feature the binary was built without fails the command and names the feature.
+  `--retention`, each with a variable `CICADA_…`. On PostgreSQL, `serve` and `worker` wait about a minute for a store
+  that answers "unavailable": a try can take seconds, so the wait can be longer, and a wrong password is tried again
+  like an unreachable database. The stores are the features `sqlite` and `postgres` of `cicada-app`, none on by
+  default; a store whose feature the binary was built without fails the command and names the feature. A usage error
+  hides the password of an address it quotes (`postgres://user:***@host`).
 - `serve` listens on `127.0.0.1:8080` unless `--listen` (`CICADA_LISTEN`) says otherwise: `App` has no
   authentication of its own. `--types` (`CICADA_TYPES`) picks the types of a node: `all`, type names with commas, or
   for `serve` `none`. The settings of the node have a flag and a variable each (`--node-id`, `--concurrency`,

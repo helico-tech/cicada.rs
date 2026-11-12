@@ -32,7 +32,11 @@
 //!
 //! The store comes from `--store` or `CICADA_STORE` (a `postgres://` address, `sqlite:FILE` or the path of a SQLite
 //! file), the types from `--types` or `CICADA_TYPES`, and each setting of the node from its flag or its variable
-//! `CICADA_…`, else the host's [`App::node_config`], else the default. A binary without types has neither `serve` nor
+//! `CICADA_…`, else the host's [`App::node_config`], else the default. On PostgreSQL, `serve` and `worker` wait for a
+//! store that answers "unavailable", as containers start in any order: they try again every second and start no try
+//! after a minute, but one try can take seconds (about 10 s for an address that does not answer), so the wait is about
+//! a minute and can be longer, and a wrong password counts as unavailable and is tried again like an unreachable
+//! database. A binary without types has neither `serve` nor
 //! `worker`: the plain `cicada` binary is one. The stores are the features `sqlite` and `postgres`, and the terminal UI
 //! of the operator commands the feature `tui`; none is on by default. The help, the usage errors and the hints name the
 //! binary as it was called.
@@ -136,8 +140,10 @@ impl App {
     /// router to serve. A layer put on the router covers the API and what was merged before it; routes merged after it
     /// are not covered, as in axum. Without a layer of the host the API has no authentication: it can change and delete
     /// everything. `/ready` is answered by `App` outside this router and before it: no layer of the host covers it, and
-    /// a route `/ready` of the host is never reached. A route that the API has already makes the command fail before
-    /// the node starts. Functions of several calls apply in the order of the calls.
+    /// a route `/ready` of the host is never reached. A route that the API has already makes axum panic while the
+    /// router is built: the panic hook of the process prints axum's message to standard error, and then the command
+    /// fails with that message as its error (exit code 1), before the node starts. `App` leaves the hook alone, as it
+    /// is shared by every thread of the process. Functions of several calls apply in the order of the calls.
     pub fn http(mut self, f: impl FnOnce(Router, &ActorSystem) -> Router + Send + 'static) -> Self {
         self.http.push(Box::new(f));
         self
