@@ -163,9 +163,10 @@ decision 9 fails for such a type, so a host finds out in its tests.
 
 ### 7. A hosting node still decodes with serde, and both refusals stay `422`
 
-After the schema check a node that hosts the type decodes the payload with serde, as today. A node that knows a
-message will fail should say so. What remains different between nodes is only a payload that the schema allows and
-serde refuses, and that is a fault of the type that the sample check finds.
+A node that hosts the type decodes a payload that the schema accepts with serde, as today; after a refusal by the schema
+it runs no decoder (decision 8). A node that knows a message will fail should say so. What remains different between
+nodes is only a payload that the schema allows and serde refuses, and that is a fault of the type that the sample check
+finds.
 
 Both refusals answer `422` with the problem type `invalid-payload`, and for a state `invalid-state`, as the decoder
 does today. The detail says which check refused it: "does not match the registered schema", with no place (decision
@@ -190,9 +191,10 @@ second half of the owner's decision of the same day, "report the first mismatch 
 
 The door asks the validator only whether a value matches, and the detail of a refusal by the schema names no place:
 "Payload of 'Add' does not match the registered schema; GET /types/counter has it", and for a state "State does not
-match the registered schema; …". It quotes nothing of the value and holds no address of the schema. Three ways to name a
-place were tried, and each could be made to cost without bound by a small request, because the cost depends on how many
-shapes a type allows at each level and how deep they nest, which a host's type decides:
+match the registered schema; …". It quotes nothing of the value and holds no address of the schema. History of the
+earlier rounds: three ways to name a place were built and taken out again, as each could be made to cost without bound
+by a small request, because the cost depends on how many shapes a type allows at each level and how deep they nest,
+which a host's type decides:
 
 - Up to five places (`boon`, from the first build): every mismatch was built with its full path first; a refused
   request of 1 MiB held 473 MiB, and 200 at once took a node to about 6 GB resident.
@@ -256,19 +258,24 @@ third round, 2026-11-12.
 
 The validator recurses per level of a value, and a type that refers to itself lets a request nest as deep as the JSON
 parser of the body allows: 127 levels with the body, so a payload or a state of 126. The stack a level takes is set by
-the steps of the schema between two levels of the type, not by the depth alone. With `boon` it was about 42 KiB a level
-in a test build for a list under an `Option` or a tagged enum, and 86 to 103 KiB for a type with newtypes or several
-groups between its levels (12.9 MiB at 126 levels for the widest). With `jsonschema`, for the three widest shapes the
-validation found: at most 10.8 KiB a level in a test build (1.35 MiB at 126 levels, for a value that does not match;
-0.5 MiB for one that does) and about 2.5 KiB in a release build (311 KiB). A thread of the runtime has a stack of
+the steps of the schema between two levels of the type, not by the depth alone. A thread of the runtime has a stack of
 2 MiB. An overflow is no error: the process dies, and every turn it runs becomes a lost claim.
 
+The check of the door as it is, `is_valid` of `jsonschema`, needs at 126 levels at most 455 KiB in a test build for the
+three shapes the validation found widest for `boon` (`chain`, `stack`, `wide`; about 2.7 KiB a level, matching or not)
+and at most 87 KiB in a release build; the validator measured 2.0 MiB in a test build for a type with 48 newtypes
+between two levels, more than a default stack. History of the earlier rounds: with `boon` a level took about 42 KiB in
+a test build for a list under an `Option` or a tagged enum and 86 to 103 KiB for a type with newtypes or several groups
+between its levels (12.9 MiB at 126 levels for the widest), and `validate` of `jsonschema`, which named a place, took
+up to 1.35 MiB at 126 levels for those three shapes.
+
 Every value is checked on a scoped thread of its own with a stack of 64 MiB, chosen as five times what the widest shape
-needed with `boon`; with `jsonschema` it is more than forty times the widest found. The stack is address space: only
-the pages a check touches are used. The thread costs about 26 µs a check in a release build; the check of an ordinary
-send takes about 29 µs with it and 3 µs without. With `jsonschema` these shapes fit a default stack even at 126 levels
-in a test build; the thread stays, as the stack a level takes is set by the type, and a type can need more. The check is
-as strict as before. A thread that cannot be started fails the request with `500`; the check is not skipped.
+needed with `boon`; for the door as it is, that is about 32 times the widest type the validation found (2.0 MiB) and
+about 140 times the three shapes. The stack is address space: only the pages a check touches are used. The thread costs
+about 26 µs a check in a release build; the check of an ordinary send takes about 29 µs with it and 3 µs without. The
+thread stays, as the stack a level takes is set by the type, and a type can need more than a default stack. On that
+thread the check is the same as anywhere else. A thread that cannot be started fails the request with `500`; the check
+is not skipped.
 
 - **Every value on a stack of its own (chosen).**
 - A bound below which a value stays on the calling thread (this change before the third round of validation, at 24

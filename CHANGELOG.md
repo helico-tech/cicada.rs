@@ -60,15 +60,14 @@ and 0.12.0 can share a database, and during a rolling deploy a node of 0.11.0 st
 
 - `ActorSystem::send_message_checked` and `ActorSystem::create_actor_checked` take a `SchemaCheck` from their caller
   (`cicada::schema::SchemaCheck`, `check(schema, value)`, true when the value matches) and run it where a hosting node
-  decodes: after the repeated
-  id, the registered type and the message type, and for a create after the `null` check and before the address and
-  the decoder, so that a state that does not match gets the same answer on every node; a node that hosts a singleton
-  answered `invalid-address` for a create of another name with a bad state, and answers `invalid-state` now. Its
-  refusal is `SendResult::InvalidPayload` or `CreateActorResult::InvalidState` with "… does not match the registered
-  schema; GET /types/… has it", and nothing else runs. `send_message` and `create_actor` are these with a check that
-  accepts everything. The core has no validator.
-- `cicada::runtime::MAX_REFUSAL_DETAIL` (2,000): the most characters of the detail of a refused payload or state, by a
-  check or by the decoder of a hosting node; a longer one is cut and ends with ` … (cut)`.
+  decodes: after the repeated id, the registered type and the message type, and for a create after the `null` check and
+  before the address and the decoder, so that a state that does not match gets the same answer on every node; a node
+  that hosts a singleton answered `invalid-address` for a create of another name with a bad state, and answers
+  `invalid-state` now. Its refusal is `SendResult::InvalidPayload` or `CreateActorResult::InvalidState` with "… does not
+  match the registered schema; GET /types/… has it", and nothing else runs. `send_message` and `create_actor` are these
+  with a check that accepts everything. The core has no validator.
+- `cicada::runtime::MAX_REFUSAL_DETAIL` (2,000): the most characters of the detail of a refused payload or state; a
+  longer one, such as a decoder's reason that quotes the value, is cut and ends with ` … (cut)`.
 - `cicada_axum::assert_message_sample::<M>(&sample)` and `assert_state_sample::<S>(&sample)`: a sample must pass the
   registered schema and decode as the type, or the test fails, saying which of the two refused it and why, for the
   schema with the first place that does not match (which the door does not name; it can be slow for a deep value of a

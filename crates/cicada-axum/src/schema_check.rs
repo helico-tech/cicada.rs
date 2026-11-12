@@ -216,16 +216,16 @@ mod tests {
         }
     }
 
-    /// Scenario: Two places that do not match: the first is named, with what was expected.
+    /// The sample check, not the door: of two places that do not match it names the first, with what was expected.
     #[test]
-    fn of_two_places_that_do_not_match_the_first_is_named_with_what_was_expected() {
+    fn the_sample_check_names_the_first_of_two_places_with_what_was_expected() {
         let schema = object(json!({"n": {"type": "integer"}, "name": {"type": "string"}}));
         assert_eq!(refused(&schema, &json!({"n": "x", "name": 5})), r#"at /n: "x" is not of type "integer""#);
     }
 
-    /// Scenario: A field inside an optional part: the place is the optional part, with a general reason.
+    /// The sample check, not the door: for a field inside an optional part it names the part, with a general reason.
     #[test]
-    fn a_field_inside_an_optional_part_names_the_part() {
+    fn the_sample_check_names_an_optional_part_for_a_field_inside_it() {
         #[derive(serde::Deserialize, JsonSchema)]
         #[allow(dead_code)]
         struct Address {
@@ -302,8 +302,8 @@ mod tests {
         }
     }
 
-    /// A value with many mismatches, deep in a type that refers to itself: the first is named, quickly. The memory a
-    /// refusal holds is tested in `tests/memory.rs`.
+    /// The sample check, not the door: of a value with many mismatches, deep in a type that refers to itself, it names
+    /// the first, quickly. The time and memory of a refusal at the door are tested in `tests/memory.rs`.
     #[test]
     fn a_deep_value_with_many_mismatches_names_the_first_quickly() {
         #[derive(serde::Deserialize, JsonSchema)]
@@ -325,9 +325,10 @@ mod tests {
     }
 
     /// Scenarios: A value at the deepest level the parser allows; A type with several schema steps between its levels
-    /// (decision 11). Three such types, at 21 and 24 levels (where a check on a default stack ended the process in a
-    /// test build) and at 126, the deepest payload or state a request body holds; as a state and as a payload, matching
-    /// and not. Through the check of the door and that of the sample checks, on a thread with the default stack of 2 MiB.
+    /// (decision 11). Three such types, at 21 and 24 levels (where, with the first validator, a check on a default stack
+    /// ended the process in a test build) and at 126, the deepest payload or state a request body holds; as a state and
+    /// as a payload, matching and not. Through the check of the door and that of the sample checks, on a thread with the
+    /// default stack of 2 MiB.
     #[test]
     fn a_value_is_checked_on_a_stack_of_its_own_whatever_its_type_and_depth() {
         fn shape<T: Shape>() {

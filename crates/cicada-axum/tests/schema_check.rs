@@ -49,6 +49,17 @@ enum FormMsg {
     Nest {
         node: Node,
     },
+    Ship {
+        qty: i32,
+        note: String,
+        to: Option<Place>,
+    },
+}
+
+/// An optional object of `Ship`.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct Place {
+    street: String,
 }
 
 /// A list that refers to itself through an `Option`.
@@ -154,6 +165,35 @@ async fn a_payload_that_does_not_match_is_refused_by_every_node_with_the_same_de
     assert_problem(&host, 422, pt::INVALID_PAYLOAD);
     assert_eq!(detail(&host), detail(&other));
     assert_problem(&get(&n.host, "/messages/m-host").await, 404, pt::NO_SUCH_MESSAGE);
+}
+
+/// Scenario: Two places that do not match. The detail names the message type and the schema and no field, on both
+/// nodes.
+#[tokio::test(start_paused = true)]
+async fn a_payload_with_two_wrong_fields_is_refused_with_a_detail_that_names_no_field() {
+    let n = nodes().await;
+    put(&n.host, "/actors/form/f", r#"{"state": {}}"#).await;
+    let body = r#"{"type": "Ship", "payload": {"qty": "x", "note": 5}}"#;
+    for app in [&n.other, &n.host] {
+        let reply = post(app, "/actors/form/f/messages", body).await;
+        assert_problem(&reply, 422, pt::INVALID_PAYLOAD);
+        assert_eq!(detail(&reply), refused_payload("Ship", "form"));
+    }
+}
+
+/// Scenario: A field inside an optional part. The detail names no place, on both nodes.
+#[tokio::test(start_paused = true)]
+async fn a_wrong_field_inside_an_optional_part_is_refused_with_a_detail_that_names_no_place() {
+    let n = nodes().await;
+    put(&n.host, "/actors/form/f", r#"{"state": {}}"#).await;
+    let body = r#"{"type": "Ship", "payload": {"qty": 1, "note": "n", "to": {"street": 7}}}"#;
+    for app in [&n.other, &n.host] {
+        let reply = post(app, "/actors/form/f/messages", body).await;
+        assert_problem(&reply, 422, pt::INVALID_PAYLOAD);
+        assert_eq!(detail(&reply), refused_payload("Ship", "form"));
+    }
+    let matching = r#"{"type": "Ship", "payload": {"qty": 1, "note": "n", "to": {"street": "s"}}}"#;
+    assert_eq!(post(&n.other, "/actors/form/f/messages", matching).await.status, 202);
 }
 
 /// Scenario: A payload that matches.

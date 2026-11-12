@@ -7,36 +7,38 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
 
 - [x] 1.1 The checked calls [1, 2]: `SchemaCheck`, `ActorSystem::send_message_checked` and
       `ActorSystem::create_actor_checked`; `send_message` and `create_actor` are these with a check that accepts
-      everything. The check gets the schema of the message type, or the state schema, and runs where decision 1
-      says. A refusal is `SendResult::InvalidPayload` or `CreateActorResult::InvalidState` with the check's reason,
-      and nothing is stored. The docs of `schema` no longer say that nothing validates. Verify, with `TestActors`:
-      tests that the check gets the right schema and value; that its refusal stores nothing; that it is not called
-      for a repeated id, a type that is not registered, a message type the contract does not have, or a `null`
-      state; and that on a hosting node it runs before the decoder.
+      everything. The check gets the schema of the message type, or the state schema, and runs where decision 1 says; it
+      answers yes or no. A refusal is `SendResult::InvalidPayload` or `CreateActorResult::InvalidState` with a sentence
+      that names the schema and no place, and nothing else runs and nothing is stored. The docs of `schema` no longer
+      say that nothing validates. Verify, with `TestActors`: tests that the check gets the right schema and value; that
+      its refusal stores nothing; that it is not called for a repeated id, a type that is not registered, a message type
+      the contract does not have, or a `null` state; and that on a hosting node it runs before the decoder.
 
 ## 2. The door
 
 - [x] 2.1 The validator [3, 4, 6, 8]: the dependency `jsonschema` (the owner's decision of 2026-11-12, in place of
       `boon`) in `cicada-axum` only, and one private function that checks a value against a schema: draft 2020-12, a
-      retriever that refuses every address, no format asserted, the first place only (decision 8). A schema that
-      cannot be used is not enforced, and warned about once for each such schema. Verify: unit tests for the
-      scenarios "Two places that do not match", "A field inside an optional part", "A schema that refers to a file"
-      (with a file that exists, and a port that listens, and the test shows neither is read) and "A schema with a
-      pattern the validator does not know"; a test that a bad `date-time` passes; a test of the memory a refused
-      request holds; and `cargo tree -p cicada -e normal` names none of the crates new to the workspace.
+      retriever that refuses every address, no format asserted, and only whether a value matches (`is_valid`), so that
+      the detail names no place (decision 8). A schema that cannot be used is not enforced, and warned about once for
+      each such schema. Verify: unit tests for the scenarios "A schema that refers to a file" (with a file that exists,
+      and a port that listens, and the test shows neither is read) and "A schema with a pattern the validator does not
+      know"; a test that a bad `date-time` passes; a test of the time and memory of a refusal by the schema on both
+      nodes (`tests/memory.rs`); and `cargo tree -p cicada -e normal` names none of the crates new to the workspace.
 - [x] 2.2 The handlers [1, 5, 7]: a send and a create call the checked calls with the validator. Both refusals answer
       `422` with the problem types they have; the detail says which check refused. Verify, in the HTTP tests of
-      `cicada-axum`, with a node that hosts the type and one that does not on one store: tests for the scenarios "A
-      node that does not host the type", "A node that hosts the type", "A payload that matches", "A field that the
-      type does not know", "A required field is missing", "A message type the contract does not have"; of the
-      create "A node that does not host the type", "A state that matches", "The actor exists"; "A repeat of a
-      message that does not match", "A repeat of a message whose outcome is hidden", "A send without an id"; "A
-      payload that the schema allows and the type cannot decode", "The same payload on a node that does not host
-      the type", "A state that the schema allows and the type cannot decode"; "A date that is not a date", "A state
-      schema that cannot be used"; and of `undecodable-messages` "A send with a payload that does not fit".
+      `cicada-axum`, with a node that hosts the type and one that does not on one store: tests for the scenarios "A node
+      that does not host the type", "A node that hosts the type", "Two places that do not match", "A field inside an
+      optional part", "A payload that matches", "A field that the type does not know", "A required field is missing", "A
+      message type the contract does not have"; of the create "A node that does not host the type", "A state that
+      matches", "The actor exists"; "A repeat of a message that does not match", "A repeat of a message whose outcome is
+      hidden", "A send without an id"; "A payload that the schema allows and the type cannot decode", "The same payload
+      on a node that does not host the type", "A state that the schema allows and the type cannot decode"; "A date that
+      is not a date", "A state schema that cannot be used"; and of `undecodable-messages` "A send with a payload that
+      does not fit".
 - [x] 2.3 The sample checks [9]: `assert_message_sample` and `assert_state_sample`, public in `cicada-axum`. Verify:
-      tests for the scenarios "A sample that passes both", "A sample that only the decoder accepts", "A sample that
-      only the schema accepts", "A state sample" and "A schema that cannot be used".
+      tests for the scenarios "A sample that passes both", "A sample that only the decoder accepts", "A sample that only
+      the schema accepts", "A state sample" and "A schema that cannot be used", and unit tests of the first place that a
+      sample check names.
 - [x] 2.4 The repository's own types [9]: sample checks for the types of the examples, of `cicada-extras` and of the
       sample service, and for `Failed` and `Stopped` in a watcher's family: what each type serialises passes both.
       Where a schema refuses what its type writes, the schema is made right. Verify: the checks pass; the report

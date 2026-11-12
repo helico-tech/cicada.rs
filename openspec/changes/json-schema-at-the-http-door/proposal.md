@@ -20,7 +20,8 @@ node can read the registered JSON Schemas of every type. ADR 0018 enforces the s
   node: a field under a `#[serde(alias)]`, a type whose hand-written decoder allows more than its schema. And a
   node that does not host a type refuses what it accepted. A type whose schema refuses what the type itself writes
   must get a right schema, which is a contract change.
-- A node that hosts the type still decodes with serde after the schema check. serde stays the judge at the turn.
+- A node that hosts the type still decodes with serde what the schema accepts. A refusal by the schema names no place
+  and runs nothing else. serde stays the judge at the turn.
 - A send that repeats an id is answered as a repeat before it is checked, as today.
 - Formats are not asserted, and a schema that the validator cannot use is not enforced.
 - The schemas stay discoverable through `GET /types/{name}`.

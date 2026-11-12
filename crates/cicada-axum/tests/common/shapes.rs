@@ -1,6 +1,7 @@
 //! Three types that refer to themselves with several schema steps between two of their levels, as the third round of
-//! validation found them: their check needs 86 to 103 KiB of stack a level in a test build (decision 11). Shared by the
-//! test of the check function in `src/schema_check.rs` and the test of the HTTP door in `tests/deep_values.rs`.
+//! validation found them: with the first validator their check needed 86 to 103 KiB of stack a level in a test build;
+//! the check of the door as it is needs about 2.7 KiB (decision 11). Shared by the test of the check function in
+//! `src/schema_check.rs` and the test of the HTTP door in `tests/deep_values.rs`.
 #![allow(dead_code)]
 
 use schemars::JsonSchema;

@@ -105,7 +105,7 @@ detail SHALL say which of the two checks refused the value.
   node that hosts the type
 - **THEN** the answer is `422 invalid-state`, the detail holds the words "cannot be decoded", and no actor exists
 
-### Requirement: The detail of a refusal says where and why
+### Requirement: The detail of a refusal by the schema names the schema and no place
 
 The detail of a refusal by the schema SHALL say that the payload of the message type, or the state, does not match the
 registered schema, and that `GET /types/{name}` has the schema, and SHALL be the same on every node. It SHALL name no
