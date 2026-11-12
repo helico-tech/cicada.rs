@@ -9,7 +9,9 @@ use std::path::Path;
 use cicada::prelude::*;
 use cicada::store::{Message, MessageStatus, OutcomeStatus, SqliteOptions};
 use cicada::{ActorAddress, SendResult, Store};
-use cicada_actors::{Child, Supervisor, SupervisorActor, SupervisorMsg, SupervisorState};
+use cicada_actors::{
+    Child, Supervisor, SupervisorActor, SupervisorMsg, SupervisorState, Topic, TopicActor, TopicMsg, TopicState,
+};
 use common::*;
 use sqlx::SqlitePool;
 use tempfile::TempDir;
@@ -26,7 +28,8 @@ impl Sqlite {
     async fn open(dir: &Path) -> Self {
         let path = dir.join("cicada.db");
         let store = Store::sqlite(&path, SqliteOptions::default()).await.unwrap();
-        let system = ActorSystem::builder(store.clone()).host(SupervisorActor).host(WorkerActor).build();
+        let system =
+            ActorSystem::builder(store.clone()).host(SupervisorActor).host(TopicActor).host(WorkerActor).build();
         system.initialize().await.unwrap();
         let pool = SqlitePool::connect(&format!("sqlite://{}", path.display())).await.unwrap();
         Self { system, store, pool }
@@ -101,6 +104,37 @@ async fn a_read_of_the_store_that_fails_during_a_restart_commits_nothing_and_the
     assert_eq!(db.state::<WorkerState>(&addr(&worker("a"))).await.n, 1, "the child keeps running");
     let SendResult::Accepted(pending) = pending else { panic!("{pending:?}") };
     assert!(matches!(db.system.status(&pending.id).await.unwrap(), Some(MessageStatus::Pending(_))), "its mailbox");
+    db.close().await;
+}
+
+/// Scenario: A delivery that is tried again.
+#[tokio::test]
+async fn a_delivery_whose_read_of_the_store_fails_is_tried_again_and_arrives_once() {
+    let dir = TempDir::new().unwrap();
+    let db = Sqlite::open(dir.path()).await;
+    let topic = Topic::named("orders");
+    db.system.create(&topic, &TopicState::default()).await.unwrap();
+    db.system.create(&worker("a"), &WorkerState::default()).await.unwrap();
+    db.system.send(&topic, TopicMsg::Subscribe { subscriber: addr(&worker("a")) }).await.unwrap();
+    db.run_until_idle().await;
+    let publish = TopicMsg::publish(WorkerMsg::Note { text: "shipped".into() }).unwrap();
+    db.system.send(&topic, publish).await.unwrap();
+    assert_eq!(db.system.run_due_turns(1).await.unwrap(), 1, "the publish");
+    let deliver = db.pending(&addr(&topic)).await;
+    assert_eq!(deliver.len(), 1);
+
+    db.registry(false).await;
+    assert_eq!(db.system.run_due_turns(1).await.unwrap(), 1, "the first attempt of the delivery");
+    db.registry(true).await;
+    let retried = db.pending(&addr(&topic)).await;
+    assert_eq!((retried.len(), retried[0].id.clone(), retried[0].failures), (1, deliver[0].id.clone(), 1));
+    assert!(retried[0].last_error.as_deref().unwrap().contains("actor_types"), "{:?}", retried[0].last_error);
+    assert!(db.state::<WorkerState>(&addr(&worker("a"))).await.log.is_empty(), "nothing was sent");
+
+    tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+    db.run_until_idle().await;
+    assert_eq!(db.state::<WorkerState>(&addr(&worker("a"))).await.log, ["shipped"], "once, from a later attempt");
+    assert_eq!(db.outcome(&deliver[0]).await.0, OutcomeStatus::Done);
     db.close().await;
 }
 

@@ -4,6 +4,7 @@
 //! | --- | --- | --- |
 //! | [`SupervisorActor`] | `cicada.supervisor` | Starts its children, watches them, and restarts one that is at fault |
 //! | [`DeadLettersActor`] | `cicada.dead-letters` | Keeps failed messages, told by a watch; redrives or discards one |
+//! | [`TopicActor`] | `cicada.topic` | Sends each published message to its subscribers, each in a turn of its own |
 //! | [`StoredMessage`] | | A message an actor keeps to send later: a type name and a JSON payload, built from a typed ref |
 //! | [`Schedule`] | | When a recurring job runs next |
 //!
@@ -15,9 +16,11 @@ mod error;
 mod schedule;
 mod stored;
 pub mod supervisor;
+pub mod topic;
 
 pub use dead_letters::{DeadLetter, DeadLetters, DeadLettersActor, DeadLettersMsg, DeadLettersState};
 pub use error::EncodeError;
 pub use schedule::{Schedule, ScheduleError};
 pub use stored::StoredMessage;
 pub use supervisor::{Child, ChildEntry, Supervisor, SupervisorActor, SupervisorMsg, SupervisorState};
+pub use topic::{Topic, TopicActor, TopicMsg, TopicState};
