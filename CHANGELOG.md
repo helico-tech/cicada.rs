@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.13.0 — unreleased
+## 0.13.0 — 2026-11-12
 
 A breaking release: the app layer (ADR 0018, ADR 0027). The new crate `cicada-app` turns a set of actor types into a
 binary with `serve`, `worker` and the operator commands, configured by flags and `CICADA_…` variables:
