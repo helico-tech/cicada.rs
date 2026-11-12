@@ -26,7 +26,7 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
       typed helper, and `Schedule` moved from `cicada-extras` unchanged with its tests. Verify: a test that a stored
       message holds the type name and the payload the family encodes; a `compile_fail` doctest for a message of
       another family; the tests of `Schedule` pass.
-- [ ] 2.2 The supervisor [4, 5, 6, 7]: `cicada.supervisor` with its state, `Start`, `StartChild` (with the retry
+- [x] 2.2 The supervisor [4, 5, 6, 7]: `cicada.supervisor` with its state, `Start`, `StartChild` (with the retry
       policy of 7 attempts, the waits doubling from one second), the restart with its calls in the order of decision
       5 and the id of its `Restarted`, the table of causes, `Stopped`, the restart limit and both kinds of `Escalate`,
       and the rule that its own messages count only from itself. Verify: tests for every scenario of `supervisor`, on
