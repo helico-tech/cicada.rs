@@ -197,8 +197,9 @@ impl ActorClient {
     // ---- instances ----
 
     /// Creates the instance at `address` with `state` (`PUT /actors/{path}`). Idempotent: an existing instance is left
-    /// untouched and reported with `created == false`. Errors: `404` when no type matches, `422` when the state is
-    /// refused (it is `null`, or the node hosts the type and cannot decode it).
+    /// untouched and reported with `created == false`. Errors: `404` when no type matches, `422 invalid-state` when the
+    /// state is refused (it is `null`, does not match the registered state schema, or the node hosts the type and
+    /// cannot decode it); the problem's detail says why.
     pub async fn create_actor(&self, address: &ActorAddress, state: Value) -> ClientResult<CreateActorResponse> {
         let body = encode(&CreateActorRequest { state })?;
         let answer = self.call(Method::PUT, self.url(&http_path(address)?, &[])?, Some(body)).await?;
@@ -295,8 +296,9 @@ impl ActorClient {
     /// message types. Retried with the same id on transport errors and `503` (see the crate documentation); the
     /// policies of `options` are ignored when the id was already accepted. Errors: `404 no-such-type` when no
     /// registered type matches `to`, `404 no-such-instance` when its type is registered and the instance does not
-    /// exist, `422` for an unknown type name or (on a node hosting the type) an undecodable payload, `409` when the id
-    /// was accepted for another message, `400` for an invalid envelope.
+    /// exist, `422` for an unknown type name, a payload that does not match the registered schema of its message type,
+    /// or (on a node hosting the type) a payload that cannot be decoded, `409` when the id was accepted for another
+    /// message, `400` for an invalid envelope.
     pub async fn send_message(
         &self,
         to: &ActorAddress,

@@ -238,13 +238,20 @@ async fn unknown_type_and_bad_payloads() {
         assert_eq!(unknown.text("/type").as_deref(), Some(problem_types::UNKNOWN_MESSAGE_TYPE));
     }
 
+    // Every node checks a payload against the registered schema of its message type (ADR 0026).
     let bad_payload = r#"{"type":"Sleep","payload":{"millis":"soon"}}"#;
-    let refused = c.node2.post(&mailbox, bad_payload).await;
-    assert_eq!(refused.status, 422, "a hosting node decodes at send: {refused}");
-    assert_eq!(refused.text("/type").as_deref(), Some(problem_types::INVALID_PAYLOAD));
+    for node in [&c.node2, &c.send_only] {
+        let refused = node.post(&mailbox, bad_payload).await;
+        assert_eq!(refused.status, 422, "{node} checks the schema at send: {refused}");
+        assert_eq!(refused.text("/type").as_deref(), Some(problem_types::INVALID_PAYLOAD));
+    }
 
-    // The send-only node cannot decode: it accepts, and the hosting node's delivery ends it `failed`.
-    let accepted = c.send_only.post(&mailbox, bad_payload).await;
+    // An i64 one too large passes the schema and not the decoder: a hosting node refuses it at send, the send-only
+    // node cannot decode it and accepts it, and the hosting node's delivery ends it `failed`.
+    let undecodable = r#"{"type":"Sleep","payload":{"millis":9223372036854775808}}"#;
+    let refused = c.node2.post(&mailbox, undecodable).await;
+    assert_eq!(refused.status, 422, "a hosting node decodes at send: {refused}");
+    let accepted = c.send_only.post(&mailbox, undecodable).await;
     assert_eq!(accepted.status, 202, "a send-only node accepts: {accepted}");
     let id = MessageId::new(accepted.text("/id").unwrap()).unwrap();
     let outcome = c.send_only.await_finished(&id).await;

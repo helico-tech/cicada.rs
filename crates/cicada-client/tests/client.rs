@@ -259,6 +259,30 @@ async fn errors_carry_the_servers_problem() {
     assert!(e.to_string().starts_with("400 Bad request: limit must be"), "{e}");
 }
 
+/// http-schema-check: the refusal of a node that does not host the type reaches the caller with its detail.
+#[tokio::test]
+async fn a_node_that_does_not_host_the_type_refuses_what_does_not_match_the_schema_with_its_detail() {
+    let store = cicada::Store::memory();
+    ActorSystem::builder(store.clone()).host(AccountActor).build().initialize().await.unwrap();
+    let send_only = ActorSystem::builder(store).build();
+    send_only.start().await.unwrap();
+    let actors = ActorClient::new(&serve(actor_api(send_only)).await);
+    let address = acme().address().unwrap();
+
+    let refused = actors.create_actor(&address, json!({"balance": "lots"})).await.unwrap_err();
+    let problem = refused.problem().expect("a problem");
+    assert_eq!((problem.status, problem.problem_type.as_str()), (422, pt::INVALID_STATE));
+    let detail = "State does not match the schema: at /balance: want integer, but got string";
+    assert_eq!(problem.detail.as_deref(), Some(detail));
+
+    actors.create(&acme(), &AccountState::default()).await.unwrap();
+    let refused = actors.send_message(&address, "Deposit", json!({"amount": "ten"}), SendOptions::new()).await;
+    let problem = refused.unwrap_err().problem().cloned().expect("a problem");
+    assert_eq!((problem.status, problem.problem_type.as_str()), (422, pt::INVALID_PAYLOAD));
+    let detail = "Payload of 'Deposit' does not match the schema: at /amount: want integer, but got string";
+    assert_eq!(problem.detail.as_deref(), Some(detail));
+}
+
 #[tokio::test]
 async fn delivery_times_correlation_id_and_headers() {
     let (actors, _, _) = client_test(|r| r).await;

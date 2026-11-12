@@ -43,10 +43,10 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
 
 ## 3. Client, command line and end-to-end tests
 
-- [ ] 3.1 `cicada-client` and `cicada-cli` [7]: the refusal of a node that does not host the type reaches the caller
+- [x] 3.1 `cicada-client` and `cicada-cli` [7]: the refusal of a node that does not host the type reaches the caller
       as the problem `invalid-payload` or `invalid-state` with its detail. Verify: a client test against such a
       node, and a case in `tests/cli.rs` that prints the detail.
-- [ ] 3.2 The end-to-end suite [Context]: `e2e/tests/suite/cluster_api.rs` expects `422` from the node that only
+- [x] 3.2 The end-to-end suite [Context]: `e2e/tests/suite/cluster_api.rs` expects `422` from the node that only
       sends, for the bad payload it accepts today. Verify: `cargo test -p cicada-e2e --no-run`; the suite runs in
       5.2.
 

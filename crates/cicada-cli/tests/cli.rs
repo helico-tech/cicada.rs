@@ -370,6 +370,28 @@ async fn missing_items_and_api_errors_fail_with_a_message() {
     assert!(cicada_fails("http://127.0.0.1:1", &["health"]).await.contains("HTTP request failed"));
 }
 
+/// http-schema-check: a node that does not host the type refuses a payload or a state that does not match its schema,
+/// and the command prints the detail.
+#[tokio::test]
+async fn a_refusal_by_the_schema_on_a_node_that_does_not_host_the_type_prints_its_detail() {
+    let store = cicada::Store::memory();
+    ActorSystem::builder(store.clone()).host(AccountActor).build().initialize().await.unwrap();
+    let send_only = ActorSystem::builder(store).build();
+    send_only.start().await.unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a free port");
+    let s = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, actor_api(send_only)).await.expect("the server runs") });
+
+    let state = cicada_fails(&s, &["create", "actor", "account/acme:1", "--state", r#"{"balance":"lots"}"#]).await;
+    assert_eq!(state, "422 Invalid state: State does not match the schema: at /balance: want integer, but got string");
+    cicada(&s, &["create", "actor", "account/acme:1", "--state", "{}"]).await;
+    let payload =
+        cicada_fails(&s, &["send", "account/acme:1", "--type", "Deposit", "--payload", r#"{"amount":"ten"}"#]).await;
+    let expected = "422 Invalid payload: Payload of 'Deposit' does not match the schema: at /amount: want integer, \
+                    but got string";
+    assert_eq!(payload, expected);
+}
+
 #[tokio::test]
 async fn nodes_types_and_health() {
     let s = server().await;
