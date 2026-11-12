@@ -2,55 +2,55 @@
 
 ## Why
 
-`cicada-extras` holds schedules, a crash-loop guard, a failure watcher that polls outcomes on a timer, and dead
-letters. With watches, control effects and child actors in the core, supervision can be an ordinary actor, and the
-polling watcher and the guard are no longer needed. ADR 0018 decides on one crate of ready-made actors.
+`cicada-extras` holds a schedule helper, a failure watcher that polls outcomes on a timer, and dead letters; its
+crash-loop guard went with `turn-observer`. With watches, control effects and child actors in the core,
+supervision can be an ordinary actor, and the polling watcher is no longer needed. ADR 0018 decides on one crate of
+ready-made actors.
 
 ## What Changes
 
-- A new crate `cicada-actors` (layer 3) replaces `cicada-extras`. It uses only the public API of the layers below.
-- A ready-made actor has a fixed type name. It stores the messages it sends for others as an address, a message type
-  name and a JSON payload. A typed helper builds that from a ref and a message, so a wrong message is still a compile
-  error.
+- **BREAKING** A new crate `cicada-actors` (layer 3) replaces `cicada-extras`. It uses only the public API of the
+  layers below.
+- **BREAKING** A `Failed` says why its message failed. It holds a cause: the handler failed, the handler refused
+  the message, a timeout, a message or a state that cannot be decoded, a rejected commit, a failure of the store
+  or the node around the turn, or the claim limit. Its schema is part of the contract of every type that watches,
+  so each such type gets a new contract.
+- A ready-made actor has a fixed type name (`cicada.supervisor`, `cicada.dead-letters`, `cicada.topic`). A message it
+  keeps to send later is a type name and a JSON payload; a typed helper builds that from a ref and a message, so a
+  wrong message is still a compile error.
 - The first three actors:
-  - **Supervisor.** It watches actors. When one fails, it restarts or stops it with control effects. The actors it
-    starts are its children, so they go when it goes.
+  - **Supervisor.** It creates its children, watches them, and restarts one whose message failed through a fault of
+    the child: its handler failed or its turn ran too long. A child whose state its type cannot read is given up and
+    shown. A message that is itself at fault, a rejected commit, a failure of the store and the claim limit restart
+    nothing. One incident is one
+    restart, however many queued messages fail. After too many restarts it gives up on the child and fails a message
+    of its own, so that a supervisor above it restarts it; a child it cannot start at all is given up without a
+    restart above. Its children are fixed by its state, and go when it goes.
   - **Dead letters.** It gets failed messages through a watch, with no polling. An operator redrives or discards one
     with a message.
-  - **Topic.** It keeps subscribers and sends each published message to all of them.
+  - **Topic.** It keeps subscribers and sends each published message to all of them, each in a turn of its own, and
+    drops a subscriber that is not there at its next delivery.
 - `FailureWatcher` is removed: a watch replaces it. `CrashLoopGuard` went with `turn-observer`, whose claim limit
-  replaces it.
+  replaces it. `Schedule` moves to `cicada-actors` as it is.
+- The core gets `Turn::create_raw` and `Turn::create_child_raw`: a create by address with a JSON state. A supervisor
+  needs it, and Chorus asks for it (its `cicada-requests`, point 8).
 
-The simplest version: three actors. The others wait until someone needs them.
-
-To decide in the design:
-
-- How a supervisor escalates. A failed turn commits nothing, so escalating is a committed turn that sends upward
-  (ADR 0018, Left to the changes).
-- Schedules. ADR 0018 lists `schedule` under "later", but `cicada-extras` goes away in this change. Either the
-  schedule moves here now, or it becomes an example.
-- A supervisor restarts actors whose types it does not know at compile time. That needs a create by address and JSON
-  state inside a turn, which does not exist. ADR 0018 does not name it; Chorus asks for it too (its change
-  `cicada-requests`, point 8). Such a state is JSON that code sends, which nothing checks against the schema
-  (`json-schema-at-the-http-door`, Non-Goals): a state that no node can decode fails every message of the actor
-  (found when `json-schema-at-the-http-door` was reviewed).
-- What a supervisor does with a `Failed` whose error starts with `claim limit:`. A message that kills its node
-  takes the messages beside it to the claim limit too (`turn-observer`, decision 10), so a supervisor that restarts
-  on every `Failed` would restart healthy actors. The start of the error is a hint and no proof; a field of `Failed`
-  for the cause would be proof, and changes the contract of every watcher (found when `turn-observer` was
-  reviewed).
+The simplest version: three actors, one way to supervise (restart the child that is at fault). The others wait
+until someone needs them.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `supervisor`: an actor that restarts or stops the actors it watches.
+- `supervisor`: an actor that restarts the actors it watches when they are at fault.
 - `dead-letters`: an actor that collects failed messages and redrives or discards them.
 - `topic`: an actor that sends each published message to its subscribers.
+- `create-by-address`: a turn creates an actor by its address, with a state given as JSON.
 
 ### Modified Capabilities
 
-None.
+- `watches`: a `Failed` says why the message failed.
+- `outcomes-listing`: its requirement about the failure watcher goes.
 
 ## Out of scope
 
@@ -65,10 +65,12 @@ Step 10 of ADR 0018. After `cicada-app`, before `docs-per-layer`. It needs `chil
 
 ## Impact
 
-- `crates/cicada`, if the supervisor needs a create by address and JSON state: the core has none, and
-  `control-effects` left it out (found when `control-effects` was reviewed). The design decides.
-- A new crate; `cicada-extras` (removed), the examples and the sample service that use it, `README.md`,
-  `docs/architecture.md` (the crate table), `docs/operations.md` and `CHANGELOG.md`.
-- No change to a guarantee; the contracts of the ready-made actors are new wire formats of their own, covered by ADR
-  0018.
-- Hosts that use `cicada-extras` must move to `cicada-actors`.
+- A new crate; `cicada-extras` (removed); `crates/cicada` (`Failed` and the cause a commit carries, in the node and
+  in all three stores; the two creates by address); the examples and the sample service that use the
+  old crate; `e2e` (its compose file names `FAILURE_WATCHER_INTERVAL`); the workspace manifest, `AGENTS.md` (the
+  map), `README.md`, `docs/architecture.md` (the notifications, the crate table, the calls of a turn),
+  `docs/operations.md` and `CHANGELOG.md`.
+- The wire format changes: `Failed` gains a field. ADR 0028 records that, where ADR 0023 fixed its schema, and how
+  a supervisor escalates, which ADR 0018 left open. `TurnOutcome`, which an observer gets, does not change.
+- Hosts that use `cicada-extras` move to `cicada-actors`, and a host with a type that watches changes that type's
+  contract. Chorus and Karakuri have neither.
