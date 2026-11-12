@@ -129,9 +129,12 @@ registration until the type is registered again. Change a type in one of two way
   of the type (`DELETE /actors/{type}/{key}`) and remove its registration with `DELETE /types/{name}`; the call is
   refused with `409` while an actor of the type exists. Start the new version, which registers its contract.
 
+A type that starts to watch adds the variants `Failed(cicada::Failed)` and `Stopped(cicada::Stopped)` to its message
+family, so its contract changes like any other: deploy it in one of the two ways above.
+
 ## Upgrading
 
-Stores write schema version 4 and apply any missing migrations in place when they open a database. Migrations are
+Stores write schema version 5 and apply any missing migrations in place when they open a database. Migrations are
 additive, so nodes of the previous version keep working during a rolling deploy, unless a release says otherwise: a
 migration that is not additive breaks the nodes of the previous version, so every old node is stopped before the first
 new one starts. The changelog says so for each such release.
@@ -167,6 +170,14 @@ independent. A node of 0.7.0 that opens the migrated database refuses it, but on
 notice: its deletes and stops remove one row and leave the children behind, as orphans that never go away. So stop
 every node of the old version, then start the new ones. Clients of 0.7.0 keep working: they ignore the new field
 `parent` of an actor's view.
+
+**Version 0.9.0 is such a release.** A watcher is told of the failures and removals of the actors it watches, in the
+transaction of the event (ADR 0023). Its migration 5 adds the table `watches` and the column `messages.notification`;
+no existing message is a notification and no watch is stored. A node of 0.8.0 that opens the migrated database refuses
+it, but one that is still running does not notice: a message that fails there tells no watcher, and an actor it removes
+keeps its watches as a watcher. So stop every node of the old version, then start the new ones. Clients of 0.8.0 keep
+working: they ignore the new field `notification` of a message's view. A host that runs `FailureWatcher` keeps it until
+`cicada-actors` replaces it with a watch.
 
 **Switching a type to `create_child`.** An actor created with `turn.create` stays independent: a later `create_child`
 of it by its creator does not adopt it, but fails the creator's message (the commit is rejected, and a handler cannot
@@ -210,8 +221,18 @@ When the next change lands, add a section `## X.Y.Z — unreleased` to the chang
 - **Health.** `GET /health` is 200 while the node runs and its store answers, 503 otherwise (also while it stops).
   Use it for readiness; for liveness, prefer a check that does not fail when only the database is down.
 - **Failures.** `GET /outcomes?status=failed&since=…` lists failed messages with envelope and error, kept for the outcome
-  retention (7 days). Without `status` it lists every finished message. For longer, host `DeadLettersActor` and run `FailureWatcher` (`cicada-extras`): failures become
-  dead letters that an operator redrives or discards with a message.
+  retention (7 days). Without `status` it lists every finished message. For longer, host `DeadLettersActor` and run
+  `FailureWatcher` (`cicada-extras`): failures become dead letters that an operator redrives or discards with a
+  message. A watcher of `*` is told of every failure without polling, in the transaction of the failure.
+- **Watches.** `GET /watches` (`cicada get watches`, `:watches` in `cicada tui`) lists them by target and watcher. A
+  watcher of every type (`*`) gets a `Failed` in its mailbox for every failure of the system, and on PostgreSQL every
+  commit that ends a message `failed` locks its row; failures are the rare case, and removals do not reach it, as a
+  watch on a type tells of failures only. A watcher that does not keep up lets notifications pile up in its mailbox,
+  which `GET /stats?prefix=` and its mailbox show. One event can write many messages, for an actor with many watchers
+  or a tree whose actors are each watched; it is one transaction, like the removal of a tree. A watch on one actor
+  stays when that actor is gone for good: a watcher that is done with a target removes its watch, for example when it
+  handles the `Stopped`. A notification that fails tells nobody and is not retried; its outcome shows it, and
+  `POST /messages/{id}/retry` sends it again.
 - **A message that keeps killing its node** (out of memory, an abort, a native crash) is claimed again forever: its
   `attempt` climbs while `failures` stays put (`GET /messages/{id}`). Install `CrashLoopGuard` (`cicada-extras`) to
   fail such a message after N claims without a commit; set N above what deploys during long turns cause, since every
@@ -231,7 +252,9 @@ When the next change lands, add a section `## X.Y.Z — unreleased` to the chang
   its root fails and is handled again and again. There are two ways out: remove the tree from the leaves up, listing
   each level with `GET /actors/{type}/{key}/children` and deleting the deepest actors first, or raise `socket_timeout`
   (`PostgresOptions`) for the node that runs the removal. A tree of many thousands of actors with full mailboxes is
-  better removed bottom-up by its own code.
+  better removed bottom-up by its own code. One more reason: on PostgreSQL the watchers of the removed root are locked
+  for the whole removal, so a turn running on one of them cannot renew its lease meanwhile; a removal that takes
+  nearly as long as the lease costs that turn its lease, and its handler runs again.
 - **Store down.** Nothing proceeds and HTTP answers 503 `store-unavailable`; `ActorClient` retries sends with the same
   id. Nodes recover on their own when the store returns: the dispatch loop retries claims after `poll_interval`, and
   the PostgreSQL wake-up listener reconnects with a back-off (from 250 ms, doubling up to 30 s),

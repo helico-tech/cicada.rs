@@ -7,6 +7,81 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.9.0 — unreleased
+
+A breaking release: watches (ADR 0018, ADR 0023). An actor can watch another actor, the actors of a type, or every
+actor, and is told with a message in its mailbox when a message to a watched actor ends `failed` and when a watched
+actor goes away, in the transaction of that event. A failed message can now cause messages, so the guarantees G2 and G4
+change, the store schema goes to version 5 with a migration that is not additive, and a message gains a field. Nodes of
+0.8.0 and 0.9.0 must not share a database.
+
+### Upgrading
+
+1. Stop every node of 0.8.0, then start the nodes of 0.9.0; the first one migrates the store to schema version 5. A
+   node of 0.8.0 that opens the migrated database refuses it, but one that is still running does not notice: a message
+   that fails there tells no watcher, and an actor it removes keeps its watches. Rolling back the code needs a database
+   from before the migration, as for every schema version.
+2. Nothing changes for an actor that nobody watches.
+3. Code that builds a `Message` or a `MessageView` by hand names the new field `notification` (`false`).
+4. A type that starts to watch adds the variants `Failed(cicada::Failed)` and `Stopped(cicada::Stopped)` to its message
+   family, so its contract changes: upgrade the nodes that host it as the operations guide says under "Changing a
+   contract". A family that has a variant `Failed` or `Stopped` of its own renames it first.
+5. A host that runs `FailureWatcher` (`cicada-extras`) keeps it until `cicada-actors` replaces it with a watch.
+6. `ActorClient` users need not be upgraded together with the nodes: a client of 0.8.0 ignores the new field
+   `notification` of a message's view. Watches over HTTP need a client of 0.9.0.
+
+### Changed (breaking)
+
+- When a message to a watched actor ends `failed`, or a watched actor stops or is deleted, the same transaction puts
+  one notification into the mailbox of each watcher: a `Failed` or a `Stopped`, one per watcher and actor, named after
+  the id of the event (`<event>.0`, `<event>.1`, …) in the order of the actor and then of the watcher. A failed message
+  can now cause messages: G2 and G4 name the notifications (they are written with their event or not at all, and each
+  once), and S2 says that a failed commit, a stop and a delete write theirs with them. A watcher that does not exist,
+  or that the same event removes, gets nothing; a notification never fails the commit of the watched actor, and one
+  that fails tells nobody, so two actors that watch each other cannot loop.
+- An appended migration (version 5) adds the table `watches (target, watcher)` with an index on `(watcher, target)` and
+  the column `messages.notification`, in both stores; no existing message is a notification. A node of 0.8.0 refuses
+  the migrated database, and one that keeps running would write no notifications, so every old node is stopped first.
+- A message has the field `notification`, which only the store sets: `Message`, `MessageView` (over HTTP always
+  written) and the envelope that an outcome keeps, where an older envelope without it reads as `false`. A sender cannot
+  set it: a message of the type `Failed` that a client sends is an ordinary message, and its failure tells the
+  watchers.
+
+### Added
+
+- `cicada::Failed`, `cicada::Stopped` and `cicada::StopCause`: the notifications, with fixed JSON Schemas that a
+  snapshot test pins. A `Failed` holds the actor, the failed message's id, type, payload, correlation id and sender, the
+  error and the attempts; a `Stopped` the actor, the cause (`stopped`, `deleted`, `parent`) and `by`, the actor whose
+  turn removed it (`null` from outside a turn). `correlationId`, `from` and `by` are always written.
+- `cicada::WatchTarget`: one actor (`type/key`), the types under a prefix that ends at a dot (`billing` matches
+  `billing` and `billing.invoices`, not `billings`), or every type (`*`); a text that is none of them is refused. A
+  watch on one actor tells of its failures and its going away, a watch on a type or `*` of failures only.
+- `Turn::watch` and `Turn::unwatch` set and remove the watches of a turn's own actor, applied by its commit before its
+  creates and sends, in the order of the calls; `watch` fails at the call (`TurnError::Invalid`) for a text that is no
+  target and for a family without both notifications. A watch survives the delete and re-create of its target, and
+  removing a watcher removes its watches.
+- `ActorSystem::watch`, `unwatch` and `watches`; `WatchResult` names the refusals: a watcher whose type is not
+  registered, that does not exist, or whose type does not declare both notifications with the core's schemas.
+- `GET /watches?watcher=&target=&cursor=&limit=` on both routers, and `PUT /watches` and
+  `DELETE /watches?target=&watcher=` on the full router, with the problems `404 no-such-watch` and
+  `422 not-a-watcher`; `ActorClient::watches`, `watch` and `unwatch`; `cicada get watches`, `cicada create watch` and
+  `cicada delete watch`, and the column `NOTIFICATION` of a message with `-o wide`; the listing `:watches` in
+  `cicada tui`, where Enter on a row opens the watcher.
+- A `Failed` is kept by the `failed` rule of the failed message's retention for both of its outcomes; a `Stopped` is
+  caused by the message whose turn removed the actor. The runtime wakes its dispatch loop after a failure, a stop and a
+  delete, and PostgreSQL announces a notification to the nodes of its watcher's type.
+- ADR 0023 records the rules of a watch. The randomised comparison of the stores sets and removes watches, and the
+  simulation under faults has a watcher and checks that every failure of a watched actor is told exactly once.
+
+### Fixed
+
+- The conformance case `s7_release_expiry_and_lost_commits_keep_the_message_pending` no longer depends on a lease of
+  0.8 seconds holding on PostgreSQL: its last claim takes a long lease, as do the other cases that claimed with the
+  default lease on a real-time fixture and then needed the lease to hold. It failed once in the release workflow of
+  0.7.0, on a slow runner.
+- The `children` tab of an actor in `cicada tui` says `1000+` when the actor has more children than it shows, as the
+  mailbox fact does. The architecture says that the message of a turn that stops ends `done`, not `purged`.
+
 ## 0.8.0 — 2026-11-11
 
 A breaking release: child actors (ADR 0019). An actor may have a parent, the actor whose turn created it with

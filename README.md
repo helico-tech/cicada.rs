@@ -23,7 +23,7 @@ summarised [below](#decisions).
 
 | Crate | Contents |
 | --- | --- |
-| `cicada` | Addressing (`ActorAddress`, `ActorRef`, `TypeName`), the definition API (the `Actor` trait), the runtime and dispatch loop (`ActorSystem`) with per-message retry (`RetryPolicy`) and retention (`Retention`), the store (`Store`), plugin hooks, contracts and JSON Schemas, the HTTP wire model (`cicada::api`). No HTTP server. Each store is a cargo feature, none on by default: `sqlite` (`Store::sqlite`: one file, WAL, one writer; for a single node or a few processes on one host) and `postgres` (`Store::postgres`: `FOR UPDATE SKIP LOCKED` claims, `LISTEN/NOTIFY` wake-ups; for many nodes). The feature `testing` is the test support that `cicada-test` exports. |
+| `cicada` | Addressing (`ActorAddress`, `ActorRef`, `TypeName`), the definition API (the `Actor` trait), the runtime and dispatch loop (`ActorSystem`) with per-message retry (`RetryPolicy`) and retention (`Retention`), watches (`Turn::watch`, `Failed`, `Stopped`), the store (`Store`), plugin hooks, contracts and JSON Schemas, the HTTP wire model (`cicada::api`). No HTTP server. Each store is a cargo feature, none on by default: `sqlite` (`Store::sqlite`: one file, WAL, one writer; for a single node or a few processes on one host) and `postgres` (`Store::postgres`: `FOR UPDATE SKIP LOCKED` claims, `LISTEN/NOTIFY` wake-ups; for many nodes). The feature `testing` is the test support that `cicada-test` exports. |
 | `cicada-axum` | `actor_api()` (the whole API), `actor_api_read()` (only what reads) and `actor_health()` (a public readiness check) as axum routers. |
 | `cicada-client` | `ActorClient`: typed HTTP client (reqwest) for remote callers, idempotent sends. |
 | `cicada-cli` | The binary `cicada`: kubectl-style commands and a k9s-style terminal UI over the HTTP API; see [Command line and terminal UI](#command-line-and-terminal-ui). |
@@ -249,6 +249,87 @@ turn.create_child(&item, &BatchItemState { input: "x".into() })?; // removed wit
 list the direct children in address order, one level at a time. A large tree is one large transaction; see the
 operations guide, On call.
 
+### Watches
+
+An actor can watch other actors (ADR 0018, ADR 0023): it is told, with a message in its mailbox, when a message to a
+watched actor ends `failed`, and when a watched actor goes away. A watcher declares the two notifications as variants
+of its message family, with the core's types `cicada::Failed` and `cicada::Stopped`, and its one handler handles them:
+
+```rust
+use cicada::prelude::*;
+use serde::{Deserialize, Serialize};
+
+/// The singleton `supervisor/_`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Supervisor;
+
+impl ActorRef for Supervisor {
+    const TYPE: &'static str = "supervisor";
+    type Message = SupervisorMsg;
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type")]
+enum SupervisorMsg {
+    Failed(cicada::Failed),   // a message to a watched actor ended `failed`
+    Stopped(cicada::Stopped), // an actor watched by its address went away
+    Watch { target: String }, // `billing.invoices/acme`, `billing` or `*`
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+struct Log {
+    lines: Vec<String>,
+}
+
+struct SupervisorActor;
+
+impl Actor for SupervisorActor {
+    type Ref = Supervisor;
+    type State = Log;
+
+    async fn handle(&self, turn: &mut Turn<Self>, msg: SupervisorMsg) -> HandlerResult {
+        match msg {
+            SupervisorMsg::Watch { target } => turn.watch(target.as_str())?,
+            SupervisorMsg::Failed(f) => {
+                let line = format!("{} failed {} after {} attempts: {}", f.actor, f.message_id, f.attempts, f.error);
+                turn.state_mut().lines.push(line);
+            }
+            SupervisorMsg::Stopped(s) => {
+                turn.unwatch(&s.actor)?; // done with it: a watch outlives its target
+                turn.state_mut().lines.push(format!("{} went away: {:?}", s.actor, s.cause));
+            }
+        }
+        Ok(())
+    }
+}
+```
+
+`turn.watch(target)` and `turn.unwatch(target)` take a typed ref, an address, a `WatchTarget` or its text. A target is
+one actor (`billing.invoices/acme`), the types under a prefix that ends at a dot (`billing` matches `billing` and
+`billing.invoices`, not `billings`), or every type (`*`). It need not exist, and a watch survives the delete and
+re-create of its target; removing the watcher removes its watches. Both calls are buffered and applied by the commit
+before its creates and sends, in the order of the calls, so the last call for a target stands; a turn that fails sets
+none. `watch` fails at the call (`TurnError::Invalid`) for a text that is no target and for a family without both
+variants. A family that has a `Failed` or `Stopped` of its own renames it, and adding the variants changes a type's
+contract (see the operations guide, Changing a contract).
+
+The store writes a notification in the transaction of its event, one per watcher and actor, and marks it
+(`notification` in the views of a message):
+
+- A **`Failed`** when a message ends `failed`, for the watchers of the actor's address, of a prefix of its type and of
+  `*`. It holds the actor, the failed message's id, type, payload, correlation id and sender (`from`), the error and the
+  attempts, and is kept as long as the failure is: by the `failed` rule of the failed message's retention. A message
+  that is retried, done or cancelled tells nobody.
+- A **`Stopped`** when an actor watched by its address stops itself, is deleted, or goes with its parent: `cause` is
+  `stopped`, `deleted` or `parent`, and `by` the actor whose turn removed it, `null` for a delete from outside. A watch
+  on a type prefix or on `*` tells of failures only.
+
+A notification that fails tells nobody, so two actors that watch each other cannot loop; one sent again from outside
+(`retry`) is an ordinary message. A watcher that does not exist, or that the same event removes, gets nothing, and the
+watched actor never knows its watchers. From outside a turn, `ActorSystem::watch`, `unwatch` and `watches`, `PUT`,
+`DELETE` and `GET /watches`, `ActorClient::watch`, and `cicada create watch` set, remove and list watches; the watcher
+must exist, and its type must declare both variants.
+
 ### Run it in an axum service
 
 The host owns the store and the node's life cycle; the HTTP API is a `Router` it mounts with its own
@@ -421,7 +502,7 @@ request's path and query as `instance`.
 | `GET /actors/{type}/{key}/turn` — the running turn: message, node, lease expiry, `cancelRequested` | 200 | 404 `no-running-turn` |
 | `POST /actors/{type}/{key}/turn/cancel` — ask the owning node to cancel the running turn, within one heartbeat; the message ends `cancelled`, without effects | 202 | 404 `no-running-turn` |
 | `GET /messages?prefix=&cursor=&limit=` — pending messages of every instance under the prefix (including running ones), instance by instance in address order, each in delivery order | 200 | |
-| `GET /messages/{id}` — status, error, `failures` and `lastError`, node and lease while running, envelope (with `retry`, `retention` and `causedBy`) | 200 | 404 unknown, past retention, or removed by its retention policy |
+| `GET /messages/{id}` — status, error, `failures` and `lastError`, node and lease while running, envelope (with `retry`, `retention`, `causedBy` and `notification`, true for a notification of a watch) | 200 | 404 unknown, past retention, or removed by its retention policy |
 | `POST /messages/{id}/cancel` — cancel a pending message (a running turn is stopped with `turn/cancel`) | 204 | 404; 409 running or already finished |
 | `POST /messages/{id}/retry` — send a `failed` or `cancelled` message again: a new message with a new id, same target, type, payload, correlation id, headers, retry and retention, `causedBy` the original | 202 `{id, deliverAt}` | 404 unknown, past retention or removed by its retention policy; 404 `no-such-instance` when the target is gone; 409 `message-not-retryable` for a pending, running, done or purged message |
 | `POST /messages/{id}/deliver-now` — make a pending, not running message due at once, at a new place in delivery order | 200 message | 404; 409 running or already finished |
@@ -436,6 +517,9 @@ request's path and query as `instance`.
 | `GET /types` — type names, contract hashes, state and message JSON Schemas | 200 | |
 | `GET /types/{name}` — one type | 200 | 404 |
 | `DELETE /types/{name}` — removes the type's registration (a node that hosts the type registers it again at its next start) | 204 | 404; 409 actors of the type exist |
+| `GET /watches?watcher=&target=&cursor=&limit=` — stored watches `{target, watcher}` in the order of target and watcher; `target` narrows to the watches stored with exactly that target | 200 | 400 a watcher or target that does not parse |
+| `PUT /watches` body `{target, watcher}` — set a watch; the target is an address, a type prefix or `*`, and need not exist | 201 set; 200 set already | 400 a target that is no target; 404 `no-such-type` or `no-such-instance` for the watcher; 422 `not-a-watcher` when its type does not declare `Failed` and `Stopped` |
+| `DELETE /watches?target=&watcher=` — remove a watch | 204 | 400; 404 `no-such-watch` |
 | `GET /openapi.json` — the OpenAPI 3.1 document of this router | 200 | |
 | `GET /health` — node running and store reachable | 200 | 503 |
 
@@ -517,6 +601,7 @@ cicada retry messages --prefix account/ --type Deposit               # bulk: --i
 | `cancel message ID`, `cancel turn ADDR`, `retry message ID`, `deliver-now ID` | One message; stop a running turn |
 | `cancel messages`, `retry messages`, with `--id ID…` or `--prefix P [--type T]` | Bulk, at most 1000 per call |
 | `pause ADDR`, `resume ADDR`, `purge ADDR` | An actor's mailbox |
+| `get watches [--watcher ADDR] [--target T]`, `create watch --target T --watcher ADDR`, `delete watch --target T --watcher ADDR` | List, set and remove watches; `-o wide` on a message shows `NOTIFICATION` |
 | `stats [--prefix P]`, `health` | Counts; whether the node and its store answer |
 
 A missing item (`actor account/nobody:1 not found`) or an error response (the problem's title and detail) prints
@@ -530,7 +615,7 @@ Requests run beside the screen, so a slow node never freezes it. Status words ar
 
 | Keys | What |
 | --- | --- |
-| `:actors`, `:messages`, `:outcomes [status]`, `:turns`, each with an optional prefix; `:nodes`, `:types` | A listing; Tab completes |
+| `:actors`, `:messages`, `:outcomes [status]`, `:turns`, `:watches`, each with an optional prefix; `:nodes`, `:types` | A listing; Tab completes; Enter on a watch opens its watcher |
 | `:actor ADDR`, `:mailbox ADDR`, `:message ID`, `:node ID`, `:type NAME` | One item |
 | `enter`, `esc`, `q` | Open the selected row; clear the filter or go back; `q` on the first screen and `ctrl-c` quit |
 | `j` `k` `↑` `↓`, `g` `G`, `pgup` `pgdn` | Move |
@@ -543,11 +628,12 @@ Requests run beside the screen, so a slow node never freezes it. Status words ar
 | `ctrl-k`, `ctrl-d` | Stop the running turn; delete an actor or remove a type |
 | `ctrl-r`, `?` | Refresh now; help |
 
-The screen of an actor shows its parent (or none) and lists its direct children in the tab `children`: Enter on a
-child opens the child's screen, `P` the parent's and Esc goes back, so the tree is walked one level per screen. An
-action applies to the selected row, else to the item the screen shows, and runs only after a confirmation whose
-default is No (`y` confirms); the question before a delete says that the descendants go too. The mouse wheel moves, a click selects a row, a click on the selected row opens it and a
-click on a column header sorts by it. Sending messages and bulk actions are CLI only.
+The screen of an actor shows its parent (or none) and lists its direct children in the tab `children`: Enter on a child
+opens the child's screen, `P` the parent's and Esc goes back, so the tree is walked one level per screen. An action
+applies to the selected row, else to the item the screen shows, and runs only after a confirmation whose default is No
+(`y` confirms); the question before a delete says that the descendants go too. The mouse wheel moves, a click selects a
+row, a click on the selected row opens it and a click on a column header sorts by it. Sending messages and bulk actions
+are CLI only.
 
 ## Testing with `TestActors`
 
@@ -1194,6 +1280,7 @@ Decisions, as ADRs in [docs/adr/](docs/adr/):
 | [0020](docs/adr/0020-the-change-loop.md) | The change loop: one order of changes, each described with the owner one ahead, built and validated in the background, and released when it lands. |
 | [0021](docs/adr/0021-a-key-is-one-name.md) | A key is one name: a ref is written as one string or a unit, a `:` is an ordinary character, contracts hold no key fields, and a database is upgraded in place. |
 | [0022](docs/adr/0022-typed-errors-and-no-such-type.md) | Typed errors: a named error per module, a start error with a problem per cause (a contract conflict is its own case), a send to an unregistered type answers `404 no-such-type`, and a migration that violates a constraint is an invalid store. |
+| [0023](docs/adr/0023-the-rules-of-a-watch.md) | The rules of a watch: notifications in the watcher's own family, a type target at a dot and `*` for every type (failures only), `Stopped` with its cause and `by`, a notification marked and named after its event, and G2 and G4 that name the notifications. |
 
 Design questions and their answers:
 

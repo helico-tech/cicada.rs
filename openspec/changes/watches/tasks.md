@@ -100,7 +100,7 @@ delete or a stop removes a tree.
 
 ## 5. Docs
 
-- [ ] 5.1 `docs/architecture.md` (G2, G4, S2, the rows on effects and on the commit, the table of how a turn ends,
+- [x] 5.1 `docs/architecture.md` (G2, G4, S2, the rows on effects and on the commit, the table of how a turn ends,
       the terms *watch*, *watcher* and *notification*, the schema), `README.md` (the turn API, the two message types
       with an example of a watcher, the routes, the command line, the terminal UI, the row of ADR 0023) and
       `docs/operations.md`: "Version 0.9.0 is such a release", with every old node stopped first and why [10]; a
@@ -108,7 +108,7 @@ delete or a stop removes a tree.
       root and its lease [Risks]. The two doc leftovers of decision 15. Verify:
       `cargo test -p cicada-examples --doc` passes, every risk of `design.md` that names the docs is in them, and no
       line of the three files is longer than 120 columns where it was not before.
-- [ ] 5.2 `CHANGELOG.md`, a section `0.9.0 — unreleased`, and the version `0.9.0` in `Cargo.toml`: the section
+- [x] 5.2 `CHANGELOG.md`, a section `0.9.0 — unreleased`, and the version `0.9.0` in `Cargo.toml`: the section
       starts with the upgrade steps of the Migration Plan of `design.md`, then the breaking changes of the proposal,
       then the fix of the conformance case. Verify: every step of the plan and every **BREAKING** line of the
       proposal is in the section.
