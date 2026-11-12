@@ -113,10 +113,10 @@ a commit carries the control effects of its turn.
 
 ## 6. Checks
 
-- [ ] 6.1 `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
+- [x] 6.1 `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
       `cargo test --workspace`, `cargo check -p cicada` with no feature and with each of `sqlite`, `postgres` and
       `testing` alone, and `openspec validate turn-observer --strict`. Verify: all pass.
-- [ ] 6.2 The PostgreSQL tests with `CICADA_PG_URL` set, once more against a throwaway `postgres:17.5-alpine` with
+- [x] 6.2 The PostgreSQL tests with `CICADA_PG_URL` set, once more against a throwaway `postgres:17.5-alpine` with
       its default 100 connections, as the database of CI has (removed afterwards), and the end-to-end suite with
       `CICADA_E2E=1 cargo test -p cicada-e2e -- --nocapture`. All need Docker. Verify: all pass; if Docker cannot be
       started, leave this task open and say so in the report.

@@ -1,4 +1,4 @@
-//! The turn's task structure: the worker (handler and hooks), the lease keeper (heartbeat and watchdog) and the
+//! The turn's task structure: the worker (load and handler), the lease keeper (heartbeat and watchdog) and the
 //! overtime warning are separate tasks, so one failing child never cancels another; each child's failure is handled
 //! explicitly. A keeper that fails unexpectedly means the lease is no longer known to be held: the worker is cancelled
 //! and nothing is committed or released.
