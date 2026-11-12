@@ -1437,7 +1437,8 @@ system.watch(&WatchTarget::Every, &DeadLetters::default().address()?).await?;
 
 Over HTTP and on the command line the watch is `PUT /watches` or `cicada create watch --target '*' --watcher
 cicada.dead-letters/_`. A letter holds the failed message (its actor, type, payload, correlation id and sender), its
-error, its cause, its attempts and when it was recorded. The actor keeps at most its capacity of letters, 1,000 unless
+error, its cause, its attempts, when it was recorded, and the `seq` of the notification that told of it, which orders
+letters recorded at the same store time. The actor keeps at most its capacity of letters, 1,000 unless
 built with another, and drops the oldest first. Its own failures are no letters, and neither is a `Failed` that a client
 sent: only a notification counts.
 

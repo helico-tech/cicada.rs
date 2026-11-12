@@ -64,6 +64,7 @@ fn dead_letters() {
         cause: FailureCause::Handler,
         attempts: 1,
         recorded_at: t(),
+        seq: 17,
         redriven_as: Some(MessageId::new("m-2").unwrap()),
         redrive_error: None,
     };

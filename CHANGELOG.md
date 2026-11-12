@@ -48,7 +48,9 @@ The operations guide, "Upgrading", has the same steps with more detail.
 - The dead letters have a new contract and live in `cicada-actors`: the ref `DeadLetters` has a name
   (`DeadLetters::default()` is `cicada.dead-letters/_`), `RecordFailure` is gone (the actor takes `Failed` and
   `Stopped`), `Redrive` and `Discard` take `messageId`, and the state keeps the letters by the id of the failed message,
-  each with the sender, the error, the cause, the attempts and the time it was recorded (`recordedAt`).
+  each with the sender, the error, the cause, the attempts, the time it was recorded (`recordedAt`) and the `seq` of its
+  notification, which orders letters recorded at the same time. `DeadLettersActor::with_capacity` returns a
+  `CapacityError` in place of a `String`.
 - The sample service hosts the three ready-made actors, creates `cicada.dead-letters/_` and its watch on every type at
   the start, and no longer reads `FAILURE_WATCHER_INTERVAL`; `Sample` has no `watcher`, and the type `Watcher` is
   gone.
@@ -73,8 +75,9 @@ The operations guide, "Upgrading", has the same steps with more detail.
   delivery that is refused at the call fails for good and keeps the subscriber; one whose read of the store fails is
   tried again.
 - `StoredMessage`: a message an actor keeps to send later, a type name and a JSON payload, built from a typed ref
-  (`StoredMessage::for_ref`), so that a message of the wrong family does not compile. `Child::start` and
-  `TopicMsg::publish` build one too.
+  (`StoredMessage::for_ref`), so that a message of the wrong family does not compile; `Child::start` checks its start
+  message the same way. `TopicMsg::publish` takes a message of any family: a value without serde and a JSON Schema does
+  not compile, and one that is not a message family is refused with `EncodeError`.
 - `Turn::create_raw` and `Turn::create_child_raw`: a create by address with a JSON state, for a turn that does not
   know the type when it is compiled. A type that is not registered is `TurnError::Invalid`, a failed read of the
   registry `TurnError::Store`; a node that hosts the type refuses an address or a state it cannot read.

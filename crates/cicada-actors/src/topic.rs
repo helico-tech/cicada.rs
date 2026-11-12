@@ -64,8 +64,9 @@ pub enum TopicMsg {
 }
 
 impl TopicMsg {
-    /// A `Publish` of `message`, a message of some family. A type that is no message family does not compile; the
-    /// families of the subscribers cannot be known.
+    /// A `Publish` of `message`, a message of some family. A value that serde cannot encode, or that has no JSON Schema,
+    /// does not compile; a value that is not a message family (an enum with `#[serde(tag = "type")]`) is refused with
+    /// [`EncodeError`]. The families of the subscribers cannot be known.
     ///
     /// ```
     /// # use cicada::prelude::*;
@@ -79,7 +80,7 @@ impl TopicMsg {
     /// # Ok::<(), cicada_actors::EncodeError>(())
     /// ```
     ///
-    /// A value that is no message does not compile:
+    /// A value without serde and a schema does not compile:
     ///
     /// ```compile_fail
     /// use cicada_actors::TopicMsg;

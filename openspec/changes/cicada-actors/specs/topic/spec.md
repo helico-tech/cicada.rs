@@ -44,10 +44,17 @@ subscriber. One subscriber SHALL get the messages in the order they were publish
 - **WHEN** an actor subscribes twice and a message is published
 - **THEN** it gets the message once
 
-#### Scenario: A value that is no message does not compile
+#### Scenario: A value without serde and a schema does not compile
 
-- **WHEN** code builds a `Publish` with the typed helper from a value that is no message
+- **WHEN** code builds a `Publish` with the typed helper from a value that serde cannot encode or that has no JSON
+  Schema
 - **THEN** the code does not compile
+
+#### Scenario: A value that is no message family is refused
+
+- **WHEN** code builds a `Publish` with the typed helper from a value that serde encodes but that is not a message
+  family
+- **THEN** the helper returns an error, and no `Publish` is built
 
 #### Scenario: The correlation id of a publish
 

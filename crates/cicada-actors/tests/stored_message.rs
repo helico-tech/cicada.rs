@@ -38,8 +38,16 @@ fn a_stored_message_holds_the_type_name_and_the_payload_the_family_encodes() {
     assert_eq!(read, begin);
 }
 
+/// Scenario: A value that is no message family is refused (of the topic): a value with serde and a JSON Schema
+/// compiles, and is refused when it is built.
 #[test]
 fn a_value_that_is_no_message_of_a_family_is_refused() {
     let e = StoredMessage::of(&5_u32).unwrap_err();
+    assert!(e.to_string().contains("is not a message family"), "{e}");
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    struct Shipped {
+        id: u32,
+    }
+    let e = cicada_actors::TopicMsg::publish(Shipped { id: 7 }).unwrap_err();
     assert!(e.to_string().contains("is not a message family"), "{e}");
 }

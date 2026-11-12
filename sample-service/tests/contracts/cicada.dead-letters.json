@@ -32,7 +32,7 @@
           "type": "integer"
         },
         "cause": {
-          "description": "What failed: the handler, the node, the message, the state, the commit, or the claim limit.",
+          "description": "What failed, one of:\n- `handler`: the handler returned an error or panicked and no retry is left, or it returned a state that cannot\n  be stored;\n- `node`: a read of the store the node needed failed, also one the handler passed on, or a panic outside the\n  handler;\n- `refused`: the handler refused the message for good;\n- `timeout`: the turn ran past its maximum duration;\n- `message`: the message cannot be decoded;\n- `state`: the state or the address of the actor cannot be read by its type;\n- `commit`: the effects of the turn were refused, or its commit was rejected or refused;\n- `claim-limit`: the message reached the claim limit.",
           "oneOf": [
             {
               "const": "handler",
@@ -288,6 +288,11 @@
               "string",
               "null"
             ]
+          },
+          "seq": {
+            "description": "The `seq` of the notification that told of it: it grows with every message of the store, so it orders letters\nrecorded at the same store time.",
+            "format": "int64",
+            "type": "integer"
           }
         },
         "required": [
@@ -297,13 +302,14 @@
           "error",
           "cause",
           "attempts",
-          "recordedAt"
+          "recordedAt",
+          "seq"
         ],
         "type": "object"
       }
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "description": "The state of [`DeadLetters`]: the letters by the id of the failed message. The order of the keys means nothing (a\nstore may sort them); age is told by [`DeadLetter::recorded_at`].",
+    "description": "The state of [`DeadLetters`]: the letters by the id of the failed message. The order of the keys means nothing (a\nstore may sort them); age is told by [`DeadLetter::recorded_at`] and then [`DeadLetter::seq`].",
     "properties": {
       "letters": {
         "additionalProperties": {

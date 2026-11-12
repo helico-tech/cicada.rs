@@ -80,6 +80,9 @@ pub struct DeadLetter {
     pub attempts: u32,
     /// When the letter was recorded (store time).
     pub recorded_at: Timestamp,
+    /// The `seq` of the notification that told of it: it grows with every message of the store, so it orders letters
+    /// recorded at the same store time.
+    pub seq: i64,
     /// The id of the message a redrive sent; once set, the letter is not sent again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub redriven_as: Option<MessageId>,
@@ -89,7 +92,7 @@ pub struct DeadLetter {
 }
 
 /// The state of [`DeadLetters`]: the letters by the id of the failed message. The order of the keys means nothing (a
-/// store may sort them); age is told by [`DeadLetter::recorded_at`].
+/// store may sort them); age is told by [`DeadLetter::recorded_at`] and then [`DeadLetter::seq`].
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct DeadLettersState {
     /// The letters by the id of the failed message.
@@ -98,7 +101,7 @@ pub struct DeadLettersState {
 }
 
 /// The dead-letters type. It keeps at most its capacity of letters, and drops the oldest first: by the time they were
-/// recorded, and of letters recorded at the same store time, by the id of the failed message.
+/// recorded, and of letters recorded at the same store time, by the `seq` of the notification that told of them.
 ///
 /// A host creates the actor and sets its watch, on every type (`*`) or on the types it cares for, with
 /// [`ActorSystem::watch`], `PUT /watches` or `cicada create watch`. Its own failures (a redrive to an actor that is
@@ -119,14 +122,19 @@ pub struct DeadLettersActor {
     capacity: usize,
 }
 
+/// A capacity of dead letters that is not positive. It prints "capacity must be positive".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("capacity must be positive")]
+pub struct CapacityError;
+
 impl DeadLettersActor {
     /// The default capacity.
     pub const DEFAULT_CAPACITY: usize = 1_000;
 
-    /// A dead-letters type that keeps at most `capacity` letters.
-    pub fn with_capacity(capacity: usize) -> Result<Self, String> {
+    /// A dead-letters type that keeps at most `capacity` letters; fails for 0.
+    pub fn with_capacity(capacity: usize) -> Result<Self, CapacityError> {
         if capacity == 0 {
-            return Err("capacity must be positive".to_owned());
+            return Err(CapacityError);
         }
         Ok(Self { capacity })
     }
@@ -185,16 +193,17 @@ impl DeadLettersActor {
             cause: failed.cause,
             attempts: failed.attempts,
             recorded_at: turn.now(),
+            seq: turn.message().seq,
             redriven_as: None,
             redrive_error: None,
         };
         let letters = &mut turn.state_mut().letters;
         letters.insert(failed.message_id, letter);
         if letters.len() > self.capacity {
-            let mut by_age: Vec<(Timestamp, MessageId)> =
-                letters.iter().map(|(id, letter)| (letter.recorded_at, id.clone())).collect();
+            let mut by_age: Vec<(Timestamp, i64, MessageId)> =
+                letters.iter().map(|(id, letter)| (letter.recorded_at, letter.seq, id.clone())).collect();
             by_age.sort();
-            for (_, id) in by_age.into_iter().take(letters.len() - self.capacity) {
+            for (_, _, id) in by_age.into_iter().take(letters.len() - self.capacity) {
                 letters.remove(&id);
             }
         }

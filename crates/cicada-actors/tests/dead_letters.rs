@@ -112,7 +112,11 @@ async fn to_letters(test: &TestActors, message: DeadLettersMsg) -> cicada::store
 #[tokio::test(start_paused = true)]
 async fn a_watch_on_every_type_records_a_letter_for_every_failed_message() {
     let test = node(1_000, "*").await;
+    test.system().pause_mailbox(&addr(&letters_actor())).await.unwrap();
     let failed = fail_work(&test).await;
+    let notification = test.pending(&letters_actor()).await[0].clone();
+    test.system().resume_mailbox(&addr(&letters_actor())).await.unwrap();
+    test.run_until_idle().await;
     let letter = letter(&test, &failed.id).await;
     assert_eq!(
         letter,
@@ -126,6 +130,7 @@ async fn a_watch_on_every_type_records_a_letter_for_every_failed_message() {
             cause: FailureCause::Handler,
             attempts: 1,
             recorded_at: test.now(),
+            seq: notification.seq,
             redriven_as: None,
             redrive_error: None,
         }
@@ -187,6 +192,23 @@ async fn the_letters_recorded_first_go_beyond_the_capacity() {
     let mut expected = vec![failed[1].clone(), failed[2].clone()];
     expected.sort();
     assert_eq!(held, expected, "the second and the third");
+}
+
+/// Scenario: More letters than the capacity, recorded at one store time: the letter recorded first goes, whatever the
+/// ids of the failed messages.
+#[tokio::test(start_paused = true)]
+async fn of_letters_recorded_at_one_store_time_the_first_goes_beyond_the_capacity() {
+    let test = node(1, "*").await;
+    let at = test.now();
+    let mut failed = Vec::new();
+    for id in ["m-b-first", "m-a-second"] {
+        let options = SendOptions::new().id(MessageId::new(id).unwrap());
+        failed.push(test.send_with(&worker("w"), WorkerMsg::Fail, options).await.id);
+        test.run_until_idle().await;
+    }
+    assert_eq!(test.now(), at, "one store time");
+    let held: Vec<MessageId> = letters(&test).await.into_keys().collect();
+    assert_eq!(held, [failed[1].clone()], "the second is kept, although its id sorts first");
 }
 
 /// Scenario: A redrive, and Scenario: A second redrive.
@@ -383,6 +405,6 @@ async fn a_redrive_or_a_discard_of_an_id_that_is_no_letter_changes_nothing() {
 fn the_dead_letters_actor_is_at_cicada_dead_letters_underscore_by_convention() {
     assert_eq!(addr(&DeadLetters::default()).as_str(), "cicada.dead-letters/_");
     assert_eq!(addr(&DeadLetters::named("ops")).as_str(), "cicada.dead-letters/ops");
-    assert!(DeadLettersActor::with_capacity(0).is_err());
+    assert_eq!(DeadLettersActor::with_capacity(0).unwrap_err().to_string(), "capacity must be positive");
     assert_eq!(DeadLettersActor::default().capacity(), 1_000);
 }

@@ -57,7 +57,17 @@ pub struct Failed {
     pub error: String,
     /// How often the message was claimed: its `attempt`.
     pub attempts: u32,
-    /// What failed: the handler, the node, the message, the state, the commit, or the claim limit.
+    /// What failed, one of:
+    /// - `handler`: the handler returned an error or panicked and no retry is left, or it returned a state that cannot
+    ///   be stored;
+    /// - `node`: a read of the store the node needed failed, also one the handler passed on, or a panic outside the
+    ///   handler;
+    /// - `refused`: the handler refused the message for good;
+    /// - `timeout`: the turn ran past its maximum duration;
+    /// - `message`: the message cannot be decoded;
+    /// - `state`: the state or the address of the actor cannot be read by its type;
+    /// - `commit`: the effects of the turn were refused, or its commit was rejected or refused;
+    /// - `claim-limit`: the message reached the claim limit.
     pub cause: FailureCause,
 }
 
@@ -428,8 +438,19 @@ mod tests {
                     "minimum": 0
                 },
                 "cause": {
-                    "description": "What failed: the handler, the node, the message, the state, the commit, or the \
-                                    claim limit.",
+                    "description": concat!(
+                        "What failed, one of:\n",
+                        "- `handler`: the handler returned an error or panicked and no retry is left, or it returned ",
+                        "a state that cannot\n  be stored;\n",
+                        "- `node`: a read of the store the node needed failed, also one the handler passed on, or a ",
+                        "panic outside the\n  handler;\n",
+                        "- `refused`: the handler refused the message for good;\n",
+                        "- `timeout`: the turn ran past its maximum duration;\n",
+                        "- `message`: the message cannot be decoded;\n",
+                        "- `state`: the state or the address of the actor cannot be read by its type;\n",
+                        "- `commit`: the effects of the turn were refused, or its commit was rejected or refused;\n",
+                        "- `claim-limit`: the message reached the claim limit."
+                    ),
                     "oneOf": [
                         {
                             "description": "The handler returned an error or panicked, and no retry is left; or it \

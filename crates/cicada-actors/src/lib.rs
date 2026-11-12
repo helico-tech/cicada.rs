@@ -18,7 +18,7 @@ mod stored;
 pub mod supervisor;
 pub mod topic;
 
-pub use dead_letters::{DeadLetter, DeadLetters, DeadLettersActor, DeadLettersMsg, DeadLettersState};
+pub use dead_letters::{CapacityError, DeadLetter, DeadLetters, DeadLettersActor, DeadLettersMsg, DeadLettersState};
 pub use error::EncodeError;
 pub use schedule::{Schedule, ScheduleError};
 pub use stored::StoredMessage;

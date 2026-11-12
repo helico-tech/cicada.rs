@@ -368,7 +368,8 @@ Not chosen:
 - **A `Failed` that is not a notification records no letter** (decided by the main session on 2026-11-12, on a question of the builder): otherwise a client could plant a letter that a
   later `Redrive` sends in the name of the dead-letters actor.
 - It keeps at most its capacity of letters (1,000 unless the type is built with another); the oldest go first, as
-  today.
+  today: by `recordedAt` and then by the `seq` of the notification, which the letter keeps (added after the
+  validation, on the coordinator's finding: a tie broken by the message id could drop the newer letter).
 - **A redrive:** the letter records the id of the new message. A letter that was sent again is not sent a second
   time. When the type of the actor no longer takes the message, the call fails, nothing is sent, and the letter
   records why. When the actor is not there, the commit is rejected: the `Redrive` itself ends `failed` with the
@@ -412,8 +413,9 @@ A topic sends each published message to its subscribers.
   store: a retry is due later, so a later delivery can overtake it.
 
 A publisher builds the message with the typed helper: `TopicMsg::publish(OrderMsg::Shipped { id })?`. The helper
-checks that the value is a message of some family; it cannot know the families of the subscribers. Each publish
-and each `Deliver` keeps the correlation id of the publish.
+checks that the value is a message of some family: a value without serde and a JSON Schema does not compile, and one
+that is not a message family is refused with an error when it is built. It cannot know the families of the
+subscribers. Each publish and each `Deliver` keeps the correlation id of the publish.
 
 ### 10. The wire formats
 
@@ -424,7 +426,7 @@ else is. The crate has contract snapshots for the three (`assert_contracts_match
 | Type | Messages | State |
 | --- | --- | --- |
 | `cicada.supervisor` | `Start {}`, `StartChild { actor }`, `Restarted { actor }`, `Escalate { actor, error, restart }`, `Failed`, `Stopped` | `{ children: { <address>: { state, start?, running, restartId?, givenUp, lastError?, restarts: [time] } }, maxRestarts, withinSeconds }` |
-| `cicada.dead-letters` | `Redrive { messageId }`, `Discard { messageId }`, `Failed`, `Stopped` | `{ letters: { <message id>: { actor, messageType, payload, correlationId, from, error, cause, attempts, recordedAt, redrivenAs?, redriveError? } } }` |
+| `cicada.dead-letters` | `Redrive { messageId }`, `Discard { messageId }`, `Failed`, `Stopped` | `{ letters: { <message id>: { actor, messageType, payload, correlationId, from, error, cause, attempts, recordedAt, seq, redrivenAs?, redriveError? } } }` |
 | `cicada.topic` | `Subscribe { subscriber }`, `Unsubscribe { subscriber }`, `Publish { message }`, `Deliver { subscriber, message }`, `Failed`, `Stopped` | `{ subscribers: [address] }` |
 
 `start` and `message` are stored messages, `{ type, payload }` (decision 2).
