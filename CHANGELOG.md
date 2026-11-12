@@ -7,6 +7,66 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.10.0 — unreleased
+
+A breaking release: control effects (ADR 0018, ADR 0024). A turn can pause, resume, purge and delete another actor, in
+the same commit as its own state and its other effects, with the meaning these actions have for an operator. To restart
+an actor, a turn deletes it and creates it again. The commit gets new parts, so the guarantee G2 changes, and G1 and S7
+get clearer words. No schema and no contract changes.
+
+### Upgrading
+
+1. Nothing to do for the store: there is no migration, and nodes of 0.9.0 and 0.10.0 can share a database. The effects
+   are applied by the commit of the node that runs the turn; an actor on a node of 0.9.0 is paused or deleted as it
+   would be from outside.
+2. Nothing changes for a turn that does not use the new calls, and clients need no upgrade.
+
+### Changed (breaking)
+
+- A turn can pause, resume, purge and delete another actor, named by a typed ref or an address. Each is buffered like a
+  send and applied by the turn's commit, together with the turn's other effects or not at all. G2 names the control of
+  other actors among the parts of a commit that happen all together or not at all. G1 says what an instance is: one
+  life of an address, from its create to its removal; a handler of an earlier life may still run for a moment after
+  the actor was deleted and created again, and it commits nothing. S7 says that a commit can end the pending messages of
+  another actor, by a purge or a delete. The sentence on leases is exact: a lease ends only with its turn or with its
+  actor.
+- A commit applies, in this order: the watches of the turn, the outcome, the cancels, the deletes, the creates, the
+  purges, the pauses and resumes, the sends, the state, the release of the lease and last the notifications. Deletes before
+  creates give the restart; creates before pauses let a turn create an actor that starts paused; purges before sends
+  let it empty a mailbox and put a first message into it.
+
+### Added
+
+- `Turn::pause`, `resume`, `purge` and `delete` for a typed ref, and `pause_at`, `resume_at`, `purge_at` and
+  `delete_at` for an address. Each means what the call from outside a turn means. A delete removes the actor, its
+  mailbox and its descendants, voids a turn running on one of them (it commits nothing, and its message ends `purged`)
+  and tells their watchers with a `Stopped` whose `by` is the turn's actor and whose `causedBy` is the turn's message:
+  `deleted` for an actor the turn names, `parent` for a descendant, `stopped` for the turn's own actor when it stops in
+  the same turn. No effect writes another actor's state.
+- An effect on an actor that does not exist does nothing and does not fail the commit; a send to an actor that the turn
+  deletes and does not create again still fails the turn's message. A restart of an actor that is not there only creates
+  it and tells no watcher. A turn may control any actor, not only the ones it created.
+- A turn cannot delete its own actor (`TurnError::Invalid` at the call; it stops itself) or create and then delete one
+  actor (a restart is a delete, then a create); a delete of one of its ancestors fails its message and removes nothing.
+  It may pause, resume and purge its own actor. Of a pause and a resume of one actor, the last call stands; the same
+  effect twice is applied once.
+- The node logs each control effect of a commit it saw succeed, at the info level, with the acting actor, the effect
+  and the target (`Turn of … for …: delete …`), and wakes its dispatch loop after it, so that a resumed actor and a
+  notified watcher are handled at once on every store. On PostgreSQL a resume by a commit wakes the nodes of the type.
+- ADR 0024 records the rules and why a restart is not the forced release that ADR 0015 refused: the message of the turn
+  that loses its actor ends `purged` and is never handled again.
+
+### Internal
+
+- The stores apply the effects in all three backends and pass new conformance cases, among them two races run 50
+  times: two actors that restart each other's neighbours while a third sends to them, and a restart of an actor that is
+  not there while another caller creates it. On PostgreSQL the controlled actors and the watchers of each deleted actor
+  join the ordered lock of the commit, a delete of an ancestor is found by walking the parents up, a restart keeps the
+  actor's row and resets it (so a transaction waiting for that row finds the new actor), and for an address that is
+  absent the row that holds the lock is the create.
+- The randomised comparison of the stores builds pauses, resumes, purges, deletes and restarts in its commits, and the
+  simulation of nodes under faults has an actor that restarts another.
+
 ## 0.9.0 — 2026-11-12
 
 A breaking release: watches (ADR 0018, ADR 0023). An actor can watch another actor, the actors of a type, or every

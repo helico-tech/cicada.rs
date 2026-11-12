@@ -200,7 +200,10 @@ Inside a handler, `turn` offers:
 - `cancel(&id)` (a pending message of this instance gets `cancelled` at commit; keep the id a send returns to replace
   a scheduled message), `create(&ref, &initial_state)` and `create_child(&ref, &initial_state)` (applied before the
   turn's sends; see [Child actors](#child-actors)), `stop()` (removes this instance and its descendants at commit), and
-  `fail(reason)`, used as `return Err(turn.fail("declined"))` (ends the message `failed` now, never retried).
+  `fail(reason)`, used as `return Err(turn.fail("declined"))` (ends the message `failed` now, never retried);
+- `watch(target)` and `unwatch(target)` (see [Watches](#watches)), and `pause(&ref)`, `resume(&ref)`, `purge(&ref)`
+  and `delete(&ref)`, with `pause_at(&address)`, `resume_at`, `purge_at` and `delete_at` for an address (see
+  [Control effects](#control-effects)).
 
 Effects are buffered and committed atomically. A handler that returns `Err` (any error converts with `?`) or panics
 commits `failed` and nothing else — unless the message carries a [retry policy](#retry). Sends refuse fields beyond
@@ -224,7 +227,7 @@ on until it returns and holds a runtime worker thread meanwhile. Run it with `to
 An actor may have a **parent** (ADR 0019). `turn.create_child(&ref, &state)` creates an actor whose parent is the
 actor that runs the turn; `turn.create` and every create from outside a turn (`ActorSystem::create`, `PUT`) create an
 independent one. The parent is stored with the child and never changes, and the address stays `type/key`. Deleting an
-actor (`delete_actor`, `DELETE /actors/{type}/{key}`) or stopping it (`turn.stop()`) removes it and every descendant
+actor (`delete_actor`, `DELETE /actors/{type}/{key}`, `turn.delete`) or stopping it (`turn.stop()`) removes it and every descendant
 (its children, theirs, and so on) in one transaction: their pending messages end `purged`, and a turn running on one
 commits nothing. Pause, resume and purge apply to one actor only.
 
@@ -329,6 +332,51 @@ A notification that fails tells nobody, so two actors that watch each other cann
 watched actor never knows its watchers. From outside a turn, `ActorSystem::watch`, `unwatch` and `watches`, `PUT`,
 `DELETE` and `GET /watches`, `ActorClient::watch`, and `cicada create watch` set, remove and list watches; the watcher
 must exist, and its type must declare both variants.
+
+### Control effects
+
+A turn can pause, resume, purge and delete another actor (ADR 0024), with the meaning these actions have for an
+operator (`pause_mailbox`, `resume_mailbox`, `purge_mailbox`, `delete_actor`): `turn.pause(&ref)` stops new turns of it
+while its messages queue up and a running turn finishes, `turn.resume(&ref)` lets turns run again, `turn.purge(&ref)`
+ends every pending message `purged` except one that is being handled, and `turn.delete(&ref)` removes the actor, its
+mailbox and its descendants and tells their watchers, with the turn's actor as `by`. `pause_at`, `resume_at`,
+`purge_at` and `delete_at` take an address, such as the `actor` of a `Stopped`. Each effect is buffered like a send and
+applied by the turn's commit, with the turn's state and other effects or not at all. No effect writes another actor's
+state.
+
+To restart an actor, a turn deletes it and creates it again: deletes are applied before creates, so the old actor and
+its mailbox go and a new one starts with the new state. A parent restarts its child with `create_child`, and the child
+stays its child:
+
+```rust
+# use cicada::prelude::*;
+# use cicada_examples::fanout::{BatchActor, BatchItem, BatchItemState};
+# fn restart(turn: &mut Turn<BatchActor>) -> HandlerResult {
+let item = BatchItem { batch: turn.self_ref().id.clone(), index: 0 };
+turn.delete(&item)?; // the old item, its mailbox and its descendants go; a turn running on it commits nothing
+turn.create_child(&item, &BatchItemState { input: "again".into() })?; // a new life, still a child of this batch
+# Ok(())
+# }
+```
+
+- **An actor that is not there** is left alone: the effect does nothing and the commit does not fail, because an actor
+  can stop itself at any moment. So a mistyped address goes unnoticed; a typed ref makes that unlikely. A restart of an
+  actor that is not there only creates it. A send to an actor that the turn deletes and does not create again still
+  fails the turn's message, as a send to any absent actor does.
+- **Any actor can control any other**, also one it did not create, as any actor can send anything to any other. A
+  turn may pause, resume and purge its own actor, but not delete it (`TurnError::Invalid`; it calls `stop()`), and a
+  delete of one of its ancestors fails its message.
+- **A turn running on a deleted actor** commits nothing, and its message ends `purged`; what its handler did outside
+  the store stays done. After a restart, that handler of the old life may still run for a moment next to the first
+  handler of the new one, until its next heartbeat fails or its blocking code returns.
+- **A child restarted by another actor** with `create` loses its descendants and has no parent; its old parent cannot
+  take it back with `create_child` (that fails the parent's message). A parent restarts its own children.
+- **The order in one commit** is: watches, deletes, creates, purges, pauses and resumes, sends. So a turn can watch an
+  actor and delete it and be told, create an actor that starts paused, or empty a mailbox and put a first message into
+  it. Calls on one actor have one result: the same effect twice is applied once, of a pause and a resume the last call
+  stands, and a delete after a create of the same actor fails at the call (a restart is a delete, then a create).
+
+The node logs each control effect of a turn it committed at the info level (see the operations guide, Logs).
 
 ### Run it in an axum service
 
@@ -1281,6 +1329,7 @@ Decisions, as ADRs in [docs/adr/](docs/adr/):
 | [0021](docs/adr/0021-a-key-is-one-name.md) | A key is one name: a ref is written as one string or a unit, a `:` is an ordinary character, contracts hold no key fields, and a database is upgraded in place. |
 | [0022](docs/adr/0022-typed-errors-and-no-such-type.md) | Typed errors: a named error per module, a start error with a problem per cause (a contract conflict is its own case), a send to an unregistered type answers `404 no-such-type`, and a migration that violates a constraint is an invalid store. |
 | [0023](docs/adr/0023-the-rules-of-a-watch.md) | The rules of a watch: notifications in the watcher's own family, a type target at a dot and `*` for every type (failures only), `Stopped` with its cause and `by`, a notification marked and named after its event, and G2 and G4 that name the notifications. |
+| [0024](docs/adr/0024-control-effects.md) | Control effects: a turn pauses, resumes, purges and deletes another actor with the meaning of the operator's calls, an effect on an actor that is not there does nothing, a turn cannot delete itself or an ancestor, deletes come before creates (a restart), and G1, G2 and S7 that say so. |
 
 Design questions and their answers:
 

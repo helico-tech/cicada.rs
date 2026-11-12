@@ -66,13 +66,13 @@ turn and the id of its event, and the stores write the notifications.
 
 ## 3. Docs
 
-- [ ] 3.1 `docs/architecture.md`: G1, G2 and S7 as ADR 0024 words them; the rows on effects and on the order of a
+- [x] 3.1 `docs/architecture.md`: G1, G2 and S7 as ADR 0024 words them; the rows on effects and on the order of a
       commit; how a turn ends when its actor is deleted by another turn; the sentence on leases, made exact [14].
       `README.md`: the eight calls, a restart by a parent as an example, what an effect on an actor that is not
       there does, and the row of ADR 0024. `docs/operations.md`: what a restart does to a handler that is running,
       and the log line of a control effect. Verify: `cargo test -p cicada-examples --doc` passes, and every risk of
       `design.md` that names the docs is in them.
-- [ ] 3.2 `CHANGELOG.md`, a section `0.10.0 — unreleased`, and the version `0.10.0` in `Cargo.toml`: what a turn
+- [x] 3.2 `CHANGELOG.md`, a section `0.10.0 — unreleased`, and the version `0.10.0` in `Cargo.toml`: what a turn
       can do now, that nodes before and after can share a database, and the breaking line of the proposal with
       the new wording of G1, G2 and S7. Verify: every **BREAKING** line of the proposal and the Migration Plan of
       `design.md` are in the section.

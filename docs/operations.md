@@ -179,6 +179,10 @@ keeps its watches as a watcher. So stop every node of the old version, then star
 working: they ignore the new field `notification` of a message's view. A host that runs `FailureWatcher` keeps it until
 `cicada-actors` replaces it with a watch.
 
+**Version 0.10.0 changes no schema.** A turn can pause, resume, purge and delete another actor (ADR 0024); its commit
+applies those effects, and an actor on a node of 0.9.0 is paused or deleted as it would be from outside. So nodes of
+0.9.0 and 0.10.0 can share a database during a rolling deploy, and clients need no upgrade.
+
 **Switching a type to `create_child`.** An actor created with `turn.create` stays independent: a later `create_child`
 of it by its creator does not adopt it, but fails the creator's message (the commit is rejected, and a handler cannot
 test for that). So switch a parent type from `create` to `create_child` only when no parent of it is left that created
@@ -245,14 +249,27 @@ When the next change lands, add a section `## X.Y.Z — unreleased` to the chang
   message of them ends `purged`, a turn running on one commits nothing, and the delete counts the purged messages of
   the whole tree. Actors created with `create` are independent and stay. See what an actor owns first with
   `GET /actors/{type}/{key}/children` (`cicada get children`, or the `children` tab of an actor in `cicada tui`), one
-  level at a time.
+  level at a time. A turn's `delete` removes the same, in the commit of that turn.
+- **Control effects of turns.** A turn can pause, resume, purge and delete other actors (ADR 0024), for example a
+  supervisor that restarts a worker with a delete and a create. Nothing in the store records who did it: the node logs
+  each such effect of a commit it saw succeed (see [Logs](#logs)), and a watcher of the actor gets a `Stopped` with
+  `by` for a delete. An effect on an actor that is not there does nothing, so a supervisor with a wrong address fails
+  silently; the log line shows the target. Any actor can control any other.
+- **What a restart does to a running handler.** A delete, from outside or by a turn, ends the lease of a turn running
+  on the actor: that turn commits nothing, and its message ends `purged` and is never handled again. Its handler runs on
+  until its next heartbeat finds the lease gone (within a third of the lease TTL) or, in blocking code, until it
+  returns. When the actor is created again at once, as a restart does, the first turn of the new actor can start
+  meanwhile, so for a moment two handlers run for one address: the old one commits nothing, but what it does outside
+  the store overlaps with the new one. Use the message id as the idempotency key of external calls, and keep handlers
+  that a supervisor may restart free of blocking code.
 - **A large tree** is removed in one transaction that writes one `purged` outcome per pending message of every
   descendant; on SQLite it holds the single writer meanwhile. On PostgreSQL a removal that takes longer than
   `socket_timeout` (30 s) cannot finish: every delete of the tree answers `503 store-unavailable`, and a `stop()` of
   its root fails and is handled again and again. There are two ways out: remove the tree from the leaves up, listing
   each level with `GET /actors/{type}/{key}/children` and deleting the deepest actors first, or raise `socket_timeout`
   (`PostgresOptions`) for the node that runs the removal. A tree of many thousands of actors with full mailboxes is
-  better removed bottom-up by its own code. One more reason: on PostgreSQL the watchers of the removed root are locked
+  better removed bottom-up by its own code. A turn that deletes the root of a large tree is such a removal too, in its
+own commit, as a `stop()` is. One more reason: on PostgreSQL the watchers of the removed root are locked
   for the whole removal, so a turn running on one of them cannot renew its lease meanwhile; a removal that takes
   nearly as long as the lease costs that turn its lease, and its handler runs again.
 - **Store down.** Nothing proceeds and HTTP answers 503 `store-unavailable`; `ActorClient` retries sends with the same
@@ -287,6 +304,7 @@ worth an alert:
 | warn | `Retention sweep failed`, `Store wake-ups ended; falling back to polling` | The node keeps working, slower or with more stored data. |
 | warn | `Ignoring the retry policy of …` | A stored policy that cannot be decoded is read as no policy. |
 | info | `Cancelling N turns after the grace period of …` | A stop that cut running turns off. |
+| info | `Turn of supervisor/main for 3f2c…: delete worker/w1` | A committed turn paused, resumed, purged or deleted an actor (fields `actor`, `effect`, `target`); whether the target existed, the commit does not say. Nothing else records who did it. |
 
 ## Store tuning
 
