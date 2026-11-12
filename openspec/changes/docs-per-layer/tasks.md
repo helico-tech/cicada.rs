@@ -47,10 +47,10 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
 
 ## 4. Docs of the change
 
-- [ ] 4.1 `AGENTS.md` [11]: the map, the build lines and the rules name the guides, the references and their
+- [x] 4.1 `AGENTS.md` [11]: the map, the build lines and the rules name the guides, the references and their
       variables, the table of guarantees, the link check and the index of the ADRs. Verify: the link check passes, and
       `grep -n "user guide" AGENTS.md` names the guides, not the README.
-- [ ] 4.2 `CHANGELOG.md`, a section `0.14.1 — unreleased`, and the version `0.14.1` in `Cargo.toml`: what moved where,
+- [x] 4.2 `CHANGELOG.md`, a section `0.14.1 — unreleased`, and the version `0.14.1` in `Cargo.toml`: what moved where,
       the new references and checks, and that nothing changes for a host. Verify: the section names every guide and
       every new check.
 

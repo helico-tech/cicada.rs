@@ -7,6 +7,57 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.14.1 — unreleased
+
+A release of the docs (ADR 0018, its last step): one guide per layer, references that a test keeps current, a table of
+the tests behind each guarantee, and checks of the links between the docs. Nothing changes for a host: no code
+behaviour, no public API, no guarantee, no wire format and no schema. Nodes of 0.14.0 and 0.14.1 share a database.
+
+### Upgrading
+
+Nothing to do. A host that built with warnings for a missing doc comment of its own is not affected: the lint is set in
+the workspace of Cicada and reaches only its crates.
+
+### Changed
+
+- The README is an overview: what Cicada is, the layers with their crates, a quick start on `App`, how to use a
+  release, and a table of the docs. Its text moved, by layer, into four guides in `docs/guide/`:
+  - `docs/guide/core.md`, the core (`cicada`, `cicada-test`, `cicada-otel`): actor types, child actors, watches,
+    control effects, opening a store and running a node with `NodeConfig`, retry, the claim limit, message persistence
+    and causes, timers, observers and OpenTelemetry, testing with `TestActors`, contract snapshots and state samples,
+    and the examples;
+  - `docs/guide/http.md`, HTTP and the client (`cicada-axum`, `cicada-client`): mounting the routers in an axum
+    service, the client, the HTTP API and the schema check;
+  - `docs/guide/app.md`, the app (`cicada-app`): `App` with `serve`, `worker`, the flags and variables, the command
+    line and the terminal UI, and the sample service; it links to the operations guide;
+  - `docs/guide/actors.md`, the ready-made actors (`cicada-actors`): the supervisor, dead letters, the topic and
+    `Schedule`.
+- The table of the ADRs and the design questions moved from the README to `docs/adr/README.md`, where a change adds
+  its ADR's row from now on; the design notes and the known limitations moved to `docs/architecture.md`.
+- The operations guide, the architecture, `AGENTS.md`, the rules of `openspec/config.yaml` and the proposal of
+  `value-depth-limit` point into the guides instead of the README.
+- The contract snapshots of the ready-made actors moved from `crates/cicada-actors/tests/contracts` to
+  `docs/reference/contracts/`, and their test compares each as text, descriptions included, where it compared hashes:
+  a reworded doc comment fails it too, and `CICADA_UPDATE_CONTRACTS=true` rewrites a file that differs in any way.
+- `missing_docs` is an error in the workspace lints, so a public item without a doc comment fails `cargo build`, not
+  only clippy in CI.
+- Every spec in `openspec/specs/` has a real Purpose, so `openspec validate --specs --strict` passes.
+
+### Added
+
+- Every Rust block of the four guides is a doctest of `cicada-examples` (`CoreGuideDoctests`, `HttpGuideDoctests`,
+  `AppGuideDoctests`, `ActorsGuideDoctests`), as the blocks of the README and the operations guide are.
+- `docs/reference/cli.md`: the help of the plain `cicada` binary and of every command and subcommand, with the terminal
+  UI, and of `serve` and `worker`. A unit test of `cicada-app` walks the tree of the command line, renders each help
+  with a fixed name, fails when the file differs and rewrites it with `CICADA_UPDATE_CLI=true`. It runs with the
+  feature `tui`: in `cargo test --workspace`, or with `cargo test -p cicada-app --features tui`.
+- `docs/guarantees.md`: a row for each of G1–G6 and S1–S10 with the tests that prove it. A test of `cicada-examples`
+  (`examples/tests/docs.rs`) fails when a guarantee of the architecture has no row, a row names no test, or a named
+  file holds no function of that name.
+- The same test file checks the relative links of every Markdown file of the repository outside `target` and
+  `openspec/changes/archive`: a link to a file that does not exist, or with an anchor that names no heading of its
+  file, fails it. Links to the web are not checked.
+
 ## 0.14.0 — 2026-11-12
 
 A breaking release: the ready-made actors (ADR 0018, ADR 0028). The new crate `cicada-actors` replaces
