@@ -175,9 +175,15 @@ an optional struct fails under an `anyOf`. The places are the leaves of that tre
 (review), except that under an `anyOf` or a `oneOf` the alternatives that the value cannot be come last: those whose
 tag names another variant (a `const` or `enum` on a property of the part fails), whose kind does not fit the part, or
 that do not allow a property it holds. So the reasons of the variant that an enum with data names come first, before
-"and N more" (validation). The detail holds no address of the schema and no path into it; "expected a string" is fine.
+"and N more" (validation). To tell, the door looks only at the alternative's own error and its direct causes, at the
+part and its properties, never deeper, so that the walk stays linear in the number of errors: a deep value with many
+mismatches costs no more than its validation (second validation; an earlier walk over every subtree took seconds).
+Two cases the order does not help, as the variant's own error marks it as another: the named variant has a wrong value
+in a field that is a unit enum (an `enum` fails on a property of the part), and the named variant of an enum that
+denies unknown fields has an unknown field (the part holds a property it does not allow). Its reasons then keep the
+validator's order. The detail holds no address of the schema and no path into it; "expected a string" is fine.
 A reason may quote the value, so the detail is cut at 2,000 characters and then ends with the mark " … (cut)"
-(validation).
+(validation). So is the detail of the decoder of a hosting node, which may quote the value too (second validation).
 
 ### 9. The sample checks are in `cicada-axum`
 

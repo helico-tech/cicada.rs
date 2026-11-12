@@ -348,7 +348,7 @@ async fn on_a_node_that_hosts_the_type_the_check_runs_before_the_decoder() {
 
 /// http-schema-check, Scenario: A very long value (the cut of the core).
 #[tokio::test(start_paused = true)]
-async fn the_detail_of_a_refusal_by_the_check_is_cut_at_its_limit_with_a_mark() {
+async fn the_detail_of_a_refusal_by_the_check_or_the_decoder_is_cut_at_its_limit_with_a_mark() {
     let test = harness().await;
     let system = test.system();
     test.create(&a(), &CounterState::default()).await;
@@ -361,6 +361,19 @@ async fn the_detail_of_a_refusal_by_the_check_is_cut_at_its_limit_with_a_mark() 
     let CreateActorResult::InvalidState(error) = created.unwrap() else { panic!("refused") };
     assert_eq!(error.chars().count(), crate::runtime::MAX_REFUSAL_DETAIL);
     assert!(error.starts_with("State does not match the schema: ") && error.ends_with(" … (cut)"), "{error:.80}");
+
+    // The decoder of a hosting node quotes a text where it wants a number; its detail is cut the same way.
+    let accept = |_: &Value, _: &Value| Ok(());
+    let long = json!("é".repeat(200_000));
+    let sent =
+        system.send_message_checked(&a().address(), "Add", json!({"n": long}), SendOptions::new(), &accept).await;
+    let SendResult::InvalidPayload { error, .. } = sent.unwrap() else { panic!("refused") };
+    assert_eq!(error.chars().count(), crate::runtime::MAX_REFUSAL_DETAIL);
+    assert!(error.starts_with("Payload of 'Add' cannot be decoded: ") && error.ends_with(" … (cut)"), "{error:.80}");
+    let created = system.create_actor_checked(&Counter::new("b").address(), json!({"total": long}), &accept).await;
+    let CreateActorResult::InvalidState(error) = created.unwrap() else { panic!("refused") };
+    assert_eq!(error.chars().count(), crate::runtime::MAX_REFUSAL_DETAIL);
+    assert!(error.starts_with("State cannot be decoded: ") && error.ends_with(" … (cut)"), "{error:.80}");
 }
 
 #[tokio::test(start_paused = true)]

@@ -17,8 +17,8 @@ use schemars::{Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-/// type `form`: messages that deny unknown fields, carry an instant or a text with a pattern, and a state whose schema
-/// the validator cannot use.
+/// type `form`: messages that deny unknown fields, carry an instant, a text with a pattern or a shade whose schema is
+/// looser than its decoder, and a state whose schema the validator cannot use.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Form {
     id: String,
@@ -42,6 +42,26 @@ enum FormMsg {
         #[schemars(pattern(r"^[a-z]{1,8}$"))]
         code: String,
     },
+    Paint {
+        shade: Shade,
+    },
+}
+
+/// A unit enum whose schema allows any text, so that only its decoder refuses another name, and quotes it.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Shade {
+    Red,
+}
+
+impl JsonSchema for Shade {
+    fn schema_name() -> Cow<'static, str> {
+        "Shade".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({"type": "string"})
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -275,7 +295,7 @@ async fn a_state_that_does_not_match_gets_the_same_answer_on_every_node_also_und
     assert_problem(&get(&n.other, path).await, 404, pt::NO_SUCH_INSTANCE);
 }
 
-/// Scenario: A very long value.
+/// Scenarios: A very long value; A very long value that only the decoder refuses.
 #[tokio::test(start_paused = true)]
 async fn the_detail_of_a_very_long_value_is_cut_with_a_mark() {
     let n = nodes().await;
@@ -289,4 +309,11 @@ async fn the_detail_of_a_very_long_value_is_cut_with_a_mark() {
         assert!(detail.starts_with("Payload of 'Code' does not match the schema: at /code: 'AAA"), "{detail:.80}");
         assert!(detail.ends_with(" … (cut)"), "{}", &detail[detail.len() - 40..]);
     }
+    let body = json!({"type": "Paint", "payload": {"shade": "q".repeat(200_000)}}).to_string();
+    let reply = post(&n.host, "/actors/form/f/messages", &body).await;
+    assert_problem(&reply, 422, pt::INVALID_PAYLOAD);
+    let detail = detail(&reply);
+    assert_eq!(detail.chars().count(), cicada::runtime::MAX_REFUSAL_DETAIL);
+    assert!(detail.starts_with("Payload of 'Paint' cannot be decoded: unknown variant `qqq"), "{detail:.80}");
+    assert!(detail.ends_with(" … (cut)"), "{}", &detail[detail.len() - 40..]);
 }

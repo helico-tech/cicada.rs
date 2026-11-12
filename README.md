@@ -607,7 +607,8 @@ against the state schema. One that does not match is refused with `422 invalid-p
 nothing is stored. A node that hosts the type then decodes it with serde as well, with the same answer. The detail
 says which check refused it, and where: `Payload of 'Add' does not match the schema: at /n: want integer, but got
 string` names up to five places and says when there are more, the reasons of the variant that an enum with data names
-first, and is cut at 2,000 characters with the mark ` … (cut)`; `Payload of 'Add' cannot be decoded: …` is serde's.
+first; `Payload of 'Add' cannot be decoded: …` is serde's. Either is cut at 2,000 characters with the mark
+` … (cut)`.
 
 The order of the checks stays: a send that repeats the id of a message that is pending, or whose outcome is still
 shown, is answered as a repeat (`200`) before it is checked; an unknown message type is `422 unknown-message-type`.

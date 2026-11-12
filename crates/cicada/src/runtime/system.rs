@@ -46,11 +46,12 @@ const PAGE_OF_TURNS: usize = 1000;
 /// The most messages one bulk call acts on, and the most ids it takes.
 pub const BULK_LIMIT: usize = 1000;
 
-/// The most characters of the detail of a refusal by a [`SchemaCheck`]: a longer one is cut and ends with " … (cut)".
+/// The most characters of the detail of a refused payload or state, by a [`SchemaCheck`] or by the decoder of a node that
+/// hosts the type: a longer one is cut and ends with " … (cut)".
 pub const MAX_REFUSAL_DETAIL: usize = 2_000;
 
 /// `detail`, cut at [`MAX_REFUSAL_DETAIL`] characters with a mark when it is longer: a reason may quote a whole value.
-fn schema_refusal(detail: String) -> String {
+fn refusal(detail: String) -> String {
     const MARK: &str = " … (cut)";
     if detail.chars().count() <= MAX_REFUSAL_DETAIL {
         return detail;
@@ -741,16 +742,14 @@ impl ActorSystem {
             return Ok(CreateActorResult::InvalidState(e));
         }
         if let Err(reason) = check(resolved.contract.state_schema(), &state) {
-            return Ok(CreateActorResult::InvalidState(schema_refusal(format!(
-                "State does not match the schema: {reason}"
-            ))));
+            return Ok(CreateActorResult::InvalidState(refusal(format!("State does not match the schema: {reason}"))));
         }
         let hosted = self.hosted_for(&init, address.type_name());
         if let Some(problem) = hosted.and_then(|h| h.actor.address_problem(address)) {
             return Ok(CreateActorResult::InvalidAddress(problem));
         }
         if let Some(Err(e)) = hosted.map(|h| h.actor.check_state(&state)) {
-            return Ok(CreateActorResult::InvalidState(format!("State cannot be decoded: {e}")));
+            return Ok(CreateActorResult::InvalidState(refusal(format!("State cannot be decoded: {e}"))));
         }
         Ok(match self.inner.store.create(address, state).await? {
             CreateResult::Created => CreateActorResult::Created,
@@ -900,14 +899,14 @@ impl ActorSystem {
             return Ok(SendResult::UnknownType { message_type: message_type.to_owned(), type_name: name.clone() });
         };
         if let Err(reason) = check(schema, &payload) {
-            let error = schema_refusal(format!("Payload of '{message_type}' does not match the schema: {reason}"));
+            let error = refusal(format!("Payload of '{message_type}' does not match the schema: {reason}"));
             return Ok(SendResult::InvalidPayload { message_type: message_type.to_owned(), error });
         }
         let hosted = self.hosted_for(&init, name).is_some();
         if let Some(h) = self.hosted_for(&init, name)
             && let Err(e) = h.actor.check_payload(message_type, &payload)
         {
-            return Ok(SendResult::InvalidPayload { message_type: message_type.to_owned(), error: e });
+            return Ok(SendResult::InvalidPayload { message_type: message_type.to_owned(), error: refusal(e) });
         }
         let outgoing = OutgoingMessage {
             to: to.clone(),

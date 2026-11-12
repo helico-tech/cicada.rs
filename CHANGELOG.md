@@ -39,11 +39,11 @@ and 0.12.0 can share a database, and during a rolling deploy a node of 0.11.0 st
   `422 invalid-payload` or `422 invalid-state` and stores nothing; its detail names the message type (or the state)
   and up to five places that do not match, each with its path and the reason, and says when there are more:
   `Payload of 'Add' does not match the schema: at /n: want integer, but got string`. Under an enum with data the reasons
-  of the variant that the value names come first. The detail is cut at 2,000 characters (`MAX_REFUSAL_DETAIL`) and then
-  ends with ` … (cut)`, as a reason may quote the value. A node that hosts the type then
-  decodes with serde as before, with the same answer and the detail `… cannot be decoded: …`, so the detail of a
-  payload that does not fit names the schema now. A payload that is not an object reads `… at the top level: want
-  object, but got array` instead of `… must be a JSON object`.
+  of the variant that the value names come first. A node that hosts the type then decodes with serde as before, with
+  the same answer and the detail `… cannot be decoded: …`, so the detail of a payload that does not fit names the
+  schema now. Either detail is cut at 2,000 characters (`MAX_REFUSAL_DETAIL`) and then ends with ` … (cut)`, as a
+  reason may quote the value; a decoder's detail had no limit before. A payload that is not an object reads `… at the
+  top level: want object, but got array` instead of `… must be a JSON object`.
 - A send that repeats the id of a message that is pending, or whose outcome is still shown, is answered as a repeat
   before it is checked, as before. One whose outcome its retention hides is checked first.
 - Formats are not asserted (`format` is a note, as draft 2020-12 has it), the check loads nothing from outside the
@@ -59,8 +59,10 @@ and 0.12.0 can share a database, and during a rolling deploy a node of 0.11.0 st
   the decoder, so that a state that does not match gets the same answer on every node; a node that hosts a singleton
   answered `invalid-address` for a create of another name with a bad state, and answers `invalid-state` now. Its
   refusal is `SendResult::InvalidPayload` or `CreateActorResult::InvalidState` with "… does not match the schema: "
-  and its reason, cut at `cicada::runtime::MAX_REFUSAL_DETAIL` (2,000) characters. `send_message` and
-  `create_actor` are these with a check that accepts everything. The core has no validator.
+  and its reason. `send_message` and `create_actor` are these with a check that accepts everything. The core has no
+  validator.
+- `cicada::runtime::MAX_REFUSAL_DETAIL` (2,000): the most characters of the detail of a refused payload or state, by a
+  check or by the decoder of a hosting node; a longer one is cut and ends with ` … (cut)`.
 - `cicada_axum::assert_message_sample::<M>(&sample)` and `assert_state_sample::<S>(&sample)`: a sample must pass the
   registered schema and decode as the type, or the test fails, saying which of the two refused it and why. A schema
   that the validator cannot use fails too.

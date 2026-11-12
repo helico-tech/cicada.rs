@@ -110,7 +110,8 @@ refused it.
 The detail of a refusal by the schema SHALL name the message type, or the state, and up to five places of the
 payload that do not match, each with its path in the payload and the reason, and SHALL say when there are more. It
 SHALL NOT hold the address of the schema or a path into it. It SHALL be at most 2,000 characters: a longer one SHALL
-be cut and SHALL end with a mark that says so.
+be cut and SHALL end with a mark that says so. The detail of a refusal by the decoder of a hosting node SHALL be cut
+in the same way.
 
 #### Scenario: Two places that do not match
 
@@ -130,6 +131,13 @@ be cut and SHALL end with a mark that says so.
 #### Scenario: A very long value
 
 - **WHEN** a client sends a payload whose text field of 200,000 characters does not match the field's pattern
+- **THEN** the answer is `422 invalid-payload`, and the detail is 2,000 characters long and ends with the mark that it
+  was cut
+
+#### Scenario: A very long value that only the decoder refuses
+
+- **WHEN** a client sends a payload whose field of 200,000 characters the schema allows and the decoder refuses with a
+  reason that quotes it, to a node that hosts the type
 - **THEN** the answer is `422 invalid-payload`, and the detail is 2,000 characters long and ends with the mark that it
   was cut
 
