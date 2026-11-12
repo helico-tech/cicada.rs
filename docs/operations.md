@@ -284,6 +284,23 @@ of 0.13.0 and 0.14.0 share a database, and clients need no upgrade. A system wit
 The sample service no longer reads `FAILURE_WATCHER_INTERVAL`: a node that hosts the dead letters creates them and their
 watch at the start.
 
+**Version 0.15.0 changes no schema of the store, but it changes the contracts of some types.** A message schema holds
+every definition it refers to, whatever its name, and a reference to a family that holds itself accepts any value;
+[The contract of a type](guide/core.md#the-contract-of-a-type) names the three kinds of type that are hit. The contract
+hash of such a type changes, so a node of 0.15.0 that hosts it refuses to start against the registration of the
+release before (`ContractConflict`). Every other type keeps its contract byte for byte: a system without a type that
+is hit can deploy 0.15.0 rolling, with nodes of 0.14 and 0.15.0 on one database. Clients need no upgrade. Before any
+node is deployed:
+
+1. Raise the dependency to 0.15.0 and run the contract snapshot tests of every type (`assert_contracts_match`) against
+   the snapshots of 0.14.0 (0.14.1 makes the same contracts). A snapshot that changes names a type that is hit.
+2. For such a type, follow [Changing a contract](#changing-a-contract): a versioned type name, or a stop of the world
+   that stops every node that hosts it, deletes its actors and then its registration (`DELETE /types/{name}` answers
+   `409` while an actor of the type exists).
+
+A type with a newtype variant of a type whose name a reference escapes could not start before 0.15.0, so nothing of it
+is registered: it registers its first contract.
+
 **Switching a type to `create_child`.** An actor created with `turn.create` stays independent: a later `create_child`
 of it by its creator does not adopt it, but fails the creator's message (the commit is rejected, and a handler cannot
 test for that). So switch a parent type from `create` to `create_child` only when no parent of it is left that created

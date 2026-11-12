@@ -447,6 +447,41 @@ async fn main() -> anyhow::Result<()> {
 - The runtime logs with [`tracing`](https://docs.rs/tracing); install a subscriber (such as `tracing_subscriber`) to
   see its output.
 
+### The contract of a type
+
+The contract that `start` registers for a type is the JSON Schema of its state and one JSON Schema per message type,
+made by schemars from the types serde decodes. `GET /types` serves it, and the HTTP door checks a send and a create
+against it ([The schema check](http.md#the-schema-check)). The schema of a message type is cut out of the schema of the
+family and holds every definition it refers to, whatever the name of the definition. Two cases need a word:
+
+- **A family that holds itself** (a message `Batch { items: Vec<Msg> }`). schemars refers to the whole family with
+  `"$ref": "#"`, which in the schema of one message type would mean that message. There the reference accepts any value
+  (`true`): the door lets each nested message through, and the decoder checks it, at the door of a node that hosts the
+  type and in the turn on every node. The schemas of the other message types do not change.
+- **A hand-written schema** that refers to a definition it does not hold cannot be used by the validator: the door does
+  not check that message type and warns once, and the sample checks fail with "cannot be used". A newtype variant whose
+  definition is missing keeps the node from starting, with an error that names the variant and the definition.
+
+**The types that 0.15.0 changes.** Before 0.15.0 a message schema lost a definition whose name a reference escapes, and
+a reference to the family meant the one message. With the fix the contracts of three kinds of type change; every other
+type keeps its contract byte for byte:
+
+- a message with a field of a type whose name has a space, `/`, `~`, `<`, `>`, another character outside the safe set
+  of an address, or a letter that is not ASCII, from `#[schemars(rename)]`, a container `#[serde(rename)]` or the Rust
+  name (`Größe`): its schema gains the definition, so the door now checks that message type;
+- a family that holds itself: the schemas that refer to the family get `true` there, so the door no longer refuses a
+  valid nested message;
+- a hand-written schema with a reference of several segments (`#/$defs/Line/properties/sku`): its message schema now
+  keeps `Line`.
+
+A newtype variant of a type whose name a reference escapes kept the node from starting ("must be an enum with
+`#[serde(tag = "type")]`"); it starts now, with its first contract. To tell whether a type is hit: its
+[contract snapshot](#contract-snapshots) changes, or a node of 0.15.0 refuses to start against the registration of the
+release before with `StartProblem::ContractConflict`. A type that is hit is deployed as any change of a contract: under
+a versioned type name, or with a stop of the world that deletes its actors and its registration
+([Changing a contract](../operations.md#changing-a-contract)). The operations guide has the steps of the upgrade
+([Upgrading](../operations.md#upgrading)).
+
 ### Configuration
 
 Node settings are the fields of `NodeConfig`, passed to the builder:

@@ -7,6 +7,56 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.15.0 — unreleased
+
+A breaking release for a few types: a message schema holds every definition it refers to, whatever its name, and a
+reference to a family that holds itself accepts any value. The contracts of the types that are hit change; every other
+type keeps its contract byte for byte. No schema of the store changes, and clients need no upgrade. A system without a
+type that is hit can deploy it rolling: nodes of 0.14 and 0.15.0 share a database.
+
+### Upgrading
+
+1. After the dependency is raised to 0.15.0 and before any node is deployed, run the contract snapshot tests of every
+   type (`assert_contracts_match`) against the snapshots of 0.14.0 (0.14.1 makes the same contracts). A snapshot that
+   changes names a type that is hit. Without snapshots, a node of 0.15.0 that hosts such a type refuses to start
+   against the registration of the release before, with a `ContractConflict`.
+2. For such a type, follow "Changing a contract" in the operations guide: a versioned type name, or a stop of the world
+   that stops every node that hosts it, deletes its actors and then its registration (`DELETE /types/{name}` answers
+   `409` while an actor of the type exists).
+
+### Changed
+
+- **BREAKING** for a type that is hit: its message schemas change, so its contract hash changes, and the node follows
+  "Changing a contract" in the operations guide. No other type changes. Three kinds of type are hit
+  (`docs/guide/core.md`, The contract of a type):
+  - A message with a field of a type whose name a reference escapes: a name with a space, `/`, `~`, `<`, `>`, another
+    character outside the safe set of an address, or a letter that is not ASCII, from `#[schemars(rename)]`, a
+    container `#[serde(rename)]` or the Rust name (`Größe`). Its message schema lacked the definition, so the door did
+    not check that message type (it warned that the schema cannot be used) and `assert_message_sample` failed with
+    "cannot be used". The schema now holds the definition, and the door checks the message type.
+  - A family that holds itself (a message `Batch { items: Vec<Msg> }`). schemars refers to it with `"$ref": "#"`, which
+    in the schema of one message type meant that message, so the door refused valid nested messages. There the
+    reference now accepts any value (`true`), and the decoder checks the nested messages: at the door of a node that
+    hosts the type, and in the turn on every node. The schemas of the other message types do not change.
+  - A hand-written schema with a reference of several segments (`#/$defs/Line/properties/sku`): its message schema now
+    keeps the definition `Line`.
+- A reference to a definition is read as RFC 6901 reads a JSON Pointer in the fragment of an address: percent-decoded,
+  split at `/`, with `~1` and `~0` unescaped. The name of the definition is its first segment.
+
+### Fixed
+
+- A newtype variant of a type whose name a reference escapes kept the node from starting ("must be an enum with
+  `#[serde(tag = "type")]`"). It starts now, with its first contract: nothing of it was registered, so nothing breaks
+  for it.
+- A newtype variant whose definition the schema of the family does not hold, which only a hand-written schema can have,
+  is an error that names the variant and the definition, instead of "must be an enum with `#[serde(tag = "type")]`".
+
+### Added
+
+- `sample-service/tests/contract-texts.json`: the SHA-256 of the text of each contract of the examples, the ready-made
+  actors and the sample service, descriptions included. A test fails when one differs; `CICADA_UPDATE_CONTRACTS=true`
+  rewrites the file.
+
 ## 0.14.1 — 2026-11-12
 
 A release of the docs (ADR 0018, its last step): one guide per layer, references that a test keeps current, a table of

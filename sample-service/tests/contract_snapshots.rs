@@ -31,9 +31,9 @@ impl Smtp for NoSmtp {
 }
 
 /// Scenario: A type that is not hit (schema-reference-names). Every contract of the examples, the ready-made actors and
-/// this service is the text `GET /types` served at 0.14.1, byte for byte, its descriptions and the order of its keys
-/// included: `tests/contract-texts.json` holds the SHA-256 of each text. The snapshots compare hashes without the
-/// descriptions. `CICADA_UPDATE_CONTRACTS=true` rewrites the file.
+/// this service is the text that `GET /types` serves, byte for byte, its descriptions and the order of its keys
+/// included, as recorded in `tests/contract-texts.json`: the SHA-256 of each text, first recorded at 0.14.1. The
+/// snapshots compare hashes without the descriptions. `CICADA_UPDATE_CONTRACTS=true` rewrites the file.
 #[test]
 fn contracts_are_the_texts_recorded() {
     let mut contracts = catalog_contracts();

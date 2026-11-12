@@ -25,10 +25,10 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
 
 ## 2. Docs
 
-- [ ] 2.1 The core guide (the contract of a type: what is hit and how to tell), `docs/operations.md` (the upgrade to
+- [x] 2.1 The core guide (the contract of a type: what is hit and how to tell), `docs/operations.md` (the upgrade to
       0.15.0 by the Migration Plan of `design.md`). Verify: `cargo test -p cicada-examples --doc` passes, the link
       check passes, and every risk of `design.md` that names the docs is in them.
-- [ ] 2.2 `CHANGELOG.md`, a section `0.15.0 — unreleased`, and the version `0.15.0` in `Cargo.toml`: the steps of the
+- [x] 2.2 `CHANGELOG.md`, a section `0.15.0 — unreleased`, and the version `0.15.0` in `Cargo.toml`: the steps of the
       Migration Plan first, then the breaking change of the proposal, naming the three kinds of type that are hit and
       that a hit newtype variant could not start before. Verify: every step of the plan and every **BREAKING** line of
       the proposal is in the section.
