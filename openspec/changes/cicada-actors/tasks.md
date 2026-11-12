@@ -22,7 +22,7 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
 
 ## 2. The ready-made actors
 
-- [ ] 2.1 The crate and a stored message [2, 11]: `cicada-actors` in the workspace, with `StoredMessage` and its
+- [x] 2.1 The crate and a stored message [2, 11]: `cicada-actors` in the workspace, with `StoredMessage` and its
       typed helper, and `Schedule` moved from `cicada-extras` unchanged with its tests. Verify: a test that a stored
       message holds the type name and the payload the family encodes; a `compile_fail` doctest for a message of
       another family; the tests of `Schedule` pass.

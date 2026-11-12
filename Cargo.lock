@@ -491,6 +491,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "cicada-actors"
+version = "0.13.0"
+dependencies = [
+ "cicada",
+ "cicada-axum",
+ "cicada-test",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
 name = "cicada-app"
 version = "0.13.0"
 dependencies = [

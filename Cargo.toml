@@ -7,6 +7,7 @@ members = [
     "crates/cicada-client",
     "crates/cicada-otel",
     "crates/cicada-extras",
+    "crates/cicada-actors",
     "crates/cicada-app",
     "examples",
     "sample-service",
@@ -28,6 +29,7 @@ cicada-axum = { path = "crates/cicada-axum" }
 cicada-client = { path = "crates/cicada-client" }
 cicada-otel = { path = "crates/cicada-otel" }
 cicada-extras = { path = "crates/cicada-extras" }
+cicada-actors = { path = "crates/cicada-actors" }
 cicada-app = { path = "crates/cicada-app" }
 cicada-examples = { path = "examples" }
 
