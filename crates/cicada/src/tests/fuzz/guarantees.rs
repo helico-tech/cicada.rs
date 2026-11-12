@@ -215,6 +215,27 @@ async fn a_failed_commit_whose_acknowledgement_is_lost_tells_the_watcher_once() 
     assert_eq!(notified(&events, "Failed"), [("Failed", "m0")], "one Failed, not two: {events:#?}");
 }
 
+/// Scenario: A restart under faults. A turn of `a` restarts `c` while a turn runs on `c`, and the acknowledgement of
+/// its commit is lost: the running turn commits nothing, and the restart is applied once.
+#[tokio::test(start_paused = true)]
+async fn a_restart_whose_acknowledgement_is_lost_is_applied_once_and_ends_the_running_turn() {
+    let scenario = Scenario {
+        nodes: 1,
+        steps: vec![send(2, vec![sleep_action(2_000)]), ms(100), send(0, vec![Action::Restart { to: 2 }]), ms(5_000)],
+        faults: vec![fault(0, Method::Commit, 0, Fault::After)],
+    };
+    let events = run(&scenario).await;
+    check_all(&events).unwrap();
+    assert!(events.iter().any(|e| matches!(e, Event::Fault { method: Method::Commit, .. })), "{events:#?}");
+    assert_eq!(outcome_of(&events, "m1"), Some(&OutcomeStatus::Done), "{events:#?}");
+    assert_eq!(outcome_of(&events, "m0"), Some(&OutcomeStatus::Purged), "the turn on c commits nothing: {events:#?}");
+    assert_eq!(notified(&events, "Stopped"), [("Stopped", "script/c")], "one Stopped, not two: {events:#?}");
+    assert!(
+        events.contains(&Event::State { address: "script/c".to_owned(), ids: Vec::new() }),
+        "a new life with an empty state: {events:#?}"
+    );
+}
+
 #[test]
 fn one_scenario_with_faults_replays_the_same() {
     let scenario = Scenario {
@@ -236,6 +257,22 @@ fn one_scenario_with_faults_replays_the_same() {
     let first = simulate(&scenario);
     assert!(first.iter().any(|e| matches!(e, Event::Fault { .. })), "{first:#?}");
     assert_eq!(first, simulate(&scenario));
+}
+
+/// How many instances the commit of another instance removed: a `Removed` that the fault layer logs with a commit
+/// (after its `Committed`, among the messages it accepted and ended) for another address.
+fn removed_by_another(events: &[Event]) -> usize {
+    let mut committing: Option<&str> = None;
+    let mut count = 0;
+    for event in events {
+        match event {
+            Event::Committed { address, .. } => committing = Some(address),
+            Event::Removed { address } if committing.is_some_and(|by| by != address) => count += 1,
+            Event::Accepted { .. } | Event::Ended { .. } | Event::Removed { .. } => {}
+            _ => committing = None,
+        }
+    }
+    count
 }
 
 /// Generated scenarios must keep reaching the paths where bugs live. The runner is deterministic, so the counts only
@@ -268,6 +305,7 @@ fn generated_scenarios_reach_deep_states() {
         mark("removed", &|e| matches!(e, Event::Removed { .. }));
         mark("told of a failure", &|e| matches!(e, Event::Notified { kind, .. } if kind == "Failed"));
         mark("told of a removal", &|e| matches!(e, Event::Notified { kind, .. } if kind == "Stopped"));
+        *marks.entry("removed by another actor").or_insert(0) += removed_by_another(&events);
     }
     let floors = [
         ("accepted", 1200),
@@ -287,6 +325,7 @@ fn generated_scenarios_reach_deep_states() {
         ("removed", 120),
         ("told of a failure", 150),
         ("told of a removal", 120),
+        ("removed by another actor", 20),
     ];
     for (name, floor) in floors {
         assert!(marks[name] >= floor, "{name} reached only {} times, wanted {floor}: {marks:#?}", marks[name]);

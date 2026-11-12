@@ -22,7 +22,9 @@ use futures::stream::BoxStream;
 use serde_json::Value;
 
 pub use handle::Store;
-pub(crate) use model::{ActorCreate, Claim, CommitRequest, NodeRecord, OutgoingMessage, StateChange};
+pub(crate) use model::{
+    ActorCreate, Claim, CommitRequest, Control, ControlEffect, NodeRecord, OutgoingMessage, StateChange,
+};
 pub use model::{
     ActorRecord, Delivery, IdError, Message, MessageId, MessageStatus, NodeId, OutcomeRecord, OutcomeStatus, Page,
     PageCursor, RunningTurn, StoreStats, TurnOutcome, TypeDef,
@@ -108,8 +110,8 @@ impl Clock for SystemClock {
 /// **Watches** (ADR 0018, ADR 0023). A watch is a stored pair of a target and a watcher. Three events write
 /// notifications into the mailboxes of watchers, in their own transaction: a commit that ends a message `failed` (a
 /// [`Failed`](crate::Failed) for each watcher of the actor's address, of a prefix of its type at a dot, or of `*`,
-/// unless the message is itself a notification), and a commit that stops and a delete (a [`Stopped`](crate::Stopped)
-/// for each watcher of the address of each removed actor). Each watcher gets one notification per actor; a watcher that
+/// unless the message is itself a notification), and a commit that stops or deletes and a delete (a
+/// [`Stopped`](crate::Stopped) for each watcher of the address of each removed actor). Each watcher gets one notification per actor; a watcher that
 /// does not exist, or that the same event removes, gets nothing, and the watches of a watcher that does not exist are
 /// removed. Removing an actor removes the watches it holds as a watcher; the watches on it as a target stay. The
 /// notifications of one event are written last, in the order of the actor they are about and then of the watcher,
@@ -314,26 +316,38 @@ pub(crate) trait Backend: Send + Sync + 'static {
     // ---- commit ----
 
     /// Ends the turn for the claimed message, fenced by the epoch (S5). Applies all of the following or nothing (S2),
-    /// in this order: the watches of the turn (set and removed in the order of the calls, the committing instance the
-    /// watcher), the outcome (or the reschedule), the cancels of this instance's pending messages, the creates
-    /// (idempotent; a child create gives the new instance the committing instance as its parent), the sends (in
-    /// order), the state change, the release of the lease, and last the notifications of the event, named after
-    /// [`CommitRequest::event`]. A stop removes the instance and every descendant, the children this commit created
-    /// included, and purges their mailboxes, this commit's sends to them included.
+    /// in this order (ADR 0024): the watches of the turn (set and removed in the order of the calls, the committing
+    /// instance the watcher), the outcome (or the reschedule), the cancels of this instance's pending messages, the
+    /// deletes, the creates (idempotent; a child create gives the new instance the committing instance as its
+    /// parent), the purges, the pauses and resumes, the sends (in order), the state change, the release of the lease,
+    /// and last the notifications of the event, named after [`CommitRequest::event`]. A stop removes the instance and
+    /// every descendant, the children this commit created included, and purges their mailboxes, this commit's sends
+    /// to them included.
+    ///
+    /// Each control effect does what the call from outside a turn does ([`Self::set_paused`], [`Self::purge`],
+    /// [`Self::delete`]), and nothing to an instance that is absent when it is applied. A purge leaves the message
+    /// being handled: of this instance, the turn's own. A delete removes the instance, its descendants and their
+    /// mailboxes, every message ending `purged`, and voids their leases, so a turn running on one of them commits
+    /// nothing. Deletes come before creates, so a delete and a create of one address restart it; an address that is
+    /// absent then is only created, and nothing is removed. Creates come before the other effects, so a new instance
+    /// can be paused or purged and sent to in one commit.
     ///
     /// An outcome `failed` writes a `Failed` for the watchers of the message's failure (no `causedBy`), unless the
-    /// message is a notification; a rescheduled, done or cancelled message writes none. A stop writes a `Stopped` for
-    /// the watchers of each removed instance: cause `stopped` for this instance, `parent` for a descendant, `by` this
-    /// instance and `causedBy` the turn's message. A notification is not a send of the turn: a watcher that does not
-    /// exist never rejects the commit.
+    /// message is a notification; a rescheduled, done or cancelled message writes none. A stop and a delete write a
+    /// `Stopped` for the watchers of each removed instance, with `by` this instance and `causedBy` the turn's message.
+    /// The cause does not depend on the order of the removals: `deleted` for an instance the commit names in a delete,
+    /// `stopped` for this instance when it stops, and `parent` for every other. A watcher the commit removes gets
+    /// nothing, also when the commit creates it again. A notification is not a send of the turn: a watcher that does
+    /// not exist never rejects the commit.
     ///
     /// `LeaseLost` when the epoch is not current or the lease is no longer held; `Rejected` when a create names a type
-    /// that is not registered, a child create names an instance that exists with another parent or none, a send
-    /// targets an instance that is absent after the creates, or a send id is already in use (the lease is then still
-    /// held).
-    /// [`StoreError::Invalid`] when creates of one address disagree on being a child (checked first, before the store
-    /// is read, see [`support::check_creates`]), the message is not the one claimed under the epoch, the cancels
-    /// contain the turn's own message, or the data cannot be stored; nothing is applied then either.
+    /// that is not registered, a child create names an instance that exists after the deletes with another parent or
+    /// none, a delete names an ancestor of this instance, a send targets an instance that is absent after the deletes
+    /// and the creates, or a send id is already in use (the lease is then still held).
+    /// [`StoreError::Invalid`] when creates of one address disagree on being a child, the commit deletes this instance,
+    /// or it both pauses and resumes one instance (checked first, before the store is read, see
+    /// [`support::check_creates`] and [`support::check_controls`]), the message is not the one claimed under the epoch,
+    /// the cancels contain the turn's own message, or the data cannot be stored; nothing is applied then either.
     async fn commit(&self, commit: CommitRequest) -> StoreResult<CommitResult>;
 
     // ---- optional ----

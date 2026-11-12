@@ -6,23 +6,23 @@ turn and the id of its event, and the stores write the notifications.
 
 ## 1. The stores
 
-- [ ] 1.1 Model and trait [5, 7, 11]: a commit carries the control effects of its turn, each an effect (pause,
+- [x] 1.1 Model and trait [5, 7, 11]: a commit carries the control effects of its turn, each an effect (pause,
       resume, purge, delete) and an address; the shared check `support::check_controls` answers
       `StoreError::Invalid` for a commit that deletes its own actor or that both pauses and resumes one actor, and
       a commit runs it first, before the store is read; the docs of the trait give the order of decision 5 and the
       causes of decision 11. Every place that builds a `CommitRequest` follows. Verify: `cargo build --workspace`.
-- [ ] 1.2 The in-memory store [1, 2, 3, 5, 7, 11]: the effects in the order of decision 5; a delete voids a turn
+- [x] 1.2 The in-memory store [1, 2, 3, 5, 7, 11]: the effects in the order of decision 5; a delete voids a turn
       that runs on the target; a delete of an ancestor of the committing actor rejects the commit; an effect on an
       actor that is not there does nothing; a restart of an actor that is not there removes nothing. Verify: the
       cases of 1.5 on the in-memory store.
-- [ ] 1.3 SQLite: the same. Verify: the cases of 1.5.
-- [ ] 1.4 PostgreSQL [8]: the same; the controlled actors and the watchers of each deleted actor join the one
+- [x] 1.3 SQLite: the same. Verify: the cases of 1.5.
+- [x] 1.4 PostgreSQL [8]: the same; the controlled actors and the watchers of each deleted actor join the one
       ordered lock of the commit, and the watches are read again after it, as `watches` does; for an address that a
       commit both deletes and creates, the store holds the lock of a row there before it removes and creates; a
       resume is announced as a resume from outside is. Verify, with `CICADA_PG_URL` set: the cases of 1.5, and the
       two cases for PostgreSQL of decision 10, each run 50 times in one test (the scenario "A restart of an actor
       that is not there races a create" is one of them).
-- [ ] 1.5 Conformance cases in a new file `control.rs` of `crates/cicada/src/tests/conformance`, one per line:
+- [x] 1.5 Conformance cases in a new file `control.rs` of `crates/cicada/src/tests/conformance`, one per line:
       a pause, a resume and a purge by a commit do what the calls from outside do, also to the committing actor;
       a delete by a commit removes the actor, its mailbox and its descendants, and voids a turn that runs on one of
       them;
@@ -39,7 +39,7 @@ turn and the id of its event, and the stores write the notifications.
       `deleted`, `parent` and `stopped`; a watcher that the commit removes and creates again has nothing;
       a commit that deletes its own actor, or pauses and resumes one actor, is invalid.
       Verify: they pass on all three stores, on PostgreSQL with `CICADA_PG_URL` set.
-- [ ] 1.6 The randomised comparison and the simulation [10]: the comparison builds the four effects in its commits,
+- [x] 1.6 The randomised comparison and the simulation [10]: the comparison builds the four effects in its commits,
       on addresses of its pool; the simulation under faults has an actor that restarts another in some of its
       turns. Verify: `cargo test -p cicada --lib tests::fuzz` passes, and so does one run with
       `PROPTEST_CASES=20000`; the report says how long that run took, and how many generated lists reach a restart.

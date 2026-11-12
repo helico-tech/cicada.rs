@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use crate::address::ActorAddress;
-use crate::store::{Backend, Claim, OutgoingMessage, RenewResult, StoreError};
+use crate::store::{Backend, Claim, ControlEffect, OutgoingMessage, RenewResult, StoreError};
 use crate::tests::fuzz::compare::{
     self, ADDRESSES, ALL_DUE, Commit, Due, End, Op, Pair, Ranker, StateOp, error_kind, in_address_order, op, ops,
 };
@@ -52,6 +52,8 @@ fn commit(claim: usize, epoch_delta: i64) -> Commit {
         sends: vec![],
         cancels: vec![],
         watches: vec![],
+        controls: vec![],
+        restart: None,
     }
 }
 
@@ -231,6 +233,31 @@ async fn the_notifications_of_a_failure_and_a_delete_agree() {
     finish(pair).await;
 }
 
+/// A restart of `beta/1`, which has the child `beta/2` and is watched by `alpha/1`, and a pause, a purge and a send
+/// in the same commit, agree in both backends.
+#[tokio::test]
+async fn a_restart_with_the_other_control_effects_agrees() {
+    let mut pair = Pair::memory_and_sqlite().await;
+    agreed(&mut pair, Op::Enqueue(send(6, 0, Due::Now))).await;
+    agreed(&mut pair, Op::Enqueue(send(0, 1, Due::Now))).await;
+    agreed(&mut pair, Op::Enqueue(send(1, 2, Due::Now))).await;
+    agreed(&mut pair, Op::ClaimDue { types: vec![0], node: 0, ttl: Duration::from_secs(30), limit: ALL_DUE }).await;
+    let restart = Commit {
+        restart: Some((6, 1, false)),
+        controls: vec![(ControlEffect::Pause, 6), (ControlEffect::Purge, 3)],
+        sends: vec![send(6, 3, Due::Now)],
+        ..commit(0, 0)
+    };
+    let committed = agreed(&mut pair, Op::Commit(restart)).await;
+    assert!(committed.get("committed").is_some(), "{committed}");
+    let record = agreed(&mut pair, Op::Get { to: 6 }).await;
+    assert_eq!((record["paused"].clone(), record["parent"].clone()), (json!(true), json!(null)), "{record}");
+    assert_eq!(agreed(&mut pair, Op::Get { to: 7 }).await, Value::Null, "the child went with the old life");
+    let told = agreed(&mut pair, Op::Pending { to: 1, limit: 100 }).await;
+    assert!(told.to_string().contains("\"cause\":\"deleted\""), "{told}");
+    finish(pair).await;
+}
+
 #[test]
 fn generated_lists_reach_every_operation() {
     let mut runner = TestRunner::deterministic();
@@ -320,13 +347,20 @@ async fn generated_lists_reach_deep_states() {
         ("cancel requests", "cancel-requested", 5),
         ("refused requests", "\"error\":\"invalid\"", 300),
     ];
-    // Trees: listings of children that found some, and children removed together with their parent.
-    let tree_marks = [("listed children", 40), ("children removed with their parent", 40)];
+    // Trees: listings of children that found some, and children removed together with their parent. Control effects:
+    // commits that apply some, and lists that restart an actor that was there.
+    let tree_marks = [
+        ("listed children", 40),
+        ("children removed with their parent", 40),
+        ("commits with control effects", 150),
+        ("lists that restart an actor", 40),
+    ];
     let mut counts = BTreeMap::<&str, usize>::new();
     let mut runner = TestRunner::deterministic();
     for _ in 0..400 {
         let list = ops().new_tree(&mut runner).unwrap().current();
         let mut pair = Pair::memory_twice().await;
+        let mut restarted = false;
         for op in &list {
             if let Op::Advance(by) = op {
                 pair.clock.advance_by(*by);
@@ -345,13 +379,30 @@ async fn generated_lists_reach_deep_states() {
             let removed = |a: &String| !after.contains_key(a);
             let cascaded = before.iter().filter(|(a, p)| removed(a) && p.as_ref().is_some_and(removed)).count();
             *counts.entry("children removed with their parent").or_default() += cascaded;
+            if let Op::Commit(commit) = op
+                && answer.contains("\"committed\"")
+            {
+                if !commit.controls.is_empty() || commit.restart.is_some() {
+                    *counts.entry("commits with control effects").or_default() += 1;
+                }
+                restarted |= restarts(commit).any(|to| before.contains_key(ADDRESSES[to]));
+            }
         }
+        *counts.entry("lists that restart an actor").or_default() += usize::from(restarted);
     }
+    eprintln!("of 400 generated lists, {} restart an actor that is there", counts["lists that restart an actor"]);
     let floors = marks.iter().map(|(name, _, floor)| (*name, *floor)).chain(tree_marks);
     for (name, floor) in floors {
         let seen = counts.get(name).copied().unwrap_or(0);
         assert!(seen >= floor, "{name}: reached {seen} times, expected at least {floor}\n{counts:#?}");
     }
+}
+
+/// The addresses `commit` both deletes and creates.
+fn restarts(commit: &Commit) -> impl Iterator<Item = usize> + '_ {
+    let deleted = commit.controls.iter().filter(|(effect, _)| *effect == ControlEffect::Delete).map(|(_, to)| *to);
+    let deleted = deleted.chain(commit.restart.map(|(to, _, _)| to));
+    deleted.filter(|to| commit.creates.iter().chain(&commit.restart).any(|(created, _, _)| created == to))
 }
 
 /// The parent of every actor of the address pool that exists.

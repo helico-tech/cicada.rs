@@ -11,13 +11,13 @@ use crate::retention::Retention;
 use crate::retry::RetryPolicy;
 use crate::store::support::{self, Notice, Removal, check_limit};
 use crate::store::{
-    ActorRecord, Backend, CancelResult, Claim, Clock, CommitRequest, CommitResult, CreateResult, DeleteResult,
-    DeliverNowResult, EnqueueResult, Message, MessageId, MessageStatus, NodeId, NodeRecord, OutcomeRecord,
-    OutcomeStatus, OutgoingMessage, Page, PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn,
-    SetWatchResult, StateChange, StoreError, StoreResult, StoreStats, SystemClock, TurnOutcome, TypeDef,
+    ActorRecord, Backend, CancelResult, Claim, Clock, CommitRequest, CommitResult, ControlEffect, CreateResult,
+    DeleteResult, DeliverNowResult, EnqueueResult, Message, MessageId, MessageStatus, NodeId, NodeRecord,
+    OutcomeRecord, OutcomeStatus, OutgoingMessage, Page, PageCursor, RegisterResult, RemoveTypeResult, RenewResult,
+    RunningTurn, SetWatchResult, StateChange, StoreError, StoreResult, StoreStats, SystemClock, TurnOutcome, TypeDef,
 };
 use crate::time::{self, DEFAULT_RETENTION, Timestamp};
-use crate::watch::{self, StopCause, Watch, WatchTarget};
+use crate::watch::{self, Watch, WatchTarget};
 use async_trait::async_trait;
 use serde_json::Value;
 use sqlx::sqlite::{SqliteArguments, SqliteConnectOptions, SqliteRow, SqliteSynchronous};
@@ -493,6 +493,59 @@ impl SqliteStore {
         Ok(purged)
     }
 
+    /// Gives `purged` to every pending message of `address` except the one being handled: `own`, the message of the
+    /// committing turn when its commit purges its own instance, or else the message of a valid lease. Purging a message
+    /// whose lease expired also voids that lease, so that the stale turn cannot commit. `None` when it is absent.
+    async fn purge_in(
+        &self,
+        c: &mut SqliteConnection,
+        address: &ActorAddress,
+        own: Option<&MessageId>,
+        now: Timestamp,
+    ) -> StoreResult<Option<u64>> {
+        let Some(row) = fetch_optional(
+            c,
+            sqlx::query("SELECT lease_owner, lease_until, lease_message FROM actors WHERE address = ?")
+                .bind(address.as_str()),
+        )
+        .await?
+        else {
+            return Ok(None);
+        };
+        let valid = col::<Option<String>>(&row, "lease_owner")?.is_some()
+            && col::<Option<i64>>(&row, "lease_until")?.is_some_and(|until| instant(until) > now);
+        let held = match own {
+            Some(id) => Some(id.as_str().to_owned()),
+            None if valid => col::<Option<String>>(&row, "lease_message")?,
+            None => None,
+        };
+        let pending = fetch_all(
+            c,
+            sqlx::query("SELECT * FROM messages WHERE actor_address = ? ORDER BY deliver_at, seq")
+                .bind(address.as_str()),
+            rows::message,
+        )
+        .await?;
+        let mut purged = 0;
+        for message in pending.into_iter().filter(|m| held.as_deref() != Some(m.id.as_str())) {
+            self.finish(c, message, OutcomeStatus::Purged, None, now).await?;
+            purged += 1;
+        }
+        if held.is_none() {
+            // Void an expired lease whose message is gone, so that the stale turn cannot commit.
+            execute(
+                c,
+                sqlx::query(
+                    "UPDATE actors SET lease_owner = NULL, lease_until = NULL, lease_message = NULL WHERE address = ?",
+                )
+                .bind(address.as_str()),
+            )
+            .await?;
+        }
+        Self::refresh_next_due(c, address.as_str()).await?;
+        Ok(Some(purged))
+    }
+
     // ---- mailbox ----
 
     async fn is_id_in_use(&self, c: &mut SqliteConnection, id: &MessageId, now: Timestamp) -> StoreResult<bool> {
@@ -827,8 +880,19 @@ impl SqliteStore {
         commit: CommitRequest,
         now: Timestamp,
     ) -> StoreResult<CommitResult> {
-        let CommitRequest { event, address, epoch, message_id, outcome, state, creates, sends, cancels, watches } =
-            commit;
+        let CommitRequest {
+            event,
+            address,
+            epoch,
+            message_id,
+            outcome,
+            state,
+            creates,
+            sends,
+            cancels,
+            watches,
+            controls,
+        } = commit;
         let Some(claimed) = Self::holds_lease(c, &address, epoch).await? else {
             return Ok(CommitResult::LeaseLost);
         };
@@ -847,7 +911,19 @@ impl SqliteStore {
                 return Ok(CommitResult::Rejected(format!("Create of {}: its type is not registered", create.address)));
             }
         }
-        for create in creates.iter().filter(|c| c.child) {
+        // The trees of the deletes, read before anything is written: deletes come before the creates and the sends.
+        let mut deleted = BTreeSet::new();
+        for target in controls.iter().filter(|c| c.effect == ControlEffect::Delete).map(|c| &c.actor) {
+            if deleted.contains(target) || !Self::actor_exists(c, target.as_str()).await? {
+                continue;
+            }
+            let tree = Self::tree(c, target).await?;
+            if tree.contains(&address) {
+                return Ok(CommitResult::Rejected(support::ancestor_delete_reason(target, &address)));
+            }
+            deleted.extend(tree);
+        }
+        for create in creates.iter().filter(|c| c.child && !deleted.contains(&c.address)) {
             if let Some(parent) = Self::parent_of(c, create.address.as_str()).await?
                 && parent.as_deref() != Some(address.as_str())
             {
@@ -857,7 +933,8 @@ impl SqliteStore {
         let created: HashSet<&ActorAddress> = creates.iter().map(|c| &c.address).collect();
         let mut send_ids = HashSet::new();
         for send in &sends {
-            let exists = created.contains(&send.to) || Self::actor_exists(c, send.to.as_str()).await?;
+            let exists = created.contains(&send.to)
+                || (!deleted.contains(&send.to) && Self::actor_exists(c, send.to.as_str()).await?);
             if !exists {
                 return Ok(CommitResult::Rejected(format!("Send to absent instance {}", send.to)));
             }
@@ -920,15 +997,29 @@ impl SqliteStore {
                 cancelled.push(id.clone());
             }
         }
-        // 3. creates, 4. sends
+        // 3. deletes, 4. creates, 5. purges, 6. pauses and resumes, 7. sends
+        let deleted: Vec<ActorAddress> = deleted.into_iter().collect();
+        self.remove_all(c, &deleted, now).await?;
         for create in &creates {
             Self::create_in(c, &create.address, &create.state, create.child.then_some(&address), now).await?;
+        }
+        for target in support::purges(&controls) {
+            self.purge_in(c, target, (*target == address).then_some(&message_id), now).await?;
+        }
+        for (target, paused) in support::pauses(&controls) {
+            execute(
+                c,
+                sqlx::query("UPDATE actors SET paused = ? WHERE address = ?")
+                    .bind(i64::from(paused))
+                    .bind(target.as_str()),
+            )
+            .await?;
         }
         let mut sent = Vec::with_capacity(sends.len());
         for send in sends {
             sent.push(self.insert(c, send, now, false).await?);
         }
-        // 5. state, 6. release, 7. the notifications of the event
+        // 8. state, 9. release, 10. the notifications of the event
         let stop = matches!(state, StateChange::Stop);
         if let StateChange::NewState(state) = state {
             execute(
@@ -947,10 +1038,11 @@ impl SqliteStore {
                 .ok_or_else(|| StoreError::Corrupt(format!("the lease holder {address} vanished")))?;
         // The tree is read after the creates, so the children of this commit go with it.
         let tree = if stop { Self::tree(c, &address).await? } else { Vec::new() };
-        let removal =
-            Removal { root: &address, cause: StopCause::Stopped, by: Some(&address), caused_by: Some(&message_id) };
+        let removed: Vec<ActorAddress> =
+            deleted.iter().chain(&tree).cloned().collect::<BTreeSet<_>>().into_iter().collect();
+        let removal = Removal::of_commit(&address, &message_id, &controls, stop);
         let failed = failed.as_ref().map(|(m, e)| (m, e.as_str()));
-        let notices = Self::notices(c, failed, stop.then_some((&removal, &tree[..]))).await?;
+        let notices = Self::notices(c, failed, (!removed.is_empty()).then_some((&removal, &removed[..]))).await?;
         if stop {
             self.remove_all(c, &tree, now).await?;
         } else {
@@ -1114,7 +1206,7 @@ impl Backend for SqliteStore {
                 return Ok(DeleteResult::Absent);
             }
             let tree = Self::tree(c, address).await?;
-            let removal = Removal { root: address, cause: StopCause::Deleted, by: None, caused_by: None };
+            let removal = Removal::delete(address);
             let notices = Self::notices(c, None, Some((&removal, &tree[..]))).await?;
             let purged = self.remove_all(c, &tree, now).await?;
             self.notify(c, event, notices, now).await?;
@@ -1592,47 +1684,7 @@ impl Backend for SqliteStore {
     async fn purge(&self, address: &ActorAddress) -> StoreResult<Option<u64>> {
         let mut tx = self.write().await?;
         let now = tx.now;
-        let result = async {
-            let c = tx.conn();
-            let Some(row) = fetch_optional(
-                c,
-                sqlx::query("SELECT lease_owner, lease_until, lease_message FROM actors WHERE address = ?")
-                    .bind(address.as_str()),
-            )
-            .await?
-            else {
-                return Ok(None);
-            };
-            let valid = col::<Option<String>>(&row, "lease_owner")?.is_some()
-                && col::<Option<i64>>(&row, "lease_until")?.is_some_and(|until| instant(until) > now);
-            let held = if valid { col::<Option<String>>(&row, "lease_message")? } else { None };
-            let pending = fetch_all(
-                c,
-                sqlx::query("SELECT * FROM messages WHERE actor_address = ? ORDER BY deliver_at, seq")
-                    .bind(address.as_str()),
-                rows::message,
-            )
-            .await?;
-            let mut purged = 0;
-            for message in pending.into_iter().filter(|m| held.as_deref() != Some(m.id.as_str())) {
-                self.finish(c, message, OutcomeStatus::Purged, None, now).await?;
-                purged += 1;
-            }
-            if !valid {
-                // Void an expired lease whose message is gone, so that the stale turn cannot commit.
-                execute(
-                    c,
-                    sqlx::query(
-                        "UPDATE actors SET lease_owner = NULL, lease_until = NULL, lease_message = NULL WHERE address = ?",
-                    )
-                    .bind(address.as_str()),
-                )
-                .await?;
-            }
-            Self::refresh_next_due(c, address.as_str()).await?;
-            Ok(Some(purged))
-        }
-        .await;
+        let result = self.purge_in(tx.conn(), address, None, now).await;
         tx.end(result).await
     }
 
@@ -1734,6 +1786,7 @@ impl Backend for SqliteStore {
 
     async fn commit(&self, commit: CommitRequest) -> StoreResult<CommitResult> {
         support::check_creates(&commit.creates)?;
+        support::check_controls(&commit.address, &commit.controls)?;
         let mut tx = self.write().await?;
         let now = tx.now;
         let result = self.commit_in(tx.conn(), commit, now).await;

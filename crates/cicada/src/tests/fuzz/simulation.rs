@@ -5,7 +5,8 @@
 //! position of a send (`m3`, `m3.0`, `m3.0.1`), so no random id enters a run and a repeated run gives an equal log.
 //!
 //! One more actor, the watcher, watches every script actor from the start and is never removed: it is told of every
-//! failure and every removal, and the checks count its notifications.
+//! failure and every removal, and the checks count its notifications. A script actor can restart another (ADR 0024),
+//! which ends the other's life in the commit of its turn.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -66,6 +67,12 @@ pub enum Action {
     },
     /// Stops this instance when the turn commits.
     Stop,
+    /// Restarts another instance when the turn commits: deletes it and creates it again with an empty state. Does
+    /// nothing when `to` is this instance, which stops itself instead.
+    Restart {
+        /// The instance.
+        to: usize,
+    },
     /// Waits on virtual time.
     Sleep {
         /// How long.
@@ -271,6 +278,11 @@ impl ScriptActor {
                 }
                 Action::Create { to } => turn.create(&script(to), &ScriptState::default())?,
                 Action::Stop => turn.stop(),
+                Action::Restart { to } if script(to) != *turn.self_ref() => {
+                    turn.delete(&script(to))?;
+                    turn.create(&script(to), &ScriptState::default())?;
+                }
+                Action::Restart { .. } => {}
                 Action::Sleep { ms } => sleep(Duration::from_millis(ms)).await,
                 Action::Fail { times } if message.failures < times => {
                     return Err(HandlerError::msg("scripted failure"));
@@ -556,8 +568,20 @@ fn scripts_in(actions: &[Action]) -> u32 {
     actions.iter().map(|a| if let Action::Send { actions, .. } = a { 1 + scripts_in(actions) } else { 0 }).sum()
 }
 
+/// The restarts in `actions` and in the scripts they send.
+fn restarts_in(actions: &[Action]) -> u32 {
+    actions
+        .iter()
+        .map(|a| match a {
+            Action::Send { actions, .. } => restarts_in(actions),
+            Action::Restart { .. } => 1,
+            _ => 0,
+        })
+        .sum()
+}
+
 /// How long a drain may take: every script of the scenario, one after the other, at their slowest, and a notification
-/// of each, and of each delete.
+/// of each, of each delete and of each restart.
 pub fn drain_bound(scenario: &Scenario) -> Duration {
     let scripts: u32 = scenario
         .steps
@@ -565,11 +589,13 @@ pub fn drain_bound(scenario: &Scenario) -> Duration {
         .map(|s| if let Step::Send { actions, .. } = s { 1 + scripts_in(actions) } else { 0 })
         .sum();
     let deletes = scenario.steps.iter().filter(|s| matches!(s, Step::Delete { .. })).count() as u32;
+    let restarts: u32 =
+        scenario.steps.iter().map(|s| if let Step::Send { actions, .. } = s { restarts_in(actions) } else { 0 }).sum();
     let slowest_run = MAX_TURN + 2 * LEASE_TTL + BACKOFF + MAX_FAULT_DELAY;
     let slowest_notification = 2 * LEASE_TTL + MAX_FAULT_DELAY;
     slowest_run * (scripts + 1) * (MAX_ATTEMPTS + 2)
         + MAX_SEND_DELAY * (scripts + 1)
-        + slowest_notification * (scripts + deletes + 1) * (MAX_ATTEMPTS + 2)
+        + slowest_notification * (scripts + deletes + restarts + 1) * (MAX_ATTEMPTS + 2)
 }
 
 /// Runs `scenario` on the current runtime, which must be on paused time, and returns its history.
@@ -603,6 +629,7 @@ fn action() -> BoxedStrategy<Action> {
         1 => (0u32..3).prop_map(|times| Action::Panic { times }),
         1 => (0usize..KEYS.len()).prop_map(|to| Action::Create { to }),
         1 => Just(Action::Stop),
+        1 => (0usize..KEYS.len()).prop_map(|to| Action::Restart { to }),
     ];
     leaf.prop_recursive(2, 12, 3, |inner| {
         (0usize..KEYS.len(), delay_ms(), retry(), proptest::collection::vec(inner, 0..3))

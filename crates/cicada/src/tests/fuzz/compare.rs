@@ -16,6 +16,9 @@
 //!   handed just before the claim's, `1` the one just after, and where there is none, a number never handed to that
 //!   address. It reaches the same claim of the same instance in both backends, or no claim in both.
 //!
+//! Commits carry control effects on the addresses of the pool, and some restart one (a delete and a create of one
+//! address), so that deletes meet creates, sends, watches and trees.
+//!
 //! The notifications of watches are not special: each backend writes them on its own, named after an event id that
 //! the list gives (`e1`, `e2`, …), and they are compared with the mailboxes and outcomes they land in.
 
@@ -29,10 +32,10 @@ use crate::retention::{Keep, Retention};
 use crate::retry::{Backoff, RetryPolicy};
 use crate::store::sqlite::{SqliteOptions, SqliteStore};
 use crate::store::{
-    ActorCreate, ActorRecord, Backend, CancelResult, Claim, CommitRequest, CommitResult, CreateResult, DeleteResult,
-    DeliverNowResult, Delivery, EnqueueResult, Message, MessageId, MessageStatus, NodeId, OutcomeRecord, OutcomeStatus,
-    OutgoingMessage, PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn, SetWatchResult,
-    StateChange, StoreError, StoreResult, TurnOutcome, TypeDef,
+    ActorCreate, ActorRecord, Backend, CancelResult, Claim, CommitRequest, CommitResult, Control, ControlEffect,
+    CreateResult, DeleteResult, DeliverNowResult, Delivery, EnqueueResult, Message, MessageId, MessageStatus, NodeId,
+    OutcomeRecord, OutcomeStatus, OutgoingMessage, PageCursor, RegisterResult, RemoveTypeResult, RenewResult,
+    RunningTurn, SetWatchResult, StateChange, StoreError, StoreResult, TurnOutcome, TypeDef,
 };
 use crate::testing::{InMemoryStore, VirtualClock};
 use crate::time::{self, Timestamp};
@@ -158,6 +161,10 @@ pub struct Commit {
     pub cancels: Vec<usize>,
     /// Watches of the committing instance to set (`true`) or remove, as `(target, set)`; the target into [`TARGETS`].
     pub watches: Vec<(usize, bool)>,
+    /// Control effects, as `(effect, address)`; the address into [`ADDRESSES`].
+    pub controls: Vec<(ControlEffect, usize)>,
+    /// A restart, as `(address, state, child)`: a delete of the address and a create of it, as a supervisor writes it.
+    pub restart: Option<(usize, usize, bool)>,
 }
 
 /// One operation of a list. Indexes pick from the small pools above, so a shrunk list stays valid.
@@ -464,6 +471,17 @@ fn create() -> impl Strategy<Value = (usize, usize, bool)> {
     (address(), states(), any::<bool>())
 }
 
+/// A control effect of a commit, as `(effect, address)`; deletes as often as the other three together.
+fn control() -> impl Strategy<Value = (ControlEffect, usize)> {
+    let effect = prop_oneof![
+        1 => Just(ControlEffect::Pause),
+        1 => Just(ControlEffect::Resume),
+        1 => Just(ControlEffect::Purge),
+        3 => Just(ControlEffect::Delete),
+    ];
+    (effect, address())
+}
+
 fn epoch_delta() -> impl Strategy<Value = i64> {
     prop_oneof![8 => Just(0i64), 1 => Just(-1i64), 1 => Just(1i64)]
 }
@@ -490,18 +508,25 @@ fn commit() -> BoxedStrategy<Commit> {
         prop::collection::vec(send(), 0..3),
         prop::collection::vec(recent(), 0..2),
         prop::collection::vec((target(), any::<bool>()), 0..2),
+        (prop::collection::vec(control(), 0..3), prop::option::weighted(0.2, create())),
     )
-        .prop_map(|(claim, epoch_delta, wrong_message, end, state, creates, sends, cancels, watches)| Commit {
-            claim,
-            epoch_delta,
-            wrong_message,
-            end,
-            state,
-            creates,
-            sends,
-            cancels,
-            watches,
-        })
+        .prop_map(
+            |(claim, epoch_delta, wrong_message, end, state, creates, sends, cancels, watches, (controls, restart))| {
+                Commit {
+                    claim,
+                    epoch_delta,
+                    wrong_message,
+                    end,
+                    state,
+                    creates,
+                    sends,
+                    cancels,
+                    watches,
+                    controls,
+                    restart,
+                }
+            },
+        )
         .boxed()
 }
 
@@ -1183,6 +1208,12 @@ impl Side {
         };
         let sends: Vec<_> = commit.sends.iter().map(|send| self.outgoing(send, now)).collect();
         let cancels: Vec<_> = commit.cancels.iter().map(|back| self.recent_id(*back)).collect();
+        let restart = commit.restart.iter();
+        let mut controls: Vec<Control> = restart
+            .clone()
+            .map(|(to, _, _)| Control { effect: ControlEffect::Delete, actor: address_at(*to) })
+            .collect();
+        controls.extend(commit.controls.iter().map(|(effect, to)| Control { effect: *effect, actor: address_at(*to) }));
         let request = CommitRequest {
             event: self.event(),
             address: address.clone(),
@@ -1197,6 +1228,7 @@ impl Side {
             creates: commit
                 .creates
                 .iter()
+                .chain(restart)
                 .map(|(to, state, child)| ActorCreate {
                     address: address_at(*to),
                     state: STATES[*state](),
@@ -1210,6 +1242,7 @@ impl Side {
                 .iter()
                 .map(|(target, set)| WatchChange { target: target_at(*target), set: *set })
                 .collect(),
+            controls,
         };
         match self.store.commit(request).await {
             Ok(CommitResult::Committed { version, sent, cancelled }) => {
@@ -1357,6 +1390,8 @@ impl Pair {
                     sends: Vec::new(),
                     cancels: Vec::new(),
                     watches: Vec::new(),
+                    controls: Vec::new(),
+                    restart: None,
                 }),
             ]
         };

@@ -549,6 +549,47 @@ pub struct ActorCreate {
     pub child: bool,
 }
 
+/// What a control effect does to its target (ADR 0024): what the same call from outside a turn does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ControlEffect {
+    /// No new turn is claimed for the target; its messages queue up, and a running turn finishes.
+    Pause,
+    /// Turns of the target are claimed again.
+    Resume,
+    /// Every pending message of the target ends `purged`, except one that is being handled; the target stays.
+    Purge,
+    /// The target, its mailbox and its descendants go; a turn running on one of them commits nothing.
+    Delete,
+}
+
+impl ControlEffect {
+    /// The lower-case name, as the node's log writes it.
+    pub fn name(self) -> &'static str {
+        match self {
+            ControlEffect::Pause => "pause",
+            ControlEffect::Resume => "resume",
+            ControlEffect::Purge => "purge",
+            ControlEffect::Delete => "delete",
+        }
+    }
+}
+
+impl fmt::Display for ControlEffect {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// A control effect of a turn on an actor, buffered by the turn and applied by its commit (ADR 0024). The actor need
+/// not exist: then the effect does nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Control {
+    /// What happens to the actor.
+    pub effect: ControlEffect,
+    /// The actor.
+    pub actor: ActorAddress,
+}
+
 /// What a commit does to the committing instance's state.
 #[derive(Debug, Clone, PartialEq)]
 pub enum StateChange {
@@ -576,7 +617,7 @@ pub struct CommitRequest {
     pub outcome: TurnOutcome,
     /// What happens to the state.
     pub state: StateChange,
-    /// Instances to create, before the sends.
+    /// Instances to create, after the deletes and before the sends.
     pub creates: Vec<ActorCreate>,
     /// Messages to enqueue, in order.
     pub sends: Vec<OutgoingMessage>,
@@ -585,6 +626,9 @@ pub struct CommitRequest {
     /// The watches the turn set and removed, with the committing instance as watcher, in the order of its calls;
     /// applied before the creates and the sends.
     pub watches: Vec<WatchChange>,
+    /// The control effects of the turn: pauses, resumes, purges and deletes of other actors, and pauses, resumes and
+    /// purges of its own. Applied by kind, in the order of [`super::Backend::commit`], not in the order of the calls.
+    pub controls: Vec<Control>,
 }
 
 impl CommitRequest {
@@ -601,7 +645,13 @@ impl CommitRequest {
             sends: Vec::new(),
             cancels: Vec::new(),
             watches: Vec::new(),
+            controls: Vec::new(),
         }
+    }
+
+    /// The addresses this commit deletes.
+    pub fn deletes(&self) -> impl Iterator<Item = &ActorAddress> {
+        self.controls.iter().filter(|c| c.effect == ControlEffect::Delete).map(|c| &c.actor)
     }
 }
 

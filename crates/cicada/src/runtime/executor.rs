@@ -53,7 +53,7 @@ use crate::address::TypeName;
 use crate::message;
 use crate::plugin::{Attributes, ClaimContext, HandlerErrorContext, HookResult, OutcomeContext, Plugin, TurnInfo};
 use crate::store::{
-    ActorCreate, Backend, Claim, CommitRequest, CommitResult, Delivery, Message, MessageId, OutgoingMessage,
+    ActorCreate, Backend, Claim, CommitRequest, CommitResult, Control, Delivery, Message, MessageId, OutgoingMessage,
     RenewResult, StateChange, Store, StoreError, TurnOutcome,
 };
 use crate::turn::HandlerFailure;
@@ -95,6 +95,7 @@ struct Decision {
     sends: Vec<OutgoingMessage>,
     cancels: Vec<MessageId>,
     watches: Vec<WatchChange>,
+    controls: Vec<Control>,
     /// The handler's failure reason when the turn failed: the fallback if the retry's reschedule is refused.
     handler_failure: Option<String>,
 }
@@ -112,6 +113,7 @@ impl Decision {
             sends: Vec::new(),
             cancels: Vec::new(),
             watches: Vec::new(),
+            controls: Vec::new(),
             handler_failure: None,
         }
     }
@@ -527,6 +529,7 @@ impl TurnExecutor {
             sends: effects.sends,
             cancels: effects.cancels,
             watches: effects.watches,
+            controls: effects.controls,
             handler_failure: None,
         }
     }
@@ -602,6 +605,7 @@ impl TurnExecutor {
             sends: decision.sends,
             cancels: decision.cancels,
             watches: decision.watches,
+            controls: decision.controls,
         };
         let failure = match self.commit_with_retry(claim, guard, request).await {
             CommitEnd::Abandoned => return,

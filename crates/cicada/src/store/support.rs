@@ -1,5 +1,5 @@
-//! Rules shared by store implementations: the type registry, the creates of a commit, claim arguments, envelope JSON,
-//! retention of outcomes, the notifications of a watch, cursors and pages.
+//! Rules shared by store implementations: the type registry, the creates and the control effects of a commit, claim
+//! arguments, envelope JSON, retention of outcomes, the notifications of a watch, cursors and pages.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::Duration;
@@ -9,7 +9,8 @@ use serde_json::Value;
 use serde_json::{Map, json};
 
 use super::model::{
-    ActorCreate, Delivery, Message, MessageId, OutcomeStatus, OutgoingMessage, Page, PageCursor, TypeDef,
+    ActorCreate, Control, ControlEffect, Delivery, Message, MessageId, OutcomeStatus, OutgoingMessage, Page,
+    PageCursor, TypeDef,
 };
 use super::results::RegisterResult;
 use super::{StoreError, StoreResult};
@@ -58,6 +59,51 @@ pub fn check_creates(creates: &[ActorCreate]) -> StoreResult<()> {
 /// another parent or none.
 pub fn foreign_child_reason(address: &ActorAddress, parent: &ActorAddress) -> String {
     format!("Child create of {address}: it exists and is not a child of {parent}")
+}
+
+// ---- control effects ----
+
+/// Checks the control effects of a commit of `address` (ADR 0024): [`StoreError::Invalid`] when it deletes `address`
+/// itself, or both pauses and resumes one instance, which a turn never asks for. A commit runs it first, before it
+/// reads the store, so the answer does not depend on the lease.
+pub fn check_controls(address: &ActorAddress, controls: &[Control]) -> StoreResult<()> {
+    if controls.iter().any(|c| c.effect == ControlEffect::Delete && c.actor == *address) {
+        return Err(StoreError::Invalid(format!("A commit of {address} cannot delete it; a turn stops its own actor")));
+    }
+    let mut paused = HashMap::new();
+    for control in controls {
+        let set = match control.effect {
+            ControlEffect::Pause => true,
+            ControlEffect::Resume => false,
+            ControlEffect::Purge | ControlEffect::Delete => continue,
+        };
+        if *paused.entry(&control.actor).or_insert(set) != set {
+            return Err(StoreError::Invalid(format!("A commit both pauses and resumes {}", control.actor)));
+        }
+    }
+    Ok(())
+}
+
+/// The reason a commit of `address` is rejected: it deletes `ancestor`, which would remove the commit's own actor.
+pub fn ancestor_delete_reason(ancestor: &ActorAddress, address: &ActorAddress) -> String {
+    format!("Delete of {ancestor}: it is an ancestor of {address}")
+}
+
+/// The pause flag that `controls` set on each instance they pause or resume, which [`check_controls`] keeps to one.
+pub fn pauses(controls: &[Control]) -> BTreeMap<&ActorAddress, bool> {
+    controls
+        .iter()
+        .filter_map(|c| match c.effect {
+            ControlEffect::Pause => Some((&c.actor, true)),
+            ControlEffect::Resume => Some((&c.actor, false)),
+            ControlEffect::Purge | ControlEffect::Delete => None,
+        })
+        .collect()
+}
+
+/// The instances that `controls` purge, each once, in address order.
+pub fn purges(controls: &[Control]) -> BTreeSet<&ActorAddress> {
+    controls.iter().filter(|c| c.effect == ControlEffect::Purge).map(|c| &c.actor).collect()
 }
 
 // ---- nodes ----
@@ -247,24 +293,36 @@ impl Notice {
     }
 }
 
-/// The removal of the tree of `root` as the event of a stop or a delete: what the `Stopped` of each removed actor says.
-#[derive(Debug, Clone, Copy)]
+/// The removals of one event, a stop, a delete or both: what the `Stopped` of each removed actor says.
+#[derive(Debug, Clone)]
 pub struct Removal<'a> {
-    /// The removed actor whose descendants went with it.
-    pub root: &'a ActorAddress,
-    /// The cause for the root: [`StopCause::Stopped`] or [`StopCause::Deleted`]; a descendant's is
-    /// [`StopCause::Parent`].
-    pub cause: StopCause,
-    /// The actor whose turn removed the tree; `None` for a delete from outside a turn.
+    /// The actors whose removal was asked for, with the cause each reads (ADR 0024): [`StopCause::Deleted`] for the
+    /// actor of a delete from outside a turn and for the actors a turn deletes, [`StopCause::Stopped`] for the actor
+    /// of a turn that stops. Every other removed actor went with an ancestor and reads [`StopCause::Parent`].
+    pub roots: Vec<(&'a ActorAddress, StopCause)>,
+    /// The actor whose turn removed them; `None` for a delete from outside a turn.
     pub by: Option<&'a ActorAddress>,
     /// The message of that turn; `None` for a delete from outside a turn.
     pub caused_by: Option<&'a MessageId>,
 }
 
-impl Removal<'_> {
+impl<'a> Removal<'a> {
+    /// The delete of `root` from outside a turn.
+    pub fn delete(root: &'a ActorAddress) -> Self {
+        Self { roots: vec![(root, StopCause::Deleted)], by: None, caused_by: None }
+    }
+
+    /// The removals of a commit of `address` for `message`: the actors of its deletes, and `address` when it stops.
+    pub fn of_commit(address: &'a ActorAddress, message: &'a MessageId, controls: &'a [Control], stops: bool) -> Self {
+        let deletes =
+            controls.iter().filter(|c| c.effect == ControlEffect::Delete).map(|c| (&c.actor, StopCause::Deleted));
+        let stop = stops.then_some((address, StopCause::Stopped));
+        Self { roots: deletes.chain(stop).collect(), by: Some(address), caused_by: Some(message) }
+    }
+
     /// The `Stopped` of `actor`, one of the removed actors, for `watcher`.
     pub fn notice(&self, actor: &ActorAddress, watcher: &ActorAddress) -> Notice {
-        let cause = if actor == self.root { self.cause } else { StopCause::Parent };
+        let cause = self.roots.iter().find(|(root, _)| *root == actor).map_or(StopCause::Parent, |(_, cause)| *cause);
         Notice::stopped(actor, cause, self.by, self.caused_by, watcher)
     }
 }
@@ -463,7 +521,8 @@ mod tests {
     fn the_notifications_of_an_event_are_numbered_in_the_order_of_the_actor_and_then_the_watcher() {
         let a = |text: &str| ActorAddress::parse(text).unwrap();
         let failed = Message { to: a("x/2"), retention: Some(Retention::REMOVE_ON_FAILED), ..message() };
-        let removal = Removal { root: &a("x/2"), cause: StopCause::Deleted, by: None, caused_by: None };
+        let root = a("x/2");
+        let removal = Removal::delete(&root);
         let notices = vec![
             removal.notice(&a("x/2"), &a("w/b")),
             Notice::failed(&failed, "boom", &a("w/b")),
@@ -540,6 +599,52 @@ mod tests {
         assert!(check_creates(&[create("x", true), create("x", true), create("y", false)]).is_ok());
         let error = check_creates(&[create("y", false), create("x", false), create("x", true)]).unwrap_err();
         assert!(matches!(&error, StoreError::Invalid(m) if m.contains("a/x")), "{error:?}");
+    }
+
+    #[test]
+    fn a_commit_may_not_delete_its_own_actor_nor_pause_and_resume_one() {
+        let a = |text: &str| ActorAddress::parse(text).unwrap();
+        let control = |effect, text: &str| Control { effect, actor: a(text) };
+        let me = a("a/me");
+        let fine = [
+            control(ControlEffect::Pause, "a/me"),
+            control(ControlEffect::Purge, "a/me"),
+            control(ControlEffect::Delete, "a/x"),
+            control(ControlEffect::Delete, "a/x"),
+            control(ControlEffect::Pause, "a/y"),
+            control(ControlEffect::Pause, "a/y"),
+            control(ControlEffect::Resume, "a/z"),
+        ];
+        assert!(check_controls(&me, &fine).is_ok());
+        let itself = check_controls(&me, &[control(ControlEffect::Delete, "a/me")]).unwrap_err();
+        assert!(matches!(&itself, StoreError::Invalid(m) if m.contains("a/me")), "{itself:?}");
+        let both = [
+            control(ControlEffect::Resume, "a/y"),
+            control(ControlEffect::Purge, "a/y"),
+            control(ControlEffect::Pause, "a/y"),
+        ];
+        let both = check_controls(&me, &both).unwrap_err();
+        assert!(matches!(&both, StoreError::Invalid(m) if m.contains("a/y")), "{both:?}");
+        assert_eq!(pauses(&fine), BTreeMap::from([(&me, true), (&a("a/y"), true), (&a("a/z"), false)]));
+        assert_eq!(purges(&fine), BTreeSet::from([&me]));
+    }
+
+    #[test]
+    fn the_cause_of_a_removal_depends_on_what_the_commit_names_and_not_on_the_order() {
+        let a = |text: &str| ActorAddress::parse(text).unwrap();
+        let (me, kid, other, message) = (a("p/me"), a("p/kid"), a("p/other"), MessageId::new("m1").unwrap());
+        let controls = [Control { effect: ControlEffect::Delete, actor: kid.clone() }];
+        let removal = Removal::of_commit(&me, &message, &controls, true);
+        let cause = |actor: &ActorAddress| {
+            serde_json::from_value::<Stopped>(removal.notice(actor, &a("w/a")).payload).unwrap().cause
+        };
+        assert_eq!(
+            (cause(&kid), cause(&me), cause(&other)),
+            (StopCause::Deleted, StopCause::Stopped, StopCause::Parent)
+        );
+        let notice = removal.notice(&kid, &a("w/a"));
+        assert_eq!(notice.caused_by.as_ref(), Some(&message));
+        assert_eq!(notice.payload["by"], "p/me");
     }
 
     #[test]

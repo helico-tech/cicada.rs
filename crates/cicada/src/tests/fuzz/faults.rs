@@ -19,7 +19,7 @@ use std::time::Duration;
 use crate::address::{ActorAddress, TypeName};
 use crate::retry::RetryPolicy;
 use crate::store::{
-    ActorRecord, Backend, CancelResult, Claim, CommitRequest, CommitResult, CreateResult, DeleteResult,
+    ActorRecord, Backend, CancelResult, Claim, CommitRequest, CommitResult, ControlEffect, CreateResult, DeleteResult,
     DeliverNowResult, EnqueueResult, Message, MessageId, MessageStatus, NodeId, NodeRecord, OutcomeRecord,
     OutcomeStatus, OutgoingMessage, Page, PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn,
     SetWatchResult, StateChange, StoreError, StoreResult, StoreStats, TurnOutcome, TypeDef,
@@ -440,6 +440,29 @@ impl FaultStore {
         ids
     }
 
+    /// `root` and every descendant, when `root` exists; nothing otherwise.
+    async fn tree_of(&self, root: &ActorAddress) -> BTreeSet<ActorAddress> {
+        let mut tree = BTreeSet::new();
+        if !matches!(self.inner.get(root).await, Ok(Some(_))) {
+            return tree;
+        }
+        let mut level = vec![root.clone()];
+        while let Some(parent) = level.pop() {
+            if !tree.insert(parent.clone()) {
+                continue;
+            }
+            let mut cursor = None;
+            while let Ok(page) = self.inner.children(&parent, cursor.as_ref(), Page::<Message>::DEFAULT_SIZE).await {
+                level.extend(page.items);
+                cursor = page.next;
+                if cursor.is_none() {
+                    break;
+                }
+            }
+        }
+        tree
+    }
+
     /// Logs every id of `before` that is no longer pending at `address`.
     async fn log_ended(&self, address: &ActorAddress, before: BTreeSet<String>) {
         let after = self.pending_ids(address).await;
@@ -505,6 +528,17 @@ impl FaultStore {
         let ending = Ending::from(&commit.outcome);
         let stops = matches!(commit.state, StateChange::Stop);
         let mut before = self.pending_ids(&address).await;
+        // The actors the commit's deletes would remove, and the mailboxes its deletes and purges would empty.
+        let mut deleted = BTreeSet::new();
+        for target in commit.deletes() {
+            deleted.extend(self.tree_of(target).await);
+        }
+        let purged = commit.controls.iter().filter(|c| c.effect == ControlEffect::Purge).map(|c| c.actor.clone());
+        let mut others = BTreeMap::new();
+        for other in deleted.iter().cloned().chain(purged).filter(|a| *a != address) {
+            let ids = self.pending_ids(&other).await;
+            others.insert(other, ids);
+        }
         let answer = self.inner.commit(commit).await?;
         let refused = |answer: String| Event::CommitRefused {
             node: self.node.clone(),
@@ -529,6 +563,12 @@ impl FaultStore {
                     }
                 }
                 self.log_ended(&address, before).await;
+                for (other, ids) in others {
+                    self.log_ended(&other, ids).await;
+                }
+                for removed in &deleted {
+                    self.log.push(Event::Removed { address: removed.to_string() });
+                }
                 if stops {
                     self.log.push(Event::Removed { address: address.to_string() });
                 }

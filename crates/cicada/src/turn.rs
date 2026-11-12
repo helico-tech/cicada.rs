@@ -17,7 +17,7 @@ use crate::retry::RetryPolicy;
 use crate::runtime::effects::EffectBuffer;
 use crate::runtime::limits;
 use crate::runtime::resolver::TypeResolver;
-use crate::store::{ActorCreate, Delivery, Message, MessageId, OutgoingMessage, StoreError};
+use crate::store::{ActorCreate, Control, ControlEffect, Delivery, Message, MessageId, OutgoingMessage, StoreError};
 use crate::time::{self, Timestamp};
 use crate::watch::{IntoWatchTarget, WatchChange};
 
@@ -139,11 +139,12 @@ impl fmt::Display for HandlerFailure {
     }
 }
 
-/// A send, create, cancel or watch of a handler (or hook) that was refused when called.
+/// A send, create, cancel, watch or control effect of a handler (or hook) that was refused when called.
 #[derive(Debug, thiserror::Error)]
 pub enum TurnError {
     /// A field is out of bounds, contains a NUL character, the value cannot be encoded, or an initial state is `null`;
-    /// or a watch whose target is no target, or of an actor whose type may not watch.
+    /// or a watch whose target is no target, or of an actor whose type may not watch; or a delete of the turn's own
+    /// actor, or of an actor the turn creates already.
     #[error("{0}")]
     Invalid(String),
     /// A send to a raw address was refused: no registered type matches it, or that type does not accept the message
@@ -490,6 +491,102 @@ impl<A: Actor> Turn<A> {
         self.effects.stop = true;
     }
 
+    /// Pauses `actor` at commit, as [`ActorSystem::pause_mailbox`](crate::ActorSystem::pause_mailbox) does from outside
+    /// (ADR 0024): its messages queue up, no new turn of it is claimed until it is resumed, and a turn running on it
+    /// finishes. Any actor, this one included; one that is not there at commit is left alone, and the commit does not
+    /// fail for it.
+    ///
+    /// Control effects are buffered and applied by the commit together with the turn's other effects, or not at all,
+    /// by kind and not in the order of the calls: watches, deletes, creates, purges, pauses and resumes, then sends. So a
+    /// turn can create an actor, pause it and send it a message that waits. After a pause and a resume of one actor the
+    /// last call stands. Fails with [`TurnError::Invalid`] for a ref that has no address.
+    pub fn pause<R: ActorRef>(&mut self, actor: &R) -> Result<(), TurnError> {
+        self.control(ControlEffect::Pause, &address_of(actor)?)
+    }
+
+    /// [`Self::pause`] of the actor at `actor`, such as the actor of a [`Stopped`](crate::Stopped).
+    pub fn pause_at(&mut self, actor: &ActorAddress) -> Result<(), TurnError> {
+        self.control(ControlEffect::Pause, actor)
+    }
+
+    /// Resumes `actor` at commit, as [`ActorSystem::resume_mailbox`](crate::ActorSystem::resume_mailbox) does: its turns
+    /// are claimed again. Applied as [`Self::pause`] is; after a pause and a resume of one actor the last call stands.
+    pub fn resume<R: ActorRef>(&mut self, actor: &R) -> Result<(), TurnError> {
+        self.control(ControlEffect::Resume, &address_of(actor)?)
+    }
+
+    /// [`Self::resume`] of the actor at `actor`.
+    pub fn resume_at(&mut self, actor: &ActorAddress) -> Result<(), TurnError> {
+        self.control(ControlEffect::Resume, actor)
+    }
+
+    /// Purges the mailbox of `actor` at commit, as [`ActorSystem::purge_mailbox`](crate::ActorSystem::purge_mailbox)
+    /// does: every pending message ends `purged`, except one that is being handled, and the actor stays with its state.
+    /// Purges come before sends, so a turn can empty a mailbox and put a first message into it. Of this actor, the
+    /// message of this turn is the one being handled. Applied as [`Self::pause`] is.
+    pub fn purge<R: ActorRef>(&mut self, actor: &R) -> Result<(), TurnError> {
+        self.control(ControlEffect::Purge, &address_of(actor)?)
+    }
+
+    /// [`Self::purge`] of the actor at `actor`.
+    pub fn purge_at(&mut self, actor: &ActorAddress) -> Result<(), TurnError> {
+        self.control(ControlEffect::Purge, actor)
+    }
+
+    /// Deletes `actor` at commit, as [`ActorSystem::delete_actor`](crate::ActorSystem::delete_actor) does (ADR 0024):
+    /// the actor, its mailbox and its descendants go, every pending message ends `purged`, and a turn running on one of
+    /// them commits nothing and its message ends `purged`, while what its handler did outside the store stays done.
+    /// The watchers of each removed actor get a [`Stopped`](crate::Stopped) with `by` this actor: the cause is
+    /// `deleted` for an actor this turn deletes, `parent` for a descendant. Any actor, also one this one did not
+    /// create; one that is not there at commit is left alone, and the commit does not fail for it.
+    ///
+    /// Deletes come before creates, so a delete and then a create of one actor restart it: the new actor is another
+    /// life, with the new state, an empty mailbox and no watches of its own, and a handler of the old life may still
+    /// run for a moment, committing nothing. A parent restarts its child with [`Self::create_child`]; restarted with
+    /// [`Self::create`] by another actor, the child loses its descendants and has no parent. A send to an actor that
+    /// is deleted and not created again rejects the commit, as for any absent actor.
+    ///
+    /// Fails with [`TurnError::Invalid`], and buffers nothing, for a ref that has no address, for this actor (a turn
+    /// stops itself with [`Self::stop`]) and after a create of the same actor in this turn (a restart is a delete,
+    /// then a create). A delete of an ancestor of this actor rejects the commit, and the turn's message ends `failed`.
+    pub fn delete<R: ActorRef>(&mut self, actor: &R) -> Result<(), TurnError> {
+        self.control(ControlEffect::Delete, &address_of(actor)?)
+    }
+
+    /// [`Self::delete`] of the actor at `actor`, such as the actor of a [`Stopped`](crate::Stopped).
+    pub fn delete_at(&mut self, actor: &ActorAddress) -> Result<(), TurnError> {
+        self.control(ControlEffect::Delete, actor)
+    }
+
+    /// Buffers a control effect: each effect once per actor, and of a pause and a resume of one actor the last.
+    fn control(&mut self, effect: ControlEffect, actor: &ActorAddress) -> Result<(), TurnError> {
+        if effect == ControlEffect::Delete {
+            if actor == &self.info.self_address {
+                return Err(TurnError::Invalid(format!(
+                    "A turn cannot delete its own actor {actor}; it stops itself with turn.stop()"
+                )));
+            }
+            if self.effects.creates.iter().any(|c| c.address == *actor) {
+                return Err(TurnError::Invalid(format!(
+                    "{actor} is created in this turn already, and deletes are applied before creates; a restart is a \
+                     delete, then a create"
+                )));
+            }
+        }
+        let controls = &mut self.effects.controls;
+        match effect {
+            ControlEffect::Pause | ControlEffect::Resume => controls
+                .retain(|c| c.actor != *actor || !matches!(c.effect, ControlEffect::Pause | ControlEffect::Resume)),
+            ControlEffect::Purge | ControlEffect::Delete => {
+                if controls.iter().any(|c| c.effect == effect && c.actor == *actor) {
+                    return Ok(());
+                }
+            }
+        }
+        controls.push(Control { effect, actor: actor.clone() });
+        Ok(())
+    }
+
     /// A permanent failure with `reason`, for `return Err(turn.fail("declined"))`: the message ends `failed` now,
     /// without retry whatever its retry policy.
     pub fn fail(&self, reason: impl fmt::Display + fmt::Debug + Send + Sync + 'static) -> HandlerError {
@@ -540,6 +637,11 @@ impl<A: Actor> Turn<A> {
             retention: options.retention,
         });
     }
+}
+
+/// The address of `actor`; [`TurnError::Invalid`] for a ref that has none.
+fn address_of<R: ActorRef>(actor: &R) -> Result<ActorAddress, TurnError> {
+    actor.address().map_err(|e| TurnError::Invalid(e.to_string()))
 }
 
 /// Checks the envelope of a send when it is called; returns the message's id (the given one, or a fresh one).

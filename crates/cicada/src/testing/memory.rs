@@ -14,7 +14,7 @@ use crate::store::{
     SetWatchResult, StateChange, StoreError, StoreResult, StoreStats, SystemClock, TurnOutcome, TypeDef,
 };
 use crate::time::{self, DEFAULT_RETENTION, Timestamp};
-use crate::watch::{self, StopCause, Watch, WatchTarget};
+use crate::watch::{self, Watch, WatchTarget};
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -338,6 +338,36 @@ impl InMemoryStore {
         ids.len()
     }
 
+    /// Gives `purged` to every pending message of `address` except the one being handled: `own`, the message of the
+    /// committing turn when its commit purges its own instance, or else the message of a valid lease. Purging a message
+    /// whose lease expired also voids that lease, so the stale turn cannot commit. `None` when the instance is absent.
+    fn purge_locked(
+        &self,
+        s: &mut State,
+        address: &ActorAddress,
+        own: Option<&MessageId>,
+        now: Timestamp,
+    ) -> Option<u64> {
+        let row = s.actors.get_mut(address.as_str())?;
+        let held = match own {
+            Some(id) => Some(id.clone()),
+            None if row.has_valid_lease(now) => row.lease_message.clone(),
+            None => None,
+        };
+        if held.is_none() {
+            row.clear_lease();
+        }
+        let purged: Vec<_> = row.mailbox.iter().filter(|e| held.as_ref() != Some(&e.2)).cloned().collect();
+        for entry in &purged {
+            row.mailbox.remove(entry);
+        }
+        for (_, _, id) in &purged {
+            let message = s.messages.get(id).cloned().expect("mailbox entry has a message");
+            self.finish(s, message, OutcomeStatus::Purged, None, now);
+        }
+        Some(purged.len() as u64)
+    }
+
     fn status_locked(&self, s: &State, id: &MessageId, now: Timestamp) -> Option<MessageStatus> {
         if let Some(message) = s.messages.get(id) {
             let row = s.actors.get(message.to.as_str())?;
@@ -480,8 +510,7 @@ impl Backend for InMemoryStore {
                 return Ok(DeleteResult::Absent);
             }
             let tree = Self::tree(s, address);
-            let removal = Removal { root: address, cause: StopCause::Deleted, by: None, caused_by: None };
-            let notices = Self::notices(s, None, Some((&removal, &tree)));
+            let notices = Self::notices(s, None, Some((&Removal::delete(address), &tree)));
             let purged = self.remove_all(s, &tree, now);
             self.notify(s, event, notices, now)?;
             Ok(DeleteResult::Deleted { purged })
@@ -746,24 +775,7 @@ impl Backend for InMemoryStore {
     }
 
     async fn purge(&self, address: &ActorAddress) -> StoreResult<Option<u64>> {
-        self.locked(|s, now| {
-            let Some(row) = s.actors.get_mut(address.as_str()) else {
-                return Ok(None);
-            };
-            let held = if row.has_valid_lease(now) { row.lease_message.clone() } else { None };
-            if held.is_none() {
-                row.clear_lease(); // void an expired lease so the stale turn cannot commit
-            }
-            let purged: Vec<_> = row.mailbox.iter().filter(|e| held.as_ref() != Some(&e.2)).cloned().collect();
-            for entry in &purged {
-                row.mailbox.remove(entry);
-            }
-            for (_, _, id) in &purged {
-                let message = s.messages.get(id).cloned().expect("mailbox entry has a message");
-                self.finish(s, message, OutcomeStatus::Purged, None, now);
-            }
-            Ok(Some(purged.len() as u64))
-        })
+        self.locked(|s, now| Ok(self.purge_locked(s, address, None, now)))
     }
 
     async fn status(&self, id: &MessageId) -> StoreResult<Option<MessageStatus>> {
@@ -874,6 +886,7 @@ impl Backend for InMemoryStore {
 
     async fn commit(&self, commit: CommitRequest) -> StoreResult<CommitResult> {
         support::check_creates(&commit.creates)?;
+        support::check_controls(&commit.address, &commit.controls)?;
         self.locked(|s, now| {
             let Some(row) = held_lease(s, &commit.address, commit.epoch) else {
                 return Ok(CommitResult::LeaseLost);
@@ -892,17 +905,30 @@ impl Backend for InMemoryStore {
             {
                 return Ok(CommitResult::Rejected(format!("Create of {}: its type is not registered", create.address)));
             }
+            // The trees of the deletes, read before anything changes: deletes come before the creates and the sends.
+            let mut deleted = BTreeSet::new();
+            for target in commit.deletes() {
+                if !s.actors.contains_key(target.as_str()) || deleted.contains(target) {
+                    continue;
+                }
+                let tree = Self::tree(s, target);
+                if tree.contains(&commit.address) {
+                    return Ok(CommitResult::Rejected(support::ancestor_delete_reason(target, &commit.address)));
+                }
+                deleted.extend(tree);
+            }
+            let remains =
+                |address: &ActorAddress| s.actors.contains_key(address.as_str()) && !deleted.contains(address);
             let foreign =
                 commit.creates.iter().filter(|c| c.child).find(|c| {
-                    s.actors.get(c.address.as_str()).is_some_and(|r| r.parent.as_ref() != Some(&commit.address))
+                    remains(&c.address) && s.actors[c.address.as_str()].parent.as_ref() != Some(&commit.address)
                 });
             if let Some(create) = foreign {
                 return Ok(CommitResult::Rejected(support::foreign_child_reason(&create.address, &commit.address)));
             }
             let mut send_ids = HashSet::new();
             for send in &commit.sends {
-                let exists =
-                    s.actors.contains_key(send.to.as_str()) || commit.creates.iter().any(|c| c.address == send.to);
+                let exists = remains(&send.to) || commit.creates.iter().any(|c| c.address == send.to);
                 if !exists {
                     return Ok(CommitResult::Rejected(format!("Send to absent instance {}", send.to)));
                 }
@@ -969,38 +995,42 @@ impl Backend for InMemoryStore {
                 self.finish(s, m, OutcomeStatus::Cancelled, None, now);
                 cancelled.push(id.clone());
             }
-            // 3. creates, 4. sends
+            // 3. deletes, 4. creates, 5. purges, 6. pauses and resumes, 7. sends
+            self.remove_all(s, &deleted, now);
             for c in &commit.creates {
                 let parent = c.child.then_some(&commit.address);
                 Self::create_locked(s, &c.address, c.state.clone(), parent, now);
+            }
+            for target in support::purges(&commit.controls) {
+                let own = (*target == commit.address).then_some(&commit.message_id);
+                self.purge_locked(s, target, own, now);
+            }
+            for (target, paused) in support::pauses(&commit.controls) {
+                if let Some(row) = s.actors.get_mut(target.as_str()) {
+                    row.paused = paused;
+                }
             }
             let mut sent = Vec::with_capacity(commit.sends.len());
             for send in commit.sends {
                 sent.push(self.insert(s, send, now, false)?);
             }
-            // 5. state, 6. release, 7. the notifications of the event
-            let mut tree = BTreeSet::new();
+            // 8. state, 9. release, 10. the notifications of the event
+            let stops = matches!(commit.state, StateChange::Stop);
             let version = match commit.state {
-                StateChange::Unchanged => s.actors[commit.address.as_str()].version,
+                StateChange::Unchanged | StateChange::Stop => s.actors[commit.address.as_str()].version,
                 StateChange::NewState(state) => {
                     let row = s.actors.get_mut(commit.address.as_str()).expect("lease holder exists");
                     row.state = state;
                     row.version += 1;
                     row.version
                 }
-                StateChange::Stop => {
-                    tree = Self::tree(s, &commit.address);
-                    s.actors[commit.address.as_str()].version
-                }
             };
-            let removal = Removal {
-                root: &commit.address,
-                cause: StopCause::Stopped,
-                by: Some(&commit.address),
-                caused_by: Some(&commit.message_id),
-            };
+            // The tree of a stop is read after the creates, so the children of this commit go with it.
+            let tree = if stops { Self::tree(s, &commit.address) } else { BTreeSet::new() };
+            let removed: BTreeSet<ActorAddress> = deleted.iter().chain(&tree).cloned().collect();
+            let removal = Removal::of_commit(&commit.address, &commit.message_id, &commit.controls, stops);
             let failed = failed.as_ref().map(|(m, e)| (m, e.as_str()));
-            let notices = Self::notices(s, failed, (!tree.is_empty()).then_some((&removal, &tree)));
+            let notices = Self::notices(s, failed, (!removed.is_empty()).then_some((&removal, &removed)));
             self.remove_all(s, &tree, now);
             if let Some(row) = s.actors.get_mut(commit.address.as_str()) {
                 row.clear_lease();

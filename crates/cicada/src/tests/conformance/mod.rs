@@ -55,6 +55,7 @@ macro_rules! expect_matches {
 
 mod chain;
 mod children;
+mod control;
 mod env;
 mod fixture;
 mod operator;
@@ -72,6 +73,7 @@ pub use fixture::{FixtureFactory, StoreFixture};
 pub mod cases {
     pub use super::chain::*;
     pub use super::children::*;
+    pub use super::control::*;
     pub use super::operator::*;
     pub use super::reschedule::*;
     pub use super::retention::*;
@@ -245,6 +247,21 @@ macro_rules! for_each_case {
             watches_a_watcher_that_does_not_exist_is_skipped_and_loses_all_its_watches,
             watches_a_delete_racing_a_send_from_a_watcher_that_sorts_first_ends_without_an_error,
             watches_a_watch_set_while_a_message_of_its_target_fails_ends_without_an_error,
+            // control.rs
+            control_a_pause_a_resume_and_a_purge_by_a_commit_do_what_the_calls_from_outside_do_also_to_the_committing_actor,
+            control_a_delete_by_a_commit_removes_the_actor_its_mailbox_and_its_descendants_and_voids_a_turn,
+            control_a_commit_that_fails_or_is_rejected_applies_no_control_effect,
+            control_an_effect_on_an_actor_that_is_not_there_does_nothing_and_a_send_to_a_deleted_actor_still_rejects,
+            control_a_delete_of_an_ancestor_of_the_committing_actor_rejects_the_commit_and_removes_nothing,
+            control_deletes_come_before_creates_creates_before_purges_pauses_and_resumes_and_those_before_sends,
+            control_a_delete_with_a_purge_or_a_pause_of_the_same_actor_and_no_create_applies_the_delete,
+            control_a_restart_of_an_actor_that_is_not_there_creates_it_and_writes_no_stopped,
+            control_the_watches_of_the_commit_are_set_before_its_deletes,
+            control_a_deleted_actors_watchers_read_deleted_with_by_and_caused_by_and_its_descendants_parent,
+            control_several_removals_in_one_commit_give_each_actor_one_cause_and_a_watcher_created_again_has_nothing,
+            control_a_commit_that_deletes_its_own_actor_or_pauses_and_resumes_one_actor_is_invalid,
+            control_two_actors_that_restart_each_others_neighbours_while_a_third_sends_to_them_end_without_an_error,
+            control_a_restart_of_an_actor_that_is_not_there_racing_a_create_ends_with_the_state_of_the_restart,
         );
     };
 }
@@ -299,6 +316,7 @@ fn every_case_is_generated() {
     let sources = [
         include_str!("chain.rs"),
         include_str!("children.rs"),
+        include_str!("control.rs"),
         include_str!("s1_to_s10.rs"),
         include_str!("operator.rs"),
         include_str!("reschedule.rs"),

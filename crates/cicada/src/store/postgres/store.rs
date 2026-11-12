@@ -19,7 +19,7 @@ use crate::store::{
     SetWatchResult, StateChange, StoreError, StoreResult, StoreStats, TurnOutcome, TypeDef,
 };
 use crate::time::{self, Timestamp};
-use crate::watch::{self, StopCause, Watch, WatchTarget};
+use crate::watch::{self, Watch, WatchTarget};
 use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
@@ -83,12 +83,14 @@ macro_rules! transaction {
 ///
 /// **Transactions.** Every operation is one transaction at `READ COMMITTED` on a pooled connection. A transaction that
 /// writes an instance or its mailbox first locks the instance's `actors` row (`SELECT … FOR UPDATE`), so all writes to
-/// one instance are serialised (S3); `commit` locks the committing instance together with every instance it sends to
-/// or creates, in address order, which avoids deadlocks between commits. `claim_due` locks candidates with
+/// one instance are serialised (S3); `commit` locks the committing instance together with every instance it sends to,
+/// creates, pauses, resumes, purges or deletes, in address order, which avoids deadlocks between commits. A commit
+/// that deletes and creates one address restarts it in its row (a new life), so a transaction waiting for that row
+/// finds the actor; for an address that is absent, the row it inserts to hold the lock is the create. `claim_due` locks candidates with
 /// `FOR UPDATE SKIP LOCKED`, so concurrent claims from many nodes never wait for each other and never share an
 /// instance (S4). Transactions PostgreSQL aborts for a deadlock or serialization failure are re-run, up to 8 times.
 ///
-/// **Trees.** A removal (`delete`, or a commit that stops) locks the instance, then its children, then theirs, each
+/// **Trees.** A removal (`delete`, or a commit that stops or deletes) locks the instance, then its children, then theirs, each
 /// level with its own statement. A child is created only in a commit that holds its parent's row lock, so once a
 /// level is locked no commit can add a child below it, and the next statement sees every child committed before. One
 /// recursive query would read a single snapshot and could miss a child that a commit it waited for added. These locks
@@ -96,9 +98,9 @@ macro_rules! transaction {
 /// that.
 ///
 /// **Watches.** A watch changes only under the lock of its watcher's row: the watcher's own commit holds it, and a
-/// change from outside takes it. A commit that ends a message `failed`, a commit that stops and a delete first read the
-/// watchers of their one actor and lock those rows in the same statement as the other rows they touch, in address
-/// order; the watchers of the descendants of a removal are locked after the tree, in address order among themselves.
+/// change from outside takes it. A commit that ends a message `failed`, stops or deletes, and a delete, first read the
+/// watchers of the actors they name and lock those rows in the same statement as the other rows they touch, in address
+/// order; the watchers of the descendants of a removal are locked after the trees, in address order among themselves.
 /// Then they read the watches again: a watcher whose row exists and is not locked set its watch in between, and the
 /// transaction is run again; one whose row does not exist is skipped and its watches are removed. All of it comes
 /// before the clock is read. A notification wakes the nodes of its watcher's type as a send does.
@@ -117,7 +119,7 @@ macro_rules! transaction {
 ///
 /// **Wake-ups.** The store `NOTIFY`s the channel [`PostgresOptions::effective_channel`] whenever a message becomes
 /// claimable (enqueue, sends of a commit, a commit leaving messages behind, release, cancel of an expired turn,
-/// deliver-now, resume of a paused actor) with
+/// deliver-now, resume of a paused actor, also by a commit) with
 /// the instance's type name as payload. Notifications are transactional, so they are only delivered when the
 /// write committed. [`Backend::wake_ups`] listens on one dedicated connection, started on first use and re-connected
 /// with back-off when it breaks.
@@ -611,15 +613,16 @@ async fn create_in(tx: &mut Tx, address: &ActorAddress, state: &Value) -> Result
     }
 }
 
-/// Creates `create`'s instance with `parent` unless it exists (idempotent) and locks its row; returns its type and its
-/// parent. Runs before the transaction reads its clock, so `created_at` is taken from `clock_timestamp()` directly.
+/// Creates `create`'s instance with `parent` unless it exists (idempotent) and locks its row; returns its type, its
+/// parent, and whether the row is this transaction's own. Runs before the transaction reads its clock, so `created_at`
+/// is taken from `clock_timestamp()` directly.
 async fn create_and_lock(
     tx: &mut Tx,
     create: &ActorCreate,
     parent: Option<&str>,
-) -> Result<(String, Option<String>), TxError> {
+) -> Result<(String, Option<String>, bool), TxError> {
     loop {
-        sqlx::query(
+        let inserted = sqlx::query(
             "INSERT INTO actors (address, type, state, parent, created_at) VALUES ($1, $2, $3, $4, clock_timestamp()) \
              ON CONFLICT (address) DO NOTHING",
         )
@@ -628,15 +631,17 @@ async fn create_and_lock(
         .bind(&create.state)
         .bind(parent)
         .execute(&mut *tx.c)
-        .await?;
+        .await?
+        .rows_affected()
+            == 1;
         // Our own row, or the conflicting one once its transaction committed; absent only if it was deleted again.
         let row: Option<(String, Option<String>)> =
             sqlx::query_as("SELECT type, parent FROM actors WHERE address = $1 FOR UPDATE")
                 .bind(create.address.as_str())
                 .fetch_optional(&mut *tx.c)
                 .await?;
-        if let Some(row) = row {
-            return Ok(row);
+        if let Some((t, parent)) = row {
+            return Ok((t, parent, inserted));
         }
     }
 }
@@ -965,6 +970,48 @@ async fn purge_mailbox(tx: &mut Tx, addr: &str) -> Result<usize, TxError> {
     Ok(pending.len())
 }
 
+/// Locks the row of `addr` and gives `purged` to every pending message of it except the one being handled: `own`, the
+/// message of the committing turn when its commit purges its own instance, or else the message of a valid lease.
+/// Purging a message whose lease expired also voids that lease, so that the stale turn cannot commit. `None` when the
+/// instance is absent.
+async fn purge_in(tx: &mut Tx, addr: &str, own: Option<&str>) -> Result<Option<u64>, TxError> {
+    let lease: Option<(Option<String>, Option<Timestamp>, Option<String>)> =
+        sqlx::query_as("SELECT lease_owner, lease_until, lease_message FROM actors WHERE address = $1 FOR UPDATE")
+            .bind(addr)
+            .fetch_optional(&mut *tx.c)
+            .await?;
+    let Some((owner, until, lease_message)) = lease else {
+        return Ok(None);
+    };
+    let now = tx.now().await?;
+    let held = match own {
+        Some(id) => Some(id.to_owned()),
+        None if owner.is_some() && until.is_some_and(|until| until > now) => lease_message,
+        None => None,
+    };
+    let rows = sqlx::query("SELECT * FROM messages WHERE actor_address = $1 ORDER BY deliver_at, seq")
+        .bind(addr)
+        .fetch_all(&mut *tx.c)
+        .await?;
+    let pending = rows.iter().map(message).collect::<Result<Vec<_>, _>>()?;
+    let mut purged: u64 = 0;
+    for m in pending.iter().filter(|m| held.as_deref() != Some(m.id.as_str())) {
+        finish(tx, m, OutcomeStatus::Purged, None).await?;
+        purged += 1;
+    }
+    if held.is_none() {
+        // Void an expired lease whose message is gone, so that the stale turn cannot commit.
+        sqlx::query(
+            "UPDATE actors SET lease_owner = NULL, lease_until = NULL, lease_message = NULL WHERE address = $1",
+        )
+        .bind(addr)
+        .execute(&mut *tx.c)
+        .await?;
+    }
+    refresh_next_due(tx, addr).await?;
+    Ok(Some(purged))
+}
+
 async fn live_outcome(tx: &mut Tx, id: &MessageId) -> Result<Option<OutcomeRecord>, TxError> {
     let (cutoff, now) = (tx.cutoff().await?, tx.now().await?);
     let row = sqlx::query(concat!("SELECT * FROM outcomes WHERE message_id = $1 AND ", visible!(2, 3)))
@@ -1122,7 +1169,7 @@ impl Backend for PostgresStore {
             let descendants: Vec<String> = tree.iter().filter(|a| *a != address.as_str()).cloned().collect();
             lock_watchers_of(tx, &descendants, &mut locked).await?;
             let (watches, gone) = reread_watches(tx, &tree, &locked).await?;
-            let removal = Removal { root: address, cause: StopCause::Deleted, by: None, caused_by: None };
+            let removal = Removal::delete(address);
             let notices = notices(tx, &watches, &gone, None, Some((&removal, &tree))).await?;
             let purged = remove_tree(tx, &tree).await?;
             notify(tx, event, notices).await?;
@@ -1549,41 +1596,7 @@ impl Backend for PostgresStore {
     }
 
     async fn purge(&self, address: &ActorAddress) -> StoreResult<Option<u64>> {
-        transaction!(self, false, |tx| -> Option<u64> {
-            let lease: Option<(Option<String>, Option<Timestamp>, Option<String>)> = sqlx::query_as(
-                "SELECT lease_owner, lease_until, lease_message FROM actors WHERE address = $1 FOR UPDATE",
-            )
-            .bind(address.as_str())
-            .fetch_optional(&mut *tx.c)
-            .await?;
-            let Some((owner, until, lease_message)) = lease else {
-                return commit(None);
-            };
-            let now = tx.now().await?;
-            let valid = owner.is_some() && until.is_some_and(|until| until > now);
-            let held = if valid { lease_message } else { None };
-            let rows = sqlx::query("SELECT * FROM messages WHERE actor_address = $1 ORDER BY deliver_at, seq")
-                .bind(address.as_str())
-                .fetch_all(&mut *tx.c)
-                .await?;
-            let pending = rows.iter().map(message).collect::<Result<Vec<_>, _>>()?;
-            let mut purged: u64 = 0;
-            for m in pending.iter().filter(|m| held.as_deref() != Some(m.id.as_str())) {
-                finish(tx, m, OutcomeStatus::Purged, None).await?;
-                purged += 1;
-            }
-            if !valid {
-                // Void an expired lease whose message is gone, so that the stale turn cannot commit.
-                sqlx::query(
-                    "UPDATE actors SET lease_owner = NULL, lease_until = NULL, lease_message = NULL WHERE address = $1",
-                )
-                .bind(address.as_str())
-                .execute(&mut *tx.c)
-                .await?;
-            }
-            refresh_next_due(tx, address.as_str()).await?;
-            commit(Some(purged))
-        })
+        transaction!(self, false, |tx| -> Option<u64> { commit(purge_in(tx, address.as_str(), None).await?) })
     }
 
     async fn status(&self, id: &MessageId) -> StoreResult<Option<MessageStatus>> {
@@ -1831,23 +1844,28 @@ impl Backend for PostgresStore {
 
     async fn commit(&self, request: CommitRequest) -> StoreResult<CommitResult> {
         support::check_creates(&request.creates)?;
+        support::check_controls(&request.address, &request.controls)?;
         let r = &request;
         transaction!(self, false, |tx| -> CommitResult {
             if r.cancels.contains(&r.message_id) {
                 return Err(invalid(format!("A turn cannot cancel its own message {}", r.message_id)));
             }
-            // The watchers of the actor of an event (a failure or a stop) are read first, to be locked with the rest.
+            // The watchers of the actors of an event (a failure, a stop, the deletes) are read first, to be locked with
+            // the rest.
             let failing = matches!(r.outcome, TurnOutcome::Failed(_));
             let stopping = matches!(r.state, StateChange::Stop);
-            let mut event_targets = if failing { watch::failure_targets(&r.address) } else { Vec::new() };
+            let deletes: BTreeSet<&str> = r.deletes().map(ActorAddress::as_str).collect();
+            let mut first_targets = if failing { watch::failure_targets(&r.address) } else { Vec::new() };
             if stopping && !failing {
-                event_targets.push(r.address.to_string());
+                first_targets.push(r.address.to_string());
             }
-            let watchers = watchers_of(tx, &event_targets).await?;
+            first_targets.extend(deletes.iter().map(|a| (*a).to_owned()));
+            let watchers = watchers_of(tx, &first_targets).await?;
             // Lock every instance this commit touches, in address order, so that concurrent commits cannot deadlock.
             let touched: BTreeSet<&str> = std::iter::once(r.address.as_str())
                 .chain(r.creates.iter().map(|c| c.address.as_str()))
                 .chain(r.sends.iter().map(|s| s.to.as_str()))
+                .chain(r.controls.iter().map(|c| c.actor.as_str()))
                 .chain(watchers.iter().map(String::as_str))
                 .collect();
             let touched: Vec<&str> = touched.into_iter().collect();
@@ -1904,25 +1922,61 @@ impl Backend for PostgresStore {
                     ))));
                 }
             }
+            // A delete of an ancestor would remove this instance. Its ancestors stay while its row is locked: removing
+            // one removes it too.
+            if !deletes.is_empty() {
+                let named: Vec<&str> = deletes.iter().copied().collect();
+                let ancestors: Vec<String> = sqlx::query_scalar(
+                    "WITH RECURSIVE up (address) AS (
+                         SELECT parent FROM actors WHERE address = $1
+                         UNION
+                         SELECT actors.parent FROM actors JOIN up ON actors.address = up.address
+                     )
+                     SELECT address FROM up WHERE address = ANY ($2)",
+                )
+                .bind(r.address.as_str())
+                .bind(&named)
+                .fetch_all(&mut *tx.c)
+                .await?;
+                if let Some(ancestor) = r.deletes().find(|d| ancestors.iter().any(|a| a == d.as_str())) {
+                    let reason = support::ancestor_delete_reason(ancestor, &r.address);
+                    return Ok(Done::Rollback(CommitResult::Rejected(reason)));
+                }
+            }
 
-            // 3. creates, first of all writes: an instance that did not exist when locking is inserted and locked now,
-            // *before* the clock is read. A concurrent transaction creating (and enqueueing to) the same instance is
-            // thus waited for here, so the clock reading below follows it and our sends cannot sort before its
-            // messages.
+            // 3. deletes: the tree of each actor a delete names that is there, locked level by level after the rows
+            // above, before the clock is read.
+            let mut deleted: BTreeSet<String> = BTreeSet::new();
+            for target in &deletes {
+                if locked.contains(*target) && !deleted.contains(*target) {
+                    deleted.extend(lock_tree(tx, target).await?);
+                }
+            }
+            // 4. creates: an instance that did not exist when locking is inserted and locked now, *before* the clock is
+            // read. A concurrent transaction creating (and enqueueing to) the same instance is thus waited for here, so
+            // the clock reading below follows it and our sends cannot sort before its messages. For an address that
+            // the commit also deletes, the row this inserts is its own: it is the create, and nothing is removed. A
+            // row that another caller created in between is locked now, removed with its tree and created again below.
             let mut creates: Vec<&ActorCreate> = r.creates.iter().collect();
             creates.sort_by(|a, b| a.address.as_str().cmp(b.address.as_str()));
             for create in creates {
-                if !types.contains_key(create.address.as_str()) {
-                    let (t, parent) = create_and_lock(tx, create, create.child.then_some(r.address.as_str())).await?;
-                    locked.insert(create.address.as_str().to_owned());
-                    types.insert(create.address.as_str().to_owned(), t);
-                    parents.insert(create.address.as_str().to_owned(), parent);
+                let at = create.address.as_str();
+                if !types.contains_key(at) {
+                    let parent = create.child.then_some(r.address.as_str());
+                    let (t, parent, inserted) = create_and_lock(tx, create, parent).await?;
+                    locked.insert(at.to_owned());
+                    types.insert(at.to_owned(), t);
+                    parents.insert(at.to_owned(), parent);
+                    if !inserted && deletes.contains(at) {
+                        deleted.extend(lock_tree(tx, at).await?);
+                    }
                 }
             }
-            // A child create never takes over an instance: one that exists with another parent or none rejects the
-            // commit. Only this commit can create a child of its own instance, whose lock it holds.
+            locked.extend(deleted.iter().cloned());
+            // A child create never takes over an instance: one that exists after the deletes with another parent or
+            // none rejects the commit. Only this commit can create a child of its own instance, whose lock it holds.
             let foreign =
-                r.creates.iter().filter(|c| c.child).find(|c| {
+                r.creates.iter().filter(|c| c.child && !deleted.contains(c.address.as_str())).find(|c| {
                     parents.get(c.address.as_str()).cloned().flatten().as_deref() != Some(r.address.as_str())
                 });
             if let Some(create) = foreign {
@@ -1931,15 +1985,25 @@ impl Backend for PostgresStore {
                     &r.address,
                 ))));
             }
-            // A stop removes the tree, the children just created included: locked now, before the clock is read, and
-            // the watchers of its descendants after it.
-            let tree = match r.state {
-                StateChange::Stop => lock_tree(tx, r.address.as_str()).await?,
+            // A stop removes the tree as it is after the deletes and the creates, locked now, before the clock is read:
+            // the children this commit creates are in it, also those it creates again after a delete; what the deletes
+            // remove is not, also when this commit creates it again as an independent instance.
+            let tree: Vec<String> = match r.state {
+                StateChange::Stop => {
+                    let mut tree: BTreeSet<String> =
+                        lock_tree(tx, r.address.as_str()).await?.into_iter().filter(|a| !deleted.contains(a)).collect();
+                    let again = r.creates.iter().filter(|c| c.child && deleted.contains(c.address.as_str()));
+                    tree.extend(again.map(|c| c.address.to_string()));
+                    tree.into_iter().collect()
+                }
                 _ => Vec::new(),
             };
             locked.extend(tree.iter().cloned());
-            let descendants: Vec<String> = tree.iter().filter(|a| *a != r.address.as_str()).cloned().collect();
-            lock_watchers_of(tx, &descendants, &mut locked).await?;
+            // Every removed actor. The watchers of those whose watchers were not read first are locked after the trees.
+            let removed: Vec<String> =
+                deleted.iter().chain(&tree).cloned().collect::<BTreeSet<_>>().into_iter().collect();
+            let later: Vec<String> = removed.iter().filter(|a| !first_targets.contains(a)).cloned().collect();
+            lock_watchers_of(tx, &later, &mut locked).await?;
             // The turn's watches, in the order of its calls, under this instance's lock; then the watches of the event
             // are read again.
             for change in &r.watches {
@@ -1950,13 +2014,17 @@ impl Backend for PostgresStore {
                 };
                 sqlx::query(sql).bind(change.target.as_str()).bind(r.address.as_str()).execute(&mut *tx.c).await?;
             }
-            event_targets.extend(descendants.iter().cloned());
+            let mut event_targets = if failing { watch::failure_targets(&r.address) } else { Vec::new() };
+            let more: Vec<String> = removed.iter().filter(|a| !event_targets.contains(a)).cloned().collect();
+            event_targets.extend(more);
             let (watches, gone) = reread_watches(tx, &event_targets, &locked).await?;
 
             // Validate before applying the rest (S2); a rejection rolls back the creates and leaves the lease as it is.
             let mut send_ids = HashSet::new();
             for send in &r.sends {
-                if !types.contains_key(send.to.as_str()) {
+                let to = send.to.as_str();
+                let created = r.creates.iter().any(|c| c.address == send.to);
+                if !types.contains_key(to) || (deleted.contains(to) && !created) {
                     return Ok(Done::Rollback(CommitResult::Rejected(format!("Send to absent instance {}", send.to))));
                 }
                 if !send_ids.insert(&send.id) || send.id == r.message_id || is_id_in_use(tx, &send.id).await? {
@@ -2011,7 +2079,57 @@ impl Backend for PostgresStore {
                     cancelled.push(id.clone());
                 }
             }
-            // 4. sends
+            // 3. deletes, and 4. the creates of what they remove. An instance that is removed and created again keeps
+            // its row, which starts a new life: its mailbox is purged, its watches as a watcher go and every column is
+            // set as a create sets it. A transaction that waits for the row's lock then finds the new life, where a
+            // deleted row would be skipped while the inserted one is not yet visible to it.
+            let mut again: Vec<&ActorCreate> = Vec::new();
+            for create in r.creates.iter().filter(|c| deleted.contains(c.address.as_str())) {
+                if !again.iter().any(|c| c.address == create.address) {
+                    again.push(create);
+                }
+            }
+            let removed_rows: Vec<String> =
+                deleted.iter().filter(|a| !again.iter().any(|c| c.address.as_str() == a.as_str())).cloned().collect();
+            remove_tree(tx, &removed_rows).await?;
+            for create in again {
+                let at = create.address.as_str();
+                purge_mailbox(tx, at).await?;
+                sqlx::query("DELETE FROM watches WHERE watcher = $1").bind(at).execute(&mut *tx.c).await?;
+                let now = tx.now().await?;
+                sqlx::query(
+                    "UPDATE actors SET state = $2, version = 0, epoch = 0, lease_owner = NULL, lease_until = NULL,
+                         lease_message = NULL, cancel_epoch = NULL, paused = false, next_due_at = NULL, parent = $3,
+                         created_at = $4
+                     WHERE address = $1",
+                )
+                .bind(at)
+                .bind(&create.state)
+                .bind(create.child.then_some(r.address.as_str()))
+                .bind(now)
+                .execute(&mut *tx.c)
+                .await?;
+            }
+            // 5. purges and 6. pauses and resumes, of the rows this commit holds; a resume wakes the nodes of the type
+            for target in support::purges(&r.controls).into_iter().filter(|t| locked.contains(t.as_str())) {
+                let own = (*target == r.address).then_some(r.message_id.as_str());
+                purge_in(tx, target.as_str(), own).await?;
+            }
+            for (target, paused) in support::pauses(&r.controls) {
+                if !locked.contains(target.as_str()) {
+                    continue;
+                }
+                let t: Option<String> =
+                    sqlx::query_scalar("UPDATE actors SET paused = $1 WHERE address = $2 RETURNING type")
+                        .bind(paused)
+                        .bind(target.as_str())
+                        .fetch_optional(&mut *tx.c)
+                        .await?;
+                if let (Some(t), false) = (t, paused) {
+                    tx.notify(t);
+                }
+            }
+            // 7. sends
             let mut sent = Vec::with_capacity(r.sends.len());
             for send in &r.sends {
                 // A concurrent enqueue may have taken the id since the check above: undo everything.
@@ -2024,14 +2142,10 @@ impl Backend for PostgresStore {
                 tx.notify(types[send.to.as_str()].clone());
                 sent.push(stored);
             }
-            // 5. state, 6. release, 7. the notifications of the event
-            let removal = Removal {
-                root: &r.address,
-                cause: StopCause::Stopped,
-                by: Some(&r.address),
-                caused_by: Some(&r.message_id),
-            };
-            let notices = notices(tx, &watches, &gone, failed, stopping.then_some((&removal, &tree[..]))).await?;
+            // 8. state, 9. release, 10. the notifications of the event
+            let removal = Removal::of_commit(&r.address, &r.message_id, &r.controls, stopping);
+            let removals = (!removed.is_empty()).then_some((&removal, &removed[..]));
+            let notices = notices(tx, &watches, &gone, failed, removals).await?;
             match &r.state {
                 StateChange::Unchanged => {}
                 StateChange::NewState(state) => {
