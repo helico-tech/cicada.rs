@@ -36,7 +36,7 @@ written as the section "Tests of values from before" of `design.md` says. Runtim
 
 ## 3. The ready-made actors
 
-- [ ] 3.1 Dead letters, the topic and the supervisor do not change [4]. Verify: the scenarios "The deepest payload a
+- [x] 3.1 Dead letters, the topic and the supervisor do not change [4]. Verify: the scenarios "The deepest payload a
       letter keeps", "A payload too deep for a letter" and "A deep letter from before" (raw SQL into a SQLite store)
       in the tests of `cicada-actors`; their contract snapshots do not change.
 

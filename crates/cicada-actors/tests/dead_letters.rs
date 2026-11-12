@@ -6,13 +6,13 @@ mod common;
 use std::time::Duration;
 
 use cicada::prelude::*;
-use cicada::store::OutcomeStatus;
-use cicada::{Failed, FailureCause, WatchTarget};
+use cicada::store::{Message, MessageStatus, OutcomeStatus, SqliteOptions};
+use cicada::{Failed, FailureCause, Store, WatchTarget};
 use cicada_actors::{DeadLetter, DeadLetters, DeadLettersActor, DeadLettersMsg, DeadLettersState};
 use cicada_test::TestActors;
 use common::*;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 
 /// `billing.invoices/{id}` and `shipping/{id}`: actors whose messages fail.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,6 +39,10 @@ impl ActorRef for Shipment {
 #[serde(tag = "type")]
 enum Failing {
     Fail,
+    /// Fails too, with a payload `{"v": …}` of any depth.
+    Deep {
+        v: Value,
+    },
 }
 
 struct InvoiceActor;
@@ -398,6 +402,137 @@ async fn a_redrive_or_a_discard_of_an_id_that_is_no_letter_changes_nothing() {
     }
     assert_eq!(test.version(&letters_actor()).await, version, "nothing changes");
     assert_eq!(letters(&test).await.keys().collect::<Vec<_>>(), [&failed.id]);
+}
+
+/// A value `levels` deep: a chain of arrays around a number, built without recursion.
+fn nested(levels: usize) -> Value {
+    (0..levels).fold(json!(1), |inner, _| Value::Array(vec![inner]))
+}
+
+/// The error of a turn of the dead-letters actor whose letter would make its state too deep.
+const TOO_DEEP: &str = "State cannot be stored: The state is nested deeper than 64 levels";
+
+/// Sends `billing.invoices/a` a message whose payload is `levels` deep, which fails; runs the invoice's turn and returns
+/// the message and the `Failed` that the dead-letters actor gets, which waits in its paused mailbox.
+async fn fail_deep(test: &TestActors, levels: usize) -> (Message, Message) {
+    test.create(&Invoice { id: "a".into() }, &NoState {}).await;
+    test.system().pause_mailbox(&addr(&letters_actor())).await.unwrap();
+    let failed = test.send(&Invoice { id: "a".into() }, Failing::Deep { v: nested(levels - 1) }).await;
+    test.run_until_idle().await;
+    let notification = test.pending(&letters_actor()).await.pop().expect("the Failed");
+    test.system().resume_mailbox(&addr(&letters_actor())).await.unwrap();
+    (failed, notification)
+}
+
+/// Scenario: The deepest payload a letter keeps. A letter holds its payload three levels into the state, so a payload
+/// of 61 levels makes a state of 64.
+#[tokio::test(start_paused = true)]
+async fn a_letter_keeps_a_payload_of_61_levels() {
+    let test = node(1_000, "*").await;
+    let (failed, notification) = fail_deep(&test, 61).await;
+    test.run_until_idle().await;
+    assert_eq!(status(&test, &notification).await, Some(OutcomeStatus::Done));
+    assert_eq!(letter(&test, &failed.id).await.payload, json!({"v": nested(60)}));
+}
+
+/// Scenario: A payload too deep for a letter. With a payload of 62 levels the state would be 65 deep: the turn that
+/// would record it fails and records nothing, and the next failure is recorded as before. The `Failed` that fails is a
+/// notification, which tells nobody, so its cause shows only in what the node writes for a new state that cannot be
+/// stored, with the cause `handler`: its error.
+#[tokio::test(start_paused = true)]
+async fn a_payload_too_deep_for_a_letter_fails_the_turn_and_records_nothing() {
+    let test = node(1_000, "*").await;
+    let (failed, notification) = fail_deep(&test, 62).await;
+    test.run_until_idle().await;
+    let outcome = test.outcome(&notification).await.expect("an outcome");
+    assert_eq!((outcome.status, outcome.error.as_deref()), (OutcomeStatus::Failed, Some(TOO_DEEP)));
+    assert!(letters(&test).await.is_empty(), "no letter for {}", failed.id);
+    assert!(told(&test).await.is_empty(), "a notification that fails tells nobody");
+
+    let next = fail_work(&test).await;
+    assert_eq!(letters(&test).await.keys().collect::<Vec<_>>(), [&next.id]);
+}
+
+/// A node on a SQLite store in `dir` with dead letters watching every type and the worker `worker/w`, and a second
+/// connection to the database, to write a letter as an earlier release could.
+async fn sqlite_node(dir: &std::path::Path) -> (ActorSystem, Store, sqlx::SqlitePool) {
+    let path = dir.join("cicada.db");
+    let store = Store::sqlite(&path, SqliteOptions::default()).await.unwrap();
+    let system = ActorSystem::builder(store.clone()).host(DeadLettersActor::default()).host(WorkerActor).build();
+    system.initialize().await.unwrap();
+    system.create(&letters_actor(), &DeadLettersState::default()).await.unwrap();
+    system.watch(&WatchTarget::Every, &addr(&letters_actor())).await.unwrap();
+    system.create(&worker("w"), &WorkerState::default()).await.unwrap();
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", path.display())).await.unwrap();
+    (system, store, pool)
+}
+
+/// Sends `message`, runs every due turn and returns how it ended, with its error.
+async fn handled<R: ActorRef>(
+    system: &ActorSystem,
+    to: &R,
+    message: impl Into<R::Message>,
+) -> (OutcomeStatus, Option<String>) {
+    let cicada::SendResult::Accepted(m) = system.send(to, message).await.unwrap() else { panic!("not accepted") };
+    while system.run_due_turns(10).await.unwrap() > 0 {}
+    match system.status(&m.id).await.unwrap() {
+        Some(MessageStatus::Finished(o)) => (o.status, o.error),
+        other => panic!("{} has no outcome: {other:?}", m.id),
+    }
+}
+
+/// The letters the dead-letters actor holds.
+async fn held(system: &ActorSystem) -> Vec<MessageId> {
+    let state = system.get_actor(&addr(&letters_actor())).await.unwrap().expect("the actor").state;
+    serde_json::from_value::<DeadLettersState>(state).unwrap().letters.into_keys().collect()
+}
+
+/// Scenario: A deep letter from before. A letter whose payload is 70 levels deep, written past the checks into a SQLite
+/// store, makes every turn that writes the state fail, so a failure is not recorded; once the operator discards that
+/// letter, the next failure is. Real time: SQLite works on threads of its own, which tokio's paused clock does not wait
+/// for.
+#[tokio::test]
+async fn a_deep_letter_from_before_stops_the_letters_until_it_is_discarded() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let (system, store, pool) = sqlite_node(dir.path()).await;
+    let old = MessageId::new("m-old").unwrap();
+    let letter = DeadLetter {
+        actor: addr(&worker("w")),
+        message_type: "Fail".into(),
+        payload: nested(70),
+        correlation_id: None,
+        from: None,
+        error: "boom".into(),
+        cause: FailureCause::Handler,
+        attempts: 1,
+        recorded_at: system.now().await.unwrap(),
+        seq: 1,
+        redriven_as: None,
+        redrive_error: None,
+    };
+    let state = DeadLettersState { letters: [(old.clone(), letter)].into() };
+    sqlx::query("UPDATE actors SET state = ? WHERE address = ?")
+        .bind(serde_json::to_string(&state).unwrap())
+        .bind(addr(&letters_actor()).as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let (status, _) = handled(&system, &worker("w"), WorkerMsg::Fail).await;
+    assert_eq!(status, OutcomeStatus::Failed);
+    let notification = system.outcomes(Some(OutcomeStatus::Failed), "cicada.dead-letters/", None, None, 10).await;
+    let notification = notification.unwrap().items.pop().expect("the Failed of the dead-letters actor failed");
+    assert_eq!(notification.error.as_deref(), Some(TOO_DEEP));
+    assert_eq!(held(&system).await, [old.clone()], "no letter is recorded");
+
+    let discard = DeadLettersMsg::Discard { message_id: old };
+    assert_eq!(handled(&system, &letters_actor(), discard).await, (OutcomeStatus::Done, None));
+    assert!(held(&system).await.is_empty());
+    let (status, _) = handled(&system, &worker("w"), WorkerMsg::Fail).await;
+    assert_eq!(status, OutcomeStatus::Failed);
+    assert_eq!(held(&system).await.len(), 1, "the next failure is recorded");
+    pool.close().await;
+    store.close().await;
 }
 
 /// The default name of the dead-letters actor is `_`.
