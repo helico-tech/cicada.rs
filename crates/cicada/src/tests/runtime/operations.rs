@@ -224,6 +224,128 @@ async fn a_node_that_does_not_host_the_type_accepts_any_payload_and_the_hosting_
     assert_eq!(state_of::<CounterState>(&store, &addr).await.total, 2);
 }
 
+/// What a schema check was called with: `(schema, value)` per call.
+#[derive(Default)]
+struct Calls(std::sync::Mutex<Vec<(Value, Value)>>);
+
+impl Calls {
+    /// A check that records its call and answers `answer`.
+    fn check(&self, answer: Result<(), &'static str>) -> impl Fn(&Value, &Value) -> Result<(), String> + Send + Sync {
+        move |schema: &Value, value: &Value| {
+            self.0.lock().unwrap().push((schema.clone(), value.clone()));
+            answer.map_err(str::to_owned)
+        }
+    }
+
+    fn all(&self) -> Vec<(Value, Value)> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_check_gets_the_schema_of_the_message_type_or_the_state_and_the_value() {
+    let test = harness().await;
+    let system = test.system();
+    test.create(&a(), &CounterState::default()).await;
+    let calls = Calls::default();
+    let sent = system
+        .send_message_checked(&a().address(), "Add", json!({"n": 1}), SendOptions::new(), &calls.check(Ok(())))
+        .await
+        .unwrap();
+    accepted(sent);
+    let add = schema::message_schemas::<CounterMsg>().unwrap().remove("Add").unwrap();
+    assert_eq!(calls.all(), vec![(add, json!({"n": 1}))]);
+
+    let calls = Calls::default();
+    let b = Counter::new("b").address();
+    let created = system.create_actor_checked(&b, json!({"total": 2}), &calls.check(Ok(()))).await.unwrap();
+    assert_eq!(created, CreateActorResult::Created);
+    assert_eq!(calls.all(), vec![(schema::root_schema::<CounterState>(), json!({"total": 2}))]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_refusal_of_the_check_stores_nothing_on_a_node_that_hosts_the_type_or_not() {
+    let test = harness().await;
+    let send_only = ActorSystem::builder(test.store().clone()).build();
+    test.create(&a(), &CounterState::default()).await;
+    for system in [test.system(), &send_only] {
+        let calls = Calls::default();
+        let refused = system
+            .send_message_checked(
+                &a().address(),
+                "Add",
+                json!({"n": 1}),
+                SendOptions::new(),
+                &calls.check(Err("at /n: no")),
+            )
+            .await
+            .unwrap();
+        let error = "Payload of 'Add' does not match the schema: at /n: no".to_owned();
+        assert_eq!(refused, SendResult::InvalidPayload { message_type: "Add".into(), error });
+        assert!(test.pending(&a()).await.is_empty());
+
+        let b = Counter::new("b").address();
+        let refused = system.create_actor_checked(&b, json!({"total": 2}), &calls.check(Err("at /total: no"))).await;
+        let error = "State does not match the schema: at /total: no".to_owned();
+        assert_eq!(refused.unwrap(), CreateActorResult::InvalidState(error));
+        assert_eq!(system.get_actor(&b).await.unwrap(), None);
+        assert_eq!(calls.all().len(), 2);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_check_is_not_called_for_a_repeated_id_an_unknown_type_an_unknown_message_type_or_a_null_state() {
+    let test = harness().await;
+    let system = test.system();
+    test.create(&a(), &CounterState::default()).await;
+    let calls = Calls::default();
+    let check = calls.check(Err("never asked"));
+    let (to, id) = (a().address(), MessageId::random());
+    let first = system.send_message(&to, "Add", json!({"n": 1}), SendOptions::new().id(id.clone())).await;
+    let first = accepted(first.unwrap());
+    // A repeat whose payload the check would refuse is answered as a repeat.
+    let repeated = system.send_message_checked(&to, "Add", json!({"n": "x"}), SendOptions::new().id(id), &check);
+    assert_eq!(repeated.await.unwrap(), SendResult::Duplicate(Some(first)));
+    let unknown = system.send_message_checked(&parse("x/y"), "Add", json!({}), SendOptions::new(), &check).await;
+    assert_eq!(unknown.unwrap(), SendResult::NoSuchType);
+    let nope = system.send_message_checked(&to, "Nope", json!({}), SendOptions::new(), &check).await;
+    assert!(matches!(nope.unwrap(), SendResult::UnknownType { .. }));
+    assert_eq!(
+        system.create_actor_checked(&parse("x/y"), json!({}), &check).await.unwrap(),
+        CreateActorResult::NoSuchType
+    );
+    let null = system.create_actor_checked(&Counter::new("n").address(), Value::Null, &check).await.unwrap();
+    assert!(matches!(null, CreateActorResult::InvalidState(ref e) if e.contains("never null")), "{null:?}");
+    assert!(calls.all().is_empty(), "{:?}", calls.all());
+}
+
+#[tokio::test(start_paused = true)]
+async fn on_a_node_that_hosts_the_type_the_check_runs_before_the_decoder() {
+    let test = harness().await;
+    let system = test.system();
+    test.create(&a(), &CounterState::default()).await;
+    let (refuse, accept) = (Calls::default(), Calls::default());
+    let (refuse, accept) = (refuse.check(Err("at /n: no")), accept.check(Ok(())));
+    let to = a().address();
+    let send = |check| system.send_message_checked(&to, "Add", json!({"n": "x"}), SendOptions::new(), check);
+    let error = |result: SendResult| match result {
+        SendResult::InvalidPayload { error, .. } => error,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(error(send(&refuse).await.unwrap()), "Payload of 'Add' does not match the schema: at /n: no");
+    assert!(error(send(&accept).await.unwrap()).starts_with("Payload of 'Add' cannot be decoded"));
+
+    let b = Counter::new("b").address();
+    let create = |check| system.create_actor_checked(&b, json!({"total": "x"}), check);
+    let state_error = |result: CreateActorResult| match result {
+        CreateActorResult::InvalidState(e) => e,
+        other => panic!("{other:?}"),
+    };
+    assert!(state_error(create(&refuse).await.unwrap()).starts_with("State does not match the schema"));
+    assert!(state_error(create(&accept).await.unwrap()).starts_with("State cannot be decoded"));
+    assert!(test.pending(&a()).await.is_empty());
+}
+
 #[tokio::test(start_paused = true)]
 async fn delivery_time_is_store_time_and_a_past_instant_is_clamped() {
     let test = TestActors::builder().with(|n| n.host(CounterActor)).build().await.unwrap();

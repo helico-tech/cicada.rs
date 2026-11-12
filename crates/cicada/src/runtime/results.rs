@@ -13,8 +13,9 @@ pub enum CreateActorResult {
     Exists(ActorRecord),
     /// No registered type matches the address.
     NoSuchType,
-    /// The initial state was refused: it is `null` (checked on every node), or it cannot be decoded (checked on nodes
-    /// that host the type).
+    /// The initial state was refused: it is `null` (checked on every node), it does not match the state schema (checked
+    /// on every node by the check of [`ActorSystem::create_actor_checked`](super::ActorSystem::create_actor_checked)),
+    /// or it cannot be decoded (checked on nodes that host the type). Why.
     InvalidState(String),
     /// The address cannot be an instance of its type, checked on nodes that host the type: the ref does not accept its
     /// name (a singleton accepts only `_`, a ref with a reader of its own may refuse a name).
@@ -59,11 +60,13 @@ pub enum SendResult {
         /// The target's type.
         type_name: TypeName,
     },
-    /// This node hosts the target's type and could not decode the payload.
+    /// The payload does not match the schema of its message type (checked on every node by the check of
+    /// [`ActorSystem::send_message_checked`](super::ActorSystem::send_message_checked)), or this node hosts the
+    /// target's type and could not decode it.
     InvalidPayload {
         /// The type name.
         message_type: String,
-        /// Why.
+        /// Why: "Payload of 'Add' does not match the schema: …" or "Payload of 'Add' cannot be decoded: …".
         error: String,
     },
 }

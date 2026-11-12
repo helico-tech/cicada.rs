@@ -5,7 +5,7 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
 
 ## 1. The core
 
-- [ ] 1.1 The checked calls [1, 2]: `SchemaCheck`, `ActorSystem::send_message_checked` and
+- [x] 1.1 The checked calls [1, 2]: `SchemaCheck`, `ActorSystem::send_message_checked` and
       `ActorSystem::create_actor_checked`; `send_message` and `create_actor` are these with a check that accepts
       everything. The check gets the schema of the message type, or the state schema, and runs where decision 1
       says. A refusal is `SendResult::InvalidPayload` or `CreateActorResult::InvalidState` with the check's reason,

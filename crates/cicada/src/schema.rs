@@ -1,7 +1,8 @@
 //! JSON Schemas (draft 2020-12) of states and messages, generated with schemars from the same types serde decodes.
 //!
-//! Schemas are published in the contract and served by `GET /types`; nothing validates against them. The decoder is
-//! the only validator.
+//! Schemas are published in the contract and served by `GET /types`. The core has no validator: the HTTP door of
+//! `cicada-axum` checks a send and a create against them, through [`SchemaCheck`] (ADR 0026). At the turn the decoder
+//! is the only judge.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -12,6 +13,14 @@ use serde_json::{Map, Value};
 use crate::message::{MessageError, TYPE_TAG};
 
 const DRAFT: &str = "https://json-schema.org/draft/2020-12/schema";
+
+/// Checks a payload or a state against its registered schema: `check(schema, value)`, `Err` with the reason, such as
+/// "at /n: want integer, but got string". [`ActorSystem::send_message_checked`] and
+/// [`ActorSystem::create_actor_checked`] take one from their caller and put the reason into their refusal.
+///
+/// [`ActorSystem::send_message_checked`]: crate::ActorSystem::send_message_checked
+/// [`ActorSystem::create_actor_checked`]: crate::ActorSystem::create_actor_checked
+pub type SchemaCheck<'a> = &'a (dyn Fn(&Value, &Value) -> Result<(), String> + Send + Sync);
 
 /// The schema of `T` as a standalone document: `$schema`, `title`, the body and the `$defs` it uses.
 pub fn root_schema<T: JsonSchema>() -> Value {
