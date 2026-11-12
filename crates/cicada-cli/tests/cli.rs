@@ -383,12 +383,14 @@ async fn a_refusal_by_the_schema_on_a_node_that_does_not_host_the_type_prints_it
     tokio::spawn(async move { axum::serve(listener, actor_api(send_only)).await.expect("the server runs") });
 
     let state = cicada_fails(&s, &["create", "actor", "account/acme:1", "--state", r#"{"balance":"lots"}"#]).await;
-    assert_eq!(state, "422 Invalid state: State does not match the schema: at /balance: want integer, but got string");
+    assert_eq!(
+        state,
+        r#"422 Invalid state: State does not match the schema: at /balance: "lots" is not of type "integer""#
+    );
     cicada(&s, &["create", "actor", "account/acme:1", "--state", "{}"]).await;
     let payload =
         cicada_fails(&s, &["send", "account/acme:1", "--type", "Deposit", "--payload", r#"{"amount":"ten"}"#]).await;
-    let expected = "422 Invalid payload: Payload of 'Deposit' does not match the schema: at /amount: want integer, \
-                    but got string";
+    let expected = r#"422 Invalid payload: Payload of 'Deposit' does not match the schema: at /amount: "ten" is not of type "integer""#;
     assert_eq!(payload, expected);
 }
 

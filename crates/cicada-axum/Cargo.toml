@@ -10,9 +10,9 @@ publish.workspace = true
 [dependencies]
 aide.workspace = true
 axum.workspace = true
-boon.workspace = true
 cicada.workspace = true
 futures.workspace = true
+jsonschema.workspace = true
 schemars.workspace = true
 tokio.workspace = true
 serde.workspace = true
@@ -22,6 +22,7 @@ tracing.workspace = true
 [dev-dependencies]
 async-trait.workspace = true
 cicada-test.workspace = true
+peak_alloc.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tower.workspace = true
 

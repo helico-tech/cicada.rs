@@ -81,14 +81,14 @@ struct FormState {
     code: String,
 }
 
-/// A schema with a pattern that the validator's regular expressions do not know (a look-behind).
+/// A schema with a pattern that the validator's regular expressions do not know (an unclosed class).
 impl JsonSchema for FormState {
     fn schema_name() -> Cow<'static, str> {
         "FormState".into()
     }
 
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        json_schema!({"type": "object", "properties": {"code": {"type": "string", "pattern": "(?<=a)b"}}})
+        json_schema!({"type": "object", "properties": {"code": {"type": "string", "pattern": "["}}})
     }
 }
 
@@ -137,7 +137,7 @@ async fn a_payload_that_does_not_match_is_refused_by_every_node_with_the_same_de
     let n = nodes().await;
     let other = post(&n.other, SEND, r#"{"id": "m-other", "type": "Add", "payload": {"n": "x"}}"#).await;
     assert_problem(&other, 422, pt::INVALID_PAYLOAD);
-    assert_eq!(detail(&other), "Payload of 'Add' does not match the schema: at /n: want integer, but got string");
+    assert_eq!(detail(&other), r#"Payload of 'Add' does not match the schema: at /n: "x" is not of type "integer""#);
     assert_problem(&get(&n.other, "/messages/m-other").await, 404, pt::NO_SUCH_MESSAGE);
 
     let host = post(&n.host, SEND, r#"{"id": "m-host", "type": "Add", "payload": {"n": "x"}}"#).await;
@@ -163,7 +163,7 @@ async fn a_field_that_the_type_does_not_know_is_refused() {
         let reply =
             post(app, "/actors/form/f/messages", r#"{"type": "Strict", "payload": {"n": 1, "extra": true}}"#).await;
         assert_problem(&reply, 422, pt::INVALID_PAYLOAD);
-        assert!(detail(&reply).contains("'extra' not allowed"), "{}", detail(&reply));
+        assert!(detail(&reply).contains("('extra' was unexpected)"), "{}", detail(&reply));
     }
 }
 
@@ -173,7 +173,10 @@ async fn a_missing_required_field_is_refused_and_named() {
     let n = nodes().await;
     let reply = post(&n.other, SEND, r#"{"type": "Add", "payload": {}}"#).await;
     assert_problem(&reply, 422, pt::INVALID_PAYLOAD);
-    assert_eq!(detail(&reply), "Payload of 'Add' does not match the schema: at the top level: missing properties 'n'");
+    assert_eq!(
+        detail(&reply),
+        r#"Payload of 'Add' does not match the schema: at the top level: "n" is a required property"#
+    );
 }
 
 /// Scenario: A message type the contract does not have.
@@ -190,7 +193,7 @@ async fn a_state_that_does_not_match_is_refused_by_a_node_that_does_not_host_the
     let n = nodes().await;
     let refused = put(&n.other, "/actors/counter/b", r#"{"state": {"total": "x"}}"#).await;
     assert_problem(&refused, 422, pt::INVALID_STATE);
-    assert_eq!(detail(&refused), "State does not match the schema: at /total: want integer, but got string");
+    assert_eq!(detail(&refused), r#"State does not match the schema: at /total: "x" is not of type "integer""#);
     assert_problem(&get(&n.other, "/actors/counter/b").await, 404, pt::NO_SUCH_INSTANCE);
 
     assert_eq!(put(&n.other, "/actors/counter/b", r#"{"state": {"total": 1}}"#).await.status, 201);
@@ -298,10 +301,7 @@ async fn a_state_that_does_not_match_gets_the_same_answer_on_every_node_also_und
     assert_problem(&host, 422, pt::INVALID_STATE);
     assert_problem(&other, 422, pt::INVALID_STATE);
     assert_eq!(detail(&host), detail(&other));
-    assert_eq!(
-        detail(&host),
-        "State does not match the schema: at the top level: additionalProperties 'oops' not allowed"
-    );
+    assert_eq!(detail(&host), "State does not match the schema: at the top level: False schema does not allow 1");
     assert_problem(&put(&n.host, path, r#"{"state": {}}"#).await, 422, pt::INVALID_ADDRESS);
     assert_problem(&get(&n.other, path).await, 404, pt::NO_SUCH_INSTANCE);
 }
@@ -317,7 +317,7 @@ async fn the_detail_of_a_very_long_value_is_cut_with_a_mark() {
         assert_problem(&reply, 422, pt::INVALID_PAYLOAD);
         let detail = detail(&reply);
         assert_eq!(detail.chars().count(), cicada::runtime::MAX_REFUSAL_DETAIL);
-        assert!(detail.starts_with("Payload of 'Code' does not match the schema: at /code: 'AAA"), "{detail:.80}");
+        assert!(detail.starts_with(r#"Payload of 'Code' does not match the schema: at /code: "AAA"#), "{detail:.80}");
         assert!(detail.ends_with(" … (cut)"), "{}", &detail[detail.len() - 40..]);
     }
     let body = json!({"type": "Paint", "payload": {"shade": "q".repeat(200_000)}}).to_string();
@@ -361,7 +361,10 @@ async fn a_value_at_the_deepest_level_the_parser_allows_is_checked_like_any_othe
     assert_problem(&host, 422, pt::INVALID_PAYLOAD);
     assert_problem(&other, 422, pt::INVALID_PAYLOAD);
     assert_eq!(detail(&host), detail(&other));
-    assert!(detail(&host).starts_with("Payload of 'Nest' does not match the schema: at /node/items/0: want integer"));
+    assert!(
+        detail(&host)
+            .starts_with(r#"Payload of 'Nest' does not match the schema: at /node/items/0: "x" is not of type"#)
+    );
     // One level deeper is more than the parser takes.
     assert_problem(&post(&n.other, path, &nest(125, "1")).await, 400, pt::BAD_REQUEST);
 }

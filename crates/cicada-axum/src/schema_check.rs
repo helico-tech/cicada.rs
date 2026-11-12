@@ -1,51 +1,45 @@
 //! The check of a payload or a state against its registered JSON Schema at the HTTP door (ADR 0026), and the sample
 //! checks that test a type against both its schema and its decoder.
 //!
-//! The validator is `boon`, on draft 2020-12. It asserts no `format`, and loads nothing from outside the schema
-//! document: no file and no network. A schema it cannot compile is not enforced at the door, and a warning names it once
-//! in the life of the process; the sample checks fail on it. Every value is checked on a thread of its own with a
-//! large stack, as the validator recurses per level of a type that refers to itself (decision 11).
+//! The validator is `jsonschema`, on draft 2020-12. It asserts no `format`, whatever draft a schema names, and loads
+//! nothing from outside the schema document: no file and no network. A schema it cannot compile is not enforced at the
+//! door, and a warning names it once in the life of the process; the sample checks fail on it. The check asks whether a
+//! value matches and, when it does not, for the first place that does not match, never for a list: a list of places
+//! costs memory in proportion to the mismatches (decision 8). Every value is checked on a thread of its own with a large
+//! stack, as the validator recurses per level of a type that refers to itself (decision 11).
 
 use std::collections::HashSet;
-use std::error::Error;
 use std::sync::{LazyLock, Mutex};
 
-use boon::{CompileError, Compiler, Draft, ErrorKind, InstanceToken, Schemas, UrlLoader, ValidationError};
+use jsonschema::{Draft, Retrieve, Uri, ValidationError};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-
-/// The most places that the detail of a refusal names.
-const MOST_PLACES: usize = 5;
-
-/// The address under which a schema is compiled. Not a file, so that a relative reference resolves to nothing.
-const ROOT: &str = "urn:cicada:schema";
 
 /// What the validator says of a value.
 #[derive(Debug, PartialEq)]
 enum Verdict {
     /// The value matches the schema.
     Matches,
-    /// It does not: up to five places, each with its path in the value and the reason, and whether there are more.
+    /// It does not: the first place that does not match, with its path in the value and the reason.
     DoesNotMatch(String),
     /// The validator cannot compile the schema; why.
     Unusable(String),
 }
 
-/// A loader that refuses every address: the check uses nothing outside the schema document. The standard metaschemas
-/// are built into `boon` and never reach a loader.
-struct NoLoader;
+/// A retriever that refuses every address: the check uses nothing outside the schema document. The standard
+/// metaschemas are built into the validator and never reach a retriever.
+struct NoRetriever;
 
-impl UrlLoader for NoLoader {
-    fn load(&self, url: &str) -> Result<Value, Box<dyn Error>> {
-        Err(format!("{url} is outside the schema, and the check loads nothing").into())
+impl Retrieve for NoRetriever {
+    fn retrieve(&self, uri: &Uri<String>) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
+        Err(format!("{uri} is outside the schema, and the check loads nothing").into())
     }
 }
 
 /// The stack of the thread that checks a value (decision 11). The stack the validator needs per level is set by the
 /// steps of the schema between two levels of a type that refers to itself; the JSON parser of a request lets through a
-/// payload or a state of 126 levels, and the widest shape found needs about 12.9 MiB for that in a test build, so this
-/// is five times that. It is address space: only the pages the check touches are used.
+/// payload or a state of 126 levels. It is address space: only the pages the check touches are used.
 const CHECK_STACK: usize = 64 << 20;
 
 /// Checks `value` against `schema` on a scoped thread of its own with [`CHECK_STACK`] of stack, so that no nesting the
@@ -59,92 +53,38 @@ fn verdict(schema: &Value, value: &Value) -> Verdict {
     })
 }
 
-/// Checks `value` against `schema` on the calling thread.
+/// Checks `value` against `schema` on the calling thread: whether it matches, and when it does not, the first place.
 fn verdict_here(schema: &Value, value: &Value) -> Verdict {
-    let mut compiler = Compiler::new();
-    compiler.set_default_draft(Draft::V2020_12);
-    compiler.use_loader(Box::new(NoLoader));
-    let mut schemas = Schemas::new();
-    // One line: the alternate form adds the cause, over several lines.
-    let unusable =
-        |e: CompileError| Verdict::Unusable(format!("{e:#}").split_whitespace().collect::<Vec<_>>().join(" "));
-    if let Err(e) = compiler.add_resource(ROOT, schema.clone()) {
-        return unusable(e);
-    }
-    let index = match compiler.compile(ROOT, &mut schemas) {
-        Ok(index) => index,
-        Err(e) => return unusable(e),
+    let options =
+        jsonschema::options().with_draft(Draft::Draft202012).should_validate_formats(false).with_retriever(NoRetriever);
+    let validator = match options.build(schema) {
+        Ok(validator) => validator,
+        // One line: a reason may hold line breaks.
+        Err(e) => return Verdict::Unusable(e.to_string().split_whitespace().collect::<Vec<_>>().join(" ")),
     };
-    match schemas.validate(value, index) {
+    if validator.is_valid(value) {
+        return Verdict::Matches;
+    }
+    match validator.validate(value) {
         Ok(()) => Verdict::Matches,
-        Err(error) => Verdict::DoesNotMatch(places(&error)),
+        Err(error) => Verdict::DoesNotMatch(place(&error)),
     }
 }
 
-/// The leaves of the validator's tree of errors, in its order: at most five, each "at /path: reason", then "and 3 more"
-/// when there are more. A leaf names no address of the schema and no path into it. Under an `anyOf` or a `oneOf` (an
-/// enum with data, an `Option`), the alternatives that the value cannot be come last (see [`names_another`]), so the
-/// reasons of the variant that the value names come first.
-fn places(error: &ValidationError) -> String {
-    fn leaves<'e, 's, 'v>(error: &'e ValidationError<'s, 'v>, found: &mut Vec<&'e ValidationError<'s, 'v>>) {
-        if error.causes.is_empty() {
-            found.push(error);
-        }
-        let mut causes: Vec<_> = error.causes.iter().collect();
-        if matches!(error.kind, ErrorKind::AnyOf | ErrorKind::OneOf(_)) {
-            let part = error.instance_location.tokens.len();
-            causes.sort_by_key(|alternative| names_another(alternative, part)); // stable: the validator's order stays
-        }
-        causes.into_iter().for_each(|cause| leaves(cause, found));
-    }
-    let mut found = Vec::new();
-    leaves(error, &mut found);
-    let mut text: Vec<String> = found
-        .iter()
-        .take(MOST_PLACES)
-        .map(|leaf| {
-            let path = leaf.instance_location.to_string();
-            let at = if path.is_empty() { "the top level".to_owned() } else { path };
-            let why = match &leaf.kind {
-                ErrorKind::Schema { .. } | ErrorKind::RefCycle { .. } => "does not match".to_owned(),
-                kind => kind.to_string(),
-            };
-            format!("at {at}: {why}")
-        })
-        .collect();
-    if found.len() > MOST_PLACES {
-        text.push(format!("and {} more", found.len() - MOST_PLACES));
-    }
-    text.join("; ")
+/// The place of a mismatch: "at /path: reason", "the top level" for the value itself. It names no address of the schema
+/// and no path into it.
+fn place(error: &ValidationError) -> String {
+    let path = error.instance_path().to_string();
+    let at = if path.is_empty() { "the top level" } else { &path };
+    format!("at {at}: {error}")
 }
 
-/// True when the errors of an `anyOf` or `oneOf` alternative for the part `part` tokens deep show that the value is
-/// another variant: its tag names another one (a `const` or `enum` on a property of the part fails, as for an
-/// internally or adjacently tagged enum), the part is not of the alternative's kind (a unit variant's text, the `null`
-/// of an `Option`), or it holds a property that the alternative does not allow (the key of an externally tagged enum).
-///
-/// It looks only at the alternative's own error and its direct causes, never deeper, and builds no path: every error is
-/// looked at by at most its two nearest groups, so the walk over the errors stays linear. A child's location extends
-/// its parent's, so a location one token longer than the part's that ends in a property is a property of the part.
-fn names_another(alternative: &ValidationError, part: usize) -> bool {
-    std::iter::once(alternative).chain(&alternative.causes).any(|error| {
-        let tokens = &error.instance_location.tokens;
-        match error.kind {
-            ErrorKind::Const { .. } | ErrorKind::Enum { .. } => {
-                tokens.len() == part + 1 && matches!(tokens.last(), Some(InstanceToken::Prop(_)))
-            }
-            ErrorKind::Type { .. } | ErrorKind::AdditionalProperties { .. } => tokens.len() == part,
-            _ => false,
-        }
-    })
-}
-
-/// The check of the door: `Err` with the places of `value` that do not match `schema`. A schema that cannot be used
-/// lets `value` through; the first time, a warning names it with `what` ("message type 'Add' of counter").
+/// The check of the door: `Err` with the first place of `value` that does not match `schema`. A schema that cannot be
+/// used lets `value` through; the first time, a warning names it with `what` ("message type 'Add' of counter").
 pub(crate) fn check(schema: &Value, value: &Value, what: &str) -> Result<(), String> {
     match verdict(schema, value) {
         Verdict::Matches => Ok(()),
-        Verdict::DoesNotMatch(places) => Err(places),
+        Verdict::DoesNotMatch(place) => Err(place),
         Verdict::Unusable(why) => {
             warn_once(schema, what, &why);
             Ok(())
@@ -225,7 +165,7 @@ pub fn assert_state_sample<S: JsonSchema + DeserializeOwned>(sample: &Value) {
 fn passes_schema(schema: &Value, sample: &Value, what: &str) {
     match verdict(schema, sample) {
         Verdict::Matches => {}
-        Verdict::DoesNotMatch(places) => panic!("The schema refused {what}: {places}"),
+        Verdict::DoesNotMatch(place) => panic!("The schema refused {what}: {place}"),
         Verdict::Unusable(why) => panic!("The schema of {what} cannot be used by the validator: {why}"),
     }
 }
@@ -242,28 +182,36 @@ mod tests {
     use super::shapes::{Chain, PutMsg, Shape, Stack, Wide, build, payload};
     use super::*;
 
+    const DRAFT: &str = "https://json-schema.org/draft/2020-12/schema";
+
     fn object(properties: Value) -> Value {
-        json!({"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "properties": properties})
+        json!({"$schema": DRAFT, "type": "object", "properties": properties})
     }
 
     fn refused(schema: &Value, value: &Value) -> String {
         match verdict(schema, value) {
-            Verdict::DoesNotMatch(places) => places,
+            Verdict::DoesNotMatch(place) => place,
             other => panic!("{other:?}"),
         }
     }
 
-    /// Scenario: Two places that do not match.
-    #[test]
-    fn two_places_that_do_not_match_are_both_named_with_what_was_expected() {
-        let schema = object(json!({"n": {"type": "integer"}, "name": {"type": "string"}}));
-        let places = refused(&schema, &json!({"n": "x", "name": 5}));
-        assert_eq!(places, "at /n: want integer, but got string; at /name: want string, but got number");
+    fn unusable(schema: &Value) -> String {
+        match verdict(schema, &json!({"n": 1})) {
+            Verdict::Unusable(why) => why,
+            other => panic!("{other:?}"),
+        }
     }
 
-    /// Scenario: A field inside an optional part.
+    /// Scenario: Two places that do not match: the first is named, with what was expected.
     #[test]
-    fn a_field_inside_an_optional_part_is_named_by_its_path() {
+    fn of_two_places_that_do_not_match_the_first_is_named_with_what_was_expected() {
+        let schema = object(json!({"n": {"type": "integer"}, "name": {"type": "string"}}));
+        assert_eq!(refused(&schema, &json!({"n": "x", "name": 5})), r#"at /n: "x" is not of type "integer""#);
+    }
+
+    /// Scenario: A field inside an optional part: the place is the optional part, with a general reason.
+    #[test]
+    fn a_field_inside_an_optional_part_names_the_part() {
         #[derive(serde::Deserialize, JsonSchema)]
         #[allow(dead_code)]
         struct Address {
@@ -275,99 +223,75 @@ mod tests {
             address: Option<Address>,
         }
         let schema = cicada::schema::root_schema::<Ship>();
-        let places = refused(&schema, &json!({"address": {"street": 7}}));
-        assert!(places.contains("at /address/street: want string, but got number"), "{places}");
-        assert!(!places.contains("urn:") && !places.contains("$defs") && !places.contains('#'), "{places}");
-    }
-
-    /// Scenario: More than five places.
-    #[test]
-    fn more_than_five_places_name_five_and_say_that_there_are_more() {
-        let names = ["a", "b", "c", "d", "e", "f", "g", "h"];
-        let schema = object(names.iter().map(|n| (n.to_string(), json!({"type": "integer"}))).collect());
-        let value: Value = names.iter().map(|n| (n.to_string(), json!("x"))).collect::<serde_json::Map<_, _>>().into();
-        let places = refused(&schema, &value);
-        assert_eq!(places.matches("want integer, but got string").count(), 5, "{places}");
-        assert!(places.ends_with("; and 3 more"), "{places}");
+        let place = refused(&schema, &json!({"address": {"street": 7}}));
+        assert_eq!(
+            place,
+            r#"at /address: {"street":7} is not valid under any of the schemas listed in the 'anyOf' keyword"#
+        );
+        assert!(!place.contains("$defs") && !place.contains('#'), "no address of the schema: {place}");
     }
 
     #[test]
-    fn a_value_that_matches_passes_and_a_missing_field_is_named() {
-        let schema = object(json!({"n": {"type": "integer"}}));
-        let mut schema_with_required = schema.clone();
-        schema_with_required["required"] = json!(["n"]);
-        assert_eq!(verdict(&schema_with_required, &json!({"n": 1})), Verdict::Matches);
-        assert_eq!(refused(&schema_with_required, &json!({})), "at the top level: missing properties 'n'");
+    fn a_value_that_matches_passes_and_a_missing_field_and_the_top_level_are_named() {
+        let mut schema = object(json!({"n": {"type": "integer"}}));
+        schema["required"] = json!(["n"]);
+        assert_eq!(verdict(&schema, &json!({"n": 1})), Verdict::Matches);
+        assert_eq!(refused(&schema, &json!({})), r#"at the top level: "n" is a required property"#);
+        assert_eq!(refused(&schema, &json!([1])), r#"at the top level: [1] is not of type "object""#);
     }
 
-    /// Scenario: A schema that refers to a file. The file exists and would refuse every object.
+    /// Scenario: A schema that refers to a file, and to a port, relatively and under an `$id`: nothing is loaded, and
+    /// the schema cannot be used. The file exists and the port listens; either would refuse every object.
     #[test]
-    fn a_schema_that_refers_to_a_file_is_not_used_and_the_file_is_not_read() {
+    fn a_schema_that_refers_outside_itself_is_not_used_and_nothing_is_loaded() {
         let dir = std::env::temp_dir().join(format!("cicada-schema-check-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("refuse.json");
         std::fs::write(&file, r#"{"type": "string"}"#).unwrap();
-        let url = format!("file://{}", file.display());
-        let schema = json!({"$schema": "https://json-schema.org/draft/2020-12/schema", "$ref": url});
-        let verdict = verdict(&schema, &json!({"n": 1}));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let refs = [
+            json!({"$schema": DRAFT, "$ref": format!("file://{}", file.display())}),
+            json!({"$schema": DRAFT, "$ref": format!("http://127.0.0.1:{port}/refuse.json")}),
+            json!({"$schema": DRAFT, "$ref": "refuse.json"}),
+            json!({"$schema": DRAFT, "$id": format!("http://127.0.0.1:{port}/root.json"), "$ref": "refuse.json"}),
+        ];
+        for schema in refs {
+            let why = unusable(&schema);
+            assert!(why.contains("not present in a registry"), "{why}");
+            assert_eq!(check(&schema, &json!({"n": 1}), "message type 'Read' of files"), Ok(()));
+        }
+        let accepted = listener.accept();
         std::fs::remove_dir_all(&dir).unwrap();
-        assert!(matches!(verdict, Verdict::Unusable(ref why) if why.contains("loads nothing")), "{verdict:?}");
-        assert_eq!(check(&schema, &json!({"n": 1}), "message type 'Read' of files"), Ok(()));
+        assert!(matches!(accepted, Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock), "a connection came in");
     }
 
     /// Scenario: A schema with a pattern the validator does not know.
     #[test]
     fn a_schema_with_a_pattern_the_validator_does_not_know_is_not_enforced_and_warned_about_once() {
-        let schema = object(json!({"code": {"type": "string", "pattern": "(?<=a)b"}}));
-        assert!(matches!(verdict(&schema, &json!({"code": 5})), Verdict::Unusable(_)));
+        let schema = object(json!({"code": {"type": "string", "pattern": "["}}));
+        assert!(unusable(&schema).contains("is not a \"regex\""));
         assert_eq!(check(&schema, &json!({"code": 5}), "message type 'Code' of codes"), Ok(()));
         assert!(!warn_once(&schema, "message type 'Code' of codes", "again"), "warned once already");
-        let other = object(json!({"other": {"type": "string", "pattern": "(?<=a)b"}}));
+        let other = object(json!({"other": {"type": "string", "pattern": "["}}));
         assert!(warn_once(&other, "message type 'Other' of codes", "a schema of its own"));
     }
 
-    /// The reasons of the variant that the value names come first, before those of the variants it cannot be.
+    /// Formats are notes whatever draft the schema names, and a schema is read as draft 2020-12 whatever it names.
     #[test]
-    fn the_reasons_of_the_variant_that_the_value_names_come_first() {
-        #[derive(serde::Deserialize, JsonSchema)]
-        #[serde(tag = "kind")]
-        #[allow(dead_code)]
-        enum Shape {
-            Circle { r: f64 },
-            Square { side: f64 },
-            Triangle { a: f64, b: f64 },
-            Hexagon { s: f64 },
-            Dot,
+    fn a_date_that_is_not_a_date_passes_as_no_format_is_asserted_whatever_the_draft() {
+        for draft in [DRAFT, "http://json-schema.org/draft-07/schema#", "http://json-schema.org/draft-04/schema#"] {
+            let schema = json!({"$schema": draft, "type": "object", "properties": {
+                "at": {"type": "string", "format": "date-time"}, "mail": {"format": "email"}}});
+            assert_eq!(verdict(&schema, &json!({"at": "tomorrow", "mail": "nobody"})), Verdict::Matches, "{draft}");
         }
-        #[derive(serde::Deserialize, JsonSchema)]
-        #[serde(rename_all = "camelCase")]
-        #[allow(dead_code)]
-        enum Outer {
-            Dot,
-            Circle { r: f64 },
-            Square { side: f64 },
-        }
-        #[derive(serde::Deserialize, JsonSchema)]
-        #[allow(dead_code)]
-        struct Draw {
-            shape: Shape,
-            outer: Option<Outer>,
-        }
-        let schema = cicada::schema::root_schema::<Draw>();
-        let places = refused(&schema, &json!({"shape": {"kind": "Hexagon", "s": "x"}}));
-        assert!(places.starts_with("at /shape/s: want number, but got string; "), "{places}");
-        assert!(places.ends_with("and 3 more"), "the other variants follow: {places}");
-        let places = refused(&schema, &json!({"shape": {"kind": "Triangle", "a": "x"}}));
-        assert!(places.starts_with("at /shape: missing properties 'b'; at /shape/a: want number"), "{places}");
-        let places = refused(&schema, &json!({"shape": {"kind": "Dot"}, "outer": {"square": {"side": "x"}}}));
-        assert!(places.starts_with("at /outer/square/side: want number, but got string; "), "{places}");
     }
 
-    /// The walk over the errors is linear: a value that refers to itself 100 deep through an `Option`, with 2,000 wrong
-    /// items a level (200,000 errors under 100 nested `anyOf`s), is checked in about the time of its validation, some
-    /// 0.2 s in a test build. A walk over every subtree at every level took 5.6 s for it in a release build.
+    /// A value with many mismatches, deep in a type that refers to itself: the first is named, quickly. The memory a
+    /// refusal holds is tested in `tests/memory.rs`.
     #[test]
-    fn a_deep_value_with_many_mismatches_is_checked_in_linear_time() {
+    fn a_deep_value_with_many_mismatches_names_the_first_quickly() {
         #[derive(serde::Deserialize, JsonSchema)]
         #[allow(dead_code)]
         struct Node {
@@ -380,10 +304,9 @@ mod tests {
         }
         let schema = cicada::schema::root_schema::<Node>();
         let start = std::time::Instant::now();
-        let places = refused(&schema, &value);
+        let place = refused(&schema, &value);
         let took = start.elapsed();
-        assert!(places.starts_with("at /items/0: want integer, but got string; "), "{places}");
-        assert!(places.ends_with("; and 200094 more"), "{places}"); // and the `null` of 99 levels
+        assert_eq!(place, r#"at /items/0: "x" is not of type "integer""#);
         assert!(took < std::time::Duration::from_secs(30), "the check took {took:?}");
     }
 
@@ -401,7 +324,7 @@ mod tests {
                     for (schema, value) in [(&state, build::<T>(levels, ok)), (&put, payload::<T>(levels, ok))] {
                         match verdict(schema, &value) {
                             Verdict::Matches => assert!(ok, "{} at {levels} levels matches", T::NAME),
-                            Verdict::DoesNotMatch(places) => assert!(!ok, "{} at {levels} levels: {places}", T::NAME),
+                            Verdict::DoesNotMatch(place) => assert!(!ok, "{} at {levels} levels: {place}", T::NAME),
                             other => panic!("{} at {levels} levels: {other:?}", T::NAME),
                         }
                     }
@@ -414,11 +337,5 @@ mod tests {
             shape::<Wide>();
         };
         std::thread::Builder::new().stack_size(2 << 20).spawn(run).unwrap().join().unwrap();
-    }
-
-    #[test]
-    fn a_date_that_is_not_a_date_passes_as_no_format_is_asserted() {
-        let schema = object(json!({"at": {"type": "string", "format": "date-time"}, "mail": {"format": "email"}}));
-        assert_eq!(verdict(&schema, &json!({"at": "tomorrow", "mail": "nobody"})), Verdict::Matches);
     }
 }

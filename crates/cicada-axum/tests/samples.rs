@@ -23,7 +23,7 @@ struct Wallet {
     balance: i32,
 }
 
-/// A text whose schema has a pattern that the validator does not know (a look-behind).
+/// A text whose schema has a pattern that the validator does not know (an unclosed class).
 #[derive(Debug, Serialize, Deserialize)]
 struct Code(String);
 
@@ -33,7 +33,7 @@ impl JsonSchema for Code {
     }
 
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        json_schema!({"type": "string", "pattern": "(?<=a)b"})
+        json_schema!({"type": "string", "pattern": "["})
     }
 }
 
@@ -52,7 +52,9 @@ fn a_message_that_the_type_serialised_passes() {
 
 /// Scenario: A sample that only the decoder accepts.
 #[test]
-#[should_panic(expected = "The schema refused the sample of 'Pay': at the top level: missing properties 'amount'")]
+#[should_panic(
+    expected = r#"The schema refused the sample of 'Pay': at the top level: "amount" is a required property"#
+)]
 fn a_message_that_names_a_field_by_its_alias_fails_on_the_schema() {
     assert_message_sample::<PayMsg>(&json!({"type": "Pay", "sum": 3}));
 }
@@ -72,7 +74,7 @@ fn a_state_that_the_type_serialised_passes() {
 
 /// Scenario: A state sample (the second part).
 #[test]
-#[should_panic(expected = "The schema refused the state sample of samples::Wallet: at /balance: want integer")]
+#[should_panic(expected = r#"The schema refused the state sample of samples::Wallet: at /balance: "x" is not of type"#)]
 fn a_state_with_a_field_of_the_wrong_kind_fails() {
     assert_state_sample::<Wallet>(&json!({"balance": "x"}));
 }

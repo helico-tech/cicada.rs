@@ -363,11 +363,11 @@ async fn a_payload_that_does_not_fit_is_refused_with_its_reason_said_once() {
     let refused = post(&app, "/actors/counter/a/messages", r#"{"type": "Add", "payload": {"n": "x"}}"#).await;
     assert_problem(&refused, 422, pt::INVALID_PAYLOAD);
     let detail = refused.json()["detail"].as_str().unwrap().to_owned();
-    assert_eq!(detail, "Payload of 'Add' does not match the schema: at /n: want integer, but got string");
+    assert_eq!(detail, r#"Payload of 'Add' does not match the schema: at /n: "x" is not of type "integer""#);
     assert_eq!((detail.matches("'Add'").count(), detail.matches("/n").count()), (1, 1), "{detail}");
     let not_object = post(&app, "/actors/counter/a/messages", r#"{"type": "Add", "payload": [1]}"#).await;
     assert_problem(&not_object, 422, pt::INVALID_PAYLOAD);
-    let expected = "Payload of 'Add' does not match the schema: at the top level: want object, but got array";
+    let expected = r#"Payload of 'Add' does not match the schema: at the top level: [1] is not of type "object""#;
     assert_eq!(not_object.json()["detail"], expected);
 }
 

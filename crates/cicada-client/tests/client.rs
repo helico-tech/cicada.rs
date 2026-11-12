@@ -272,14 +272,14 @@ async fn a_node_that_does_not_host_the_type_refuses_what_does_not_match_the_sche
     let refused = actors.create_actor(&address, json!({"balance": "lots"})).await.unwrap_err();
     let problem = refused.problem().expect("a problem");
     assert_eq!((problem.status, problem.problem_type.as_str()), (422, pt::INVALID_STATE));
-    let detail = "State does not match the schema: at /balance: want integer, but got string";
+    let detail = r#"State does not match the schema: at /balance: "lots" is not of type "integer""#;
     assert_eq!(problem.detail.as_deref(), Some(detail));
 
     actors.create(&acme(), &AccountState::default()).await.unwrap();
     let refused = actors.send_message(&address, "Deposit", json!({"amount": "ten"}), SendOptions::new()).await;
     let problem = refused.unwrap_err().problem().cloned().expect("a problem");
     assert_eq!((problem.status, problem.problem_type.as_str()), (422, pt::INVALID_PAYLOAD));
-    let detail = "Payload of 'Deposit' does not match the schema: at /amount: want integer, but got string";
+    let detail = r#"Payload of 'Deposit' does not match the schema: at /amount: "ten" is not of type "integer""#;
     assert_eq!(problem.detail.as_deref(), Some(detail));
 }
 
