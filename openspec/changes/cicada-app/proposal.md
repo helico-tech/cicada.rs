@@ -27,6 +27,8 @@ To decide in the design:
 - A config path that is a symlink. The `cicada config` commands save by renaming a new file over the path, so they
   replace the link with a regular file and the link's target keeps the old text. Resolve the link before saving, or
   say so in the README (found while `cli-and-tui` was validated).
+- How `App` takes observers and the limit of lost claims (`turn-observer`). The sample service has telemetry and
+  moves onto `App` (found when `turn-observer` was reviewed).
 
 ## Capabilities
 

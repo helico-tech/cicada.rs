@@ -18,8 +18,8 @@ polling watcher and the guard are no longer needed. ADR 0018 decides on one crat
   - **Dead letters.** It gets failed messages through a watch, with no polling. An operator redrives or discards one
     with a message.
   - **Topic.** It keeps subscribers and sends each published message to all of them.
-- `FailureWatcher` and `CrashLoopGuard` are removed. A watch replaces the first, the claim limit of `turn-observer`
-  the second.
+- `FailureWatcher` is removed: a watch replaces it. `CrashLoopGuard` went with `turn-observer`, whose claim limit
+  replaces it.
 
 The simplest version: three actors. The others wait until someone needs them.
 
@@ -31,7 +31,14 @@ To decide in the design:
   schedule moves here now, or it becomes an example.
 - A supervisor restarts actors whose types it does not know at compile time. That needs a create by address and JSON
   state inside a turn, which does not exist. ADR 0018 does not name it; Chorus asks for it too (its change
-  `cicada-requests`, point 8).
+  `cicada-requests`, point 8). Such a state is JSON that code sends, which nothing checks against the schema
+  (`json-schema-at-the-http-door`, Non-Goals): a state that no node can decode fails every message of the actor
+  (found when `json-schema-at-the-http-door` was reviewed).
+- What a supervisor does with a `Failed` whose error starts with `claim limit:`. A message that kills its node
+  takes the messages beside it to the claim limit too (`turn-observer`, decision 10), so a supervisor that restarts
+  on every `Failed` would restart healthy actors. The start of the error is a hint and no proof; a field of `Failed`
+  for the cause would be proof, and changes the contract of every watcher (found when `turn-observer` was
+  reviewed).
 
 ## Capabilities
 
@@ -58,6 +65,8 @@ Step 10 of ADR 0018. After `cicada-app`, before `docs-per-layer`. It needs `chil
 
 ## Impact
 
+- `crates/cicada`, if the supervisor needs a create by address and JSON state: the core has none, and
+  `control-effects` left it out (found when `control-effects` was reviewed). The design decides.
 - A new crate; `cicada-extras` (removed), the examples and the sample service that use it, `README.md`,
   `docs/architecture.md` (the crate table), `docs/operations.md` and `CHANGELOG.md`.
 - No change to a guarantee; the contracts of the ready-made actors are new wire formats of their own, covered by ADR
