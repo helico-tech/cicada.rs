@@ -211,7 +211,8 @@ pub(crate) struct TurnExecutor {
     /// The node's plugins, in installation order.
     pub plugins: Vec<Arc<dyn Plugin>>,
     pub lease: LeaseSettings,
-    /// Wakes the node's dispatch loop: after a commit that sent messages, or one that may have applied unacknowledged.
+    /// Wakes the node's dispatch loop: after a commit that sent messages, wrote notifications or had control effects,
+    /// or one that may have applied unacknowledged.
     pub wake: Arc<Notify>,
 }
 
@@ -592,8 +593,12 @@ impl TurnExecutor {
             },
             outcome @ (TurnOutcome::Done | TurnOutcome::Cancelled) => outcome,
         };
-        // A stop removes actors, and a failure is an event too: either may write notifications to watchers here.
-        let notifies = matches!(outcome, TurnOutcome::Failed(_)) || matches!(decision.state, StateChange::Stop);
+        // A stop removes actors, and a failure is an event too: either may write notifications to watchers here. A
+        // control effect may too, and a resume makes messages due.
+        let notifies = matches!(outcome, TurnOutcome::Failed(_))
+            || matches!(decision.state, StateChange::Stop)
+            || !decision.controls.is_empty();
+        let controls = decision.controls.clone();
         let request = CommitRequest {
             event: MessageId::random(),
             address: claim.actor.clone(),
@@ -618,6 +623,20 @@ impl TurnExecutor {
                 _ => TurnOutcome::Failed(sanitize(&format!("Commit refused: {reason}"))),
             },
             CommitEnd::Answered(CommitResult::Committed { sent, .. }) => {
+                // Nothing in the store records who controlled an actor, so the node logs it (ADR 0024); whether the
+                // target was there, the commit does not say.
+                for control in &controls {
+                    tracing::info!(
+                        actor = %claim.actor,
+                        effect = %control.effect,
+                        target = %control.actor,
+                        "Turn of {} for {}: {} {}",
+                        claim.actor,
+                        claim.message.id,
+                        control.effect,
+                        control.actor
+                    );
+                }
                 return self.outcome(info, &outcome, &sent, notifies).await;
             }
             CommitEnd::Answered(CommitResult::LeaseLost) => {
@@ -691,7 +710,8 @@ impl TurnExecutor {
     }
 
     /// After a successful commit: wakes the node for the messages sent, for a rescheduled message (which may be due at
-    /// once) and for the notifications of a failure or a stop (`notifies`), then runs the `on_outcome` hooks.
+    /// once), and for the notifications of a failure, a stop or a delete and the messages a resume makes due
+    /// (`notifies`), then runs the `on_outcome` hooks.
     async fn outcome(&self, info: &TurnInfo, outcome: &TurnOutcome, sent: &[Message], notifies: bool) {
         if !sent.is_empty() || !outcome.is_final() || notifies {
             self.wake.notify_one();

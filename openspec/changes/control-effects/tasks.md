@@ -46,7 +46,7 @@ turn and the id of its event, and the stores write the notifications.
 
 ## 2. The runtime
 
-- [ ] 2.1 The calls [5, 6]: `Turn::pause`, `resume`, `purge` and `delete` for a ref, and `pause_at`, `resume_at`,
+- [x] 2.1 The calls [5, 6]: `Turn::pause`, `resume`, `purge` and `delete` for a ref, and `pause_at`, `resume_at`,
       `purge_at` and `delete_at` for an address. A call fails with `TurnError::Invalid` and buffers nothing for a
       ref without an address, a delete of the turn's own actor, and a delete after a create of the same address.
       After a pause and a resume of one actor the last call stands; the same effect twice is buffered once.
@@ -59,7 +59,7 @@ turn and the id of its event, and the stores write the notifications.
       watched", "Deleting itself", "Deleting its parent", "Pausing itself", "An actor it did not create", "Pause and
       resume", "The same effect twice", "A delete after a create" and "A create of a descendant of a deleted
       actor", and of `watches` "An actor is deleted by a turn".
-- [ ] 2.2 The node [8, 13]: it wakes its loop after a commit with a control effect, and writes one `tracing` event
+- [x] 2.2 The node [8, 13]: it wakes its loop after a commit with a control effect, and writes one `tracing` event
       at the info level for each control effect of a commit it saw succeed, with the acting actor, the effect and
       the target. Verify: tests for the scenarios "A resume wakes the node" and "A delete by a turn wakes the
       watcher"; the report quotes the log line of one delete.
