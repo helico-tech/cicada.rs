@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.14.0 — unreleased
+## 0.14.0 — 2026-11-12
 
 A breaking release: the ready-made actors (ADR 0018, ADR 0028). The new crate `cicada-actors` replaces
 `cicada-extras` with a supervisor, dead letters and a topic, each an ordinary actor on the public API under a fixed

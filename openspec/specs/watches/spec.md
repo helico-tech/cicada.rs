@@ -101,15 +101,15 @@ prefix, or on every type, SHALL tell its watcher of failures only: it SHALL get 
 
 When a message to a watched actor ends as `failed`, the same transaction SHALL put one `Failed` message into the
 mailbox of each watcher. It SHALL hold the actor, the id, the type name, the payload, the correlation id and the
-sender of the failed message, the error and the number of attempts. A message that ends otherwise, and an attempt that is retried,
-SHALL notify nobody.
+sender of the failed message, the error, the number of attempts and the cause. A message that ends otherwise, and
+an attempt that is retried, SHALL notify nobody.
 
 #### Scenario: A message fails for good
 
 - **WHEN** a message to a watched actor fails on its last attempt
 - **THEN** each watcher has one `Failed` message in its mailbox, with the actor, the id, the type name, the payload,
-  the correlation id and the sender of the failed message, the error and the number of attempts; its sender is the
-  actor, and it has no `causedBy`
+  the correlation id and the sender of the failed message, the error, the number of attempts and the cause; its
+  sender is the actor, and it has no `causedBy`
 
 #### Scenario: A failed message whose failure is not kept
 
@@ -329,3 +329,100 @@ outcomes that existed before the migration SHALL not be marked as notifications.
 - **WHEN** a store opens a database of schema version 4 that holds a pending message and an outcome
 - **THEN** the database is at the schema version this store writes, the message and the outcome are still there,
   neither is marked as a notification, and no watch is stored
+
+### Requirement: A `Failed` says why the message failed
+
+Every `Failed` SHALL hold exactly one cause, which says why the message failed: `handler`, `node`, `refused`,
+`timeout`, `message`, `state`, `commit` or `claim-limit`. The scenarios below say which cause each way of failing
+has.
+
+#### Scenario: A handler fails
+
+- **WHEN** the handler of a message to a watched actor returns an error and the message has no retry left
+- **THEN** the `Failed` of each watcher has the cause `handler`
+
+#### Scenario: A handler refuses a message
+
+- **WHEN** the handler fails for good
+- **THEN** the cause is `refused`
+
+#### Scenario: A turn runs too long
+
+- **WHEN** the turn is cut off at its maximum duration and the message has no retry left
+- **THEN** the cause is `timeout`
+
+#### Scenario: A message that cannot be decoded
+
+- **WHEN** a message with a payload that does not fit ends `failed`
+- **THEN** the cause is `message`
+
+#### Scenario: A state that cannot be decoded
+
+- **WHEN** a message to an actor whose state cannot be decoded ends `failed`
+- **THEN** the cause is `state`
+
+#### Scenario: A commit that is rejected
+
+- **WHEN** a handler returns after a send to an actor that does not exist
+- **THEN** the cause is `commit`
+
+#### Scenario: The claim limit
+
+- **WHEN** the claim limit fails a message
+- **THEN** the cause is `claim-limit`
+
+#### Scenario: An address the type cannot read
+
+- **WHEN** a message to an actor whose address its type cannot read ends `failed`
+- **THEN** the cause is `state`
+
+#### Scenario: An effect that is refused after the handler returned
+
+- **WHEN** a handler returns and the node then refuses one of its effects
+- **THEN** the cause is `commit`
+
+#### Scenario: A read of the store that fails after the handler returned
+
+- **WHEN** a handler returns, and the read of the registry that the node then needs fails until the node gives up
+- **THEN** the message ends `failed` with the cause `node`
+
+#### Scenario: A handler panics
+
+- **WHEN** the handler of a message without a retry policy panics
+- **THEN** the cause is `handler`
+
+#### Scenario: An observer is not touched
+
+- **WHEN** an observer is told the end of a turn that failed
+- **THEN** it gets the outcome `failed` with the error, as before
+
+#### Scenario: A handler passes a failed read of the store on
+
+- **WHEN** a handler without a retry policy returns the `TurnError::Store` of a `send_raw` with `?`, or wraps it
+  with a context of its own
+- **THEN** the cause is `node`
+
+#### Scenario: A handler refuses with a store error inside
+
+- **WHEN** a handler refuses a message for good with an error that holds a store error
+- **THEN** the cause is `refused`
+
+#### Scenario: A turn that ran too long after a refusal
+
+- **WHEN** a handler refuses a message for good, but only after its turn ran past its maximum duration
+- **THEN** the cause is `timeout`
+
+#### Scenario: A retry the store cannot schedule
+
+- **WHEN** a handler fails, its retry policy asks for a retry, and the store refuses the time of the retry
+- **THEN** the message ends `failed` with the cause `handler`
+
+#### Scenario: A new state that cannot be stored
+
+- **WHEN** a handler returns with a new state that cannot be encoded
+- **THEN** the cause is `handler`
+
+#### Scenario: A panic outside the handler
+
+- **WHEN** the node panics around a turn, outside the handler
+- **THEN** the message ends `failed` with the cause `node`

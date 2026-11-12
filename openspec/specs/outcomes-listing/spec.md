@@ -32,11 +32,16 @@ be refused with `400`. An outcome hidden by its message's retention policy, or p
 - **WHEN** a message was sent with a retention policy that removes its done outcome
 - **THEN** the message is listed neither with `status=done` nor without a status
 
-### Requirement: Failures are an outcomes query
+### Requirement: There is no route for failures
 
-The failure watcher SHALL read the failed outcomes, and `GET /failures` SHALL no longer exist.
+`GET /failures` SHALL NOT exist. Failed messages SHALL be listed as the outcomes of status `failed`.
 
-#### Scenario: The watcher forwards a failure
+#### Scenario: The failed outcomes
 
-- **WHEN** a message fails
-- **THEN** the failure watcher reads it through the outcomes of status `failed` and forwards it to the dead letters
+- **WHEN** a client asks for `GET /outcomes?status=failed` after a message failed
+- **THEN** the message is in the list
+
+#### Scenario: The old route
+
+- **WHEN** a client asks for `GET /failures`
+- **THEN** the answer is `404`
