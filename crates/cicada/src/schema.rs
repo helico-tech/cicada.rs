@@ -15,7 +15,7 @@ use crate::message::{MessageError, TYPE_TAG};
 const DRAFT: &str = "https://json-schema.org/draft/2020-12/schema";
 
 /// Checks a payload or a state against its registered schema: `check(schema, value)`, `Err` with the reason, such as
-/// "at /n: want integer, but got string". [`ActorSystem::send_message_checked`] and
+/// `at /n: "x" is not of type "integer"`. [`ActorSystem::send_message_checked`] and
 /// [`ActorSystem::create_actor_checked`] take one from their caller and put the reason into their refusal.
 ///
 /// [`ActorSystem::send_message_checked`]: crate::ActorSystem::send_message_checked

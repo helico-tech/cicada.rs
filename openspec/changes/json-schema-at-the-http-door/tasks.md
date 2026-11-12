@@ -16,13 +16,14 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
 
 ## 2. The door
 
-- [x] 2.1 The validator [3, 4, 6, 8]: the dependency `boon` in `cicada-axum` only, and one private function that
-      checks a value against a schema: draft 2020-12, a loader that refuses every address, no format asserted, the
-      detail of decision 8. A schema that cannot be used is not enforced, and warned about once for each such
-      schema. Verify: unit tests for the scenarios "Two places that do not match", "A field inside an optional
-      part", "More than five places", "A schema that refers to a file" (with a file that exists, and the test shows
-      it is not read) and "A schema with a pattern the validator does not know"; a test that a bad `date-time`
-      passes; and `cargo tree -p cicada -e normal` does not name `boon`.
+- [x] 2.1 The validator [3, 4, 6, 8]: the dependency `jsonschema` (the owner's decision of 2026-11-12, in place of
+      `boon`) in `cicada-axum` only, and one private function that checks a value against a schema: draft 2020-12, a
+      retriever that refuses every address, no format asserted, the first place only (decision 8). A schema that
+      cannot be used is not enforced, and warned about once for each such schema. Verify: unit tests for the
+      scenarios "Two places that do not match", "A field inside an optional part", "A schema that refers to a file"
+      (with a file that exists, and a port that listens, and the test shows neither is read) and "A schema with a
+      pattern the validator does not know"; a test that a bad `date-time` passes; a test of the memory a refused
+      request holds; and `cargo tree -p cicada -e normal` names none of the crates new to the workspace.
 - [x] 2.2 The handlers [1, 5, 7]: a send and a create call the checked calls with the validator. Both refusals answer
       `422` with the problem types they have; the detail says which check refused. Verify, in the HTTP tests of
       `cicada-axum`, with a node that hosts the type and one that does not on one store: tests for the scenarios "A

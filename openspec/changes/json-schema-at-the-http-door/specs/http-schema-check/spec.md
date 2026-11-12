@@ -107,26 +107,21 @@ refused it.
 
 ### Requirement: The detail of a refusal says where and why
 
-The detail of a refusal by the schema SHALL name the message type, or the state, and up to five places of the
-payload that do not match, each with its path in the payload and the reason, and SHALL say when there are more. It
-SHALL NOT hold the address of the schema or a path into it. It SHALL be at most 2,000 characters: a longer one SHALL
+The detail of a refusal by the schema SHALL name the message type, or the state, and the first place of the value
+that does not match, with its path in the value, "the top level" for the value itself, and the reason. It SHALL NOT
+hold the address of the schema or a path into it. It SHALL be at most 2,000 characters: a longer one SHALL
 be cut and SHALL end with a mark that says so. The detail of a refusal by the decoder of a hosting node SHALL be cut
 in the same way.
 
 #### Scenario: Two places that do not match
 
 - **WHEN** a client sends a payload with two fields of the wrong kind
-- **THEN** the detail names the message type and both fields, each with what was expected
+- **THEN** the detail names the message type and the first of the two fields, with what was expected
 
 #### Scenario: A field inside an optional part
 
 - **WHEN** a client sends a payload whose optional field holds an object with a field of the wrong kind
-- **THEN** the detail names the path of the inner field
-
-#### Scenario: More than five places
-
-- **WHEN** a client sends a payload with eight fields of the wrong kind
-- **THEN** the detail names five of them and says that there are more
+- **THEN** the detail names the path of the optional field, and that its value matches none of the shapes it may have
 
 #### Scenario: A very long value
 
@@ -140,6 +135,17 @@ in the same way.
   reason that quotes it, to a node that hosts the type
 - **THEN** the answer is `422 invalid-payload`, and the detail is 2,000 characters long and ends with the mark that it
   was cut
+
+### Requirement: A refused request costs memory in proportion to its size
+
+The check of a payload or a state that does not match SHALL hold memory in proportion to the size of the request, not
+to the number of places that do not match.
+
+#### Scenario: A request with many mismatches
+
+- **WHEN** a client sends a payload, or creates an actor with a state, of about 1 MiB with 520,000 values of the wrong
+  kind, or 100 levels of a type that refers to itself with 2,000 wrong values a level
+- **THEN** the answer is `422`, and the check holds at most a few times the size of the body while it runs
 
 ### Requirement: The check uses nothing outside the schema, and asserts no format
 

@@ -29,7 +29,7 @@ node can read the registered JSON Schemas of every type. ADR 0018 enforces the s
 - `ActorSystem::send_message_checked` and `create_actor_checked` take the check from the caller; the core has no
   validator.
 - `docs/architecture.md` changes its row on validation: schemas are no longer "never used to validate".
-- One new dependency, the JSON Schema validator `boon`, in `cicada-axum` only.
+- One new dependency, the JSON Schema validator `jsonschema` without its default features, in `cicada-axum` only.
 
 The simplest version: the validator sits in the HTTP layer and nowhere else.
 

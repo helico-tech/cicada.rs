@@ -605,10 +605,11 @@ A send and a create over HTTP are checked against the registered JSON Schema of 
 not the node hosts the type (ADR 0026): the payload against the schema of its message type, the state of a create
 against the state schema. One that does not match is refused with `422 invalid-payload` or `422 invalid-state`, and
 nothing is stored. A node that hosts the type then decodes it with serde as well, with the same answer. The detail
-says which check refused it, and where: `Payload of 'Add' does not match the schema: at /n: want integer, but got
-string` names up to five places and says when there are more, the reasons of the variant that an enum with data names
-first; `Payload of 'Add' cannot be decoded: …` is serde's. Either is cut at 2,000 characters with the mark
-` … (cut)`.
+says which check refused it, and where: `Payload of 'Add' does not match the schema: at /n: "x" is not of type
+"integer"` names the first place that does not match (a value that may have one of several shapes, such as an
+`Option` of a struct, is named as a whole, with a general reason); `Payload of 'Add' cannot be decoded: …` is serde's.
+Either is cut at 2,000 characters with the mark ` … (cut)`. The check asks only for that first place, so a refused
+request costs no more memory for many mismatches than for one.
 
 The order of the checks stays: a send that repeats the id of a message that is pending, or whose outcome is still
 shown, is answered as a repeat (`200`) before it is checked; an unknown message type is `422 unknown-message-type`.

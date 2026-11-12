@@ -99,21 +99,33 @@ is still shown gets the answer of a repeat, also when its payload does not match
 JSON, repeated over HTTP. A repeat of a message whose outcome retention hides is checked before the store refuses
 the id (review); that is how the decoder of a hosting node already behaves.
 
-### 3. The validator is `boon`
+### 3. The validator is `jsonschema`
 
-| | `boon` 0.6 | `jsonschema` 0.61 |
+Decided by the owner on 2026-11-12 ("V1"), after the fourth round of validation found the memory that `boon` holds for
+a refused request.
+
+| | `boon` 0.6 | `jsonschema` 0.61, without default features |
 | --- | --- | --- |
 | Draft 2020-12 | yes | yes |
-| Crates new to the workspace | 6 | 23 |
+| Crates new to the workspace | 5 | 26 |
 | Licence | MIT or Apache-2.0 | MIT |
-| Loads a reference from outside | a `file:` address, unless told not to | over HTTP or from a file, with a feature |
+| Loads a reference from outside | a `file:` address, unless told not to | nothing without its features; the check gives it a retriever that refuses every address |
+| Can stop at the first mismatch | not in its public interface: it builds every mismatch with its full path first | `is_valid`, and `validate` for the first error |
+| Memory of a refused request of 1 MiB with 520,000 mismatches | 473 MiB | under 1 MiB |
+| A check of an ordinary send, on the calling thread, release build | about 8 µs | about 3 µs |
 
-Both do what is needed. `boon` adds a quarter of the crates. It has one maintainer and few releases; the check is
-one function of `cicada-axum`, so another validator is a change in one place.
+`boon` was the first choice: a quarter of the crates, and it did all that was needed. It lost because it cannot stop
+at the first mismatch: it builds an error with its full path for every mismatch before the door picks any, so a
+refused request of 1 MiB made the check hold about 470 times its body, and 200 such requests at once took a node from
+32 MiB to about 6 GB resident. `jsonschema` answers whether a value matches without building errors, and gives the
+first error alone. The check asks for nothing else (decision 8). It has more crates (risks); the check is one
+function of `cicada-axum`, so another validator is still a change in one place.
 
-The check never loads anything from outside the schema document: no file and no network. `boon` reads a `file:`
-reference by default, so the check gives it a loader that refuses every address (second review); the standard
-metaschemas are built in. A schema that refers outside itself is a schema the validator cannot use (decision 6).
+The check never loads anything from outside the schema document: no file and no network. Without its default features
+`jsonschema` has no way to fetch, and the check gives it a retriever that refuses every address all the same; the
+standard metaschemas are built in. A schema that refers outside itself is a schema the validator cannot use (decision
+6). The check sets draft 2020-12, so a schema is read as 2020-12 whatever `$schema` it names, and a `$schema` the
+validator does not know is not fetched.
 
 ### 4. Formats are not asserted
 
@@ -169,19 +181,16 @@ hosting node would accept a payload it cannot decode.
 
 ### 8. What the detail says
 
-The detail of a schema refusal names the message type (or "state"), then up to five places that do not match, each
-with its path in the payload and the reason, and says when there are more. A validator reports a tree: a field of
-an optional struct fails under an `anyOf`. The places are the leaves of that tree, in the validator's order
-(review), except that under an `anyOf` or a `oneOf` the alternatives that the value cannot be come last: those whose
-tag names another variant (a `const` or `enum` on a property of the part fails), whose kind does not fit the part, or
-that do not allow a property it holds. So the reasons of the variant that an enum with data names come first, before
-"and N more" (validation). To tell, the door looks only at the alternative's own error and its direct causes, at the
-part and its properties, never deeper, so that the walk stays linear in the number of errors: a deep value with many
-mismatches costs no more than its validation (second validation; an earlier walk over every subtree took seconds).
-Two cases the order does not help, as the variant's own error marks it as another: the named variant has a wrong value
-in a field that is a unit enum (an `enum` fails on a property of the part), and the named variant of an enum that
-denies unknown fields has an unknown field (the part holds a property it does not allow). Its reasons then keep the
-validator's order. The detail holds no address of the schema and no path into it; "expected a string" is fine.
+The detail of a schema refusal names the message type (or "state") and the first place that does not match: its path
+in the value, "the top level" for the value itself, and the reason. The check asks the validator whether the value
+matches and, when it does not, for the first error, never for a list: a list of places costs memory and time in
+proportion to the mismatches, which a client chooses (decision 3). The detail holds no address of the schema and no
+path into it; `"x" is not of type "integer"` is fine.
+
+Known limit: for a value that can be one of several shapes (an `Option` of a struct, an enum with data), the place is
+the part that matches none of them, and the reason is general: `is not valid under any of the schemas listed in the
+'anyOf' keyword`. The place of the field inside is not named.
+
 A reason may quote the value, so the detail is cut at 2,000 characters and then ends with the mark " … (cut)"
 (validation). So is the detail of the decoder of a hosting node, which may quote the value too (second validation).
 
@@ -219,16 +228,19 @@ third round, 2026-11-12.
 
 The validator recurses per level of a value, and a type that refers to itself lets a request nest as deep as the JSON
 parser of the body allows: 127 levels with the body, so a payload or a state of 126. The stack a level takes is set by
-the steps of the schema between two levels of the type, not by the depth alone: about 42 KiB in a test build for a list
-under an `Option` or a tagged enum, 86 to 103 KiB for a type with newtypes or several groups between its levels, and
-about a quarter of that in a release build. A thread of the runtime has a stack of 2 MiB. An overflow is no error: the
-process dies, and every turn it runs becomes a lost claim.
+the steps of the schema between two levels of the type, not by the depth alone. With `boon` it was about 42 KiB a level
+in a test build for a list under an `Option` or a tagged enum, and 86 to 103 KiB for a type with newtypes or several
+groups between its levels (12.9 MiB at 126 levels for the widest). With `jsonschema`, for the three widest shapes the
+validation found: at most 10.8 KiB a level in a test build (1.35 MiB at 126 levels, for a value that does not match;
+0.5 MiB for one that does) and about 2.5 KiB in a release build (311 KiB). A thread of the runtime has a stack of
+2 MiB. An overflow is no error: the process dies, and every turn it runs becomes a lost claim.
 
-Every value is checked on a scoped thread of its own with a stack of 64 MiB, five times what the widest shape found
-needs at 126 levels in a test build (12.9 MiB). The stack is address space: only the pages a check touches are used.
-The thread costs about 30 µs a check in a release build; the check of an ordinary send takes about 38 µs with it and
-8 µs without. The check is as strict as before. A thread that cannot be started fails the request with `500`; the
-check is not skipped.
+Every value is checked on a scoped thread of its own with a stack of 64 MiB, chosen as five times what the widest shape
+needed with `boon`; with `jsonschema` it is more than forty times the widest found. The stack is address space: only
+the pages a check touches are used. The thread costs about 26 µs a check in a release build; the check of an ordinary
+send takes about 29 µs with it and 3 µs without. With `jsonschema` these shapes fit a default stack even at 126 levels
+in a test build; the thread stays, as the stack a level takes is set by the type, and a type can need more. The check is
+as strict as before. A thread that cannot be started fails the request with `500`; the check is not skipped.
 
 - **Every value on a stack of its own (chosen).**
 - A bound below which a value stays on the calling thread (this change before the third round of validation, at 24
@@ -255,7 +267,8 @@ check is not skipped.
 - A schema the validator cannot use is not enforced (decision 6). The warning and the sample check are the only
   signs.
 - A schema is compiled for each request (decision 10).
-- `boon` has one maintainer (decision 3).
+- `jsonschema` brings 26 crates into `cicada-axum`, none into the core (decision 3).
+- The detail names one place, and for a value of several possible shapes a general reason (decision 8).
 - The answer departs from ADR 0018 in its status (decision 7).
 
 ## Migration Plan

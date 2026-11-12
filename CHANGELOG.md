@@ -37,13 +37,15 @@ and 0.12.0 can share a database, and during a rolling deploy a node of 0.11.0 st
 - `POST /actors/{type}/{key}/messages` checks the payload against the schema of its message type, and
   `PUT /actors/{type}/{key}` the state against the state schema of the registered contract, on every node. A refusal is
   `422 invalid-payload` or `422 invalid-state` and stores nothing; its detail names the message type (or the state)
-  and up to five places that do not match, each with its path and the reason, and says when there are more:
-  `Payload of 'Add' does not match the schema: at /n: want integer, but got string`. Under an enum with data the reasons
-  of the variant that the value names come first. A node that hosts the type then decodes with serde as before, with
+  and the first place that does not match, with its path and the reason:
+  `Payload of 'Add' does not match the schema: at /n: "x" is not of type "integer"`. A value that may have one of
+  several shapes (an `Option` of a struct, an enum with data) is named as a whole, with a general reason. The check
+  asks only for that first place, so a refused request holds memory in proportion to its size, not to its mismatches.
+  A node that hosts the type then decodes with serde as before, with
   the same answer and the detail `… cannot be decoded: …`, so the detail of a payload that does not fit names the
   schema now. Either detail is cut at 2,000 characters (`MAX_REFUSAL_DETAIL`) and then ends with ` … (cut)`, as a
   reason may quote the value; a decoder's detail had no limit before. A payload that is not an object reads `… at the
-  top level: want object, but got array` instead of `… must be a JSON object`.
+  top level: [1] is not of type "object"` instead of `… must be a JSON object`.
 - Every payload and state is checked on a thread of its own with a stack of 64 MiB (address space; only the pages the
   check touches are used), so that the validator's recursion over a type that refers to itself, up to the 126 levels
   that the JSON parser of a request lets through, cannot overflow the stack of a thread of the runtime. The thread
@@ -70,7 +72,8 @@ and 0.12.0 can share a database, and during a rolling deploy a node of 0.11.0 st
 - `cicada_axum::assert_message_sample::<M>(&sample)` and `assert_state_sample::<S>(&sample)`: a sample must pass the
   registered schema and decode as the type, or the test fails, saying which of the two refused it and why. A schema
   that the validator cannot use fails too.
-- `cicada-axum` depends on the JSON Schema validator `boon` (draft 2020-12); no other crate does.
+- `cicada-axum` depends on the JSON Schema validator `jsonschema` 0.61 without its default features (draft 2020-12,
+  set for every schema; no format asserted; no fetching), with 26 crates new to the workspace; no other crate does.
 - ADR 0026 records the check, the status it keeps, the check of a create and what the door does where a schema and
   serde disagree.
 

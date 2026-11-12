@@ -234,7 +234,7 @@ impl Actor for SyncActor {
 | --- | --- |
 | `cicada` | Addressing, definition API, runtime and dispatch loop with turn observers and the claim limit, watches, the store (`Store` and its model; the backend trait is private), contracts and schemas, retry and retention policies, the HTTP wire model (`api`, shared by server and client). Behind features: the SQLite store (`sqlite`; sqlx, one file, WAL, one writer), the PostgreSQL store (`postgres`; sqlx, `FOR UPDATE SKIP LOCKED` claims, `LISTEN/NOTIFY` wake-ups) and the test support (`testing`: the in-memory store, clocks, `TestActors`, `claim_and_abandon`). Its tests hold the S1–S10 conformance suite every backend runs and the randomised tests: parsers, backend comparison, and a node simulation under injected faults |
 | `cicada-test` | Exports the test support of `cicada` (`TestActors`, clocks, `claim_and_abandon`); contract snapshots and state samples |
-| `cicada-axum` | `actor_api()`, `actor_api_read()` and `actor_health()` as axum routers, the OpenAPI document, the schema check of the HTTP door (the JSON Schema validator `boon`) and the sample checks |
+| `cicada-axum` | `actor_api()`, `actor_api_read()` and `actor_health()` as axum routers, the OpenAPI document, the schema check of the HTTP door (the JSON Schema validator `jsonschema`) and the sample checks |
 | `cicada-client` | Typed HTTP client (reqwest) |
 | `cicada-cli` | The binary `cicada`: commands and a terminal UI over the HTTP API, through `cicada-client`; no library crate depends on it |
 | `cicada-otel` | OpenTelemetry observer (`ActorTelemetry`) |
