@@ -46,11 +46,12 @@
 //! **The schema check** (ADR 0026). The payload of a send and the state of a create are checked against the registered
 //! JSON Schema of their message type or state, on every node, whether or not it hosts the type, and refused with `422
 //! invalid-payload` or `422 invalid-state`; a node that hosts the type then decodes them with serde, with the same
-//! answer. The detail says which check refused, and the first place that does not match (`Payload of 'Add' does not
-//! match the schema: at /n: "x" is not of type "integer"`). A send that repeats an id it finds pending or still shown
-//! is answered as a repeat first. The check, with the validator `jsonschema` on draft 2020-12, asserts no `format`,
-//! loads nothing from outside the schema, and lets through what a schema it cannot compile would check, with a warning
-//! once per schema.
+//! answer. The detail says which check refused. A refusal by the schema names no place (`Payload of 'Add' does not
+//! match the registered schema; GET /types/counter has it`): the check asks only whether the value matches, so a
+//! refused request costs time and memory in proportion to its size. A node that hosts the type adds the decoder's
+//! reason. A send that repeats an id it finds pending or still shown is answered as a repeat first. The check, with the
+//! validator `jsonschema` on draft 2020-12, asserts no `format`, loads nothing from outside the schema, and lets
+//! through what a schema it cannot compile would check, with a warning once per schema.
 //! [`assert_message_sample`] and [`assert_state_sample`] test a sample against both the schema and serde.
 //!
 //! **Paths.** The actor `sync/acme` is `/actors/sync/acme`; its key is written exactly as in the address.

@@ -36,16 +36,15 @@ and 0.12.0 can share a database, and during a rolling deploy a node of 0.11.0 st
   client sent that the system cannot take, and `400` a request that cannot be read (ADR 0026).
 - `POST /actors/{type}/{key}/messages` checks the payload against the schema of its message type, and
   `PUT /actors/{type}/{key}` the state against the state schema of the registered contract, on every node. A refusal is
-  `422 invalid-payload` or `422 invalid-state` and stores nothing; its detail names the message type (or the state)
-  and the first place that does not match, with its path and the reason:
-  `Payload of 'Add' does not match the schema: at /n: "x" is not of type "integer"`. A value that may have one of
-  several shapes (an `Option` of a struct, an enum with data) is named as a whole, with a general reason. The check
-  asks only for that first place, so a refused request holds memory in proportion to its size, not to its mismatches.
-  A node that hosts the type then decodes with serde as before, with
-  the same answer and the detail `… cannot be decoded: …`, so the detail of a payload that does not fit names the
-  schema now. Either detail is cut at 2,000 characters (`MAX_REFUSAL_DETAIL`) and then ends with ` … (cut)`, as a
-  reason may quote the value; a decoder's detail had no limit before. A payload that is not an object reads `… at the
-  top level: [1] is not of type "object"` instead of `… must be a JSON object`.
+  `422 invalid-payload` or `422 invalid-state` and stores nothing. Its detail names no place and quotes nothing of
+  the value: `Payload of 'Add' does not match the registered schema; GET /types/counter has it`, or `State does not
+  match the registered schema; …`. The check asks only whether the value matches, so a refused request costs time and
+  memory in proportion to its size, whatever the type. A node that hosts the type then decodes with serde as before;
+  when the schema refused the value and the decoder refuses it too, the decoder's reason follows (`… has it. Payload
+  of 'Add' cannot be decoded: invalid type: string "x", expected i32`), so the detail of a payload that does not fit
+  names the schema first now. The status and the problem type are the same on every node. A detail is cut at 2,000
+  characters (`MAX_REFUSAL_DETAIL`) and then ends with ` … (cut)`, as the decoder's reason may quote the value; a
+  decoder's detail had no limit before.
 - Every payload and state is checked on a thread of its own with a stack of 64 MiB (address space; only the pages the
   check touches are used), so that the validator's recursion over a type that refers to itself, up to the 126 levels
   that the JSON parser of a request lets through, cannot overflow the stack of a thread of the runtime. The thread
@@ -60,13 +59,14 @@ and 0.12.0 can share a database, and during a rolling deploy a node of 0.11.0 st
 ### Added
 
 - `ActorSystem::send_message_checked` and `ActorSystem::create_actor_checked` take a `SchemaCheck` from their caller
-  (`cicada::schema::SchemaCheck`, `check(schema, value)`) and run it where a hosting node decodes: after the repeated
+  (`cicada::schema::SchemaCheck`, `check(schema, value)`, true when the value matches) and run it where a hosting node
+  decodes: after the repeated
   id, the registered type and the message type, and for a create after the `null` check and before the address and
   the decoder, so that a state that does not match gets the same answer on every node; a node that hosts a singleton
   answered `invalid-address` for a create of another name with a bad state, and answers `invalid-state` now. Its
-  refusal is `SendResult::InvalidPayload` or `CreateActorResult::InvalidState` with "… does not match the schema: "
-  and its reason. `send_message` and `create_actor` are these with a check that accepts everything. The core has no
-  validator.
+  refusal is `SendResult::InvalidPayload` or `CreateActorResult::InvalidState` with "… does not match the registered
+  schema; GET /types/… has it", and on a hosting node the decoder's reason after it. `send_message` and `create_actor`
+  are these with a check that accepts everything. The core has no validator.
 - `cicada::runtime::MAX_REFUSAL_DETAIL` (2,000): the most characters of the detail of a refused payload or state, by a
   check or by the decoder of a hosting node; a longer one is cut and ends with ` … (cut)`.
 - `cicada_axum::assert_message_sample::<M>(&sample)` and `assert_state_sample::<S>(&sample)`: a sample must pass the

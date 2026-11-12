@@ -68,8 +68,8 @@ samples pass both."
 The core gets no validator. It gets two calls that take one more check from the caller:
 
 ```rust
-/// Checks a payload or a state against its registered schema: `check(schema, value)`, an error with the reason.
-pub type SchemaCheck<'a> = &'a (dyn Fn(&Value, &Value) -> Result<(), String> + Send + Sync);
+/// Checks a payload or a state against its registered schema: `check(schema, value)`, true when it matches.
+pub type SchemaCheck<'a> = &'a (dyn Fn(&Value, &Value) -> bool + Send + Sync);
 
 pub async fn send_message_checked(&self, to: &ActorAddress, message_type: &str, payload: Value,
     options: SendOptions, check: SchemaCheck<'_>) -> Result<SendResult, OpError>;
@@ -80,7 +80,9 @@ pub async fn create_actor_checked(&self, address: &ActorAddress, state: Value, c
 `send_message` and `create_actor` are these with a check that accepts everything. The handlers of `cicada-axum` call
 the checked ones with the validator. The core runs the check at the place where a hosting node decodes: for a send
 after the repeated id, the registered type and the message type; for a create after the registered type and the
-`null` check. A refusal is `SendResult::InvalidPayload` or `CreateActorResult::InvalidState`, as for the decoder.
+`null` check. A refusal is `SendResult::InvalidPayload` or `CreateActorResult::InvalidState`, as for the decoder,
+with the detail of decision 8. The check answers yes or no (validation: it named the places of a mismatch until the
+fifth round; see decision 8).
 In a create the check also comes before what only a hosting node checks, the address and then the decoder, so that a
 state that does not match gets the same answer on every node (validation: decided by the main session on the
 validator's report, 2026-11-12).
@@ -110,16 +112,18 @@ a refused request.
 | Crates new to the workspace | 5 | 26 |
 | Licence | MIT or Apache-2.0 | MIT |
 | Loads a reference from outside | a `file:` address, unless told not to | nothing without its features; the check gives it a retriever that refuses every address |
-| Can stop at the first mismatch | not in its public interface: it builds every mismatch with its full path first | `is_valid`, and `validate` for the first error |
-| Memory of a refused request of 1 MiB with 520,000 mismatches | 473 MiB | under 1 MiB |
+| A yes-or-no check that builds no error | not in its public interface: it builds every mismatch with its full path first | `is_valid` |
+| Memory of a refused request of 1 MiB with 520,000 mismatches | 473 MiB | nothing beyond the check's compiled schema |
 | A check of an ordinary send, on the calling thread, release build | about 8 µs | about 3 µs |
 
 `boon` was the first choice: a quarter of the crates, and it did all that was needed. It lost because it cannot stop
 at the first mismatch: it builds an error with its full path for every mismatch before the door picks any, so a
 refused request of 1 MiB made the check hold about 470 times its body, and 200 such requests at once took a node from
-32 MiB to about 6 GB resident. `jsonschema` answers whether a value matches without building errors, and gives the
-first error alone. The check asks for nothing else (decision 8). It has more crates (risks); the check is one
-function of `cicada-axum`, so another validator is still a change in one place.
+32 MiB to about 6 GB resident. `jsonschema` answers whether a value matches without building errors: `is_valid`.
+The door uses that and nothing else of its checks; its `validate`, which gives the first error, can cost without bound
+too (decision 8), and only the sample checks use it. It has more crates (risks); the check is one function of
+`cicada-axum`, so another validator is still a change in one place. The owner's choice of the library stands after
+the fifth round: of the two, only `jsonschema` has a yes-or-no check that is public.
 
 The check never loads anything from outside the schema document: no file and no network. Without its default features
 `jsonschema` has no way to fetch, and the check gives it a retriever that refuses every address all the same; the
@@ -164,8 +168,8 @@ message will fail should say so. What remains different between nodes is only a 
 serde refuses, and that is a fault of the type that the sample check finds.
 
 Both refusals answer `422` with the problem type `invalid-payload`, and for a state `invalid-state`, as the decoder
-does today. The detail says which check refused it: "does not match the schema" with the place in the payload and
-the reason, or "cannot be decoded" with serde's reason.
+does today. The detail says which check refused it: "does not match the registered schema", with no place (decision
+8), or "cannot be decoded" with serde's reason, which a hosting node also adds after a refusal by the schema.
 
 **This departs from ADR 0018, which says `400` (review).** ADR 0026 records it.
 
@@ -181,18 +185,38 @@ hosting node would accept a payload it cannot decode.
 
 ### 8. What the detail says
 
-The detail of a schema refusal names the message type (or "state") and the first place that does not match: its path
-in the value, "the top level" for the value itself, and the reason. The check asks the validator whether the value
-matches and, when it does not, for the first error, never for a list: a list of places costs memory and time in
-proportion to the mismatches, which a client chooses (decision 3). The detail holds no address of the schema and no
-path into it; `"x" is not of type "integer"` is fine.
+Validation: decided by the main session on the validator's report of its fifth round, 2026-11-12. This changes the
+second half of the owner's decision of the same day, "report the first mismatch only".
 
-Known limit: for a value that can be one of several shapes (an `Option` of a struct, an enum with data), the place is
-the part that matches none of them, and the reason is general: `is not valid under any of the schemas listed in the
-'anyOf' keyword`. The place of the field inside is not named.
+The door asks the validator only whether a value matches, and the detail of a refusal by the schema names no place:
+"Payload of 'Add' does not match the registered schema; GET /types/counter has it", and for a state "State does not
+match the registered schema; …". It quotes nothing of the value and holds no address of the schema. Three ways to name a
+place were tried, and each could be made to cost without bound by a small request, because the cost depends on how many
+shapes a type allows at each level and how deep they nest, which a host's type decides:
 
-A reason may quote the value, so the detail is cut at 2,000 characters and then ends with the mark " … (cut)"
-(validation). So is the detail of the decoder of a hosting node, which may quote the value too (second validation).
+- Up to five places (`boon`, from the first build): every mismatch was built with its full path first; a refused
+  request of 1 MiB held 473 MiB, and 200 at once took a node to about 6 GB resident.
+- The order of those places, the reasons of the variant that a value names first (validation): a walk over every
+  subtree at every nested group took 12 s for a request of 800 KB, until it was made linear.
+- The first place (`jsonschema`, `validate`): for an `anyOf` or `oneOf` it builds the errors of every alternative, with
+  a copy of the value, at every level. An expression of an enum whose variants share field names took 16 s at 13 deep
+  (572 bytes) and tripled per level; an optional batch of 520,000 wrong numbers held 263 MiB, a list wrong below its
+  first level (800 KB) 1,769 MiB.
+
+`is_valid` builds no error: it took at most 1.5 ms in every case, to 120 levels.
+
+A node that hosts the type adds the decoder's reason. When the schema refuses a value, that node also asks the decoder,
+and when the decoder refuses the value too, its reason follows: "… GET /types/counter has it. Payload of 'Add' cannot be
+decoded: invalid type: string "x", expected i32". The decoder is linear in the value. The status and the problem type
+are the same on every node; only the detail of a hosting node says more. A value that the schema refuses and the decoder
+accepts (a field under an alias, a form only a hand-written decoder takes) gets the sentence alone.
+
+The sample checks still name the first place that does not match: they run on a developer's own samples, in a test,
+where a slow answer costs nothing but time. Their docs say that naming a place can be slow for a deep value of a type
+with several shapes.
+
+A detail is cut at 2,000 characters and then ends with the mark " … (cut)" (validation): the decoder's reason may quote
+the value (second validation).
 
 ### 9. The sample checks are in `cicada-axum`
 
@@ -268,7 +292,8 @@ as strict as before. A thread that cannot be started fails the request with `500
   signs.
 - A schema is compiled for each request (decision 10).
 - `jsonschema` brings 26 crates into `cicada-axum`, none into the core (decision 3).
-- The detail names one place, and for a value of several possible shapes a general reason (decision 8).
+- The detail of a refusal by the schema names no place; a client finds it with the schema from `GET /types/{name}`,
+  or in the decoder's reason that a node hosting the type adds (decision 8).
 - The answer departs from ADR 0018 in its status (decision 7).
 
 ## Migration Plan
