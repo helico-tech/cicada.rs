@@ -127,6 +127,13 @@ impl InMemoryStore {
         Self::new(clock, DEFAULT_RETENTION)
     }
 
+    /// Removes the row of `address` alone, past the rules of the store, as SQL could in a database: its mailbox and
+    /// the watches it holds stay. For the conformance case of a watcher that does not exist.
+    #[cfg(test)]
+    pub(crate) fn remove_row_by_hand(&self, address: &ActorAddress) {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).actors.remove(address.as_str());
+    }
+
     fn locked<T>(&self, f: impl FnOnce(&mut State, Timestamp) -> StoreResult<T>) -> StoreResult<T> {
         if self.closed.load(Ordering::SeqCst) {
             return Err(StoreError::unavailable("Store is closed"));

@@ -113,8 +113,9 @@ impl Clock for SystemClock {
 /// does not exist, or that the same event removes, gets nothing, and the watches of a watcher that does not exist are
 /// removed. Removing an actor removes the watches it holds as a watcher; the watches on it as a target stay. The
 /// notifications of one event are written last, in the order of the actor they are about and then of the watcher,
-/// named after the event's id with their number (`<event>.0`, …), and marked as notifications ([`Message::notification`]).
-/// One whose id is in use is skipped. A watch changes only under the lock of its watcher's row.
+/// named after the event's id with their number (`<event>.0`, …), and marked as notifications
+/// ([`Message::notification`]). One whose id is in use is skipped. A watch changes only under the lock of its watcher's
+/// row.
 #[async_trait]
 pub(crate) trait Backend: Send + Sync + 'static {
     // ---- clock ----

@@ -460,8 +460,8 @@ impl<A: Actor> Turn<A> {
     /// tells of failures only. The target need not exist, and the watch survives its delete and re-create.
     ///
     /// Buffered and applied by the commit before the turn's creates and sends, in the order of the calls; a turn that
-    /// fails sets none. Setting a watch that exists changes nothing. Fails with [`TurnError::Invalid`] for a text that is
-    /// no target, and when this actor's message family does not declare `Failed(cicada::Failed)` and
+    /// fails sets none. Setting a watch that exists changes nothing. Fails with [`TurnError::Invalid`] for a text that
+    /// is no target, and when this actor's message family does not declare `Failed(cicada::Failed)` and
     /// `Stopped(cicada::Stopped)`; the turn can go on.
     ///
     /// [`WatchTarget`]: crate::WatchTarget
@@ -475,8 +475,8 @@ impl<A: Actor> Turn<A> {
     }
 
     /// Removes this instance's watch of `target` at commit, in the order of the calls with [`Self::watch`], so the last
-    /// call for a target stands. A watch it does not hold is ignored. Fails with [`TurnError::Invalid`] for a text that is
-    /// no target.
+    /// call for a target stands. A watch it does not hold is ignored. Fails with [`TurnError::Invalid`] for a text that
+    /// is no target.
     pub fn unwatch(&mut self, target: impl IntoWatchTarget) -> Result<(), TurnError> {
         let target = target.into_watch_target().map_err(|e| TurnError::Invalid(e.to_string()))?;
         self.effects.watches.push(WatchChange { target, set: false });

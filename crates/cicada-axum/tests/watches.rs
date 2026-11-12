@@ -87,6 +87,46 @@ async fn a_watch_is_refused_for_a_bad_watcher_or_target() {
     assert!(listed(&app, "").await.is_empty(), "no watch is stored");
 }
 
+/// type `imposter`, the singleton `imposter/_`: its family has a `Failed` of its own, so it may not watch.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct Imposter;
+
+impl ActorRef for Imposter {
+    const TYPE: &'static str = "imposter";
+    type Message = ImposterMsg;
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, JsonSchema)]
+#[serde(tag = "type")]
+enum ImposterMsg {
+    Failed { reason: String },
+    Stopped(cicada::Stopped),
+}
+
+struct ImposterActor;
+
+impl Actor for ImposterActor {
+    type Ref = Imposter;
+    type State = NoState;
+
+    async fn handle(&self, _: &mut Turn<Self>, _: ImposterMsg) -> HandlerResult {
+        Ok(())
+    }
+}
+
+/// Scenario: A watcher with a `Failed` of its own (over HTTP).
+#[tokio::test(start_paused = true)]
+async fn a_watcher_with_a_failed_of_its_own_is_422_not_a_watcher() {
+    let system = node_with(memory_store(), |b| b.host(CounterActor).host(ImposterActor)).await;
+    system.create(&Imposter, &NoState {}).await.unwrap();
+    let app = actor_api(system);
+    let reply = put(&app, "/watches", &body("counter/c", "imposter/_")).await;
+    assert_problem(&reply, 422, pt::NOT_A_WATCHER);
+    let detail = reply.json()["detail"].as_str().unwrap().to_owned();
+    assert!(detail.contains("has a message type Failed that is not cicada::Failed"), "{detail}");
+    assert!(listed(&app, "").await.is_empty(), "no watch is stored");
+}
+
 /// Scenario: An actor is deleted (over HTTP).
 #[tokio::test(start_paused = true)]
 async fn a_watched_actor_deleted_over_http_tells_its_watcher() {

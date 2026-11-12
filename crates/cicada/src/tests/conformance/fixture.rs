@@ -3,6 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::address::ActorAddress;
 use crate::store::Backend;
 use async_trait::async_trait;
 
@@ -40,6 +41,17 @@ pub trait StoreFixture: Send + Sync + 'static {
     /// time monotonic regardless.
     async fn step_back(&self, _duration: Duration) {
         panic!("step_back is not supported")
+    }
+
+    /// True when [`remove_row`](Self::remove_row) is supported.
+    fn supports_removing_rows(&self) -> bool {
+        false
+    }
+
+    /// Deletes the row of the instance `address` by hand, past the store, as an operator with SQL could: its mailbox
+    /// and the watches it holds stay. The calls of a store cannot leave a watch whose watcher does not exist.
+    async fn remove_row(&self, _address: &ActorAddress) {
+        panic!("remove_row is not supported")
     }
 
     /// True when [`reopen`](Self::reopen) is supported, i.e. the backend is durable (S1).

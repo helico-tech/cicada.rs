@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::address::ActorAddress;
 use crate::store::sqlite::{SqliteOptions, SqliteStore};
 use crate::store::{Backend, Clock, SystemClock};
 use crate::testing::VirtualClock;
@@ -19,6 +20,15 @@ fn temp_db() -> (TempDir, PathBuf) {
     let dir = tempfile::Builder::new().prefix("cicada-sqlite").tempdir().expect("a temp dir");
     let file = dir.path().join("actors.db");
     (dir, file)
+}
+
+/// Deletes the row of `address` in the database file on a connection of its own, past the store.
+async fn remove_row(file: &PathBuf, address: &ActorAddress) {
+    use sqlx::Connection;
+    let options = sqlx::sqlite::SqliteConnectOptions::new().filename(file);
+    let mut c = sqlx::SqliteConnection::connect_with(&options).await.expect("a raw connection");
+    sqlx::query("DELETE FROM actors WHERE address = ?").bind(address.as_str()).execute(&mut c).await.expect("deleted");
+    c.close().await.expect("closed");
 }
 
 async fn open(file: &PathBuf, clock: Arc<dyn Clock>, retention: Duration) -> Arc<SqliteStore> {
@@ -100,6 +110,14 @@ mod virtual_time {
             self.open_handle().await
         }
 
+        fn supports_removing_rows(&self) -> bool {
+            true
+        }
+
+        async fn remove_row(&self, address: &ActorAddress) {
+            remove_row(&self.file, address).await;
+        }
+
         fn supports_clock_step_back(&self) -> bool {
             true
         }
@@ -132,6 +150,7 @@ mod real_time {
 
     struct RealTimeFixture {
         _dir: TempDir,
+        file: PathBuf,
         store: Arc<SqliteStore>,
     }
 
@@ -145,7 +164,7 @@ mod real_time {
 
         async fn create(&self, retention: Duration) -> RealTimeFixture {
             let (dir, file) = temp_db();
-            RealTimeFixture { store: open(&file, Arc::new(SystemClock), retention).await, _dir: dir }
+            RealTimeFixture { store: open(&file, Arc::new(SystemClock), retention).await, file, _dir: dir }
         }
     }
 
@@ -161,6 +180,14 @@ mod real_time {
 
         async fn advance(&self, duration: Duration) {
             tokio::time::sleep(duration).await;
+        }
+
+        fn supports_removing_rows(&self) -> bool {
+            true
+        }
+
+        async fn remove_row(&self, address: &ActorAddress) {
+            remove_row(&self.file, address).await;
         }
 
         async fn close(&mut self) {

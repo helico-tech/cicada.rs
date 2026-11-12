@@ -143,9 +143,9 @@ const MIGRATIONS: &[&[&str]] = &[
     ],
     // 5: watches (ADR 0018, ADR 0023). A watch is the pair of a target (an address, a type prefix or `*`) and a
     // watcher; the primary key serves the lookup of the watchers of an event, `watches_watcher` the listing by watcher
-    // and the removal of a watcher's watches. No foreign keys, as elsewhere. `messages.notification` marks a message the
-    // store wrote as a notification; every existing message is none, and an outcome keeps the mark in its envelope,
-    // where an older envelope without it reads as none. Not additive (see the module docs).
+    // and the removal of a watcher's watches. No foreign keys, as elsewhere. `messages.notification` marks a message
+    // the store wrote as a notification; every existing message is none, and an outcome keeps the mark in its
+    // envelope, where an older envelope without it reads as none. Not additive (see the module docs).
     &[
         r#"CREATE TABLE {s}.watches (
             target  text COLLATE "C" NOT NULL,

@@ -1035,7 +1035,7 @@
         }
       },
       "put": {
-        "summary": "Sets a watch: the watcher is told when a message to the target fails, and when a watched actor                      goes away. Idempotent. The watcher must exist and declare the messages Failed and Stopped.",
+        "summary": "Sets a watch: the watcher is told when a message to the target fails, and when a watched actor goes away. Idempotent. The watcher must exist and declare the messages Failed and Stopped.",
         "operationId": "setWatch",
         "requestBody": {
           "description": "Body of `PUT /watches`. The watcher must exist and its type must declare the messages `Failed` and `Stopped`; the\ntarget need not exist.",

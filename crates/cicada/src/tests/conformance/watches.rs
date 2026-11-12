@@ -7,8 +7,8 @@ use std::collections::BTreeMap;
 use crate::address::{ActorAddress, TypeName};
 use crate::retention::{Keep, Retention};
 use crate::store::{
-    ActorCreate, Backend, CommitRequest, CommitResult, DeleteResult, Message, MessageId, OutgoingMessage,
-    SetWatchResult, StateChange, StoreError, TurnOutcome,
+    ActorCreate, Backend, CommitRequest, CommitResult, DeleteResult, Message, MessageId, OutcomeStatus,
+    OutgoingMessage, SetWatchResult, StateChange, StoreError, TurnOutcome,
 };
 use crate::watch::{Failed, StopCause, Stopped, WatchChange, WatchTarget};
 use serde_json::json;
@@ -556,6 +556,58 @@ pub async fn watches_an_actor_that_watches_itself_is_told_of_its_failures_and_ge
         assert_eq!(got.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["e1.1", "e2.0"], "only the other is told");
         assert!(store.get(&x).await.unwrap().is_none());
         assert!(watches(&*store, Some(&x), None, 100).await.is_empty());
+    })
+    .await
+}
+
+/// watches - a notification whose id is already in use is skipped: the commit succeeds, and the other notifications of
+/// the event are written
+pub async fn watches_a_notification_whose_id_is_in_use_is_skipped_and_the_others_are_written<B: FixtureFactory>(
+    backend: &B,
+) {
+    store_test(backend, async |t| {
+        let store = t.store();
+        let x = t.new_actor_named(&TYPE, "x", json!({})).await;
+        let (a, b) = (watcher(t, "a").await, watcher(t, "b").await);
+        watch(&*store, x.as_str(), &a).await;
+        watch(&*store, x.as_str(), &b).await;
+        let other = t.new_actor_named(&OTHER, "o", json!({})).await;
+        let taken = t.send_id(&other, event("e1.0")).await; // the id the notification for w/a would get
+        let failed = fail(t, &x, "e1").await; // asserts that the commit succeeds
+        assert!(notifications(t, &a).await.is_empty(), "skipped");
+        let got = notifications(t, &b).await;
+        assert_eq!(got.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["e1.1"], "the others are written");
+        assert_eq!(failed_of(&got[0]).message_id, failed.id);
+        assert_eq!(t.pending(&other).await, [taken], "the message that holds the id is left as it was");
+    })
+    .await
+}
+
+/// watches - a watcher that does not exist is skipped and loses all its watches, not only the one that matched
+pub async fn watches_a_watcher_that_does_not_exist_is_skipped_and_loses_all_its_watches<B: FixtureFactory>(
+    backend: &B,
+) {
+    store_test(backend, async |t| {
+        if !assume(t.fixture.supports_removing_rows(), "needs to remove a row by hand") {
+            return;
+        }
+        let store = t.store();
+        let x = t.new_actor_named(&TYPE, "x", json!({})).await;
+        let (gone, kept) = (watcher(t, "gone").await, watcher(t, "kept").await);
+        for on in [x.as_str(), "billing", "*"] {
+            watch(&*store, on, &gone).await;
+        }
+        watch(&*store, x.as_str(), &kept).await;
+        t.fixture.remove_row(&gone).await;
+        assert_eq!(store.get(&gone).await.unwrap(), None, "the row is gone");
+        assert_eq!(watches(&*store, Some(&gone), None, 100).await.len(), 3, "its watches stay until an event");
+
+        let failed = fail(t, &x, "e1").await; // asserts that the commit succeeds
+        assert_eq!(outcome_record(&*store, &failed.id).await.expect("an outcome").status, OutcomeStatus::Failed);
+        assert!(watches(&*store, Some(&gone), None, 100).await.is_empty(), "all three watches are removed");
+        assert_eq!(watches(&*store, None, None, 100).await, [pair(x.as_str(), kept.as_str())], "the others stay");
+        let got = notifications(t, &kept).await;
+        assert_eq!(got.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["e1.0"], "numbered without the gone one");
     })
     .await
 }

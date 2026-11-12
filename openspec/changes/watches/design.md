@@ -342,7 +342,7 @@ review).
 
 A watcher that does not exist while its watch is stored cannot be made through the calls of a store: watches follow
 their watcher. So that rule is tested on SQLite and on PostgreSQL, with a row removed by hand, and not in the
-conformance suite (third review).
+conformance suite (third review; changed by decision 16).
 
 The comparison does not run PostgreSQL. The conformance suite gets two cases for its locks (first review): a
 watcher whose address sorts before its target's sends to the target while the target is deleted, and a watch is set
@@ -393,6 +393,25 @@ Decided by the main session. The validator of `child-actors` passed it and noted
 - One line of `README.md`, in the part on children, is 181 columns long.
 - The `children` tab of the terminal UI shows the first 1000 children and does not say when there are more. The
   mailbox fact of the same screen says `1000+`.
+
+### 16. What the builder settled
+
+Decided by the main session on the builder's report (2026-11-12). The design left these open; the build settled them,
+and the conformance suite pins the first two on every store.
+
+- **A notification whose id is in use is skipped.** The store writes the other notifications of the event, and the
+  commit or delete succeeds; it logs a warning. It can only happen when a caller of the private trait reuses an event
+  id, as the runtime draws a new one for every commit and every delete. Not chosen: failing the commit or the delete
+  (a watch never fails the commit of the watched actor).
+- **A watcher that does not exist loses all its watches**, not only the ones that matched the event. Not chosen:
+  removing only the watch that matched (watches follow their watcher, and the others of a watcher that is gone could
+  never tell anyone). The conformance suite shows it with a watcher that holds three watches; its fixtures remove the
+  watcher's row by hand, past the store, which changes the last sentence of decision 12: the rule is tested in the
+  conformance suite too, on every store.
+- **`Turn::watch` and `Turn::unwatch` take `impl IntoWatchTarget`**, a public trait for a typed ref, an address, a
+  `WatchTarget` or its text, so that a text that is no target fails at the call, as decision 9 asks.
+- **`PUT /watches` answers `201` for a new watch and `200` for one that existed**, with the watch as its body, as
+  `PUT /actors/{type}/{key}` does.
 
 ## Risks / Trade-offs
 

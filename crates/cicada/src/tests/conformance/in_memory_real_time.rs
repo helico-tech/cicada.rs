@@ -5,6 +5,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::address::ActorAddress;
 use crate::store::{Backend, SystemClock};
 use crate::testing::InMemoryStore;
 use crate::tests::conformance::{FixtureFactory, StoreFixture};
@@ -41,6 +42,14 @@ impl StoreFixture for RealTimeFixture {
 
     async fn advance(&self, duration: Duration) {
         tokio::time::sleep(duration).await;
+    }
+
+    fn supports_removing_rows(&self) -> bool {
+        true
+    }
+
+    async fn remove_row(&self, address: &ActorAddress) {
+        self.store.remove_row_by_hand(address);
     }
 
     async fn close(&mut self) {

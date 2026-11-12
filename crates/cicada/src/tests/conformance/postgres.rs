@@ -11,6 +11,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::address::ActorAddress;
 use crate::store::Backend;
 use crate::store::postgres::{PostgresOptions, PostgresStore};
 use crate::tests::conformance::{FixtureFactory, StoreFixture};
@@ -68,6 +69,15 @@ impl StoreFixture for PostgresFixture {
 
     async fn peer(&self) -> Arc<dyn Backend> {
         open_peer(&self.db, self.retention).await
+    }
+
+    fn supports_removing_rows(&self) -> bool {
+        true
+    }
+
+    async fn remove_row(&self, address: &ActorAddress) {
+        // A canonical address holds no quote: every other character than `A-Z a-z 0-9 . _ ~ - : /` is encoded.
+        self.db.sql(&format!("DELETE FROM \"{}\".actors WHERE address = '{address}'", self.db.schema)).await;
     }
 
     fn supports_reopen(&self) -> bool {

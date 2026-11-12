@@ -214,7 +214,8 @@ fn routes(access: Access) -> ApiRouter<Arc<Api>> {
                 described(
                     op,
                     "setWatch",
-                    "Sets a watch: the watcher is told when a message to the target fails, and when a watched actor                      goes away. Idempotent. The watcher must exist and declare the messages Failed and Stopped.",
+                    "Sets a watch: the watcher is told when a message to the target fails, and when a watched actor \
+                     goes away. Idempotent. The watcher must exist and declare the messages Failed and Stopped.",
                 )
                 .input::<Json<WatchRequest>>()
                 .response_with::<201, Json<WatchView>, _>(|r| r.description("Set."))

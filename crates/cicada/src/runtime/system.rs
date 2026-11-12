@@ -738,7 +738,8 @@ impl ActorSystem {
     /// Admin delete (`DELETE /actors/{type}/{key}`): removes the instance and every descendant (the actors its turns
     /// created with [`Turn::create_child`](crate::Turn::create_child), theirs, and so on) in one transaction, and purges
     /// their mailboxes. [`DeleteResult::Deleted`] counts the purged messages of the whole tree. The watchers of each
-    /// removed actor get a [`Stopped`](crate::Stopped) in the same transaction, and the dispatch loop is woken for them.
+    /// removed actor get a [`Stopped`](crate::Stopped) in the same transaction, and the dispatch loop is woken for
+    /// them.
     pub async fn delete_actor(&self, address: &ActorAddress) -> Result<DeleteResult, OpError> {
         let result = self.inner.store.delete(address, &MessageId::random()).await?;
         if matches!(result, DeleteResult::Deleted { .. }) {

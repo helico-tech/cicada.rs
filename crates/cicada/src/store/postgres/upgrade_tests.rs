@@ -346,7 +346,8 @@ async fn a_database_of_schema_version_3_is_opened_and_its_actors_have_no_parent(
         assert_eq!(store.pending(&address("notes/a"), None, 10).await.unwrap().items.len(), 1);
         assert!(store.children(&address("notes/a"), None, 10).await.unwrap().items.is_empty());
         // Every actor is independent: deleting one leaves the other.
-        assert_eq!(store.delete(&address("notes/a"), &MessageId::random()).await.unwrap(), DeleteResult::Deleted { purged: 1 });
+        let deleted = store.delete(&address("notes/a"), &MessageId::random()).await.unwrap();
+        assert_eq!(deleted, DeleteResult::Deleted { purged: 1 });
         assert!(store.get(&address("notes/b")).await.unwrap().is_some());
         store.close().await;
     })

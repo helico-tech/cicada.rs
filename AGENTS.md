@@ -25,7 +25,7 @@ PostgreSQL for tests: `docker compose up -d postgres` (port 55432). Tests that n
 
 | Path | What |
 | --- | --- |
-| `crates/cicada` | Core: `address`, `message`, `actor` (the `Actor` trait), `turn`, `plugin`, `runtime` (node, executor), `store` (`Store`, the private `Backend` trait, model, support; `sqlite` and `postgres` behind their features), `testing` (feature `testing`: in-memory store, clocks, `TestActors`), `contract`, `schema`, `retry`, `retention`, `time`, `api` (HTTP wire model), `tests` (the conformance suite, the store, fuzz and runtime tests that need the private trait) |
+| `crates/cicada` | Core: `address`, `message`, `actor` (the `Actor` trait), `turn`, `watch` (`WatchTarget`, the notifications `Failed` and `Stopped`, the check of a watcher), `plugin`, `runtime` (node, executor), `store` (`Store`, the private `Backend` trait, model, support; `sqlite` and `postgres` behind their features), `testing` (feature `testing`: in-memory store, clocks, `TestActors`), `contract`, `schema`, `retry`, `retention`, `time`, `api` (HTTP wire model), `tests` (the conformance suite, the store, fuzz and runtime tests that need the private trait) |
 | `crates/cicada-test` | Exports `TestActors`, the clocks and `claim_and_abandon`; contract snapshots and state samples |
 | `crates/cicada-axum` | HTTP API routers |
 | `crates/cicada-client` | Typed HTTP client |

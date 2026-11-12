@@ -398,7 +398,11 @@ mod tests {
                     "oneOf": [
                         {"description": "Its own turn stopped it.", "type": "string", "const": "stopped"},
                         {"description": "It was deleted from outside a turn.", "type": "string", "const": "deleted"},
-                        {"description": "It was removed with its parent (ADR 0019).", "type": "string", "const": "parent"}
+                        {
+                            "description": "It was removed with its parent (ADR 0019).",
+                            "type": "string",
+                            "const": "parent"
+                        }
                     ]
                 },
                 "by": {

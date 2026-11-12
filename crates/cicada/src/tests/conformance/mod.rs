@@ -241,6 +241,8 @@ macro_rules! for_each_case {
             watches_a_notification_that_fails_writes_nothing_and_a_sender_cannot_mark_a_message,
             watches_the_notifications_of_one_event_are_numbered_in_order_one_per_watcher_and_actor,
             watches_an_actor_that_watches_itself_is_told_of_its_failures_and_gets_nothing_when_it_stops,
+            watches_a_notification_whose_id_is_in_use_is_skipped_and_the_others_are_written,
+            watches_a_watcher_that_does_not_exist_is_skipped_and_loses_all_its_watches,
             watches_a_delete_racing_a_send_from_a_watcher_that_sorts_first_ends_without_an_error,
             watches_a_watch_set_while_a_message_of_its_target_fails_ends_without_an_error,
         );

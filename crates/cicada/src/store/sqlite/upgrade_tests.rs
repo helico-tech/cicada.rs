@@ -470,7 +470,8 @@ async fn a_database_of_schema_version_4_is_opened_and_nothing_in_it_is_a_notific
     let envelope = json!({"id": "m0", "to": "notes/a", "from": null, "type": "Note", "payload": {}, "deliverAt":
         "2026-01-01T00:00:00Z", "correlationId": null, "headers": {}, "seq": 0, "attempt": 1});
     db.exec(
-        "INSERT INTO outcomes (message_id, actor_address, status, finished_at, envelope) VALUES ('m0', 'notes/a', 'done', ?, ?)",
+        "INSERT INTO outcomes (message_id, actor_address, status, finished_at, envelope)
+            VALUES ('m0', 'notes/a', 'done', ?, ?)",
         &[&now_micros(), &envelope.to_string()],
     )
     .await
