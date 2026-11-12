@@ -271,7 +271,7 @@ impl Actor for SyncActor {
 
 ## HTTP contract
 
-See the README for the endpoints and `docs/openapi.json` for the OpenAPI document. Durations are ISO-8601 strings (`PT5S`); instants are ISO-8601 in UTC. Errors are `application/problem+json` (RFC 9457) with `type` `urn:cicada:problem:<slug>`. The routes are an
+See [the HTTP guide](guide/http.md#http-api) for the endpoints and [openapi.json](openapi.json) for the OpenAPI document. Durations are ISO-8601 strings (`PT5S`); instants are ISO-8601 in UTC. Errors are `application/problem+json` (RFC 9457) with `type` `urn:cicada:problem:<slug>`. The routes are an
 axum `Router` that the host nests into its own router and wraps in its own authentication layers. The bodies are the
 types of `cicada::api`, used by both `cicada-axum` and `cicada-client`; request envelopes decode strictly (an unknown
 key is `400`). A payload and the state of a create are checked against the registered JSON Schema of their message type
@@ -282,3 +282,43 @@ node, and nothing runs after it, not even the decoder of a hosting node. A send 
 pending, or whose outcome is still shown, is answered as a repeat before it is checked. The check asserts no `format`,
 loads nothing from outside the schema, and does not enforce a schema that the validator cannot compile; JSON that code
 sends is not checked.
+
+## Design notes
+
+- **Definitions are checked by the compiler.** One `handle` with an exhaustive `match` over the messages its ref
+  names, which are declared once, on the ref (ADR 0003, ADR 0018). Handlers return `Result<(), HandlerError>`:
+  `HandlerError::permanent` / `turn.fail(..)` refuse further retries, and a panic is caught and treated as a failure
+  (`panic: …`).
+- **The host owns the node.** The host builds an `ActorSystem`, calls `start` and `stop` itself, merges `actor_api()`
+  into its router, and owns the store, or it hands all of that to `App` (`cicada-app`), which only composes those
+  layers (ADR 0027). `actor_api()` takes the `ActorSystem` itself, so it cannot be mounted without a node.
+- **Handlers run as futures on the tokio runtime.** A handler that does not yield is cut off only when it returns, and
+  it holds a runtime worker thread meanwhile; when every worker is blocked, heartbeats and the dispatch loop stall too.
+  Run blocking work in `spawn_blocking`. A handler still running well after its maximum turn or a lost lease is logged
+  as a warning.
+- **Validation at construction.** `DeadLettersActor::with_capacity(0)` returns an `Err` instead of failing node start.
+  `RetryPolicy::new`, `Backoff::*`, `Keep::last`,
+  `Keep::keep_for` and `Schedule::*` return `Result` too. A function of the core returns a named error of its module
+  (`RetryError`, `RetentionError`, `IdError`, `MessageError`, `ContractError`, `DefinitionError`, `RequestError`) that
+  implements `std::error::Error`, so `?` carries it into `anyhow` or an error of the host (ADR 0022).
+- **Plain `Timestamp` and `MessageId` in state.** chrono's serde form is the contract's instant format, and both types
+  have JSON Schemas, so states and messages hold them without attributes (issue 0701). `RetryPolicy` and `Retention`
+  have JSON Schemas too (issue 0200).
+- **Telemetry.** The OpenTelemetry SDK for Rust exports every span it drops, so the span of a turn whose observed value
+  the node drops without an end is ended and exported with `cicada.outcome` = `abandoned` (issue 0600). The W3C
+  propagator's empty `tracestate` is left out.
+- **PostgreSQL settings.** Connection parameters go in the URL; no type of the SQL driver is in the public API, so a
+  setting a URL cannot carry is added to `PostgresOptions` when a host needs it (ADR 0018). `socket_timeout` bounds a whole transaction attempt (the
+  connection is then closed), not every read, because sqlx has no per-read timeout.
+- **Cancelling `run_due_turns`.** Dropping its future cancels the turns like a node stop after the grace period: the
+  worker is stopped first, then the lease is released only when the handler had not ended, and claims that arrive
+  after the caller is gone are released.
+- **Errors.** Error texts use Rust names (`max_lost_claims must be at least 1, or None for no limit`); a SQLite file
+  of a newer schema is refused with `StoreError::Invalid`.
+
+## Known limitations
+
+The claim limit cannot tell the message that kills a node from the messages that ran beside it, and a node killed hard
+as a matter of routine (a deploy that sends SIGKILL) loses the claims of its turns too; external side effects are
+at-least-once (use `message().id` as idempotency key, also across retries); a commit rejected because of the handler's
+own sends is not retryable; the client has no streaming of message status (poll `GET /messages/{id}`).

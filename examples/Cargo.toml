@@ -16,9 +16,9 @@ schemars.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-# The README's code blocks run as doctests of this crate (`ReadmeDoctests` in src/lib.rs).
+# The code blocks of the README, the guides and the operations guide run as doctests of this crate (src/lib.rs).
 anyhow.workspace = true
-# The README and the operations guide open both stores.
+# The README, the guides and the operations guide open both stores.
 cicada = { workspace = true, features = ["sqlite", "postgres"] }
 async-trait.workspace = true
 axum.workspace = true

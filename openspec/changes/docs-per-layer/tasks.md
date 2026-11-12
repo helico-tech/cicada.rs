@@ -5,13 +5,13 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
 
 ## 1. The guides and the README
 
-- [ ] 1.1 The four guides [1, 2]: `docs/guide/core.md`, `http.md`, `app.md` and `actors.md`, with the text of the
+- [x] 1.1 The four guides [1, 2]: `docs/guide/core.md`, `http.md`, `app.md` and `actors.md`, with the text of the
       README moved into them by the table of decision 3, each a doctest of `cicada-examples` (`examples/build.rs`
       expands them as it does the README; one doctest struct per guide in `examples/src/lib.rs`). A block that shows
       a worked example names its file of `examples/`. Verify: `cargo test -p cicada-examples --doc` passes and runs
       the blocks of the four guides (the report says how many per guide); a block changed so that it does not
       compile fails it.
-- [ ] 1.2 The README [3]: an overview of about 200 lines with the parts of decision 3; the table of the ADRs moves to
+- [x] 1.2 The README [3]: an overview of about 200 lines with the parts of decision 3; the table of the ADRs moves to
       `docs/adr/README.md`, the design notes and the known limitations to `docs/architecture.md`. The release steps
       still find the tag lines. Verify: `scripts/release-check.sh` still reads what it needs (run its check of the
       tag form on the current version); the doctests pass; the README names every guide.

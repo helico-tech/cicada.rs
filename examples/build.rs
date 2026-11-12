@@ -1,5 +1,5 @@
-//! Turns README.md and docs/operations.md into rustdoc markdown for their doctests (see `ReadmeDoctests` in
-//! src/lib.rs). A Rust block may be preceded by a hidden setup comment that GitHub does not render:
+//! Turns README.md, the guides in docs/guide and docs/operations.md into rustdoc markdown for their doctests (see
+//! `ReadmeDoctests` in src/lib.rs). A Rust block may be preceded by a hidden setup comment that GitHub does not render:
 //!
 //! ````text
 //! <!-- doctest
@@ -24,7 +24,14 @@ use std::{env, fs};
 fn main() {
     let root = Path::new(&env::var("CARGO_MANIFEST_DIR").expect("set by cargo")).join("..");
     let out = Path::new(&env::var("OUT_DIR").expect("set by cargo")).to_path_buf();
-    for (source, target) in [("README.md", "README.md"), ("docs/operations.md", "operations.md")] {
+    for (source, target) in [
+        ("README.md", "README.md"),
+        ("docs/guide/core.md", "guide-core.md"),
+        ("docs/guide/http.md", "guide-http.md"),
+        ("docs/guide/app.md", "guide-app.md"),
+        ("docs/guide/actors.md", "guide-actors.md"),
+        ("docs/operations.md", "operations.md"),
+    ] {
         let path = root.join(source);
         println!("cargo:rerun-if-changed={}", path.display());
         let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("{source}: {e}"));

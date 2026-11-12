@@ -33,6 +33,27 @@ pub mod timer;
 #[doc = include_str!(concat!(env!("OUT_DIR"), "/README.md"))]
 pub struct ReadmeDoctests;
 
+/// The Rust code blocks of the guide of the core (`docs/guide/core.md`), compiled and run like the README's.
+#[cfg(doctest)]
+#[doc = include_str!(concat!(env!("OUT_DIR"), "/guide-core.md"))]
+pub struct CoreGuideDoctests;
+
+/// The Rust code blocks of the guide of HTTP and the client (`docs/guide/http.md`), compiled and run like the README's.
+#[cfg(doctest)]
+#[doc = include_str!(concat!(env!("OUT_DIR"), "/guide-http.md"))]
+pub struct HttpGuideDoctests;
+
+/// The Rust code blocks of the guide of the app (`docs/guide/app.md`), compiled and run like the README's.
+#[cfg(doctest)]
+#[doc = include_str!(concat!(env!("OUT_DIR"), "/guide-app.md"))]
+pub struct AppGuideDoctests;
+
+/// The Rust code blocks of the guide of the ready-made actors (`docs/guide/actors.md`), compiled and run like the
+/// README's.
+#[cfg(doctest)]
+#[doc = include_str!(concat!(env!("OUT_DIR"), "/guide-actors.md"))]
+pub struct ActorsGuideDoctests;
+
 /// The Rust code blocks of the operations guide, compiled and run like the README's.
 #[cfg(doctest)]
 #[doc = include_str!(concat!(env!("OUT_DIR"), "/operations.md"))]
