@@ -56,7 +56,7 @@ written as the section "Tests of values from before" of `design.md` says. Runtim
 
 ## 5. Checks
 
-- [ ] 5.1 `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
+- [x] 5.1 `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
       `cargo test --workspace`, `cargo check -p cicada` with no feature and with each feature alone,
       `openspec validate value-depth-limit --strict` and `openspec validate --specs --strict`. Verify: all pass.
 - [ ] 5.2 The PostgreSQL tests with `CICADA_PG_URL` set, once more against a throwaway `postgres:17.5-alpine` with

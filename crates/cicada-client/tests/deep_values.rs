@@ -86,8 +86,10 @@ impl Actor for RefuserActor {
 
 /// A value `levels` deep: arrays and objects in turn around a number, built without recursion.
 fn nested(levels: usize) -> Value {
-    (0..levels)
-        .fold(json!(1), |inner, level| if level % 2 == 0 { Value::Array(vec![inner]) } else { field("n", inner) })
+    (0..levels).fold(
+        json!(1),
+        |inner, level| if level.is_multiple_of(2) { Value::Array(vec![inner]) } else { field("n", inner) },
+    )
 }
 
 /// `{key: inner}`, one level deeper, without copying `inner`.

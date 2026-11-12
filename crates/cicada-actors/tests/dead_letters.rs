@@ -523,7 +523,7 @@ async fn a_deep_letter_from_before_stops_the_letters_until_it_is_discarded() {
     let notification = system.outcomes(Some(OutcomeStatus::Failed), "cicada.dead-letters/", None, None, 10).await;
     let notification = notification.unwrap().items.pop().expect("the Failed of the dead-letters actor failed");
     assert_eq!(notification.error.as_deref(), Some(TOO_DEEP));
-    assert_eq!(held(&system).await, [old.clone()], "no letter is recorded");
+    assert_eq!(held(&system).await, std::slice::from_ref(&old), "no letter is recorded");
 
     let discard = DeadLettersMsg::Discard { message_id: old };
     assert_eq!(handled(&system, &letters_actor(), discard).await, (OutcomeStatus::Done, None));

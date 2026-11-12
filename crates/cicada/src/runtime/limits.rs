@@ -164,7 +164,7 @@ mod tests {
     }
 
     fn mixed(level: usize, inner: Value) -> Value {
-        if level % 2 == 0 { in_array(level, inner) } else { in_object(level, inner) }
+        if level.is_multiple_of(2) { in_array(level, inner) } else { in_object(level, inner) }
     }
 
     /// Scenario of the limit (value-depth): 64 levels are accepted and 65 refused, in arrays, in objects and in both.
