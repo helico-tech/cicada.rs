@@ -17,12 +17,15 @@ parser reads. The change `value-depth-limit` describes the measurements.
 
 ## Decision
 
-- A payload and a state hold at most 64 arrays and objects inside each other. A scalar is 0 deep.
+- A payload and a state hold at most 64 arrays and objects inside each other (`runtime::limits::MAX_DEPTH`). A scalar
+  is 0 deep.
 - The limit is checked where the other limits of a value are checked: for a send and a create from outside a turn
   (`OpError::Invalid`, over HTTP `400`, before the repeated id and before the schema check), for a send and a create
   in a turn (`TurnError::Invalid` at the call), for the new state of a turn (the message ends `failed`, cause
-  `handler`), and for an operator's retry of a message (`409 message-not-retryable`; a bulk retry skips it). The
-  check stops at the first level beyond the limit.
+  `handler`, with an error that starts with `State cannot be stored:`), and for an operator's retry of a message
+  (`RetryResult::TooDeep`, over HTTP `409 message-not-retryable`; a bulk retry skips it). The check stops at the first
+  level beyond the limit, and its error names the payload or the state and the limit: `The payload is nested deeper
+  than 64 levels`.
 - A value stored before is read as before; only what is written is checked.
 - The runtime writes a `Failed` that holds a payload of at most 64 levels one level down, so a notification can be 65
   deep. Every other value written from this decision on is at most 64 deep, and every view of one is read by a parser

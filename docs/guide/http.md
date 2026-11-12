@@ -166,10 +166,10 @@ request's path and query as `instance`.
 | `GET /messages?prefix=&cursor=&limit=` — pending messages of every instance under the prefix (including running ones), instance by instance in address order, each in delivery order | 200 | |
 | `GET /messages/{id}` — status, error, `failures` and `lastError`, node and lease while running, envelope (with `lostClaims`, `retry`, `retention`, `causedBy` and `notification`, true for a notification of a watch) | 200 | 404 unknown, past retention, or removed by its retention policy |
 | `POST /messages/{id}/cancel` — cancel a pending message (a running turn is stopped with `turn/cancel`) | 204 | 404; 409 running or already finished |
-| `POST /messages/{id}/retry` — send a `failed` or `cancelled` message again: a new message with a new id, same target, type, payload, correlation id, headers, retry and retention, `causedBy` the original | 202 `{id, deliverAt}` | 404 unknown, past retention or removed by its retention policy; 404 `no-such-instance` when the target is gone; 409 `message-not-retryable` for a pending, running, done or purged message |
+| `POST /messages/{id}/retry` — send a `failed` or `cancelled` message again: a new message with a new id, same target, type, payload, correlation id, headers, retry and retention, `causedBy` the original | 202 `{id, deliverAt}` | 404 unknown, past retention or removed by its retention policy; 404 `no-such-instance` when the target is gone; 409 `message-not-retryable` for a pending, running, done or purged message, and for one whose payload is nested deeper than 64 levels (stored before 0.16.0, or a `Failed` about a payload at the limit) |
 | `POST /messages/{id}/deliver-now` — make a pending, not running message due at once, at a new place in delivery order | 200 message | 404; 409 running or already finished |
 | `POST /messages/bulk-cancel` body `{ids? or prefix?, messageType?}` — cancel by ids (at most 1000) or by filter, at most 1000 per call; skips what cannot be cancelled | 200 `{affected, more}` | 400 not exactly one of ids or a filter, or more than 1000 ids |
-| `POST /messages/bulk-retry` body `{ids? or prefix?, messageType?}` — retry by ids or by filter (over `failed` outcomes), at most 1000 per call; a filter skips messages already retried | 200 `{affected, more}` | 400 |
+| `POST /messages/bulk-retry` body `{ids? or prefix?, messageType?}` — retry by ids or by filter (over `failed` outcomes), at most 1000 per call; it skips, without counting, what cannot be retried, also a payload nested too deep, and a filter skips messages already retried | 200 `{affected, more}` | 400 |
 | `GET /messages/{id}/caused?cursor=&limit=` — the messages that the turn which handled `{id}` sent, one level down: pending ones and retained outcomes, each like `GET /messages/{id}`, in message-id order | 200 | 404 unknown or past retention |
 | `GET /outcomes?status=&prefix=&since=&cursor=&limit=` — finished messages with envelope and error; `status` is `done`, `failed`, `cancelled` or `purged` (absent: all), oldest first | 200 | 400 unknown status |
 | `GET /turns?node=&prefix=&cursor=&limit=` — the turns running now, by address: actor, message, node, lease expiry, `cancelRequested` | 200 | |
@@ -197,8 +197,9 @@ On every endpoint, additionally:
 
 - `400` — malformed JSON, path or query; an unknown key in a request envelope (`{"paylaod": …}`, also inside `retry`
   and `retention`); both `deliverAt` and `delay`; a delivery time beyond year 9999; envelope limits (id/type ≤ 200
-  chars, ≤ 64 headers, no NUL); an invalid retry policy; `limit` outside 1..1000; a bad cursor. Payloads and states
-  themselves are checked against their schemas instead (see [The schema check](#the-schema-check)).
+  chars, ≤ 64 headers, no NUL); a payload or a state with a NUL character or nested deeper than 64 levels (`The
+  payload is nested deeper than 64 levels`); an invalid retry policy; `limit` outside 1..1000; a bad cursor. Within
+  these limits, payloads and states are checked against their schemas (see [The schema check](#the-schema-check)).
 - `405` — `POST /actors/{type}/{key}` without `/messages`.
 - `413 request-too-large` — a body larger than `ApiConfig::max_request_body_bytes` (default 1 MiB), by its
   `Content-Length` or while reading.
@@ -213,6 +214,14 @@ instant. Both are resolved against the store clock. Listings take `cursor` (the 
 not a snapshot: in a mailbox listing, a message rescheduled in place between two pages (later `deliverAt`, new `seq`)
 can appear on both, so deduplicate by id.
 
+**How deep a value and its view can be.** A payload and a state hold at most 64 levels of arrays and objects (ADR 0029,
+[How deep a value can be](core.md#how-deep-a-value-can-be)). A view wraps them: `GET /messages/{id}` puts a payload two
+levels deeper, a page of `GET /outcomes` four, `GET /actors/{type}/{key}` a state one, and a `Failed` holds the payload
+of the failed message one level down. So no view of a value written from 0.16.0 on is deeper than 69 levels, which
+every JSON parser that allows 128 reads, serde_json and `cicada-client` among them. System.Text.Json and Json.NET stop
+at 64 by default; each raises it with one setting (`MaxDepth`). A value stored before 0.16.0 can be deeper, and so can
+its view.
+
 ### The schema check
 
 A send and a create over HTTP are checked against the registered JSON Schema of their type, on every node, whether or
@@ -226,8 +235,10 @@ bound for a type with several shapes, and after a refusal nothing else runs, not
 a refusal by the schema costs time and memory in proportion to the size of the request. The sample checks name the
 first place that does not match. A detail is cut at 2,000 characters with the mark ` … (cut)`.
 
-The order of the checks stays: a send that repeats the id of a message that is pending, or whose outcome is still
-shown, is answered as a repeat (`200`) before it is checked; an unknown message type is `422 unknown-message-type`.
+The order of the checks stays: the limits of the envelope and of the value come first, so a payload nested deeper
+than 64 levels is `400` also when it repeats the id of a message that a node of 0.15.0 accepted; then a send that
+repeats the id of a message that is pending, or whose outcome is still shown, is answered as a repeat (`200`) before
+it is checked; an unknown message type is `422 unknown-message-type`.
 In a create the schema comes before what only a hosting node checks, so a state that does not match gets the same
 answer on every node; a name that the ref does not accept (`422 invalid-address`) is judged after it, by a hosting
 node.
@@ -239,8 +250,9 @@ What the door does not check:
 - **A schema the validator cannot use.** A schema that does not compile (a `$ref` outside the document, a pattern its
   regular expressions do not know) is not enforced; a warning names it once. The check loads nothing from outside the
   schema: no file, no network.
-- **JSON that code sends.** `turn.send_raw` and `ActorSystem::send_message` are not checked; only a hosting node's
-  decoder judges them, as before. Typed sends are checked by the compiler.
+- **JSON that code sends.** `turn.send_raw` and `ActorSystem::send_message` are not checked against the schema; only a
+  hosting node's decoder judges them, as before, after the limits of a value. Typed sends are checked by the
+  compiler.
 
 The schema and serde come from the same type, but can disagree. A payload that serde accepts and the schema refuses is
 refused at the door: a field sent under its `#[serde(alias)]`, a form that only a hand-written `Deserialize` takes,

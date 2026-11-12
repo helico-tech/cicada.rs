@@ -167,7 +167,7 @@ then of the watcher.
 | Handler returns `Err` or panics, retry policy with attempts left, failure not permanent | None; the same message returns to pending after the backoff, `failures` + 1, `lastError` set | None |
 | Handler fails (no retry left, or permanent), or state cannot be decoded | `failed`, error recorded | None |
 | Message cannot be decoded (unknown type name, payload that does not fit) | `failed`, reason recorded, never retried | None |
-| Handler returns, but its new state cannot be encoded or is JSON `null` | `failed`, error recorded, never retried | None |
+| Handler returns, but its new state cannot be encoded (`State cannot be encoded: …`), or cannot be stored: it is JSON `null`, holds a NUL character, or is nested deeper than 64 levels (`State cannot be stored: …`, ADR 0029) | `failed`, error recorded, never retried | None |
 | Commit rejected: a send targets an absent instance (also one the turn deletes and does not create), a child create names an actor that exists with another parent or none, or a delete names an ancestor of the turn's actor | `failed`, reason recorded | None |
 | Turn exceeds its maximum duration and is cut off | As a failing handler: retried by the policy, else `failed` (`timeout`) | None |
 | Handler returned, but only after its maximum duration (blocking code) | `failed` (`timeout`), never retried | None |
@@ -197,7 +197,7 @@ message fails, and hands it to the store with the commit; the outcome and an obs
 | The turn ran past its maximum duration, whatever the handler did | `timeout` |
 | The message cannot be decoded | `message` |
 | The state or the address cannot be read by the type | `state` |
-| The handler returned a new state that cannot be stored (it does not encode, or it is `null`) | `handler` |
+| The handler returned a new state that cannot be stored (it does not encode, it is `null`, it holds a NUL character, or it is nested deeper than 64 levels) | `handler` |
 | The effects of the turn were refused, or its commit was rejected or refused | `commit` |
 | The claim limit | `claim-limit` |
 
@@ -275,14 +275,17 @@ impl Actor for SyncActor {
 See [the HTTP guide](guide/http.md#http-api) for the endpoints and [openapi.json](openapi.json) for the OpenAPI document. Durations are ISO-8601 strings (`PT5S`); instants are ISO-8601 in UTC. Errors are `application/problem+json` (RFC 9457) with `type` `urn:cicada:problem:<slug>`. The routes are an
 axum `Router` that the host nests into its own router and wraps in its own authentication layers. The bodies are the
 types of `cicada::api`, used by both `cicada-axum` and `cicada-client`; request envelopes decode strictly (an unknown
-key is `400`). A payload and the state of a create are checked against the registered JSON Schema of their message type
-or state on every node, whether or not it hosts the type, and refused with `422 invalid-payload` or `422 invalid-state`;
-a node that hosts the type then decodes them with serde, with the same answer, and the detail says which check refused
-(ADR 0026). The check asks only whether a value matches: a refusal by the schema names no place, is the same on every
+key is `400`). The limits of an envelope and of a value come first, on every send and create, also one from code: a
+field beyond its limit, a NUL character, or a payload or a state nested deeper than 64 levels is `400`
+(`OpError::Invalid` from code), before the repeated id and the schema check (ADR 0029). A payload and the state of a
+create are checked against the registered JSON Schema of their message type or state on every node, whether or not it
+hosts the type, and refused with `422 invalid-payload` or `422 invalid-state`; a node that hosts the type then decodes
+them with serde, with the same answer, and the detail says which check refused (ADR 0026). The check asks only whether a value matches: a refusal by the schema names no place, is the same on every
 node, and nothing runs after it, not even the decoder of a hosting node. A send that repeats the id of a message that is
 pending, or whose outcome is still shown, is answered as a repeat before it is checked. The check asserts no `format`,
 loads nothing from outside the schema, and does not enforce a schema that the validator cannot compile; JSON that code
-sends is not checked.
+sends is not checked against the schema. No view of a value written from 0.16.0 on is deeper than 69 levels (a page of
+outcomes that holds a `Failed`), so a JSON parser that allows 128 reads every one.
 
 ## Design notes
 

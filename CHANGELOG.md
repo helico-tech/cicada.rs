@@ -7,6 +7,69 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.16.0 — unreleased
+
+A breaking release: a payload and a state hold at most 64 levels of arrays and objects (ADR 0029). A deeper value
+could end a node: it overflowed a stack on its way through the check, the store or the decoder, and the process ended
+without an error. No schema of the store changes, and clients need no upgrade. Nodes of 0.15.0 and 0.16.0 share a
+database.
+
+### Upgrading
+
+1. A host that sends or stores values deeper than 64 levels makes them shallower before the upgrade. Mind the values a
+   host keeps inside its own states: kept a few levels down, they may be that much less deep. No check before the
+   upgrade finds such a value; it shows up as a refusal or a failed turn after it.
+2. After the upgrade, an actor whose turns fail with `State cannot be stored: The state is nested deeper than 64
+   levels` gets a shallower state from its handler, or is deleted and created again, which drops its mailbox and its
+   children and tells its watchers `Stopped`. Dead letters that hold a letter whose payload is deeper than 61 levels
+   discard that letter (`Discard` with its `messageId`); a supervisor whose state holds a child state deeper than 61
+   levels or a start payload deeper than 60 is deleted and created again with a shallower state. "Upgrading" in the
+   operations guide has the details, also for a topic.
+
+During a rolling deploy a node of 0.15.0 still takes a deeper value, and a client that repeats such a send to a node of
+0.16.0 gets `400`, not the answer to a repeated send: the limits are checked before the repeated id.
+
+**Chorus** keeps the output of a task three levels into the state of a workflow (`steps`, a list of steps): from this
+release on, a task output deeper than 61 levels fails the turn of the workflow that would keep it. Check how deep the
+outputs of its users' tasks can be, and bound them before they reach the state.
+
+### Changed
+
+- **BREAKING** A payload and a state are at most 64 levels deep (`cicada::runtime::limits::MAX_DEPTH`): `{"a": {"b":
+  1}}` is 2 deep, a scalar 0. A deeper value is refused like every other value beyond a limit: `OpError::Invalid` from
+  outside a turn, `TurnError::Invalid` at the call in a turn (by a typed ref and as raw JSON), and `400` over HTTP,
+  before the repeated id and the schema check; a turn whose new state is too deep ends its message `failed` with the
+  cause `handler`, and keeps the stored state. The error names the payload or the state and the limit: `The payload is
+  nested deeper than 64 levels`.
+- **BREAKING** Over HTTP a payload or a state of 65 to 126 levels is `400`, where it was checked against its schema
+  (`202` or `422`).
+- **BREAKING** for code that matches `RetryResult` exhaustively: an operator's retry checks the stored payload too. A
+  payload deeper than 64 levels, stored before 0.16.0 or a `Failed` about a payload at the limit, is the new
+  `RetryResult::TooDeep`, over HTTP `409 message-not-retryable`, and nothing is written; a bulk retry skips it and does
+  not count it. Without the check a retried `Failed` would grow a level with every failure.
+- The error of a new state that a check refuses (`null`, a NUL character, too deep) starts with `State cannot be
+  stored:`, where it said `State cannot be encoded:`. A state that does not encode still says `State cannot be
+  encoded:`.
+- The check of a payload or a state finds a NUL character and measures the depth in one walk, which stops at the first
+  level beyond the limit, so it refuses a value of any depth with an error. Nothing after it meets a value deeper than
+  64 levels, except a `Failed` that the store writes, which holds the payload of the failed message one level down.
+- Values stored before are delivered and decoded as before: only what is written is checked. A turn that writes such a
+  state back fails.
+- The ready-made actors do not change, and neither do their contracts. As they hold values three or four levels down,
+  a letter keeps a payload of at most 61 levels (a deeper one fails the turn of the dead-letters actor that would
+  record it, and no letter is recorded), a `Publish` a payload of at most 62, and a supervisor a child state of at most
+  61 and a start payload of at most 60.
+
+### Added
+
+- Every view of a value written from this release on can be read back over HTTP: it is at most 69 levels deep (a page
+  of `GET /outcomes` that holds a `Failed`), which every JSON parser that allows 128 reads. The HTTP guide says how deep
+  each view is, and that System.Text.Json and Json.NET stop at 64 by default.
+- The core guide names what the limit leaves to the host: a `serde_json::Value` built in code too deep for its own drop,
+  serde's decoder of an untagged enum that holds itself, whose time doubles with every level of a value that does not
+  decode, and the stack that the decoder of a type with large fields needs in a debug build. The operations guide names
+  the memory that reading a body takes, up to about 90 times its size, and how to bound it.
+
 ## 0.15.0 — 2026-11-12
 
 A breaking release for a few types: a message schema holds every definition it refers to, whatever its name, and a

@@ -25,6 +25,11 @@ WorkerMsg::Begin { batch: 7 })` builds one from a typed ref and a message, so a 
 compile. The contracts of the three types are wire formats; their references in
 [docs/reference/contracts](../reference/contracts/) pin them, doc comments included.
 
+Their states and messages are checked like any other, against the depth limit of 64 levels too
+([How deep a value can be](core.md#how-deep-a-value-can-be)). As they hold values three or four levels down, they keep
+values of at most 60 to 62 levels; each section says how much, and what to do about a deeper value stored before
+0.16.0.
+
 ## Supervisor
 
 **A restart empties the mailbox of the child.** Its pending messages end `purged`, no dead letter is written for them,
@@ -115,6 +120,13 @@ system.send(&supervisor, SupervisorMsg::Start).await?;
   The state of a child and its start message are stored as JSON: when the type of the child changes so that they no
   longer fit, a restart deletes the child and cannot create it again, and the supervisor gives it up.
 
+- **How deep.** An entry holds the state of its child three levels into the state of the supervisor, and the payload of
+  its start message four. So a child state deeper than 61 levels, or a start payload deeper than 60, makes the state too
+  deep, and the create of the supervisor is refused. A supervisor whose state, stored before 0.16.0, holds such an
+  entry fails every turn that writes its state (`State cannot be stored: The state is nested deeper than 64 levels`).
+  Delete it, which deletes its children too, and create it again with a shallower state: its `Start` starts them
+  again.
+
 A supervisor is one actor: it handles the failures of its children one after the other.
 
 ## Dead letters
@@ -154,6 +166,15 @@ sent: only a notification counts.
   `commit`, and the letter stays as it was.
 - `Discard { messageId }` forgets a letter. Over HTTP: `POST /actors/cicada.dead-letters/_/messages` with
   `{"type": "Redrive", "payload": {"messageId": "…"}}`.
+- **How deep.** A letter holds the payload three levels into the state, so a failed message whose payload is deeper
+  than 61 levels cannot be kept: the turn that would record it fails with the cause `handler` (`State cannot be stored:
+  The state is nested deeper than 64 levels`), and no letter is recorded. That failure is a notification, which tells
+  nobody: the outcome of the notification (`GET /outcomes?status=failed&prefix=cicada.dead-letters/`) holds the error
+  and the id of the failed message, for as long as outcomes are kept. The next failure is recorded as before.
+- **A deep letter from before 0.16.0.** Dead letters that hold a letter whose payload is deeper than 61 levels fail
+  every turn that writes their state: no later failure is recorded, and a `Redrive` or a `Discard` of another letter
+  fails. `Discard` of the deep letter itself works, as the state is within the limit without it; deleting and creating
+  the actor works too, and drops all its letters.
 
 ## Topic
 
@@ -193,6 +214,9 @@ system.send_with(&orders, shipped, SendOptions::new().correlation_id("c1")).awai
   failed `Deliver` for each publish until it is unsubscribed. A delivery whose read of the store fails is tried again,
   as a start of a supervisor is.
 - One turn for each subscriber and each publish: a topic with many subscribers is slow.
+- **How deep.** A `Publish` and a `Deliver` hold the published message two levels down, so a payload deeper than 62
+  levels makes the `Publish` too deep: the send of the publisher is refused at the call. A `Publish` stored before
+  0.16.0 with such a payload fails, as its `Deliver` is refused at the call; the topic goes on with the next message.
 
 ## Schedules
 

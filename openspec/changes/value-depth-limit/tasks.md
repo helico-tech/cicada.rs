@@ -42,7 +42,7 @@ written as the section "Tests of values from before" of `design.md` says. Runtim
 
 ## 4. Docs
 
-- [ ] 4.1 The core guide (the limit, where it is refused, the untagged enum that holds itself, the `Value` too deep
+- [x] 4.1 The core guide (the limit, where it is refused, the untagged enum that holds itself, the `Value` too deep
       for its own drop, the decoder of a type with large fields in a debug build), the HTTP guide (the `400`, the
       `409` of a retry, a view at most 69 levels deep, the default of 64 of .NET parsers), the guide of the ready-made
       actors (61, 62, 61 and 60, the ways out of decision 3), `docs/architecture.md` (the rows of a new state that
@@ -50,7 +50,7 @@ written as the section "Tests of values from before" of `design.md` says. Runtim
       first, before the repeated id and the schema check), `docs/operations.md` (memory per body; the upgrade to
       0.16.0 by the Migration Plan and decision 3), and ADR 0029 as built. Verify: `cargo test -p cicada-examples
       --doc` and the link check pass, and every risk of `design.md` that names the docs is in them.
-- [ ] 4.2 `CHANGELOG.md`, a section `0.16.0 — unreleased`, and the version `0.16.0` in `Cargo.toml`: the steps of the
+- [x] 4.2 `CHANGELOG.md`, a section `0.16.0 — unreleased`, and the version `0.16.0` in `Cargo.toml`: the steps of the
       Migration Plan first, then each **BREAKING** line of the proposal, the new `RetryResult::TooDeep`, and what Chorus
       must check. Verify: every step of the plan and every **BREAKING** line of the proposal is in the section.
 

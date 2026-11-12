@@ -187,7 +187,8 @@ Inside a handler, `turn` offers:
 
 Effects are buffered and committed atomically. A handler that returns `Err` (any error converts with `?`) or panics
 commits `failed` and nothing else — unless the message carries a [retry policy](#retry). Sends refuse fields beyond
-the send limits with `TurnError::Invalid`, which the handler may handle.
+the send limits, and sends and creates a value nested too deep ([How deep a value can be](#how-deep-a-value-can-be)),
+with `TurnError::Invalid`, which the handler may handle.
 
 **Every actor has state.** A type that keeps no data has `type State = NoState`, an empty struct stored as `{}`; it is
 created with `create(&ref, &NoState {})`. A state is never `null`: a create with a state that encodes to `null` (`()`,
@@ -201,6 +202,41 @@ turn that ends with such a state ends its message `failed`, without a retry, and
 **Blocking code.** Handlers run as futures on the tokio runtime. The turn timeout, a lost lease and a node stop cancel
 a handler at its next `.await`; code that does not yield (blocking I/O, `std::thread::sleep`, heavy computation) runs
 on until it returns and holds a runtime worker thread meanwhile. Run it with `tokio::task::spawn_blocking`.
+
+### How deep a value can be
+
+A payload and a state hold at most 64 arrays and objects inside each other (`cicada::runtime::limits::MAX_DEPTH`,
+ADR 0029): `{"a": {"b": 1}}` is 2 deep, a number 0. A deeper value is refused like the other limits of a value:
+
+| Where | Answer |
+| --- | --- |
+| A send or a create from outside a turn (`ActorSystem::send_message`, `create_actor`, the typed calls) | `OpError::Invalid`, over HTTP `400`, before the repeated id and the schema check |
+| A send or a create in a turn, by a typed ref or as raw JSON | `TurnError::Invalid` at the call |
+| The new state of a turn | the message ends `failed` with the cause `handler`, error `State cannot be stored: The state is nested deeper than 64 levels`, and the stored state stays |
+| An operator's retry of a stored payload (`retry_message`, `POST /messages/{id}/retry`) | `RetryResult::TooDeep`, over HTTP `409 message-not-retryable`; a bulk retry skips it |
+
+The error names the payload or the state and the limit: `The payload is nested deeper than 64 levels`. The check stops
+at the first level beyond the limit, so it refuses a value of any depth with an error, and nothing after it (the store,
+the decoder, a view) meets a deeper value; a `Failed` that the store writes holds the payload of the failed message
+one level down, so it can be 65 deep. A value stored before 0.16.0 is delivered and decoded as before: only what is
+written is checked, so a turn that writes such a state back fails ([Upgrading](../operations.md#upgrading)).
+
+The limit leaves three things to the host:
+
+- **A `Value` too deep for its own drop.** serde_json drops a `serde_json::Value` with a walk that calls itself, so a
+  value built in code thousands of levels deep overflows the stack wherever it is dropped: in the host's code, or in
+  cicada's after the refusal. A Rust value too deep for its own `Serialize` is the same. Bound the depth of what you
+  build from outside data.
+- **An untagged enum that holds itself.** serde decodes it by trying each variant at each level, so for a value that
+  does not decode the time doubles with every level: a tree 24 levels deep, a few hundred bytes, takes seconds, and a
+  decode cannot be stopped. Keep such enums out of messages and states, or make them tagged (`#[serde(tag = "…")]`).
+  Over HTTP the schema check refuses most such values before they reach the decoder; not a value the schema accepts
+  and only the decoder refuses (a number too large for its field), nor one below a nested message of a family that
+  holds itself, which the door lets through ([The contract of a type](#the-contract-of-a-type)).
+- **A type with large fields in a debug build.** The decoder of a type needs stack for each level of a value. An
+  ordinary type 64 levels deep fits a thread of the runtime (2 MiB) with room to spare, but a type that holds itself
+  with large fields inline (arrays of numbers, big structs) can need most of it in a debug build, where hosts run their
+  tests; a release build needs far less.
 
 ## Child actors
 

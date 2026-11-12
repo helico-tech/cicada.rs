@@ -30,6 +30,12 @@ the store and the node's life cycle, or hands them to `App`.
   bounds a turn. A turn that runs into it is `failed("timeout")`, or retried when the message has a retry policy. A
   handler that does not yield is cancelled only when it returns.
 - **SQLite** has one writer: fine for one node, or a few processes on one host. Use PostgreSQL for more.
+- **Memory per request.** Reading a JSON body takes up to about 90 times its size as JSON values before any check runs:
+  a body of 1 MiB that is a list of 520,000 numbers takes about 90 MB. The decoder of a node that hosts the type takes
+  one copy of the payload more. Both grow with the size of the body, so one request cannot end a node, but many large
+  ones at once take memory: bound them with the body limit of the router (`ApiConfig::max_request_body_bytes`, 1 MiB by
+  default) and with the number of requests at once that the host's router lets through (such as tower's
+  `ConcurrencyLimitLayer`).
 
 ## Deploying
 
@@ -300,6 +306,33 @@ node is deployed:
 
 A type with a newtype variant of a type whose name a reference escapes could not start before 0.15.0, so nothing of it
 is registered: it registers its first contract.
+
+**Version 0.16.0 changes no schema of the store, but it refuses values nested deeper than 64 levels** (ADR 0029,
+[How deep a value can be](guide/core.md#how-deep-a-value-can-be)). Nodes of 0.15.0 and 0.16.0 can share a database.
+During a rolling deploy a node of 0.15.0 still takes a deeper value, and a client that repeats such a send to a node of
+0.16.0 gets `400`, not the answer to a repeated send, as the limits come before the repeated id. Clients need no
+upgrade. No check before the upgrade finds a deep value; it shows up as a refusal or a failed turn after it.
+
+1. A host that sends or stores values deeper than 64 levels makes them shallower before the upgrade. Over HTTP a
+   payload or a state of 65 to 126 levels was checked against its schema and is `400` now; from code any depth was
+   taken. Mind the values that a host keeps inside its own states: a state that holds them a few levels down holds
+   them a few levels less deep.
+2. After the upgrade, an actor whose turns fail with `State cannot be stored: The state is nested deeper than 64
+   levels` holds a state from before that is too deep. Its turns that leave the state as it is still end as before.
+   Give it a shallower state from its handler, or delete it and create it again, which also drops its mailbox and its
+   children and tells its watchers `Stopped` (a supervisor of it then forgets it as a child). A state deeper than 126
+   levels, whose view `cicada-client` refuses, can be read with a parser that allows more, such as `curl` and `jq`.
+3. The ready-made actors keep values a few levels down ([Ready-made actors](guide/actors.md)):
+   - **Dead letters** that hold a letter whose payload is deeper than 61 levels record nothing more, and a `Redrive` or
+     a `Discard` of another letter fails, until that letter is discarded: send `Discard` with its `messageId`.
+     Deleting and creating the actor works too, and drops all its letters.
+   - **A supervisor** whose state holds a child state deeper than 61 levels or a start payload deeper than 60 fails
+     every turn that writes its state. Delete it, which deletes its children too, and create it again with a shallower
+     state; its `Start` starts them again.
+   - **A topic** with a pending `Publish` whose payload is deeper than 62 levels fails that `Publish`, as its
+     `Deliver` is refused at the call; the topic goes on with the next message.
+4. An operator cannot retry a message stored before the upgrade whose payload is deeper than 64 levels (`409
+   message-not-retryable`); a bulk retry skips it.
 
 **Switching a type to `create_child`.** An actor created with `turn.create` stays independent: a later `create_child`
 of it by its creator does not adopt it, but fails the creator's message (the commit is rejected, and a handler cannot
