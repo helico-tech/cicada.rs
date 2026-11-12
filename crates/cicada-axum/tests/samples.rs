@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 
 use cicada::store::MessageId;
-use cicada::{ActorAddress, Failed, StopCause, Stopped};
+use cicada::{ActorAddress, Failed, FailureCause, StopCause, Stopped};
 use cicada_axum::{assert_message_sample, assert_state_sample};
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
@@ -112,11 +112,15 @@ fn the_notifications_failed_and_stopped_pass_in_a_watchers_family() {
         from,
         error: "Payload of 'Add' cannot be decoded: invalid type".into(),
         attempts: 1,
+        cause: FailureCause::Message,
     };
     let mut samples = vec![
         WatcherMsg::Failed(failed(None, None)),
         WatcherMsg::Failed(failed(Some("c-1"), Some(address("orders/o:1")))),
     ];
+    for cause in [FailureCause::Handler, FailureCause::ClaimLimit, FailureCause::Node] {
+        samples.push(WatcherMsg::Failed(Failed { cause, ..failed(None, None) }));
+    }
     for (cause, by) in [(StopCause::Stopped, Some(address("counter/a"))), (StopCause::Deleted, None)] {
         samples.push(WatcherMsg::Stopped(Stopped { actor: address("counter/a"), cause, by }));
     }

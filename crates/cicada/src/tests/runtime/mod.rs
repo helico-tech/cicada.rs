@@ -7,6 +7,7 @@ mod actor_type;
 mod after_handler;
 mod claim_limit;
 mod dispatch_loop;
+mod failure_cause;
 mod lease;
 mod lease_robustness;
 mod message_retry;

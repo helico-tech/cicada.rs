@@ -19,7 +19,7 @@ use crate::retention::{Keep, Retention};
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 use crate::retry::RetryPolicy;
 use crate::time::{self, MAX_INSTANT, Timestamp};
-use crate::watch::{self, Failed, StopCause, Stopped, Watch, WatchTarget};
+use crate::watch::{self, Failed, FailureCause, StopCause, Stopped, Watch, WatchTarget};
 
 // ---- registry ----
 
@@ -250,9 +250,10 @@ pub struct Notice {
 }
 
 impl Notice {
-    /// The [`Failed`] of `message`, which ends `failed` with `error`, for `watcher`. It has no `causedBy`, and it is
-    /// kept by the `failed` rule of the message's retention for both of its own outcomes: it holds the payload.
-    pub fn failed(message: &Message, error: &str, watcher: &ActorAddress) -> Self {
+    /// The [`Failed`] of `message`, which ends `failed` with `error` for `cause`, for `watcher`. It has no `causedBy`,
+    /// and it is kept by the `failed` rule of the message's retention for both of its own outcomes: it holds the
+    /// payload.
+    pub fn failed(message: &Message, error: &str, cause: FailureCause, watcher: &ActorAddress) -> Self {
         let failed = Failed {
             actor: message.to.clone(),
             message_id: message.id.clone(),
@@ -262,6 +263,7 @@ impl Notice {
             from: message.from.clone(),
             error: error.to_owned(),
             attempts: message.attempt,
+            cause,
         };
         let rule = message.retention.as_ref().and_then(|r| r.failed.clone());
         Self {
@@ -528,7 +530,7 @@ mod tests {
         let removal = Removal::delete(&root);
         let notices = vec![
             removal.notice(&a("x/2"), &a("w/b")),
-            Notice::failed(&failed, "boom", &a("w/b")),
+            Notice::failed(&failed, "boom", FailureCause::Timeout, &a("w/b")),
             removal.notice(&a("x/1"), &a("w/b")),
             removal.notice(&a("x/1"), &a("w/a")),
             removal.notice(&a("x/1"), &a("w/a")),
@@ -552,6 +554,7 @@ mod tests {
         let failure = &written[2];
         assert_eq!(failure.retention, Some(Retention { done: Some(Keep::Remove), failed: Some(Keep::Remove) }));
         assert_eq!((failure.caused_by.as_ref(), failure.payload["messageId"].as_str()), (None, Some("m1")));
+        assert_eq!(failure.payload["cause"], "timeout", "the cause it was given");
         assert_eq!(written[3].payload, json!({"actor": "x/2", "cause": "deleted", "by": null}));
         assert!(written.iter().all(|m| m.headers.is_empty() && m.retry.is_none() && m.delivery == Delivery::Now));
     }

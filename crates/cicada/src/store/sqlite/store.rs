@@ -17,7 +17,7 @@ use crate::store::{
     SetWatchResult, StateChange, StoreError, StoreResult, StoreStats, SystemClock, TurnOutcome, TypeDef,
 };
 use crate::time::{self, DEFAULT_RETENTION, Timestamp};
-use crate::watch::{self, Watch, WatchTarget};
+use crate::watch::{self, FailureCause, Watch, WatchTarget};
 use async_trait::async_trait;
 use serde_json::Value;
 use sqlx::sqlite::{SqliteArguments, SqliteConnectOptions, SqliteRow, SqliteSynchronous};
@@ -428,12 +428,12 @@ impl SqliteStore {
     /// the event removes gets nothing; one that does not exist gets nothing and loses its watches.
     async fn notices(
         c: &mut SqliteConnection,
-        failed: Option<(&Message, &str)>,
+        failed: Option<(&Message, &str, FailureCause)>,
         removed: Option<(&Removal<'_>, &[ActorAddress])>,
     ) -> StoreResult<Vec<Notice>> {
         let watcher = |row: &SqliteRow| rows::address(&col::<String>(row, "watcher")?);
         let mut notices = Vec::new();
-        if let Some((message, error)) = failed {
+        if let Some((message, error, cause)) = failed {
             let targets = watch::failure_targets(&message.to);
             let sql = format!(
                 "SELECT DISTINCT watcher FROM watches WHERE target IN {} ORDER BY watcher",
@@ -444,7 +444,7 @@ impl SqliteStore {
                 query = query.bind(target.as_str());
             }
             for w in fetch_all(c, query, watcher).await? {
-                notices.push(Notice::failed(message, error, &w));
+                notices.push(Notice::failed(message, error, cause, &w));
             }
         }
         if let Some((removal, tree)) = removed {
@@ -935,6 +935,7 @@ impl SqliteStore {
             epoch,
             message_id,
             outcome,
+            cause,
             state,
             creates,
             sends,
@@ -1094,7 +1095,7 @@ impl SqliteStore {
         let removed: Vec<ActorAddress> =
             deleted.iter().chain(&tree).cloned().collect::<BTreeSet<_>>().into_iter().collect();
         let removal = Removal::of_commit(&address, &message_id, &controls, stop);
-        let failed = failed.as_ref().map(|(m, e)| (m, e.as_str()));
+        let failed = failed.as_ref().map(|(m, e)| (m, e.as_str(), cause));
         let notices = Self::notices(c, failed, (!removed.is_empty()).then_some((&removal, &removed[..]))).await?;
         if stop {
             self.remove_all(c, &tree, now).await?;

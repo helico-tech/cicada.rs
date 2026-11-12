@@ -14,7 +14,7 @@ use crate::store::{
     SetWatchResult, StateChange, StoreError, StoreResult, StoreStats, SystemClock, TurnOutcome, TypeDef,
 };
 use crate::time::{self, DEFAULT_RETENTION, Timestamp};
-use crate::watch::{self, Watch, WatchTarget};
+use crate::watch::{self, FailureCause, Watch, WatchTarget};
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -285,15 +285,15 @@ impl InMemoryStore {
     /// the event removes gets nothing; one that does not exist gets nothing and loses its watches.
     fn notices(
         s: &mut State,
-        failed: Option<(&Message, &str)>,
+        failed: Option<(&Message, &str, FailureCause)>,
         removed: Option<(&Removal, &BTreeSet<ActorAddress>)>,
     ) -> Vec<Notice> {
         let mut notices = Vec::new();
-        if let Some((message, error)) = failed {
+        if let Some((message, error, cause)) = failed {
             let targets = watch::failure_targets(&message.to);
             let watchers: BTreeSet<&ActorAddress> =
                 s.watches.iter().filter(|(target, _)| targets.contains(target)).map(|(_, w)| w).collect();
-            notices.extend(watchers.into_iter().map(|w| Notice::failed(message, error, w)));
+            notices.extend(watchers.into_iter().map(|w| Notice::failed(message, error, cause, w)));
         }
         if let Some((removal, tree)) = removed {
             for actor in tree {
@@ -1035,7 +1035,7 @@ impl Backend for InMemoryStore {
             let tree = if stops { Self::tree(s, &commit.address) } else { BTreeSet::new() };
             let removed: BTreeSet<ActorAddress> = deleted.iter().chain(&tree).cloned().collect();
             let removal = Removal::of_commit(&commit.address, &commit.message_id, &commit.controls, stops);
-            let failed = failed.as_ref().map(|(m, e)| (m, e.as_str()));
+            let failed = failed.as_ref().map(|(m, e)| (m, e.as_str(), commit.cause));
             let notices = Self::notices(s, failed, (!removed.is_empty()).then_some((&removal, &removed)));
             self.remove_all(s, &tree, now);
             if let Some(row) = s.actors.get_mut(commit.address.as_str()) {

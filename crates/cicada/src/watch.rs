@@ -53,10 +53,61 @@ pub struct Failed {
     pub correlation_id: Option<String>,
     /// The sender of the failed message; null for a message sent from outside a turn.
     pub from: Option<ActorAddress>,
-    /// Why it failed.
+    /// The error it failed with.
     pub error: String,
     /// How often the message was claimed: its `attempt`.
     pub attempts: u32,
+    /// What failed: the handler, the node, the message, the state, the commit, or the claim limit.
+    pub cause: FailureCause,
+}
+
+/// Why a message ended `failed` (ADR 0028). The node decides it where it decides that the message fails. Written in
+/// kebab-case, in place in the schema of [`Failed`]. A closed set: a value added later changes the contract of every
+/// type that watches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+#[schemars(inline)]
+pub enum FailureCause {
+    /// The handler returned an error or panicked, and no retry is left; or it returned a new state that cannot be
+    /// stored.
+    Handler,
+    /// The node or the store failed around the turn: a read the node needed failed, also one the handler passed on,
+    /// or a panic outside the handler.
+    Node,
+    /// The handler refused the message for good (a permanent failure).
+    Refused,
+    /// The turn ran past its maximum duration.
+    Timeout,
+    /// The message cannot be decoded.
+    Message,
+    /// The state or the address of the actor cannot be read by its type.
+    State,
+    /// The effects of the turn were refused, or its commit was rejected or refused.
+    Commit,
+    /// The message reached the claim limit (ADR 0025).
+    ClaimLimit,
+}
+
+impl FailureCause {
+    /// The name on the wire: `handler`, `node`, `refused`, `timeout`, `message`, `state`, `commit` or `claim-limit`.
+    pub fn name(self) -> &'static str {
+        match self {
+            FailureCause::Handler => "handler",
+            FailureCause::Node => "node",
+            FailureCause::Refused => "refused",
+            FailureCause::Timeout => "timeout",
+            FailureCause::Message => "message",
+            FailureCause::State => "state",
+            FailureCause::Commit => "commit",
+            FailureCause::ClaimLimit => "claim-limit",
+        }
+    }
+}
+
+impl fmt::Display for FailureCause {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
 }
 
 /// The notification of a watched actor that went away. Its type name is `Stopped`. A watcher's message family declares
@@ -369,15 +420,56 @@ mod tests {
                     "type": ["string", "null"],
                     "pattern": "^[a-z][a-z0-9._-]*/[^/]+$"
                 },
-                "error": {"description": "Why it failed.", "type": "string"},
+                "error": {"description": "The error it failed with.", "type": "string"},
                 "attempts": {
                     "description": "How often the message was claimed: its `attempt`.",
                     "type": "integer",
                     "format": "uint32",
                     "minimum": 0
+                },
+                "cause": {
+                    "description": "What failed: the handler, the node, the message, the state, the commit, or the \
+                                    claim limit.",
+                    "oneOf": [
+                        {
+                            "description": "The handler returned an error or panicked, and no retry is left; or it \
+                                            returned a new state that cannot be\nstored.",
+                            "type": "string",
+                            "const": "handler"
+                        },
+                        {
+                            "description": "The node or the store failed around the turn: a read the node needed \
+                                            failed, also one the handler passed on,\nor a panic outside the handler.",
+                            "type": "string",
+                            "const": "node"
+                        },
+                        {
+                            "description": "The handler refused the message for good (a permanent failure).",
+                            "type": "string",
+                            "const": "refused"
+                        },
+                        {"description": "The turn ran past its maximum duration.", "type": "string", "const": "timeout"},
+                        {"description": "The message cannot be decoded.", "type": "string", "const": "message"},
+                        {
+                            "description": "The state or the address of the actor cannot be read by its type.",
+                            "type": "string",
+                            "const": "state"
+                        },
+                        {
+                            "description": "The effects of the turn were refused, or its commit was rejected or \
+                                            refused.",
+                            "type": "string",
+                            "const": "commit"
+                        },
+                        {
+                            "description": "The message reached the claim limit (ADR 0025).",
+                            "type": "string",
+                            "const": "claim-limit"
+                        }
+                    ]
                 }
             },
-            "required": ["actor", "messageId", "messageType", "payload", "error", "attempts"]
+            "required": ["actor", "messageId", "messageType", "payload", "error", "attempts", "cause"]
         });
         let stopped = json!({
             "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -429,13 +521,14 @@ mod tests {
             from: Some(address("billing/ledger")),
             error: "declined".into(),
             attempts: 2,
+            cause: FailureCause::Refused,
         };
         let written = serde_json::to_value(&full).unwrap();
         assert_eq!(
             written,
             json!({"actor": "billing.invoices/acme", "messageId": "m1", "messageType": "Charge",
                 "payload": {"amount": 3}, "correlationId": "run-7", "from": "billing/ledger", "error": "declined",
-                "attempts": 2})
+                "attempts": 2, "cause": "refused"})
         );
         assert_eq!(serde_json::from_value::<Failed>(written).unwrap(), full);
         let bare = Failed { correlation_id: None, from: None, ..full };
@@ -443,6 +536,34 @@ mod tests {
         assert_eq!(written["correlationId"], Value::Null, "always written");
         assert_eq!(written["from"], Value::Null, "always written");
         assert_eq!(serde_json::from_value::<Failed>(written).unwrap(), bare);
+    }
+
+    #[test]
+    fn every_cause_is_written_in_kebab_case_and_read_back() {
+        let causes = [
+            (FailureCause::Handler, "handler"),
+            (FailureCause::Node, "node"),
+            (FailureCause::Refused, "refused"),
+            (FailureCause::Timeout, "timeout"),
+            (FailureCause::Message, "message"),
+            (FailureCause::State, "state"),
+            (FailureCause::Commit, "commit"),
+            (FailureCause::ClaimLimit, "claim-limit"),
+        ];
+        for (cause, text) in causes {
+            assert_eq!(serde_json::to_value(cause).unwrap(), json!(text));
+            assert_eq!(serde_json::from_value::<FailureCause>(json!(text)).unwrap(), cause);
+            assert_eq!((cause.name(), cause.to_string()), (text, text.to_owned()));
+        }
+        assert!(serde_json::from_value::<FailureCause>(json!("claim_limit")).is_err(), "a closed set");
+    }
+
+    /// A `Failed` of the release before 0.14.0 has no cause: a watcher of this release cannot decode it.
+    #[test]
+    fn a_failed_without_a_cause_does_not_decode() {
+        let old = json!({"actor": "w/a", "messageId": "m1", "messageType": "Charge", "payload": {},
+            "correlationId": null, "from": null, "error": "boom", "attempts": 1});
+        assert!(serde_json::from_value::<Failed>(old).is_err());
     }
 
     #[test]
@@ -554,6 +675,29 @@ mod tests {
         Stopped(Stopped),
     }
 
+    /// The `Failed` of the release before 0.14.0: every field but the cause.
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    #[serde(rename_all = "camelCase")]
+    #[allow(dead_code)]
+    struct FailedWithoutCause {
+        actor: ActorAddress,
+        message_id: MessageId,
+        message_type: String,
+        payload: Value,
+        correlation_id: Option<String>,
+        from: Option<ActorAddress>,
+        error: String,
+        attempts: u32,
+    }
+
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    #[serde(tag = "type")]
+    #[allow(dead_code)]
+    enum OldFailed {
+        Failed(FailedWithoutCause),
+        Stopped(Stopped),
+    }
+
     /// A type of the family's own that is called like a part of the core's types does not change them.
     mod mine {
         #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -593,6 +737,13 @@ mod tests {
     #[test]
     fn a_family_with_a_failed_of_its_own_may_not_watch() {
         let problem = watcher_problem(&contract_of::<OwnFailed>()).unwrap();
+        assert!(problem.contains("message type Failed that is not cicada::Failed"), "{problem}");
+    }
+
+    /// Scenario: A watcher with a `Failed` of its own, for a `Failed` without a cause.
+    #[test]
+    fn a_family_with_the_failed_of_the_release_before_may_not_watch() {
+        let problem = watcher_problem(&contract_of::<OldFailed>()).unwrap();
         assert!(problem.contains("message type Failed that is not cicada::Failed"), "{problem}");
     }
 }

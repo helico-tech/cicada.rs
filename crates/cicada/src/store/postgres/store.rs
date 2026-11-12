@@ -19,7 +19,7 @@ use crate::store::{
     SetWatchResult, StateChange, StoreError, StoreResult, StoreStats, TurnOutcome, TypeDef,
 };
 use crate::time::{self, Timestamp};
-use crate::watch::{self, Watch, WatchTarget};
+use crate::watch::{self, FailureCause, Watch, WatchTarget};
 use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
@@ -807,11 +807,11 @@ async fn notices(
     tx: &mut Tx,
     watches: &EventWatches,
     gone: &HashSet<String>,
-    failed: Option<(&Message, &str)>,
+    failed: Option<(&Message, &str, FailureCause)>,
     removed: Option<(&Removal<'_>, &[String])>,
 ) -> Result<Vec<Notice>, TxError> {
     let mut candidates: Vec<(ActorAddress, &str, bool)> = Vec::new();
-    if let Some((message, _)) = failed {
+    if let Some((message, _, _)) = failed {
         let targets = watch::failure_targets(&message.to);
         let watchers: BTreeSet<&str> =
             watches.iter().filter(|(t, _)| targets.contains(t)).map(|(_, w)| w.as_str()).collect();
@@ -837,7 +837,7 @@ async fn notices(
         }
         let watcher = address(watcher.to_owned())?;
         out.push(match (failed, removed) {
-            (Some((message, error)), _) if is_failure => Notice::failed(message, error, &watcher),
+            (Some((message, error, cause)), _) if is_failure => Notice::failed(message, error, cause, &watcher),
             (_, Some((removal, _))) => removal.notice(&about, &watcher),
             _ => unreachable!("a candidate comes from the failure or the removal"),
         });
@@ -2138,7 +2138,9 @@ impl Backend for PostgresStore {
                 .ok_or_else(|| corrupt(format!("the claimed message {} is not pending", r.message_id)))?;
             let claimed_message = message(&row)?;
             let failed = match &r.outcome {
-                TurnOutcome::Failed(error) if !claimed_message.notification => Some((&claimed_message, error.as_str())),
+                TurnOutcome::Failed(error) if !claimed_message.notification => {
+                    Some((&claimed_message, error.as_str(), r.cause))
+                }
                 _ => None,
             };
             match &r.outcome {

@@ -9,7 +9,7 @@ use crate::address::{ActorAddress, TypeName};
 use crate::retention::Retention;
 use crate::retry::RetryPolicy;
 use crate::time::{self, MAX_DELAY, MAX_INSTANT, TimeError, Timestamp};
-use crate::watch::WatchChange;
+use crate::watch::{FailureCause, WatchChange};
 
 /// An id that is not valid: a [`MessageId`] or [`NodeId`] that is blank. It prints why, e.g. "MessageId must not be
 /// blank".
@@ -621,6 +621,9 @@ pub struct CommitRequest {
     pub message_id: MessageId,
     /// How the message ends.
     pub outcome: TurnOutcome,
+    /// Why the message fails, written into the [`Failed`](crate::Failed) of each watcher; read only when the outcome
+    /// is [`TurnOutcome::Failed`].
+    pub cause: FailureCause,
     /// What happens to the state.
     pub state: StateChange,
     /// Instances to create, after the deletes and before the sends.
@@ -638,7 +641,7 @@ pub struct CommitRequest {
 }
 
 impl CommitRequest {
-    /// A commit of `outcome` without effects, with a new random event id.
+    /// A commit of `outcome` without effects, with a new random event id; a failure has the cause `handler`.
     pub fn new(address: ActorAddress, epoch: i64, message_id: MessageId, outcome: TurnOutcome) -> Self {
         Self {
             event: MessageId::random(),
@@ -646,6 +649,7 @@ impl CommitRequest {
             epoch,
             message_id,
             outcome,
+            cause: FailureCause::Handler,
             state: StateChange::Unchanged,
             creates: Vec::new(),
             sends: Vec::new(),
@@ -653,6 +657,11 @@ impl CommitRequest {
             watches: Vec::new(),
             controls: Vec::new(),
         }
+    }
+
+    /// This commit with the failure cause `cause`.
+    pub fn with_cause(self, cause: FailureCause) -> Self {
+        Self { cause, ..self }
     }
 
     /// The addresses this commit deletes.

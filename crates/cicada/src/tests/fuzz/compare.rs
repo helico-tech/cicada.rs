@@ -42,7 +42,7 @@ use crate::store::{
 };
 use crate::testing::{InMemoryStore, VirtualClock};
 use crate::time::{self, Timestamp};
-use crate::watch::{Watch, WatchChange, WatchTarget};
+use crate::watch::{FailureCause, Watch, WatchChange, WatchTarget};
 use proptest::prelude::*;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -1224,6 +1224,7 @@ impl Side {
             epoch,
             message_id: commit.wrong_message.map_or(claimed, id_at),
             outcome,
+            cause: FailureCause::Timeout,
             state: match commit.state {
                 StateOp::Unchanged => StateChange::Unchanged,
                 StateOp::New(state) => StateChange::NewState(STATES[state]()),

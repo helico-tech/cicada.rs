@@ -9,7 +9,7 @@ use cicada::prelude::*;
 use cicada::runtime::{BulkSelection, NodeConfig, RetryResult, SendResult, WatchResult};
 use cicada::store::{Message, MessageStatus, OutcomeRecord, OutcomeStatus};
 use cicada::testing::{TestActors, TokioClock, default_start};
-use cicada::{Failed, StopCause, Stopped, Store, WatchTarget};
+use cicada::{Failed, FailureCause, StopCause, Stopped, Store, WatchTarget};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -339,6 +339,7 @@ async fn a_message_that_fails_for_good_tells_each_watcher() {
         from: None,
         error: "boom".into(),
         attempts: 1,
+        cause: FailureCause::Handler,
     };
     for key in ["a", "b"] {
         assert_eq!(notes(&test, key).await.failed, std::slice::from_ref(&expected), "{key}");
@@ -560,6 +561,7 @@ async fn a_message_of_the_type_failed_from_a_sender_is_not_marked() {
         from: None,
         error: "made up".into(),
         attempts: 1,
+        cause: FailureCause::Handler,
     })
     .unwrap();
     let sent = match test.send_raw(&address(&supervisor("a")), "Failed", fake, SendOptions::new()).await {

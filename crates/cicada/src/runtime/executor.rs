@@ -70,7 +70,7 @@ use crate::store::{
     RenewResult, StateChange, Store, StoreError, TurnOutcome,
 };
 use crate::turn::{HandlerFailure, TurnInfo};
-use crate::watch::WatchChange;
+use crate::watch::{FailureCause, WatchChange};
 
 const RENEW_RETRY: Duration = Duration::from_secs(1);
 const STUCK_AFTER: Duration = Duration::from_secs(5);
@@ -103,6 +103,9 @@ impl LeaseSettings {
 /// What a turn decided, before it is committed.
 struct Decision {
     outcome: TurnOutcome,
+    /// Why the message fails, by the table of ADR 0028: read when the outcome is `failed`, and for a reschedule when
+    /// the store refuses it and the message fails after all.
+    cause: FailureCause,
     state: StateChange,
     creates: Vec<ActorCreate>,
     sends: Vec<OutgoingMessage>,
@@ -114,13 +117,16 @@ struct Decision {
 }
 
 impl Decision {
-    fn failed(reason: impl Into<String>) -> Self {
-        Self::of(TurnOutcome::Failed(reason.into()))
+    /// The message fails for `cause` with `reason`, without effects.
+    fn failed(cause: FailureCause, reason: impl Into<String>) -> Self {
+        Self { cause, ..Self::of(TurnOutcome::Failed(reason.into())) }
     }
 
+    /// A decision without effects: `outcome` is not `failed` (see [`Self::failed`]).
     fn of(outcome: TurnOutcome) -> Self {
         Self {
             outcome,
+            cause: FailureCause::Handler,
             state: StateChange::Unchanged,
             creates: Vec::new(),
             sends: Vec::new(),
@@ -301,7 +307,7 @@ impl TurnExecutor {
                     let when = if phase.handler_ended() { "after its handler ended" } else { "before its handler ran" };
                     let panic = e.try_into_panic().map(|p| panic_message(&*p)).unwrap_or_default();
                     tracing::error!("Turn of {} for {} panicked {when}: {panic}", claim.actor, claim.message.id);
-                    Some(Decision::failed(format!("Turn failed {when}: panic: {panic}")))
+                    Some(Decision::failed(FailureCause::Node, format!("Turn failed {when}: panic: {panic}")))
                 }
             },
             _ = cancel.cancelled() => {
@@ -356,7 +362,8 @@ impl TurnExecutor {
         );
         let outcome = TurnOutcome::Failed(format!("claim limit: {lost} lost claims"));
         let guard = LeaseGuard::new(self.deadline(claim_sent));
-        let request = CommitRequest::new(claim.actor.clone(), claim.epoch, claim.message.id.clone(), outcome.clone());
+        let request = CommitRequest::new(claim.actor.clone(), claim.epoch, claim.message.id.clone(), outcome.clone())
+            .with_cause(FailureCause::ClaimLimit);
         match self.commit_with_retry(claim, &guard, request).await {
             CommitEnd::Answered(CommitResult::Committed { sent, .. }) => {
                 self.wake_after(&outcome, &sent, true);
@@ -474,7 +481,7 @@ impl TurnExecutor {
                 let when = if phase.handler_ended() { "after its handler ended" } else { "before its handler ran" };
                 let panic = panic_message(&*panic);
                 tracing::error!("Turn of {} for {} failed {when}: {panic}", claim.actor, claim.message.id);
-                Decision::failed(format!("Turn failed {when}: panic: {panic}"))
+                Decision::failed(FailureCause::Node, format!("Turn failed {when}: panic: {panic}"))
             }
         }
     }
@@ -490,7 +497,7 @@ impl TurnExecutor {
         // Load: state, own ref, message.
         let loaded = match hosted.actor.load(claim) {
             Ok(loaded) => loaded,
-            Err(reason) => return Decision::failed(reason),
+            Err(reason) => return Decision::failed(FailureCause::State, reason),
         };
 
         // Run.
@@ -520,7 +527,7 @@ impl TurnExecutor {
             Ok(run) => match run.end {
                 RunEnd::Undecodable(reason) => {
                     tracing::info!("{} cannot decode {}, which fails: {reason}", info.self_address, info.message.id);
-                    Decision::failed(reason)
+                    Decision::failed(FailureCause::Message, reason)
                 }
                 RunEnd::Threw(failure) => {
                     let reason = failure.reason();
@@ -534,21 +541,23 @@ impl TurnExecutor {
     async fn after_return(&self, run: RunResult, guard: &LeaseGuard) -> Decision {
         let effects = run.effects;
         match self.check_typed_effects(&effects, guard).await {
-            Ok(Some(reason)) => return Decision::failed(reason),
+            Ok(Some(reason)) => return Decision::failed(FailureCause::Commit, reason),
             Ok(None) => {}
-            Err(e) => return Decision::failed(format!("Turn failed after its handler ended: {e}")),
+            Err(e) => return Decision::failed(FailureCause::Node, format!("Turn failed after its handler ended: {e}")),
         }
         let state = if effects.stop {
             StateChange::Stop
         } else {
             match run.new_state {
                 None => StateChange::Unchanged,
-                Some(Err(e)) => return Decision::failed(format!("State cannot be encoded: {e}")),
+                Some(Err(e)) => {
+                    return Decision::failed(FailureCause::Handler, format!("State cannot be encoded: {e}"));
+                }
                 Some(Ok(state)) => {
                     if let Err(e) = message::check_not_null("state", &state)
                         .and_then(|()| limits::check_json("state", Some(&state)))
                     {
-                        return Decision::failed(format!("State cannot be encoded: {e}"));
+                        return Decision::failed(FailureCause::Handler, format!("State cannot be encoded: {e}"));
                     }
                     StateChange::NewState(state)
                 }
@@ -556,6 +565,7 @@ impl TurnExecutor {
         };
         Decision {
             outcome: TurnOutcome::Done,
+            cause: FailureCause::Handler,
             state,
             creates: effects.creates,
             sends: effects.sends,
@@ -638,6 +648,7 @@ impl TurnExecutor {
             epoch: claim.epoch,
             message_id: claim.message.id.clone(),
             outcome: outcome.clone(),
+            cause: decision.cause,
             state: decision.state,
             creates: decision.creates,
             sends: decision.sends,
@@ -645,15 +656,16 @@ impl TurnExecutor {
             watches: decision.watches,
             controls: decision.controls,
         };
-        let failure = match self.commit_with_retry(claim, guard, request).await {
+        let (failure, cause) = match self.commit_with_retry(claim, guard, request).await {
             CommitEnd::Abandoned => return,
             // A retry commit the store cannot apply (the reschedule's delivery time out of range): the handler's
-            // failure stands, with the refusal appended.
+            // failure stands, with the refusal appended, and so does its cause.
             CommitEnd::Refused(reason) => match (&outcome, &decision.handler_failure) {
-                (TurnOutcome::Rescheduled { .. }, Some(handler_failure)) => {
-                    TurnOutcome::Failed(sanitize(&format!("{handler_failure} (commit refused: {reason})")))
-                }
-                _ => TurnOutcome::Failed(sanitize(&format!("Commit refused: {reason}"))),
+                (TurnOutcome::Rescheduled { .. }, Some(handler_failure)) => (
+                    TurnOutcome::Failed(sanitize(&format!("{handler_failure} (commit refused: {reason})"))),
+                    decision.cause,
+                ),
+                _ => (TurnOutcome::Failed(sanitize(&format!("Commit refused: {reason}"))), FailureCause::Commit),
             },
             CommitEnd::Answered(CommitResult::Committed { sent, .. }) => {
                 // Nothing in the store records who controlled an actor, so the node logs it (ADR 0024); whether the
@@ -678,10 +690,13 @@ impl TurnExecutor {
                 tracing::info!("Commit of {} for {} rejected: lease lost", claim.actor, claim.message.id);
                 return;
             }
-            CommitEnd::Answered(CommitResult::Rejected(reason)) => TurnOutcome::Failed(sanitize(&reason)),
+            CommitEnd::Answered(CommitResult::Rejected(reason)) => {
+                (TurnOutcome::Failed(sanitize(&reason)), FailureCause::Commit)
+            }
         };
         // Rejected or refused: nothing was applied and the lease is still held; record the failure without effects.
-        let request = CommitRequest::new(claim.actor.clone(), claim.epoch, claim.message.id.clone(), failure.clone());
+        let request = CommitRequest::new(claim.actor.clone(), claim.epoch, claim.message.id.clone(), failure.clone())
+            .with_cause(cause);
         match self.commit_with_retry(claim, guard, request).await {
             CommitEnd::Answered(CommitResult::Committed { sent, .. }) => {
                 self.wake_after(&failure, &sent, true);
@@ -756,9 +771,10 @@ impl TurnExecutor {
 }
 
 /// The handler failed; its effects are discarded. The message's retry policy decides between a reschedule and
-/// `failed`.
+/// `failed`; the failure decides the cause (ADR 0028).
 fn handler_failed(info: &TurnInfo, failure: HandlerFailure, reason: String, retryable: bool) -> Decision {
     tracing::debug!("Handler of {} failed on {}: {failure}", info.self_address, info.message.id);
+    let cause = failure.cause();
     let failed_runs = info.message.failures + 1; // including this one
     let retry_delay = match &info.message.retry {
         Some(policy) if retryable && !failure.is_permanent() && policy.retries_after(failed_runs) => {
@@ -770,7 +786,7 @@ fn handler_failed(info: &TurnInfo, failure: HandlerFailure, reason: String, retr
         Some(delay) => TurnOutcome::Rescheduled { delivery: Delivery::After(delay), error: reason.clone() },
         None => TurnOutcome::Failed(reason.clone()),
     };
-    Decision { handler_failure: Some(reason), ..Decision::of(outcome) }
+    Decision { cause, handler_failure: Some(reason), ..Decision::of(outcome) }
 }
 
 /// Logs a warning when the handler is still running a while after its maximum turn duration: it does not yield.

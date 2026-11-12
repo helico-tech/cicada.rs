@@ -127,6 +127,61 @@ async fn a_watcher_with_a_failed_of_its_own_is_422_not_a_watcher() {
     assert!(listed(&app, "").await.is_empty(), "no watch is stored");
 }
 
+/// type `old-watcher`, the singleton `old-watcher/_`: its family has the `Failed` of the release before 0.14.0, without
+/// a cause, so it may not watch.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct OldWatcher;
+
+impl ActorRef for OldWatcher {
+    const TYPE: &'static str = "old-watcher";
+    type Message = OldWatcherMsg;
+}
+
+/// Every field of `cicada::Failed` but the cause.
+#[derive(Debug, serde::Serialize, serde::Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+struct FailedWithoutCause {
+    actor: ActorAddress,
+    message_id: MessageId,
+    message_type: String,
+    payload: Value,
+    correlation_id: Option<String>,
+    from: Option<ActorAddress>,
+    error: String,
+    attempts: u32,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, JsonSchema)]
+#[serde(tag = "type")]
+enum OldWatcherMsg {
+    Failed(FailedWithoutCause),
+    Stopped(cicada::Stopped),
+}
+
+struct OldWatcherActor;
+
+impl Actor for OldWatcherActor {
+    type Ref = OldWatcher;
+    type State = NoState;
+
+    async fn handle(&self, _: &mut Turn<Self>, _: OldWatcherMsg) -> HandlerResult {
+        Ok(())
+    }
+}
+
+/// Scenario: A watcher with a `Failed` of its own, when it is the `Failed` without a cause (over HTTP).
+#[tokio::test(start_paused = true)]
+async fn a_watcher_with_the_failed_of_the_release_before_is_422_not_a_watcher() {
+    let system = node_with(memory_store(), |b| b.host(CounterActor).host(OldWatcherActor)).await;
+    system.create(&OldWatcher, &NoState {}).await.unwrap();
+    let app = actor_api(system);
+    let reply = put(&app, "/watches", &body("counter/c", "old-watcher/_")).await;
+    assert_problem(&reply, 422, pt::NOT_A_WATCHER);
+    let detail = reply.json()["detail"].as_str().unwrap().to_owned();
+    assert!(detail.contains("has a message type Failed that is not cicada::Failed"), "{detail}");
+    assert!(listed(&app, "").await.is_empty(), "no watch is stored");
+}
+
 /// Scenario: An actor is deleted (over HTTP).
 #[tokio::test(start_paused = true)]
 async fn a_watched_actor_deleted_over_http_tells_its_watcher() {
@@ -182,7 +237,7 @@ async fn a_message_of_the_type_failed_sent_over_http_is_not_marked() {
     system.create(&Watcher { id: "refusing".into() }, &Seen { refuse: true, ..Seen::default() }).await.unwrap();
     assert_eq!(put(&app, "/watches", &body("watcher/refusing", "watcher/a")).await.status, StatusCode::CREATED);
     let fake = json!({"type": "Failed", "payload": {"actor": "counter/c", "messageId": "m1", "messageType": "Add",
-        "payload": {}, "correlationId": null, "from": null, "error": "made up", "attempts": 1}});
+        "payload": {}, "correlationId": null, "from": null, "error": "made up", "attempts": 1, "cause": "handler"}});
     let id = send_id(&app, "/actors/watcher/refusing/messages", &fake.to_string()).await;
     assert_eq!(get_json(&app, &format!("/messages/{id}")).await["message"]["notification"], false);
     eventually(async || !seen(&system, "a").await.failed.is_empty()).await;

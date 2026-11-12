@@ -5,7 +5,7 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
 
 ## 1. The core
 
-- [ ] 1.1 The cause of a failure [1]: `FailureCause` with its eight values, public at the crate root and in kebab-case
+- [x] 1.1 The cause of a failure [1]: `FailureCause` with its eight values, public at the crate root and in kebab-case
       on the wire; the field `cause` of `Failed`. The node decides the cause where it decides that a message fails,
       by the table of decision 1, also for a handler error whose chain of causes holds a `TurnError::Store` or a
       `StoreError`, and hands it to the store with the commit; the in-memory store, SQLite and PostgreSQL write it into

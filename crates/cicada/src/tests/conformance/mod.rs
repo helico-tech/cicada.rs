@@ -236,6 +236,7 @@ macro_rules! for_each_case {
             watches_a_commit_sets_and_removes_watches_of_its_actor_in_the_order_of_the_calls,
             watches_are_set_removed_and_listed_from_outside_with_both_filters_and_paging,
             watches_a_failed_commit_writes_one_failed_per_watcher_with_every_field_and_the_mark,
+            watches_a_failed_commit_writes_the_cause_it_was_given,
             watches_a_failed_is_kept_by_the_failed_rule_of_the_retention_of_the_failed_message,
             watches_a_rescheduled_a_done_and_a_cancelled_commit_write_nothing,
             watches_a_type_prefix_matches_at_a_dot_and_every_type_matches_and_neither_is_told_of_a_removal,

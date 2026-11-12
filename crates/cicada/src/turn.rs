@@ -20,7 +20,7 @@ use crate::runtime::limits;
 use crate::runtime::resolver::TypeResolver;
 use crate::store::{ActorCreate, Control, ControlEffect, Delivery, Message, MessageId, OutgoingMessage, StoreError};
 use crate::time::{self, Timestamp};
-use crate::watch::{IntoWatchTarget, WatchChange};
+use crate::watch::{FailureCause, IntoWatchTarget, WatchChange};
 
 /// The result of a handler.
 pub type HandlerResult = Result<(), HandlerError>;
@@ -71,6 +71,15 @@ impl HandlerError {
     pub fn reason(&self) -> String {
         if self.permanent { self.error.to_string() } else { format!("{:#}", self.error) }
     }
+
+    /// True when the chain of causes of the error holds a [`TurnError::Store`] or a [`StoreError`]: a failed store
+    /// operation, passed on or wrapped with a context.
+    fn holds_store_error(&self) -> bool {
+        self.error.chain().any(|e| {
+            matches!(e.downcast_ref::<TurnError>(), Some(TurnError::Store(_)))
+                || e.downcast_ref::<StoreError>().is_some()
+        })
+    }
 }
 
 impl<E: std::error::Error + Send + Sync + 'static> From<E> for HandlerError {
@@ -110,6 +119,19 @@ impl HandlerFailure {
     /// True for a permanent failure (the receiver's veto).
     pub fn is_permanent(&self) -> bool {
         matches!(self, HandlerFailure::Error(e) if e.is_permanent())
+    }
+
+    /// Why the message fails when this failure ends it (ADR 0028): `timeout` for a turn past its maximum duration;
+    /// `refused` for a permanent failure, whatever it holds; `node` for an error whose chain of causes holds a failed
+    /// store operation, which the handler passed on or wrapped; else `handler`.
+    pub fn cause(&self) -> FailureCause {
+        match self {
+            HandlerFailure::Timeout { .. } => FailureCause::Timeout,
+            HandlerFailure::Panic(_) => FailureCause::Handler,
+            HandlerFailure::Error(e) if e.is_permanent() => FailureCause::Refused,
+            HandlerFailure::Error(e) if e.holds_store_error() => FailureCause::Node,
+            HandlerFailure::Error(_) => FailureCause::Handler,
+        }
     }
 
     /// The reason the failure is recorded with: the handler's error, `panic: …`, or `timeout`.

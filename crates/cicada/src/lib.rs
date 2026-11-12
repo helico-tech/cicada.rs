@@ -38,7 +38,7 @@ pub use message::NoState;
 pub use runtime::{ActorSystem, CreateActorResult, OpError, SendResult, StartError, StartProblem};
 pub use store::Store;
 pub use turn::{HandlerError, HandlerResult, SendOptions, Turn};
-pub use watch::{Failed, StopCause, Stopped, WatchTarget};
+pub use watch::{Failed, FailureCause, StopCause, Stopped, WatchTarget};
 
 /// Everything needed to define actor types.
 pub mod prelude {

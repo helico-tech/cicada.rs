@@ -16,7 +16,7 @@ use crate::store::{
     OutgoingMessage, RenewResult, StoreError, StoreResult,
 };
 use crate::testing::{TestActors, claim_and_abandon};
-use crate::{ActorSystem, Failed, Stopped, WatchTarget};
+use crate::{ActorSystem, Failed, FailureCause, Stopped, WatchTarget};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
@@ -243,6 +243,7 @@ async fn each_watcher_is_told_once_of_a_message_that_fails_at_the_limit() {
         assert_eq!(told[0].message_id, m.id);
         assert_eq!(told[0].error, "claim limit: 3 lost claims");
         assert_eq!(told[0].attempts, 4, "the attempt of the claim that failed it");
+        assert_eq!(told[0].cause, FailureCause::ClaimLimit, "Scenario: The claim limit");
     }
 }
 

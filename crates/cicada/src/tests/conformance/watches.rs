@@ -10,7 +10,7 @@ use crate::store::{
     ActorCreate, Backend, CommitRequest, CommitResult, DeleteResult, Message, MessageId, OutcomeStatus,
     OutgoingMessage, SetWatchResult, StateChange, StoreError, TurnOutcome,
 };
-use crate::watch::{Failed, StopCause, Stopped, WatchChange, WatchTarget};
+use crate::watch::{Failed, FailureCause, StopCause, Stopped, WatchChange, WatchTarget};
 use serde_json::json;
 use std::sync::LazyLock;
 
@@ -235,6 +235,7 @@ pub async fn watches_a_failed_commit_writes_one_failed_per_watcher_with_every_fi
                     from: Some(sender.clone()),
                     error: "declined".into(),
                     attempts: 1,
+                    cause: FailureCause::Handler,
                 }
             );
             assert_eq!(m.payload["correlationId"], "run-7");
@@ -248,6 +249,42 @@ pub async fn watches_a_failed_commit_writes_one_failed_per_watcher_with_every_fi
         let m = got.iter().find(|m| m.id.as_str() == "e2.0").expect("the second Failed");
         assert_eq!((m.payload["correlationId"].clone(), m.payload["from"].clone()), (json!(null), json!(null)));
         assert_eq!(failed_of(m).message_id, bare.id);
+    })
+    .await
+}
+
+/// watches - a failed commit writes the cause it was given into the `Failed` of every watcher, and its error stays as
+/// it was given
+pub async fn watches_a_failed_commit_writes_the_cause_it_was_given<B: FixtureFactory>(backend: &B) {
+    store_test(backend, async |t| {
+        let store = t.store();
+        let x = t.new_actor_named(&TYPE, "x", json!({})).await;
+        let (a, b) = (watcher(t, "a").await, watcher(t, "b").await);
+        watch(&*store, x.as_str(), &a).await;
+        watch(&*store, "*", &b).await;
+        let causes = [
+            FailureCause::Handler,
+            FailureCause::Node,
+            FailureCause::Refused,
+            FailureCause::Timeout,
+            FailureCause::Message,
+            FailureCause::State,
+            FailureCause::Commit,
+            FailureCause::ClaimLimit,
+        ];
+        for (n, cause) in causes.into_iter().enumerate() {
+            enqueue_ok(&*store, OutgoingMessage::new(x.clone(), "Msg", json!({"n": n}))).await;
+            let c = t.claim_one().await;
+            let failed = TurnOutcome::Failed(format!("failed for {cause}"));
+            t.commit_ok(CommitRequest { event: event(&format!("e{n}")), ..ending(&c, failed).with_cause(cause) }).await;
+            for w in [&a, &b] {
+                let got = notifications(t, w).await;
+                let m = got.iter().find(|m| m.id.as_str().starts_with(&format!("e{n}."))).expect("a Failed");
+                let told = failed_of(m);
+                assert_eq!((told.cause, told.error.as_str()), (cause, &*format!("failed for {cause}")), "{w}");
+                assert_eq!(m.payload["cause"], json!(cause.name()), "in kebab-case");
+            }
+        }
     })
     .await
 }
