@@ -81,11 +81,11 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
 
 ## 6. Checks
 
-- [ ] 6.1 `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
+- [x] 6.1 `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
       `cargo test --workspace`, `cargo test -p cicada-app`, `cargo check -p cicada` and `cargo check -p cicada-app`
       each with no feature and with each feature alone, and `openspec validate cicada-app --strict`. Verify: all
       pass.
-- [ ] 6.2 The PostgreSQL tests with `CICADA_PG_URL` set, once more against a throwaway `postgres:17.5-alpine` with
+- [x] 6.2 The PostgreSQL tests with `CICADA_PG_URL` set, once more against a throwaway `postgres:17.5-alpine` with
       its default 100 connections, as the database of CI has (removed afterwards), and the end-to-end suite with
       `CICADA_E2E=1 cargo test -p cicada-e2e -- --nocapture`. All need Docker. Verify: all pass; if Docker cannot be
       started, leave this task open and say so in the report.
