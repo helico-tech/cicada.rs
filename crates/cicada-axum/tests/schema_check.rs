@@ -176,7 +176,8 @@ async fn a_field_that_the_type_does_not_know_is_refused() {
     assert_eq!(detail(&other), refused_payload("Strict", "form"));
     let host = post(&n.host, "/actors/form/f/messages", body).await;
     assert_problem(&host, 422, pt::INVALID_PAYLOAD);
-    assert!(detail(&host).contains("cannot be decoded: unknown field `extra`"), "{}", detail(&host));
+    let decoder = "Payload of 'Strict' cannot be decoded: unknown field `extra`, expected `n`";
+    assert_eq!(detail(&host), format!("{}. {decoder}", refused_payload("Strict", "form")));
 }
 
 /// Scenario: A required field is missing: refused by both nodes, named by the hosting node's decoder.
