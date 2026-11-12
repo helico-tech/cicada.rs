@@ -12,7 +12,7 @@ A payload and a state are JSON, and JSON can nest. Four things go wrong with a d
 - **The decoder of a hosting node can overflow a debug build.** For a type with large fields, a value that a
   request may carry (70 to 80 levels) already overflows the default stack of a thread of the runtime in a debug
   build, at the send or in the turn. A release build has room up to the 126 levels a request can carry.
-- **A view can be deeper than a parser reads.** `GET /messages/{id}` wraps a payload three levels deeper. For a
+- **A view can be deeper than a parser reads.** `GET /messages/{id}` wraps a payload two levels deeper. For a
   payload at the deepest level a request can carry, the answer is `200` and no JSON parser reads it, so
   `cicada-client` fails on it. The node is not harmed.
 
@@ -34,35 +34,37 @@ so they are no way to end a node with one request, but the factor is large:
 
 ## What Changes
 
-- **BREAKING** A payload and a state may be nested only so deep. A deeper value is refused like every other value
-  beyond a limit: `OpError::Invalid` from outside a turn, `TurnError::Invalid` in a turn, and `400` over HTTP.
-- The limit leaves room for the levels a view adds, so every value that is accepted can be read back.
-- A decode of a value at the limit does not overflow a stack, in a debug or a release build, at the send and in
-  the turn.
+- **BREAKING** A payload and a state are at most 64 levels deep. A deeper value is refused like every other value
+  beyond a limit: `OpError::Invalid` from outside a turn, `TurnError::Invalid` in a turn, and `400` over HTTP, before
+  the schema check; a turn whose new state is too deep ends its message `failed`.
+- **BREAKING** Over HTTP a payload or a state of 65 to 126 levels is `400`, where it was checked against its schema
+  (`202` or `422`).
+- An operator's retry checks the stored payload too: a payload that is too deep is `409 message-not-retryable`
+  (a new `RetryResult::TooDeep`), and a bulk retry skips it.
+- The check stops at the first level beyond the limit, so the check itself refuses a value of any depth with an
+  error, and nothing after it meets a value deeper than 64 (a `Failed` that the runtime writes, 65). A `Value` built
+  in code deep enough for serde_json's own drop to overflow is the host's.
+- Every value accepted from this release on can be read back over HTTP: its views are at most 69 levels deep.
+- Values stored before are delivered and decoded as before; a turn that writes such a state back fails.
+- The error of a new state that a check refuses says `State cannot be stored:`.
+- The ready-made actors do not change: a failed message whose payload is too deep for a dead letter fails the turn of
+  the dead-letters actor and gets no letter.
+- The core guide names the cost of serde's decoder for an untagged enum that holds itself, and the operations guide
+  the memory that reading a body takes.
 
-The simplest version: one more check in `runtime::limits`, next to the size of a value.
-
-To decide in the design:
-
-- The limit. It must be below what a parser reads less the levels of the deepest view, and low enough for a
-  decoder in a debug build, or the decode gets a stack of its own as the schema check has. For the decoder of an
-  untagged enum even 20 levels cost too much, so a limit alone may not settle that one.
-- Whether values that are stored today and are deeper than the limit need anything.
-- The levels that the ready-made actors add around a value: a letter of dead letters, a `Deliver` of a topic and a
-  child entry of a supervisor each hold a payload or a state some levels deeper (found when `cicada-actors` was
-  reviewed).
-- Whether the two costs in proportion to the body need anything: a limit on the number of values in a body, a
-  decoder that does not copy, or only a line in the operations guide on the size of a body.
+The simplest version: one limit, checked in the walk that already checks every payload and state.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `value-depth`: a payload and a state have a largest depth, and a value within it never ends a node.
+- `value-depth`: a payload and a state have a largest depth; a value within it is stored, viewed and decoded (for
+  an ordinary type) without ending a node, and the check refuses a deeper one with an error.
 
 ### Modified Capabilities
 
-None.
+- `dead-letters`: a failed message whose payload is too deep for a letter fails the turn that would record it.
+- `http-schema-check`: the deepest value it checks is 64 levels, not 126, and a repeat beyond a limit is `400`.
 
 ## Out of scope
 
@@ -71,12 +73,19 @@ None.
 
 ## Order
 
-After `schema-reference-names`. It is not a step of ADR 0018; it waits for the owner to place it.
+After `schema-reference-names`, the last of the line. Not a step of ADR 0018; the owner placed it on 2026-11-12.
 
 ## Impact
 
-- `crates/cicada` (`runtime::limits`, the docs of the calls that take JSON), `cicada-axum` (the answer), the guide
-  of the core ([docs/guide/core.md](../../../docs/guide/core.md)) and that of HTTP
-  ([docs/guide/http.md](../../../docs/guide/http.md), the answer), `docs/architecture.md` (the limits) and
-  `CHANGELOG.md`.
-- The wire format gains a refusal; the design says whether that needs an ADR.
+- `crates/cicada` (`runtime::limits`, the executor's error of a refused state, `runtime::system` with `retry_message`
+  and `bulk_retry`, `RetryResult`, the docs of the calls that take JSON), `cicada-actors` (its tests and docs),
+  `crates/cicada-axum` (the tests of deep values, of memory and of the schema check, which use 100 and 126 levels),
+  the guides of the core ([docs/guide/core.md](../../../docs/guide/core.md)), of HTTP
+  ([docs/guide/http.md](../../../docs/guide/http.md): the answer, how deep a view can be) and of the ready-made actors
+  ([docs/guide/actors.md](../../../docs/guide/actors.md)), `docs/architecture.md` (the rows of a new state that cannot
+  be stored in the table of outcomes and the table of causes, and the HTTP contract: the limits come before the
+  repeated id and the schema check), `docs/operations.md` (memory per body, the upgrade), `CHANGELOG.md`, and
+  ADR 0029 with its row in `docs/adr/README.md`.
+- Hosts: Chorus keeps the output of a task three levels into the state of a workflow; a task output deeper than 61
+  levels fails the workflow's turn after the upgrade. Karakuri does not use cicada.
+- The HTTP contract gains a refusal (`400`) where a value of 65 to 126 levels was checked against its schema: ADR 0029.
