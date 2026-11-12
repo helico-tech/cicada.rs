@@ -1,6 +1,7 @@
 //! The depth of a payload and a state (value-depth, ADR 0029), on virtual time with `TestActors`: a value deeper than
-//! the limit is refused from outside a turn, at the call in a turn, and as the new state of a turn. Public API only; the
-//! retry of an operator and the values stored before are tested in `crates/cicada/src/tests/runtime/value_depth.rs`.
+//! the limit is refused from outside a turn, at the call in a turn, and as the new state of a turn. Public API only;
+//! the retry of an operator and the values stored before are tested in
+//! `crates/cicada/src/tests/runtime/value_depth.rs`.
 
 use cicada::prelude::*;
 use cicada::runtime::limits::MAX_DEPTH;
@@ -34,8 +35,12 @@ enum DeepMsg {
     Keep { v: Value },
     /// Sets the state to a value `levels` deep.
     Grow { levels: usize },
-    /// Sends a payload and creates `deep/made` with a state, each `levels` deep, by a typed ref and as raw JSON, and keeps
-    /// how each call ended as the state.
+    /// Sets the state to `null`.
+    Null,
+    /// Sets the state to a text with a NUL character, which no send can carry.
+    Nul,
+    /// Sends a payload and creates `deep/made` with a state, each `levels` deep, by a typed ref and as raw JSON, and
+    /// keeps how each call ended as the state.
     Try { levels: usize },
 }
 
@@ -49,6 +54,8 @@ impl Actor for DeepActor {
         match message {
             DeepMsg::Keep { v } => turn.set_state(v),
             DeepMsg::Grow { levels } => turn.set_state(nested(levels)),
+            DeepMsg::Null => turn.set_state(Value::Null),
+            DeepMsg::Nul => turn.set_state(json!({"text": "a\u{0}b"})),
             DeepMsg::Try { levels } => {
                 let (me, at) = (turn.self_ref().clone(), turn.self_address().clone());
                 let made = deep("made");
@@ -163,8 +170,8 @@ async fn a_send_and_a_create_from_outside_a_turn_are_refused_beyond_64_levels() 
     assert_eq!(test.state_json(&deep("b")).await, Some(nested(MAX_DEPTH)));
 }
 
-/// Scenario: A send and a create in a turn. Each call with a value of 65 levels returns `TurnError::Invalid`, by a typed
-/// ref and as raw JSON, and the turn goes on; with 64 levels each call is taken.
+/// Scenario: A send and a create in a turn. Each call with a value of 65 levels returns `TurnError::Invalid`, by a
+/// typed ref and as raw JSON, and the turn goes on; with 64 levels each call is taken.
 #[tokio::test(start_paused = true)]
 async fn a_send_and_a_create_in_a_turn_are_refused_at_the_call_beyond_64_levels() {
     let test = test().await;
@@ -205,6 +212,29 @@ async fn a_new_state_beyond_64_levels_fails_the_turn_with_the_cause_handler() {
     test.send(&deep("a"), DeepMsg::Grow { levels: MAX_DEPTH }).await;
     test.run_until_idle().await;
     assert_eq!(test.state_json(&deep("a")).await, Some(nested(MAX_DEPTH)));
+}
+
+/// The error of every new state that a check refuses starts with `State cannot be stored:`: one that is `null`, and one
+/// with a NUL character, as one that is too deep. The message ends `failed` with the cause `handler`, and the stored
+/// state is as it was.
+#[tokio::test(start_paused = true)]
+async fn a_new_state_that_is_null_or_holds_a_nul_character_cannot_be_stored() {
+    let test = test().await;
+    let cases = [
+        (DeepMsg::Null, "The state is null; a state is never null (a type that keeps no data uses NoState)"),
+        (DeepMsg::Nul, "The state contains a NUL character"),
+    ];
+    for (message, why) in cases {
+        let m = test.send(&deep("a"), message).await;
+        test.run_until_idle().await;
+        let outcome = test.outcome(&m).await.unwrap();
+        let error = format!("State cannot be stored: {why}");
+        assert_eq!((outcome.status, outcome.error.as_deref()), (OutcomeStatus::Failed, Some(error.as_str())));
+        let told = test.state::<_, Told>(&Witness).await.failed;
+        let failed = told.iter().find(|f| f.message_id == m.id).expect("the witness was told");
+        assert_eq!((failed.cause, failed.error.as_str()), (FailureCause::Handler, error.as_str()));
+        assert_eq!((test.state_json(&deep("a")).await, test.version(&deep("a")).await), (Some(json!({})), 0));
+    }
 }
 
 /// Scenario: A deep value sent from code. 1,000 levels, which a walk that calls itself for every level would take

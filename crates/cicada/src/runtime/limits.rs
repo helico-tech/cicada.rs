@@ -1,8 +1,8 @@
 //! Limits on the envelope fields of a send and on a payload or a state. Within them every backend stores a message
-//! without error; beyond them a send is refused before it reaches the store, the same way on every backend: from outside
-//! an actor as a bad request (`400`), inside a turn with a [`crate::turn::TurnError::Invalid`] at the call. No field,
-//! and no string or key of a payload or state, may contain a NUL character (PostgreSQL text and JSONB cannot hold one),
-//! and a payload or a state holds at most [`MAX_DEPTH`] arrays and objects inside each other (ADR 0029).
+//! without error; beyond them a send is refused before it reaches the store, the same way on every backend: from
+//! outside an actor as a bad request (`400`), inside a turn with a [`crate::turn::TurnError::Invalid`] at the call. No
+//! field, and no string or key of a payload or state, may contain a NUL character (PostgreSQL text and JSONB cannot
+//! hold one), and a payload or a state holds at most [`MAX_DEPTH`] arrays and objects inside each other (ADR 0029).
 
 use std::collections::BTreeMap;
 

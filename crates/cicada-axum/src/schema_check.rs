@@ -327,10 +327,10 @@ mod tests {
     }
 
     /// Scenarios: A value at the depth limit; A type with several schema steps between its levels (decision 11). Three
-    /// such types, at 21 and 24 levels (where, with the first validator, a check on a default stack ended the process in
-    /// a test build), at 64, the deepest payload or state the door takes, and at 126, which a sample can hold; as a state
-    /// and as a payload, matching and not. Through the check of the door and that of the sample checks, on a thread with
-    /// the default stack of 2 MiB.
+    /// such types, at 21 and 24 levels (where, with the first validator, a check on a default stack ended the process
+    /// in a test build), at 64, the deepest payload or state the door takes, and at 126, which a sample can hold; as a
+    /// state and as a payload, matching and not. Through the check of the door and that of the sample checks, on a
+    /// thread with the default stack of 2 MiB.
     #[test]
     fn a_value_is_checked_on_a_stack_of_its_own_whatever_its_type_and_depth() {
         fn shape<T: Shape>() {

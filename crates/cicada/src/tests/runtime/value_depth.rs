@@ -153,8 +153,8 @@ async fn a_deep_message_from_before_is_delivered_and_decoded() {
     assert_eq!(test.state_json(&deep("a")).await, Some(json!({"depth": 99})), "the handler got all of it");
 }
 
-/// Scenarios: A deep state from before, left as it is; … written back. A turn that leaves a state of 100 levels as it is
-/// ends `done`; one that writes it back ends `failed` with the cause `handler`, and the stored state is as it was.
+/// Scenarios: A deep state from before, left as it is; … written back. A turn that leaves a state of 100 levels as it
+/// is ends `done`; one that writes it back ends `failed` with the cause `handler`, and the stored state is as it was.
 #[tokio::test(start_paused = true)]
 async fn a_deep_state_from_before_is_read_as_before_and_cannot_be_written_back() {
     let test = test().await;

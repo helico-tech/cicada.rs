@@ -463,8 +463,8 @@ fn nest(levels: usize, item: &str) -> String {
     format!(r#"{{"type": "Nest", "payload": {{"node": {node}}}}}"#)
 }
 
-/// Scenario: A value at the depth limit (ADR 0029). The payload has 64 levels, the most the door takes; it is checked on
-/// a stack of its own on both nodes, and the hosting node then decodes it and handles it. One level deeper is `400`,
+/// Scenario: A value at the depth limit (ADR 0029). The payload has 64 levels, the most the door takes; it is checked
+/// on a stack of its own on both nodes, and the hosting node then decodes it and handles it. One level deeper is `400`,
 /// before the schema check.
 #[tokio::test(start_paused = true)]
 async fn a_value_at_the_depth_limit_is_checked_like_any_other_and_one_level_deeper_is_400() {

@@ -412,8 +412,8 @@ fn nested(levels: usize) -> Value {
 /// The error of a turn of the dead-letters actor whose letter would make its state too deep.
 const TOO_DEEP: &str = "State cannot be stored: The state is nested deeper than 64 levels";
 
-/// Sends `billing.invoices/a` a message whose payload is `levels` deep, which fails; runs the invoice's turn and returns
-/// the message and the `Failed` that the dead-letters actor gets, which waits in its paused mailbox.
+/// Sends `billing.invoices/a` a message whose payload is `levels` deep, which fails; runs the invoice's turn and
+/// returns the message and the `Failed` that the dead-letters actor gets, which waits in its paused mailbox.
 async fn fail_deep(test: &TestActors, levels: usize) -> (Message, Message) {
     test.create(&Invoice { id: "a".into() }, &NoState {}).await;
     test.system().pause_mailbox(&addr(&letters_actor())).await.unwrap();

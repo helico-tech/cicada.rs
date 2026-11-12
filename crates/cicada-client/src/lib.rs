@@ -462,7 +462,8 @@ impl ActorClient {
 
     /// Sends a failed or cancelled message again as a new message with a new id (`POST /messages/{id}/retry`), or `None`
     /// when `id` is unknown or past retention. Other refusals are [`ClientError::Api`]: `404 no-such-instance` when the
-    /// target is gone, `409 message-not-retryable` for a pending, running, done or purged message.
+    /// target is gone, `409 message-not-retryable` for a pending, running, done or purged message, and for one whose
+    /// payload is nested deeper than 64 levels (stored before 0.16.0, or a `Failed` about a payload at the limit).
     pub async fn retry(&self, id: &MessageId) -> ClientResult<Option<SendReceipt>> {
         let url = self.url(&format!("{}/retry", message_path(id)?), &[])?;
         let answer = self.call(Method::POST, url, None).await?;

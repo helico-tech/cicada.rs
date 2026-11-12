@@ -1,7 +1,7 @@
-//! A value at the depth limit (ADR 0029) is checked like any other, decoded and handled: types with several schema steps
-//! between their levels, through the HTTP door served by `axum::serve` on a multi-thread runtime with its default worker
-//! stacks, as a host runs it, on a node that hosts the types and on one that does not. In a debug build, as hosts run
-//! their tests.
+//! A value at the depth limit (ADR 0029) is checked like any other, decoded and handled: types with several schema
+//! steps between their levels, through the HTTP door served by `axum::serve` on a multi-thread runtime with its default
+//! worker stacks, as a host runs it, on a node that hosts the types and on one that does not. In a debug build, as
+//! hosts run their tests.
 
 mod common;
 

@@ -1131,10 +1131,11 @@ impl ActorSystem {
         }
     }
 
-    /// Retries at most [`BULK_LIMIT`] messages (`POST /messages/bulk-retry`), each as [`Self::retry_message`] does; ones
-    /// that are not eligible, also one whose payload is too deep, are skipped and not counted. With a filter it walks the `failed` outcomes and also skips one
-    /// already retried (it has a `caused_by` child), so that calling again until `more` is false does not send a message
-    /// twice. Not one transaction: a store failure half way reports it as an error, with the work done so far kept.
+    /// Retries at most [`BULK_LIMIT`] messages (`POST /messages/bulk-retry`), each as [`Self::retry_message`] does;
+    /// ones that are not eligible, also one whose payload is too deep, are skipped and not counted. With a filter it
+    /// walks the `failed` outcomes and also skips one already retried (it has a `caused_by` child), so that calling
+    /// again until `more` is false does not send a message twice. Not one transaction: a store failure half way reports
+    /// it as an error, with the work done so far kept.
     pub async fn bulk_retry(&self, selection: BulkSelection) -> Result<BulkResult, OpError> {
         match selection {
             BulkSelection::Ids(ids) => {

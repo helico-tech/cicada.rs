@@ -280,12 +280,13 @@ field beyond its limit, a NUL character, or a payload or a state nested deeper t
 (`OpError::Invalid` from code), before the repeated id and the schema check (ADR 0029). A payload and the state of a
 create are checked against the registered JSON Schema of their message type or state on every node, whether or not it
 hosts the type, and refused with `422 invalid-payload` or `422 invalid-state`; a node that hosts the type then decodes
-them with serde, with the same answer, and the detail says which check refused (ADR 0026). The check asks only whether a value matches: a refusal by the schema names no place, is the same on every
-node, and nothing runs after it, not even the decoder of a hosting node. A send that repeats the id of a message that is
-pending, or whose outcome is still shown, is answered as a repeat before it is checked. The check asserts no `format`,
-loads nothing from outside the schema, and does not enforce a schema that the validator cannot compile; JSON that code
-sends is not checked against the schema. No view of a value written from 0.16.0 on is deeper than 69 levels (a page of
-outcomes that holds a `Failed`), so a JSON parser that allows 128 reads every one.
+them with serde, with the same answer, and the detail says which check refused (ADR 0026). The check asks only whether a
+value matches: a refusal by the schema names no place, is the same on every node, and nothing runs after it, not even
+the decoder of a hosting node. A send that repeats the id of a message that is pending, or whose outcome is still shown,
+is answered as a repeat before it is checked. The check asserts no `format`, loads nothing from outside the schema, and
+does not enforce a schema that the validator cannot compile; JSON that code sends is not checked against the schema. No
+view of a value written from 0.16.0 on is deeper than 69 levels (a page of outcomes that holds a `Failed`), so a JSON
+parser that allows 128 reads every one.
 
 ## Design notes
 

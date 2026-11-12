@@ -9,6 +9,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, header};
 use cicada::prelude::*;
+use cicada::runtime::limits::MAX_DEPTH;
 use cicada::{ActorSystem, Store};
 use peak_alloc::PeakAlloc;
 use serde::{Deserialize, Serialize};
@@ -123,15 +124,14 @@ fn basket() -> Value {
     object(vec![("id", json!("b-1")), ("batch", object(vec![("lines", Value::Array(vec![json!(0); 520_000]))]))])
 }
 
-/// 62 levels of a list that refers to itself, each with 2,000 items: wrong ones in every level, or below the first
-/// level only (in the optional part). With its innermost list of items it is 63 levels deep, so the payload `{"v": …}`
-/// has 64, the most the door takes (ADR 0029).
-fn node(first_level_matches: bool) -> Value {
-    const LEVELS: usize = 62;
+/// A list that refers to itself, `depth` levels deep with its innermost list of items, each level with 2,000 items:
+/// wrong ones in every level, or below the first level only (in the optional part).
+fn node(depth: usize, first_level_matches: bool) -> Value {
+    let levels = depth - 1;
     let level = |item: Value, next: Value| object(vec![("items", Value::Array(vec![item; 2_000])), ("next", next)]);
     let mut node = level(json!("x"), Value::Null);
-    for depth in 1..LEVELS {
-        let item = if first_level_matches && depth == LEVELS - 1 { json!(1) } else { json!("x") };
+    for level_index in 1..levels {
+        let item = if first_level_matches && level_index == levels - 1 { json!(1) } else { json!("x") };
         node = level(item, node);
     }
     node
@@ -206,14 +206,16 @@ async fn a_refused_request_costs_time_and_memory_in_proportion_to_its_size() {
     let send = |message_type: &str, value: Value| {
         object(vec![("type", json!(message_type)), ("payload", object(vec![("v", value)]))]).to_string()
     };
-    type Case = (&'static str, &'static str, fn() -> Value);
+    // The value of a case, given how deep it may be: in a payload `{"v": …}` one level less than in a state, so that
+    // the list is 64 levels deep in both, the most the door takes (ADR 0029).
+    type Case = (&'static str, &'static str, fn(usize) -> Value);
     let cases: [Case; 6] = [
-        ("an order of 520,000 wrong lines", "orders", order),
-        ("an optional batch of 520,000 wrong lines", "baskets", basket),
-        ("a list in a payload of 64 levels, wrong in every level", "nodes", || node(false)),
-        ("a list in a payload of 64 levels, wrong below the first level", "nodes", || node(true)),
-        ("an expression 30 deep with one wrong leaf", "calcs", || expr(30)),
-        ("an untagged tree 24 deep with one wrong leaf", "trees", || tree(24)),
+        ("an order of 520,000 wrong lines", "orders", |_| order()),
+        ("an optional batch of 520,000 wrong lines", "baskets", |_| basket()),
+        ("a list of 64 levels, wrong in every level", "nodes", |depth| node(depth, false)),
+        ("a list of 64 levels, wrong below the first level", "nodes", |depth| node(depth, true)),
+        ("an expression 30 deep with one wrong leaf", "calcs", |_| expr(30)),
+        ("an untagged tree 24 deep with one wrong leaf", "trees", |_| tree(24)),
     ];
     for (what, name, value) in cases {
         for (node, app) in &nodes {
@@ -222,10 +224,16 @@ async fn a_refused_request_costs_time_and_memory_in_proportion_to_its_size() {
                     "a payload",
                     "POST",
                     format!("/actors/{name}/a/messages"),
-                    send("Nope", value()),
-                    send("Put", value()),
+                    send("Nope", value(MAX_DEPTH - 1)),
+                    send("Put", value(MAX_DEPTH - 1)),
                 ),
-                ("a state", "PUT", format!("/actors/ghosts/{name}"), created(value()), created(value())),
+                (
+                    "a state",
+                    "PUT",
+                    format!("/actors/ghosts/{name}"),
+                    created(value(MAX_DEPTH)),
+                    created(value(MAX_DEPTH)),
+                ),
             ];
             for (kind, method, before_uri, before_body, body) in kinds {
                 let uri = if kind == "a state" { format!("/actors/{name}/new") } else { before_uri.clone() };
