@@ -900,8 +900,10 @@ a `Failed`, as for any failure.
 A claim is lost when another claim takes its place although its turn neither committed nor gave the lease back: its
 node died or was killed, its lease ran out (a long pause, a partition), or its commit did not get through. The claim
 that replaces such a lease counts it, in the message's `lost_claims` (`lostClaims` over HTTP). A node that stops in good
-order and gives its claims back loses none, and neither does a failed run that is committed as a retry. The count never
-goes back, also not after a retry; a message sent again (`POST /messages/{id}/retry`) is a new message with none.
+order and gives its claims back loses none, and neither does a failed run that is committed as a retry, or a claim
+whose answer a slow store gave only after its lease deadline: the node gives it back without running anything. The
+count never goes back, also not after a retry; a message sent again (`POST /messages/{id}/retry`) is a new message with
+none.
 
 <!-- doctest
 # use cicada::ActorSystem;

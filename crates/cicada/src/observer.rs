@@ -14,6 +14,7 @@
 //! | An operator cancels the turn | yes | `cancelled` |
 //! | The claim limit fails the message | after its commit | `failed`, right after the start |
 //! | No commit that the node saw succeed | yes | – (the value is dropped) |
+//! | The answer of the claim arrives after its lease deadline | – | – (nothing runs; the claim is given back) |
 //!
 //! An observer cannot refuse a turn and cannot change what it commits, except that it may add headers to the messages
 //! the turn sends ([`TurnStart::add_send_header`]). Its methods are plain functions: they run on a thread of the

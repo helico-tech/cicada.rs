@@ -63,6 +63,9 @@ over HTTP gains `lostClaims`. Nodes of 0.10.0 and 0.11.0 must not share a databa
   observer is an observer. The methods are plain functions, not async. Observers are called in the order they were
   added; a panic in one is caught and logged, and the turn goes on as if that observer were not there. A message that
   the claim limit fails is told to the observers after its commit, start and end together.
+- A node gives back a claim whose answer arrives after the local deadline of its lease, without calling an observer
+  or running anything, so that a slow store costs the message no lost claim. Before, the turn was dropped at once and
+  its lease left to run out.
 - ADR 0025 records the claim limit, what counts as a lost claim and why a release does not.
 
 ### Telemetry
@@ -76,6 +79,8 @@ over HTTP gains `lostClaims`. Nodes of 0.10.0 and 0.11.0 must not share a databa
   through leaves a span that is `abandoned` and has no `exception` event; the event used to be written when the handler
   failed, before the commit.
 - The span of a turn whose state cannot be decoded starts at the claim, like every other span.
+- The `exception.message` of an `exception` event is the error of the outcome. For a timeout that is `timeout`; it used
+  to be `timeout: the turn exceeded its maximum duration of PT…`, with the duration.
 
 ### Headers of a send
 

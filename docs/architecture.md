@@ -165,7 +165,7 @@ then of the watcher.
 | Turn exceeds its maximum duration and is cut off | As a failing handler: retried by the policy, else `failed` (`timeout`) | None |
 | Handler returned, but only after its maximum duration (blocking code) | `failed` (`timeout`), never retried | None |
 | Node dies or loses the lease before commit, or its commit does not get through | None; message stays pending, and the claim that replaces the lease counts a lost claim | None |
-| Node stops in good order before the handler ended | None; the lease is released, the message stays pending and the claim is not lost | None |
+| Node stops in good order before the handler ended, or the answer of a claim arrives after its lease deadline (nothing runs then) | None; the lease is released, the message stays pending and the claim is not lost | None |
 | A node claims a message with as many lost claims as its claim limit (ADR 0025) | `failed` (`claim limit: <n> lost claims`), no handler runs, the retry policy is not asked | None |
 | Turn stops its instance | `done` for the turn's message; `purged` for the other pending messages of the instance and of its descendants | Applied, then the instance and its descendants are removed |
 | Instance deleted, from outside or by another actor's turn, or an ancestor of it deleted or stopped | `purged` for all still-pending messages, including one being handled; a turn running on it commits nothing, and a create afterwards starts a new instance | — |
@@ -188,7 +188,8 @@ functions that run on the turn task, and a panic in one is caught and logged. Th
 then commits while the keeper keeps renewing. Cancellation is tokio's: an aborted future stops at its next `.await`, so
 a handler blocked in synchronous code keeps its turn until it returns. Blocking work belongs in `spawn_blocking`. A cancelled turn (node stop after the grace period,
 or a dropped `run_due_turns` future) aborts *work*, waits for it to stop, and releases its lease only if the handler
-had not ended. A claim the store answers after its caller is gone is released, never left to expire.
+had not ended. A claim the store answers after its caller is gone is released, never left to expire, and so is a
+claim whose answer arrives after its local lease deadline: nothing runs under it, and it is not a lost claim.
 
 An admin cancel of a running turn is recorded by the store as the turn's epoch and read by the keeper at its next renewal, so it takes up to one heartbeat. The keeper aborts *work*, waits for it to stop and commits `cancelled` itself, fenced by its epoch, so G1 and G3 hold and no other node runs the message meanwhile. Whether the cancel request or the handler's end came first is decided once, by one atomic flag: a request that lost is ignored and the turn commits normally. No request can reach a later turn, because each stores the epoch it was for. A lease ends only with its turn or with its actor: no operation takes it away from a running turn (ADR 0015), and a delete, from outside or by a turn, ends it with the actor, whose message ends `purged` and is never handled again (ADR 0024).
 

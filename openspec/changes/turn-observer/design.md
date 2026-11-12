@@ -4,7 +4,8 @@ Described on 2026-11-12 (change loop, Describe), while `control-effects` is buil
 of this change to the main session on 2026-11-11 ("Dor change 5 until 9 i fully trust you"). Every decision below is
 made by the main session; each gives the options and why. Reviewed once; what changed after the review is marked
 "review". Reviewed three times; what changed after the second review is marked "second review", after the third "third
-review".
+review". Validated once after the build; what the main session decided on the validator's report (2026-11-12) is marked
+"validation".
 
 ## Context
 
@@ -307,6 +308,24 @@ column with a default is added to each table, and it runs them again.
 
 The SQLite store is expected to pass the test as it is: SQLite prepares a statement again when the schema changed.
 If it does not, its statements list their columns too.
+
+Validation: SQLite needed its column lists too. SQLite prepares the statement again, but sqlx keeps the columns of the
+statement it prepared first: with `SELECT *`, the statement prepared again returns one more column, the worker thread
+of sqlx panics (an index out of bounds) and the store answers `Unavailable(WorkerCrashed)`. So the statements of both
+stores list their columns, and a source test finds no `*` in a reading statement of either store, outside `count(*)`.
+
+### 15. A claim that arrives after its own deadline is given back
+
+Validation. A node that receives a claim whose local deadline has passed (the time the claim was sent, plus the
+lease TTL, less the safety margin) starts nothing: no observer is called, nothing is loaded and no handler runs. It
+releases the claim. A release with an epoch that is no longer current changes nothing in the store, so this is safe
+when another node has claimed meanwhile; when the lease is still the node's, nothing ran under it. The turn is not
+observed.
+
+- **Give it back (chosen).** A slow store, or a node that waited long for the answer of its claim, is not a fault of
+  the message. The default limit of 5 must not fail messages because the store was slow.
+- Leave the lease to run out, as before this decision. The node drops the turn at once because its deadline passed,
+  and the claim that replaces the lease counts it as lost.
 
 ## Risks / Trade-offs
 

@@ -26,6 +26,10 @@
 //! turn commits it `failed` with the error `claim limit: <n> lost claims`, fenced by its epoch, without asking its retry
 //! policy, and only once that commit succeeded are the observers told its start and its end.
 //!
+//! **A claim that arrives too late.** A claim whose answer comes after its local lease deadline starts nothing (no
+//! observer, no load, no handler) and is released: left to run out, it would be a lost claim of its message, and a
+//! slow store is not a fault of the message.
+//!
 //! **Cancel.** An operator's cancel request ([`crate::store::Backend::request_cancel`]) reaches the keeper through its next
 //! renewal. If the handler has not ended, the keeper aborts *work* and the turn commits `cancelled`, without effects
 //! and fenced by its epoch; the lease is kept throughout, so no other turn can start (G1). If the handler already
@@ -237,6 +241,18 @@ impl TurnExecutor {
             let _ = self.store.release(&claim.actor, claim.epoch).await;
             return;
         };
+        // A claim whose answer came after its local deadline: nothing runs under it, and it is given back rather than
+        // left to run out, so that a slow store costs the message no lost claim. A release with an epoch that is no
+        // longer current changes nothing.
+        if Instant::now() >= self.deadline(claim_sent) {
+            tracing::warn!(
+                "Claim of {} for {} arrived after its lease deadline; it is given back",
+                claim.actor,
+                claim.message.id
+            );
+            let _ = self.store.release(&claim.actor, claim.epoch).await;
+            return;
+        }
         if self.max_lost_claims.is_some_and(|max| claim.message.lost_claims >= max) {
             return self.fail_at_claim_limit(&claim, claim_sent).await;
         }
@@ -248,7 +264,7 @@ impl TurnExecutor {
             send_headers: observed.headers().clone(),
             claim_sent,
         });
-        let guard = Arc::new(LeaseGuard::new(claim_sent + self.lease.ttl - self.lease.safety_margin()));
+        let guard = Arc::new(LeaseGuard::new(self.deadline(claim_sent)));
         let phase = Arc::new(HandlerPhase::new());
 
         let mut work = tokio::spawn(self.clone().decide_or_fail(
@@ -312,6 +328,11 @@ impl TurnExecutor {
         overtime.abort();
     }
 
+    /// The local deadline of the lease of a claim sent at `claim_sent`: the TTL less the safety margin.
+    fn deadline(&self, claim_sent: Instant) -> Instant {
+        claim_sent + self.lease.ttl - self.lease.safety_margin()
+    }
+
     /// Fails a message that reached the claim limit, without decoding or running it: commits `failed` with the error of
     /// the limit, fenced by the claim's epoch, and then tells the observers the start and the end. When that commit does
     /// not succeed they are told nothing, and the next claim finds one more lost claim.
@@ -326,7 +347,7 @@ impl TurnExecutor {
             claim.actor
         );
         let outcome = TurnOutcome::Failed(format!("claim limit: {lost} lost claims"));
-        let guard = LeaseGuard::new(claim_sent + self.lease.ttl - self.lease.safety_margin());
+        let guard = LeaseGuard::new(self.deadline(claim_sent));
         let request = CommitRequest::new(claim.actor.clone(), claim.epoch, claim.message.id.clone(), outcome.clone());
         match self.commit_with_retry(claim, &guard, request).await {
             CommitEnd::Answered(CommitResult::Committed { sent, .. }) => {

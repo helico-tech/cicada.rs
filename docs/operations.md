@@ -33,8 +33,9 @@ futures, logs go through `tracing`, and the host owns the store and the node's l
   `shutdown_grace_period` (30 s), then cancels them and releases their leases; a cancelled turn that does not end
   within `shutdown_cancel_timeout` (5 s) is left to its lease. Give the platform's stop timeout more than the sum
   (e.g. Kubernetes `terminationGracePeriodSeconds`, compose `stop_grace_period`); otherwise the process is killed and
-  its turns wait out their lease. A process killed without `stop` loses nothing either: its turns re-run elsewhere
-  after the lease TTL.
+  its turns wait out their lease. A process killed without `stop` loses no message: its turns re-run elsewhere after
+  the lease TTL. But each of them is a lost claim of its message, and a message with five lost claims ends `failed`
+  ([The claim limit](#the-claim-limit)), so a deploy that kills nodes as a matter of routine uses up that limit.
 
   ```rust,no_run
   use std::time::Duration;
@@ -188,11 +189,12 @@ applies those effects, and an actor on a node of 0.9.0 is paused or deleted as i
 **Version 0.11.0 is such a release.** A message counts its lost claims, and a node fails a message at its claim limit
 (ADR 0025, [The claim limit](#the-claim-limit)). Its migration 6 adds the column `messages.lost_claims`; no existing
 message starts with a lost claim. A node of 0.10.0 that opens the migrated database refuses it, but one that is still
-running does not notice: it counts no lost claim, so the claims it replaces escape the limit, and on PostgreSQL every
-statement of it that reads a message with `*` fails on the changed table ("cached plan must not change result type")
-until its connection is replaced. So stop every node of the old version, then start the new ones. Clients of 0.10.0
-keep working: they ignore the new field `lostClaims` of a message's view. A node that had no `CrashLoopGuard` now has a
-limit of 5; the changelog of 0.11.0 lists the code changes.
+running does not notice: it counts no lost claim, so the claims it replaces escape the limit, and its statements that
+read a message with `*` break on the changed table. On PostgreSQL they fail ("cached plan must not change result
+type") until the connection is replaced; on SQLite the worker of the driver (sqlx) crashes on them, and the store
+answers unavailable. So stop every node of the old version, then start the new ones. Clients of 0.10.0 keep working:
+they ignore the new field `lostClaims` of a message's view. A node that had no `CrashLoopGuard` now has a limit of 5;
+the changelog of 0.11.0 lists the code changes.
 
 **Switching a type to `create_child`.** An actor created with `turn.create` stays independent: a later `create_child`
 of it by its creator does not adopt it, but fails the creator's message (the commit is rejected, and a handler cannot
@@ -293,13 +295,15 @@ A message counts its lost claims, and a node fails a message with as many as its
 `claim limit: <n> lost claims`, without asking its retry policy, and its watchers get a `Failed`.
 
 - **What counts.** A claim is lost when another claim takes its place although its turn neither committed nor gave the
-  lease back. That is a node that died or was killed hard, also as a matter of routine (a deploy that sends SIGKILL, a
-  Ctrl-C of the process), a lease that ran out (a long pause of the process, a partition from the store), and a commit
-  that did not get through. A node that stops in good order but leaves a lease to run out loses that claim too: a stop
-  that comes after a handler ended, while its commit is under way, or that a handler which does not yield outlasts. So
-  stop a node with its grace period (`shutdown_grace_period`), and give the limit room for routine kills, or raise it.
+  lease back. That is a node that died or was killed hard, also as a matter of routine (a deploy that sends SIGKILL, an
+  out-of-memory kill, a crash), a lease that ran out (a long pause of the process, a partition from the store), and a
+  commit that did not get through. A node that stops in good order but leaves a lease to run out loses that claim
+  too: a stop that comes after a handler ended, while its commit is under way, or that a handler which does not yield
+  outlasts. So stop a node with its grace period (`shutdown_grace_period`), and give the limit room for routine kills,
+  or raise it.
 - **What does not count.** A release: a node that stops in good order and gives back the claims of handlers that had not
-  ended, or a claim it could not run. A failed run that is committed as a retry. A lease that runs out with no claim
+  ended, or a claim it could not run, such as one whose answer came from a slow store only after the lease it asked for
+  had run out. A failed run that is committed as a retry. A lease that runs out with no claim
   after it: its turn can still commit.
 - **One message takes others with it.** The limit cannot tell the message that kills a node from the messages that ran
   beside it: each of them loses its claim when the node dies. A message that kills its node at once, as often as the

@@ -12,8 +12,8 @@ use crate::observer::TurnObserver;
 use crate::prelude::*;
 use crate::runtime::{NodeConfig, RetryResult, StartProblem};
 use crate::store::{
-    Backend, CommitRequest, CommitResult, Message, MessageStatus, NodeId, OutcomeRecord, OutcomeStatus, RenewResult,
-    StoreError, StoreResult,
+    Backend, CommitRequest, CommitResult, Message, MessageStatus, NodeId, OutcomeRecord, OutcomeStatus,
+    OutgoingMessage, RenewResult, StoreError, StoreResult,
 };
 use crate::testing::{TestActors, claim_and_abandon};
 use crate::{ActorSystem, Failed, Stopped, WatchTarget};
@@ -227,19 +227,35 @@ async fn the_mailbox_moves_on_after_a_message_fails_at_the_limit() {
 
 /// Scenario: A watcher is told.
 #[tokio::test(start_paused = true)]
-async fn a_watcher_is_told_of_a_message_that_fails_at_the_limit() {
+async fn each_watcher_is_told_once_of_a_message_that_fails_at_the_limit() {
     let (test, _) = harness(Some(3), vec![]).await;
-    test.create(&job("watcher"), &JobState::default()).await;
     let target = WatchTarget::from(addr(&job("j")));
-    test.system().watch(&target, &addr(&job("watcher"))).await.unwrap();
+    for watcher in ["watcher-a", "watcher-b"] {
+        test.create(&job(watcher), &JobState::default()).await;
+        test.system().watch(&target, &addr(&job(watcher))).await.unwrap();
+    }
     let m = test.send(&job("j"), run()).await;
     die(&test, 3).await;
     test.run_until_idle().await;
-    let told = test.state::<_, JobState>(&job("watcher")).await.failed;
-    assert_eq!(told.len(), 1, "{told:?}");
-    assert_eq!(told[0].message_id, m.id);
-    assert_eq!(told[0].error, "claim limit: 3 lost claims");
-    assert_eq!(told[0].attempts, 4, "the attempt of the claim that failed it");
+    for watcher in ["watcher-a", "watcher-b"] {
+        let told = test.state::<_, JobState>(&job(watcher)).await.failed;
+        assert_eq!(told.len(), 1, "{watcher}: {told:?}");
+        assert_eq!(told[0].message_id, m.id);
+        assert_eq!(told[0].error, "claim limit: 3 lost claims");
+        assert_eq!(told[0].attempts, 4, "the attempt of the claim that failed it");
+    }
+}
+
+/// Scenario: A message whose turns keep dying, when the message cannot be decoded: the limit fails it before the
+/// decoder would.
+#[tokio::test(start_paused = true)]
+async fn a_message_that_cannot_be_decoded_ends_failed_by_the_limit_and_not_by_the_decoder() {
+    let (test, runs) = harness(Some(3), vec![]).await;
+    let m = enqueue(test.store(), OutgoingMessage::new(addr(&job("j")), "Nope", serde_json::json!({}))).await;
+    die(&test, 3).await;
+    test.run_until_idle().await;
+    assert_eq!(outcome(&test, &m).await.error.as_deref(), Some("claim limit: 3 lost claims"));
+    assert_eq!(runs.load(Ordering::SeqCst), 0);
 }
 
 /// Writes `committed:<outcome>` after each commit that succeeded.
@@ -325,6 +341,58 @@ async fn a_commit_of_the_limit_that_does_not_succeed_tells_nobody_and_the_next_c
     let outcome = outcome_of(&memory, &m.id).await.expect("an outcome");
     assert_eq!(outcome.error.as_deref(), Some("claim limit: 4 lost claims"));
     assert_eq!(events.all(), vec!["start:Run:5", "end:Failed(error=claim limit: 4 lost claims):sent=0"]);
+}
+
+/// The answers of claims arrive after the lease they asked for has run out while `slow` is set: a store that answers
+/// late.
+struct SlowClaims(AtomicBool);
+
+#[async_trait]
+impl Faults for SlowClaims {
+    async fn claim_due(
+        &self,
+        inner: &dyn Backend,
+        types: &BTreeSet<TypeName>,
+        node: &NodeId,
+        ttl: Duration,
+        limit: usize,
+    ) -> StoreResult<Vec<crate::store::Claim>> {
+        let claims = inner.claim_due(types, node, ttl, limit).await?;
+        if self.0.load(Ordering::SeqCst) {
+            sleep(ttl + Duration::from_secs(1)).await;
+        }
+        Ok(claims)
+    }
+}
+
+/// Scenario: A claim that arrives too late.
+#[tokio::test(start_paused = true)]
+async fn a_claim_that_arrives_after_its_lease_deadline_is_given_back_and_counts_no_lost_claim() {
+    let memory = virtual_store();
+    let events = Events::default();
+    let runs = Arc::new(AtomicU32::new(0));
+    let slow = Faulty::new(memory.clone(), SlowClaims(AtomicBool::new(true)));
+    let system = node(slow.clone(), "n1").host(JobActor(runs.clone())).observe(Recorder::new(&events)).build();
+    system.create(&job("j"), &JobState::default()).await.unwrap();
+    let m = accepted(system.send(&job("j"), run()).await.unwrap());
+    claim_and_abandon(&memory, &types(), LEASE, 1).await.unwrap();
+    sleep(LEASE + Duration::from_secs(1)).await;
+
+    assert_eq!(system.run_due_turns(1).await.unwrap(), 1); // its answer arrives after the lease deadline
+    assert_eq!(runs.load(Ordering::SeqCst), 0, "its handler does not run");
+    assert!(events.all().is_empty(), "the turn is not observed: {:?}", events.all());
+    let pending = match memory.status(&m.id).await.unwrap() {
+        Some(MessageStatus::Pending(message)) => message,
+        other => panic!("given back, so pending without a lease: {other:?}"),
+    };
+    assert_eq!((pending.attempt, pending.lost_claims), (2, 1), "the abandoned claim is lost, the late one not");
+
+    slow.faults.0.store(false, Ordering::SeqCst);
+    assert_eq!(system.run_due_turns(1).await.unwrap(), 1);
+    let outcome = outcome_of(&memory, &m.id).await.expect("an outcome");
+    assert_eq!(outcome.status, OutcomeStatus::Done);
+    assert_eq!((outcome.envelope.attempt, outcome.envelope.lost_claims), (3, 1), "the same lost claims as before");
+    assert_eq!(runs.load(Ordering::SeqCst), 1);
 }
 
 /// Scenario: The message is sent again.

@@ -127,6 +127,18 @@ succeeded: the start and then the end.
 - **WHEN** an operator retries a message that the limit failed
 - **THEN** the new message has a `lostClaims` of 0 and its handler runs
 
+### Requirement: A node gives back a claim that arrives too late
+
+A node that receives a claim after the local deadline of its lease (the time the claim was sent, plus the lease TTL,
+less the safety margin) SHALL NOT call an observer, load or run anything for it, and SHALL release it, so that the
+claim is not lost.
+
+#### Scenario: A claim that arrives too late
+
+- **WHEN** the answer of a claim arrives after its lease deadline
+- **THEN** the node releases the claim, its handler does not run, and the next claim of the message has the same
+  `lostClaims` as before
+
 ### Requirement: The limit of lost claims is set on the node
 
 `NodeConfig::max_lost_claims` SHALL be the limit of a node: 5 unless it is set, and none when it is `None`. A node

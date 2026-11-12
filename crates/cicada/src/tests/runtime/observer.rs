@@ -560,20 +560,38 @@ async fn an_observer_that_panics_at_the_end_changes_nothing_and_the_next_is_told
 /// Scenario: An observer panics when its value is dropped.
 #[tokio::test(start_paused = true)]
 async fn an_observer_that_panics_when_its_value_is_dropped_leaves_the_node_going() {
+    /// The store reports every renewal lost while the flag is set.
+    struct LoseLeaseWhile(AtomicBool);
+
+    #[async_trait]
+    impl Faults for LoseLeaseWhile {
+        async fn renew(
+            &self,
+            inner: &dyn Backend,
+            a: &ActorAddress,
+            e: i64,
+            ttl: Duration,
+        ) -> StoreResult<RenewResult> {
+            if self.0.load(Ordering::SeqCst) { Ok(RenewResult::LeaseLost) } else { inner.renew(a, e, ttl).await }
+        }
+    }
+
     let memory = virtual_store();
     let events = Events::default();
-    let losing = node(Faulty::new(memory.clone(), LoseLease), "losing")
+    let faulty = Faulty::new(memory.clone(), LoseLeaseWhile(AtomicBool::new(true)));
+    let system = node(faulty.clone(), "n1")
         .host(ProbeActor(Events::default()))
         .observe(Breaking { value: "first", panics_at: "drop" })
         .observe(Recorder::new(&events))
         .build();
-    losing.create(&p("p"), &ProbeState::default()).await.unwrap();
-    let m = accepted(losing.send(&p("p"), ProbeMsg::Do { fail: false, sleep_seconds: 20, sends: None }).await.unwrap());
-    assert_eq!(losing.run_due_turns(1).await.unwrap(), 1);
+    system.create(&p("p"), &ProbeState::default()).await.unwrap();
+    let m = accepted(system.send(&p("p"), ProbeMsg::Do { fail: false, sleep_seconds: 20, sends: None }).await.unwrap());
+    assert_eq!(system.run_due_turns(1).await.unwrap(), 1);
     assert_eq!(events.all(), vec!["start:Do:1", "dropped:Do"], "the value of the other observer is dropped");
-    sleep(Duration::from_secs(31)).await;
-    let healthy = probe_node(memory.clone(), "healthy", &events);
-    assert_eq!(healthy.run_due_turns(1).await.unwrap(), 1, "the next claim of the message runs");
+    faulty.faults.0.store(false, Ordering::SeqCst);
+    sleep(Duration::from_secs(31)).await; // the lease runs out
+    assert_eq!(system.run_due_turns(1).await.unwrap(), 1, "the same node runs the next claim of the message");
+    assert_eq!(events.all(), vec!["start:Do:1", "dropped:Do", "start:Do:2", "end:Done:sent=1"]);
     assert_eq!(outcome_of(&memory, &m.id).await.unwrap().status, OutcomeStatus::Done);
 }
 
