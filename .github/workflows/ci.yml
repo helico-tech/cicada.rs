@@ -52,6 +52,29 @@ jobs:
           cargo check -p cicada --features sqlite
           cargo check -p cicada --features postgres
           cargo check -p cicada --features testing
+      # The same for cicada-app, whose features the workspace turns on too: no feature, each store alone, the terminal
+      # UI alone.
+      - name: Build cicada-app with each feature alone
+        shell: bash
+        env:
+          RUSTFLAGS: -D warnings
+        run: |
+          set -euo pipefail
+          cargo check -p cicada-app
+          cargo check -p cicada-app --features sqlite
+          cargo check -p cicada-app --features postgres
+          cargo check -p cicada-app --features tui
+      # The crate alone is built without the terminal UI: its tests include that such a binary does not know `tui`.
+      - run: cargo test -p cicada-app
+      - name: cicada-app without tui builds no terminal library
+        shell: bash
+        run: |
+          set -euo pipefail
+          trees="${RUNNER_TEMP:-/tmp}"
+          cargo tree -p cicada-app -e normal > "$trees/app.txt"
+          cargo tree -p cicada-app -e normal --features tui > "$trees/app-tui.txt"
+          grep -q 'ratatui v' "$trees/app-tui.txt" || { echo "tui does not build ratatui"; exit 1; }
+          if grep -qE 'ratatui|crossterm' "$trees/app.txt"; then echo "cicada-app without tui builds ratatui or crossterm"; exit 1; fi
       # The trees go to files first, so a `cargo tree` that fails fails the step; the first two greps check that the
       # trees hold what each feature must build. SQLite builds no TLS library. The whole workspace, on every target and
       # with its dev-dependencies, builds rustls with one crypto provider: with both ring and aws-lc-rs, every caller

@@ -62,7 +62,7 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
 
 ## 4. CI and the map
 
-- [ ] 4.1 CI and `AGENTS.md` [10]: `cargo check -p cicada-app` with no feature and with each of `sqlite`, `postgres`
+- [x] 4.1 CI and `AGENTS.md` [10]: `cargo check -p cicada-app` with no feature and with each of `sqlite`, `postgres`
       and `tui` alone; `cargo test -p cicada-app`; a `cargo tree` check that `cicada-app` without `tui` names
       neither `ratatui` nor `crossterm`; the crate in the map and in the build lines of `AGENTS.md`. Verify: every
       command the CI file gained passes when it is run by hand, and the report lists them.

@@ -8,11 +8,13 @@ covers sizing, deploying, upgrading and watching nodes.
 
 ```sh
 cargo build --workspace
-cargo test --workspace                 # unit, runtime, SQLite, HTTP and README tests; every feature of cicada on
+cargo test --workspace                 # unit, runtime, SQLite, HTTP and README tests; every feature of cicada and cicada-app on
 cargo test -p cicada-examples --doc    # only the Rust blocks of README.md and docs/operations.md
 cargo clippy --workspace --all-targets
 cargo fmt --all                        # rustfmt.toml: 120 columns; CI checks it
 cargo check -p cicada [--features sqlite|postgres|testing]   # the core with no feature or one alone; CI builds each
+cargo check -p cicada-app [--features sqlite|postgres|tui]   # the app layer the same way; CI builds each
+cargo test -p cicada-app               # the crate alone, so without the terminal UI
 CICADA_PG_URL=postgres://cicada:cicada@localhost:55432/cicada cargo test -p cicada   # with the PostgreSQL tests
 PROPTEST_CASES=100000 cargo test -p cicada --lib tests::fuzz   # a long randomised run; a short one is part of cargo test
 CICADA_E2E=1 cargo test -p cicada-e2e -- --nocapture   # E2E and fault tests in Docker, ~3 min; see e2e/README.md
@@ -29,7 +31,7 @@ PostgreSQL for tests: `docker compose up -d postgres` (port 55432). Tests that n
 | `crates/cicada-test` | Exports `TestActors`, the clocks and `claim_and_abandon`; contract snapshots and state samples |
 | `crates/cicada-axum` | HTTP API routers |
 | `crates/cicada-client` | Typed HTTP client |
-| `crates/cicada-cli` | The `cicada` command line and terminal UI, over HTTP |
+| `crates/cicada-app` | `App`: a set of actors as a binary with `serve`, `worker` and the operator commands (`command`, `settings`, `node`; the command line `cli`, `operator`, `config`, `output`, and `tui` behind its feature); the binary `cicada` |
 | `crates/cicada-otel`, `crates/cicada-extras` | The telemetry observer and building blocks |
 | `examples/`, `sample-service/` | Worked examples; a runnable node |
 | `e2e/` | End-to-end and fault tests against sample nodes in Docker |
