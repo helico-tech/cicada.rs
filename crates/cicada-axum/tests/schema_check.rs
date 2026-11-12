@@ -489,3 +489,58 @@ async fn a_value_at_the_depth_limit_is_checked_like_any_other_and_one_level_deep
         }
     }
 }
+
+/// A value `levels` deep: a chain of arrays around a number, built without recursion.
+fn arrays(levels: usize) -> Value {
+    (0..levels).fold(json!(1), |inner, _| Value::Array(vec![inner]))
+}
+
+/// Scenarios: A send over HTTP; A create over HTTP (value-depth). A payload and a state of 65 levels are `400` on both
+/// nodes, before the schema check, with a detail that names the limit, and nothing is stored; at 64 levels both are
+/// taken. `extra` is no field of `Add` or of the state of `counter`, which neither the schemas nor the decoders refuse.
+#[tokio::test(start_paused = true)]
+async fn a_send_and_a_create_over_http_beyond_64_levels_are_400_on_every_node() {
+    let n = nodes().await;
+    let send = |id: &str, levels: usize| {
+        json!({"id": id, "type": "Add", "payload": {"n": 1, "extra": arrays(levels - 1)}}).to_string()
+    };
+    let create = |levels: usize| json!({"state": {"total": 1, "extra": arrays(levels - 1)}}).to_string();
+    for (node, app) in [("other", &n.other), ("host", &n.host)] {
+        let sent = post(app, SEND, &send(node, 65)).await;
+        assert_problem(&sent, 400, pt::BAD_REQUEST);
+        assert_eq!(detail(&sent), "The payload is nested deeper than 64 levels");
+        assert_problem(&get(app, &format!("/messages/{node}")).await, 404, pt::NO_SUCH_MESSAGE);
+        let path = format!("/actors/counter/{node}");
+        let created = put(app, &path, &create(65)).await;
+        assert_problem(&created, 400, pt::BAD_REQUEST);
+        assert_eq!(detail(&created), "The state is nested deeper than 64 levels");
+        assert_problem(&get(app, &path).await, 404, pt::NO_SUCH_INSTANCE);
+
+        assert_eq!(post(app, SEND, &send(node, 64)).await.status, 202, "{node}");
+        assert_eq!(put(app, &path, &create(64)).await.status, 201, "{node}");
+    }
+}
+
+/// Scenario: A repeat beyond the depth limit. A `Failed` about a payload of 64 levels is 65 levels deep and pending; a
+/// client that sends a message with its id, its type and its payload gets `400`, as the limits come before the repeated
+/// id.
+#[tokio::test(start_paused = true)]
+async fn a_repeat_of_a_pending_notification_beyond_the_depth_limit_is_400() {
+    let n = nodes().await;
+    put(&n.host, "/actors/watcher/w", r#"{"state": {}}"#).await;
+    assert_eq!(put(&n.host, "/watches", r#"{"target": "counter/a", "watcher": "watcher/w"}"#).await.status, 201);
+    assert_eq!(post(&n.host, "/actors/watcher/w/mailbox/pause", "").await.status.as_u16(), 204);
+    let body = json!({"type": "Fail", "payload": {"reason": "no", "extra": arrays(63)}}).to_string();
+    let failed = send_id(&n.host, SEND, &body).await;
+    wait_for(&n.host, &failed, "failed").await;
+    let mailbox = get_json(&n.host, "/actors/watcher/w/mailbox").await;
+    let [notification] = items(&mailbox).as_slice() else { panic!("one notification: {mailbox}") };
+    assert_eq!(notification["payload"]["messageId"], failed.as_str());
+
+    let repeat = json!({"id": notification["id"], "type": "Failed", "payload": notification["payload"]}).to_string();
+    for app in [&n.other, &n.host] {
+        let reply = post(app, "/actors/watcher/w/messages", &repeat).await;
+        assert_problem(&reply, 400, pt::BAD_REQUEST);
+        assert_eq!(detail(&reply), "The payload is nested deeper than 64 levels");
+    }
+}

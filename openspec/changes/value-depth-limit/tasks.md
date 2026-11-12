@@ -25,12 +25,12 @@ written as the section "Tests of values from before" of `design.md` says. Runtim
 
 ## 2. HTTP
 
-- [ ] 2.1 The door [2]: a send and a create over HTTP of 65 levels are `400` on a node that hosts the type and on one
+- [x] 2.1 The door [2]: a send and a create over HTTP of 65 levels are `400` on a node that hosts the type and on one
       that does not; `deep_values.rs` checks 64 levels where it checked 126, `memory.rs` 64 where it checked 100, and
       the schema check keeps its own thread. Verify: the scenarios "A send over HTTP", "A create over HTTP", "A value
       at the limit", the ADDED and MODIFIED requirements of the delta `http-schema-check`, and "A repeat beyond the
       depth limit".
-- [ ] 2.2 Views and decoding [1]: Verify: the scenarios "A message at the limit", "The deepest view" and "An actor at
+- [x] 2.2 Views and decoding [1]: Verify: the scenarios "A message at the limit", "The deepest view" and "An actor at
       the limit" read with `cicada-client`, and "Three shapes at the limit" in a debug build on threads with their
       default stack.
 

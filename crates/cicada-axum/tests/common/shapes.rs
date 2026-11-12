@@ -1,7 +1,7 @@
 //! Three types that refer to themselves with several schema steps between two of their levels, as the third round of
 //! validation found them: with the first validator their check needed 86 to 103 KiB of stack a level in a test build;
-//! the check of the door as it is needs about 2.7 KiB (decision 11). Shared by the test of the check function in
-//! `src/schema_check.rs` and the test of the HTTP door in `tests/deep_values.rs`.
+//! the check of the door as it is needs about 2.7 KiB (decision 11); and a list that holds itself. Shared by the test of
+//! the check function in `src/schema_check.rs` and the tests of the HTTP door in `tests/deep_values.rs`.
 #![allow(dead_code)]
 
 use schemars::JsonSchema;
@@ -25,6 +25,23 @@ fn object(fields: Vec<(&str, Value)>) -> Value {
 
 fn pick(ok: bool) -> Value {
     if ok { json!(1) } else { json!("x") }
+}
+
+/// A list that holds itself through an `Option`, with no step between two levels.
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct List {
+    n: i32,
+    next: Option<Box<List>>,
+}
+
+impl Shape for List {
+    const NAME: &'static str = "list";
+    fn leaf(ok: bool) -> Value {
+        object(vec![("n", pick(ok)), ("next", Value::Null)])
+    }
+    fn wrap(inner: Value) -> Value {
+        object(vec![("n", json!(1)), ("next", inner)])
+    }
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]

@@ -112,7 +112,7 @@ impl Actor for WitnessActor {
 
 /// A value `levels` deep: arrays and objects in turn around a number, built without recursion.
 fn nested(levels: usize) -> Value {
-    (0..levels).fold(json!(1), |inner, level| if level % 2 == 0 { json!([inner]) } else { keep(inner) })
+    (0..levels).fold(json!(1), |inner, level| if level % 2 == 0 { Value::Array(vec![inner]) } else { keep(inner) })
 }
 
 /// `{"v": inner}`, one level deeper, without copying `inner`.

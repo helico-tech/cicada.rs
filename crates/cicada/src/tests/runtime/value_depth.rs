@@ -99,7 +99,7 @@ impl Actor for WitnessActor {
 
 /// A chain of arrays `levels` deep around a number, built without recursion.
 fn nested(levels: usize) -> Value {
-    (0..levels).fold(json!(1), |inner, _| json!([inner]))
+    (0..levels).fold(json!(1), |inner, _| Value::Array(vec![inner]))
 }
 
 /// How deep a chain of [`nested`] is, counted without recursion.
