@@ -214,7 +214,7 @@ impl App {
             let mut out = out;
             let name = command::program_name(&args);
             let names: Vec<&'static str> = self.types.iter().map(|t| t.name).collect();
-            match command::parse(&args, !names.is_empty()).map_err(AppError::Usage)? {
+            match command::parse(&args, !names.is_empty()).map_err(AppError::usage)? {
                 Parsed::Help(help) => write!(out, "{help}").map_err(|e| AppError::Failed(e.into())),
                 Parsed::Version => {
                     let version =
@@ -232,14 +232,14 @@ impl App {
                         self.node_config.as_ref(),
                         &names,
                     )
-                    .map_err(AppError::Usage)?;
+                    .map_err(AppError::usage)?;
                     node::serve(self.into_parts(), settings, &mut out, stop).await
                 }
                 Parsed::Worker(args) => {
                     let stop = Stop::watch(shutdown);
                     let settings =
                         settings::resolve(Kind::Worker, &args.node, None, &env, self.node_config.as_ref(), &names)
-                            .map_err(AppError::Usage)?;
+                            .map_err(AppError::usage)?;
                     node::worker(self.into_parts(), settings, stop).await
                 }
             }
@@ -261,13 +261,21 @@ pub fn node_command(args: &[OsString]) -> bool {
 /// Why a command did not succeed.
 #[derive(Debug)]
 pub enum AppError {
-    /// The command line cannot be used: exit code 2.
+    /// The command line cannot be used: exit code 2. `run_with` hides the password of an address the message quotes
+    /// (`scheme://user:***@host`); it leaves alone a raw password with `/`, `#`, `?`, a quote or a space, an address
+    /// without `//` (`postgres:u:pw@h`) and the libpq form (`host=h password=…`).
     Usage(String),
     /// The command failed: exit code 1.
     Failed(anyhow::Error),
 }
 
 impl AppError {
+    /// A command line that cannot be used, quoting what the user gave: a flag, a variable or an argument that may be an
+    /// address with a password, which is hidden.
+    fn usage(message: String) -> Self {
+        Self::Usage(command::hide_passwords(&message))
+    }
+
     /// 2 for [`Self::Usage`], 1 for [`Self::Failed`].
     pub fn exit_code(&self) -> u8 {
         match self {

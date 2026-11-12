@@ -190,8 +190,8 @@ Without `--listen` and `CICADA_LISTEN`, `serve` SHALL listen on `127.0.0.1:8080`
 
 ### Requirement: A store that is not there yet is waited for
 
-On PostgreSQL, `serve` and `worker` SHALL try again while the store answers that it is unavailable, for up to 60
-seconds, and then fail.
+On PostgreSQL, `serve` and `worker` SHALL try again while the store answers that it is unavailable, SHALL start no new
+try after 60 seconds, and then fail.
 
 #### Scenario: The database comes up late
 

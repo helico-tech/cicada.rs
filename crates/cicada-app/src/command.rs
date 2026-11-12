@@ -128,7 +128,8 @@ fn usage(error: &clap::Error) -> String {
 }
 
 /// `text` with the password of every address in it that has one (`scheme://user:secret@host` becomes
-/// `scheme://user:***@host`).
+/// `scheme://user:***@host`). It leaves alone a raw password with `/`, `#`, `?`, a quote or a space, an address without
+/// `//` (`postgres:u:pw@h`) and the libpq form (`host=h password=…`).
 pub(crate) fn hide_passwords(text: &str) -> String {
     let mut hidden = String::with_capacity(text.len());
     let mut rest = text;

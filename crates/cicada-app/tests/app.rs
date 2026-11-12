@@ -468,6 +468,26 @@ async fn a_usage_error_hides_the_password_of_an_address() {
     assert!(!error.contains("pw"), "{error}");
 }
 
+/// The usage errors of the settings quote what the user gave, in a variable or a flag that clap does not read:
+/// a password in it is hidden.
+#[tokio::test]
+async fn a_usage_error_of_the_settings_hides_the_password_of_an_address() {
+    let db = TempDb::new();
+    let address = "postgres://u:S3CRET@h/db";
+    let mut env = db.env();
+    env.insert("CICADA_LISTEN".into(), address.into());
+    let listen = run(counter_app(), &env, &["myapp", "serve"]).await.unwrap_err();
+    assert!(matches!(listen, AppError::Usage(_)), "{listen}");
+    assert!(listen.to_string().starts_with("CICADA_LISTEN: invalid value 'postgres://u:***@h/db'"), "{listen}");
+    assert!(!listen.to_string().contains("S3CRET"), "{listen}");
+
+    let types = run(counter_app(), &db.env(), &["myapp", "serve", "--types", address]).await.unwrap_err();
+    assert!(matches!(types, AppError::Usage(_)), "{types}");
+    assert!(types.to_string().contains("does not host postgres://u:***@h/db"), "{types}");
+    assert!(!types.to_string().contains("S3CRET"), "{types}");
+    assert!(!db.path.exists(), "nothing started");
+}
+
 /// A node setting that can be read and is not valid fails the start: exit code 1.
 #[tokio::test]
 async fn a_setting_that_is_not_valid_fails_the_start() {

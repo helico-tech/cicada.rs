@@ -52,8 +52,10 @@ changes; nodes of 0.12.0 and 0.13.0 can share a database.
   `--retention`, each with a variable `CICADA_…`. On PostgreSQL, `serve` and `worker` wait about a minute for a store
   that answers "unavailable": a try can take seconds, so the wait can be longer, and a wrong password is tried again
   like an unreachable database. The stores are the features `sqlite` and `postgres` of `cicada-app`, none on by
-  default; a store whose feature the binary was built without fails the command and names the feature. A usage error
-  hides the password of an address it quotes (`postgres://user:***@host`).
+  default; a store whose feature the binary was built without fails the command and names the feature. A usage error,
+  of clap or of the settings, hides the password of an address it quotes, from a flag, a variable or an argument
+  (`postgres://user:***@host`); it leaves alone a raw password with `/`, `#`, `?`, a quote or a space, an address
+  without `//` (`postgres:u:pw@h`) and the libpq form (`host=h password=…`).
 - `serve` listens on `127.0.0.1:8080` unless `--listen` (`CICADA_LISTEN`) says otherwise: `App` has no
   authentication of its own. `--types` (`CICADA_TYPES`) picks the types of a node: `all`, type names with commas, or
   for `serve` `none`. The settings of the node have a flag and a variable each (`--node-id`, `--concurrency`,
