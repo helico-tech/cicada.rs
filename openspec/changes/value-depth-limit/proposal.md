@@ -75,6 +75,7 @@ After `schema-reference-names`. It is not a step of ADR 0018; it waits for the o
 
 ## Impact
 
-- `crates/cicada` (`runtime::limits`, the docs of the calls that take JSON), `cicada-axum` (the answer),
-  `README.md`, `docs/architecture.md` (the limits) and `CHANGELOG.md`.
+- `crates/cicada` (`runtime::limits`, the docs of the calls that take JSON), `cicada-axum` (the answer), the guide
+  of the core (`docs/guide/core.md` after `docs-per-layer`; the README before it), `docs/architecture.md` (the
+  limits) and `CHANGELOG.md`.
 - The wire format gains a refusal; the design says whether that needs an ADR.
