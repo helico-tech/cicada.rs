@@ -48,6 +48,9 @@ To decide in the design:
   decoder in a debug build, or the decode gets a stack of its own as the schema check has. For the decoder of an
   untagged enum even 20 levels cost too much, so a limit alone may not settle that one.
 - Whether values that are stored today and are deeper than the limit need anything.
+- The levels that the ready-made actors add around a value: a letter of dead letters, a `Deliver` of a topic and a
+  child entry of a supervisor each hold a payload or a state some levels deeper (found when `cicada-actors` was
+  reviewed).
 - Whether the two costs in proportion to the body need anything: a limit on the number of values in a body, a
   decoder that does not copy, or only a line in the operations guide on the size of a body.
 
