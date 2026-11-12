@@ -236,11 +236,11 @@ impl Actor for SyncActor {
 | `cicada-test` | Exports the test support of `cicada` (`TestActors`, clocks, `claim_and_abandon`); contract snapshots and state samples |
 | `cicada-axum` | `actor_api()`, `actor_api_read()` and `actor_health()` as axum routers, the OpenAPI document, the schema check of the HTTP door (the JSON Schema validator `jsonschema`) and the sample checks |
 | `cicada-client` | Typed HTTP client (reqwest) |
-| `cicada-cli` | The binary `cicada`: commands and a terminal UI over the HTTP API, through `cicada-client`; no library crate depends on it |
+| `cicada-app` | Layer 2 (ADR 0018, ADR 0027): `App` turns a set of actor types into a binary with `serve` (the node and the HTTP API at the root, with a public `/ready` outside the host's router), `worker` (the node only) and the operator commands, which go over HTTP through `cicada-client`; settings from flags and `CICADA_…` variables over the host's `NodeConfig`. It only composes `cicada`, `cicada-axum` and `cicada-client`, and builds the binary `cicada` (no hosted type, so neither `serve` nor `worker`). Features `sqlite`, `postgres` and `tui` (the terminal UI), none on by default |
 | `cicada-otel` | OpenTelemetry observer (`ActorTelemetry`) |
 | `cicada-extras` | Schedules (interval, daily), failure watcher, dead letters |
 | `examples` | Worked examples with tests |
-| `sample-service` | A runnable node (binary) with the examples, used by end-to-end tests |
+| `sample-service` | A runnable node (binary) on `cicada-app` with the examples, used by end-to-end tests |
 | `e2e` (`cicada-e2e`) | End-to-end and fault tests: sample nodes in Docker on PostgreSQL and SQLite, driven over HTTP (`CICADA_E2E=1`) |
 
 ## HTTP contract

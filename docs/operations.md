@@ -1,8 +1,9 @@
 # Operating Cicada for Rust
 
 How to size, deploy, upgrade and watch Cicada nodes. The design is in [architecture.md](architecture.md), the API and
-the settings in the [README](../README.md). Settings are `NodeConfig`, `PostgresOptions` and `SqliteOptions`, handlers are tokio
-futures, logs go through `tracing`, and the host owns the store and the node's life cycle.
+the settings in the [README](../README.md). Settings are `NodeConfig`, `PostgresOptions` and `SqliteOptions`, or the
+flags and `CICADA_…` variables of a binary built from `cicada-app` (README, Run it as a binary); handlers are tokio
+futures, logs go through `tracing`, and the host owns the store and the node's life cycle, or hands them to `App`.
 
 ## Sizing
 
@@ -17,7 +18,9 @@ futures, logs go through `tracing`, and the host owns the store and the node's l
   claim, heartbeat and commit, and HTTP requests use the same pool. Keep it at least `concurrency + 4`. A pool that is
   too small delays lease renewals, and a renewal that waits too long makes the node give up the turn. Mind the server
   side too: `nodes × max_pool_size` plus up to two connections per node for the wake-up listener (`LISTEN` and its
-  probe) must stay under PostgreSQL's `max_connections`.
+  probe) must stay under PostgreSQL's `max_connections`. A binary built from `cicada-app` sizes the pool as the larger
+  of 20 and `concurrency + 4` unless `--store-pool-size` (`CICADA_STORE_POOL_SIZE`) says otherwise; set it per
+  deployment so that the nodes together stay under the server's limit.
 - **`lease_ttl`** (30 s) is how long a dead node's turn waits before another node re-runs it. Shorter means faster
   recovery but more heartbeat writes (every `lease_ttl / 3`) and more risk that a stalled runtime or a long pause
   loses the lease.
@@ -28,9 +31,30 @@ futures, logs go through `tracing`, and the host owns the store and the node's l
 
 ## Deploying
 
-- **Graceful stop.** Nothing handles signals for you: the host waits for `SIGTERM` (and Ctrl-C), calls
-  `system.stop()`, and closes the store afterwards. On stop a node stops claiming, lets running turns finish within
-  `shutdown_grace_period` (30 s), then cancels them and releases their leases; a cancelled turn that does not end
+- **`serve` and `worker`.** A binary built from `cicada-app` runs a node with `serve` (the node and the HTTP API) or
+  `worker` (the node only), configured by flags and `CICADA_…` variables:
+
+  ```sh
+  myapp serve --store "$DATABASE_URL" --listen 0.0.0.0:8080 --concurrency 32   # a node that serves; add a layer first
+  myapp serve --store "$DATABASE_URL" --listen 0.0.0.0:8080 --types none       # a node that only serves HTTP
+  myapp worker --store "$DATABASE_URL" --types billing.invoices                  # a node that only runs turns
+  ```
+
+  `serve` listens on `127.0.0.1:8080` unless `--listen` (`CICADA_LISTEN`) says otherwise, so in a container nothing
+  answers from outside until it is set. The API has **no authentication** unless the host adds a layer with
+  `App::http`: it can change and delete everything, so open it to a network only behind one. `serve` and `worker`
+  refuse `--token`, which belongs to the operator commands, so it cannot look like protection. `/ready` stays public.
+  Set the same `--retention` (`CICADA_RETENTION`, 7 days by default) on every node of a system: it is how long
+  outcomes are kept and the window in which a message id is known. On PostgreSQL a node waits up to 60 s for a database
+  that is not there yet, so containers may start in any order. Exit codes: 0 after a stop, 2 for a command line or a
+  variable that cannot be used, 1 for a node that cannot start.
+- **Graceful stop.** `serve` and `worker` stop on `SIGTERM` and `SIGINT`. `serve` stops the node first: it claims no
+  more and lets running turns finish within the grace period, while the API keeps answering and `/ready` answers
+  `503`; then the HTTP server stops, requests still open get 5 s and are cut off after that, and the store is closed.
+  `worker` stops the node and closes the store. A host that uses the layers directly handles signals itself: it waits
+  for `SIGTERM` (and Ctrl-C), calls `system.stop()`, and closes the store afterwards. On stop a node stops claiming,
+  lets running turns finish within `shutdown_grace_period` (30 s), then cancels them and releases their leases; a
+  cancelled turn that does not end
   within `shutdown_cancel_timeout` (5 s) is left to its lease. Give the platform's stop timeout more than the sum
   (e.g. Kubernetes `terminationGracePeriodSeconds`, compose `stop_grace_period`); otherwise the process is killed and
   its turns wait out their lease. A process killed without `stop` loses no message: its turns re-run elsewhere after
@@ -69,8 +93,10 @@ futures, logs go through `tracing`, and the host owns the store and the node's l
   }
   ```
 
-  When the node serves HTTP, stop it inside axum's `with_graceful_shutdown` future, as the README's quick start does:
-  the API keeps answering while turns finish, and `/ready` answers `503` from the moment `stop` begins.
+  When the node serves HTTP, stop it inside axum's `with_graceful_shutdown` future, as the README's axum service and
+  `serve` do: the API keeps answering while turns finish, and `/ready` answers `503` from the moment `stop` begins.
+  With the HTTP server first, one request that stays open (a route that streams) would hold up the stop of the node
+  until the platform kills the process, and every turn running then would be a lost claim.
 - **Rolling deploys** work as long as the contracts stay equal: a node refuses to start when a type's contract
   differs from the registered one. Check that in CI with contract snapshots (`cicada_test::assert_contracts_match`,
   README, Testing) and keep stored states readable with state samples (`assert_state_decodes`).
@@ -87,8 +113,10 @@ futures, logs go through `tracing`, and the host owns the store and the node's l
 - **Send-only nodes** (a node that hosts nothing) serve the whole API for every registered type and are a safe place
   for public traffic: they never run turns.
 - **Probes.** The API's `GET /health` usually sits behind the host's authentication layer, where a probe has no
-  credentials. Merge `actor_health(system, "/ready")` outside it: it answers like `/health` (`200` with the node id and
-  state when the node runs and reaches its store, else `503`). Use it for **readiness** only. A store outage makes
+  credentials. Merge `actor_health(system, "/ready")` outside it (`serve` answers `/ready` outside the host's router by
+  itself): it answers like `/health` (`200` with the node id and state when the node runs and reaches its store, else
+  `503`). Use it for **readiness** only. A `worker` serves nothing, so it has **no readiness check**: whatever runs it
+  sees only the process, and a worker that cannot reach its store keeps running and retries. A store outage makes
   every node unready, and restarting them does not bring the store back, so do not use it for liveness. A Kubernetes
   example for a node with the default 30 s grace period:
 
@@ -212,6 +240,12 @@ not host the type. Before the nodes are upgraded:
    [Changing a contract](#changing-a-contract).
 
 Clients need no upgrade.
+
+**Version 0.13.0 changes no schema and no wire format.** It adds `cicada-app` (ADR 0027), so nodes of 0.12.0 and
+0.13.0 can share a database. A host may move its start-up code onto `App`; nothing forces it. The command line moved
+from `cicada-cli` into `cicada-app` and is still the binary `cicada`; install it with `--features tui` for the
+terminal UI. A deployment of the sample service renames its variables (README, Sample service); a node of it refuses
+to start while one of the old ones is set.
 
 **Switching a type to `create_child`.** An actor created with `turn.create` stays independent: a later `create_child`
 of it by its creator does not adopt it, but fails the creator's message (the commit is rejected, and a handler cannot

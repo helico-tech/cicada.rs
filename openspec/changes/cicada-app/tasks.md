@@ -69,13 +69,13 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
 
 ## 5. Docs
 
-- [ ] 5.1 `README.md`: a quick start on `App`, with `--listen` and `App::http` where it first serves; the commands
+- [x] 5.1 `README.md`: a quick start on `App`, with `--listen` and `App::http` where it first serves; the commands
       and the tables of flags and variables; how to install `cicada`; the variables of the sample service.
       `docs/operations.md`: deploying with `serve` and `worker`, that a worker has no readiness check, how a node
       stops, the loopback default, the pool and the retention, and that the API has no authentication unless the
       host adds a layer. `docs/architecture.md`: the crate table. The row of ADR 0027. Verify:
       `cargo test -p cicada-examples --doc` passes, and every risk of `design.md` that names the docs is in them.
-- [ ] 5.2 `CHANGELOG.md`, a section `0.13.0 — unreleased`, and the version `0.13.0` in `Cargo.toml`: the steps of
+- [x] 5.2 `CHANGELOG.md`, a section `0.13.0 — unreleased`, and the version `0.13.0` in `Cargo.toml`: the steps of
       the Migration Plan of `design.md` first, then the breaking change of the proposal. Verify: every step of the
       plan and every **BREAKING** line of the proposal is in the section.
 

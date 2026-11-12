@@ -7,6 +7,79 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.13.0 — unreleased
+
+A breaking release: the app layer (ADR 0018, ADR 0027). The new crate `cicada-app` turns a set of actor types into a
+binary with `serve`, `worker` and the operator commands, configured by flags and `CICADA_…` variables:
+`App::new().host(actor).run()`. The crate `cicada-cli` goes into it. No schema of the store and no wire format
+changes; nodes of 0.12.0 and 0.13.0 can share a database.
+
+### Upgrading
+
+1. A host may replace its own start-up code by `App`. Nothing forces it: the layers below are as they were.
+2. Whoever installs the command line builds `cicada-app` where it built `cicada-cli`, with the feature `tui` for the
+   terminal UI (`cargo install --path crates/cicada-app --features tui`). The binary is still called `cicada`.
+3. A deployment of the sample service renames its variables: `PORT` becomes `CICADA_LISTEN` (and `serve` listens on
+   `127.0.0.1:8080` unless it is set; the image sets `0.0.0.0:8080`), `DATABASE_URL` and `SQLITE_PATH` become
+   `CICADA_STORE`, `DATABASE_SCHEMA` becomes `CICADA_STORE_SCHEMA`, `DATABASE_POOL_SIZE` becomes
+   `CICADA_STORE_POOL_SIZE`, `HOSTED_TYPES` with its groups becomes `CICADA_TYPES` with type names, and `NODE_ID`,
+   `CONCURRENCY`, `LEASE_TTL`, `HEARTBEAT_INTERVAL`, `POLL_INTERVAL`, `SHUTDOWN_GRACE_PERIOD` and `MAX_TURN` get the
+   prefix `CICADA_`. `API_TOKEN`, `FAILURE_WATCHER_INTERVAL` and the variables of OpenTelemetry stay. For this release
+   a node of the sample refuses to start while one of the old variables is set, and the error names the new one. The
+   image runs `serve`.
+
+### Changed (breaking)
+
+- The crate `cicada-cli` goes: its command line moves into `cicada-app`, which still builds the binary `cicada` with
+  the operator commands. The terminal UI is the feature `tui` of `cicada-app`, off by default: without it the binary
+  has no command `tui` and builds neither `ratatui` nor `crossterm`. Whoever used `cicada-cli` as a library uses
+  `cicada-app`, whose public API is `App`, `AppError`, `Env` and `node_command`.
+- The help, the usage errors and the hints of the command line name the binary as it was called
+  (`myapp config set-context`, not `cicada config set-context`). A command line that cannot be used exits with code 2,
+  as clap's errors did, and every other error with code 1.
+- The sample service runs on `App`: its variables are those of `cicada-app` (see Upgrading), it picks its types by
+  their names with `--types` in place of the groups of `HOSTED_TYPES`, its `GET /` names the node and its types but no
+  longer the store or the groups, and its `main` needs a command (`serve`).
+
+### Added
+
+- `cicada-app` (layer 2): `App::new().host(actor).run()` gives a binary with `serve` (the node, the HTTP API at the
+  root and a public `/ready`), `worker` (the node, no HTTP) and the operator commands of `cicada`, which always go over
+  HTTP. A binary without hosted types has neither `serve` nor `worker`, so the plain `cicada` binary never serves.
+- The store from `--store` or `CICADA_STORE`: `postgres://…` or `postgresql://…`, `sqlite:FILE`, or the path of a
+  SQLite file. Another value with `://`, or one that starts with `postgres:`, is refused and never printed, as it may
+  hold a password. `--store-schema`, `--store-pool-size` (by default the larger of 20 and the concurrency plus 4) and
+  `--retention`, each with a variable `CICADA_…`. On PostgreSQL, `serve` and `worker` wait up to 60 s for a store that
+  answers "unavailable". The stores are the features `sqlite` and `postgres` of `cicada-app`, none on by default; a
+  store whose feature the binary was built without fails the command and names the feature.
+- `serve` listens on `127.0.0.1:8080` unless `--listen` (`CICADA_LISTEN`) says otherwise: `App` has no
+  authentication of its own. `--types` (`CICADA_TYPES`) picks the types of a node: `all`, type names with commas, or
+  for `serve` `none`. The settings of the node have a flag and a variable each (`--node-id`, `--concurrency`,
+  `--lease-ttl`, `--heartbeat-interval`, `--poll-interval`, `--shutdown-grace-period`, `--max-turn`,
+  `--max-lost-claims`); a flag wins over its variable, the variable over `App::node_config`, and that over the default.
+  A duration is `250ms`, `5s`, `7d` or ISO 8601.
+- `App::http` lets the host change the HTTP side (its layer, its routes); `/ready` is answered outside its router.
+  `App::on_start` runs after the node started; its error stops the node and fails the command. `App::observe` adds an
+  observer, `App::version` sets what `--version` prints (`cicada-app <version>` without it; the plain binary prints
+  `cicada <version>`).
+- `serve` starts in order (the store, the address, the routes, the node, `on_start`, then `Listening on
+  http://<address>` on the output) and stops in good order: the node first, while the API keeps answering and `/ready`
+  answers `503`, then the HTTP server, whose requests still open get 5 s before they are cut off, then the store.
+  `serve` and `worker` refuse `--context`, `--server`, `--token` and `-o`, so that `serve --token` cannot look like
+  protection. `run` sets up logging and watches SIGTERM and SIGINT only for `serve` and `worker`; `run_async` does the
+  same on the caller's runtime, and `run_with` takes the arguments, the environment, the output and the stop from its
+  caller. `node_command` says whether arguments would start a node.
+- CI checks `cicada-app` with no feature and with each feature alone, runs `cargo test -p cicada-app` (without the
+  terminal UI), and checks that it builds neither `ratatui` nor `crossterm` without `tui`.
+- `cicada-app` depends on `http-body` (already in the tree through axum) and turns on clap's feature `string`.
+- ADR 0027 records where the app layer departs from ADR 0018 and the names of its flags and variables.
+
+### Fixed
+
+- `cicada config` commands write through a config path that is a symlink: the file it points to gets the new text, with
+  mode 0600, a relative link is read from the folder of the link, a target that is not there yet is created, and the
+  link stays a link. They replaced the link with a regular file before.
+
 ## 0.12.0 — 2026-11-12
 
 A breaking release: the schema check at the HTTP door (ADR 0018, ADR 0026). A send and a create over HTTP are checked

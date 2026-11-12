@@ -583,6 +583,7 @@ dependencies = [
  "async-trait",
  "axum",
  "cicada",
+ "cicada-app",
  "cicada-axum",
  "cicada-client",
  "cicada-extras",

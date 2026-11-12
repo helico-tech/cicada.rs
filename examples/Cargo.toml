@@ -22,6 +22,7 @@ anyhow.workspace = true
 cicada = { workspace = true, features = ["sqlite", "postgres"] }
 async-trait.workspace = true
 axum.workspace = true
+cicada-app = { workspace = true, features = ["sqlite", "postgres"] }
 cicada-axum.workspace = true
 cicada-client.workspace = true
 cicada-otel.workspace = true
