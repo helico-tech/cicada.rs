@@ -1,11 +1,12 @@
-//! The actor types of the sample service, in groups selectable with `HOSTED_TYPES`.
+//! The actor types of the sample service, each picked by its name with `--types` (`CICADA_TYPES`), and the singletons
+//! a node creates for the types it hosts.
 
 use std::sync::Arc;
 
 use cicada::actor::{DefinitionError, contract_of};
 use cicada::contract::Contract;
-use cicada::runtime::ActorSystemBuilder;
 use cicada::{Actor, ActorAddress, ActorRef, ActorType, NoState};
+use cicada_app::App;
 use cicada_examples::cron::CronJobActor;
 use cicada_examples::fanout::{BatchActor, BatchItemActor};
 use cicada_examples::registry::{DeviceActor, DeviceRegistry, DeviceRegistryActor, RegistryState};
@@ -22,15 +23,11 @@ use serde_json::Value;
 use crate::e2e::{CounterActor, EffectLog, FlakyActor, RecorderActor, SlowActor};
 use crate::fakes::Fakes;
 
-/// All group names, in catalog order.
-pub const GROUPS: [&str; 11] =
-    ["singleton", "timer", "cron", "reply", "saga", "steps", "fanout", "registry", "supervision", "sync", "e2e"];
-
 /// One actor type of the catalog, with its generic parameters erased.
 pub struct CatalogType {
     type_name: &'static str,
     contract: fn() -> Result<Contract, DefinitionError>,
-    host: Box<dyn Fn(ActorSystemBuilder) -> ActorSystemBuilder + Send + Sync>,
+    add: Box<dyn Fn(App) -> App + Send + Sync>,
 }
 
 impl CatalogType {
@@ -40,7 +37,7 @@ impl CatalogType {
         Self {
             type_name: <A::Ref as ActorRef>::TYPE,
             contract: contract_of::<A>,
-            host: Box::new(move |builder| builder.host(ActorType::shared(actor.clone()))),
+            add: Box::new(move |app| app.host(ActorType::shared(actor.clone()))),
         }
     }
 
@@ -54,9 +51,9 @@ impl CatalogType {
         (self.contract)()
     }
 
-    /// Hosts this type on the node `builder` builds.
-    pub fn host(&self, builder: ActorSystemBuilder) -> ActorSystemBuilder {
-        (self.host)(builder)
+    /// `app` with this type added.
+    pub fn add_to(&self, app: App) -> App {
+        (self.add)(app)
     }
 }
 
@@ -66,7 +63,7 @@ impl std::fmt::Debug for CatalogType {
     }
 }
 
-/// A singleton the node creates at start when it hosts its group (create is idempotent, so every node may).
+/// A singleton the node creates at start when it hosts its type (create is idempotent, so every node may).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Singleton {
     /// Its address.
@@ -84,11 +81,11 @@ impl Singleton {
     }
 }
 
-/// The actor types of the sample service per group, and the singletons per group.
+/// The actor types of the sample service, and their singletons.
 #[derive(Debug)]
 pub struct Catalog {
-    groups: Vec<(&'static str, Vec<CatalogType>)>,
-    singletons: Vec<(&'static str, Vec<Singleton>)>,
+    types: Vec<CatalogType>,
+    singletons: Vec<Singleton>,
 }
 
 impl Catalog {
@@ -99,84 +96,45 @@ impl Catalog {
 
     /// The catalog with the given fakes.
     pub fn with_fakes(node_id: &str, effects: EffectLog, fakes: Fakes) -> Self {
-        let groups = vec![
-            ("singleton", vec![CatalogType::of(CleanupActor { files: fakes.temp_files })]),
-            ("timer", vec![CatalogType::of(CheckoutActor)]),
-            ("cron", vec![CatalogType::of(CronJobActor { task: fakes.cron_task })]),
-            ("reply", vec![CatalogType::of(PricingActor { prices: fakes.price_list }), CatalogType::of(CartActor)]),
-            (
-                "saga",
-                vec![
-                    CatalogType::of(OrderActor),
-                    CatalogType::of(InventoryActor),
-                    CatalogType::of(PaymentsActor { gateway: fakes.payment_gateway }),
-                ],
-            ),
-            ("steps", vec![CatalogType::of(OnboardingActor { services: fakes.onboarding })]),
-            (
-                "fanout",
-                vec![CatalogType::of(BatchActor), CatalogType::of(BatchItemActor { processor: fakes.item_processor })],
-            ),
-            ("registry", vec![CatalogType::of(DeviceRegistryActor), CatalogType::of(DeviceActor)]),
-            ("supervision", vec![CatalogType::of(DeadLettersActor::default())]),
-            ("sync", vec![CatalogType::of(SyncActor { api: fakes.sync_api }), CatalogType::of(ReportsActor)]),
-            (
-                "e2e",
-                vec![
-                    CatalogType::of(SlowActor::new(node_id, effects.clone())),
-                    CatalogType::of(CounterActor::new(node_id)),
-                    CatalogType::of(RecorderActor::new(node_id, effects)),
-                    CatalogType::of(FlakyActor),
-                ],
-            ),
+        let types = vec![
+            CatalogType::of(CleanupActor { files: fakes.temp_files }),
+            CatalogType::of(CheckoutActor),
+            CatalogType::of(CronJobActor { task: fakes.cron_task }),
+            CatalogType::of(PricingActor { prices: fakes.price_list }),
+            CatalogType::of(CartActor),
+            CatalogType::of(OrderActor),
+            CatalogType::of(InventoryActor),
+            CatalogType::of(PaymentsActor { gateway: fakes.payment_gateway }),
+            CatalogType::of(OnboardingActor { services: fakes.onboarding }),
+            CatalogType::of(BatchActor),
+            CatalogType::of(BatchItemActor { processor: fakes.item_processor }),
+            CatalogType::of(DeviceRegistryActor),
+            CatalogType::of(DeviceActor),
+            CatalogType::of(DeadLettersActor::default()),
+            CatalogType::of(SyncActor { api: fakes.sync_api }),
+            CatalogType::of(ReportsActor),
+            CatalogType::of(SlowActor::new(node_id, effects.clone())),
+            CatalogType::of(CounterActor::new(node_id)),
+            CatalogType::of(RecorderActor::new(node_id, effects)),
+            CatalogType::of(FlakyActor),
         ];
         let singletons = vec![
-            ("singleton", vec![Singleton::of(&Cleanup, &NoState {})]),
-            ("reply", vec![Singleton::of(&Pricing, &NoState {})]),
-            ("saga", vec![Singleton::of(&Payments, &NoState {})]),
-            ("registry", vec![Singleton::of(&DeviceRegistry, &RegistryState::default())]),
-            ("supervision", vec![Singleton::of(&DeadLetters, &DeadLettersState::default())]),
+            Singleton::of(&Cleanup, &NoState {}),
+            Singleton::of(&Pricing, &NoState {}),
+            Singleton::of(&Payments, &NoState {}),
+            Singleton::of(&DeviceRegistry, &RegistryState::default()),
+            Singleton::of(&DeadLetters, &DeadLettersState::default()),
         ];
-        Self { groups, singletons }
+        Self { types, singletons }
     }
 
-    /// The types of the `selected` groups, in catalog order.
-    pub fn types(&self, selected: &[String]) -> Vec<&CatalogType> {
-        self.groups.iter().filter(|(name, _)| selected.iter().any(|s| s == name)).flat_map(|(_, types)| types).collect()
+    /// Every type, in catalog order.
+    pub fn types(&self) -> &[CatalogType] {
+        &self.types
     }
 
-    /// The singletons of the `selected` groups, in the order of `selected`.
-    pub fn singletons(&self, selected: &[String]) -> Vec<&Singleton> {
-        selected
-            .iter()
-            .flat_map(|group| self.singletons.iter().filter(move |(name, _)| name == group))
-            .flat_map(|(_, singletons)| singletons)
-            .collect()
+    /// Every singleton; a node creates those of the types it hosts.
+    pub fn singletons(&self) -> &[Singleton] {
+        &self.singletons
     }
-}
-
-/// Parses `HOSTED_TYPES`: `all`, `none` (a send-only node), or a comma-separated list of [`GROUPS`]. The result keeps
-/// the given order, without duplicates.
-pub fn parse_groups(value: &str) -> Result<Vec<String>, String> {
-    let value = value.trim().to_lowercase();
-    match value.as_str() {
-        "all" => return Ok(GROUPS.iter().map(|g| (*g).to_owned()).collect()),
-        "none" | "" => return Ok(Vec::new()),
-        _ => {}
-    }
-    let mut groups: Vec<String> = Vec::new();
-    for group in value.split(',').map(str::trim).filter(|g| !g.is_empty()) {
-        if !groups.iter().any(|g| g == group) {
-            groups.push(group.to_owned());
-        }
-    }
-    let unknown: Vec<&str> = groups.iter().map(String::as_str).filter(|g| !GROUPS.contains(g)).collect();
-    if !unknown.is_empty() {
-        return Err(format!(
-            "HOSTED_TYPES: unknown group(s) [{}]; known: all, none, {}",
-            unknown.join(", "),
-            GROUPS.join(", ")
-        ));
-    }
-    Ok(groups)
 }

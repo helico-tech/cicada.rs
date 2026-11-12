@@ -11,10 +11,9 @@ publish.workspace = true
 anyhow.workspace = true
 axum.workspace = true
 chrono.workspace = true
-# Every feature of cicada-app, so that a build of the workspace has the terminal UI and both stores on.
+cicada.workspace = true
+# Both stores, and the terminal UI so that a build of the workspace has every feature of cicada-app on.
 cicada-app = { workspace = true, features = ["sqlite", "postgres", "tui"] }
-cicada = { workspace = true, features = ["sqlite", "postgres"] }
-cicada-axum.workspace = true
 cicada-examples.workspace = true
 cicada-extras.workspace = true
 cicada-otel.workspace = true
@@ -29,9 +28,9 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 
 [dev-dependencies]
+cicada-axum.workspace = true
 cicada-client.workspace = true
 cicada-test.workspace = true
 reqwest.workspace = true

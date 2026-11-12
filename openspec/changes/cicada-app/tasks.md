@@ -31,7 +31,7 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
       value", "The host's value over the default", "The limit of lost claims is turned off", "A value that cannot
       be read", "A list", "None", "A type the binary does not have", "An empty name and a name twice", "A type
       called `all`" and "A worker that hosts nothing".
-- [ ] 2.2 `serve`, `worker` and the entry points [1, 2, 6, 7, 8, 9]: `App` with `host`, `observe`, `node_config`,
+- [x] 2.2 `serve`, `worker` and the entry points [1, 2, 6, 7, 8, 9]: `App` with `host`, `observe`, `node_config`,
       `http`, `on_start`, `version`, `run`, `run_async` and `run_with`; `AppError`; `node_command`; the order of the
       start; `/ready` outside the host's router; the stop, with signals watched only for `serve` and `worker`; the
       wait for the store as a loop over a function that opens it; the refusal of the operator flags; no `serve` and
@@ -45,16 +45,18 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
       of the plain binary", "No serve without types", "Help", "A command line that cannot be read", "Whether a node
       runs" and "A host with an async main"; on virtual time, with a function that fails, "The database comes up
       late" and "The database stays away"; and with `CICADA_PG_URL` set, one test that `worker` handles a message
-      on PostgreSQL.
+      on PostgreSQL. Built: "A request that stays open" is a unit test of the inner function with a wait of 300 ms;
+      "A host with an async main" needs a process and a signal, so it is a test of the sample service (3.1), whose
+      binary is such a host: it serves, and SIGTERM ends it with exit code 0.
 
 ## 3. The sample service
 
-- [ ] 3.1 The sample on `App` [12]: its `main` on `run_async`, its types picked by `--types`, the node id it reads
+- [x] 3.1 The sample on `App` [12]: its `main` on `run_async`, its types picked by `--types`, the node id it reads
       itself and checks in `on_start`, its routes and token through `http`, its singleton actors and its watcher in
       `on_start`, telemetry only for a node, `GET /` without the store, and the refusal of its old variables.
       Verify: the tests of the sample service pass, with a test that an old variable stops the start and that the
       error names the new one.
-- [ ] 3.2 The image and the end-to-end suite [12]: the Dockerfile (the entry point runs `serve`, the variables, the
+- [x] 3.2 The image and the end-to-end suite [12]: the Dockerfile (the entry point runs `serve`, the variables, the
       health check on the port of `CICADA_LISTEN`), the compose files, the code that starts single nodes, and the
       tests that read `GET /`. Verify: `cargo test -p cicada-e2e --no-run` passes; the suite runs in 6.2.
 

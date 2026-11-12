@@ -71,7 +71,7 @@ impl fmt::Display for RawResponse {
 /// One sample node, reachable on the host at `localhost:<port>`.
 #[derive(Debug, Clone)]
 pub struct Node {
-    /// The node id (`NODE_ID`), which is also its compose service or container name.
+    /// The node id (`CICADA_NODE_ID`), which is also its compose service or container name.
     pub id: String,
     /// The host port.
     pub port: u16,

@@ -15,7 +15,8 @@ use reqwest::Method;
 use crate::secs;
 
 const TOKEN: &str = "e2e-secret";
-const TIMINGS: [(&str, &str); 3] = [("LEASE_TTL", "5s"), ("POLL_INTERVAL", "200ms"), ("SHUTDOWN_GRACE_PERIOD", "5s")];
+const TIMINGS: [(&str, &str); 3] =
+    [("CICADA_LEASE_TTL", "5s"), ("CICADA_POLL_INTERVAL", "200ms"), ("CICADA_SHUTDOWN_GRACE_PERIOD", "5s")];
 
 pub fn class() -> Class {
     Class {
@@ -36,7 +37,7 @@ pub fn class() -> Class {
 fn sqlite() -> &'static SingleNode {
     static NODE: OnceLock<SingleNode> = OnceLock::new();
     NODE.get_or_init(|| {
-        let env: Vec<_> = TIMINGS.into_iter().chain([("NODE_ID", "sqlite-1")]).collect();
+        let env: Vec<_> = TIMINGS.into_iter().chain([("CICADA_NODE_ID", "sqlite-1")]).collect();
         SingleNode::new(SINGLE_CONTAINERS[0], 9090, &env, Some(SQLITE_VOLUME), None)
     })
 }
@@ -45,7 +46,7 @@ fn sqlite() -> &'static SingleNode {
 fn secured() -> &'static SingleNode {
     static NODE: OnceLock<SingleNode> = OnceLock::new();
     NODE.get_or_init(|| {
-        let env: Vec<_> = TIMINGS.into_iter().chain([("NODE_ID", "auth-1"), ("API_TOKEN", TOKEN)]).collect();
+        let env: Vec<_> = TIMINGS.into_iter().chain([("CICADA_NODE_ID", "auth-1"), ("API_TOKEN", TOKEN)]).collect();
         SingleNode::new(SINGLE_CONTAINERS[1], 9091, &env, None, Some(TOKEN))
     })
 }
@@ -82,7 +83,9 @@ async fn health_and_types() {
     let types = node.client.types().await.unwrap();
     let slow = types.iter().find(|t| t.name == "e2e.slow").expect("the slow type");
     assert!(slow.messages.contains_key("Sleep"));
-    assert!(node.get("/").await.body.contains("sqlite"));
+    let root = node.get("/").await;
+    assert_eq!(root.text("/node").as_deref(), Some("sqlite-1"), "{root}");
+    assert!(root.body.contains("\"e2e.slow\""), "GET / names the hosted types: {root}");
 }
 
 async fn state_pending_messages_and_an_in_flight_turn_survive_a_container_restart() {

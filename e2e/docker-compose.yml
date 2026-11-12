@@ -4,9 +4,10 @@
 #   docker compose -f e2e/docker-compose.yml down -v
 #
 # Ports on the host: node-1 9081, node-2 9082, node-3 9083, send-only node 9084,
-# PostgreSQL 25432. Fault-test timings are short and can be overridden from the shell: LEASE_TTL (default 5s;
-# heartbeat = TTL/3), POLL_INTERVAL (200ms), SHUTDOWN_GRACE_PERIOD (5s), API_TOKEN (unset = no auth). How to drive
-# fault scenarios by hand: e2e/README.md.
+# PostgreSQL 25432. The nodes run `serve` (the entry point of the image) with the variables of cicada-app; the image
+# sets CICADA_LISTEN=0.0.0.0:8080. Fault-test timings are short and can be overridden from the shell: LEASE_TTL
+# (default 5s; heartbeat = TTL/3), POLL_INTERVAL (200ms), SHUTDOWN_GRACE_PERIOD (5s), API_TOKEN (unset = no auth). How
+# to drive fault scenarios by hand: e2e/README.md.
 name: cicada-rs-e2e
 
 x-node: &node
@@ -20,11 +21,11 @@ x-node: &node
     postgres:
       condition: service_healthy
   environment: &node-env
-    DATABASE_URL: postgres://actors:actors@postgres:5432/actors
-    HOSTED_TYPES: all
-    LEASE_TTL: ${LEASE_TTL:-5s}
-    POLL_INTERVAL: ${POLL_INTERVAL:-200ms}
-    SHUTDOWN_GRACE_PERIOD: ${SHUTDOWN_GRACE_PERIOD:-5s}
+    CICADA_STORE: postgres://actors:actors@postgres:5432/actors
+    CICADA_TYPES: all
+    CICADA_LEASE_TTL: ${LEASE_TTL:-5s}
+    CICADA_POLL_INTERVAL: ${POLL_INTERVAL:-200ms}
+    CICADA_SHUTDOWN_GRACE_PERIOD: ${SHUTDOWN_GRACE_PERIOD:-5s}
     FAILURE_WATCHER_INTERVAL: 2s
     API_TOKEN: ${API_TOKEN:-}
 
@@ -49,7 +50,7 @@ services:
     <<: *node
     environment:
       <<: *node-env
-      NODE_ID: node-1
+      CICADA_NODE_ID: node-1
     ports:
       - "9081:8080"
 
@@ -57,7 +58,7 @@ services:
     <<: *node
     environment:
       <<: *node-env
-      NODE_ID: node-2
+      CICADA_NODE_ID: node-2
     ports:
       - "9082:8080"
 
@@ -65,7 +66,7 @@ services:
     <<: *node
     environment:
       <<: *node-env
-      NODE_ID: node-3
+      CICADA_NODE_ID: node-3
     ports:
       - "9083:8080"
 
@@ -74,8 +75,8 @@ services:
     <<: *node
     environment:
       <<: *node-env
-      NODE_ID: send-only
-      HOSTED_TYPES: none
+      CICADA_NODE_ID: send-only
+      CICADA_TYPES: none
     depends_on:
       node-1:
         condition: service_healthy

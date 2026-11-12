@@ -31,23 +31,28 @@ COPY --from=build /usr/local/bin/cicada-sample-service /usr/local/bin/cicada-sam
 USER cicada
 WORKDIR /data
 
-# SHUTDOWN_GRACE_PERIOD: on `docker stop` the node lets running turns finish for this long, then cancels the rest
-# (up to 5 s more) and releases their leases; the HTTP server stops accepting requests first. The library default
-# (30 s) does not fit in the 10 s `docker stop` waits by default before it kills the process (and its leases then expire
-# instead of being released), so the image defaults to 3 s. For longer turns raise both: e.g.
-# SHUTDOWN_GRACE_PERIOD=30s with `docker stop -t 45` / `docker run --stop-timeout 45` / compose `stop_grace_period: 45s`.
-ENV PORT=8080 \
-    SQLITE_PATH=/data/actors.db \
-    SHUTDOWN_GRACE_PERIOD=3s \
+# CICADA_SHUTDOWN_GRACE_PERIOD: on `docker stop` the node stops claiming and lets running turns finish for this long
+# while the API still answers, then cancels the rest (up to 5 s more) and releases their leases; then the HTTP server
+# stops. The library default (30 s) does not fit in the 10 s `docker stop` waits by default before it kills the
+# process (and its leases then expire instead of being released), so the image defaults to 3 s. For longer turns raise
+# both: e.g. CICADA_SHUTDOWN_GRACE_PERIOD=30s with `docker stop -t 45` / `docker run --stop-timeout 45` / compose
+# `stop_grace_period: 45s`. CICADA_LISTEN opens the API to every network of the container: `serve` listens on the
+# loopback address unless told otherwise. It is set here and not in a compose file, because the end-to-end suite also
+# starts nodes with `docker run`. CICADA_STORE is the SQLite file on the volume; set it to a postgres:// address for
+# PostgreSQL.
+ENV CICADA_LISTEN=0.0.0.0:8080 \
+    CICADA_STORE=/data/actors.db \
+    CICADA_SHUTDOWN_GRACE_PERIOD=3s \
     RUST_LOG=info,sqlx=warn
 EXPOSE 8080
 VOLUME /data
 
-# GET /ready is public (actor_health()), so the check needs no token.
+# GET /ready is public (App answers it outside the host's router), so the check needs no token. It asks the port of
+# CICADA_LISTEN.
 HEALTHCHECK --interval=5s --timeout=3s --start-period=30s --retries=5 \
-  CMD curl -fsS "http://localhost:${PORT}/ready" > /dev/null || exit 1
+  CMD curl -fsS "http://localhost:${CICADA_LISTEN##*:}/ready" > /dev/null || exit 1
 
-# The binary is PID 1 and handles SIGTERM: the node stops gracefully (no new claims, running turns finish within
-# SHUTDOWN_GRACE_PERIOD, leases released).
+# The binary is PID 1 and handles SIGTERM: the node stops in good order (no new claims, running turns finish within
+# CICADA_SHUTDOWN_GRACE_PERIOD, leases released), then the HTTP server.
 STOPSIGNAL SIGTERM
-ENTRYPOINT ["/usr/local/bin/cicada-sample-service"]
+ENTRYPOINT ["/usr/local/bin/cicada-sample-service", "serve"]

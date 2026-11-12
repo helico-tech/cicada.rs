@@ -3,8 +3,9 @@
 The sample service (`sample-service`) in Docker, driven over HTTP only:
 
 - `docker-compose.yml` — compose project `cicada-rs-e2e`: PostgreSQL 18 (host port 25432), `node-1`..`node-3` hosting
-  every type (9081–9083) and a send-only node (9084), all from the image `cicada-rs-sample:e2e`. `LEASE_TTL=5s`,
-  `POLL_INTERVAL=200ms`, `SHUTDOWN_GRACE_PERIOD=5s`.
+  every type (9081–9083) and a send-only node (9084, `CICADA_TYPES=none`), all from the image `cicada-rs-sample:e2e`,
+  whose entry point runs `serve`. `CICADA_LEASE_TTL=5s`, `CICADA_POLL_INTERVAL=200ms`,
+  `CICADA_SHUTDOWN_GRACE_PERIOD=5s`.
 - `tests/suite/` — the automated suite (fault tests and E2E) against that stack,
   plus single SQLite nodes started with `docker run` (9090, and 9091 with `API_TOKEN`). One module per test
   class; `src/` is the harness (docker CLI, nodes, polling, ordering checks, the suite runner).
@@ -59,7 +60,8 @@ curl -s localhost:9084/messages/<id>                                       # lat
 docker compose -f e2e/docker-compose.yml up -d --wait                      # bring node-2 back (unpause for pause)
 ```
 
-Shorter or longer timings: `LEASE_TTL=10s docker compose -f e2e/docker-compose.yml up -d --wait`.
+Shorter or longer timings: `LEASE_TTL=10s docker compose -f e2e/docker-compose.yml up -d --wait` (the compose file
+passes the variable of the shell on as `CICADA_LEASE_TTL`; so do `POLL_INTERVAL` and `SHUTDOWN_GRACE_PERIOD`).
 
 ## Telemetry
 

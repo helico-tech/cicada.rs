@@ -6,7 +6,8 @@
 #   docker compose -f e2e/docker-compose.yml -f e2e/docker-compose.otel.yml down -v
 #
 # Ports on the host besides the E2E ones: Grafana 3001, OTLP HTTP 4328 (for a node run with
-# `cargo run -p cicada-sample-service` and OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4328). The sample service exports over HTTP/protobuf only.
+# `cargo run -p cicada-sample-service -- serve --store actors.db` and OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4328).
+# The sample service exports over HTTP/protobuf only.
 x-otel-env: &otel-env
   OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4318
   OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf

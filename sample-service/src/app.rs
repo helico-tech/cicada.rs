@@ -1,215 +1,142 @@
-//! The sample node: an [`ActorSystem`] on PostgreSQL (`DATABASE_URL`) or SQLite, hosting the example groups selected by
-//! `HOSTED_TYPES`, and its HTTP routes.
+//! The sample node on `cicada-app`: every type of the [`Catalog`], picked with `--types`, its routes and its bearer
+//! token through `App::http`, and its singletons and failure watcher through `App::on_start`.
 
-use std::future::Future;
-use std::sync::Arc;
+use std::ffi::OsString;
+use std::sync::{Arc, Mutex, PoisonError};
 
-use anyhow::Context;
 use axum::Router;
 use axum::extract::{Query, Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::get;
-use cicada::Store;
 use cicada::runtime::NodeConfig;
-use cicada::store::{NodeId, PostgresOptions, SqliteOptions};
-use cicada::{ActorSystem, CreateActorResult};
-use cicada_axum::{actor_api, actor_health};
-use cicada_extras::FailureWatcher;
+use cicada::store::NodeId;
+use cicada::{ActorRef, ActorSystem, CreateActorResult};
+use cicada_app::{App, Env, node_command};
+use cicada_extras::{DeadLetters, FailureWatcher};
 use serde::{Deserialize, Serialize};
-use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 
-use crate::catalog::Catalog;
-use crate::config::SampleConfig;
+use crate::catalog::{Catalog, Singleton};
+use crate::config::{ConfigError, SampleConfig, node_id, refuse_old_variables};
 use crate::e2e::EffectLog;
-use crate::telemetry::Telemetry;
 
 /// What `GET /` answers: which node this is and what it hosts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeInfo {
     /// The node id.
     pub node: String,
-    /// The hosted groups.
-    pub groups: Vec<String>,
     /// The type names of the hosted types.
     pub types: Vec<String>,
-    /// The store, e.g. `sqlite (actors.db)`.
-    pub store: String,
 }
 
-/// A running sample node: the actor system on its store, the failure watcher when it hosts `supervision`, and the
-/// telemetry providers when export is configured. [`Self::router`] serves it over HTTP; [`Self::shutdown`] stops it.
+/// The sample node: its `App`, and the failure watcher that its `on_start` may start.
 #[derive(Debug)]
-pub struct SampleNode {
-    system: ActorSystem,
-    store: Store,
-    info: NodeInfo,
-    effects: EffectLog,
-    api_token: Option<String>,
-    watcher: Option<JoinHandle<()>>,
-    telemetry: Option<Telemetry>,
+pub struct Sample {
+    /// The binary, ready to run.
+    pub app: App,
+    /// The failure watcher, once started; abort it when the run of `app` returned.
+    pub watcher: Watcher,
 }
 
-impl SampleNode {
-    /// Opens the store, starts the node with the hosted types, creates the hosted singletons (create is idempotent;
-    /// every node hosting the group does it) and starts the failure watcher when the node hosts `supervision`.
-    pub async fn start(config: &SampleConfig) -> anyhow::Result<Self> {
-        let node_id = config.node_id.clone().map(NodeId::new).transpose().map_err(anyhow::Error::msg)?;
-        let node_id = node_id.unwrap_or_else(NodeId::random);
+/// The failure watcher of a node that hosts the dead letters.
+#[derive(Debug, Clone, Default)]
+pub struct Watcher(Arc<Mutex<Option<JoinHandle<()>>>>);
+
+impl Watcher {
+    fn set(&self, handle: JoinHandle<()>) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(handle);
+    }
+
+    /// Stops the watcher, when it was started.
+    pub fn abort(&self) {
+        if let Some(handle) = self.0.lock().unwrap_or_else(PoisonError::into_inner).take() {
+            handle.abort();
+        }
+    }
+}
+
+impl Sample {
+    /// The sample node for the arguments `args` of the process and its variables `env`. For a node command
+    /// (`serve`, `worker`) a variable the sample read before 0.13.0 is refused ([`refuse_old_variables`]).
+    ///
+    /// Its actors record the node id when they are built, before the node exists, so it reads `CICADA_NODE_ID` itself
+    /// and passes it to `App` in `node_config`; `on_start` fails when the node runs under another id (`--node-id`).
+    pub fn new(args: &[OsString], env: &Env) -> Result<Self, ConfigError> {
+        if node_command(args) {
+            refuse_old_variables(env)?;
+        }
+        let config = SampleConfig::from_vars(env)?;
+        let node_id = node_id(env);
         let effects = EffectLog::new();
         let catalog = Catalog::new(node_id.as_str(), effects.clone());
-        let hosted = catalog.types(&config.groups);
-        let telemetry = if config.telemetry { Some(Telemetry::from_env().context("OpenTelemetry")?) } else { None };
-        let store = open_store(config).await?;
-
-        let defaults = NodeConfig::default();
-        let node = NodeConfig {
-            node_id: node_id.clone(),
-            lease_ttl: config.lease_ttl.unwrap_or(defaults.lease_ttl),
-            heartbeat_interval: config.heartbeat_interval,
-            poll_interval: config.poll_interval.unwrap_or(defaults.poll_interval),
-            shutdown_grace_period: config.shutdown_grace_period.unwrap_or(defaults.shutdown_grace_period),
-            default_max_turn: config.default_max_turn.unwrap_or(defaults.default_max_turn),
-            concurrency: config.concurrency.unwrap_or(defaults.concurrency),
-            ..defaults
-        };
-        let mut builder = ActorSystem::builder(store.clone()).config(node);
-        for t in &hosted {
-            builder = t.host(builder);
+        let mut app = App::new()
+            .version(concat!("cicada-sample-service ", env!("CARGO_PKG_VERSION")))
+            .node_config(NodeConfig { node_id: node_id.clone(), ..NodeConfig::default() });
+        for t in catalog.types() {
+            app = t.add_to(app);
         }
-        if let Some(t) = &telemetry {
-            builder = builder.observe(t.observer());
-        }
-        let system = builder.build();
-        let started = async {
-            system.start().await?;
-            for singleton in catalog.singletons(&config.groups) {
-                let result = system.create_actor(&singleton.address, singleton.initial_state.clone()).await?;
-                if !matches!(result, CreateActorResult::Created | CreateActorResult::Exists(_)) {
-                    anyhow::bail!("Cannot create {}: {result:?}", singleton.address);
-                }
-            }
-            anyhow::Ok(())
-        };
-        if let Err(e) = started.await {
-            system.stop().await;
-            store.close().await;
-            if let Some(t) = telemetry {
-                t.shutdown().await;
-            }
-            return Err(e);
-        }
-        let watcher = config
-            .groups
-            .iter()
-            .any(|g| g == "supervision")
-            .then(|| FailureWatcher::new(system.clone()).start(config.failure_watcher_interval));
-
-        let types: Vec<String> = hosted.iter().map(|t| t.type_name().to_owned()).collect();
-        let info = NodeInfo {
-            node: node_id.as_str().to_owned(),
-            groups: config.groups.clone(),
-            types,
-            store: config.store_description(),
-        };
-        let hosting = if info.groups.is_empty() { "nothing (send-only)".to_owned() } else { info.groups.join(", ") };
-        tracing::info!("Sample node {}: hosting {hosting} on {}", info.node, info.store);
-        Ok(Self { system, store, info, effects, api_token: config.api_token.clone(), watcher, telemetry })
-    }
-
-    /// The actor system.
-    pub fn system(&self) -> &ActorSystem {
-        &self.system
-    }
-
-    /// What `GET /` answers.
-    pub fn info(&self) -> &NodeInfo {
-        &self.info
-    }
-
-    /// This node's log of the E2E actors' side effects.
-    pub fn effects(&self) -> &EffectLog {
-        &self.effects
-    }
-
-    /// The node's routes besides those of `actor_api()`, which are mounted at the root:
-    ///
-    /// - `GET /`: [`NodeInfo`], without authentication;
-    /// - `GET /ready`: readiness, without authentication, for container and Kubernetes probes;
-    /// - `GET /e2e/effects[?actor=<address>]`: this node's in-memory [`EffectLog`].
-    ///
-    /// With an API token the API and `/e2e/effects` require `Authorization: Bearer <token>`.
-    pub fn router(&self) -> Router {
-        let info = self.info.clone();
-        let effects = self.effects.clone();
-        let mut protected = actor_api(self.system.clone()).route("/e2e/effects", get(list_effects).with_state(effects));
-        if let Some(token) = &self.api_token {
-            let token: Arc<[u8]> = token.as_bytes().into();
-            protected = protected.layer(middleware::from_fn_with_state(token, require_bearer));
-        }
-        Router::new()
-            .route("/", get(move || async move { Json(info.clone()) }))
-            .merge(actor_health(self.system.clone(), "/ready"))
-            .merge(protected)
-    }
-
-    /// Stops the node: the failure watcher, then the actor system (no new claims; running turns get the shutdown grace
-    /// period, then their leases are released), then the store, then the telemetry providers (flushed).
-    pub async fn shutdown(self) {
-        if let Some(watcher) = self.watcher {
-            watcher.abort();
-        }
-        self.system.stop().await;
-        self.store.close().await;
-        if let Some(t) = self.telemetry {
-            t.shutdown().await;
-        }
-        tracing::info!("Sample node {} stopped", self.info.node);
+        let token = config.api_token.clone();
+        let watcher = Watcher::default();
+        let started = watcher.clone();
+        let singletons = catalog.singletons().to_vec();
+        let interval = config.failure_watcher_interval;
+        let app = app
+            .http(move |api, system| routes(api, system, effects, token))
+            .on_start(move |system| async move { start(system, node_id, singletons, interval, started).await });
+        Ok(Self { app, watcher })
     }
 }
 
-/// Serves `node` on `listener` until `shutdown` completes, then stops accepting requests, lets the open ones finish,
-/// and stops the node ([`SampleNode::shutdown`]).
-pub async fn serve(
-    node: SampleNode,
-    listener: TcpListener,
-    shutdown: impl Future<Output = ()> + Send + 'static,
+/// The work after the start: the node id check, the singletons of the hosted types, and the failure watcher when the
+/// node hosts the dead letters.
+async fn start(
+    system: ActorSystem,
+    node_id: NodeId,
+    singletons: Vec<Singleton>,
+    interval: std::time::Duration,
+    watcher: Watcher,
 ) -> anyhow::Result<()> {
-    let served = axum::serve(listener, node.router()).with_graceful_shutdown(shutdown).await;
-    node.shutdown().await;
-    Ok(served?)
+    if system.node_id() != &node_id {
+        anyhow::bail!(
+            "the node runs as {} while the actors of the sample record {node_id}: set CICADA_NODE_ID, not --node-id",
+            system.node_id()
+        );
+    }
+    let hosted = system.hosted_types();
+    for singleton in singletons.iter().filter(|s| hosted.contains(s.address.type_name())) {
+        let result = system.create_actor(&singleton.address, singleton.initial_state.clone()).await?;
+        if !matches!(result, CreateActorResult::Created | CreateActorResult::Exists(_)) {
+            anyhow::bail!("Cannot create {}: {result:?}", singleton.address);
+        }
+    }
+    if hosted.iter().any(|t| t.as_str() == DeadLetters::TYPE) {
+        watcher.set(FailureWatcher::new(system.clone()).start(interval));
+    }
+    let types: Vec<&str> = hosted.iter().map(|t| t.as_str()).collect();
+    let hosting = if types.is_empty() { "nothing (send-only)".to_owned() } else { types.join(", ") };
+    tracing::info!("Sample node {node_id}: hosting {hosting}");
+    Ok(())
 }
 
-/// How long a node retries an unavailable PostgreSQL store at start before it gives up.
-const STORE_STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
-
-async fn open_store(config: &SampleConfig) -> anyhow::Result<Store> {
-    Ok(match &config.database_url {
-        Some(url) => {
-            let mut store_config = PostgresOptions::for_schema(&config.database_schema);
-            if let Some(size) = config.effective_pool_size() {
-                store_config.max_pool_size = size;
-            }
-            // The database may still be starting when the node starts (a whole stack started or restarted at once,
-            // where even its host name may not resolve yet): an unavailable store is retried for a while instead of
-            // ending the process.
-            let deadline = tokio::time::Instant::now() + STORE_STARTUP_TIMEOUT;
-            loop {
-                match Store::postgres(url, store_config.clone()).await {
-                    Err(e) if e.is_unavailable() && tokio::time::Instant::now() < deadline => {
-                        tracing::warn!("PostgreSQL unavailable, retrying in 1 s: {e}");
-                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                    }
-                    opened => break opened.context("Opening the PostgreSQL store")?,
-                }
-            }
-        }
-        None => Store::sqlite(&config.sqlite_path, SqliteOptions::default())
-            .await
-            .with_context(|| format!("Opening the SQLite store {}", config.sqlite_path.display()))?,
-    })
+/// The node's routes besides those of `actor_api()` (`api`), at the root:
+///
+/// - `GET /`: [`NodeInfo`], without authentication;
+/// - `GET /e2e/effects[?actor=<address>]`: this node's in-memory [`EffectLog`].
+///
+/// With an API token the API and `/e2e/effects` require `Authorization: Bearer <token>`. `GET /ready` is `App`'s.
+fn routes(api: Router, system: &ActorSystem, effects: EffectLog, token: Option<String>) -> Router {
+    let info = NodeInfo {
+        node: system.node_id().as_str().to_owned(),
+        types: system.hosted_types().iter().map(|t| t.as_str().to_owned()).collect(),
+    };
+    let mut protected = api.route("/e2e/effects", get(list_effects).with_state(effects));
+    if let Some(token) = token {
+        let token: Arc<[u8]> = token.as_bytes().into();
+        protected = protected.layer(middleware::from_fn_with_state(token, require_bearer));
+    }
+    Router::new().route("/", get(move || async move { Json(info.clone()) })).merge(protected)
 }
 
 #[derive(Deserialize)]

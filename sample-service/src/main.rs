@@ -1,62 +1,47 @@
-//! Starts the sample node on `0.0.0.0:$PORT`, configured by environment variables (see
-//! `SampleConfig::from_vars`). SIGTERM or SIGINT stops it gracefully: the HTTP server stops accepting requests, then
-//! the node stops claiming, lets running turns finish within the shutdown grace period and releases the leases of the
-//! rest, then the store is closed and telemetry flushed.
+//! The sample node: `cicada-sample-service serve` (or `worker`, or an operator command), configured by the flags and
+//! variables of `cicada-app` and the few of its own (see `SampleConfig::from_vars`). SIGTERM or SIGINT stops a node in
+//! good order: the node stops claiming and lets running turns finish within the grace period while the API still
+//! answers, then the HTTP server stops, the store is closed, the failure watcher stops and telemetry is flushed.
 
+use std::ffi::OsString;
 use std::process::ExitCode;
 
-use cicada_sample_service::{SampleConfig, SampleNode, serve};
-use tokio::net::TcpListener;
-use tracing_subscriber::EnvFilter;
+use cicada_app::{Env, node_command};
+use cicada_sample_service::telemetry::Telemetry;
+use cicada_sample_service::{Sample, SampleConfig};
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,sqlx=warn"));
-    // Colours only on a terminal, not in container logs.
-    let ansi = std::io::IsTerminal::is_terminal(&std::io::stdout());
-    tracing_subscriber::fmt().with_env_filter(filter).with_ansi(ansi).init();
-    match run().await {
-        Ok(()) => ExitCode::SUCCESS,
+    let args: Vec<OsString> = std::env::args_os().collect();
+    let env: Env =
+        std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))).collect();
+    let Sample { app, watcher } = match Sample::new(&args, &env) {
+        Ok(sample) => sample,
         Err(e) => {
-            tracing::error!("{e:#}");
-            ExitCode::FAILURE
-        }
-    }
-}
-
-async fn run() -> anyhow::Result<()> {
-    let config = SampleConfig::from_env()?;
-    tracing::info!("{config:?}");
-    let node = SampleNode::start(&config).await?;
-    let listener = TcpListener::bind(("0.0.0.0", config.port)).await?;
-    tracing::info!("Listening on {}", listener.local_addr()?);
-    serve(node, listener, shutdown_signal()).await
-}
-
-/// Completes on SIGTERM (`docker stop`, Kubernetes) or SIGINT (Ctrl-C).
-async fn shutdown_signal() {
-    let interrupt = async {
-        if let Err(e) = tokio::signal::ctrl_c().await {
-            tracing::warn!("Cannot listen for SIGINT: {e}");
-            std::future::pending::<()>().await;
+            eprintln!("error: {e}");
+            return ExitCode::from(2);
         }
     };
-    #[cfg(unix)]
-    let terminate = async {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut signal) => {
-                signal.recv().await;
-            }
+    let wants_telemetry = SampleConfig::from_vars(&env).is_ok_and(|c| c.telemetry);
+    let telemetry = if node_command(&args) && wants_telemetry {
+        match Telemetry::from_env() {
+            Ok(telemetry) => Some(telemetry),
             Err(e) => {
-                tracing::warn!("Cannot listen for SIGTERM: {e}");
-                std::future::pending::<()>().await;
+                eprintln!("error: OpenTelemetry: {e:#}");
+                return ExitCode::FAILURE;
             }
         }
+    } else {
+        None
     };
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-    tokio::select! {
-        () = interrupt => tracing::info!("SIGINT received; shutting down"),
-        () = terminate => tracing::info!("SIGTERM received; shutting down"),
+    let app = match &telemetry {
+        Some(t) => app.observe(t.observer()),
+        None => app,
+    };
+    let code = app.run_async().await;
+    watcher.abort();
+    if let Some(t) = telemetry {
+        t.shutdown().await;
     }
+    code
 }

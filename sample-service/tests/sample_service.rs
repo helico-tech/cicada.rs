@@ -1,12 +1,17 @@
-//! The sample node over HTTP, on SQLite (and on PostgreSQL when `CICADA_PG_URL` is set).
+//! The sample node over HTTP, run as `App::run_with` runs it, on SQLite (and on PostgreSQL when `CICADA_PG_URL` is
+//! set); and the binary itself, stopped with SIGTERM.
 
+use std::ffi::OsString;
 use std::future::Future;
+use std::io::Write;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use cicada::ActorRef;
 use cicada::api::MessageState;
 use cicada::prelude::*;
+use cicada_app::{AppError, Env};
 use cicada_client::ActorClient;
 use cicada_examples::registry::DeviceRegistry;
 use cicada_examples::saga::{Inventory, InventoryMsg, InventoryState, Order, OrderMsg, OrderState, OrderStatus};
@@ -15,27 +20,47 @@ use cicada_sample_service::e2e::{
     Counter, CounterMsg, CounterState, EffectLog, Flaky, FlakyMsg, FlakyState, Recorder, RecorderMsg, RecorderState,
     Slow, SlowMsg, SlowState, flaky_retry,
 };
-use cicada_sample_service::{Catalog, GROUPS, SampleConfig, SampleNode, serve};
+use cicada_sample_service::{Catalog, OLD_VARIABLES, Sample, SampleConfig, refuse_old_variables};
 use reqwest::StatusCode;
-use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-fn vars(pairs: &[(&str, &str)]) -> std::collections::HashMap<String, String> {
+fn vars(pairs: &[(&str, &str)]) -> Env {
     pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
 }
 
-fn all_groups() -> Vec<String> {
-    GROUPS.iter().map(|g| (*g).to_owned()).collect()
+fn args(list: &[&str]) -> Vec<OsString> {
+    list.iter().map(OsString::from).collect()
 }
 
-fn config(db: &std::path::Path) -> SampleConfig {
-    SampleConfig {
-        node_id: Some("test-node".into()),
-        sqlite_path: db.to_path_buf(),
-        poll_interval: Some(Duration::from_millis(50)),
-        failure_watcher_interval: Duration::from_millis(100),
-        ..SampleConfig::default()
+/// The environment of a node `test-node` on the SQLite file `db`.
+fn env(db: &std::path::Path) -> Env {
+    vars(&[
+        ("CICADA_STORE", &db.display().to_string()),
+        ("CICADA_NODE_ID", "test-node"),
+        ("CICADA_POLL_INTERVAL", "50ms"),
+        ("FAILURE_WATCHER_INTERVAL", "100ms"),
+    ])
+}
+
+/// An output that the test reads while the node writes to it.
+#[derive(Clone, Default)]
+struct Out(Arc<Mutex<Vec<u8>>>);
+
+impl Write for Out {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Out {
+    fn text(&self) -> String {
+        String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
     }
 }
 
@@ -45,31 +70,47 @@ struct Node {
     http: reqwest::Client,
     api: ActorClient,
     stop: Option<oneshot::Sender<()>>,
-    server: Option<JoinHandle<anyhow::Result<()>>>,
+    task: Option<JoinHandle<Result<(), AppError>>>,
+    watcher: cicada_sample_service::Watcher,
 }
 
 impl Node {
-    async fn start(config: &SampleConfig) -> Self {
-        let node = SampleNode::start(config).await.expect("the node starts");
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}", listener.local_addr().unwrap());
+    /// `serve --listen 127.0.0.1:0 <flags>` with `env`.
+    async fn start(env: &Env, flags: &[&str]) -> Self {
+        let mut line = vec!["cicada-sample-service", "serve", "--listen", "127.0.0.1:0"];
+        line.extend(flags);
+        let line = args(&line);
+        let Sample { app, watcher } = Sample::new(&line, env).expect("the sample's variables");
+        let out = Out::default();
         let (stop, stopped) = oneshot::channel::<()>();
-        let server = tokio::spawn(serve(node, listener, async move {
+        let task = tokio::spawn(app.run_with(line, env.clone(), out.clone(), async move {
             let _ = stopped.await;
         }));
-        let http = reqwest::Client::new();
-        let api = ActorClient::with_client(&base, authorized(config.api_token.as_deref()));
-        Self { base, http, api, stop: Some(stop), server: Some(server) }
+        let started = Instant::now();
+        let base = loop {
+            if let Some(l) = out.text().lines().find(|l| l.starts_with("Listening on ")) {
+                break l.trim_start_matches("Listening on ").to_owned();
+            }
+            if task.is_finished() {
+                panic!("the node ended: {:?}", task.await.unwrap());
+            }
+            assert!(started.elapsed() < Duration::from_secs(20), "the node did not listen");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        let token = env.get("API_TOKEN").map(String::as_str);
+        let api = ActorClient::with_client(&base, authorized(token));
+        Self { base, http: reqwest::Client::new(), api, stop: Some(stop), task: Some(task), watcher }
     }
 
     async fn get(&self, path: &str) -> reqwest::Response {
         self.http.get(format!("{}{path}", self.base)).send().await.unwrap()
     }
 
-    /// Stops the server and the node, as SIGTERM does.
+    /// Stops the node, as SIGTERM does.
     async fn stop(mut self) {
         let _ = self.stop.take().unwrap().send(());
-        self.server.take().unwrap().await.unwrap().expect("served until shutdown");
+        self.task.take().unwrap().await.unwrap().expect("served until the stop");
+        self.watcher.abort();
     }
 }
 
@@ -81,9 +122,9 @@ fn authorized(token: Option<&str>) -> reqwest::Client {
     reqwest::Client::builder().default_headers(headers).build().unwrap()
 }
 
-/// Runs `test` against a node on `config`, then stops the node.
-async fn with_node(config: SampleConfig, test: impl AsyncFnOnce(&Node)) {
-    let node = Node::start(&config).await;
+/// Runs `test` against a node on `env`, then stops the node.
+async fn with_node(env: Env, flags: &[&str], test: impl AsyncFnOnce(&Node)) {
+    let node = Node::start(&env, flags).await;
     test(&node).await;
     node.stop().await;
 }
@@ -108,56 +149,53 @@ fn temp_db() -> TempDb {
 }
 
 #[test]
-fn configuration_comes_from_the_environment() {
+fn the_sample_reads_its_own_variables() {
     let config = SampleConfig::from_vars(&vars(&[
-        ("PORT", "9000"),
-        ("NODE_ID", "n1"),
-        ("HOSTED_TYPES", "saga, e2e"),
-        ("DATABASE_URL", "postgres://a:b@db/x"),
-        ("LEASE_TTL", "3s"),
-        ("POLL_INTERVAL", "PT0.1S"),
-        ("CONCURRENCY", "4"),
         ("API_TOKEN", "secret"),
+        ("FAILURE_WATCHER_INTERVAL", "2s"),
+        ("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel:4318"),
     ]))
     .unwrap();
-    assert_eq!(config.port, 9000);
-    assert_eq!(config.groups, ["saga", "e2e"]);
-    assert_eq!(config.lease_ttl, Some(Duration::from_secs(3)));
-    assert_eq!(config.poll_interval, Some(Duration::from_millis(100)));
-    assert_eq!(config.concurrency, Some(4));
-    let shown = format!("{config:?}");
-    assert!(!shown.contains("secret") && !shown.contains("b@db"), "{shown}");
-    assert_eq!(SampleConfig::from_vars(&vars(&[])).unwrap().groups, all_groups());
-    assert!(SampleConfig::from_vars(&vars(&[("HOSTED_TYPES", "none")])).unwrap().groups.is_empty());
-    let unknown = SampleConfig::from_vars(&vars(&[("HOSTED_TYPES", "saga,nope")])).unwrap_err();
-    assert!(unknown.0.contains("unknown group(s) [nope]"), "{unknown}");
-    let invalid = SampleConfig::from_vars(&vars(&[("LEASE_TTL", "soon")])).unwrap_err();
-    assert_eq!(invalid.0, "LEASE_TTL: not a duration: soon");
-    assert_eq!(SampleConfig::from_vars(&vars(&[("PORT", "x")])).unwrap_err().0, "PORT: not a number: x");
+    assert_eq!(config.api_token.as_deref(), Some("secret"));
+    assert_eq!(config.failure_watcher_interval, Duration::from_secs(2));
+    assert!(config.telemetry);
+    assert!(!format!("{config:?}").contains("secret"));
+    assert_eq!(SampleConfig::from_vars(&vars(&[])).unwrap(), SampleConfig::default());
+    let invalid = SampleConfig::from_vars(&vars(&[("FAILURE_WATCHER_INTERVAL", "soon")])).unwrap_err();
+    assert_eq!(invalid.0, "FAILURE_WATCHER_INTERVAL: not a duration: soon");
 }
 
+/// An old variable stops the start of a node, and the error names the new one.
 #[test]
-fn the_postgres_pool_is_never_smaller_than_the_store_default_nor_than_the_concurrency_needs() {
-    // The sample once always set 10, below the default concurrency of 16, starving heartbeats.
-    let pool = |pairs: &[(&str, &str)]| SampleConfig::from_vars(&vars(pairs)).unwrap().effective_pool_size();
-    assert_eq!(pool(&[]), None, "the store's default (20)");
-    assert_eq!(pool(&[("CONCURRENCY", "4")]), Some(20));
-    assert_eq!(pool(&[("CONCURRENCY", "40")]), Some(44));
-    assert_eq!(pool(&[("CONCURRENCY", "40"), ("DATABASE_POOL_SIZE", "7")]), Some(7));
+fn an_old_variable_stops_the_start_and_names_the_new_one() {
+    for (old, new) in OLD_VARIABLES {
+        let error = Sample::new(&args(&["sample", "serve"]), &vars(&[(old, "x")])).unwrap_err();
+        assert!(error.0.contains(&format!("{old} (use {new})")), "{old}: {error}");
+    }
+    let error = refuse_old_variables(&vars(&[("DATABASE_URL", "postgres://u:secret@db/x"), ("HOSTED_TYPES", "none")]));
+    let error = error.unwrap_err().0;
+    assert!(error.contains("DATABASE_URL (use CICADA_STORE)") && error.contains("HOSTED_TYPES (use CICADA_TYPES)"));
+    assert!(!error.contains("secret"), "{error}");
+    assert!(Sample::new(&args(&["sample", "worker"]), &vars(&[("PORT", "8080")])).is_err());
+    assert!(Sample::new(&args(&["sample", "get", "actors"]), &vars(&[("PORT", "8080")])).is_ok(), "not a node");
+    assert!(refuse_old_variables(&vars(&[("PORT", " ")])).is_ok(), "a blank variable is unset");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn all_groups_run_together_on_one_node_singletons_are_created_at_start() {
+async fn every_type_runs_on_one_node_and_the_singletons_are_created_at_start() {
     let db = temp_db();
-    with_node(config(&db.path), async |node| {
+    with_node(env(&db.path), &[], async |node| {
         let api = &node.api;
         assert!(api.health().await.unwrap());
         assert!(api.get(&DeviceRegistry).await.unwrap().is_some());
         assert!(api.get(&DeadLetters).await.unwrap().is_some());
-        let expected = Catalog::new("x", EffectLog::new()).types(&all_groups()).len();
+        let expected = Catalog::new("x", EffectLog::new()).types().len();
         assert_eq!(api.types().await.unwrap().len(), expected);
-        let info = node.get("/").await.text().await.unwrap();
-        assert!(info.contains(r#""node":"test-node""#), "{info}");
+        let info: serde_json::Value = node.get("/").await.json().await.unwrap();
+        assert_eq!(info["node"], "test-node");
+        assert_eq!(info["types"].as_array().unwrap().len(), expected);
+        assert!(info.get("store").is_none() && info.get("groups").is_none(), "{info}");
+        assert_eq!(node.get("/ready").await.status(), StatusCode::OK);
     })
     .await;
 }
@@ -165,7 +203,7 @@ async fn all_groups_run_together_on_one_node_singletons_are_created_at_start() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_saga_runs_over_http() {
     let db = temp_db();
-    with_node(config(&db.path), async |node| {
+    with_node(env(&db.path), &[], async |node| {
         let api = &node.api;
         let apple = Inventory { sku: "apple".into() };
         let order = Order { id: "o1".into() };
@@ -185,7 +223,7 @@ async fn the_saga_runs_over_http() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_e2e_actors_record_node_attempt_and_effects() {
     let db = temp_db();
-    with_node(config(&db.path), async |node| {
+    with_node(env(&db.path), &[], async |node| {
         let api = &node.api;
         let slow = Slow { id: "s".into() };
         let counter = Counter { id: "c".into() };
@@ -233,7 +271,7 @@ async fn the_e2e_actors_record_node_attempt_and_effects() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flaky_messages_are_retried_and_final_failures_reach_the_dead_letters() {
     let db = temp_db();
-    with_node(config(&db.path), async |node| {
+    with_node(env(&db.path), &[], async |node| {
         let api = &node.api;
         let flaky = Flaky { id: "f".into() };
         let retried = SendOptions::new().retry(flaky_retry());
@@ -278,8 +316,9 @@ async fn flaky_messages_are_retried_and_final_failures_reach_the_dead_letters() 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn with_api_token_the_api_requires_the_bearer_token() {
     let db = temp_db();
-    let config = SampleConfig { api_token: Some("s3cret".into()), ..config(&db.path) };
-    with_node(config, async |node| {
+    let mut env = env(&db.path);
+    env.insert("API_TOKEN".into(), "s3cret".into());
+    with_node(env, &[], async |node| {
         assert_eq!(node.get("/health").await.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(node.get("/e2e/effects").await.status(), StatusCode::UNAUTHORIZED);
         let wrong = node.http.get(format!("{}/health", node.base)).bearer_auth("s3creT").send().await.unwrap();
@@ -295,16 +334,18 @@ async fn with_api_token_the_api_requires_the_bearer_token() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_send_only_node_accepts_sends_for_types_other_nodes_registered() {
-    // A hosting node registers the types first (same SQLite file), then a node hosting nothing serves the API.
+    // A node hosting the E2E types registers them first (same SQLite file), then a node hosting nothing serves the API.
     let db = temp_db();
     let counter = Counter { id: "c".into() };
-    let e2e_only = SampleConfig { groups: vec!["e2e".into()], ..config(&db.path) };
-    with_node(e2e_only, async |node| {
+    let e2e_only = ["--types", "e2e.slow,e2e.counter,e2e.recorder,e2e.flaky"];
+    with_node(env(&db.path), &e2e_only, async |node| {
+        let info: serde_json::Value = node.get("/").await.json().await.unwrap();
+        assert_eq!(info["types"].as_array().unwrap().len(), 4, "{info}");
+        assert!(node.api.get(&DeadLetters).await.unwrap().is_none(), "no singleton of a type it does not host");
         node.api.create(&counter, &CounterState::default()).await.unwrap();
     })
     .await;
-    let send_only = SampleConfig { groups: Vec::new(), ..config(&db.path) };
-    with_node(send_only, async |node| {
+    with_node(env(&db.path), &["--types", "none"], async |node| {
         let api = &node.api;
         let sent = api.send(&counter, CounterMsg::Step { seq: 1, hold_millis: 0 }).await.unwrap();
         // Nobody here runs it.
@@ -314,30 +355,72 @@ async fn a_send_only_node_accepts_sends_for_types_other_nodes_registered() {
         assert_eq!(refused.unwrap_err().status(), Some(422));
         assert!(api.status(&MessageId::new("unknown").unwrap()).await.unwrap().is_none());
         let info = node.get("/").await.text().await.unwrap();
-        assert!(info.contains(r#""groups":[]"#) && info.contains(r#""types":[]"#), "{info}");
+        assert!(info.contains(r#""types":[]"#), "{info}");
     })
     .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn on_shutdown_the_server_stops_and_the_store_is_closed() {
+async fn on_shutdown_the_node_stops_and_the_port_is_closed() {
     let db = temp_db();
-    let node = SampleNode::start(&config(&db.path)).await.unwrap();
-    let system = node.system().clone();
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let base = format!("http://{}", listener.local_addr().unwrap());
-    let (stop, stopped) = oneshot::channel::<()>();
-    let server = tokio::spawn(serve(node, listener, async move {
-        let _ = stopped.await;
-    }));
+    let node = Node::start(&env(&db.path), &[]).await;
+    let base = node.base.clone();
     assert_eq!(reqwest::get(format!("{base}/ready")).await.unwrap().status(), StatusCode::OK);
-    stop.send(()).unwrap();
-    server.await.unwrap().unwrap();
-    assert!(!system.health().await, "the node is stopped and its store closed");
+    node.stop().await;
     assert!(reqwest::get(format!("{base}/ready")).await.is_err(), "the port is closed");
 }
 
-/// The node on PostgreSQL (`DATABASE_URL`), in a schema of its own. Skipped without `CICADA_PG_URL`.
+/// A `--node-id` flag that differs from `CICADA_NODE_ID` fails the start: the actors would record the wrong id.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_node_id_flag_other_than_the_variable_fails_the_start() {
+    let db = temp_db();
+    let line = args(&["cicada-sample-service", "serve", "--listen", "127.0.0.1:0", "--node-id", "other"]);
+    let env = env(&db.path);
+    let Sample { app, .. } = Sample::new(&line, &env).unwrap();
+    let error = app.run_with(line, env, Out::default(), std::future::pending()).await.unwrap_err();
+    assert_eq!(error.exit_code(), 1);
+    assert!(error.to_string().contains("CICADA_NODE_ID"), "{error}");
+}
+
+/// app, Scenario: A host with an async main. The binary's `main` is async and calls `run_async`: it serves, and stops
+/// on SIGTERM with exit code 0.
+#[cfg(unix)]
+#[test]
+fn the_binary_serves_and_stops_on_sigterm_with_exit_code_0() {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+
+    let db = temp_db();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cicada-sample-service"))
+        .args(["serve", "--listen", "127.0.0.1:0"])
+        .env_clear()
+        .env("CICADA_STORE", &db.path)
+        .env("RUST_LOG", "warn")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the binary starts");
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let base = loop {
+        let line = lines.next().expect("a line before the end").unwrap();
+        if let Some(base) = line.strip_prefix("Listening on ") {
+            break base.to_owned();
+        }
+    };
+    let mut socket = std::net::TcpStream::connect(base.trim_start_matches("http://")).unwrap();
+    socket.write_all(b"GET /ready HTTP/1.1\r\nHost: node\r\nConnection: close\r\n\r\n").unwrap();
+    let mut answer = String::new();
+    std::io::Read::read_to_string(&mut socket, &mut answer).unwrap();
+    assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+    let killed = Command::new("kill").args(["-TERM", &child.id().to_string()]).status().unwrap();
+    assert!(killed.success());
+    let status = child.wait().unwrap();
+    let mut stderr = String::new();
+    std::io::Read::read_to_string(&mut child.stderr.take().unwrap(), &mut stderr).unwrap();
+    assert_eq!(status.code(), Some(0), "{stderr}");
+}
+
+/// The node on PostgreSQL (`CICADA_STORE`), in a schema of its own. Skipped without `CICADA_PG_URL`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_node_runs_on_postgres() {
     let Ok(url) = std::env::var("CICADA_PG_URL") else {
@@ -345,18 +428,14 @@ async fn the_node_runs_on_postgres() {
         return;
     };
     let schema = format!("sample_{}", uuid_like());
-    let config = SampleConfig {
-        database_url: Some(url),
-        database_schema: schema.clone(),
-        concurrency: Some(4),
-        ..config(std::path::Path::new("unused.db"))
-    };
-    with_node(config, async |node| {
+    let mut env = env(std::path::Path::new("unused.db"));
+    env.insert("CICADA_STORE".into(), url);
+    env.insert("CICADA_STORE_SCHEMA".into(), schema);
+    env.insert("CICADA_CONCURRENCY".into(), "4".into());
+    with_node(env, &[], async |node| {
         let api = &node.api;
         assert!(api.health().await.unwrap());
         assert!(api.get(&DeviceRegistry).await.unwrap().is_some());
-        let info = node.get("/").await.text().await.unwrap();
-        assert!(info.contains(&format!("postgres (schema {schema})")), "{info}");
         let counter = Counter { id: "pg".into() };
         api.create(&counter, &CounterState::default()).await.unwrap();
         for seq in 1..=5 {
