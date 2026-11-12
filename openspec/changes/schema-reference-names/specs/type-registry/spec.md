@@ -47,6 +47,17 @@ segment.
   whose references have one segment, is made
 - **THEN** it is the same as before, byte for byte
 
+### Requirement: A newtype variant refers to a whole definition
+
+A newtype variant of a message family SHALL refer to a whole definition, so that the door is never stricter than the
+decoder. A family with a newtype variant whose reference points inside a definition SHALL be refused, with an error
+that names the variant and the reference. A reference of one segment SHALL NOT be affected.
+
+#### Scenario: A newtype variant that points inside a definition
+
+- **WHEN** a hand-written family schema has a newtype variant that refers to `#/$defs/Line/properties/sku`
+- **THEN** the error names the variant and the reference, and no schema of the family is made
+
 ### Requirement: A family that holds itself is never refused for its nested messages
 
 When a message family holds itself, a reference to the whole family in the schema of one message type SHALL accept

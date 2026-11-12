@@ -68,6 +68,11 @@ When the definition that a newtype variant refers to is not there after decoding
 the variant refers to a definition the family's schema does not hold, and names it, instead of "must be an enum with
 #[serde(tag)]". After decision 1 that happens only for a hand-written schema.
 
+A newtype variant whose reference points inside a definition (`#/$defs/Line/properties/sku`, hand-written schemas
+only) is refused the same way: the error names the variant and the reference. Inlining the whole definition `Line`
+would make the door stricter than the decoder, which ADR 0026 does not allow, and such a family did not start before
+0.15.0 either. A reference of one segment is not affected. (Added after the validation of the build.)
+
 ### 3. A reference to the family accepts any message
 
 When a family holds itself, schemars refers to the family with `#`. In each message document that holds such a

@@ -9,11 +9,12 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
       `#/$defs/` as RFC 6901 says for a fragment (percent-decode, split at `/`, unescape `~1` and `~0`) and gives the
       first segment as the name of the definition, used where the definitions of a message are collected and where a
       newtype variant is replaced. A newtype variant whose definition is missing names the variant and the
-      definition. Verify: unit tests of the function with names that schemars escapes (a space, `<`, `>`, `/`, `~`,
-      a letter that is not ASCII, a `%` that does not decode) and a pointer of several segments; tests for the
+      definition; one whose reference points inside a definition names the variant and the reference (added after
+      the validation). Verify: unit tests of the function with names that schemars escapes (a space, `<`, `>`, `/`,
+      `~`, a letter that is not ASCII, a `%` that does not decode) and a pointer of several segments; tests for the
       scenarios "A renamed type", "A type renamed for serde", "A type name with a letter that is not ASCII", "A
-      newtype variant of a renamed type", "A newtype variant whose definition is missing" and "A reference of several
-      segments".
+      newtype variant of a renamed type", "A newtype variant whose definition is missing", "A newtype variant that
+      points inside a definition" and "A reference of several segments".
 - [x] 1.2 A reference to the family [3]: in each message document, every `"$ref": "#"` under a keyword that holds a
       schema becomes `true`; data in `const`, `enum`, `default` and `examples` stays. Verify: tests for the scenarios
       "The other messages of the family" and "A `#` that is data"; and through the HTTP door, on a node that hosts the

@@ -64,9 +64,16 @@ pub fn message_schemas<M: JsonSchema>() -> Result<BTreeMap<String, Value>, Messa
         if let Some(Value::Array(required)) = alt.get_mut("required") {
             required.retain(|r| r != TYPE_TAG);
         }
-        // A newtype variant refers to its struct: inline it.
+        // A newtype variant refers to its struct: inline it. A pointer inside a definition would inline more than the
+        // variant decodes, and the door may not be stricter than the decoder (ADR 0026).
         if let Some(Value::String(reference)) = alt.remove("$ref") {
-            let definition = definition_name(&reference).ok_or_else(not_tagged)?;
+            let (definition, inside) = definition_name(&reference).ok_or_else(not_tagged)?;
+            if inside {
+                return Err(MessageError::new(format!(
+                    "{family}: the variant '{name}' refers to '{reference}', inside the definition '{definition}'; a \
+                     newtype variant refers to a whole definition"
+                )));
+            }
             let target = defs
                 .get(&definition)
                 .ok_or_else(|| {
@@ -133,7 +140,7 @@ fn referenced_defs(value: &Value, defs: &Map<String, Value>) -> BTreeSet<String>
 fn collect_refs(value: &Value, found: &mut impl FnMut(&str)) {
     match value {
         Value::Object(o) => {
-            if let Some(name) = o.get("$ref").and_then(Value::as_str).and_then(definition_name) {
+            if let Some((name, _)) = o.get("$ref").and_then(Value::as_str).and_then(definition_name) {
                 found(&name);
             }
             o.values().for_each(|v| collect_refs(v, found));
@@ -143,16 +150,17 @@ fn collect_refs(value: &Value, found: &mut impl FnMut(&str)) {
     }
 }
 
-/// The name of the definition that `reference` points into, for a `$ref` that starts with `#/$defs/`: the first segment
-/// of the pointer, read as RFC 6901 reads a pointer in the fragment of an address. The rest is percent-decoded (left as
-/// it is when a `%` is not followed by two hex digits or the bytes are not UTF-8), split at `/`, and `~1` and `~0` in the
-/// segment become `/` and `~`. schemars writes the name `Line <v2>` as `#/$defs/Line%20%3Cv2%3E`, `line/v2` as
-/// `#/$defs/line~1v2`; `#/$defs/Line/properties/sku` needs the definition `Line`.
-fn definition_name(reference: &str) -> Option<String> {
+/// The name of the definition that `reference` points into, for a `$ref` that starts with `#/$defs/`, and whether it
+/// points inside that definition: the first segment of the pointer, read as RFC 6901 reads a pointer in the fragment of
+/// an address, and whether more segments follow. The rest is percent-decoded (left as it is when a `%` is not followed
+/// by two hex digits or the bytes are not UTF-8), split at `/`, and `~1` and `~0` in the segment become `/` and `~`.
+/// schemars writes the name `Line <v2>` as `#/$defs/Line%20%3Cv2%3E`, `line/v2` as `#/$defs/line~1v2`;
+/// `#/$defs/Line/properties/sku` needs the definition `Line` and points inside it.
+fn definition_name(reference: &str) -> Option<(String, bool)> {
     let rest = reference.strip_prefix("#/$defs/")?;
     let pointer = percent_decode(rest).unwrap_or_else(|| rest.to_owned());
-    let segment = pointer.split('/').next().unwrap_or_default();
-    Some(segment.replace("~1", "/").replace("~0", "~"))
+    let (segment, inside) = pointer.split_once('/').map_or((pointer.as_str(), false), |(first, _)| (first, true));
+    Some((segment.replace("~1", "/").replace("~0", "~"), inside))
 }
 
 /// `text` with each `%` and two hex digits turned into its byte; `None` when a `%` is not followed by two hex digits or
@@ -294,26 +302,28 @@ mod tests {
         assert!(message_schemas::<Color>().is_err());
     }
 
-    /// Names that schemars escapes in a reference, written as it writes them, and the definition each reference needs.
+    /// Names that schemars escapes in a reference, written as it writes them, the definition each reference needs, and
+    /// whether it points inside it.
     #[test]
     fn a_reference_is_read_as_a_pointer_in_a_fragment() {
-        for (reference, name) in [
-            ("#/$defs/Charge", "Charge"),
-            ("#/$defs/Line%20%3Cv2%3E", "Line <v2>"),
-            ("#/$defs/line~1v2", "line/v2"),
-            ("#/$defs/a~0b", "a~b"),
-            ("#/$defs/~01", "~1"),
-            ("#/$defs/Gr%C3%B6%C3%9Fe", "Größe"),
-            ("#/$defs/100%25", "100%"),
+        for (reference, name, inside) in [
+            ("#/$defs/Charge", "Charge", false),
+            ("#/$defs/Line%20%3Cv2%3E", "Line <v2>", false),
+            ("#/$defs/line~1v2", "line/v2", false),
+            ("#/$defs/a~0b", "a~b", false),
+            ("#/$defs/~01", "~1", false),
+            ("#/$defs/Gr%C3%B6%C3%9Fe", "Größe", false),
+            ("#/$defs/100%25", "100%", false),
             // A `%` that does not decode, and bytes that are not UTF-8: the rest as it is, split and unescaped.
-            ("#/$defs/100%", "100%"),
-            ("#/$defs/50%zz~1off", "50%zz/off"),
-            ("#/$defs/%C3", "%C3"),
+            ("#/$defs/100%", "100%", false),
+            ("#/$defs/50%zz~1off", "50%zz/off", false),
+            ("#/$defs/%C3", "%C3", false),
             // A pointer of several segments needs the definition of its first; a decoded `/` splits too.
-            ("#/$defs/Line/properties/sku", "Line"),
-            ("#/$defs/Line%2Fsku", "Line"),
+            ("#/$defs/Line/properties/sku", "Line", true),
+            ("#/$defs/Line%2Fsku", "Line", true),
+            ("#/$defs/Line/", "Line", true),
         ] {
-            assert_eq!(definition_name(reference).as_deref(), Some(name), "{reference}");
+            assert_eq!(definition_name(reference), Some((name.to_owned(), inside)), "{reference}");
         }
         for reference in ["#", "#/definitions/Charge", "other.json#/$defs/Charge", "#/$defs"] {
             assert_eq!(definition_name(reference), None, "{reference}");
@@ -341,7 +351,7 @@ mod tests {
         let root = SchemaSettings::draft2020_12().into_generator().into_root_schema_for::<Holds>().to_value();
         let reference = root["oneOf"][0]["properties"]["odd"]["$ref"].as_str().unwrap();
         assert_eq!(reference, "#/$defs/a%20b%3Cc%3E~1d~0e%25f%5Bg%5D%7CGr%C3%B6%C3%9Fe");
-        assert_eq!(definition_name(reference).as_deref(), Some(ODD));
+        assert_eq!(definition_name(reference), Some((ODD.to_owned(), false)));
         assert!(message_schemas::<Holds>().unwrap()["Hold"]["$defs"][ODD].is_object());
     }
 
@@ -366,21 +376,29 @@ mod tests {
         cm: u32,
     }
 
+    /// A type with a plain name that holds a type whose name a reference escapes.
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    struct Holder {
+        line: Line,
+    }
+
     #[derive(Serialize, Deserialize, JsonSchema)]
     #[serde(tag = "type")]
     enum Order {
         Add { line: Line },
         AddV2 { line: SerdeLine },
         Measure { size: Größe },
+        Hold { holder: Holder },
         Put(Line),
     }
 
     /// Scenarios: A renamed type; A type renamed for serde; A type name with a letter that is not ASCII. The message
-    /// schema holds the definition, and what the definition refers to.
+    /// schema holds the definition, also one it reaches through another definition, and what the definition refers to.
     #[test]
     fn a_message_schema_holds_a_definition_whose_name_is_escaped_in_its_reference() {
         let schemas = message_schemas::<Order>().unwrap();
-        for (message, name) in [("Add", "Line <v2>"), ("AddV2", "line/v2"), ("Measure", "Größe")] {
+        for (message, name) in [("Add", "Line <v2>"), ("AddV2", "line/v2"), ("Measure", "Größe"), ("Hold", "Line <v2>")]
+        {
             let defs = &schemas[message]["$defs"];
             assert_eq!(defs.as_object().map(|d| d.contains_key(name)), Some(true), "{message}: {defs}");
         }
@@ -428,6 +446,23 @@ mod tests {
     fn a_newtype_variant_whose_definition_is_missing_names_the_variant_and_the_definition() {
         let e = message_schemas::<Missing>().unwrap_err().to_string();
         assert!(e.contains("the variant 'Line' refers to the definition 'Gone v2'"), "{e}");
+        assert!(!e.contains("must be an enum"), "{e}");
+    }
+
+    handwritten!(Inside, {"oneOf": [
+        {"type": "object", "properties": {"type": {"const": "Sku"}}, "required": ["type"],
+            "$ref": "#/$defs/Line/properties/sku"}
+    ], "$defs": {"Line": {"type": "object", "properties": {"sku": {"type": "object"}}, "required": ["sku"]}}});
+
+    /// Scenario: A newtype variant that points inside a definition. Inlining the whole definition would make the door
+    /// stricter than the decoder (ADR 0026), so the family is refused, naming the variant and the reference.
+    #[test]
+    fn a_newtype_variant_that_points_inside_a_definition_names_the_variant_and_the_reference() {
+        let e = message_schemas::<Inside>().unwrap_err().to_string();
+        assert!(
+            e.contains("the variant 'Sku' refers to '#/$defs/Line/properties/sku', inside the definition 'Line'"),
+            "{e}"
+        );
         assert!(!e.contains("must be an enum"), "{e}");
     }
 

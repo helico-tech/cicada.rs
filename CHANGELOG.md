@@ -29,9 +29,10 @@ type that is hit can deploy it rolling: nodes of 0.14 and 0.15.0 share a databas
 - **BREAKING** for a type that is hit: its message schemas change, so its contract hash changes, and the node follows
   "Changing a contract" in the operations guide. No other type changes. Three kinds of type are hit
   (`docs/guide/core.md`, The contract of a type):
-  - A message with a field of a type whose name a reference escapes: a name with a space, `/`, `~`, `<`, `>`, another
-    character outside the safe set of an address, or a letter that is not ASCII, from `#[schemars(rename)]`, a
-    container `#[serde(rename)]` or the Rust name (`Größe`). Its message schema lacked the definition, so the door did
+  - A message whose schema reaches a type whose name a reference escapes, at any depth (a field of that type, or a
+    field of a type `A` that holds one): a name with a space, `/`, `~`, `<`, `>`, another character outside the safe
+    set of an address, or a letter that is not ASCII, from `#[schemars(rename)]`, a container `#[serde(rename)]` or the
+    Rust name (`Größe`). Its message schema lacked the definition, so the door did
     not check that message type (it warned that the schema cannot be used) and `assert_message_sample` failed with
     "cannot be used". The schema now holds the definition, and the door checks the message type.
   - A family that holds itself (a message `Batch { items: Vec<Msg> }`). schemars refers to it with `"$ref": "#"`, which
@@ -50,6 +51,9 @@ type that is hit can deploy it rolling: nodes of 0.14 and 0.15.0 share a databas
   for it.
 - A newtype variant whose definition the schema of the family does not hold, which only a hand-written schema can have,
   is an error that names the variant and the definition, instead of "must be an enum with `#[serde(tag = "type")]`".
+- A newtype variant whose reference points inside a definition (`#/$defs/Line/properties/sku`, hand-written schemas
+  only) is an error that names the variant and the reference. Inlining the whole definition would make the door
+  stricter than the decoder; such a family did not start before 0.15.0 either.
 
 ### Added
 

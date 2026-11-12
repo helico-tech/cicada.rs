@@ -460,15 +460,18 @@ family and holds every definition it refers to, whatever the name of the definit
   type and in the turn on every node. The schemas of the other message types do not change.
 - **A hand-written schema** that refers to a definition it does not hold cannot be used by the validator: the door does
   not check that message type and warns once, and the sample checks fail with "cannot be used". A newtype variant whose
-  definition is missing keeps the node from starting, with an error that names the variant and the definition.
+  definition is missing keeps the node from starting, with an error that names the variant and the definition; so does
+  one whose reference points inside a definition (`#/$defs/Line/properties/sku`), with an error that names the variant
+  and the reference, as the door may not be stricter than the decoder.
 
 **The types that 0.15.0 changes.** Before 0.15.0 a message schema lost a definition whose name a reference escapes, and
 a reference to the family meant the one message. With the fix the contracts of three kinds of type change; every other
 type keeps its contract byte for byte:
 
-- a message with a field of a type whose name has a space, `/`, `~`, `<`, `>`, another character outside the safe set
-  of an address, or a letter that is not ASCII, from `#[schemars(rename)]`, a container `#[serde(rename)]` or the Rust
-  name (`Größe`): its schema gains the definition, so the door now checks that message type;
+- a message whose schema reaches a type whose name has a space, `/`, `~`, `<`, `>`, another character outside the safe
+  set of an address, or a letter that is not ASCII, from `#[schemars(rename)]`, a container `#[serde(rename)]` or the
+  Rust name (`Größe`), at any depth (a field of that type, or a field of a type `A` that holds one): its schema gains
+  the definition, so the door now checks that message type;
 - a family that holds itself: the schemas that refer to the family get `true` there, so the door no longer refuses a
   valid nested message;
 - a hand-written schema with a reference of several segments (`#/$defs/Line/properties/sku`): its message schema now
