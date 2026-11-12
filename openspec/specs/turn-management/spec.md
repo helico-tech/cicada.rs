@@ -25,8 +25,8 @@ the actor, the message being handled, the node holding the lease, its expiry and
 
 `POST /actors/{type}/{key}/turn/cancel` SHALL record a request for the current turn, only while a valid lease is held,
 and answer `202`, or `404 no-running-turn`. The owning node SHALL stop the handler at its next heartbeat and commit the
-outcome `cancelled`, without effects and without retry, fenced by its epoch. `on_outcome` SHALL see the outcome and
-`on_handler_error` SHALL not be called. A request SHALL never affect a later turn.
+outcome `cancelled`, without effects and without retry, fenced by its epoch. An observer SHALL be told the end of the
+turn with the outcome `cancelled`. A request SHALL never affect a later turn.
 
 #### Scenario: A handler is cancelled
 
