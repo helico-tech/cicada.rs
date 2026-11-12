@@ -221,6 +221,9 @@ impl Actor for WatcherActor {
     }
 }
 
+/// Types with several schema steps between two of their levels.
+pub mod shapes;
+
 /// Named latches that `Block` handlers wait on.
 pub mod gates {
     use super::*;

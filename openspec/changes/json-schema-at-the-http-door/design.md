@@ -212,24 +212,28 @@ The door compiles the schema for each request. A schema of a message is small, a
 cache by contract hash can come when someone measures a need. The only thing the door remembers is which unusable
 schemas it has warned about (decision 6).
 
-### 11. A deep value is checked on a stack of its own
+### 11. A value is checked on a stack of its own
 
-Validation: decided by the main session on the builder's report, 2026-11-12.
+Validation: decided by the main session on the builder's report and, for every value, on the validator's report of its
+third round, 2026-11-12.
 
 The validator recurses per level of a value, and a type that refers to itself lets a request nest as deep as the JSON
-parser of the body allows: 127 levels with the body, so a payload or a state of 126. The check runs on a thread of the
-runtime with its default stack of 2 MiB. Measured for a list that refers to itself through an `Option` and for an
-internally tagged enum that does, matching or not: about 42 KiB of stack a level in a test build (5.3 MiB at 126
-levels) and 11 KiB in a release build (1.4 MiB). An overflow is no error: the process dies, and every turn it runs
-becomes a lost claim.
+parser of the body allows: 127 levels with the body, so a payload or a state of 126. The stack a level takes is set by
+the steps of the schema between two levels of the type, not by the depth alone: about 42 KiB in a test build for a list
+under an `Option` or a tagged enum, 86 to 103 KiB for a type with newtypes or several groups between its levels, and
+about a quarter of that in a release build. A thread of the runtime has a stack of 2 MiB. An overflow is no error: the
+process dies, and every turn it runs becomes a lost claim.
 
-The door measures the depth of the value first, without recursion. A value of at most 24 levels (half of a default
-stack in a test build) is checked where it is checked now. A deeper one is checked on a scoped thread of its own with
-a stack of 32 MiB, six times what 126 levels take in a test build; only the pages the check touches are used, and the
-thread costs about 20 µs to start and join. The check is as strict as for any other value. A thread that cannot be
-started fails the request with `500`; the check is not skipped.
+Every value is checked on a scoped thread of its own with a stack of 64 MiB, five times what the widest shape found
+needs at 126 levels in a test build (12.9 MiB). The stack is address space: only the pages a check touches are used.
+The thread costs about 30 µs a check in a release build; the check of an ordinary send takes about 38 µs with it and
+8 µs without. The check is as strict as before. A thread that cannot be started fails the request with `500`; the
+check is not skipped.
 
-- **Check it on a stack of its own (chosen).**
+- **Every value on a stack of its own (chosen).**
+- A bound below which a value stays on the calling thread (this change before the third round of validation, at 24
+  levels). Not safe: a type with several schema steps between its levels ended the process from 21 levels in a test
+  build, and a bound that is safe for one type is not safe for the next.
 - Refuse a value deeper than a bound. It would be stricter than the schema, which allows any depth.
 - Do not check a deep value. Nesting would switch the check off.
 

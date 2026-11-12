@@ -3,8 +3,8 @@
 //!
 //! The validator is `boon`, on draft 2020-12. It asserts no `format`, and loads nothing from outside the schema
 //! document: no file and no network. A schema it cannot compile is not enforced at the door, and a warning names it once
-//! in the life of the process; the sample checks fail on it. A value nested deeper than [`SHALLOW`] levels is checked on
-//! a thread of its own with a larger stack, as the validator recurses per level.
+//! in the life of the process; the sample checks fail on it. Every value is checked on a thread of its own with a
+//! large stack, as the validator recurses per level of a type that refers to itself (decision 11).
 
 use std::collections::HashSet;
 use std::error::Error;
@@ -42,45 +42,21 @@ impl UrlLoader for NoLoader {
     }
 }
 
-/// The deepest value that is checked on the calling thread (decision 11). The validator recurses per level of a type
-/// that refers to itself, at about 42 KiB of stack a level in a test build and 11 KiB in a release build, so 24 levels
-/// take half of a default stack of 2 MiB in a test build.
-const SHALLOW: usize = 24;
+/// The stack of the thread that checks a value (decision 11). The stack the validator needs per level is set by the
+/// steps of the schema between two levels of a type that refers to itself; the JSON parser of a request lets through a
+/// payload or a state of 126 levels, and the widest shape found needs about 12.9 MiB for that in a test build, so this
+/// is five times that. It is address space: only the pages the check touches are used.
+const CHECK_STACK: usize = 64 << 20;
 
-/// The stack of the thread of its own that checks a deeper value. The JSON parser of a request lets through 127 levels,
-/// the body included, so a payload or a state of at most 126; they take about 5.3 MiB in a test build, and this is six
-/// times that. Only the pages the check touches are used.
-const DEEP_STACK: usize = 32 << 20;
-
-/// Checks `value` against `schema`; a value deeper than [`SHALLOW`] on a thread of its own with [`DEEP_STACK`] of stack,
-/// so that no nesting the parser lets through overflows the stack of a thread of the runtime. Nothing is skipped.
+/// Checks `value` against `schema` on a scoped thread of its own with [`CHECK_STACK`] of stack, so that no nesting the
+/// parser lets through overflows the stack of a thread of the runtime, whatever the type. Nothing is skipped.
 fn verdict(schema: &Value, value: &Value) -> Verdict {
-    if depth(value) <= SHALLOW {
-        return verdict_here(schema, value);
-    }
     std::thread::scope(|scope| {
-        let thread = std::thread::Builder::new().name("cicada-deep-check".to_owned()).stack_size(DEEP_STACK);
+        let thread = std::thread::Builder::new().name("cicada-schema-check".to_owned()).stack_size(CHECK_STACK);
         // A thread that cannot be started fails the request (500), as the check must not be skipped.
-        let handle =
-            thread.spawn_scoped(scope, || verdict_here(schema, value)).expect("a thread to check a deep value");
+        let handle = thread.spawn_scoped(scope, || verdict_here(schema, value)).expect("a thread to check a value");
         handle.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic))
     })
-}
-
-/// The nesting of `value`: 0 for a scalar, 1 for an object or an array of scalars. Without recursion, for any depth.
-fn depth(value: &Value) -> usize {
-    let mut deepest = 0;
-    let mut open = vec![(value, 1)];
-    while let Some((value, level)) = open.pop() {
-        let inner: Box<dyn Iterator<Item = &Value>> = match value {
-            Value::Object(fields) => Box::new(fields.values()),
-            Value::Array(items) => Box::new(items.iter()),
-            _ => continue,
-        };
-        deepest = deepest.max(level);
-        open.extend(inner.filter(|v| v.is_object() || v.is_array()).map(|v| (v, level + 1)));
-    }
-    deepest
 }
 
 /// Checks `value` against `schema` on the calling thread.
@@ -254,10 +230,16 @@ fn passes_schema(schema: &Value, sample: &Value, what: &str) {
     }
 }
 
+/// Types with several schema steps between two of their levels, shared with the test of the HTTP door.
+#[cfg(test)]
+#[path = "../tests/common/shapes.rs"]
+mod shapes;
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
+    use super::shapes::{Chain, PutMsg, Shape, Stack, Wide, build, payload};
     use super::*;
 
     fn object(properties: Value) -> Value {
@@ -405,46 +387,33 @@ mod tests {
         assert!(took < std::time::Duration::from_secs(30), "the check took {took:?}");
     }
 
-    /// The depth of a value, without recursion.
+    /// Scenarios: A value at the deepest level the parser allows; A type with several schema steps between its levels
+    /// (decision 11). Three such types, at 21 and 24 levels (where a check on a default stack ended the process in a
+    /// test build) and at 126, the deepest payload or state a request body holds; as a state and as a payload, matching
+    /// and not. Through the check function, on a thread with the default stack of 2 MiB.
     #[test]
-    fn the_depth_of_a_value_counts_its_containers() {
-        assert_eq!(depth(&json!(1)), 0);
-        assert_eq!(depth(&json!({})), 1);
-        assert_eq!(depth(&json!({"a": [1, {"b": []}], "c": "x"})), 4);
-        let mut deep = Value::Null;
-        for _ in 0..100_000 {
-            deep = Value::Array(vec![deep]); // not `json!`, which would copy `deep` by recursion
-        }
-        assert_eq!(depth(&deep), 100_000);
-        std::mem::forget(deep); // dropping it would recurse 100,000 levels
-    }
-
-    /// Scenario: A value at the deepest level the parser allows (decision 11), on an ordinary test thread: 126 levels of a
-    /// type that refers to itself, the deepest payload or state that a request body of 127 levels holds.
-    #[test]
-    fn a_value_at_the_deepest_level_the_parser_allows_is_checked_on_a_stack_of_its_own() {
-        #[derive(serde::Deserialize, JsonSchema)]
-        #[allow(dead_code)]
-        struct Node {
-            items: Vec<i32>,
-            next: Option<Box<Node>>,
-        }
-        let schema = cicada::schema::root_schema::<Node>();
-        for (item, matches) in [(json!(1), true), (json!("x"), false)] {
-            let mut value = json!({"items": [item.clone()], "next": null}); // two levels: the object and its items
-            for _ in 2..126 {
-                value = json!({"items": [item.clone()], "next": value});
-            }
-            assert_eq!(depth(&value), 126);
-            match verdict(&schema, &value) {
-                Verdict::Matches => assert!(matches),
-                Verdict::DoesNotMatch(places) => {
-                    assert!(!matches, "{places}");
-                    assert!(places.starts_with("at /items/0: want integer, but got string; "), "{places}");
+    fn a_value_is_checked_on_a_stack_of_its_own_whatever_its_type_and_depth() {
+        fn shape<T: Shape>() {
+            let state = cicada::schema::root_schema::<T>();
+            let put = cicada::schema::message_schemas::<PutMsg<T>>().unwrap().remove("Put").unwrap();
+            for levels in [21, 24, 126] {
+                for ok in [true, false] {
+                    for (schema, value) in [(&state, build::<T>(levels, ok)), (&put, payload::<T>(levels, ok))] {
+                        match verdict(schema, &value) {
+                            Verdict::Matches => assert!(ok, "{} at {levels} levels matches", T::NAME),
+                            Verdict::DoesNotMatch(places) => assert!(!ok, "{} at {levels} levels: {places}", T::NAME),
+                            other => panic!("{} at {levels} levels: {other:?}", T::NAME),
+                        }
+                    }
                 }
-                other => panic!("{other:?}"),
             }
         }
+        let run = || {
+            shape::<Chain>();
+            shape::<Stack>();
+            shape::<Wide>();
+        };
+        std::thread::Builder::new().stack_size(2 << 20).spawn(run).unwrap().join().unwrap();
     }
 
     #[test]

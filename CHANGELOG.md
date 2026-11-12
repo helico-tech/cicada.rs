@@ -44,9 +44,10 @@ and 0.12.0 can share a database, and during a rolling deploy a node of 0.11.0 st
   schema now. Either detail is cut at 2,000 characters (`MAX_REFUSAL_DETAIL`) and then ends with ` … (cut)`, as a
   reason may quote the value; a decoder's detail had no limit before. A payload that is not an object reads `… at the
   top level: want object, but got array` instead of `… must be a JSON object`.
-- A payload or a state nested deeper than 24 levels, as a type that refers to itself allows up to the 126 levels that
-  the JSON parser of a request lets through, is checked on a thread of its own with a stack of 32 MiB, so that the
-  validator's recursion cannot overflow the stack of a thread of the runtime. It is checked as strictly as any other.
+- Every payload and state is checked on a thread of its own with a stack of 64 MiB (address space; only the pages the
+  check touches are used), so that the validator's recursion over a type that refers to itself, up to the 126 levels
+  that the JSON parser of a request lets through, cannot overflow the stack of a thread of the runtime. The thread
+  costs about 30 µs a check.
 - A send that repeats the id of a message that is pending, or whose outcome is still shown, is answered as a repeat
   before it is checked, as before. One whose outcome its retention hides is checked first.
 - Formats are not asserted (`format` is a note, as draft 2020-12 has it), the check loads nothing from outside the

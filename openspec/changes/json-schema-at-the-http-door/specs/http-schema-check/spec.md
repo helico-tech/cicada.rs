@@ -180,6 +180,13 @@ any other value, on every node, and the check SHALL NOT end the process.
 - **THEN** both nodes answer `202` for the first, which is then handled, and `422 invalid-payload` with the same detail
   for the second, and a body one level deeper is `400`
 
+#### Scenario: A type with several schema steps between its levels
+
+- **WHEN** a client sends a payload and creates an actor with a state of a type that has six newtypes between two of
+  its levels, at 24 levels and at the deepest level the parser allows, once matching and once not, to a node that
+  hosts the type and to one that does not, both served on a runtime whose threads have their default stack
+- **THEN** both nodes answer `202` and `201` for the matching ones and `422` for the others, and the process goes on
+
 ### Requirement: A host can test its samples against the schema and the decoder
 
 `cicada-axum` SHALL offer `assert_message_sample` and `assert_state_sample`. Each SHALL fail unless its sample
