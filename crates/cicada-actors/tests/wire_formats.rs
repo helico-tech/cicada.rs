@@ -1,10 +1,13 @@
-//! The wire formats of the three ready-made actors (ADR 0028): their contracts against the snapshots in
-//! `tests/contracts`, the JSON their messages and states are written as, and sample checks for what the helpers and
-//! the actors write: both the registered schemas and the decoders take it (ADR 0026).
+//! The wire formats of the three ready-made actors (ADR 0028): their contracts against the references in
+//! `docs/reference/contracts`, the JSON their messages and states are written as, and sample checks for what the
+//! helpers and the actors write: both the registered schemas and the decoders take it (ADR 0026).
 
 mod common;
 
+use std::path::{Path, PathBuf};
+
 use cicada::actor::contract_of;
+use cicada::contract::Contract;
 use cicada::prelude::*;
 use cicada::{Failed, FailureCause, StopCause, Stopped, WatchTarget};
 use cicada_actors::{
@@ -12,20 +15,130 @@ use cicada_actors::{
     SupervisorMsg, SupervisorState, Topic, TopicActor, TopicMsg, TopicState,
 };
 use cicada_axum::{assert_message_sample, assert_state_sample};
-use cicada_test::TestActors;
+use cicada_test::{TestActors, UPDATE_CONTRACTS_ENV, describe_changes};
 use common::*;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
-#[test]
-fn the_contracts_of_the_three_types_match_their_snapshots() {
-    let contracts = [
+/// The references of the contracts: what a host depends on, so they live with the other references of the docs.
+fn contracts_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/reference/contracts")
+}
+
+/// `value` with the keys of every object sorted, so that the text of a reference does not follow the order of a map.
+fn sorted(value: &Value) -> Value {
+    match value {
+        Value::Object(o) => {
+            let mut keys: Vec<&String> = o.keys().collect();
+            keys.sort();
+            Value::Object(keys.into_iter().map(|k| (k.clone(), sorted(&o[k]))).collect::<Map<_, _>>())
+        }
+        Value::Array(a) => Value::Array(a.iter().map(sorted).collect()),
+        other => other.clone(),
+    }
+}
+
+/// The text of the reference of `contract`: its JSON as `GET /types` serves it, pretty and with sorted keys.
+fn reference_text(contract: &Contract) -> String {
+    serde_json::to_string_pretty(&sorted(&contract.to_json())).unwrap() + "\n"
+}
+
+/// Compares each contract with its reference in `dir` as text, descriptions included, unlike
+/// `cicada_test::assert_contracts_match`, which compares hashes and so leaves a reworded doc comment out. With
+/// `update`, a reference that differs in any way, or is missing, is written instead. The error names each type and
+/// what changed in its contract.
+fn check_references(dir: &Path, contracts: &[Contract], update: bool) -> Result<(), String> {
+    let mut problems = Vec::new();
+    for contract in contracts {
+        let file = dir.join(format!("{}.json", contract.type_name()));
+        let current = reference_text(contract);
+        let recorded = std::fs::read_to_string(&file).ok();
+        if recorded.as_deref() == Some(current.as_str()) {
+            continue;
+        }
+        if update {
+            std::fs::write(&file, &current).map_err(|e| format!("Cannot write {}: {e}", file.display()))?;
+            continue;
+        }
+        let changes = match recorded.as_deref().map(serde_json::from_str::<Value>) {
+            None => vec!["the reference is missing".to_owned()],
+            Some(Err(e)) => vec![format!("the reference is not JSON: {e}")],
+            Some(Ok(json)) => match Contract::from_json(&json) {
+                Err(e) => vec![format!("the reference is not a contract: {e}")],
+                Ok(old) if old.hash() == contract.hash() => vec!["a description (doc comment) changed".to_owned()],
+                Ok(old) => describe_changes(&old, contract),
+            },
+        };
+        let lines: Vec<String> = changes.iter().map(|c| format!("  - {c}")).collect();
+        problems.push(format!("{} ({}):\n{}", contract.type_name(), file.display(), lines.join("\n")));
+    }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Contracts differ from their references:\n{}\nIf the change is meant, rewrite them with \
+             {UPDATE_CONTRACTS_ENV}=true and commit them.",
+            problems.join("\n")
+        ))
+    }
+}
+
+fn the_three_contracts() -> [Contract; 3] {
+    [
         contract_of::<SupervisorActor>().unwrap(),
         contract_of::<DeadLettersActor>().unwrap(),
         contract_of::<TopicActor>().unwrap(),
-    ];
+    ]
+}
+
+#[test]
+fn the_contracts_of_the_three_types_match_their_references() {
+    let contracts = the_three_contracts();
     let names: Vec<&str> = contracts.iter().map(|c| c.type_name().as_str()).collect();
     assert_eq!(names, ["cicada.supervisor", "cicada.dead-letters", "cicada.topic"]);
-    cicada_test::assert_contracts_match(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/contracts"), &contracts);
+    let update = std::env::var(UPDATE_CONTRACTS_ENV).is_ok_and(|v| v == "true");
+    if let Err(e) = check_references(&contracts_dir(), &contracts, update) {
+        panic!("{e}");
+    }
+}
+
+/// `contract` with `edit` applied to its JSON.
+fn edited(contract: &Contract, edit: impl FnOnce(&mut Value)) -> Contract {
+    let mut json = contract.to_json();
+    edit(&mut json);
+    Contract::from_json(&json).unwrap()
+}
+
+/// Scenario: A field of a ready-made actor changes.
+#[test]
+fn a_renamed_field_of_the_state_of_the_supervisor_names_the_change() {
+    let supervisor = contract_of::<SupervisorActor>().unwrap();
+    let renamed = edited(&supervisor, |json| {
+        let properties = json["state"]["properties"].as_object_mut().unwrap();
+        let children = properties.remove("children").expect("the state has children");
+        properties.insert("kids".into(), children);
+    });
+    let error = check_references(&contracts_dir(), &[renamed], false).unwrap_err();
+    assert!(error.contains("cicada.supervisor") && error.contains("state schema changed"), "{error}");
+    assert!(error.contains("CICADA_UPDATE_CONTRACTS=true"), "{error}");
+}
+
+/// Scenario: Only a doc comment changes.
+#[test]
+fn a_reworded_doc_comment_of_the_topic_fails_and_the_update_writes_the_new_text() {
+    let topic = contract_of::<TopicActor>().unwrap();
+    let reworded = edited(&topic, |json| {
+        json["messages"]["Publish"]["description"] = json!("Publishes a message, reworded.");
+    });
+    assert_eq!(reworded.hash(), topic.hash(), "a description is not in the hash");
+    let error = check_references(&contracts_dir(), std::slice::from_ref(&reworded), false).unwrap_err();
+    assert!(error.contains("cicada.topic") && error.contains("a description (doc comment) changed"), "{error}");
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::copy(contracts_dir().join("cicada.topic.json"), dir.path().join("cicada.topic.json")).unwrap();
+    check_references(dir.path(), std::slice::from_ref(&reworded), true).unwrap();
+    let rewritten = std::fs::read_to_string(dir.path().join("cicada.topic.json")).unwrap();
+    assert!(rewritten.contains("Publishes a message, reworded."), "{rewritten}");
+    assert_eq!(check_references(dir.path(), &[reworded], false), Ok(()));
 }
 
 fn failed() -> Failed {

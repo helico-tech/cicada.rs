@@ -18,13 +18,13 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
 
 ## 2. The references
 
-- [ ] 2.1 The help of the command line [5]: a unit test inside `cicada-app`, behind the feature `tui`, that walks the
+- [x] 2.1 The help of the command line [5]: a unit test inside `cicada-app`, behind the feature `tui`, that walks the
       commands with `get_subcommands()`, renders the help of `cicada` and of `serve` and `worker` (from an `App` with
       one test type named `myapp`), and compares it with `docs/reference/cli.md`, rewriting it with
       `CICADA_UPDATE_CLI=true`; its failure message names `--workspace` or `--features tui`. Verify: tests for the
       scenarios "A flag is added", "A subcommand is added" (each tried once in a scratch change and put back) and
       "The name of the test binary"; the reference is committed.
-- [ ] 2.2 The contracts of the ready-made actors [6]: the snapshots of `cicada-actors` move to
+- [x] 2.2 The contracts of the ready-made actors [6]: the snapshots of `cicada-actors` move to
       `docs/reference/contracts/`, and its test compares each as pretty JSON text, descriptions included. Verify:
       tests for the scenarios "A field of a ready-made actor changes" and "Only a doc comment changes" (each tried
       once and put back).

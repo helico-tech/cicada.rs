@@ -103,6 +103,9 @@ cargo run -- get actor counter/a -o json                 # "state": {"total": 5}
 | [Ready-made actors](docs/guide/actors.md) | The supervisor, dead letters, the topic, `Schedule` |
 | [Architecture](docs/architecture.md) | The reference for behaviour: the domain language, guarantees G1–G6, store requirements S1–S10, the HTTP contract |
 | [Operations](docs/operations.md) | Sizing, deploying, upgrading, releasing, on call, store tuning, telemetry |
+| [Command line](docs/reference/cli.md) | The help of every command of `cicada`, and of `serve` and `worker`; generated and checked by a test |
+| [Contracts](docs/reference/contracts/) | The contracts of the ready-made actors, a wire format; checked by a test |
+| [OpenAPI](docs/openapi.json) | The OpenAPI document of the HTTP API; checked by a test |
 | [Decisions](docs/adr/README.md) | The ADRs, one per decision |
 | [Changelog](CHANGELOG.md) | What changed in each release |
 

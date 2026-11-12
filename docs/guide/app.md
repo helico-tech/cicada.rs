@@ -149,6 +149,8 @@ only read also work against `actor_api_read()`. Install `cicada` from a checkout
 `cargo run -p cicada-app --features tui -- <command>`. The help, the usage errors and the hints name the binary as it was
 called (`myapp config set-context`), and a usage error exits with code 2.
 
+The help of every command, as `--help` prints it, is in [the reference of the command line](../reference/cli.md).
+
 **Which server.** The server is `--server`, else `CICADA_SERVER`, else the `server` of the context. The context is
 `--context`, else `CICADA_CONTEXT`, else the file's `current-context`; a context the file does not have is an error.
 The token is `--token`, else `CICADA_TOKEN`, else the context's `token`, sent as `Authorization: Bearer <token>`; the

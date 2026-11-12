@@ -42,6 +42,8 @@
 //! binary as it was called.
 
 mod cli;
+#[cfg(all(test, feature = "tui"))]
+mod cli_reference;
 mod command;
 mod config;
 mod node;

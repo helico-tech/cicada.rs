@@ -22,7 +22,8 @@ a node hosts it like any other type, and the host creates its instances.
 A message that one of them keeps to send later is a `StoredMessage`: a type name and a JSON payload,
 `{"type": …, "payload": …}`. The actor knows where it goes, so it holds no address. `StoredMessage::for_ref(&worker,
 WorkerMsg::Begin { batch: 7 })` builds one from a typed ref and a message, so a message of the wrong family does not
-compile. The contracts of the three types are wire formats; `crates/cicada-actors/tests/contracts` pins them.
+compile. The contracts of the three types are wire formats; their references in
+[docs/reference/contracts](../reference/contracts/) pin them, doc comments included.
 
 ## Supervisor
 
