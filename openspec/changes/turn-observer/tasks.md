@@ -93,7 +93,7 @@ a commit carries the control effects of its turn.
 
 ## 5. Docs
 
-- [ ] 5.1 `docs/architecture.md`: the term *observer* in place of *plugin*; G4 as ADR 0025 words it; the claim step,
+- [x] 5.1 `docs/architecture.md`: the term *observer* in place of *plugin*; G4 as ADR 0025 words it; the claim step,
       the row of a node that dies or loses its lease and a row for the claim limit in the turn semantics;
       `lostClaims` where a message is described; the schema paragraph (version 6, and that it is not additive), the
       crate table and how the runtime maps to tokio. `README.md`: observers in place of plugins with an example, the
@@ -106,7 +106,7 @@ a commit carries the control effects of its turn.
       `cargo test -p cicada-examples --doc` passes, every risk of `design.md` that names the docs is in them, and
       `grep -rn -i "plugin" README.md docs/architecture.md docs/operations.md AGENTS.md` finds nothing but ADR
       titles.
-- [ ] 5.2 `CHANGELOG.md`, a section `0.11.0 — unreleased`, and the version `0.11.0` in `Cargo.toml`: the section
+- [x] 5.2 `CHANGELOG.md`, a section `0.11.0 — unreleased`, and the version `0.11.0` in `Cargo.toml`: the section
       starts with the steps of the Migration Plan of `design.md`, then the breaking changes of the proposal, then
       what changes in the telemetry and in the headers of a send. Verify: every step of the plan and every
       **BREAKING** line of the proposal is in the section.

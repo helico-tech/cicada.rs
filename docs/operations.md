@@ -134,10 +134,12 @@ family, so its contract changes like any other: deploy it in one of the two ways
 
 ## Upgrading
 
-Stores write schema version 5 and apply any missing migrations in place when they open a database. Migrations are
+Stores write schema version 6 and apply any missing migrations in place when they open a database. Migrations are
 additive, so nodes of the previous version keep working during a rolling deploy, unless a release says otherwise: a
 migration that is not additive breaks the nodes of the previous version, so every old node is stopped before the first
-new one starts. The changelog says so for each such release.
+new one starts. The changelog says so for each such release. From 0.11.0 on both stores name the columns they read, so
+a later migration that only adds a column with a default can be additive: the statements of a running node of the
+release before keep working while it is applied.
 
 **Version 0.4.0 is such a release.** Its migration 2 (every actor has state, ADR 0018) gives every actor without a
 state the state `{}`, makes the state column required, and removes the registrations of the types that were
@@ -182,6 +184,15 @@ working: they ignore the new field `notification` of a message's view. A host th
 **Version 0.10.0 changes no schema.** A turn can pause, resume, purge and delete another actor (ADR 0024); its commit
 applies those effects, and an actor on a node of 0.9.0 is paused or deleted as it would be from outside. So nodes of
 0.9.0 and 0.10.0 can share a database during a rolling deploy, and clients need no upgrade.
+
+**Version 0.11.0 is such a release.** A message counts its lost claims, and a node fails a message at its claim limit
+(ADR 0025, [The claim limit](#the-claim-limit)). Its migration 6 adds the column `messages.lost_claims`; no existing
+message starts with a lost claim. A node of 0.10.0 that opens the migrated database refuses it, but one that is still
+running does not notice: it counts no lost claim, so the claims it replaces escape the limit, and on PostgreSQL every
+statement of it that reads a message with `*` fails on the changed table ("cached plan must not change result type")
+until its connection is replaced. So stop every node of the old version, then start the new ones. Clients of 0.10.0
+keep working: they ignore the new field `lostClaims` of a message's view. A node that had no `CrashLoopGuard` now has a
+limit of 5; the changelog of 0.11.0 lists the code changes.
 
 **Switching a type to `create_child`.** An actor created with `turn.create` stays independent: a later `create_child`
 of it by its creator does not adopt it, but fails the creator's message (the commit is rejected, and a handler cannot
@@ -237,10 +248,8 @@ When the next change lands, add a section `## X.Y.Z — unreleased` to the chang
   stays when that actor is gone for good: a watcher that is done with a target removes its watch, for example when it
   handles the `Stopped`. A notification that fails tells nobody and is not retried; its outcome shows it, and
   `POST /messages/{id}/retry` sends it again.
-- **A message that keeps killing its node** (out of memory, an abort, a native crash) is claimed again forever: its
-  `attempt` climbs while `failures` stays put (`GET /messages/{id}`). Install `CrashLoopGuard` (`cicada-extras`) to
-  fail such a message after N claims without a commit; set N above what deploys during long turns cause, since every
-  lost or released lease counts.
+- **A message that keeps killing its node** (out of memory, an abort, a native crash) ends `failed` at the claim limit,
+  with the error `claim limit: <n> lost claims`; see [The claim limit](#the-claim-limit).
 - **Stuck instances.** An instance whose state no longer decodes fails every turn: its messages end `failed` one by
   one. Fix the state type (add `#[serde(default)]`), or delete and re-create the instance (`DELETE`, then
   `PUT /actors/{type}/{key}`; the delete purges its mailbox and removes its descendants).
@@ -277,6 +286,38 @@ When the next change lands, add a section `## X.Y.Z — unreleased` to the chang
   the PostgreSQL wake-up listener reconnects with a back-off (from 250 ms, doubling up to 30 s),
   polling meanwhile.
 
+### The claim limit
+
+A message counts its lost claims, and a node fails a message with as many as its limit, `NodeConfig::max_lost_claims`
+(5 by default), instead of running it (ADR 0025). The message ends `failed` with the error
+`claim limit: <n> lost claims`, without asking its retry policy, and its watchers get a `Failed`.
+
+- **What counts.** A claim is lost when another claim takes its place although its turn neither committed nor gave the
+  lease back. That is a node that died or was killed hard, also as a matter of routine (a deploy that sends SIGKILL, a
+  Ctrl-C of the process), a lease that ran out (a long pause of the process, a partition from the store), and a commit
+  that did not get through. A node that stops in good order but leaves a lease to run out loses that claim too: a stop
+  that comes after a handler ended, while its commit is under way, or that a handler which does not yield outlasts. So
+  stop a node with its grace period (`shutdown_grace_period`), and give the limit room for routine kills, or raise it.
+- **What does not count.** A release: a node that stops in good order and gives back the claims of handlers that had not
+  ended, or a claim it could not run. A failed run that is committed as a retry. A lease that runs out with no claim
+  after it: its turn can still commit.
+- **One message takes others with it.** The limit cannot tell the message that kills a node from the messages that ran
+  beside it: each of them loses its claim when the node dies. A message that kills its node at once, as often as the
+  limit allows, takes every message that the node claimed with it each time to the limit too, and they all end `failed`
+  together. Their errors name the limit: send them again (`POST /messages/{id}/retry`, `cicada retry`, or a bulk retry
+  by prefix); the one that fails again is the cause. A supervisor that restarts an actor on every `Failed` restarts the
+  actors of those messages too.
+- **The count never goes back**, also not after a retry that was committed: it counts over the life of the message. A
+  message that lives long and is retried often can gather lost claims over weeks, and the limit then ends it although
+  its last loss is long ago. A message sent again is a new message with none.
+- **How to see it.** `lostClaims` in the view of a message (`GET /messages/{id}`, the mailbox, `/outcomes`), the
+  column `LOST` of `cicada get messages -o wide` and the line `Lost claims` of a message in `cicada tui`: a message on
+  its way to the limit before it gets there. A node logs each failure by the limit at the warning level (see
+  [Logs](#logs)). A watcher tells such a failure from a failure of a handler by the start of the error,
+  `claim limit:`; it is a hint, as a handler can return an error with the same start.
+- **Setting it.** `NodeConfig { max_lost_claims: Some(10), ..NodeConfig::default() }` raises it, `None` turns it off,
+  and `Some(0)` fails the start. Each node applies its own limit, so set one value on every node of a system.
+
 ### Node table
 
 Every node, send-only ones too, writes a row to the `nodes` table every 10 s, with its id and hosted types; `GET /nodes`
@@ -299,8 +340,10 @@ worth an alert:
 | warn | `Commit of … failed; retrying …`, `Commit of … refused: …` | A commit could not be written; the turn re-runs after its lease, or the message ends `failed`. |
 | info | `Commit of … rejected: lease lost` | A turn outlived its lease (a stalled runtime, a pause, a slow store); another node may have run it. |
 | warn | `Handler of … is still running … it does not yield` | Blocking code in a handler; move it to `spawn_blocking`. |
-| error | `Turn of … panicked …`, `A turn task failed` | A panic outside the handler (a hook, the runtime): a bug. A handler's own panic is an ordinary handler failure (`panic: …`). |
-| warn | `on_handler_error of plugin … failed; ignored`, `on_outcome of plugin … failed; ignored` | A plugin hook failed. |
+| error | `Turn of … panicked …`, `A turn task failed` | A panic outside the handler (the runtime): a bug. A handler's own panic is an ordinary handler failure (`panic: …`). |
+| warn | `Message … has N lost claims, as many as the claim limit allows: it fails without running` | A message reached the [claim limit](#the-claim-limit): its turns kept dying, or ran beside one that did. |
+| warn | `An observer panicked when the turn started; it is left out of this turn: …`, `… when the turn ended: …`, `… when its turn was dropped: …` | An observer has a bug; the turn went on as if that observer were not there. |
+| warn | `A header of an observer is left out of the sends of the turn: …`, `The header '…' of an observer is left out of a send to …` | A header that the limits of a message refuse, or that did not fit into a message of 64 headers; a trace breaks at that message. |
 | warn | `Retention sweep failed`, `Store wake-ups ended; falling back to polling` | The node keeps working, slower or with more stored data. |
 | warn | `Ignoring the retry policy of …` | A stored policy that cannot be decoded is read as no policy. |
 | info | `Cancelling N turns after the grace period of …` | A stop that cut running turns off. |
@@ -363,15 +406,19 @@ panics.
 
 ## Telemetry
 
-Install `ActorTelemetry` (`cicada-otel`, README, OpenTelemetry) to get a span per turn and the metrics
-`cicada.turn.duration` and `cicada.message.lag`. Useful signals:
+Add `ActorTelemetry` (`cicada-otel`, README, OpenTelemetry) to a node with `observe` to get a span per turn and the
+metrics `cicada.turn.duration` and `cicada.message.lag`. Useful signals:
 
 - **Lag** (`cicada.message.lag`) rising for one type: too few nodes host it, `concurrency` is too low, or its turns
   got slower. A message is claimed at most `poll_interval` late when nodes are idle.
-- **Failed turns** (`cicada.turn.duration` count with `cicada.outcome="failed"`), by type.
+- **Failed turns** (`cicada.turn.duration` count with `cicada.outcome="failed"`), by type. Each such span has an
+  `exception` event with the error, whatever failed: the handler, a timeout, a message or a state that does not decode,
+  a rejected commit, or the claim limit (`claim limit: …`).
 - **Retries** (`cicada.outcome="rescheduled"`) climbing: a dependency is failing and senders' retry policies are
-  absorbing it.
-- **Abandoned turns** (spans with `cicada.outcome="abandoned"`): turns that lost their lease or were cut off by a stop.
+  absorbing it. These spans have an `exception` event too.
+- **Abandoned turns** (spans with `cicada.outcome="abandoned"`): turns of which the node saw no commit succeed. They
+  lost their lease, were cut off by a stop, or their commit did not get through. They have no `exception` event, also
+  when their handler failed; each one that another claim replaces is a lost claim of its message.
 - Mailbox depth is not a metric (it needs a store query); `GET /stats?prefix=` counts the actors and pending messages
   under a prefix and names the delivery time of the oldest due message, and `GET /messages?prefix=` lists them. A
   call reads every row under the prefix, so poll it rarely, and with a prefix on a big store.

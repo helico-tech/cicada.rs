@@ -7,6 +7,96 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.11.0 — unreleased
+
+A breaking release: one turn observer in place of the plugin API, and the claim limit (ADR 0018, ADR 0025). An observer
+watches the turns of a node start and end and has no say in them. A message counts its lost claims, and a node fails a
+message whose turns keep dying instead of claiming it again for ever; the guarantee G4 names that limit. The store
+schema goes to version 6 with a migration that is not additive, a message gains a field, and the view of a message
+over HTTP gains `lostClaims`. Nodes of 0.10.0 and 0.11.0 must not share a database.
+
+### Upgrading
+
+1. Stop every node of 0.10.0. Then start the nodes of 0.11.0; the first one migrates the database. A node of 0.10.0
+   that keeps running counts no lost claim, and on PostgreSQL its statements fail on the changed table until their
+   connections are replaced. Clients of 0.10.0 keep working: they ignore the new field `lostClaims`.
+2. Replace `install(plugin)` by `observe(observer)`. A plugin of your own becomes a `TurnObserver`: `on_claim` becomes
+   `turn_started`, `on_outcome` becomes `turn_ended` of the value it returns, and what `on_handler_error` saw is the
+   error of the outcome. Code that read `Turn::attributes` has no replacement, and neither has a plugin that refused
+   turns in `on_claim`: an observer has no say.
+3. Remove `CrashLoopGuard`. Set `NodeConfig::max_lost_claims` if 5 is not what you want. A node that had no guard now
+   has a limit.
+4. Code that builds a `Message` by hand adds `lost_claims: 0`; code that builds a `NodeConfig` field by field adds
+   `max_lost_claims`.
+5. A watcher that matches on the error of a `Failed`: the guard's text is gone; the limit's starts with `claim limit:`.
+
+### Changed (breaking)
+
+- `Plugin`, `Attributes`, the three hook contexts (`ClaimContext`, `HandlerErrorContext`, `OutcomeContext`),
+  `HookResult`, `TurnInfo`, `ActorSystemBuilder::install` and `Turn::attributes` are removed, with the module
+  `cicada::plugin`. `HandlerFailure` leaves the public API. The start problem for a plugin that is installed twice
+  goes.
+- `CrashLoopGuard` and `CrashLoopError` of `cicada-extras` are removed. The core has a claim limit in their place,
+  `NodeConfig::max_lost_claims`, `Some(5)` by default: a message with that many lost claims ends `failed` with the
+  error `claim limit: <n> lost claims`, without running its handler and without asking its retry policy, and a watch
+  sees it. A claim is lost when another claim takes its place although its turn neither committed nor gave the lease
+  back. `None` turns the limit off and `Some(0)` fails the start. A node that had no guard now has a limit. `NodeConfig`
+  gets a public field. G4 says that a handler runs again only when its turn ended without a commit, and that a message
+  whose claims were lost as often as the claim limit allows ends `failed`, whether or not its handler ever ran.
+- A message counts its lost claims: `lost_claims`, a field of `Message` (code that builds one by hand adds it) and a
+  column of both stores, and `lostClaims` in the view of a message over HTTP, read as 0 when a view lacks it. The claim
+  that replaces a lease that ran out, which no commit, release, cancel or purge cleared, writes it. Nothing else changes
+  it, and it never goes back. The wide table of `cicada get messages` has the column `LOST`, and the facts of a message
+  in the terminal UI the line `Lost claims`.
+- Migration 6 adds the column `messages.lost_claims`, 0 for every message that exists, so no message starts with lost
+  claims from before it. It is not additive: every node of 0.10.0 is stopped before the first node of 0.11.0 starts.
+- The sample service no longer reads `CRASH_LOOP_LIMIT`; it runs with the default limit.
+
+### Added
+
+- The module `cicada::observer`: the trait `TurnObserver`, added to a node with `ActorSystemBuilder::observe`, any
+  number of times. `turn_started` is called once a message is claimed, before anything is decoded or run, with the
+  actor, the message as claimed and the store time of the claim (`TurnStart`), and returns an `ObservedTurn`, whose
+  `turn_ended` is told the committed outcome and the messages the commit sent (`TurnEnd`) once the commit succeeded,
+  also the `failed` that the node committed in place of a rejected or refused commit. A value dropped without that call
+  means that the node saw no commit of the turn succeed. `()` is an `ObservedTurn` that is told nothing; an `Arc` of an
+  observer is an observer. The methods are plain functions, not async. Observers are called in the order they were
+  added; a panic in one is caught and logged, and the turn goes on as if that observer were not there. A message that
+  the claim limit fails is told to the observers after its commit, start and end together.
+- ADR 0025 records the claim limit, what counts as a lost claim and why a release does not.
+
+### Telemetry
+
+- `ActorTelemetry` of `cicada-otel` is an observer: `ActorSystem::builder(store).observe(ActorTelemetry::global())`.
+  Its spans, attributes and metrics stay.
+- A turn that ends `failed` or is rescheduled now always has an `exception` event with the error, written from the
+  outcome. A failure that is not the handler's (a rejected commit, a message or a state that cannot be decoded, a
+  timeout, the claim limit) used to set the error status of the span without an event; now it writes the event too, so
+  telemetry shows more `exception` events than before. A handler that failed in a turn whose commit then does not get
+  through leaves a span that is `abandoned` and has no `exception` event; the event used to be written when the handler
+  failed, before the commit.
+- The span of a turn whose state cannot be decoded starts at the claim, like every other span.
+
+### Headers of a send
+
+- A header that an observer adds never fails a send of the handler. One that the limits of a message refuse (a name of
+  more than 200 or a value of more than 4,000 characters, or a NUL character) is left out when it is added, with a
+  warning. A send takes its own headers first and then those of the observers, in the order of their names, as long as
+  the message stays within 64 headers; the ones that do not fit are left out of that message, with a warning, and a
+  trace breaks at that message. A header of a plugin used to count towards the limits, and over a limit the handler's
+  send failed. A header that a send sets itself still keeps its value, and of two observers the one added later wins.
+
+### Internal
+
+- The statements of both SQL stores name the columns they read; none reads with `*`. On PostgreSQL a statement that a
+  connection has prepared then keeps working when a later migration adds a column, and on SQLite sqlx no longer crashes
+  its worker in that case, so such a migration can be additive again. A test per store adds a column with a default to
+  every table under an open store.
+- New conformance cases for the count of lost claims on all three stores, upgrade tests from schema version 5, the
+  randomised comparison of the stores compares the count (155 of 400 generated lists reach such a claim), and the
+  simulation of nodes under faults runs its nodes with a claim limit of 2 and checks that a message fails at the limit
+  only after two lost claims and without a handler run for that claim.
+
 ## 0.10.0 — 2026-11-12
 
 A breaking release: control effects (ADR 0018, ADR 0024). A turn can pause, resume, purge and delete another actor, in

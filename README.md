@@ -23,13 +23,13 @@ summarised [below](#decisions).
 
 | Crate | Contents |
 | --- | --- |
-| `cicada` | Addressing (`ActorAddress`, `ActorRef`, `TypeName`), the definition API (the `Actor` trait), the runtime and dispatch loop (`ActorSystem`) with per-message retry (`RetryPolicy`) and retention (`Retention`), watches (`Turn::watch`, `Failed`, `Stopped`), the store (`Store`), plugin hooks, contracts and JSON Schemas, the HTTP wire model (`cicada::api`). No HTTP server. Each store is a cargo feature, none on by default: `sqlite` (`Store::sqlite`: one file, WAL, one writer; for a single node or a few processes on one host) and `postgres` (`Store::postgres`: `FOR UPDATE SKIP LOCKED` claims, `LISTEN/NOTIFY` wake-ups; for many nodes). The feature `testing` is the test support that `cicada-test` exports. |
+| `cicada` | Addressing (`ActorAddress`, `ActorRef`, `TypeName`), the definition API (the `Actor` trait), the runtime and dispatch loop (`ActorSystem`) with per-message retry (`RetryPolicy`) and retention (`Retention`) and the claim limit (`NodeConfig::max_lost_claims`), watches (`Turn::watch`, `Failed`, `Stopped`), the store (`Store`), turn observers (`TurnObserver`), contracts and JSON Schemas, the HTTP wire model (`cicada::api`). No HTTP server. Each store is a cargo feature, none on by default: `sqlite` (`Store::sqlite`: one file, WAL, one writer; for a single node or a few processes on one host) and `postgres` (`Store::postgres`: `FOR UPDATE SKIP LOCKED` claims, `LISTEN/NOTIFY` wake-ups; for many nodes). The feature `testing` is the test support that `cicada-test` exports. |
 | `cicada-axum` | `actor_api()` (the whole API), `actor_api_read()` (only what reads) and `actor_health()` (a public readiness check) as axum routers. |
 | `cicada-client` | `ActorClient`: typed HTTP client (reqwest) for remote callers, idempotent sends. |
 | `cicada-cli` | The binary `cicada`: kubectl-style commands and a k9s-style terminal UI over the HTTP API; see [Command line and terminal UI](#command-line-and-terminal-ui). |
 | `cicada-test` | `TestActors` on the in-memory store (`Store::memory`), virtual time, `claim_and_abandon` (a node that dies), contract snapshots and state samples. |
-| `cicada-extras` | Building blocks on the public API, no core changes: `CrashLoopGuard`, dead letters (`DeadLettersActor`, `FailureWatcher`), `Schedule`. |
-| `cicada-otel` | `ActorTelemetry`: OpenTelemetry traces and metrics per turn, a plugin on the OpenTelemetry API. |
+| `cicada-extras` | Building blocks on the public API, no core changes: dead letters (`DeadLettersActor`, `FailureWatcher`), `Schedule`. |
+| `cicada-otel` | `ActorTelemetry`: OpenTelemetry traces and metrics per turn, an observer on the OpenTelemetry API. |
 | `examples` (`cicada-examples`) | Ten worked examples, each tested with `TestActors`; see [Examples](#examples). |
 | `sample-service` | A runnable node hosting the examples, configured by environment variables. |
 
@@ -189,10 +189,10 @@ Inside a handler, `turn` offers:
 
 - `self_ref()` (the typed ref), `self_address()`, `state()`, `state_mut()` and `set_state(..)` (taking the state
   mutably marks it written; it is stored at commit);
-- `message()`, the envelope: `id`, `to`, `from`, `message_type`, `payload`, `attempt`, `failures`, `last_error`,
-  `retry`, `retention`, `caused_by`, `deliver_at`, `correlation_id`, `headers`;
-- `now()` (store time at claim; it does not move during the turn), `current_time()` (`now` plus the time the turn has
-  run so far), `attributes()` (shared with plugins);
+- `message()`, the envelope: `id`, `to`, `from`, `message_type`, `payload`, `attempt`, `failures`, `lost_claims`,
+  `last_error`, `retry`, `retention`, `caused_by`, `deliver_at`, `correlation_id`, `headers`;
+- `now()` (store time at claim; it does not move during the turn) and `current_time()` (`now` plus the time the turn
+  has run so far);
 - `send(&ref, msg)`, `send_with(&ref, msg, SendOptions)` and `send_self(..)` / `send_self_with(..)`. `SendOptions`
   sets `delay` or `at`, `correlation_id`, `header`, `retry`, `retention` and `id`. Each returns the new message's id.
 - `send_to(&address, &msg, options).await` and `send_raw(&address, type, payload, options).await` for raw addresses
@@ -543,14 +543,14 @@ request's path and query as `instance`.
 | `GET /actors/{type}/{key}/children?cursor=&limit=` — the direct children's addresses, in address order, paged | 200 | 404 |
 | `GET /actors?prefix=&cursor=&limit=` — instance addresses, paged | 200 | |
 | `POST /actors/{type}/{key}/messages` body `{id?, type, payload?, deliverAt? \| delay?, correlationId?, headers?, retry?, retention?}` — send | 202 `{id, deliverAt}`; 200 that id was already accepted (same target and type) | 400 invalid `retry` or `retention` policy; 404 `no-such-type` when no registered type matches the target, also when the actor exists; 404 `no-such-instance` when its type is registered and the actor does not exist; 409 id already used for another target or type; 422 unknown message type, undecodable payload (hosting node only) |
-| `GET /actors/{type}/{key}/mailbox?cursor=&limit=` — pending mailbox in delivery order, each with `attempt`, `failures`, `lastError`, `retry` and `state` (`running` or `pending`) | 200 | 404 |
+| `GET /actors/{type}/{key}/mailbox?cursor=&limit=` — pending mailbox in delivery order, each with `attempt`, `failures`, `lostClaims`, `lastError`, `retry` and `state` (`running` or `pending`) | 200 | 404 |
 | `POST /actors/{type}/{key}/mailbox/pause` — pause: messages queue up, no new turn is started, a running turn finishes | 204 | 404 |
 | `POST /actors/{type}/{key}/mailbox/resume` — resume a paused actor | 204 | 404 |
 | `POST /actors/{type}/{key}/mailbox/purge` — every pending message except one being handled ends `purged`; the actor stays | 200 `{purged}` | 404 |
 | `GET /actors/{type}/{key}/turn` — the running turn: message, node, lease expiry, `cancelRequested` | 200 | 404 `no-running-turn` |
 | `POST /actors/{type}/{key}/turn/cancel` — ask the owning node to cancel the running turn, within one heartbeat; the message ends `cancelled`, without effects | 202 | 404 `no-running-turn` |
 | `GET /messages?prefix=&cursor=&limit=` — pending messages of every instance under the prefix (including running ones), instance by instance in address order, each in delivery order | 200 | |
-| `GET /messages/{id}` — status, error, `failures` and `lastError`, node and lease while running, envelope (with `retry`, `retention`, `causedBy` and `notification`, true for a notification of a watch) | 200 | 404 unknown, past retention, or removed by its retention policy |
+| `GET /messages/{id}` — status, error, `failures` and `lastError`, node and lease while running, envelope (with `lostClaims`, `retry`, `retention`, `causedBy` and `notification`, true for a notification of a watch) | 200 | 404 unknown, past retention, or removed by its retention policy |
 | `POST /messages/{id}/cancel` — cancel a pending message (a running turn is stopped with `turn/cancel`) | 204 | 404; 409 running or already finished |
 | `POST /messages/{id}/retry` — send a `failed` or `cancelled` message again: a new message with a new id, same target, type, payload, correlation id, headers, retry and retention, `causedBy` the original | 202 `{id, deliverAt}` | 404 unknown, past retention or removed by its retention policy; 404 `no-such-instance` when the target is gone; 409 `message-not-retryable` for a pending, running, done or purged message |
 | `POST /messages/{id}/deliver-now` — make a pending, not running message due at once, at a new place in delivery order | 200 message | 404; 409 running or already finished |
@@ -736,9 +736,10 @@ assert!(test.failures().await.is_empty());
 `run_until_idle_max`, `pending_at`, `list(prefix)`, `exists`, `state_json`, `version`, `outcome(&message)`, `now`,
 `clock`, `system()` for anything else (every `ActorSystem` call) and `store()`, the in-memory `Store`, to build a
 second system on it. The builder's `with(|node| …)` configures the node like `ActorSystem::builder` (hosted types,
-plugins, `default_max_turn`, …); `start_at` and `retention` set the store's start time and retention. A test that
+observers, `default_max_turn`, …); `start_at` and `retention` set the store's start time and retention. A test that
 plays a node which claims a turn and dies calls `claim_and_abandon(test.store(), &types, lease, limit)`: the message
-is claimed again, as its next attempt, once the lease runs out. A test without `TestActors` opens the in-memory store
+is claimed again, as its next attempt, once the lease runs out. That claim is lost, so a message abandoned as often as
+the [claim limit](#claim-limit) allows ends `failed`. A test without `TestActors` opens the in-memory store
 with `Store::memory()`, `Store::memory_on(clock)` or `Store::memory_with(clock, retention)`. Nothing runs in the background: turns run only inside
 `run_until_idle` and `advance_time_by`.
 
@@ -799,7 +800,7 @@ Decoding is all it checks: a sample whose renamed field is now ignored still dec
 ## Retry
 
 Retry is part of a message's **delivery**, set by its **sender** next to the delivery time — like a workflow engine's
-caller choosing the retry policy of an activity. Actor types and plugins do not configure it, and a message sent
+caller choosing the retry policy of an activity. Actor types and observers do not configure it, and a message sent
 without a policy is never retried: a handler that fails ends it `failed`.
 
 <!-- doctest
@@ -865,21 +866,21 @@ message; deleting or stopping the instance purges it.
 - **The receiver's veto.** A handler that returns `HandlerError::permanent(reason)` (or `turn.fail(reason)`, the same
   thing) ends the message `failed` at once with that reason, whatever the policy. `HandlerError::permanent_from(err)`
   keeps the cause.
-- **Not retried:** undecodable state, a message that cannot be decoded (no handler runs, so no `on_handler_error`
-  either; it ends `failed` with the reason), a failing `on_claim` hook, and commits rejected by the store (e.g. a send to
-  an absent instance).
+- **Not retried:** undecodable state, a message that cannot be decoded (no handler runs; it ends `failed` with the
+  reason), a message at the [claim limit](#claim-limit), and commits rejected by the store (e.g. a send to an absent
+  instance).
 - **Timeouts.** A run cut off at its maximum turn is a failure retried per policy. A handler that blocks its thread
   past the maximum (code that does not yield) is waited for; it is retried only if it then fails with an ordinary
   error. If it returns `Ok` or vetoes, the message ends `failed` with `timeout`, never re-run.
 - **Counting.** `message().failures` counts failed runs (this run is attempt `failures + 1`); `message().attempt`
-  counts claims, including crash recoveries, which do not use up an attempt.
+  counts claims, including crash recoveries, which do not use up an attempt; `message().lost_claims` counts the claims
+  that were lost, which the [claim limit](#claim-limit) caps.
 - **Forwarding.** `message().retry` is the incoming policy; pass it on with
   `SendOptions { retry: turn.message().retry.clone(), ..SendOptions::new() }`.
 - **Dedup.** A resend with an id that was already accepted is `200` / `SendResult::Duplicate` when target and type
   match, as before; a different `retry` on it is ignored, like a different payload — the first accepted send stands.
-- **Hooks.** The runtime decides retry-or-fail first; then `on_handler_error` hooks run and see the decision
-  (`will_retry`, `retry_delay`). They observe only. `on_outcome` sees `TurnOutcome::Rescheduled` for each retried
-  run.
+- **Observers.** An [observer](#observers) is told the end of each retried run as `TurnOutcome::Rescheduled`, with the
+  error and the delivery of the retry, and the end of the last as `failed`. It observes only.
 - **Unreadable policies.** A stored or served policy that a node or client cannot decode (a backoff kind of a newer
   version, a damaged row) is logged as a warning and read as no policy: the message is handled without retry, and
   claims, status reads and listings keep working.
@@ -887,6 +888,41 @@ message; deleting or stopping the instance purges it.
   ends `failed` with the handler's error and the refusal.
 
 `RetryPolicy` and `Retention` have JSON Schemas, so a message or state may carry one as a field.
+
+## Claim limit
+
+A message that kills its node (out of memory, `std::process::exit`, an abort) would otherwise be claimed again for
+ever, and take a node down each time. The core caps it (ADR 0025): a message counts its **lost claims**, and a node
+that claims a message with as many lost claims as its limit, 5 by default, does not run it. It commits the message
+`failed` with the error `claim limit: <n> lost claims`, without asking its retry policy, and its watchers are told with
+a `Failed`, as for any failure.
+
+A claim is lost when another claim takes its place although its turn neither committed nor gave the lease back: its
+node died or was killed, its lease ran out (a long pause, a partition), or its commit did not get through. The claim
+that replaces such a lease counts it, in the message's `lost_claims` (`lostClaims` over HTTP). A node that stops in good
+order and gives its claims back loses none, and neither does a failed run that is committed as a retry. The count never
+goes back, also not after a retry; a message sent again (`POST /messages/{id}/retry`) is a new message with none.
+
+<!-- doctest
+# use cicada::ActorSystem;
+# use cicada::runtime::NodeConfig;
+# fn node(store: cicada::Store) {
+@@5
+# }
+-->
+```rust
+let config = NodeConfig {
+    max_lost_claims: Some(10), // None turns the limit off
+    ..NodeConfig::default()
+};
+let system = ActorSystem::builder(store).config(config).build();
+```
+
+The limit cannot tell the message that kills a node from the messages that ran beside it: each of them loses its claim
+when the node dies, and they all reach the limit together. Their errors name the limit, so they can be sent again; the
+one that fails again is the cause. A watcher can tell such a failure from a failure of a handler by the start of the
+error, `claim limit:`, though a handler can return an error that starts the same.
+[docs/operations.md](docs/operations.md) says what counts in practice and how to choose a limit.
 
 ## Message persistence
 
@@ -1153,6 +1189,7 @@ Node settings are the fields of `NodeConfig`, passed to the builder:
 | `shutdown_grace_period` | 30 s | Running turns may finish on stop; then they are cancelled and their leases released. |
 | `shutdown_cancel_timeout` | 5 s | How long a cancelled turn may take to end before it is left to its lease. |
 | `sweep_interval` | 1 h | Deletion of expired outcomes. |
+| `max_lost_claims` | `Some(5)` | The [claim limit](#claim-limit): a message with this many lost claims ends `failed` without running; `None` turns it off, `Some(0)` fails the start. Set one value on every node. |
 
 Handlers run on the tokio runtime that called `start`; there is no separate handler pool (see
 [Blocking code](#define-an-actor-type)).
@@ -1204,7 +1241,6 @@ the examples and the end-to-end actors, with the API and the readiness check; se
 | `CONCURRENCY` | maximum concurrent turns | 16 |
 | `FAILURE_WATCHER_INTERVAL` | poll interval of the dead-letter watcher (group `supervision`) | `10s` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | when set, traces and metrics go there over OTLP (`ActorTelemetry`); only HTTP/protobuf, so `OTEL_EXPORTER_OTLP_PROTOCOL` must be unset or `http/protobuf` | — |
-| `CRASH_LOOP_LIMIT` | when set, `CrashLoopGuard` fails a message after this many claims without a commit | — |
 
 The root `docker-compose.yml` starts a PostgreSQL for development and tests
 (`postgres://cicada:cicada@localhost:55432/cicada`).
@@ -1306,28 +1342,29 @@ Decisions, as ADRs in [docs/adr/](docs/adr/):
 | [0009](docs/adr/0009-one-baseline-schema.md) | The six early migrations are merged into one schema at version 1. |
 | [0010](docs/adr/0010-openspec-for-work-tracking.md) | Changes, designs and tasks live in `openspec/` (OpenSpec). |
 | [0011](docs/adr/0011-library-only.md) | A library only: the console (`cicada-ui`) and container handles (`cicada-docker`) are removed. |
-| [0012](docs/adr/0012-slimmer-api-and-wire-format.md) | A slimmer API and wire format: plugins observe, one way to configure and send, ISO-8601 durations only, twelve endpoints. |
+| [0012](docs/adr/0012-slimmer-api-and-wire-format.md) | A slimmer API and wire format: turn hooks that only observe (replaced by one observer in 0018), one way to configure and send, ISO-8601 durations only, twelve endpoints. |
 | [0013](docs/adr/0013-type-and-key-addresses.md) | Actors are addressed by type name and key (`sync/acme`) instead of URIs. |
 | [0014](docs/adr/0014-management-reads-and-type-removal.md) | Management reads over HTTP (outcomes, stats, caused-by) and removing a type's registration. |
 | [0015](docs/adr/0015-operator-actions.md) | Operator actions: node table, cancelling a running turn, pausing and purging a mailbox, retrying a message, bulk actions; the store refuses creates of an unregistered type. |
 | [0016](docs/adr/0016-releases-are-tags.md) | A release is a tag on `main` with one version for the workspace; a release passes all checks first and never moves. |
 | [0017](docs/adr/0017-contracts-ignore-descriptions-and-stores-refuse-foreign-databases.md) | A contract hash leaves out the schemas' descriptions (the published contract keeps them); the SQLite store refuses a database that holds other tables. |
-| [0018](docs/adr/0018-a-smaller-core-layers-and-watches.md) | A smaller core (every actor has state, one-name keys, one turn observer instead of plugins, no public store trait), layers above it (`cicada-app`, `cicada-actors`), JSON Schema checks at the HTTP door, watches and control effects. |
+| [0018](docs/adr/0018-a-smaller-core-layers-and-watches.md) | A smaller core (every actor has state, one-name keys, one turn observer in place of three hooks, no public store trait), layers above it (`cicada-app`, `cicada-actors`), JSON Schema checks at the HTTP door, watches and control effects. |
 | [0019](docs/adr/0019-child-actors.md) | Child actors: an actor may have a parent, the actor whose turn created it, and removing the parent removes what it owns. |
 | [0020](docs/adr/0020-the-change-loop.md) | The change loop: one order of changes, each described with the owner one ahead, built and validated in the background, and released when it lands. |
 | [0021](docs/adr/0021-a-key-is-one-name.md) | A key is one name: a ref is written as one string or a unit, a `:` is an ordinary character, contracts hold no key fields, and a database is upgraded in place. |
 | [0022](docs/adr/0022-typed-errors-and-no-such-type.md) | Typed errors: a named error per module, a start error with a problem per cause (a contract conflict is its own case), a send to an unregistered type answers `404 no-such-type`, and a migration that violates a constraint is an invalid store. |
 | [0023](docs/adr/0023-the-rules-of-a-watch.md) | The rules of a watch: notifications in the watcher's own family, a type target at a dot and `*` for every type (failures only), `Stopped` with its cause and `by`, a notification marked and named after its event, and G2 and G4 that name the notifications. |
 | [0024](docs/adr/0024-control-effects.md) | Control effects: a turn pauses, resumes, purges and deletes another actor with the meaning of the operator's calls, an effect on an actor that is not there does nothing, a turn cannot delete itself or an ancestor, deletes come before creates (a restart), and G1, G2 and S7 that say so. |
+| [0025](docs/adr/0025-the-claim-limit.md) | The claim limit: a message counts its lost claims (a claim that another claim replaced although its turn neither committed nor gave the lease back), a node fails a message with as many as its limit (5 by default) through a commit that tells its watchers, and G4 that names the limit. |
 
 Design questions and their answers:
 
 | Question | Decision |
 | --- | --- |
-| Crash loops | No claim limit in the core; `attempt` is on the envelope and in `/messages/{id}`. `CrashLoopGuard` is opt-in. |
+| Crash loops | The claim limit in the core, on by default (ADR 0025): a message with 5 lost claims ends `failed`; `lostClaims` is on the envelope and in `/messages/{id}`. |
 | Contract changes | Strict contract-hash equality; a node with a different contract for a registered type name fails to start. Contracts include the generated schemas, so a schemars upgrade can change hashes. Doc comments (`description`) do not count in the hash. |
 | State evolution | No migrations; changes must be additive with defaults (`#[serde(default)]`). |
-| Plugin data | `headers` on the envelope; `correlation_id` is kept (the HTTP contract uses it). |
+| Observer data | `headers` on the envelope, which an observer may add to a turn's sends; `correlation_id` is kept (the HTTP contract uses it). |
 | Send to an absent instance inside a turn | The whole turn fails at commit: outcome `failed` with the reason, no effects. |
 | Admin delete | Allowed: `DELETE /actors/{type}/{key}`. |
 | One-way messaging | Kept; no ask/await. |
@@ -1338,7 +1375,7 @@ Design notes:
 - **Definitions are checked by the compiler.** One `handle` with an exhaustive `match` over the messages its ref
   names, which are declared once, on the ref (ADR 0003, ADR 0018). Handlers return `Result<(), HandlerError>`:
   `HandlerError::permanent` / `turn.fail(..)` refuse further retries, and a panic is caught and treated as a failure
-  (`panic: …`). `Attributes` are keyed by type.
+  (`panic: …`).
 - **The host owns the node.** The host builds an `ActorSystem`, calls `start` and `stop` itself, merges `actor_api()`
   into its router, and owns the store. `actor_api()` takes the `ActorSystem` itself, so it cannot be mounted without a
   node.
@@ -1346,26 +1383,27 @@ Design notes:
   it holds a runtime worker thread meanwhile; when every worker is blocked, heartbeats and the dispatch loop stall too.
   Run blocking work in `spawn_blocking`. A handler still running well after its maximum turn or a lost lease is logged
   as a warning.
-- **Validation at construction.** `CrashLoopGuard::new(0)` and `DeadLettersActor::with_capacity(0)` return an `Err`
-  instead of failing node start (a plugin has no validation hook). `RetryPolicy::new`, `Backoff::*`, `Keep::last`,
+- **Validation at construction.** `DeadLettersActor::with_capacity(0)` returns an `Err` instead of failing node start.
+  `RetryPolicy::new`, `Backoff::*`, `Keep::last`,
   `Keep::keep_for` and `Schedule::*` return `Result` too. A function of the core returns a named error of its module
   (`RetryError`, `RetentionError`, `IdError`, `MessageError`, `ContractError`, `DefinitionError`, `RequestError`) that
   implements `std::error::Error`, so `?` carries it into `anyhow` or an error of the host (ADR 0022).
 - **Plain `Timestamp` and `MessageId` in state.** chrono's serde form is the contract's instant format, and both types
   have JSON Schemas, so states and messages hold them without attributes (issue 0701). `RetryPolicy` and `Retention`
   have JSON Schemas too (issue 0200).
-- **Telemetry.** The OpenTelemetry SDK for Rust exports every span it drops, so the span of a turn that never commits
-  is ended and exported with `cicada.outcome` = `abandoned` (issue 0600). The W3C propagator's empty `tracestate` is
-  left out.
+- **Telemetry.** The OpenTelemetry SDK for Rust exports every span it drops, so the span of a turn whose observed value
+  the node drops without an end is ended and exported with `cicada.outcome` = `abandoned` (issue 0600). The W3C
+  propagator's empty `tracestate` is left out.
 - **PostgreSQL settings.** Connection parameters go in the URL; no type of the SQL driver is in the public API, so a
   setting a URL cannot carry is added to `PostgresOptions` when a host needs it (ADR 0018). `socket_timeout` bounds a whole transaction attempt (the
   connection is then closed), not every read, because sqlx has no per-read timeout.
 - **Cancelling `run_due_turns`.** Dropping its future cancels the turns like a node stop after the grace period: the
   worker is stopped first, then the lease is released only when the handler had not ended, and claims that arrive
   after the caller is gone are released.
-- **Errors.** Error texts use Rust names (`max_uncommitted_claims must be at least 1`); a SQLite file of a
-  newer schema is refused with `StoreError::Invalid`.
+- **Errors.** Error texts use Rust names (`max_lost_claims must be at least 1, or None for no limit`); a SQLite file
+  of a newer schema is refused with `StoreError::Invalid`.
 
-Known limitations: no claim limit for crash loops without `CrashLoopGuard`; external side effects are at-least-once
-(use `message().id` as idempotency key, also across retries); a commit rejected because of the handler's own sends is
-not retryable; the client has no streaming of message status (poll `GET /messages/{id}`).
+Known limitations: the claim limit cannot tell the message that kills a node from the messages that ran beside it,
+and a node killed hard as a matter of routine (a deploy that sends SIGKILL) loses the claims of its turns too; external
+side effects are at-least-once (use `message().id` as idempotency key, also across retries); a commit rejected because
+of the handler's own sends is not retryable; the client has no streaming of message status (poll `GET /messages/{id}`).

@@ -33,7 +33,8 @@ use crate::time::Timestamp;
 
 /// Watches the turns of a node. It has no say in them. Add one with
 /// [`ActorSystemBuilder::observe`](crate::runtime::ActorSystemBuilder::observe); an `Arc` of an observer is an
-/// observer too, so a test can keep a handle.
+/// observer too, so a test can keep a handle. Its methods run on a thread of the runtime, in the turn: one that blocks
+/// holds up that thread and the turn, so it keeps books and hands slow work to a task of its own.
 ///
 /// ```
 /// use cicada::observer::{ObservedTurn, TurnEnd, TurnObserver, TurnStart};

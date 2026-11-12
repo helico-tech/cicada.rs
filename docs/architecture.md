@@ -15,7 +15,7 @@ state plus a mailbox; it occupies memory only while one message is being handled
 | --- | --- | --- |
 | Topology | Embedded peer nodes, one shared store | No coordinator and no cluster protocol. |
 | Runtime | tokio; the HTTP API is an axum `Router` | Services that host actors are tokio services. axum supplies HTTP; the host supplies authentication. |
-| Long work | Lease + heartbeat | A handler may run for minutes. A turn whose node dies is re-run elsewhere. |
+| Long work | Lease + heartbeat | A handler may run for minutes. A turn whose node dies is re-run elsewhere, until its message reaches the claim limit. |
 | Retries | Per message, at dispatch | The sender attaches a retry policy; a failed run puts the same message back until the policy is exhausted. |
 | Validation | The serializer (serde) is the only validator | JSON Schemas are generated (schemars) and published, never used to validate. |
 | Messaging | One-way send only | A reply is an ordinary send to the sender's address. |
@@ -35,15 +35,17 @@ state plus a mailbox; it occupies memory only while one message is being handled
 | Watch | A stored pair of a target and a watcher (ADR 0018, ADR 0023). The target is one actor (`type/key`), the types under a prefix that ends at a dot (`billing` matches `billing` and `billing.invoices`, not `billings`), or every type (`*`); it need not exist, and the watch survives its delete and re-create. A turn sets and removes the watches of its own actor (`turn.watch`, `turn.unwatch`); `ActorSystem`, HTTP and the command line do so from outside. |
 | Watcher | The actor a watch tells. Its message family declares `Failed(cicada::Failed)` and `Stopped(cicada::Stopped)`, or a watch of it is refused. Removing a watcher removes its watches; the watches on it as a target stay. |
 | Notification | A `Failed` or a `Stopped` that the store writes into a watcher's mailbox in the transaction of the event, one per watcher and actor, marked (`notification`) and named after the event's id (`<event>.0`, `<event>.1`, …). A `Failed` says that a message to a watched actor ended `failed`; a `Stopped`, that an actor watched by its address went away (`stopped`, `deleted`, or with its `parent`). A notification that fails tells nobody. |
-| Message | A typed envelope addressed to one instance, with a delivery time. |
+| Message | A typed envelope addressed to one instance, with a delivery time. The store counts its claims (`attempt`), its failed runs that were retried (`failures`) and its lost claims (`lostClaims`). |
 | Mailbox | An instance's pending messages, ordered by delivery time. |
 | Turn | One handling of one message: claim, load, run handler, commit. |
 | Effects | What a handler produces: new state, sends, creates (independent or child), cancels, watches, stop, and control effects: pause, resume, purge and delete of another actor, and pause, resume and purge of its own (ADR 0024). Buffered until commit. |
 | Commit | The single atomic write that applies a turn's effects, completes its message and writes the notifications of its event. It applies them in a fixed order: watches, outcome, cancels, deletes, creates, purges, pauses and resumes, sends, state, release of the lease, notifications. |
 | Lease | A node's exclusive, time-limited right to run a turn for one instance. |
 | Epoch | Per-instance counter, increased on every claim. The fencing token for commits. |
+| Lost claim | A claim that another claim replaced although its turn neither committed nor gave the lease back: its node died, its lease ran out, or its commit did not get through. The claim that replaces it adds 1 to the `lostClaims` of its message, which never goes back (ADR 0025). |
+| Claim limit | The most lost claims a node lets a message have (`NodeConfig::max_lost_claims`, 5 by default): a message with that many ends `failed` when the node claims it, without running (ADR 0025). |
 | Outcome | The terminal result of a message: `done`, `failed`, `cancelled` or `purged`. |
-| Plugin | An optional extension that observes a turn through three hooks and may refuse it at claim. It never changes what a turn commits, except that it may add headers to the turn's sends. The core uses none. |
+| Observer | Code added to a node (`TurnObserver`) that is told when each of its turns starts and, once its commit succeeded, how it ended; a turn without a commit that the node saw succeed is dropped instead. It cannot refuse a turn or change what it commits, except that it may add headers to the turn's sends (ADR 0018). The core uses none. |
 
 ## Guarantees
 
@@ -52,7 +54,7 @@ state plus a mailbox; it occupies memory only while one message is being handled
 | G1 Serial | Turns of one instance never overlap, and at most one turn commits per epoch. An instance is one life of an address, from its create to its removal: a handler of an earlier life may still run for a moment after the actor was deleted and created again, and it commits nothing (ADR 0024). |
 | G2 Atomic | State change, creates, sends, watches, the control of other actors (pauses, resumes, purges and deletes), message completion and the notifications of the event (a message that ends `failed`, an actor that goes away) happen all together or not at all. |
 | G3 One outcome | Every accepted message reaches exactly one outcome. None is lost; none completes twice. |
-| G4 Effects once | Effects inside the system, notifications included, are exactly-once. Handler execution and external side effects are at-least-once, and repeat only after a node dies mid-turn. |
+| G4 Effects once | Effects inside the system, notifications included, are exactly-once. Handler execution and external side effects are at-least-once: a handler runs again only when its turn ended without a commit. A message whose claims were lost as often as the claim limit allows ends `failed`, whether or not its handler ever ran (ADR 0025). |
 | G5 Order | Per instance, delivery follows `(deliverAt, seq)` and never happens early. |
 | G6 No hidden retry | The runtime never re-runs a handler that returned. It re-runs a handler that failed only when the message's own retry policy asks for it. |
 
@@ -81,7 +83,7 @@ store of the tests (feature `testing`). A host opens one as the public type `Sto
 | S10 Retention | Outcomes are kept for a configured period, which is also the dedup window. A message's retention policy can hide its outcome earlier or keep it longer; a minimal record stays for the whole dedup window. |
 
 The SQL schema (tables `actor_types`, `actors`, `messages`, `outcomes`, `watches`, plus sequences) is versioned and
-migrated when a store opens a database; it is at version 5. `actors.state` is required in both stores, so a store
+migrated when a store opens a database; it is at version 6. `actors.state` is required in both stores, so a store
 refuses an instance without a state. Migration 2 gave every instance without a state the state `{}` and removed the
 registrations without a state schema (types that were stateless before ADR 0018). Migration 3 removed every
 registration, because key fields left every contract, and rewrote `%3A` to `:` in `actors.address`,
@@ -89,16 +91,23 @@ registration, because key fields left every contract, and rewrote `%3A` to `:` i
 added the nullable column `actors.parent` and the index `actors_parent (parent, address)` (ADR 0019); every existing
 actor is independent. It has no foreign key: the store removes a tree itself, as every removed mailbox needs its
 `purged` outcomes. Migration 5 added the table `watches (target, watcher)`, both the primary key, with an index on
-`(watcher, target)`, and the column `messages.notification` (ADR 0023); no existing message is a notification. Unlike
-the first, these four are not additive: every node of the previous version is stopped before the first new one starts (a
-node of version 3 that keeps running deletes a parent without its children; one of version 4 writes no notifications).
+`(watcher, target)`, and the column `messages.notification` (ADR 0023); no existing message is a notification.
+Migration 6 added the column `messages.lost_claims` (ADR 0025); no existing message has a lost claim. Unlike the first,
+these five are not additive: every node of the previous version is stopped before the first new one starts (a node of
+version 3 that keeps running deletes a parent without its children; one of version 4 writes no notifications; one of
+version 5 counts no lost claim, and on PostgreSQL its statements that read with `*` fail on the changed table). From
+version 6 on both stores name the columns they read, so a later migration that only adds a column with a default can be
+additive again.
 The SQLite store sets up only a new or empty database: one without a schema version that already holds tables belongs to
 another program, and opening it fails and leaves it as it was (ADR 0017).
 
 ## Turn semantics
 
 1. **Claim.** A node atomically takes the lease of an instance that has a due head message and no valid lease. Epoch
-   and `attempt` each increase by 1.
+   and `attempt` each increase by 1. When the instance still holds a lease that ran out and that nothing cleared, the
+   claim counts it lost: the message of that lease, still pending, gets `lostClaims` + 1. A message with as many lost
+   claims as the node's claim limit is not loaded or run: the node commits it `failed` (see the table). Then the node
+   tells its observers that the turn starts.
 2. **Load.** State, the own ref and the message are decoded. If the message cannot be decoded (a type name the family
    does not have, or a payload that does not fit), no handler runs: the message ends `failed` with the reason, never
    retried, and the state stays as it was.
@@ -155,12 +164,14 @@ then of the watcher.
 | Commit rejected: a send targets an absent instance (also one the turn deletes and does not create), a child create names an actor that exists with another parent or none, or a delete names an ancestor of the turn's actor | `failed`, reason recorded | None |
 | Turn exceeds its maximum duration and is cut off | As a failing handler: retried by the policy, else `failed` (`timeout`) | None |
 | Handler returned, but only after its maximum duration (blocking code) | `failed` (`timeout`), never retried | None |
-| Node dies or loses the lease before commit | None; message stays pending | None |
+| Node dies or loses the lease before commit, or its commit does not get through | None; message stays pending, and the claim that replaces the lease counts a lost claim | None |
+| Node stops in good order before the handler ended | None; the lease is released, the message stays pending and the claim is not lost | None |
+| A node claims a message with as many lost claims as its claim limit (ADR 0025) | `failed` (`claim limit: <n> lost claims`), no handler runs, the retry policy is not asked | None |
 | Turn stops its instance | `done` for the turn's message; `purged` for the other pending messages of the instance and of its descendants | Applied, then the instance and its descendants are removed |
 | Instance deleted, from outside or by another actor's turn, or an ancestor of it deleted or stopped | `purged` for all still-pending messages, including one being handled; a turn running on it commits nothing, and a create afterwards starts a new instance | — |
 | Another actor's turn purges the instance | `purged` for every pending message except one being handled | — |
 | Admin cancels a pending message | `cancelled` | — |
-| Admin cancels a running turn, before its handler ended | `cancelled` at the owning node's next heartbeat, no retry; the mailbox moves on. A handler stops at its next `.await`; blocking code runs until it returns, and the commit is then `cancelled` rather than done (`on_outcome` sees it, `on_handler_error` does not run). A request after the handler ended is ignored (G6) | None |
+| Admin cancels a running turn, before its handler ended | `cancelled` at the owning node's next heartbeat, no retry; the mailbox moves on. A handler stops at its next `.await`; blocking code runs until it returns, and the commit is then `cancelled` rather than done (an observer is told `cancelled`). A request after the handler ended is ignored (G6) | None |
 | Admin purges a mailbox | `purged` for every pending message except one being handled | — |
 
 Every row that ends a message `failed` tells the actor's watchers with a `Failed`, unless the message is itself a
@@ -168,9 +179,12 @@ notification; every row that removes actors tells the watchers of each removed a
 
 ### How the runtime maps to tokio
 
-Each claimed turn is a task with three children: *work* (load, `on_claim`, the handler under `tokio::time::timeout`,
-checks), *keeper* (heartbeat at a third of the TTL, plus a watchdog on the local lease deadline; it aborts
-*work* when the lease is lost) and *overtime* (warns about handlers that do not yield). The turn task awaits *work* and
+Each claimed turn is a task. It checks the claim limit first (a message at the limit is committed `failed` and only
+then are the observers told its start and its end), calls `turn_started` of each observer, and spawns three children:
+*work* (load, the handler under `tokio::time::timeout`, checks), *keeper* (heartbeat at a third of the TTL, plus a
+watchdog on the local lease deadline; it aborts *work* when the lease is lost) and *overtime* (warns about handlers that
+do not yield). The observers' values are told the outcome after a commit succeeded, or dropped; their methods are plain
+functions that run on the turn task, and a panic in one is caught and logged. The turn task awaits *work* and
 then commits while the keeper keeps renewing. Cancellation is tokio's: an aborted future stops at its next `.await`, so
 a handler blocked in synchronous code keeps its turn until it returns. Blocking work belongs in `spawn_blocking`. A cancelled turn (node stop after the grace period,
 or a dropped `run_due_turns` future) aborts *work*, waits for it to stop, and releases its lease only if the handler
@@ -216,13 +230,13 @@ impl Actor for SyncActor {
 
 | Crate | Contents |
 | --- | --- |
-| `cicada` | Addressing, definition API, runtime and dispatch loop, watches, the store (`Store` and its model; the backend trait is private), contracts and schemas, retry and retention policies, the HTTP wire model (`api`, shared by server and client). Behind features: the SQLite store (`sqlite`; sqlx, one file, WAL, one writer), the PostgreSQL store (`postgres`; sqlx, `FOR UPDATE SKIP LOCKED` claims, `LISTEN/NOTIFY` wake-ups) and the test support (`testing`: the in-memory store, clocks, `TestActors`, `claim_and_abandon`). Its tests hold the S1–S10 conformance suite every backend runs and the randomised tests: parsers, backend comparison, and a node simulation under injected faults |
+| `cicada` | Addressing, definition API, runtime and dispatch loop with turn observers and the claim limit, watches, the store (`Store` and its model; the backend trait is private), contracts and schemas, retry and retention policies, the HTTP wire model (`api`, shared by server and client). Behind features: the SQLite store (`sqlite`; sqlx, one file, WAL, one writer), the PostgreSQL store (`postgres`; sqlx, `FOR UPDATE SKIP LOCKED` claims, `LISTEN/NOTIFY` wake-ups) and the test support (`testing`: the in-memory store, clocks, `TestActors`, `claim_and_abandon`). Its tests hold the S1–S10 conformance suite every backend runs and the randomised tests: parsers, backend comparison, and a node simulation under injected faults |
 | `cicada-test` | Exports the test support of `cicada` (`TestActors`, clocks, `claim_and_abandon`); contract snapshots and state samples |
 | `cicada-axum` | `actor_api()`, `actor_api_read()` and `actor_health()` as axum routers, and the OpenAPI document |
 | `cicada-client` | Typed HTTP client (reqwest) |
 | `cicada-cli` | The binary `cicada`: commands and a terminal UI over the HTTP API, through `cicada-client`; no library crate depends on it |
-| `cicada-otel` | OpenTelemetry plugin |
-| `cicada-extras` | Schedules (interval, daily), crash-loop guard, failure watcher, dead letters |
+| `cicada-otel` | OpenTelemetry observer (`ActorTelemetry`) |
+| `cicada-extras` | Schedules (interval, daily), failure watcher, dead letters |
 | `examples` | Worked examples with tests |
 | `sample-service` | A runnable node (binary) with the examples, used by end-to-end tests |
 | `e2e` (`cicada-e2e`) | End-to-end and fault tests: sample nodes in Docker on PostgreSQL and SQLite, driven over HTTP (`CICADA_E2E=1`) |
