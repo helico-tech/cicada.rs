@@ -70,20 +70,26 @@ async fn the_system_is_the_in_process_sdk_next_to_the_api() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_non_hosting_node_accepts_any_payload_which_then_ends_failed_if_it_does_not_decode() {
+async fn a_non_hosting_node_checks_the_schema_and_a_payload_that_only_the_decoder_refuses_ends_failed() {
     let store = memory_store();
     let a = actor_api(node_with(store.clone(), |b| b.host(CounterActor)).await);
     let b = actor_api(node_with(store, |b| b).await);
-    // State is only decoded where the type is hosted.
-    assert_eq!(
-        put(&a, "/actors/counter/x", r#"{"state": {"total": "x"}}"#).await.status,
-        StatusCode::UNPROCESSABLE_ENTITY
-    );
+    // Every node checks a state against its schema; only a hosting node also decodes it.
+    for app in [&a, &b] {
+        let bad_state = put(app, "/actors/counter/x", r#"{"state": {"total": "x"}}"#).await;
+        assert_eq!(bad_state.status, StatusCode::UNPROCESSABLE_ENTITY);
+    }
     assert_eq!(put(&b, "/actors/counter/c", r#"{"state": {}}"#).await.status, StatusCode::CREATED);
 
+    // Every node checks a payload against its schema ...
     let bad = r#"{"type": "Add", "payload": {"n": "not a number"}}"#;
-    assert_eq!(post(&a, "/actors/counter/c/messages", bad).await.status, StatusCode::UNPROCESSABLE_ENTITY);
-    let id = send_id(&b, "/actors/counter/c/messages", bad).await;
+    for app in [&a, &b] {
+        assert_eq!(post(app, "/actors/counter/c/messages", bad).await.status, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    // ... and only a hosting node decodes it: an i32 too large passes the schema.
+    let too_large = r#"{"type": "Add", "payload": {"n": 3000000000}}"#;
+    assert_eq!(post(&a, "/actors/counter/c/messages", too_large).await.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let id = send_id(&b, "/actors/counter/c/messages", too_large).await;
 
     // The type name is still checked by any node, through the TypeRegistry.
     assert_eq!(

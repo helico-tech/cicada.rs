@@ -16,14 +16,14 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
 
 ## 2. The door
 
-- [ ] 2.1 The validator [3, 4, 6, 8]: the dependency `boon` in `cicada-axum` only, and one private function that
+- [x] 2.1 The validator [3, 4, 6, 8]: the dependency `boon` in `cicada-axum` only, and one private function that
       checks a value against a schema: draft 2020-12, a loader that refuses every address, no format asserted, the
       detail of decision 8. A schema that cannot be used is not enforced, and warned about once for each such
       schema. Verify: unit tests for the scenarios "Two places that do not match", "A field inside an optional
       part", "More than five places", "A schema that refers to a file" (with a file that exists, and the test shows
       it is not read) and "A schema with a pattern the validator does not know"; a test that a bad `date-time`
       passes; and `cargo tree -p cicada -e normal` does not name `boon`.
-- [ ] 2.2 The handlers [1, 5, 7]: a send and a create call the checked calls with the validator. Both refusals answer
+- [x] 2.2 The handlers [1, 5, 7]: a send and a create call the checked calls with the validator. Both refusals answer
       `422` with the problem types they have; the detail says which check refused. Verify, in the HTTP tests of
       `cicada-axum`, with a node that hosts the type and one that does not on one store: tests for the scenarios "A
       node that does not host the type", "A node that hosts the type", "A payload that matches", "A field that the
@@ -33,10 +33,10 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
       payload that the schema allows and the type cannot decode", "The same payload on a node that does not host
       the type", "A state that the schema allows and the type cannot decode"; "A date that is not a date", "A state
       schema that cannot be used"; and of `undecodable-messages` "A send with a payload that does not fit".
-- [ ] 2.3 The sample checks [9]: `assert_message_sample` and `assert_state_sample`, public in `cicada-axum`. Verify:
+- [x] 2.3 The sample checks [9]: `assert_message_sample` and `assert_state_sample`, public in `cicada-axum`. Verify:
       tests for the scenarios "A sample that passes both", "A sample that only the decoder accepts", "A sample that
       only the schema accepts", "A state sample" and "A schema that cannot be used".
-- [ ] 2.4 The repository's own types [9]: sample checks for the types of the examples, of `cicada-extras` and of the
+- [x] 2.4 The repository's own types [9]: sample checks for the types of the examples, of `cicada-extras` and of the
       sample service, and for `Failed` and `Stopped` in a watcher's family: what each type serialises passes both.
       Where a schema refuses what its type writes, the schema is made right. Verify: the checks pass; the report
       lists every type whose schema changed, and the changelog names each as a contract change.

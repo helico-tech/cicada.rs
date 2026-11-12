@@ -18,10 +18,12 @@ use cicada::runtime::{BulkResult, RetryResult, WatchResult};
 use cicada::store::{CancelResult, DeleteResult, DeliverNowResult, MessageId, NodeId, RemoveTypeResult};
 use cicada::{ActorAddress, CreateActorResult, SendOptions, SendResult};
 use futures::FutureExt;
+use serde_json::Value;
 
 use crate::Api;
 use crate::problem::{ApiError, ApiProblem, json, panicked};
 use crate::request::{self, Params};
+use crate::schema_check;
 
 type Shared = State<Arc<Api>>;
 type Outcome = Result<Response, ApiError>;
@@ -112,7 +114,9 @@ pub(crate) async fn put_actor(State(api): Shared, req: Request) -> Response {
             ApiProblem::bad_request(r#"A create needs a body with the initial state: {"state": ...}"#)
         })?;
         let response = |created| CreateActorResponse { address: address.clone(), created };
-        match api.system.create_actor(&address, body.state).await? {
+        let what = format!("the state of {}", address.type_name());
+        let check = |schema: &Value, state: &Value| schema_check::check(schema, state, &what);
+        match api.system.create_actor_checked(&address, body.state, &check).await? {
             CreateActorResult::Created => Ok(json(StatusCode::CREATED, &response(true))),
             CreateActorResult::Exists(_) => Ok(json(StatusCode::OK, &response(false))),
             CreateActorResult::NoSuchType => Err(no_such_type(&address).into()),
@@ -275,7 +279,9 @@ async fn send(api: &Api, address: ActorAddress, req: Request) -> Outcome {
         retention: body.retention,
         id: Some(id.clone()),
     };
-    match api.system.send_message(&address, &body.message_type, body.payload, options).await? {
+    let what = format!("message type '{}' of {}", body.message_type, address.type_name());
+    let check = |schema: &Value, payload: &Value| schema_check::check(schema, payload, &what);
+    match api.system.send_message_checked(&address, &body.message_type, body.payload, options, &check).await? {
         SendResult::Accepted(m) => {
             Ok(json(StatusCode::ACCEPTED, &SendResponse { id: m.id, deliver_at: Some(m.deliver_at) }))
         }
@@ -297,7 +303,7 @@ async fn send(api: &Api, address: ActorAddress, req: Request) -> Outcome {
             format!("{type_name} does not accept message type '{message_type}'"),
         )
         .into()),
-        // The error names the message type and says why already.
+        // The error names the message type and says which check refused it and why already.
         SendResult::InvalidPayload { error, .. } => {
             Err(unprocessable(problem_types::INVALID_PAYLOAD, "Invalid payload", error).into())
         }

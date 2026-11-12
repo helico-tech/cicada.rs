@@ -66,6 +66,7 @@ mod handlers;
 mod problem;
 mod request;
 mod routes;
+mod schema_check;
 
 use std::sync::Arc;
 
@@ -75,6 +76,7 @@ use cicada::ActorSystem;
 
 use routes::Access;
 pub use routes::openapi_document;
+pub use schema_check::{assert_message_sample, assert_state_sample};
 
 /// Largest accepted `limit` of a paged listing.
 pub const MAX_PAGE_SIZE: usize = 1000;

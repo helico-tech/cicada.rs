@@ -9,8 +9,9 @@ publish.workspace = true
 
 [dependencies]
 aide.workspace = true
-cicada.workspace = true
 axum.workspace = true
+boon.workspace = true
+cicada.workspace = true
 futures.workspace = true
 schemars.workspace = true
 tokio.workspace = true
