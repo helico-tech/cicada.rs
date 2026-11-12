@@ -18,6 +18,14 @@ A payload and a state are JSON, and JSON can nest. Three things go wrong with a 
 
 Over HTTP the schema check is safe since `json-schema-at-the-http-door`: it runs on a stack of its own.
 
+Two more costs of a value were measured in the same validation. They are in proportion to the size of the body,
+so they are no way to end a node with one request, but the factor is large:
+
+- **Reading a body costs up to about 90 times its size.** A body of 1 MiB that is a list of 520,000 numbers takes
+  about 90 MB as JSON values, before any check runs.
+- **The decoder of a hosting node copies a payload before it decodes it,** about 17 times the body for a list of
+  short items.
+
 ## What Changes
 
 - **BREAKING** A payload and a state may be nested only so deep. A deeper value is refused like every other value
@@ -33,6 +41,8 @@ To decide in the design:
 - The limit. It must be below what a parser reads less the levels of the deepest view, and low enough for a
   decoder in a debug build, or the decode gets a stack of its own as the schema check has.
 - Whether values that are stored today and are deeper than the limit need anything.
+- Whether the two costs in proportion to the body need anything: a limit on the number of values in a body, a
+  decoder that does not copy, or only a line in the operations guide on the size of a body.
 
 ## Capabilities
 
