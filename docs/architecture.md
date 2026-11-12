@@ -251,7 +251,8 @@ types of `cicada::api`, used by both `cicada-axum` and `cicada-client`; request 
 key is `400`). A payload and the state of a create are checked against the registered JSON Schema of their message type
 or state on every node, whether or not it hosts the type, and refused with `422 invalid-payload` or `422 invalid-state`;
 a node that hosts the type then decodes them with serde, with the same answer, and the detail says which check refused
-(ADR 0026). The check asks only whether a value matches: a refusal by the schema names no place, and a node that hosts
-the type adds the decoder's reason. A send that repeats the id of a message that is pending, or whose outcome is still
-shown, is answered as a repeat before it is checked. The check asserts no `format`, loads nothing from outside the
-schema, and does not enforce a schema that the validator cannot compile; JSON that code sends is not checked.
+(ADR 0026). The check asks only whether a value matches: a refusal by the schema names no place, is the same on every
+node, and nothing runs after it, not even the decoder of a hosting node. A send that repeats the id of a message that is
+pending, or whose outcome is still shown, is answered as a repeat before it is checked. The check asserts no `format`,
+loads nothing from outside the schema, and does not enforce a schema that the validator cannot compile; JSON that code
+sends is not checked.

@@ -169,7 +169,7 @@ serde refuses, and that is a fault of the type that the sample check finds.
 
 Both refusals answer `422` with the problem type `invalid-payload`, and for a state `invalid-state`, as the decoder
 does today. The detail says which check refused it: "does not match the registered schema", with no place (decision
-8), or "cannot be decoded" with serde's reason, which a hosting node also adds after a refusal by the schema.
+8), or "cannot be decoded" with serde's reason, for a value that the schema accepts.
 
 **This departs from ADR 0018, which says `400` (review).** ADR 0026 records it.
 
@@ -205,18 +205,22 @@ shapes a type allows at each level and how deep they nest, which a host's type d
 
 `is_valid` builds no error: it took at most 1.5 ms in every case, to 120 levels.
 
-A node that hosts the type adds the decoder's reason. When the schema refuses a value, that node also asks the decoder,
-and when the decoder refuses the value too, its reason follows: "… GET /types/counter has it. Payload of 'Add' cannot be
-decoded: invalid type: string "x", expected i32". The decoder is linear in the value. The status and the problem type
-are the same on every node; only the detail of a hosting node says more. A value that the schema refuses and the decoder
-accepts (a field under an alias, a form only a hand-written decoder takes) gets the sentence alone.
+A node that hosts the type adds nothing (validation, round 6). The round before, a hosting node asked the decoder
+after a refusal by the schema and added its reason; that softening was taken out again, because serde's decoder is not
+linear for an untagged enum: a tree of an untagged enum whose variants share a field, with one wrong leaf, took 9.9 s at
+24 levels (326 bytes) on the hosting node and doubled per level, while the other node answered in 0.1 ms; and at 126
+levels it ended the process of a test build in the decoder. So after a refusal by the schema nothing else runs, on any
+node, and the detail is the one sentence everywhere. A value that the schema refuses never meets the decoder, which is
+better than 0.11.0, where a hosting node decodes every payload at the door. A value that the schema accepts is still
+decoded on a hosting node (decision 7), with the faults the decoder has today; the proposal `value-depth-limit` records
+those.
 
 The sample checks still name the first place that does not match: they run on a developer's own samples, in a test,
 where a slow answer costs nothing but time. Their docs say that naming a place can be slow for a deep value of a type
 with several shapes.
 
-A detail is cut at 2,000 characters and then ends with the mark " … (cut)" (validation): the decoder's reason may quote
-the value (second validation).
+A detail is cut at 2,000 characters and then ends with the mark " … (cut)" (validation): the reason of the decoder, for
+a value that the schema accepts, may quote the value (second validation).
 
 ### 9. The sample checks are in `cicada-axum`
 
@@ -292,8 +296,8 @@ as strict as before. A thread that cannot be started fails the request with `500
   signs.
 - A schema is compiled for each request (decision 10).
 - `jsonschema` brings 26 crates into `cicada-axum`, none into the core (decision 3).
-- The detail of a refusal by the schema names no place; a client finds it with the schema from `GET /types/{name}`,
-  or in the decoder's reason that a node hosting the type adds (decision 8).
+- The detail of a refusal by the schema names no place, on any node; a client finds it with the schema from
+  `GET /types/{name}`, or with the sample checks in its tests (decision 8).
 - The answer departs from ADR 0018 in its status (decision 7).
 
 ## Migration Plan

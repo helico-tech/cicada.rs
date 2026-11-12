@@ -17,7 +17,7 @@ does not match SHALL be refused with `422` and the problem type `invalid-payload
 #### Scenario: A node that hosts the type
 
 - **WHEN** the same send goes to a node that hosts the type
-- **THEN** the answer is `422 invalid-payload`, as on the other node, and the detail adds the decoder's reason
+- **THEN** the answer is `422 invalid-payload`, with the same detail
 
 #### Scenario: A payload that matches
 
@@ -32,8 +32,7 @@ does not match SHALL be refused with `422` and the problem type `invalid-payload
 #### Scenario: A required field is missing
 
 - **WHEN** a client sends a payload without a field that the schema requires
-- **THEN** the answer is `422 invalid-payload` on every node, and on a node that hosts the type the decoder's reason in
-  the detail names the field
+- **THEN** the answer is `422 invalid-payload`, with the same detail on every node
 
 #### Scenario: A message type the contract does not have
 
@@ -85,10 +84,9 @@ against the schema. It SHALL get the answer of a repeated send.
 
 ### Requirement: A hosting node also decodes, with the same answer
 
-A node that hosts the type SHALL decode the payload or the state as today, and SHALL refuse one that does not decode
-with `422` and the same problem type. When the schema refuses the value, a node that hosts the type SHALL also ask the
-decoder, and when the decoder refuses it too, the detail SHALL add the decoder's reason; the status and the problem
-type are the same on every node. The detail SHALL say which of the two checks refused the value.
+A node that hosts the type SHALL decode a payload or a state that the schema accepts, as today, and SHALL refuse one
+that does not decode with `422` and the same problem type. After a refusal by the schema it SHALL run no decoder. The
+detail SHALL say which of the two checks refused the value.
 
 #### Scenario: A payload that the schema allows and the type cannot decode
 
@@ -110,15 +108,15 @@ type are the same on every node. The detail SHALL say which of the two checks re
 ### Requirement: The detail of a refusal says where and why
 
 The detail of a refusal by the schema SHALL say that the payload of the message type, or the state, does not match the
-registered schema, and that `GET /types/{name}` has the schema. It SHALL name no place of the value, quote nothing of
-it and hold no address of the schema. A detail SHALL be at most 2,000 characters: a longer one SHALL be cut and SHALL
-end with a mark that says so.
+registered schema, and that `GET /types/{name}` has the schema, and SHALL be the same on every node. It SHALL name no
+place of the value, quote nothing of it and hold no address of the schema. A detail SHALL be at most 2,000 characters: a
+longer one SHALL be cut and SHALL end with a mark that says so.
 
 #### Scenario: Two places that do not match
 
 - **WHEN** a client sends a payload with two fields of the wrong kind
-- **THEN** the detail on a node that does not host the type names the message type and the schema and no field, and
-  the detail on a node that hosts the type adds the decoder's reason, which names the first field it could not decode
+- **THEN** the detail names the message type and the schema and no field, on a node that hosts the type and on one
+  that does not
 
 #### Scenario: A field inside an optional part
 
@@ -137,11 +135,11 @@ end with a mark that says so.
 - **THEN** the answer is `422 invalid-payload`, and the detail is 2,000 characters long and ends with the mark that it
   was cut
 
-### Requirement: A refused request costs time and memory in proportion to its size
+### Requirement: A refusal by the schema costs time and memory in proportion to the size of the request
 
-The check of a payload or a state SHALL ask only whether the value matches. A refused request SHALL cost time and
-memory in proportion to its size, not to the number of places that do not match, nor to the number of shapes the
-value could have at each level.
+The check of a payload or a state SHALL ask only whether the value matches, and nothing SHALL run after a refusal. A
+refusal by the schema SHALL cost time and memory in proportion to the size of the request, not to the number of places
+that do not match, nor to the number of shapes the value could have at each level.
 
 #### Scenario: A request with many mismatches
 
@@ -154,8 +152,9 @@ value could have at each level.
 #### Scenario: A small nested value with one mistake
 
 - **WHEN** a client sends a payload, or creates an actor with a state, that is an expression 30 deep of an enum whose
-  variants share the names of their fields, with one wrong leaf, to a node that hosts the type and to one that does not
-- **THEN** the answer is `422` within seconds
+  variants share the names of their fields, or a tree 24 deep of an untagged enum whose variants share a field, with
+  one wrong leaf, to a node that hosts the type and to one that does not
+- **THEN** the answer is `422` at once on both
 
 ### Requirement: The check uses nothing outside the schema, and asserts no format
 
@@ -193,8 +192,8 @@ any other value, on every node, and the check SHALL NOT end the process.
 
 - **WHEN** a client sends a payload of 126 levels of a type that refers to itself, in a body of 127 levels, once
   matching the schema and once with mismatches at every level, to a node that hosts the type and to one that does not
-- **THEN** both nodes answer `202` for the first, which is then handled, and `422 invalid-payload` for the second,
-  the hosting node's detail with the decoder's reason, and a body one level deeper is `400`
+- **THEN** both nodes answer `202` for the first, which is then handled, and `422 invalid-payload` with the same detail
+  for the second, and a body one level deeper is `400`
 
 #### Scenario: A type with several schema steps between its levels
 

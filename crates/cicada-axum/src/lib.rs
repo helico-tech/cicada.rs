@@ -48,10 +48,10 @@
 //! invalid-payload` or `422 invalid-state`; a node that hosts the type then decodes them with serde, with the same
 //! answer. The detail says which check refused. A refusal by the schema names no place (`Payload of 'Add' does not
 //! match the registered schema; GET /types/counter has it`): the check asks only whether the value matches, so a
-//! refused request costs time and memory in proportion to its size. A node that hosts the type adds the decoder's
-//! reason. A send that repeats an id it finds pending or still shown is answered as a repeat first. The check, with the
-//! validator `jsonschema` on draft 2020-12, asserts no `format`, loads nothing from outside the schema, and lets
-//! through what a schema it cannot compile would check, with a warning once per schema.
+//! refused request costs time and memory in proportion to its size. Nothing else runs after a refusal, not even the
+//! decoder of a node that hosts the type. A send that repeats an id it finds pending or still shown is answered as a
+//! repeat first. The check, with the validator `jsonschema` on draft 2020-12, asserts no `format`, loads nothing from
+//! outside the schema, and lets through what a schema it cannot compile would check, with a warning once per schema.
 //! [`assert_message_sample`] and [`assert_state_sample`] test a sample against both the schema and serde.
 //!
 //! **Paths.** The actor `sync/acme` is `/actors/sync/acme`; its key is written exactly as in the address.

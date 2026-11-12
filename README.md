@@ -604,14 +604,13 @@ can appear on both, so deduplicate by id.
 A send and a create over HTTP are checked against the registered JSON Schema of their type, on every node, whether or
 not the node hosts the type (ADR 0026): the payload against the schema of its message type, the state of a create
 against the state schema. One that does not match is refused with `422 invalid-payload` or `422 invalid-state`, and
-nothing is stored. A node that hosts the type then decodes it with serde as well, with the same answer. The detail
-says which check refused it. A refusal by the schema names no place and quotes nothing of the value: `Payload of 'Add'
-does not match the registered schema; GET /types/counter has it`. The check asks the validator only whether the value
-matches, as finding a place can cost time and memory without bound for a type with several shapes, so a refused
-request costs time and memory in proportion to its size. A node that hosts the type adds the decoder's reason when the
-decoder refuses the value too: `… GET /types/counter has it. Payload of 'Add' cannot be decoded: invalid type: string
-"x", expected i32`; the status and the problem type are the same on every node. A detail is cut at 2,000 characters
-with the mark ` … (cut)`.
+nothing is stored. A node that hosts the type also decodes a value that the schema accepts, with serde, with the same
+answer. The detail says which check refused it. A refusal by the schema names no place and quotes nothing of the
+value, and is the same on every node: `Payload of 'Add' does not match the registered schema; GET /types/counter has
+it`. The check asks the validator only whether the value matches, as finding a place can cost time and memory without
+bound for a type with several shapes, and after a refusal nothing else runs, not even the decoder of a hosting node, so
+a refusal by the schema costs time and memory in proportion to the size of the request. The sample checks name the
+first place that does not match. A detail is cut at 2,000 characters with the mark ` … (cut)`.
 
 The order of the checks stays: a send that repeats the id of a message that is pending, or whose outcome is still
 shown, is answered as a repeat (`200`) before it is checked; an unknown message type is `422 unknown-message-type`.

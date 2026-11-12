@@ -556,13 +556,13 @@ pub mod problem_types {
     /// 500: an unexpected error in the node; not retryable as such.
     pub const INTERNAL_ERROR: &str = "urn:cicada:problem:internal-error";
     /// 422: the state of a create is `null`, does not match the registered state schema (every node; the detail names
-    /// no place), or cannot be decoded (hosting node, which adds the decoder's reason); the detail says which check
+    /// no place, the same on every node), or matches and cannot be decoded (hosting node); the detail says which check
     /// refused it.
     pub const INVALID_STATE: &str = "urn:cicada:problem:invalid-state";
     /// 422: the target type does not accept this message type name.
     pub const UNKNOWN_MESSAGE_TYPE: &str = "urn:cicada:problem:unknown-message-type";
     /// 422: the payload does not match the registered schema of its message type (every node; the detail names no
-    /// place), or cannot be decoded (hosting node, which adds the decoder's reason); the detail says which check
+    /// place, the same on every node), or matches and cannot be decoded (hosting node); the detail says which check
     /// refused it.
     pub const INVALID_PAYLOAD: &str = "urn:cicada:problem:invalid-payload";
     /// 422: the watcher's type may not watch: its message family does not declare `Failed` and `Stopped` with the

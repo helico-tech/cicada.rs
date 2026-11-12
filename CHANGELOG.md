@@ -38,13 +38,13 @@ and 0.12.0 can share a database, and during a rolling deploy a node of 0.11.0 st
   `PUT /actors/{type}/{key}` the state against the state schema of the registered contract, on every node. A refusal is
   `422 invalid-payload` or `422 invalid-state` and stores nothing. Its detail names no place and quotes nothing of
   the value: `Payload of 'Add' does not match the registered schema; GET /types/counter has it`, or `State does not
-  match the registered schema; …`. The check asks only whether the value matches, so a refused request costs time and
-  memory in proportion to its size, whatever the type. A node that hosts the type then decodes with serde as before;
-  when the schema refused the value and the decoder refuses it too, the decoder's reason follows (`… has it. Payload
-  of 'Add' cannot be decoded: invalid type: string "x", expected i32`), so the detail of a payload that does not fit
-  names the schema first now. The status and the problem type are the same on every node. A detail is cut at 2,000
-  characters (`MAX_REFUSAL_DETAIL`) and then ends with ` … (cut)`, as the decoder's reason may quote the value; a
-  decoder's detail had no limit before.
+  match the registered schema; …`, the same on every node. The check asks only whether the value matches, and after
+  a refusal nothing else runs, so a refusal by the schema costs time and memory in proportion to the size of the
+  request, whatever the type. A node that hosts the type no longer gives the decoder's reason for a payload or a state
+  that the schema refuses (`Payload of 'Add' cannot be decoded: …` until now): it decodes only what the schema accepts,
+  as serde's decoder is not linear for every type. The sample checks name the first place that does not match. A
+  detail is cut at 2,000 characters (`MAX_REFUSAL_DETAIL`) and then ends with ` … (cut)`, as the reason of the decoder
+  may quote the value; a decoder's detail had no limit before.
 - Every payload and state is checked on a thread of its own with a stack of 64 MiB (address space; only the pages the
   check touches are used), so that the validator's recursion over a type that refers to itself, up to the 126 levels
   that the JSON parser of a request lets through, cannot overflow the stack of a thread of the runtime. The thread
@@ -65,13 +65,14 @@ and 0.12.0 can share a database, and during a rolling deploy a node of 0.11.0 st
   the decoder, so that a state that does not match gets the same answer on every node; a node that hosts a singleton
   answered `invalid-address` for a create of another name with a bad state, and answers `invalid-state` now. Its
   refusal is `SendResult::InvalidPayload` or `CreateActorResult::InvalidState` with "… does not match the registered
-  schema; GET /types/… has it", and on a hosting node the decoder's reason after it. `send_message` and `create_actor`
-  are these with a check that accepts everything. The core has no validator.
+  schema; GET /types/… has it", and nothing else runs. `send_message` and `create_actor` are these with a check that
+  accepts everything. The core has no validator.
 - `cicada::runtime::MAX_REFUSAL_DETAIL` (2,000): the most characters of the detail of a refused payload or state, by a
   check or by the decoder of a hosting node; a longer one is cut and ends with ` … (cut)`.
 - `cicada_axum::assert_message_sample::<M>(&sample)` and `assert_state_sample::<S>(&sample)`: a sample must pass the
-  registered schema and decode as the type, or the test fails, saying which of the two refused it and why. A schema
-  that the validator cannot use fails too.
+  registered schema and decode as the type, or the test fails, saying which of the two refused it and why, for the
+  schema with the first place that does not match (which the door does not name; it can be slow for a deep value of a
+  type with several shapes). A schema that the validator cannot use fails too.
 - `cicada-axum` depends on the JSON Schema validator `jsonschema` 0.61 without its default features (draft 2020-12,
   set for every schema; no format asserted; no fetching), with 26 crates new to the workspace; no other crate does.
 - ADR 0026 records the check, the status it keeps, the check of a create and what the door does where a schema and
