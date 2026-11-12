@@ -168,6 +168,18 @@ validator cannot use SHALL NOT be enforced: the request goes on as if it matched
 - **WHEN** the registered state schema of a type cannot be compiled, and a client creates an actor of that type
 - **THEN** the actor is created
 
+### Requirement: A value at the deepest level the parser allows is checked like any other
+
+A payload or a state as deep as the JSON parser of a request body lets through SHALL be checked against its schema like
+any other value, on every node, and the check SHALL NOT end the process.
+
+#### Scenario: A value at the deepest level the parser allows
+
+- **WHEN** a client sends a payload of 126 levels of a type that refers to itself, in a body of 127 levels, once
+  matching the schema and once with mismatches at every level, to a node that hosts the type and to one that does not
+- **THEN** both nodes answer `202` for the first, which is then handled, and `422 invalid-payload` with the same detail
+  for the second, and a body one level deeper is `400`
+
 ### Requirement: A host can test its samples against the schema and the decoder
 
 `cicada-axum` SHALL offer `assert_message_sample` and `assert_state_sample`. Each SHALL fail unless its sample

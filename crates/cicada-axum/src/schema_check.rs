@@ -3,7 +3,8 @@
 //!
 //! The validator is `boon`, on draft 2020-12. It asserts no `format`, and loads nothing from outside the schema
 //! document: no file and no network. A schema it cannot compile is not enforced at the door, and a warning names it once
-//! in the life of the process; the sample checks fail on it.
+//! in the life of the process; the sample checks fail on it. A value nested deeper than [`SHALLOW`] levels is checked on
+//! a thread of its own with a larger stack, as the validator recurses per level.
 
 use std::collections::HashSet;
 use std::error::Error;
@@ -41,8 +42,49 @@ impl UrlLoader for NoLoader {
     }
 }
 
-/// Checks `value` against `schema`.
+/// The deepest value that is checked on the calling thread (decision 11). The validator recurses per level of a type
+/// that refers to itself, at about 42 KiB of stack a level in a test build and 11 KiB in a release build, so 24 levels
+/// take half of a default stack of 2 MiB in a test build.
+const SHALLOW: usize = 24;
+
+/// The stack of the thread of its own that checks a deeper value. The JSON parser of a request lets through 127 levels,
+/// the body included, so a payload or a state of at most 126; they take about 5.3 MiB in a test build, and this is six
+/// times that. Only the pages the check touches are used.
+const DEEP_STACK: usize = 32 << 20;
+
+/// Checks `value` against `schema`; a value deeper than [`SHALLOW`] on a thread of its own with [`DEEP_STACK`] of stack,
+/// so that no nesting the parser lets through overflows the stack of a thread of the runtime. Nothing is skipped.
 fn verdict(schema: &Value, value: &Value) -> Verdict {
+    if depth(value) <= SHALLOW {
+        return verdict_here(schema, value);
+    }
+    std::thread::scope(|scope| {
+        let thread = std::thread::Builder::new().name("cicada-deep-check".to_owned()).stack_size(DEEP_STACK);
+        // A thread that cannot be started fails the request (500), as the check must not be skipped.
+        let handle =
+            thread.spawn_scoped(scope, || verdict_here(schema, value)).expect("a thread to check a deep value");
+        handle.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    })
+}
+
+/// The nesting of `value`: 0 for a scalar, 1 for an object or an array of scalars. Without recursion, for any depth.
+fn depth(value: &Value) -> usize {
+    let mut deepest = 0;
+    let mut open = vec![(value, 1)];
+    while let Some((value, level)) = open.pop() {
+        let inner: Box<dyn Iterator<Item = &Value>> = match value {
+            Value::Object(fields) => Box::new(fields.values()),
+            Value::Array(items) => Box::new(items.iter()),
+            _ => continue,
+        };
+        deepest = deepest.max(level);
+        open.extend(inner.filter(|v| v.is_object() || v.is_array()).map(|v| (v, level + 1)));
+    }
+    deepest
+}
+
+/// Checks `value` against `schema` on the calling thread.
+fn verdict_here(schema: &Value, value: &Value) -> Verdict {
     let mut compiler = Compiler::new();
     compiler.set_default_draft(Draft::V2020_12);
     compiler.use_loader(Box::new(NoLoader));
@@ -341,8 +383,7 @@ mod tests {
 
     /// The walk over the errors is linear: a value that refers to itself 100 deep through an `Option`, with 2,000 wrong
     /// items a level (200,000 errors under 100 nested `anyOf`s), is checked in about the time of its validation, some
-    /// 0.2 s in a test build. A walk over every subtree at every level took 5.6 s for it in a release build. The
-    /// unoptimised validator needs more stack for 100 levels than a test thread has, so the test runs on its own thread.
+    /// 0.2 s in a test build. A walk over every subtree at every level took 5.6 s for it in a release build.
     #[test]
     fn a_deep_value_with_many_mismatches_is_checked_in_linear_time() {
         #[derive(serde::Deserialize, JsonSchema)]
@@ -351,20 +392,59 @@ mod tests {
             items: Vec<i32>,
             next: Option<Box<Node>>,
         }
-        let check = || {
-            let mut value = json!({"items": vec!["x"; 2_000], "next": null});
-            for _ in 1..100 {
-                value = json!({"items": vec!["x"; 2_000], "next": value});
+        let mut value = json!({"items": vec!["x"; 2_000], "next": null});
+        for _ in 1..100 {
+            value = json!({"items": vec!["x"; 2_000], "next": value});
+        }
+        let schema = cicada::schema::root_schema::<Node>();
+        let start = std::time::Instant::now();
+        let places = refused(&schema, &value);
+        let took = start.elapsed();
+        assert!(places.starts_with("at /items/0: want integer, but got string; "), "{places}");
+        assert!(places.ends_with("; and 200094 more"), "{places}"); // and the `null` of 99 levels
+        assert!(took < std::time::Duration::from_secs(30), "the check took {took:?}");
+    }
+
+    /// The depth of a value, without recursion.
+    #[test]
+    fn the_depth_of_a_value_counts_its_containers() {
+        assert_eq!(depth(&json!(1)), 0);
+        assert_eq!(depth(&json!({})), 1);
+        assert_eq!(depth(&json!({"a": [1, {"b": []}], "c": "x"})), 4);
+        let mut deep = Value::Null;
+        for _ in 0..100_000 {
+            deep = Value::Array(vec![deep]); // not `json!`, which would copy `deep` by recursion
+        }
+        assert_eq!(depth(&deep), 100_000);
+        std::mem::forget(deep); // dropping it would recurse 100,000 levels
+    }
+
+    /// Scenario: A value at the deepest level the parser allows (decision 11), on an ordinary test thread: 126 levels of a
+    /// type that refers to itself, the deepest payload or state that a request body of 127 levels holds.
+    #[test]
+    fn a_value_at_the_deepest_level_the_parser_allows_is_checked_on_a_stack_of_its_own() {
+        #[derive(serde::Deserialize, JsonSchema)]
+        #[allow(dead_code)]
+        struct Node {
+            items: Vec<i32>,
+            next: Option<Box<Node>>,
+        }
+        let schema = cicada::schema::root_schema::<Node>();
+        for (item, matches) in [(json!(1), true), (json!("x"), false)] {
+            let mut value = json!({"items": [item.clone()], "next": null}); // two levels: the object and its items
+            for _ in 2..126 {
+                value = json!({"items": [item.clone()], "next": value});
             }
-            let schema = cicada::schema::root_schema::<Node>();
-            let start = std::time::Instant::now();
-            let places = refused(&schema, &value);
-            let took = start.elapsed();
-            assert!(places.starts_with("at /items/0: want integer, but got string; "), "{places}");
-            assert!(places.ends_with("; and 200094 more"), "{places}"); // and the `null` of 99 levels
-            assert!(took < std::time::Duration::from_secs(30), "the check took {took:?}");
-        };
-        std::thread::Builder::new().stack_size(256 << 20).spawn(check).unwrap().join().unwrap();
+            assert_eq!(depth(&value), 126);
+            match verdict(&schema, &value) {
+                Verdict::Matches => assert!(matches),
+                Verdict::DoesNotMatch(places) => {
+                    assert!(!matches, "{places}");
+                    assert!(places.starts_with("at /items/0: want integer, but got string; "), "{places}");
+                }
+                other => panic!("{other:?}"),
+            }
+        }
     }
 
     #[test]

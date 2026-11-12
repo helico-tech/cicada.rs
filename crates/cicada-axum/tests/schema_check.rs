@@ -10,6 +10,7 @@ use axum::Router;
 use cicada::api::problem_types as pt;
 use cicada::prelude::*;
 use cicada::retention::Retention;
+use cicada::store::{MessageStatus, OutcomeStatus};
 use cicada::time::Timestamp;
 use cicada_axum::actor_api;
 use common::*;
@@ -17,8 +18,8 @@ use schemars::{Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-/// type `form`: messages that deny unknown fields, carry an instant, a text with a pattern or a shade whose schema is
-/// looser than its decoder, and a state whose schema the validator cannot use.
+/// type `form`: messages that deny unknown fields, carry an instant, a text with a pattern, a shade whose schema is
+/// looser than its decoder or a list that refers to itself, and a state whose schema the validator cannot use.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Form {
     id: String,
@@ -45,6 +46,16 @@ enum FormMsg {
     Paint {
         shade: Shade,
     },
+    Nest {
+        node: Node,
+    },
+}
+
+/// A list that refers to itself through an `Option`.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct Node {
+    items: Vec<i32>,
+    next: Option<Box<Node>>,
 }
 
 /// A unit enum whose schema allows any text, so that only its decoder refuses another name, and quotes it.
@@ -316,4 +327,41 @@ async fn the_detail_of_a_very_long_value_is_cut_with_a_mark() {
     assert_eq!(detail.chars().count(), cicada::runtime::MAX_REFUSAL_DETAIL);
     assert!(detail.starts_with("Payload of 'Paint' cannot be decoded: unknown variant `qqq"), "{detail:.80}");
     assert!(detail.ends_with(" … (cut)"), "{}", &detail[detail.len() - 40..]);
+}
+
+/// The body of a `Nest` whose node has `levels` levels, each with the item `item`: `levels + 3` levels deep (the body,
+/// the payload, the objects of the node and the innermost list of items). Built as text, without recursion.
+fn nest(levels: usize, item: &str) -> String {
+    let mut node = format!(r#"{{"items": [{item}], "next": null}}"#);
+    for _ in 1..levels {
+        node = format!(r#"{{"items": [{item}], "next": {node}}}"#);
+    }
+    format!(r#"{{"type": "Nest", "payload": {{"node": {node}}}}}"#)
+}
+
+/// Scenario: A value at the deepest level the parser allows (decision 11). The body has 127 levels, the most the JSON
+/// parser of a request lets through, so the payload has 126; it is checked on a stack of its own on both nodes, and the
+/// hosting node then decodes it and handles it.
+#[tokio::test(start_paused = true)]
+async fn a_value_at_the_deepest_level_the_parser_allows_is_checked_like_any_other() {
+    let n = nodes().await;
+    put(&n.host, "/actors/form/f", r#"{"state": {}}"#).await;
+    let path = "/actors/form/f/messages";
+    for app in [&n.other, &n.host] {
+        let id = MessageId::new(send_id(app, path, &nest(124, "1")).await).unwrap();
+        // Read through the node: the view of the message over HTTP nests the payload deeper than a parser takes.
+        eventually(async || {
+            let status = n.other_system.status(&id).await.unwrap();
+            matches!(status, Some(MessageStatus::Finished(ref o)) if o.status == OutcomeStatus::Done)
+        })
+        .await;
+    }
+    let host = post(&n.host, path, &nest(124, r#""x""#)).await;
+    let other = post(&n.other, path, &nest(124, r#""x""#)).await;
+    assert_problem(&host, 422, pt::INVALID_PAYLOAD);
+    assert_problem(&other, 422, pt::INVALID_PAYLOAD);
+    assert_eq!(detail(&host), detail(&other));
+    assert!(detail(&host).starts_with("Payload of 'Nest' does not match the schema: at /node/items/0: want integer"));
+    // One level deeper is more than the parser takes.
+    assert_problem(&post(&n.other, path, &nest(125, "1")).await, 400, pt::BAD_REQUEST);
 }
