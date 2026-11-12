@@ -1,7 +1,9 @@
 # actor-addressing Specification
 
 ## Purpose
-TBD - created by archiving change actor-type-and-key. Update Purpose after archive.
+An actor is addressed by its type name and its key, one name, as `type/key`; the address alone
+tells its type. A ref is written as one string or as a unit, so every ref has one address, and the HTTP API
+reaches an actor by the same type and key.
 
 ## Requirements
 

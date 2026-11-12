@@ -1,7 +1,9 @@
 # type-registry Specification
 
 ## Purpose
-TBD - created by archiving change remove-registered-type. Update Purpose after archive.
+The store keeps the contract of each registered type: its schemas, compared by a hash that leaves
+out the descriptions. An operator removes the registration of a type that has no actors, and a send to an
+actor of a type that is not registered answers that there is no such type.
 
 ## Requirements
 

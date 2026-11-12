@@ -1,7 +1,8 @@
 # messages-by-cause Specification
 
 ## Purpose
-TBD - created by archiving change messages-by-cause. Update Purpose after archive.
+Each message records the message whose turn sent it, also in its outcome, so a tool can follow
+a chain both ways: back to what started it, and down to what it caused.
 
 ## Requirements
 

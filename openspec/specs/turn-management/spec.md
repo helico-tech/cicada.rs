@@ -1,7 +1,8 @@
 # turn-management Specification
 
 ## Purpose
-TBD - created by archiving change turn-management. Update Purpose after archive.
+An operator lists the turns that run now and asks the node that runs one to cancel it. No call
+takes a lease away from a running turn.
 
 ## Requirements
 

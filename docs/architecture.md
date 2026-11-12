@@ -1,7 +1,8 @@
 # Architecture
 
 This document is the reference for Cicada's domain language, guarantees G1–G6, store requirements S1–S10 and HTTP
-contract. Decisions are recorded in the ADRs in [adr/](adr/).
+contract. Decisions are recorded in the ADRs in [adr/](adr/README.md); the tests that prove each guarantee are listed
+in [guarantees.md](guarantees.md).
 
 Priorities, in order: simplicity, ease of use, correctness. Throughput is not a goal.
 

@@ -1,7 +1,8 @@
 # management-api Specification
 
 ## Purpose
-TBD - created by archiving change management-api. Update Purpose after archive.
+The HTTP API comes as two routers, one that only reads and one that can change too, and
+publishes an OpenAPI document that describes its routes.
 
 ## Requirements
 

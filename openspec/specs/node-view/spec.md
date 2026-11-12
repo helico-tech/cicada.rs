@@ -1,7 +1,8 @@
 # node-view Specification
 
 ## Purpose
-TBD - created by archiving change node-view. Update Purpose after archive.
+Every node records itself in a node table with a heartbeat, so an operator sees the nodes of a system
+and whether each is alive, suspect or dead. The table is for display only: leases decide who runs what.
 
 ## Requirements
 

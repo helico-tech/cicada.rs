@@ -1,7 +1,8 @@
 # outcomes-listing Specification
 
 ## Purpose
-TBD - created by archiving change outcomes-listing. Update Purpose after archive.
+Finished messages are listed with their envelope and error, by status, prefix and time, for as
+long as their outcomes are kept.
 
 ## Requirements
 

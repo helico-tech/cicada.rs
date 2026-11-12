@@ -1,7 +1,8 @@
 # store-counts Specification
 
 ## Purpose
-TBD - created by archiving change store-counts. Update Purpose after archive.
+An operator counts the actors and pending messages under an address prefix and sees the delivery
+time of the oldest message that is due, so a backlog shows without a listing.
 
 ## Requirements
 

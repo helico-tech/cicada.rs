@@ -27,6 +27,8 @@ cicada-axum.workspace = true
 cicada-client.workspace = true
 cicada-otel.workspace = true
 cicada-test.workspace = true
+# tests/docs.rs writes small trees of Markdown files.
+tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber.workspace = true
 

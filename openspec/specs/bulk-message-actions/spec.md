@@ -1,7 +1,8 @@
 # bulk-message-actions Specification
 
 ## Purpose
-TBD - created by archiving change bulk-message-actions. Update Purpose after archive.
+An operator cancels or retries many messages in one call, chosen by their ids or by a
+filter, and each message is treated as the single action would treat it.
 
 ## Requirements
 

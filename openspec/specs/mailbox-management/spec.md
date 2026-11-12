@@ -1,7 +1,8 @@
 # mailbox-management Specification
 
 ## Purpose
-TBD - created by archiving change mailbox-management. Update Purpose after archive.
+An operator sees which message of a mailbox is running, pauses and resumes an actor so that
+its messages wait, and purges its mailbox.
 
 ## Requirements
 

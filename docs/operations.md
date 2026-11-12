@@ -1,9 +1,11 @@
 # Operating Cicada for Rust
 
 How to size, deploy, upgrade and watch Cicada nodes. The design is in [architecture.md](architecture.md), the API and
-the settings in the [README](../README.md). Settings are `NodeConfig`, `PostgresOptions` and `SqliteOptions`, or the
-flags and `CICADA_…` variables of a binary built from `cicada-app` (README, Run it as a binary); handlers are tokio
-futures, logs go through `tracing`, and the host owns the store and the node's life cycle, or hands them to `App`.
+the settings in the guides of [the core](guide/core.md), [HTTP](guide/http.md) and [the app](guide/app.md).
+Settings are `NodeConfig`, `PostgresOptions` and `SqliteOptions` ([Configuration](guide/core.md#configuration)), or
+the flags and `CICADA_…` variables of a binary built from `cicada-app` ([Run it as a
+binary](guide/app.md#run-it-as-a-binary)); handlers are tokio futures, logs go through `tracing`, and the host owns
+the store and the node's life cycle, or hands them to `App`.
 
 ## Sizing
 
@@ -83,7 +85,7 @@ futures, logs go through `tracing`, and the host owns the store and the node's l
           .config(node)
           .build();
       system.start().await?;
-      // … serve the HTTP API (see the README) …
+      // … serve the HTTP API (see the HTTP guide) …
 
       let mut terminate = signal(SignalKind::terminate())?;
       tokio::select! {
@@ -96,13 +98,15 @@ futures, logs go through `tracing`, and the host owns the store and the node's l
   }
   ```
 
-  When the node serves HTTP, stop it inside axum's `with_graceful_shutdown` future, as the README's axum service and
-  `serve` do: the API keeps answering while turns finish, and `/ready` answers `503` from the moment `stop` begins.
+  When the node serves HTTP, stop it inside axum's `with_graceful_shutdown` future, as the axum service of
+  [the HTTP guide](guide/http.md#run-it-in-an-axum-service) and `serve` do: the API keeps answering while turns
+  finish, and `/ready` answers `503` from the moment `stop` begins.
   With the HTTP server first, one request that stays open (a route that streams) would hold up the stop of the node
   until the platform kills the process, and every turn running then would be a lost claim.
 - **Rolling deploys** work as long as the contracts stay equal: a node refuses to start when a type's contract
   differs from the registered one. Check that in CI with contract snapshots (`cicada_test::assert_contracts_match`,
-  README, Testing) and keep stored states readable with state samples (`assert_state_decodes`).
+  [Contract snapshots](guide/core.md#contract-snapshots)) and keep stored states readable with state samples
+  (`assert_state_decodes`).
 - **Schema migrations** run when a store is opened (`Store::sqlite`, `Store::postgres`), so the first
   node of a new version migrates the database. On PostgreSQL concurrent starts serialise on an advisory lock, and a current schema runs no DDL, so a node may connect
   as a user without `CREATE` once the schema was migrated. A store does not open a schema newer than its own (`StoreError::Invalid`). Start the new nodes
@@ -237,7 +241,7 @@ that only a hand-written `Deserialize` takes), or it sent anything that does not
 not host the type. Before the nodes are upgraded:
 
 1. Add `cicada_axum::assert_message_sample` and `assert_state_sample` to the tests of each type, with what the type
-   serialises and with what clients send over HTTP ([The schema check](../README.md#the-schema-check)).
+   serialises and with what clients send over HTTP ([The schema check](guide/http.md#the-schema-check)).
 2. A sample that fails only the schema shows a type whose schema and serde disagree. When it is a form that only some
    clients send (an alias), stop sending it. When it is what the type itself writes (a field with `#[serde(with)]` and
    no `#[schemars(with)]`), the schema is wrong and every send of the typed client would be refused; there is no switch
@@ -249,8 +253,8 @@ Clients need no upgrade.
 **Version 0.13.0 changes no schema and no wire format.** It adds `cicada-app` (ADR 0027), so nodes of 0.12.0 and
 0.13.0 can share a database. A host may move its start-up code onto `App`; nothing forces it. The command line moved
 from `cicada-cli` into `cicada-app` and is still the binary `cicada`; install it with `--features tui` for the
-terminal UI. A deployment of the sample service renames its variables (README, Sample service); a node of it refuses
-to start while one of the old ones is set.
+terminal UI. A deployment of the sample service renames its variables ([Sample service](guide/app.md#sample-service));
+a node of it refuses to start while one of the old ones is set.
 
 **Version 0.14.0 changes no schema of the store, but it changes a wire format.** A `Failed` holds its cause (ADR
 0028), so the contract of every type that watches changes, and `cicada-actors` replaces `cicada-extras`, whose dead
@@ -275,7 +279,7 @@ of 0.13.0 and 0.14.0 share a database, and clients need no upgrade. A system wit
       `cicada create watch --target '*' --watcher cicada.dead-letters/_`.
 4. **A supervisor and a topic** are new: nothing moves. Both watch, so create them only when no node of 0.13.0 is left:
    such a node writes a `Failed` without a cause. Host a supervisor on nodes that host the types of its children, so
-   that a wrong entry is refused when the child starts (README, Ready-made actors).
+   that a wrong entry is refused when the child starts ([Supervisor](guide/actors.md#supervisor)).
 
 The sample service no longer reads `FAILURE_WATCHER_INTERVAL`: a node that hosts the dead letters creates them and their
 watch at the start.
@@ -302,9 +306,10 @@ clients require, as 0.6.0 does, needs its clients upgraded together with the nod
 A release is a tag `vX.Y.Z` on `main` (ADR 0016). All crates share the version in `[workspace.package]`.
 
 1. On `main`, set the version in `Cargo.toml` and run `cargo check`, which updates `Cargo.lock`. A breaking change raises
-   the minor number while the version is 0.x, anything else the patch number; the README says what counts as breaking.
-   `docs/openapi.json` carries the version: regenerate it (a test says how when it is stale) and update the README's
-   `tag = "vX.Y.Z"` lines.
+   the minor number while the version is 0.x, anything else the patch number;
+   [the README](../README.md#using-a-release-in-another-project) says what counts as breaking. `docs/openapi.json`
+   carries the version: regenerate it (a test says how when it is stale) and update the README's `tag = "vX.Y.Z"`
+   lines.
 2. In `CHANGELOG.md`, replace `unreleased` in the heading of that version with today's date, as `YYYY-MM-DD`.
 3. Commit and push to `main`, and wait for CI.
 4. Run `scripts/release-check.sh vX.Y.Z`. It prints the release notes, or says what is wrong.
@@ -499,8 +504,8 @@ panics.
 
 ## Telemetry
 
-Add `ActorTelemetry` (`cicada-otel`, README, OpenTelemetry) to a node with `observe` to get a span per turn and the
-metrics `cicada.turn.duration` and `cicada.message.lag`. Useful signals:
+Add `ActorTelemetry` (`cicada-otel`, [OpenTelemetry](guide/core.md#opentelemetry)) to a node with `observe` to get a
+span per turn and the metrics `cicada.turn.duration` and `cicada.message.lag`. Useful signals:
 
 - **Lag** (`cicada.message.lag`) rising for one type: too few nodes host it, `concurrency` is too low, or its turns
   got slower. A message is claimed at most `poll_interval` late when nodes are idle.

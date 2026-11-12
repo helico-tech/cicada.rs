@@ -31,18 +31,18 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
 
 ## 3. The checks of the docs
 
-- [ ] 3.1 The table of guarantees [7]: `docs/guarantees.md` with a row for each of G1–G6 and S1–S10 and the tests
+- [x] 3.1 The table of guarantees [7]: `docs/guarantees.md` with a row for each of G1–G6 and S1–S10 and the tests
       that prove each, and a test of `cicada-examples` that checks it by the rules of decision 7. Verify: tests for
       the scenarios "A named test is gone", "A guarantee without a row" and "A table that cannot be read"; the table
       names at least one test for every row, and the report lists them.
-- [ ] 3.2 The links [8]: a test of `cicada-examples` that checks the relative links and anchors of the Markdown files
+- [x] 3.2 The links [8]: a test of `cicada-examples` that checks the relative links and anchors of the Markdown files
       of the repository outside `target` and `openspec/changes/archive`; every pointer into the README that moved is
       fixed (`docs/architecture.md`, `docs/operations.md`, `AGENTS.md`, `openspec/config.yaml`, the proposal of
       `value-depth-limit`). Verify: tests for the scenarios "A section moves" and "A link to the web"; the test
       passes on the repository.
-- [ ] 3.3 `missing_docs` [9]: `deny` in the workspace lints. Verify: the scenario "A public function without a doc
+- [x] 3.3 `missing_docs` [9]: `deny` in the workspace lints. Verify: the scenario "A public function without a doc
       comment" (tried once and put back); `cargo build --workspace` passes.
-- [ ] 3.4 The Purposes of the specs [10]: the eleven specs with the placeholder get a real Purpose. Verify:
+- [x] 3.4 The Purposes of the specs [10]: the eleven specs with the placeholder get a real Purpose. Verify:
       `openspec validate --specs --strict` passes.
 
 ## 4. Docs of the change

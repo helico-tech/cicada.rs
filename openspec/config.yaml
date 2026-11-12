@@ -23,5 +23,5 @@ rules:
     - Every task states how it is verified
     - Test runtime behaviour on virtual time with `#[tokio::test(start_paused = true)]` and `TestActors`
     - A store backend change must pass the conformance suite (`crates/cicada/src/tests/conformance`)
-    - A public API change keeps the doctests of `cicada-examples` (README.md, docs/operations.md) compiling
+    - A public API change keeps the doctests of `cicada-examples` (README.md, the guides in docs/guide, docs/operations.md) compiling
     - End with `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and `openspec validate <change> --strict`

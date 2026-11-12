@@ -1,7 +1,8 @@
 # message-actions Specification
 
 ## Purpose
-TBD - created by archiving change message-actions. Update Purpose after archive.
+An operator cancels a pending message, sends a failed or cancelled message again as a new one,
+and makes a pending message due at once.
 
 ## Requirements
 
