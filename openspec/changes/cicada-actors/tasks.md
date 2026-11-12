@@ -71,7 +71,7 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
 
 ## 5. Checks
 
-- [ ] 5.1 `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
+- [x] 5.1 `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
       `cargo test --workspace`, `cargo check -p cicada` with no feature and with each feature alone,
       `cargo check -p cicada-actors`, and `openspec validate cicada-actors --strict`. Verify: all pass.
 - [ ] 5.2 The PostgreSQL tests with `CICADA_PG_URL` set, once more against a throwaway `postgres:17.5-alpine` with
