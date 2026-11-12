@@ -2,7 +2,7 @@
 
 ## Why
 
-A payload and a state are JSON, and JSON can nest. Three things go wrong with a deeply nested value, all older than
+A payload and a state are JSON, and JSON can nest. Four things go wrong with a deeply nested value, all older than
 `json-schema-at-the-http-door`, whose validation found them:
 
 - **JSON that code sends has no depth limit.** `turn.send_raw`, `ActorSystem::send_message` and a create take a
@@ -15,6 +15,12 @@ A payload and a state are JSON, and JSON can nest. Three things go wrong with a 
 - **A view can be deeper than a parser reads.** `GET /messages/{id}` wraps a payload three levels deeper. For a
   payload at the deepest level a request can carry, the answer is `200` and no JSON parser reads it, so
   `cicada-client` fails on it. The node is not harmed.
+
+- **The decoder can take seconds for a small value.** For an untagged enum whose variants share a field, a value
+  with one wrong leaf costs twice as much with every level: 24 levels, a request of 326 bytes, take about 10
+  seconds on a node that hosts the type, at the send and again in the turn. Since `json-schema-at-the-http-door`
+  a value that the schema refuses no longer reaches the decoder over HTTP; a value that the schema accepts and
+  only the decoder refuses (a number that is too large) still does.
 
 Over HTTP the schema check is safe since `json-schema-at-the-http-door`: it runs on a stack of its own.
 
@@ -39,7 +45,8 @@ The simplest version: one more check in `runtime::limits`, next to the size of a
 To decide in the design:
 
 - The limit. It must be below what a parser reads less the levels of the deepest view, and low enough for a
-  decoder in a debug build, or the decode gets a stack of its own as the schema check has.
+  decoder in a debug build, or the decode gets a stack of its own as the schema check has. For the decoder of an
+  untagged enum even 20 levels cost too much, so a limit alone may not settle that one.
 - Whether values that are stored today and are deeper than the limit need anything.
 - Whether the two costs in proportion to the body need anything: a limit on the number of values in a body, a
   decoder that does not copy, or only a line in the operations guide on the size of a body.
