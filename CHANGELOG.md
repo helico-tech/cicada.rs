@@ -7,6 +7,69 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.12.0 — unreleased
+
+A breaking release: the schema check at the HTTP door (ADR 0018, ADR 0026). A send and a create over HTTP are checked
+against the registered JSON Schema of their type on every node, whether or not the node hosts the type, so whether a
+bad payload is refused no longer depends on the node a client reaches. No schema of the store changes; nodes of 0.11.0
+and 0.12.0 can share a database, and during a rolling deploy a node of 0.11.0 still answers as before.
+
+### Upgrading
+
+1. Before the nodes are upgraded, add `cicada_axum::assert_message_sample` and `assert_state_sample` to the tests of
+   each type, with what the type itself serialises and with what clients send over HTTP.
+2. A sample that fails only the schema shows a type whose schema and serde disagree. When it is a form that only some
+   clients send (a field under its `#[serde(alias)]`), stop sending it. When it is what the type itself writes (a field
+   with `#[serde(with)]` and no `#[schemars(with)]`), the schema is wrong: making it right changes the contract of the
+   type, so follow "Changing a contract" in the operations guide. There is no switch that turns the check off.
+3. A client that sent such a form to a node that hosts the type, or anything at all to a node that does not, now gets
+   `422` where it got `202` (or `201` for a create). Clients need no upgrade.
+
+### Changed (breaking)
+
+- A payload or a state that serde accepts and the schema refuses is refused over HTTP from now on, by every node: a
+  field under a `#[serde(alias)]`, a form that only a hand-written `Deserialize` takes. A node that does not host a type
+  refuses what it accepted until now. A type whose schema refuses what the type itself writes gets `422` for every
+  send of the typed client; it needs a right schema, which is a contract change.
+- The status stays `422`, as for a payload that did not decode, where ADR 0018 said `400`: in this API `422` is what a
+  client sent that the system cannot take, and `400` a request that cannot be read (ADR 0026).
+- `POST /actors/{type}/{key}/messages` checks the payload against the schema of its message type, and
+  `PUT /actors/{type}/{key}` the state against the state schema of the registered contract, on every node. A refusal is
+  `422 invalid-payload` or `422 invalid-state` and stores nothing; its detail names the message type (or the state)
+  and up to five places that do not match, each with its path and the reason, and says when there are more:
+  `Payload of 'Add' does not match the schema: at /n: want integer, but got string`. A node that hosts the type then
+  decodes with serde as before, with the same answer and the detail `… cannot be decoded: …`, so the detail of a
+  payload that does not fit names the schema now. A payload that is not an object reads `… at the top level: want
+  object, but got array` instead of `… must be a JSON object`.
+- A send that repeats the id of a message that is pending, or whose outcome is still shown, is answered as a repeat
+  before it is checked, as before. One whose outcome its retention hides is checked first.
+- Formats are not asserted (`format` is a note, as draft 2020-12 has it), the check loads nothing from outside the
+  schema (no file, no network), and a schema that the validator cannot compile is not enforced: the door lets the
+  request through and logs a warning once per schema. JSON that code sends (`turn.send_raw`,
+  `ActorSystem::send_message`) stays unchecked.
+
+### Added
+
+- `ActorSystem::send_message_checked` and `ActorSystem::create_actor_checked` take a `SchemaCheck` from their caller
+  (`cicada::schema::SchemaCheck`, `check(schema, value)`) and run it where a hosting node decodes: after the repeated
+  id, the registered type and the message type, and for a create after the `null` check and the address. Its refusal
+  is `SendResult::InvalidPayload` or `CreateActorResult::InvalidState` with "… does not match the schema: " and its
+  reason. `send_message` and `create_actor` are these with a check that accepts everything. The core has no validator.
+- `cicada_axum::assert_message_sample::<M>(&sample)` and `assert_state_sample::<S>(&sample)`: a sample must pass the
+  registered schema and decode as the type, or the test fails, saying which of the two refused it and why. A schema
+  that the validator cannot use fails too.
+- `cicada-axum` depends on the JSON Schema validator `boon` (draft 2020-12); no other crate does.
+- ADR 0026 records the check, the status it keeps, the check of a create and what the door does where a schema and
+  serde disagree.
+
+### Tests
+
+- Sample checks for every message and state of the examples, the dead letters of `cicada-extras`, the types of the
+  sample service, and `Failed` and `Stopped` in a watcher's family. Every one of them passes: no type of the
+  repository changed its schema, so no contract changes.
+- The end-to-end suite expects `422` from the send-only node for a payload that does not match, and keeps the failed
+  delivery with an `i64` that only the decoder refuses.
+
 ## 0.11.0 — 2026-11-12
 
 A breaking release: one turn observer in place of the plugin API, and the claim limit (ADR 0018, ADR 0025). An observer

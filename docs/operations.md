@@ -196,6 +196,23 @@ answers unavailable. So stop every node of the old version, then start the new o
 they ignore the new field `lostClaims` of a message's view. A node that had no `CrashLoopGuard` now has a limit of 5;
 the changelog of 0.11.0 lists the code changes.
 
+**Version 0.12.0 changes no schema.** A send and a create over HTTP are checked against the registered JSON Schema of
+their type on every node (ADR 0026), so nodes of 0.11.0 and 0.12.0 can share a database; during a rolling deploy a node
+of 0.11.0 still answers as before. A client gets `422 invalid-payload` or `422 invalid-state` where it got `202` or
+`201` in two cases: what it sends serde accepts and the schema refuses (a field under its `#[serde(alias)]`, a form
+that only a hand-written `Deserialize` takes), or it sent anything at all to a node that does not host the type. Before
+the nodes are upgraded:
+
+1. Add `cicada_axum::assert_message_sample` and `assert_state_sample` to the tests of each type, with what the type
+   serialises and with what clients send over HTTP ([The schema check](../README.md#the-schema-check)).
+2. A sample that fails only the schema shows a type whose schema and serde disagree. When it is a form that only some
+   clients send (an alias), stop sending it. When it is what the type itself writes (a field with `#[serde(with)]` and
+   no `#[schemars(with)]`), the schema is wrong and every send of the typed client would be refused; there is no switch
+   to turn the check off. Making the schema right changes the contract of the type: follow
+   [Changing a contract](#changing-a-contract).
+
+Clients need no upgrade.
+
 **Switching a type to `create_child`.** An actor created with `turn.create` stays independent: a later `create_child`
 of it by its creator does not adopt it, but fails the creator's message (the commit is rejected, and a handler cannot
 test for that). So switch a parent type from `create` to `create_child` only when no parent of it is left that created
@@ -351,6 +368,7 @@ worth an alert:
 | warn | `A header of an observer is left out of the sends of the turn: …`, `The header '…' of an observer is left out of a send to …` | A header that the limits of a message refuse, or that did not fit into a message of 64 headers; a trace breaks at that message. |
 | warn | `Retention sweep failed`, `Store wake-ups ended; falling back to polling` | The node keeps working, slower or with more stored data. |
 | warn | `Ignoring the retry policy of …` | A stored policy that cannot be decoded is read as no policy. |
+| warn | `The schema of message type '…' of … cannot be used by the validator and is not enforced at the door: …`, `The schema of the state of … …` | The HTTP door cannot compile a registered schema (a `$ref` outside the document, a pattern its regular expressions do not know), so sends or creates of that type pass unchecked and a node that does not host it lets through what its decoder would refuse. Logged once per schema in the life of the process. The sample checks of the type fail too; fix its schema, which is a contract change. |
 | info | `Cancelling N turns after the grace period of …` | A stop that cut running turns off. |
 | info | `Turn of supervisor/main for 3f2c…: delete worker/w1` | A committed turn paused, resumed, purged or deleted an actor (fields `actor`, `effect`, `target`); whether the target existed, the commit does not say. Nothing else records who did it. |
 

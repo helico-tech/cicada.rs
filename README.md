@@ -24,7 +24,7 @@ summarised [below](#decisions).
 | Crate | Contents |
 | --- | --- |
 | `cicada` | Addressing (`ActorAddress`, `ActorRef`, `TypeName`), the definition API (the `Actor` trait), the runtime and dispatch loop (`ActorSystem`) with per-message retry (`RetryPolicy`) and retention (`Retention`) and the claim limit (`NodeConfig::max_lost_claims`), watches (`Turn::watch`, `Failed`, `Stopped`), the store (`Store`), turn observers (`TurnObserver`), contracts and JSON Schemas, the HTTP wire model (`cicada::api`). No HTTP server. Each store is a cargo feature, none on by default: `sqlite` (`Store::sqlite`: one file, WAL, one writer; for a single node or a few processes on one host) and `postgres` (`Store::postgres`: `FOR UPDATE SKIP LOCKED` claims, `LISTEN/NOTIFY` wake-ups; for many nodes). The feature `testing` is the test support that `cicada-test` exports. |
-| `cicada-axum` | `actor_api()` (the whole API), `actor_api_read()` (only what reads) and `actor_health()` (a public readiness check) as axum routers. |
+| `cicada-axum` | `actor_api()` (the whole API), `actor_api_read()` (only what reads) and `actor_health()` (a public readiness check) as axum routers; the check of a send and a create against the registered JSON Schemas, and the sample checks `assert_message_sample` and `assert_state_sample`. |
 | `cicada-client` | `ActorClient`: typed HTTP client (reqwest) for remote callers, idempotent sends. |
 | `cicada-cli` | The binary `cicada`: kubectl-style commands and a k9s-style terminal UI over the HTTP API; see [Command line and terminal UI](#command-line-and-terminal-ui). |
 | `cicada-test` | `TestActors` on the in-memory store (`Store::memory`), virtual time, `claim_and_abandon` (a node that dies), contract snapshots and state samples. |
@@ -537,12 +537,12 @@ request's path and query as `instance`.
 
 | Endpoint | Success | Errors |
 | --- | --- | --- |
-| `PUT /actors/{type}/{key}` body `{state}` — create; `state` is required (`{}` for `NoState`) | 201 created; 200 already exists (untouched) | 400 no body or no `state`; 404 no such type; 422 a `null` state, or a state that cannot be decoded or a name the ref does not accept (hosting node) |
+| `PUT /actors/{type}/{key}` body `{state}` — create; `state` is required (`{}` for `NoState`) | 201 created; 200 already exists (untouched) | 400 no body or no `state`; 404 no such type; 422 `invalid-state`: a `null` state or one that does not match the registered state schema (every node), or one that cannot be decoded (hosting node); 422 `invalid-address`: a name the ref does not accept (hosting node) |
 | `GET /actors/{type}/{key}` — address, type, state, version, createdAt, paused, parent (null for an independent actor) | 200 | 404 |
 | `DELETE /actors/{type}/{key}` — admin delete of the actor and every descendant, purges their mailboxes | 204 | 404 |
 | `GET /actors/{type}/{key}/children?cursor=&limit=` — the direct children's addresses, in address order, paged | 200 | 404 |
 | `GET /actors?prefix=&cursor=&limit=` — instance addresses, paged | 200 | |
-| `POST /actors/{type}/{key}/messages` body `{id?, type, payload?, deliverAt? \| delay?, correlationId?, headers?, retry?, retention?}` — send | 202 `{id, deliverAt}`; 200 that id was already accepted (same target and type) | 400 invalid `retry` or `retention` policy; 404 `no-such-type` when no registered type matches the target, also when the actor exists; 404 `no-such-instance` when its type is registered and the actor does not exist; 409 id already used for another target or type; 422 unknown message type, undecodable payload (hosting node only) |
+| `POST /actors/{type}/{key}/messages` body `{id?, type, payload?, deliverAt? \| delay?, correlationId?, headers?, retry?, retention?}` — send | 202 `{id, deliverAt}`; 200 that id was already accepted (same target and type) | 400 invalid `retry` or `retention` policy; 404 `no-such-type` when no registered type matches the target, also when the actor exists; 404 `no-such-instance` when its type is registered and the actor does not exist; 409 id already used for another target or type; 422 unknown message type; 422 `invalid-payload`: a payload that does not match the registered schema of its message type (every node), or one that cannot be decoded (hosting node) |
 | `GET /actors/{type}/{key}/mailbox?cursor=&limit=` — pending mailbox in delivery order, each with `attempt`, `failures`, `lostClaims`, `lastError`, `retry` and `state` (`running` or `pending`) | 200 | 404 |
 | `POST /actors/{type}/{key}/mailbox/pause` — pause: messages queue up, no new turn is started, a running turn finishes | 204 | 404 |
 | `POST /actors/{type}/{key}/mailbox/resume` — resume a paused actor | 204 | 404 |
@@ -584,7 +584,7 @@ On every endpoint, additionally:
 - `400` — malformed JSON, path or query; an unknown key in a request envelope (`{"paylaod": …}`, also inside `retry`
   and `retention`); both `deliverAt` and `delay`; a delivery time beyond year 9999; envelope limits (id/type ≤ 200
   chars, ≤ 64 headers, no NUL); an invalid retry policy; `limit` outside 1..1000; a bad cursor. Payloads and states
-  themselves are decoded leniently (unknown keys ignored).
+  themselves are checked against their schemas instead (see [The schema check](#the-schema-check)).
 - `405` — `POST /actors/{type}/{key}` without `/messages`.
 - `413 request-too-large` — a body larger than `ApiConfig::max_request_body_bytes` (default 1 MiB), by its
   `Content-Length` or while reading.
@@ -598,6 +598,50 @@ instant. Both are resolved against the store clock. Listings take `cursor` (the 
 (default 100); a `prefix` is a prefix of the address (`sync/`, `sync/ac`). Pages are a keyset,
 not a snapshot: in a mailbox listing, a message rescheduled in place between two pages (later `deliverAt`, new `seq`)
 can appear on both, so deduplicate by id.
+
+### The schema check
+
+A send and a create over HTTP are checked against the registered JSON Schema of their type, on every node, whether or
+not the node hosts the type (ADR 0026): the payload against the schema of its message type, the state of a create
+against the state schema. One that does not match is refused with `422 invalid-payload` or `422 invalid-state`, and
+nothing is stored. A node that hosts the type then decodes it with serde as well, with the same answer. The detail
+says which check refused it, and where: `Payload of 'Add' does not match the schema: at /n: want integer, but got
+string` names up to five places and says when there are more; `Payload of 'Add' cannot be decoded: …` is serde's.
+
+The order of the checks stays: a send that repeats the id of a message that is pending, or whose outcome is still
+shown, is answered as a repeat (`200`) before it is checked; an unknown message type is `422 unknown-message-type`.
+
+What the door does not check:
+
+- **Formats.** `format` (`date-time`, `email`, …) is a note, as draft 2020-12 has it: a text that is no date passes the
+  door, and the message fails in its turn.
+- **A schema the validator cannot use.** A schema that does not compile (a `$ref` outside the document, a pattern its
+  regular expressions do not know) is not enforced; a warning names it once. The check loads nothing from outside the
+  schema: no file, no network.
+- **JSON that code sends.** `turn.send_raw` and `ActorSystem::send_message` are not checked; only a hosting node's
+  decoder judges them, as before. Typed sends are checked by the compiler.
+
+The schema and serde come from the same type, but can disagree. A payload that serde accepts and the schema refuses is
+refused at the door: a field sent under its `#[serde(alias)]`, a form that only a hand-written `Deserialize` takes,
+or what the type itself writes when a field has `#[serde(with)]` and no `#[schemars(with)]`. In the last case every
+send of the typed client is refused, there is no switch, and the way out is a right schema, a contract change (see
+[Changing a contract](docs/operations.md#changing-a-contract)). The other way round, a payload that only serde refuses
+passes a node that does not host the type and fails in its turn. Test what clients send, and what the types write, with
+the sample checks of `cicada-axum`; each fails, naming which of the two refused the sample and why:
+
+<!-- doctest
+@@2
+# use cicada_examples::sync::{SyncMsg, SyncState};
+@@4
+-->
+```rust
+use cicada_axum::{assert_message_sample, assert_state_sample};
+use serde_json::json;
+
+assert_message_sample::<SyncMsg>(&serde_json::to_value(SyncMsg::FetchPage { cursor: None }).unwrap()); // what it writes
+assert_message_sample::<SyncMsg>(&json!({"type": "FetchPage", "cursor": "p2"})); // what a client sends
+assert_state_sample::<SyncState>(&json!({"source": "https://api.acme.test/items", "imported": 3}));
+```
 
 ## Command line and terminal UI
 
@@ -1358,6 +1402,7 @@ Decisions, as ADRs in [docs/adr/](docs/adr/):
 | [0023](docs/adr/0023-the-rules-of-a-watch.md) | The rules of a watch: notifications in the watcher's own family, a type target at a dot and `*` for every type (failures only), `Stopped` with its cause and `by`, a notification marked and named after its event, and G2 and G4 that name the notifications. |
 | [0024](docs/adr/0024-control-effects.md) | Control effects: a turn pauses, resumes, purges and deletes another actor with the meaning of the operator's calls, an effect on an actor that is not there does nothing, a turn cannot delete itself or an ancestor, deletes come before creates (a restart), and G1, G2 and S7 that say so. |
 | [0025](docs/adr/0025-the-claim-limit.md) | The claim limit: a message counts its lost claims (a claim that another claim replaced although its turn neither committed nor gave the lease back), a node fails a message with as many as its limit (5 by default) through a commit that tells its watchers, and G4 that names the limit. |
+| [0026](docs/adr/0026-the-schema-check-at-the-http-door.md) | The schema check at the HTTP door: a send and a create over HTTP are checked against the registered schema on every node and refused with `422` (not `400` as 0018 said), a hosting node still decodes, a repeated send is answered first, no format is asserted, a schema the validator cannot use is not enforced, and JSON that code sends is not checked. |
 
 Design questions and their answers:
 

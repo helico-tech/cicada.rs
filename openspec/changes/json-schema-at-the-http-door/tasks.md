@@ -52,7 +52,7 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
 
 ## 4. Docs
 
-- [ ] 4.1 `docs/architecture.md`: the row on validation, and the HTTP contract where it says payloads and states are
+- [x] 4.1 `docs/architecture.md`: the row on validation, and the HTTP contract where it says payloads and states are
       read leniently. `README.md`: the rows of the two routes, what the door checks and what it does not (formats, a
       schema it cannot use, JSON that code sends), the sample checks with an example, and the row of ADR 0026.
       `docs/operations.md`: the upgrade to 0.12.0 (run the sample checks first; a schema fix is a contract change,
@@ -60,7 +60,7 @@ The numbers in brackets are the decisions of `design.md`. Each group is one comm
       `api::problem_types` and the route table of `cicada-axum`. Regenerate `docs/openapi.json`. Verify:
       `cargo test -p cicada-examples --doc` passes, the OpenAPI test passes, and every risk of `design.md` that
       names the docs is in them.
-- [ ] 4.2 `CHANGELOG.md`, a section `0.12.0 — unreleased`, and the version `0.12.0` in `Cargo.toml`: the section
+- [x] 4.2 `CHANGELOG.md`, a section `0.12.0 — unreleased`, and the version `0.12.0` in `Cargo.toml`: the section
       starts with the steps of the Migration Plan of `design.md`, then the breaking change of the proposal, then
       that the status stays `422` where ADR 0018 said `400`. Verify: every step of the plan and every **BREAKING**
       line of the proposal is in the section.

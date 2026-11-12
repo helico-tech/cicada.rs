@@ -4,11 +4,11 @@
 //!
 //! | Method and path | Success | Errors |
 //! | --- | --- | --- |
-//! | `PUT /actors/{type}/{key}` body `{state}` | 201 created, 200 exists | 400 no body or no state, 404 no type, 422 null or bad state, bad address |
+//! | `PUT /actors/{type}/{key}` body `{state}` | 201 created, 200 exists | 400 no body or no state, 404 no type, 422 null state, a state that does not match its schema or cannot be decoded, bad address |
 //! | `GET /actors/{type}/{key}` | 200 | 404 |
 //! | `DELETE /actors/{type}/{key}` | 204 | 404 |
 //! | `GET /actors?prefix=&cursor=&limit=` | 200 | |
-//! | `POST /actors/{type}/{key}/messages` body `{id?, type, payload, deliverAt or delay, correlationId?, headers?, retry?, retention?}` | 202, 200 duplicate id | 400 invalid retry or retention policy, 404, 409 id taken, 422 type or payload |
+//! | `POST /actors/{type}/{key}/messages` body `{id?, type, payload, deliverAt or delay, correlationId?, headers?, retry?, retention?}` | 202, 200 duplicate id | 400 invalid retry or retention policy, 404, 409 id taken, 422 unknown type, a payload that does not match its schema or cannot be decoded |
 //! | `GET /actors/{type}/{key}/mailbox?cursor=&limit=` | 200 | 404 |
 //! | `POST /actors/{type}/{key}/mailbox/pause` | 204 | 404 |
 //! | `POST /actors/{type}/{key}/mailbox/resume` | 204 | 404 |
@@ -39,9 +39,18 @@
 //! request's original path and query as `instance`. The bodies are those of [`cicada::api`].
 //!
 //! **Request bodies** are strict: an unknown key in the envelope (`{"paylaod": …}`, `{"delayMs": …}`), or inside its
-//! `retry` and `retention` policies, is a `400`, so a misspelling is never silently ignored. Payloads and states inside
-//! them are decoded leniently, like every message. A body larger than [`ApiConfig::max_request_body_bytes`] (default
-//! 1 MiB) is refused with `413`: by its `Content-Length`, or while reading, which stops one byte past the limit.
+//! `retry` and `retention` policies, is a `400`, so a misspelling is never silently ignored. A body larger than
+//! [`ApiConfig::max_request_body_bytes`] (default 1 MiB) is refused with `413`: by its `Content-Length`, or while
+//! reading, which stops one byte past the limit.
+//!
+//! **The schema check** (ADR 0026). The payload of a send and the state of a create are checked against the registered
+//! JSON Schema of their message type or state, on every node, whether or not it hosts the type, and refused with `422
+//! invalid-payload` or `422 invalid-state`; a node that hosts the type then decodes them with serde, with the same
+//! answer. The detail says which check refused, and where (`Payload of 'Add' does not match the schema: at /n: want
+//! integer, but got string`). A send that repeats an id it finds pending or still shown is answered as a repeat first.
+//! The check, with the validator `boon` on draft 2020-12, asserts no `format`, loads nothing from outside the schema,
+//! and lets through what a schema it cannot compile would check, with a warning once per schema.
+//! [`assert_message_sample`] and [`assert_state_sample`] test a sample against both the schema and serde.
 //!
 //! **Paths.** The actor `sync/acme` is `/actors/sync/acme`; its key is written exactly as in the address.
 //!

@@ -37,7 +37,8 @@ pub struct RequestError(String);
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CreateActorRequest {
-    /// Initial state; never null. A type that keeps no data takes `{}`.
+    /// Initial state; never null. A type that keeps no data takes `{}`. It must match the state schema of the type
+    /// (`GET /types/{name}`), or the create is refused with `422 invalid-state`.
     pub state: Value,
 }
 
@@ -118,7 +119,8 @@ pub struct SendRequest {
     /// Message type name, as listed in the target type's contract.
     #[serde(rename = "type")]
     pub message_type: String,
-    /// The message's JSON (without type tag). Defaults to `{}`.
+    /// The message's JSON (without type tag). Defaults to `{}`. It must match the schema of its message type
+    /// (`GET /types/{name}`), or the send is refused with `422 invalid-payload`.
     #[serde(default = "empty_object")]
     pub payload: Value,
     /// Absolute delivery time.
@@ -553,11 +555,13 @@ pub mod problem_types {
     pub const REQUEST_TOO_LARGE: &str = "urn:cicada:problem:request-too-large";
     /// 500: an unexpected error in the node; not retryable as such.
     pub const INTERNAL_ERROR: &str = "urn:cicada:problem:internal-error";
-    /// 422: the state is `null`, or it cannot be decoded (hosting node).
+    /// 422: the state of a create is `null`, does not match the registered state schema (every node), or cannot be
+    /// decoded (hosting node); the detail says which check refused it.
     pub const INVALID_STATE: &str = "urn:cicada:problem:invalid-state";
     /// 422: the target type does not accept this message type name.
     pub const UNKNOWN_MESSAGE_TYPE: &str = "urn:cicada:problem:unknown-message-type";
-    /// 422: the payload cannot be decoded (hosting node).
+    /// 422: the payload does not match the registered schema of its message type (every node), or cannot be decoded
+    /// (hosting node); the detail says which check refused it.
     pub const INVALID_PAYLOAD: &str = "urn:cicada:problem:invalid-payload";
     /// 422: the watcher's type may not watch: its message family does not declare `Failed` and `Stopped` with the
     /// core's types.

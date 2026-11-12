@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Cicada actor API",
-    "version": "0.11.0"
+    "version": "0.12.0"
   },
   "paths": {
     "/actors": {
@@ -119,7 +119,7 @@
         }
       },
       "put": {
-        "summary": "Creates an actor with its initial state. An existing one is left untouched.",
+        "summary": "Creates an actor with its initial state, which must match the registered state schema. An existing one is left untouched.",
         "operationId": "createActor",
         "parameters": [
           {
@@ -1155,7 +1155,7 @@
     },
     "/actors/{type}/{key}/messages": {
       "post": {
-        "summary": "Sends a message. Idempotent on its id.",
+        "summary": "Sends a message, whose payload must match the registered schema of its message type. Idempotent on its id.",
         "operationId": "sendMessage",
         "parameters": [
           {
@@ -2509,7 +2509,7 @@
         "type": "object",
         "properties": {
           "state": {
-            "description": "Initial state; never null. A type that keeps no data takes `{}`."
+            "description": "Initial state; never null. A type that keeps no data takes `{}`. It must match the state schema of the type\n(`GET /types/{name}`), or the create is refused with `422 invalid-state`."
           }
         },
         "additionalProperties": false,
@@ -3076,7 +3076,7 @@
             "type": "string"
           },
           "payload": {
-            "description": "The message's JSON (without type tag). Defaults to `{}`.",
+            "description": "The message's JSON (without type tag). Defaults to `{}`. It must match the schema of its message type\n(`GET /types/{name}`), or the send is refused with `422 invalid-payload`.",
             "default": {}
           },
           "deliverAt": {

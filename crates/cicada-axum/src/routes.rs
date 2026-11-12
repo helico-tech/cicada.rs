@@ -245,7 +245,8 @@ fn routes(access: Access) -> ApiRouter<Arc<Api>> {
                 described(
                     op,
                     "createActor",
-                    "Creates an actor with its initial state. An existing one is left untouched.",
+                    "Creates an actor with its initial state, which must match the registered state schema. An \
+                     existing one is left untouched.",
                 )
                 .input::<(Path<ActorPath>, Json<CreateActorRequest>)>()
                 .response_with::<201, Json<CreateActorResponse>, _>(|r| r.description("Created."))
@@ -366,10 +367,15 @@ fn write_routes(router: ApiRouter<Arc<Api>>) -> ApiRouter<Arc<Api>> {
         .api_route(
             "/actors/{type}/{key}/messages",
             post_with(handlers::send_message, |op| {
-                described(op, "sendMessage", "Sends a message. Idempotent on its id.")
-                    .input::<(Path<ActorPath>, Json<SendRequest>)>()
-                    .response_with::<202, Json<SendResponse>, _>(|r| r.description("Accepted."))
-                    .response_with::<200, Json<SendResponse>, _>(|r| r.description("That id was already accepted."))
+                described(
+                    op,
+                    "sendMessage",
+                    "Sends a message, whose payload must match the registered schema of its message type. Idempotent \
+                     on its id.",
+                )
+                .input::<(Path<ActorPath>, Json<SendRequest>)>()
+                .response_with::<202, Json<SendResponse>, _>(|r| r.description("Accepted."))
+                .response_with::<200, Json<SendResponse>, _>(|r| r.description("That id was already accepted."))
             }),
         )
         .api_route(

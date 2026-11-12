@@ -17,7 +17,7 @@ state plus a mailbox; it occupies memory only while one message is being handled
 | Runtime | tokio; the HTTP API is an axum `Router` | Services that host actors are tokio services. axum supplies HTTP; the host supplies authentication. |
 | Long work | Lease + heartbeat | A handler may run for minutes. A turn whose node dies is re-run elsewhere, until its message reaches the claim limit. |
 | Retries | Per message, at dispatch | The sender attaches a retry policy; a failed run puts the same message back until the policy is exhausted. |
-| Validation | The serializer (serde) is the only validator | JSON Schemas are generated (schemars) and published, never used to validate. |
+| Validation | serde at the turn; the registered JSON Schema at the HTTP door | JSON Schemas are generated (schemars) and published. A send and a create over HTTP must match them on every node; a hosting node also decodes with serde, and serde stays the only judge at the turn (ADR 0026). |
 | Messaging | One-way send only | A reply is an ordinary send to the sender's address. |
 | Mailbox + state | One transaction boundary | State, outgoing messages and message completion commit atomically. |
 
@@ -234,7 +234,7 @@ impl Actor for SyncActor {
 | --- | --- |
 | `cicada` | Addressing, definition API, runtime and dispatch loop with turn observers and the claim limit, watches, the store (`Store` and its model; the backend trait is private), contracts and schemas, retry and retention policies, the HTTP wire model (`api`, shared by server and client). Behind features: the SQLite store (`sqlite`; sqlx, one file, WAL, one writer), the PostgreSQL store (`postgres`; sqlx, `FOR UPDATE SKIP LOCKED` claims, `LISTEN/NOTIFY` wake-ups) and the test support (`testing`: the in-memory store, clocks, `TestActors`, `claim_and_abandon`). Its tests hold the S1–S10 conformance suite every backend runs and the randomised tests: parsers, backend comparison, and a node simulation under injected faults |
 | `cicada-test` | Exports the test support of `cicada` (`TestActors`, clocks, `claim_and_abandon`); contract snapshots and state samples |
-| `cicada-axum` | `actor_api()`, `actor_api_read()` and `actor_health()` as axum routers, and the OpenAPI document |
+| `cicada-axum` | `actor_api()`, `actor_api_read()` and `actor_health()` as axum routers, the OpenAPI document, the schema check of the HTTP door (the JSON Schema validator `boon`) and the sample checks |
 | `cicada-client` | Typed HTTP client (reqwest) |
 | `cicada-cli` | The binary `cicada`: commands and a terminal UI over the HTTP API, through `cicada-client`; no library crate depends on it |
 | `cicada-otel` | OpenTelemetry observer (`ActorTelemetry`) |
@@ -248,4 +248,9 @@ impl Actor for SyncActor {
 See the README for the endpoints and `docs/openapi.json` for the OpenAPI document. Durations are ISO-8601 strings (`PT5S`); instants are ISO-8601 in UTC. Errors are `application/problem+json` (RFC 9457) with `type` `urn:cicada:problem:<slug>`. The routes are an
 axum `Router` that the host nests into its own router and wraps in its own authentication layers. The bodies are the
 types of `cicada::api`, used by both `cicada-axum` and `cicada-client`; request envelopes decode strictly (an unknown
-key is `400`), payloads and states leniently.
+key is `400`). A payload and the state of a create are checked against the registered JSON Schema of their message type
+or state on every node, whether or not it hosts the type, and refused with `422 invalid-payload` or `422 invalid-state`;
+a node that hosts the type then decodes them with serde, with the same answer, and the detail says which check refused
+(ADR 0026). A send that repeats the id of a message that is pending, or whose outcome is still shown, is answered as a
+repeat before it is checked. The check asserts no `format`, loads nothing from outside the schema, and does not enforce
+a schema that the validator cannot compile; JSON that code sends is not checked.
