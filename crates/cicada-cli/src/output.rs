@@ -165,7 +165,7 @@ impl Columns for WatchView {
 
 impl Columns for MessageView {
     fn headers(wide: bool) -> Vec<&'static str> {
-        let extra = ["FROM", "CAUSED-BY", "NOTIFICATION", "LAST-ERROR"];
+        let extra = ["LOST", "FROM", "CAUSED-BY", "NOTIFICATION", "LAST-ERROR"];
         wide_cols(vec!["ID", "TO", "TYPE", "DUE", "ATTEMPT", "FAILURES"], &extra, wide)
     }
     fn cells(&self, wide: bool, now: Timestamp) -> Vec<String> {
@@ -179,6 +179,7 @@ impl Columns for MessageView {
         ];
         if wide {
             cells.extend([
+                self.lost_claims.to_string(),
                 dash(self.from.as_ref()),
                 dash(self.caused_by.as_ref()),
                 self.notification.to_string(),

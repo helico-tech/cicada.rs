@@ -672,6 +672,34 @@ mod tests {
         }
     }
 
+    /// The screen of a message with two lost claims shows them among its facts.
+    #[test]
+    fn the_facts_of_a_message_show_its_lost_claims() {
+        let status: cicada::api::MessageStatusView = serde_json::from_value(json!({
+            "id": "m1", "status": "pending", "failures": 0,
+            "message": {"id": "m1", "to": "jobs/j1", "from": null, "type": "Run", "payload": {},
+                "deliverAt": "2026-01-01T00:00:00Z", "correlationId": null, "headers": {}, "seq": 1, "attempt": 3,
+                "failures": 0, "lostClaims": 2}
+        }))
+        .unwrap();
+        let id = MessageId::new("m1").unwrap();
+        let overview = Overview {
+            subject: Item::Message(id.clone()),
+            facts: fetch::message_facts(&status),
+            panes: vec![("payload".into(), json!({}))],
+            pane_follows_selection: false,
+            caused_by: None,
+            actor: None,
+            parent: None,
+        };
+        let mut app = loaded(ScreenData::Grid(Rows::default()));
+        let screen_state = &mut app.stack[0];
+        screen_state.target = Target::Message(id);
+        screen_state.overview = Some(overview);
+        let text = screen(&mut app, 140, 30);
+        assert!(text.lines().any(|l| l.contains("Lost claims") && l.contains('2')), "{text}");
+    }
+
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::from(code)
     }

@@ -22,6 +22,7 @@ impl From<Message> for MessageView {
             seq: m.seq,
             attempt: m.attempt,
             failures: m.failures,
+            lost_claims: m.lost_claims,
             last_error: m.last_error,
             retry: m.retry,
             caused_by: m.caused_by,

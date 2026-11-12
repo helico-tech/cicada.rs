@@ -35,7 +35,7 @@ fn message_view_keeps_its_wire_form() {
     let text = serde_json::to_string(&MessageView::from(message())).unwrap();
     assert_eq!(
         text,
-        r#"{"id":"m1","to":"a/b","from":null,"type":"Run","payload":{"x":1},"deliverAt":"2026-01-01T00:00:00.000001Z","correlationId":null,"headers":{},"seq":3,"attempt":0,"failures":0,"lastError":null,"retry":{"maxAttempts":2,"backoff":{"kind":"fixed","delay":"PT1H"}},"causedBy":null,"retention":{"done":{"kind":"last","count":5},"failed":null},"notification":false}"#
+        r#"{"id":"m1","to":"a/b","from":null,"type":"Run","payload":{"x":1},"deliverAt":"2026-01-01T00:00:00.000001Z","correlationId":null,"headers":{},"seq":3,"attempt":0,"failures":0,"lostClaims":0,"lastError":null,"retry":{"maxAttempts":2,"backoff":{"kind":"fixed","delay":"PT1H"}},"causedBy":null,"retention":{"done":{"kind":"last","count":5},"failed":null},"notification":false}"#
     );
     let back: MessageView = serde_json::from_str(&text).unwrap();
     assert_eq!(back, MessageView::from(message()));
@@ -44,6 +44,17 @@ fn message_view_keeps_its_wire_form() {
     // A view of an earlier node has no mark: it is no notification.
     let earlier = text.replace(r#","notification":false"#, "");
     assert!(!serde_json::from_str::<MessageView>(&earlier).unwrap().notification);
+}
+
+/// claim-limit, Scenario: The view of a message (its wire form), and A view from an earlier node.
+#[test]
+fn message_view_has_the_lost_claims_and_reads_a_view_without_them_as_none() {
+    let lost = serde_json::to_value(MessageView::from(Message { lost_claims: 2, ..message() })).unwrap();
+    assert_eq!(lost["lostClaims"], 2);
+    let text = serde_json::to_string(&MessageView::from(message())).unwrap();
+    let earlier = text.replace(r#","lostClaims":0"#, "");
+    assert!(!earlier.contains("lostClaims"));
+    assert_eq!(serde_json::from_str::<MessageView>(&earlier).unwrap().lost_claims, 0);
 }
 
 #[test]

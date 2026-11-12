@@ -2,11 +2,15 @@
 
 mod common;
 
+use std::collections::BTreeSet;
+use std::time::Duration;
+
 use axum::Router;
 use axum::http::{StatusCode, header};
 use cicada::api::problem_types as pt;
 use cicada::prelude::*;
 use cicada::time::{Timestamp, parse_instant};
+use cicada::{Store, TypeName};
 use cicada_axum::actor_api;
 use common::*;
 use serde_json::{Value, json};
@@ -584,6 +588,54 @@ async fn outcomes_list_finished_messages_with_envelope_and_error() {
     assert_eq!(items(&get_json(&app, "/outcomes?status=cancelled").await).len(), 0);
     assert_problem(&get(&app, "/outcomes?status=pending").await, 400, pt::BAD_REQUEST);
     assert_problem(&get(&app, "/outcomes?status=").await, 400, pt::BAD_REQUEST);
+}
+
+// ---- lost claims ----
+
+/// A store with the counter type registered (by a node that never starts), and a node that hosts nothing, so that
+/// nothing claims a message unless the test does.
+async fn send_only() -> (Store, Router) {
+    let store = memory_store();
+    ActorSystem::builder(store.clone()).host(CounterActor).build().initialize().await.unwrap();
+    let app = actor_api(node_with(store.clone(), |b| b).await);
+    put(&app, "/actors/counter/a", r#"{"state": {}}"#).await;
+    (store, app)
+}
+
+/// Plays `n` nodes that each claim the due messages of counters and die, each lease running out.
+async fn die(store: &Store, n: u32) {
+    let lease = Duration::from_secs(30);
+    for _ in 0..n {
+        let types = BTreeSet::from([TypeName::parse("counter").unwrap()]);
+        cicada_test::claim_and_abandon(store, &types, lease, 10).await.unwrap();
+        tokio::time::sleep(lease + Duration::from_secs(1)).await;
+    }
+}
+
+/// claim-limit, Scenario: The view of a message (over HTTP).
+#[tokio::test(start_paused = true)]
+async fn the_view_of_a_message_has_its_lost_claims() {
+    let (store, app) = send_only().await;
+    let id = send_id(&app, "/actors/counter/a/messages", r#"{"type": "Add", "payload": {"n": 1}}"#).await;
+    assert_eq!(get_json(&app, &format!("/messages/{id}")).await["message"]["lostClaims"], 0);
+    die(&store, 3).await; // the third claim replaced the second; the second replaced the first
+    let status = get_json(&app, &format!("/messages/{id}")).await;
+    assert_eq!((status["message"]["attempt"].as_u64(), status["message"]["lostClaims"].as_u64()), (Some(3), Some(2)));
+    let mailbox = get_json(&app, "/actors/counter/a/mailbox").await;
+    assert_eq!(items(&mailbox)[0]["lostClaims"], 2);
+}
+
+/// claim-limit, Scenario: The outcome keeps the count (over HTTP).
+#[tokio::test(start_paused = true)]
+async fn the_outcome_of_a_message_keeps_its_lost_claims() {
+    let (store, app) = send_only().await;
+    let id = send_id(&app, "/actors/counter/a/messages", r#"{"type": "Add", "payload": {"n": 1}}"#).await;
+    die(&store, 1).await;
+    let _hosting = node(store.clone()).await; // claims the message, finds one lost claim, and handles it
+    eventually(async || get_json(&app, &format!("/messages/{id}")).await["status"] == "done").await;
+    assert_eq!(get_json(&app, &format!("/messages/{id}")).await["message"]["lostClaims"], 1);
+    let page = get_json(&app, "/outcomes?status=done").await;
+    assert_eq!(items(&page)[0]["message"]["lostClaims"], 1);
 }
 
 // ---- GET /stats ----

@@ -78,16 +78,16 @@ a commit carries the control effects of its turn.
       scenarios "A scenario that reaches the limit" and "A failure by the limit that is not allowed";
       `cargo test -p cicada --lib tests::fuzz` passes, and so does one run with `PROPTEST_CASES=20000`; the report
       says how long that run took and how many generated scenarios reach the limit.
-- [ ] 3.3 The end-to-end tests [Impact]: where a test stops a node in good order in the middle of a turn, it also
+- [x] 3.3 The end-to-end tests [Impact]: where a test stops a node in good order in the middle of a turn, it also
       checks that the message has `lostClaims` 0 afterwards. Verify: the suite compiles (`cargo test -p cicada-e2e
       --no-run`); it runs in 6.2. If no test stops a node that way, say so in the report and add none.
 
 ## 4. HTTP, client, command line and terminal UI
 
-- [ ] 4.1 `lostClaims` in the view of a message [9]: `MessageView` and its mapping, read as 0 when it is missing;
+- [x] 4.1 `lostClaims` in the view of a message [9]: `MessageView` and its mapping, read as 0 when it is missing;
       `ActorClient` follows; regenerate `docs/openapi.json`. Verify: tests for the scenarios "The view of a message"
       (over HTTP), "A view from an earlier node" and "The outcome keeps the count" (over HTTP); the OpenAPI test.
-- [ ] 4.2 The command line and the terminal UI [9]: the column `LOST` in the wide table of `cicada get messages`,
+- [x] 4.2 The command line and the terminal UI [9]: the column `LOST` in the wide table of `cicada get messages`,
       and the line `Lost claims` in the facts of a message. Verify: a case in `tests/cli.rs` for the column, and a
       test with `TestBackend` for the line.
 

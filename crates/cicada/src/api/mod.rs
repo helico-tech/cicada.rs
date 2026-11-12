@@ -222,7 +222,7 @@ pub struct MessageView {
     pub deliver_at: Timestamp,
     /// Opaque string passed through.
     pub correlation_id: Option<String>,
-    /// Plugin headers passed through.
+    /// Headers passed through, such as those an observer adds.
     pub headers: BTreeMap<String, String>,
     /// Store-assigned sequence number; the tie-breaker for equal `deliverAt`.
     pub seq: i64,
@@ -231,6 +231,11 @@ pub struct MessageView {
     /// Number of failed runs that were retried under [`Self::retry`]; 0 when it never failed.
     #[serde(default)]
     pub failures: u32,
+    /// Number of claims that another claim replaced although their turn neither committed nor gave the lease back
+    /// (their node died, their lease ran out, or their commit did not get through). A node fails the message at its
+    /// claim limit (ADR 0025). Never goes back; 0 when a view without it is read.
+    #[serde(default)]
+    pub lost_claims: u32,
     /// The error of the most recent retried failure, or null.
     #[serde(default)]
     pub last_error: Option<String>,

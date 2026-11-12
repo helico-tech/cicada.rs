@@ -516,6 +516,35 @@ async fn the_view_of_a_message_shows_whether_it_is_a_notification() {
     assert!(wide.contains("NOTIFICATION") && wide.trim_end().ends_with("true"), "{wide}");
 }
 
+/// claim-limit, Scenario: The view of a message (the column `LOST`). A node that hosts nothing serves the store, so only
+/// the dead nodes of the test claim the message.
+#[tokio::test]
+async fn the_wide_table_of_messages_shows_their_lost_claims() {
+    let store = cicada::Store::memory();
+    ActorSystem::builder(store.clone()).host(AccountActor).build().initialize().await.unwrap();
+    let system = ActorSystem::builder(store.clone()).build();
+    system.start().await.unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a free port");
+    let s = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, actor_api(system)).await.expect("the server runs") });
+    cicada(&s, &["create", "actor", "account/lost", "--state", "{}"]).await;
+    cicada(&s, &["send", "account/lost", "--type", "Deposit", "--payload", r#"{"amount":1}"#]).await;
+    let types = std::collections::BTreeSet::from([cicada::TypeName::parse("account").unwrap()]);
+    let lease = Duration::from_millis(50);
+    for _ in 0..3 {
+        // A node claims the message and dies; its lease runs out. The next claim counts it lost.
+        cicada_test::claim_and_abandon(&store, &types, lease, 1).await.unwrap();
+        tokio::time::sleep(lease * 2).await;
+    }
+    let table = cicada(&s, &["get", "messages", "--prefix", "account/", "-o", "wide"]).await;
+    let header: Vec<&str> = table.lines().next().unwrap().split_whitespace().collect();
+    let row: Vec<&str> = rows(&table)[0].split_whitespace().collect();
+    let column = |name: &str| header.iter().position(|h| *h == name).unwrap_or_else(|| panic!("{name}: {table}"));
+    assert_eq!((row[column("ATTEMPT")], row[column("LOST")]), ("3", "2"), "{table}");
+    let narrow = cicada(&s, &["get", "messages", "--prefix", "account/"]).await;
+    assert!(!narrow.contains("LOST"), "only the wide table: {narrow}");
+}
+
 /// A missing actor: `run` fails, which the binary turns into exit code 1.
 #[tokio::test]
 async fn the_children_of_an_actor_that_does_not_exist_fail() {

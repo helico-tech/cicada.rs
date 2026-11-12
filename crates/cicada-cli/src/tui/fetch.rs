@@ -3,7 +3,9 @@
 use anyhow::{anyhow, bail};
 use chrono::Utc;
 use cicada::ActorAddress;
-use cicada::api::{ActorView, MailboxMessageView, OutcomeView, PageView, RunningTurnView, WatchView};
+use cicada::api::{
+    ActorView, MailboxMessageView, MessageStatusView, OutcomeView, PageView, RunningTurnView, WatchView,
+};
 use cicada::store::RemoveTypeResult;
 use cicada::time::{Timestamp, format_instant};
 use cicada_client::{ActorClient, CancelOutcome};
@@ -73,38 +75,9 @@ pub async fn screen(client: &ActorClient, target: &Target) -> anyhow::Result<Scr
             let (status, caused) = tokio::try_join!(client.status(id), client.caused_by(id, None, limit))?;
             let status = status.ok_or_else(|| anyhow!("message {id} not found"))?;
             let m = &status.message;
-            let state = wire(&status.status);
-            let mut facts = vec![
-                Fact { label: "Status", value: format!("● {state}"), tone: theme::status(&state) },
-                fact("Type", &m.message_type),
-                fact("To", m.to.to_string()),
-                fact("From", m.from.as_ref().map_or("outside an actor".to_owned(), ToString::to_string)),
-                fact("Caused by", m.caused_by.as_ref().map_or("-".to_owned(), ToString::to_string)),
-                fact("Due", when(m.deliver_at)),
-                fact("Attempt", m.attempt.to_string()),
-                Fact {
-                    label: "Failures",
-                    value: m.failures.to_string(),
-                    tone: if m.failures > 0 { Tone::Warn } else { Tone::Normal },
-                },
-            ];
-            facts.extend(m.correlation_id.as_ref().map(|c| fact("Correlation", c)));
-            facts.extend(status.last_error.as_ref().map(|e| Fact {
-                label: "Last error",
-                value: e.clone(),
-                tone: Tone::Bad,
-            }));
-            facts.extend(status.error.as_ref().map(|e| Fact { label: "Error", value: e.clone(), tone: Tone::Bad }));
-            facts.extend(status.finished_at.map(|t| fact("Finished", when(t))));
-            facts.extend(status.node.as_ref().map(|n| Fact { label: "Node", value: n.clone(), tone: Tone::Info }));
-            facts.extend(status.lease_until.map(|t| fact("Lease", when(t))));
-            if !m.headers.is_empty() {
-                let headers: Vec<String> = m.headers.iter().map(|(k, v)| format!("{k}={v}")).collect();
-                facts.push(fact("Headers", headers.join(", ")));
-            }
             let overview = Overview {
                 subject: Item::Message(id.clone()),
-                facts,
+                facts: message_facts(&status),
                 panes: vec![("payload".to_owned(), m.payload.clone())],
                 pane_follows_selection: false,
                 caused_by: m.caused_by.clone(),
@@ -174,6 +147,37 @@ pub async fn screen(client: &ActorClient, target: &Target) -> anyhow::Result<Scr
         }
         Target::Describe(item) => ScreenData::Describe(describe(client, item).await?),
     })
+}
+
+/// The facts of a message on its screen, from its status as the API serves it. The lost claims, like the failures, are
+/// a warning when there are any: a message on its way to the claim limit.
+pub fn message_facts(status: &MessageStatusView) -> Vec<Fact> {
+    let m = &status.message;
+    let state = wire(&status.status);
+    let count =
+        |label, n: u32| Fact { label, value: n.to_string(), tone: if n > 0 { Tone::Warn } else { Tone::Normal } };
+    let mut facts = vec![
+        Fact { label: "Status", value: format!("● {state}"), tone: theme::status(&state) },
+        fact("Type", &m.message_type),
+        fact("To", m.to.to_string()),
+        fact("From", m.from.as_ref().map_or("outside an actor".to_owned(), ToString::to_string)),
+        fact("Caused by", m.caused_by.as_ref().map_or("-".to_owned(), ToString::to_string)),
+        fact("Due", when(m.deliver_at)),
+        fact("Attempt", m.attempt.to_string()),
+        count("Failures", m.failures),
+        count("Lost claims", m.lost_claims),
+    ];
+    facts.extend(m.correlation_id.as_ref().map(|c| fact("Correlation", c)));
+    facts.extend(status.last_error.as_ref().map(|e| Fact { label: "Last error", value: e.clone(), tone: Tone::Bad }));
+    facts.extend(status.error.as_ref().map(|e| Fact { label: "Error", value: e.clone(), tone: Tone::Bad }));
+    facts.extend(status.finished_at.map(|t| fact("Finished", when(t))));
+    facts.extend(status.node.as_ref().map(|n| Fact { label: "Node", value: n.clone(), tone: Tone::Info }));
+    facts.extend(status.lease_until.map(|t| fact("Lease", when(t))));
+    if !m.headers.is_empty() {
+        let headers: Vec<String> = m.headers.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        facts.push(fact("Headers", headers.join(", ")));
+    }
+    facts
 }
 
 /// The rows of a page of watches whose target or watcher starts with `prefix`; a row opens its watcher.

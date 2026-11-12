@@ -65,6 +65,7 @@ async fn pending_delayed_messages_are_delivered_after_a_restart_of_the_whole_clu
 
     let slow_done = c.send_only.await_finished_within(&in_flight.id, secs(60)).await;
     assert_eq!(slow_done.status, MessageState::Done);
+    assert_eq!(slow_done.message.lost_claims, 0, "a node that stops in good order loses no claim");
     let runs = c.send_only.state::<SlowState, _>(&slow).await.runs;
     assert_eq!(runs.len(), 1, "{runs:?}");
     assert!(runs[0].attempt >= 1);

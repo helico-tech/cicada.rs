@@ -137,6 +137,7 @@ async fn graceful_stop_a_short_turn_finishes_within_the_grace_period() {
     let last = so.await_finished_within(&receipt.id, secs(10)).await;
     assert_eq!(last.status, MessageState::Done);
     assert_eq!(last.message.attempt, 1);
+    assert_eq!(last.message.lost_claims, 0, "a node that stops in good order loses no claim");
     let runs = so.state::<SlowState, _>(&slow).await.runs;
     assert_eq!(runs.len(), 1, "{runs:?}");
     assert_eq!(runs[0].node, victim, "committed by the stopping node itself");
@@ -156,6 +157,7 @@ async fn graceful_stop_a_turn_longer_than_the_grace_period_is_released_and_re_ru
     let last = so.await_finished_within(&receipt.id, secs(60)).await;
     assert_eq!(last.status, MessageState::Done);
     assert_eq!(last.message.attempt, 2);
+    assert_eq!(last.message.lost_claims, 0, "the stopping node gave its claim back: it is not lost");
     let runs = so.state::<SlowState, _>(&slow).await.runs;
     assert_eq!(runs.len(), 1, "{runs:?}");
     assert_ne!(runs[0].node, victim);

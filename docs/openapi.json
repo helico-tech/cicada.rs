@@ -1828,7 +1828,7 @@
             ]
           },
           "headers": {
-            "description": "Plugin headers passed through.",
+            "description": "Headers passed through, such as those an observer adds.",
             "type": "object",
             "additionalProperties": {
               "type": "string"
@@ -1847,6 +1847,13 @@
           },
           "failures": {
             "description": "Number of failed runs that were retried under [`Self::retry`]; 0 when it never failed.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0,
+            "default": 0
+          },
+          "lostClaims": {
+            "description": "Number of claims that another claim replaced although their turn neither committed nor gave the lease back\n(their node died, their lease ran out, or their commit did not get through). A node fails the message at its\nclaim limit (ADR 0025). Never goes back; 0 when a view without it is read.",
             "type": "integer",
             "format": "uint32",
             "minimum": 0,
@@ -2254,7 +2261,7 @@
             ]
           },
           "headers": {
-            "description": "Plugin headers passed through.",
+            "description": "Headers passed through, such as those an observer adds.",
             "type": "object",
             "additionalProperties": {
               "type": "string"
@@ -2273,6 +2280,13 @@
           },
           "failures": {
             "description": "Number of failed runs that were retried under [`Self::retry`]; 0 when it never failed.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0,
+            "default": 0
+          },
+          "lostClaims": {
+            "description": "Number of claims that another claim replaced although their turn neither committed nor gave the lease back\n(their node died, their lease ran out, or their commit did not get through). A node fails the message at its\nclaim limit (ADR 0025). Never goes back; 0 when a view without it is read.",
             "type": "integer",
             "format": "uint32",
             "minimum": 0,
