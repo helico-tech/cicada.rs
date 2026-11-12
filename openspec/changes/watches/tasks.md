@@ -115,9 +115,9 @@ delete or a stop removes a tree.
 
 ## 6. Checks
 
-- [ ] 6.1 `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace`,
+- [x] 6.1 `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace`,
       `cargo check -p cicada` with no feature and with each of `sqlite`, `postgres` and `testing` alone, and
       `openspec validate watches --strict`. Verify: all pass.
-- [ ] 6.2 The PostgreSQL tests with `CICADA_PG_URL` set, and the end-to-end suite with
+- [x] 6.2 The PostgreSQL tests with `CICADA_PG_URL` set, and the end-to-end suite with
       `CICADA_E2E=1 cargo test -p cicada-e2e -- --nocapture`. Both need Docker. Verify: both pass; if Docker cannot
       be started, leave this task open and say so in the report.

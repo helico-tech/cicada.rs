@@ -201,6 +201,7 @@ impl WatchTarget {
 
 /// The texts of every target that the failure of a message to `actor` matches: its address, each prefix of its type
 /// name at a dot, longest first, and `*`. A store looks the watches of a failure up by these.
+#[cfg_attr(not(any(feature = "sqlite", feature = "postgres", feature = "testing")), allow(dead_code))]
 pub(crate) fn failure_targets(actor: &ActorAddress) -> Vec<String> {
     let name = actor.type_name().as_str();
     let mut targets = vec![actor.as_str().to_owned()];
