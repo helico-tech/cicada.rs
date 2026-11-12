@@ -137,30 +137,7 @@ pub(crate) fn same_schema(a: &Value, b: &Value) -> bool {
 fn strip_descriptions(schema: &mut Value) {
     let Value::Object(o) = schema else { return }; // a boolean schema has nothing to strip
     o.remove("description");
-    for (keyword, value) in o.iter_mut() {
-        match keyword.as_str() {
-            "properties" | "patternProperties" | "$defs" | "definitions" | "dependentSchemas" => {
-                if let Value::Object(named) = value {
-                    named.values_mut().for_each(strip_descriptions);
-                }
-            }
-            "items" | "prefixItems" | "anyOf" | "oneOf" | "allOf" => match value {
-                Value::Array(list) => list.iter_mut().for_each(strip_descriptions),
-                single => strip_descriptions(single),
-            },
-            "additionalProperties"
-            | "additionalItems"
-            | "unevaluatedProperties"
-            | "unevaluatedItems"
-            | "not"
-            | "if"
-            | "then"
-            | "else"
-            | "contains"
-            | "propertyNames" => strip_descriptions(value),
-            _ => {}
-        }
-    }
+    crate::schema::for_each_subschema(o, &mut strip_descriptions);
 }
 
 /// Canonical JSON text: object keys sorted (by their bytes), no insignificant whitespace, array order kept.

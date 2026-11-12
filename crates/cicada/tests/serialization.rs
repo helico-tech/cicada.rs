@@ -4,8 +4,9 @@ use std::collections::BTreeMap;
 
 use cicada::contract::{canonical_json, canonical_sha256};
 use cicada::message::{self, EncodedMessage, FamilyInfo};
+use cicada::prelude::*;
 use cicada::schema::{message_schemas, root_schema};
-use schemars::JsonSchema;
+use cicada::testing::TestActors;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -209,4 +210,59 @@ fn a_family_that_is_not_a_tagged_enum_is_rejected() {
     assert!(FamilyInfo::of::<Inner>().is_err());
     assert!(FamilyInfo::of::<Priority>().is_err());
     assert!(message::encode(&Inner { n: 1 }).is_err());
+}
+
+// ---- names that a reference escapes ----
+
+/// A name with a space and `<>`, which a reference to its definition escapes.
+#[derive(Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(rename = "Line <v2>")]
+struct Line {
+    sku: String,
+    priority: Priority,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type")]
+enum LineMsg {
+    Put(Line),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Lines {
+    id: String,
+}
+
+impl ActorRef for Lines {
+    const TYPE: &'static str = "lines";
+    type Message = LineMsg;
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+struct LinesState {
+    skus: Vec<String>,
+}
+
+struct LinesActor;
+
+impl Actor for LinesActor {
+    type Ref = Lines;
+    type State = LinesState;
+
+    async fn handle(&self, turn: &mut Turn<Self>, message: LineMsg) -> HandlerResult {
+        let LineMsg::Put(line) = message;
+        turn.state_mut().skus.push(line.sku);
+        Ok(())
+    }
+}
+
+/// Scenario: A newtype variant of a renamed type. The node starts, which it did not before 0.15.0, and handles it.
+#[tokio::test(start_paused = true)]
+async fn a_node_starts_with_a_newtype_variant_of_a_renamed_type() {
+    let test = TestActors::builder().with(|node| node.host(LinesActor)).build().await.expect("the node starts");
+    let lines = Lines { id: "l".into() };
+    test.create(&lines, &LinesState::default()).await;
+    test.send(&lines, LineMsg::Put(Line { sku: "a".into(), priority: Priority::High })).await;
+    test.run_until_idle().await;
+    assert_eq!(test.state::<_, LinesState>(&lines).await.skus, ["a"]);
 }

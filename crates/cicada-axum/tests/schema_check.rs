@@ -19,7 +19,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 /// type `form`: messages that deny unknown fields, carry an instant, a text with a pattern, a shade whose schema is
-/// looser than its decoder or a list that refers to itself, and a state whose schema the validator cannot use.
+/// looser than its decoder, a list that refers to itself, other messages of the family or a type whose name a reference
+/// escapes, and a state whose schema the validator cannot use.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Form {
     id: String,
@@ -54,6 +55,19 @@ enum FormMsg {
         note: String,
         to: Option<Place>,
     },
+    Batch {
+        items: Vec<FormMsg>,
+    },
+    Line {
+        line: Line,
+    },
+}
+
+/// A type renamed to a name with a space and `<>`, which a reference to its definition escapes.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[schemars(rename = "Line <v2>")]
+struct Line {
+    sku: String,
 }
 
 /// An optional object of `Ship`.
@@ -114,8 +128,8 @@ impl Actor for FormActor {
     }
 }
 
-/// The routers of a node that hosts `counter`, `form` and `maintenance.cleanup` and of one that does not, on one
-/// store, with `counter/a`.
+/// The routers of a node that hosts `counter`, `form`, `maintenance.cleanup` and `watcher` and of one that does not, on
+/// one store, with `counter/a`.
 struct Nodes {
     host: Router,
     other: Router,
@@ -124,7 +138,8 @@ struct Nodes {
 
 async fn nodes() -> Nodes {
     let store = memory_store();
-    let host = actor_api(node_with(store.clone(), |b| b.host(CounterActor).host(FormActor).host(CleanupActor)).await);
+    let host = node_with(store.clone(), |b| b.host(CounterActor).host(FormActor).host(CleanupActor).host(WatcherActor));
+    let host = actor_api(host.await);
     let other_system = node_with(store, |b| b).await;
     let other = actor_api(other_system.clone());
     assert_eq!(put(&host, "/actors/counter/a", r#"{"state": {}}"#).await.status, 201);
@@ -380,6 +395,63 @@ async fn the_detail_of_a_very_long_value_quotes_none_of_it_or_is_cut_with_a_mark
     assert_eq!(detail.chars().count(), cicada::runtime::MAX_REFUSAL_DETAIL);
     assert!(detail.starts_with("Payload of 'Paint' cannot be decoded: unknown variant `qqq"), "{detail:.80}");
     assert!(detail.ends_with(" … (cut)"), "{}", &detail[detail.len() - 40..]);
+}
+
+/// Scenario: A renamed type (schema-reference-names). The schema of `Line` holds the definition `Line <v2>`, so the
+/// door checks a send of it on both nodes, and the sample check can use it.
+#[tokio::test(start_paused = true)]
+async fn a_field_of_a_type_whose_name_a_reference_escapes_is_checked_at_the_door() {
+    let n = nodes().await;
+    put(&n.host, "/actors/form/f", r#"{"state": {}}"#).await;
+    let wrong = r#"{"type": "Line", "payload": {"line": {"sku": 5}}}"#;
+    for app in [&n.other, &n.host] {
+        let reply = post(app, "/actors/form/f/messages", wrong).await;
+        assert_problem(&reply, 422, pt::INVALID_PAYLOAD);
+        assert_eq!(detail(&reply), refused_payload("Line", "form"));
+    }
+    let right = r#"{"type": "Line", "payload": {"line": {"sku": "a"}}}"#;
+    assert_eq!(post(&n.other, "/actors/form/f/messages", right).await.status, 202);
+    cicada_axum::assert_message_sample::<FormMsg>(&json!({"type": "Line", "line": {"sku": "a"}}));
+}
+
+/// The body of a `Batch` whose items are `items`.
+fn batch(items: &str) -> String {
+    format!(r#"{{"type": "Batch", "payload": {{"items": {items}}}}}"#)
+}
+
+/// Scenario: A batch of messages. Its items are messages of the family, also a `Batch`: the door accepts it on every
+/// node, as the type decodes it, and the hosting node handles it.
+#[tokio::test(start_paused = true)]
+async fn a_batch_that_holds_messages_of_its_own_family_is_accepted_by_every_node() {
+    let n = nodes().await;
+    put(&n.host, "/actors/form/f", r#"{"state": {}}"#).await;
+    let items = r#"[{"type": "Strict", "n": 1}, {"type": "Batch", "items": [{"type": "Code", "code": "ab"}]}]"#;
+    for app in [&n.other, &n.host] {
+        let id = send_id(app, "/actors/form/f/messages", &batch(items)).await;
+        wait_for(app, &id, "done").await;
+    }
+    let sample = json!({"type": "Batch", "items": serde_json::from_str::<Value>(items).unwrap()});
+    cicada_axum::assert_message_sample::<FormMsg>(&sample);
+}
+
+/// Scenarios: A nested message that is wrong, on a node that hosts the type; … on a node that does not host the type.
+/// The schema lets it through on both; the decoder of the hosting node refuses it, and on the other node it fails in
+/// its turn with the cause `message`, which a watcher of the actor is told.
+#[tokio::test(start_paused = true)]
+async fn a_wrong_nested_message_is_refused_by_the_decoder_of_the_hosting_node_and_fails_in_its_turn_otherwise() {
+    let n = nodes().await;
+    put(&n.host, "/actors/form/f", r#"{"state": {}}"#).await;
+    put(&n.host, "/actors/watcher/w", r#"{"state": {}}"#).await;
+    assert_eq!(put(&n.host, "/watches", r#"{"target": "form/f", "watcher": "watcher/w"}"#).await.status, 201);
+    let body = batch(r#"[{"type": "Strict", "n": "x"}]"#);
+    let host = post(&n.host, "/actors/form/f/messages", &body).await;
+    assert_problem(&host, 422, pt::INVALID_PAYLOAD);
+    assert!(detail(&host).starts_with("Payload of 'Batch' cannot be decoded: "), "{}", detail(&host));
+    let id = send_id(&n.other, "/actors/form/f/messages", &body).await;
+    wait_for(&n.other, &id, "failed").await;
+    eventually(async || !get_json(&n.other, "/actors/watcher/w").await["state"]["failed"].is_null()).await;
+    let failed = &get_json(&n.other, "/actors/watcher/w").await["state"]["failed"];
+    assert_eq!((failed[0]["messageId"].as_str(), failed[0]["cause"].as_str()), (Some(id.as_str()), Some("message")));
 }
 
 /// The body of a `Nest` whose node has `levels` levels, each with the item `item`: `levels + 3` levels deep (the body,

@@ -66,10 +66,16 @@ pub fn message_schemas<M: JsonSchema>() -> Result<BTreeMap<String, Value>, Messa
         }
         // A newtype variant refers to its struct: inline it.
         if let Some(Value::String(reference)) = alt.remove("$ref") {
-            let target = reference
-                .strip_prefix("#/$defs/")
-                .and_then(|n| defs.get(n))
-                .and_then(Value::as_object)
+            let definition = definition_name(&reference).ok_or_else(not_tagged)?;
+            let target = defs
+                .get(&definition)
+                .ok_or_else(|| {
+                    MessageError::new(format!(
+                        "{family}: the variant '{name}' refers to the definition '{definition}', which the schema of \
+                         the family does not hold"
+                    ))
+                })?
+                .as_object()
                 .ok_or_else(not_tagged)?;
             let own_description = alt.remove("description");
             alt = target.clone();
@@ -99,7 +105,9 @@ pub fn message_schemas<M: JsonSchema>() -> Result<BTreeMap<String, Value>, Messa
                 Value::Object(used.into_iter().filter_map(|n| defs.get(&n).map(|d| (n, d.clone()))).collect()),
             );
         }
-        if schemas.insert(name.clone(), normalise(Value::Object(document))).is_some() {
+        let mut document = Value::Object(document);
+        accept_the_family(&mut document);
+        if schemas.insert(name.clone(), normalise(document)).is_some() {
             return Err(MessageError::new(format!("{family}: message type '{name}' is declared twice")));
         }
     }
@@ -125,13 +133,90 @@ fn referenced_defs(value: &Value, defs: &Map<String, Value>) -> BTreeSet<String>
 fn collect_refs(value: &Value, found: &mut impl FnMut(&str)) {
     match value {
         Value::Object(o) => {
-            if let Some(name) = o.get("$ref").and_then(Value::as_str).and_then(|r| r.strip_prefix("#/$defs/")) {
-                found(name);
+            if let Some(name) = o.get("$ref").and_then(Value::as_str).and_then(definition_name) {
+                found(&name);
             }
             o.values().for_each(|v| collect_refs(v, found));
         }
         Value::Array(a) => a.iter().for_each(|v| collect_refs(v, found)),
         _ => {}
+    }
+}
+
+/// The name of the definition that `reference` points into, for a `$ref` that starts with `#/$defs/`: the first segment
+/// of the pointer, read as RFC 6901 reads a pointer in the fragment of an address. The rest is percent-decoded (left as
+/// it is when a `%` is not followed by two hex digits or the bytes are not UTF-8), split at `/`, and `~1` and `~0` in the
+/// segment become `/` and `~`. schemars writes the name `Line <v2>` as `#/$defs/Line%20%3Cv2%3E`, `line/v2` as
+/// `#/$defs/line~1v2`; `#/$defs/Line/properties/sku` needs the definition `Line`.
+fn definition_name(reference: &str) -> Option<String> {
+    let rest = reference.strip_prefix("#/$defs/")?;
+    let pointer = percent_decode(rest).unwrap_or_else(|| rest.to_owned());
+    let segment = pointer.split('/').next().unwrap_or_default();
+    Some(segment.replace("~1", "/").replace("~0", "~"))
+}
+
+/// `text` with each `%` and two hex digits turned into its byte; `None` when a `%` is not followed by two hex digits or
+/// the bytes are not UTF-8.
+fn percent_decode(text: &str) -> Option<String> {
+    let hex = |b: u8| char::from(b).to_digit(16);
+    let mut bytes = Vec::with_capacity(text.len());
+    let mut rest = text.as_bytes();
+    while let Some((&byte, tail)) = rest.split_first() {
+        rest = tail;
+        if byte == b'%' {
+            let (high, low) = (hex(*tail.first()?)?, hex(*tail.get(1)?)?);
+            bytes.push((high * 16 + low) as u8);
+            rest = &tail[2..];
+        } else {
+            bytes.push(byte);
+        }
+    }
+    String::from_utf8(bytes).ok()
+}
+
+/// Makes every reference to the whole family (`"$ref": "#"`, which schemars writes for a family that holds itself) in
+/// the message document `schema` accept any value: in the document `#` would be the one message. A subschema that is
+/// only the reference becomes `true`; one with other keywords loses the reference. The decoder checks such a nested
+/// message. Only keywords that hold schemas are walked: a `#` in `const`, `enum`, `default` or `examples` is data.
+fn accept_the_family(schema: &mut Value) {
+    let Value::Object(o) = schema else { return };
+    if o.get("$ref").and_then(Value::as_str) == Some("#") {
+        o.shift_remove("$ref");
+        if o.is_empty() {
+            *schema = Value::Bool(true);
+            return;
+        }
+    }
+    for_each_subschema(o, &mut accept_the_family);
+}
+
+/// Calls `f` on each subschema directly under the schema object `o`: the values of the keywords that hold schemas. The
+/// keys of `properties` and the like are names, and `const`, `enum`, `default` and `examples` hold data, so they are
+/// not walked.
+pub(crate) fn for_each_subschema(o: &mut Map<String, Value>, f: &mut impl FnMut(&mut Value)) {
+    for (keyword, value) in o.iter_mut() {
+        match keyword.as_str() {
+            "properties" | "patternProperties" | "$defs" | "definitions" | "dependentSchemas" => {
+                if let Value::Object(named) = value {
+                    named.values_mut().for_each(&mut *f);
+                }
+            }
+            "items" | "prefixItems" | "anyOf" | "oneOf" | "allOf" => match value {
+                Value::Array(list) => list.iter_mut().for_each(&mut *f),
+                single => f(single),
+            },
+            "additionalProperties"
+            | "additionalItems"
+            | "unevaluatedProperties"
+            | "unevaluatedItems"
+            | "not"
+            | "if"
+            | "then"
+            | "else"
+            | "contains"
+            | "propertyNames" => f(value),
+            _ => {}
+        }
     }
 }
 
@@ -207,5 +292,227 @@ mod tests {
     fn refuses_untagged_families() {
         assert!(message_schemas::<Charge>().is_err());
         assert!(message_schemas::<Color>().is_err());
+    }
+
+    /// Names that schemars escapes in a reference, written as it writes them, and the definition each reference needs.
+    #[test]
+    fn a_reference_is_read_as_a_pointer_in_a_fragment() {
+        for (reference, name) in [
+            ("#/$defs/Charge", "Charge"),
+            ("#/$defs/Line%20%3Cv2%3E", "Line <v2>"),
+            ("#/$defs/line~1v2", "line/v2"),
+            ("#/$defs/a~0b", "a~b"),
+            ("#/$defs/~01", "~1"),
+            ("#/$defs/Gr%C3%B6%C3%9Fe", "Größe"),
+            ("#/$defs/100%25", "100%"),
+            // A `%` that does not decode, and bytes that are not UTF-8: the rest as it is, split and unescaped.
+            ("#/$defs/100%", "100%"),
+            ("#/$defs/50%zz~1off", "50%zz/off"),
+            ("#/$defs/%C3", "%C3"),
+            // A pointer of several segments needs the definition of its first; a decoded `/` splits too.
+            ("#/$defs/Line/properties/sku", "Line"),
+            ("#/$defs/Line%2Fsku", "Line"),
+        ] {
+            assert_eq!(definition_name(reference).as_deref(), Some(name), "{reference}");
+        }
+        for reference in ["#", "#/definitions/Charge", "other.json#/$defs/Charge", "#/$defs"] {
+            assert_eq!(definition_name(reference), None, "{reference}");
+        }
+    }
+
+    /// A name that schemars escapes in several ways: a space, `<>`, `/`, `~`, `%`, `[]`, `|` and letters that are not
+    /// ASCII.
+    const ODD: &str = "a b<c>/d~e%f[g]|Größe";
+
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    #[schemars(rename = "a b<c>/d~e%f[g]|Größe")]
+    struct Odd {
+        x: u8,
+    }
+
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    #[serde(tag = "type")]
+    enum Holds {
+        Hold { odd: Odd },
+    }
+
+    #[test]
+    fn the_reference_that_schemars_writes_for_an_escaped_name_needs_the_definition_of_that_name() {
+        let root = SchemaSettings::draft2020_12().into_generator().into_root_schema_for::<Holds>().to_value();
+        let reference = root["oneOf"][0]["properties"]["odd"]["$ref"].as_str().unwrap();
+        assert_eq!(reference, "#/$defs/a%20b%3Cc%3E~1d~0e%25f%5Bg%5D%7CGr%C3%B6%C3%9Fe");
+        assert_eq!(definition_name(reference).as_deref(), Some(ODD));
+        assert!(message_schemas::<Holds>().unwrap()["Hold"]["$defs"][ODD].is_object());
+    }
+
+    /// `Line <v2>`, through `#[schemars(rename)]`.
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    #[schemars(rename = "Line <v2>")]
+    struct Line {
+        sku: String,
+        color: Color,
+    }
+
+    /// `line/v2`, through a container `#[serde(rename)]`, which schemars follows.
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    #[serde(rename = "line/v2")]
+    struct SerdeLine {
+        sku: String,
+    }
+
+    /// A Rust name with letters that are not ASCII.
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    struct Größe {
+        cm: u32,
+    }
+
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    #[serde(tag = "type")]
+    enum Order {
+        Add { line: Line },
+        AddV2 { line: SerdeLine },
+        Measure { size: Größe },
+        Put(Line),
+    }
+
+    /// Scenarios: A renamed type; A type renamed for serde; A type name with a letter that is not ASCII. The message
+    /// schema holds the definition, and what the definition refers to.
+    #[test]
+    fn a_message_schema_holds_a_definition_whose_name_is_escaped_in_its_reference() {
+        let schemas = message_schemas::<Order>().unwrap();
+        for (message, name) in [("Add", "Line <v2>"), ("AddV2", "line/v2"), ("Measure", "Größe")] {
+            let defs = &schemas[message]["$defs"];
+            assert_eq!(defs.as_object().map(|d| d.contains_key(name)), Some(true), "{message}: {defs}");
+        }
+        assert!(schemas["Add"]["$defs"]["Color"].is_object());
+    }
+
+    /// Scenario: A newtype variant of a renamed type. Its message schema is the schema of that type, with the
+    /// definitions it refers to.
+    #[test]
+    fn a_newtype_variant_of_a_renamed_type_is_the_schema_of_that_type() {
+        assert_eq!(
+            message_schemas::<Order>().unwrap()["Put"],
+            json!({"$schema": DRAFT, "title": "Put", "type": "object",
+                "properties": {"sku": {"type": "string"}, "color": {"$ref": "#/$defs/Color"}},
+                "required": ["sku", "color"],
+                "description": "`Line <v2>`, through `#[schemars(rename)]`.",
+                "$defs": {"Color": {"type": "string", "enum": ["red"]}}})
+        );
+    }
+
+    /// A message family `$name` whose schema is written by hand.
+    macro_rules! handwritten {
+        ($name:ident, $schema:tt) => {
+            struct $name;
+
+            impl JsonSchema for $name {
+                fn schema_name() -> std::borrow::Cow<'static, str> {
+                    stringify!($name).into()
+                }
+
+                fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+                    schemars::json_schema!($schema)
+                }
+            }
+        };
+    }
+
+    handwritten!(Missing, {"oneOf": [
+        {"type": "object", "properties": {"type": {"const": "Run"}}, "required": ["type"]},
+        {"type": "object", "properties": {"type": {"const": "Line"}}, "required": ["type"], "$ref": "#/$defs/Gone%20v2"}
+    ]});
+
+    /// Scenario: A newtype variant whose definition is missing.
+    #[test]
+    fn a_newtype_variant_whose_definition_is_missing_names_the_variant_and_the_definition() {
+        let e = message_schemas::<Missing>().unwrap_err().to_string();
+        assert!(e.contains("the variant 'Line' refers to the definition 'Gone v2'"), "{e}");
+        assert!(!e.contains("must be an enum"), "{e}");
+    }
+
+    handwritten!(Segments, {"oneOf": [
+        {"type": "object", "properties": {"type": {"const": "Add"}, "sku": {"$ref": "#/$defs/Line/properties/sku"}},
+            "required": ["type"]},
+        {"type": "object", "properties": {"type": {"const": "Run"}}, "required": ["type"]}
+    ], "$defs": {"Line": {"type": "object", "properties": {"sku": {"type": "string"}}}}});
+
+    /// Scenario: A reference of several segments.
+    #[test]
+    fn a_reference_of_several_segments_needs_the_definition_of_its_first() {
+        let schemas = message_schemas::<Segments>().unwrap();
+        assert_eq!(
+            schemas["Add"]["$defs"],
+            json!({"Line": {"type": "object", "properties": {"sku": {"type": "string"}}}})
+        );
+        assert!(schemas["Run"].get("$defs").is_none());
+    }
+
+    /// A family that holds itself: in a field, an optional field with a doc comment, and a definition.
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    #[serde(tag = "type")]
+    enum Tree {
+        Add {
+            n: i32,
+        },
+        Batch {
+            items: Vec<Tree>,
+            /// The one after.
+            next: Option<Box<Tree>>,
+            group: Group,
+        },
+    }
+
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    struct Group {
+        members: Vec<Tree>,
+    }
+
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    #[serde(tag = "type")]
+    enum Flat {
+        Add { n: i32 },
+    }
+
+    /// Scenario: The other messages of the family. Only the document that refers to the family changes: there each
+    /// reference to it accepts any value, also in a definition the document holds.
+    #[test]
+    fn a_reference_to_the_family_accepts_any_value_and_the_other_messages_do_not_change() {
+        let schemas = message_schemas::<Tree>().unwrap();
+        let add = serde_json::to_string(&schemas["Add"]).unwrap();
+        assert_eq!(add, serde_json::to_string(&message_schemas::<Flat>().unwrap()["Add"]).unwrap());
+        assert_eq!(
+            add,
+            r#"{"$schema":"https://json-schema.org/draft/2020-12/schema","title":"Add","type":"object","properties":{"n":{"type":"integer","format":"int32"}},"required":["n"]}"#
+        );
+        let batch = &schemas["Batch"];
+        assert_eq!(batch["properties"]["items"], json!({"type": "array", "items": true}));
+        assert_eq!(
+            batch["properties"]["next"],
+            json!({"anyOf": [true, {"type": "null"}], "description": "The one after."})
+        );
+        assert_eq!(batch["$defs"]["Group"]["properties"]["members"], json!({"type": "array", "items": true}));
+        assert!(!serde_json::to_string(batch).unwrap().contains(r##""$ref":"#""##), "{batch}");
+    }
+
+    handwritten!(Data, {"oneOf": [{"type": "object", "properties": {
+        "type": {"const": "Mark"},
+        "mark": {"const": "#"},
+        "data": {"const": {"$ref": "#"}, "enum": [{"$ref": "#"}], "default": {"$ref": "#"}, "examples": [{"$ref": "#"}]},
+        "next": {"$ref": "#"}
+    }, "required": ["type"]}]});
+
+    /// Scenario: A `#` that is data. It stays in `const`, `enum`, `default` and `examples`; a reference beside it does
+    /// not.
+    #[test]
+    fn a_reference_to_the_family_in_data_stays() {
+        assert_eq!(
+            message_schemas::<Data>().unwrap()["Mark"]["properties"],
+            json!({
+                "mark": {"const": "#"},
+                "data": {"const": {"$ref": "#"}, "enum": [{"$ref": "#"}], "default": {"$ref": "#"}, "examples": [{"$ref": "#"}]},
+                "next": true
+            })
+        );
     }
 }
