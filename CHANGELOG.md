@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.16.8 — unreleased
+## 0.16.8 — 2026-11-13
 
 Nothing breaks in the API: an observer can pick timers or the other sends for a header, and `cicada-otel` starts a new
 trace for each timer, linked to the turn that set it. No schema, HTTP field or actor contract changes. Traces change on
