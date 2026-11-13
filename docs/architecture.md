@@ -262,7 +262,7 @@ impl Actor for SyncActor {
 | --- | --- |
 | `cicada` | Addressing, definition API, runtime and dispatch loop with turn observers and the claim limit, watches, the store (`Store` and its model; the backend trait is private), contracts and schemas, retry and retention policies, the HTTP wire model (`api`, shared by server and client). Behind features: the SQLite store (`sqlite`; sqlx, one file, WAL, one writer), the PostgreSQL store (`postgres`; sqlx, `FOR UPDATE SKIP LOCKED` claims, `LISTEN/NOTIFY` wake-ups) and the test support (`testing`: the in-memory store, clocks, `TestActors`, `claim_and_abandon`). Its tests hold the S1–S10 conformance suite every backend runs and the randomised tests: parsers, backend comparison, and a node simulation under injected faults |
 | `cicada-test` | Exports the test support of `cicada` (`TestActors`, clocks, `claim_and_abandon`); contract snapshots and state samples |
-| `cicada-axum` | `actor_api()`, `actor_api_read()` and `actor_health()` as axum routers, the OpenAPI document, the schema check of the HTTP door (the JSON Schema validator `jsonschema`) and the sample checks |
+| `cicada-axum` | `actor_api()`, `actor_api_read()` and `actor_health()` as axum routers, the change hints as Server-Sent Events (`GET /changes`), the OpenAPI document, the schema check of the HTTP door (the JSON Schema validator `jsonschema`) and the sample checks |
 | `cicada-client` | Typed HTTP client (reqwest) |
 | `cicada-app` | Layer 2 (ADR 0018, ADR 0027): `App` turns a set of actor types into a binary with `serve` (the node and the HTTP API at the root, with a public `/ready` outside the host's router), `worker` (the node only) and the operator commands, which go over HTTP through `cicada-client`; settings from flags and `CICADA_…` variables over the host's `NodeConfig`. It only composes `cicada`, `cicada-axum` and `cicada-client`, and builds the binary `cicada` (no hosted type, so neither `serve` nor `worker`). Features `sqlite`, `postgres` and `tui` (the terminal UI), none on by default |
 | `cicada-otel` | OpenTelemetry observer (`ActorTelemetry`) |
@@ -296,6 +296,17 @@ of it is one read of the store (one `SELECT` per read attempt on SQL, one lock i
 rows share one committed snapshot and each state comes with its own version; there is no snapshot across pages. It
 returns the stored JSON without an actor or a schema, and one row that does not decode fails the page.
 
+`GET /changes?prefix=` (ADR 0035) serves the change hints below as Server-Sent Events on both routers: `changed` with
+`{"address":"<canonical>"}` and `resync` with `{}`, no `id` or `retry` field and no replay (`Last-Event-ID` is
+ignored; each request is a new subscription that starts with a `resync`), and a `keep-alive` comment after 15 seconds
+without output, which says nothing about readiness. The prefix is that of the listings, read with the same query
+parser. The handler subscribes and answers `200` at once, without a store query; each response holds one
+subscription and no queue of its own, so a slow body lags and resyncs in the core. It is the one exception to the
+`503` of a closed store: closing the store ends an open body without a final event, and a request after the close
+gets an empty `200`. Stopping a node leaves the streams open, so `cicada-app` bounds them with its drain (5 s after
+the node stopped, then the body is cut), and a host that mounts the routers closes the store in its shutdown future
+or cancels them itself.
+
 ## Change hints
 
 `ActorSystem::changes(prefix)` (ADR 0034) is a best-effort stream of `ActorChange::Changed { address }` and
@@ -327,6 +338,8 @@ carries no state, version or kind of change, because a version starts again at 0
   hub `Up` only after `LISTEN` succeeded, also after a reconnect (sqlx's eager reconnect is off), so no hint between a
   loss and the next `Up` goes unnoticed once the loss is seen. A `COMMIT` that fails with `54000` (a full notification
   queue) is an unavailable store. Nodes before 0.16.10 send no hints.
+- **Over HTTP.** `GET /changes` carries the same items as Server-Sent Events (see HTTP contract); it adds no
+  coverage, order or delivery promise.
 
 ## Design notes
 
@@ -372,5 +385,5 @@ The claim limit cannot tell the message that kills a node from the messages that
 as a matter of routine (a deploy that sends SIGKILL) loses the claims of its turns too; external side effects are
 at-least-once (use `message().id` as idempotency key, also across retries); a commit rejected because of the handler's
 own sends is not retryable; the client has no streaming of message status (poll `GET /messages/{id}`); change hints
-are best effort, with no history or replay, and do not cover a separately opened SQLite file, older PostgreSQL nodes or
-SQL by hand.
+are best effort, with no history or replay (also over HTTP), and do not cover a separately opened SQLite file, older
+PostgreSQL nodes or SQL by hand; `cicada-client` has no method for the stream of `GET /changes`.

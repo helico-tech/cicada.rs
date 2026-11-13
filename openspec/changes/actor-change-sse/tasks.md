@@ -16,7 +16,7 @@
   store afterward. Retain production DRAIN=5s and use the existing shortened-drain harness/virtual-time controls in
   tests. Also cover the standalone guide's stop-then-close shutdown with an open stream. Run affected app tests;
   no new shutdown API or production lifecycle change belongs here.
-- [ ] 4. Update the axum crate route table, architecture's HTTP/closed-store sections, HTTP guide and operations.
+- [x] 4. Update the axum crate route table, architecture's HTTP/closed-store sections, HTTP guide and operations.
   Include example frames, readiness versus comments, store/worker/app lifetimes, auth/CORS, proxy/timeouts and bounded
   consumer recovery. Write a guide-only JS example with one worker, at most 1000 dirty addresses, generation-aware
   resync, safe fetch-failure retry/disposal and correct path/query encoding. State that Rust protocol tests ground it,

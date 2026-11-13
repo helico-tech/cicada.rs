@@ -7,6 +7,33 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.16.11 — unreleased
+
+Nothing breaks: a browser page can follow the change hints over HTTP. The route is new; no schema, actor contract,
+command line or existing route changes. Upgrade a server before a page uses the route.
+
+### Added
+
+- `GET /changes?prefix=` on both `actor_api` and `actor_api_read` (operationId `streamActorChanges`, ADR 0035): the
+  hints of `ActorSystem::changes` as Server-Sent Events, `event: changed` with `data: {"address":"<canonical>"}` and
+  `event: resync` with `data: {}`, the first a `resync` once the store's source is live. The prefix is the literal
+  one of the listings and other query keys are ignored. No `id` or `retry` field and no replay: `Last-Event-ID` is
+  ignored and each request starts with a `resync`. The `200` comes at once with `Cache-Control: no-cache` and
+  `X-Accel-Buffering: no`, and a `: keep-alive` comment follows each 15 seconds without output; comments do not mean
+  the stream is live. Each response holds one subscription and no queue of its own, so a slow reader gets the core's
+  `resync`. The OpenAPI document describes the body as a `text/event-stream` string with examples.
+- The HTTP guide's Follow changes over HTTP: the frames, lifetimes, authentication, CORS and proxies, and a browser
+  consumer with one worker, at most 1000 pending addresses, resyncs that drop an older incomplete listing, and
+  retries that keep a failed address. `cicada-client` gets no method for the stream.
+
+### Changed
+
+- A closed store ends an open change stream without a final event, and `GET /changes` after the close answers an empty
+  `200`: the streaming exception to the `503` of a closed store. Stopping a node leaves the streams open, so with a
+  page open `serve` may use its whole 5-second drain before it cuts the stream and closes the store.
+- The axum service of the HTTP guide closes its store inside the shutdown future, after the node stopped, so open
+  change streams end and axum's graceful shutdown can finish.
+
 ## 0.16.10 — 2026-11-13
 
 Nothing breaks: a host can follow hints that actors changed instead of polling them. No schema, HTTP route, actor

@@ -80,9 +80,9 @@ async fn main() -> anyhow::Result<()> {
         .with_graceful_shutdown(async move {
             shutdown_signal().await;
             system.stop().await; // no new claims; running turns may finish within the grace period
+            store.close().await; // the store is yours: close it after the node; it also ends open GET /changes streams
         })
         .await?;
-    store.close().await; // the store is yours: close it after the node stopped
     Ok(())
 }
 
@@ -101,6 +101,10 @@ async fn shutdown_signal() {
 - `system.start()`, `system.stop()` and the store are those of the core: see
   [Open a store and run a node](core.md#open-a-store-and-run-a-node).
 - A node hosting no types still serves the whole API (create, send, query) for every registered type.
+- The store is closed inside the shutdown future, after the node stopped and before axum waits for open requests:
+  axum's graceful shutdown waits for every open response, and a [change stream](#follow-changes-over-http) stays open
+  until its store closes. A host that closes the store later bounds that wait in another way, as `cicada-app` does
+  with its five seconds.
 - `actor_api(system)` and `actor_health(system, path)` are plain routers with no fallback: `merge` them or `nest`
   them under a prefix, and wrap them in your own layers. They need nothing installed on the app: they read and write
   JSON themselves with the wire types of `cicada::api`. `actor_api_with(system, ApiConfig { max_request_body_bytes })`
@@ -157,6 +161,7 @@ request's path and query as `instance`.
 | `GET /actors/{type}/{key}/children?cursor=&limit=` — the direct children's addresses, in address order, paged | 200 | 404 |
 | `GET /actors?prefix=&cursor=&limit=` — instance addresses, paged | 200 | |
 | `GET /actors/states?prefix=&cursor=&limit=` — the actors of `GET /actors`, each as `GET /actors/{type}/{key}` shows it, with the same pages and cursors; one read of the store per page (see [List actors with their state](#list-actors-with-their-state)) | 200 | 500 a stored row that no longer decodes fails the whole page |
+| `GET /changes?prefix=` — hints that actors under the prefix may have changed, as Server-Sent Events (see [Follow changes over HTTP](#follow-changes-over-http)) | 200 `text/event-stream`, also after the store closed (an empty body) | |
 | `POST /actors/{type}/{key}/messages` body `{id?, type, payload?, deliverAt? \| delay?, correlationId?, headers?, retry?, retention?}` — send | 202 `{id, deliverAt}`; 200 that id was already accepted (same target and type) | 400 invalid `retry` or `retention` policy; 404 `no-such-type` when no registered type matches the target, also when the actor exists; 404 `no-such-instance` when its type is registered and the actor does not exist; 409 id already used for another target or type; 422 unknown message type; 422 `invalid-payload`: a payload that does not match the registered schema of its message type (every node), or one that cannot be decoded (hosting node) |
 | `GET /actors/{type}/{key}/mailbox?cursor=&limit=` — pending mailbox in delivery order, each with `attempt`, `failures`, `lostClaims`, `lastError`, `retry` and `state` (`running` or `pending`) | 200 | 404 |
 | `POST /actors/{type}/{key}/mailbox/pause` — pause: messages queue up, no new turn is started, a running turn finishes | 204 | 404 |
@@ -255,6 +260,154 @@ row that no longer decodes fails the whole page with `500`. The core guide has t
 [List actors with their state](core.md#list-actors-with-their-state). The route is new in 0.16.9: upgrade the server
 before a client uses it. Against an older server the method returns that server's error and does not fall back to
 reading each actor.
+
+### Follow changes over HTTP
+
+`GET /changes?prefix=` streams the change hints of the core ([Follow changes](core.md#follow-changes), ADR 0034) as
+Server-Sent Events, for a page that shows many actors (ADR 0035). Both routers serve it. It is only a transport: it
+covers what the core's feed covers, with the same best effort, and adds no state, history, order or delivery promise.
+
+```text
+event: resync
+data: {}
+
+event: changed
+data: {"address":"order/42"}
+
+: keep-alive
+
+```
+
+- **Events.** `changed` carries the canonical address of an actor that may have changed: read it with
+  `GET /actors/{address}` (`404` means it is gone). `resync` says that hints may have been missed: list the prefix
+  again with `GET /actors/states`. The first event is a `resync`, once the store's source of hints is live. Every
+  event ends in a blank line; ignore an event name you do not know.
+- **No replay.** No `id` or `retry` field; `Last-Event-ID` is ignored, and every request, a reconnect too, is a new
+  subscription that starts with a `resync`.
+- **The query.** `prefix` is the literal prefix of the listings (`order/`, `user/jan%40`), decoded once; absent or
+  empty means every actor, the first one counts, and other keys (`cursor`, `limit`) are ignored.
+- **Readiness.** The `200` comes at once, without a store query. A `: keep-alive` comment follows each 15 seconds
+  without output. Comments can come before the first `resync` (on PostgreSQL while its listener is down) and do not
+  mean the stream is live; the first `resync` may wait as long as the database is away, so a page that cares sets its
+  own deadline.
+- **How long it lives.** Closing the store ends the body without a final event, and a request after the close gets a
+  `200` with an empty body, not `503`. Stopping the node does not end it. `cicada-app`'s `serve` stops the node, gives
+  open requests 5 seconds and then cuts them with a transport error, so an open dashboard can use those 5 seconds of
+  the stop. A host that mounts the routers itself owns that: axum's graceful shutdown waits for open streams until the
+  store is closed (see [Run it in an axum service](#run-it-in-an-axum-service)) or the host cancels them.
+- **A slow reader.** Each response holds one subscription and nothing more: a body that is not read falls behind,
+  and the core's lag turns into a `resync` once it is read again. A dropped connection frees the subscription.
+- **Authentication and CORS.** The host's layers wrap the route like any other. The browser's `EventSource` cannot
+  set an `Authorization` header: use a session cookie on the same origin, or, from another origin,
+  `new EventSource(url, { withCredentials: true })` with CORS that allows that origin and credentials. A `401` or
+  `403` closes the source for good.
+- **Proxies.** The response says `Cache-Control: no-cache` and `X-Accel-Buffering: no` (nginx's hint not to buffer),
+  but not every proxy obeys it: turn off buffering and compression for the route, and allow responses that stay open
+  and idle for more than 15 seconds. Over HTTP/1 a browser opens only a few connections per origin, so keep one
+  stream per page.
+- **Clients.** `cicada-client` has no method for the stream: a browser uses `EventSource`, Rust in the same process
+  uses `ActorSystem::changes`, and a remote Rust client brings an SSE reader of its own.
+
+A page keeps one `EventSource` and one worker that does one read at a time, not a fetch per event. It waits for the
+first `resync`, lists the prefix into a fresh map and shows the map only when the listing is complete and no newer
+`resync` came meanwhile; then it reads the addresses that changed during the listing. It keeps at most 1000 of them
+and lists again when there would be more. A read that fails keeps its address, or asks for a new listing, and tries
+again after a pause, with one timer at most. This JavaScript is an illustration: no test runs it. The same protocol
+(hints during paging, a newer `resync`, the bound and the retries) is tested in Rust against a real stream in
+[crates/cicada-axum/tests/changes.rs](../../crates/cicada-axum/tests/changes.rs).
+
+```js
+// A live view of the actors under `prefix`; returns a function that stops it.
+function follow(prefix, render) {
+  const MAX_DIRTY = 1000, RETRY_MS = 2000;
+  let view = new Map();     // canonical address -> the actor as GET /actors/{address} shows it
+  const dirty = new Set();  // addresses to read again
+  let generation = 0;       // moves on with each resync
+  let needsListing = false, working = false, retry = null;
+  const abort = new AbortController();
+  // Same origin: the session cookie goes along. URLSearchParams encodes the prefix once.
+  const source = new EventSource(`/changes?${new URLSearchParams({ prefix })}`);
+
+  function relist() { generation += 1; dirty.clear(); needsListing = true; }
+  source.addEventListener("resync", () => { relist(); kick(); });
+  source.addEventListener("changed", (event) => {
+    const { address } = JSON.parse(event.data); // canonical and already encoded: use it as it is
+    if (!dirty.has(address) && dirty.size >= MAX_DIRTY) relist(); else dirty.add(address);
+    kick();
+  });
+  source.onerror = () => {
+    // CONNECTING: the browser reconnects by itself, and the new stream starts with a resync.
+    if (source.readyState === EventSource.CLOSED) render(view, "stopped"); // no reconnect: show it
+  };
+
+  function kick() { if (!working && retry === null) work(); }
+  function later() { retry = setTimeout(() => { retry = null; kick(); }, RETRY_MS); }
+
+  async function work() {
+    working = true;
+    try {
+      while (true) {
+        if (needsListing) {
+          needsListing = false;
+          let listed;
+          try { listed = await list(generation); } catch (error) { needsListing = true; throw error; }
+          if (listed !== null) { view = listed; render(view, "live"); } // null: a newer resync, list again
+        } else if (dirty.size > 0) {
+          const address = dirty.values().next().value;
+          dirty.delete(address);
+          try { await read(address); } catch (error) {
+            if (dirty.size >= MAX_DIRTY) relist(); else dirty.add(address); // never lose it
+            throw error;
+          }
+          render(view, "live");
+        } else return;
+      }
+    } catch (error) {
+      if (!abort.signal.aborted) later();
+    } finally {
+      working = false;
+    }
+  }
+
+  async function list(gen) {
+    const fresh = new Map();
+    let cursor = null;
+    do {
+      const query = new URLSearchParams({ prefix, limit: "100" });
+      if (cursor !== null) query.set("cursor", cursor);
+      const page = await getJson(`/actors/states?${query}`);
+      if (gen !== generation) return null; // a resync came: this listing may miss what it reported
+      for (const actor of page.items) fresh.set(actor.address, actor);
+      cursor = page.next;
+    } while (cursor !== null);
+    return fresh;
+  }
+
+  async function read(address) {
+    const response = await fetch(`/actors/${address}`, { signal: abort.signal }); // not encoded again
+    if (response.status === 404) view.delete(address);
+    else if (response.ok) view.set(address, await response.json());
+    else throw new Error(`GET /actors/${address}: ${response.status}`);
+  }
+
+  async function getJson(url) {
+    const response = await fetch(url, { signal: abort.signal });
+    if (!response.ok) throw new Error(`GET ${url}: ${response.status}`);
+    return response.json();
+  }
+
+  return () => { abort.abort(); source.close(); clearTimeout(retry); retry = null; };
+}
+```
+
+An address is already encoded: `user/jan%40example.com` is read at `/actors/user/jan%40example.com`, and a key with a
+slash, `files/a%2Fb`, at `/actors/files/a%2Fb`; encoding it again (`%2540`) names another actor. Query values are
+encoded once, by `URLSearchParams`: the prefix `user/jan%40` goes on the wire as `prefix=user%2Fjan%2540`. After a
+`CLOSED` source (a `401`, a `403`, a refused connection) the page shows that it stopped; it may open a new
+`EventSource` after the user signs in again, with a growing pause, and that stream starts with a `resync`. Each
+`resync` rereads the whole prefix, so many of them cost many rows; there is no snapshot across pages and no history to
+catch up from. A page that must see what the feed does not cover (a separately opened SQLite file, PostgreSQL nodes
+before 0.16.10, SQL by hand) keeps a periodic full read.
 
 ### The schema check
 

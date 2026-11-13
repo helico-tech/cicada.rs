@@ -62,7 +62,8 @@ the store and the node's life cycle, or hands them to `App`.
 - **Graceful stop.** `serve` and `worker` stop on `SIGTERM` and `SIGINT`. `serve` stops the node first: it claims no
   more and lets running turns finish within the grace period, while the API keeps answering and `/ready` answers
   `503`; then the HTTP server stops, requests still open get 5 s and are cut off after that, and the store is closed.
-  `worker` stops the node and closes the store. A host that uses the layers directly handles signals itself: it waits
+  An open change stream (`GET /changes`) does not end when the node stops, so with a dashboard open the stop of
+  `serve` takes the node's stop plus those 5 s. `worker` stops the node and closes the store. A host that uses the layers directly handles signals itself: it waits
   for `SIGTERM` (and Ctrl-C), calls `system.stop()`, and closes the store afterwards. On stop a node stops claiming,
   lets running turns finish within `shutdown_grace_period` (30 s), then cancels them and releases their leases; a
   cancelled turn that does not end
@@ -108,7 +109,16 @@ the store and the node's life cycle, or hands them to `App`.
   [the HTTP guide](guide/http.md#run-it-in-an-axum-service) and `serve` do: the API keeps answering while turns
   finish, and `/ready` answers `503` from the moment `stop` begins.
   With the HTTP server first, one request that stays open (a route that streams) would hold up the stop of the node
-  until the platform kills the process, and every turn running then would be a lost claim.
+  until the platform kills the process, and every turn running then would be a lost claim. Close the store in that
+  future too, after the node: axum waits for every open response, and a change stream ends only when its store
+  closes (or when the host cuts it off after a time of its own, as `serve` does).
+- **Change streams behind a proxy.** `GET /changes` is a response that stays open (Server-Sent Events, ADR 0035; the
+  [HTTP guide](guide/http.md#follow-changes-over-http) has the protocol). It sends a comment after 15 s without
+  output and says `X-Accel-Buffering: no`, but configure the proxy or load balancer in front of it yourself: no
+  buffering and no compression for the route, and idle and response timeouts well above 15 s. Each open page holds
+  one connection and one subscription; limit them in the host's middleware or proxy, as the API sets no quota. The
+  browser's `EventSource` sends no `Authorization` header, so a page authenticates with a session cookie, and from
+  another origin with CORS that allows credentials.
 - **Rolling deploys** work as long as the contracts stay equal: a node refuses to start when a type's contract
   differs from the registered one. Check that in CI with contract snapshots (`cicada_test::assert_contracts_match`,
   [Contract snapshots](guide/core.md#contract-snapshots)) and keep stored states readable with state samples
@@ -340,6 +350,10 @@ an `@` payload on the store's channel; nodes of 0.16.9 ignore those payloads, so
 Only nodes of 0.16.10 send hints, though: a host that follows changes sees the writes of an older node only at its
 next `Resync`. Upgrade every node that writes, then let the followers subscribe again (or restart them), so that they
 read everything once.
+
+**Version 0.16.11 changes no schema, contract or existing route.** It adds `GET /changes` (ADR 0035), so a page that
+uses it needs a server of 0.16.11; an older one answers `404`. A node that serves it still sees only the hints of
+nodes of 0.16.10 or later. With a page open, `serve` may now use its whole 5 s drain on stop.
 
 **Switching a type to `create_child`.** An actor created with `turn.create` stays independent: a later `create_child`
 of it by its creator does not adopt it, but fails the creator's message (the commit is rejected, and a handler cannot

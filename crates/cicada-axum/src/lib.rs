@@ -9,6 +9,7 @@
 //! | `DELETE /actors/{type}/{key}` | 204 | 404 |
 //! | `GET /actors?prefix=&cursor=&limit=` | 200 | |
 //! | `GET /actors/states?prefix=&cursor=&limit=` (each actor with its state, one store read per page) | 200 | |
+//! | `GET /changes?prefix=` (change hints as Server-Sent Events) | 200 `text/event-stream` | |
 //! | `POST /actors/{type}/{key}/messages` body `{id?, type, payload, deliverAt or delay, correlationId?, headers?, retry?, retention?}` | 202, 200 duplicate id | 400 invalid retry or retention policy, 404, 409 id taken, 422 unknown type, a payload that does not match its schema or cannot be decoded |
 //! | `GET /actors/{type}/{key}/mailbox?cursor=&limit=` | 200 | 404 |
 //! | `POST /actors/{type}/{key}/mailbox/pause` | 204 | 404 |
@@ -59,6 +60,16 @@
 //!
 //! **Listings** take `cursor` (the `next` of the previous page) and `limit` (1..[`MAX_PAGE_SIZE`], default 100). A
 //! `prefix` is a prefix of the address, such as `sync/` (one type) or `sync/ac`.
+//!
+//! **Change hints** (ADR 0035). `GET /changes?prefix=` streams the hints of [`cicada::ActorSystem::changes`] as
+//! Server-Sent Events: `event: changed` with `data: {"address":"<canonical address>"}` (read that actor again) and
+//! `event: resync` with `data: {}` (list the prefix again), the first event a `resync` once the store's source is live.
+//! The prefix is the literal one of the listings; other query keys are ignored. No `id` or `retry` field, no replay
+//! (`Last-Event-ID` is ignored), and a `: keep-alive` comment after each 15 seconds without output, which says nothing
+//! about readiness. The `200` comes at once, with `Cache-Control: no-cache` and `X-Accel-Buffering: no`. Closing the
+//! store ends the body without a final event (a request after the close gets an empty `200`, not `503`); stopping the
+//! node does not. A host whose graceful shutdown waits for open requests ends these streams itself, e.g. by closing
+//! the store in its shutdown future after the node stopped.
 //!
 //! **Mounting.** The routers have no fallback, so a host can [`Router::nest`] or [`Router::merge`] them, and wraps the
 //! API in its own authentication layers:
