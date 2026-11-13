@@ -23,7 +23,7 @@ Each layer uses only the public API of the layers below it (ADR 0018). Use the l
 | 0 | `cicada`, `cicada-test`, `cicada-otel` | Actor types, the runtime, the stores (features `sqlite` and `postgres`), watches, retry and retention; `TestActors` on virtual time; an OpenTelemetry observer | [The core](docs/guide/core.md) |
 | 1 | `cicada-axum`, `cicada-client` | The HTTP API as an axum `Router`, with the schema check at the door; the typed client | [HTTP and the client](docs/guide/http.md) |
 | 2 | `cicada-app` | `App`: a set of actor types as a binary with `serve`, `worker` and the operator commands; the binary `cicada` and its terminal UI | [The app](docs/guide/app.md) |
-| 3 | `cicada-actors` | Ready-made actors: a supervisor, dead letters, a topic and a scheduler; `Schedule` | [Ready-made actors](docs/guide/actors.md) |
+| 3 | `cicada-actors` | Ready-made actors: a supervisor, dead letters, a topic, a scheduler and a rate limiter; `Schedule` | [Ready-made actors](docs/guide/actors.md) |
 
 `examples/` holds ten worked examples, each tested ([the core guide](docs/guide/core.md#examples)), and
 `sample-service/` a runnable node on `cicada-app` ([the app guide](docs/guide/app.md#sample-service)).
@@ -100,7 +100,7 @@ cargo run -- get actor counter/a -o json                 # "state": {"total": 5}
 | [The core](docs/guide/core.md) | Actor types, messages, turns and state, child actors, watches, control effects, the store and the node, retry, retention, the claim limit, observers, testing, the examples |
 | [HTTP and the client](docs/guide/http.md) | The routers, the HTTP API, the schema check, mounting in an axum service, the typed client |
 | [The app](docs/guide/app.md) | `App`, `serve` and `worker`, the settings, the command line and the terminal UI, the sample service |
-| [Ready-made actors](docs/guide/actors.md) | The supervisor, dead letters, the topic, the scheduler, `Schedule` |
+| [Ready-made actors](docs/guide/actors.md) | The supervisor, dead letters, the topic, the scheduler, the rate limiter, `Schedule` |
 | [Architecture](docs/architecture.md) | The reference for behaviour: the domain language, guarantees G1–G6, store requirements S1–S10, the HTTP contract |
 | [Guarantees and their tests](docs/guarantees.md) | Each of G1–G6 and S1–S10 with the tests that prove it; checked by a test |
 | [Operations](docs/operations.md) | Sizing, deploying, upgrading, releasing, on call, store tuning, telemetry |

@@ -7,6 +7,24 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.16.2 — unreleased
+
+Nothing breaks: a new ready-made actor, the rate limiter. A node that hosts it registers its contract at its first
+start; nothing changes for the other nodes, and no schema of the store changes.
+
+### Added
+
+- The rate limiter (`RateLimiterActor`, `cicada.rate-limiter`, one instance for each limit, built with
+  `RateLimiter::named`): its one message, `Submit { to, message, retry }`, reserves the next free slot of a shared
+  rate and sends the stored message to the target, due at that slot, with `retry` as its retry policy there
+  (`RateLimiterMsg::submit` builds one from a typed ref and a message of its family). Its state holds the rate, the
+  burst and the longest delay, fixed at the create (`RateLimiterState::new`, checked like a decoded state, fails with
+  `InvalidRate`), and one GCRA timestamp; it keeps no queue. A slot beyond the longest delay, or a message the target
+  does not take, is refused for good and reserves nothing; a target that is gone fails the commit. Slots are due
+  times, not runs: messages that wait past their slots can run close together. Its contract is in
+  `docs/reference/contracts/cicada.rate-limiter.json`; the actors guide, "Rate limiter", has its rules, and
+  `examples/src/rate_limit.rs` is a worked example. The sample service hosts the type and creates no limiter.
+
 ## 0.16.1 — 2026-11-13
 
 Nothing breaks: a new ready-made actor, the scheduler. A node that hosts it registers its contract at its first start;

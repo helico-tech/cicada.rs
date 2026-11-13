@@ -449,3 +449,24 @@ async fn a_replaced_limiter_starts_fresh_and_forwarded_messages_keep_their_due_t
     submit(&test, note("a", "3")).await;
     assert_eq!(due(&test, start).await, [Duration::ZERO, Duration::ZERO, SECOND]);
 }
+
+// How deep.
+
+/// A `Submit` holds its payload two levels down: one of 62 levels is sent, one of 63 is refused at the call.
+#[tokio::test(start_paused = true)]
+async fn a_submit_takes_a_payload_of_62_levels_and_refuses_63() {
+    let test = node().await;
+    test.create(&api(), &rate(1, 1, SECOND)).await;
+    let deep = |levels: usize| {
+        let payload = (0..levels).fold(json!(1), |inner, _| serde_json::Value::Array(vec![inner]));
+        RateLimiterMsg::Submit {
+            to: addr(&worker("a")),
+            message: StoredMessage { message_type: "Note".into(), payload },
+            retry: None,
+        }
+    };
+    let ok = test.system().send(&api(), deep(62)).await;
+    assert!(matches!(ok, Ok(SendResult::Accepted(_))), "{ok:?}");
+    let refused = test.system().send(&api(), deep(63)).await;
+    assert!(matches!(&refused, Err(cicada::OpError::Invalid(why)) if why.contains("64")), "{refused:?}");
+}

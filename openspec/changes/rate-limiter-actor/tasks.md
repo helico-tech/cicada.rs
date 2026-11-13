@@ -13,7 +13,7 @@
   without an automatic instance in the sample service. Regenerate and commit `docs/reference/contracts` and the
   sample-service contract snapshots/texts using `CICADA_UPDATE_CONTRACTS=true`. Verify the actor wire-format tests
   and the sample-service contract/samples tests, including unchanged existing contracts.
-- [ ] 4. Add a tested example and actors-guide doctests showing startup creation, create-and-submit, target retries
+- [x] 4. Add a tested example and actors-guide doctests showing startup creation, create-and-submit, target retries
   and a payload reply address. State the scheduling, commit-delay and replacement limitations. Update guide tables,
   README, crate docs, architecture's crate row, AGENTS map and changelog. Verify the example test,
   `cargo test -p cicada-examples --doc` and `cargo test -p cicada-examples --test docs`.

@@ -39,7 +39,7 @@ PostgreSQL for tests: `docker compose up -d postgres` (port 55432). Tests that n
 | `crates/cicada-client` | Typed HTTP client |
 | `crates/cicada-app` | `App`: a set of actors as a binary with `serve`, `worker` and the operator commands (`command`, `settings`, `node`; the command line `cli`, `operator`, `config`, `output`, and `tui` behind its feature; `cli_reference`, the test of `docs/reference/cli.md`); the binary `cicada` |
 | `crates/cicada-otel` | The telemetry observer |
-| `crates/cicada-actors` | The ready-made actors (layer 3): `supervisor`, `dead_letters`, `topic`, `scheduler`; `StoredMessage` and `Schedule`; their contracts are checked against `docs/reference/contracts` in `tests/wire_formats.rs` |
+| `crates/cicada-actors` | The ready-made actors (layer 3): `supervisor`, `dead_letters`, `topic`, `scheduler`, `rate_limiter`; `StoredMessage` and `Schedule`; their contracts are checked against `docs/reference/contracts` in `tests/wire_formats.rs` |
 | `examples/`, `sample-service/` | Worked examples, the doctests of the README and the guides (`src/lib.rs`, `build.rs`) and the checks of the docs (`tests/docs.rs`); a runnable node |
 | `e2e/` | End-to-end and fault tests against sample nodes in Docker |
 | `docs/` | `architecture.md`; `guarantees.md`, the tests behind each guarantee; `guide/`, one guide per layer; `operations.md`; `reference/`, the generated help of the command line (`cli.md`) and the contracts of the ready-made actors (`contracts/`); `openapi.json`; `adr/` and its index `adr/README.md` |

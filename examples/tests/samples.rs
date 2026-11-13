@@ -9,6 +9,7 @@ use cicada_actors::Schedule;
 use cicada_axum::{assert_message_sample, assert_state_sample};
 use cicada_examples::cron::{CronMsg, CronState};
 use cicada_examples::fanout::{BatchItemMsg, BatchItemState, BatchMsg, BatchState, BatchStatus};
+use cicada_examples::rate_limit::{SignupMsg, SignupState, SmsMsg};
 use cicada_examples::registry::{Device, DeviceMsg, DeviceState, RegistryMsg, RegistryState};
 use cicada_examples::reply::{CartLine, CartMsg, CartState, PendingLine, PricingMsg, PricingReply};
 use cicada_examples::saga::{InventoryMsg, InventoryState, Order, OrderMsg, OrderState, OrderStatus, PaymentsMsg};
@@ -157,6 +158,14 @@ fn steps() {
 fn supervision() {
     messages([MailerMsg::SendMail { to: "a@b.c".into() }]);
     states([MailerState::default(), MailerState { sent: vec!["a@b.c".into()] }]);
+}
+
+#[test]
+fn rate_limit() {
+    messages([SignupMsg::Register { phone: "+31 6 1".into() }, SignupMsg::Texted]);
+    states([SignupState::default(), SignupState { phone: Some("+31 6 1".into()), texted: true }]);
+    let reply_to = "signups/1".parse().unwrap();
+    messages([SmsMsg::Send { phone: "+31 6 1".into(), text: "Welcome!".into(), reply_to }]);
 }
 
 #[test]

@@ -6,7 +6,7 @@ to work.
 
 | Crate | Contents |
 | --- | --- |
-| `cicada-actors` | Ready-made actors on the public API, each under a fixed type name: a supervisor (`SupervisorActor`), dead letters (`DeadLettersActor`), a topic (`TopicActor`) and a scheduler (`SchedulerActor`); `StoredMessage` and `Schedule`. |
+| `cicada-actors` | Ready-made actors on the public API, each under a fixed type name: a supervisor (`SupervisorActor`), dead letters (`DeadLettersActor`), a topic (`TopicActor`), a scheduler (`SchedulerActor`) and a rate limiter (`RateLimiterActor`); `StoredMessage` and `Schedule`. |
 
 The Rust blocks of this guide are doctests of the `examples` crate (`cargo test -p cicada-examples --doc`).
 
@@ -19,11 +19,12 @@ a node hosts it like any other type, and the host creates its instances.
 | `DeadLettersActor` | `cicada.dead-letters` | any name, `_` by convention | Keeps failed messages, told of them by a watch; an operator redrives or discards one. |
 | `TopicActor` | `cicada.topic` | the name of the topic | Sends each published message to all of its subscribers. |
 | `SchedulerActor` | `cicada.scheduler` | the name of the schedule | Sends a stored message to a target on each slot of a `Schedule`. |
+| `RateLimiterActor` | `cicada.rate-limiter` | the name of the limit | Sends each submitted message to its target at the next free slot of a shared rate. |
 
 A message that one of them keeps to send later is a `StoredMessage`: a type name and a JSON payload,
 `{"type": …, "payload": …}`. The actor knows where it goes, so it holds no address. `StoredMessage::for_ref(&worker,
 WorkerMsg::Begin { batch: 7 })` builds one from a typed ref and a message, so a message of the wrong family does not
-compile. The contracts of the four types are wire formats; their references in
+compile. The contracts of the five types are wire formats; their references in
 [docs/reference/contracts](../reference/contracts/) pin them, doc comments included.
 
 Their states and messages are checked like any other, against the depth limit of 64 levels too
@@ -347,3 +348,104 @@ let t: Timestamp = "2026-10-02T10:15:30Z".parse().unwrap();
 assert_eq!(Schedule::every(3600).unwrap().next(t), "2026-10-02T11:00:00Z".parse::<Timestamp>().unwrap());
 assert_eq!(Schedule::daily(2, 30).unwrap().next(t), "2026-10-03T02:30:00Z".parse::<Timestamp>().unwrap());
 ```
+
+## Rate limiter
+
+`RateLimiterActor` gives many senders one shared rate: it sends each submitted message to its target at the next free
+slot, one instance for each limit. It shapes when messages become due; it does not enforce an outside API's quota at
+the time of the call, and nothing asks it "may I?". The rate, the burst and the longest delay are in the state, fixed
+at the create. A host creates its shared limiters at startup:
+
+<!-- doctest
+# use cicada::prelude::*;
+# async fn start(system: ActorSystem) -> Result<(), Box<dyn std::error::Error>> {
+@@6
+# Ok(())
+# }
+-->
+```rust
+use std::time::Duration;
+use cicada_actors::{RateLimiter, RateLimiterState};
+
+let sms = RateLimiter::named("sms"); // hosted as RateLimiterActor
+// One text a second, five at once after idle time, and none that waits longer than a minute.
+system.create(&sms, &RateLimiterState::new(1, Duration::from_secs(1), 5, Duration::from_secs(60))?).await?;
+```
+
+A producer can also create the limiter and submit to it in one turn, as a turn's creates come before its sends. The
+limiter is the sender of what it forwards, so a reply address belongs in the payload; the retry policy of the message
+at the target is chosen in the `Submit`. [examples/src/rate_limit.rs](../../examples/src/rate_limit.rs) is this
+signup:
+
+<!-- doctest
+# use cicada::prelude::*;
+# use serde::{Deserialize, Serialize};
+# #[derive(Debug, Clone, Serialize, Deserialize)]
+# struct Sms;
+# impl ActorRef for Sms { const TYPE: &'static str = "sms"; type Message = SmsMsg; }
+# #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+# #[serde(tag = "type")]
+# enum SmsMsg { Send { phone: String, text: String, reply_to: ActorAddress } }
+@@3
+# fn register<A: Actor>(turn: &mut Turn<A>, phone: String, rate: RateLimiterState) -> HandlerResult {
+@@5
+# Ok(())
+# }
+-->
+```rust
+use std::time::Duration;
+use cicada_actors::{RateLimiter, RateLimiterMsg, RateLimiterState};
+
+let sms = RateLimiter::named("sms");
+turn.create(&sms, &rate)?; // a limiter that exists keeps its settings and reservations
+let text = SmsMsg::Send { phone, text: "Welcome!".into(), reply_to: turn.self_address().clone() };
+let retry = RetryPolicy::new(3, Backoff::fixed(Duration::from_secs(5))?)?; // at the target
+turn.send(&sms, RateLimiterMsg::submit(&Sms, text, Some(retry))?)?;
+```
+
+`RateLimiterMsg::submit` takes a typed ref and a message of its family, so a message the target does not take does not
+compile. Over HTTP (the example's sender writes its fields in camelCase):
+
+```sh
+curl -X PUT localhost:8080/actors/cicada.rate-limiter/sms -H 'content-type: application/json' -d '{"state":
+  {"count": 1, "period": "PT1S", "burst": 5, "maxDelay": "PT1M"}}'
+curl -X POST localhost:8080/actors/cicada.rate-limiter/sms/messages -H 'content-type: application/json' -d '{"type":
+  "Submit", "payload": {"to": "sms/_", "message": {"type": "Send", "payload": {"phone": "+31 6 1", "text": "Hi",
+  "replyTo": "signups/1"}}}}'
+```
+
+- **Its settings.** `count` messages per `period`; `burst`, the messages that may be due at once after enough idle
+  time, the first included (1 spaces every message); `maxDelay`, the longest time from handling a submission to its
+  slot. Count and burst are positive, the period is positive, and the durations, and the burst's span of
+  `(burst - 1)` intervals, are at most `MAX_DELAY`; the constructor and the decoder refuse anything else. No message
+  changes them: replace the limiter (below).
+- **Its slots.** The limiter uses the generic cell rate algorithm (GCRA): the interval between slots is the period
+  divided by the count, rounded up to a whole microsecond (3 a second are 333,334 µs apart), and the state keeps one
+  timestamp, `idleAt`, when the full burst is free again. Idle time gives the burst back. At 2 a second with a burst
+  of 2 and a longest delay of one second, five submissions at once get now, now, +0.5 s and +1 s, and the fifth is
+  refused.
+- **The longest delay.** A slot exactly `maxDelay` away is taken; one further is refused for good (the cause
+  `refused`), so it reaches dead letters that watch the limiter. A `maxDelay` of zero takes only capacity that is free
+  now. The delay counts from the store's time when the turn that handles the submission was claimed: the time the
+  submission waited in the limiter's mailbox, and the time its commit takes, are not in it.
+- **What the target gets.** The stored message, due at its slot, with a new id, the limiter as its sender, the
+  correlation id of the submission and the default retention. Headers of the submission are not copied; an observer
+  still adds its own. Its retry policy is the `retry` of the `Submit`, none by default; the retry policy of the
+  submission's own envelope governs only the limiter's turn. A retry at the target goes after its own backoff,
+  without passing the limiter again.
+- **A failed forward reserves nothing.** The slot and the forwarded message commit in one turn. A slot beyond the
+  longest delay or past `MAX_INSTANT`, or a message the target does not take, is refused for good; a target that is
+  gone rejects the commit (`commit`); a read of the store that fails is tried by the submission's own retry policy.
+  An operator's retry or a redrive of the dead letters handles the `Submit` again, at a slot of that turn's store
+  time. A repeated message id follows the core's dedup rules.
+- **A forwarded message keeps its slot.** A failure at the target, or a cancel of the forwarded message, gives no slot
+  back.
+- **Slots are due times, not runs.** Messages that wait past their slots, behind a paused or slow target, or after an
+  outage, can run close together. A slot is clamped to the store's time at the commit, so a slow commit of the limiter
+  can narrow the spacing between the stored due times too. The limiter does not enforce an outside API's quota; a
+  worker that must never exceed one checks it at the call.
+- **Replacing a limiter.** Deleting a limiter and creating it with new settings starts its reservations fresh;
+  messages it forwarded keep their due times in their targets' mailboxes. Producers that share a key must agree on the
+  settings, as a create of a limiter that exists changes nothing.
+- **How deep.** A `Submit` holds the payload of its message two levels down: a payload deeper than 62 levels makes the
+  send of the submission too deep, and it is refused at the call.

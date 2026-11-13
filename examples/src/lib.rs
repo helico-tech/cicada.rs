@@ -11,6 +11,7 @@
 //! | [`fanout`] | Example 7: fan-out and fan-in; one child per item, the parent counts the replies. |
 //! | [`registry`] | Example 8: a registry actor that keeps the refs of the instances it created. |
 //! | [`supervision`] | Example 9: a supervisor restarts a child at fault; dead letters keep what failed, to redrive. |
+//! | [`rate_limit`] | Example 10: a shared rate limit; signups create a limiter and submit their texts to it in one turn. |
 //! | [`sync`] | The architecture's example: a paged import, one turn per page, rescheduled hourly. |
 //!
 //! Every example has the same shape: a public ref struct per actor type (its one field is the key), a
@@ -19,6 +20,7 @@
 
 pub mod cron;
 pub mod fanout;
+pub mod rate_limit;
 pub mod registry;
 pub mod reply;
 pub mod saga;
