@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.16.10 — unreleased
+## 0.16.10 — 2026-11-13
 
 Nothing breaks: a host can follow hints that actors changed instead of polling them. No schema, HTTP route, actor
 contract or command line change. On PostgreSQL a commit that changes an actor sends one more notification; nodes of

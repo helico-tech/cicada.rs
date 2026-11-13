@@ -38,8 +38,9 @@ store back.
 
 ### Requirement: A closed store answers unavailable
 
-After `close`, every store operation SHALL fail as unavailable, on every backend. A request over HTTP that needs
-the store SHALL then get `503 store-unavailable`.
+After `close`, store operations SHALL fail as unavailable on every backend, except change subscriptions, which
+SHALL end normally with no items. Existing change streams SHALL also end, discarding backlog. Nonstreaming HTTP
+requests that need the store SHALL get `503 store-unavailable`. Worker stop SHALL NOT close the store.
 
 #### Scenario: A request after the store is closed
 
@@ -55,6 +56,11 @@ the store SHALL then get `503 store-unavailable`.
 
 - **WHEN** a store of each backend is closed and then asked for its time
 - **THEN** each fails as unavailable
+
+#### Scenario: A change subscription after close
+
+- **WHEN** a system calls changes after its Store was closed, or a previous stream is polled after close
+- **THEN** the stream ends with None instead of yielding a store error or Resync
 
 ### Requirement: Each SQL backend is a cargo feature
 
