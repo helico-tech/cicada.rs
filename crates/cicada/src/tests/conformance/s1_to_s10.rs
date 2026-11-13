@@ -408,7 +408,7 @@ pub async fn instances_list_records_takes_the_prefix_literally_like_list<B: Fixt
         let store = t.store();
         let a = type_name("a");
         let ab = type_name("ab");
-        let mut all = vec![
+        let mut all = [
             t.new_actor_named(&a, "one", json!({})).await,
             t.new_actor_named(&ab, "one", json!({})).await,
             t.new_actor_named(&a, "50%_x", json!({})).await,

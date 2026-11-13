@@ -26,6 +26,6 @@
 
 ## Finishing checks
 
-- [ ] 5. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
+- [x] 5. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
   `openspec validate list-actors-with-state --strict`; include PostgreSQL where configured and record any unavailable
   optional checks. Regenerate version-bearing references if their existing drift checks require it.
