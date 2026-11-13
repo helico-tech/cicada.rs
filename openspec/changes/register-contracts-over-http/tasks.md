@@ -32,7 +32,7 @@
 
 ## Finishing checks
 
-- [ ] 5. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
+- [x] 5. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
   `openspec validate register-contracts-over-http --strict`; include PostgreSQL with CICADA_PG_URL when available
   and record any unavailable optional checks. Commit generated OpenAPI and any version-bearing reference updates
   required by existing drift checks. Verify accepted schema-boundary round trips on SQL, not only memory.
