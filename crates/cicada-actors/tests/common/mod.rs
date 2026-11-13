@@ -49,6 +49,8 @@ pub enum WorkerMsg {
     StopSelf,
     /// A message of a published topic, noted with its text.
     Note { text: String },
+    /// Fails on its first run; a run that retries it notes its text.
+    FailOnce { text: String },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -91,6 +93,8 @@ impl Actor for WorkerActor {
             WorkerMsg::Poison => turn.state_mut().poisoned = true,
             WorkerMsg::StopSelf => turn.stop(),
             WorkerMsg::Note { text } => turn.state_mut().log.push(text),
+            WorkerMsg::FailOnce { .. } if turn.message().failures == 0 => return Err(HandlerError::msg("first run")),
+            WorkerMsg::FailOnce { text } => turn.state_mut().log.push(text),
         }
         Ok(())
     }

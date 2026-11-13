@@ -10,7 +10,8 @@ use cicada::prelude::*;
 use cicada::store::{Message, MessageStatus, OutcomeStatus, SqliteOptions};
 use cicada::{ActorAddress, SendResult, Store};
 use cicada_actors::{
-    Child, Supervisor, SupervisorActor, SupervisorMsg, SupervisorState, Topic, TopicActor, TopicMsg, TopicState,
+    Child, Schedule, Scheduler, SchedulerActor, SchedulerMsg, SchedulerState, Supervisor, SupervisorActor,
+    SupervisorMsg, SupervisorState, Topic, TopicActor, TopicMsg, TopicState,
 };
 use common::*;
 use sqlx::SqlitePool;
@@ -28,8 +29,12 @@ impl Sqlite {
     async fn open(dir: &Path) -> Self {
         let path = dir.join("cicada.db");
         let store = Store::sqlite(&path, SqliteOptions::default()).await.unwrap();
-        let system =
-            ActorSystem::builder(store.clone()).host(SupervisorActor).host(TopicActor).host(WorkerActor).build();
+        let system = ActorSystem::builder(store.clone())
+            .host(SupervisorActor)
+            .host(TopicActor)
+            .host(SchedulerActor)
+            .host(WorkerActor)
+            .build();
         system.initialize().await.unwrap();
         let pool = SqlitePool::connect(&format!("sqlite://{}", path.display())).await.unwrap();
         Self { system, store, pool }
@@ -135,6 +140,39 @@ async fn a_delivery_whose_read_of_the_store_fails_is_tried_again_and_arrives_onc
     db.run_until_idle().await;
     assert_eq!(db.state::<WorkerState>(&addr(&worker("a"))).await.log, ["shipped"], "once, from a later attempt");
     assert_eq!(db.outcome(&deliver[0]).await.0, OutcomeStatus::Done);
+    db.close().await;
+}
+
+/// Scenario: A run whose read of the store fails is retried. The armed tick of a daily schedule is made due now.
+#[tokio::test]
+async fn a_run_of_a_scheduler_whose_read_of_the_store_fails_is_tried_again_and_delivers_once() {
+    let dir = TempDir::new().unwrap();
+    let db = Sqlite::open(dir.path()).await;
+    let nightly = Scheduler::named("nightly");
+    let state = SchedulerState::new(Schedule::daily(2, 0).unwrap(), &worker("a"), WorkerMsg::Note { text: "n".into() })
+        .unwrap();
+    db.system.create(&nightly, &state).await.unwrap();
+    db.system.create(&worker("a"), &WorkerState::default()).await.unwrap();
+    db.system.send(&nightly, SchedulerMsg::Start).await.unwrap();
+    db.run_until_idle().await;
+    let tick = db.pending(&addr(&nightly)).await.pop().expect("the armed tick");
+    db.system.deliver_now(&tick.id).await.unwrap();
+    assert_eq!(db.system.run_due_turns(1).await.unwrap(), 1, "the tick");
+    let run = db.pending(&addr(&nightly)).await.into_iter().find(|m| m.message_type == "Run").expect("the run");
+
+    db.registry(false).await;
+    assert_eq!(db.system.run_due_turns(1).await.unwrap(), 1, "the first attempt of the run");
+    db.registry(true).await;
+    let retried = db.pending(&addr(&nightly)).await.into_iter().find(|m| m.id == run.id).expect("pending again");
+    assert_eq!(retried.failures, 1);
+    assert!(retried.last_error.as_deref().unwrap().contains("actor_types"), "{:?}", retried.last_error);
+    assert!(db.state::<WorkerState>(&addr(&worker("a"))).await.log.is_empty(), "nothing was sent");
+
+    tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+    db.run_until_idle().await;
+    assert_eq!(db.state::<WorkerState>(&addr(&worker("a"))).await.log, ["n"], "once, from a later attempt");
+    assert_eq!(db.outcome(&run).await.0, OutcomeStatus::Done);
+    assert_eq!(db.state::<SchedulerState>(&addr(&nightly)).await.runs, 1);
     db.close().await;
 }
 

@@ -7,14 +7,14 @@ tests of `cicada-actors`, as those of the topic and the supervisor do.
 
 ## 1. The actor
 
-- [ ] 1.1 The types [2, 3]: a module `scheduler` in `cicada-actors` with `Scheduler` (`named`, type name
+- [x] 1.1 The types [2, 3]: a module `scheduler` in `cicada-actors` with `Scheduler` (`named`, type name
       `cicada.scheduler`), `SchedulerState` with its public fields and
       `SchedulerState::new(schedule, &target, message)`, `SchedulerMsg` (`Start`, `Run { slot }`,
       `Update { schedule, target, message, retry }`, `Tick { slot }`) and the unit struct `SchedulerActor`; exported
       from the crate root and named in the table of `src/lib.rs`. Doc comments on every public item. Verify: the JSON
       of the state and of an `Update` in `design.md` decode to the values they name; a doctest of
       `SchedulerState::new`, and a `compile_fail` doctest for a message of another family.
-- [ ] 1.2 The chain [3, 4, 5, 7]: `Start` cancels the armed tick and arms one at `schedule.next(now)`; a `Tick` counts
+- [x] 1.2 The chain [3, 4, 5, 7]: `Start` cancels the armed tick and arms one at `schedule.next(now)`; a `Tick` counts
       only from the scheduler itself and as the armed one, arms the next at `schedule.next(max(now, slot))` and sends
       the scheduler `Run { slot }`; a `Run` sends the stored message with `send_raw`, with the scheduler's `retry` and
       the header `cicada-slot` when it has a slot, then adds 1 to `runs` and sets `lastRun`. `Tick` and the `Run` a
@@ -22,15 +22,15 @@ tests of `cicada-actors`, as those of the topic and the supervisor do.
       schedule, a target and a message", "A scheduler sends its message to its target on each slot", "The target learns
       its slot" (the header's text checked character by character), "A scheduler skips the slots it missed" (the
       early tick through `ActorSystem::deliver_now`) and "The ticks of a scheduler are its own".
-- [ ] 1.3 The operator's messages [3]: a `Run` without a slot, and `Update`. Verify: the scenarios of the requirements
+- [x] 1.3 The operator's messages [3]: a `Run` without a slot, and `Update`. Verify: the scenarios of the requirements
       "An operator runs a schedule now" and "An operator edits a schedule".
-- [ ] 1.4 Failures [6]: a target that is gone (cause `commit`), a message it does not take (cause `refused`), a read of
+- [x] 1.4 Failures [6]: a target that is gone (cause `commit`), a message it does not take (cause `refused`), a read of
       the store that fails (retried, as `tests/store_failure.rs` does for the topic), and a chain that ends. Verify: the
       scenarios of the requirements "A failed delivery does not end the chain" (the retry through
       `ActorSystem::retry_message`, and a redrive through `DeadLettersActor` that watches the scheduler) and "A start or
       a new schedule arms a chain again" (the tick that fails for good through `claim_and_abandon` up to the claim
       limit, the purge through `ActorSystem::purge_mailbox`).
-- [ ] 1.5 How deep [8]: a stored message whose payload is 62 levels deep is accepted, one of 63 levels is refused at
+- [x] 1.5 How deep [8]: a stored message whose payload is 62 levels deep is accepted, one of 63 levels is refused at
       the create of the scheduler and at the send of an `Update`. Verify: tests at `ActorSystem`.
 
 ## 2. Wire formats and the sample service
