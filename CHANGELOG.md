@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.16.9 — unreleased
+## 0.16.9 — 2026-11-13
 
 Nothing breaks: a host can list actors with their state in one read per page. The route and the methods are new;
 `list_actors`, `GET /actors` and its OpenAPI operation stay as they were. No schema, actor contract or command line

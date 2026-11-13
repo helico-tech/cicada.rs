@@ -120,9 +120,9 @@ published to a registry (`publish = false`), so they are git dependencies. Name 
 
 ```toml
 [workspace.dependencies]
-cicada = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.16.8", features = ["postgres"] }
-cicada-axum = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.16.8" }
-cicada-test = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.16.8" }
+cicada = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.16.9", features = ["postgres"] }
+cicada-axum = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.16.9" }
+cicada-test = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.16.9" }
 ```
 
 Name the store's feature on `cicada`: `postgres`, `sqlite`, or both. None is on by default, and each builds only its
