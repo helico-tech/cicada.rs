@@ -16,6 +16,7 @@
 pub mod actor;
 pub mod address;
 pub mod api;
+pub mod change;
 pub mod contract;
 pub mod message;
 pub mod observer;
@@ -34,6 +35,7 @@ pub mod watch;
 
 pub use actor::{Actor, ActorType};
 pub use address::{ActorAddress, ActorRef, TypeName};
+pub use change::{ActorChange, ActorChanges};
 pub use message::NoState;
 pub use runtime::{ActorSystem, CreateActorResult, OpError, SendResult, StartError, StartProblem};
 pub use store::Store;

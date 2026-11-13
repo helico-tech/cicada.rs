@@ -3,6 +3,7 @@
 //! store directly. The tests that need only the public API are in `tests/` and in the other crates.
 
 mod added_column;
+mod change_feed;
 pub(crate) mod conformance;
 mod fuzz;
 pub(crate) mod postgres;

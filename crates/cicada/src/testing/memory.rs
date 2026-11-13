@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::address::{ActorAddress, TypeName};
+use crate::change::{ChangeCollector, ChangeHub, SourceState};
 use crate::store::support::{self, Notice, Removal, check_limit};
 use crate::store::{
     ActorRecord, Backend, CancelResult, Claim, Clock, CommitRequest, CommitResult, CreateResult, DeleteResult,
@@ -95,6 +96,8 @@ struct State {
     last_seq: i64,
     last_epoch: i64,
     last_now: Option<Timestamp>,
+    /// The change hints of the operation running under the lock, published after it.
+    changes: ChangeCollector,
 }
 
 /// A complete [`Backend`] held in memory, for tests and single-process experiments. Passes the S1–S10 conformance suite
@@ -102,12 +105,14 @@ struct State {
 ///
 /// Every operation runs under one lock and never awaits while holding it, so all operations are linearizable (S3) and
 /// commits are atomic (S2). Store time never goes backwards: when the clock steps back, the store keeps the latest
-/// time it handed out until the clock catches up.
+/// time it handed out until the clock catches up. The change hints of an operation are collected under the lock and
+/// published right after it, with no `await` in between.
 pub(crate) struct InMemoryStore {
     clock: Arc<dyn Clock>,
     retention: Duration,
     state: Mutex<State>,
     closed: AtomicBool,
+    hub: Arc<ChangeHub>,
 }
 
 impl Default for InMemoryStore {
@@ -119,7 +124,13 @@ impl Default for InMemoryStore {
 impl InMemoryStore {
     /// A store on `clock` that keeps outcomes for `retention`.
     pub(crate) fn new(clock: Arc<dyn Clock>, retention: Duration) -> Self {
-        Self { clock, retention, state: Mutex::new(State::default()), closed: AtomicBool::new(false) }
+        Self {
+            clock,
+            retention,
+            state: Mutex::new(State::default()),
+            closed: AtomicBool::new(false),
+            hub: Arc::new(ChangeHub::new(SourceState::Up)),
+        }
     }
 
     /// A store on `clock` with the default retention.
@@ -164,7 +175,13 @@ impl InMemoryStore {
             now = last;
         }
         state.last_now = Some(now);
-        f(&mut state, now)
+        let result = f(&mut state, now);
+        let mut changes = std::mem::take(&mut state.changes);
+        drop(state);
+        if result.is_ok() {
+            self.hub.publish_collected(&mut changes);
+        }
+        result
     }
 
     fn cutoff(&self, now: Timestamp) -> Timestamp {
@@ -292,7 +309,9 @@ impl InMemoryStore {
         let mut purged = 0;
         for address in tree {
             purged += self.purge_mailbox(s, address, now);
-            s.actors.remove(address.as_str());
+            if s.actors.remove(address.as_str()).is_some() {
+                s.changes.add(address);
+            }
         }
         s.watches.retain(|(_, watcher)| !tree.contains(watcher));
         purged
@@ -432,6 +451,7 @@ impl InMemoryStore {
                 mailbox: BTreeSet::new(),
             },
         );
+        s.changes.add(address);
         CreateResult::Created
     }
 }
@@ -791,6 +811,7 @@ impl Backend for InMemoryStore {
             Ok(match s.actors.get_mut(address.as_str()) {
                 Some(row) => {
                     row.paused = paused;
+                    s.changes.add(address);
                     true
                 }
                 None => false,
@@ -1032,6 +1053,7 @@ impl Backend for InMemoryStore {
             for (target, paused) in support::pauses(&commit.controls) {
                 if let Some(row) = s.actors.get_mut(target.as_str()) {
                     row.paused = paused;
+                    s.changes.add(target);
                 }
             }
             let mut sent = Vec::with_capacity(commit.sends.len());
@@ -1046,7 +1068,9 @@ impl Backend for InMemoryStore {
                     let row = s.actors.get_mut(commit.address.as_str()).expect("lease holder exists");
                     row.state = state;
                     row.version += 1;
-                    row.version
+                    let version = row.version;
+                    s.changes.add(&commit.address);
+                    version
                 }
             };
             // The tree of a stop is read after the creates, so the children of this commit go with it.
@@ -1140,7 +1164,12 @@ impl Backend for InMemoryStore {
         })
     }
 
+    fn changes(&self) -> Arc<ChangeHub> {
+        self.hub.clone()
+    }
+
     async fn close(&self) {
         self.closed.store(true, Ordering::SeqCst);
+        self.hub.close();
     }
 }

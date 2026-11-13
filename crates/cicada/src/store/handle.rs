@@ -24,6 +24,7 @@ use super::{
     SetWatchResult, StoreResult, StoreStats, TypeDef,
 };
 use crate::address::{ActorAddress, TypeName};
+use crate::change::ChangeHub;
 use crate::time::Timestamp;
 use crate::watch::{Watch, WatchTarget};
 
@@ -153,8 +154,10 @@ impl Store {
     }
 
     /// Releases the store's resources, such as its connections, for every clone. Afterwards every operation fails as
-    /// unavailable, and a system on the store answers `503`. Stopping a system does not close its store: the host
-    /// closes the store it opened, after its systems have stopped.
+    /// unavailable, and a system on the store answers `503`; the one exception are change streams
+    /// ([`ActorSystem::changes`](crate::ActorSystem::changes)), which end normally, without their backlog, and a new
+    /// one ends at once. Stopping a system does not close its store, nor its change streams: the host closes the store
+    /// it opened, after its systems have stopped.
     pub async fn close(&self) {
         self.backend.close().await
     }
@@ -355,6 +358,10 @@ impl Backend for Store {
 
     async fn commit(&self, commit: CommitRequest) -> StoreResult<CommitResult> {
         self.backend.commit(commit).await
+    }
+
+    fn changes(&self) -> Arc<ChangeHub> {
+        self.backend.changes()
     }
 
     fn wake_ups(&self, types: &BTreeSet<TypeName>) -> Option<BoxStream<'static, ()>> {

@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::address::{ActorAddress, TypeName};
+use crate::change::{ChangeHub, SourceState};
 use crate::retention::Retention;
 use crate::retry::RetryPolicy;
 use crate::store::support::{self, Notice, Removal, check_limit};
@@ -90,6 +91,8 @@ pub struct SqliteStore {
     /// The latest store time this instance handed out; see [`SqliteStore::store_now`].
     high_water: Mutex<Timestamp>,
     closed: AtomicBool,
+    /// The change hints of the writes through this store, published after their commits.
+    hub: Arc<ChangeHub>,
 }
 
 impl std::fmt::Debug for SqliteStore {
@@ -246,6 +249,7 @@ impl SqliteStore {
             reader_permits: Semaphore::new(readers.len()),
             readers: Mutex::new(readers),
             closed: AtomicBool::new(false),
+            hub: Arc::new(ChangeHub::new(SourceState::Up)),
         })
     }
 
@@ -1899,10 +1903,15 @@ impl Backend for SqliteStore {
         tx.end(result).await
     }
 
+    fn changes(&self) -> Arc<ChangeHub> {
+        self.hub.clone()
+    }
+
     async fn close(&self) {
         if self.closed.swap(true, Ordering::SeqCst) {
             return;
         }
+        self.hub.close();
         self.reader_permits.close();
         if let Some(writer) = self.writer.lock().await.take() {
             writer.close().await;

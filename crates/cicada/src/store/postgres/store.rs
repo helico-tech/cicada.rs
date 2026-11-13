@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crate::address::{ActorAddress, TypeName};
+use crate::change::{ChangeHub, SourceState};
 use crate::retention::Retention;
 use crate::retry::RetryPolicy;
 use crate::store::support::{self, Notice, Removal, check_limit};
@@ -140,6 +141,7 @@ pub struct PostgresStore {
     channel: String,
     listener: NotificationListener,
     closed: AtomicBool,
+    hub: Arc<ChangeHub>,
 }
 
 impl std::fmt::Debug for PostgresStore {
@@ -195,6 +197,7 @@ impl PostgresStore {
             channel,
             listener,
             closed: AtomicBool::new(false),
+            hub: Arc::new(ChangeHub::new(SourceState::Down)),
         })
     }
 
@@ -2345,11 +2348,16 @@ impl Backend for PostgresStore {
         )
     }
 
+    fn changes(&self) -> Arc<ChangeHub> {
+        self.hub.clone()
+    }
+
     /// Closes the listener and the connection pool. Idempotent.
     async fn close(&self) {
         if self.closed.swap(true, Ordering::SeqCst) {
             return;
         }
+        self.hub.close();
         self.listener.stop().await;
         self.pool.close().await;
     }

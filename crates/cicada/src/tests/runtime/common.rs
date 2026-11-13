@@ -741,6 +741,10 @@ impl<F: Faults> Backend for Faulty<F> {
         self.inner.request_cancel(address).await
     }
 
+    fn changes(&self) -> std::sync::Arc<crate::change::ChangeHub> {
+        self.inner.changes()
+    }
+
     fn wake_ups(&self, types: &BTreeSet<TypeName>) -> Option<BoxStream<'static, ()>> {
         self.faults.wake_ups(&self.inner, types)
     }

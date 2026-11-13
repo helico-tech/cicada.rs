@@ -15,6 +15,7 @@ pub(crate) mod sqlite;
 pub(crate) mod support;
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -37,6 +38,7 @@ pub(crate) use results::{CommitResult, CreateResult, EnqueueResult, RegisterResu
 pub use sqlite::SqliteOptions;
 
 use crate::address::{ActorAddress, TypeName};
+use crate::change::ChangeHub;
 use crate::time::Timestamp;
 use crate::watch::{Watch, WatchTarget};
 
@@ -365,6 +367,14 @@ pub(crate) trait Backend: Send + Sync + 'static {
     /// [`support::check_creates`] and [`support::check_controls`]), the message is not the one claimed under the epoch,
     /// the cancels contain the turn's own message, or the data cannot be stored; nothing is applied then either.
     async fn commit(&self, commit: CommitRequest) -> StoreResult<CommitResult>;
+
+    // ---- change hints (ADR 0034) ----
+
+    /// The hub of this store's change hints, shared by its clones; starts the source it needs (PostgreSQL's listener),
+    /// so it must be called inside a tokio runtime. Every committed transaction that creates, removes, pauses or
+    /// resumes an instance, or writes its state, publishes its addresses there after it committed (or one resync).
+    /// [`Self::close`] closes the hub.
+    fn changes(&self) -> Arc<ChangeHub>;
 
     // ---- optional ----
 

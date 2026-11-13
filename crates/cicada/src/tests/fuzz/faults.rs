@@ -840,6 +840,10 @@ impl Backend for FaultStore {
         self.gate(Method::Commit, || self.do_commit(commit)).await
     }
 
+    fn changes(&self) -> std::sync::Arc<crate::change::ChangeHub> {
+        self.inner.changes()
+    }
+
     fn wake_ups(&self, types: &BTreeSet<TypeName>) -> Option<BoxStream<'static, ()>> {
         self.inner.wake_ups(types)
     }

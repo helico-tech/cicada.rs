@@ -21,6 +21,7 @@ use super::results::{
 };
 use crate::actor::{Actor, ActorType, HostedActor};
 use crate::address::{ActorAddress, ActorRef, TypeName};
+use crate::change::ActorChanges;
 use crate::message::{self, MessageFamily};
 use crate::observer::{Observers, TurnObserver};
 use crate::schema::SchemaCheck;
@@ -870,6 +871,20 @@ impl ActorSystem {
     ) -> Result<Page<ActorSnapshot>, OpError> {
         let page = self.inner.store.list_records(prefix, cursor, limit).await?;
         Ok(Page { items: page.items.into_iter().map(snapshot).collect(), next: page.next })
+    }
+
+    /// Hints that actors under the literal `prefix` (as [`Self::list_actors`] takes it) may have changed (ADR 0034; see
+    /// [`crate::change`]). The first item is [`ActorChange::Resync`](crate::ActorChange::Resync), once the store's
+    /// source is live: read the prefix with [`Self::list_actors_with_state`], then reread each
+    /// [`Changed`](crate::ActorChange::Changed) address with [`Self::get_actor`] and relist after every later
+    /// `Resync`. Best effort: no history, replay or order across transactions.
+    ///
+    /// Call it inside a tokio runtime. It needs neither [`Self::start`] nor hosted types, and [`Self::stop`] does not
+    /// end the stream: the store owns the feed, and [`Store::close`] ends it. On PostgreSQL the first `Resync` waits
+    /// until the store's listener has its `LISTEN`; while the database cannot be reached no item arrives, so a host
+    /// that cares sets its own timeout.
+    pub fn changes(&self, prefix: &str) -> ActorChanges {
+        ActorChanges::new(self.inner.store.changes(), prefix)
     }
 
     /// Sends a message (`POST /actors/{type}/{key}/messages`). Idempotent on the id within the retention window.
