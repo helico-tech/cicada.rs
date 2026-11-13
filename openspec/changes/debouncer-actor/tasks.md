@@ -8,7 +8,7 @@
   replacement, quiet/maxWait, both sequence orders at an equal due time, public/empty Flush, rollback, timer-loss
   recovery, redrive into a later burst, depth boundaries, creation and target policies. Extend the existing SQLite
   store-failure fixture for registry retries and cancellation of a retrying timer if needed. Run those targeted tests.
-- [ ] 3. Add contract and message/state samples to `tests/wire_formats.rs`, including empty/pending/invalid states.
+- [x] 3. Add contract and message/state samples to `tests/wire_formats.rs`, including empty/pending/invalid states.
   Host the type without an automatic instance in the sample service. Regenerate and commit actor references and
   sample-service snapshots/texts with `CICADA_UPDATE_CONTRACTS=true`; verify wire-format and sample-service
   contract/sample tests, ensuring existing contracts do not change.

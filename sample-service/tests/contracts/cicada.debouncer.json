@@ -1,0 +1,332 @@
+{
+  "messages": {
+    "Flush": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Sends the kept submission to its target, cancels the armed flush and clears the burst, in one commit; with\nnothing kept it does nothing. Anyone may send it: the armed timer, or an operator who delivers early or\nrecovers a flush that failed. It sends what is kept when it runs, not what was kept when it was sent.",
+      "properties": {},
+      "title": "Flush",
+      "type": "object"
+    },
+    "Submit": {
+      "$defs": {
+        "Backoff": {
+          "oneOf": [
+            {
+              "properties": {
+                "factor": {
+                  "default": 2.0,
+                  "minimum": 1,
+                  "type": "number"
+                },
+                "initial": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "integer"
+                    }
+                  ]
+                },
+                "kind": {
+                  "const": "exponential",
+                  "type": "string"
+                },
+                "max": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "integer"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "initial",
+                "max"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "delay": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "integer"
+                    }
+                  ]
+                },
+                "kind": {
+                  "const": "fixed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "delay"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "RetryPolicy": {
+          "properties": {
+            "backoff": {
+              "$ref": "#/$defs/Backoff"
+            },
+            "maxAttempts": {
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "maxAttempts",
+            "backoff"
+          ],
+          "type": "object"
+        },
+        "StoredMessage": {
+          "description": "A message an actor keeps to send later (ADR 0028): its type name and its JSON payload, as a store holds a message.\nThe actor that keeps it knows where it goes, so it holds no address. Build one with `StoredMessage::for_ref`.",
+          "properties": {
+            "payload": {
+              "description": "The payload: the fields of the variant, without the type tag."
+            },
+            "type": {
+              "description": "The type name: the variant of the family.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Replaces the kept submission with this one, its target, message, retry policy and correlation id together, and\narms a `Flush` at the quiet period from now, capped by the longest wait from the first submission of the burst.\nThe target is not checked until the flush.",
+      "properties": {
+        "message": {
+          "$ref": "#/$defs/StoredMessage",
+          "description": "The message for the target."
+        },
+        "retry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RetryPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The retry policy of the message at the target; none: one attempt. A retry there does not pass the debouncer\nagain."
+        },
+        "to": {
+          "description": "The target.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "to",
+        "message"
+      ],
+      "title": "Submit",
+      "type": "object"
+    }
+  },
+  "state": {
+    "$defs": {
+      "Backoff": {
+        "oneOf": [
+          {
+            "properties": {
+              "factor": {
+                "default": 2.0,
+                "minimum": 1,
+                "type": "number"
+              },
+              "initial": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ]
+              },
+              "kind": {
+                "const": "exponential",
+                "type": "string"
+              },
+              "max": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "initial",
+              "max"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "delay": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ]
+              },
+              "kind": {
+                "const": "fixed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "delay"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "DebouncedMessage": {
+        "description": "The submission a debouncer keeps: what a flush sends, where, and with which retry policy and correlation id.",
+        "properties": {
+          "correlationId": {
+            "description": "The correlation id of the submission, which the target's message carries.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "$ref": "#/$defs/StoredMessage",
+            "description": "The message for the target."
+          },
+          "retry": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RetryPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The retry policy of the message at the target; none: one attempt."
+          },
+          "to": {
+            "description": "The target.",
+            "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "to",
+          "message"
+        ],
+        "type": "object"
+      },
+      "RetryPolicy": {
+        "properties": {
+          "backoff": {
+            "$ref": "#/$defs/Backoff"
+          },
+          "maxAttempts": {
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "maxAttempts",
+          "backoff"
+        ],
+        "type": "object"
+      },
+      "StoredMessage": {
+        "description": "A message an actor keeps to send later (ADR 0028): its type name and its JSON payload, as a store holds a message.\nThe actor that keeps it knows where it goes, so it holds no address. Build one with `StoredMessage::for_ref`.",
+        "properties": {
+          "payload": {
+            "description": "The payload: the fields of the variant, without the type tag."
+          },
+          "type": {
+            "description": "The type name: the variant of the family.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "payload"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "The state of a [`Debouncer`]: its quiet period and longest wait, fixed at its create, and the burst it keeps. Build\nit with `DebouncerState::new`; a decoded state is checked the same way.\n\nOn the wire: `{\"quiet\":\"PT2S\",\"maxWait\":\"PT5S\"}`, with `pending`, `firstAt` and `armed` while it keeps a burst.",
+    "properties": {
+      "armed": {
+        "description": "The id of the armed `Flush`; absent or null between bursts, and may be absent with `pending`.",
+        "minLength": 1,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "firstAt": {
+        "description": "The store time the first submission of the burst was handled; present exactly with `pending`.",
+        "format": "date-time",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "maxWait": {
+        "description": "The longest time from the first submission of a burst to its scheduled flush, as an ISO-8601 duration; at\nleast `quiet` and at most `MAX_DELAY`.",
+        "type": "string"
+      },
+      "pending": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/DebouncedMessage"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The latest submission of the burst; absent or null between bursts."
+      },
+      "quiet": {
+        "description": "How long a burst must be quiet before its kept submission is sent, as an ISO-8601 duration; positive and at\nmost `maxWait`.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "quiet",
+      "maxWait"
+    ],
+    "title": "DebouncerState",
+    "type": "object"
+  },
+  "type": "cicada.debouncer"
+}

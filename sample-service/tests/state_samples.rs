@@ -8,7 +8,10 @@ use cicada::FailureCause;
 use cicada::retry::{Backoff, RetryPolicy};
 use cicada::store::MessageId;
 use cicada::time::Timestamp;
-use cicada_actors::{DeadLetter, DeadLettersState, RateLimiterState, Schedule, SchedulerState, StoredMessage};
+use cicada_actors::{
+    DeadLetter, DeadLettersState, DebouncedMessage, DebouncerState, RateLimiterState, Schedule, SchedulerState,
+    StoredMessage,
+};
 use cicada_examples::cron::CronState;
 use cicada_examples::timer::{CheckoutState, CheckoutStatus};
 use cicada_test::{assert_state_decodes, record_state_sample};
@@ -74,6 +77,27 @@ fn rate_limiter() {
     let state = RateLimiterState { idle_at: Some(t()), ..RateLimiterState::new(3, second, 2, 10 * second).unwrap() };
     record_state_sample(&dir, "reserved", &state);
     assert_state_decodes::<RateLimiterState>(&dir);
+}
+
+#[test]
+fn debouncer() {
+    let dir = dir("debouncer");
+    let second = std::time::Duration::from_secs(1);
+    let message = StoredMessage { message_type: "Note".into(), payload: json!({"text": "n"}) };
+    let pending = DebouncedMessage {
+        to: cicada::ActorAddress::parse("worker/a").unwrap(),
+        message,
+        retry: None,
+        correlation_id: Some("c".into()),
+    };
+    let state = DebouncerState {
+        pending: Some(pending),
+        first_at: Some(t()),
+        armed: Some(MessageId::new("f1").unwrap()),
+        ..DebouncerState::new(2 * second, 5 * second).unwrap()
+    };
+    record_state_sample(&dir, "pending", &state);
+    assert_state_decodes::<DebouncerState>(&dir);
 }
 
 /// The samples of the dead letters start again with 0.14.0: their contract changed, and the letters of 0.13.0 are lost

@@ -1,0 +1,17 @@
+{
+  "quiet": "PT2S",
+  "maxWait": "PT5S",
+  "pending": {
+    "to": "worker/a",
+    "message": {
+      "type": "Note",
+      "payload": {
+        "text": "n"
+      }
+    },
+    "retry": null,
+    "correlationId": "c"
+  },
+  "firstAt": "2026-10-03T12:00:00Z",
+  "armed": "f1"
+}

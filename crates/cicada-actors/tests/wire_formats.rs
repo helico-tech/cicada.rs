@@ -1,4 +1,4 @@
-//! The wire formats of the five ready-made actors (ADR 0028): their contracts against the references in
+//! The wire formats of the six ready-made actors (ADR 0028): their contracts against the references in
 //! `docs/reference/contracts`, the JSON their messages and states are written as, and sample checks for what the
 //! helpers and the actors write: both the registered schemas and the decoders take it (ADR 0026).
 
@@ -11,9 +11,10 @@ use cicada::contract::Contract;
 use cicada::prelude::*;
 use cicada::{Failed, FailureCause, StopCause, Stopped, WatchTarget};
 use cicada_actors::{
-    Child, DeadLetters, DeadLettersActor, DeadLettersMsg, DeadLettersState, RateLimiter, RateLimiterActor,
-    RateLimiterMsg, RateLimiterState, Schedule, Scheduler, SchedulerActor, SchedulerMsg, SchedulerState, StoredMessage,
-    Supervisor, SupervisorActor, SupervisorMsg, SupervisorState, Topic, TopicActor, TopicMsg, TopicState,
+    Child, DeadLetters, DeadLettersActor, DeadLettersMsg, DeadLettersState, Debouncer, DebouncerActor, DebouncerMsg,
+    DebouncerState, RateLimiter, RateLimiterActor, RateLimiterMsg, RateLimiterState, Schedule, Scheduler,
+    SchedulerActor, SchedulerMsg, SchedulerState, StoredMessage, Supervisor, SupervisorActor, SupervisorMsg,
+    SupervisorState, Topic, TopicActor, TopicMsg, TopicState,
 };
 use cicada_axum::{assert_message_sample, assert_state_sample};
 use cicada_test::{TestActors, UPDATE_CONTRACTS_ENV, describe_changes};
@@ -83,23 +84,31 @@ fn check_references(dir: &Path, contracts: &[Contract], update: bool) -> Result<
     }
 }
 
-fn the_five_contracts() -> [Contract; 5] {
+fn the_six_contracts() -> [Contract; 6] {
     [
         contract_of::<SupervisorActor>().unwrap(),
         contract_of::<DeadLettersActor>().unwrap(),
         contract_of::<TopicActor>().unwrap(),
         contract_of::<SchedulerActor>().unwrap(),
         contract_of::<RateLimiterActor>().unwrap(),
+        contract_of::<DebouncerActor>().unwrap(),
     ]
 }
 
 #[test]
-fn the_contracts_of_the_five_types_match_their_references() {
-    let contracts = the_five_contracts();
+fn the_contracts_of_the_six_types_match_their_references() {
+    let contracts = the_six_contracts();
     let names: Vec<&str> = contracts.iter().map(|c| c.type_name().as_str()).collect();
     assert_eq!(
         names,
-        ["cicada.supervisor", "cicada.dead-letters", "cicada.topic", "cicada.scheduler", "cicada.rate-limiter"]
+        [
+            "cicada.supervisor",
+            "cicada.dead-letters",
+            "cicada.topic",
+            "cicada.scheduler",
+            "cicada.rate-limiter",
+            "cicada.debouncer"
+        ]
     );
     let update = std::env::var(UPDATE_CONTRACTS_ENV).is_ok_and(|v| v == "true");
     if let Err(e) = check_references(&contracts_dir(), &contracts, update) {
@@ -290,6 +299,68 @@ fn the_messages_are_written_in_camel_case_and_pass_their_samples() {
     ] {
         assert!(cicada::message::decode::<RateLimiterMsg>("Submit", &invalid).is_err(), "{invalid}");
     }
+
+    let two = RetryPolicy::new(2, Backoff::fixed(std::time::Duration::from_secs(10)).unwrap()).unwrap();
+    let debouncer = [
+        (
+            DebouncerMsg::submit(&worker("b"), WorkerMsg::Note { text: "hi".into() }, None).unwrap(),
+            json!({"type": "Submit", "to": "worker/b", "message": message, "retry": null}),
+        ),
+        (
+            DebouncerMsg::submit(&worker("b"), WorkerMsg::Note { text: "hi".into() }, Some(two)).unwrap(),
+            json!({"type": "Submit", "to": "worker/b", "message": message, "retry": fixed}),
+        ),
+        (DebouncerMsg::Flush, json!({"type": "Flush"})),
+    ];
+    for (message, written) in debouncer {
+        assert_eq!(json_of(&message), written);
+        assert_message_sample::<DebouncerMsg>(&written);
+    }
+    assert_message_sample::<DebouncerMsg>(&json!({"type": "Submit", "to": "worker/b", "message": message}));
+    for invalid in [
+        json!({"message": message}),
+        json!({"to": "worker/b"}),
+        json!({"to": "worker/b", "message": message, "retry": {"maxAttempts": 0, "backoff": fixed["backoff"]}}),
+    ] {
+        assert!(cicada::message::decode::<DebouncerMsg>("Submit", &invalid).is_err(), "{invalid}");
+    }
+}
+
+#[test]
+fn a_debouncer_state_is_written_in_camel_case_passes_its_samples_and_refuses_invalid_states() {
+    let second = std::time::Duration::from_secs(1);
+    let state = DebouncerState::new(2 * second, 5 * second).unwrap();
+    let written = json_of(&state);
+    assert_eq!(written, json!({"quiet": "PT2S", "maxWait": "PT5S", "pending": null, "firstAt": null, "armed": null}));
+    assert_state_sample::<DebouncerState>(&written);
+    assert_state_sample::<DebouncerState>(&json!({"quiet": "PT2S", "maxWait": "PT5S"}));
+    let pending = json!({
+        "to": "worker/a",
+        "message": {"type": "Note", "payload": {"text": "n"}},
+        "retry": {"maxAttempts": 2, "backoff": {"kind": "fixed", "delay": "PT10S"}},
+        "correlationId": "c"
+    });
+    let kept = json!({"quiet": "PT2S", "maxWait": "PT5S", "pending": pending, "firstAt": "2026-11-13T02:00:00Z",
+        "armed": "f1"});
+    assert_state_sample::<DebouncerState>(&kept);
+    assert_state_sample::<DebouncerState>(&json!(
+        {"quiet": "PT1S", "maxWait": "PT1S", "pending": {"to": "worker/a", "message": {"type": "Note", "payload": {}}},
+            "firstAt": "2026-11-13T02:00:00Z"}
+    ));
+    for invalid in [
+        json!({"quiet": "PT0S", "maxWait": "PT5S"}),
+        json!({"quiet": "PT5S", "maxWait": "PT2S"}),
+        json!({"quiet": "PT1S", "maxWait": "P365001D"}),
+        json!({"quiet": "PT2S"}),
+        json!({"quiet": 2, "maxWait": "PT5S"}),
+        json!({"quiet": "PT2S", "maxWait": "PT5S", "pending": pending}),
+        json!({"quiet": "PT2S", "maxWait": "PT5S", "firstAt": "2026-11-13T02:00:00Z"}),
+        json!({"quiet": "PT2S", "maxWait": "PT5S", "armed": "f1"}),
+        json!({"quiet": "PT2S", "maxWait": "PT5S", "pending": {"to": "worker/a"}, "firstAt": "2026-11-13T02:00:00Z"}),
+        json!({"quiet": "PT2S", "maxWait": "PT5S", "pending": pending, "firstAt": "soon"}),
+    ] {
+        assert!(serde_json::from_value::<DebouncerState>(invalid.clone()).is_err(), "{invalid}");
+    }
 }
 
 #[test]
@@ -384,6 +455,7 @@ async fn the_states_the_actors_write_pass_their_samples() {
                 .host(TopicActor)
                 .host(SchedulerActor)
                 .host(RateLimiterActor)
+                .host(DebouncerActor)
                 .host(WorkerActor)
         })
         .build()
@@ -451,4 +523,20 @@ async fn the_states_the_actors_write_pass_their_samples() {
     let written = test.state_json(&api).await.unwrap();
     assert!(written["idleAt"].is_string(), "{written}");
     assert_state_sample::<RateLimiterState>(&written);
+
+    let deb = Debouncer::named("d");
+    test.create(&deb, &DebouncerState::new(second, 5 * second).unwrap()).await;
+    let submit = DebouncerMsg::submit(&worker("a"), WorkerMsg::Note { text: "n".into() }, None).unwrap();
+    test.send_with(&deb, submit, SendOptions::new().correlation_id("c")).await;
+    test.run_until_idle().await;
+    let written = test.state_json(&deb).await.unwrap();
+    for key in ["firstAt", "armed"] {
+        assert!(written[key].is_string(), "{key} in {written}");
+    }
+    assert_eq!(written["pending"]["correlationId"], "c", "{written}");
+    assert_state_sample::<DebouncerState>(&written);
+    test.advance_time_by(second).await;
+    let written = test.state_json(&deb).await.unwrap();
+    assert_eq!(written, json!({"quiet": "PT1S", "maxWait": "PT5S", "pending": null, "firstAt": null, "armed": null}));
+    assert_state_sample::<DebouncerState>(&written);
 }
