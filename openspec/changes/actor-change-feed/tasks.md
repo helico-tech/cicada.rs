@@ -25,7 +25,7 @@
   Assert committed reads after hints; use a later marker rather than timing-based absence assertions. Run conformance
   on memory, SQLite and PostgreSQL with CICADA_PG_URL, documenting unavailable fixtures. Add new tests proving existing
   S2/S3 guarantees to docs/guarantees.md without inventing a durable-feed guarantee.
-- [ ] 5. Document the core API and a compiling subscribe/resync/read loop using list_actors_with_state; update
+- [x] 5. Document the core API and a compiling subscribe/resync/read loop using list_actors_with_state; update
   architecture, core guide, operations, changelog/version and Store::close's stream exception. Explain exact scope,
   version-reset rationale, coarse resyncs, no replay/order guarantee, SQLite shutdown/separate-handle limits, all-writer
   upgrades, PostgreSQL queue usage/commit cost/failures and host reconciliation. Keep watches' failure/removal-only

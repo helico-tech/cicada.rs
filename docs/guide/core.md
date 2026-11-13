@@ -479,7 +479,8 @@ async fn main() -> anyhow::Result<()> {
   another program.
 - `ActorSystem` is cheap to clone; every clone is the same node. Its methods are the in-process API: `create`,
   `send`, `send_with`, `send_to`, `send_message`, `get_actor`, `delete_actor`, `list_actors`,
-  `list_actors_with_state`, `pending`, `list_pending`, `status`, `outcome`, `cancel`, `failures`, `types`, `health`.
+  `list_actors_with_state`, `changes`, `pending`, `list_pending`, `status`, `outcome`, `cancel`, `failures`, `types`,
+  `health`.
 - The runtime logs with [`tracing`](https://docs.rs/tracing); install a subscriber (such as `tracing_subscriber`) to
   see its output.
 
@@ -523,6 +524,85 @@ loop {
 - **Size.** A page holds whole states, so large states make large pages: pick a smaller limit for them. A state stored
   before 0.16.0 can be nested deeper than 64 levels and is returned as it is
   ([How deep a value can be](#how-deep-a-value-can-be)); one bad row fails the whole page.
+
+### Follow changes
+
+A live board that shows actors need not poll them all. `changes(prefix)` returns a stream of hints (ADR 0034):
+`ActorChange::Changed { address }` says that the actor at that address may have changed, and `ActorChange::Resync`
+says that hints may have been missed. The first item is always `Resync`. Read the prefix after a `Resync`, then read
+each changed address; the read is the truth, the hint is only a reason to read.
+
+<!-- doctest
+# use std::collections::BTreeMap;
+# use cicada::{ActorAddress, ActorChange, ActorSystem, OpError};
+# use cicada::runtime::ActorSnapshot;
+# use futures::StreamExt;
+# async fn follow(system: &ActorSystem) -> Result<(), OpError> {
+@@30
+# Ok(())
+# }
+-->
+```rust
+let mut board: BTreeMap<ActorAddress, ActorSnapshot> = BTreeMap::new();
+let mut changes = system.changes("factory.ticket/");
+while let Some(change) = changes.next().await {
+    match change {
+        ActorChange::Resync => {
+            // Replace the board, page by page; hints that arrive meanwhile wait in the stream.
+            board.clear();
+            let mut cursor = None;
+            loop {
+                let page = system.list_actors_with_state("factory.ticket/", cursor.as_ref(), 100).await?;
+                for actor in page.items {
+                    board.insert(actor.address.clone(), actor);
+                }
+                match page.next {
+                    Some(next) => cursor = Some(next),
+                    None => break,
+                }
+            }
+        }
+        ActorChange::Changed { address, .. } => match system.get_actor(&address).await? {
+            Some(actor) => {
+                board.insert(address, actor);
+            }
+            None => {
+                board.remove(&address);
+            }
+        },
+        _ => {}
+    }
+}
+```
+
+- **What is reported.** A committed create (from outside or by a turn, a child too), a turn's new state, also one equal
+  to the old, a pause or a resume, a restart, and a removal by a delete or a stop, with every descendant. Each address
+  once per transaction; a transaction of more than 100 addresses (or more than 7,998 bytes of them) sends one `Resync`
+  instead. A hint is sent only after its commit, so a read after it sees that commit, or a later one. Mailbox work
+  (sends, cancels, purges, retries), leases, watches, node rows and sweeps send nothing, and so do a rejected commit, a
+  fenced one and a failed turn, whose effects are dropped.
+- **No state, no version.** A hint carries neither: a version starts at 0 again when an address is deleted and created
+  anew, so it cannot tell two lives apart. Duplicate hints and extra `Resync`s are harmless; a hint says nothing of what
+  happened in between, not even that the actor was gone for a while.
+- **Prefixes.** The prefix is literal, as for `list_actors`: `order` also matches `orders/x`, `order/` does not, and
+  `%` and `_` are plain characters. The empty prefix matches every actor. A `Resync` reaches every prefix.
+- **Best effort.** No history, no replay, no exactly-once delivery, and no order across transactions or nodes. A reader
+  that falls more than 1024 items behind gets a `Resync` and then live hints, and never slows a writer. The pages of the
+  reread are no global snapshot: process the hints that queued during it afterwards.
+- **Scope.** On SQLite and in memory the feed covers the writes through the same `Store` and its clones, not those of
+  a store opened separately on the same file, even in one process. On PostgreSQL it covers every node on the same
+  database and schema that runs 0.16.10 or later; older nodes and SQL by hand send nothing
+  ([the operations guide](../operations.md#store-tuning)). A host that must catch those keeps a periodic full read.
+- **Life.** Call `changes` inside a tokio runtime; it needs neither `start` nor hosted types, so a read-only node can
+  follow a store. `stop` does not end the stream, the store owns the feed, and `Store::close` ends every stream,
+  without its backlog. On PostgreSQL the first `Resync` waits until the store listens on its channel; while the
+  database cannot be reached nothing arrives, so set your own timeout if that matters. A lost connection gives a
+  `Resync` once the store listens again.
+- **SQLite and cancelled commits.** A commit whose caller is cancelled while its `COMMIT` runs may still land. The store
+  then settles the transaction before the next write and sends a `Resync`. When the tokio runtime shuts down meanwhile
+  no hint comes: subscribe again and read everything when the service resumes.
+- **Watches are not this.** A watch tells an actor, durably, of a failure or a removal; it never reports a state
+  write. The feed is for hosts outside the actors.
 
 ### The contract of a type
 

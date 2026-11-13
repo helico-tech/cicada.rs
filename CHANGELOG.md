@@ -7,6 +7,36 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.16.10 — unreleased
+
+Nothing breaks: a host can follow hints that actors changed instead of polling them. No schema, HTTP route, actor
+contract or command line change. On PostgreSQL a commit that changes an actor sends one more notification; nodes of
+0.16.9 ignore it, but send no hints: upgrade every node that writes, then let followers subscribe again.
+
+### Added
+
+- `ActorSystem::changes(prefix)`, an `ActorChanges` stream (`Send`, `Unpin`, a cancel-safe `next`) of
+  `ActorChange::Changed { address }` and `ActorChange::Resync` (ADR 0034). The first item is `Resync` once the store's
+  source is live; read the prefix with `list_actors_with_state` after a `Resync` and each changed address with
+  `get_actor`. A committed create, new state (also an equal one), pause, resume, restart and removal with every
+  descendant is reported once per transaction, after its commit; more than 100 addresses or 7,998 encoded bytes are one
+  `Resync`. Hints carry no state or version, have no history, replay or order across transactions, and a reader more
+  than 1024 items behind gets a `Resync`. The prefix is literal, as for `list_actors`. It needs neither `start` nor
+  hosted types; `stop` leaves it, `Store::close` ends it.
+- Memory and SQLite report the writes through the same `Store` and its clones; a separately opened SQLite file is not
+  covered. A SQLite `COMMIT` that fails or whose caller is cancelled settles under its writer before a `Resync`.
+- PostgreSQL reports the writes of every node of 0.16.10 or later on the schema: one `@` payload per transaction on
+  the store's channel, sent with the wake-ups in one `pg_notify` before `COMMIT`. The listener turns the feed live only
+  after its `LISTEN`, also after a reconnect, and a lost connection gives a `Resync`.
+
+### Changed
+
+- `Store::close` ends change streams normally (they end without their backlog, and a new one ends at once), the one
+  exception to "every operation fails as unavailable".
+- PostgreSQL: a commit that only writes a state now sends a notification too, and a `COMMIT` that fails with SQLSTATE
+  `54000` (a full notification queue) is `StoreError::Unavailable`, not `Invalid`; other errors map as before. The
+  wake-ups of the dispatch loop also wake once when the listener first has its `LISTEN`.
+
 ## 0.16.9 — 2026-11-13
 
 Nothing breaks: a host can list actors with their state in one read per page. The route and the methods are new;

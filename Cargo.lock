@@ -469,7 +469,7 @@ dependencies = [
 
 [[package]]
 name = "cicada"
-version = "0.16.9"
+version = "0.16.10"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -492,7 +492,7 @@ dependencies = [
 
 [[package]]
 name = "cicada-actors"
-version = "0.16.9"
+version = "0.16.10"
 dependencies = [
  "cicada",
  "cicada-axum",
@@ -509,7 +509,7 @@ dependencies = [
 
 [[package]]
 name = "cicada-app"
-version = "0.16.9"
+version = "0.16.10"
 dependencies = [
  "anyhow",
  "axum",
@@ -540,7 +540,7 @@ dependencies = [
 
 [[package]]
 name = "cicada-axum"
-version = "0.16.9"
+version = "0.16.10"
 dependencies = [
  "aide",
  "async-trait",
@@ -560,7 +560,7 @@ dependencies = [
 
 [[package]]
 name = "cicada-client"
-version = "0.16.9"
+version = "0.16.10"
 dependencies = [
  "axum",
  "cicada",
@@ -577,7 +577,7 @@ dependencies = [
 
 [[package]]
 name = "cicada-e2e"
-version = "0.16.9"
+version = "0.16.10"
 dependencies = [
  "anyhow",
  "chrono",
@@ -594,7 +594,7 @@ dependencies = [
 
 [[package]]
 name = "cicada-examples"
-version = "0.16.9"
+version = "0.16.10"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -606,6 +606,7 @@ dependencies = [
  "cicada-client",
  "cicada-otel",
  "cicada-test",
+ "futures",
  "schemars",
  "serde",
  "serde_json",
@@ -617,7 +618,7 @@ dependencies = [
 
 [[package]]
 name = "cicada-otel"
-version = "0.16.9"
+version = "0.16.10"
 dependencies = [
  "cicada",
  "cicada-actors",
@@ -632,7 +633,7 @@ dependencies = [
 
 [[package]]
 name = "cicada-sample-service"
-version = "0.16.9"
+version = "0.16.10"
 dependencies = [
  "anyhow",
  "axum",
@@ -661,7 +662,7 @@ dependencies = [
 
 [[package]]
 name = "cicada-test"
-version = "0.16.9"
+version = "0.16.10"
 dependencies = [
  "anyhow",
  "async-trait",

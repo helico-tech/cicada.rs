@@ -296,6 +296,38 @@ of it is one read of the store (one `SELECT` per read attempt on SQL, one lock i
 rows share one committed snapshot and each state comes with its own version; there is no snapshot across pages. It
 returns the stored JSON without an actor or a schema, and one row that does not decode fails the page.
 
+## Change hints
+
+`ActorSystem::changes(prefix)` (ADR 0034) is a best-effort stream of `ActorChange::Changed { address }` and
+`ActorChange::Resync`, for a host that keeps a view of many actors: it reads a changed address again
+(`get_actor`) and the whole prefix after a `Resync` (`list_actors_with_state`), and a `Resync` comes first. A hint
+carries no state, version or kind of change, because a version starts again at 0 in an actor's next life.
+
+- **What publishes.** A committed transaction that inserts an actor (a create from outside or by a turn, a child, a
+  restart), writes a turn's new state (also an equal one), pauses or resumes one, or removes one (a delete, a turn's
+  delete or a stop, with every descendant). It collects each address once, at most 100 and 7,998 encoded bytes;
+  beyond either, or when it cannot name its addresses from the work it does anyway, it publishes one `Resync`. Mailbox,
+  lease, watch, node and sweep work publish nothing, and neither does a rolled-back, rejected or fenced commit. The
+  prefix is literal, as for the listing; a `Resync` reaches every prefix.
+- **The hub.** Each store owns one bounded broadcast (1024 items) and a source state, `Up`, `Down` or `Closed`, shared
+  by its clones. One short lock orders state changes, publication and a subscription with its reading of the state. A
+  stream's first and every later resync takes a fresh receiver and the state together: `Up` yields `Resync`, `Down`
+  waits for `Up`, `Closed` ends it. A lagging stream, a source `Resync` and a source `Up` all start such a resync, so a
+  slow reader never blocks a writer. Closing the store closes the hub; it wins over queued hints. Stopping a node does
+  not touch it.
+- **Memory and SQLite.** They start `Up` and publish within one `Store` and its clones, right after the commit: memory
+  after its lock, SQLite after a confirmed `COMMIT`. A SQLite `COMMIT` that fails, or whose caller is cancelled once it
+  was asked for, may still land; with hints collected, the transaction's owned writer guard moves into a task that
+  queues `ROLLBACK` behind the outstanding work, awaits it, publishes `Resync` and only then frees the writer. Without
+  a running runtime no hint is promised. A separate open of the same file is not covered.
+- **PostgreSQL.** A transaction adds one payload to its wake-ups on the channel `cicada_<schema>`: `@` and the
+  addresses separated by one space, or `@` alone for a resync; all of them go in one `pg_notify` statement before
+  `COMMIT`, so only a committed transaction is heard, and a re-run starts empty. Payloads that start with `@` belong to
+  the feed: a malformed one is a resync as a whole, and wake-ups ignore them. The listener starts `Down` and turns the
+  hub `Up` only after `LISTEN` succeeded, also after a reconnect (sqlx's eager reconnect is off), so no hint between a
+  loss and the next `Up` goes unnoticed once the loss is seen. A `COMMIT` that fails with `54000` (a full notification
+  queue) is an unavailable store. Nodes before 0.16.10 send no hints.
+
 ## Design notes
 
 - **Definitions are checked by the compiler.** One `handle` with an exhaustive `match` over the messages its ref
@@ -339,4 +371,6 @@ returns the stored JSON without an actor or a schema, and one row that does not 
 The claim limit cannot tell the message that kills a node from the messages that ran beside it, and a node killed hard
 as a matter of routine (a deploy that sends SIGKILL) loses the claims of its turns too; external side effects are
 at-least-once (use `message().id` as idempotency key, also across retries); a commit rejected because of the handler's
-own sends is not retryable; the client has no streaming of message status (poll `GET /messages/{id}`).
+own sends is not retryable; the client has no streaming of message status (poll `GET /messages/{id}`); change hints
+are best effort, with no history or replay, and do not cover a separately opened SQLite file, older PostgreSQL nodes or
+SQL by hand.

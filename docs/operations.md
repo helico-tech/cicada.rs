@@ -334,6 +334,13 @@ upgrade. No check before the upgrade finds a deep value; it shows up as a refusa
 4. An operator cannot retry a message stored before the upgrade whose payload is deeper than 64 levels (`409
    message-not-retryable`); a bulk retry skips it.
 
+**Version 0.16.10 changes no schema and no wire format of the HTTP API.** It adds change hints (ADR 0034,
+[Follow changes](guide/core.md#follow-changes)). On PostgreSQL every transaction that changes an actor now also sends
+an `@` payload on the store's channel; nodes of 0.16.9 ignore those payloads, so both versions can share a database.
+Only nodes of 0.16.10 send hints, though: a host that follows changes sees the writes of an older node only at its
+next `Resync`. Upgrade every node that writes, then let the followers subscribe again (or restart them), so that they
+read everything once.
+
 **Switching a type to `create_child`.** An actor created with `turn.create` stays independent: a later `create_child`
 of it by its creator does not adopt it, but fails the creator's message (the commit is rejected, and a handler cannot
 test for that). So switch a parent type from `create` to `create_child` only when no parent of it is left that created
@@ -513,6 +520,19 @@ Connection parameters (`sslmode`, `sslrootcert`, `application_name`, `options`, 
 `PostgresOptions` when a host needs it. For TLS see [TLS for PostgreSQL](#tls-for-postgresql). Store time
 is the server's `clock_timestamp()`, read after each transaction's row locks, so run PostgreSQL with a disciplined
 clock (NTP).
+
+Change hints (ADR 0034) ride on PostgreSQL's `NOTIFY`. A transaction that changes an actor (a create, a new state, a
+pause or resume, a removal) sends one notification of at most 7,998 bytes on the store's channel, with its wake-ups, in
+one statement before `COMMIT`; a commit that changes no actor sends what it sent before. A commit that only writes a
+state now notifies too: a little more work per commit, and one more entry in the server's notification queue (8 GB by
+default; `max_notify_queue_pages` from PostgreSQL 17 on). The queue is cleared as every listener reads it, so a session
+that listens on any channel and holds a transaction open, or stops reading, keeps it from being cleared;
+`SELECT pg_notification_queue_usage()` shows how full it is. A full queue fails the `COMMIT` with SQLSTATE `54000`,
+which the store reports as unavailable (`503`): the commit is not applied, and the usual rules for a commit that
+fails apply (the message stays pending). A `COMMIT` can also time out or lose its answer, as before; the hints follow what the server committed. Every
+store keeps one listening connection, started by the dispatch loop or by the first subscriber. Hints are best effort: a
+host that needs every change of an older node, of SQL by hand, or after a runtime shut down keeps its own periodic full
+read.
 
 SQLite (`SqliteOptions`, feature `sqlite`):
 
