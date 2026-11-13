@@ -21,7 +21,7 @@ Other changes to the listener, its reconnect backoff or the change feed.
 
 ## Order
 
-After `deep-failure-notices`. No following change.
+After `deep-failure-notices`, before `cicada-agent-skill`.
 
 ## Impact
 
