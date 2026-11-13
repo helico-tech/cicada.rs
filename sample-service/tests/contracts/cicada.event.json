@@ -1,0 +1,86 @@
+{
+  "messages": {
+    "Publish": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Creates one run of each subscribed flow type with `input`, keyed by this message's id, and sends each a\n`Continue`, all in one commit.",
+      "properties": {
+        "input": {
+          "description": "The input of each run: any JSON value, `null` included, but not absent."
+        }
+      },
+      "required": [
+        "input"
+      ],
+      "title": "Publish",
+      "type": "object"
+    },
+    "PublishBatch": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "A `Publish` whose input is `{\"items\": [...]}`: one run of each flow type for the whole batch, also an empty\none. A batcher whose message type is `PublishBatch` sends it as it is.",
+      "properties": {
+        "items": {
+          "description": "The items of the batch.",
+          "items": true,
+          "type": "array"
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "title": "PublishBatch",
+      "type": "object"
+    },
+    "Subscribe": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Adds a flow type to the end of the list; a type held already changes nothing, also at the limit of 100. A name\nthat is no type name, or a 101st type, is refused for good. The registry is not read: the type is checked when\nan event is published.",
+      "properties": {
+        "flow": {
+          "description": "The type name of the flow.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "flow"
+      ],
+      "title": "Subscribe",
+      "type": "object"
+    },
+    "Unsubscribe": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Removes a flow type; one not held changes nothing. A name that is no type name is refused for good. The runs\nit started stay.",
+      "properties": {
+        "flow": {
+          "description": "The type name of the flow.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "flow"
+      ],
+      "title": "Unsubscribe",
+      "type": "object"
+    }
+  },
+  "state": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "The state of an [`Event`]: the subscribed flow types, in the order they subscribed, each once.\n\nOn the wire: `{\"flows\":[\"shop.email\",\"shop.fulfil\"]}`; `flows` defaults to empty. A decoded state is checked: at\nmost 100 unique type names.",
+    "properties": {
+      "flows": {
+        "default": [],
+        "description": "The type names of the subscribed flows, in the order they subscribed; at most 100, each once; absent: none.",
+        "items": {
+          "maxLength": 100,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9._-]*$",
+          "type": "string"
+        },
+        "maxItems": 100,
+        "type": "array",
+        "uniqueItems": true
+      }
+    },
+    "title": "EventState",
+    "type": "object"
+  },
+  "type": "cicada.event"
+}

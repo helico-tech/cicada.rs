@@ -1,0 +1,6 @@
+{
+  "flows": [
+    "flows.onboarding",
+    "shop.fulfil"
+  ]
+}

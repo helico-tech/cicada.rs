@@ -116,7 +116,11 @@ pub struct EventState {
 struct RawState {
     /// The type names of the subscribed flows, in the order they subscribed; at most 100, each once; absent: none.
     #[serde(default)]
-    #[schemars(length(max = 100))]
+    #[schemars(
+        length(max = 100),
+        inner(length(min = 1, max = 100), regex(pattern = r"^[a-z][a-z0-9._-]*$")),
+        extend("uniqueItems" = true)
+    )]
     flows: Vec<String>,
 }
 

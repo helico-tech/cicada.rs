@@ -1,4 +1,4 @@
-//! The wire formats of the seven ready-made actors (ADR 0028): their contracts against the references in
+//! The wire formats of the eight ready-made actors (ADR 0028): their contracts against the references in
 //! `docs/reference/contracts`, the JSON their messages and states are written as, and sample checks for what the
 //! helpers and the actors write: both the registered schemas and the decoders take it (ADR 0026). And the wire format
 //! of a flow (ADR 0031): a test flow's contract, whose type name its host chooses, pinned in `tests/contracts`, with the
@@ -14,10 +14,10 @@ use cicada::prelude::*;
 use cicada::{Failed, FailureCause, StopCause, Stopped, WatchTarget};
 use cicada_actors::{
     Batcher, BatcherActor, BatcherMsg, BatcherState, Child, DeadLetters, DeadLettersActor, DeadLettersMsg,
-    DeadLettersState, Debouncer, DebouncerActor, DebouncerMsg, DebouncerState, Flow, FlowActor, FlowMsg, FlowRun,
-    FlowState, FlowStatus, JournalEntry, RateLimiter, RateLimiterActor, RateLimiterMsg, RateLimiterState, Schedule,
-    Scheduler, SchedulerActor, SchedulerMsg, SchedulerState, StoredMessage, Supervisor, SupervisorActor, SupervisorMsg,
-    SupervisorState, Topic, TopicActor, TopicMsg, TopicState,
+    DeadLettersState, Debouncer, DebouncerActor, DebouncerMsg, DebouncerState, Event, EventActor, EventMsg, EventState,
+    Flow, FlowActor, FlowMsg, FlowRun, FlowState, FlowStatus, JournalEntry, RateLimiter, RateLimiterActor,
+    RateLimiterMsg, RateLimiterState, Schedule, Scheduler, SchedulerActor, SchedulerMsg, SchedulerState, StoredMessage,
+    Supervisor, SupervisorActor, SupervisorMsg, SupervisorState, Topic, TopicActor, TopicMsg, TopicState,
 };
 use cicada_axum::{assert_message_sample, assert_state_sample};
 use cicada_test::{TestActors, UPDATE_CONTRACTS_ENV, describe_changes};
@@ -88,7 +88,7 @@ fn check_references(dir: &Path, contracts: &[Contract], update: bool) -> Result<
     }
 }
 
-fn the_seven_contracts() -> [Contract; 7] {
+fn the_eight_contracts() -> [Contract; 8] {
     [
         contract_of::<SupervisorActor>().unwrap(),
         contract_of::<DeadLettersActor>().unwrap(),
@@ -97,12 +97,13 @@ fn the_seven_contracts() -> [Contract; 7] {
         contract_of::<RateLimiterActor>().unwrap(),
         contract_of::<DebouncerActor>().unwrap(),
         contract_of::<BatcherActor>().unwrap(),
+        contract_of::<EventActor>().unwrap(),
     ]
 }
 
 #[test]
-fn the_contracts_of_the_seven_types_match_their_references() {
-    let contracts = the_seven_contracts();
+fn the_contracts_of_the_eight_types_match_their_references() {
+    let contracts = the_eight_contracts();
     let names: Vec<&str> = contracts.iter().map(|c| c.type_name().as_str()).collect();
     assert_eq!(
         names,
@@ -113,7 +114,8 @@ fn the_contracts_of_the_seven_types_match_their_references() {
             "cicada.scheduler",
             "cicada.rate-limiter",
             "cicada.debouncer",
-            "cicada.batcher"
+            "cicada.batcher",
+            "cicada.event"
         ]
     );
     let update = std::env::var(UPDATE_CONTRACTS_ENV).is_ok_and(|v| v == "true");
@@ -342,6 +344,57 @@ fn the_messages_are_written_in_camel_case_and_pass_their_samples() {
         assert_message_sample::<BatcherMsg>(&written);
     }
     assert!(cicada::message::decode::<BatcherMsg>("Add", &json!({})).is_err(), "an Add needs its item");
+
+    let event = [
+        (EventMsg::Subscribe { flow: "shop.email".into() }, json!({"type": "Subscribe", "flow": "shop.email"})),
+        (EventMsg::Unsubscribe { flow: "shop.email".into() }, json!({"type": "Unsubscribe", "flow": "shop.email"})),
+        (EventMsg::publish(json!({"order": 7})).unwrap(), json!({"type": "Publish", "input": {"order": 7}})),
+        (EventMsg::publish(()).unwrap(), json!({"type": "Publish", "input": null})),
+        (EventMsg::publish([1, 2]).unwrap(), json!({"type": "Publish", "input": [1, 2]})),
+        (
+            EventMsg::publish_batch([json!({"row": 1}), Value::Null]).unwrap(),
+            json!({"type": "PublishBatch", "items": [{"row": 1}, null]}),
+        ),
+        (EventMsg::publish_batch(Vec::<Value>::new()).unwrap(), json!({"type": "PublishBatch", "items": []})),
+    ];
+    for (message, written) in event {
+        assert_eq!(json_of(&message), written);
+        assert_message_sample::<EventMsg>(&written);
+    }
+    for (message_type, invalid) in [
+        ("Publish", json!({})),
+        ("PublishBatch", json!({})),
+        ("PublishBatch", json!({"items": {"row": 1}})),
+        ("Subscribe", json!({})),
+        ("Unsubscribe", json!({"flow": 7})),
+    ] {
+        assert!(cicada::message::decode::<EventMsg>(message_type, &invalid).is_err(), "{message_type} {invalid}");
+    }
+}
+
+#[test]
+fn an_event_state_is_written_as_its_list_passes_its_samples_and_refuses_invalid_states() {
+    let empty = json_of(EventState::default());
+    assert_eq!(empty, json!({"flows": []}));
+    assert_state_sample::<EventState>(&empty);
+    assert_state_sample::<EventState>(&json!({}));
+    let populated = json!({"flows": ["shop.email", "shop.fulfil"]});
+    assert_state_sample::<EventState>(&populated);
+    let held: EventState = serde_json::from_value(populated.clone()).unwrap();
+    assert_eq!(json_of(&held), populated, "in subscription order");
+    let full: Vec<String> = (0..100).map(|i| format!("shop.flow{i}")).collect();
+    assert_state_sample::<EventState>(&json!({ "flows": full }));
+    let over: Vec<String> = (0..101).map(|i| format!("shop.flow{i}")).collect();
+    for invalid in [
+        json!({ "flows": over }),
+        json!({"flows": ["shop.email", "shop.email"]}),
+        json!({"flows": ["Shop Email"]}),
+        json!({"flows": [""]}),
+        json!({"flows": "shop.email"}),
+        json!({"flows": null}),
+    ] {
+        assert!(serde_json::from_value::<EventState>(invalid.clone()).is_err(), "{invalid}");
+    }
 }
 
 #[test]
@@ -519,6 +572,7 @@ async fn the_states_the_actors_write_pass_their_samples() {
                 .host(RateLimiterActor)
                 .host(DebouncerActor)
                 .host(BatcherActor)
+                .host(EventActor)
                 .host(WorkerActor)
         })
         .build()
@@ -620,6 +674,17 @@ async fn the_states_the_actors_write_pass_their_samples() {
     let written = test.state_json(&bat).await.unwrap();
     assert_eq!((written["items"].clone(), written["armed"].clone()), (json!([]), Value::Null), "{written}");
     assert_state_sample::<BatcherState>(&written);
+
+    let event = Event::named("e");
+    test.create(&event, &EventState::default()).await;
+    for flow in ["shop.email", "shop.fulfil", "shop.email"] {
+        test.send(&event, EventMsg::Subscribe { flow: flow.into() }).await;
+    }
+    test.send(&event, EventMsg::Unsubscribe { flow: "shop.email".into() }).await;
+    test.run_until_idle().await;
+    let written = test.state_json(&event).await.unwrap();
+    assert_eq!(written, json!({"flows": ["shop.fulfil"]}));
+    assert_state_sample::<EventState>(&written);
 }
 
 /// The input of the test flow.

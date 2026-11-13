@@ -9,7 +9,7 @@
   selection, hosted/unhosted invalid input, stale subscriptions, same-id retention boundaries, new-id redrive,
   scheduler/composition starts, independent lifecycle and depth. Include both encoded-looking and raw slash ids.
   Use public shared-store nodes and the existing registry-failure fixture as needed; run those targeted tests.
-- [ ] 3. Pin Event's contract and all message/initial/populated/invalid state samples in wire-format tests and
+- [x] 3. Pin Event's contract and all message/initial/populated/invalid state samples in wire-format tests and
   `docs/reference/contracts/cicada.event.json`. Host Event in the sample service without automatic instances or
   subscriptions. Regenerate references and sample-service snapshots/texts with `CICADA_UPDATE_CONTRACTS=true`;
   verify those tests and unchanged existing actor/flow contracts.

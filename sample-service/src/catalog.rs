@@ -7,8 +7,8 @@ use cicada::actor::{DefinitionError, contract_of};
 use cicada::contract::Contract;
 use cicada::{Actor, ActorAddress, ActorRef, ActorType, NoState};
 use cicada_actors::{
-    BatcherActor, DeadLetters, DeadLettersActor, DeadLettersState, DebouncerActor, FlowActor, RateLimiterActor,
-    SchedulerActor, SupervisorActor, TopicActor,
+    BatcherActor, DeadLetters, DeadLettersActor, DeadLettersState, DebouncerActor, EventActor, FlowActor,
+    RateLimiterActor, SchedulerActor, SupervisorActor, TopicActor,
 };
 use cicada_app::App;
 use cicada_examples::cron::CronJobActor;
@@ -122,6 +122,7 @@ impl Catalog {
             CatalogType::of(RateLimiterActor),
             CatalogType::of(DebouncerActor),
             CatalogType::of(BatcherActor),
+            CatalogType::of(EventActor),
             CatalogType::of(SyncActor { api: fakes.sync_api }),
             CatalogType::of(ReportsActor),
             CatalogType::of(SlowActor::new(node_id, effects.clone())),

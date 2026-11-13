@@ -9,7 +9,7 @@ use cicada::retry::{Backoff, RetryPolicy};
 use cicada::store::MessageId;
 use cicada::time::Timestamp;
 use cicada_actors::{
-    BatcherState, DeadLetter, DeadLettersState, DebouncedMessage, DebouncerState, FlowState, JournalEntry,
+    BatcherState, DeadLetter, DeadLettersState, DebouncedMessage, DebouncerState, EventState, FlowState, JournalEntry,
     RateLimiterState, Schedule, SchedulerState, StoredMessage,
 };
 use cicada_examples::cron::CronState;
@@ -116,6 +116,14 @@ fn batcher() {
     };
     record_state_sample(&dir, "pending", &state);
     assert_state_decodes::<BatcherState>(&dir);
+}
+
+#[test]
+fn event() {
+    let dir = dir("event");
+    let state = EventState { flows: vec!["flows.onboarding".into(), "shop.fulfil".into()] };
+    record_state_sample(&dir, "subscribed", &state);
+    assert_state_decodes::<EventState>(&dir);
 }
 
 #[test]
