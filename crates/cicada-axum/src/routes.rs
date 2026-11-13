@@ -18,7 +18,8 @@ use axum::routing::{get, post};
 use cicada::api::{
     ActorView, BulkRequest, BulkResponse, CreateActorRequest, CreateActorResponse, HealthView, MailboxMessageView,
     MessageStatusView, MessageView, NodeDetailView, NodeListView, OutcomeView, PageView, Problem, PurgeResponse,
-    RunningTurnView, SendRequest, SendResponse, StatsView, TypeListView, TypeView, WatchRequest, WatchView,
+    RegisterTypeRequest, RunningTurnView, SendRequest, SendResponse, StatsView, TypeListView, TypeView, WatchRequest,
+    WatchView,
 };
 use schemars::JsonSchema;
 
@@ -272,18 +273,31 @@ fn routes(access: Access) -> ApiRouter<Arc<Api>> {
                     "Removed.",
                 )
             });
-        type_by_name = type_by_name.delete_with(handlers::remove_type, |op| {
-            no_content(
+        type_by_name = type_by_name
+            .put_with(handlers::register_type, |op| {
                 described(
                     op,
-                    "removeType",
-                    "Removes a type's registration. Refused while actors of the type exist (409). A node that hosts \
-                     the type registers it again at its next start.",
+                    "registerType",
+                    "Registers a contract without hosting its type, so that creates and sends are accepted before a \
+                     worker runs it. The server computes the hash; the first registration wins: an equal hash answers \
+                     the stored type with its first descriptions, a different one 409. Schemas are checked for shape \
+                     (422), not compiled.",
                 )
-                .input::<Path<TypePath>>(),
-                "Removed.",
-            )
-        });
+                .input::<(Path<TypePath>, Json<RegisterTypeRequest>)>()
+                .response_with::<200, Json<TypeView>, _>(|r| r.description("Registered, now or before."))
+            })
+            .delete_with(handlers::remove_type, |op| {
+                no_content(
+                    described(
+                        op,
+                        "removeType",
+                        "Removes a type's registration. Refused while actors of the type exist (409). A node that \
+                         hosts the type registers it again at its next start.",
+                    )
+                    .input::<Path<TypePath>>(),
+                    "Removed.",
+                )
+            });
         actor = actor
             .put_with(handlers::put_actor, |op| {
                 described(

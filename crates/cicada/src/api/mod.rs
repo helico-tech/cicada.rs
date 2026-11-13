@@ -5,7 +5,7 @@
 //! explicit `null`. Instants are ISO-8601 strings in UTC ([`crate::time::format_instant`]), durations ISO-8601
 //! durations ([`crate::time::format_duration`]).
 //!
-//! Request bodies ([`CreateActorRequest`], [`SendRequest`]) decode strictly: an unknown key in the envelope, or inside
+//! Request bodies ([`CreateActorRequest`], [`SendRequest`], [`RegisterTypeRequest`]) decode strictly: an unknown key in the envelope, or inside
 //! its `retry` and `retention` policies, is an error, so a misspelling is never silently ignored. Payloads and states
 //! inside them are plain JSON and stay lenient. Serialized, they leave absent optional fields out, so a node that does
 //! not know a field yet still accepts a request that does not set it.
@@ -482,6 +482,17 @@ pub struct TypeView {
     pub messages: BTreeMap<String, Value>,
 }
 
+/// Body of `PUT /types/{name}`: the schemas of a contract to register without hosting its type. Both fields are
+/// required; the name comes from the path and the server computes the hash, so neither is a field.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RegisterTypeRequest {
+    /// JSON Schema of the state: an object or a boolean.
+    pub state: Value,
+    /// JSON Schema per message type name, each an object or a boolean; may be empty.
+    pub messages: BTreeMap<String, Value>,
+}
+
 /// Response of `GET /types`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct TypeListView {
@@ -549,6 +560,8 @@ pub mod problem_types {
     pub const MESSAGE_NOT_RETRYABLE: &str = "urn:cicada:problem:message-not-retryable";
     /// 409: actors of the type exist, so its registration cannot be removed.
     pub const TYPE_IN_USE: &str = "urn:cicada:problem:type-in-use";
+    /// 409: the type is registered with a different contract hash; the detail names the type and both hashes.
+    pub const CONTRACT_CONFLICT: &str = "urn:cicada:problem:contract-conflict";
     /// 422: the address cannot be an instance of its type: its ref does not accept the name (hosting node).
     pub const INVALID_ADDRESS: &str = "urn:cicada:problem:invalid-address";
     /// 413: the request body is larger than the node accepts.
@@ -568,6 +581,9 @@ pub mod problem_types {
     /// 422: the watcher's type may not watch: its message family does not declare `Failed` and `Stopped` with the
     /// core's types.
     pub const NOT_A_WATCHER: &str = "urn:cicada:problem:not-a-watcher";
+    /// 422: a contract to register has a schema that is not an object or a boolean, nested deeper than 120 levels or
+    /// with a NUL character, or a message name beyond the send limits.
+    pub const INVALID_CONTRACT: &str = "urn:cicada:problem:invalid-contract";
     /// 503: the store is unreachable or failed.
     pub const STORE_UNAVAILABLE: &str = "urn:cicada:problem:store-unavailable";
     /// 503: the node is stopping or stopped, or its store is unreachable (`/health`).

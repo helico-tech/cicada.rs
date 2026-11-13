@@ -202,3 +202,28 @@ fn problems_and_create_requests() {
     // Null decodes, so that the node can refuse it as an invalid state (422) rather than a malformed body.
     assert_eq!(serde_json::from_str::<CreateActorRequest>(r#"{"state": null}"#).unwrap().state, Value::Null);
 }
+
+/// type-registry, Scenarios: A registration request, A malformed request and Client-supplied identity fields.
+#[test]
+fn register_type_requests_are_strict_in_the_envelope_and_keep_schema_keywords() {
+    let request = RegisterTypeRequest {
+        state: json!({"type": "object"}),
+        messages: BTreeMap::from([("Add".to_owned(), json!(true))]),
+    };
+    let text = serde_json::to_string(&request).unwrap();
+    assert_eq!(text, r#"{"state":{"type":"object"},"messages":{"Add":true}}"#);
+    assert_eq!(serde_json::from_str::<RegisterTypeRequest>(&text).unwrap(), request);
+    for field in ["name", "type", "hash"] {
+        let body = format!(r#"{{"state": {{}}, "messages": {{}}, "{field}": "x"}}"#);
+        let error = serde_json::from_str::<RegisterTypeRequest>(&body).unwrap_err().to_string();
+        assert!(error.contains("unknown field"), "{error}");
+    }
+    for missing in [r#"{"state": {}}"#, r#"{"messages": {}}"#, r#"{"state": {}, "messages": []}"#] {
+        assert!(serde_json::from_str::<RegisterTypeRequest>(missing).is_err(), "{missing}");
+    }
+    let kept = serde_json::from_str::<RegisterTypeRequest>(r#"{"state": {"x-own": 1}, "messages": {}}"#).unwrap();
+    assert_eq!(kept.state, json!({"x-own": 1}));
+    // Null decodes, so that the node can refuse it as an invalid contract (422) rather than a malformed body.
+    let null = serde_json::from_str::<RegisterTypeRequest>(r#"{"state": null, "messages": {}}"#).unwrap();
+    assert_eq!(null.state, Value::Null);
+}

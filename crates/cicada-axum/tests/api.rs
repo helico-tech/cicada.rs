@@ -926,3 +926,184 @@ async fn the_store_outlives_the_router() {
     let system = ActorSystem::builder(store).build();
     assert_eq!(system.list_actors("", None, 10).await.unwrap().items.len(), 1);
 }
+
+// ---- PUT /types/{name} ----
+
+const COUNTER_SCHEMAS: &str = r#"{"state": {"type": "object", "properties": {"total": {"type": "integer"}}},
+    "messages": {"Add": {"type": "object", "properties": {"n": {"type": "integer"}}, "required": ["n"]}}}"#;
+
+/// A started node that hosts nothing, on `store`, behind the full router.
+async fn bare(store: Store) -> Router {
+    actor_api(node_with(store, |b| b).await)
+}
+
+fn no_types(page: &Value) {
+    assert!(items(page).is_empty(), "nothing is registered: {page}");
+}
+
+/// The hash the server computes for `body` under `name`.
+fn hash_of(name: &str, body: &str) -> String {
+    let body: Value = serde_json::from_str(body).unwrap();
+    let messages = body["messages"].as_object().unwrap().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    cicada::contract::Contract::new(TypeName::parse(name).unwrap(), body["state"].clone(), messages).hash().to_owned()
+}
+
+/// Scenarios: A registration request, and The registered schemas are used before a handler exists.
+#[tokio::test(start_paused = true)]
+async fn a_type_registered_over_http_answers_its_view_and_gates_creates_and_sends_without_a_handler() {
+    let app = bare(memory_store()).await;
+    let reply = put(&app, "/types/counter", COUNTER_SCHEMAS).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text);
+    assert_eq!(reply.content_type(), "application/json");
+    let view = reply.json();
+    let keys: Vec<&str> = view.as_object().unwrap().keys().map(String::as_str).collect();
+    assert_eq!(keys, ["name", "hash", "state", "messages"]);
+    assert_eq!(view["name"], "counter");
+    assert_eq!(view["hash"], hash_of("counter", COUNTER_SCHEMAS));
+    assert_eq!(view["messages"]["Add"]["required"], json!(["n"]));
+    assert_eq!(get_json(&app, "/types/counter").await, view);
+
+    let retry = put(&app, "/types/counter", COUNTER_SCHEMAS).await;
+    assert_eq!((retry.status, retry.json()), (StatusCode::OK, view));
+
+    assert_problem(&put(&app, "/actors/counter/a", r#"{"state": {"total": "x"}}"#).await, 422, pt::INVALID_STATE);
+    assert_eq!(put(&app, "/actors/counter/a", r#"{"state": {"total": 0}}"#).await.status, StatusCode::CREATED);
+    let refused = post(&app, "/actors/counter/a/messages", r#"{"type": "Add", "payload": {"n": "x"}}"#).await;
+    assert_problem(&refused, 422, pt::INVALID_PAYLOAD);
+    let id = send_id(&app, "/actors/counter/a/messages", r#"{"type": "Add", "payload": {"n": 1}}"#).await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_eq!(get_json(&app, &format!("/messages/{id}")).await["status"], "pending", "it waits for a host");
+}
+
+/// Scenario: A malformed request.
+#[tokio::test(start_paused = true)]
+async fn a_malformed_registration_is_a_bad_request() {
+    let app = bare(memory_store()).await;
+    for bad in [
+        "",
+        "{",
+        "[]",
+        "5",
+        "{}",
+        r#"{"state": {}}"#,
+        r#"{"messages": {}}"#,
+        r#"{"state": {}, "messages": []}"#,
+        r#"{"state": {}, "messages": 5}"#,
+    ] {
+        assert_problem(&put(&app, "/types/counter", bad).await, 400, pt::BAD_REQUEST);
+    }
+    no_types(&get_json(&app, "/types").await);
+}
+
+/// Scenario: Client-supplied identity fields.
+#[tokio::test(start_paused = true)]
+async fn identity_fields_in_a_registration_are_refused_and_schema_keywords_kept() {
+    let app = bare(memory_store()).await;
+    for field in ["name", "type", "hash", "contract"] {
+        let body = format!(r#"{{"state": {{}}, "messages": {{}}, "{field}": "counter"}}"#);
+        let reply = put(&app, "/types/counter", &body).await;
+        assert_problem(&reply, 400, pt::BAD_REQUEST);
+        assert!(reply.text.contains("unknown field"), "{}", reply.text);
+    }
+    no_types(&get_json(&app, "/types").await);
+    let kept = r#"{"state": {"x-custom": {"keep": true}}, "messages": {"Go": {"unknownKeyword": 1}}}"#;
+    let view = put(&app, "/types/counter", kept).await.json();
+    assert_eq!(view["state"]["x-custom"], json!({"keep": true}));
+    assert_eq!(view["messages"]["Go"]["unknownKeyword"], 1);
+}
+
+/// Scenario: An invalid path or contract.
+#[tokio::test(start_paused = true)]
+async fn an_invalid_name_is_a_bad_request_and_an_invalid_contract_a_422() {
+    let app = bare(memory_store()).await;
+    assert_problem(&put(&app, "/types/Not%20A%20Name", COUNTER_SCHEMAS).await, 400, pt::BAD_REQUEST);
+    let deep = (1..121).fold(json!({}), |inner, _| json!({"not": inner}));
+    let long = "m".repeat(201);
+    for bad in [
+        r#"{"state": null, "messages": {}}"#.to_owned(),
+        r#"{"state": {}, "messages": {"Add": 5}}"#.to_owned(),
+        r#"{"state": {"title": "a\u0000"}, "messages": {}}"#.to_owned(),
+        format!(r#"{{"state": {{}}, "messages": {{"{long}": {{}}}}}}"#),
+        json!({"state": deep, "messages": {}}).to_string(),
+    ] {
+        assert_problem(&put(&app, "/types/counter", &bad).await, 422, pt::INVALID_CONTRACT);
+    }
+    no_types(&get_json(&app, "/types").await);
+}
+
+/// Scenario: A wire conflict.
+#[tokio::test(start_paused = true)]
+async fn a_different_contract_for_a_registered_name_is_a_409_naming_both_hashes() {
+    let app = bare(memory_store()).await;
+    let view = put(&app, "/types/counter", COUNTER_SCHEMAS).await.json();
+    let other = r#"{"state": {}, "messages": {"Reset": {}}}"#;
+    let reply = put(&app, "/types/counter", other).await;
+    assert_problem(&reply, 409, pt::CONTRACT_CONFLICT);
+    let detail = reply.json()["detail"].as_str().unwrap().to_owned();
+    for part in ["counter", view["hash"].as_str().unwrap(), &hash_of("counter", other)] {
+        assert!(detail.contains(part), "{part}: {detail}");
+    }
+    assert_eq!(get_json(&app, "/types/counter").await, view);
+}
+
+/// Scenario: Existing body and store errors.
+#[tokio::test(start_paused = true)]
+async fn a_registration_above_the_body_limit_is_a_413_and_one_after_the_close_a_503() {
+    let store = memory_store();
+    let small = cicada_axum::actor_api_with(
+        node_with(store.clone(), |b| b).await,
+        cicada_axum::ApiConfig { max_request_body_bytes: 100 },
+    );
+    let big = format!(r#"{{"state": {{"title": "{}"}}, "messages": {{}}}}"#, "x".repeat(200));
+    assert_problem(&put(&small, "/types/counter", &big).await, 413, pt::REQUEST_TOO_LARGE);
+    no_types(&get_json(&small, "/types").await);
+
+    let app = bare(store.clone()).await;
+    store.close().await;
+    assert_problem(&put(&app, "/types/counter", COUNTER_SCHEMAS).await, 503, pt::STORE_UNAVAILABLE);
+}
+
+/// Scenario: Read-only mounting.
+#[tokio::test(start_paused = true)]
+async fn the_read_router_answers_405_to_a_registration() {
+    let system = node_with(memory_store(), |b| b).await;
+    let read = cicada_axum::actor_api_read(system.clone());
+    let reply = put(&read, "/types/counter", COUNTER_SCHEMAS).await;
+    assert_eq!(reply.status, StatusCode::METHOD_NOT_ALLOWED, "the router's ordinary 405");
+    assert_eq!(reply.headers[header::ALLOW], "GET,HEAD");
+    assert!(system.types().await.unwrap().is_empty());
+}
+
+/// Scenario: A peer replaces descriptions after deletion, over HTTP: both routers answer the new descriptions.
+#[tokio::test(start_paused = true)]
+async fn after_a_peer_registers_again_every_router_serves_the_new_descriptions() {
+    let store = memory_store();
+    let (a, b) = (bare(store.clone()).await, bare(store.clone()).await);
+    let described = |text: &str| format!(r#"{{"state": {{"description": "{text}"}}, "messages": {{}}}}"#);
+    put(&a, "/types/counter", &described("A")).await;
+    assert_eq!(get_json(&a, "/types/counter").await["state"]["description"], "A");
+    assert_eq!(get_json(&b, "/types").await["items"][0]["state"]["description"], "A");
+
+    assert_eq!(delete(&b, "/types/counter").await.status, StatusCode::NO_CONTENT);
+    assert_eq!(put(&b, "/types/counter", &described("B")).await.json()["state"]["description"], "B");
+
+    for app in [&a, &b] {
+        assert_eq!(get_json(app, "/types/counter").await["state"]["description"], "B");
+        assert_eq!(get_json(app, "/types").await["items"][0]["state"]["description"], "B");
+        assert_eq!(put(app, "/types/counter", &described("A")).await.json()["state"]["description"], "B");
+    }
+}
+
+/// Scenario: The accepted schema depth boundary, in the responses: the views of 120-level schemas parse.
+#[tokio::test(start_paused = true)]
+async fn the_views_of_schemas_at_the_depth_bound_parse() {
+    let app = bare(memory_store()).await;
+    let deep = (1..120).fold(json!({}), |inner, _| json!({"not": inner}));
+    let body = json!({"state": deep, "messages": {"Go": deep}}).to_string();
+    let reply = put(&app, "/types/deep", &body).await;
+    assert_eq!(reply.status, StatusCode::OK);
+    for text in [reply.text, get(&app, "/types/deep").await.text, get(&app, "/types").await.text] {
+        let parsed: Value = serde_json::from_str(&text).expect("within the parser's 128 levels");
+        assert!(parsed.is_object());
+    }
+}

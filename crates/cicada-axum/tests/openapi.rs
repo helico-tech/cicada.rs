@@ -91,6 +91,31 @@ async fn both_routers_describe_the_change_stream_as_server_sent_events_with_only
     }
 }
 
+/// type-registry, Scenario: Generated API description.
+#[tokio::test(start_paused = true)]
+async fn only_the_full_document_describes_the_registration_of_a_type() {
+    let system = node_with(memory_store(), |b| b).await;
+    let full = get_json(&actor_api(system.clone()), "/openapi.json").await;
+    let register = &full["paths"]["/types/{name}"]["put"];
+    assert_eq!(register["operationId"], "registerType");
+    let parameters: Vec<&str> =
+        register["parameters"].as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
+    assert_eq!(parameters, ["name"]);
+    let body = &register["requestBody"]["content"]["application/json"]["schema"]["$ref"];
+    assert_eq!(body, "#/components/schemas/RegisterTypeRequest");
+    let request = &full["components"]["schemas"]["RegisterTypeRequest"];
+    assert_eq!(request["required"], serde_json::json!(["state", "messages"]));
+    assert_eq!(request["additionalProperties"], false);
+    let ok = &register["responses"]["200"]["content"]["application/json"]["schema"]["$ref"];
+    assert_eq!(ok, "#/components/schemas/TypeView");
+    assert!(register["responses"]["default"]["content"][cicada_axum::PROBLEM_JSON].is_object());
+    assert_eq!(full, openapi_document());
+
+    let read = get_json(&actor_api_read(system), "/openapi.json").await;
+    let methods: Vec<&String> = read["paths"]["/types/{name}"].as_object().unwrap().keys().collect();
+    assert_eq!(methods, ["get"]);
+}
+
 #[tokio::test(start_paused = true)]
 async fn the_full_router_serves_the_whole_document() {
     let system = node_with(memory_store(), |b| b.host(CounterActor)).await;

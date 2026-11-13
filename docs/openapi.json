@@ -1033,6 +1033,56 @@
           }
         }
       },
+      "put": {
+        "summary": "Registers a contract without hosting its type, so that creates and sends are accepted before a worker runs it. The server computes the hash; the first registration wins: an equal hash answers the stored type with its first descriptions, a different one 409. Schemas are checked for shape (422), not compiled.",
+        "operationId": "registerType",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "description": "The type name, e.g. `sync`.",
+            "required": true,
+            "schema": {
+              "description": "The type name, e.g. `sync`.",
+              "type": "string"
+            },
+            "style": "simple"
+          }
+        ],
+        "requestBody": {
+          "description": "Body of `PUT /types/{name}`: the schemas of a contract to register without hosting its type. Both fields are\nrequired; the name comes from the path and the server computes the hash, so neither is a field.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterTypeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "An error (RFC 9457).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Registered, now or before.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TypeView"
+                }
+              }
+            }
+          }
+        }
+      },
       "delete": {
         "summary": "Removes a type's registration. Refused while actors of the type exist (409). A node that hosts the type registers it again at its next start.",
         "operationId": "removeType",
@@ -2605,6 +2655,25 @@
         "required": [
           "target",
           "watcher"
+        ]
+      },
+      "RegisterTypeRequest": {
+        "description": "Body of `PUT /types/{name}`: the schemas of a contract to register without hosting its type. Both fields are\nrequired; the name comes from the path and the server computes the hash, so neither is a field.",
+        "type": "object",
+        "properties": {
+          "state": {
+            "description": "JSON Schema of the state: an object or a boolean."
+          },
+          "messages": {
+            "description": "JSON Schema per message type name, each an object or a boolean; may be empty.",
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "state",
+          "messages"
         ]
       },
       "CreateActorRequest": {

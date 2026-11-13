@@ -11,10 +11,11 @@ use cicada::address::TypeName;
 use cicada::api::{
     ActorView, BulkRequest, BulkResponse, CreateActorRequest, CreateActorResponse, HealthView, MailboxMessageView,
     MessageStatusView, MessageView, NodeDetailView, NodeListView, NodeView, OutcomeView, PageView, PurgeResponse,
-    RunningTurnView, SendRequest, SendResponse, StatsView, TypeListView, TypeView, WatchRequest, WatchView,
-    problem_types,
+    RegisterTypeRequest, RunningTurnView, SendRequest, SendResponse, StatsView, TypeListView, TypeView, WatchRequest,
+    WatchView, problem_types,
 };
-use cicada::runtime::{BulkResult, RetryResult, WatchResult};
+use cicada::contract::Contract;
+use cicada::runtime::{BulkResult, RegisterContractResult, RetryResult, WatchResult};
 use cicada::store::{CancelResult, DeleteResult, DeliverNowResult, MessageId, NodeId, RemoveTypeResult};
 use cicada::{ActorAddress, CreateActorResult, SendOptions, SendResult};
 use futures::FutureExt;
@@ -597,6 +598,35 @@ pub(crate) async fn type_by_name(State(api): Shared, Path(name): Path<String>, r
             )
         })?;
         Ok(json(StatusCode::OK, &TypeView::from(&found)))
+    })
+    .await
+}
+
+pub(crate) async fn register_type(State(api): Shared, Path(name): Path<String>, req: Request) -> Response {
+    let instance = request::instance(&req);
+    run(instance, async move {
+        let type_name = TypeName::parse(&name).map_err(|e| ApiProblem::bad_request(e.to_string()))?;
+        let body: RegisterTypeRequest = request::body(req, api.max_body).await?.ok_or_else(|| {
+            ApiProblem::bad_request(
+                r#"A registration needs a body with the schemas: {"state": ..., "messages": {...}}"#,
+            )
+        })?;
+        match api.system.register_contract(&Contract::new(type_name, body.state, body.messages)).await? {
+            RegisterContractResult::Registered(stored) => Ok(json(StatusCode::OK, &TypeView::from(&stored))),
+            RegisterContractResult::Conflict { existing, requested_hash } => Err(ApiProblem::new(
+                StatusCode::CONFLICT,
+                problem_types::CONTRACT_CONFLICT,
+                "Contract conflict",
+                format!(
+                    "Type {name} is registered with contract {}; this request has {requested_hash}",
+                    existing.definition.contract_hash
+                ),
+            )
+            .into()),
+            RegisterContractResult::InvalidContract(e) => {
+                Err(unprocessable(problem_types::INVALID_CONTRACT, "Invalid contract", e).into())
+            }
+        }
     })
     .await
 }

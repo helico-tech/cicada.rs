@@ -10,7 +10,7 @@
   keys and values, boolean roots, empty messages and invalid roots/names. Use virtual time for runtime behavior;
   cover memory, SQLite and PostgreSQL when CICADA_PG_URL is set. Run the registration tests with sqlite,postgres,testing
   enabled and the existing registry conformance tests; do not change backend registration or the schema.
-- [ ] 2. Add the strict RegisterTypeRequest wire type, PUT /types/{name} handler on the full router, and the
+- [x] 2. Add the strict RegisterTypeRequest wire type, PUT /types/{name} handler on the full router, and the
   invalid-contract/contract-conflict problem constants. Return the stored TypeView with 200 for both new and equal
   requests; retain existing parsing, size, closed-store and read-router rules. Extend core api tests and
   cicada-axum/tests/api.rs for required fields, forbidden identity/hash fields, malformed paths/bodies, 422 validation,
