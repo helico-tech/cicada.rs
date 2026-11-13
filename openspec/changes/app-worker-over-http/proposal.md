@@ -25,7 +25,7 @@ Changes to the wire protocol, a headless-server CLI change, other-language SDKs 
 
 ## Order
 
-After `remote-turns-over-http`. No following change.
+After `remote-turns-over-http`. Before `deep-failure-notices`.
 
 ## Impact
 
