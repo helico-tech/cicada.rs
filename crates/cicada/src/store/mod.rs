@@ -224,9 +224,11 @@ pub(crate) trait Backend: Send + Sync + 'static {
         limit: usize,
     ) -> StoreResult<Vec<Claim>>;
 
-    /// Extends the lease to `store now + ttl`; succeeds only with the current epoch while the lease is held. Reports
-    /// [`RenewResult::CancelRequested`] when [`Self::request_cancel`] recorded this epoch; the lease is renewed either
-    /// way. It counts no lost claim.
+    /// Extends the lease to the later of its expiry and `store now + ttl`, atomically, and returns that expiry: a renewal
+    /// never shortens a held lease, so a shorter TTL from a peer cannot end a lease whose holder still follows an
+    /// earlier confirmed deadline (ADR 0037). Succeeds only with the current epoch while the lease is held, also after
+    /// it ran out when no claim replaced it. Reports [`RenewResult::CancelRequested`] when [`Self::request_cancel`]
+    /// recorded this epoch; the lease is renewed either way. It counts no lost claim.
     async fn renew(&self, address: &ActorAddress, epoch: i64, ttl: Duration) -> StoreResult<RenewResult>;
 
     /// Gives up the lease without an outcome. The message stays pending with its incremented `attempt`, and the claim

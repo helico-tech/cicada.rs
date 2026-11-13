@@ -1569,20 +1569,24 @@ impl Backend for SqliteStore {
             let renewed = fetch_optional(
                 tx.conn(),
                 sqlx::query(
-                    "UPDATE actors SET lease_until = ? WHERE address = ? AND epoch = ? AND lease_owner IS NOT NULL
-                     RETURNING cancel_epoch",
+                    "UPDATE actors SET lease_until = max(coalesce(lease_until, ?1), ?1)
+                     WHERE address = ?2 AND epoch = ?3 AND lease_owner IS NOT NULL
+                     RETURNING cancel_epoch, lease_until",
                 )
                 .bind(micros(lease_until))
                 .bind(address.as_str())
                 .bind(epoch),
             )
             .await?;
-            Ok(match renewed {
-                Some(row) if col::<Option<i64>>(&row, "cancel_epoch")? == Some(epoch) => {
-                    RenewResult::CancelRequested(lease_until)
-                }
-                Some(_) => RenewResult::Renewed(lease_until),
-                None => RenewResult::LeaseLost,
+            let Some(row) = renewed else {
+                return Ok(RenewResult::LeaseLost);
+            };
+            // The later of the held expiry and the requested one (ADR 0037).
+            let lease_until = instant(col(&row, "lease_until")?);
+            Ok(if col::<Option<i64>>(&row, "cancel_epoch")? == Some(epoch) {
+                RenewResult::CancelRequested(lease_until)
+            } else {
+                RenewResult::Renewed(lease_until)
             })
         }
         .await;

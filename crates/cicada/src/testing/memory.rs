@@ -667,6 +667,8 @@ impl Backend for InMemoryStore {
             let lease_until = time::truncate(time::add(now, ttl).map_err(|e| StoreError::Invalid(e.0))?);
             Ok(match held_lease(s, address, epoch) {
                 Some(row) => {
+                    // Never shorter than the lease it holds (ADR 0037).
+                    let lease_until = row.lease_until.map_or(lease_until, |held| held.max(lease_until));
                     row.lease_until = Some(lease_until);
                     if row.cancel_epoch == Some(epoch) {
                         RenewResult::CancelRequested(lease_until)

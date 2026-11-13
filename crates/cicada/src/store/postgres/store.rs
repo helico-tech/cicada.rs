@@ -1511,17 +1511,20 @@ impl Backend for PostgresStore {
 
     async fn renew(&self, address: &ActorAddress, epoch: i64, ttl: Duration) -> StoreResult<RenewResult> {
         transaction!(self, false, |tx| -> RenewResult {
-            let held: Option<Option<i64>> = sqlx::query_scalar(
-                "SELECT cancel_epoch FROM actors WHERE address = $1 AND epoch = $2 AND lease_owner IS NOT NULL FOR UPDATE",
+            let held: Option<(Option<i64>, Option<Timestamp>)> = sqlx::query_as(
+                "SELECT cancel_epoch, lease_until FROM actors
+                 WHERE address = $1 AND epoch = $2 AND lease_owner IS NOT NULL FOR UPDATE",
             )
             .bind(address.as_str())
             .bind(epoch)
             .fetch_optional(&mut *tx.c)
             .await?;
-            let Some(cancel_epoch) = held else {
+            let Some((cancel_epoch, held_until)) = held else {
                 return commit(RenewResult::LeaseLost);
             };
-            let lease_until = time::truncate(time::add(tx.now().await?, ttl).map_err(|e| invalid(e.0))?);
+            let requested = time::truncate(time::add(tx.now().await?, ttl).map_err(|e| invalid(e.0))?);
+            // Never shorter than the lease it holds, under the row lock (ADR 0037).
+            let lease_until = held_until.map_or(requested, |held| held.max(requested));
             sqlx::query("UPDATE actors SET lease_until = $1 WHERE address = $2")
                 .bind(lease_until)
                 .bind(address.as_str())

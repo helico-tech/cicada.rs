@@ -7,7 +7,7 @@ use crate::store::{
     ActorCreate, CancelResult, CommitRequest, CommitResult, Delivery, EnqueueResult, MessageId, MessageStatus,
     OutcomeStatus, OutgoingMessage, RenewResult, StateChange, StoreError,
 };
-use crate::time::{self, MAX_INSTANT};
+use crate::time::{self, MAX_INSTANT, Timestamp};
 use chrono::{DateTime, Utc};
 use serde_json::json;
 
@@ -165,12 +165,133 @@ pub async fn s5_renew_and_commit_still_work_after_expiry_as_long_as_nobody_re_cl
             Some(MessageStatus::Pending(_)),
             "an expired lease is not running"
         );
-        assert_matches!(store.renew(&a, c.epoch, LONG_LEASE).await.unwrap(), RenewResult::Renewed(_));
+        let renewed =
+            expect_matches!(store.renew(&a, c.epoch, t.ticks(8)).await.unwrap(), RenewResult::Renewed(until) => until);
         assert_matches!(store.status(&m.id).await.unwrap(), Some(MessageStatus::Running { .. }), "renewed again");
-        assert_matches!(store.renew(&a, c.epoch, t.ttl()).await.unwrap(), RenewResult::Renewed(_));
-        t.expire_lease().await;
+        // A shorter renewal keeps the later expiry; the lease then runs out past that retained expiry.
+        let retained =
+            expect_matches!(store.renew(&a, c.epoch, t.ttl()).await.unwrap(), RenewResult::Renewed(until) => until);
+        assert_eq!(retained, renewed, "a shorter renewal keeps the held expiry");
+        t.advance(time::between(store.now().await.unwrap(), retained) + t.tick).await;
+        assert_matches!(
+            store.status(&m.id).await.unwrap(),
+            Some(MessageStatus::Pending(_)),
+            "expired again before the commit"
+        );
         t.commit_ok(done(&c)).await;
         assert_eq!(outcome_record(&*store, &m.id).await.map(|o| o.status), Some(OutcomeStatus::Done));
+    })
+    .await
+}
+
+/// S5 - a renewal never shortens a held lease: a shorter one keeps the expiry, a longer one extends it
+pub async fn s5_a_renewal_never_shortens_a_held_lease_and_a_longer_one_extends_it<B: FixtureFactory>(backend: &B) {
+    store_test(backend, async |t| {
+        let store = t.store();
+        let a = t.new_actor(&TYPE, json!({})).await;
+        t.send(&a).await;
+        let c = t.claim_one_ttl(t.ticks(12)).await;
+        t.advance_ticks(2).await;
+        let short =
+            expect_matches!(store.renew(&a, c.epoch, t.ticks(1)).await.unwrap(), RenewResult::Renewed(until) => until);
+        assert_eq!(short, c.lease_until, "a shorter renewal keeps the held expiry");
+        assert_eq!(store.running_turn(&a).await.unwrap().expect("running").lease_until, c.lease_until);
+        t.advance_ticks(3).await; // past what the short renewal asked for, before the held expiry
+        assert!(t.claim_node(&NODE_B).await.is_empty(), "the retained lease stays exclusive");
+
+        let before = store.now().await.unwrap();
+        let long =
+            expect_matches!(store.renew(&a, c.epoch, t.ticks(16)).await.unwrap(), RenewResult::Renewed(until) => until);
+        assert!(long >= plus(before, t.ticks(16)) && long > c.lease_until, "a longer renewal extends the lease");
+        if t.fixture.is_virtual_time() {
+            assert_eq!(long, plus(c.claimed_at, t.ticks(21)));
+        }
+        assert_eq!(store.running_turn(&a).await.unwrap().expect("running").lease_until, long);
+        let again =
+            expect_matches!(store.renew(&a, c.epoch, t.ticks(1)).await.unwrap(), RenewResult::Renewed(until) => until);
+        assert_eq!(again, long, "and a shorter one after it keeps that");
+    })
+    .await
+}
+
+/// S5 - a shorter renewal of a lease with a cancel request still reports it, with the retained expiry
+pub async fn s5_a_shorter_renewal_still_reports_the_cancel_request_with_the_retained_expiry<B: FixtureFactory>(
+    backend: &B,
+) {
+    store_test(backend, async |t| {
+        let store = t.store();
+        let a = t.new_actor(&TYPE, json!({})).await;
+        t.send(&a).await;
+        let c = t.claim_one_ttl(t.ticks(12)).await;
+        assert!(store.request_cancel(&a).await.unwrap());
+        t.advance_ticks(1).await;
+        let short = expect_matches!(
+            store.renew(&a, c.epoch, t.ticks(1)).await.unwrap(),
+            RenewResult::CancelRequested(until) => until
+        );
+        assert_eq!(short, c.lease_until, "the retained expiry");
+        let long = expect_matches!(
+            store.renew(&a, c.epoch, t.ticks(20)).await.unwrap(),
+            RenewResult::CancelRequested(until) => until
+        );
+        assert!(long > c.lease_until, "a longer renewal extends it and still reports the request");
+        assert_eq!(store.running_turn(&a).await.unwrap().expect("running").lease_until, long);
+    })
+    .await
+}
+
+/// S5 - concurrent shorter and longer renewals of one lease never shorten it
+pub async fn s5_concurrent_shorter_and_longer_renewals_never_shorten_the_lease<B: FixtureFactory>(backend: &B) {
+    store_test(backend, async |t| {
+        let store = t.store();
+        let a = t.new_actor(&TYPE, json!({})).await;
+        t.send(&a).await;
+        let c = t.claim_one_ttl(t.ticks(12)).await;
+        let mut floor = c.lease_until;
+        let epoch = c.epoch;
+        for round in 0..4u32 {
+            let tick = t.tick;
+            let results = t
+                .concurrently(8, |i, peer| {
+                    let a = a.clone();
+                    // Every other renewal is shorter than the lease it finds; the longer ones grow per round.
+                    let ttl = if i % 2 == 0 { tick } else { tick * (13 + round * 4 + i as u32) };
+                    async move { peer.renew(&a, epoch, ttl).await.unwrap() }
+                })
+                .await;
+            let untils: Vec<Timestamp> = results
+                .iter()
+                .map(|r| expect_matches!(r, RenewResult::Renewed(until) => *until, "round {round}"))
+                .collect();
+            assert!(untils.iter().all(|until| *until >= floor), "no renewal went below the held expiry: {untils:?}");
+            let stored = store.running_turn(&a).await.unwrap().expect("running").lease_until;
+            assert_eq!(Some(&stored), untils.iter().max(), "the stored expiry is the latest any renewal returned");
+            floor = stored;
+        }
+        assert!(t.claim_node(&NODE_B).await.is_empty(), "the lease stays exclusive");
+    })
+    .await
+}
+
+/// S5 - a stale renewal leaves a newer lease as it is; an expired lease nobody replaced is renewed from store now
+pub async fn s5_a_stale_renewal_leaves_a_newer_lease_and_an_expired_held_one_renews_from_now<B: FixtureFactory>(
+    backend: &B,
+) {
+    store_test(backend, async |t| {
+        let store = t.store();
+        let a = t.new_actor(&TYPE, json!({})).await;
+        t.send(&a).await;
+        let old = t.claim_one().await;
+        t.expire_lease().await;
+        let new = t.claim_one_node(&NODE_B).await;
+        assert_eq!(store.renew(&a, old.epoch, LONG_LEASE).await.unwrap(), RenewResult::LeaseLost);
+        assert_eq!(store.running_turn(&a).await.unwrap().expect("running").lease_until, new.lease_until);
+
+        t.expire_lease().await;
+        let before = store.now().await.unwrap();
+        let renewed =
+            expect_matches!(store.renew(&a, new.epoch, t.ttl()).await.unwrap(), RenewResult::Renewed(until) => until);
+        assert!(renewed >= plus(before, t.ttl()) && renewed > new.lease_until, "renewed from store now");
     })
     .await
 }
