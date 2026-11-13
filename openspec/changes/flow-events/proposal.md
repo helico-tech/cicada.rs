@@ -12,8 +12,13 @@ input before their first Continue. A dedicated event actor can atomically create
 - Publish carries JSON input. In one turn it creates one independent run per subscribed type, keyed by the Publish's
   envelope id, and sends each Continue. One invalid target prevents the entire fan-out; store failures follow the
   Publish's retry policy. The run's own continuation uses the flow's retry policy.
+  An id that cannot be an actor key (`.` or `..`) is refused permanently when there are subscriptions; recover with a
+  fresh valid publication id. Empty subscription lists need no address and remain a successful no-op.
+- PublishBatch carries the batcher's `items` array and publishes one input object `{"items": [...]}` per flow,
+  not one run per item. This adds no adapter or change to the batcher. An empty array is a valid publication.
 - A repeated publication is governed by core dedup and existing run identities. Done runs ignore Continue; existing
   running runs can recover without replacing their input or saved results. Fresh scheduler messages create fresh runs.
+  Operator retry and dead-letter redrive create fresh publication ids; runtime policy retries keep the original id.
 - Document that only flow types should be subscribed; registry metadata cannot prove that an arbitrary actor is a
   FlowActor. A hosting node validates typed input on create; a non-hosting node cannot, as for core raw creates.
 - Pin the contract, host the event actor in the sample service and show event starts and composition with the scheduler,
