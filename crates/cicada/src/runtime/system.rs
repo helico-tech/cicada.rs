@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
@@ -12,12 +12,14 @@ use tokio::time::{Instant, sleep, timeout};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
-use super::executor::{HostedType, LeaseSettings, TurnExecutor};
+use super::executor::{
+    HostedType, LeaseSettings, TurnExecutor, at_claim_limit, claim_limit_commit, claim_limit_committed, safety_margin,
+};
 use super::limits;
 use super::resolver::{RegisteredType, TypeResolver};
 use super::results::{
-    ActorSnapshot, BulkResult, BulkSelection, CreateActorResult, MailboxEntry, NodeHealth, NodeInfo, OpError,
-    RegisterContractResult, RetryResult, SendResult, WatchResult,
+    ActorSnapshot, BulkResult, BulkSelection, CreateActorResult, LeaseTurnsResult, MailboxEntry, NodeHealth, NodeInfo,
+    OpError, RegisterContractResult, RenewTurnResult, RetryResult, SendResult, TurnLease, WatchResult,
 };
 use crate::actor::{Actor, ActorType, HostedActor};
 use crate::address::{ActorAddress, ActorRef, TypeName};
@@ -27,9 +29,10 @@ use crate::message::{self, MessageFamily};
 use crate::observer::{Observers, TurnObserver};
 use crate::schema::SchemaCheck;
 use crate::store::{
-    ActorRecord, Backend, CancelResult, Claim, CreateResult, DeleteResult, DeliverNowResult, EnqueueResult, Message,
-    MessageId, MessageStatus, NodeId, OutcomeRecord, OutcomeStatus, OutgoingMessage, Page, PageCursor, RegisterResult,
-    RemoveTypeResult, RunningTurn, SetWatchResult, Store, StoreError, StoreStats,
+    ActorRecord, Backend, CancelResult, Claim, CommitResult, CreateResult, DeleteResult, DeliverNowResult,
+    EnqueueResult, Message, MessageId, MessageStatus, NodeId, OutcomeRecord, OutcomeStatus, OutgoingMessage, Page,
+    PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn, SetWatchResult, Store, StoreError,
+    StoreStats,
 };
 use crate::time::{self, MAX_INSTANT, Timestamp};
 use crate::turn::SendOptions;
@@ -47,6 +50,12 @@ const PAGE_OF_TURNS: usize = 1000;
 
 /// The most messages one bulk call acts on, and the most ids it takes.
 pub const BULK_LIMIT: usize = 1000;
+
+/// The most turns one [`ActorSystem::lease_turns`] call leases.
+pub const MAX_LEASE_BATCH: usize = 100;
+
+/// The most types one [`ActorSystem::lease_turns`] call selects.
+pub const MAX_LEASE_TYPES: usize = 100;
 
 /// The most characters of the detail of a refused payload or state, by a [`SchemaCheck`] or by the decoder of a node that
 /// hosts the type: a longer one is cut and ends with " … (cut)".
@@ -213,6 +222,15 @@ impl Default for NodeConfig {
 impl NodeConfig {
     fn heartbeat(&self) -> Duration {
         self.heartbeat_interval.unwrap_or(self.lease_ttl / 3)
+    }
+
+    /// The problems of [`Self::validate`] as the error of an operation that needs a valid configuration.
+    fn check(&self) -> Result<(), OpError> {
+        let problems = self.validate();
+        if problems.is_empty() {
+            return Ok(());
+        }
+        Err(OpError::Start(StartError { problems: problems.into_iter().map(StartProblem::Other).collect() }))
     }
 
     fn validate(&self) -> Vec<String> {
@@ -641,18 +659,28 @@ impl ActorSystem {
     /// its dispatch loop behind), they are released.
     async fn claim(&self, init: &Initialized, limit: usize) -> Result<Vec<(Claim, Instant)>, StoreError> {
         let sent = Instant::now();
+        let mut batch = self.claim_batch(init.types.clone(), self.inner.config.node_id.clone(), limit).await?;
+        Ok(batch.take().into_iter().map(|c| (c, sent)).collect())
+    }
+
+    /// Claims up to `limit` turns of `types` for `owner` with this system's TTL, guarded: claims left in the returned
+    /// batch are released when it is dropped. The store call runs in a task of its own; when the caller is gone by the
+    /// time its claims arrive, the batch nobody receives releases them.
+    async fn claim_batch(
+        &self,
+        types: BTreeSet<TypeName>,
+        owner: NodeId,
+        limit: usize,
+    ) -> Result<ClaimBatch, StoreError> {
         let store = self.inner.store.clone();
-        let types = init.types.clone();
-        let node = self.inner.config.node_id.clone();
         let ttl = self.inner.config.lease_ttl;
         let (tx, rx) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
-            let result = store.claim_due(&types, &node, ttl, limit).await;
+            let result = store.claim_due(&types, &owner, ttl, limit).await;
             // Unsent or never received, the batch releases its claims when dropped.
             let _ = tx.send(result.map(|claims| ClaimBatch { store, claims }));
         });
-        let mut batch = rx.await.map_err(|_| StoreError::unavailable("claiming failed: the claim task ended"))??;
-        Ok(std::mem::take(&mut batch.claims).into_iter().map(|c| (c, sent)).collect())
+        rx.await.map_err(|_| StoreError::unavailable("claiming failed: the claim task ended"))?
     }
 
     async fn dispatch_loop(&self, init: Arc<Initialized>, tracker: TaskTracker, cancel: CancellationToken) {
@@ -717,6 +745,195 @@ impl ActorSystem {
             Err(e) => {
                 tracing::warn!("Reading the next due time failed: {e}");
                 poll
+            }
+        }
+    }
+
+    // ---- leases for executors outside the system (ADR 0037) ----
+
+    /// Leases up to `limit` due turns of `types` for `owner`, an executor outside this system, which runs them and
+    /// renews, releases (and later completes) their leases itself (ADR 0037). `types` maps each selected type name to
+    /// the contract hash the executor was built with. The system needs no handler for them: it can be unstarted and
+    /// host nothing. A trusted operation for executors with write access, not an authorization boundary.
+    ///
+    /// In order: `limit` in 1..=[`MAX_LEASE_BATCH`], 1..=[`MAX_LEASE_TYPES`] types and an `owner` of at most
+    /// [`MAX_ID_LENGTH`](super::limits::MAX_ID_LENGTH) characters with no NUL, else [`OpError::Invalid`]; a valid
+    /// [`NodeConfig`], else [`OpError::Start`] (without validating or registering hosted types); a system that is not
+    /// stopping or stopped, else [`StoreError::Unavailable`]; a TTL the local monotonic clock can add, else `Invalid`.
+    /// Then one read of the registry compares every hash exactly: the first type in name order that is absent or
+    /// registered with another hash answers [`LeaseTurnsResult::ContractMismatch`] and nothing is claimed. That check is
+    /// not atomic with the claim: stop old executors before replacing a contract.
+    ///
+    /// The claim uses this system's `lease_ttl`, records `owner` as the lease owner (shown by
+    /// [`Self::list_running_turns`], with no node row and no count in [`Self::running_turns`]), and shares the store's
+    /// lease exclusivity with every node. A message at this system's claim limit is not handed out: one fenced commit
+    /// fails it as a local node would, without loading a handler or asking its retry policy, and its watchers and then
+    /// this system's observers are told only when that commit is confirmed; otherwise its lease is released.
+    ///
+    /// Claims are guarded until they are returned: when the future is dropped, when the system is seen stopping after
+    /// the claim, or when the conservative deadline (the time this call sent the claim plus the TTL less
+    /// `min(ttl / 10, 1 s)`) passed after the claim or after the claim limit's commits, every claim not handed out gets
+    /// one release attempt in the background, best effort. Late claims answer `Leased` with fewer or no turns. Once
+    /// returned, the caller owns each lease: it keeps its own deadline the same way, from its own request time.
+    pub async fn lease_turns(
+        &self,
+        owner: &NodeId,
+        types: &BTreeMap<TypeName, String>,
+        limit: usize,
+    ) -> Result<LeaseTurnsResult, OpError> {
+        check_lease_request(owner, types, limit)?;
+        self.inner.config.check()?;
+        self.check_admitting()?;
+        let ttl = self.inner.config.lease_ttl;
+        let sent = Instant::now();
+        let deadline = sent.checked_add(ttl).map(|end| end - safety_margin(ttl)).ok_or_else(|| {
+            OpError::Invalid(format!("A lease of {ttl:?} cannot be represented on the local monotonic clock"))
+        })?;
+        let registered = self.inner.store.list_types().await?;
+        for (name, requested) in types {
+            let hash = registered.iter().find(|d| &d.name == name).map(|d| d.contract_hash.clone());
+            if hash.as_deref() != Some(requested.as_str()) {
+                return Ok(LeaseTurnsResult::ContractMismatch {
+                    type_name: name.clone(),
+                    registered: hash,
+                    requested: requested.clone(),
+                });
+            }
+        }
+        let mut batch = self.claim_batch(types.keys().cloned().collect(), owner.clone(), limit).await?;
+        if !self.admissible(&batch, deadline)? {
+            return Ok(LeaseTurnsResult::Leased(Vec::new()));
+        }
+        self.fail_at_claim_limit(&mut batch).await;
+        if !self.admissible(&batch, deadline)? {
+            return Ok(LeaseTurnsResult::Leased(Vec::new()));
+        }
+        let leases = batch
+            .take()
+            .into_iter()
+            .map(|c| TurnLease {
+                actor: c.actor,
+                epoch: c.epoch,
+                message: c.message,
+                state: c.state,
+                version: c.version,
+                claimed_at: c.claimed_at,
+                lease_until: c.lease_until,
+                ttl,
+            })
+            .collect();
+        Ok(LeaseTurnsResult::Leased(leases))
+    }
+
+    /// Renews the lease of `actor` held under `epoch` with this system's `lease_ttl` (ADR 0037): any system on the same
+    /// store can renew a lease another one granted. The lease then runs to the later of its expiry and store now plus
+    /// the TTL. [`RenewTurnResult::LeaseLost`] once the epoch was replaced, released or completed, or the actor was
+    /// deleted; an expired lease that no claim replaced still renews, which does not let an executor run past its own
+    /// deadline. Renewal reports an operator's cancel request and ends nothing. No owner is checked. Validates the
+    /// [`NodeConfig`] ([`OpError::Start`]) and works in every life-cycle state.
+    pub async fn renew_turn(&self, actor: &ActorAddress, epoch: i64) -> Result<RenewTurnResult, OpError> {
+        self.inner.config.check()?;
+        let ttl = self.inner.config.lease_ttl;
+        Ok(match self.inner.store.renew(actor, epoch, ttl).await? {
+            RenewResult::Renewed(lease_until) => RenewTurnResult::Renewed { lease_until, ttl, cancel_requested: false },
+            RenewResult::CancelRequested(lease_until) => {
+                RenewTurnResult::Renewed { lease_until, ttl, cancel_requested: true }
+            }
+            RenewResult::LeaseLost => RenewTurnResult::LeaseLost,
+        })
+    }
+
+    /// Gives up the lease of `actor` held under `epoch` without an outcome (ADR 0037): its message stays pending with
+    /// its attempt counted and no lost claim, and is claimable at once. Nothing happens when the epoch is not current
+    /// and held, so repeating it is harmless and it cannot touch a later lease. The holder stops its work first and
+    /// never releases a turn whose handler ended (G6). No owner is checked; works in every life-cycle state.
+    pub async fn release_turn(&self, actor: &ActorAddress, epoch: i64) -> Result<(), OpError> {
+        self.inner.store.release(actor, epoch).await?;
+        self.wake_up();
+        Ok(())
+    }
+
+    /// [`StoreError::Unavailable`] when the system is stopping or stopped: it leases nothing more.
+    fn check_admitting(&self) -> Result<(), StoreError> {
+        match self.state() {
+            NodeState::Stopping | NodeState::Stopped => {
+                Err(StoreError::unavailable(format!("the actor system is {}", self.state())))
+            }
+            NodeState::New | NodeState::Started => Ok(()),
+        }
+    }
+
+    /// Whether `batch` may still be handed out: an error when the system is stopping, false when `deadline` passed.
+    /// Either way the caller then drops the batch, which releases its claims.
+    fn admissible(&self, batch: &ClaimBatch, deadline: Instant) -> Result<bool, StoreError> {
+        self.check_admitting()?;
+        if Instant::now() >= deadline {
+            if !batch.claims.is_empty() {
+                tracing::warn!(
+                    "{} leased claims came after their lease deadline; they are given back",
+                    batch.claims.len()
+                );
+            }
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    /// Takes every claim at this system's claim limit out of `batch`: one fenced commit fails each, concurrently. A
+    /// confirmed one wakes the dispatch loop and is told to the observers; every other one is released in the
+    /// background (an uncertain commit also wakes the loop). Until then they stay in `batch`, which releases them when
+    /// the caller is dropped.
+    async fn fail_at_claim_limit(&self, batch: &mut ClaimBatch) {
+        let max = self.inner.config.max_lost_claims;
+        let (store, observers, wake) = (&self.inner.store, &self.inner.observers, &self.inner.wake);
+        let commits =
+            batch.claims.iter().enumerate().filter(|(_, c)| at_claim_limit(max, c)).map(|(i, claim)| async move {
+                let (outcome, request) = claim_limit_commit(claim);
+                let confirmed = match store.commit(request).await {
+                    Ok(CommitResult::Committed { sent, .. }) => {
+                        claim_limit_committed(observers, wake, claim, &outcome, &sent);
+                        true
+                    }
+                    Ok(other) => {
+                        tracing::info!("Claim-limit commit of {} for {}: {other:?}", claim.actor, claim.message.id);
+                        false
+                    }
+                    Err(StoreError::Invalid(reason)) => {
+                        tracing::error!(
+                            "Claim-limit commit of {} for {} refused: {reason}",
+                            claim.actor,
+                            claim.message.id
+                        );
+                        false
+                    }
+                    Err(e) => {
+                        // It may have applied: wake the loop for its notifications.
+                        wake.notify_one();
+                        tracing::warn!(
+                            "Claim-limit commit of {} for {} failed; it is given back: {e}",
+                            claim.actor,
+                            claim.message.id
+                        );
+                        false
+                    }
+                };
+                (i, confirmed)
+            });
+        let results = futures::future::join_all(commits).await;
+        if results.is_empty() {
+            return;
+        }
+        let confirmed: HashSet<usize> = results.iter().filter(|(_, ok)| *ok).map(|(i, _)| *i).collect();
+        let limited: HashSet<usize> = results.iter().map(|(i, _)| *i).collect();
+        let mut given_back = ClaimBatch { store: store.clone(), claims: Vec::new() };
+        for (i, claim) in batch.take().into_iter().enumerate() {
+            if confirmed.contains(&i) {
+                continue;
+            }
+            if limited.contains(&i) {
+                given_back.claims.push(claim);
+            } else {
+                batch.claims.push(claim);
             }
         }
     }
@@ -1426,6 +1643,27 @@ fn check_bulk_ids(ids: &[MessageId]) -> Result<(), OpError> {
     Ok(())
 }
 
+/// Checks the bounds of a [`ActorSystem::lease_turns`] request before anything reads the store.
+fn check_lease_request(owner: &NodeId, types: &BTreeMap<TypeName, String>, limit: usize) -> Result<(), OpError> {
+    if !(1..=MAX_LEASE_BATCH).contains(&limit) {
+        return Err(OpError::Invalid(format!("The limit must be between 1 and {MAX_LEASE_BATCH}, was {limit}")));
+    }
+    if types.is_empty() || types.len() > MAX_LEASE_TYPES {
+        return Err(OpError::Invalid(format!(
+            "Between 1 and {MAX_LEASE_TYPES} types must be selected, got {}",
+            types.len()
+        )));
+    }
+    let id = owner.as_str();
+    if id.chars().count() > limits::MAX_ID_LENGTH {
+        return Err(OpError::Invalid(format!("The owner must be at most {} characters long", limits::MAX_ID_LENGTH)));
+    }
+    if id.contains('\0') {
+        return Err(OpError::Invalid("The owner must not contain a NUL character".to_owned()));
+    }
+    Ok(())
+}
+
 /// True when `actual` is the wanted message type, or none is wanted.
 fn of_type(wanted: &Option<String>, actual: &str) -> bool {
     wanted.as_deref().is_none_or(|w| w == actual)
@@ -1444,6 +1682,13 @@ fn duplicate_of(existing: Option<Message>, to: &ActorAddress, message_type: &str
 struct ClaimBatch {
     store: Store,
     claims: Vec<Claim>,
+}
+
+impl ClaimBatch {
+    /// Takes the claims out: the caller now owns their leases.
+    fn take(&mut self) -> Vec<Claim> {
+        std::mem::take(&mut self.claims)
+    }
 }
 
 impl Drop for ClaimBatch {

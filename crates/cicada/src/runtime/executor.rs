@@ -102,8 +102,49 @@ pub(crate) struct LeaseSettings {
 impl LeaseSettings {
     /// Subtracted from every local lease deadline: covers clock-rate differences and the store's processing time.
     fn safety_margin(&self) -> Duration {
-        (self.ttl / 10).min(Duration::from_secs(1))
+        safety_margin(self.ttl)
     }
+}
+
+/// Subtracted from a lease of `ttl` for a local deadline: a tenth of it, at most one second (ADR 0037).
+pub(crate) fn safety_margin(ttl: Duration) -> Duration {
+    (ttl / 10).min(Duration::from_secs(1))
+}
+
+/// True when `claim`'s message has as many lost claims as `max_lost_claims` allows (ADR 0025).
+pub(crate) fn at_claim_limit(max_lost_claims: Option<u32>, claim: &Claim) -> bool {
+    max_lost_claims.is_some_and(|max| claim.message.lost_claims >= max)
+}
+
+/// The outcome and the commit that fail a message at the claim limit without running it: `failed` with the error
+/// `claim limit: <n> lost claims` and cause `ClaimLimit`, fenced by the claim's epoch. Logs why.
+pub(crate) fn claim_limit_commit(claim: &Claim) -> (TurnOutcome, CommitRequest) {
+    let lost = claim.message.lost_claims;
+    tracing::warn!(
+        actor = %claim.actor,
+        message = %claim.message.id,
+        lost_claims = lost,
+        "Message {} to {} has {lost} lost claims, as many as the claim limit allows: it fails without running",
+        claim.message.id,
+        claim.actor
+    );
+    let outcome = TurnOutcome::Failed(format!("claim limit: {lost} lost claims"));
+    let request = CommitRequest::new(claim.actor.clone(), claim.epoch, claim.message.id.clone(), outcome.clone())
+        .with_cause(FailureCause::ClaimLimit);
+    (outcome, request)
+}
+
+/// After a claim-limit commit succeeded: wakes the node for the notifications of the failure, then tells the observers
+/// the turn's start and its end.
+pub(crate) fn claim_limit_committed(
+    observers: &Observers,
+    wake: &Notify,
+    claim: &Claim,
+    outcome: &TurnOutcome,
+    sent: &[Message],
+) {
+    wake.notify_one();
+    observers.start(&claim.actor, &claim.message, claim.claimed_at).ended(outcome, sent);
 }
 
 /// What a turn decided, before it is committed.
@@ -276,7 +317,7 @@ impl TurnExecutor {
             }
             return;
         }
-        if self.max_lost_claims.is_some_and(|max| claim.message.lost_claims >= max) {
+        if at_claim_limit(self.max_lost_claims, &claim) {
             return self.fail_at_claim_limit(&claim, claim_sent).await;
         }
         let observed = self.observers.start(&claim.actor, &claim.message, claim.claimed_at);
@@ -361,23 +402,11 @@ impl TurnExecutor {
     /// the limit, fenced by the claim's epoch, and then tells the observers the start and the end. When that commit does
     /// not succeed they are told nothing, and the next claim finds one more lost claim.
     async fn fail_at_claim_limit(&self, claim: &Claim, claim_sent: Instant) {
-        let lost = claim.message.lost_claims;
-        tracing::warn!(
-            actor = %claim.actor,
-            message = %claim.message.id,
-            lost_claims = lost,
-            "Message {} to {} has {lost} lost claims, as many as the claim limit allows: it fails without running",
-            claim.message.id,
-            claim.actor
-        );
-        let outcome = TurnOutcome::Failed(format!("claim limit: {lost} lost claims"));
+        let (outcome, request) = claim_limit_commit(claim);
         let guard = LeaseGuard::new(self.deadline(claim_sent));
-        let request = CommitRequest::new(claim.actor.clone(), claim.epoch, claim.message.id.clone(), outcome.clone())
-            .with_cause(FailureCause::ClaimLimit);
         match self.commit_with_retry(claim, &guard, request).await {
             CommitEnd::Answered(CommitResult::Committed { sent, .. }) => {
-                self.wake_after(&outcome, &sent, true);
-                self.observers.start(&claim.actor, &claim.message, claim.claimed_at).ended(&outcome, &sent);
+                claim_limit_committed(&self.observers, &self.wake, claim, &outcome, &sent);
             }
             CommitEnd::Answered(other) => {
                 tracing::info!("Claim-limit commit of {} for {}: {other:?}", claim.actor, claim.message.id)

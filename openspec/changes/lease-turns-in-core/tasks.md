@@ -1,12 +1,12 @@
 ## Implementation
 
-- [ ] 1. Make Backend::renew atomically retain max(existing expiry, store now + TTL) in memory, SQLite and
+- [x] 1. Make Backend::renew atomically retain max(existing expiry, store now + TTL) in memory, SQLite and
   PostgreSQL, returning that actual expiry for both normal and cancel-requested renewal. Keep the signature,
   epoch/held checks and expired-current-epoch behavior. Add shared conformance for short/long/concurrent renewal,
   cancellation flag and fencing. Fix `s5_renew_and_commit_still_work_after_expiry_as_long_as_nobody_re_claimed` in
   conformance/robustness.rs to advance beyond the retained expiry and assert expiry before its final commit; do not
   accidentally stop testing expired commits. Run targeted renewal/conformance tests on every configured backend.
-- [ ] 2. Add TurnLease, LeaseTurnsResult, RenewTurnResult, MAX_LEASE_BATCH/MAX_LEASE_TYPES and the public
+- [x] 2. Add TurnLease, LeaseTurnsResult, RenewTurnResult, MAX_LEASE_BATCH/MAX_LEASE_TYPES and the public
   ActorSystem lease_turns/renew_turn/release_turn methods. Validate inputs/config, check the name/hash map in one
   registry read, use server TTL, record the worker owner and preserve the documented lifecycle and error precedence.
   Keep local handler initialization separate and return enough time information for conservative client deadlines.

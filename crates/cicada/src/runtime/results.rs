@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use serde_json::Value;
 
 use super::resolver::RegisteredType;
@@ -190,6 +192,68 @@ pub struct BulkResult {
     pub affected: u64,
     /// True when matches remain beyond the cap of [`super::BULK_LIMIT`].
     pub more: bool,
+}
+
+/// A turn leased by [`ActorSystem::lease_turns`](super::ActorSystem::lease_turns) for a caller that runs it outside
+/// this system (ADR 0037): the claim the store granted and the TTL it was granted for. The caller owns its lease once it
+/// has it: it renews it with [`renew_turn`](super::ActorSystem::renew_turn) and gives it back with
+/// [`release_turn`](super::ActorSystem::release_turn); dropping a `TurnLease` does nothing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TurnLease {
+    /// The leased actor.
+    pub actor: ActorAddress,
+    /// The fencing token of the lease; renew and release name the lease by the actor and this epoch.
+    pub epoch: i64,
+    /// The head message, with `attempt` already incremented for this lease and its `lost_claims`.
+    pub message: Message,
+    /// The actor's state.
+    pub state: Value,
+    /// The actor's version.
+    pub version: i64,
+    /// Store time at the claim; the handler's `now`.
+    pub claimed_at: Timestamp,
+    /// Store time at which the lease expires unless renewed. For display and the handler's clock, not for a deadline:
+    /// store time is not the caller's clock.
+    pub lease_until: Timestamp,
+    /// The TTL the serving system asked the store for. The caller's conservative deadline is its monotonic time when it
+    /// sent the request plus this TTL, less the smaller of a tenth of it and one second.
+    pub ttl: Duration,
+}
+
+/// Result of [`ActorSystem::lease_turns`](super::ActorSystem::lease_turns).
+#[derive(Debug, Clone, PartialEq)]
+pub enum LeaseTurnsResult {
+    /// The leased turns, at most the limit asked for. Empty when nothing was due, and also when every claim was filtered
+    /// by the claim limit or arrived too late to hand out.
+    Leased(Vec<TurnLease>),
+    /// A selected type is not registered with the requested hash; nothing was claimed. The first such type in type
+    /// name order.
+    ContractMismatch {
+        /// The type.
+        type_name: TypeName,
+        /// The registered hash, or `None` when the type is not registered.
+        registered: Option<String>,
+        /// The hash the caller asked for.
+        requested: String,
+    },
+}
+
+/// Result of [`ActorSystem::renew_turn`](super::ActorSystem::renew_turn).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenewTurnResult {
+    /// The lease is extended.
+    Renewed {
+        /// Store time at which the lease now expires: the later of its expiry before and store now plus `ttl`, so it
+        /// can be later than this renewal asked for.
+        lease_until: Timestamp,
+        /// The TTL the serving system asked the store for.
+        ttl: Duration,
+        /// An operator asked to cancel this turn ([`ActorSystem::cancel_turn`](super::ActorSystem::cancel_turn)). The
+        /// lease is extended all the same; the request ends nothing by itself.
+        cancel_requested: bool,
+    },
+    /// The epoch is no longer current or its lease was released, completed or deleted: the turn must be abandoned.
+    LeaseLost,
 }
 
 /// A failed operation of [`super::ActorSystem`].
