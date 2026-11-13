@@ -7,6 +7,32 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.16.13 — unreleased
+
+Nothing breaks: an executor outside the system can lease, renew and release turns through the core, the first part of
+remote execution. No schema, contract, route or command line changes. One store behaviour changes: a renewal never
+shortens a held lease.
+
+### Added
+
+- `ActorSystem::lease_turns(&NodeId, &BTreeMap<TypeName, String>, usize)`, `renew_turn(&ActorAddress, i64)` and
+  `release_turn(&ActorAddress, i64)`, with `TurnLease`, `LeaseTurnsResult`, `RenewTurnResult` and the bounds
+  `runtime::MAX_LEASE_BATCH` and `MAX_LEASE_TYPES` (100 each) (ADR 0037). A system without handlers, started or not,
+  leases due turns of the selected types for a worker id, once one registry read found every requested contract hash
+  (`ContractMismatch` names the first type that is absent or differs, and nothing is claimed). The serving system's
+  `lease_ttl` and claim limit apply: a message at the limit fails by one fenced commit and is never handed out. A
+  lease carries the claim and the TTL; the caller's deadline is its request time plus the TTL, less
+  `min(ttl / 10, 1 s)`. Claims not handed out (a dropped call, a late answer, a stopping system) are released, best
+  effort. Renew and release work by actor and epoch on any system of the store, in every life-cycle state; a renewal
+  reports a cancel request. No completion yet: a leased turn ends by release, expiry or the removal of its actor.
+- The core guide's Lease turns for an executor outside the node, and Leases outside the node in the architecture.
+
+### Changed
+
+- A renewal never shortens a held lease, on every store: it keeps the later of the lease's expiry and store now plus
+  the TTL, atomically, and returns that expiry (S5). Nodes that share a TTL see no difference; a peer with a shorter TTL
+  can no longer end a lease early.
+
 ## 0.16.12 — 2026-11-13
 
 Nothing breaks: a server can register the contract of a type that runs elsewhere, so that it accepts the type's creates

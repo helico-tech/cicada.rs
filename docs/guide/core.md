@@ -480,7 +480,7 @@ async fn main() -> anyhow::Result<()> {
 - `ActorSystem` is cheap to clone; every clone is the same node. Its methods are the in-process API: `create`,
   `send`, `send_with`, `send_to`, `send_message`, `get_actor`, `delete_actor`, `list_actors`,
   `list_actors_with_state`, `changes`, `pending`, `list_pending`, `status`, `outcome`, `cancel`, `failures`, `types`,
-  `register_contract`, `health`.
+  `register_contract`, `lease_turns`, `renew_turn`, `release_turn`, `health`.
 - The runtime logs with [`tracing`](https://docs.rs/tracing); install a subscriber (such as `tracing_subscriber`) to
   see its output.
 
@@ -694,6 +694,86 @@ worker.initialize().await?;
   whether a handler exists.
 - **Trusted.** Whoever can register decides the schemas the door checks. Over HTTP it is a write route of the full
   router, behind the host's authentication.
+
+### Lease turns for an executor outside the node
+
+`ActorSystem::lease_turns` hands due turns to an executor that runs them outside the system, such as a worker process
+that reaches the server over a network (ADR 0037). The server needs no handler and may be unstarted; it registers the
+contract (above) and leases on the executor's behalf. `renew_turn` keeps a lease, `release_turn` gives it back.
+Completing a leased turn is not part of the core yet: in this release a leased turn ends by release, expiry or the
+removal of its actor. The block inspects and gives back the turns of the reports type of
+[examples/src/sync.rs](../../examples/src/sync.rs):
+
+<!-- doctest
+# #[tokio::main(flavor = "current_thread")]
+# async fn main() -> Result<(), Box<dyn std::error::Error>> {
+# use cicada::prelude::*;
+# let store = cicada::Store::memory();
+@@30
+# Ok(())
+# }
+-->
+```rust
+use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
+use cicada::actor::contract_of;
+use cicada::runtime::{LeaseTurnsResult, RenewTurnResult};
+use cicada::store::NodeId;
+use cicada_examples::sync::{Reports, ReportsActor, ReportsMsg, ReportsState};
+
+let server = ActorSystem::builder(store).build(); // hosts nothing and is not started
+let contract = contract_of::<ReportsActor>()?;
+server.register_contract(&contract).await?;
+let acme = Reports { tenant: "acme".into() };
+server.create(&acme, &ReportsState::default()).await?;
+server.send(&acme, ReportsMsg::SyncFinished { imported: 3 }).await?;
+
+let worker = NodeId::new("worker-1")?;
+let types = BTreeMap::from([(contract.type_name().clone(), contract.hash().to_owned())]);
+let sent = Instant::now(); // the worker's own clock, read before the request
+let LeaseTurnsResult::Leased(leases) = server.lease_turns(&worker, &types, 10).await? else {
+    panic!("the worker was built with another contract");
+};
+for lease in leases {
+    let deadline = sent + lease.ttl - (lease.ttl / 10).min(Duration::from_secs(1));
+    println!("{} {} (attempt {}) until {deadline:?}", lease.actor, lease.message.message_type, lease.message.attempt);
+    let renewed = server.renew_turn(&lease.actor, lease.epoch).await?;
+    if let RenewTurnResult::Renewed { cancel_requested: true, .. } = renewed {
+        println!("an operator asked to cancel it");
+    }
+    // Not run here: give it back, and the message waits for the next executor.
+    server.release_turn(&lease.actor, lease.epoch).await?;
+}
+```
+
+- **What it checks.** 1 to `MAX_LEASE_BATCH` (100) turns, 1 to `MAX_LEASE_TYPES` (100) types and an owner of at most
+  200 characters with no NUL, else `OpError::Invalid`, before the store is read. Then one read of the registry compares
+  each requested hash exactly: the first type in name order that is absent or has another hash answers
+  `ContractMismatch` and nothing is claimed. The check is not atomic with the claim: stop old executors before you
+  replace a contract.
+- **The server's policy.** The serving system's `lease_ttl` and claim limit apply, not the caller's. A message at the
+  claim limit is never handed out: one fenced commit fails it as a local node would, and its watchers and then the
+  server's observers hear of it only when that commit is confirmed. An empty batch may mean that every claim was
+  filtered or came too late. A returned lease starts no observer.
+- **Deadlines.** Keep the deadline on your own monotonic clock: the time you sent the request plus `ttl`, less
+  `min(ttl / 10, 1 s)`, as in the block, and the same for each renewal; keep the later of the deadline you had and the
+  new one. Do not run past it. `claimed_at` and `lease_until` are store times, for the handler's clock and for display.
+  A renewal keeps the later of the lease's expiry and store now plus the TTL, so its `lease_until` may be later than it
+  asked, and a server with a shorter TTL never shortens a lease you hold.
+- **Who owns a lease.** The owner id shows in the running turns (`list_running_turns`, `running_turn`), with no node row
+  and no count in the server's `running_turns()` or concurrency. Reusing a node's id is allowed and mixes their display;
+  give each worker its own id. Renew and release name the lease by actor and epoch, through any system on the store,
+  and check no owner: they are trusted operations for executors with write access, not an authorization boundary.
+- **Giving a lease back.** Release a turn only before its handler runs or after you stopped it, never after it ended
+  (G6). The message stays pending, its attempt counted and no claim lost; a repeated or stale release does nothing.
+  A renewal that reports `cancel_requested` ends nothing by itself. Renew and release still work after the lease ran
+  out while no claim replaced it.
+- **Cleanup.** Until `lease_turns` returns, the server guards its claims: a dropped call, a late answer or a stopping
+  system gives each one back, best effort. Once returned, the leases are the caller's: dropping a `TurnLease` does
+  nothing, and leases whose response is lost expire, and the next claim counts each as lost.
+- **Life cycle.** A stopping or stopped server refuses to lease (`StoreError::Unavailable`); renew and release work in
+  every state. Stopping a server does not wait for or release the leases executors hold. An invalid `NodeConfig` fails
+  lease and renew with `OpError::Start`.
 
 ### Configuration
 

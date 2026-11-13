@@ -28,7 +28,7 @@
   original expiry. Check that a response lost after handoff leaves a recoverable lease and counts lost only when
   replaced. Run these tests on virtual time and preserve the existing delayed-claim cleanup tests; add shared-store
   SQL peer coverage where available, without sleep-based runtime race tests.
-- [ ] 5. Update ADR 0037/index as needed, architecture lease/turn/lifecycle descriptions, core guide and operations
+- [x] 5. Update ADR 0037/index as needed, architecture lease/turn/lifecycle descriptions, core guide and operations
   for public leasing, trusted ownership, no node membership/local concurrency accounting, non-atomic hash checks,
   retained expiry, TTL versus deadline, best-effort cleanup, no receipts, and the G6/release obligation. Include a
   compiled example that inspects then relinquishes a lease without implying completion or a finished HTTP worker.

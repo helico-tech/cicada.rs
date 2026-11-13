@@ -78,7 +78,7 @@ store of the tests (feature `testing`). A host opens one as the public type `Sto
 | S2 Atomicity | `commit` applies all of its parts or none. `delete`, and a commit that stops, remove the instance, its descendants and their mailboxes together. A commit that ends a message `failed`, a commit that stops and a delete write their notifications with them. |
 | S3 Per-instance linearizability | All operations on one instance and its mailbox have a single order. A read after an acknowledged write sees it. |
 | S4 Lease exclusivity | At most one unexpired lease per instance. Each claim issues an epoch greater than any earlier one for that address, also across delete and re-create. |
-| S5 Fencing | `commit` and `renew` succeed only with the current epoch. |
+| S5 Fencing | `commit` and `renew` succeed only with the current epoch. `renew` never shortens a held lease: it keeps the later of its expiry and store now plus the TTL, atomically (ADR 0037). |
 | S6 Order | `claim_due` returns, per instance, only the pending message with the smallest `(deliverAt, seq)`, and only when it is due. |
 | S7 No loss, no duplicate | A message leaves pending only by commit, cancel, purge or delete; a commit can end the pending messages of another actor, by a purge or a delete (ADR 0024). Message ids are unique across pending messages and retained outcomes. |
 | S8 Liveness | An instance that is not paused, with a due head message and no valid lease, is eventually returned by `claim_due`. A paused instance is not claimed until it is resumed (ADR 0015). |
@@ -221,6 +221,45 @@ claim whose answer arrives after its local lease deadline: nothing runs under it
 that arrives with less than one heartbeat of its lease left runs, and its keeper renews it at once.
 
 An admin cancel of a running turn is recorded by the store as the turn's epoch and read by the keeper at its next renewal, so it takes up to one heartbeat. The keeper aborts *work*, waits for it to stop and commits `cancelled` itself, fenced by its epoch, so G1 and G3 hold and no other node runs the message meanwhile. Whether the cancel request or the handler's end came first is decided once, by one atomic flag: a request that lost is ignored and the turn commits normally. No request can reach a later turn, because each stores the epoch it was for. A lease ends only with its turn or with its actor: no operation takes it away from a running turn (ADR 0015), and a delete, from outside or by a turn, ends it with the actor, whose message ends `purged` and is never handled again (ADR 0024).
+
+### Leases outside the node
+
+An executor outside the system takes turns through three operations of `ActorSystem` (ADR 0037), not through the
+store: `lease_turns(owner, types, limit)`, `renew_turn(actor, epoch)` and `release_turn(actor, epoch)`. The serving
+system needs no handler and may be unstarted. `lease_turns` takes 1–100 type names, each with the contract hash the
+executor was built with, and claims 1–100 turns for `owner`, an id of at most 200 characters with no NUL. One read of
+the registry compares every hash first, and the first type in name order that is absent or registered with another
+hash refuses the request with nothing claimed; the check is not atomic with the claim, so old executors stop before a
+contract is replaced. The claim uses the serving system's `lease_ttl` and claim limit and records `owner` as lease
+owner: the turn shows in the running turns under that id, with no node row and no count in the local concurrency. A
+`TurnLease` is the claim (actor, epoch, message, state, version, store times) plus the TTL the store was asked for.
+
+- **Admission.** A message at the serving system's claim limit is never handed out: one fenced commit fails it, as a
+  local node does, without a handler or the retry policy, concurrently for the batch. Watchers and then the observers
+  hear of it only when the commit is confirmed; any other result, an uncertain one included, is released. The local
+  executor keeps its own commit retries.
+- **Deadlines.** The executor's deadline is its monotonic time when it sent the request plus the returned TTL, less
+  `min(ttl / 10, 1 s)`; store times do not synchronise clocks. `lease_turns` applies the same rule to its own request
+  and checks it after the claim and again after the claim limit's commits; a batch past it is not handed out.
+- **Guard.** Claims stay in a guard until they are returned. A dropped future (also while the claim is in its own
+  task), a system seen stopping after the claim, or a deadline that passed gives every claim not handed out one release
+  attempt in the background, best effort: a closed store or an ended runtime leaves the lease to expire, and the claim
+  that replaces it counts it lost. Once returned, the caller owns each lease; dropping a `TurnLease` does nothing, and
+  a lost response leaves its leases to expire. No receipt is stored.
+- **Renew and release.** The actor and the epoch name the lease, on any system of the store; no owner is checked, as
+  these are trusted operations, not an authorization boundary. A renewal with another system's TTL keeps the later
+  expiry, so a peer with a shorter TTL cannot end a lease whose holder still follows its earlier confirmed deadline,
+  also when the renewal's answer is lost. It reports an operator's cancel request and ends nothing. A release leaves
+  the message pending with no lost claim; repeating it, or a stale epoch, changes nothing. The holder stops its work
+  before it releases and never releases a turn whose handler ended (G6). Both work after the lease ran out while no
+  claim replaced it, which does not let an executor run past its deadline.
+- **Life cycle.** `lease_turns` and `renew_turn` check the `NodeConfig` (`OpError::Start`) without validating or
+  registering hosted types; `lease_turns` refuses a stopping or stopped system (`StoreError::Unavailable`) before the
+  store, after the claim and before it hands out; renew and release work in every state. A stop does not wait for or
+  release remote leases.
+
+Completing a leased turn is not part of this; until it is, a leased turn ends by release, expiry or the removal of its
+actor.
 
 All local timing uses `tokio::time`, so tests on a paused runtime (`start_paused = true`) run on virtual time: the
 in-memory store reads its clock from `tokio::time::Instant` (`TokioClock`).

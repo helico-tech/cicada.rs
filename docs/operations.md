@@ -355,6 +355,12 @@ read everything once.
 uses it needs a server of 0.16.11; an older one answers `404`. A node that serves it still sees only the hints of
 nodes of 0.16.10 or later. With a page open, `serve` may now use its whole 5 s drain on stop.
 
+**Version 0.16.13 changes no schema, contract or route.** It adds leases for executors outside the node (ADR 0037,
+[Lease turns for an executor outside the node](guide/core.md#lease-turns-for-an-executor-outside-the-node)), and a
+renewal no longer shortens a held lease. Nodes that share one `lease_ttl` see no difference, so nodes of 0.16.12 and
+0.16.13 can share a database. Lease and renew through nodes of 0.16.13 only: a node of 0.16.12 still sets a renewed
+lease to its own TTL, and one with a shorter TTL could end a lease a worker still holds.
+
 **Switching a type to `create_child`.** An actor created with `turn.create` stays independent: a later `create_child`
 of it by its creator does not adopt it, but fails the creator's message (the commit is rejected, and a handler cannot
 test for that). So switch a parent type from `create` to `create_child` only when no parent of it is left that created
@@ -494,6 +500,15 @@ removes the node's own row. The table is for display only: leases decide who run
 overlapping turns. A stopped turn is not forced away from a node that is alive: `POST
 /actors/{type}/{key}/turn/cancel` asks the owning node to cancel it within one heartbeat, and a dead node's lease
 expires by itself within the lease TTL.
+
+### External leases
+
+A system can lease turns to executors outside it ([Lease turns for an executor outside the
+node](guide/core.md#lease-turns-for-an-executor-outside-the-node)). Such a turn shows in `GET /turns` and in the turn
+of its actor under the executor's id, which has no row in the node table and is not in the node's concurrency. The
+serving node's `lease_ttl` and claim limit apply, and the executor keeps a deadline of its own. A lease that its
+executor loses, or whose response never reached it, expires after the TTL, and the claim that replaces it counts a
+lost claim, as a dead node's would. Stopping a node does not wait for the leases executors hold.
 
 ### Logs
 

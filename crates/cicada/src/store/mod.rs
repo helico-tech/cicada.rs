@@ -102,7 +102,7 @@ impl Clock for SystemClock {
 /// | S2 Atomicity | `commit` applies all of its parts or none. `delete`, and a commit that stops, remove the instance, its descendants and their mailboxes together. A commit that ends a message `failed`, a stop and a delete write their notifications with them. |
 /// | S3 Per-instance linearizability | All operations on one instance and its mailbox have a single order. |
 /// | S4 Lease exclusivity | At most one unexpired lease per instance; every claim issues a greater epoch. |
-/// | S5 Fencing | `commit` and `renew` succeed only with the current epoch. |
+/// | S5 Fencing | `commit` and `renew` succeed only with the current epoch; `renew` never shortens a held lease. |
 /// | S6 Order | `claim_due` returns, per instance, only the pending message with the smallest `(deliver_at, seq)`, when due. |
 /// | S7 No loss, no duplicate | A message leaves pending only by commit, cancel or delete; ids are unique. |
 /// | S8 Liveness | An instance that is not paused, with a due head message and no valid lease, is eventually returned by `claim_due`. |
