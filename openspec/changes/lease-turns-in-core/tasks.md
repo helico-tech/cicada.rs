@@ -21,7 +21,7 @@
   watcher-once and observer ordering tests; ordinary returned leases start no server observer. Cover commit failure,
   refusal, LeaseLost and an applied commit whose reply was lost. Keep local executor retries unchanged. Run targeted
   remote lease/claim-limit tests and the existing local claim-limit/runtime fault tests.
-- [ ] 4. Add deterministic fault/race tests in crates/cicada/src/tests/runtime/remote_lease.rs using the existing
+- [x] 4. Add deterministic fault/race tests in crates/cicada/src/tests/runtime/remote_lease.rs using the existing
   Faulty/Faults harness. Cover cancellation during the detached claim and during limit filtering; late initial and
   post-filter responses; stop during claim/filtering; failed cleanup and runtime/closed-store boundaries; checked
   monotonic overflow. Withhold a shorter peer-renewal answer and prove a competing claim cannot start before the

@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct Job {
+pub(super) struct Job {
     id: String,
 }
 
@@ -28,23 +28,23 @@ impl ActorRef for Job {
     type Message = JobMsg;
 }
 
-fn job(id: &str) -> Job {
+pub(super) fn job(id: &str) -> Job {
     Job { id: id.into() }
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type")]
-enum JobMsg {
+pub(super) enum JobMsg {
     Run,
     Failed(Failed),
     Stopped(Stopped),
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-struct JobState {}
+pub(super) struct JobState {}
 
 /// The job type; the servers here only know its contract.
-struct JobActor;
+pub(super) struct JobActor;
 
 impl Actor for JobActor {
     type Ref = Job;
@@ -55,18 +55,18 @@ impl Actor for JobActor {
     }
 }
 
-const LEASE: Duration = Duration::from_secs(30);
-const LIMIT_FAILURE: &str = "Failed(error=claim limit: 3 lost claims)";
+pub(super) const LEASE: Duration = Duration::from_secs(30);
+pub(super) const LIMIT_FAILURE: &str = "Failed(error=claim limit: 3 lost claims)";
 
-fn types() -> BTreeSet<TypeName> {
+pub(super) fn types() -> BTreeSet<TypeName> {
     BTreeSet::from([type_name::<Job>()])
 }
 
-fn selection() -> BTreeMap<TypeName, String> {
+pub(super) fn selection() -> BTreeMap<TypeName, String> {
     BTreeMap::from([(type_name::<Job>(), contract_of::<JobActor>().unwrap().hash().to_owned())])
 }
 
-fn worker() -> NodeId {
+pub(super) fn worker() -> NodeId {
     NodeId::new("worker").unwrap()
 }
 
@@ -80,7 +80,7 @@ async fn server(store: impl IntoStore, limit: Option<u32>, events: &Events) -> A
 
 /// Creates `job/<id>`, sends it `Run` with `options` and lets `lost` claims of it run out: the next claim finds `lost`
 /// lost claims. Only that job may have a due message while it runs.
-async fn job_with_lost_claims(
+pub(super) async fn job_with_lost_claims(
     memory: &Store,
     system: &ActorSystem,
     id: &str,
@@ -96,7 +96,7 @@ async fn job_with_lost_claims(
     m
 }
 
-async fn lease(system: &ActorSystem) -> Vec<TurnLease> {
+pub(super) async fn lease(system: &ActorSystem) -> Vec<TurnLease> {
     match system.lease_turns(&worker(), &selection(), 10).await.unwrap() {
         LeaseTurnsResult::Leased(leases) => leases,
         other => panic!("expected Leased, got {other:?}"),
@@ -104,12 +104,12 @@ async fn lease(system: &ActorSystem) -> Vec<TurnLease> {
 }
 
 /// The `Failed` notifications waiting in the mailbox of `watcher`.
-async fn notifications(memory: &Store, watcher: &ActorAddress) -> Vec<Message> {
+pub(super) async fn notifications(memory: &Store, watcher: &ActorAddress) -> Vec<Message> {
     let page = memory.pending(watcher, None, 10).await.unwrap();
     page.items.into_iter().filter(|m| m.notification && m.message_type == "Failed").collect()
 }
 
-async fn pending(memory: &Store, m: &Message) -> Message {
+pub(super) async fn pending(memory: &Store, m: &Message) -> Message {
     match memory.status(&m.id).await.unwrap() {
         Some(MessageStatus::Pending(message)) => message,
         other => panic!("expected pending, got {other:?}"),
