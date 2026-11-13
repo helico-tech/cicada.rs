@@ -1,14 +1,15 @@
 //! Durable flows (ADR 0031): a multi-step job written as ordinary async code. Each run is one actor that replays the
-//! results its journal holds and executes one new step per turn, saving its result and arming the next `Continue` in
-//! the same commit.
+//! results its journal holds and executes one new step or sleep per turn, saving it and arming the next `Continue` in
+//! the same commit; a sleep's `Continue` is due at its saved wake time.
 
 use std::collections::HashSet;
 use std::fmt;
 use std::future::Future;
 use std::marker::PhantomData;
+use std::time::Duration;
 
 use cicada::prelude::*;
-use cicada::time::{self, MAX_INSTANT, Timestamp};
+use cicada::time::{self, MAX_DELAY, MAX_INSTANT, Timestamp};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -67,8 +68,8 @@ pub trait Flow: Send + Sync + 'static {
         retry_policy()
     }
 
-    /// The flow's code. It calls [`Step::run`] for each external step and passes its errors on with `?`; it returns
-    /// `Ok(())` once every step is done.
+    /// The flow's code. It calls [`Step::run`] for each external step and [`Step::sleep`] for each durable wait, and
+    /// passes their errors on with `?`; it returns `Ok(())` once every step is done.
     fn run(&self, step: &mut Step, input: Self::Input) -> impl Future<Output = HandlerResult> + Send;
 }
 
@@ -289,37 +290,43 @@ fn check_id(id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// What the first new step, or the first misuse, of an execution decided. It wins over what the flow returns.
+/// What the first new step or sleep, the first sleep not yet due, or the first misuse, of an execution decided. It
+/// wins over what the flow returns.
 enum Latch {
     /// A closure was invoked and has not finished: its future was dropped, or it panicked, if this is left.
     InProgress(String),
-    /// A new result to save with the next continuation.
+    /// A new entry to save with the next continuation, which a sleep's wake time delays.
     New(JournalEntry),
+    /// A saved sleep whose wake time has not come: the next continuation is due then, and nothing is saved.
+    Waiting(Timestamp),
     /// The closure's own error, with its retryability.
     Failed(HandlerError),
     /// A replay or result that cannot be saved; refused for good.
     Permanent(String),
 }
 
-/// The private error by which [`Step::run`] suspends a flow: passed on with `?`, it ends the execution.
+/// The private error by which [`Step::run`] and [`Step::sleep`] suspend a flow: passed on with `?`, it ends the
+/// execution.
 #[derive(Debug)]
 struct Suspend;
 
 impl fmt::Display for Suspend {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("the flow is suspended after a new step; pass this error on with `?`")
+        f.write_str("the flow is suspended after a new step or at a sleep; pass this error on with `?`")
     }
 }
 
 impl std::error::Error for Suspend {}
 
-/// The steps of one execution of a flow: it replays saved results in journal order and executes at most one new
-/// step. A flow sees it only through [`Flow::run`]; it gives no access to the turn.
+/// The steps of one execution of a flow: it replays saved results and elapsed sleeps in journal order and executes at
+/// most one new step or sleep. A flow sees it only through [`Flow::run`]; it gives no access to the turn.
 pub struct Step {
     journal: Vec<JournalEntry>,
     cursor: usize,
     seen: HashSet<String>,
     address: String,
+    /// Store time at the claim: what a sleep counts from and is compared with.
+    now: Timestamp,
     latch: Option<Latch>,
 }
 
@@ -330,8 +337,8 @@ impl fmt::Debug for Step {
 }
 
 impl Step {
-    fn new(journal: Vec<JournalEntry>, address: &ActorAddress) -> Self {
-        Self { journal, cursor: 0, seen: HashSet::new(), address: address.as_str().to_owned(), latch: None }
+    fn new(journal: Vec<JournalEntry>, address: &ActorAddress, now: Timestamp) -> Self {
+        Self { journal, cursor: 0, seen: HashSet::new(), address: address.as_str().to_owned(), now, latch: None }
     }
 
     /// The step `id`. When the journal holds its result, returns it decoded as a `T` without calling `call`.
@@ -379,18 +386,16 @@ impl Step {
         }
         match self.replay(id, "step") {
             Err(reason) => return Err(self.refuse(reason)),
-            Ok(Some(saved)) => {
-                return T::deserialize(&saved).map_err(|e| {
+            Ok(Some(JournalEntry::Step { result, .. })) => {
+                return T::deserialize(&result).map_err(|e| {
                     self.refuse(format!("the saved result of step `{id}` does not decode as the type asked for: {e}"))
                 });
             }
+            Ok(Some(JournalEntry::Sleep { .. })) => unreachable!("replay matches the kind"),
             Ok(None) => {}
         }
-        if self.journal.len() >= MAX_ENTRIES {
-            return Err(self.refuse(format!(
-                "step `{id}` would be entry {} of a journal that holds at most {MAX_ENTRIES}",
-                MAX_ENTRIES + 1
-            )));
+        if let Err(reason) = self.room(id, "step") {
+            return Err(self.refuse(reason));
         }
         self.latch = Some(Latch::InProgress(id.to_owned()));
         let outcome = call(format!("{}/{id}", self.address)).await;
@@ -405,8 +410,73 @@ impl Step {
         Err(HandlerError::new(Suspend))
     }
 
-    /// Matches a call of `id` against the next saved entry: its saved result, or none at the end of the journal.
-    fn replay(&mut self, id: &str, kind: &str) -> Result<Option<Value>, String> {
+    /// The durable sleep `id`: the flow continues once store time reaches a wake time saved in the journal, and no
+    /// handler stays open meanwhile. Pass its error on with `?`.
+    ///
+    /// The first time, it saves the wake time, the claim's store time plus `duration` rounded up to microseconds, and
+    /// suspends the flow: the commit arms the next `Continue` due then. A zero duration saves and suspends as well, so
+    /// every new sleep is a commit. On replay it returns `Ok(())` once store time has reached the saved wake time;
+    /// before that it suspends again and arms a `Continue` due at the same time, saving nothing, so an early `Continue`,
+    /// retry, redrive or deliver-now cannot shorten the sleep. Replay ignores `duration`: the saved time decides, also
+    /// when the code changed it. The wake time is a lower bound: a paused run, an outage or a cancelled continuation
+    /// makes it later, and a late wake does not sleep again; a run whose continuation was cancelled, purged or failed
+    /// waits for a public `Continue`.
+    ///
+    /// Sleep ids share the namespace and the limit of 1000 entries of the step ids. A new sleep longer than
+    /// [`MAX_DELAY`], or that would end after [`MAX_INSTANT`], an invalid or repeated id, a saved entry at its place that
+    /// is not this sleep, and a new sleep after 1000 entries fail the turn for good. Like [`Step::run`], after the first
+    /// new step or sleep of an execution, or its first misuse, it does nothing.
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use cicada::prelude::*;
+    /// use cicada_actors::{Flow, Step};
+    ///
+    /// struct Reminder;
+    ///
+    /// impl Flow for Reminder {
+    ///     const TYPE: &'static str = "reminder";
+    ///     type Input = String;
+    ///
+    ///     async fn run(&self, step: &mut Step, user: String) -> HandlerResult {
+    ///         step.run("signed-up", |_key| async { Ok(()) }).await?;
+    ///         step.sleep("cool-off", Duration::from_secs(24 * 3600)).await?;
+    ///         step.run("remind", |key| async move { Ok(format!("{user}: {key}")) }).await?;
+    ///         Ok(())
+    ///     }
+    /// }
+    /// ```
+    pub async fn sleep(&mut self, id: &str, duration: Duration) -> HandlerResult {
+        if self.latch.is_some() {
+            return Err(HandlerError::new(Suspend));
+        }
+        let latch = match self.replay(id, "sleep") {
+            Err(reason) => Latch::Permanent(reason),
+            Ok(Some(JournalEntry::Sleep { until, .. })) if self.now >= until => return Ok(()),
+            Ok(Some(JournalEntry::Sleep { until, .. })) => Latch::Waiting(until),
+            Ok(Some(JournalEntry::Step { .. })) => unreachable!("replay matches the kind"),
+            Ok(None) => match self.room(id, "sleep").and_then(|()| wake_time(id, self.now, duration)) {
+                Ok(until) => Latch::New(JournalEntry::Sleep { id: id.to_owned(), until }),
+                Err(reason) => Latch::Permanent(reason),
+            },
+        };
+        self.latch = Some(latch);
+        Err(HandlerError::new(Suspend))
+    }
+
+    /// Checks that the journal has room for the new step or sleep `id`.
+    fn room(&self, id: &str, kind: &str) -> Result<(), String> {
+        if self.journal.len() >= MAX_ENTRIES {
+            return Err(format!(
+                "{kind} `{id}` would be entry {} of a journal that holds at most {MAX_ENTRIES}",
+                MAX_ENTRIES + 1
+            ));
+        }
+        Ok(())
+    }
+
+    /// Matches a call of `id` of `kind` against the next saved entry: that entry, or none at the end of the journal.
+    fn replay(&mut self, id: &str, kind: &str) -> Result<Option<JournalEntry>, String> {
         check_id(id)?;
         if !self.seen.insert(id.to_owned()) {
             return Err(format!("the flow calls the id `{id}` twice"));
@@ -415,10 +485,10 @@ impl Step {
             return Ok(None);
         };
         match entry {
-            JournalEntry::Step { id: saved, result } if kind == "step" && saved == id => {
-                let result = result.clone();
+            saved if saved.kind() == kind && saved.id() == id => {
+                let saved = saved.clone();
                 self.cursor += 1;
-                Ok(Some(result))
+                Ok(Some(saved))
             }
             other => Err(format!(
                 "the flow calls {kind} `{id}` where its journal holds {} `{}` at entry {}: changed flow code cannot \
@@ -435,6 +505,27 @@ impl Step {
         self.latch = Some(Latch::Permanent(reason));
         HandlerError::new(Suspend)
     }
+}
+
+/// The wake time of a new sleep: `now + duration`, rounded up to microseconds; the duration at most [`MAX_DELAY`] and
+/// the time at most [`MAX_INSTANT`].
+fn wake_time(id: &str, now: Timestamp, duration: Duration) -> Result<Timestamp, String> {
+    if duration > MAX_DELAY {
+        return Err(format!(
+            "sleep `{id}` lasts {}, longer than the most a sleep may last, {}",
+            time::format_duration(duration),
+            time::format_duration(MAX_DELAY)
+        ));
+    }
+    let until = time::add(now, duration).map(time::ceil).map_err(|e| format!("sleep `{id}` cannot end: {e}"))?;
+    if until > MAX_INSTANT {
+        return Err(format!(
+            "sleep `{id}` would end at {}, after {}",
+            time::format_instant(until),
+            time::format_instant(MAX_INSTANT)
+        ));
+    }
+    Ok(until)
 }
 
 /// Encodes a new result and checks it the way the core checks a state, with the three levels the state adds.
@@ -477,7 +568,8 @@ fn check_result(value: &Value, depth: usize) -> Result<(), String> {
 /// `F::retry()` and its own correlation id, without running flow code; so a host starts a run, or recovers one whose
 /// continuation was cancelled, purged or failed, with a `Continue`, and a poke resets the attempts. Only the armed
 /// `Continue` executes the flow: it replays the journal, and the first new step's result commits with the next armed
-/// `Continue`, which keeps the correlation id. A flow that returns `Ok` after replaying every entry marks the run done
+/// `Continue`, which keeps the correlation id. A new sleep commits with an armed `Continue` due at its wake time, and
+/// a replayed sleep not yet due arms one due at that same time and saves nothing. A flow that returns `Ok` after replaying every entry marks the run done
 /// and clears `armed`; a done run ignores `Continue` and keeps its state until it is deleted. An execution that fails
 /// commits nothing; its message follows its retry policy, and its watchers are told as for any actor. The runner
 /// installs no watch.
@@ -505,10 +597,10 @@ impl<F: Flow> Actor for FlowActor<F> {
             if let Some(old) = turn.state().armed.clone() {
                 turn.cancel(&old)?;
             }
-            return arm(turn);
+            return arm(turn, None);
         }
         let state = turn.state();
-        let mut step = Step::new(state.journal.clone(), turn.self_address());
+        let mut step = Step::new(state.journal.clone(), turn.self_address(), turn.now());
         let returned = self.flow.run(&mut step, state.input.clone()).await;
         match step.latch.take() {
             Some(Latch::InProgress(id)) => Err(HandlerError::permanent(format!(
@@ -518,9 +610,14 @@ impl<F: Flow> Actor for FlowActor<F> {
             Some(Latch::Failed(e)) => Err(e),
             Some(Latch::Permanent(reason)) => Err(HandlerError::permanent(reason)),
             Some(Latch::New(entry)) => {
+                let wake = match &entry {
+                    JournalEntry::Sleep { until, .. } => Some(*until),
+                    JournalEntry::Step { .. } => None,
+                };
                 turn.state_mut().journal.push(entry);
-                arm(turn)
+                arm(turn, wake)
             }
+            Some(Latch::Waiting(until)) => arm(turn, Some(until)),
             None => {
                 returned?;
                 if step.cursor < step.journal.len() {
@@ -540,9 +637,13 @@ impl<F: Flow> Actor for FlowActor<F> {
     }
 }
 
-/// Self-sends a `Continue` due now with the flow's retry policy and the incoming correlation id, and saves its id.
-fn arm<F: Flow>(turn: &mut Turn<FlowActor<F>>) -> HandlerResult {
+/// Self-sends a `Continue`, due at `wake` or now, with the flow's retry policy and the incoming correlation id, and
+/// saves its id.
+fn arm<F: Flow>(turn: &mut Turn<FlowActor<F>>, wake: Option<Timestamp>) -> HandlerResult {
     let mut options = SendOptions::new().retry(F::retry());
+    if let Some(until) = wake {
+        options = options.at(until);
+    }
     options.correlation_id = turn.message().correlation_id.clone();
     let id = turn.send_self_with(FlowMsg::Continue, options).map_err(HandlerError::permanent_from)?;
     turn.state_mut().armed = Some(id);
@@ -655,5 +756,170 @@ mod tests {
         let back: FlowRun<NoTraits> = serde_json::from_value(serde_json::json!("k")).unwrap();
         assert_eq!(back.clone().key, "k");
         assert!(cicada::address::RefBinding::<FlowRun<NoTraits>>::new().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod sleep_tests {
+    use super::*;
+    use futures::executor::block_on;
+
+    const SECOND: Duration = Duration::from_secs(1);
+
+    fn at(text: &str) -> Timestamp {
+        time::parse_instant(text).unwrap()
+    }
+
+    fn execution(journal: Vec<JournalEntry>, now: Timestamp) -> Step {
+        Step::new(journal, &ActorAddress::parse("test.flow/k").unwrap(), now)
+    }
+
+    fn saved_sleep(id: &str, until: &str) -> JournalEntry {
+        JournalEntry::Sleep { id: id.to_owned(), until: at(until) }
+    }
+
+    fn saved_step(id: &str) -> JournalEntry {
+        JournalEntry::Step { id: id.to_owned(), result: Value::Null }
+    }
+
+    /// What the execution latched, as text.
+    fn latched(step: &Step) -> String {
+        match &step.latch {
+            None => "none".to_owned(),
+            Some(Latch::InProgress(id)) => format!("in progress {id}"),
+            Some(Latch::New(entry)) => format!("new {}", serde_json::to_string(entry).unwrap()),
+            Some(Latch::Waiting(until)) => format!("waiting {}", time::format_instant(*until)),
+            Some(Latch::Failed(e)) => format!("failed {e}"),
+            Some(Latch::Permanent(reason)) => format!("permanent {reason}"),
+        }
+    }
+
+    /// Calls a sleep in `step` and returns whether it suspended.
+    fn sleep(step: &mut Step, id: &str, duration: Duration) -> bool {
+        block_on(step.sleep(id, duration)).is_err()
+    }
+
+    #[test]
+    fn a_new_sleep_latches_its_wake_time_rounded_up_to_microseconds() {
+        let now = at("2026-11-14T00:00:00Z");
+        for (duration, until) in [
+            (Duration::ZERO, "2026-11-14T00:00:00Z"),
+            (Duration::from_nanos(1), "2026-11-14T00:00:00.000001Z"),
+            (Duration::from_nanos(1_001), "2026-11-14T00:00:00.000002Z"),
+            (Duration::from_micros(1), "2026-11-14T00:00:00.000001Z"),
+            (Duration::from_secs(60), "2026-11-14T00:01:00Z"),
+        ] {
+            let mut step = execution(vec![], now);
+            assert!(sleep(&mut step, "w", duration), "{duration:?}: a new sleep suspends, zero included");
+            let expected = format!(r#"new {{"kind":"sleep","id":"w","until":"{until}"}}"#);
+            assert_eq!(latched(&step), expected, "{duration:?}");
+        }
+    }
+
+    #[test]
+    fn a_new_sleep_is_bounded_by_max_delay_and_max_instant() {
+        let now = at("2026-11-14T00:00:00Z");
+        let mut step = execution(vec![], now);
+        assert!(sleep(&mut step, "w", MAX_DELAY));
+        assert!(latched(&step).starts_with("new "), "MAX_DELAY itself is allowed: {}", latched(&step));
+        let mut step = execution(vec![], now);
+        sleep(&mut step, "w", MAX_DELAY + Duration::from_nanos(1));
+        assert!(latched(&step).contains("longer than the most a sleep may last"), "{}", latched(&step));
+
+        let late = time::sub(MAX_INSTANT, SECOND);
+        let mut step = execution(vec![], late);
+        sleep(&mut step, "w", SECOND);
+        assert_eq!(latched(&step), r#"new {"kind":"sleep","id":"w","until":"9999-12-31T23:59:59.999999Z"}"#);
+        for duration in [SECOND + Duration::from_nanos(1), Duration::from_secs(2), MAX_DELAY] {
+            let mut step = execution(vec![], late);
+            sleep(&mut step, "w", duration);
+            assert!(latched(&step).contains("after 9999-12-31T23:59:59.999999Z"), "{duration:?}: {}", latched(&step));
+        }
+    }
+
+    #[test]
+    fn sleep_ids_share_the_step_namespace_and_the_entry_limit() {
+        let now = at("2026-11-14T00:00:00Z");
+        let mut step = execution(vec![], now);
+        sleep(&mut step, "a b", SECOND);
+        assert!(latched(&step).contains("a step id is"), "{}", latched(&step));
+
+        let mut step = execution(vec![saved_step("a")], now);
+        block_on(step.run("a", |_key| async { Ok(()) })).unwrap();
+        sleep(&mut step, "a", SECOND);
+        assert!(latched(&step).contains("calls the id `a` twice"), "{}", latched(&step));
+
+        let full: Vec<JournalEntry> = (0..1000).map(|i| saved_step(&format!("s{i}"))).collect();
+        let mut step = execution(full, now);
+        for i in 0..1000 {
+            block_on(step.run(&format!("s{i}"), |_key| async { Ok(()) })).unwrap();
+        }
+        sleep(&mut step, "w", SECOND);
+        assert!(latched(&step).contains("sleep `w` would be entry 1001"), "{}", latched(&step));
+    }
+
+    #[test]
+    fn a_replayed_sleep_waits_for_its_saved_wake_time_whatever_the_duration() {
+        let until = "2026-11-14T00:01:00Z";
+        for duration in [Duration::ZERO, SECOND, MAX_DELAY + SECOND] {
+            let mut step = execution(vec![saved_sleep("w", until)], at("2026-11-14T00:00:59.999999Z"));
+            assert!(sleep(&mut step, "w", duration), "{duration:?}: not yet due");
+            assert_eq!(latched(&step), format!("waiting {until}"), "{duration:?}");
+
+            for now in [until, "2026-11-15T00:00:00Z"] {
+                let mut step = execution(vec![saved_sleep("w", until)], at(now));
+                assert!(!sleep(&mut step, "w", duration), "{duration:?} at {now}: elapsed");
+                assert_eq!((latched(&step), step.cursor), ("none".to_owned(), 1), "{duration:?} at {now}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_sleep_and_a_step_do_not_replay_each_other() {
+        let now = at("2026-11-14T00:00:00Z");
+        let mut step = execution(vec![saved_step("w")], now);
+        sleep(&mut step, "w", SECOND);
+        assert!(latched(&step).contains("calls sleep `w` where its journal holds step `w`"), "{}", latched(&step));
+
+        let mut step = execution(vec![saved_sleep("v", "2026-11-13T00:00:00Z")], now);
+        sleep(&mut step, "w", SECOND);
+        assert!(latched(&step).contains("calls sleep `w` where its journal holds sleep `v`"), "{}", latched(&step));
+
+        let mut step = execution(vec![saved_sleep("w", "2026-11-13T00:00:00Z")], now);
+        let mut invoked = false;
+        let _ = block_on(step.run("w", |_key| {
+            invoked = true;
+            async { Ok(()) }
+        }));
+        assert!(!invoked);
+        assert!(latched(&step).contains("calls step `w` where its journal holds sleep `w`"), "{}", latched(&step));
+    }
+
+    #[test]
+    fn an_earlier_latch_wins_over_a_sleep_and_a_sleep_latch_over_a_later_step() {
+        let now = at("2026-11-14T00:00:00Z");
+        let mut step = execution(vec![], now);
+        step.latch = Some(Latch::InProgress("a".to_owned()));
+        assert!(sleep(&mut step, "w", SECOND));
+        assert_eq!(latched(&step), "in progress a", "an abandoned step stays the outcome");
+        assert!(step.seen.is_empty() && step.cursor == 0, "the sleep did nothing");
+
+        for journal in [vec![], vec![saved_sleep("w", "2026-11-15T00:00:00Z")]] {
+            let mut step = execution(journal, now);
+            assert!(sleep(&mut step, "w", SECOND));
+            let before = latched(&step);
+            let mut invoked = false;
+            let caught = block_on(step.run("next", |_key| {
+                invoked = true;
+                async { Ok(()) }
+            }));
+            assert!(caught.is_err() && !invoked, "{before}: a later step invokes nothing");
+            assert!(sleep(&mut step, "again", SECOND));
+            assert_eq!(latched(&step), before, "the sleep's latch stays");
+        }
+
+        let mut step = execution(vec![], now);
+        drop(step.sleep("w", SECOND));
+        assert_eq!((latched(&step), step.seen.len()), ("none".to_owned(), 0), "an unpolled sleep does nothing");
     }
 }

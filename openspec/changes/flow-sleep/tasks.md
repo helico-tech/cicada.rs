@@ -1,6 +1,6 @@
 ## Implementation
 
-- [ ] 1. Reconcile the integration with the landed durable-flows runner, then add lazy Step::sleep and New(Sleep)/
+- [x] 1. Reconcile the integration with the landed durable-flows runner, then add lazy Step::sleep and New(Sleep)/
   Waiting scheduling using the existing journal and armed continuation. Validate MAX_DELAY and checked timestamps
   without changing the wire shape. Add library tests for zero/fractional durations, bounds, ids, count and latch
   precedence; run the actor library tests and API doctests.
