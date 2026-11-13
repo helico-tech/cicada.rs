@@ -315,8 +315,10 @@ worker.start().await?; // registers the contract, then polls for turns
   them.
 - **Results, not errors.** A lost lease, a contract mismatch and a rejected commit are `200` bodies tagged by
   `result`, so a proxy's `404` or `409` never passes for one. `ActorClient` classifies by the HTTP status alone: `400`,
-  `413` and `422` are `SourceError::Invalid`; `408`, `429`, `502`, `503`, `504`, a transport failure and a timeout are
-  `Unavailable`; any other status (a redirect, `401`, `403`, `404`, `500`, …) and a body it cannot read are `Fatal`.
+  `413` and `422` are `SourceError::Invalid`; `408`, `429`, `502`, `503`, `504`, a transport failure (also one while
+  the body is read) and a timeout are `Unavailable`; any other status (a redirect, `401`, `403`, `404`, `500`, …) is
+  `Fatal`, and so is a body that arrived whole but is not a result this version reads (malformed JSON, a missing field,
+  an unknown variant).
 - **One request per call.** `ActorClient` never repeats a lease, renewal, release or completion (`send_attempts` is for
   sends only). The worker repeats a completion itself, always with the same report. A default `reqwest::Client`
   follows redirects and may then send a POST twice: disable them, and any retry layer, as above.

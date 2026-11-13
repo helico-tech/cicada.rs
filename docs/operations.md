@@ -552,14 +552,14 @@ timeouts must be longer than that, and much shorter than the server's `lease_ttl
   `claim-limit` after that many lost claims; without one it loops, repeating any external effect each time. Raise the
   limit, or make the handler's output smaller, then retry the failed messages.
 - **Deep old states.** A state or payload stored before 0.16.0 can be nested deeper than a lease's JSON parser reads
-  (128 levels, less the three or four of the body around it); a lease of it answers a body the worker cannot read,
+  (128 levels, less the three or four of the body around it); a lease of it answers a body the worker cannot parse,
   which is fatal and stops the worker, and its claims expire. Restarting a loop of such workers only repeats it: fix
   or delete the actor or the message first.
 - **Uncertain completions.** A completion whose answer was lost (a `502` of the proxy, a timeout) may have applied: the
   worker repeats its report until it is answered or its budget runs out, and a `leaseLost` then proves nothing either
   way. No receipt is stored, so treat effects as at least once and give external calls idempotency keys.
-- **Failure modes.** A `401`, `403`, `404` or `500` from the API, a redirect, or a response this version cannot read is
-  fatal: a lease request that gets it stops the worker (`Worker::stopped` returns it), and a completion that gets it
+- **Failure modes.** A `401`, `403`, `404` or `500` from the API, a redirect, or a response body that arrived whole
+  but is not a result this version reads is fatal (a body cut off in transit is unavailable): a lease request that gets it stops the worker (`Worker::stopped` returns it), and a completion that gets it
   abandons that turn. A renewal that fails in any way extends nothing: the worker tries again, and abandons the turn at
   its deadline unless a later renewal gets through. `503`, `502`, `504`, `429`, `408` and network errors are retried
   by the worker in its own rhythm.
