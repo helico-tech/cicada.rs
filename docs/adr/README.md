@@ -46,6 +46,7 @@ accepted ADR is not rewritten: a later one supersedes it. A change that makes a 
 | [0039](0039-workers-over-a-turn-source.md) | Worker reuses the Rust executor over a public TurnSource, with per-turn deadlines, bounded shared capacity, explicit completion retries and independent shutdown. |
 | [0040](0040-remote-turns-over-http.md) | Four JSON lease routes and ActorClient's TurnSource adapter preserve explicit completion results, fencing and uncertainty across HTTP peers. |
 | [0041](0041-a-consumer-skill-with-each-release.md) | A consumer skill ships with each release and routes agents to the project's resolved Cicada source; guides own the knowledge and CI checks provenance and drift. |
+| [0042](0042-app-workers-over-http.md) | App worker selects store or HTTP execution with explicit mode precedence, shared hosting, server-owned lease policy and independent Worker shutdown. |
 
 ## Design questions
 

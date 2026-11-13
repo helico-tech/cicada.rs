@@ -11,13 +11,21 @@ credentials. The preceding library worker provides that behavior; the command li
 - Reuse the application's actor selection, authentication/client conventions and shutdown handling.
 - Document deployment and regenerate the command-line reference.
 
-## To decide
+## Settled decisions
 
-- Flags, environment variables, context/token settings and conflicts between server and store configuration.
-- Which NodeConfig settings translate to WorkerConfig, and diagnostics for unsupported settings.
-- A small example and targeted end-to-end test proving no database is opened by an HTTP worker.
-- Whether a plain headless cicada serve is wanted: if so, propose it separately; hosts can already mount an empty
-  ActorSystem's HTTP router, so it is not required for this change.
+- Explicit --server/--context select HTTP; explicit --store selects the store; conflicting mode flags fail.
+- Without mode flags, CICADA_STORE keeps precedence over ambient HTTP target variables; current-context alone does
+  not switch a worker's mode. HTTP target/auth resolution reuses operator conventions.
+- Map only applicable host/flag/env settings into WorkerConfig. Refuse explicit server-owned settings and ignore
+  their ambient values; remote execution never opens a store or requires a store feature.
+- Share actor/observer hosting, disable redirects on the worker client and preserve Worker stop/error semantics.
+- Reject ActorSystem-only on_start hooks in HTTP mode before network access. No headless-server or new hook API.
+
+## Capabilities
+
+### Modified Capabilities
+
+- `app`: HTTP worker selection, configuration, lifecycle and documentation alongside the existing store worker.
 
 ## Out of scope
 
