@@ -1,5 +1,6 @@
 use serde_json::Value;
 
+use super::resolver::RegisteredType;
 use crate::address::{ActorAddress, TypeName};
 use crate::store::{ActorRecord, Message, MessageId, NodeId, RunningTurn, StoreError};
 use crate::time::Timestamp;
@@ -20,6 +21,26 @@ pub enum CreateActorResult {
     /// The address cannot be an instance of its type, checked on nodes that host the type: the ref does not accept its
     /// name (a singleton accepts only `_`, a ref with a reader of its own may refuse a name).
     InvalidAddress(String),
+}
+
+/// Result of [`ActorSystem::register_contract`](super::ActorSystem::register_contract) (`PUT /types/{name}`). HTTP:
+/// `200`, `409`, `422`.
+#[derive(Debug, Clone)]
+pub enum RegisterContractResult {
+    /// The type is registered: newly, or it already was with the same hash. The stored contract, which keeps the
+    /// descriptions of the first registration.
+    Registered(RegisteredType),
+    /// The type is registered with a different hash; nothing changed.
+    Conflict {
+        /// The registration that stays.
+        existing: RegisteredType,
+        /// The hash computed for the refused contract.
+        requested_hash: String,
+    },
+    /// The contract cannot be registered: a schema that is not an object or a boolean, nested deeper than
+    /// [`MAX_SCHEMA_DEPTH`](super::limits::MAX_SCHEMA_DEPTH) or with a NUL character, or a message name beyond the send
+    /// limits. Nothing was written. Why.
+    InvalidContract(String),
 }
 
 /// Result of setting a watch from outside a turn (`PUT /watches`). HTTP: `201`, `200`, `404`, `404`, `422`.

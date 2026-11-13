@@ -1,6 +1,6 @@
 ## Implementation
 
-- [ ] 1. Add ActorSystem::register_contract and RegisterContractResult, with validation of schema roots, message
+- [x] 1. Add ActorSystem::register_contract and RegisterContractResult, with validation of schema roots, message
   names, NUL and the separate 120-level schema bound before recomputing the hash. Use Backend::register without a
   preliminary read, return its stored definition and leave local initialization unchanged. Make TypeResolver reuse
   a hash entry only when its complete source JSON matches. Add public-API tests in crates/cicada/tests/registration.rs

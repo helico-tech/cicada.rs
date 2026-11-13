@@ -3,6 +3,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use serde_json::Value;
+
 use crate::address::ActorAddress;
 use crate::contract::Contract;
 use crate::store::{Backend, Store, StoreError, StoreResult, TypeDef};
@@ -24,10 +26,12 @@ impl RegisteredType {
     }
 }
 
-/// Finds the type of an address in the TypeRegistry and caches parsed contracts.
+/// Finds the type of an address in the TypeRegistry and caches parsed contracts, per hash with the JSON they were parsed
+/// from: two contracts with one hash may differ in their descriptions, and a type can be removed and registered again
+/// with other descriptions by another system.
 pub(crate) struct TypeResolver {
     store: Store,
-    contracts: Mutex<HashMap<String, Arc<Contract>>>,
+    contracts: Mutex<HashMap<String, (Value, Arc<Contract>)>>,
 }
 
 impl TypeResolver {
@@ -38,13 +42,13 @@ impl TypeResolver {
     pub fn registered(&self, def: TypeDef) -> StoreResult<RegisteredType> {
         let mut cache = self.contracts.lock().unwrap_or_else(|e| e.into_inner());
         let contract = match cache.get(&def.contract_hash) {
-            Some(c) => c.clone(),
-            None => {
+            Some((json, c)) if *json == def.contract => c.clone(),
+            _ => {
                 let parsed =
                     Arc::new(Contract::of(&def).map_err(|e| {
                         StoreError::Corrupt(format!("The contract of {} cannot be read: {e}", def.name))
                     })?);
-                cache.insert(def.contract_hash.clone(), parsed.clone());
+                cache.insert(def.contract_hash.clone(), (def.contract.clone(), parsed.clone()));
                 parsed
             }
         };

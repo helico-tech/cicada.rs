@@ -25,6 +25,10 @@ pub const MAX_HEADER_VALUE_LENGTH: usize = 4_000;
 /// Deepest payload or state: the most arrays and objects inside each other. `{"a": {"b": 1}}` is 2 deep, a scalar 0.
 /// A view of a value at this depth is at most 69 levels deep, which every JSON parser that allows 128 reads (ADR 0029).
 pub const MAX_DEPTH: usize = 64;
+/// Deepest state or message schema that [`ActorSystem::register_contract`](super::ActorSystem::register_contract)
+/// accepts, counted as [`MAX_DEPTH`] counts a value. The stored contract and a type view add at most two levels and the
+/// type list four, so every JSON parser that allows 128 reads them. Not a limit on values, nor on local hosting.
+pub const MAX_SCHEMA_DEPTH: usize = 120;
 
 /// Checks the fields of one send, naming the first field that is out of bounds. Lengths count characters.
 pub(crate) fn check(
@@ -69,8 +73,8 @@ pub(crate) fn check_envelope(
 /// deep, naming the first problem it meets. One walk, which stops at the first level beyond the limit, so it refuses a
 /// value of any depth without overflowing a stack.
 pub(crate) fn check_json(what: &str, value: Option<&Value>) -> Result<(), String> {
-    match value.map(|v| walk(v, 0, true)) {
-        Some(Err(problem)) => Err(problem.text(what)),
+    match value.map(|v| walk(v, 0, MAX_DEPTH, true)) {
+        Some(Err(problem)) => Err(problem.text(what, MAX_DEPTH)),
         _ => Ok(()),
     }
 }
@@ -78,7 +82,26 @@ pub(crate) fn check_json(what: &str, value: Option<&Value>) -> Result<(), String
 /// Checks only that `value` is at most [`MAX_DEPTH`] deep: a stored payload that an operator retries was checked for a
 /// NUL character when it was written.
 pub(crate) fn check_depth(what: &str, value: &Value) -> Result<(), String> {
-    walk(value, 0, false).map_err(|problem| problem.text(what))
+    walk(value, 0, MAX_DEPTH, false).map_err(|problem| problem.text(what, MAX_DEPTH))
+}
+
+/// Checks a contract that is registered without hosting: the state and each message schema is an object or a boolean,
+/// at most [`MAX_SCHEMA_DEPTH`] deep and free of NUL characters, and each message name obeys the send limits of a type
+/// name. Names the first problem it meets.
+pub(crate) fn check_contract(contract: &crate::contract::Contract) -> Result<(), String> {
+    check_schema("state schema", contract.state_schema())?;
+    for (name, schema) in contract.message_schemas() {
+        field("message name", name, MAX_TYPE_LENGTH)?;
+        check_schema(&format!("schema of message '{name}'"), schema)?;
+    }
+    Ok(())
+}
+
+fn check_schema(what: &str, schema: &Value) -> Result<(), String> {
+    if !(schema.is_object() || schema.is_boolean()) {
+        return Err(format!("The {what} is not an object or a boolean"));
+    }
+    walk(schema, 0, MAX_SCHEMA_DEPTH, true).map_err(|problem| problem.text(what, MAX_SCHEMA_DEPTH))
 }
 
 /// What [`walk`] found.
@@ -88,18 +111,18 @@ enum Problem {
 }
 
 impl Problem {
-    fn text(&self, what: &str) -> String {
+    fn text(&self, what: &str, max: usize) -> String {
         match self {
             Problem::Nul => format!("The {what} contains a NUL character"),
-            Problem::TooDeep => format!("The {what} is nested deeper than {MAX_DEPTH} levels"),
+            Problem::TooDeep => format!("The {what} is nested deeper than {max} levels"),
         }
     }
 }
 
 /// Walks `value`, which is inside `depth` arrays and objects, looking for a NUL character when `nul` is set. It calls
-/// itself at most `MAX_DEPTH` times: a container inside `MAX_DEPTH` others is refused before its items are walked.
-fn walk(value: &Value, depth: usize, nul: bool) -> Result<(), Problem> {
-    let nested = |depth: usize| if depth < MAX_DEPTH { Ok(depth + 1) } else { Err(Problem::TooDeep) };
+/// itself at most `max` times: a container inside `max` others is refused before its items are walked.
+fn walk(value: &Value, depth: usize, max: usize, nul: bool) -> Result<(), Problem> {
+    let nested = |depth: usize| if depth < max { Ok(depth + 1) } else { Err(Problem::TooDeep) };
     match value {
         Value::Object(o) => {
             let inner = nested(depth)?;
@@ -107,13 +130,13 @@ fn walk(value: &Value, depth: usize, nul: bool) -> Result<(), Problem> {
                 if nul && k.contains('\0') {
                     return Err(Problem::Nul);
                 }
-                walk(v, inner, nul)?;
+                walk(v, inner, max, nul)?;
             }
             Ok(())
         }
         Value::Array(a) => {
             let inner = nested(depth)?;
-            a.iter().try_for_each(|v| walk(v, inner, nul))
+            a.iter().try_for_each(|v| walk(v, inner, max, nul))
         }
         Value::String(s) if nul && s.contains('\0') => Err(Problem::Nul),
         _ => Ok(()),

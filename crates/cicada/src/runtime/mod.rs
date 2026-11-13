@@ -10,7 +10,7 @@ mod system;
 pub use resolver::RegisteredType;
 pub use results::{
     ActorSnapshot, BulkResult, BulkSelection, CreateActorResult, MailboxEntry, NodeHealth, NodeInfo, OpError,
-    RetryResult, SendResult, WatchResult,
+    RegisterContractResult, RetryResult, SendResult, WatchResult,
 };
 pub use system::{
     ActorSystem, ActorSystemBuilder, BULK_LIMIT, MAX_REFUSAL_DETAIL, NodeConfig, NodeState, StartError, StartProblem,

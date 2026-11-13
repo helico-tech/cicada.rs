@@ -17,11 +17,12 @@ use super::limits;
 use super::resolver::{RegisteredType, TypeResolver};
 use super::results::{
     ActorSnapshot, BulkResult, BulkSelection, CreateActorResult, MailboxEntry, NodeHealth, NodeInfo, OpError,
-    RetryResult, SendResult, WatchResult,
+    RegisterContractResult, RetryResult, SendResult, WatchResult,
 };
 use crate::actor::{Actor, ActorType, HostedActor};
 use crate::address::{ActorAddress, ActorRef, TypeName};
 use crate::change::ActorChanges;
+use crate::contract::Contract;
 use crate::message::{self, MessageFamily};
 use crate::observer::{Observers, TurnObserver};
 use crate::schema::SchemaCheck;
@@ -1243,6 +1244,35 @@ impl ActorSystem {
         let mut types = defs.into_iter().map(|d| self.inner.resolver.registered(d)).collect::<Result<Vec<_>, _>>()?;
         types.sort_by(|a, b| a.name().cmp(b.name()));
         Ok(types)
+    }
+
+    /// Registers `contract` without hosting its type (`PUT /types/{name}`): for a worker or a peer that runs the type
+    /// elsewhere, so that this system's HTTP door can accept its creates and sends. Works on any system, started or
+    /// not; it neither initializes the node nor adds a hosted type, a node row or a change hint.
+    ///
+    /// Checks the contract first ([`RegisterContractResult::InvalidContract`], before any write): the state and each
+    /// message schema is an object or a boolean, at most [`MAX_SCHEMA_DEPTH`](super::limits::MAX_SCHEMA_DEPTH) deep,
+    /// with no NUL character, and each message name obeys the send limits. Schemas are not compiled. Then it computes
+    /// the hash from the name and schemas, ignoring a hash `contract` carries (as one made by [`Contract::of`] does),
+    /// and registers it atomically: the first registration wins. An equal hash answers the stored contract, with its
+    /// first descriptions; a different hash answers [`RegisterContractResult::Conflict`] and changes nothing.
+    pub async fn register_contract(&self, contract: &Contract) -> Result<RegisterContractResult, OpError> {
+        if let Err(why) = limits::check_contract(contract) {
+            return Ok(RegisterContractResult::InvalidContract(why));
+        }
+        let contract = Contract::new(
+            contract.type_name().clone(),
+            contract.state_schema().clone(),
+            contract.message_schemas().clone(),
+        );
+        let resolver = &self.inner.resolver;
+        Ok(match self.inner.store.register(contract.to_type_def()).await? {
+            RegisterResult::Registered(stored) => RegisterContractResult::Registered(resolver.registered(stored)?),
+            RegisterResult::Conflict { existing, .. } => RegisterContractResult::Conflict {
+                existing: resolver.registered(existing)?,
+                requested_hash: contract.hash().to_owned(),
+            },
+        })
     }
 
     /// Removes the registration of the type `name` (`DELETE /types/{name}`), unless actors of the type exist. A node that
