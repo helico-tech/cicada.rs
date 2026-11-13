@@ -1,6 +1,6 @@
 ## Implementation
 
-- [ ] 1. Add the public limiter ref, state, checked decoder/constructor, message family and typed submission helper
+- [x] 1. Add the public limiter ref, state, checked decoder/constructor, message family and typed submission helper
   in `crates/cicada-actors/src/rate_limiter.rs`, with crate exports. Implement checked slot arithmetic. Verify with
   unit tests for validation, fractional rounding, inclusive delay and timestamp overflow, and a compile-fail doctest
   for a message of the wrong family; run `cargo test -p cicada-actors --lib` and `cargo test -p cicada-actors --doc`.
