@@ -41,6 +41,7 @@ accepted ADR is not rewritten: a later one supersedes it. A change that makes a 
 | [0034](0034-actor-change-hints.md) | Best-effort actor change hints with bounded resync recovery, shared-Store memory/SQLite coverage and transactional PostgreSQL notifications across upgraded nodes. |
 | [0035](0035-actor-change-sse.md) | GET /changes exposes changed/resync hints as SSE, with fixed keep-alives, no replay, and the existing store and application shutdown lifetimes. |
 | [0036](0036-register-contracts-without-hosting.md) | A core operation and PUT /types/{name} register contracts without handlers, recomputing hashes and preserving atomic first-registration-wins semantics. |
+| [0037](0037-leasing-turns-outside-the-node.md) | Public core lease, renew and release operations use server policy, conservative handoff deadlines and epoch fencing for trusted external executors. |
 
 ## Design questions
 
