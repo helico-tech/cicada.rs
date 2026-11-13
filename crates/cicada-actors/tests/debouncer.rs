@@ -529,13 +529,25 @@ async fn an_old_failed_flush_redriven_flushes_the_new_burst_now() {
     submit(&test, note("c", "old")).await;
     test.advance_time_by(secs(2)).await;
     let old = failed(&test).await.pop().expect("the failed flush");
+    let letters: DeadLettersState = test.state(&DeadLetters::default()).await;
+    assert!(letters.letters.contains_key(&old.message_id), "the dead letters keep the failed flush");
+    // The old burst ends by a manual flush once its target is there; its dead letter stays.
+    test.create(&worker("c"), &WorkerState::default()).await;
+    submit(&test, DebouncerMsg::Flush).await;
+    assert_eq!(log(&test, "c").await, ["old"]);
+    assert_eq!(held(&test).await, settings(2, 5), "the old burst is over");
     test.advance_time_by(secs(10)).await;
     submit(&test, note("a", "new")).await;
+    let timer = test.pending(&deb()).await.pop().expect("the new burst's timer");
+    assert_eq!(time::between(start, timer.deliver_at), secs(14), "due in the future");
+    assert_eq!(held(&test).await.first_at, time::add(start, secs(12)).ok(), "a fresh burst");
+    assert!(forwarded(&test, start).await.is_empty(), "the new value waits");
     test.send(&DeadLetters::default(), DeadLettersMsg::Redrive { message_id: old.message_id }).await;
     test.run_until_idle().await;
     assert_eq!(forwarded(&test, start).await, [("new".to_owned(), secs(12))], "the new burst, early");
     assert_eq!(held(&test).await, settings(2, 5));
-    assert!(test.pending(&deb()).await.is_empty(), "the new burst's timer was cancelled");
+    assert_eq!(status(&test, &timer).await, Some(OutcomeStatus::Cancelled), "the new burst's timer was cancelled");
+    assert!(test.pending(&deb()).await.is_empty());
 }
 
 // Deep pending values fail without losing the earlier burst.
