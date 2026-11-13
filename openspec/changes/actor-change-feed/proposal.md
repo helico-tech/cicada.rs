@@ -16,17 +16,20 @@ avoid polling every row on every refresh. The code-factory showcase is the motiv
   Store and its clones; separately opened SQLite handles, including other processes, are outside this first version.
 - Bound subscriber buffering, signal detected gaps with Resync, and define startup/reconnect/close behaviour without
   a durable log or a replay cursor. The design must state precisely which losses are detected and how hosts recover.
-- Keep the existing dispatch wake-ups and turn outcomes intact. ADR 0034 will record the feed's best-effort contract
-  and any inter-node notification format; no SQL schema change is planned.
+- Keep dispatch wake-up filtering and core transaction guarantees; accept ordinary PostgreSQL notification failures.
+  ADR 0034 records the feed's best-effort contract and inter-node notification format; no SQL schema change is planned.
 
 The owner delegated the split to an Opus 5.5 adviser: this core feed first, then actor-change-sse for HTTP transport.
 No TurnEnd extension is needed: an observer sees neither other nodes nor all operator-created snapshot changes.
 
-## To decide
+## Settled boundaries
 
-- The exact source readiness and resync protocol, including races with subscription and shutdown.
-- PostgreSQL publication failure boundaries: no payload/queue failure should be hidden behind a claim of reliability.
-- The public stream type, buffer policy, and explicit limits of best-effort coverage and recovery.
+- ActorChange carries Changed { address } or Resync; the first/recovery resync waits for source readiness. A store
+  owns the feed, so an unstarted system can subscribe and worker stop does not end it; Store::close does.
+- One bounded transaction collector coalesces large batches. PostgreSQL uses one @-prefixed feed payload on the
+  existing channel, atomically with its write; queue exhaustion/timeouts retain ordinary store-failure semantics.
+- Memory/SQLite publish locally after commit; SQLite cancellation settles the writer before resync where the runtime
+  remains available. Runtime shutdown and out-of-scope writers require a fresh subscription or explicit refresh.
 
 ## Capabilities
 
@@ -36,7 +39,8 @@ No TurnEnd extension is needed: an observer sees neither other nodes nor all ope
 
 ### Modified Capabilities
 
-None planned; dispatch wake-ups and turn observers retain their behaviour.
+- `store-backends`: change streams end normally on close, an explicit exception to unavailable read/write calls.
+  The internal listener owns reconnect readiness; ordinary wake-up filtering and TurnObserver remain unchanged.
 
 ## Out of scope
 

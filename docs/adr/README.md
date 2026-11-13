@@ -38,6 +38,7 @@ accepted ADR is not rewritten: a later one supersedes it. A change that makes a 
 | [0031](0031-durable-flows.md) | Host-named flow actors replay an ordered journal, commit one new step per turn, recover through an armed continuation and retain completed runs; external effects remain at least once, and the first journal contract includes durable sleep. |
 | [0032](0032-timer-trace-links.md) | Observers select headers for delayed self-sends or other sends; cicada-otel starts timer traces with a link carried by prefixed propagation headers, preserving explicit parents and ordinary send propagation. |
 | [0033](0033-listing-actors-with-state.md) | A typed actor-state listing and GET /actors/states reuse full actor snapshots, with one set-based read per page and ordinary address keyset paging. |
+| [0034](0034-actor-change-hints.md) | Best-effort actor change hints with bounded resync recovery, shared-Store memory/SQLite coverage and transactional PostgreSQL notifications across upgraded nodes. |
 
 ## Design questions
 
