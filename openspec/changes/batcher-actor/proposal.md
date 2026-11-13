@@ -2,34 +2,33 @@
 
 ## Why
 
-Some targets work better on a list than on one item at a time: a bulk API, a digest email, one write for many rows.
-Outside, batching by size or by time is a named feature of Broadway and Inngest, and a paid one of Oban Pro (Chunk)
-and River Pro. The same actor with a key per group is the aggregator of the integration patterns. It is not on ADR
-0018's list, and it comes last of the four small actors, because throughput is not a goal of cicada.
+Some targets work on lists: a bulk API, a digest email, or one write for many rows. One actor per stream can collect
+items in handling order and forward a batch on count or time. The actor uses the public core API, following the
+ready-made actors of ADR 0028; throughput is not a goal.
 
 ## What Changes
 
-- A new ready-made actor `BatcherActor`, type name `cicada.batcher`, one instance per stream of items (the key is its
-  name).
-- Its message `Add { item }` takes a JSON value and appends it. The first item of a batch arms a `Flush` after the
-  longest wait; the item that reaches the largest count makes the actor send itself a `Flush` at once.
-- Its own `Flush` sends one message to the target, of a type name set at create, with the payload
-  `{"items": [...]}`, and clears the batch in the same commit. The target declares a variant with a list field.
-- A batch that the target cannot decode fails at the target and reaches its dead letters whole. A target that is
-  absent fails the `Flush`, and the items stay.
-- An item that arrives after a flush starts a new batch.
-- Its settings are in its state, set at create: the target, the type name of the flush, the largest count and the
-  longest wait. Both limits are required, so a batch always ends and the state stays bounded.
-- Its contract is pinned in `docs/reference/contracts`; the actors guide gets a section with doctests.
+- Add `BatcherActor`, type name `cicada.batcher`, with fixed target, message type, maxItems, maxWait and optional
+  target retry. Both limits are required; maxItems is 1 through 1,000, and maxWait is positive.
+- `Add { item }` appends one JSON value. The first retained item arms a public `Flush` at the batch's deadline.
+  An Add that reaches maxItems, or finds an overdue batch, sends and clears the batch in that same turn.
+- Public `Flush` sends the current items as `{"items": [...]}`, cancelling the timer and clearing atomically.
+  Empty is a no-op. A timer carries the crate's shared retry policy; an operator may flush early or redrive it.
+- A missing target fails the turn. An Add that would flush commits neither its item nor the delivery; a failed
+  timer keeps the earlier batch. State therefore remains below maxItems even while a target is absent.
+- A target's decoding or handling failure occurs after forwarding; its failed message contains the whole batch.
+- Never stop automatically. Hosts explicitly create instances, including create-and-add in one turn.
+- Pin the contract, add a tested example and guide section, and host the type in the sample service without instances.
 
-The simplest version: a flush on count or on time, one target, items kept in order.
+This changes the proposal's earlier self-sent immediate Flush: queued Adds could otherwise exceed the count limit
+and grow state without bound while the target was absent. Inline delivery keeps the limit enforceable.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `batcher`: a ready-made actor that collects items and sends them to a target as one message, when the batch reaches
-  its largest count or its longest wait.
+- `batcher`: collect items per key in handling order and forward them as one message on count, scheduled wait or
+  public Flush, with atomic forwarding and bounded item count.
 
 ### Modified Capabilities
 
@@ -37,25 +36,17 @@ None.
 
 ## Out of scope
 
-- A batch that waits for an expected count per correlation id, or for every member to succeed (a batch with
-  callbacks). The second needs a notice of success that the core does not give.
-- A flush on the size of the batch in bytes.
-- Checking an item against the target's schema at `Add`; the target's decoder is the judge.
+- Flush on bytes, a bound on total state bytes, target-schema checking of each item, callbacks and success tracking.
+- A separate expected-count rule: a key per group with maxItems as the expected count already provides aggregation.
+- Live settings changes, automatic idle deletion, and a guarantee of delivery despite a missing target or lost timer.
 - Changes to the core.
-
-## Questions for the design
-
-- What are the default and the cap of the largest count? The whole state is read and written on every turn, and the
-  wrapping adds two levels toward the depth limit of a value.
-- Is an expected count a third rule to end a batch, so that this actor is also the aggregator?
 
 ## Order
 
-After `debouncer-actor`, before `durable-flows`. The last of the four small actors.
+After `debouncer-actor`, before `durable-flows`.
 
 ## Impact
 
-- `crates/cicada-actors` (a module `batcher`, its tests on virtual time, `tests/wire_formats.rs`),
-  `docs/reference/contracts` (a new file), [docs/guide/actors.md](../../../docs/guide/actors.md) and its doctests,
-  `README.md` (the table of actors), `CHANGELOG.md`.
-- Hosts: no host has asked for it.
+`crates/cicada-actors` (module, exports, tests and wire samples), `docs/reference/contracts`, the actors guide and its
+doctests, a tested example, README, crate docs, architecture's crate row, AGENTS map, changelog, and sample-service
+catalog and contract snapshots/texts. No existing contract changes.
