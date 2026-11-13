@@ -18,20 +18,27 @@ An installed copy cannot promise it has silently updated, and latest-main advice
   load detail as needed instead of placing every manual into the initial instructions.
 - Cover project integration and layer choice, actor identity/state/messages, durable flows and ready-made actors,
   external-effect idempotency, retries and cancellation, virtual-time testing, HTTP/workers, telemetry and operations.
-- Package authoritative references from the same source revision rather than hand-maintaining another copy. Include
+- Read authoritative references from the resolved dependency's source rather than packaging another manual. Include
   source/version provenance, offline behavior and an explicit path to update the installed skill.
 - Check packaging, references and example compilation in CI/release checks, and evaluate representative consumer
   requests to catch misleading guidance that structural validation cannot prove correct.
 
-## To decide
+## Settled decisions
 
-- Exact source layout and release/install format, keeping the skill usable outside a Cicada checkout and across
-  agents that support SKILL.md without requiring a particular connector or agent harness.
-- Version discovery for Cargo lockfiles, workspace dependencies, git revisions, local paths, mixed versions and new
-  projects; source precedence and honest behavior when matching sources or network access are unavailable.
-- Which references ship offline versus load from pinned upstream sources; deterministic generation and link handling.
-- The minimum always-loaded practices, task routing and ownership of improvements to canonical guides.
-- What CI can enforce automatically, what needs behavioral review, and release integration within five build tasks.
+- Maintain skills/cicada/SKILL.md and a read-only Python source resolver; ship them as a versioned release archive.
+- Resolve installed Cargo packages offline with the lockfile, using manifest paths instead of guessed cache locations.
+  Report mixed or unavailable sources and distinguish version equality from revision equality.
+- Route to the resolved source's guides/examples/API. Missing headings require further inspection, not an invented
+  API or an automatic conclusion that a feature is absent. No copied manuals or silent fetch/update.
+- Put reusable actor-design advice in the core guide, preserve contract/deployment caveats and test guide examples.
+- Check source resolution, routes and archive provenance in CI; use focused behavioral review for quality. No check
+  claims to prove every best practice or automatically refresh installed copies.
+
+## Capabilities
+
+### New Capabilities
+
+- `consumer-skill`: a portable, version-aware coding-agent skill for projects using Cicada.
 
 ## Out of scope
 
