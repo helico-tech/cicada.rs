@@ -54,6 +54,7 @@ macro_rules! expect_matches {
 }
 
 mod chain;
+mod changes;
 mod children;
 mod control;
 mod env;
@@ -73,6 +74,7 @@ pub use fixture::{FixtureFactory, StoreFixture};
 /// Every case of the suite, as an `async fn`, one module per suite.
 pub mod cases {
     pub use super::chain::*;
+    pub use super::changes::*;
     pub use super::children::*;
     pub use super::control::*;
     pub use super::lost_claims::*;
@@ -279,6 +281,13 @@ macro_rules! for_each_case {
             lost_claims_a_commit_after_the_lease_ran_out_succeeds_and_counts_nothing,
             lost_claims_the_message_of_a_lost_claim_is_cancelled_or_purged_and_the_next_one_has_none,
             lost_claims_the_message_in_an_outcome_keeps_its_count,
+            // changes.rs
+            changes_creates_pauses_resumes_and_deletes_from_outside_are_reported_after_they_commit,
+            changes_a_turn_reports_its_new_state_even_an_equal_one_its_creates_controls_and_restarts_once_each,
+            changes_a_stop_and_a_delete_by_a_commit_report_every_removed_actor_with_its_descendants,
+            changes_mailbox_lease_watch_registry_node_and_sweep_work_and_a_turn_that_keeps_its_state_report_nothing,
+            changes_refused_rolled_back_and_fenced_commits_and_a_failed_turn_report_nothing,
+            changes_a_transaction_of_more_than_100_actors_is_one_resync,
         );
     };
 }
@@ -332,6 +341,7 @@ fn every_case_is_generated() {
 
     let sources = [
         include_str!("chain.rs"),
+        include_str!("changes.rs"),
         include_str!("children.rs"),
         include_str!("control.rs"),
         include_str!("lost_claims.rs"),

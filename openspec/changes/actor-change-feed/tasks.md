@@ -19,7 +19,7 @@
   error mapping (including unchanged statement-time class-54 errors), two stores on one schema, cancelled commits,
   listener termination/reconnect readiness, lag under wake-up traffic and stream close. Use gated PostgreSQL fault
   fixtures without filling the server's real notification queue; run targeted tests and the postgres-only check.
-- [ ] 4. Add/register shared change-feed conformance coverage for every included and excluded actor write path:
+- [x] 4. Add/register shared change-feed conformance coverage for every included and excluded actor write path:
   operator/turn/child creates, equal-value state writes, pauses/resumes, restart, stop/delete descendants, idempotent
   or absent operations, mailbox/lease/watch/registry-only work, refused/rolled-back/LeaseLost commits and coalescing.
   Assert committed reads after hints; use a later marker rather than timing-based absence assertions. Run conformance
