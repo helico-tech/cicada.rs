@@ -24,5 +24,5 @@
 
 ## Finishing checks
 
-- [ ] 4. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
+- [x] 4. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
   `openspec validate otel-timer-traces --strict`; record results and any unavailable optional checks.
