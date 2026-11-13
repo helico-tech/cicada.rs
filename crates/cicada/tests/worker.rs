@@ -640,3 +640,49 @@ async fn a_permanent_failure_of_a_manual_batch_stops_a_new_worker_too() {
     assert_eq!(stopped.to_string(), "turn source failed: gone");
     assert_eq!(json!(worker.state().name()), json!("STOPPED"));
 }
+
+/// A worker's turns through a server on `store`, on real time: registration, manual batches and polling.
+async fn works_on(store: Store) {
+    let server = ActorSystem::builder(store.clone()).build();
+    let worker = Worker::builder(server.clone()).host(CounterActor(Arc::default())).config(config(4)).build();
+    worker.initialize().await.unwrap();
+    for id in ["a", "b"] {
+        server.create(&counter(id), &CounterState::default()).await.unwrap();
+    }
+    let first = send(&server, "a", CounterMsg::Add { n: 2 }).await;
+    send(&server, "b", CounterMsg::Add { n: 3 }).await;
+    assert_eq!(worker.run_due_turns(10).await.unwrap(), 2);
+    assert_eq!(outcome(&server, &first.id).await, Some(OutcomeStatus::Done));
+    worker.start().await.unwrap();
+    send(&server, "a", CounterMsg::Add { n: 5 }).await;
+    let deadline = tokio::time::Instant::now() + secs(10);
+    while total(&server, "a").await != 7 {
+        assert!(tokio::time::Instant::now() < deadline, "the worker did not poll the turn");
+        sleep(Duration::from_millis(20)).await;
+    }
+    worker.stop().await;
+    assert_eq!(total(&server, "b").await, 3);
+    store.close().await;
+}
+
+/// A worker on SQLite.
+#[tokio::test]
+async fn a_worker_runs_its_turns_on_sqlite() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cicada.db");
+    works_on(Store::sqlite(path, cicada::store::SqliteOptions::default()).await.unwrap()).await;
+}
+
+/// A worker on PostgreSQL (skipped without `CICADA_PG_URL`).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_worker_runs_its_turns_on_postgres() {
+    let Some(url) = std::env::var("CICADA_PG_URL").ok().filter(|u| !u.trim().is_empty()) else {
+        eprintln!("CICADA_PG_URL is unset: skipping a PostgreSQL test");
+        return;
+    };
+    let schema = format!("worker_{}_{}", std::process::id(), &MessageId::random().as_str()[..8]);
+    works_on(Store::postgres(&url, cicada::store::PostgresOptions::for_schema(&schema)).await.unwrap()).await;
+    use sqlx::Connection;
+    let mut c = sqlx::PgConnection::connect(&url).await.unwrap();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!("DROP SCHEMA \"{schema}\" CASCADE"))).execute(&mut c).await.unwrap();
+}

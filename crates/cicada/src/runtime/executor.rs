@@ -166,7 +166,7 @@ impl Holder {
 
     /// The deadline of a grant of `ttl` asked for at `sent`; `None` for a source's grant that is shorter than
     /// [`MIN_GRANT`] or that the monotonic clock cannot hold.
-    fn grant(&self, sent: Instant, ttl: Duration) -> Option<Instant> {
+    pub(crate) fn grant(&self, sent: Instant, ttl: Duration) -> Option<Instant> {
         if self.is_source() && ttl < MIN_GRANT {
             return None;
         }
@@ -174,7 +174,7 @@ impl Holder {
     }
 
     /// The renewal interval for a lease of `ttl`: the node's heartbeat, or a third of a source's TTL (at least 1 ns).
-    fn heartbeat(&self, ttl: Duration) -> Duration {
+    pub(crate) fn heartbeat(&self, ttl: Duration) -> Duration {
         match self {
             Holder::Store { lease, .. } => lease.heartbeat,
             Holder::Source(_) => (ttl / 3).max(NANO),
