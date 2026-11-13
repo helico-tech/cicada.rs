@@ -7,6 +7,44 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.16.16 — unreleased
+
+Nothing breaks: a worker runs unchanged Rust actors through any server of the HTTP API, the fourth part of remote
+execution. No schema, contract, store behaviour, command line or existing route changes; four routes are added.
+
+### Added
+
+- `POST /leases`, `/leases/renew`, `/leases/release` and `/leases/complete` on the full router (`actor_api`; not
+  `actor_api_read`), operationIds `leaseTurns`, `renewTurn`, `releaseTurn` and `completeTurn` (ADR 0040). They serve
+  the core's lease, renewal, release and completion on any system of the store, started or not, hosting the types or
+  not, with no session: a worker can lease on one server and renew and complete on another. Core alternatives are
+  `200` results tagged by `result` (`leased`, `contractMismatch`, `renewed`, `leaseLost`, `completed`, `rejected`); a
+  release is `204`. Their bodies refuse unknown fields at every level and a key repeated at any depth (also spelled
+  with other escapes), an empty or non-object body and anything after it, with `400` before any operation; the body
+  limit and serde_json's nesting limit apply. A completion calls the core once, with no retry, fallback or release.
+  They are trusted writes: the host's authentication must cover `/leases` and its children.
+- `cicada::api::leases`, re-exported in `cicada::api`: `LeaseTurnsRequest`, `LeaseTurnsResponse`, `TurnLeaseView`,
+  `TurnMessageView`, `RenewTurnRequest`, `RenewTurnResponse`, `ReleaseTurnRequest`, `CompleteTurnRequest`,
+  `CompleteTurnResponse`, `TurnReportView`, `StateReportView`, `TurnEffectsView`, `TurnSendView`, `ActorCreateView`,
+  `WatchChangeView`, `ControlView`, `ControlEffectView`, `TurnFailureView` and `TurnOutcomeView`, with conversions to
+  and from the core types. A `TurnMessageView` has every field of `MessageView`, each required (nullable ones as
+  `null`), its policies decoded strictly; `epoch`, `version` and `seq` are exact `i64` integers, durations keep
+  nanoseconds. `MessageView` is unchanged.
+- `ActorClient` implements `TurnSource`, so `Worker::builder(ActorClient::with_client(url, http))` runs actors without
+  database access. One request per call (`send_attempts` applies to sends only), each lease, renewal, release and
+  completion bounded by `ActorClient::turn_timeout` (default 10 s, positive) through the response body. Errors follow
+  the HTTP status alone: `400`, `413` and `422` are `Invalid`; `408`, `429`, `502`, `503`, `504`, transport errors and
+  timeouts `Unavailable`; any other status, a malformed body or an unknown variant `Fatal`. A registration conflict
+  reads the existing type once and computes the requested hash from the schemas. The `reqwest::Client` keeps its own
+  redirect and retry policy: give a worker one without redirects.
+- Example 15, `examples/src/remote_worker.rs`: the cleanup singleton in a worker that reaches only the HTTP API, with a
+  bearer token and redirects off.
+
+### Changed
+
+- The test `work_that_outlives_the_cancel_timeout_is_no_longer_renewed_and_its_lease_expires` stops the worker only
+  once its handler signals that it entered its blocking section.
+
 ## 0.16.15 — 2026-11-13
 
 Nothing breaks: a worker runs unchanged Rust actors through a turn source instead of a store, the third part of remote

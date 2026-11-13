@@ -369,6 +369,12 @@ database. Complete through nodes of 0.16.14 only: an older node has no `complete
 through a turn source (ADR 0039, [Run actors in a worker](guide/core.md#run-actors-in-a-worker)); a node runs its turns
 as before. A worker leases, renews and completes through its source, so serve it from nodes of 0.16.14 or later.
 
+**Version 0.16.16 changes no schema, contract, store behaviour or existing route.** It adds the four `/leases` routes
+of the full API and `ActorClient` as a turn source (ADR 0040, [Run a worker over
+HTTP](guide/http.md#run-a-worker-over-http)). Point a worker over HTTP only at servers of 0.16.16 or later behind its
+load balancer: an older server answers `404`, which stops the worker with a fatal error. Extend the host's
+authentication to `/leases` and its children before exposing them.
+
 **Switching a type to `create_child`.** An actor created with `turn.create` stays independent: a later `create_child`
 of it by its creator does not adopt it, but fails the creator's message (the commit is rejected, and a handler cannot
 test for that). So switch a parent type from `create` to `create_child` only when no parent of it is left that created
@@ -531,6 +537,32 @@ the source's. Size its `concurrency` as a node's; it counts lease requests in fl
 than leaving it idle. A completion it cannot get through within one TTL is abandoned without release, logged as
 `Completion of … abandoned; the lease will expire` or `… dropped …; it may have applied`, and the lease expires as a
 dead node's would.
+
+A worker over HTTP ([Run a worker over HTTP](guide/http.md#run-a-worker-over-http)) needs only the URL of the full API
+behind a load balancer, no sticky sessions, and credentials the host's authentication accepts for `/leases`, its
+children and `PUT /types/{name}`: these are trusted writes, and an epoch is no secret. Give the worker a
+`reqwest::Client` without redirects and without a retry layer of its own. Each lease, renewal, release and completion
+takes at most `turn_timeout` (10 s by default) or the client's own shorter timeout; a load balancer's idle and request
+timeouts must be longer than that, and much shorter than the server's `lease_ttl`, or every renewal comes too late.
+
+- **Body limits.** A completion carries the whole report of a turn. Size `ApiConfig::max_request_body_bytes` (1 MiB by
+  default) and every proxy's body limit for the largest report a handler can produce, not for one send. A report over
+  a limit is `413`: the worker abandons the turn, and the lease expires and is claimed again, so the handler runs again
+  and fails the same way. With a claim limit set ([The claim limit](#the-claim-limit)) the message then fails with cause
+  `claim-limit` after that many lost claims; without one it loops, repeating any external effect each time. Raise the
+  limit, or make the handler's output smaller, then retry the failed messages.
+- **Deep old states.** A state or payload stored before 0.16.0 can be nested deeper than a lease's JSON parser reads
+  (128 levels, less the three or four of the body around it); a lease of it answers a body the worker cannot read,
+  which is fatal and stops the worker, and its claims expire. Restarting a loop of such workers only repeats it: fix
+  or delete the actor or the message first.
+- **Uncertain completions.** A completion whose answer was lost (a `502` of the proxy, a timeout) may have applied: the
+  worker repeats its report until it is answered or its budget runs out, and a `leaseLost` then proves nothing either
+  way. No receipt is stored, so treat effects as at least once and give external calls idempotency keys.
+- **Failure modes.** A `401`, `403`, `404` or `500` from the API, a redirect, or a response this version cannot read is
+  fatal: a lease request that gets it stops the worker (`Worker::stopped` returns it), and a completion that gets it
+  abandons that turn. A renewal that fails in any way extends nothing: the worker tries again, and abandons the turn at
+  its deadline unless a later renewal gets through. `503`, `502`, `504`, `429`, `408` and network errors are retried
+  by the worker in its own rhythm.
 
 ### Logs
 

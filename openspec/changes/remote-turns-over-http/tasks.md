@@ -31,7 +31,7 @@
   for runtime assertions, following AGENTS.md; real-socket framing smoke tests need no timer-sensitive behavior.
   Run the targeted integration tests, including SQLite/PostgreSQL peer cases where available. Add a compiled
   no_run example in examples/ of a database-free worker using an explicitly configured HTTP client.
-- [ ] 5. Update ADR 0040/index as needed, architecture's HTTP contract, HTTP guide, operations and crate route table.
+- [x] 5. Update ADR 0040/index as needed, architecture's HTTP contract, HTTP guide, operations and crate route table.
   Document full envelopes, exact integer parsing, nanosecond TTLs, raw canonical body addresses, trusted auth covering
   /leases and its children plus type registration, redirects/custom retry restrictions, effective timeouts, whole-report
   body/proxy limits, deep legacy states, claim-limit recovery and uncertain completion. Link the example, and relevant

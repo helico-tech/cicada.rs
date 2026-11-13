@@ -438,6 +438,28 @@ rules. Schemas are not compiled: the door's fallback for an unusable schema appl
 behind the host's authentication. A node's resolver reuses a parsed contract only when both its hash and its stored
 JSON match, so descriptions that another system replaced after a removal are read fresh.
 
+Remote turns (ADR 0040) are four POST routes of the full router: `/leases` (`{owner, types: {name: hash}, limit}`),
+`/leases/renew` and `/leases/release` (`{actor, epoch}`) and `/leases/complete` (`{actor, epoch, messageId,
+report}`), over the core operations of [Leases outside the node](#leases-outside-the-node) on any system of the store,
+started or not and hosting nothing, without sessions. The actor is a canonical address in the body, so a worker echoes
+it without a path to encode. Core alternatives are `200` results tagged by `result` (`leased`, `contractMismatch`,
+`renewed`, `leaseLost`, `completed`, `rejected`); a release is `204`; operation errors keep the problem mapping above
+(`503` for a stopping server's lease, the store's errors as everywhere). A lease carries every field of a message
+(nullable ones as `null`, counters at 0 too), its state and version, the store times and the TTL, all required and the
+policies decoded strictly; responses ignore unknown envelope fields. Requests refuse unknown fields at every level, and
+their own parser refuses a key repeated at any depth (also an escape of it), an empty or non-object body and anything
+after it, all `400` before any operation; the byte limit and serde_json's nesting limit of 128 stay, and a value within
+that budget meets the core's storage checks (a too deep new state fails the turn, `completed` with cause `handler`).
+`epoch`, `version` and `seq` are exact `i64` JSON integers, durations keep nanoseconds. A completion calls the core once:
+no retry, fallback commit, release or observer is added by HTTP. These routes are trusted writes: an epoch is a fence,
+not a secret, so the host's authentication covers `/leases` and its children and `PUT /types/{name}`.
+`ActorClient` is a `TurnSource` over them and the type routes: one request per call (no use of `send_attempts`), each
+of the four bounded by `turn_timeout` (default 10 s) through the response body, and errors classified by the HTTP
+status alone (`400`/`413`/`422` invalid; `408`/`429`/`502`/`503`/`504`, transport and timeout unavailable; anything
+else, a malformed body or an unknown variant fatal). A registration conflict reads the existing type once and computes
+the requested hash from the schemas. Its `reqwest::Client` keeps its own redirect and retry policy, which a worker's
+host disables.
+
 ## Change hints
 
 `ActorSystem::changes(prefix)` (ADR 0034) is a best-effort stream of `ActorChange::Changed { address }` and

@@ -33,10 +33,10 @@ PostgreSQL for tests: `docker compose up -d postgres` (port 55432). Tests that n
 
 | Path | What |
 | --- | --- |
-| `crates/cicada` | Core: `address`, `message`, `actor` (the `Actor` trait), `turn`, `watch` (`WatchTarget`, the notifications `Failed` and `Stopped`, the `FailureCause` of a `Failed`, the check of a watcher), `observer` (`TurnObserver`), `runtime` (node, `Worker` and its `TurnSource`, executor, the claim limit), `store` (`Store`, the private `Backend` trait, model, support; `sqlite` and `postgres` behind their features), `testing` (feature `testing`: in-memory store, clocks, `TestActors`), `contract`, `schema`, `retry`, `retention`, `time`, `api` (HTTP wire model), `tests` (the conformance suite, the store, fuzz and runtime tests that need the private trait) |
+| `crates/cicada` | Core: `address`, `message`, `actor` (the `Actor` trait), `turn`, `watch` (`WatchTarget`, the notifications `Failed` and `Stopped`, the `FailureCause` of a `Failed`, the check of a watcher), `observer` (`TurnObserver`), `runtime` (node, `Worker` and its `TurnSource`, executor, the claim limit), `store` (`Store`, the private `Backend` trait, model, support; `sqlite` and `postgres` behind their features), `testing` (feature `testing`: in-memory store, clocks, `TestActors`), `contract`, `schema`, `retry`, `retention`, `time`, `api` (HTTP wire model; `leases`, the bodies of the remote turn routes), `tests` (the conformance suite, the store, fuzz and runtime tests that need the private trait) |
 | `crates/cicada-test` | Exports `TestActors`, the clocks and `claim_and_abandon`; contract snapshots and state samples |
 | `crates/cicada-axum` | HTTP API routers |
-| `crates/cicada-client` | Typed HTTP client |
+| `crates/cicada-client` | Typed HTTP client; `turns`, its `TurnSource` for a worker over HTTP |
 | `crates/cicada-app` | `App`: a set of actors as a binary with `serve`, `worker` and the operator commands (`command`, `settings`, `node`; the command line `cli`, `operator`, `config`, `output`, and `tui` behind its feature; `cli_reference`, the test of `docs/reference/cli.md`); the binary `cicada` |
 | `crates/cicada-otel` | The telemetry observer |
 | `crates/cicada-actors` | The ready-made actors (layer 3): `supervisor`, `dead_letters`, `topic`, `scheduler`, `rate_limiter`, `debouncer`, `batcher`, `event`; `flow`, durable flows under a host's type name (a test flow's contract in `tests/contracts`); `StoredMessage` and `Schedule`; their contracts are checked against `docs/reference/contracts` in `tests/wire_formats.rs` |

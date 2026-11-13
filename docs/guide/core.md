@@ -867,9 +867,9 @@ assert_eq!(server.get_actor(&acme.address()?).await?.map(|a| a.version), Some(1)
 
 A `Worker` runs ordinary actors without a store (ADR 0039): it leases their turns from a `TurnSource`, runs the
 unchanged handlers with the node's executor, and completes each turn through the source with the duties of the two
-sections above. `ActorSystem` is a source in process; `Arc<T>` of a source is one too, and an HTTP client can implement
-the trait. The block runs the reports type of [examples/src/sync.rs](../../examples/src/sync.rs) through a server that
-hosts nothing:
+sections above. `ActorSystem` is a source in process; `Arc<T>` of a source is one too, and `ActorClient` is one over HTTP
+([Run a worker over HTTP](http.md#run-a-worker-over-http)). The block runs the reports type of
+[examples/src/sync.rs](../../examples/src/sync.rs) through a server that hosts nothing:
 
 <!-- doctest
 # #[tokio::main(flavor = "current_thread")]

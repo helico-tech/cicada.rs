@@ -540,8 +540,9 @@ pub struct Problem {
 
 /// The problem `type` URIs the HTTP API uses.
 pub mod problem_types {
-    /// 400: malformed JSON body (also unknown keys in a request envelope), query parameter or path; a delivery time
-    /// out of range; an envelope field that is too long or contains a NUL character; an invalid retry policy.
+    /// 400: malformed JSON body (also unknown keys in a request envelope, and in a `/leases` body a key repeated at any
+    /// depth), query parameter or path; a delivery time out of range; an envelope field that is too long or contains a
+    /// NUL character; an invalid retry policy.
     pub const BAD_REQUEST: &str = "urn:cicada:problem:bad-request";
     /// 404: no registered type matches the address (create), or no type has this name (remove).
     pub const NO_SUCH_TYPE: &str = "urn:cicada:problem:no-such-type";

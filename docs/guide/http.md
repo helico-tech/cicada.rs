@@ -7,7 +7,7 @@ this API for a host that does not need more.
 | Crate | Contents |
 | --- | --- |
 | `cicada-axum` | `actor_api()` (the whole API), `actor_api_read()` (only what reads) and `actor_health()` (a public readiness check) as axum routers; the check of a send and a create against the registered JSON Schemas, and the sample checks `assert_message_sample` and `assert_state_sample`. |
-| `cicada-client` | `ActorClient`: typed HTTP client (reqwest) for remote callers, idempotent sends. |
+| `cicada-client` | `ActorClient`: typed HTTP client (reqwest) for remote callers, idempotent sends; a `TurnSource`, so a `Worker` runs actors over HTTP. |
 
 The Rust blocks of this guide are doctests of the `examples` crate (`cargo test -p cicada-examples --doc`).
 
@@ -189,6 +189,10 @@ request's path and query as `instance`.
 | `GET /watches?watcher=&target=&cursor=&limit=` — stored watches `{target, watcher}` in the order of target and watcher; `target` narrows to the watches stored with exactly that target | 200 | 400 a watcher or target that does not parse |
 | `PUT /watches` body `{target, watcher}` — set a watch; the target is an address, a type prefix or `*`, and need not exist | 201 set; 200 set already | 400 a target that is no target; 404 `no-such-type` or `no-such-instance` for the watcher; 422 `not-a-watcher` when its type does not declare `Failed` and `Stopped` |
 | `DELETE /watches?target=&watcher=` — remove a watch | 204 | 400; 404 `no-such-watch` |
+| `POST /leases` body `{owner, types: {name: hash}, limit}` — lease turns for a trusted worker (see [Run a worker over HTTP](#run-a-worker-over-http)) | 200 `{result: "leased", leases}` (empty when nothing is due) or `{result: "contractMismatch", type, registered, requested}` | 400 a malformed or invalid body, a repeated key; 413; 503 the server is stopping |
+| `POST /leases/renew` body `{actor, epoch}` | 200 `{result: "renewed", leaseUntil, ttl, cancelRequested}` or `{result: "leaseLost"}` | 400; 413 |
+| `POST /leases/release` body `{actor, epoch}` — give a lease back without an outcome | 204, also when nothing was held | 400; 413 |
+| `POST /leases/complete` body `{actor, epoch, messageId, report}` | 200 `{result: "completed", outcome, cause, version, sent, cancelled}`, `{result: "rejected", failure}` or `{result: "leaseLost"}` | 400 a malformed body, a repeated key, a failure nobody may report; 413 |
 | `GET /openapi.json` — the OpenAPI 3.1 document of this router | 200 | |
 | `GET /health` — node running and store reachable | 200 | 503 |
 
@@ -272,6 +276,67 @@ println!("{} {}", stored.name, stored.hash);
   accepted and the door warns about it later ([The schema check](#the-schema-check)).
 - **Who may register.** It is a write route: `actor_api` serves it, behind the host's authentication, and
   `actor_api_read` answers `405`. It is not an identity or an authorization of a worker.
+
+### Run a worker over HTTP
+
+A [worker](core.md#run-actors-in-a-worker) runs ordinary Rust actors in a process that only reaches the HTTP API
+(ADR 0040): `ActorClient` is its `TurnSource`. The worker registers its contracts with `PUT /types/{name}`, leases with
+`POST /leases`, and renews, releases and completes with `POST /leases/renew`, `/leases/release` and
+`/leases/complete` through whichever server the load balancer picks. Any server on the store answers, started or not,
+hosting the types or not; no session sticks to the one that leased. This block is
+[examples/src/remote_worker.rs](../../examples/src/remote_worker.rs), example 15, which runs the cleanup singleton:
+
+<!-- doctest
+# use std::time::Duration;
+# use cicada::runtime::{Worker, WorkerConfig};
+# use cicada_client::ActorClient;
+# use cicada_examples::singleton::{CleanupActor, TempFiles};
+# async fn example<F: TempFiles>(files: F) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+# let (base_url, token) = ("https://actors.internal", "secret");
+@@11
+# Ok(()) }
+-->
+```rust,no_run
+let mut bearer = reqwest::header::HeaderValue::try_from(format!("Bearer {token}"))?;
+bearer.set_sensitive(true);
+let headers = reqwest::header::HeaderMap::from_iter([(reqwest::header::AUTHORIZATION, bearer)]);
+// No redirects (a 307 or 308 would send a POST again), and no retry policy of the client's own.
+let http = reqwest::Client::builder().default_headers(headers).redirect(reqwest::redirect::Policy::none()).build()?;
+let source = ActorClient::with_client(base_url, http).turn_timeout(Duration::from_secs(5));
+let worker = Worker::builder(source)
+    .host(CleanupActor { files })
+    .config(WorkerConfig { concurrency: 4, ..WorkerConfig::default() })
+    .build();
+worker.start().await?; // registers the contract, then polls for turns
+```
+
+- **Trusted writes.** An epoch is a fence, not a secret: whoever can call these routes can complete any lease. The
+  host's authentication must cover `/leases` and its children, and `PUT /types/{name}`. `actor_api_read` serves none of
+  them.
+- **Results, not errors.** A lost lease, a contract mismatch and a rejected commit are `200` bodies tagged by
+  `result`, so a proxy's `404` or `409` never passes for one. `ActorClient` classifies by the HTTP status alone: `400`,
+  `413` and `422` are `SourceError::Invalid`; `408`, `429`, `502`, `503`, `504`, a transport failure and a timeout are
+  `Unavailable`; any other status (a redirect, `401`, `403`, `404`, `500`, …) and a body it cannot read are `Fatal`.
+- **One request per call.** `ActorClient` never repeats a lease, renewal, release or completion (`send_attempts` is for
+  sends only). The worker repeats a completion itself, always with the same report. A default `reqwest::Client`
+  follows redirects and may then send a POST twice: disable them, and any retry layer, as above.
+- **Timeouts.** `turn_timeout` (default 10 s, positive) bounds each of the four calls from sending to the end of the
+  body; a shorter timeout of the `reqwest::Client` still applies. The worker may give up a renewal or a completion
+  sooner, at its own lease deadline.
+- **Uncertain completion.** A completion whose answer was lost may have applied. The worker repeats its report within
+  its budget and its lease; a `leaseLost` answer then says nothing about the first attempt. It never runs the handler
+  again and never releases a turn whose handler ended. After `rejected`, it reports only the returned failure.
+- **Whole reports.** A completion carries the whole report: the new state and every send, create and other effect in
+  one body. It must fit `ApiConfig::max_request_body_bytes` (1 MiB by default) and every proxy's limit, or it is `413`:
+  the worker abandons the turn without a release or a failure report of its own, and lost-claim recovery runs the
+  handler again later, until the [claim limit](../operations.md#the-claim-limit) if one is set.
+- **Exact bodies.** Bodies are strict: an unknown field at any level, a key twice in any object (also spelled with
+  other escapes), anything after the object, or a missing field is `400` before anything happens. A lease's message has
+  every field of `MessageView`, all required, nullable ones as `null`. `epoch`, `version` and `seq` use the whole
+  `i64` range: a client in another language must not read them as floating-point numbers. Durations keep nanoseconds
+  (`PT0.000000002S`). The actor in a body is its canonical address, echoed as it is.
+- **Older servers.** A server before 0.16.16 has no `/leases` routes: its `404` is `Fatal`, and the worker stops with
+  that error at its first lease request.
 
 ### List actors with their state
 
