@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.16.14 — unreleased
+## 0.16.14 — 2026-11-13
 
 Nothing breaks: an executor outside the system can complete the turns it leased with the report of its handler, the
 second part of remote execution. No schema, contract, route, command line or store behaviour changes.
