@@ -61,7 +61,7 @@ tests of `cicada-actors`, as those of the topic and the supervisor do.
 
 ## 4. Checks
 
-- [ ] 4.1 `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
+- [x] 4.1 `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
       `cargo test --workspace`, `cargo check -p cicada-actors`, `openspec validate scheduler-actor --strict` and
       `openspec validate --specs --strict`. Verify: all pass.
 - [ ] 4.2 The end-to-end suite with `CICADA_E2E=1 cargo test -p cicada-e2e -- --nocapture`, which starts the sample
