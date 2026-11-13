@@ -10,17 +10,14 @@ That is fine at tens of tickets and wasteful at hundreds; every host with a boar
 
 ## What Changes
 
-- The listing of actors can return each actor's state and version with its address, paged by address as now
-  (keyset, `next` cursor). Without the option it answers as today.
-- The same over HTTP on `GET /actors` and in `cicada-client`.
-- The simplest version: one option on the existing listing, read from the columns the store already has; no schema
-  change.
-
-## To decide
-
-- An option on the existing call and route (`state=true`), or a call and route of its own (a list of snapshots).
-- The page size with states: the same default and maximum as for addresses, or smaller, as states can be large.
-- What a row holds besides the state: the version, `createdAt`, `paused`, `parent` (as `GET /actors/{type}/{key}`).
+- Add ActorSystem::list_actors_with_state returning a page of the existing ActorSnapshot, with address, state,
+  version, created_at, paused and parent. Keep the existing address-only listing unchanged.
+- Add GET /actors/states and ActorClient::list_actors_with_state, returning pages of the existing ActorView. A
+  separate route keeps the old route's response fixed and avoids a boolean query option and response union.
+- Read each page with one actor SELECT per SQL read attempt, or one memory-store lock, using existing stored columns.
+  Reuse literal address prefixes, keyset cursors and HTTP page limits (default 100, maximum 1000); core keeps its positive-limit check.
+- Rows in one page share a read snapshot; there is no snapshot across pages. Reuse the single-actor read/error rules,
+  including older deep states. ADR 0033 records the additive wire contract; there is no schema change.
 
 ## Capabilities
 
@@ -30,7 +27,7 @@ None.
 
 ### Modified Capabilities
 
-- `management-api` (probably also `actor-state`): the listing of actors can carry each actor's state.
+- `management-api`: a host can list actors with their complete stored state snapshots.
 
 ## Out of scope
 
@@ -43,6 +40,7 @@ After `otel-timer-traces`, before `actor-change-feed`.
 
 ## Impact
 
-The listing of both store backends and the conformance suite, `ActorSystem::list_actors` or its sibling, the
-`GET /actors` route of `cicada-axum` and `docs/openapi.json`, `cicada-client`, `docs/guide/http.md` and the core
-guide, the changelog. Once it is released, cicada-code-factory reads its board in one call (`src/ui/mod.rs`).
+The private listing method of all three stores and the conformance suite, the new ActorSystem method, the
+`GET /actors/states` route of `cicada-axum` and `docs/openapi.json`, `cicada-client`, core/HTTP guides, architecture,
+ADR 0033 and changelog. No CLI or terminal UI change. After release cicada-code-factory can use one page read for its
+board (`src/ui/mod.rs`); the host update is outside this change.

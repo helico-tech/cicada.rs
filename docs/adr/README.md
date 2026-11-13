@@ -37,6 +37,7 @@ accepted ADR is not rewritten: a later one supersedes it. A change that makes a 
 | [0030](0030-three-loops.md) | Three loops, each in a session of its own: design with the owner, build in a worktree, and review in any agent harness, handing over through files (`scripts/status.py`, `scripts/review.py`); changes are small, the builder runs targeted tests, reviews read rather than run the suite, and only blocking findings start one fix round. |
 | [0031](0031-durable-flows.md) | Host-named flow actors replay an ordered journal, commit one new step per turn, recover through an armed continuation and retain completed runs; external effects remain at least once, and the first journal contract includes durable sleep. |
 | [0032](0032-timer-trace-links.md) | Observers select headers for delayed self-sends or other sends; cicada-otel starts timer traces with a link carried by prefixed propagation headers, preserving explicit parents and ordinary send propagation. |
+| [0033](0033-listing-actors-with-state.md) | A typed actor-state listing and GET /actors/states reuse full actor snapshots, with one set-based read per page and ordinary address keyset paging. |
 
 ## Design questions
 
