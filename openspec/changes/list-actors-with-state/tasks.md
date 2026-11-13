@@ -17,7 +17,7 @@
   pagination, empty results, limits/defaults/duplicates, literal prefixes, type states route coexistence, store error
   mapping, maximum-depth state round-trip and unchanged GET /actors. Regenerate docs/openapi.json using
   CICADA_UPDATE_OPENAPI=true and verify both routers' documents. Run the affected axum/client tests.
-- [ ] 4. Document the method/route in crate docs and core/HTTP guides with compiling listing examples. Explain
+- [x] 4. Document the method/route in crate docs and core/HTTP guides with compiling listing examples. Explain
   per-page read consistency, keyset concurrency, version lifetime, core versus HTTP limits, large-page sizing,
   legacy-depth caveats and new-server requirement. Add the route to the HTTP depth paragraph (state + 3 = 67), and
   describe this listing in architecture with ADR 0033. Update changelog/version using the release process; leave CLI

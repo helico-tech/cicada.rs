@@ -289,6 +289,13 @@ does not enforce a schema that the validator cannot compile; JSON that code send
 view of a value written from 0.16.0 on is deeper than 69 levels (a page of outcomes that holds a `Failed`), so a JSON
 parser that allows 128 reads every one.
 
+Actors are listed by address (`GET /actors`, `ActorSystem::list_actors`) or with their state (`GET /actors/states`,
+`ActorSystem::list_actors_with_state`, ADR 0033). The second has the prefix, order, cursors and limits of the first,
+and each row is the single-actor snapshot (`ActorSnapshot`, over HTTP the view of `GET /actors/{type}/{key}`). Each page
+of it is one read of the store (one `SELECT` per read attempt on SQL, one lock in memory) that names its columns, so its
+rows share one committed snapshot and each state comes with its own version; there is no snapshot across pages. It
+returns the stored JSON without an actor or a schema, and one row that does not decode fails the page.
+
 ## Design notes
 
 - **Definitions are checked by the compiler.** One `handle` with an exhaustive `match` over the messages its ref

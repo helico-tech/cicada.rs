@@ -7,6 +7,27 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.16.9 — unreleased
+
+Nothing breaks: a host can list actors with their state in one read per page. The route and the methods are new;
+`list_actors`, `GET /actors` and its OpenAPI operation stay as they were. No schema, actor contract or command line
+change. Upgrade a server before its clients call the new route.
+
+### Added
+
+- `ActorSystem::list_actors_with_state(prefix, cursor, limit)`, a page of the `ActorSnapshot` that `get_actor` returns
+  (address, state, version, `created_at`, `paused`, `parent`), with the prefix, order, cursors and positive-limit rule
+  of `list_actors` (ADR 0033). Each page is one read of the store: one `SELECT` per read attempt on SQLite and
+  PostgreSQL, one lock in memory. Its rows share one committed snapshot and each state comes with its own version;
+  there is no snapshot across pages. The stored JSON is returned without an actor or a schema, also for a state stored
+  before the depth limit; one row that does not decode fails the page.
+- `GET /actors/states?prefix=&cursor=&limit=` on both `actor_api` and `actor_api_read` (operationId `listActorStates`,
+  response `ActorViewPage`): the view of `GET /actors/{type}/{key}` for each actor, in the pages of `GET /actors`,
+  limit 1 to 1000, 100 by default. An actor of a type named `states` stays at `GET /actors/states/{key}`. A page holds
+  a state three levels deeper, 67 for a state at the limit.
+- `ActorClient::list_actors_with_state(prefix, cursor, limit)` for that route. Against an older server it returns that
+  server's error and does not fall back to reading each actor.
+
 ## 0.16.8 — 2026-11-13
 
 Nothing breaks in the API: an observer can pick timers or the other sends for a header, and `cicada-otel` starts a new

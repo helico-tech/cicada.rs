@@ -156,6 +156,7 @@ request's path and query as `instance`.
 | `DELETE /actors/{type}/{key}` — admin delete of the actor and every descendant, purges their mailboxes | 204 | 404 |
 | `GET /actors/{type}/{key}/children?cursor=&limit=` — the direct children's addresses, in address order, paged | 200 | 404 |
 | `GET /actors?prefix=&cursor=&limit=` — instance addresses, paged | 200 | |
+| `GET /actors/states?prefix=&cursor=&limit=` — the actors of `GET /actors`, each as `GET /actors/{type}/{key}` shows it, with the same pages and cursors; one read of the store per page (see [List actors with their state](#list-actors-with-their-state)) | 200 | 500 a stored row that no longer decodes fails the whole page |
 | `POST /actors/{type}/{key}/messages` body `{id?, type, payload?, deliverAt? \| delay?, correlationId?, headers?, retry?, retention?}` — send | 202 `{id, deliverAt}`; 200 that id was already accepted (same target and type) | 400 invalid `retry` or `retention` policy; 404 `no-such-type` when no registered type matches the target, also when the actor exists; 404 `no-such-instance` when its type is registered and the actor does not exist; 409 id already used for another target or type; 422 unknown message type; 422 `invalid-payload`: a payload that does not match the registered schema of its message type (every node), or one that cannot be decoded (hosting node) |
 | `GET /actors/{type}/{key}/mailbox?cursor=&limit=` — pending mailbox in delivery order, each with `attempt`, `failures`, `lostClaims`, `lastError`, `retry` and `state` (`running` or `pending`) | 200 | 404 |
 | `POST /actors/{type}/{key}/mailbox/pause` — pause: messages queue up, no new turn is started, a running turn finishes | 204 | 404 |
@@ -216,11 +217,44 @@ can appear on both, so deduplicate by id.
 
 **How deep a value and its view can be.** A payload and a state hold at most 64 levels of arrays and objects (ADR 0029,
 [How deep a value can be](core.md#how-deep-a-value-can-be)). A view wraps them: `GET /messages/{id}` puts a payload two
-levels deeper, a page of `GET /outcomes` four, `GET /actors/{type}/{key}` a state one, and a `Failed` holds the payload
+levels deeper, a page of `GET /outcomes` four, `GET /actors/{type}/{key}` a state one, a page of `GET /actors/states`
+a state three (67 levels for a state at the limit), and a `Failed` holds the payload
 of the failed message one level down. So no view of a value written from 0.16.0 on is deeper than 69 levels, which
 every JSON parser that allows 128 reads, serde_json and `cicada-client` among them. System.Text.Json and Json.NET stop
 at 64 by default; each raises it with one setting (`MaxDepth`). A value stored before 0.16.0 can be deeper, and so can
-its view.
+its view: one such state can make a whole page of `GET /actors/states` too deep for a client's parser.
+
+### List actors with their state
+
+`GET /actors/states` and `ActorClient::list_actors_with_state` list actors with their state (ADR 0033): each row is
+the view of `GET /actors/{type}/{key}` (address, type, state, version, createdAt, paused, parent), in the pages of
+`GET /actors`, with the same `prefix`, `cursor` and `limit` (1 to 1000, 100 by default). Both routers serve it.
+
+<!-- doctest
+# async fn board(client: &cicada_client::ActorClient) -> Result<(), cicada_client::ClientError> {
+@@9
+# Ok(())
+# }
+-->
+```rust,no_run
+let mut cursor: Option<String> = None;
+loop {
+    let page = client.list_actors_with_state("factory.ticket/", cursor.as_deref(), Some(100)).await?;
+    for actor in &page.items {
+        println!("{} v{}: {}", actor.address, actor.version, actor.state);
+    }
+    let Some(next) = page.next else { break };
+    cursor = Some(next);
+}
+```
+
+A page is one read of the store, so its rows share one committed snapshot; there is no snapshot across pages (a later
+page shows later commits, misses an actor created before its cursor and leaves out a deleted one), and a version
+counts the state writes of one life of an actor. Large states make large pages: pick a smaller `limit` for them. One
+row that no longer decodes fails the whole page with `500`. The core guide has the details:
+[List actors with their state](core.md#list-actors-with-their-state). The route is new in 0.16.9: upgrade the server
+before a client uses it. Against an older server the method returns that server's error and does not fall back to
+reading each actor.
 
 ### The schema check
 

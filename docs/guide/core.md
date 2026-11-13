@@ -478,10 +478,51 @@ async fn main() -> anyhow::Result<()> {
   `Store::sqlite(path, options)` sets up a new or empty file and refuses a SQLite file that holds the tables of
   another program.
 - `ActorSystem` is cheap to clone; every clone is the same node. Its methods are the in-process API: `create`,
-  `send`, `send_with`, `send_to`, `send_message`, `get_actor`, `delete_actor`, `list_actors`, `pending`,
-  `list_pending`, `status`, `outcome`, `cancel`, `failures`, `types`, `health`.
+  `send`, `send_with`, `send_to`, `send_message`, `get_actor`, `delete_actor`, `list_actors`,
+  `list_actors_with_state`, `pending`, `list_pending`, `status`, `outcome`, `cancel`, `failures`, `types`, `health`.
 - The runtime logs with [`tracing`](https://docs.rs/tracing); install a subscriber (such as `tracing_subscriber`) to
   see its output.
+
+### List actors with their state
+
+`list_actors` returns addresses only. A board or a table that shows many actors uses `list_actors_with_state`
+instead (ADR 0033): each row is the `ActorSnapshot` that `get_actor` returns (address, state, version, `created_at`,
+`paused`, `parent`), so a page costs one read, not one listing and a read per actor.
+
+<!-- doctest
+# async fn board(system: &cicada::ActorSystem) -> Result<(), cicada::OpError> {
+@@11
+# Ok(())
+# }
+-->
+```rust
+let mut cursor = None;
+loop {
+    let page = system.list_actors_with_state("factory.ticket/", cursor.as_ref(), 100).await?;
+    for actor in &page.items {
+        println!("{} v{} paused={}: {}", actor.address, actor.version, actor.paused, actor.state);
+    }
+    match page.next {
+        Some(next) => cursor = Some(next),
+        None => break,
+    }
+}
+```
+
+- **Paging.** The prefix, the order and the cursors are those of `list_actors`: a literal prefix of the address
+  (`a` matches `a/one` and `ab/one`, `a/` only the type `a`; `%` and `_` are plain characters), address order, and
+  the same `next` cursor for the same page. Keep the prefix while paging. The limit must be positive; the core sets
+  no upper limit, while HTTP takes 1 to 1000 (100 by default).
+- **One read per page.** A page is one read of the store: its rows share one committed snapshot, and each state comes
+  with its own version. A turn that is still running is not seen; a commit that changes several listed actors is seen
+  whole or not at all. The stored state is returned as it is, without an actor or a schema, so the node need not host
+  the types.
+- **No snapshot across pages.** A later page shows later commits, misses an actor created before its cursor and leaves
+  out one deleted meanwhile. A version counts the state writes of one life of an actor: it says nothing of `paused`
+  or `parent`, is no global watermark, and starts again at 0 when an actor is deleted and created again.
+- **Size.** A page holds whole states, so large states make large pages: pick a smaller limit for them. A state stored
+  before 0.16.0 can be nested deeper than 64 levels and is returned as it is
+  ([How deep a value can be](#how-deep-a-value-can-be)); one bad row fails the whole page.
 
 ### The contract of a type
 

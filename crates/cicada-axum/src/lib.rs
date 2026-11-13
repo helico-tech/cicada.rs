@@ -8,6 +8,7 @@
 //! | `GET /actors/{type}/{key}` | 200 | 404 |
 //! | `DELETE /actors/{type}/{key}` | 204 | 404 |
 //! | `GET /actors?prefix=&cursor=&limit=` | 200 | |
+//! | `GET /actors/states?prefix=&cursor=&limit=` (each actor with its state, one store read per page) | 200 | |
 //! | `POST /actors/{type}/{key}/messages` body `{id?, type, payload, deliverAt or delay, correlationId?, headers?, retry?, retention?}` | 202, 200 duplicate id | 400 invalid retry or retention policy, 404, 409 id taken, 422 unknown type, a payload that does not match its schema or cannot be decoded |
 //! | `GET /actors/{type}/{key}/mailbox?cursor=&limit=` | 200 | 404 |
 //! | `POST /actors/{type}/{key}/mailbox/pause` | 204 | 404 |
