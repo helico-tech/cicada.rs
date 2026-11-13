@@ -8,6 +8,7 @@ use cicada::time::Timestamp;
 use cicada_actors::Schedule;
 use cicada_axum::{assert_message_sample, assert_state_sample};
 use cicada_examples::cron::{CronMsg, CronState};
+use cicada_examples::debounce::{DocumentMsg, DocumentState, IndexerMsg};
 use cicada_examples::fanout::{BatchItemMsg, BatchItemState, BatchMsg, BatchState, BatchStatus};
 use cicada_examples::rate_limit::{SignupMsg, SignupState, SmsMsg};
 use cicada_examples::registry::{Device, DeviceMsg, DeviceState, RegistryMsg, RegistryState};
@@ -166,6 +167,14 @@ fn rate_limit() {
     states([SignupState::default(), SignupState { phone: Some("+31 6 1".into()), texted: true }]);
     let reply_to = "signups/1".parse().unwrap();
     messages([SmsMsg::Send { phone: "+31 6 1".into(), text: "Welcome!".into(), reply_to }]);
+}
+
+#[test]
+fn debounce() {
+    messages([DocumentMsg::Edit { text: "abc".into() }, DocumentMsg::Indexed { version: 3 }]);
+    states([DocumentState::default(), DocumentState { text: "abc".into(), version: 3, indexed: Some(3) }]);
+    let reply_to = "documents/d1".parse().unwrap();
+    messages([IndexerMsg::Reindex { doc: "d1".into(), version: 3, text: "abc".into(), reply_to }]);
 }
 
 #[test]

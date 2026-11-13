@@ -7,6 +7,31 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.16.3 — unreleased
+
+Nothing breaks: a new ready-made actor, the debouncer. A node that hosts it registers its contract at its first start;
+nothing changes for the other nodes, and no schema of the store changes.
+
+### Added
+
+- The debouncer (`DebouncerActor`, `cicada.debouncer`, one instance for each key, built with `Debouncer::named`):
+  `Submit { to, message, retry }` replaces the kept submission whole, with its correlation id, and arms a public
+  `Flush` at the quiet period from the turn's store time, capped by the longest wait from the burst's first
+  submission (`DebouncerMsg::submit` builds one from a typed ref and a message of its family). `Flush` sends the kept
+  message to its target, with the debouncer as its sender and the kept retry policy and correlation id, and clears
+  the burst in the same commit; with nothing kept it does nothing. Its state holds the quiet period and the longest
+  wait, fixed at the create (`DebouncerState::new`, checked like a decoded state, fails with `InvalidDebounce`), and
+  the kept `DebouncedMessage`, the burst's start and the armed flush. A flush that fails clears nothing: an
+  operator's `Flush`, retry or redrive sends what is kept then. Due times are not run times: the longest wait bounds
+  the scheduled flush, not one delayed by a pause or an outage. Its contract is in
+  `docs/reference/contracts/cicada.debouncer.json`; the actors guide, "Debouncer", has its rules, and
+  `examples/src/debounce.rs` is a worked example. The sample service hosts the type and creates no debouncer.
+
+### Fixed
+
+- The README and the core guide count the twelve worked examples, and the core guide's table of examples lists
+  `rate_limit`.
+
 ## 0.16.2 — 2026-11-13
 
 Nothing breaks: a new ready-made actor, the rate limiter. A node that hosts it registers its contract at its first

@@ -6,7 +6,7 @@ to work.
 
 | Crate | Contents |
 | --- | --- |
-| `cicada-actors` | Ready-made actors on the public API, each under a fixed type name: a supervisor (`SupervisorActor`), dead letters (`DeadLettersActor`), a topic (`TopicActor`), a scheduler (`SchedulerActor`) and a rate limiter (`RateLimiterActor`); `StoredMessage` and `Schedule`. |
+| `cicada-actors` | Ready-made actors on the public API, each under a fixed type name: a supervisor (`SupervisorActor`), dead letters (`DeadLettersActor`), a topic (`TopicActor`), a scheduler (`SchedulerActor`), a rate limiter (`RateLimiterActor`) and a debouncer (`DebouncerActor`); `StoredMessage` and `Schedule`. |
 
 The Rust blocks of this guide are doctests of the `examples` crate (`cargo test -p cicada-examples --doc`).
 
@@ -20,11 +20,12 @@ a node hosts it like any other type, and the host creates its instances.
 | `TopicActor` | `cicada.topic` | the name of the topic | Sends each published message to all of its subscribers. |
 | `SchedulerActor` | `cicada.scheduler` | the name of the schedule | Sends a stored message to a target on each slot of a `Schedule`. |
 | `RateLimiterActor` | `cicada.rate-limiter` | the name of the limit | Sends each submitted message to its target at the next free slot of a shared rate. |
+| `DebouncerActor` | `cicada.debouncer` | the key whose bursts it debounces | Keeps the latest submission of a burst and sends it to its target once the burst is quiet. |
 
 A message that one of them keeps to send later is a `StoredMessage`: a type name and a JSON payload,
 `{"type": …, "payload": …}`. The actor knows where it goes, so it holds no address. `StoredMessage::for_ref(&worker,
 WorkerMsg::Begin { batch: 7 })` builds one from a typed ref and a message, so a message of the wrong family does not
-compile. The contracts of the five types are wire formats; their references in
+compile. The contracts of the six types are wire formats; their references in
 [docs/reference/contracts](../reference/contracts/) pin them, doc comments included.
 
 Their states and messages are checked like any other, against the depth limit of 64 levels too
@@ -449,3 +450,93 @@ curl -X POST localhost:8080/actors/cicada.rate-limiter/sms/messages -H 'content-
   settings, as a create of a limiter that exists changes nothing.
 - **How deep.** A `Submit` holds the payload of its message two levels down: a payload deeper than 62 levels makes the
   send of the submission too deep, and it is refused at the call.
+
+## Debouncer
+
+`DebouncerActor` turns a burst of submissions into one delivery: it keeps only the latest submission, one instance
+for each key, and sends it to its target once the burst was quiet for a while, at the latest a fixed time after the
+burst began, or at once on a `Flush`. Use it for "re-index after edits" or "one notice after a run of changes". It
+delivers the trailing value only: it merges no payloads and has no leading edge. The quiet period and the longest
+wait are in the state, fixed at the create. A host creates a debouncer at startup, or a producer creates it and
+submits to it in one turn, as a turn's creates come before its sends:
+
+<!-- doctest
+# use cicada::prelude::*;
+# use serde::{Deserialize, Serialize};
+# #[derive(Debug, Clone, Serialize, Deserialize)]
+# struct Indexer;
+# impl ActorRef for Indexer { const TYPE: &'static str = "indexer"; type Message = IndexerMsg; }
+# #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+# #[serde(tag = "type")]
+# enum IndexerMsg { Reindex { doc: String, version: u32, text: String, reply_to: ActorAddress } }
+@@3
+# fn edit<A: Actor>(turn: &mut Turn<A>, doc: String, version: u32, text: String) -> HandlerResult {
+@@7
+# Ok(())
+# }
+-->
+```rust
+use std::time::Duration;
+use cicada_actors::{Debouncer, DebouncerMsg, DebouncerState};
+
+let debouncer = Debouncer::named(format!("reindex-{doc}")); // hosted as DebouncerActor
+// Two seconds quiet, at most ten seconds from the first submission of a burst.
+let settings = DebouncerState::new(Duration::from_secs(2), Duration::from_secs(10))?;
+turn.create(&debouncer, &settings)?; // a debouncer that exists keeps its settings and its burst
+let reindex = IndexerMsg::Reindex { doc, version, text, reply_to: turn.self_address().clone() };
+let retry = RetryPolicy::new(3, Backoff::fixed(Duration::from_secs(5))?)?; // at the target
+turn.send(&debouncer, DebouncerMsg::submit(&Indexer, reindex, Some(retry))?)?;
+```
+
+[examples/src/debounce.rs](../../examples/src/debounce.rs) is this document. `DebouncerMsg::submit` takes a typed ref
+and a message of its family, so a message the target does not take does not compile. Over HTTP (the example's indexer
+writes its fields in camelCase):
+
+```sh
+curl -X PUT localhost:8080/actors/cicada.debouncer/reindex-d1 -H 'content-type: application/json' -d '{"state":
+  {"quiet": "PT2S", "maxWait": "PT10S"}}'
+curl -X POST localhost:8080/actors/cicada.debouncer/reindex-d1/messages -H 'content-type: application/json' -d '{"type":
+  "Submit", "payload": {"to": "indexer/_", "message": {"type": "Reindex", "payload": {"doc": "d1", "version": 3,
+  "text": "abc", "replyTo": "documents/d1"}}}}'
+curl -X POST localhost:8080/actors/cicada.debouncer/reindex-d1/messages -H 'content-type: application/json' \
+  -d '{"type": "Flush"}'
+```
+
+- **Its settings.** `quiet`, how long a burst must be quiet before its submission is sent, and `maxWait`, the longest
+  time from the burst's first submission to its scheduled flush: `0 < quiet <= maxWait <= MAX_DELAY`, which the
+  constructor and the decoder check. With `quiet` equal to `maxWait`, a burst is a fixed window from its first
+  submission; that is not a rate limit. No message changes the settings: delete the debouncer and create it again.
+- **The latest submission wins, whole.** A `Submit` replaces the kept target, message, target retry policy and
+  correlation id together. The target is not looked up until the flush, so it need not exist yet. A superseded
+  submission ends `done`, and nobody is told that it was dropped.
+- **Its timer.** Each `Submit` cancels the armed `Flush` and arms one at `min(now + quiet, firstAt + maxWait)`, where
+  `now` is the store's time of the turn and `firstAt` that of the burst's first submission, with the crate's shared
+  retry policy (7 attempts, the waits doubling from one second). With `quiet` 2 s and `maxWait` 5 s, submissions
+  handled at 0, 1, 2, 3 and 4 s deliver only the last, at 5 s. A due time past `MAX_INSTANT` fails the `Submit` for
+  good (`refused`) and changes nothing. A `Submit` and the timer due at the same instant run in the core's order: the
+  `Submit` first replaces the kept value; the flush first delivers the old one, and the `Submit` starts a new burst.
+- **Flush is public.** A `Flush` sends the kept submission, cancels the armed timer and clears the burst in one commit;
+  with nothing kept it ends `done` and does nothing. Anyone may send one, so an operator delivers early, or recovers a
+  flush that failed. It sends what is kept when it runs: an old `Flush` that is retried or redriven while a new burst
+  waits flushes the new burst early.
+- **What the target gets.** The stored message, due now, with a new id, the debouncer as its sender, the kept
+  correlation id and retry policy, and the default retention. Headers of the submission are not kept; an observer
+  still adds its own to the flush's send. A reply address belongs in the payload. A retry at the target goes after its
+  own backoff, without passing the debouncer again; the timer's own retry policy governs only the flush.
+- **A failed flush clears nothing.** A message the target does not take, or a target type that is not registered,
+  fails the flush for good (`refused`); a target that is gone rejects the commit (`commit`); a read of the store that
+  fails is tried again by the flush's retry policy, and a `Submit` in between cancels that retry and arms its own
+  timer. Terminal failures reach the debouncer's watchers, and dead letters that watch it keep them; the debouncer
+  watches nothing. A failure at the target after the flush committed does not bring the value back.
+- **A lost timer.** A flush that failed for good, or that an operator cancelled or purged (which tells no watcher),
+  leaves the kept submission without a live timer. A `Flush` sends it; a new `Submit` replaces it and arms a timer from
+  the old `firstAt`, due at once when `maxWait` has passed.
+- **Due times are not run times.** `maxWait` bounds the scheduled flush from the store's time at which the burst's
+  first submission was handled. Time a submission waited in the mailbox, a pause of the debouncer, an outage or a slow
+  commit can all make the flush later; due times are rounded up to a microsecond and clamped to the store's time at
+  the commit. A paused debouncer flushes when it is resumed and its flush is claimed.
+- **It never stops itself.** Submissions may wait in its mailbox; delete an idle debouncer with the core's control.
+  Pause, resume and delete work as for any actor; a create of a debouncer that exists changes nothing.
+- **How deep.** The state holds the kept payload three levels down, so a payload may be at most 61 levels deep. A
+  `Submit` holds it two levels down and is accepted with 62 levels, but keeping it would make the state too deep: that
+  turn fails (the cause `handler`) and the earlier burst and its timer stay as they were.

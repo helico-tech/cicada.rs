@@ -12,6 +12,7 @@
 //! | [`registry`] | Example 8: a registry actor that keeps the refs of the instances it created. |
 //! | [`supervision`] | Example 9: a supervisor restarts a child at fault; dead letters keep what failed, to redrive. |
 //! | [`rate_limit`] | Example 10: a shared rate limit; signups create a limiter and submit their texts to it in one turn. |
+//! | [`debounce`] | Example 11: a burst of edits, one reindex; each edit submits the latest version to a debouncer. |
 //! | [`sync`] | The architecture's example: a paged import, one turn per page, rescheduled hourly. |
 //!
 //! Every example has the same shape: a public ref struct per actor type (its one field is the key), a
@@ -19,6 +20,7 @@
 //! (external services, faked in the tests), with one `impl Actor` whose `handle` matches on the message.
 
 pub mod cron;
+pub mod debounce;
 pub mod fanout;
 pub mod rate_limit;
 pub mod registry;

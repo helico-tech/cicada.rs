@@ -12,7 +12,7 @@
   Host the type without an automatic instance in the sample service. Regenerate and commit actor references and
   sample-service snapshots/texts with `CICADA_UPDATE_CONTRACTS=true`; verify wire-format and sample-service
   contract/sample tests, ensuring existing contracts do not change.
-- [ ] 4. Add a tested example and actors-guide doctests covering explicit creation, replacement, Flush recovery,
+- [x] 4. Add a tested example and actors-guide doctests covering explicit creation, replacement, Flush recovery,
   deadlines, payload depth and reply/sender semantics. Update guide tables, README, crate docs, architecture's crate
   row, AGENTS map and changelog. Run the example test, `cargo test -p cicada-examples --doc` and
   `cargo test -p cicada-examples --test docs`.
