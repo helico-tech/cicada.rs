@@ -12,7 +12,7 @@
   instances in the sample service. Regenerate and commit actor references and sample-service contract snapshots/texts
   with `CICADA_UPDATE_CONTRACTS=true`. Verify wire-format and sample-service contract/sample tests and ensure no
   existing contract changes.
-- [ ] 4. Add a tested batching example and actors-guide doctests with a typed items-array target. Explain group
+- [x] 4. Add a tested batching example and actors-guide doctests with a typed items-array target. Explain group
   aggregation, public recovery, failed final Add, count versus byte limits, depth, timer loss and deadline semantics.
   Update guide tables, README, crate docs, architecture's crate row, AGENTS map and changelog. Verify the example,
   `cargo test -p cicada-examples --doc` and `cargo test -p cicada-examples --test docs`.

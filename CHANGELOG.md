@@ -7,6 +7,28 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.16.4 — unreleased
+
+Nothing breaks: a new ready-made actor, the batcher. A node that hosts it registers its contract at its first start;
+nothing changes for the other nodes, and no schema of the store changes.
+
+### Added
+
+- The batcher (`BatcherActor`, `cicada.batcher`, one instance for each stream or group, built with `Batcher::named`):
+  `Add { item }` appends one JSON value, `null` included, in handling order (`BatcherMsg::add` builds one from any
+  `Serialize` value). The `Add` that fills the batch, or that is handled at or after its deadline, sends the batch
+  with its own item in the same turn, so a stored batch always holds fewer than `maxItems` items; otherwise the first
+  item of a batch arms a public `Flush` at its store time plus `maxWait`. A flush sends the fixed message type with
+  `{"items": [...]}` to the fixed target, with the batcher as its sender, the settings' retry policy and no
+  correlation id, and cancels the armed flush and clears the batch in the same commit; with nothing held it does
+  nothing. Its state holds the target, the message type, `maxItems` (1 through 1,000), `maxWait` and the target's
+  retry policy, fixed at the create (`BatcherState::new`, checked like a decoded state, fails with `InvalidBatch`),
+  and the items, the batch's first time and the armed flush. A flush that fails clears nothing, and an `Add` whose
+  flush fails keeps no item: an operator's `Flush`, retry or redrive sends what is held then. `maxItems` bounds the
+  count of items, not their bytes, and due times are not run times. Its contract is in
+  `docs/reference/contracts/cicada.batcher.json`; the actors guide, "Batcher", has its rules, and
+  `examples/src/batching.rs` is a worked example. The sample service hosts the type and creates no batcher.
+
 ## 0.16.3 — 2026-11-13
 
 Nothing breaks: a new ready-made actor, the debouncer. A node that hosts it registers its contract at its first start;

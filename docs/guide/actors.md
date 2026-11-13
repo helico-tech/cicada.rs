@@ -6,7 +6,7 @@ to work.
 
 | Crate | Contents |
 | --- | --- |
-| `cicada-actors` | Ready-made actors on the public API, each under a fixed type name: a supervisor (`SupervisorActor`), dead letters (`DeadLettersActor`), a topic (`TopicActor`), a scheduler (`SchedulerActor`), a rate limiter (`RateLimiterActor`) and a debouncer (`DebouncerActor`); `StoredMessage` and `Schedule`. |
+| `cicada-actors` | Ready-made actors on the public API, each under a fixed type name: a supervisor (`SupervisorActor`), dead letters (`DeadLettersActor`), a topic (`TopicActor`), a scheduler (`SchedulerActor`), a rate limiter (`RateLimiterActor`), a debouncer (`DebouncerActor`) and a batcher (`BatcherActor`); `StoredMessage` and `Schedule`. |
 
 The Rust blocks of this guide are doctests of the `examples` crate (`cargo test -p cicada-examples --doc`).
 
@@ -21,11 +21,12 @@ a node hosts it like any other type, and the host creates its instances.
 | `SchedulerActor` | `cicada.scheduler` | the name of the schedule | Sends a stored message to a target on each slot of a `Schedule`. |
 | `RateLimiterActor` | `cicada.rate-limiter` | the name of the limit | Sends each submitted message to its target at the next free slot of a shared rate. |
 | `DebouncerActor` | `cicada.debouncer` | the key whose bursts it debounces | Keeps the latest submission of a burst and sends it to its target once the burst is quiet. |
+| `BatcherActor` | `cicada.batcher` | the stream or group whose items it batches | Collects items and sends them to its target as one message when the batch is full or has waited long enough. |
 
 A message that one of them keeps to send later is a `StoredMessage`: a type name and a JSON payload,
 `{"type": …, "payload": …}`. The actor knows where it goes, so it holds no address. `StoredMessage::for_ref(&worker,
 WorkerMsg::Begin { batch: 7 })` builds one from a typed ref and a message, so a message of the wrong family does not
-compile. The contracts of the six types are wire formats; their references in
+compile. The contracts of the seven types are wire formats; their references in
 [docs/reference/contracts](../reference/contracts/) pin them, doc comments included.
 
 Their states and messages are checked like any other, against the depth limit of 64 levels too
@@ -540,3 +541,110 @@ curl -X POST localhost:8080/actors/cicada.debouncer/reindex-d1/messages -H 'cont
 - **How deep.** The state holds the kept payload three levels down, so a payload may be at most 61 levels deep. A
   `Submit` holds it two levels down and is accepted with 62 levels, but keeping it would make the state too deep: that
   turn fails (the cause `handler`) and the earlier burst and its timer stay as they were.
+
+## Batcher
+
+`BatcherActor` collects items, one instance for each stream or group, and sends them to a fixed target as one
+message: when the batch is full, at the latest a fixed time after its first item, or at once on a `Flush`. Use it for
+targets that work on lists: a bulk API, a digest email, one write for many rows. It keeps items in handling order and
+does not merge them. The target, the message type, the count limit, the longest wait and the target's retry policy
+are in the state, fixed at the create. A host creates a batcher at startup, or a producer creates it and adds to it in
+one turn, as a turn's creates come before its sends:
+
+<!-- doctest
+# use cicada::prelude::*;
+# use serde::{Deserialize, Serialize};
+# #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+# struct AuditEvent { account: String, action: String }
+# #[derive(Debug, Clone, Serialize, Deserialize)]
+# struct AuditLog;
+# impl ActorRef for AuditLog { const TYPE: &'static str = "audit-log"; type Message = AuditLogMsg; }
+# #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+# #[serde(tag = "type")]
+# enum AuditLogMsg { Write { items: Vec<AuditEvent> } }
+@@3
+# fn rename<A: Actor>(turn: &mut Turn<A>, account: String, action: String) -> HandlerResult {
+@@6
+# Ok(())
+# }
+-->
+```rust
+use std::time::Duration;
+use cicada_actors::{Batcher, BatcherMsg, BatcherState};
+
+let batcher = Batcher::named("audit"); // hosted as BatcherActor
+// A `Write { items }` to the audit log of at most 50 events, at most five seconds from the first.
+let mut settings = BatcherState::new(&AuditLog, "Write", 50, Duration::from_secs(5))?;
+settings.retry = Some(RetryPolicy::new(3, Backoff::fixed(Duration::from_secs(5))?)?); // at the target
+turn.create(&batcher, &settings)?; // a batcher that exists keeps its settings and its batch
+turn.send(&batcher, BatcherMsg::add(AuditEvent { account, action })?)?;
+```
+
+[examples/src/batching.rs](../../examples/src/batching.rs) works this out. The target's message holds the batch in a
+field `items`, here `Vec<AuditEvent>`, so the target decodes the batch like any message. Over HTTP:
+
+```sh
+curl -X PUT localhost:8080/actors/cicada.batcher/audit -H 'content-type: application/json' -d '{"state":
+  {"target": "audit-log/_", "messageType": "Write", "maxItems": 50, "maxWait": "PT5S"}}'
+curl -X POST localhost:8080/actors/cicada.batcher/audit/messages -H 'content-type: application/json' -d '{"type":
+  "Add", "payload": {"item": {"account": "a1", "action": "renamed to x"}}}'
+curl -X POST localhost:8080/actors/cicada.batcher/audit/messages -H 'content-type: application/json' \
+  -d '{"type": "Flush"}'
+```
+
+- **Its settings.** `target`, `messageType`, `maxItems`, from 1 through 1,000, and `maxWait`, the longest time from a
+  batch's first item to its scheduled flush, `0 < maxWait <= MAX_DELAY`; with `retry`, the retry policy of each batch
+  at the target, none by default. The constructor and the decoder check them, and the message type's length. Whether
+  the target type is registered and takes the message type is checked only when a batch is sent. There is no default
+  `maxItems`, and no message changes the settings: delete the batcher and create it again.
+- **Items, in handling order.** An `Add` holds one item, any JSON value, `null` included; `BatcherMsg::add` builds one
+  from any `Serialize` value. The batcher does not check items against the target's schema: the target decodes the
+  whole batch. Headers and the correlation id of an `Add` are not kept, so data to reply to or correlate belongs in
+  the item.
+- **A full batch goes at once.** The `Add` that brings the batch to `maxItems` sends it, with its own item, in its own
+  turn, and clears it. So a stored batch always holds fewer than `maxItems` items, even when `Add`s queue up. With
+  `maxItems` 1, each `Add` is sent on its own, with no timer.
+- **Its timer.** The first item of a batch sets `firstAt`, the store's time of that turn, and arms a `Flush` at
+  `firstAt + maxWait`, with the crate's shared retry policy (7 attempts, the waits doubling from one second); later
+  items keep that timer. An `Add` handled at or after that deadline sends the batch with its own item. With
+  `maxItems` 3 and `maxWait` 10 s, items handled at 0, 1 and 2 s go as one batch at 2 s, and an item at 4 s is due
+  alone at 14 s. A due time past `MAX_INSTANT` fails the `Add` for good (`refused`) and changes nothing. An `Add` and
+  the timer due at the same instant run in the core's order: the `Add` first joins the batch; the flush first sends the
+  batch, and the `Add` starts the next one.
+- **Flush is public.** A `Flush` sends the items held, cancels the armed timer and clears the batch in one commit; with
+  nothing held it ends `done` and does nothing. Anyone may send one, so an operator delivers early, or recovers a
+  flush that failed. It sends what is held when it runs: an old `Flush` that is retried or redriven while a new batch
+  waits flushes the new batch early.
+- **What the target gets.** The message type with the payload `{"items": [...]}`, due now, with a new id, the batcher
+  as its sender, the settings' retry policy, no correlation id, and the default retention. An observer still adds its
+  own headers to the send. A retry at the target goes after its own backoff, without passing the batcher again; the
+  policy of an `Add` or of the timer governs only that turn.
+- **A failed flush clears nothing.** A target type that is not registered or does not take the message, or a batch out
+  of bounds, fails the turn for good (`refused`); a target that is gone rejects the commit (`commit`); a read of the
+  store that fails is tried again by the incoming message's own retry policy. The batch and its timer stay as they
+  were. Terminal failures reach the batcher's watchers, and dead letters that watch it keep them; the batcher watches
+  nothing. A failure at the target after the flush committed fails the target's message, which holds the whole batch,
+  and brings nothing back to the batcher.
+- **A failed final `Add` keeps no item.** When the `Add` that fills the batch, or that comes after the deadline, cannot
+  send it, its item is not kept: the batch stays below `maxItems` however long the target is gone. That `Add`'s failure
+  holds the item, and dead letters that watch the batcher keep it. A retry or a redrive of it adds the item to the batch
+  held then, so it may come after later items.
+- **A lost timer.** A flush that failed for good, or that an operator cancelled or purged (which tells no watcher),
+  leaves the items without a live timer, and so does a batch created with items and no `armed`. An `Add` before the
+  old deadline does not arm a new timer; the batch goes when it is full, on an `Add` at or after the deadline, or on a
+  `Flush`. Send a `Flush` to recover it.
+- **Groups.** To collect a known number of parts, use one batcher for each group, with `maxItems` the number of parts
+  and `maxWait` the timeout: the batch goes when the last part comes, or at the timeout with the parts that came. Put
+  the group in each item, as the target is the same for all groups, and delete the batcher when the group is done.
+- **Count, not bytes.** `maxItems` bounds how many items are held, not their size, and each `Add` rewrites the whole
+  state. Keep items small, or batch references to data kept elsewhere.
+- **Due times are not run times.** `maxWait` bounds the scheduled flush from the store's time at which the batch's
+  first item was handled. Time an item waited in the mailbox, a pause of the batcher, an outage, a retry or a slow
+  commit can all make the flush later; due times are rounded up to a microsecond and clamped to the store's time at
+  the commit. A paused batcher flushes when it is resumed and its flush is claimed.
+- **It never stops itself.** A create of a batcher that exists changes nothing. Pause, resume and delete work as for
+  any actor; a delete discards the items held, and batches already sent stay with their target.
+- **How deep.** The state and the batch hold each item two levels down, so an item may be at most 62 levels deep. A
+  deeper item fails its `Add`, with the cause `handler` when it would be held and `refused` when it would be sent at
+  once; the earlier batch and its timer stay as they were. The batcher is newer than 0.16.0, so no stored batch holds
+  a deeper item.

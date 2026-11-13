@@ -13,12 +13,14 @@
 //! | [`supervision`] | Example 9: a supervisor restarts a child at fault; dead letters keep what failed, to redrive. |
 //! | [`rate_limit`] | Example 10: a shared rate limit; signups create a limiter and submit their texts to it in one turn. |
 //! | [`debounce`] | Example 11: a burst of edits, one reindex; each edit submits the latest version to a debouncer. |
+//! | [`batching`] | Example 12: audit events in bulk; each change adds its event to a batcher that writes 50 at once. |
 //! | [`sync`] | The architecture's example: a paged import, one turn per page, rescheduled hourly. |
 //!
 //! Every example has the same shape: a public ref struct per actor type (its one field is the key), a
 //! message enum with `#[serde(tag = "type")]`, a state struct, and an actor struct whose fields are its dependencies
 //! (external services, faked in the tests), with one `impl Actor` whose `handle` matches on the message.
 
+pub mod batching;
 pub mod cron;
 pub mod debounce;
 pub mod fanout;

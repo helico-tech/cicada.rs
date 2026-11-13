@@ -7,6 +7,7 @@ use cicada::store::MessageId;
 use cicada::time::Timestamp;
 use cicada_actors::Schedule;
 use cicada_axum::{assert_message_sample, assert_state_sample};
+use cicada_examples::batching::{AccountMsg, AccountState, AuditEvent, AuditLogMsg};
 use cicada_examples::cron::{CronMsg, CronState};
 use cicada_examples::debounce::{DocumentMsg, DocumentState, IndexerMsg};
 use cicada_examples::fanout::{BatchItemMsg, BatchItemState, BatchMsg, BatchState, BatchStatus};
@@ -175,6 +176,14 @@ fn debounce() {
     states([DocumentState::default(), DocumentState { text: "abc".into(), version: 3, indexed: Some(3) }]);
     let reply_to = "documents/d1".parse().unwrap();
     messages([IndexerMsg::Reindex { doc: "d1".into(), version: 3, text: "abc".into(), reply_to }]);
+}
+
+#[test]
+fn batching() {
+    messages([AccountMsg::Rename { name: "x".into() }]);
+    states([AccountState::default(), AccountState { name: "x".into() }]);
+    let event = AuditEvent { account: "a1".into(), action: "renamed to x".into() };
+    messages([AuditLogMsg::Write { items: vec![] }, AuditLogMsg::Write { items: vec![event] }]);
 }
 
 #[test]

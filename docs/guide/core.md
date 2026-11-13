@@ -1004,7 +1004,7 @@ Decoding is all it checks: a sample whose renamed field is now ignored still dec
 
 ## Examples
 
-[`examples/`](../../examples/) (crate `cicada-examples`) holds twelve worked examples, each with its tests under
+[`examples/`](../../examples/) (crate `cicada-examples`) holds thirteen worked examples, each with its tests under
 `examples/tests/`, run with `TestActors` on virtual time:
 
 | Module | Pattern |
@@ -1020,6 +1020,7 @@ Decoding is all it checks: a sample whose renamed field is now ignored still dec
 | `supervision` | A supervisor restarts a mailer that fails; dead letters keep the failed mail, to redrive it. |
 | `rate_limit` | A shared rate limit; signups create a limiter and submit their texts to it in one turn. |
 | `debounce` | A burst of edits, one reindex; each edit submits the latest version to a debouncer. |
+| `batching` | Audit events in bulk; each change adds its event to a batcher that writes 50 at once. |
 | `sync` | The architecture's example: a paged import, one turn per page, rescheduled hourly. |
 
 Every example has the same shape: a public ref struct per actor type (its one field is the key), a
