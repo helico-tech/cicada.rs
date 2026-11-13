@@ -7,6 +7,34 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.16.8 — unreleased
+
+Nothing breaks in the API: an observer can pick timers or the other sends for a header, and `cicada-otel` starts a new
+trace for each timer, linked to the turn that set it. No schema, HTTP field or actor contract changes. Traces change on
+purpose: an actor that re-arms itself no longer builds one trace that never ends.
+
+### Added
+
+- `cicada::observer::Sends` (`All`, `Timers`, `Others`) and `TurnStart::add_header_for(sends, name, value)`, which
+  adds an observer's header to the timers of a turn, its other sends, or all of them; `add_send_header` is `All`, as
+  before. A timer is a send to the turn's own actor with `At` or `After`, whatever the time: a zero delay and a past
+  instant count, on every send method and for every actor type. Precedence, the limits of a message and the isolation
+  of a panicking observer hold for each kind on its own (ADR 0032).
+
+### Changed
+
+- `ActorTelemetry` puts its propagator's headers on the other sends as before and, prefixed with `cicada-link-`
+  (`cicada-link-traceparent`), on timers. A turn takes its parent from the plain headers and at most one link from the
+  prefixed ones, so a timer's turn is a root span with a link to the turn that set it, and the messages it sends are in
+  its trace. A timer that sets its own `traceparent` keeps it as its parent and gets the link too; the all-zero
+  workaround now keeps a link. A flow's sleep, a scheduler's `Tick` and the deadline `Flush` of a debouncer or a batcher
+  are timers; a flow's immediate continuations and a rate limiter's delayed forward stay in their sender's trace.
+- Each attempt of a timer (a policy retry, a re-run after a lost claim, an operator retry) is a root linked to the same
+  sender, and the configured sampler decides about these roots on its own: with a parent-based sampler, timers no
+  longer follow the sender's sampling decision. Links are best effort: a missing or malformed field, another propagator
+  or a full message leaves the link out, and nothing fails. A timer queued before the upgrade keeps its parent until it
+  re-arms; an older node ignores the prefixed headers and starts a root without a link.
+
 ## 0.16.7 — 2026-11-13
 
 Nothing breaks: a new ready-made actor starts flows from an event. No existing actor, flow contract or schema of the

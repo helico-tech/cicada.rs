@@ -293,6 +293,9 @@ the target's mailbox) and `lastRun` (the store's time of the run that sent the l
   the target. A `Run` that commits puts exactly one message into the target's mailbox; the target handles it at least
   once. A target slower than its schedule never runs two deliveries at once: they wait in its mailbox, and none is
   skipped.
+- **Traces.** With `ActorTelemetry`, each `Tick` is a timer ([OpenTelemetry](core.md#opentelemetry)): its turn starts
+  a new trace with a link to the turn that armed it (the `Start`, an `Update` or the previous `Tick`), and its `Run`
+  and the delivery to the target are in the tick's trace. A run sent by a client is in the client's trace.
 - **The slot.** A run for a slot carries the header `cicada-slot`: the slot in UTC to the second, as
   `2026-11-13T02:00:00Z`. The target knows which slot it handles also when the tick was late. The name and the form of
   the header are stable. The payload is the same on every slot, so a target keys its work by the slot, or by the
@@ -846,6 +849,10 @@ due at `until`. When that `Continue` arrives, the replay passes the sleep and ru
   than `MAX_DELAY` (365,000 days) or ending after `MAX_INSTANT` (the end of the year 9999) fails the turn for good, and
   nothing is saved. A sleep caught with `let _ =` still ends the turn, as a caught step does, and a sleep after an
   abandoned step adds nothing.
+- **Traces.** With `ActorTelemetry`, the `Continue` of a sleep is a timer ([OpenTelemetry](core.md#opentelemetry)):
+  the turn that wakes starts a new trace with a link to the turn that slept, after a zero sleep too, and the steps after
+  it, up to the next sleep, are in that trace. The immediate continuations between steps stay in one trace, and so do
+  pokes. A timer re-armed by a replay or a public `Continue` links to the turn that armed it.
 - **Deploy first.** That a node's schema accepts a sleep entry does not mean it can run the code that wrote it: a node
   with the flow's code from before the sleep fails such a run for good, as a changed replay. Deploy the code that
   sleeps, on 0.16.6 or later, to every node that hosts the flow before starting runs that use it.

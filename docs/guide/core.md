@@ -849,6 +849,36 @@ that add a header of one name, the one added later wins. Pass an `Arc` to keep a
 is told nothing, for an observer that only adds headers. The table of which call comes in which situation is in the
 `cicada::observer` docs.
 
+**Headers for timers or for the other sends.** `TurnStart::add_header_for(sends, name, value)` adds a header to the
+sends that `sends` picks: `Sends::All` (what `add_send_header` does), `Sends::Timers` or `Sends::Others`. A timer is a
+send to the turn's own actor with `SendOptions::delay` or `at`, whatever the time asked for: a zero delay or a past
+instant counts, though the store makes such a message due at once. The send method and the actor's type do not matter.
+Every other send is one of the others: a send to itself now, and any send to another actor, a delayed one too. The rules
+above hold for each kind on its own: a send's own header wins, then the observer's headers in name order up to 64,
+and of two calls or two observers for one name, the later wins in the kinds it picks. A refused header is left out and
+keeps an earlier valid value of its name; a panicking observer loses its headers of both kinds. `cicada-otel` uses
+this to start a new trace for each timer:
+
+<!-- doctest
+@@1
+# use cicada::observer::{ObservedTurn, TurnObserver, TurnStart};
+@@11
+-->
+```rust
+use cicada::observer::Sends;
+
+struct Marks;
+
+impl TurnObserver for Marks {
+    fn turn_started(&self, turn: &mut TurnStart<'_>) -> Box<dyn ObservedTurn> {
+        turn.add_send_header("audit", "on"); // every send
+        turn.add_header_for(Sends::Timers, "x-timer", "yes"); // only the timers
+        turn.add_header_for(Sends::Others, "x-chain", turn.message().id.to_string()); // every other send
+        Box::new(())
+    }
+}
+```
+
 ### OpenTelemetry
 
 `cicada-otel` adds OpenTelemetry tracing and metrics as an observer. It depends on the OpenTelemetry API only; the
@@ -884,6 +914,21 @@ system.send_with(&Sync { tenant: "acme".into() }, SyncMsg::Run, options).await?;
   with no code in the handlers. A send that sets `traceparent` itself keeps its own. From outside an actor, use
   `current_trace_headers()`; over HTTP, put `traceparent` in the message's `headers`. `with_propagator(..)` replaces
   the global propagator.
+- **A timer starts a new trace, linked to the turn that set it** (ADR 0032), so an actor that re-arms itself does not
+  build one trace that never ends. A timer carries the turn's context under the propagator's names prefixed with
+  `cicada-link-` (`cicada-link-traceparent`), and its turn is a root span with one link to the sending span. The
+  messages a timer's turn sends are in its trace again. A turn takes its parent from the plain headers only and the
+  link from the prefixed ones (the prefix in any case); a link never becomes a parent, and a turn without a valid
+  parent is a root, whatever context is current. A timer that sets its own `traceparent`, or gets one from another
+  observer, is a child of it and keeps the link; the invalid all-zero `traceparent` makes a root with the link. The
+  ready-made actors follow the same rule: a flow's sleep, a scheduler's `Tick` and the deadline `Flush` of a debouncer
+  or a batcher are timers, while a rate limiter's delayed forward goes to another actor and stays in its sender's trace.
+- **Links are best effort.** A missing or malformed link field, a node with another propagator, or a timer whose own
+  headers fill its 64 leaves the link out; the turn runs as always. Each attempt of a timer, a policy retry, a re-run
+  after a lost claim and an operator retry too, is a root linked to the same sender, and a deliver-now keeps the link.
+  The sampler decides about these roots on its own, so a parent-based sampler no longer follows the sender's decision.
+  A timer queued by an older version keeps its plain headers and its parent until it re-arms; an older node ignores the
+  prefixed headers and starts a root without a link.
 - **Metrics:** `cicada.turn.duration` (claim to commit) and `cicada.message.lag` (due time to claim), histograms in
   seconds by `cicada.actor.type` and `cicada.message.type`; the duration also by `cicada.outcome`.
 

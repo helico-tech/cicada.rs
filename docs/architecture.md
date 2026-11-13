@@ -47,7 +47,8 @@ state plus a mailbox; it occupies memory only while one message is being handled
 | Lost claim | A claim that another claim replaced although its turn neither committed nor gave the lease back: its node died, its lease ran out, or its commit did not get through. The claim that replaces it adds 1 to the `lostClaims` of its message, which never goes back (ADR 0025). |
 | Claim limit | The most lost claims a node lets a message have (`NodeConfig::max_lost_claims`, 5 by default): a message with that many ends `failed` when the node claims it, without running (ADR 0025). |
 | Outcome | The terminal result of a message: `done`, `failed`, `cancelled` or `purged`. |
-| Observer | Code added to a node (`TurnObserver`) that is told when each of its turns starts and, once its commit succeeded, how it ended; a turn without a commit that the node saw succeed is dropped instead. It cannot refuse a turn or change what it commits, except that it may add headers to the turn's sends (ADR 0018). The core uses none. |
+| Observer | Code added to a node (`TurnObserver`) that is told when each of its turns starts and, once its commit succeeded, how it ended; a turn without a commit that the node saw succeed is dropped instead. It cannot refuse a turn or change what it commits, except that it may add headers to the turn's sends (ADR 0018): to all of them, to its timers or to the others (ADR 0032). The core uses none. |
+| Timer | A send of a turn to its own actor with a delivery `At` or `After`, whatever the time asked for: a zero delay or a past instant counts. The kind of send an observer's header picks (`Sends::Timers`); the send method and the actor's type do not matter, and the store keeps no mark of it (ADR 0032). |
 
 ## Guarantees
 
@@ -311,7 +312,12 @@ parser that allows 128 reads every one.
   have JSON Schemas too (issue 0200).
 - **Telemetry.** The OpenTelemetry SDK for Rust exports every span it drops, so the span of a turn whose observed value
   the node drops without an end is ended and exported with `cicada.outcome` = `abandoned` (issue 0600). The W3C
-  propagator's empty `tracestate` is left out.
+  propagator's empty `tracestate` is left out. A timer starts a new trace (ADR 0032): `cicada-otel` puts the propagator's
+  headers on the other sends and, prefixed with `cicada-link-`, on timers; a turn takes its parent from the plain
+  headers and at most one link from the prefixed ones, each through the configured propagator from an empty context.
+  A link never becomes a parent, so each attempt of a timer is a root linked to its sender, unless the send set a plain
+  parent itself. The prefix is a stable convention of `cicada-otel`; the core and the HTTP API treat these headers like
+  any other, and links are best effort (a missing field, another propagator or the header limit leaves them out).
 - **PostgreSQL settings.** Connection parameters go in the URL; no type of the SQL driver is in the public API, so a
   setting a URL cannot carry is added to `PostgresOptions` when a host needs it (ADR 0018). `socket_timeout` bounds a whole transaction attempt (the
   connection is then closed), not every read, because sqlx has no per-read timeout.

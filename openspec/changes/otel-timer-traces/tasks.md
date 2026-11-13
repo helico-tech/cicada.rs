@@ -15,7 +15,7 @@
   retry/deliver-now, and legacy headers. Retain no-observer and ordinary-chain regression coverage. Add a dev dependency
   on cicada-actors for actual flow sleep (including zero) and scheduler trace-boundary tests; verify redrive/notification
   header behaviour using existing fixtures where possible. Run `cargo test -p cicada-otel` and affected actor tests.
-- [ ] 3. Document the additive observer API and ADR 0032 header convention in crate docs, architecture's observer and
+- [x] 3. Document the additive observer API and ADR 0032 header convention in crate docs, architecture's observer and
   telemetry sections, and the core guide with a compiling header-selection example. Document flow-sleep and scheduler
   trace boundaries in the actors guide, per-attempt roots, explicit parent overrides, best-effort links, sampler
   consequences and old queued messages. Update changelog/version following the release process; no actor contracts,
