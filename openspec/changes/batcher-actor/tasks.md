@@ -1,6 +1,6 @@
 ## Implementation
 
-- [ ] 1. Add the batcher ref, actor, state, validated constructor/decoder, messages and serialization helper with
+- [x] 1. Add the batcher ref, actor, state, validated constructor/decoder, messages and serialization helper with
   crate exports. Implement count-triggered inline forwarding, the first-item timer and public Flush with checked
   time arithmetic. Verify settings, state consistency and timestamps in library tests; run actor library tests
   and doctests.

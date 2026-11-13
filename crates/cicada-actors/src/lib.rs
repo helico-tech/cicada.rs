@@ -8,12 +8,14 @@
 //! | [`SchedulerActor`] | `cicada.scheduler` | Sends a stored message to a target on each slot of a [`Schedule`] |
 //! | [`RateLimiterActor`] | `cicada.rate-limiter` | Sends each submitted message to its target at the next free slot of a rate |
 //! | [`DebouncerActor`] | `cicada.debouncer` | Keeps the latest submission of a burst and sends it once the burst is quiet |
+//! | [`BatcherActor`] | `cicada.batcher` | Collects items and sends them to its target as one batch on count or time |
 //! | [`StoredMessage`] | | A message an actor keeps to send later: a type name and a JSON payload, built from a typed ref |
 //! | [`Schedule`] | | When a recurring job runs next |
 //!
 //! A message an actor of this crate keeps is a [`StoredMessage`]: the actor knows where it goes, so it holds no
 //! address. Its typed helper checks the message against the family of a ref when the code is compiled.
 
+pub mod batcher;
 pub mod dead_letters;
 pub mod debouncer;
 mod error;
@@ -24,6 +26,7 @@ mod stored;
 pub mod supervisor;
 pub mod topic;
 
+pub use batcher::{Batcher, BatcherActor, BatcherMsg, BatcherState, InvalidBatch};
 pub use dead_letters::{CapacityError, DeadLetter, DeadLetters, DeadLettersActor, DeadLettersMsg, DeadLettersState};
 pub use debouncer::{DebouncedMessage, Debouncer, DebouncerActor, DebouncerMsg, DebouncerState, InvalidDebounce};
 pub use error::EncodeError;
