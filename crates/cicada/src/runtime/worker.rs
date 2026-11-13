@@ -607,26 +607,34 @@ impl Worker {
     }
 
     /// Sends one lease request for the slots of `reservation`, in a task of its own: a response that nobody receives
-    /// any more releases its leases. The batch is checked before it is handed over; a malformed one is released and is
-    /// a fatal error.
+    /// any more releases its leases. The request is admitted under the lifecycle lock: a stopping or stopped worker
+    /// sends none ([`WorkerError::Start`]), and once a stop began no request starts. The batch is checked before it is
+    /// handed over; a malformed one is released and is a fatal error.
     async fn lease(&self, init: &Initialized, reservation: Reservation) -> Result<LeasedBatch, WorkerError> {
         let source = self.inner.source.clone();
         let owner = self.inner.config.worker_id.clone();
         let types = init.types.clone();
         let (tx, rx) = oneshot::channel();
-        tokio::spawn(async move {
-            let limit = reservation.slots;
-            let sent = Instant::now();
-            let result = match source.lease_turns(&owner, &types, limit).await {
-                Ok(LeaseTurnsResult::Leased(leases)) => checked_batch(source, leases, &types, reservation, sent),
-                Ok(LeaseTurnsResult::ContractMismatch { type_name, registered, requested }) => {
-                    Err(WorkerError::ContractMismatch { type_name, registered, requested })
-                }
-                Err(e) => Err(WorkerError::Source(e)),
-            };
-            // Unsent or never received, the batch releases its leases when dropped.
-            let _ = tx.send(result);
-        });
+        {
+            let _lifecycle = self.lifecycle();
+            let state = self.state();
+            if !matches!(state, NodeState::New | NodeState::Started) {
+                return Err(state_error(state).into());
+            }
+            tokio::spawn(async move {
+                let limit = reservation.slots;
+                let sent = Instant::now();
+                let result = match source.lease_turns(&owner, &types, limit).await {
+                    Ok(LeaseTurnsResult::Leased(leases)) => checked_batch(source, leases, &types, reservation, sent),
+                    Ok(LeaseTurnsResult::ContractMismatch { type_name, registered, requested }) => {
+                        Err(WorkerError::ContractMismatch { type_name, registered, requested })
+                    }
+                    Err(e) => Err(WorkerError::Source(e)),
+                };
+                // Unsent or never received, the batch releases its leases when dropped.
+                let _ = tx.send(result);
+            });
+        }
         rx.await.map_err(|_| SourceError::Unavailable("leasing failed: the lease task ended".to_owned()))?
     }
 

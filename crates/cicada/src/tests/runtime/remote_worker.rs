@@ -615,3 +615,107 @@ async fn stop_returns_while_non_yielding_work_runs_on_and_nothing_is_released_un
     assert!(matches!(status(&server, &m.id).await, MessageStatus::Running { .. }), "left to expire");
     assert_eq!(server.state(), NodeState::New, "the source is not stopped");
 }
+
+/// Scenario: Operator cancellation followed by shutdown.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cancelled_completion_after_a_shutdown_stays_within_the_confirmed_lease() {
+    let store = Store::memory();
+    let server = ActorSystem::builder(store.clone())
+        .config(NodeConfig { lease_ttl: Duration::from_millis(1_500), ..NodeConfig::default() })
+        .build();
+    server.register_contract(&contract_of::<BlockerActor>().unwrap()).await.unwrap();
+    let blocker = Blocker { id: "b".into() };
+    server.create(&blocker, &crate::NoState {}).await.unwrap();
+    let m = accepted(server.send(&blocker, BlockerMsg::Block { millis: 1_200 }).await.unwrap());
+    let source = Scripted::new(&server);
+    source.script([Complete::Hang]);
+    let worker = Worker::builder(source.clone())
+        .host(BlockerActor)
+        .config(WorkerConfig {
+            poll_interval: Duration::from_millis(20),
+            shutdown_cancel_timeout: secs(3),
+            ..worker_config()
+        })
+        .build();
+    worker.start().await.unwrap();
+    eventually(secs(10), || async { matches!(status(&server, &m.id).await, MessageStatus::Running { .. }) }).await;
+    let mark = std::time::Instant::now();
+    assert!(server.cancel_turn(&addr(&blocker)).await.unwrap());
+    // The renewal after 500 ms brings the cancel, which wins (the handler blocks until 1.2 s) and confirms the lease
+    // until about 1.85 s; every renewal after it fails.
+    eventually(secs(10), || async { Scripted::count(&source.renews) >= 1 }).await;
+    source.set_renew(Renew::Fail);
+    // The shutdown comes while the work is still stopping; the `cancelled` completion then hangs.
+    worker.stop_with_grace(Duration::ZERO).await;
+    let ended = mark.elapsed();
+    // Cut off at the confirmed deadline by the watchdog, not at the end of the completion budget (1.2 s + 1.5 s).
+    assert!(ended > Duration::from_millis(1_500), "the completion ended after {ended:?}");
+    assert!(ended < Duration::from_millis(2_400), "the completion outlived the lease: {ended:?}");
+    assert_eq!(source.reports(), [TurnReport::Cancelled]);
+    assert_eq!(Scripted::count(&source.releases), 0, "never released as unfinished work");
+    assert!(matches!(status(&server, &m.id).await, MessageStatus::Running { .. }), "left to expire");
+}
+
+/// type `clock`: records the handler's clocks after a while.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct Clock {
+    id: String,
+}
+
+impl crate::address::ActorRef for Clock {
+    const TYPE: &'static str = "clock";
+    type Message = ClockMsg;
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(tag = "type")]
+enum ClockMsg {
+    Read { millis: u64 },
+}
+
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+struct ClockState {
+    now: Vec<String>,
+    current: Vec<String>,
+}
+
+struct ClockActor;
+
+impl crate::Actor for ClockActor {
+    type Ref = Clock;
+    type State = ClockState;
+
+    async fn handle(&self, turn: &mut crate::Turn<Self>, message: ClockMsg) -> crate::HandlerResult {
+        let ClockMsg::Read { millis } = message;
+        let before = turn.now();
+        sleep(Duration::from_millis(millis)).await;
+        let (now, current) = (turn.now(), turn.current_time());
+        let state = turn.state_mut();
+        state.now.extend([before, now].map(crate::time::format_instant));
+        state.current.push(crate::time::format_instant(current));
+        Ok(())
+    }
+}
+
+/// Scenario: Handler time.
+#[tokio::test(start_paused = true)]
+async fn a_handlers_now_is_the_claim_and_current_time_counts_from_the_worker_lease_request() {
+    let store = virtual_store();
+    let server = server(&store, "server", TTL);
+    server.register_contract(&contract_of::<ClockActor>().unwrap()).await.unwrap();
+    let clock = Clock { id: "c".into() };
+    server.create(&clock, &ClockState::default()).await.unwrap();
+    accepted(server.send(&clock, ClockMsg::Read { millis: 2_000 }).await.unwrap());
+    let source = Scripted::new(&server);
+    // The server claims at once; the answer reaches the worker 3 s after its request.
+    *source.lease_delay.lock().unwrap() = secs(3);
+    let worker = Worker::builder(source.clone()).host(ClockActor).config(worker_config()).build();
+    assert_eq!(worker.run_due_turns(10).await.unwrap(), 1);
+    let snapshot = server.get_actor(&addr(&clock)).await.unwrap().unwrap();
+    let state: ClockState = serde_json::from_value(snapshot.state).unwrap();
+    let claimed_at = crate::testing::default_start();
+    let format = crate::time::format_instant;
+    assert_eq!(state.now, [format(claimed_at), format(claimed_at)], "now stays the claim's store time");
+    let expected = crate::time::add(claimed_at, secs(5)).unwrap();
+    assert_eq!(state.current, [format(expected)], "3 s of transit plus 2 s of handler, from the request");
+}

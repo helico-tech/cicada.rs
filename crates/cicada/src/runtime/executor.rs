@@ -451,7 +451,11 @@ impl TurnExecutor {
                 }
             },
             _ = cancel.cancelled() => {
-                keeper.abort();
+                // A node stops renewing at once. A worker keeps its keeper (heartbeat and watchdog) until it knows how
+                // the turn ends, so that a `cancelled` completion stays within the lease it confirmed.
+                if !self.holder.is_source() {
+                    keeper.abort();
+                }
                 overtime.abort();
                 work.abort();
                 // Wait for the worker to stop (at its next `.await`; code that does not yield runs on until it
@@ -468,8 +472,10 @@ impl TurnExecutor {
                         claim.actor, claim.message.id
                     );
                 } else {
+                    keeper.abort();
                     let _ = self.holder.release(&claim.actor, claim.epoch).await;
                 }
+                keeper.abort();
                 return;
             }
         };

@@ -489,6 +489,37 @@ async fn a_stop_during_registration_marks_the_worker_stopped_and_a_late_registra
     assert_eq!(total(&server, "a").await, 0);
 }
 
+/// Scenario: Stop during registration.
+#[tokio::test(start_paused = true)]
+async fn a_stop_while_a_manual_batch_registers_sends_no_lease_request_after_it() {
+    let store = store();
+    let server = server(&store);
+    setup(&server, &["a"]).await;
+    let m = send(&server, "a", CounterMsg::Add { n: 1 }).await;
+    let gate = Arc::new(Notify::new());
+    let probe = Arc::new(Probe { register_gate: Some(gate.clone()), ..probe(&server, 2) });
+    let worker = worker(&probe, 2);
+    let batch = tokio::spawn({
+        let worker = worker.clone();
+        async move { worker.run_due_turns(10).await }
+    });
+    sleep(Duration::from_millis(1)).await;
+    assert_eq!(probe.registrations.load(Ordering::SeqCst), 1, "the manual batch waits for the registration");
+    worker.stop().await;
+    assert_eq!(worker.state(), NodeState::Stopped);
+    gate.notify_one();
+    let error = batch.await.unwrap().unwrap_err();
+    match error {
+        WorkerError::Start(e) => assert_eq!(only_other(&e), "Worker is STOPPED"),
+        other => panic!("expected a state error, got {other:?}"),
+    }
+    sleep(secs(5)).await;
+    assert_eq!(probe.leases.load(Ordering::SeqCst), 0, "no lease request after the stop");
+    assert_eq!(probe.releases.load(Ordering::SeqCst), 0, "nothing to clean up");
+    assert_eq!(outcome(&server, &m.id).await, None, "the message is still pending");
+    assert!(worker.stopped().await.is_none(), "a requested stop");
+}
+
 /// Scenario: A manual batch.
 #[tokio::test(start_paused = true)]
 async fn a_manual_batch_asks_for_at_most_its_limit_and_free_capacity_and_zero_asks_nothing() {
