@@ -38,7 +38,7 @@
 
 ## Finishing checks
 
-- [ ] 6. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
+- [x] 6. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
   `openspec validate lease-turns-in-core --strict`. Include PostgreSQL with CICADA_PG_URL where available and record
   unavailable optional checks. Run backend conformance after the renewal behavior change; verify existing local
   executor/cleanup/fuzz behavior. Regenerate version-bearing references only as required by existing drift checks.
