@@ -51,6 +51,10 @@ pub enum WorkerMsg {
     Note { text: String },
     /// Fails on its first run; a run that retries it notes its text.
     FailOnce { text: String },
+    /// A batch, noted as its items in JSON.
+    Items { items: Vec<serde_json::Value> },
+    /// A batch that fails on its first run; a run that retries it notes its items in JSON.
+    ItemsFailOnce { items: Vec<serde_json::Value> },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -95,6 +99,11 @@ impl Actor for WorkerActor {
             WorkerMsg::Note { text } => turn.state_mut().log.push(text),
             WorkerMsg::FailOnce { .. } if turn.message().failures == 0 => return Err(HandlerError::msg("first run")),
             WorkerMsg::FailOnce { text } => turn.state_mut().log.push(text),
+            WorkerMsg::Items { items } => turn.state_mut().log.push(serde_json::to_string(&items).unwrap()),
+            WorkerMsg::ItemsFailOnce { .. } if turn.message().failures == 0 => {
+                return Err(HandlerError::msg("first run"));
+            }
+            WorkerMsg::ItemsFailOnce { items } => turn.state_mut().log.push(serde_json::to_string(&items).unwrap()),
         }
         Ok(())
     }

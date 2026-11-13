@@ -4,7 +4,7 @@
   crate exports. Implement count-triggered inline forwarding, the first-item timer and public Flush with checked
   time arithmetic. Verify settings, state consistency and timestamps in library tests; run actor library tests
   and doctests.
-- [ ] 2. Add virtual-time `TestActors` tests in `tests/batcher.rs` for the spec: strict count bound with queued Adds,
+- [x] 2. Add virtual-time `TestActors` tests in `tests/batcher.rs` for the spec: strict count bound with queued Adds,
   count 1, timers, ordered items/null, same-time sequence orders, absent-target rollback and redriven Add, timer loss,
   restored nonempty state without armed, manual/stale Flush, depth boundaries, creation and target envelope policies.
   Extend the existing SQLite registry-failure fixture if needed. Run the batcher and store-failure integration tests.

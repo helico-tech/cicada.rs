@@ -10,9 +10,10 @@ use cicada::prelude::*;
 use cicada::store::{Message, MessageStatus, OutcomeStatus, SqliteOptions};
 use cicada::{ActorAddress, SendResult, Store};
 use cicada_actors::{
-    Child, Debouncer, DebouncerActor, DebouncerMsg, DebouncerState, RateLimiter, RateLimiterActor, RateLimiterMsg,
-    RateLimiterState, Schedule, Scheduler, SchedulerActor, SchedulerMsg, SchedulerState, Supervisor, SupervisorActor,
-    SupervisorMsg, SupervisorState, Topic, TopicActor, TopicMsg, TopicState,
+    Batcher, BatcherActor, BatcherMsg, BatcherState, Child, Debouncer, DebouncerActor, DebouncerMsg, DebouncerState,
+    RateLimiter, RateLimiterActor, RateLimiterMsg, RateLimiterState, Schedule, Scheduler, SchedulerActor, SchedulerMsg,
+    SchedulerState, Supervisor, SupervisorActor, SupervisorMsg, SupervisorState, Topic, TopicActor, TopicMsg,
+    TopicState,
 };
 use common::*;
 use sqlx::SqlitePool;
@@ -36,6 +37,7 @@ impl Sqlite {
             .host(SchedulerActor)
             .host(RateLimiterActor)
             .host(DebouncerActor)
+            .host(BatcherActor)
             .host(WorkerActor)
             .build();
         system.initialize().await.unwrap();
@@ -263,6 +265,39 @@ async fn a_submit_cancels_a_flush_that_waits_for_its_retry_and_arms_its_own() {
     assert_eq!(pending.len(), 1, "only the replacement timer");
     assert_eq!(held.armed, Some(pending[0].id.clone()));
     assert_eq!(held.pending.unwrap().message.payload["text"], "m");
+    db.close().await;
+}
+
+/// Scenario: Temporary registry failure. The armed flush of a batcher is made due now; its read of the registry fails,
+/// which clears nothing, and its retry forwards the batch once.
+#[tokio::test]
+async fn a_flush_of_a_batcher_whose_read_of_the_store_fails_is_tried_again_and_forwards_once() {
+    let dir = TempDir::new().unwrap();
+    let db = Sqlite::open(dir.path()).await;
+    let bat = Batcher::named("b");
+    db.system.create(&bat, &BatcherState::new(&worker("a"), "Items", 3, HOUR).unwrap()).await.unwrap();
+    db.system.create(&worker("a"), &WorkerState::default()).await.unwrap();
+    db.system.send(&bat, BatcherMsg::add("n").unwrap()).await.unwrap();
+    db.run_until_idle().await;
+    let timer = db.pending(&addr(&bat)).await.pop().expect("the armed flush");
+
+    db.registry(false).await;
+    db.system.deliver_now(&timer.id).await.unwrap();
+    assert_eq!(db.system.run_due_turns(1).await.unwrap(), 1, "the first attempt of the flush");
+    db.registry(true).await;
+    let retried = db.pending(&addr(&bat)).await;
+    assert_eq!((retried.len(), retried[0].id.clone(), retried[0].failures), (1, timer.id.clone(), 1));
+    assert!(retried[0].last_error.as_deref().unwrap().contains("actor_types"), "{:?}", retried[0].last_error);
+    let held: BatcherState = db.state(&addr(&bat)).await;
+    assert!(held.items.len() == 1 && held.armed == Some(timer.id.clone()), "nothing cleared: {held:?}");
+    assert!(db.pending(&addr(&worker("a"))).await.is_empty(), "nothing was sent");
+
+    tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+    db.run_until_idle().await;
+    assert_eq!(db.state::<WorkerState>(&addr(&worker("a"))).await.log, [r#"["n"]"#], "once, from a later attempt");
+    assert_eq!(db.outcome(&timer).await.0, OutcomeStatus::Done);
+    let held: BatcherState = db.state(&addr(&bat)).await;
+    assert!(held.items.is_empty() && held.first_at.is_none() && held.armed.is_none(), "cleared: {held:?}");
     db.close().await;
 }
 
