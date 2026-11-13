@@ -150,6 +150,40 @@ async fn a_failed_commit_rolls_back_and_resyncs_and_a_known_rollback_publishes_n
     store.close().await;
 }
 
+/// A runtime shut down while a commit settles: the task that would settle it never runs and no timely hint is
+/// promised, but the store, used from another runtime, gets its writer back and the next `BEGIN` rolls the transaction
+/// back; a fresh subscription and a full read then show the settled file.
+#[test]
+fn a_runtime_shut_down_during_settlement_frees_the_writer_and_a_fresh_subscription_reads_the_settled_file() {
+    let main = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+    let db = TempDb::new();
+    let store = main.block_on(open(&db));
+    for (key, fault, lands) in [
+        ("in-flight", CommitFault::InFlight as fn(Arc<Notify>) -> CommitFault, true),
+        ("queued", CommitFault::Queued, false),
+    ] {
+        let doomed = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        doomed.block_on(async {
+            let reached = Arc::new(Notify::new());
+            *store.commit_fault.lock().unwrap() = Some(fault(reached.clone()));
+            let store = store.clone();
+            tokio::spawn(async move { store.create(&instance(key), json!({})).await });
+            reached.notified().await;
+        });
+        drop(doomed); // drops the stopped create, and with it the settle task it asks for
+        main.block_on(async {
+            let after = format!("after-{key}");
+            let next_write = tokio::time::timeout(Duration::from_secs(10), create(&*store, &after));
+            next_write.await.expect("the writer is free again");
+            let mut fresh = subscribe(&*store).await;
+            assert_eq!(store.get(&instance(key)).await.unwrap().is_some(), lands, "{key}");
+            create(&*store, &format!("marker-{key}")).await;
+            assert_eq!(until(&mut fresh, &instance(&format!("marker-{key}"))).await, vec![]);
+        });
+    }
+    main.block_on(store.close());
+}
+
 #[tokio::test]
 async fn close_waits_for_a_settling_commit_and_ends_the_streams() {
     let db = TempDb::new();

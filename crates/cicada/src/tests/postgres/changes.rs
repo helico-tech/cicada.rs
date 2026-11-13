@@ -3,11 +3,11 @@
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use futures::StreamExt;
 use serde_json::json;
+use sqlx::AssertSqlSafe;
 use tokio::time::timeout;
 
 use super::common::{TestDb, eventually, test_db};
@@ -178,17 +178,24 @@ async fn a_re_run_transaction_starts_with_an_empty_collection() {
     let store = open(&db).await;
     let mut changes = subscribe(&store, "").await;
     store.create(&addr("p"), json!({})).await.unwrap();
-    spawn_children(&store, &addr("p"), 59).await;
+    spawn_children(&store, &addr("p"), 3).await;
     store.create(&addr("marker-1"), json!({})).await.unwrap();
     until(&mut changes, &addr("marker-1")).await;
-    // The first attempt collects 60 addresses and rolls back; leaking into the re-run would make 120: a resync.
-    store.rerun_next_commit.store(true, Ordering::SeqCst);
+    // The first attempt removes the whole tree, `p-001` included, and rolls back. Before the re-run, `p-001` leaves
+    // the tree, so the attempt that commits never touches it: a collection that survived the re-run would report it.
+    let s = db.schema.clone();
+    let mut c = db.connect().await;
+    *store.rerun_next_commit.lock().unwrap() = Some(Box::pin(async move {
+        sqlx::raw_sql(AssertSqlSafe(format!("UPDATE \"{s}\".actors SET parent = NULL WHERE address = 'pgc/p-001'")))
+            .execute(&mut c)
+            .await
+            .unwrap();
+    }));
     store.delete(&addr("p"), &MessageId::random()).await.unwrap();
-    assert!(!store.rerun_next_commit.load(Ordering::SeqCst), "the fault ran");
+    assert!(store.rerun_next_commit.lock().unwrap().is_none(), "the fault ran");
+    assert!(store.get(&addr("p-001")).await.unwrap().is_some(), "the re-run left it");
     store.create(&addr("marker-2"), json!({})).await.unwrap();
-    let seen = until(&mut changes, &addr("marker-2")).await;
-    assert_eq!(seen.len(), 60, "{seen:?}");
-    assert!(seen.iter().all(|c| matches!(c, ActorChange::Changed { .. })));
+    assert_eq!(until(&mut changes, &addr("marker-2")).await, hints(&["p", "p-000", "p-002"]));
     db.cleanup().await;
 }
 

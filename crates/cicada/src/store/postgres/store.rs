@@ -150,9 +150,10 @@ pub struct PostgresStore {
     closed: AtomicBool,
     /// The change hints of every upgraded node on this schema, fed by the listener.
     hub: Arc<ChangeHub>,
-    /// Makes the next attempt that would commit roll back and run again, as after a deadlock, for the tests.
+    /// Makes the next attempt that would commit roll back, run this future, and run again as after a deadlock, for
+    /// the tests.
     #[cfg(test)]
-    pub(crate) rerun_next_commit: AtomicBool,
+    pub(crate) rerun_next_commit: std::sync::Mutex<Option<futures::future::BoxFuture<'static, ()>>>,
 }
 
 impl std::fmt::Debug for PostgresStore {
@@ -212,7 +213,7 @@ impl PostgresStore {
             closed: AtomicBool::new(false),
             hub,
             #[cfg(test)]
-            rerun_next_commit: AtomicBool::new(false),
+            rerun_next_commit: std::sync::Mutex::new(None),
         })
     }
 
@@ -268,10 +269,14 @@ impl PostgresStore {
             Err(e) => (Err(e), false),
         };
         #[cfg(test)]
-        if commit && self.rerun_next_commit.swap(false, Ordering::SeqCst) {
-            sqlx::raw_sql("ROLLBACK").execute(&mut *tx.c).await?;
-            tx.open = false;
-            return Err(TxError::Again("a re-run of a test".into()));
+        if commit {
+            let between = self.rerun_next_commit.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if let Some(between) = between {
+                sqlx::raw_sql("ROLLBACK").execute(&mut *tx.c).await?;
+                tx.open = false;
+                between.await;
+                return Err(TxError::Again("a re-run of a test".into()));
+            }
         }
         if commit {
             let mut payloads = std::mem::take(&mut tx.notify);
