@@ -4,7 +4,7 @@
   exports. Implement bounded validated subscriptions, Publish/PublishBatch normalization and atomic raw create/send,
   mapping address/call refusals to permanent errors and preserving store retryability. Add library tests for state,
   name/count bounds, helper serialization, missing fields and raw dot/slash/percent ids; run library tests and doctests.
-- [ ] 2. Add virtual-time TestActors integration tests for every spec scenario: multi-flow atomic starts, batching,
+- [x] 2. Add virtual-time TestActors integration tests for every spec scenario: multi-flow atomic starts, batching,
   empty subscriptions/batches, invalid dot ids with/without subscribers and fresh-id recovery, context and retry
   selection, hosted/unhosted invalid input, stale subscriptions, same-id retention boundaries, new-id redrive,
   scheduler/composition starts, independent lifecycle and depth. Include both encoded-looking and raw slash ids.

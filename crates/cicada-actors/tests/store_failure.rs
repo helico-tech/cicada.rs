@@ -11,8 +11,9 @@ use cicada::store::{Message, MessageStatus, OutcomeStatus, SqliteOptions};
 use cicada::{ActorAddress, SendResult, Store};
 use cicada_actors::{
     Batcher, BatcherActor, BatcherMsg, BatcherState, Child, Debouncer, DebouncerActor, DebouncerMsg, DebouncerState,
-    RateLimiter, RateLimiterActor, RateLimiterMsg, RateLimiterState, Schedule, Scheduler, SchedulerActor, SchedulerMsg,
-    SchedulerState, Supervisor, SupervisorActor, SupervisorMsg, SupervisorState, Topic, TopicActor, TopicMsg,
+    Event, EventActor, EventMsg, EventState, Flow, FlowActor, FlowRun, FlowState, FlowStatus, RateLimiter,
+    RateLimiterActor, RateLimiterMsg, RateLimiterState, Schedule, Scheduler, SchedulerActor, SchedulerMsg,
+    SchedulerState, Step, Supervisor, SupervisorActor, SupervisorMsg, SupervisorState, Topic, TopicActor, TopicMsg,
     TopicState,
 };
 use common::*;
@@ -38,6 +39,9 @@ impl Sqlite {
             .host(RateLimiterActor)
             .host(DebouncerActor)
             .host(BatcherActor)
+            .host(EventActor)
+            .host(FlowActor::new(Mail))
+            .host(FlowActor::new(Ship))
             .host(WorkerActor)
             .build();
         system.initialize().await.unwrap();
@@ -298,6 +302,73 @@ async fn a_flush_of_a_batcher_whose_read_of_the_store_fails_is_tried_again_and_f
     assert_eq!(db.outcome(&timer).await.0, OutcomeStatus::Done);
     let held: BatcherState = db.state(&addr(&bat)).await;
     assert!(held.items.is_empty() && held.first_at.is_none() && held.armed.is_none(), "cleared: {held:?}");
+    db.close().await;
+}
+
+/// `shop.mail`: one step.
+struct Mail;
+
+impl Flow for Mail {
+    const TYPE: &'static str = "shop.mail";
+    type Input = serde_json::Value;
+
+    async fn run(&self, step: &mut Step, _input: serde_json::Value) -> HandlerResult {
+        step.run("send", |_key| async { Ok(()) }).await
+    }
+}
+
+/// `shop.ship`: one step.
+struct Ship;
+
+impl Flow for Ship {
+    const TYPE: &'static str = "shop.ship";
+    type Input = serde_json::Value;
+
+    async fn run(&self, step: &mut Step, _input: serde_json::Value) -> HandlerResult {
+        step.run("ship", |_key| async { Ok(()) }).await
+    }
+}
+
+/// Scenario: Store outage. A publication with a retry policy whose read of the registry fails creates and starts
+/// nothing; its retry starts each subscribed run once, under the same id.
+#[tokio::test]
+async fn a_publication_whose_read_of_the_store_fails_starts_no_run_and_its_retry_starts_each_once() {
+    let dir = TempDir::new().unwrap();
+    let db = Sqlite::open(dir.path()).await;
+    let event = Event::named("placed");
+    db.system.create(&event, &EventState::default()).await.unwrap();
+    for flow in ["shop.mail", "shop.ship"] {
+        db.system.send(&event, EventMsg::Subscribe { flow: flow.into() }).await.unwrap();
+    }
+    db.run_until_idle().await;
+    let second = std::time::Duration::from_secs(1);
+    let policy = RetryPolicy::new(2, Backoff::fixed(second).unwrap()).unwrap();
+    let publish = EventMsg::publish(serde_json::json!({"order": 7})).unwrap();
+    let SendResult::Accepted(publication) =
+        db.system.send_with(&event, publish, SendOptions::new().retry(policy)).await.unwrap()
+    else {
+        panic!("not accepted")
+    };
+    let mail = addr(&FlowRun::<Mail>::named(publication.id.as_str()));
+    let ship = addr(&FlowRun::<Ship>::named(publication.id.as_str()));
+
+    db.registry(false).await;
+    assert_eq!(db.system.run_due_turns(1).await.unwrap(), 1, "the first attempt of the publication");
+    db.registry(true).await;
+    let retried = db.pending(&addr(&event)).await;
+    assert_eq!((retried.len(), retried[0].id.clone(), retried[0].failures), (1, publication.id.clone(), 1));
+    assert!(retried[0].last_error.as_deref().unwrap().contains("actor_types"), "{:?}", retried[0].last_error);
+    for run in [&mail, &ship] {
+        assert!(db.system.get_actor(run).await.unwrap().is_none(), "no partial run: {run}");
+    }
+
+    tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+    db.run_until_idle().await;
+    assert_eq!(db.outcome(&publication).await.0, OutcomeStatus::Done);
+    for run in [&mail, &ship] {
+        let state: FlowState<serde_json::Value> = db.state(run).await;
+        assert_eq!((state.status, state.journal.len()), (FlowStatus::Done, 1), "started once: {run}");
+    }
     db.close().await;
 }
 
