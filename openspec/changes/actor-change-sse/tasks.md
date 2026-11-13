@@ -27,7 +27,7 @@
 
 ## Finishing checks
 
-- [ ] 5. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
+- [x] 5. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
   `openspec validate actor-change-sse --strict`; include PostgreSQL where configured and record unavailable optional
   checks. Regenerate version-bearing references if existing drift checks require it; no browser/proxy execution is
   claimed by passing the Rust tests.
