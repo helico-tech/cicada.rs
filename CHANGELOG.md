@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.16.15 — unreleased
+## 0.16.15 — 2026-11-13
 
 Nothing breaks: a worker runs unchanged Rust actors through a turn source instead of a store, the third part of remote
 execution. No schema, contract, route, command line or store behaviour changes; a node runs its turns as before.
