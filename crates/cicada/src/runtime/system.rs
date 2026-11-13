@@ -14,10 +14,11 @@ use tokio_util::task::TaskTracker;
 
 use super::completion::{self, CompleteTurnResult, Refusal, TurnCompletion, TurnFailure, TurnReport};
 use super::executor::{
-    HostedType, LeaseSettings, TurnExecutor, at_claim_limit, claim_limit_commit, claim_limit_committed, safety_margin,
+    Holder, HostedType, LeaseSettings, LeaseTiming, TurnExecutor, at_claim_limit, claim_limit_commit,
+    claim_limit_committed, safety_margin,
 };
 use super::limits;
-use super::resolver::{RegisteredType, TypeResolver};
+use super::resolver::{RegisteredType, Registry, TypeResolver};
 use super::results::{
     ActorSnapshot, BulkResult, BulkSelection, CreateActorResult, LeaseTurnsResult, MailboxEntry, NodeHealth, NodeInfo,
     OpError, RegisterContractResult, RenewTurnResult, RetryResult, SendResult, TurnLease, WatchResult,
@@ -293,7 +294,7 @@ impl ActorSystemBuilder {
 
     /// Builds the node. It does nothing until [`ActorSystem::start`] (or [`ActorSystem::initialize`]).
     pub fn build(self) -> ActorSystem {
-        let resolver = Arc::new(TypeResolver::new(self.store.clone()));
+        let resolver = Arc::new(TypeResolver::new(Registry::Store(self.store.clone())));
         ActorSystem {
             inner: Arc::new(Inner {
                 store: self.store,
@@ -474,12 +475,11 @@ impl ActorSystem {
         let names: BTreeSet<TypeName> = types.keys().cloned().collect();
         let lease = LeaseSettings { ttl: inner.config.lease_ttl, heartbeat: inner.config.heartbeat() };
         let executor = Arc::new(TurnExecutor {
-            store: inner.store.clone(),
+            holder: Holder::Store { store: inner.store.clone(), lease },
             resolver: inner.resolver.clone(),
             hosted: Arc::new(types),
             observers: inner.observers.clone(),
             max_lost_claims: inner.config.max_lost_claims,
-            lease,
             wake: inner.wake.clone(),
         });
         Ok(Arc::new(Initialized { executor, types: names }))
@@ -653,15 +653,15 @@ impl ActorSystem {
     }
 
     /// Claims up to `limit` turns, paired with the local time the claim was sent (the start of their local lease
-    /// deadline).
+    /// deadline) and the TTL.
     ///
     /// The store call itself is not cancellable: it runs in a task of its own, and claims the store granted are never
     /// dropped on the floor. When the caller is gone by the time they arrive (cancelled, or the node stopped and left
     /// its dispatch loop behind), they are released.
-    async fn claim(&self, init: &Initialized, limit: usize) -> Result<Vec<(Claim, Instant)>, StoreError> {
-        let sent = Instant::now();
+    async fn claim(&self, init: &Initialized, limit: usize) -> Result<Vec<(Claim, LeaseTiming)>, StoreError> {
+        let timing = LeaseTiming { sent: Instant::now(), ttl: self.inner.config.lease_ttl };
         let mut batch = self.claim_batch(init.types.clone(), self.inner.config.node_id.clone(), limit).await?;
-        Ok(batch.take().into_iter().map(|c| (c, sent)).collect())
+        Ok(batch.take().into_iter().map(|c| (c, timing)).collect())
     }
 
     /// Claims up to `limit` turns of `types` for `owner` with this system's TTL, guarded: claims left in the returned

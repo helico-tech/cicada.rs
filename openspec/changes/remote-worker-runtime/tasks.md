@@ -1,6 +1,6 @@
 ## Implementation
 
-- [ ] 1. Reconcile the landed registration, lease and completion APIs, then add Worker/WorkerBuilder/WorkerConfig,
+- [x] 1. Reconcile the landed registration, lease and completion APIs, then add Worker/WorkerBuilder/WorkerConfig,
   WorkerError, SourceError and the object-safe TurnSource exports described in the design. Implement the reference
   ActorSystem adapter using public operations and forwarding for Arc<T>; document source fencing, nonshortening
   renewal and no hidden mutation retries. Test error classification, full type definitions, exact contract/hash

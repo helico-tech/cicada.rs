@@ -37,7 +37,10 @@ pub use actor::{Actor, ActorType};
 pub use address::{ActorAddress, ActorRef, TypeName};
 pub use change::{ActorChange, ActorChanges};
 pub use message::NoState;
-pub use runtime::{ActorSystem, CreateActorResult, OpError, SendResult, StartError, StartProblem};
+pub use runtime::{
+    ActorSystem, CreateActorResult, OpError, SendResult, SourceError, StartError, StartProblem, TurnSource, Worker,
+    WorkerBuilder, WorkerConfig, WorkerError,
+};
 pub use store::Store;
 pub use turn::{HandlerError, HandlerResult, SendOptions, Turn};
 pub use watch::{Failed, FailureCause, StopCause, Stopped, WatchTarget};
