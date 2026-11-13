@@ -1,0 +1,7 @@
+Verdict: fix needed
+
+1. docs/guide/http.md:359–360,384,393–395: prior blocker 3 remains partly unresolved. Disposal can occur after a read/body promise fulfills but before its awaiting continuation runs. AbortController cannot revoke that fulfilled result: the listing still replaces the view and calls render after disposal; an actor read can likewise mutate it. Reproduced with the exact head JavaScript and native Node fetch/Response, disposing from the JSON promise's fulfillment handler: source closed, then render received counter/a with disposed=true. Reproducer: /tmp/actor-change-sse-code-2-dispose.cjs. The new Rust check at crates/cicada-axum/tests/changes.rs:548 explicitly rejects the completed page after disposal, a guard absent from the JavaScript, so its passing test does not establish the example's behavior. Check the abort state after asynchronous boundaries and before applying results/rendering, and cover disposal between read completion and continuation for listing/address reads with equivalent model behavior.
+
+Notes: Prior blockers 1 and 2 are fixed: connection state survives successful reads/retries and reconnect recovery has coverage; idle/active response drops observably release their source, with no additional tasks. Retry disposal coverage is present. No other regression identified in previous..head.
+
+Not checked: suite reruns, actual browser/proxy execution or Docker E2E. Relied on the builder's reported checks; ran only the focused JavaScript reproduction above. Review limited to the round-two diff and supporting context.

@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.16.11 — unreleased
+## 0.16.11 — 2026-11-13
 
 Nothing breaks: a browser page can follow the change hints over HTTP. The route is new; no schema, actor contract,
 command line or existing route changes. Upgrade a server before a page uses the route.
