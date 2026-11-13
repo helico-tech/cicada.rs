@@ -12,6 +12,7 @@ use tokio::time::{Instant, sleep, timeout};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
+use super::completion::{self, CompleteTurnResult, Refusal, TurnCompletion, TurnFailure, TurnReport};
 use super::executor::{
     HostedType, LeaseSettings, TurnExecutor, at_claim_limit, claim_limit_commit, claim_limit_committed, safety_margin,
 };
@@ -32,11 +33,11 @@ use crate::store::{
     ActorRecord, Backend, CancelResult, Claim, CommitResult, CreateResult, DeleteResult, DeliverNowResult,
     EnqueueResult, Message, MessageId, MessageStatus, NodeId, OutcomeRecord, OutcomeStatus, OutgoingMessage, Page,
     PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn, SetWatchResult, Store, StoreError,
-    StoreStats,
+    StoreStats, TurnOutcome,
 };
 use crate::time::{self, MAX_INSTANT, Timestamp};
 use crate::turn::SendOptions;
-use crate::watch::{self, Watch, WatchTarget};
+use crate::watch::{self, FailureCause, Watch, WatchTarget};
 
 const MIN_SLEEP: Duration = Duration::from_millis(1);
 /// How often a node refreshes its row in the node table.
@@ -851,6 +852,88 @@ impl ActorSystem {
         self.inner.store.release(actor, epoch).await?;
         self.wake_up();
         Ok(())
+    }
+
+    /// Completes the leased turn of `actor` under `epoch` on `message_id` with the report of its handler (ADR 0038): one
+    /// fenced commit applies the outcome this system derives from `report`, with its state and effects, atomically. Any
+    /// system on the same store can complete a lease another one granted. A trusted operation for executors with write
+    /// access: the report is the finished effect buffer of a handler the executor ran, and no handler runs here.
+    ///
+    /// In order, before the store: a [`TurnFailure`] that is retryable with a cause other than `handler`, `node` or
+    /// `timeout`, or has the cause `claim-limit`, is [`OpError::Invalid`]. A returned report whose send breaks the send
+    /// limits or delivery bounds, or whose create has a `null`, NUL-containing or too deep state, fails the message
+    /// instead, without effects and without retry: cause `commit`, `Commit refused: …`. So does a new own state that
+    /// cannot be stored, with cause `handler` and `State cannot be stored: …`. These derived failures are committed in
+    /// this call. A retryable failure reads the message once: when it is pending or running for `actor`, its retry policy
+    /// and failures decide between a reschedule and `failed`, as for a local turn; a failed read is the store's error,
+    /// with nothing committed. Every send gets `actor` as sender and `message_id` as cause, and keeps its id.
+    ///
+    /// Then exactly one commit attempt. [`CompleteTurnResult::Completed`] when it applied;
+    /// [`CompleteTurnResult::LeaseLost`] when the epoch is no longer held, also for a report repeated after its commit
+    /// applied. A commit the store rejects or refuses returns [`CompleteTurnResult::Rejected`] with the failure, without
+    /// retry, to submit next, and commits nothing: the caller replaces its report with `Failed(failure)` for good. A
+    /// failure report that the store turns down is [`OpError::Invalid`] (no further fallback): the caller abandons the
+    /// turn. Any other store error may hide an applied commit: the caller repeats its current report, never runs the
+    /// handler again, and never releases the lease. Neither a configuration nor initialization is needed; it works after
+    /// [`Self::stop`] while the store is open, never releases a lease, and tells this system's observers nothing.
+    pub async fn complete_turn(
+        &self,
+        actor: &ActorAddress,
+        epoch: i64,
+        message_id: &MessageId,
+        report: TurnReport,
+    ) -> Result<CompleteTurnResult, OpError> {
+        if let TurnReport::Failed(failure) = &report {
+            completion::check_failure(failure).map_err(OpError::Invalid)?;
+        }
+        let report = match completion::check_effect_limits(&report) {
+            Ok(()) => report,
+            Err(e) => TurnReport::Failed(TurnFailure {
+                cause: FailureCause::Commit,
+                retryable: false,
+                reason: format!("Commit refused: {e}"),
+            }),
+        };
+        let snapshot = match &report {
+            TurnReport::Failed(failure) if failure.retryable => match self.inner.store.status(message_id).await? {
+                Some(MessageStatus::Pending(m) | MessageStatus::Running { message: m, .. }) if &m.to == actor => {
+                    m.retry.map(|policy| (policy, m.failures))
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        let retry = snapshot.as_ref().map(|(policy, failures)| (policy, *failures));
+        let decision = completion::report_decision(report, actor, message_id, retry);
+        let terminal_failure = matches!(decision.outcome, TurnOutcome::Failed(_));
+        let (request, prepared) = completion::prepare(actor, epoch, message_id, decision);
+        let refused = |refusal: Refusal<'_>| {
+            if terminal_failure {
+                let (Refusal::Rejected(reason) | Refusal::Invalid(reason)) = refusal;
+                tracing::warn!("Failure commit of {actor} for {message_id} refused: {reason}");
+                return Err(OpError::Invalid(format!("The failure of {actor} for {message_id} was refused: {reason}")));
+            }
+            Ok(CompleteTurnResult::Rejected(completion::fallback(&prepared, refusal)))
+        };
+        match self.inner.store.commit(request).await {
+            Ok(CommitResult::Committed { version, sent, cancelled }) => {
+                completion::log_controls(actor, message_id, &prepared.controls);
+                if completion::wakes(&prepared.outcome, &sent, prepared.notifies) {
+                    self.wake_up();
+                }
+                let cause = matches!(prepared.outcome, TurnOutcome::Failed(_)).then_some(prepared.cause);
+                let outcome = prepared.outcome.clone();
+                Ok(CompleteTurnResult::Completed(TurnCompletion { outcome, cause, version, sent, cancelled }))
+            }
+            Ok(CommitResult::LeaseLost) => Ok(CompleteTurnResult::LeaseLost),
+            Ok(CommitResult::Rejected(reason)) => refused(Refusal::Rejected(&reason)),
+            Err(StoreError::Invalid(reason)) => refused(Refusal::Invalid(&reason)),
+            Err(e) => {
+                // It may have applied: wake the loop for what it sent or made due.
+                self.wake_up();
+                Err(OpError::Store(e))
+            }
+        }
     }
 
     /// [`StoreError::Unavailable`] when the system is stopping or stopped: it leases nothing more.

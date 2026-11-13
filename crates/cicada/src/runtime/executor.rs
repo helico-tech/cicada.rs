@@ -58,19 +58,17 @@ use tokio::task::AbortHandle;
 use tokio::time::{Instant, sleep};
 use tokio_util::sync::CancellationToken;
 
+use super::completion::{
+    self, Decision, Refusal, TurnFailure, failure_decision, fallback, prepare, report_decision, run_report,
+};
 use super::effects::EffectBuffer;
-use super::limits;
 use super::resolver::TypeResolver;
 use crate::actor::{HostedActor, RunEnd, RunResult, panic_message};
 use crate::address::TypeName;
-use crate::message;
 use crate::observer::{Observed, Observers};
-use crate::store::{
-    ActorCreate, Backend, Claim, CommitRequest, CommitResult, Control, Delivery, Message, MessageId, OutgoingMessage,
-    RenewResult, StateChange, Store, StoreError, TurnOutcome,
-};
+use crate::store::{Backend, Claim, CommitRequest, CommitResult, Message, RenewResult, Store, StoreError, TurnOutcome};
 use crate::turn::{HandlerFailure, TurnInfo};
-use crate::watch::{FailureCause, WatchChange};
+use crate::watch::FailureCause;
 
 const RENEW_RETRY: Duration = Duration::from_secs(1);
 const STUCK_AFTER: Duration = Duration::from_secs(5);
@@ -145,44 +143,6 @@ pub(crate) fn claim_limit_committed(
 ) {
     wake.notify_one();
     observers.start(&claim.actor, &claim.message, claim.claimed_at).ended(outcome, sent);
-}
-
-/// What a turn decided, before it is committed.
-struct Decision {
-    outcome: TurnOutcome,
-    /// Why the message fails, by the table of ADR 0028: read when the outcome is `failed`, and for a reschedule when
-    /// the store refuses it and the message fails after all.
-    cause: FailureCause,
-    state: StateChange,
-    creates: Vec<ActorCreate>,
-    sends: Vec<OutgoingMessage>,
-    cancels: Vec<MessageId>,
-    watches: Vec<WatchChange>,
-    controls: Vec<Control>,
-    /// The handler's failure reason when the turn failed: the fallback if the retry's reschedule is refused.
-    handler_failure: Option<String>,
-}
-
-impl Decision {
-    /// The message fails for `cause` with `reason`, without effects.
-    fn failed(cause: FailureCause, reason: impl Into<String>) -> Self {
-        Self { cause, ..Self::of(TurnOutcome::Failed(reason.into())) }
-    }
-
-    /// A decision without effects: `outcome` is not `failed` (see [`Self::failed`]).
-    fn of(outcome: TurnOutcome) -> Self {
-        Self {
-            outcome,
-            cause: FailureCause::Handler,
-            state: StateChange::Unchanged,
-            creates: Vec::new(),
-            sends: Vec::new(),
-            cancels: Vec::new(),
-            watches: Vec::new(),
-            controls: Vec::new(),
-            handler_failure: None,
-        }
-    }
 }
 
 enum CommitEnd {
@@ -572,47 +532,19 @@ impl TurnExecutor {
                     let reason = failure.reason();
                     handler_failed(info, failure, reason, true)
                 }
-                RunEnd::Returned => self.after_return(run, guard).await,
+                RunEnd::Returned => self.after_return(run, info, guard).await,
             },
         }
     }
 
-    async fn after_return(&self, run: RunResult, guard: &LeaseGuard) -> Decision {
-        let effects = run.effects;
-        match self.check_typed_effects(&effects, guard).await {
+    async fn after_return(&self, run: RunResult, info: &TurnInfo, guard: &LeaseGuard) -> Decision {
+        match self.check_typed_effects(&run.effects, guard).await {
             Ok(Some(reason)) => return Decision::failed(FailureCause::Commit, reason),
             Ok(None) => {}
             Err(e) => return Decision::failed(FailureCause::Node, format!("Turn failed after its handler ended: {e}")),
         }
-        let state = if effects.stop {
-            StateChange::Stop
-        } else {
-            match run.new_state {
-                None => StateChange::Unchanged,
-                Some(Err(e)) => {
-                    return Decision::failed(FailureCause::Handler, format!("State cannot be encoded: {e}"));
-                }
-                Some(Ok(state)) => {
-                    if let Err(e) = message::check_not_null("state", &state)
-                        .and_then(|()| limits::check_json("state", Some(&state)))
-                    {
-                        return Decision::failed(FailureCause::Handler, format!("State cannot be stored: {e}"));
-                    }
-                    StateChange::NewState(state)
-                }
-            }
-        };
-        Decision {
-            outcome: TurnOutcome::Done,
-            cause: FailureCause::Handler,
-            state,
-            creates: effects.creates,
-            sends: effects.sends,
-            cancels: effects.cancels,
-            watches: effects.watches,
-            controls: effects.controls,
-            handler_failure: None,
-        }
+        let retry = info.message.retry.as_ref().map(|policy| (policy, info.message.failures));
+        report_decision(run_report(run), &info.self_address, &info.message.id, retry)
     }
 
     /// Checks what the compiler cannot: that every created actor's type is registered, and its initial state against
@@ -665,74 +597,25 @@ impl TurnExecutor {
     /// Commits `decision`, or the `failed` that replaces it when the store rejects or refuses it, and tells `observed`
     /// the outcome once a commit succeeded; otherwise `observed` is dropped.
     async fn commit(&self, claim: &Claim, decision: Decision, guard: &LeaseGuard, observed: Observed) {
-        // Every backend can store the reason (PostgreSQL refuses NUL characters in text). A rescheduled message carries
-        // its `lastError` along, so that one is also bounded.
-        let outcome = match decision.outcome {
-            TurnOutcome::Failed(e) => TurnOutcome::Failed(sanitize(&e)),
-            TurnOutcome::Rescheduled { delivery, error } => TurnOutcome::Rescheduled {
-                delivery,
-                error: sanitize(&error).chars().take(TurnOutcome::MAX_ERROR_LENGTH).collect(),
-            },
-            outcome @ (TurnOutcome::Done | TurnOutcome::Cancelled) => outcome,
-        };
-        // A stop removes actors, and a failure is an event too: either may write notifications to watchers here. A
-        // control effect may too, and a resume makes messages due.
-        let notifies = matches!(outcome, TurnOutcome::Failed(_))
-            || matches!(decision.state, StateChange::Stop)
-            || !decision.controls.is_empty();
-        let controls = decision.controls.clone();
-        let request = CommitRequest {
-            event: MessageId::random(),
-            address: claim.actor.clone(),
-            epoch: claim.epoch,
-            message_id: claim.message.id.clone(),
-            outcome: outcome.clone(),
-            cause: decision.cause,
-            state: decision.state,
-            creates: decision.creates,
-            sends: decision.sends,
-            cancels: decision.cancels,
-            watches: decision.watches,
-            controls: decision.controls,
-        };
-        let (failure, cause) = match self.commit_with_retry(claim, guard, request).await {
+        let (request, prepared) = prepare(&claim.actor, claim.epoch, &claim.message.id, decision);
+        let TurnFailure { cause, reason, .. } = match self.commit_with_retry(claim, guard, request).await {
             CommitEnd::Abandoned => return,
             // A retry commit the store cannot apply (the reschedule's delivery time out of range): the handler's
             // failure stands, with the refusal appended, and so does its cause.
-            CommitEnd::Refused(reason) => match (&outcome, &decision.handler_failure) {
-                (TurnOutcome::Rescheduled { .. }, Some(handler_failure)) => (
-                    TurnOutcome::Failed(sanitize(&format!("{handler_failure} (commit refused: {reason})"))),
-                    decision.cause,
-                ),
-                _ => (TurnOutcome::Failed(sanitize(&format!("Commit refused: {reason}"))), FailureCause::Commit),
-            },
+            CommitEnd::Refused(reason) => fallback(&prepared, Refusal::Invalid(&reason)),
             CommitEnd::Answered(CommitResult::Committed { sent, .. }) => {
-                // Nothing in the store records who controlled an actor, so the node logs it (ADR 0024); whether the
-                // target was there, the commit does not say.
-                for control in &controls {
-                    tracing::info!(
-                        actor = %claim.actor,
-                        effect = %control.effect,
-                        target = %control.actor,
-                        "Turn of {} for {}: {} {}",
-                        claim.actor,
-                        claim.message.id,
-                        control.effect,
-                        control.actor
-                    );
-                }
-                self.wake_after(&outcome, &sent, notifies);
-                observed.ended(&outcome, &sent);
+                completion::log_controls(&claim.actor, &claim.message.id, &prepared.controls);
+                self.wake_after(&prepared.outcome, &sent, prepared.notifies);
+                observed.ended(&prepared.outcome, &sent);
                 return;
             }
             CommitEnd::Answered(CommitResult::LeaseLost) => {
                 tracing::info!("Commit of {} for {} rejected: lease lost", claim.actor, claim.message.id);
                 return;
             }
-            CommitEnd::Answered(CommitResult::Rejected(reason)) => {
-                (TurnOutcome::Failed(sanitize(&reason)), FailureCause::Commit)
-            }
+            CommitEnd::Answered(CommitResult::Rejected(reason)) => fallback(&prepared, Refusal::Rejected(&reason)),
         };
+        let failure = TurnOutcome::Failed(reason);
         // Rejected or refused: nothing was applied and the lease is still held; record the failure without effects.
         let request = CommitRequest::new(claim.actor.clone(), claim.epoch, claim.message.id.clone(), failure.clone())
             .with_cause(cause);
@@ -803,7 +686,7 @@ impl TurnExecutor {
     /// once), and for the notifications of a failure, a stop or a delete and the messages a resume makes due
     /// (`notifies`).
     fn wake_after(&self, outcome: &TurnOutcome, sent: &[Message], notifies: bool) {
-        if !sent.is_empty() || !outcome.is_final() || notifies {
+        if completion::wakes(outcome, sent, notifies) {
             self.wake.notify_one();
         }
     }
@@ -813,19 +696,8 @@ impl TurnExecutor {
 /// `failed`; the failure decides the cause (ADR 0028).
 fn handler_failed(info: &TurnInfo, failure: HandlerFailure, reason: String, retryable: bool) -> Decision {
     tracing::debug!("Handler of {} failed on {}: {failure}", info.self_address, info.message.id);
-    let cause = failure.cause();
-    let failed_runs = info.message.failures + 1; // including this one
-    let retry_delay = match &info.message.retry {
-        Some(policy) if retryable && !failure.is_permanent() && policy.retries_after(failed_runs) => {
-            Some(policy.backoff().delay(failed_runs).min(crate::time::MAX_DELAY))
-        }
-        _ => None,
-    };
-    let outcome = match retry_delay {
-        Some(delay) => TurnOutcome::Rescheduled { delivery: Delivery::After(delay), error: reason.clone() },
-        None => TurnOutcome::Failed(reason.clone()),
-    };
-    Decision { cause, handler_failure: Some(reason), ..Decision::of(outcome) }
+    let failure = TurnFailure { cause: failure.cause(), retryable: retryable && !failure.is_permanent(), reason };
+    failure_decision(failure, info.message.retry.as_ref().map(|policy| (policy, info.message.failures)))
 }
 
 /// Logs a warning when the handler is still running a while after its maximum turn duration: it does not yield.
@@ -840,9 +712,4 @@ async fn overtime_warning(work: AbortHandle, claim: Claim, max_turn: Duration) {
             claim.message.id
         );
     }
-}
-
-/// A failure reason every backend can store.
-fn sanitize(reason: &str) -> String {
-    reason.replace('\0', "\u{FFFD}")
 }

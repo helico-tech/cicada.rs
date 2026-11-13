@@ -1,5 +1,6 @@
 //! The node runtime: the dispatch loop, turn execution and the in-process operations behind the HTTP API.
 
+mod completion;
 pub(crate) mod effects;
 pub(crate) mod executor;
 pub mod limits;
@@ -7,6 +8,7 @@ pub(crate) mod resolver;
 mod results;
 mod system;
 
+pub use completion::{CompleteTurnResult, StateReport, TurnCompletion, TurnEffects, TurnFailure, TurnReport, TurnSend};
 pub use resolver::RegisteredType;
 pub use results::{
     ActorSnapshot, BulkResult, BulkSelection, CreateActorResult, LeaseTurnsResult, MailboxEntry, NodeHealth, NodeInfo,

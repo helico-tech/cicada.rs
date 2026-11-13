@@ -376,7 +376,7 @@ pub struct Watch {
 
 /// A change of a watch buffered by a turn and applied by its commit, before its creates and sends.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct WatchChange {
+pub struct WatchChange {
     /// The target; the watcher is the committing actor.
     pub target: WatchTarget,
     /// True to set the watch, false to remove it.

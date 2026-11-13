@@ -1,13 +1,13 @@
 ## Implementation
 
-- [ ] 1. Reconcile the landed lease/registration APIs, then add the public runtime report/effect/result types and
+- [x] 1. Reconcile the landed lease/registration APIs, then add the public runtime report/effect/result types and
   the plain ActorCreate, Control/ControlEffect and WatchChange exports described in the design. Keep Backend,
   CommitRequest/Result, OutgoingMessage, Claim and EffectBuffer private. Extract shared helpers for run-report
   conversion, report-to-Decision policy, sanitization/request construction and fallback selection; keep the local
   executor's retry, fallback, handler-phase, validation order, observers and deadlines unchanged. Exercise every
   existing outcome/failure mapping with the local runtime/claim-limit/fault tests, including timeouts after a
   returned handler, state encoding and post-handler registry failures. Run the affected core runtime and fuzz tests.
-- [ ] 2. Add ActorSystem::complete_turn with failure-combination validation, remote storage-limit backstops,
+- [x] 2. Add ActorSystem::complete_turn with failure-combination validation, remote storage-limit backstops,
   Pending/Running retry snapshot, derived identities and at most one commit attempt. Return exact Rejected failure
   reports for known backend refusal; reject a refused terminal failure without recursion. Preserve logging/wakes,
   no initialization/config dependency, no server observers and no release. Add public tests in

@@ -23,13 +23,11 @@ use futures::stream::BoxStream;
 use serde_json::Value;
 
 pub use handle::Store;
-pub(crate) use model::{
-    ActorCreate, Claim, CommitRequest, Control, ControlEffect, NodeRecord, OutgoingMessage, StateChange,
-};
 pub use model::{
-    ActorRecord, Delivery, IdError, Message, MessageId, MessageStatus, NodeId, OutcomeRecord, OutcomeStatus, Page,
-    PageCursor, RunningTurn, StoreStats, TurnOutcome, TypeDef,
+    ActorCreate, ActorRecord, Control, ControlEffect, Delivery, IdError, Message, MessageId, MessageStatus, NodeId,
+    OutcomeRecord, OutcomeStatus, Page, PageCursor, RunningTurn, StoreStats, TurnOutcome, TypeDef,
 };
+pub(crate) use model::{Claim, CommitRequest, NodeRecord, OutgoingMessage, StateChange};
 #[cfg(feature = "postgres")]
 pub use postgres::PostgresOptions;
 pub use results::{CancelResult, DeleteResult, DeliverNowResult, RemoveTypeResult};
