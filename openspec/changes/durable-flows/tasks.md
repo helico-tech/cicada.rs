@@ -5,7 +5,7 @@
   validation and the armed continuation protocol. Add library tests for state/id/count/result validation and API
   doctests showing ordinary async closures, error propagation and typed refs without requiring F: Clone/Debug.
   Run the actor crate's library tests and doctests.
-- [ ] 2. Add virtual-time TestActors integration tests for every flow scenario: one new step per commit, replay and
+- [x] 2. Add virtual-time TestActors integration tests for every flow scenario: one new step per commit, replay and
   changed-order/type/early-return errors, retry and terminal watch notifications, interruption before commit with
   stable external keys, public recovery, done/control semantics, depth/count limits, and swallowed failures.
   Include external timeout/select cancellation followed by Ok/Err/another step, caught invocation/serialization
