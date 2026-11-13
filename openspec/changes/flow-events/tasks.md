@@ -1,6 +1,6 @@
 ## Implementation
 
-- [ ] 1. Reconcile with the landed flow runner and batcher, then add EventActor/ref/state/messages/helpers and crate
+- [x] 1. Reconcile with the landed flow runner and batcher, then add EventActor/ref/state/messages/helpers and crate
   exports. Implement bounded validated subscriptions, Publish/PublishBatch normalization and atomic raw create/send,
   mapping address/call refusals to permanent errors and preserving store retryability. Add library tests for state,
   name/count bounds, helper serialization, missing fields and raw dot/slash/percent ids; run library tests and doctests.
