@@ -7,6 +7,32 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.16.7 — unreleased
+
+Nothing breaks: a new ready-made actor starts flows from an event. No existing actor, flow contract or schema of the
+store changes; a node that hosts the event registers one more type, `cicada.event`.
+
+### Added
+
+- The event (`EventActor`, `cicada.event`, one instance for each business event, built with `Event::named`): its state
+  holds up to 100 subscribed flow types, each once and in order, which a host adds with `Subscribe` and removes with
+  `Unsubscribe` (an invalid name and a 101st type are refused for good; the registry is read only on publication).
+  `Publish { input }` creates one run of each subscribed flow with `FlowState::new(input)` and sends it a `Continue`,
+  all in one commit, keyed by the publication's own message id (`orders.receipt/<id>`); `PublishBatch { items }` does
+  the same with the input `{"items": [...]}`, so a batcher whose message type is `PublishBatch` feeds it directly.
+  `EventMsg::publish` and `EventMsg::publish_batch` build them. A type that is not registered or does not take
+  `Continue`, input that a hosting node cannot decode, and the ids `.` and `..` fail the publication for good and start
+  no run; a read of the store that fails follows the publication's retry policy. The first `Continue` has the crate's
+  shared policy and the publication's correlation id; the run then arms its flow's own policy. The actors guide,
+  "Event", has the rules on keys, retries and redrives, repeated ids, validation and depth; the worked example
+  `flow_events` starts a receipt and a fulfilment from a placed order and a digest from a batcher. The contract is in
+  `docs/reference/contracts/cicada.event.json`, and the sample service hosts the type, with no event at startup.
+
+### Changed
+
+- The actors guide, "Durable sleep": only a zero sleep makes the next turn due at once; a positive duration under a
+  microsecond rounds up to one microsecond.
+
 ## 0.16.6 — 2026-11-13
 
 Nothing breaks: flows can sleep durably. No state field, message, journal entry or contract changes, so a flow that

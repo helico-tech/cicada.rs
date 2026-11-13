@@ -1,6 +1,6 @@
 [package]
 name = "cicada-actors"
-description = "Ready-made actors on Cicada: a supervisor, dead letters, a topic, a scheduler, a rate limiter, a debouncer and a batcher; durable flows; and schedules."
+description = "Ready-made actors on Cicada: a supervisor, dead letters, a topic, a scheduler, a rate limiter, a debouncer, a batcher and an event that starts flows; durable flows; and schedules."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

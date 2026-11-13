@@ -11,6 +11,7 @@ use cicada_examples::batching::{AccountMsg, AccountState, AuditEvent, AuditLogMs
 use cicada_examples::cron::{CronMsg, CronState};
 use cicada_examples::debounce::{DocumentMsg, DocumentState, IndexerMsg};
 use cicada_examples::fanout::{BatchItemMsg, BatchItemState, BatchMsg, BatchState, BatchStatus};
+use cicada_examples::flow_events::{Digest, PlacedOrder};
 use cicada_examples::flow_onboarding::OnboardingInput;
 use cicada_examples::rate_limit::{SignupMsg, SignupState, SmsMsg};
 use cicada_examples::registry::{Device, DeviceMsg, DeviceState, RegistryMsg, RegistryState};
@@ -201,6 +202,15 @@ fn flow_onboarding() {
     let journal = vec![account, welcome, sleep, workspace];
     let done = FlowState { journal, status: FlowStatus::Done, ..initial.clone() };
     states([initial, progress, sleeping, done]);
+}
+
+#[test]
+fn flow_events() {
+    let placed = PlacedOrder { order: "o-1".into(), email: "ann@example.test".into(), cents: 1250 };
+    let shipped = JournalEntry::Step { id: "ship".into(), result: serde_json::json!("t-1") };
+    let done = FlowState { journal: vec![shipped], status: FlowStatus::Done, ..FlowState::new(placed.clone()) };
+    states([FlowState::new(placed.clone()), done]);
+    states([FlowState::new(Digest { items: vec![] }), FlowState::new(Digest { items: vec![placed] })]);
 }
 
 #[test]

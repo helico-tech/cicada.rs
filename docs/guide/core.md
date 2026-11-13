@@ -1004,7 +1004,7 @@ Decoding is all it checks: a sample whose renamed field is now ignored still dec
 
 ## Examples
 
-[`examples/`](../../examples/) (crate `cicada-examples`) holds fourteen worked examples, each with its tests under
+[`examples/`](../../examples/) (crate `cicada-examples`) holds fifteen worked examples, each with its tests under
 `examples/tests/`, run with `TestActors` on virtual time:
 
 | Module | Pattern |
@@ -1022,9 +1022,10 @@ Decoding is all it checks: a sample whose renamed field is now ignored still dec
 | `debounce` | A burst of edits, one reindex; each edit submits the latest version to a debouncer. |
 | `batching` | Audit events in bulk; each change adds its event to a batcher that writes 50 at once. |
 | `flow_onboarding` | The onboarding of `steps` as a durable flow: async code, one new step per turn, and a durable sleep. |
+| `flow_events` | Flows started by an event: a placed order starts a receipt and a fulfilment in one commit, a batcher a digest. |
 | `sync` | The architecture's example: a paged import, one turn per page, rescheduled hourly. |
 
 Every example has the same shape: a public ref struct per actor type (its one field is the key), a
 message enum with `#[serde(tag = "type")]`, a state struct, and an actor struct whose fields are its dependencies
 (external services, faked in the tests), with one `impl Actor` whose `handle` matches on the message. The flow
-example writes a `Flow` instead, which `FlowActor` hosts ([Flows](actors.md#flows)).
+examples write a `Flow` instead, which `FlowActor` hosts ([Flows](actors.md#flows)).

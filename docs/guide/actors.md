@@ -6,7 +6,7 @@ to work.
 
 | Crate | Contents |
 | --- | --- |
-| `cicada-actors` | Ready-made actors on the public API, each under a fixed type name: a supervisor (`SupervisorActor`), dead letters (`DeadLettersActor`), a topic (`TopicActor`), a scheduler (`SchedulerActor`), a rate limiter (`RateLimiterActor`), a debouncer (`DebouncerActor`) and a batcher (`BatcherActor`); durable flows (`Flow`, `FlowActor`) under a type name the host chooses; `StoredMessage` and `Schedule`. |
+| `cicada-actors` | Ready-made actors on the public API, each under a fixed type name: a supervisor (`SupervisorActor`), dead letters (`DeadLettersActor`), a topic (`TopicActor`), a scheduler (`SchedulerActor`), a rate limiter (`RateLimiterActor`), a debouncer (`DebouncerActor`), a batcher (`BatcherActor`) and an event (`EventActor`); durable flows (`Flow`, `FlowActor`) under a type name the host chooses; `StoredMessage` and `Schedule`. |
 
 The Rust blocks of this guide are doctests of the `examples` crate (`cargo test -p cicada-examples --doc`).
 
@@ -23,12 +23,13 @@ writes its own flow, names its type and hosts it with `FlowActor` (ADR 0031).
 | `RateLimiterActor` | `cicada.rate-limiter` | the name of the limit | Sends each submitted message to its target at the next free slot of a shared rate. |
 | `DebouncerActor` | `cicada.debouncer` | the key whose bursts it debounces | Keeps the latest submission of a burst and sends it to its target once the burst is quiet. |
 | `BatcherActor` | `cicada.batcher` | the stream or group whose items it batches | Collects items and sends them to its target as one message when the batch is full or has waited long enough. |
+| `EventActor` | `cicada.event` | the name of the event | Creates and starts one run of each subscribed flow for each publication, all in one commit. |
 | `FlowActor<F>` | chosen by the flow `F` | one run of the flow | Runs a multi-step job written as async code, one new step or durable sleep per turn, replaying what it saved. |
 
 A message that one of them keeps to send later is a `StoredMessage`: a type name and a JSON payload,
 `{"type": …, "payload": …}`. The actor knows where it goes, so it holds no address. `StoredMessage::for_ref(&worker,
 WorkerMsg::Begin { batch: 7 })` builds one from a typed ref and a message, so a message of the wrong family does not
-compile. The contracts of the seven types are wire formats; their references in
+compile. The contracts of the eight types are wire formats; their references in
 [docs/reference/contracts](../reference/contracts/) pin them, doc comments included. The contract of a flow holds the
 host's input, so the host pins it.
 
@@ -839,7 +840,8 @@ due at `until`. When that `Continue` arrives, the replay passes the sleep and ru
   after a sleep that fails is retried by the flow's policy, and its retries pass the sleep. A delete removes the run and
   its timer; no sleep brings it back.
 - **A zero sleep is a commit.** A zero or sub-microsecond duration saves its entry and ends the turn like any other, so
-  every new sleep is a commit boundary; the next turn is due at once.
+  every new sleep is a commit boundary. After a zero sleep the next turn is due at once; a positive duration under a
+  microsecond rounds up to one microsecond, so its turn is due a microsecond later.
 - **Limits.** A sleep id shares the namespace of the step ids and counts towards the 1,000 entries. A new sleep longer
   than `MAX_DELAY` (365,000 days) or ending after `MAX_INSTANT` (the end of the year 9999) fails the turn for good, and
   nothing is saved. A sleep caught with `let _ =` still ends the turn, as a caught step does, and a sleep after an
@@ -870,3 +872,145 @@ A host pins the contract of its flow like that of any of its types:
 let contract = cicada::actor::contract_of::<cicada_actors::FlowActor<Onboarding>>()?;
 cicada_test::assert_contracts_match("tests/contracts", &[contract]); // in a test of the host
 ```
+
+## Event
+
+`EventActor` starts flows from a business event: one instance for each event, such as `cicada.event/order-placed`,
+holds a list of flow types, and each publication creates and starts one run of each of them, all in one commit. A
+[topic](#topic) sends to actors that exist; a flow run must be created with its input before its first `Continue`,
+which the event does. The host creates each event and subscribes its flows, at its start or in the turn that creates
+the event; nothing subscribes itself:
+
+<!-- doctest
+# use cicada::prelude::*;
+# use cicada::SendResult;
+# use serde::{Deserialize, Serialize};
+# #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+# struct PlacedOrder { order: String }
+# struct Receipt;
+# impl cicada_actors::Flow for Receipt {
+#     const TYPE: &'static str = "orders.receipt";
+#     type Input = PlacedOrder;
+#     async fn run(&self, _step: &mut cicada_actors::Step, _input: PlacedOrder) -> HandlerResult { Ok(()) }
+# }
+# struct Fulfil;
+# impl cicada_actors::Flow for Fulfil {
+#     const TYPE: &'static str = "orders.fulfil";
+#     type Input = PlacedOrder;
+#     async fn run(&self, _step: &mut cicada_actors::Step, _input: PlacedOrder) -> HandlerResult { Ok(()) }
+# }
+# async fn host(store: cicada::Store) -> Result<(), Box<dyn std::error::Error>> {
+@@14
+# Ok(())
+# }
+-->
+```rust
+use cicada_actors::{Event, EventActor, EventMsg, EventState, FlowActor, FlowRun};
+
+let system =
+    ActorSystem::builder(store).host(EventActor).host(FlowActor::new(Receipt)).host(FlowActor::new(Fulfil)).build();
+let placed = Event::named("order-placed"); // cicada.event/order-placed
+system.create(&placed, &EventState::default()).await?; // an event that exists keeps its list
+for flow in ["orders.receipt", "orders.fulfil"] {
+    system.send(&placed, EventMsg::Subscribe { flow: flow.into() }).await?; // held already: nothing changes
+}
+let order = PlacedOrder { order: "o-1".into() };
+if let SendResult::Accepted(publication) = system.send(&placed, EventMsg::publish(&order)?).await? {
+    let receipt = FlowRun::<Receipt>::named(publication.id.as_str()); // orders.receipt/<publication id>
+    println!("{:?}", receipt.address()?);
+}
+```
+
+[examples/src/flow_events.rs](../../examples/src/flow_events.rs) works this out, with a digest fed by a batcher and
+dead letters that watch the events and the flows; the sample service hosts the event type, with no event at startup.
+Over HTTP:
+
+```sh
+curl -X PUT localhost:8080/actors/cicada.event/order-placed -H 'content-type: application/json' -d '{"state": {}}'
+curl -X POST localhost:8080/actors/cicada.event/order-placed/messages -H 'content-type: application/json' \
+  -d '{"type": "Subscribe", "payload": {"flow": "orders.receipt"}}'
+curl -X POST localhost:8080/actors/cicada.event/order-placed/messages -H 'content-type: application/json' \
+  -d '{"id": "event-17", "type": "Publish", "payload": {"input": {"order": "o-1"}}}'
+```
+
+The state is `{"flows": ["orders.receipt", "orders.fulfil"]}`: at most 100 type names, each once, in the order they
+subscribed. `Publish { input }` carries any JSON value, `null` included; `EventMsg::publish` builds it from any
+`Serialize` value. `PublishBatch { items }` is a `Publish` whose input is `{"items": [...]}`: one run of each flow for
+the whole batch, an empty one included, and `EventMsg::publish_batch` builds it. A flow that takes a batch declares its
+own input with a field `items`. That is the payload a [batcher](#batcher) sends, so a batcher whose message type is
+`PublishBatch` feeds an event directly, and so can a scheduler, a rate limiter or a debouncer with a stored `Publish`:
+
+<!-- doctest
+# use cicada::prelude::*;
+# use serde::{Deserialize, Serialize};
+# #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+# struct PlacedOrder { order: String }
+# fn compose(order: PlacedOrder) -> Result<(), Box<dyn std::error::Error>> {
+@@15
+# let _ = (nightly, limited, debounced, batches);
+# Ok(())
+# }
+-->
+```rust
+use std::time::Duration;
+use cicada_actors::{BatcherState, DebouncerMsg, Event, EventMsg, RateLimiterMsg, Schedule, SchedulerState};
+
+/// The input of `orders.digest`: one run for each batch.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+struct Digest {
+    items: Vec<PlacedOrder>,
+}
+
+let (placed, report, digests) = (Event::named("order-placed"), Event::named("report"), Event::named("orders-digest"));
+let publish = EventMsg::publish(serde_json::json!({"kind": "nightly"}))?;
+let nightly = SchedulerState::new(Schedule::daily(2, 0)?, &report, publish)?; // a fresh run each slot
+let limited = RateLimiterMsg::submit(&placed, EventMsg::publish(&order)?, None)?; // to a cicada.rate-limiter
+let debounced = DebouncerMsg::submit(&placed, EventMsg::publish(&order)?, None)?; // to a cicada.debouncer
+let batches = BatcherState::new(&digests, "PublishBatch", 20, Duration::from_secs(3600))?; // one Digest per batch
+```
+
+- **One commit, all or nothing.** For each subscribed type, in order, a publication creates the run, an independent
+  actor and no child of the event, with `{"input": <input>, "journal": [], "status": "running", "armed": null}`, and
+  sends it a `Continue`. The creates and the sends commit together. A run that exists already keeps its state. With
+  no subscription a publication does nothing. No order of execution across the runs is promised.
+- **The key of a run is the publication's id.** The publication `event-17` starts `orders.receipt/event-17` and
+  `orders.fulfil/event-17`, so a run is found from the publication's id. The id is one name of the key, percent-encoded
+  once, with no prefix: `a/b` keys `a%2Fb`, and an id that reads `a%2Fb` keys `a%252Fb`, a different run. The ids `.`
+  and `..` cannot key a run: with a subscription, such a publication fails for good (the cause `refused`) and starts
+  nothing; without one it does nothing. Publish it again under another id.
+- **The first `Continue`.** Each has a new id, the event as its sender, the publication's correlation id, the default
+  retention and the crate's shared retry policy (7 attempts, the waits doubling from one second); the publication's
+  other headers are not copied, and an observer adds its own. The run's first turn arms the flow's own policy,
+  `Flow::retry()`, before any flow code runs, and the correlation id follows the chain. A publication's own retry
+  policy governs only its turn.
+- **What fails the publication.** A type that is not registered or does not take `Continue`, a dot id, and input that
+  a node hosting the flow cannot decode fail it for good (`refused`); a read of the store that fails is tried again by
+  the publication's own policy. Either way nothing of the turn commits: no run starts. So a stale subscription blocks
+  every publication of the event: unsubscribe it, then retry or redrive the failed one. The event watches nothing:
+  watch the events, and dead letters that watch them keep a failed publication; watch the flow types for the runs.
+- **What it does not check.** The registry cannot tell a flow from another actor that takes `Continue`, so subscribe
+  only flow types. A node that does not host the flow cannot decode its input: such a run commits and fails its first
+  message with the cause `state`, while the other runs of the publication go on. A failure of a run after the commit
+  is the run's: the publication stays `done`, and a public `Continue` to the run recovers it.
+- **A repeated id.** A runtime retry keeps the publication's id, and so the keys of its runs. Within the store's
+  retention, a send with an id that was accepted already is a duplicate and adds nothing. After it, the same id
+  publishes again with the current subscriptions: a run that exists keeps its first input and progress (a done run
+  ignores the `Continue`, a running one resumes), a type subscribed since gets a first run, and a deleted run is
+  created again. The input is still checked first, so input that a hosting node cannot decode fails the publication
+  although the run exists. No ledger of publications is kept.
+- **A retry or redrive is a new publication.** An operator's retry and a redrive of dead letters send the message under
+  a new id, so its runs get new keys. A failed publication started nothing, so nothing is started twice; but each retry
+  call starts runs of its own. Recover a run that started with a `Continue` to the run, not by publishing again. A
+  successful publication with no subscription is not replayed to a later subscriber: publish again.
+- **Keys are jobs.** Never reuse a publication id for another job, also across events and after retention or a delete:
+  message ids are unique only among pending and retained messages, and a run's steps would get the old keys
+  ([Flows](#flows)). A run created by hand for a subscribed type must not use an id that a publication may take. A
+  scheduler's slots and the forwards of a rate limiter, a debouncer and a batcher get fresh ids, so each starts fresh
+  runs.
+- **Independent runs.** `Unsubscribe` stops new runs of a type and deletes none; deleting the event leaves its runs.
+  Subscribing a type that is not registered yet is kept: the type is checked when an event is published. An absent
+  `Unsubscribe` changes nothing; an invalid name and a 101st type are refused for good.
+- **How deep.** The run state holds the input one level down, so a `Publish` input may be 63 levels deep, and a batch's
+  items three levels down, so an item may be 61. A batcher passes items up to 62 levels deep: a batch with such an item
+  reaches the event and fails its publication for good, and no run starts. The failure tells the event's watchers;
+  dead letters cannot keep a payload that deep ([Dead letters](#dead-letters)). With no subscription nothing is checked.

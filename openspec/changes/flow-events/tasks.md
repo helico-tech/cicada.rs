@@ -13,7 +13,7 @@
   `docs/reference/contracts/cicada.event.json`. Host Event in the sample service without automatic instances or
   subscriptions. Regenerate references and sample-service snapshots/texts with `CICADA_UPDATE_CONTRACTS=true`;
   verify those tests and unchanged existing actor/flow contracts.
-- [ ] 4. Add tested examples and actors-guide doctests for explicit subscriptions, general/batch typed input, event
+- [x] 4. Add tested examples and actors-guide doctests for explicit subscriptions, general/batch typed input, event
   and flow watches/recovery, scheduler/limiter/debouncer Publish and batcher PublishBatch. State atomicity boundaries,
   input validation limits, dot-id refusal, encoding, fresh-id redrive, retention/key reuse and batch depth. Update guide
   tables, README, crate docs, architecture's crate row, AGENTS map and changelog. Verify examples,
