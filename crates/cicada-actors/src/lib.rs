@@ -7,6 +7,7 @@
 //! | [`TopicActor`] | `cicada.topic` | Sends each published message to its subscribers, each in a turn of its own |
 //! | [`SchedulerActor`] | `cicada.scheduler` | Sends a stored message to a target on each slot of a [`Schedule`] |
 //! | [`RateLimiterActor`] | `cicada.rate-limiter` | Sends each submitted message to its target at the next free slot of a rate |
+//! | [`DebouncerActor`] | `cicada.debouncer` | Keeps the latest submission of a burst and sends it once the burst is quiet |
 //! | [`StoredMessage`] | | A message an actor keeps to send later: a type name and a JSON payload, built from a typed ref |
 //! | [`Schedule`] | | When a recurring job runs next |
 //!
@@ -14,6 +15,7 @@
 //! address. Its typed helper checks the message against the family of a ref when the code is compiled.
 
 pub mod dead_letters;
+pub mod debouncer;
 mod error;
 pub mod rate_limiter;
 mod schedule;
@@ -23,6 +25,7 @@ pub mod supervisor;
 pub mod topic;
 
 pub use dead_letters::{CapacityError, DeadLetter, DeadLetters, DeadLettersActor, DeadLettersMsg, DeadLettersState};
+pub use debouncer::{DebouncedMessage, Debouncer, DebouncerActor, DebouncerMsg, DebouncerState, InvalidDebounce};
 pub use error::EncodeError;
 pub use rate_limiter::{InvalidRate, RateLimiter, RateLimiterActor, RateLimiterMsg, RateLimiterState};
 pub use schedule::{Schedule, ScheduleError};
