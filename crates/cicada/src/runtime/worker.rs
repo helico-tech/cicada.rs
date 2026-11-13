@@ -406,6 +406,7 @@ impl Worker {
             hosted: Arc::new(types),
             observers: inner.observers.clone(),
             max_lost_claims: None,
+            renew_while_stopping: Some(inner.config.shutdown_cancel_timeout),
             wake: inner.wake.clone(),
         });
         Ok(Arc::new(Initialized { executor, types: hashes }))
@@ -446,8 +447,9 @@ impl Worker {
 
     /// Stops the worker: no new lease requests (a response that comes after is released); running turns, of polling
     /// and of manual batches, get `grace` to finish; the rest are cancelled, and a turn whose handler had not ended
-    /// releases its lease once it stopped. A turn that ignores cancellation beyond the cancel timeout is left behind:
-    /// its lease is not released but expires. A turn whose handler ended still completes within its budget. Works in
+    /// releases its lease once it stopped. A cancelled turn keeps renewing while its work stops, for at most the cancel
+    /// timeout; one that ignores cancellation beyond it is left behind, no longer renewed: its lease is not released
+    /// but expires. A turn whose handler ended still completes within its budget. Works in
     /// every state, also on a worker that was never started; the source is neither stopped nor closed. A second call
     /// waits for the first.
     pub async fn stop_with_grace(&self, grace: Duration) {
@@ -526,8 +528,8 @@ impl Worker {
     /// other lease failure also stops the worker.
     ///
     /// Dropping the returned future cancels this call's turns only, as a stop after its grace period would: a turn
-    /// whose handler has not ended releases its lease once it stopped; one whose handler ended still completes. Their
-    /// slots stay taken until then. A lease response that comes after the caller left is released.
+    /// whose handler has not ended releases its lease once it stopped, or after the cancel timeout stops renewing it
+    /// to expire; one whose handler ended still completes. Their slots stay taken until then. A lease response that comes after the caller left is released.
     pub async fn run_due_turns(&self, limit: usize) -> Result<usize, WorkerError> {
         let state = self.state();
         if !matches!(state, NodeState::New | NodeState::Started) {

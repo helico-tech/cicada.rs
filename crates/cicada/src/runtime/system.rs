@@ -480,6 +480,7 @@ impl ActorSystem {
             hosted: Arc::new(types),
             observers: inner.observers.clone(),
             max_lost_claims: inner.config.max_lost_claims,
+            renew_while_stopping: None,
             wake: inner.wake.clone(),
         });
         Ok(Arc::new(Initialized { executor, types: names }))

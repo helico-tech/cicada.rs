@@ -366,6 +366,9 @@ pub(crate) struct TurnExecutor {
     /// The claim limit: a message with this many lost claims ends `failed` without running. Always `None` for a
     /// worker: the serving system applies its own.
     pub max_lost_claims: Option<u32>,
+    /// How long a cancelled turn keeps renewing while its work stops: `None` for a node, which stops renewing at once;
+    /// a worker's cancel timeout, after which a turn whose work has not stopped is abandoned to expire.
+    pub renew_while_stopping: Option<Duration>,
     /// Wakes the node's dispatch loop: after a commit that sent messages, wrote notifications or had control effects,
     /// or one that may have applied unacknowledged.
     pub wake: Arc<Notify>,
@@ -451,9 +454,10 @@ impl TurnExecutor {
                 }
             },
             _ = cancel.cancelled() => {
-                // A node stops renewing at once. A worker keeps its keeper (heartbeat and watchdog) until it knows how
-                // the turn ends, so that a `cancelled` completion stays within the lease it confirmed.
-                if !self.holder.is_source() {
+                // A node stops renewing at once. A worker keeps its keeper (heartbeat and watchdog) while its work
+                // stops, so that a `cancelled` completion stays within the lease it confirmed, but not longer than
+                // its cancel timeout: then the turn is abandoned, and its lease expires on its own.
+                if self.renew_while_stopping.is_none() {
                     keeper.abort();
                 }
                 overtime.abort();
@@ -461,7 +465,25 @@ impl TurnExecutor {
                 // Wait for the worker to stop (at its next `.await`; code that does not yield runs on until it
                 // returns): only then is it known whether the handler ended, and a release cannot let another node
                 // run the turn while this one still does.
-                let _ = (&mut work).await;
+                let stopped = match self.renew_while_stopping {
+                    Some(keep_for) => {
+                        let stopped = tokio::time::timeout(keep_for, &mut work).await.is_ok();
+                        if !stopped {
+                            keeper.abort();
+                            guard.lose("its work did not stop within the cancel timeout; it is abandoned");
+                            tracing::warn!(
+                                "Turn of {} for {} did not stop within {keep_for:?} of its cancellation; it is no \
+                                 longer renewed, and its lease expires on its own",
+                                claim.actor, claim.message.id
+                            );
+                        }
+                        stopped
+                    }
+                    None => false,
+                };
+                if !stopped {
+                    let _ = (&mut work).await;
+                }
                 if guard.is_lost() {
                 } else if phase.cancelled() {
                     // An operator's cancel request came first: honour it instead of handing the turn to another node.

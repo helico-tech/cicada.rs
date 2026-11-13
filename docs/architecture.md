@@ -333,7 +333,9 @@ renewal and explicit rejection, and not to retry a mutation behind the caller's 
   the hosted types (at most 100) and registers each contract, requiring the stored hash; only success is cached.
   `start` registers without holding the lock a stop takes, then checks the state again. `stop` stops polling, waits
   `shutdown_cancel_timeout` for the loop, gives the tracked turns the grace period (in every state, so manual turns of
-  a new worker too), cancels them and waits again. A lease path that gets `ContractMismatch`, `Invalid` or `Fatal`
+  a new worker too), cancels them and waits again. A cancelled worker turn keeps its keeper (so the watchdog bounds a
+  `cancelled` completion) for at most `shutdown_cancel_timeout` while its work stops; work still running then is
+  abandoned: no longer renewed, marked lost, never released, and its lease expires. A node stops renewing at once. A lease path that gets `ContractMismatch`, `Invalid` or `Fatal`
   records the first error and stops the worker from a task of its own; `stopped` returns it to every waiter, `None`
   after a requested stop. The worker never stops or closes its source.
 

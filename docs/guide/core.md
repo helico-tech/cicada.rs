@@ -936,7 +936,9 @@ assert!(worker.stopped().await.is_none()); // None: stopped on request
   expire.
 - **Life cycle.** `start` is one-shot; a stop during its registration marks the worker stopped and nothing runs.
   `stop` (also on a worker that was never started) stops polling, gives running turns the grace period, cancels the
-  rest and waits `shutdown_cancel_timeout`; code that does not yield may outlive it, and nothing is released under it.
+  rest and waits `shutdown_cancel_timeout`. A cancelled turn keeps renewing while its work stops, at most that long;
+  code that does not yield may outlive it, is then no longer renewed, and its lease expires: nothing is released under
+  it.
   A lease request that answers a contract mismatch, `Invalid` or `Fatal` stops the worker by itself, and `stopped`
   returns that first error to every waiter (`None` after a requested stop). The worker never stops or closes its
   source, has no node row (it is not in `GET /nodes`; its leases show under its `worker_id`), no sweep and no claim

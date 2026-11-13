@@ -656,6 +656,57 @@ async fn a_cancelled_completion_after_a_shutdown_stays_within_the_confirmed_leas
     assert!(matches!(status(&server, &m.id).await, MessageStatus::Running { .. }), "left to expire");
 }
 
+/// Scenario: Non-yielding work and source lifetime.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn work_that_outlives_the_cancel_timeout_is_no_longer_renewed_and_its_lease_expires() {
+    let store = Store::memory();
+    let server = ActorSystem::builder(store.clone())
+        .config(NodeConfig { lease_ttl: Duration::from_millis(600), ..NodeConfig::default() })
+        .build();
+    let contract = contract_of::<BlockerActor>().unwrap();
+    server.register_contract(&contract).await.unwrap();
+    let blocker = Blocker { id: "b".into() };
+    server.create(&blocker, &crate::NoState {}).await.unwrap();
+    // Blocked for more than four TTLs, ignoring cancellation.
+    let m = accepted(server.send(&blocker, BlockerMsg::Block { millis: 2_500 }).await.unwrap());
+    let source = Scripted::new(&server);
+    let worker = Worker::builder(source.clone())
+        .host(BlockerActor)
+        .config(WorkerConfig {
+            poll_interval: Duration::from_millis(20),
+            shutdown_cancel_timeout: Duration::from_millis(200),
+            ..worker_config()
+        })
+        .build();
+    worker.start().await.unwrap();
+    eventually(secs(10), || async { matches!(status(&server, &m.id).await, MessageStatus::Running { .. }) }).await;
+    let mark = std::time::Instant::now();
+    worker.stop_with_grace(Duration::ZERO).await;
+    assert!(mark.elapsed() < Duration::from_millis(600), "stop returned after {:?}", mark.elapsed());
+    // Give an abandonment racing the stop's own timeout a moment, then no renewal follows.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let renewals = Scripted::count(&source.renews);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(Scripted::count(&source.renews), renewals, "renewed after the cancel timeout");
+    // The lease expires while the work still blocks: another caller claims the message, with one lost claim.
+    let types = std::collections::BTreeMap::from([(contract.type_name().clone(), contract.hash().to_owned())]);
+    let other = NodeId::new("other").unwrap();
+    let lease = loop {
+        match server.lease_turns(&other, &types, 1).await.unwrap() {
+            LeaseTurnsResult::Leased(mut leases) if !leases.is_empty() => break leases.remove(0),
+            _ => {}
+        }
+        assert!(mark.elapsed() < Duration::from_millis(2_000), "the lease did not expire while the work blocked");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert_eq!((lease.message.id.clone(), lease.message.lost_claims), (m.id.clone(), 1), "expired, not released");
+    // Once the work ends, nothing is released or completed under the replaced lease.
+    tokio::time::sleep(Duration::from_millis(2_800).saturating_sub(mark.elapsed())).await;
+    assert_eq!(Scripted::count(&source.releases), 0);
+    assert_eq!(Scripted::count(&source.completes), 0);
+    assert!(server.outcome(&m.id).await.unwrap().is_none(), "nothing was committed under the replaced lease");
+}
+
 /// type `clock`: records the handler's clocks after a while.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct Clock {
