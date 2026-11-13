@@ -153,6 +153,16 @@ pub(crate) trait Backend: Send + Sync + 'static {
     /// at most `limit` per page.
     async fn list(&self, prefix: &str, cursor: Option<&PageCursor>, limit: usize) -> StoreResult<Page<ActorAddress>>;
 
+    /// The instances [`Self::list`] pages, with the order, prefix rule, cursors and limit of that listing, each as the
+    /// snapshot [`Self::get`] returns. A page is one read of the store (one `SELECT` per read attempt, one lock in
+    /// memory), so its rows share one committed snapshot; there is no snapshot across pages.
+    async fn list_records(
+        &self,
+        prefix: &str,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> StoreResult<Page<ActorRecord>>;
+
     /// The direct children of `parent` (the instances its commits created as children), in ascending address order,
     /// at most `limit` per page. An empty page when `parent` is absent or has none.
     async fn children(

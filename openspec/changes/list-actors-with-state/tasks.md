@@ -1,6 +1,6 @@
 ## Implementation
 
-- [ ] 1. Add private Backend::list_records and its store-handle forwarding, with one explicitly projected actor
+- [x] 1. Add private Backend::list_records and its store-handle forwarding, with one explicitly projected actor
   SELECT per SQL read attempt and one locked memory read. Reuse each backend's existing prefix/cursor rules, row
   decoder and page_of without making address-only list fetch state. Add and register conformance cases in
   `s1_to_s10.rs` for rows equal to get, addresses/cursors equal to list, empty/last pages, literal percent/underscore

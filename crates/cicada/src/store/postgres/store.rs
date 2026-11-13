@@ -564,6 +564,13 @@ fn outcome(row: &PgRow) -> Result<OutcomeRecord, TxError> {
     })
 }
 
+/// The columns of an actor snapshot, which [`actor_record`] decodes.
+macro_rules! actor_columns {
+    () => {
+        "address, type, state, version, created_at, paused, parent"
+    };
+}
+
 fn actor_record(row: &PgRow) -> Result<ActorRecord, TxError> {
     Ok(ActorRecord {
         address: address(row.try_get("address")?)?,
@@ -621,12 +628,39 @@ async fn list_types_in(tx: &mut Tx) -> Result<Vec<TypeDef>, TxError> {
 }
 
 async fn get_in(tx: &mut Tx, address: &str) -> Result<Option<ActorRecord>, TxError> {
-    let row =
-        sqlx::query("SELECT address, type, state, version, created_at, paused, parent FROM actors WHERE address = $1")
-            .bind(address)
-            .fetch_optional(&mut *tx.c)
-            .await?;
+    let row = sqlx::query(concat!("SELECT ", actor_columns!(), " FROM actors WHERE address = $1"))
+        .bind(address)
+        .fetch_optional(&mut *tx.c)
+        .await?;
     row.as_ref().map(actor_record).transpose()
+}
+
+/// The `columns` of at most `limit + 1` instances whose URIs start with `prefix` (compared literally), in URI order,
+/// after `cursor` when it lies at or past the prefix, each decoded by `decode`: one `SELECT`.
+async fn prefix_page_in<T>(
+    tx: &mut Tx,
+    columns: &'static str,
+    prefix: &str,
+    cursor: Option<&PageCursor>,
+    limit: usize,
+    decode: impl Fn(&PgRow) -> Result<T, TxError>,
+) -> Result<Vec<T>, TxError> {
+    let (lower_bound, op) = match cursor {
+        Some(c) if c.0.as_str() >= prefix => (c.0.as_str(), ">"),
+        _ => (prefix, ">="),
+    };
+    let sql = format!(
+        "SELECT {columns} FROM actors WHERE address {op} $1 AND address < $2 AND starts_with(address, $3) \
+         ORDER BY address LIMIT $4"
+    );
+    let rows = sqlx::query(AssertSqlSafe(sql))
+        .bind(lower_bound)
+        .bind(upper_bound(prefix))
+        .bind(prefix)
+        .bind(limit as i64 + 1)
+        .fetch_all(&mut *tx.c)
+        .await?;
+    rows.iter().map(decode).collect()
 }
 
 /// Locks the instance's row for the rest of the transaction and returns its type, or `None` when absent.
@@ -1182,23 +1216,23 @@ impl Backend for PostgresStore {
 
     async fn list(&self, prefix: &str, cursor: Option<&PageCursor>, limit: usize) -> StoreResult<Page<ActorAddress>> {
         check_limit(limit)?;
-        let lower_bound = cursor.map(|c| c.0.as_str()).filter(|c| *c >= prefix).unwrap_or(prefix);
-        let inclusive = cursor.is_none_or(|c| c.0.as_str() < prefix);
-        let sql = if inclusive {
-            "SELECT address FROM actors WHERE address >= $1 AND address < $2 AND starts_with(address, $3) ORDER BY address LIMIT $4"
-        } else {
-            "SELECT address FROM actors WHERE address > $1 AND address < $2 AND starts_with(address, $3) ORDER BY address LIMIT $4"
-        };
         transaction!(self, true, |tx| -> Page<ActorAddress> {
-            let rows: Vec<String> = sqlx::query_scalar(sql)
-                .bind(lower_bound)
-                .bind(upper_bound(prefix))
-                .bind(prefix)
-                .bind(limit as i64 + 1)
-                .fetch_all(&mut *tx.c)
-                .await?;
-            let addresses = rows.into_iter().map(address).collect::<Result<Vec<_>, _>>()?;
+            let addresses =
+                prefix_page_in(tx, "address", prefix, cursor, limit, |row| address(row.try_get("address")?)).await?;
             commit(support::page_of(addresses, limit, |a| PageCursor(a.to_string())))
+        })
+    }
+
+    async fn list_records(
+        &self,
+        prefix: &str,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> StoreResult<Page<ActorRecord>> {
+        check_limit(limit)?;
+        transaction!(self, true, |tx| -> Page<ActorRecord> {
+            let records = prefix_page_in(tx, actor_columns!(), prefix, cursor, limit, actor_record).await?;
+            commit(support::page_of(records, limit, |r: &ActorRecord| PageCursor(r.address.to_string())))
         })
     }
 

@@ -123,6 +123,13 @@ macro_rules! outcome_columns {
     };
 }
 
+/// The columns of an actor snapshot, which [`rows::actor_record`] decodes.
+macro_rules! actor_columns {
+    () => {
+        "address, type, state, version, created_at, paused, parent"
+    };
+}
+
 /// The columns of a running turn; `cancel_requested` is true only for the current epoch.
 const RUNNING_TURN: &str = "address, lease_message, lease_owner, lease_until, (cancel_epoch IS NOT NULL AND cancel_epoch = epoch) AS cancel_requested";
 
@@ -370,14 +377,36 @@ impl SqliteStore {
     async fn get_in(c: &mut SqliteConnection, address: &ActorAddress) -> StoreResult<Option<ActorRecord>> {
         fetch_optional(
             c,
-            sqlx::query(
-                "SELECT address, type, state, version, created_at, paused, parent FROM actors WHERE address = ?",
-            )
-            .bind(address.as_str()),
+            sqlx::query(concat!("SELECT ", actor_columns!(), " FROM actors WHERE address = ?")).bind(address.as_str()),
         )
         .await?
         .map(|row| rows::actor_record(&row))
         .transpose()
+    }
+
+    /// The `columns` of at most `limit + 1` instances whose URIs start with `prefix` (compared literally), in URI
+    /// order, after `cursor` when it lies at or past the prefix, each decoded by `decode`: one `SELECT`.
+    async fn prefix_page_in<T>(
+        c: &mut SqliteConnection,
+        columns: &'static str,
+        prefix: &str,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+        decode: impl Fn(&SqliteRow) -> StoreResult<T>,
+    ) -> StoreResult<Vec<T>> {
+        let (lower_bound, op) = match cursor {
+            Some(c) if c.0.as_str() >= prefix => (c.0.as_str(), ">"),
+            _ => (prefix, ">="),
+        };
+        let sql = format!(
+            "SELECT {columns} FROM actors WHERE address {op} ? AND substr(address, 1, ?) = ? ORDER BY address LIMIT ?"
+        );
+        let query = sqlx::query(AssertSqlSafe(sql))
+            .bind(lower_bound)
+            .bind(prefix_len(prefix))
+            .bind(prefix)
+            .bind(limit as i64 + 1);
+        fetch_all(c, query, decode).await
     }
 
     async fn actor_exists(c: &mut SqliteConnection, addr: &str) -> StoreResult<bool> {
@@ -1214,23 +1243,26 @@ impl Backend for SqliteStore {
 
     async fn list(&self, prefix: &str, cursor: Option<&PageCursor>, limit: usize) -> StoreResult<Page<ActorAddress>> {
         check_limit(limit)?;
-        let (lower_bound, inclusive) = match cursor {
-            Some(c) if c.0.as_str() >= prefix => (c.0.as_str(), false),
-            _ => (prefix, true),
-        };
-        let sql = if inclusive {
-            "SELECT address FROM actors WHERE address >= ? AND substr(address, 1, ?) = ? ORDER BY address LIMIT ?"
-        } else {
-            "SELECT address FROM actors WHERE address > ? AND substr(address, 1, ?) = ? ORDER BY address LIMIT ?"
-        };
         let mut tx = self.read().await?;
-        let result = fetch_all(
-            tx.conn(),
-            sqlx::query(sql).bind(lower_bound).bind(prefix_len(prefix)).bind(prefix).bind(limit as i64 + 1),
-            |row| rows::address(&col::<String>(row, "address")?),
-        )
+        let result = Self::prefix_page_in(tx.conn(), "address", prefix, cursor, limit, |row| {
+            rows::address(&col::<String>(row, "address")?)
+        })
         .await
         .map(|items| support::page_of(items, limit, |a| PageCursor(a.to_string())));
+        tx.end(result).await
+    }
+
+    async fn list_records(
+        &self,
+        prefix: &str,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> StoreResult<Page<ActorRecord>> {
+        check_limit(limit)?;
+        let mut tx = self.read().await?;
+        let result = Self::prefix_page_in(tx.conn(), actor_columns!(), prefix, cursor, limit, rows::actor_record)
+            .await
+            .map(|items| support::page_of(items, limit, |r: &ActorRecord| PageCursor(r.address.to_string())));
         tx.end(result).await
     }
 

@@ -134,6 +134,24 @@ impl InMemoryStore {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).actors.remove(address.as_str());
     }
 
+    /// The instances whose URIs start with `prefix`, in URI order, after `cursor` when it is given.
+    fn prefix_rows<'a>(
+        s: &'a State,
+        prefix: &'a str,
+        cursor: Option<&PageCursor>,
+    ) -> impl Iterator<Item = &'a ActorRow> + 'a {
+        use std::ops::Bound;
+        let start = match cursor {
+            Some(c) => Bound::Excluded(c.0.clone()),
+            None => Bound::Included(prefix.to_owned()),
+        };
+        s.actors
+            .range((start, Bound::Unbounded))
+            .map(|(_, r)| r)
+            .skip_while(move |r| !r.address.as_str().starts_with(prefix) && r.address.as_str() < prefix)
+            .take_while(move |r| r.address.as_str().starts_with(prefix))
+    }
+
     fn locked<T>(&self, f: impl FnOnce(&mut State, Timestamp) -> StoreResult<T>) -> StoreResult<T> {
         if self.closed.load(Ordering::SeqCst) {
             return Err(StoreError::unavailable("Store is closed"));
@@ -466,21 +484,21 @@ impl Backend for InMemoryStore {
     async fn list(&self, prefix: &str, cursor: Option<&PageCursor>, limit: usize) -> StoreResult<Page<ActorAddress>> {
         check_limit(limit)?;
         self.locked(|s, _| {
-            use std::ops::Bound;
-            let start = match cursor {
-                Some(c) => Bound::Excluded(c.0.clone()),
-                None => Bound::Included(prefix.to_owned()),
-            };
-            let items: Vec<ActorAddress> = s
-                .actors
-                .range((start, Bound::Unbounded))
-                .map(|(_, r)| &r.address)
-                .skip_while(|a| !a.as_str().starts_with(prefix) && a.as_str() < prefix)
-                .take_while(|a| a.as_str().starts_with(prefix))
-                .take(limit + 1)
-                .cloned()
-                .collect();
+            let items = Self::prefix_rows(s, prefix, cursor).take(limit + 1).map(|r| r.address.clone()).collect();
             Ok(support::page_of(items, limit, |a| PageCursor(a.to_string())))
+        })
+    }
+
+    async fn list_records(
+        &self,
+        prefix: &str,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> StoreResult<Page<ActorRecord>> {
+        check_limit(limit)?;
+        self.locked(|s, _| {
+            let items = Self::prefix_rows(s, prefix, cursor).take(limit + 1).map(ActorRow::snapshot).collect();
+            Ok(support::page_of(items, limit, |r: &ActorRecord| PageCursor(r.address.to_string())))
         })
     }
 

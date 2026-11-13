@@ -191,6 +191,15 @@ impl Backend for Store {
         self.backend.list(prefix, cursor, limit).await
     }
 
+    async fn list_records(
+        &self,
+        prefix: &str,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> StoreResult<Page<ActorRecord>> {
+        self.backend.list_records(prefix, cursor, limit).await
+    }
+
     async fn children(
         &self,
         parent: &ActorAddress,

@@ -308,6 +308,136 @@ pub async fn instances_list_by_prefix_in_address_order_with_paging<B: FixtureFac
     .await
 }
 
+/// Every page of `list_records` (or of `list`, with `records` false) under `prefix` at `limit`: the addresses of each
+/// page and the cursor that follows it.
+async fn record_pages(
+    store: &dyn Backend,
+    prefix: &str,
+    limit: usize,
+    records: bool,
+) -> Vec<(Vec<ActorAddress>, Option<PageCursor>)> {
+    let mut pages = Vec::new();
+    let mut cursor: Option<PageCursor> = None;
+    loop {
+        let (items, next) = if records {
+            let page = store.list_records(prefix, cursor.as_ref(), limit).await.unwrap();
+            (page.items.into_iter().map(|r| r.address).collect(), page.next)
+        } else {
+            let page = store.list(prefix, cursor.as_ref(), limit).await.unwrap();
+            (page.items, page.next)
+        };
+        pages.push((items, next.clone()));
+        match next {
+            Some(next) => cursor = Some(next),
+            None => return pages,
+        }
+    }
+}
+
+/// instances - list records pages like list, with the snapshot get returns
+pub async fn instances_list_records_pages_like_list_with_the_snapshot_get_returns<B: FixtureFactory>(backend: &B) {
+    store_test(backend, async |t| {
+        let store = t.store();
+        let one = t.new_actor_named(&TYPE, "one", json!({"n": 0})).await;
+        let two = t.new_actor_named(&TYPE, "two", json!({"deep": {"list": [1, 2, 3]}})).await;
+        t.new_actor_named(&TYPE, "three", json!(null)).await;
+        t.send(&one).await;
+        let c = t.claim_one().await;
+        t.commit_ok(CommitRequest {
+            state: StateChange::NewState(json!({"n": 1})),
+            creates: vec![ActorCreate { address: address("conformance/one-child"), state: json!({}), child: true }],
+            ..done(&c)
+        })
+        .await;
+        assert!(store.set_paused(&two, true).await.unwrap());
+        t.new_actor_named(&OTHER, "x", json!({})).await;
+
+        // Each row is the snapshot get returns, and the pages have the addresses and cursors of list.
+        for limit in [1, 2, 3, 4, 5, 1001] {
+            for prefix in ["conformance/", "", "conformance/t"] {
+                assert_eq!(
+                    record_pages(&*store, prefix, limit, true).await,
+                    record_pages(&*store, prefix, limit, false).await,
+                    "prefix '{prefix}', limit {limit}"
+                );
+            }
+        }
+        let page = store.list_records("conformance/", None, 1001).await.unwrap();
+        assert_eq!(page.next, None);
+        assert_eq!(page.items.len(), 4);
+        for row in &page.items {
+            assert_eq!(Some(row), store.get(&row.address).await.unwrap().as_ref());
+        }
+        let child = page.items.iter().find(|r| r.address.as_str() == "conformance/one-child").expect("the child");
+        assert_eq!(child.parent.as_ref(), Some(&one));
+        assert!(page.items.iter().any(|r| r.address == two && r.paused));
+        assert!(page.items.iter().any(|r| r.address == one && r.version == 1 && r.state == json!({"n": 1})));
+
+        // The last page has no cursor; nothing matching is an empty page with none.
+        let first = store.list_records("conformance/", None, 2).await.unwrap();
+        let last = store.list_records("conformance/", first.next.as_ref(), 2).await.unwrap();
+        assert_eq!(last.items.len(), 2);
+        assert_eq!(last.next, None);
+        let none = store.list_records("nothing/", None, 2).await.unwrap();
+        assert!(none.items.is_empty());
+        assert_eq!(none.next, None);
+
+        // A cursor before the prefix starts at the prefix; one past every match is an empty page.
+        let before = store.list_records("other/", Some(&PageCursor("a".into())), 10).await.unwrap();
+        assert_eq!(before.items.iter().map(|r| r.address.clone()).collect::<Vec<_>>(), vec![address("other/x")]);
+        let after = store.list_records("conformance/", Some(&PageCursor("conformance/zzz".into())), 10).await.unwrap();
+        assert!(after.items.is_empty());
+        assert_eq!(after.next, None);
+        for cursor in ["a", "conformance/zzz", "conformance/one"] {
+            let cursor = Some(PageCursor(cursor.into()));
+            let records = store.list_records("conformance/", cursor.as_ref(), 10).await.unwrap();
+            let addresses = store.list("conformance/", cursor.as_ref(), 10).await.unwrap();
+            assert_eq!(records.items.into_iter().map(|r| r.address).collect::<Vec<_>>(), addresses.items);
+        }
+
+        // Zero is refused, as by list; there is no upper cap.
+        assert_matches!(store.list_records("", None, 0).await, Err(StoreError::Invalid(_)));
+        assert_matches!(store.list("", None, 0).await, Err(StoreError::Invalid(_)));
+    })
+    .await
+}
+
+/// instances - list records takes the prefix literally, like list
+pub async fn instances_list_records_takes_the_prefix_literally_like_list<B: FixtureFactory>(backend: &B) {
+    store_test(backend, async |t| {
+        let store = t.store();
+        let a = type_name("a");
+        let ab = type_name("ab");
+        let mut all = vec![
+            t.new_actor_named(&a, "one", json!({})).await,
+            t.new_actor_named(&ab, "one", json!({})).await,
+            t.new_actor_named(&a, "50%_x", json!({})).await,
+            t.new_actor_named(&a, "5000", json!({})).await,
+            t.new_actor_named(&a, "b_c", json!({})).await,
+            t.new_actor_named(&a, "bxc", json!({})).await,
+        ];
+        all.sort_by(|x, y| x.as_str().cmp(y.as_str()));
+        let listed = async |prefix: &str| {
+            let records = store.list_records(prefix, None, 100).await.unwrap();
+            let addresses = store.list(prefix, None, 100).await.unwrap();
+            let records: Vec<String> = records.items.into_iter().map(|r| r.address.to_string()).collect();
+            assert_eq!(records, addresses.items.iter().map(|a| a.to_string()).collect::<Vec<_>>(), "'{prefix}'");
+            records
+        };
+        assert_eq!(listed("").await, all.iter().map(|a| a.to_string()).collect::<Vec<_>>());
+        assert_eq!(listed("a").await.len(), 6, "a matches both types");
+        assert_eq!(listed("a/").await.len(), 5, "a/ matches only type a");
+        assert_eq!(listed("ab/").await, vec!["ab/one"]);
+        // The canonical key of `50%_x` is `50%25_x`: percent and underscore are plain characters, not wildcards.
+        assert_eq!(listed("a/50%").await, vec!["a/50%25_x"]);
+        assert_eq!(listed("a/50%25_").await, vec!["a/50%25_x"]);
+        assert_eq!(listed("a/b_").await, vec!["a/b_c"]);
+        assert!(listed("a/%").await.is_empty());
+        assert!(listed("a/_").await.is_empty());
+    })
+    .await
+}
+
 /// instances - delete of an absent instance reports absent
 pub async fn instances_delete_of_an_absent_instance_reports_absent<B: FixtureFactory>(backend: &B) {
     store_test(backend, async |t| {
@@ -692,6 +822,56 @@ pub async fn s3_concurrent_enqueues_to_one_instance_get_distinct_seqs_in_one_ord
         for order in by_sender.values() {
             assert_eq!(order, &(0..25).collect::<Vec<u32>>());
         }
+    })
+    .await
+}
+
+/// S2 / S3 - a page of records sees each commit whole: a state with its version, and its creates with it
+pub async fn s3_a_page_of_records_sees_each_commit_whole_with_its_state_version_and_creates<B: FixtureFactory>(
+    backend: &B,
+) {
+    store_test(backend, async |t| {
+        let main = t.new_actor_named(&TYPE, "main", json!({"n": 0})).await;
+        for round in 0..12i64 {
+            t.send(&main).await;
+            let c = t.claim_one().await;
+            let seen = t
+                .concurrently(4, |i, peer| {
+                    let (c, main) = (c.clone(), main.clone());
+                    async move {
+                        if i == 0 {
+                            let request = CommitRequest {
+                                state: StateChange::NewState(json!({"n": round + 1})),
+                                creates: vec![ActorCreate {
+                                    address: address(&format!("conformance/main-c{round:02}")),
+                                    state: json!({"round": round}),
+                                    child: true,
+                                }],
+                                ..done(&c)
+                            };
+                            assert_matches!(peer.commit(request).await.unwrap(), CommitResult::Committed { .. });
+                            return Vec::new();
+                        }
+                        let mut seen = Vec::new();
+                        for _ in 0..4 {
+                            let page = peer.list_records("conformance/", None, 1000).await.unwrap();
+                            let row = page.items.iter().find(|r| r.address == main).expect("the main actor");
+                            let n = row.state["n"].as_i64().expect("a number");
+                            let children = page.items.iter().filter(|r| r.parent.as_ref() == Some(&main)).count();
+                            assert_eq!(row.version, n, "a state comes with its own version");
+                            assert_eq!(children as i64, n, "a commit's creates come with its state");
+                            seen.push(n);
+                            tokio::task::yield_now().await;
+                        }
+                        seen
+                    }
+                })
+                .await;
+            assert!(seen.iter().flatten().all(|n| *n == round || *n == round + 1));
+        }
+        let page = t.store().list_records("conformance/", None, 1000).await.unwrap();
+        assert_eq!(page.items.len(), 13);
+        assert_eq!(page.items[0].version, 12);
     })
     .await
 }

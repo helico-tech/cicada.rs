@@ -42,6 +42,7 @@ pub enum Method {
     Create,
     Get,
     List,
+    ListRecords,
     Children,
     Delete,
     Watch,
@@ -74,7 +75,7 @@ pub enum Method {
 
 impl Method {
     /// Every method.
-    pub const ALL: [Method; 35] = [
+    pub const ALL: [Method; 36] = [
         Method::Now,
         Method::Register,
         Method::ListTypes,
@@ -82,6 +83,7 @@ impl Method {
         Method::Create,
         Method::Get,
         Method::List,
+        Method::ListRecords,
         Method::Children,
         Method::Delete,
         Method::Watch,
@@ -670,6 +672,15 @@ impl Backend for FaultStore {
 
     async fn list(&self, prefix: &str, cursor: Option<&PageCursor>, limit: usize) -> StoreResult<Page<ActorAddress>> {
         self.gate(Method::List, || self.inner.list(prefix, cursor, limit)).await
+    }
+
+    async fn list_records(
+        &self,
+        prefix: &str,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> StoreResult<Page<ActorRecord>> {
+        self.gate(Method::ListRecords, || self.inner.list_records(prefix, cursor, limit)).await
     }
 
     async fn children(

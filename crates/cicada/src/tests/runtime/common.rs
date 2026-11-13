@@ -575,6 +575,15 @@ impl<F: Faults> Backend for Faulty<F> {
         self.inner.list(prefix, cursor, limit).await
     }
 
+    async fn list_records(
+        &self,
+        prefix: &str,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> StoreResult<Page<crate::store::ActorRecord>> {
+        self.inner.list_records(prefix, cursor, limit).await
+    }
+
     async fn children(
         &self,
         parent: &ActorAddress,
