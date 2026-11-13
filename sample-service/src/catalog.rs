@@ -6,7 +6,7 @@ use std::sync::Arc;
 use cicada::actor::{DefinitionError, contract_of};
 use cicada::contract::Contract;
 use cicada::{Actor, ActorAddress, ActorRef, ActorType, NoState};
-use cicada_actors::{DeadLetters, DeadLettersActor, DeadLettersState, SupervisorActor, TopicActor};
+use cicada_actors::{DeadLetters, DeadLettersActor, DeadLettersState, SchedulerActor, SupervisorActor, TopicActor};
 use cicada_app::App;
 use cicada_examples::cron::CronJobActor;
 use cicada_examples::fanout::{BatchActor, BatchItemActor};
@@ -113,6 +113,7 @@ impl Catalog {
             CatalogType::of(DeadLettersActor::default()),
             CatalogType::of(SupervisorActor),
             CatalogType::of(TopicActor),
+            CatalogType::of(SchedulerActor),
             CatalogType::of(SyncActor { api: fakes.sync_api }),
             CatalogType::of(ReportsActor),
             CatalogType::of(SlowActor::new(node_id, effects.clone())),

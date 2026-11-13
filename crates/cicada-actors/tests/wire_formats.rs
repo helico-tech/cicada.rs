@@ -1,4 +1,4 @@
-//! The wire formats of the three ready-made actors (ADR 0028): their contracts against the references in
+//! The wire formats of the four ready-made actors (ADR 0028): their contracts against the references in
 //! `docs/reference/contracts`, the JSON their messages and states are written as, and sample checks for what the
 //! helpers and the actors write: both the registered schemas and the decoders take it (ADR 0026).
 
@@ -11,8 +11,9 @@ use cicada::contract::Contract;
 use cicada::prelude::*;
 use cicada::{Failed, FailureCause, StopCause, Stopped, WatchTarget};
 use cicada_actors::{
-    Child, DeadLetters, DeadLettersActor, DeadLettersMsg, DeadLettersState, StoredMessage, Supervisor, SupervisorActor,
-    SupervisorMsg, SupervisorState, Topic, TopicActor, TopicMsg, TopicState,
+    Child, DeadLetters, DeadLettersActor, DeadLettersMsg, DeadLettersState, Schedule, Scheduler, SchedulerActor,
+    SchedulerMsg, SchedulerState, StoredMessage, Supervisor, SupervisorActor, SupervisorMsg, SupervisorState, Topic,
+    TopicActor, TopicMsg, TopicState,
 };
 use cicada_axum::{assert_message_sample, assert_state_sample};
 use cicada_test::{TestActors, UPDATE_CONTRACTS_ENV, describe_changes};
@@ -82,19 +83,20 @@ fn check_references(dir: &Path, contracts: &[Contract], update: bool) -> Result<
     }
 }
 
-fn the_three_contracts() -> [Contract; 3] {
+fn the_four_contracts() -> [Contract; 4] {
     [
         contract_of::<SupervisorActor>().unwrap(),
         contract_of::<DeadLettersActor>().unwrap(),
         contract_of::<TopicActor>().unwrap(),
+        contract_of::<SchedulerActor>().unwrap(),
     ]
 }
 
 #[test]
-fn the_contracts_of_the_three_types_match_their_references() {
-    let contracts = the_three_contracts();
+fn the_contracts_of_the_four_types_match_their_references() {
+    let contracts = the_four_contracts();
     let names: Vec<&str> = contracts.iter().map(|c| c.type_name().as_str()).collect();
-    assert_eq!(names, ["cicada.supervisor", "cicada.dead-letters", "cicada.topic"]);
+    assert_eq!(names, ["cicada.supervisor", "cicada.dead-letters", "cicada.topic", "cicada.scheduler"]);
     let update = std::env::var(UPDATE_CONTRACTS_ENV).is_ok_and(|v| v == "true");
     if let Err(e) = check_references(&contracts_dir(), &contracts, update) {
         panic!("{e}");
@@ -223,6 +225,71 @@ fn the_messages_are_written_in_camel_case_and_pass_their_samples() {
     for message in [deliver, TopicMsg::Failed(failed()), TopicMsg::Stopped(stopped())] {
         assert_message_sample::<TopicMsg>(&json_of(message));
     }
+
+    let slot: cicada::time::Timestamp = "2026-11-13T02:00:00Z".parse().unwrap();
+    let every = Schedule::every(60).unwrap();
+    let policy = RetryPolicy::new(3, Backoff::fixed(std::time::Duration::from_secs(300)).unwrap()).unwrap();
+    let scheduler = [
+        (SchedulerMsg::Start, json!({"type": "Start"})),
+        (SchedulerMsg::Run { slot: None }, json!({"type": "Run", "slot": null})),
+        (SchedulerMsg::Run { slot: Some(slot) }, json!({"type": "Run", "slot": "2026-11-13T02:00:00Z"})),
+        (SchedulerMsg::Tick { slot }, json!({"type": "Tick", "slot": "2026-11-13T02:00:00Z"})),
+        (
+            SchedulerMsg::Update { schedule: None, target: None, message: None, retry: None },
+            json!({"type": "Update", "schedule": null, "target": null, "message": null, "retry": null}),
+        ),
+        (
+            SchedulerMsg::Update {
+                schedule: Some(every),
+                target: Some(addr(&worker("b"))),
+                message: Some(StoredMessage::for_ref(&worker("b"), WorkerMsg::Note { text: "hi".into() }).unwrap()),
+                retry: Some(policy),
+            },
+            json!({
+                "type": "Update",
+                "schedule": {"type": "every", "seconds": 60},
+                "target": "worker/b",
+                "message": message,
+                "retry": {"maxAttempts": 3, "backoff": {"kind": "fixed", "delay": "PT5M"}}
+            }),
+        ),
+    ];
+    for (message, written) in scheduler {
+        assert_eq!(json_of(&message), written);
+        assert_message_sample::<SchedulerMsg>(&written);
+    }
+    for written in [json!({"type": "Run"}), json!({"type": "Update", "message": message})] {
+        assert_message_sample::<SchedulerMsg>(&written);
+    }
+}
+
+#[test]
+fn a_scheduler_state_built_by_new_is_written_in_camel_case_and_passes_its_sample() {
+    let mut state =
+        SchedulerState::new(Schedule::daily(2, 0).unwrap(), &worker("a"), WorkerMsg::Note { text: "n".into() })
+            .unwrap();
+    let written = json_of(&state);
+    assert_eq!(
+        written,
+        json!({
+            "schedule": {"type": "daily", "hour": 2, "minute": 0},
+            "target": "worker/a",
+            "message": {"type": "Note", "payload": {"text": "n"}},
+            "retry": null,
+            "nextRun": null,
+            "armedTick": null,
+            "runs": 0,
+            "lastRun": null
+        })
+    );
+    assert_state_sample::<SchedulerState>(&written);
+    state.retry = Some(RetryPolicy::new(2, Backoff::fixed(std::time::Duration::from_secs(10)).unwrap()).unwrap());
+    assert_state_sample::<SchedulerState>(&json_of(&state));
+    assert_state_sample::<SchedulerState>(&json!({
+        "schedule": {"type": "every", "seconds": 60},
+        "target": "worker/a",
+        "message": {"type": "Note", "payload": {"text": "n"}}
+    }));
 }
 
 #[test]
@@ -253,11 +320,18 @@ fn a_supervisor_state_built_by_the_helpers_is_written_in_camel_case_and_passes_i
     assert_state_sample::<TopicState>(&json!({"subscribers": []}));
 }
 
-/// The states that the actors write in a run, with a restart, a given-up child, a redriven letter and subscribers.
+/// The states that the actors write in a run, with a restart, a given-up child, a redriven letter, subscribers and a
+/// scheduler that delivered.
 #[tokio::test(start_paused = true)]
 async fn the_states_the_actors_write_pass_their_samples() {
     let test = TestActors::builder()
-        .with(|node| node.host(SupervisorActor).host(DeadLettersActor::default()).host(TopicActor).host(WorkerActor))
+        .with(|node| {
+            node.host(SupervisorActor)
+                .host(DeadLettersActor::default())
+                .host(TopicActor)
+                .host(SchedulerActor)
+                .host(WorkerActor)
+        })
         .build()
         .await
         .unwrap();
@@ -301,4 +375,17 @@ async fn the_states_the_actors_write_pass_their_samples() {
     let written = test.state_json(&topic).await.unwrap();
     assert_eq!(written, json!({"subscribers": ["worker/a"]}));
     assert_state_sample::<TopicState>(&written);
+
+    let nightly = Scheduler::named("nightly");
+    let state =
+        SchedulerState::new(Schedule::every(60).unwrap(), &worker("a"), WorkerMsg::Note { text: "n".into() }).unwrap();
+    test.create(&nightly, &state).await;
+    test.send(&nightly, SchedulerMsg::Start).await;
+    test.advance_time_by(std::time::Duration::from_secs(60)).await;
+    let written = test.state_json(&nightly).await.unwrap();
+    for key in ["nextRun", "armedTick", "lastRun"] {
+        assert!(written[key].is_string(), "{key} in {written}");
+    }
+    assert_eq!(written["runs"], 1, "{written}");
+    assert_state_sample::<SchedulerState>(&written);
 }

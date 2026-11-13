@@ -35,12 +35,12 @@ tests of `cicada-actors`, as those of the topic and the supervisor do.
 
 ## 2. Wire formats and the sample service
 
-- [ ] 2.1 The contract [2, 3]: `docs/reference/contracts/cicada.scheduler.json`, written with
+- [x] 2.1 The contract [2, 3]: `docs/reference/contracts/cicada.scheduler.json`, written with
       `CICADA_UPDATE_CONTRACTS=true`; `tests/wire_formats.rs` checks it, the JSON that the state and the messages are
       written as, and sample checks that the registered schemas and the decoders take what `SchedulerState::new` and
       the actor write (ADR 0026). Verify: `cargo test -p cicada-actors --test wire_formats` passes without the
       variable.
-- [ ] 2.2 The sample service [9]: its catalog hosts `SchedulerActor`, with no singleton; its contract snapshot in
+- [x] 2.2 The sample service [9]: its catalog hosts `SchedulerActor`, with no singleton; its contract snapshot in
       `sample-service/tests/contracts/` and `tests/contract-texts.json`; a state sample of an armed daily scheduler in
       `tests/states/`, as `cron` has. Verify: `cargo test -p cicada-sample-service` passes.
 

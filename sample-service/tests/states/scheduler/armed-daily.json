@@ -1,0 +1,25 @@
+{
+  "schedule": {
+    "type": "daily",
+    "hour": 2,
+    "minute": 0
+  },
+  "target": "reports/_",
+  "message": {
+    "type": "Build",
+    "payload": {
+      "full": true
+    }
+  },
+  "retry": {
+    "maxAttempts": 3,
+    "backoff": {
+      "kind": "fixed",
+      "delay": "PT5M"
+    }
+  },
+  "nextRun": "2026-10-03T12:00:00Z",
+  "armedTick": "0b9f6a52-5c1e-4a55-9d0c-3f1f8f0f2a12",
+  "runs": 4,
+  "lastRun": "2026-10-03T12:00:00Z"
+}

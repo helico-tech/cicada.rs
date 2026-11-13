@@ -1,0 +1,461 @@
+{
+  "messages": {
+    "Run": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Sends the stored message to the target, with the retry policy of the state, and keeps the armed tick. A tick sends\nit with its slot, which the delivery carries in the header `cicada-slot`; a client sends it without one, to run\nthe schedule now, also on a scheduler that was never started.",
+      "properties": {
+        "slot": {
+          "description": "The slot of the tick that sent it; none for a run now.",
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "title": "Run",
+      "type": "object"
+    },
+    "Start": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Cancels the armed tick, if there is one, and arms a `Tick` at the next slot of the schedule. Safe to repeat: one\ntick stays armed. It also arms a chain again that ended.",
+      "properties": {},
+      "title": "Start",
+      "type": "object"
+    },
+    "Tick": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "One slot: arms the next tick and sends the scheduler a `Run` with the slot. Sent by the scheduler to itself, with\na retry policy.",
+      "properties": {
+        "slot": {
+          "description": "The slot.",
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "slot"
+      ],
+      "title": "Tick",
+      "type": "object"
+    },
+    "Update": {
+      "$defs": {
+        "Backoff": {
+          "oneOf": [
+            {
+              "properties": {
+                "factor": {
+                  "default": 2.0,
+                  "minimum": 1,
+                  "type": "number"
+                },
+                "initial": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "integer"
+                    }
+                  ]
+                },
+                "kind": {
+                  "const": "exponential",
+                  "type": "string"
+                },
+                "max": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "integer"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "initial",
+                "max"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "delay": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "integer"
+                    }
+                  ]
+                },
+                "kind": {
+                  "const": "fixed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "delay"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "RetryPolicy": {
+          "properties": {
+            "backoff": {
+              "$ref": "#/$defs/Backoff"
+            },
+            "maxAttempts": {
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "maxAttempts",
+            "backoff"
+          ],
+          "type": "object"
+        },
+        "Schedule": {
+          "description": "The wire form, unchecked.",
+          "oneOf": [
+            {
+              "description": "Every `seconds`, aligned to multiples of the interval since the epoch.",
+              "properties": {
+                "seconds": {
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "type": {
+                  "const": "every",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "seconds"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Once a day at `hour`:`minute` UTC.",
+              "properties": {
+                "hour": {
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "minute": {
+                  "default": 0,
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": {
+                  "const": "daily",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "hour"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "StoredMessage": {
+          "description": "A message an actor keeps to send later (ADR 0028): its type name and its JSON payload, as a store holds a message.\nThe actor that keeps it knows where it goes, so it holds no address. Build one with `StoredMessage::for_ref`.",
+          "properties": {
+            "payload": {
+              "description": "The payload: the fields of the variant, without the type tag."
+            },
+            "type": {
+              "description": "The type name: the variant of the family.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Replaces each field it gives and keeps the counts. A new schedule on a started scheduler cancels the armed tick\nand arms one at the new schedule's next slot; a new target, message or retry policy counts from the next `Run`,\nalso one that is already waiting. With no field it changes nothing.",
+      "properties": {
+        "message": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StoredMessage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The new message."
+        },
+        "retry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RetryPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The new retry policy of the delivered message; a policy of one attempt turns retries off."
+        },
+        "schedule": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Schedule"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The new schedule."
+        },
+        "target": {
+          "description": "The new target.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "title": "Update",
+      "type": "object"
+    }
+  },
+  "state": {
+    "$defs": {
+      "Backoff": {
+        "oneOf": [
+          {
+            "properties": {
+              "factor": {
+                "default": 2.0,
+                "minimum": 1,
+                "type": "number"
+              },
+              "initial": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ]
+              },
+              "kind": {
+                "const": "exponential",
+                "type": "string"
+              },
+              "max": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "initial",
+              "max"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "delay": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ]
+              },
+              "kind": {
+                "const": "fixed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "delay"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "RetryPolicy": {
+        "properties": {
+          "backoff": {
+            "$ref": "#/$defs/Backoff"
+          },
+          "maxAttempts": {
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "maxAttempts",
+          "backoff"
+        ],
+        "type": "object"
+      },
+      "Schedule": {
+        "description": "The wire form, unchecked.",
+        "oneOf": [
+          {
+            "description": "Every `seconds`, aligned to multiples of the interval since the epoch.",
+            "properties": {
+              "seconds": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "type": {
+                "const": "every",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "seconds"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Once a day at `hour`:`minute` UTC.",
+            "properties": {
+              "hour": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "minute": {
+                "default": 0,
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "daily",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "hour"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "StoredMessage": {
+        "description": "A message an actor keeps to send later (ADR 0028): its type name and its JSON payload, as a store holds a message.\nThe actor that keeps it knows where it goes, so it holds no address. Build one with `StoredMessage::for_ref`.",
+        "properties": {
+          "payload": {
+            "description": "The payload: the fields of the variant, without the type tag."
+          },
+          "type": {
+            "description": "The type name: the variant of the family.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "payload"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "The state of a [`Scheduler`]: what it sends, where and when, and what it did. Build it with `SchedulerState::new`.\nA scheduler is started when `armed_tick` is set.",
+    "properties": {
+      "armedTick": {
+        "description": "The id of the armed tick, which `Start` and `Update` cancel. It stays set when the tick goes without running.",
+        "minLength": 1,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "lastRun": {
+        "description": "The store's time of the run that sent the last of them.",
+        "format": "date-time",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "message": {
+        "$ref": "#/$defs/StoredMessage",
+        "description": "What it sends."
+      },
+      "nextRun": {
+        "description": "The slot of the armed tick.",
+        "format": "date-time",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "retry": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/RetryPolicy"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The retry policy of the delivered message; none: one attempt."
+      },
+      "runs": {
+        "default": 0,
+        "description": "The deliveries that reached the mailbox of the target.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "schedule": {
+        "$ref": "#/$defs/Schedule",
+        "description": "When it sends."
+      },
+      "target": {
+        "description": "Where it sends.",
+        "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+        "type": "string"
+      }
+    },
+    "required": [
+      "schedule",
+      "target",
+      "message"
+    ],
+    "title": "SchedulerState",
+    "type": "object"
+  },
+  "type": "cicada.scheduler"
+}

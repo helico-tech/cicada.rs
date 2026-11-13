@@ -5,9 +5,10 @@
 use std::path::PathBuf;
 
 use cicada::FailureCause;
+use cicada::retry::{Backoff, RetryPolicy};
 use cicada::store::MessageId;
 use cicada::time::Timestamp;
-use cicada_actors::{DeadLetter, DeadLettersState, Schedule};
+use cicada_actors::{DeadLetter, DeadLettersState, Schedule, SchedulerState, StoredMessage};
 use cicada_examples::cron::CronState;
 use cicada_examples::timer::{CheckoutState, CheckoutStatus};
 use cicada_test::{assert_state_decodes, record_state_sample};
@@ -47,6 +48,23 @@ fn cron() {
     };
     record_state_sample(&dir, "armed-daily", &state);
     assert_state_decodes::<CronState>(&dir);
+}
+
+#[test]
+fn scheduler() {
+    let dir = dir("scheduler");
+    let state = SchedulerState {
+        schedule: Schedule::daily(2, 0).unwrap(),
+        target: "reports/_".parse().unwrap(),
+        message: StoredMessage { message_type: "Build".into(), payload: json!({"full": true}) },
+        retry: Some(RetryPolicy::new(3, Backoff::fixed(std::time::Duration::from_secs(300)).unwrap()).unwrap()),
+        next_run: Some(t()),
+        armed_tick: Some(MessageId::new("0b9f6a52-5c1e-4a55-9d0c-3f1f8f0f2a12").unwrap()),
+        runs: 4,
+        last_run: Some(t()),
+    };
+    record_state_sample(&dir, "armed-daily", &state);
+    assert_state_decodes::<SchedulerState>(&dir);
 }
 
 /// The samples of the dead letters start again with 0.14.0: their contract changed, and the letters of 0.13.0 are lost
