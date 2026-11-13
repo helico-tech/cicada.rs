@@ -86,7 +86,8 @@ Each is a later change, when someone needs it:
   before its event.
 - How does a flow get onto its event actor: does the node subscribe it at start, or the host?
 - What is the key of a run: an event id the publisher gives, or the id of the `Publish` message, which the store
-  already keeps unique (S7, S10)?
+  already keeps unique (S7, S10)? The scheduler sends the same payload on every slot, so a key taken from the payload
+  would start a run on the first slot only; the id of the message, or the slot (header `cicada-slot`), does not.
 - Does a done run stay until a host deletes it, or stop itself after a time? While it stays, the same event id starts
   no new run.
 - Limits: the most steps in a run, or the largest state. The whole state is read and written on every turn, and a

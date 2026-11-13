@@ -47,8 +47,9 @@ None.
 
 ## Questions for the design
 
-- Does `Fire` send to the target itself, or through a `Deliver` with the crate's shared retry policy, as the topic and
-  the scheduler do?
+- Does `Fire` send to the target itself, or through a turn of its own with the crate's shared retry policy, as the
+  topic (`Deliver`) and the scheduler (`Run`) do? A delivery the debouncer counts only from itself cannot be retried
+  or redriven by an operator; the scheduler's `Run` is public for that reason.
 - Does a `Submit` to a different target in the middle of a burst replace the target too, or is that refused?
 
 ## Order

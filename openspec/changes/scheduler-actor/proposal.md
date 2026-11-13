@@ -17,12 +17,15 @@ this proposal (the scheduler, rate limiter, debouncer and batcher, their precede
 
 - A new ready-made actor `SchedulerActor`, type name `cicada.scheduler`, one instance per schedule (the key is its
   name). On each slot of its `Schedule` it sends a `StoredMessage` to a target address.
-- Its state holds the schedule, the target, the message, the id of the armed tick, the next slot, a count of runs
-  and the last error of a delivery.
-- Its messages: `Start` (safe to repeat), `RunNow` (runs now and keeps the slots), `Reschedule { schedule }`; and its
-  own `Tick` and `Deliver`, which count only when they come from itself.
-- A tick arms the next tick and sends itself a `Deliver` with the crate's shared retry policy; the `Deliver` sends to
-  the target. A target that is absent fails that delivery alone, and the chain goes on, as in the topic.
+- Its state holds the schedule, the target, the message, a retry policy for the delivered message, the id of the
+  armed tick, the next slot, a count of runs and the time of the last one. A failed delivery is a failed message of
+  the scheduler, shown to its watchers.
+- Its messages: `Start` (safe to repeat), `Run { slot }` (with no slot: runs now and keeps the slots), `Update
+  { schedule, target, message, retry }` with each field optional; and its own `Tick`, which counts only when it comes
+  from itself.
+- A tick arms the next tick and sends itself a `Run` with its slot and the crate's shared retry policy; the `Run`
+  sends to the target, with the header `cicada-slot`. A target that is absent fails that run alone, and the chain goes
+  on, as in the topic.
 - Slots missed while no node ran, or while the scheduler was paused, are skipped; a late tick fires once. That is the
   rule `Schedule` already has; the guide states it.
 - Pause, resume and removal are the core's own `pause`, `resume` and `delete`, with no messages of their own.
@@ -45,7 +48,8 @@ None.
 
 ## Out of scope
 
-- Cron expressions and time zones. They need a new wire form of `Schedule`, agreed first (issue 0602).
+- Cron expressions and time zones. Nobody has asked for them, and they need a cron parser and a time zone database;
+  the first request means `cicada.scheduler.v2`.
 - A rule that skips a run while the last one still runs. It needs a notice of success that the core does not give.
 - Catching up missed slots, a backfill, an end date or a limit on runs, and jitter.
 - Changes to the core.
@@ -66,8 +70,10 @@ moves on: scheduler, rate limiter, debouncer, batcher.
 
 ## Impact
 
-- `crates/cicada-actors` (a module `scheduler`, its tests on virtual time, `tests/wire_formats.rs`),
-  `docs/reference/contracts` (a new file), [docs/guide/actors.md](../../../docs/guide/actors.md) and its doctests,
-  `README.md` (the table of actors), `CHANGELOG.md`, and possibly `examples/src/cron.rs` and `sample-service`.
-- Hosts: no host has asked for it. Chorus and Karakuri record no request; the sample service could replace its `cron`
-  type.
+- `crates/cicada-actors` (a module `scheduler`, its tests on virtual time, `tests/wire_formats.rs`, the table in
+  `src/lib.rs`), `docs/reference/contracts` (a new file), [docs/guide/actors.md](../../../docs/guide/actors.md) (its
+  tables, its count of the types, the section "Schedules") and its doctests, `docs/architecture.md` (the row of
+  `cicada-actors`), `AGENTS.md` (the map), `README.md` (the table of actors), `CHANGELOG.md`, and `sample-service`
+  (the catalog, `tests/contracts/` and `tests/contract-texts.json`).
+- Hosts: no host has asked for it. Chorus and Karakuri record no request; the sample service hosts the scheduler next
+  to its `cron` type.
