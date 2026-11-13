@@ -15,7 +15,7 @@
   fields, validation, hash mismatch, unstarted/empty servers, local contention, owner visibility, peer renewal,
   repeated/stale release, expired-but-held renewal, delete/recreate fencing, stopped server and store close.
   Use virtual time for runtime behavior and run targeted lease tests with sqlite,postgres,testing features.
-- [ ] 3. Filter at-limit claims with one concurrent fenced failure-commit attempt per claim, reusing request and
+- [x] 3. Filter at-limit claims with one concurrent fenced failure-commit attempt per claim, reusing request and
   successful wake/observer logic without loading a hosted handler. Keep claims guarded until a confirmed commit or
   cleanup; do not add retry/keeper tasks for this path. Add mixed/all-limited batches, disabled limit, retry ignored,
   watcher-once and observer ordering tests; ordinary returned leases start no server observer. Cover commit failure,

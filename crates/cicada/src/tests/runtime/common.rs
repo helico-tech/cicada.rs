@@ -503,6 +503,10 @@ pub trait Faults: Send + Sync + 'static {
         inner.renew(address, epoch, ttl).await
     }
 
+    async fn release(&self, inner: &dyn Backend, address: &ActorAddress, epoch: i64) -> StoreResult<()> {
+        inner.release(address, epoch).await
+    }
+
     async fn commit(&self, inner: &dyn Backend, commit: CommitRequest) -> StoreResult<CommitResult> {
         inner.commit(commit).await
     }
@@ -634,7 +638,7 @@ impl<F: Faults> Backend for Faulty<F> {
     }
 
     async fn release(&self, address: &ActorAddress, epoch: i64) -> StoreResult<()> {
-        self.inner.release(address, epoch).await
+        self.faults.release(&self.inner, address, epoch).await
     }
 
     async fn next_due_at(&self, types: &BTreeSet<TypeName>) -> StoreResult<Option<Timestamp>> {
