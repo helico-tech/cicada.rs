@@ -372,6 +372,66 @@ async fn delete_purges_and_list_pages() {
     assert_eq!(actors.status(&pending.id).await.unwrap().unwrap().status, MessageState::Purged);
 }
 
+/// Scenarios: A page holds complete stored snapshots; Pages have the same boundaries as address-only pages.
+#[tokio::test]
+async fn actors_are_listed_with_their_state_in_the_pages_of_the_address_listing() {
+    let (actors, _, _) = client_test(|r| r).await;
+    for i in 1..=3 {
+        actors.create(&account("acme", i), &AccountState::default()).await.unwrap();
+    }
+    actors.create(&account("other", 1), &AccountState::default()).await.unwrap();
+    actors.send(&account("acme", 2), AccountMsg::Deposit { amount: 5 }).await.unwrap();
+    eventually(async || balance(&actors, &account("acme", 2)).await == Some(5)).await;
+    assert!(actors.pause_mailbox(&account("acme", 3).address().unwrap()).await.unwrap());
+
+    let first = actors.list_actors_with_state("account/acme:", None, Some(2)).await.unwrap();
+    let addresses = actors.list_actors("account/acme:", None, Some(2)).await.unwrap();
+    assert_eq!(first.items.iter().map(|v| v.address.clone()).collect::<Vec<_>>(), addresses.items);
+    assert_eq!(first.next, addresses.next);
+    let second = actors.list_actors_with_state("account/acme:", first.next.as_deref(), Some(2)).await.unwrap();
+    assert_eq!(second.items.len(), 1);
+    assert!(second.next.is_none());
+    for view in first.items.iter().chain(&second.items) {
+        assert_eq!(Some(view), actors.get_actor(&view.address).await.unwrap().as_ref());
+    }
+    let [_, deposited] = &first.items[..] else { panic!("two views") };
+    assert_eq!(
+        (deposited.state["balance"].clone(), deposited.version, deposited.type_name.as_str()),
+        (json!(5), 1, "account")
+    );
+    assert!(second.items[0].paused);
+    assert_eq!(actors.list_actors_with_state("", None, None).await.unwrap().items.len(), 4);
+    assert!(actors.list_actors_with_state("nobody/", None, None).await.unwrap().items.is_empty());
+    let e = actors.list_actors_with_state("", None, Some(0)).await.unwrap_err();
+    assert_eq!(e.status(), Some(400));
+}
+
+/// Scenario: The generated contract and client describe the new route. Against a server without `GET /actors/states`
+/// (one before 0.16.9), the method returns that server's error after one request and reads no actor one by one.
+#[tokio::test]
+async fn the_state_listing_against_an_older_server_returns_its_error_and_does_not_fall_back() {
+    let paths = Arc::new(Mutex::new(Vec::new()));
+    let seen = paths.clone();
+    let older = move |router: Router| {
+        router.layer(middleware::from_fn(move |req: Request, next: Next| {
+            let seen = seen.clone();
+            async move {
+                seen.lock().unwrap().push(req.uri().path().to_owned());
+                if req.uri().path() == "/actors/states" {
+                    return StatusCode::NOT_FOUND.into_response();
+                }
+                next.run(req).await
+            }
+        }))
+    };
+    let (actors, _, _) = client_test(older).await;
+    actors.create(&acme(), &AccountState::default()).await.unwrap();
+    paths.lock().unwrap().clear();
+    let e = actors.list_actors_with_state("", None, None).await.unwrap_err();
+    assert_eq!(e.status(), Some(404));
+    assert_eq!(*paths.lock().unwrap(), ["/actors/states"]);
+}
+
 #[tokio::test]
 async fn the_children_of_an_actor_are_listed_its_children_name_it_and_a_delete_removes_them() {
     let (actors, _, _) = client_test(|r| r).await;

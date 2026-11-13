@@ -322,6 +322,17 @@ pub(crate) async fn list_actors(State(api): Shared, req: Request) -> Response {
     .await
 }
 
+pub(crate) async fn list_actor_states(State(api): Shared, req: Request) -> Response {
+    let instance = request::instance(&req);
+    run(instance, async move {
+        let params = Params::of(req.uri())?;
+        let page =
+            api.system.list_actors_with_state(&params.prefix(), params.cursor().as_ref(), params.limit()?).await?;
+        Ok(json(StatusCode::OK, &PageView::of(page, ActorView::from)))
+    })
+    .await
+}
+
 pub(crate) async fn list_pending(State(api): Shared, req: Request) -> Response {
     let instance = request::instance(&req);
     run(instance, async move {

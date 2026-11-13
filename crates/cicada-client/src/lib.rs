@@ -273,6 +273,21 @@ impl ActorClient {
         self.call(Method::GET, self.url("/actors", &query)?, None).await?.ok()
     }
 
+    /// The instances [`Self::list_actors`] pages, each with the view [`Self::get_actor`] returns
+    /// (`GET /actors/states?prefix=`; ADR 0033), one page at a time; pass [`PageView::next`] as `cursor` for the
+    /// following page. A page is one read of the store; there is no snapshot across pages. Large states make large
+    /// pages: pick a smaller `limit` for them. A server before 0.16.9 has no such route and answers with an error; this
+    /// method does not fall back to reading each actor.
+    pub async fn list_actors_with_state(
+        &self,
+        prefix: &str,
+        cursor: Option<&str>,
+        limit: Option<usize>,
+    ) -> ClientResult<PageView<ActorView>> {
+        let query = listing(prefix, None, cursor, limit);
+        self.call(Method::GET, self.url("/actors/states", &query)?, None).await?.ok()
+    }
+
     // ---- messages ----
 
     /// Sends `msg` to `to`, due now; the compiler checks that `to` accepts `msg`. See [`Self::send_message`].

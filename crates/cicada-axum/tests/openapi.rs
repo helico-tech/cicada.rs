@@ -41,6 +41,29 @@ fn every_operation_has_an_id_and_answers_errors_as_problems() {
     }
 }
 
+/// Scenarios: The generated contract and client describe the new route; The address listing stays compatible.
+#[tokio::test(start_paused = true)]
+async fn both_routers_describe_the_state_listing_and_leave_the_address_listing_as_it_was() {
+    let system = node_with(memory_store(), |b| b.host(CounterActor)).await;
+    for app in [actor_api(system.clone()), actor_api_read(system.clone())] {
+        let document = get_json(&app, "/openapi.json").await;
+        let states = &document["paths"]["/actors/states"]["get"];
+        assert_eq!(states["operationId"], "listActorStates");
+        let parameters: Vec<&str> =
+            states["parameters"].as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
+        assert_eq!(parameters, ["prefix", "cursor", "limit"]);
+        let ok = &states["responses"]["200"]["content"]["application/json"]["schema"]["$ref"];
+        assert_eq!(ok, "#/components/schemas/ActorViewPage");
+        let page = &document["components"]["schemas"]["ActorViewPage"]["properties"];
+        assert_eq!(page["items"]["items"]["$ref"], "#/components/schemas/ActorView");
+        assert!(states["responses"]["default"]["content"][cicada_axum::PROBLEM_JSON].is_object());
+        let actors = &document["paths"]["/actors"]["get"];
+        assert_eq!(actors["operationId"], "listActors");
+        let ok = &actors["responses"]["200"]["content"]["application/json"]["schema"]["$ref"];
+        assert_eq!(ok, "#/components/schemas/ActorAddressPage", "no union with the state listing");
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn the_full_router_serves_the_whole_document() {
     let system = node_with(memory_store(), |b| b.host(CounterActor)).await;
@@ -66,6 +89,8 @@ async fn the_read_router_has_no_route_that_changes_anything() {
     assert!(served.contains(&("get".to_owned(), "/actors/{type}/{key}/children".to_owned())), "{served:?}");
     assert_eq!(get(&app, "/watches").await.status, StatusCode::OK, "a read route");
     assert!(served.contains(&("get".to_owned(), "/watches".to_owned())), "{served:?}");
+    assert_eq!(items(&get_json(&app, "/actors/states").await)[0]["address"], format!("counter/{id}"), "a read route");
+    assert!(served.contains(&("get".to_owned(), "/actors/states".to_owned())), "{served:?}");
     let refused = [
         call(&app, Method::PUT, &actor, "{}").await,
         call(&app, Method::DELETE, &actor, "").await,

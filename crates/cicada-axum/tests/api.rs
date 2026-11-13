@@ -264,6 +264,136 @@ async fn list_is_paged_and_filtered_by_prefix() {
     assert_problem(&get(&app, "/actors?limit=x").await, 400, pt::BAD_REQUEST);
 }
 
+// ---- GET /actors/states?prefix= ----
+
+/// type `states`: a type whose name is the last segment of `GET /actors/states`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct States {
+    name: String,
+}
+
+impl ActorRef for States {
+    const TYPE: &'static str = "states";
+    type Message = PingMsg;
+}
+
+struct StatesActor;
+
+impl Actor for StatesActor {
+    type Ref = States;
+    type State = NoState;
+
+    async fn handle(&self, _turn: &mut Turn<Self>, _message: PingMsg) -> HandlerResult {
+        Ok(())
+    }
+}
+
+/// Scenarios: A page holds complete stored snapshots; Pages have the same boundaries as address-only pages; No
+/// matching rows; The address listing stays compatible.
+#[tokio::test(start_paused = true)]
+async fn states_are_listed_with_the_view_of_each_actor_in_the_pages_of_the_address_listing() {
+    let app = app().await;
+    tree(&app).await;
+    put(&app, "/actors/counter/b3", r#"{"state": {"total": 4}}"#).await;
+    put(&app, "/actors/ping/p", r#"{"state": {}}"#).await;
+    assert_eq!(post(&app, "/actors/counter/b3/mailbox/pause", "").await.status, StatusCode::NO_CONTENT);
+
+    let all = get_json(&app, "/actors/states?prefix=counter/").await;
+    assert_eq!(all["next"], Value::Null);
+    let rows = items(&all);
+    let addresses: Vec<&str> = rows.iter().map(|r| r["address"].as_str().unwrap()).collect();
+    assert_eq!(addresses, ["counter/a", "counter/b1", "counter/b2", "counter/b3", "counter/c"]);
+    for row in rows {
+        let keys: Vec<&str> = row.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys, ["address", "type", "state", "version", "createdAt", "paused", "parent"]);
+        assert_eq!(row, &get_json(&app, &format!("/actors/{}", row["address"].as_str().unwrap())).await);
+    }
+    assert_eq!((&rows[0]["type"], &rows[0]["parent"]), (&json!("counter"), &Value::Null));
+    assert_eq!(rows[1]["parent"], "counter/a");
+    assert_eq!((&rows[3]["state"]["total"], &rows[3]["paused"]), (&json!(4), &json!(true)));
+
+    // The pages and cursors of GET /actors, which is unchanged.
+    let first = get_json(&app, "/actors/states?prefix=counter/&limit=2").await;
+    let addresses_first = get_json(&app, "/actors?prefix=counter/&limit=2").await;
+    assert_eq!(items(&addresses_first), &vec![json!("counter/a"), json!("counter/b1")]);
+    assert_eq!(first["next"], addresses_first["next"]);
+    let cursor = enc(first["next"].as_str().unwrap());
+    let second = get_json(&app, &format!("/actors/states?prefix=counter/&limit=2&cursor={cursor}")).await;
+    assert_eq!(items(&second).iter().map(|r| r["address"].clone()).collect::<Vec<_>>(), ["counter/b2", "counter/b3"]);
+    let cursor = enc(second["next"].as_str().unwrap());
+    let last = get_json(&app, &format!("/actors/states?prefix=counter/&limit=2&cursor={cursor}")).await;
+    assert_eq!(items(&last).len(), 1);
+    assert_eq!(last["next"], Value::Null);
+
+    // No match, and a cursor past every match: an empty page with no next.
+    assert_eq!(get(&app, "/actors/states?prefix=nothing/").await.text, r#"{"items":[],"next":null}"#);
+    assert_eq!(
+        get(&app, "/actors/states?prefix=counter/&cursor=counter%2Fz").await.text,
+        r#"{"items":[],"next":null}"#
+    );
+    // An empty prefix is every actor; an empty cursor is none.
+    assert_eq!(items(&get_json(&app, "/actors/states").await).len(), 6);
+    assert_eq!(items(&get_json(&app, "/actors/states?prefix=&cursor=").await).len(), 6);
+}
+
+/// Scenarios: Limits and duplicate query values follow existing listings; Prefixes are literal address prefixes.
+#[tokio::test(start_paused = true)]
+async fn the_state_listing_has_the_limits_and_the_query_rules_of_the_address_listing() {
+    let app = app().await;
+    for i in 0..101 {
+        put(&app, &format!("/actors/counter/n{i:03}"), r#"{"state": {}}"#).await;
+    }
+    for key in ["50%25_x", "5000", "b_c", "bxc"] {
+        put(&app, &format!("/actors/ping/{key}"), r#"{"state": {}}"#).await;
+    }
+    let page = get_json(&app, "/actors/states").await;
+    assert_eq!(items(&page).len(), 100, "100 by default");
+    assert!(page["next"].is_string());
+    assert_eq!(items(&get_json(&app, "/actors/states?limit=1").await).len(), 1);
+    assert_eq!(items(&get_json(&app, "/actors/states?limit=1000").await).len(), 105);
+    assert_eq!(items(&get_json(&app, "/actors/states?limit=1&limit=2").await).len(), 1, "the first value counts");
+    assert_eq!(items(&get_json(&app, "/actors/states?limit=1&unknown=x").await).len(), 1, "an unknown key is ignored");
+    for limit in ["0", "1001", "-1", "x", ""] {
+        assert_problem(&get(&app, &format!("/actors/states?limit={limit}")).await, 400, pt::BAD_REQUEST);
+    }
+    let listed = async |prefix: &str| -> Vec<Value> {
+        let states = get_json(&app, &format!("/actors/states?prefix={}", enc(prefix))).await;
+        let addresses = get_json(&app, &format!("/actors?prefix={}", enc(prefix))).await;
+        let rows: Vec<Value> = items(&states).iter().map(|r| r["address"].clone()).collect();
+        assert_eq!(&rows, items(&addresses), "{prefix}");
+        rows
+    };
+    assert_eq!(listed("ping/50%").await, [json!("ping/50%25_x")]);
+    assert_eq!(listed("ping/b_").await, [json!("ping/b_c")]);
+    assert!(listed("ping/_").await.is_empty());
+    assert!(listed("ping/%").await.is_empty());
+    assert_eq!(listed("p").await.len(), 4);
+}
+
+/// Scenario: The fixed route does not hide the states actor type.
+#[tokio::test(start_paused = true)]
+async fn the_state_listing_and_an_actor_of_the_type_states_have_their_own_routes() {
+    let app = actor_api(node_with(memory_store(), |b| b.host(CounterActor).host(StatesActor)).await);
+    assert_eq!(put(&app, "/actors/states/one", r#"{"state": {}}"#).await.status, StatusCode::CREATED);
+    put(&app, "/actors/counter/a", r#"{"state": {}}"#).await;
+    let listed = get_json(&app, "/actors/states").await;
+    assert_eq!(items(&listed).iter().map(|r| r["address"].clone()).collect::<Vec<_>>(), ["counter/a", "states/one"]);
+    let one = get_json(&app, "/actors/states/one").await;
+    assert_eq!((&one["address"], &one["type"]), (&json!("states/one"), &json!("states")));
+}
+
+/// Scenario: A bad row or unavailable store fails the page. A closed store is a 503, with no page.
+#[tokio::test(start_paused = true)]
+async fn the_state_listing_of_a_closed_store_is_a_503() {
+    let store = memory_store();
+    let app = actor_api(node(store.clone()).await);
+    put(&app, "/actors/counter/a", r#"{"state": {}}"#).await;
+    store.close().await;
+    let reply = get(&app, "/actors/states").await;
+    assert_problem(&reply, 503, pt::STORE_UNAVAILABLE);
+    assert_eq!(reply.content_type(), cicada_axum::PROBLEM_JSON);
+}
+
 // ---- POST /actors/{path}/messages ----
 
 #[tokio::test(start_paused = true)]

@@ -12,7 +12,7 @@
   parent/paused metadata, unhosted types, direct limits 0/1001 and changes between pages. Extend the legacy-depth
   fixture in `tests/runtime/value_depth.rs` to list older states without applying write validation. Run these runtime
   tests and `cargo check -p cicada` without features.
-- [ ] 3. Add GET /actors/states on both routers with operationId listActorStates, existing ListQuery and fixed
+- [x] 3. Add GET /actors/states on both routers with operationId listActorStates, existing ListQuery and fixed
   PageView<ActorView>, plus ActorClient::list_actors_with_state. Extend axum API and client tests for full fields,
   pagination, empty results, limits/defaults/duplicates, literal prefixes, type states route coexistence, store error
   mapping, maximum-depth state round-trip and unchanged GET /actors. Regenerate docs/openapi.json using

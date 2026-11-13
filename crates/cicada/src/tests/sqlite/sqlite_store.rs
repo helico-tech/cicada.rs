@@ -49,6 +49,26 @@ async fn database_uses_wal_and_has_its_tables() {
     assert_eq!(tables, ["actor_types", "actors", "messages", "nodes", "outcomes", "sequences", "watches"]);
 }
 
+/// Scenario: A bad row or unavailable store fails the page. A row whose state cannot be decoded fails the whole page of
+/// `list_records` as corrupt, also when it is only the row read beyond the page; `get` of a good row still works.
+#[tokio::test]
+async fn a_malformed_row_fails_the_whole_page_of_records_also_as_the_row_beyond_it() {
+    let db = TempDb::new();
+    let store = db.open(Arc::new(VirtualClock::default())).await;
+    store.register(crate::tests::conformance::type_def(&type_name(), "test")).await.unwrap();
+    for id in ["1", "2"] {
+        assert_eq!(store.create(&instance(id), json!({})).await.unwrap(), CreateResult::Created);
+    }
+    db.exec("UPDATE actors SET state = '{not json' WHERE address = 'x/2'").await;
+    for limit in [1, 2] {
+        let page = store.list_records("x/", None, limit).await;
+        assert!(matches!(page, Err(StoreError::Corrupt(_))), "limit {limit}: {page:?}");
+    }
+    assert!(store.get(&instance("1")).await.unwrap().is_some());
+    store.close().await;
+    assert!(matches!(store.list_records("x/", None, 1).await, Err(StoreError::Unavailable(_))));
+}
+
 #[tokio::test]
 async fn reopening_an_existing_database_keeps_its_data() {
     let db = TempDb::new();

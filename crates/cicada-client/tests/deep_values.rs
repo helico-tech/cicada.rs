@@ -160,3 +160,14 @@ async fn an_actor_at_the_limit_is_read() {
     assert_eq!(view.state, nested(MAX_DEPTH));
     assert_eq!(actors.state::<_, Value>(&deep("b")).await.unwrap(), Some(nested(MAX_DEPTH)));
 }
+
+/// Scenario: A maximum-depth current state fits the view. A state of 64 levels is read in a page of
+/// `GET /actors/states`, which wraps it three levels deeper, 67.
+#[tokio::test]
+async fn an_actor_at_the_limit_is_read_in_a_page_of_states() {
+    let actors = client().await;
+    assert!(actors.create(&deep("b"), &nested(MAX_DEPTH)).await.unwrap().created);
+    let page = actors.list_actors_with_state("deep/", None, None).await.unwrap();
+    let states: Vec<(&str, &Value)> = page.items.iter().map(|v| (v.address.as_str(), &v.state)).collect();
+    assert_eq!(states, vec![("deep/a", &json!({})), ("deep/b", &nested(MAX_DEPTH))]);
+}

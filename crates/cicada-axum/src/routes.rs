@@ -275,6 +275,20 @@ fn routes(access: Access) -> ApiRouter<Arc<Api>> {
                     .response::<200, Json<PageView<cicada::ActorAddress>>>()
             }),
         )
+        .api_route(
+            "/actors/states",
+            get_with(handlers::list_actor_states, |op| {
+                described(
+                    op,
+                    "listActorStates",
+                    "Actors with their state, by prefix: the view of each actor GET /actors/{type}/{key} returns, \
+                     with the order and paging of listActors. A page is one read of the store; there is no snapshot \
+                     across pages. Large states make large pages: pick a smaller limit for them.",
+                )
+                .input::<Query<ListQuery>>()
+                .response::<200, Json<PageView<ActorView>>>()
+            }),
+        )
         .api_route("/actors/{type}/{key}", actor)
         .api_route("/actors/{type}/{key}/children", children)
         .api_route("/actors/{type}/{key}/mailbox", mailbox)
