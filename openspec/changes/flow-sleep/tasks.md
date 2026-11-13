@@ -8,7 +8,7 @@
   early manual Continue/deliver-now/retry/redrive, no second armed timer, late wake, zero-duration commit boundary,
   timer loss, pause/delete, failure after sleep and no work after an abandoned step. Assert closure counters,
   journal contents and pending/armed messages; run those targeted tests and unchanged flow contract/sample fixtures.
-- [ ] 3. Extend the flow example and actors-guide doctests with durable wait and recovery, documenting the limits,
+- [x] 3. Extend the flow example and actors-guide doctests with durable wait and recovery, documenting the limits,
   code-deployment requirement and unchanged contracts. Update the changelog. Verify the example, unchanged
   sample-service flow contract snapshots/texts, `cargo test -p cicada-examples --doc` and
   `cargo test -p cicada-examples --test docs`; do not bless a contract difference by regeneration.

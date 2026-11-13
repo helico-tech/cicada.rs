@@ -23,7 +23,7 @@ writes its own flow, names its type and hosts it with `FlowActor` (ADR 0031).
 | `RateLimiterActor` | `cicada.rate-limiter` | the name of the limit | Sends each submitted message to its target at the next free slot of a shared rate. |
 | `DebouncerActor` | `cicada.debouncer` | the key whose bursts it debounces | Keeps the latest submission of a burst and sends it to its target once the burst is quiet. |
 | `BatcherActor` | `cicada.batcher` | the stream or group whose items it batches | Collects items and sends them to its target as one message when the batch is full or has waited long enough. |
-| `FlowActor<F>` | chosen by the flow `F` | one run of the flow | Runs a multi-step job written as async code, one new step per turn, replaying the results it saved. |
+| `FlowActor<F>` | chosen by the flow `F` | one run of the flow | Runs a multi-step job written as async code, one new step or durable sleep per turn, replaying what it saved. |
 
 A message that one of them keeps to send later is a `StoredMessage`: a type name and a JSON payload,
 `{"type": …, "payload": …}`. The actor knows where it goes, so it holds no address. `StoredMessage::for_ref(&worker,
@@ -654,8 +654,8 @@ curl -X POST localhost:8080/actors/cicada.batcher/audit/messages -H 'content-typ
 
 ## Flows
 
-A flow is a multi-step job written as ordinary async code (ADR 0031): create an account, send a welcome mail,
-provision a workspace. Each run is one actor, hosted by `FlowActor<F>`, whose state holds the run's input and a
+A flow is a multi-step job written as ordinary async code (ADR 0031): create an account, wait a minute, send a welcome
+mail, provision a workspace. Each run is one actor, hosted by `FlowActor<F>`, whose state holds the run's input and a
 journal of saved results. Every execution runs the flow's code from the top: a step whose result the journal holds
 returns it without running again, and the first new step runs its closure, whose result commits together with the
 next `Continue`. So a committed step never runs again, a failed step is retried by the flow's policy, and the order of
@@ -670,7 +670,7 @@ Unlike the other actors of this crate, a flow has no fixed type name: its host c
 #     async fn create(&self, _email: &str, key: String) -> Result<String, HandlerError> { Ok(format!("acc-{key}")) }
 #     async fn welcome(&self, _account: &str, _key: String) -> Result<(), HandlerError> { Ok(()) }
 # }
-@@25
+@@27
 # async fn host(store: cicada::Store, accounts: Accounts) -> Result<(), Box<dyn std::error::Error>> {
 @@1
 # let _ = system;
@@ -678,6 +678,7 @@ Unlike the other actors of this crate, a flow has no fixed type name: its host c
 # }
 -->
 ```rust
+use std::time::Duration;
 use cicada_actors::{Flow, FlowActor, Step};
 
 /// The input of a run: part of the contract, fixed at its create.
@@ -698,6 +699,7 @@ impl Flow for Onboarding {
     async fn run(&self, step: &mut Step, signup: Signup) -> HandlerResult {
         let accounts = &self.accounts;
         let account: String = step.run("create-account", |key| accounts.create(&signup.email, key)).await?;
+        step.sleep("cool-off", Duration::from_secs(60)).await?; // durable: no handler waits
         step.run("send-welcome", |key| accounts.welcome(&account, key)).await?;
         Ok(())
     }
@@ -707,10 +709,11 @@ let system = ActorSystem::builder(store).host(FlowActor::new(Onboarding { accoun
 ```
 
 `step.run(id, closure)` gives the closure the step's idempotency key and returns its result; `?` passes on the error
-by which a new step suspends the execution, as any other error. In an `App` the flow is one more type:
-`App::new().host(FlowActor::new(Onboarding { accounts }))`. A host starts a run by creating it with
-`FlowState::new(input)` and sending it `Continue`; a producer can do both in one turn, as a turn's creates come
-before its sends:
+by which a new step suspends the execution, as any other error. `step.sleep(id, duration)` waits until a store time
+saved in the journal, with no handler open meanwhile ([Durable sleep](#durable-sleep)). In an `App` the flow is one
+more type: `App::new().host(FlowActor::new(Onboarding { accounts }))`. A host starts a run by creating it with
+`FlowState::new(input)` and sending it `Continue`; a producer can do both in one turn, as a turn's creates come before
+its sends:
 
 <!-- doctest
 # use cicada::prelude::*;
@@ -774,9 +777,9 @@ and null. A journal given at the create is trusted as progress: the replay check
 results against the code, not whether its effects happened.
 
 - **One new step per turn.** The first step the journal does not hold runs its closure; its result and the next
-  `Continue` commit together, and the next step runs in the next turn. A run of n steps takes n + 2 turns: the start,
-  one for each step, and the replay that completes it. A flow that returns `Ok` after replaying every saved entry is
-  `done`.
+  `Continue` commit together, and the next step runs in the next turn. A run of n steps and sleeps takes n + 2 turns:
+  the start, one for each step or sleep, and the replay that completes it. A flow that returns `Ok` after replaying
+  every saved entry is `done`.
 - **Starting and recovering.** A `Continue` that is not the run's armed one cancels the armed one, if any, and arms a
   fresh one, due now with the flow's retry policy and the incoming correlation id, without running flow code. Only the
   armed `Continue` runs the flow, so pokes never race each other; each poke starts the attempts afresh. The policy is
@@ -814,8 +817,36 @@ results against the code, not whether its effects happened.
   for good before it is saved. The input may be 63 levels deep. Nothing bounds the bytes of a result beyond the core's
   limits, and each step rewrites the whole state, so keep results small or save references to data kept elsewhere.
 - **The sleep entry.** A journal entry is `{"kind": "step", "id", "result"}` or `{"kind": "sleep", "id", "until"}`. The
-  sleep entry is in the contract for a durable sleep of a later release, so that release changes no contract; no
-  method writes one yet.
+  sleep entry was in the contract before `Step::sleep` wrote one (0.16.6), so a flow that starts to sleep keeps its
+  contract, hash and pinned text included.
+
+### Durable sleep
+
+`step.sleep("cool-off", Duration::from_secs(60)).await?` pauses a run between two steps without holding a handler, a
+lease or a timer in memory. The first time, it saves `{"kind": "sleep", "id": "cool-off", "until": …}`, the claim's
+store time plus the duration rounded up to microseconds, and ends the turn: the entry commits with the next `Continue`,
+due at `until`. When that `Continue` arrives, the replay passes the sleep and runs the next step in the same turn.
+
+- **The saved time decides.** A replayed sleep compares store time with its saved `until`, and ignores the duration
+  the code passes now: a deploy that changes the duration does not move the wake time of a sleeping run, nor of one
+  that slept already. A replayed sleep before its `until` saves nothing and arms a `Continue` due at that same time.
+- **Nothing wakes it early.** A public `Continue` replaces the armed timer as for any run, and its execution replays
+  the sleep and arms it again at the saved time; a deliver-now of the timer, a retry and a redrive under a new id do the
+  same. One `Continue` stays armed, and no step after the sleep runs before `until`.
+- **Late is fine.** `until` is a lower bound. A paused run, an outage, a busy node or the claim limit makes the wake
+  later, and a late wake does not sleep the duration again. A run whose timer was cancelled, purged or failed for good
+  stalls with its sleep saved until a public `Continue` resumes it; once `until` has passed, it goes straight on. A step
+  after a sleep that fails is retried by the flow's policy, and its retries pass the sleep. A delete removes the run and
+  its timer; no sleep brings it back.
+- **A zero sleep is a commit.** A zero or sub-microsecond duration saves its entry and ends the turn like any other, so
+  every new sleep is a commit boundary; the next turn is due at once.
+- **Limits.** A sleep id shares the namespace of the step ids and counts towards the 1,000 entries. A new sleep longer
+  than `MAX_DELAY` (365,000 days) or ending after `MAX_INSTANT` (the end of the year 9999) fails the turn for good, and
+  nothing is saved. A sleep caught with `let _ =` still ends the turn, as a caught step does, and a sleep after an
+  abandoned step adds nothing.
+- **Deploy first.** That a node's schema accepts a sleep entry does not mean it can run the code that wrote it: a node
+  with the flow's code from before the sleep fails such a run for good, as a changed replay. Deploy the code that
+  sleeps, on 0.16.6 or later, to every node that hosts the flow before starting runs that use it.
 
 A host pins the contract of its flow like that of any of its types:
 

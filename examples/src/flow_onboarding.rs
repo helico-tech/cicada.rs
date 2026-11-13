@@ -1,11 +1,13 @@
 //! Example 13 — the onboarding as a durable flow.
 //!
 //! The onboarding of [`steps`](crate::steps), against the same [`OnboardingServices`], written as ordinary async code:
-//! a [`Flow`] whose steps create the account, send the welcome mail and provision a workspace. The
-//! [`FlowActor`](cicada_actors::FlowActor) runs each run as one actor, `flows.onboarding/<user>`: every execution
-//! replays the results its journal holds and executes one new step, whose result commits with the next `Continue`. So
-//! a committed step never runs again, and a failed step is retried by the flow's policy (three attempts, five seconds
-//! apart). A run that ran out of attempts keeps its saved steps; a public `Continue` resumes it there (see
+//! a [`Flow`] whose steps create the account and send the welcome mail, then sleep a minute, durably, before they
+//! provision a workspace. The [`FlowActor`](cicada_actors::FlowActor) runs each run as one actor,
+//! `flows.onboarding/<user>`: every execution replays the results its journal holds and executes one new step, whose
+//! result commits with the next `Continue`. So a committed step never runs again, and a failed step is retried by the
+//! flow's policy (three attempts, five seconds apart). The sleep saves its wake time in the journal and commits with a
+//! `Continue` due then; no handler waits meanwhile, and an early `Continue` replays it and waits for the same time. A
+//! run that ran out of attempts keeps its saved steps; a public `Continue` resumes it there (see
 //! `tests/flow_onboarding.rs`). Each call receives the key `flows.onboarding/<user>/<step id>`, the same on every
 //! attempt.
 //!
@@ -43,6 +45,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::steps::OnboardingServices;
 
+/// How long a run waits after the welcome mail before it provisions the workspace.
+pub const COOL_OFF: Duration = Duration::from_secs(60);
+
 /// The input of an onboarding run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct OnboardingInput {
@@ -74,6 +79,7 @@ impl<S: OnboardingServices> Flow for OnboardingFlow<S> {
         let account_id: String =
             step.run("create-account", |key| async move { Ok(services.create_account(email, &key).await?) }).await?;
         step.run("send-welcome", |key| async move { Ok(services.send_welcome(email, &key).await?) }).await?;
+        step.sleep("cool-off", COOL_OFF).await?;
         let account_id = account_id.as_str();
         let _workspace_id: String = step
             .run("provision-workspace", |key| async move { Ok(services.provision_workspace(account_id, &key).await?) })

@@ -195,8 +195,12 @@ fn flow_onboarding() {
     let welcome = JournalEntry::Step { id: "send-welcome".into(), result: serde_json::Value::Null };
     let workspace = JournalEntry::Step { id: "provision-workspace".into(), result: serde_json::json!("ws-1") };
     let progress = FlowState { journal: vec![account.clone()], armed: Some(id()), ..initial.clone() };
-    let done = FlowState { journal: vec![account, welcome, workspace], status: FlowStatus::Done, ..initial.clone() };
-    states([initial, progress, done]);
+    let sleep = JournalEntry::Sleep { id: "cool-off".into(), until: t() };
+    let journal = vec![account.clone(), welcome.clone(), sleep.clone()];
+    let sleeping = FlowState { journal, armed: Some(id()), ..initial.clone() };
+    let journal = vec![account, welcome, sleep, workspace];
+    let done = FlowState { journal, status: FlowStatus::Done, ..initial.clone() };
+    states([initial, progress, sleeping, done]);
 }
 
 #[test]

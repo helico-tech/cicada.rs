@@ -130,6 +130,10 @@ fn flow_onboarding() {
         ..FlowState::new(OnboardingInput { email: "bob@example.test".into() })
     };
     record_state_sample(&dir, "two-steps-saved", &state);
+    let mut sleeping = state.clone();
+    let until = "2026-11-14T00:01:00Z".parse().unwrap();
+    sleeping.journal.push(JournalEntry::Sleep { id: "cool-off".into(), until });
+    record_state_sample(&dir, "sleeping", &sleeping);
     assert_state_decodes::<FlowState<OnboardingInput>>(&dir);
 }
 

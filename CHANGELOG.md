@@ -7,6 +7,25 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.16.6 — unreleased
+
+Nothing breaks: flows can sleep durably. No state field, message, journal entry or contract changes, so a flow that
+starts to sleep keeps its contract hash; no schema of the store changes. Deploy 0.16.6, with the flow code that
+sleeps, to every node that hosts a flow before starting runs that use it.
+
+### Added
+
+- `Step::sleep(id, duration)`: a durable sleep inside a flow. A new sleep saves `{"kind": "sleep", "id", "until"}`
+  with `until` the claim's store time plus the duration, rounded up to microseconds, and ends the turn; the entry
+  commits with the next `Continue`, due at `until`, so no handler stays open while the run waits. A zero duration
+  commits too. A replayed sleep returns once store time reaches the saved `until`, whatever duration the code passes
+  now; before that it arms a `Continue` due at the same time and saves nothing, so an early `Continue`, a deliver-now,
+  a retry or a redrive cannot shorten it. A late wake (pause, outage, a cancelled timer resumed by `Continue`) does not
+  sleep again. A new sleep longer than `MAX_DELAY` or ending after `MAX_INSTANT`, a repeated id, a mismatch with the
+  saved entry and a 1,001st entry fail the turn for good. The actors guide, "Durable sleep", has the rules; the
+  onboarding flow example sleeps a minute before it provisions the workspace, with its type name, input and contract
+  unchanged.
+
 ## 0.16.5 — 2026-11-13
 
 Nothing breaks: durable flows, a new kind of ready-made actor whose type name the host chooses. A node that hosts a

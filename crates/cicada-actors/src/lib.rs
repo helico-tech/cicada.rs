@@ -10,7 +10,7 @@
 //! | [`RateLimiterActor`] | `cicada.rate-limiter` | Sends each submitted message to its target at the next free slot of a rate |
 //! | [`DebouncerActor`] | `cicada.debouncer` | Keeps the latest submission of a burst and sends it once the burst is quiet |
 //! | [`BatcherActor`] | `cicada.batcher` | Collects items and sends them to its target as one batch on count or time |
-//! | [`FlowActor`] | chosen by the [`Flow`] | Runs a multi-step job written as async code, one step per turn, replaying saved results |
+//! | [`FlowActor`] | chosen by the [`Flow`] | Runs a multi-step job written as async code, one step or durable sleep per turn, replaying saved results |
 //! | [`StoredMessage`] | | A message an actor keeps to send later: a type name and a JSON payload, built from a typed ref |
 //! | [`Schedule`] | | When a recurring job runs next |
 //!

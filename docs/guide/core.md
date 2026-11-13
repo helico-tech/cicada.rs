@@ -1021,7 +1021,7 @@ Decoding is all it checks: a sample whose renamed field is now ignored still dec
 | `rate_limit` | A shared rate limit; signups create a limiter and submit their texts to it in one turn. |
 | `debounce` | A burst of edits, one reindex; each edit submits the latest version to a debouncer. |
 | `batching` | Audit events in bulk; each change adds its event to a batcher that writes 50 at once. |
-| `flow_onboarding` | The onboarding of `steps` as a durable flow: async code, one new step per turn. |
+| `flow_onboarding` | The onboarding of `steps` as a durable flow: async code, one new step per turn, and a durable sleep. |
 | `sync` | The architecture's example: a paged import, one turn per page, rescheduled hourly. |
 
 Every example has the same shape: a public ref struct per actor type (its one field is the key), a
