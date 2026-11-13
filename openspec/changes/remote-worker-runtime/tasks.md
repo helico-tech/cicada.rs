@@ -35,7 +35,7 @@
 
 ## Finishing checks
 
-- [ ] 6. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
+- [x] 6. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
   `openspec validate remote-worker-runtime --strict`; include PostgreSQL with CICADA_PG_URL where available and
   record unavailable optional checks. Preserve existing conformance and local executor tests. Regenerate references
   only when existing drift checks require it; this change introduces no HTTP wire format or schema migration.
