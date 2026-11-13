@@ -4,7 +4,7 @@
   Waiting scheduling using the existing journal and armed continuation. Validate MAX_DELAY and checked timestamps
   without changing the wire shape. Add library tests for zero/fractional durations, bounds, ids, count and latch
   precedence; run the actor library tests and API doctests.
-- [ ] 2. Extend virtual-time flow integration tests for the full sleep spec: saved deadline, changed-duration replay,
+- [x] 2. Extend virtual-time flow integration tests for the full sleep spec: saved deadline, changed-duration replay,
   early manual Continue/deliver-now/retry/redrive, no second armed timer, late wake, zero-duration commit boundary,
   timer loss, pause/delete, failure after sleep and no work after an abandoned step. Assert closure counters,
   journal contents and pending/armed messages; run those targeted tests and unchanged flow contract/sample fixtures.

@@ -629,7 +629,7 @@ struct SignUp {
     user: String,
 }
 
-/// The test flow, `test.sign-up`: an account, then a welcome.
+/// The test flow, `test.sign-up`: an account, a minute's sleep, then a welcome.
 struct SignUpFlow;
 
 impl Flow for SignUpFlow {
@@ -638,13 +638,14 @@ impl Flow for SignUpFlow {
 
     async fn run(&self, step: &mut cicada_actors::Step, input: SignUp) -> HandlerResult {
         let account: String = step.run("account", |key| async move { Ok(format!("{}@{key}", input.user)) }).await?;
+        step.sleep("cool-off", std::time::Duration::from_secs(60)).await?;
         step.run("welcome", |_key| async move { Ok(account.len()) }).await?;
         Ok(())
     }
 }
 
 /// A flow's contract is the host's: pinned with the actor tests, not in `docs/reference/contracts`. It holds the sleep
-/// entry of the journal already, so the sleep of a later release changes no hash.
+/// entry of the journal, so a flow that sleeps, as this one does since sleeps were added, has the fixture of before.
 #[test]
 fn the_contract_of_a_test_flow_matches_its_fixture() {
     let contract = contract_of::<FlowActor<SignUpFlow>>().unwrap();
@@ -734,12 +735,19 @@ async fn the_states_a_flow_writes_pass_their_samples() {
     let run = FlowRun::<SignUpFlow>::named("u1");
     test.create(&run, &FlowState::new(SignUp { user: "u1".into() })).await;
     test.send(&run, FlowMsg::Continue).await;
-    for _ in 0..4 {
+    for _ in 0..3 {
+        test.system().run_due_turns(1).await.unwrap();
+        assert_state_sample::<FlowState<SignUp>>(&test.state_json(&run).await.unwrap());
+    }
+    let account = json!({"kind": "step", "id": "account", "result": "u1@test.sign-up/u1/account"});
+    let sleep = json!({"kind": "sleep", "id": "cool-off", "until": "2026-01-01T00:01:00Z"});
+    assert_eq!(test.state_json(&run).await.unwrap()["journal"], json!([account, sleep]));
+    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+    for _ in 0..2 {
         test.system().run_due_turns(1).await.unwrap();
         assert_state_sample::<FlowState<SignUp>>(&test.state_json(&run).await.unwrap());
     }
     let written = test.state_json(&run).await.unwrap();
     assert_eq!(written["status"], "done");
-    let account = json!({"kind": "step", "id": "account", "result": "u1@test.sign-up/u1/account"});
-    assert_eq!(written["journal"], json!([account, {"kind": "step", "id": "welcome", "result": 26}]));
+    assert_eq!(written["journal"], json!([account, sleep, {"kind": "step", "id": "welcome", "result": 26}]));
 }

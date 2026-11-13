@@ -1,7 +1,9 @@
 //! Durable flows, on virtual time with `TestActors`: one new step per commit, replay and changed replay, retries and
 //! terminal failures with their watch notifications, interruption before commit with stable keys, public starts,
 //! pokes and recovery, done runs, swallowed suspensions and failures, abandoned, unpolled and panicking step futures,
-//! timeouts inside closures, result limits and the journal's count limit. A probe counts every closure invocation.
+//! timeouts inside closures, result limits and the journal's count limit; and durable sleeps: the saved wake time,
+//! changed-duration replay, early pokes, deliver-now, retries and redrives, lost timers, pause, delete, failures after
+//! a sleep and the limits of a new sleep. A probe counts every closure invocation.
 
 mod common;
 
@@ -13,7 +15,8 @@ use std::time::Duration;
 use cicada::FailureCause;
 use cicada::prelude::*;
 use cicada::runtime::RetryResult;
-use cicada::store::{Message, OutcomeStatus};
+use cicada::store::{DeliverNowResult, Message, OutcomeStatus};
+use cicada::time::{self, MAX_DELAY, Timestamp};
 use cicada_actors::{Flow, FlowActor, FlowMsg, FlowRun, FlowState, FlowStatus, JournalEntry, Step};
 use cicada_test::TestActors;
 use common::*;
@@ -26,6 +29,8 @@ const SECOND: Duration = Duration::from_secs(1);
 const BACKOFF: Duration = Duration::from_secs(10);
 /// Longer than the node's default maximum turn of 15 minutes.
 const SLOW: Duration = Duration::from_secs(3600);
+const MINUTE: Duration = Duration::from_secs(60);
+const MICROSECOND: Duration = Duration::from_micros(1);
 
 /// The test flow's policy: three attempts, ten seconds apart.
 fn three_attempts() -> RetryPolicy {
@@ -82,6 +87,11 @@ impl Probe {
         }
     }
 
+    /// Whether the flow code planned to glitch at `id` does so this time: it fails outside any step.
+    fn glitch(&self, id: &str) -> bool {
+        self.plans.lock().unwrap().get_mut(id).and_then(VecDeque::pop_front).is_some()
+    }
+
     /// The keys of every call, in order.
     fn keys(&self) -> Vec<String> {
         self.keys.lock().unwrap().clone()
@@ -127,6 +137,17 @@ enum Op {
     Unencodable { id: String },
     /// A charge that is declined, as data; the flow then calls `notify`.
     Charge { id: String },
+    /// A durable sleep of `secs` seconds and `nanos` nanoseconds.
+    Sleep {
+        id: String,
+        secs: u64,
+        #[serde(default)]
+        nanos: u32,
+    },
+    /// A one-minute sleep whose suspension the flow catches.
+    SwallowSleep { id: String },
+    /// An error of the flow code itself, outside any step, when the probe plans one for `id`.
+    Glitch { id: String },
 }
 
 /// How the test flow ends after its steps.
@@ -284,6 +305,15 @@ impl ScriptFlow {
                     step.run(&id, |key| async move { p.call(key).await.map(|_| Err("declined".to_owned())) }).await?;
                 if charged.is_err() {
                     step.run("notify", |key| p.call(key)).await?;
+                }
+            }
+            Op::Sleep { id, secs, nanos } => step.sleep(&id, Duration::new(secs, nanos)).await?,
+            Op::SwallowSleep { id } => {
+                let _ = step.sleep(&id, MINUTE).await;
+            }
+            Op::Glitch { id } => {
+                if p.glitch(&id) {
+                    return Err(HandlerError::msg("the flow glitched"));
                 }
             }
         }
@@ -521,15 +551,16 @@ async fn changed_flow_code_fails_for_good_without_progress() {
 
 // Interruption before commit.
 
-/// Scenario: Lost progress before commit; and Key stability and escaping.
+/// Scenario: Lost progress before commit; and Key stability and escaping. The probe notes its call, an external effect,
+/// before it would respond; the turn's timeout drops the call before the response, so the effect is lost to the run.
 #[tokio::test(start_paused = true)]
-async fn a_success_whose_turn_does_not_commit_is_called_again_with_the_same_key() {
+async fn a_step_effect_lost_to_a_turn_timeout_is_called_again_with_the_same_key() {
     let probe = Probe::default();
     probe.plan("a", &[Act::Slow]);
     let test = node(&probe).await;
     start(&test, "k/1", script(steps(&["a"]))).await;
     test.run_until_idle().await;
-    assert_eq!(probe.keys(), ["test.flow/k%2F1/a"], "the call succeeded, but past the turn's maximum");
+    assert_eq!(probe.keys(), ["test.flow/k%2F1/a"], "the call was made, then the turn's maximum dropped it unanswered");
     assert!(journal(&test, "k/1").await.is_empty(), "nothing saved");
     let retried = armed(&test, "k/1").await;
     assert_eq!((retried.failures, retried.last_error.as_deref()), (1, Some("timeout")));
@@ -879,4 +910,320 @@ async fn a_unit_result_is_saved_as_null() {
     let done = test.state_json(&plain).await.unwrap();
     assert_eq!(done["journal"], json!([{"kind": "step", "id": "only", "result": null}]));
     assert_eq!((done["status"].clone(), done["armed"].clone()), (json!("done"), Value::Null));
+}
+
+// Durable sleep.
+
+fn sleep(id: &str, duration: Duration) -> Op {
+    Op::Sleep { id: id.to_owned(), secs: duration.as_secs(), nanos: duration.subsec_nanos() }
+}
+
+fn saved_sleep(id: &str, until: Timestamp) -> JournalEntry {
+    JournalEntry::Sleep { id: id.to_owned(), until }
+}
+
+fn after(instant: Timestamp, duration: Duration) -> Timestamp {
+    time::add(instant, duration).unwrap()
+}
+
+/// Asserts that `key` holds `journal` and one pending continuation, armed and due at `until`, and returns it.
+async fn sleeping(test: &TestActors, key: &str, journal: &[JournalEntry], until: Timestamp) -> Message {
+    assert_eq!(state(test, key).await.journal, journal, "{key}");
+    let timer = armed(test, key).await;
+    assert_eq!(timer.deliver_at, until, "{key}: due at the saved wake time");
+    assert_eq!(test.pending(&run(key)).await.len(), 1, "{key}: one continuation");
+    timer
+}
+
+/// Scenarios: First durable wait; and Before and at the deadline. Every later turn replays the elapsed sleep.
+#[tokio::test(start_paused = true)]
+async fn a_sleep_commits_its_wake_time_with_a_continuation_due_then() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    start(&test, "k", script(vec![op(|id| Op::Step { id }, "a"), sleep("w", MINUTE), op(|id| Op::Step { id }, "b")]))
+        .await;
+    let t0 = test.now();
+    assert_eq!(test.run_until_idle().await, 3, "the start, step a, and the sleep");
+    let until = after(t0, MINUTE);
+    let journal = [saved("a", json!("r-a")), saved_sleep("w", until)];
+    let timer = sleeping(&test, "k", &journal, until).await;
+    assert_eq!((timer.retry, timer.from), (Some(three_attempts()), Some(addr(&run("k")))));
+    assert_eq!(probe.ids(), ["a"], "no closure after the sleep in its turn");
+
+    // Tokio's virtual timer counts whole milliseconds.
+    let ms = Duration::from_millis(1);
+    assert_eq!(test.advance_time_by(MINUTE - ms).await, 0, "no handler runs before the wake time");
+    assert_eq!(test.advance_time_by(ms).await, 2, "step b at the wake time, then the completion");
+    assert_eq!(probe.ids(), ["a", "b"]);
+    let done = state(&test, "k").await;
+    assert_eq!(done.status, FlowStatus::Done);
+    assert_eq!(done.journal, [journal[0].clone(), journal[1].clone(), saved("b", json!("r-b"))]);
+    assert_eq!(outcome(&test, &timer.id).await.unwrap().status, OutcomeStatus::Done);
+}
+
+/// Scenarios: Zero sleep; and Fractional microsecond.
+#[tokio::test(start_paused = true)]
+async fn a_zero_or_sub_microsecond_sleep_still_ends_its_turn_with_a_commit() {
+    for (duration, wait) in [(Duration::ZERO, Duration::ZERO), (Duration::from_nanos(1), MICROSECOND)] {
+        let probe = Probe::default();
+        let test = node(&probe).await;
+        start(&test, "k", script(vec![sleep("w", duration), op(|id| Op::Step { id }, "b")])).await;
+        test.system().run_due_turns(1).await.unwrap();
+        let (t0, version) = (test.now(), test.version(&run("k")).await);
+        test.system().run_due_turns(1).await.unwrap();
+        assert_eq!(test.version(&run("k")).await, version + 1, "{duration:?}: the sleep commits");
+        sleeping(&test, "k", &[saved_sleep("w", after(t0, wait))], after(t0, wait)).await;
+        assert!(probe.ids().is_empty(), "{duration:?}: b waits for the next turn");
+
+        test.advance_time_by(wait).await;
+        assert_eq!(probe.ids(), ["b"], "{duration:?}");
+        assert_eq!(state(&test, "k").await.status, FlowStatus::Done, "{duration:?}");
+    }
+}
+
+/// Scenario: Duration changes in code, also to one that a new sleep may not have.
+#[tokio::test(start_paused = true)]
+async fn a_replayed_sleep_keeps_its_saved_wake_time_when_the_code_changes_its_duration() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    let until = after(test.now(), SLOW);
+    let too_long = MAX_DELAY + SECOND;
+    for (key, duration) in [("shorter", Duration::ZERO), ("longer", SLOW * 24), ("invalid", too_long)] {
+        let code = script(vec![sleep("w", duration), op(|id| Op::Step { id }, "b")]);
+        start_with(&test, key, restored(code, vec![saved_sleep("w", until)])).await;
+    }
+    test.run_until_idle().await;
+    for key in ["shorter", "longer", "invalid"] {
+        sleeping(&test, key, &[saved_sleep("w", until)], until).await;
+    }
+    assert!(probe.ids().is_empty());
+    test.advance_time_by(SLOW).await;
+    for key in ["shorter", "longer", "invalid"] {
+        assert_eq!(state(&test, key).await.status, FlowStatus::Done, "{key}");
+    }
+    assert_eq!(probe.ids(), ["b", "b", "b"]);
+}
+
+/// Scenario: Manual early Continue.
+#[tokio::test(start_paused = true)]
+async fn an_early_public_continue_rearms_the_sleep_at_its_saved_wake_time() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    start(&test, "k", script(vec![sleep("w", MINUTE), op(|id| Op::Step { id }, "b")])).await;
+    test.run_until_idle().await;
+    let timer = armed(&test, "k").await;
+    let until = timer.deliver_at;
+    test.advance_time_by(SECOND * 10).await;
+
+    test.send(&run("k"), FlowMsg::Continue).await;
+    test.system().run_due_turns(1).await.unwrap();
+    assert_eq!(outcome(&test, &timer.id).await.unwrap().status, OutcomeStatus::Cancelled, "the timer is replaced");
+    assert_eq!(armed(&test, "k").await.deliver_at, test.now(), "the normalization arms a continuation due now");
+    assert_eq!(test.run_until_idle().await, 1, "it replays the sleep");
+    let rearmed = sleeping(&test, "k", &[saved_sleep("w", until)], until).await;
+    assert!(rearmed.id != timer.id);
+    assert!(probe.ids().is_empty(), "nothing after the sleep runs early");
+
+    test.advance_time_by(MINUTE).await;
+    assert_eq!(probe.ids(), ["b"]);
+    assert_eq!(state(&test, "k").await.status, FlowStatus::Done);
+}
+
+/// Scenario: Deliver-now.
+#[tokio::test(start_paused = true)]
+async fn a_sleep_timer_delivered_now_rearms_at_the_same_time() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    start(&test, "k", script(vec![sleep("w", MINUTE), op(|id| Op::Step { id }, "b")])).await;
+    test.run_until_idle().await;
+    let timer = armed(&test, "k").await;
+    let until = timer.deliver_at;
+    let DeliverNowResult::Delivered(_) = test.system().deliver_now(&timer.id).await.unwrap() else {
+        panic!("delivered now")
+    };
+    assert_eq!(test.run_until_idle().await, 1);
+    assert_eq!(outcome(&test, &timer.id).await.unwrap().status, OutcomeStatus::Done, "not cancelled by itself");
+    let rearmed = sleeping(&test, "k", &[saved_sleep("w", until)], until).await;
+    assert!(rearmed.id != timer.id);
+    assert!(probe.ids().is_empty());
+    test.advance_time_by(MINUTE).await;
+    assert_eq!(probe.ids(), ["b"]);
+}
+
+/// Scenario: Early redrive, of a cancelled timer under a new id, and a retry of the armed continuation.
+#[tokio::test(start_paused = true)]
+async fn a_redrive_or_retry_before_the_wake_time_rearms_at_the_same_time() {
+    let probe = Probe::default();
+    probe.plan("g", &[Act::Fail]);
+    let test = node(&probe).await;
+    start(&test, "redrive", script(vec![sleep("w", MINUTE), op(|id| Op::Step { id }, "b")])).await;
+    let until = after(test.now(), MINUTE);
+    let code = script(vec![op(|id| Op::Glitch { id }, "g"), sleep("w", MINUTE), op(|id| Op::Step { id }, "b")]);
+    start_with(&test, "retry", restored(code, vec![saved_sleep("w", until)])).await;
+    test.run_until_idle().await;
+
+    let timer = armed(&test, "redrive").await;
+    test.system().cancel(&timer.id).await.unwrap();
+    let RetryResult::Accepted(redriven) = test.system().retry_message(&timer.id).await.unwrap() else {
+        panic!("redriven")
+    };
+    assert_eq!(test.run_until_idle().await, 2, "the redrive normalizes, its continuation replays");
+    assert_eq!(outcome(&test, &redriven.id).await.unwrap().status, OutcomeStatus::Done);
+    sleeping(&test, "redrive", &[saved_sleep("w", until)], until).await;
+
+    let failing = armed(&test, "retry").await;
+    assert_eq!((failing.failures, failing.last_error.as_deref()), (1, Some("the flow glitched")));
+    test.advance_time_by(BACKOFF).await;
+    let record = outcome(&test, &failing.id).await.unwrap();
+    assert_eq!((record.status, record.envelope.attempt), (OutcomeStatus::Done, 2), "retried before the wake time");
+    sleeping(&test, "retry", &[saved_sleep("w", until)], until).await;
+    assert!(probe.ids().is_empty());
+
+    test.advance_time_by(MINUTE).await;
+    assert_eq!(probe.ids(), ["b", "b"]);
+}
+
+/// Scenario: Recovery after a cancelled (or purged) timer.
+#[tokio::test(start_paused = true)]
+async fn a_lost_sleep_timer_stalls_the_run_until_a_public_continue() {
+    for how in ["cancel", "purge"] {
+        let probe = Probe::default();
+        let test = node(&probe).await;
+        start(&test, "k", script(vec![sleep("w", MINUTE), op(|id| Op::Step { id }, "b")])).await;
+        test.run_until_idle().await;
+        let timer = armed(&test, "k").await;
+        match how {
+            "cancel" => drop(test.system().cancel(&timer.id).await.unwrap()),
+            _ => drop(test.system().purge_mailbox(&addr(&run("k"))).await.unwrap()),
+        }
+        assert_eq!(test.advance_time_by(MINUTE * 2).await, 0, "{how}: stalled past the wake time");
+        let held = state(&test, "k").await;
+        assert_eq!((held.journal, held.armed), (vec![saved_sleep("w", timer.deliver_at)], Some(timer.id)), "{how}");
+        assert!(probe.ids().is_empty(), "{how}");
+
+        test.send(&run("k"), FlowMsg::Continue).await;
+        test.run_until_idle().await;
+        assert_eq!(probe.ids(), ["b"], "{how}: the elapsed sleep is replayed, not slept again");
+        assert_eq!(state(&test, "k").await.status, FlowStatus::Done, "{how}");
+    }
+}
+
+/// Scenario: Pause past wake time.
+#[tokio::test(start_paused = true)]
+async fn a_run_paused_past_its_wake_time_continues_when_resumed_without_sleeping_again() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    start(&test, "k", script(vec![sleep("w", MINUTE), op(|id| Op::Step { id }, "b")])).await;
+    test.run_until_idle().await;
+    let until = armed(&test, "k").await.deliver_at;
+    assert!(test.system().pause_mailbox(&addr(&run("k"))).await.unwrap());
+    assert_eq!(test.advance_time_by(MINUTE * 2).await, 0);
+    assert!(probe.ids().is_empty());
+    assert!(test.system().resume_mailbox(&addr(&run("k"))).await.unwrap());
+    assert_eq!(test.run_until_idle().await, 2, "step b, then the completion, at once");
+    let done = state(&test, "k").await;
+    assert_eq!(done.journal, [saved_sleep("w", until), saved("b", json!("r-b"))]);
+    assert_eq!(done.status, FlowStatus::Done);
+}
+
+/// Scenario: Deleted run.
+#[tokio::test(start_paused = true)]
+async fn a_deleted_sleeping_run_loses_its_timer_and_is_not_recreated() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    start(&test, "k", script(vec![sleep("w", MINUTE), op(|id| Op::Step { id }, "b")])).await;
+    test.run_until_idle().await;
+    test.system().delete_actor(&addr(&run("k"))).await.unwrap();
+    assert!(test.pending(&run("k")).await.is_empty(), "the timer is purged");
+    assert_eq!(test.advance_time_by(MINUTE * 2).await, 0);
+    assert!(!test.exists(&run("k")).await);
+    assert!(probe.ids().is_empty());
+}
+
+/// Scenario: Retry after sleep.
+#[tokio::test(start_paused = true)]
+async fn a_failing_step_after_a_sleep_retries_without_sleeping_again() {
+    let probe = Probe::default();
+    probe.plan("b", &[Act::Fail]);
+    let test = node(&probe).await;
+    start(&test, "k", script(vec![op(|id| Op::Step { id }, "a"), sleep("w", MINUTE), op(|id| Op::Step { id }, "b")]))
+        .await;
+    test.run_until_idle().await;
+    let until = armed(&test, "k").await.deliver_at;
+    test.advance_time_by(MINUTE).await;
+    let failed = armed(&test, "k").await;
+    assert_eq!((failed.failures, failed.deliver_at), (1, after(until, BACKOFF)), "the flow's backoff, no new sleep");
+    assert_eq!(test.advance_time_by(BACKOFF).await, 2, "the retry and the completion");
+    assert_eq!(probe.ids(), ["a", "b", "b"], "a is replayed, not run");
+    let done = state(&test, "k").await;
+    assert_eq!(done.journal, [saved("a", json!("r-a")), saved_sleep("w", until), saved("b", json!("r-b"))]);
+}
+
+/// Scenario: Sleep after an abandoned step.
+#[tokio::test(start_paused = true)]
+async fn a_sleep_after_an_abandoned_step_adds_nothing() {
+    let probe = Probe::default();
+    probe.plan("a", &[Act::Slow]);
+    let test = node(&probe).await;
+    start(&test, "k", script(vec![op(|id| Op::Abandon { id }, "a"), sleep("w", MINUTE)])).await;
+    test.run_until_idle().await;
+    refused(&test, "k", "step `a` was abandoned").await;
+    assert!(journal(&test, "k").await.is_empty());
+}
+
+/// Scenario: Swallowed sleep suspension, of a new sleep and of a replayed one not yet due.
+#[tokio::test(start_paused = true)]
+async fn a_swallowed_sleep_suspension_still_controls_the_turn() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    let code = |end| ending(vec![op(|id| Op::SwallowSleep { id }, "w"), op(|id| Op::Step { id }, "b")], end);
+    let t0 = test.now();
+    start(&test, "ok", code(End::Ok)).await;
+    start(&test, "fail", code(End::Fail)).await;
+    let until = after(t0, SLOW);
+    start_with(&test, "replay", restored(code(End::Ok), vec![saved_sleep("w", until)])).await;
+    test.run_until_idle().await;
+    for key in ["ok", "fail"] {
+        sleeping(&test, key, &[saved_sleep("w", after(t0, MINUTE))], after(t0, MINUTE)).await;
+    }
+    sleeping(&test, "replay", &[saved_sleep("w", until)], until).await;
+    assert!(probe.ids().is_empty(), "b is not invoked after a caught suspension");
+}
+
+/// Scenarios: Sleep bounds; Shared id namespace and count; and Wrong operation kind.
+#[tokio::test(start_paused = true)]
+async fn an_invalid_new_sleep_fails_for_good_and_keeps_earlier_progress() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    let x = || op(|id| Op::Step { id }, "x");
+    let full: Vec<JournalEntry> = (0..1000).map(|i| saved(&format!("s{i}"), json!(format!("r-s{i}")))).collect();
+    let cases = [
+        (
+            "too-long",
+            vec![x(), sleep("w", MAX_DELAY + Duration::from_nanos(1))],
+            vec![saved("x", json!("r-x"))],
+            "longer than the most a sleep may last",
+        ),
+        ("repeated", vec![x(), sleep("x", MINUTE)], vec![saved("x", json!("r-x"))], "calls the id `x` twice"),
+        (
+            "kind",
+            vec![x(), sleep("w", MINUTE)],
+            vec![saved("x", json!("r-x")), saved("w", json!("r-w"))],
+            "calls sleep `w` where its journal holds step `w`",
+        ),
+        (
+            "full",
+            vec![Op::Repeat { prefix: "s".into(), count: 1000 }, sleep("w", MINUTE)],
+            full,
+            "sleep `w` would be entry 1001 of a journal that holds at most 1000",
+        ),
+    ];
+    for (key, ops, saved, why) in cases {
+        let before = saved.clone();
+        start_with(&test, key, restored(script(ops), saved)).await;
+        test.run_until_idle().await;
+        refused(&test, key, why).await;
+        assert_eq!(state(&test, key).await.journal, before, "{key}: no new progress");
+    }
+    assert!(probe.keys().is_empty());
 }
