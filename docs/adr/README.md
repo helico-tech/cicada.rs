@@ -43,6 +43,7 @@ accepted ADR is not rewritten: a later one supersedes it. A change that makes a 
 | [0036](0036-register-contracts-without-hosting.md) | A core operation and PUT /types/{name} register contracts without handlers, recomputing hashes and preserving atomic first-registration-wins semantics. |
 | [0037](0037-leasing-turns-outside-the-node.md) | Public core lease, renew and release operations use server policy, conservative handoff deadlines and epoch fencing for trusted external executors. |
 | [0038](0038-completing-leased-turns.md) | Handler reports complete remote turns through one fenced commit attempt; shared server policy returns an explicit failure report after known rejection for safe caller retries. |
+| [0039](0039-workers-over-a-turn-source.md) | Worker reuses the Rust executor over a public TurnSource, with per-turn deadlines, bounded shared capacity, explicit completion retries and independent shutdown. |
 
 ## Design questions
 

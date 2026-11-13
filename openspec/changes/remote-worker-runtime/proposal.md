@@ -18,13 +18,19 @@ needs the same Turn behavior and cancellation discipline as a local node, using 
 - Existing Rust Actor/Turn handlers come first, with a language-neutral protocol for later clients.
 - Renew and complete may reach any server sharing the database; no sticky session or server-local lease owner.
 
-## To decide
+## Further settled decisions
 
-- Public Worker/WorkerConfig and transport APIs; reuse executor and resolver without leaking private Backend types.
-- Conservative monotonic deadlines from request start, including transport delay, retries and late responses.
-- Cancellation versus handler completion, MAX_TURN, shutdown, G6, and renewal during completion.
-- Startup hash checks, dynamic registry reads, observer outcomes after uncertain commits, and bounded concurrency.
-- Report server policy rather than duplicate retry/claim-limit policy in the worker.
+- Public TurnSource uses core types; ActorSystem supplies the reference adapter. No HTTP types or Backend exposure.
+- Private executor/resolver seams reuse handlers and guard/phase behavior; server TTL drives per-turn timing.
+- Manual and background claims reserve the same capacity; stop also drains manual tasks on an unstarted Worker.
+- Completion retains the current report and one fixed budget, including retryable failures receiving a final fallback.
+- Source responses determine actual observer outcomes; unknown completion never authorizes handler re-execution/release.
+
+## Capabilities
+
+### New Capabilities
+
+- `remote-workers`: Rust Worker over a public turn source, with shared execution, deadlines and lifecycle.
 
 ## Out of scope
 
@@ -36,5 +42,5 @@ After `complete-leased-turns`, before `remote-turns-over-http`.
 
 ## Impact
 
-Core worker/runtime/transport and resolver seams, virtual-time behavior and fault tests, core guide and architecture.
+Core worker/runtime/transport and resolver seams, virtual-time behavior and fault tests, core guide, architecture and ADR 0039.
 The direct-store runtime keeps its behavior; this change must prove that before the transport ships over HTTP.
