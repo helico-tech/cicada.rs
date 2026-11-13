@@ -1,4 +1,4 @@
-//! The wire formats of the six ready-made actors (ADR 0028): their contracts against the references in
+//! The wire formats of the seven ready-made actors (ADR 0028): their contracts against the references in
 //! `docs/reference/contracts`, the JSON their messages and states are written as, and sample checks for what the
 //! helpers and the actors write: both the registered schemas and the decoders take it (ADR 0026).
 
@@ -11,10 +11,10 @@ use cicada::contract::Contract;
 use cicada::prelude::*;
 use cicada::{Failed, FailureCause, StopCause, Stopped, WatchTarget};
 use cicada_actors::{
-    Child, DeadLetters, DeadLettersActor, DeadLettersMsg, DeadLettersState, Debouncer, DebouncerActor, DebouncerMsg,
-    DebouncerState, RateLimiter, RateLimiterActor, RateLimiterMsg, RateLimiterState, Schedule, Scheduler,
-    SchedulerActor, SchedulerMsg, SchedulerState, StoredMessage, Supervisor, SupervisorActor, SupervisorMsg,
-    SupervisorState, Topic, TopicActor, TopicMsg, TopicState,
+    Batcher, BatcherActor, BatcherMsg, BatcherState, Child, DeadLetters, DeadLettersActor, DeadLettersMsg,
+    DeadLettersState, Debouncer, DebouncerActor, DebouncerMsg, DebouncerState, RateLimiter, RateLimiterActor,
+    RateLimiterMsg, RateLimiterState, Schedule, Scheduler, SchedulerActor, SchedulerMsg, SchedulerState, StoredMessage,
+    Supervisor, SupervisorActor, SupervisorMsg, SupervisorState, Topic, TopicActor, TopicMsg, TopicState,
 };
 use cicada_axum::{assert_message_sample, assert_state_sample};
 use cicada_test::{TestActors, UPDATE_CONTRACTS_ENV, describe_changes};
@@ -84,7 +84,7 @@ fn check_references(dir: &Path, contracts: &[Contract], update: bool) -> Result<
     }
 }
 
-fn the_six_contracts() -> [Contract; 6] {
+fn the_seven_contracts() -> [Contract; 7] {
     [
         contract_of::<SupervisorActor>().unwrap(),
         contract_of::<DeadLettersActor>().unwrap(),
@@ -92,12 +92,13 @@ fn the_six_contracts() -> [Contract; 6] {
         contract_of::<SchedulerActor>().unwrap(),
         contract_of::<RateLimiterActor>().unwrap(),
         contract_of::<DebouncerActor>().unwrap(),
+        contract_of::<BatcherActor>().unwrap(),
     ]
 }
 
 #[test]
-fn the_contracts_of_the_six_types_match_their_references() {
-    let contracts = the_six_contracts();
+fn the_contracts_of_the_seven_types_match_their_references() {
+    let contracts = the_seven_contracts();
     let names: Vec<&str> = contracts.iter().map(|c| c.type_name().as_str()).collect();
     assert_eq!(
         names,
@@ -107,7 +108,8 @@ fn the_contracts_of_the_six_types_match_their_references() {
             "cicada.topic",
             "cicada.scheduler",
             "cicada.rate-limiter",
-            "cicada.debouncer"
+            "cicada.debouncer",
+            "cicada.batcher"
         ]
     );
     let update = std::env::var(UPDATE_CONTRACTS_ENV).is_ok_and(|v| v == "true");
@@ -324,6 +326,62 @@ fn the_messages_are_written_in_camel_case_and_pass_their_samples() {
     ] {
         assert!(cicada::message::decode::<DebouncerMsg>("Submit", &invalid).is_err(), "{invalid}");
     }
+
+    let batcher = [
+        (BatcherMsg::add(json!({"row": 7})).unwrap(), json!({"type": "Add", "item": {"row": 7}})),
+        (BatcherMsg::add(()).unwrap(), json!({"type": "Add", "item": null})),
+        (BatcherMsg::add("a").unwrap(), json!({"type": "Add", "item": "a"})),
+        (BatcherMsg::Flush, json!({"type": "Flush"})),
+    ];
+    for (message, written) in batcher {
+        assert_eq!(json_of(&message), written);
+        assert_message_sample::<BatcherMsg>(&written);
+    }
+    assert!(cicada::message::decode::<BatcherMsg>("Add", &json!({})).is_err(), "an Add needs its item");
+}
+
+#[test]
+fn a_batcher_state_is_written_in_camel_case_passes_its_samples_and_refuses_invalid_states() {
+    let second = std::time::Duration::from_secs(1);
+    let state = BatcherState::new(&worker("a"), "Items", 3, 10 * second).unwrap();
+    let written = json_of(&state);
+    let settings = json!({"target": "worker/a", "messageType": "Items", "maxItems": 3, "maxWait": "PT10S"});
+    let mut full = settings.clone();
+    full.as_object_mut()
+        .unwrap()
+        .extend(json!({"retry": null, "items": [], "firstAt": null, "armed": null}).as_object().unwrap().clone());
+    assert_eq!(written, full);
+    assert_state_sample::<BatcherState>(&written);
+    assert_state_sample::<BatcherState>(&settings);
+    let with = |extra: Value| {
+        let mut json = settings.clone();
+        json.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        json
+    };
+    let fixed = json!({"maxAttempts": 2, "backoff": {"kind": "fixed", "delay": "PT10S"}});
+    let at = "2026-11-13T02:00:00Z";
+    assert_state_sample::<BatcherState>(&with(
+        json!({"retry": fixed, "items": [1, null], "firstAt": at, "armed": "f1"}),
+    ));
+    assert_state_sample::<BatcherState>(&with(json!({"items": [{"a": 1}], "firstAt": at})));
+    for invalid in [
+        with(json!({"maxItems": 0})),
+        with(json!({"maxItems": 1001})),
+        with(json!({"maxWait": "PT0S"})),
+        with(json!({"maxWait": "P365001D"})),
+        with(json!({"messageType": ""})),
+        with(json!({"messageType": "I".repeat(201)})),
+        with(json!({"target": "not an address"})),
+        with(json!({"items": [1, 2, 3], "firstAt": at})),
+        with(json!({"items": [1]})),
+        with(json!({"firstAt": at})),
+        with(json!({"armed": "f1"})),
+        with(json!({"items": [1], "firstAt": "soon"})),
+        with(json!({"retry": {"maxAttempts": 0, "backoff": fixed["backoff"]}})),
+        json!({"target": "worker/a", "messageType": "Items", "maxItems": 3}),
+    ] {
+        assert!(serde_json::from_value::<BatcherState>(invalid.clone()).is_err(), "{invalid}");
+    }
 }
 
 #[test]
@@ -456,6 +514,7 @@ async fn the_states_the_actors_write_pass_their_samples() {
                 .host(SchedulerActor)
                 .host(RateLimiterActor)
                 .host(DebouncerActor)
+                .host(BatcherActor)
                 .host(WorkerActor)
         })
         .build()
@@ -539,4 +598,22 @@ async fn the_states_the_actors_write_pass_their_samples() {
     let written = test.state_json(&deb).await.unwrap();
     assert_eq!(written, json!({"quiet": "PT1S", "maxWait": "PT5S", "pending": null, "firstAt": null, "armed": null}));
     assert_state_sample::<DebouncerState>(&written);
+
+    let bat = Batcher::named("b");
+    let mut state = BatcherState::new(&worker("a"), "Items", 3, second).unwrap();
+    state.retry = Some(RetryPolicy::new(2, Backoff::fixed(second).unwrap()).unwrap());
+    test.create(&bat, &state).await;
+    test.send(&bat, BatcherMsg::add(json!({"row": 1})).unwrap()).await;
+    test.send(&bat, BatcherMsg::add(()).unwrap()).await;
+    test.run_until_idle().await;
+    let written = test.state_json(&bat).await.unwrap();
+    for key in ["firstAt", "armed"] {
+        assert!(written[key].is_string(), "{key} in {written}");
+    }
+    assert_eq!(written["items"], json!([{"row": 1}, null]), "{written}");
+    assert_state_sample::<BatcherState>(&written);
+    test.advance_time_by(second).await;
+    let written = test.state_json(&bat).await.unwrap();
+    assert_eq!((written["items"].clone(), written["armed"].clone()), (json!([]), Value::Null), "{written}");
+    assert_state_sample::<BatcherState>(&written);
 }

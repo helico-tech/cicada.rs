@@ -1,0 +1,21 @@
+{
+  "target": "worker/a",
+  "messageType": "Items",
+  "maxItems": 3,
+  "maxWait": "PT10S",
+  "retry": {
+    "maxAttempts": 2,
+    "backoff": {
+      "kind": "fixed",
+      "delay": "PT10S"
+    }
+  },
+  "items": [
+    {
+      "row": 1
+    },
+    null
+  ],
+  "firstAt": "2026-10-03T12:00:00Z",
+  "armed": "f1"
+}

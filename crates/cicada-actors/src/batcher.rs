@@ -109,6 +109,7 @@ struct RawState {
     target: ActorAddress,
     /// The message type of each batch, whose payload is `{"items": [...]}`; not empty, at most `MAX_TYPE_LENGTH`
     /// characters, without NUL. The target's registry is checked only when a batch is sent.
+    #[schemars(length(min = 1, max = 200))]
     message_type: String,
     /// The items that make a batch full; 1 through 1000. A full batch is sent at once, so a state holds fewer.
     #[schemars(range(min = 1, max = 1000))]

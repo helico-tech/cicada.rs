@@ -8,7 +8,7 @@
   count 1, timers, ordered items/null, same-time sequence orders, absent-target rollback and redriven Add, timer loss,
   restored nonempty state without armed, manual/stale Flush, depth boundaries, creation and target envelope policies.
   Extend the existing SQLite registry-failure fixture if needed. Run the batcher and store-failure integration tests.
-- [ ] 3. Add message/state samples and contract references in `tests/wire_formats.rs`; register the type without
+- [x] 3. Add message/state samples and contract references in `tests/wire_formats.rs`; register the type without
   instances in the sample service. Regenerate and commit actor references and sample-service contract snapshots/texts
   with `CICADA_UPDATE_CONTRACTS=true`. Verify wire-format and sample-service contract/sample tests and ensure no
   existing contract changes.

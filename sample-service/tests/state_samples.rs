@@ -9,8 +9,8 @@ use cicada::retry::{Backoff, RetryPolicy};
 use cicada::store::MessageId;
 use cicada::time::Timestamp;
 use cicada_actors::{
-    DeadLetter, DeadLettersState, DebouncedMessage, DebouncerState, RateLimiterState, Schedule, SchedulerState,
-    StoredMessage,
+    BatcherState, DeadLetter, DeadLettersState, DebouncedMessage, DebouncerState, RateLimiterState, Schedule,
+    SchedulerState, StoredMessage,
 };
 use cicada_examples::cron::CronState;
 use cicada_examples::timer::{CheckoutState, CheckoutStatus};
@@ -98,6 +98,23 @@ fn debouncer() {
     };
     record_state_sample(&dir, "pending", &state);
     assert_state_decodes::<DebouncerState>(&dir);
+}
+
+#[test]
+fn batcher() {
+    let dir = dir("batcher");
+    let state = BatcherState {
+        target: cicada::ActorAddress::parse("worker/a").unwrap(),
+        message_type: "Items".into(),
+        max_items: 3,
+        max_wait: std::time::Duration::from_secs(10),
+        retry: Some(RetryPolicy::new(2, Backoff::fixed(std::time::Duration::from_secs(10)).unwrap()).unwrap()),
+        items: vec![json!({"row": 1}), json!(null)],
+        first_at: Some(t()),
+        armed: Some(MessageId::new("f1").unwrap()),
+    };
+    record_state_sample(&dir, "pending", &state);
+    assert_state_decodes::<BatcherState>(&dir);
 }
 
 /// The samples of the dead letters start again with 0.14.0: their contract changed, and the letters of 0.13.0 are lost

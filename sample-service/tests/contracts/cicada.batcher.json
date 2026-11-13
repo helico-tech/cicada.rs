@@ -1,0 +1,180 @@
+{
+  "messages": {
+    "Add": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Appends one item, any JSON value, `null` included. The first item of a batch arms a `Flush` at the longest wait;\nan item that fills the batch, or that comes at or after that deadline, sends the batch with it in this turn.",
+      "properties": {
+        "item": {
+          "description": "The item."
+        }
+      },
+      "required": [
+        "item"
+      ],
+      "title": "Add",
+      "type": "object"
+    },
+    "Flush": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Sends the items held to the target, cancels the armed flush and clears the batch, in one commit; with nothing\nheld it does nothing. Anyone may send it: the armed timer, or an operator who delivers early or recovers a\nflush that failed. It sends what is held when it runs, not what was held when it was sent.",
+      "properties": {},
+      "title": "Flush",
+      "type": "object"
+    }
+  },
+  "state": {
+    "$defs": {
+      "Backoff": {
+        "oneOf": [
+          {
+            "properties": {
+              "factor": {
+                "default": 2.0,
+                "minimum": 1,
+                "type": "number"
+              },
+              "initial": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ]
+              },
+              "kind": {
+                "const": "exponential",
+                "type": "string"
+              },
+              "max": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "initial",
+              "max"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "delay": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ]
+              },
+              "kind": {
+                "const": "fixed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "delay"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "RetryPolicy": {
+        "properties": {
+          "backoff": {
+            "$ref": "#/$defs/Backoff"
+          },
+          "maxAttempts": {
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "maxAttempts",
+          "backoff"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "The state of a [`Batcher`]: its target, message type, count limit, longest wait and target retry policy, fixed at\nits create, and the batch it holds. Build it with `BatcherState::new`; a decoded state is checked the same way.\n\nOn the wire: `{\"target\":\"indexer/_\",\"messageType\":\"Index\",\"maxItems\":100,\"maxWait\":\"PT5S\"}`, with `retry`, and\n`items`, `firstAt` and `armed` while it holds a batch.",
+    "properties": {
+      "armed": {
+        "description": "The id of the armed `Flush`; absent or null between batches, and may be absent while items are held.",
+        "minLength": 1,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "firstAt": {
+        "description": "The store time the first item of the batch was handled; present exactly while items are held.",
+        "format": "date-time",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "items": {
+        "default": [],
+        "description": "The items held, in handling order; fewer than `maxItems`; absent: none.",
+        "items": true,
+        "type": "array"
+      },
+      "maxItems": {
+        "description": "The items that make a batch full; 1 through 1000. A full batch is sent at once, so a state holds fewer.",
+        "format": "uint32",
+        "maximum": 1000,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "maxWait": {
+        "description": "The longest time from the first item of a batch to its scheduled flush, as an ISO-8601 duration; positive and\nat most `MAX_DELAY`.",
+        "type": "string"
+      },
+      "messageType": {
+        "description": "The message type of each batch, whose payload is `{\"items\": [...]}`; not empty, at most `MAX_TYPE_LENGTH`\ncharacters, without NUL. The target's registry is checked only when a batch is sent.",
+        "maxLength": 200,
+        "minLength": 1,
+        "type": "string"
+      },
+      "retry": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/RetryPolicy"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The retry policy of each batch at the target; absent or null: one attempt."
+      },
+      "target": {
+        "description": "The target of each batch.",
+        "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+        "type": "string"
+      }
+    },
+    "required": [
+      "target",
+      "messageType",
+      "maxItems",
+      "maxWait"
+    ],
+    "title": "BatcherState",
+    "type": "object"
+  },
+  "type": "cicada.batcher"
+}
