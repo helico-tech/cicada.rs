@@ -35,6 +35,7 @@ accepted ADR is not rewritten: a later one supersedes it. A change that makes a 
 | [0028](0028-the-ready-made-actors.md) | The ready-made actors: a `Failed` holds its cause, a turn creates an actor by its address, a supervisor restarts a child at fault once per incident by the order of its own mailbox and escalates by failing a message of its own (as a handler for too many restarts, refused for good for a child it cannot start), a stored message holds no address, and a topic delivers to each subscriber in a turn of its own. |
 | [0029](0029-the-depth-of-a-value.md) | The depth of a value: a payload and a state hold at most 64 levels, refused like the other limits of a value (before the repeated id and the schema check over HTTP, at the call in a turn, as a failed turn for a new state, and at an operator's retry, `409`); values stored before are read as before; a `Failed` can be one level deeper. |
 | [0030](0030-three-loops.md) | Three loops, each in a session of its own: design with the owner, build in a worktree, and review in any agent harness, handing over through files (`scripts/status.py`, `scripts/review.py`); changes are small, the builder runs targeted tests, reviews read rather than run the suite, and only blocking findings start one fix round. |
+| [0031](0031-durable-flows.md) | Host-named flow actors replay an ordered journal, commit one new step per turn, recover through an armed continuation and retain completed runs; external effects remain at least once, and the first journal contract includes durable sleep. |
 
 ## Design questions
 
