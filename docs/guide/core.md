@@ -785,7 +785,8 @@ match msg {
 ```
 
 A cron actor arms its next tick the same way; `Schedule` of the ready-made actors gives it the next slot (see
-[Schedules](actors.md#schedules)).
+[Schedule](actors.md#schedule)), and the ready-made [scheduler](actors.md#scheduler) sends a stored message on each slot
+with no host code.
 
 ## Observers
 

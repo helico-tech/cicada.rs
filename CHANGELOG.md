@@ -7,6 +7,23 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.16.1 — unreleased
+
+Nothing breaks: a new ready-made actor, the scheduler. A node that hosts it registers its contract at its first start;
+nothing changes for the other nodes, and no schema of the store changes.
+
+### Added
+
+- The scheduler (`SchedulerActor`, `cicada.scheduler`, one instance for each schedule, built with
+  `Scheduler::named`): on each slot of its `Schedule` it sends a stored message to a target. The schedule, the target,
+  the message and a retry policy for the delivered message are in its state (`SchedulerState::new` builds one from a
+  typed ref and a message of its family), so an operator creates and edits a schedule at runtime. `Start` arms the
+  chain, `Run` sends now, `Update` replaces the schedule, the target, the message or the retry policy and keeps the
+  counts; pause, resume and delete are the core's control. A delivery for a slot carries the header `cicada-slot`
+  (`2026-11-13T02:00:00Z`). A target that is gone, or a message it does not take, fails that run alone, and missed
+  slots are skipped. Its contract is in `docs/reference/contracts/cicada.scheduler.json`; the actors guide,
+  "Scheduler", has its rules. The sample service hosts it.
+
 ## 0.16.0 — 2026-11-12
 
 A breaking release: a payload and a state hold at most 64 levels of arrays and objects (ADR 0029). A deeper value

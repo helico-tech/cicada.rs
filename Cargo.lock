@@ -469,7 +469,7 @@ dependencies = [
 
 [[package]]
 name = "cicada"
-version = "0.16.0"
+version = "0.16.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -492,7 +492,7 @@ dependencies = [
 
 [[package]]
 name = "cicada-actors"
-version = "0.16.0"
+version = "0.16.1"
 dependencies = [
  "cicada",
  "cicada-axum",
@@ -508,7 +508,7 @@ dependencies = [
 
 [[package]]
 name = "cicada-app"
-version = "0.16.0"
+version = "0.16.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -539,7 +539,7 @@ dependencies = [
 
 [[package]]
 name = "cicada-axum"
-version = "0.16.0"
+version = "0.16.1"
 dependencies = [
  "aide",
  "async-trait",
@@ -559,7 +559,7 @@ dependencies = [
 
 [[package]]
 name = "cicada-client"
-version = "0.16.0"
+version = "0.16.1"
 dependencies = [
  "axum",
  "cicada",
@@ -576,7 +576,7 @@ dependencies = [
 
 [[package]]
 name = "cicada-e2e"
-version = "0.16.0"
+version = "0.16.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -593,7 +593,7 @@ dependencies = [
 
 [[package]]
 name = "cicada-examples"
-version = "0.16.0"
+version = "0.16.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -616,7 +616,7 @@ dependencies = [
 
 [[package]]
 name = "cicada-otel"
-version = "0.16.0"
+version = "0.16.1"
 dependencies = [
  "cicada",
  "cicada-test",
@@ -630,7 +630,7 @@ dependencies = [
 
 [[package]]
 name = "cicada-sample-service"
-version = "0.16.0"
+version = "0.16.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -659,7 +659,7 @@ dependencies = [
 
 [[package]]
 name = "cicada-test"
-version = "0.16.0"
+version = "0.16.1"
 dependencies = [
  "anyhow",
  "async-trait",

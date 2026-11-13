@@ -46,7 +46,7 @@ tests of `cicada-actors`, as those of the topic and the supervisor do.
 
 ## 3. Docs
 
-- [ ] 3.1 The actors guide [9]: the section "Schedules" becomes "Scheduler", with doctests: the actor and its state,
+- [x] 3.1 The actors guide [9]: the section "Schedules" becomes "Scheduler", with doctests: the actor and its state,
       its messages, the header `cicada-slot` and its form, the retry policy of the delivered message (one attempt for
       none), a client's `Run` without a slot, two deliveries close together after a `Run` before a slot, a target that
       is gone (pause or delete the scheduler; the cost for the dead letters), the ways a chain ends and `Start` as the
@@ -55,7 +55,7 @@ tests of `cicada-actors`, as those of the topic and the supervisor do.
       `docs/architecture.md` (the row of `cicada-actors`), `AGENTS.md` (the map), `README.md` (the table of actors).
       Verify: `cargo test -p cicada-examples --doc` and `cargo test -p cicada-examples --test docs` pass, and every
       risk of `design.md` that names the guide is in it.
-- [ ] 3.2 `CHANGELOG.md`, a section `0.16.1 — unreleased` that names the new actor and that nothing breaks; the version
+- [x] 3.2 `CHANGELOG.md`, a section `0.16.1 — unreleased` that names the new actor and that nothing breaks; the version
       `0.16.1` in `Cargo.toml`, `Cargo.lock` updated by `cargo check`, and `docs/openapi.json` regenerated with
       `CICADA_UPDATE_OPENAPI=true`. Verify: the versions agree and the OpenAPI test passes without the variable.
 

@@ -6,7 +6,7 @@ to work.
 
 | Crate | Contents |
 | --- | --- |
-| `cicada-actors` | Ready-made actors on the public API, each under a fixed type name: a supervisor (`SupervisorActor`), dead letters (`DeadLettersActor`) and a topic (`TopicActor`); `StoredMessage` and `Schedule`. |
+| `cicada-actors` | Ready-made actors on the public API, each under a fixed type name: a supervisor (`SupervisorActor`), dead letters (`DeadLettersActor`), a topic (`TopicActor`) and a scheduler (`SchedulerActor`); `StoredMessage` and `Schedule`. |
 
 The Rust blocks of this guide are doctests of the `examples` crate (`cargo test -p cicada-examples --doc`).
 
@@ -18,15 +18,16 @@ a node hosts it like any other type, and the host creates its instances.
 | `SupervisorActor` | `cicada.supervisor` | any name | Starts its children, watches them, and restarts one that is at fault. |
 | `DeadLettersActor` | `cicada.dead-letters` | any name, `_` by convention | Keeps failed messages, told of them by a watch; an operator redrives or discards one. |
 | `TopicActor` | `cicada.topic` | the name of the topic | Sends each published message to all of its subscribers. |
+| `SchedulerActor` | `cicada.scheduler` | the name of the schedule | Sends a stored message to a target on each slot of a `Schedule`. |
 
 A message that one of them keeps to send later is a `StoredMessage`: a type name and a JSON payload,
 `{"type": …, "payload": …}`. The actor knows where it goes, so it holds no address. `StoredMessage::for_ref(&worker,
 WorkerMsg::Begin { batch: 7 })` builds one from a typed ref and a message, so a message of the wrong family does not
-compile. The contracts of the three types are wire formats; their references in
+compile. The contracts of the four types are wire formats; their references in
 [docs/reference/contracts](../reference/contracts/) pin them, doc comments included.
 
 Their states and messages are checked like any other, against the depth limit of 64 levels too
-([How deep a value can be](core.md#how-deep-a-value-can-be)). As they hold values three or four levels down, they keep
+([How deep a value can be](core.md#how-deep-a-value-can-be)). As they hold values two to four levels down, they keep
 values of at most 60 to 62 levels; each section says how much, and what to do about a deeper value stored before
 0.16.0.
 
@@ -218,12 +219,125 @@ system.send_with(&orders, shipped, SendOptions::new().correlation_id("c1")).awai
   levels makes the `Publish` too deep: the send of the publisher is refused at the call. A `Publish` stored before
   0.16.0 with such a payload fails, as its `Deliver` is refused at the call; the topic goes on with the next message.
 
-## Schedules
+## Scheduler
+
+`SchedulerActor` sends a stored message to a target on each slot of a `Schedule`, one instance for each schedule. The
+type has no settings: the schedule, the target, the message and a retry policy for the delivered message are in the
+state, so an operator creates and edits a schedule at runtime, over HTTP or on the command line, with no deploy.
+
+<!-- doctest
+# use cicada::prelude::*;
+# use serde::{Deserialize, Serialize};
+# #[derive(Debug, Clone, Serialize, Deserialize)]
+# struct Reports;
+# impl ActorRef for Reports { const TYPE: &'static str = "reports"; type Message = ReportsMsg; }
+# #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+# #[serde(tag = "type")]
+# enum ReportsMsg { Build { full: bool } }
+@@4
+# async fn schedule(system: ActorSystem) -> Result<(), Box<dyn std::error::Error>> {
+@@5
+# Ok(())
+# }
+-->
+```rust
+use std::time::Duration;
+use cicada::retry::{Backoff, RetryPolicy};
+use cicada_actors::{Schedule, Scheduler, SchedulerMsg, SchedulerState};
+
+let nightly = Scheduler::named("nightly-report"); // hosted as SchedulerActor
+let mut state = SchedulerState::new(Schedule::daily(2, 0)?, &Reports, ReportsMsg::Build { full: true })?;
+state.retry = Some(RetryPolicy::new(3, Backoff::fixed(Duration::from_secs(300))?)?);
+system.create(&nightly, &state).await?;
+system.send(&nightly, SchedulerMsg::Start).await?;
+```
+
+`SchedulerState::new` takes a typed ref and a message of its family, so a message the target does not take does not
+compile. Over HTTP a schedule takes two calls, a create and a `Start` (a turn does both in one commit, as its creates
+come before its sends):
+
+```sh
+curl -X PUT localhost:8080/actors/cicada.scheduler/nightly-report -H 'content-type: application/json' -d '{"state":
+  {"schedule": {"type": "daily", "hour": 2, "minute": 0}, "target": "reports/_",
+   "message": {"type": "Build", "payload": {"full": true}},
+   "retry": {"maxAttempts": 3, "backoff": {"kind": "fixed", "delay": "PT5M"}}}}'
+curl -X POST localhost:8080/actors/cicada.scheduler/nightly-report/messages -H 'content-type: application/json' \
+  -d '{"type": "Start"}'
+```
+
+The state also holds `nextRun` (the slot of the armed tick), `armedTick` (its id), `runs` (the deliveries that reached
+the target's mailbox) and `lastRun` (the store's time of the run that sent the last of them). A scheduler is
+**started** when `armedTick` is set; no slot delivers before a `Start`.
+
+- **Its messages.** `Start` arms a tick at the next slot; it is safe to repeat, as one tick stays armed. `Run` sends the
+  stored message to the target now and keeps the armed tick, also on a scheduler that was never started. `Update`
+  replaces each of `schedule`, `target`, `message` and `retry` that it gives and keeps the counts, as
+  `{"type": "Update", "payload": {"message": {"type": "Build", "payload": {"full": false}}}}`. A new schedule on a
+  started scheduler cancels the armed tick and arms the new schedule's next slot; a new target, message or retry policy
+  counts from the next `Run`, also one that is already waiting. Pause, resume and delete a scheduler with the core's
+  control: there are no messages for them.
+- **Each slot takes two turns.** The `Tick` arms the next tick and sends the scheduler a `Run` with its slot; the
+  `Run` reads the target, the message and the retry policy from the state and sends the message. The `Tick` is the
+  scheduler's own: from anybody else, or when it is not the armed tick, it ends `done` and changes nothing. A schedule
+  every second is two turns a second.
+- **What the target gets.** The stored message, with the scheduler as its sender, no correlation id and a new id for
+  each run. It carries the scheduler's retry policy (`retry`), so a failed run of the target is tried again after its
+  backoff instead of waiting for the next slot; with none, or a policy of one attempt, a failed run ends `failed` at
+  the target. A `Run` that commits puts exactly one message into the target's mailbox; the target handles it at least
+  once. A target slower than its schedule never runs two deliveries at once: they wait in its mailbox, and none is
+  skipped.
+- **The slot.** A run for a slot carries the header `cicada-slot`: the slot in UTC to the second, as
+  `2026-11-13T02:00:00Z`. The target knows which slot it handles also when the tick was late. The name and the form of
+  the header are stable. The payload is the same on every slot, so a target keys its work by the slot, or by the
+  message id:
+
+<!-- doctest
+# use cicada::prelude::*;
+# fn key<A: Actor>(turn: &Turn<A>) -> String {
+@@4
+# key
+# }
+-->
+```rust
+let key = match turn.message().headers.get("cicada-slot") {
+    Some(slot) => slot.clone(), // "2026-11-13T02:00:00Z": a run for a slot
+    None => turn.message().id.as_str().to_owned(), // a run now, which has no slot
+};
+```
+
+- **A run now.** A client sends `{"type": "Run"}`, without a slot: the slot belongs to the scheduler, and a target that
+  keys its work by the slot would drop the real run of a slot that a client made up. Such a run has no `cicada-slot`
+  header. A `Run` just before a slot gives two deliveries close together.
+- **Missed slots are skipped.** A tick arms the next one at the first slot after the later of the store's time and
+  its own slot. Slots missed while no node ran, or while the scheduler was paused, are skipped: at the resume a late
+  tick delivers once, and the next tick goes to the next slot from then. A tick that an operator makes due early
+  (`deliver-now`) delivers its slot once, and the next tick goes to the slot after it.
+- **A failed delivery does not end the chain.** A target that is gone fails that `Run` with the cause `commit`; a
+  message its type does not take fails it with `refused`; the next slot delivers as usual. A `Run` whose read of the
+  store fails is tried again (7 attempts, the waits doubling from one second). A failed `Run` is a failed message of
+  the scheduler: its watchers are told, dead letters that watch it keep it, and an operator's retry or a redrive of
+  the dead letters delivers it again. The scheduler records no failure in its state and watches nothing.
+- **A target that is gone fails every slot** until an operator pauses the scheduler, deletes it, or creates the target
+  again; the scheduler does not stop by itself. With `every(60)` that is 1,440 failed messages a day, and dead letters
+  that watch the scheduler keep 1,000 by default and drop the oldest first: one forgotten scheduler pushes other
+  failures out within a day. Pause or delete such a scheduler.
+- **How a chain ends.** A chain ends when its armed tick goes without running: a purge of the scheduler's mailbox, an
+  operator's cancel of the tick, or a tick that fails for good (the claim limit). Only the last tells the scheduler's
+  watchers, and `armedTick` stays set in each case. A retry or a redrive of a failed tick ends `done` and arms
+  nothing. `Start`, or an `Update` with a schedule, arms the chain again.
+- **A scheduler that runs itself**, with itself as its target and `Run` as its message, runs without end until it is
+  paused. It is not refused; do not set one up.
+- **How deep.** The state holds the payload of its message two levels down, and so does an `Update` that sets a
+  message. A payload deeper than 62 levels is refused: at the create of the scheduler (`400` over HTTP,
+  `OpError::Invalid` from code), and at the send of the `Update`.
+
+### Schedule
 
 `cicada_actors::Schedule` (`Schedule::every(seconds)`, aligned to the epoch, and `Schedule::daily(hour, minute)`,
-UTC) gives a cron actor its next slot; it is serializable, so it can live in state. A cron actor arms its next tick
-as a timer ([Timers](core.md#timers) in the core guide). See [examples/src/cron.rs](../../examples/src/cron.rs) for
-the `Tick` chain:
+UTC) gives the scheduler, or a cron actor of the host, its next slot; it is serializable, so it can live in state. A
+cron actor that does host work in its own turn arms its next tick as a timer ([Timers](core.md#timers) in the core
+guide); [examples/src/cron.rs](../../examples/src/cron.rs) is that `Tick` chain. Cron expressions and time zones are
+not supported:
 
 ```rust
 use cicada::time::Timestamp;
