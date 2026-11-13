@@ -12,7 +12,7 @@
   cancellation before COMMIT, queued/in-flight COMMIT, commit errors, confirmed rollback, no double publication,
   settlement before resync/read, next-writer exclusion and close. Test same-Store clones and the documented boundary
   at separate file opens. Run targeted SQLite tests and `cargo check -p cicada --features sqlite`.
-- [ ] 3. Add PostgreSQL transactional batch collection/encoding and one parameterized flush for wake-ups plus feed.
+- [x] 3. Add PostgreSQL transactional batch collection/encoding and one parameterized flush for wake-ups plus feed.
   Map COMMIT-time SQLSTATE 54000 to Unavailable; retain other error mappings and retry classification. Refactor the
   listener to typed source events, disable eager_reconnect, gate Up on successful LISTEN, and serialize start/close.
   Test valid/malformed/noncanonical payloads, ordinary wake-up/probe isolation, thresholds, fresh retry collectors,

@@ -192,6 +192,10 @@ async fn wake_ups_follow_enqueues_sends_and_releases_of_the_requested_types_on_a
     let writer = db.open().await;
     let (mut received, collector) = collect_wake_ups(&listening, type_name());
     wait_listening(&listening).await;
+    assert!(
+        some_within(&mut received, Duration::from_secs(10)).await,
+        "the first LISTEN wakes: what came before is lost"
+    );
     let short = Duration::from_millis(300);
     let long = Duration::from_secs(2);
 
@@ -251,6 +255,10 @@ async fn the_wake_up_listener_reconnects_after_losing_its_connection() {
     let writer = db.open().await;
     let (mut received, collector) = collect_wake_ups(&listening, type_name());
     wait_listening(&listening).await;
+    assert!(
+        some_within(&mut received, Duration::from_secs(10)).await,
+        "the first LISTEN wakes: what came before is lost"
+    );
 
     // Kill the listener's backend, as a database restart or a network failure would. Only this test's listener: it
     // is the one that listens on this test's channel.
@@ -340,6 +348,10 @@ async fn a_resume_by_a_commit_wakes_the_nodes_of_the_type_and_a_pause_does_not()
     let writer = db.open().await;
     let (mut received, collector) = collect_wake_ups(&listening, type_name());
     wait_listening(&listening).await;
+    assert!(
+        some_within(&mut received, Duration::from_secs(10)).await,
+        "the first LISTEN wakes: what came before is lost"
+    );
     let short = Duration::from_millis(300);
     let long = Duration::from_secs(2);
     let a = addr("pg/a");

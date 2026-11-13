@@ -3,6 +3,7 @@
 
 pub(crate) mod common;
 
+mod changes;
 mod robustness;
 mod runtime;
 mod store;

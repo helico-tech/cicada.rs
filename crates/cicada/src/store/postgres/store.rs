@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crate::address::{ActorAddress, TypeName};
-use crate::change::{ChangeHub, SourceState};
+use crate::change::{ChangeCollector, ChangeHub, HubItem, SourceState};
 use crate::retention::Retention;
 use crate::retry::RetryPolicy;
 use crate::store::support::{self, Notice, Removal, check_limit};
@@ -32,7 +32,7 @@ use sqlx::{AssertSqlSafe, PgPool, Postgres, Row};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::store::postgres::config::PostgresOptions;
-use crate::store::postgres::error::{is_transient, map_error};
+use crate::store::postgres::error::{is_transient, map_error, sql_state};
 use crate::store::postgres::listener::NotificationListener;
 use crate::store::postgres::schema;
 
@@ -126,12 +126,19 @@ macro_rules! transaction {
 /// write committed. [`Backend::wake_ups`] listens on one dedicated connection, started on first use and re-connected
 /// with back-off when it breaks.
 ///
+/// **Change hints** (ADR 0034). A transaction that creates, removes, pauses or resumes an instance, or writes its state,
+/// sends one more payload on the same channel: `@` and the addresses it changed, separated by single spaces, or `@`
+/// alone when they are more than 100 or 7,998 bytes. Every pending payload goes in one `pg_notify` statement right
+/// before `COMMIT`, so a rollback sends none and a re-run starts empty. Payloads that start with `@` are the feed's;
+/// wake-ups ignore them. [`Backend::changes`] starts the same listener, whose hub is up only after `LISTEN` succeeded.
+///
 /// **JSON.** State, payloads, headers, contracts and envelopes are `jsonb`, which normalises objects (key order,
 /// duplicate keys) and rejects the escape `\u0000` in strings.
 ///
 /// **Errors.** Values PostgreSQL refuses (SQLSTATE classes `22` and `54`, e.g. a NUL character or an id too long for
 /// its index) are [`StoreError::Invalid`]; stored data that cannot be decoded is [`StoreError::Corrupt`]; everything
-/// else, including a closed store, is [`StoreError::Unavailable`].
+/// else, including a closed store and a `COMMIT` that fails because the notification queue is full (`54000`), is
+/// [`StoreError::Unavailable`].
 ///
 /// The store owns its pool and listener; [`Backend::close`] releases them.
 pub struct PostgresStore {
@@ -141,7 +148,11 @@ pub struct PostgresStore {
     channel: String,
     listener: NotificationListener,
     closed: AtomicBool,
+    /// The change hints of every upgraded node on this schema, fed by the listener.
     hub: Arc<ChangeHub>,
+    /// Makes the next attempt that would commit roll back and run again, as after a deadlock, for the tests.
+    #[cfg(test)]
+    pub(crate) rerun_next_commit: AtomicBool,
 }
 
 impl std::fmt::Debug for PostgresStore {
@@ -189,7 +200,9 @@ impl PostgresStore {
             return Err(e);
         }
         let channel = config.effective_channel();
-        let listener = NotificationListener::new(channel.clone(), base.application_name("cicada-listener"));
+        let hub = Arc::new(ChangeHub::new(SourceState::Down));
+        let listener =
+            NotificationListener::new(channel.clone(), base.application_name("cicada-listener"), hub.clone());
         Ok(Self {
             pool,
             retention: config.retention,
@@ -197,7 +210,9 @@ impl PostgresStore {
             channel,
             listener,
             closed: AtomicBool::new(false),
-            hub: Arc::new(ChangeHub::new(SourceState::Down)),
+            hub,
+            #[cfg(test)]
+            rerun_next_commit: AtomicBool::new(false),
         })
     }
 
@@ -219,7 +234,14 @@ impl PostgresStore {
     /// A transaction at `READ COMMITTED` on a pooled connection.
     async fn begin(&self, read_only: bool) -> Result<Tx, TxError> {
         let c = self.pool.acquire().await?;
-        let mut tx = Tx { c, now: None, notify: Vec::new(), retention: self.retention, open: true };
+        let mut tx = Tx {
+            c,
+            now: None,
+            notify: Vec::new(),
+            changes: ChangeCollector::default(),
+            retention: self.retention,
+            open: true,
+        };
         let begin = if read_only {
             "BEGIN ISOLATION LEVEL READ COMMITTED READ ONLY"
         } else {
@@ -237,7 +259,7 @@ impl PostgresStore {
         tokio::time::timeout(self.socket_timeout, work).await.unwrap_or(Err(TxError::TimedOut))
     }
 
-    /// Ends `tx` as `outcome` asks: commit (sending the collected wake-ups with it) or roll back.
+    /// Ends `tx` as `outcome` asks: commit (sending the collected wake-ups and change hints with it) or roll back.
     async fn end<T>(&self, tx: &mut Tx, outcome: TxResult<T>) -> Result<T, TxError> {
         let (result, commit) = match outcome {
             Err(TxError::TimedOut) => return Err(TxError::TimedOut), // the connection is busy: it is closed instead
@@ -245,11 +267,23 @@ impl PostgresStore {
             Ok(Done::Rollback(result)) => (Ok(result), false),
             Err(e) => (Err(e), false),
         };
+        #[cfg(test)]
+        if commit && self.rerun_next_commit.swap(false, Ordering::SeqCst) {
+            sqlx::raw_sql("ROLLBACK").execute(&mut *tx.c).await?;
+            tx.open = false;
+            return Err(TxError::Again("a re-run of a test".into()));
+        }
         if commit {
-            for type_name in std::mem::take(&mut tx.notify) {
-                sqlx::query("SELECT pg_notify($1, $2)").bind(&self.channel).bind(type_name).execute(&mut *tx.c).await?;
+            let mut payloads = std::mem::take(&mut tx.notify);
+            payloads.extend(tx.changes.take().map(|batch| batch.encode()));
+            if !payloads.is_empty() {
+                sqlx::query("SELECT pg_notify($1, payload) FROM unnest($2::text[]) AS payload")
+                    .bind(&self.channel)
+                    .bind(&payloads)
+                    .execute(&mut *tx.c)
+                    .await?;
             }
-            sqlx::raw_sql("COMMIT").execute(&mut *tx.c).await?;
+            sqlx::raw_sql("COMMIT").execute(&mut *tx.c).await.map_err(commit_error)?;
         } else {
             sqlx::raw_sql("ROLLBACK").execute(&mut *tx.c).await?;
         }
@@ -316,11 +350,13 @@ fn connect_options(url: &str) -> StoreResult<PgConnectOptions> {
 
 // ---- transactions ----
 
-/// One transaction: its connection, its clock reading and the wake-ups to send at commit.
+/// One transaction: its connection, its clock reading, and the wake-ups and change hints to send at commit. A re-run
+/// is a new `Tx`, so a failed attempt's hints never reach a later one.
 struct Tx {
     c: PoolConnection<Postgres>,
     now: Option<Timestamp>,
     notify: Vec<String>,
+    changes: ChangeCollector,
     retention: Duration,
     /// A transaction is open on `c` that was neither committed nor rolled back yet.
     open: bool,
@@ -350,6 +386,24 @@ impl Tx {
             self.notify.push(type_name);
         }
     }
+
+    /// Reports the instance at `addr` to the change feed when the transaction commits; an address that does not parse
+    /// (a corrupt row) turns the transaction's hints into a resync.
+    fn changed(&mut self, addr: &str) {
+        match ActorAddress::parse(addr) {
+            Ok(address) => self.changes.add(&address),
+            Err(_) => self.changes.overflow(),
+        }
+    }
+}
+
+/// The error of a `COMMIT`: a full notification queue (SQLSTATE `54000`, raised at commit) is an unavailable store,
+/// not refused data as other class-`54` errors of a statement are.
+fn commit_error(e: sqlx::Error) -> TxError {
+    if sql_state(&e).as_deref() == Some("54000") {
+        return TxError::Store(StoreError::Unavailable(Box::new(e)));
+    }
+    TxError::Sql(e)
 }
 
 /// How a transaction ends: committed, or rolled back while still returning a result.
@@ -696,6 +750,7 @@ async fn create_in(tx: &mut Tx, address: &ActorAddress, state: &Value) -> Result
         .execute(&mut *tx.c)
         .await?;
         if inserted.rows_affected() == 1 {
+            tx.changes.add(address);
             return Ok(CreateResult::Created);
         }
         // The conflicting row is committed now (READ COMMITTED: the next statement sees it) unless it was deleted again
@@ -734,6 +789,9 @@ async fn create_and_lock(
                 .fetch_optional(&mut *tx.c)
                 .await?;
         if let Some((t, parent)) = row {
+            if inserted {
+                tx.changes.add(&create.address);
+            }
             return Ok((t, parent, inserted));
         }
     }
@@ -764,6 +822,7 @@ async fn lock_tree(tx: &mut Tx, root: &str) -> Result<Vec<String>, TxError> {
 async fn remove_tree(tx: &mut Tx, tree: &[String]) -> Result<usize, TxError> {
     let mut purged = 0;
     for addr in tree {
+        tx.changed(addr);
         purged += purge_mailbox(tx, addr).await?;
         sqlx::query("DELETE FROM actors WHERE address = $1").bind(addr).execute(&mut *tx.c).await?;
     }
@@ -1718,6 +1777,9 @@ impl Backend for PostgresStore {
                     .bind(address.as_str())
                     .fetch_optional(&mut *tx.c)
                     .await?;
+            if t.is_some() {
+                tx.changes.add(address);
+            }
             if let (Some(t), false) = (&t, paused) {
                 tx.notify(t.clone());
             }
@@ -2232,6 +2294,7 @@ impl Backend for PostgresStore {
             remove_tree(tx, &removed_rows).await?;
             for create in again {
                 let at = create.address.as_str();
+                tx.changes.add(&create.address);
                 purge_mailbox(tx, at).await?;
                 sqlx::query("DELETE FROM watches WHERE watcher = $1").bind(at).execute(&mut *tx.c).await?;
                 let now = tx.now().await?;
@@ -2263,6 +2326,9 @@ impl Backend for PostgresStore {
                         .bind(target.as_str())
                         .fetch_optional(&mut *tx.c)
                         .await?;
+                if t.is_some() {
+                    tx.changes.add(target);
+                }
                 if let (Some(t), false) = (t, paused) {
                     tx.notify(t);
                 }
@@ -2292,6 +2358,7 @@ impl Backend for PostgresStore {
                         .bind(r.address.as_str())
                         .execute(&mut *tx.c)
                         .await?;
+                    tx.changes.add(&r.address);
                 }
                 StateChange::Stop => {
                     let version: i64 = sqlx::query_scalar("SELECT version FROM actors WHERE address = $1")
@@ -2322,10 +2389,12 @@ impl Backend for PostgresStore {
     // ---- wake-ups ----
 
     /// Yields when a `NOTIFY` for one of `types` arrives on this store's channel (from any node, including this one),
-    /// and after the listener reconnected. The first call starts the shared listener connection.
+    /// and whenever the listener has its `LISTEN` (again): notifications sent while it had none are lost. Change hints
+    /// (`@…` payloads) do not wake. The first call starts the shared listener connection; the stream ends when the
+    /// store is closed.
     fn wake_ups(&self, types: &BTreeSet<TypeName>) -> Option<BoxStream<'static, ()>> {
         let names: Arc<HashSet<String>> = Arc::new(types.iter().map(|t| t.as_str().to_owned()).collect());
-        let receiver = self.listener.subscribe();
+        let Some((receiver, _)) = self.hub.subscribe() else { return Some(futures::stream::empty().boxed()) };
         self.listener.start();
         Some(
             futures::stream::unfold(receiver, move |mut receiver| {
@@ -2333,9 +2402,8 @@ impl Backend for PostgresStore {
                 async move {
                     loop {
                         match receiver.recv().await {
-                            Ok(payload) if payload.is_empty() || names.contains(&payload) => {
-                                return Some(((), receiver));
-                            }
+                            Ok(HubItem::Up) => return Some(((), receiver)),
+                            Ok(HubItem::WakeUp(name)) if names.contains(&*name) => return Some(((), receiver)),
                             Ok(_) => continue,
                             // Missed some: one of them may have been ours.
                             Err(RecvError::Lagged(_)) => return Some(((), receiver)),
@@ -2348,7 +2416,9 @@ impl Backend for PostgresStore {
         )
     }
 
+    /// The hub of this store's change hints; starts the shared listener, whose `LISTEN` brings the hub up.
     fn changes(&self) -> Arc<ChangeHub> {
+        self.listener.start();
         self.hub.clone()
     }
 

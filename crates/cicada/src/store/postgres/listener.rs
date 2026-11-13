@@ -1,14 +1,16 @@
-//! The wake-up listener: one dedicated connection that `LISTEN`s on the store's channel.
+//! The listener: one dedicated connection that `LISTEN`s on the store's channel and feeds the store's change hub.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgListener, PgPoolOptions};
-use tokio::sync::{broadcast, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
 
+use crate::change::ChangeHub;
+#[cfg(test)]
+use crate::change::SourceState;
 use crate::store::postgres::store::CONNECTION_TIMEOUT;
 
 /// First delay before the listener reconnects after losing its connection; doubles up to [`MAX_RECONNECT_DELAY`].
@@ -22,76 +24,63 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Payload of probe notifications. Never a type name (the `!` is not allowed in one), so every listener ignores it.
 pub(crate) const PROBE_PAYLOAD: &str = "!cicada-listener-probe";
 
-/// Holds one dedicated connection that `LISTEN`s on `channel` and republishes every notification's payload. Started
-/// lazily by [`Self::start`]; runs until [`Self::stop`].
+/// Holds one dedicated connection that `LISTEN`s on `channel` and feeds the store's [`ChangeHub`]: the hub goes up only
+/// once `LISTEN` succeeded, down when the connection is lost, and gets every notification's payload (a feed batch, or a
+/// type name for the wake-ups). Started lazily by [`Self::start`]; runs until [`Self::stop`].
 ///
 /// Robustness: the listener sends itself a probe notification every 5 s (sqlx only notices a dead socket when it
 /// reads from it, and a dead peer without a TCP reset never answers); when nothing arrives for 10 s, or the connection
-/// fails, it is dropped and re-opened after a back-off that starts at 250 ms and doubles up to 30 s.
-/// After every reconnect an empty payload is published, because notifications sent while disconnected are lost:
-/// subscribers treat it as "something may have changed".
+/// fails or is lost, it is dropped and re-opened after a back-off that starts at 250 ms and doubles up to 30 s. sqlx's
+/// own eager reconnect is off, so that every reconnect goes through `LISTEN` before the hub goes up again:
+/// notifications sent while disconnected are lost, and the hub's `Up` makes every subscriber resync and every wake-up
+/// stream wake.
 pub(crate) struct NotificationListener {
     channel: String,
     options: PgConnectOptions,
-    notifications: broadcast::Sender<String>,
-    listening: watch::Sender<bool>,
-    task: Mutex<Option<JoinHandle<()>>>,
-    stopped: std::sync::atomic::AtomicBool,
+    hub: Arc<ChangeHub>,
+    /// The running task, and whether the listener was stopped for good: one lock, so a start cannot race a stop.
+    task: Mutex<(Option<JoinHandle<()>>, bool)>,
 }
 
 impl NotificationListener {
-    pub(crate) fn new(channel: String, options: PgConnectOptions) -> Self {
-        Self {
-            channel,
-            options,
-            notifications: broadcast::channel(64).0,
-            listening: watch::channel(false).0,
-            task: Mutex::new(None),
-            stopped: std::sync::atomic::AtomicBool::new(false),
-        }
-    }
-
-    /// Payloads of received notifications; an empty string means "anything may have changed".
-    pub(crate) fn subscribe(&self) -> broadcast::Receiver<String> {
-        self.notifications.subscribe()
+    pub(crate) fn new(channel: String, options: PgConnectOptions, hub: Arc<ChangeHub>) -> Self {
+        Self { channel, options, hub, task: Mutex::new((None, false)) }
     }
 
     /// True while `LISTEN` is active on a live connection.
     #[cfg(test)]
     pub(crate) fn is_listening(&self) -> bool {
-        *self.listening.borrow()
+        self.hub.state() == SourceState::Up
     }
 
-    /// Starts listening, once. Must be called inside a tokio runtime.
+    /// Starts listening, once, unless stopped. Must be called inside a tokio runtime.
     pub(crate) fn start(&self) {
         let mut task = self.task.lock().unwrap_or_else(|e| e.into_inner());
-        if task.is_some() || self.stopped.load(std::sync::atomic::Ordering::SeqCst) {
+        if task.0.is_some() || task.1 {
             return;
         }
-        let run = Run {
-            channel: self.channel.clone(),
-            options: self.options.clone(),
-            notifications: self.notifications.clone(),
-            listening: self.listening.clone(),
-        };
-        *task = Some(tokio::spawn(run.run()));
+        let run = Run { channel: self.channel.clone(), options: self.options.clone(), hub: self.hub.clone() };
+        task.0 = Some(tokio::spawn(run.run()));
     }
 
-    /// Stops listening and closes the connections.
+    /// Stops listening for good and closes the connections; a later [`Self::start`] does nothing.
     pub(crate) async fn stop(&self) {
-        self.stopped.store(true, std::sync::atomic::Ordering::SeqCst);
-        let task = self.task.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let task = {
+            let mut task = self.task.lock().unwrap_or_else(|e| e.into_inner());
+            task.1 = true;
+            task.0.take()
+        };
         if let Some(task) = task {
             task.abort();
             let _ = task.await;
         }
-        self.listening.send_replace(false);
+        self.hub.down();
     }
 }
 
 impl Drop for NotificationListener {
     fn drop(&mut self) {
-        if let Some(task) = self.task.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        if let Some(task) = self.task.lock().unwrap_or_else(|e| e.into_inner()).0.take() {
             task.abort();
         }
     }
@@ -100,37 +89,28 @@ impl Drop for NotificationListener {
 struct Run {
     channel: String,
     options: PgConnectOptions,
-    notifications: broadcast::Sender<String>,
-    listening: watch::Sender<bool>,
+    hub: Arc<ChangeHub>,
 }
 
 impl Run {
     async fn run(self) {
         let mut backoff = RECONNECT_DELAY;
-        let mut reconnecting = false;
         loop {
             match self.connect().await {
                 Ok((mut listener, pool)) => {
-                    self.listening.send_replace(true);
-                    if reconnecting {
-                        self.publish(String::new());
-                    }
-                    reconnecting = true;
+                    self.hub.up();
                     backoff = RECONNECT_DELAY;
                     let probe = tokio::spawn(probe(pool, self.channel.clone()));
                     let error = self.receive(&mut listener).await;
                     probe.abort();
-                    self.listening.send_replace(false);
+                    self.hub.down();
                     tracing::warn!(
-                        "Wake-up listener on '{}' lost its connection ({error}); reconnecting in {backoff:?}",
+                        "Listener on '{}' lost its connection ({error}); reconnecting in {backoff:?}",
                         self.channel
                     );
                 }
                 Err(e) => {
-                    tracing::warn!(
-                        "Wake-up listener on '{}' cannot connect ({e}); retrying in {backoff:?}",
-                        self.channel
-                    )
+                    tracing::warn!("Listener on '{}' cannot connect ({e}); retrying in {backoff:?}", self.channel)
                 }
             }
             sleep(backoff).await;
@@ -139,7 +119,8 @@ impl Run {
     }
 
     /// A listener on a fresh pool of two connections: one for `LISTEN`, one for probes. Fresh, so that a hanging
-    /// connection of an earlier attempt (whose clean-up may never finish) cannot block this one.
+    /// connection of an earlier attempt (whose clean-up may never finish) cannot block this one. Returns once `LISTEN`
+    /// succeeded.
     async fn connect(&self) -> Result<(PgListener, PgPool), sqlx::Error> {
         let pool = PgPoolOptions::new()
             .max_connections(2)
@@ -149,31 +130,27 @@ impl Run {
             .max_lifetime(None)
             .connect_lazy_with(self.options.clone());
         let mut listener = PgListener::connect_with(&pool).await?;
+        listener.eager_reconnect(false);
         listener.listen(&self.channel).await?;
         Ok((listener, pool))
     }
 
-    /// Republishes notifications until the connection fails; returns why.
+    /// Feeds the hub with notifications until the connection fails or is lost; returns why.
     async fn receive(&self, listener: &mut PgListener) -> String {
         loop {
             match timeout(PROBE_INTERVAL + PROBE_TIMEOUT, listener.try_recv()).await {
                 Ok(Ok(Some(notification))) => {
                     if notification.payload() != PROBE_PAYLOAD {
-                        self.publish(notification.payload().to_owned());
+                        self.hub.payload(notification.payload());
                     }
                 }
-                // The connection was lost and sqlx re-established it (and its LISTEN): notifications may be missed.
-                Ok(Ok(None)) => self.publish(String::new()),
+                Ok(Ok(None)) => return "the connection was lost".to_owned(),
                 Ok(Err(e)) => return e.to_string(),
                 Err(_) => {
                     return format!("no notification, not even a probe, for {:?}", PROBE_INTERVAL + PROBE_TIMEOUT);
                 }
             }
         }
-    }
-
-    fn publish(&self, payload: String) {
-        let _ = self.notifications.send(payload); // no subscribers: nobody to wake
     }
 }
 
@@ -183,7 +160,7 @@ async fn probe(pool: PgPool, channel: String) {
         sleep(PROBE_INTERVAL).await;
         let sent = sqlx::query("SELECT pg_notify($1, $2)").bind(&channel).bind(PROBE_PAYLOAD).execute(&pool).await;
         if let Err(e) = sent {
-            tracing::debug!("Wake-up listener probe on '{channel}' failed: {e}");
+            tracing::debug!("Listener probe on '{channel}' failed: {e}");
         }
     }
 }
