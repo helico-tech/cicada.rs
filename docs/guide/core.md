@@ -781,8 +781,8 @@ for lease in leases {
 new state (`StateReport::Unchanged`, `Set` or `Stop`) and the finished buffer of its effects (`TurnEffects`: watches,
 creates, sends as `TurnSend`, cancels and controls), `Failed` with a `TurnFailure`, or `Cancelled`. The server derives
 the outcome and commits it with the state and effects in one fenced commit, through any system on the store: unstarted,
-stopped, or with another configuration. The core has no worker of its own; the block plays one, completing a turn of
-the reports type of [examples/src/sync.rs](../../examples/src/sync.rs):
+stopped, or with another configuration. The block plays a worker by hand, completing a turn of the reports type of
+[examples/src/sync.rs](../../examples/src/sync.rs); for Rust actors, a [worker](#run-actors-in-a-worker) does all of it:
 
 <!-- doctest
 # #[tokio::main(flavor = "current_thread")]
@@ -862,6 +862,89 @@ assert_eq!(server.get_actor(&acme.address()?).await?.map(|a| a.version), Some(1)
 - **Cancellation.** Report `Cancelled` only when an operator's cancel request (from `renew_turn`) came before your
   handler ended; one that comes later is ignored, and the handler's report stands. The server trusts this.
 - **What the server does not do.** It runs no handler, never releases a lease, and tells its own observers nothing.
+
+### Run actors in a worker
+
+A `Worker` runs ordinary actors without a store (ADR 0039): it leases their turns from a `TurnSource`, runs the
+unchanged handlers with the node's executor, and completes each turn through the source with the duties of the two
+sections above. `ActorSystem` is a source in process; `Arc<T>` of a source is one too, and an HTTP client can implement
+the trait. The block runs the reports type of [examples/src/sync.rs](../../examples/src/sync.rs) through a server that
+hosts nothing:
+
+<!-- doctest
+# #[tokio::main(flavor = "current_thread")]
+# async fn main() -> Result<(), Box<dyn std::error::Error>> {
+# use cicada::prelude::*;
+# let store = cicada::Store::memory();
+@@17
+# Ok(())
+# }
+-->
+```rust
+use cicada::Worker;
+use cicada::runtime::WorkerConfig;
+use cicada_examples::sync::{Reports, ReportsActor, ReportsMsg, ReportsState};
+
+let server = ActorSystem::builder(store).build(); // hosts nothing and is not started
+let worker = Worker::builder(server.clone()) // any TurnSource
+    .host(ReportsActor) // the actor as a node hosts it
+    .config(WorkerConfig { concurrency: 4, ..WorkerConfig::default() })
+    .build();
+worker.initialize().await?; // registers the contract through the source
+let acme = Reports { tenant: "acme".into() };
+server.create(&acme, &ReportsState::default()).await?;
+server.send(&acme, ReportsMsg::SyncFinished { imported: 3 }).await?;
+assert_eq!(worker.run_due_turns(10).await?, 1); // or worker.start() to poll
+assert_eq!(server.get_actor(&acme.address()?).await?.map(|a| a.version), Some(1));
+worker.stop().await;
+assert!(worker.stopped().await.is_none()); // None: stopped on request
+```
+
+- **The source.** `TurnSource` has the core operations: `register_contract`, `list_types`, `lease_turns`,
+  `renew_turn`, `release_turn` and `complete_turn`, with a `SourceError` of `Unavailable` (try again later; a mutation
+  may have applied), `Invalid` or `Fatal`. The reference source maps `OpError::Invalid` and `StoreError::Invalid` to
+  `Invalid`, an unavailable or corrupt store to `Unavailable`, and `OpError::Start` to `Fatal`. A source is trusted: it
+  keeps epoch fencing, hands a lease to one caller, never shortens a lease on renewal, answers `Rejected` explicitly,
+  and does not retry a mutation behind the worker's back. The worker checks each batch (no more leases than asked, only
+  the types asked for, one per actor, each message addressed to its actor, a usable TTL), but cannot make a dishonest
+  source safe.
+- **Registration.** `initialize` (and `start`) checks the settings and the hosted types (at most 100), registers each
+  exact contract and requires the stored hash to be the worker's: a conflict is the `StartProblem::ContractConflict` a
+  node reports. A failed initialization can be retried; a success is kept. A raw send or create in a handler reads the
+  registry through the source on each call; a failing source is a `node` failure, as a failing store is on a node.
+- **Timing.** Each lease names the TTL its server granted. The worker's deadline is its monotonic time when it sent
+  the request plus that TTL, less `min(ttl / 10, 1 s)`; a renewal keeps the later of its old deadline and the new one,
+  so a peer with a shorter TTL never shortens it, and the next heartbeat is a third of the latest TTL. A grant that
+  arrives after its deadline starts nothing and is released; one with less than a heartbeat left is renewed at once.
+  An answer that comes at or after the deadline cannot revive the lease, and no completion starts past it.
+  `Turn::now` is the claim's store time; `Turn::current_time` adds the worker's time since its request, an estimate
+  that can run ahead of store time by the request's transit and the server's processing.
+- **Capacity.** `concurrency` counts running turns plus slots reserved by lease requests in flight, shared by polling
+  and `run_due_turns`; a dropped manual call cancels only its own turns, which keep their slots until their cleanup
+  ended. Polling asks again at once after a full batch and waits `poll_interval` (or a turn's end) after a sparse,
+  empty or unavailable one. An empty worker starts and never asks.
+- **Completion.** The worker keeps one current report and one budget of the latest TTL from the start of completion,
+  never reset. An unavailable source is retried with the same report (50 ms back-off up to 2 s) within the budget and
+  the lease, which the keeper keeps renewing; a call that hangs is cut off at the budget or when the lease is lost.
+  `Rejected` replaces the report for good with the failure it carries, also when a retryable failure's reschedule was
+  refused. Observers end only on `Completed`, with the outcome the server applied (a returned report the server failed
+  ends `failed`). `LeaseLost`, an invalid or fatal answer and a spent budget abandon the turn without release: the
+  outcome may be applied or not, and the lease expires.
+- **Cancellation.** An operator's cancel request that a renewal brings before the handler ended completes the turn
+  `cancelled`, also when a stop follows. A stop or a dropped manual call alone releases a turn only once its work
+  stopped and its handler had not ended; a turn whose handler ended still completes within its budget, or is left to
+  expire.
+- **Life cycle.** `start` is one-shot; a stop during its registration marks the worker stopped and nothing runs.
+  `stop` (also on a worker that was never started) stops polling, gives running turns the grace period, cancels the
+  rest and waits `shutdown_cancel_timeout`; code that does not yield may outlive it, and nothing is released under it.
+  A lease request that answers a contract mismatch, `Invalid` or `Fatal` stops the worker by itself, and `stopped`
+  returns that first error to every waiter (`None` after a requested stop). The worker never stops or closes its
+  source, has no node row (it is not in `GET /nodes`; its leases show under its `worker_id`), no sweep and no claim
+  limit of its own: the serving system applies its claim limit and TTL. Serving the source over HTTP and running a
+  worker from the command line are following changes.
+
+`WorkerConfig` has `worker_id` (random; the lease owner, at most 200 characters), `poll_interval` (500 ms),
+`default_max_turn` (15 min), `concurrency` (16), `shutdown_grace_period` (30 s) and `shutdown_cancel_timeout` (5 s).
 
 ### Configuration
 

@@ -7,6 +7,29 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.16.15 — unreleased
+
+Nothing breaks: a worker runs unchanged Rust actors through a turn source instead of a store, the third part of remote
+execution. No schema, contract, route, command line or store behaviour changes; a node runs its turns as before.
+
+### Added
+
+- `Worker`, `WorkerBuilder` (`host`, `observe`, `config`, `build`), `WorkerConfig` (`worker_id`, `poll_interval`,
+  `default_max_turn`, `concurrency`, `shutdown_grace_period`, `shutdown_cancel_timeout`) and `WorkerError` (`Start`,
+  `Source`, `ContractMismatch`) (ADR 0039). A worker registers its contracts through its source (a conflict is the
+  node's `StartProblem::ContractConflict`), leases turns by polling or `run_due_turns`, and runs them with the node's
+  executor: the same handlers, buffering, raw sends and creates, timeouts, decode and panic handling, watches,
+  controls and observers. Each lease follows the TTL its server granted, with a heartbeat of a third of it; a late
+  answer cannot revive an expired lease. Completion keeps one report and one budget of a TTL: unavailable answers are
+  retried with that report, `Rejected` replaces it for good with its failure, and only `Completed` ends observers.
+  Polling and manual batches share `concurrency`, lease requests in flight included. A lease request answered with a
+  contract mismatch, `Invalid` or `Fatal` stops the worker, and `Worker::stopped` returns that error. A worker has no
+  node row, sweep or claim limit, and never stops or closes its source.
+- `TurnSource`, the async trait a worker leases from (`register_contract`, `list_types`, `lease_turns`, `renew_turn`,
+  `release_turn`, `complete_turn`), implemented by `ActorSystem` and `Arc<T>`, and `SourceError` (`Unavailable`,
+  `Invalid`, `Fatal`), with the classification of `OpError` the reference source uses.
+- The core guide's Run actors in a worker, with a tested example; workers in the architecture and in operations.
+
 ## 0.16.14 — 2026-11-13
 
 Nothing breaks: an executor outside the system can complete the turns it leased with the report of its handler, the

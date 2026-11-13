@@ -365,6 +365,10 @@ lease to its own TTL, and one with a shorter TTL could end a lease a worker stil
 (ADR 0038, [Complete a leased turn](guide/core.md#complete-a-leased-turn)); nodes of 0.16.13 and 0.16.14 can share a
 database. Complete through nodes of 0.16.14 only: an older node has no `complete_turn`.
 
+**Version 0.16.15 changes no schema, contract, route or store behaviour.** It adds `Worker`, which runs Rust actors
+through a turn source (ADR 0039, [Run actors in a worker](guide/core.md#run-actors-in-a-worker)); a node runs its turns
+as before. A worker leases, renews and completes through its source, so serve it from nodes of 0.16.14 or later.
+
 **Switching a type to `create_child`.** An actor created with `turn.create` stays independent: a later `create_child`
 of it by its creator does not adopt it, but fails the creator's message (the commit is rejected, and a handler cannot
 test for that). So switch a parent type from `create` to `create_child` only when no parent of it is left that created
@@ -519,6 +523,14 @@ turn](guide/core.md#complete-a-leased-turn)) through any node of the store, stop
 its own retry policy rules and storage limits, but runs no handler, tells its own observers nothing and never releases
 the lease. No receipt of a completion is stored: after a lost answer, the executor's repeat gets `LeaseLost`, and
 retention may already have removed the outcome, so reading the message cannot always settle an uncertain completion.
+
+A `Worker` is such an executor for Rust actors ([Run actors in a worker](guide/core.md#run-actors-in-a-worker)). It has
+no row in the node table and no sweep: its leases show under its `worker_id`, and its life cycle is its own, apart from
+the source's. Size its `concurrency` as a node's; it counts lease requests in flight as well as running turns. Watch
+`Worker::stopped`: a contract mismatch or a source that refuses its requests stops it by itself, with the error, rather
+than leaving it idle. A completion it cannot get through within one TTL is abandoned without release, logged as
+`Completion of … abandoned; the lease will expire` or `… dropped …; it may have applied`, and the lease expires as a
+dead node's would.
 
 ### Logs
 

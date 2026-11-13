@@ -295,6 +295,48 @@ or an event id: the serving system derives them, with the policy the local execu
   releases a lease and tells its own observers nothing. No receipt is stored: retention may hide the outcome and a
   reschedule leaves the message pending, so a later read of the message cannot always settle an uncertain completion.
 
+### Workers
+
+A `Worker` runs ordinary Rust actors through a `TurnSource` instead of a store (ADR 0039). The source is an
+object-safe async trait over the core results of `register_contract`, `types` (as `list_types`, full `TypeDef`s),
+`lease_turns`, `renew_turn`, `release_turn` and `complete_turn`, with `SourceError::{Unavailable, Invalid, Fatal}`;
+`ActorSystem` and `Arc<T>` implement it. A source is trusted to keep the core's fencing, unique claims, non-shortening
+renewal and explicit rejection, and not to retry a mutation behind the caller's back.
+
+- **One executor.** The worker uses the node's `TurnExecutor` with a private holder: `Store` (a node: its TTL,
+  heartbeat and claim limit, its own commit and fallback path) or `Source`. The work task ends in a `TurnReport`, the
+  same for both: a node derives the decision it commits, a worker completes it. Handlers, `Turn` buffering, raw sends
+  and creates (the resolver reads the registry from the store or the source, each call fresh, with the parsed-contract
+  cache of ADR 0036; a source error is a store error of the turn), timeouts, decode and panic handling, typed checks
+  after the handler, watches, controls, observer headers and handler-phase arbitration are shared. A worker has no
+  claim limit of its own.
+- **Per-turn timing.** A grant's deadline is the worker's request time plus its TTL less `min(ttl / 10, 1 s)`; a TTL
+  under 2 ns or a deadline the monotonic clock cannot hold is invalid metadata. The heartbeat is `max(ttl / 3, 1 ns)` of
+  the latest confirmed TTL; a renewal keeps the later deadline and, with less than a heartbeat left, the next renewal
+  follows at once. Failed renewals are retried after `min(heartbeat / 4, 1 s)`. The watchdog stays independent of
+  renewal calls. A worker's lease guard is strict: an extension is accepted, and a completion started, only while the
+  confirmed deadline has not passed, checked under one lock, so a renewal ready with the watchdog cannot revive it.
+- **Completion.** One current report and one budget (completion start plus the latest confirmed TTL, never reset).
+  `Unavailable` is retried with the same report (50 ms doubling to 2 s) within the budget and the lease; each call is
+  raced against both and one cut off is uncertain. `Rejected` replaces the report for good with its failure (a refused
+  retry of a retryable failure included); a rejection of a non-retryable failure, or one that carries a failure nobody
+  may report, is a protocol error. `Completed` ends the observers with the applied outcome and sends; `LeaseLost`,
+  `Invalid`, `Fatal`, a protocol error or a spent budget abandon the turn without release.
+- **Capacity and dispatch.** Slots are reserved before a lease request (at most 100, the free slots, and a manual
+  call's limit) and move to the turn tasks of the batch; unused ones return. The request runs in a task of its own and
+  hands a guarded batch back: a batch that nobody receives, that a stop beat to the hand-off, or that fails its checks
+  (count, requested types, one lease per actor, the message's target, the TTL) releases its leases best effort. A
+  malformed batch is a `Fatal` lease error. Polling repeats at once after a full batch and waits `poll_interval` or a
+  turn's end otherwise; there is no due-time query or listener. Manual batches cancel a child of the worker's cancel
+  token when dropped, and their tasks stay tracked.
+- **Life cycle.** `NodeState` again, without a node row, sweep or heartbeat. Initialization validates the settings,
+  the hosted types (at most 100) and registers each contract, requiring the stored hash; only success is cached.
+  `start` registers without holding the lock a stop takes, then checks the state again. `stop` stops polling, waits
+  `shutdown_cancel_timeout` for the loop, gives the tracked turns the grace period (in every state, so manual turns of
+  a new worker too), cancels them and waits again. A lease path that gets `ContractMismatch`, `Invalid` or `Fatal`
+  records the first error and stops the worker from a task of its own; `stopped` returns it to every waiter, `None`
+  after a requested stop. The worker never stops or closes its source.
+
 All local timing uses `tokio::time`, so tests on a paused runtime (`start_paused = true`) run on virtual time: the
 in-memory store reads its clock from `tokio::time::Instant` (`TokioClock`).
 

@@ -26,7 +26,7 @@
   and no release after handler end. Test operator cancellation through renewal separately from shutdown/manual
   cancellation, including operator cancellation followed by shutdown. Use start_paused and TestActors where
   applicable; run targeted Worker/runtime tests with memory, SQLite and PostgreSQL where configured.
-- [ ] 5. Update ADR 0039/index as needed, architecture, the core guide, operations and public API docs. Include a
+- [x] 5. Update ADR 0039/index as needed, architecture, the core guide, operations and public API docs. Include a
   compiled in-process Worker example and describe source duties, registration, timing estimates, per-turn TTLs,
   manual capacity, cancellation distinctions, bounded completion and uncertain results. Document Worker lifecycle
   independence and the absence of node membership; HTTP and CLI remain following changes. Link applicable new
