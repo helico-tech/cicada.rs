@@ -15,7 +15,7 @@
   stopped/closed systems, hash mismatch, release idempotence, fencing and read-router exclusion. Assert no server
   completion observer but preserved claim-limit observers. Run affected axum tests, regenerate docs/openapi.json
   with CICADA_UPDATE_OPENAPI=true and check required fields and route access in OpenAPI tests.
-- [ ] 3. Implement TurnSource for ActorClient using raw calls, the explicit status/result conversion and positive
+- [x] 3. Implement TurnSource for ActorClient using raw calls, the explicit status/result conversion and positive
   turn_timeout (default 10s) through body reading; add async-trait from the workspace. Preserve management retries
   and supplied HTTP client settings. Add registration's recognized conflict/invalid-contract alternatives and one
   diagnostic GET, recomputing requested_hash from schemas and retaining served definitions. Test every status class,

@@ -32,6 +32,12 @@
 //! fails with a transport error or a `503` is retried with the same id, up to [`ActorClient::send_attempts`] attempts,
 //! so it is enqueued at most once even when an acknowledgement was lost; the server answers a repeated id with `200`,
 //! reported as [`SendReceipt::duplicate`]. To retry later yourself, pass the same id again.
+//!
+//! **Remote turns** (ADR 0040). `ActorClient` is a [`TurnSource`](cicada::runtime::TurnSource), so a
+//! [`Worker`](cicada::runtime::Worker) can run ordinary Rust actors outside the database network with only the URL of
+//! a server's full API: see [`turns`] for its requests, timeouts and error mapping.
+
+pub mod turns;
 
 use std::time::Duration;
 
@@ -158,6 +164,7 @@ pub struct ActorClient {
     http: reqwest::Client,
     send_attempts: u32,
     retry_delay: Duration,
+    turn_timeout: Duration,
 }
 
 impl ActorClient {
@@ -175,6 +182,7 @@ impl ActorClient {
             http,
             send_attempts: 3,
             retry_delay: Duration::from_millis(200),
+            turn_timeout: Duration::from_secs(10),
         }
     }
 
@@ -192,6 +200,19 @@ impl ActorClient {
     /// Pause before the second attempt of a send, doubled for each further one; default 200 ms.
     pub fn retry_delay(mut self, delay: Duration) -> Self {
         self.retry_delay = delay;
+        self
+    }
+
+    /// The longest a lease, renewal, release or completion of the [`TurnSource`](cicada::runtime::TurnSource) may take,
+    /// from sending the request to reading the whole response; default 10 s. A shorter timeout of the
+    /// [`reqwest::Client`] still applies; the other methods keep the client's own settings.
+    ///
+    /// # Panics
+    ///
+    /// When `timeout` is zero.
+    pub fn turn_timeout(mut self, timeout: Duration) -> Self {
+        assert!(!timeout.is_zero(), "turn_timeout must be positive");
+        self.turn_timeout = timeout;
         self
     }
 

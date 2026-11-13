@@ -562,6 +562,7 @@ dependencies = [
 name = "cicada-client"
 version = "0.16.15"
 dependencies = [
+ "async-trait",
  "axum",
  "cicada",
  "cicada-axum",
