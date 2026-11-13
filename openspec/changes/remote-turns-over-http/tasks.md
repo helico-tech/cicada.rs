@@ -40,7 +40,7 @@
 
 ## Finishing checks
 
-- [ ] 6. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
+- [x] 6. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
   `openspec validate remote-turns-over-http --strict`. Include PostgreSQL with CICADA_PG_URL where available and
   record unavailable optional checks. Check committed OpenAPI/reference drift and preserve existing management
   API/client behavior and backend conformance.
