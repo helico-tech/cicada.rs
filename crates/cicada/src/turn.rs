@@ -13,6 +13,7 @@ use serde_json::Value;
 use crate::actor::Actor;
 use crate::address::{ActorAddress, ActorRef};
 use crate::message::{self, MessageFamily};
+use crate::observer::SendHeaders;
 use crate::retention::Retention;
 use crate::retry::RetryPolicy;
 use crate::runtime::effects::EffectBuffer;
@@ -273,8 +274,8 @@ pub(crate) struct TurnInfo {
     pub(crate) message: Message,
     /// Store time at the claim.
     pub(crate) now: Timestamp,
-    /// The headers of the observers, for every send of the turn.
-    pub(crate) send_headers: BTreeMap<String, String>,
+    /// The headers of the observers for the sends of the turn: those for timers and those for the others.
+    pub(crate) send_headers: SendHeaders,
     /// The local time at which the claim was sent.
     pub(crate) claim_sent: Instant,
     /// The types the node hosts: a create by address checks its address and state against them.
@@ -693,11 +694,13 @@ impl<A: Actor> Turn<A> {
         Ok(id)
     }
 
-    /// Adds the headers that observers set for this turn's sends to a send to `to` whose own headers were checked: its
-    /// own win, and the rest go in the order of their names as long as the message stays within the most headers it may
-    /// have. One that does not fit is left out, with a warning; it never fails the send.
+    /// Adds the headers that observers set for this turn's sends to a send to `to` whose own headers were checked: those
+    /// for timers when it is one (a send to this actor with `At` or `After`), else those for the others. Its own win,
+    /// and the rest go in the order of their names as long as the message stays within the most headers it may have.
+    /// One that does not fit is left out, with a warning; it never fails the send.
     fn with_turn_headers(&self, to: &ActorAddress, mut options: SendOptions) -> SendOptions {
-        for (name, value) in &self.info.send_headers {
+        let timer = *to == self.info.self_address && !matches!(options.delivery, Delivery::Now);
+        for (name, value) in self.info.send_headers.of(timer) {
             if options.headers.contains_key(name) {
                 continue;
             }

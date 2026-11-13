@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use super::common::*;
 use crate::address::ActorAddress;
-use crate::observer::{ObservedTurn, TurnEnd, TurnObserver, TurnStart};
+use crate::observer::{ObservedTurn, Sends, TurnEnd, TurnObserver, TurnStart};
 use crate::prelude::*;
 use crate::runtime::NodeConfig;
 use crate::store::{
@@ -65,6 +65,17 @@ enum ProbeMsg {
         #[serde(default)]
         headers: BTreeMap<String, String>,
     },
+    /// Sends `Log` to itself and to the probe `q`, each now and after ten seconds, with `own` headers of its own
+    /// (`own-00`, …) and `headers`; the text of each says which (`now-self`, `later-self`, `now-other`, `later-other`).
+    Mixed {
+        #[serde(default)]
+        own: u32,
+        #[serde(default)]
+        headers: BTreeMap<String, String>,
+    },
+    /// Sends `Log` to itself with a zero delay, at the claim, at an hour before it, at a second after the turn's
+    /// current time (then sleeps five seconds, so that instant is past at the commit), and now.
+    Timers,
     /// Sends `Log` to a probe that does not exist: the commit is rejected.
     Orphan,
     /// Watches `target`.
@@ -123,6 +134,32 @@ where
                 options = options.header(name, value);
             }
             turn.send_self_with(ProbeMsg::Log { text: "tagged".into() }, options)?;
+        }
+        ProbeMsg::Mixed { own, headers } => {
+            let mut options = SendOptions::new();
+            for n in 0..own {
+                options = options.header(format!("own-{n:02}"), "o");
+            }
+            for (name, value) in headers {
+                options = options.header(name, value);
+            }
+            let later = options.clone().delay(Duration::from_secs(10));
+            let log = |text: &str| ProbeMsg::Log { text: text.into() };
+            turn.send_self_with(log("now-self"), options.clone())?;
+            turn.send_self_with(log("later-self"), later.clone())?;
+            turn.send_with(&p("q"), log("now-other"), options)?;
+            turn.send_with(&p("q"), log("later-other"), later)?;
+        }
+        ProbeMsg::Timers => {
+            let log = |text: &str| ProbeMsg::Log { text: text.into() };
+            let now = turn.now();
+            let soon = time::add(turn.current_time(), Duration::from_secs(1)).unwrap();
+            turn.send_self_with(log("after-zero"), SendOptions::new().delay(Duration::ZERO))?;
+            turn.send_self_with(log("at-now"), SendOptions::new().at(now))?;
+            turn.send_self_with(log("at-past"), SendOptions::new().at(time::sub(now, Duration::from_secs(3_600))))?;
+            turn.send_self_with(log("at-clamped"), SendOptions::new().at(soon))?;
+            turn.send_self(log("now"))?;
+            tokio::time::sleep(Duration::from_secs(5)).await;
         }
         ProbeMsg::Orphan => {
             turn.send(&p("nobody"), ProbeMsg::Log { text: "lost".into() })?;
@@ -715,4 +752,162 @@ async fn a_notification_of_a_watch_carries_no_header_of_an_observer() {
     assert_eq!(mailbox.len(), 1, "{mailbox:?}");
     assert_eq!(mailbox[0].message_type, "Failed");
     assert!(mailbox[0].headers.is_empty(), "{:?}", mailbox[0].headers);
+}
+
+// ---- headers for timers and the other sends ----
+
+/// Adds every header of its list for the sends it names, then panics when `panics`; is told nothing.
+struct Picks {
+    headers: Vec<(Sends, String, String)>,
+    panics: bool,
+}
+
+impl Picks {
+    fn of(headers: &[(Sends, &str, &str)]) -> Arc<dyn TurnObserver> {
+        let headers = headers.iter().map(|(s, n, v)| (*s, (*n).to_owned(), (*v).to_owned())).collect();
+        Arc::new(Self { headers, panics: false })
+    }
+}
+
+impl TurnObserver for Picks {
+    fn turn_started(&self, turn: &mut TurnStart<'_>) -> Box<dyn ObservedTurn> {
+        for (sends, name, value) in &self.headers {
+            turn.add_header_for(*sends, name.clone(), value.clone());
+        }
+        if self.panics {
+            panic!("an observer broke after it picked its headers");
+        }
+        Box::new(())
+    }
+}
+
+/// The headers of each message the turn of `message` sent to `p` or `q`, by the text of the message.
+async fn sent_by_text(
+    observers: Vec<Arc<dyn TurnObserver>>,
+    message: ProbeMsg,
+) -> BTreeMap<String, BTreeMap<String, String>> {
+    let test = probe_test(MINUTE, observers).await;
+    test.create(&p("p"), &ProbeState::default()).await;
+    test.create(&p("q"), &ProbeState::default()).await;
+    let m = test.send(&p("p"), message).await;
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1);
+    assert_eq!(test.outcome(&m).await.unwrap().status, OutcomeStatus::Done, "the sends succeeded");
+    let mut sent = test.pending(&p("p")).await;
+    sent.extend(test.pending(&p("q")).await);
+    sent.into_iter().map(|m| (m.payload["text"].as_str().unwrap().to_owned(), m.headers)).collect()
+}
+
+fn mixed(own: u32, headers: &[(&str, &str)]) -> ProbeMsg {
+    ProbeMsg::Mixed { own, headers: headers.iter().map(|(n, v)| ((*n).to_owned(), (*v).to_owned())).collect() }
+}
+
+fn value<'a>(headers: &'a BTreeMap<String, String>, name: &str) -> Option<&'a str> {
+    headers.get(name).map(String::as_str)
+}
+
+/// Scenario: A header selection distinguishes requested timer sends.
+#[tokio::test(start_paused = true)]
+async fn only_a_delayed_send_to_the_actor_itself_gets_the_headers_for_timers() {
+    let picks = Picks::of(&[(Sends::All, "audit", "a"), (Sends::Timers, "timer", "t"), (Sends::Others, "work", "w")]);
+    let sent = sent_by_text(vec![picks, Headers::of(&[("legacy", "l")])], mixed(0, &[])).await;
+    assert_eq!(sent.len(), 4, "{sent:?}");
+    for (text, headers) in &sent {
+        assert_eq!(value(headers, "audit"), Some("a"), "{text}");
+        assert_eq!(value(headers, "legacy"), Some("l"), "add_send_header reaches every send: {text}");
+        let timer = text == "later-self";
+        assert_eq!(value(headers, "timer"), timer.then_some("t"), "{text}");
+        assert_eq!(value(headers, "work"), (!timer).then_some("w"), "{text}");
+    }
+}
+
+/// Scenario: Zero delays and past times are still timer requests.
+#[tokio::test(start_paused = true)]
+async fn a_zero_delay_and_a_past_instant_are_timers_and_a_send_now_to_itself_is_not() {
+    let picks = Picks::of(&[(Sends::Timers, "timer", "t"), (Sends::Others, "work", "w")]);
+    let sent = sent_by_text(vec![picks], ProbeMsg::Timers).await;
+    assert_eq!(sent.len(), 5, "{sent:?}");
+    for (text, headers) in &sent {
+        let timer = text != "now";
+        assert_eq!(value(headers, "timer"), timer.then_some("t"), "{text}");
+        assert_eq!(value(headers, "work"), (!timer).then_some("w"), "{text}");
+    }
+}
+
+/// Scenario: Calls and observers override independently per kind.
+#[tokio::test(start_paused = true)]
+async fn calls_and_observers_override_a_header_in_each_kind_on_its_own() {
+    let a = Picks::of(&[(Sends::All, "x", "all"), (Sends::Timers, "x", "timer")]);
+    let b = Picks::of(&[(Sends::Others, "x", "other")]);
+    let sent = sent_by_text(vec![a, b], mixed(0, &[])).await;
+    assert_eq!(sent.len(), 4);
+    for (text, headers) in &sent {
+        let expected = if text == "later-self" { "timer" } else { "other" };
+        assert_eq!(value(headers, "x"), Some(expected), "{text}");
+    }
+    let last = Picks::of(&[(Sends::Timers, "x", "timer"), (Sends::Others, "x", "other"), (Sends::All, "x", "last")]);
+    let sent = sent_by_text(vec![last], mixed(0, &[])).await;
+    assert!(sent.values().all(|h| value(h, "x") == Some("last")), "{sent:?}");
+}
+
+/// Scenario: The send's own headers and limits apply independently to each kind.
+#[tokio::test(start_paused = true)]
+async fn each_kind_keeps_a_sends_own_header_and_fills_up_to_the_limit_in_name_order() {
+    let picks = Picks::of(&[
+        (Sends::All, "x", "observer"),
+        (Sends::Timers, "a-timer", "1"),
+        (Sends::Timers, "b-timer", "2"),
+        (Sends::Others, "a-other", "1"),
+        (Sends::Others, "b-other", "2"),
+    ]);
+    // 62 own headers and `x` leave room for one header of the observer.
+    let sent = sent_by_text(vec![picks], mixed(62, &[("x", "mine")])).await;
+    assert_eq!(sent.len(), 4);
+    for (text, headers) in &sent {
+        assert_eq!(headers.len(), 64, "{text}");
+        assert_eq!(value(headers, "x"), Some("mine"), "{text}");
+        let (first, second, unselected) =
+            if text == "later-self" { ("a-timer", "b-timer", "a-other") } else { ("a-other", "b-other", "a-timer") };
+        assert_eq!(value(headers, first), Some("1"), "{text}");
+        assert!(!headers.contains_key(second), "{text}: does not fit");
+        assert!(!headers.contains_key(unselected), "{text}: not selected");
+    }
+}
+
+/// Scenario: Invalid selected headers do not erase previous values.
+#[tokio::test(start_paused = true)]
+async fn a_refused_header_keeps_the_earlier_value_of_its_name() {
+    let long = "v".repeat(5_000);
+    let picks = Picks::of(&[
+        (Sends::Timers, "t", "ok"),
+        (Sends::Timers, "t", "a\u{0}b"),
+        (Sends::Others, "o", "ok"),
+        (Sends::Others, "o", long.as_str()),
+        (Sends::All, "both", "fine"),
+        (Sends::All, "both", "a\u{0}b"),
+    ]);
+    let sent = sent_by_text(vec![picks], mixed(0, &[])).await;
+    assert_eq!(sent.len(), 4);
+    for (text, headers) in &sent {
+        let (name, other) = if text == "later-self" { ("t", "o") } else { ("o", "t") };
+        assert_eq!(value(headers, name), Some("ok"), "{text}");
+        assert!(!headers.contains_key(other), "{text}");
+        assert_eq!(value(headers, "both"), Some("fine"), "{text}");
+    }
+}
+
+/// Scenario: A panicking observer loses both selections.
+#[tokio::test(start_paused = true)]
+async fn an_observer_that_panics_loses_its_headers_of_both_kinds() {
+    let broken = Arc::new(Picks {
+        headers: vec![(Sends::Timers, "timer".into(), "t".into()), (Sends::Others, "work".into(), "w".into())],
+        panics: true,
+    });
+    let kept = Picks::of(&[(Sends::Others, "kept", "k"), (Sends::Timers, "kept-timer", "k")]);
+    let sent = sent_by_text(vec![broken, kept], mixed(0, &[])).await;
+    assert_eq!(sent.len(), 4, "the handler ran: {sent:?}");
+    for (text, headers) in &sent {
+        assert!(!headers.contains_key("timer") && !headers.contains_key("work"), "{text}: {headers:?}");
+        let name = if text == "later-self" { "kept-timer" } else { "kept" };
+        assert_eq!(value(headers, name), Some("k"), "{text}: the other observer still adds its headers");
+    }
 }

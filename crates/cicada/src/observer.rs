@@ -17,7 +17,8 @@
 //! | The answer of the claim arrives after its lease deadline | – | – (nothing runs; the claim is given back) |
 //!
 //! An observer cannot refuse a turn and cannot change what it commits, except that it may add headers to the messages
-//! the turn sends ([`TurnStart::add_send_header`]). Its methods are plain functions: they run on a thread of the
+//! the turn sends ([`TurnStart::add_send_header`], or [`TurnStart::add_header_for`] to pick timers or the other
+//! sends). Its methods are plain functions: they run on a thread of the
 //! runtime, in the turn, and must not block. A panic in an observer is caught and logged, and the turn goes on as if
 //! that observer were not there. The observers of a node are called in the order they were added, at the start and at
 //! the end.
@@ -84,18 +85,68 @@ impl ObservedTurn for () {
     fn turn_ended(self: Box<Self>, _end: &TurnEnd<'_>) {}
 }
 
+/// The sends of a turn that a header of an observer goes on ([`TurnStart::add_header_for`]).
+///
+/// A timer is a send to the turn's own actor with a delivery of [`Delivery::At`](crate::store::Delivery::At) or
+/// [`Delivery::After`](crate::store::Delivery::After), whatever the time asked for: a zero delay or a past instant
+/// counts, though the store makes such a message due at once. The send method does not matter, and neither does the
+/// actor's type. Every other send of the turn is one of the others, a delayed send to another actor too.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Sends {
+    /// Every send of the turn: timers and the others.
+    All,
+    /// The sends to the turn's own actor with a later delivery: `At` or `After`.
+    Timers,
+    /// Every send that is not a timer.
+    Others,
+}
+
+/// The headers observers added for the sends of a turn: one map for timers, one for the other sends.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SendHeaders {
+    timers: BTreeMap<String, String>,
+    others: BTreeMap<String, String>,
+}
+
+impl SendHeaders {
+    /// The headers for a timer when `timer`, else those for another send.
+    pub(crate) fn of(&self, timer: bool) -> &BTreeMap<String, String> {
+        if timer { &self.timers } else { &self.others }
+    }
+
+    fn insert(&mut self, sends: Sends, name: String, value: String) {
+        match sends {
+            Sends::All => {
+                self.timers.insert(name.clone(), value.clone());
+                self.others.insert(name, value);
+            }
+            Sends::Timers => {
+                self.timers.insert(name, value);
+            }
+            Sends::Others => {
+                self.others.insert(name, value);
+            }
+        }
+    }
+
+    fn extend(&mut self, later: SendHeaders) {
+        self.timers.extend(later.timers);
+        self.others.extend(later.others);
+    }
+}
+
 /// A turn that starts, as [`TurnObserver::turn_started`] sees it.
 #[derive(Debug)]
 pub struct TurnStart<'a> {
     actor: &'a ActorAddress,
     message: &'a Message,
     claimed_at: Timestamp,
-    headers: BTreeMap<String, String>,
+    headers: SendHeaders,
 }
 
 impl<'a> TurnStart<'a> {
     pub(crate) fn new(actor: &'a ActorAddress, message: &'a Message, claimed_at: Timestamp) -> Self {
-        Self { actor, message, claimed_at, headers: BTreeMap::new() }
+        Self { actor, message, claimed_at, headers: SendHeaders::default() }
     }
 
     /// The actor whose turn this is.
@@ -126,12 +177,35 @@ impl<'a> TurnStart<'a> {
     /// than 4,000 characters, or a NUL character) is left out here, with a warning. A send takes its own headers first
     /// and then those of the observers, in the order of their names, as long as the message stays within 64 headers;
     /// the ones that do not fit are left out of that message, with a warning.
+    ///
+    /// The same as [`Self::add_header_for`] with [`Sends::All`].
     pub fn add_send_header(&mut self, name: impl Into<String>, value: impl Into<String>) {
+        self.add_header_for(Sends::All, name, value);
+    }
+
+    /// Adds a header for the sends of this turn that `sends` picks: all of them, the timers, or the others. The rules
+    /// of [`Self::add_send_header`] hold for each kind on its own: of two calls for one name the later wins in the
+    /// kinds it picks, and of two observers the one added later. A refused header is left out, with a warning, and
+    /// keeps the value an earlier call gave that name.
+    ///
+    /// ```
+    /// use cicada::observer::{Sends, TurnObserver, ObservedTurn, TurnStart};
+    ///
+    /// /// Marks the timers of each turn, and keeps a chain id on the other sends.
+    /// struct Marks;
+    ///
+    /// impl TurnObserver for Marks {
+    ///     fn turn_started(&self, turn: &mut TurnStart<'_>) -> Box<dyn ObservedTurn> {
+    ///         turn.add_header_for(Sends::Timers, "timer", "yes");
+    ///         turn.add_header_for(Sends::Others, "chain", turn.message().id.to_string());
+    ///         Box::new(())
+    ///     }
+    /// }
+    /// ```
+    pub fn add_header_for(&mut self, sends: Sends, name: impl Into<String>, value: impl Into<String>) {
         let (name, value) = (name.into(), value.into());
         match limits::check_header(&name, &value) {
-            Ok(()) => {
-                self.headers.insert(name, value);
-            }
+            Ok(()) => self.headers.insert(sends, name, value),
             Err(e) => tracing::warn!(
                 actor = %self.actor,
                 message = %self.message.id,
@@ -203,12 +277,12 @@ impl Observers {
 #[derive(Default)]
 pub(crate) struct Observed {
     turns: Vec<Box<dyn ObservedTurn>>,
-    headers: BTreeMap<String, String>,
+    headers: SendHeaders,
 }
 
 impl Observed {
-    /// The headers the observers added for the sends of the turn; of two with one name, the later observer's.
-    pub(crate) fn headers(&self) -> &BTreeMap<String, String> {
+    /// The headers the observers added for the sends of the turn, per kind; of two with one name, the later observer's.
+    pub(crate) fn headers(&self) -> &SendHeaders {
         &self.headers
     }
 

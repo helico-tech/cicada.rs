@@ -1,6 +1,6 @@
 ## Implementation
 
-- [ ] 1. Add public `observer::Sends` and `TurnStart::add_header_for`, keeping `add_send_header` equivalent to All.
+- [x] 1. Add public `observer::Sends` and `TurnStart::add_header_for`, keeping `add_send_header` equivalent to All.
   Carry the two maps through Observed, TurnInfo and the common typed/raw send-header merge. Classify by self-address
   equality and requested At/After, with no clock or actor-type checks. Extend virtual-time observer and send-header
   tests for every send path, zero/past/clamped delivery, delayed sends to other actors, call/observer precedence,

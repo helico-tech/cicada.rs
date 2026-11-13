@@ -1,9 +1,11 @@
-//! `TurnStart::add_send_header`: headers an observer adds when a turn starts to every message the turn sends.
+//! `TurnStart::add_send_header`: headers an observer adds when a turn starts to every message the turn sends; and
+//! `TurnStart::add_header_for`, which picks the timers of a turn or its other sends, whatever the send method.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use cicada::observer::{ObservedTurn, TurnObserver, TurnStart};
+use cicada::observer::{ObservedTurn, Sends, TurnObserver, TurnStart};
 use cicada::prelude::*;
 use cicada::turn::TurnError;
 use cicada_test::TestActors;
@@ -28,6 +30,9 @@ fn relay(id: &str) -> Relay {
 enum RelayMsg {
     /// Sends `Seen` to `b` with `send`, to itself with `send_self` and to `b` with `send_raw`.
     Fan,
+    /// Sends `Seen` to itself later with `send_self_with`, `send_with` to its own ref, and `send_to` and `send_raw`
+    /// to its own address, with a delay or an instant; and `Seen` to `b` later.
+    FanLater,
     /// Sends `Seen` to `b` with its own `x-run` header.
     Own,
     /// Sends `Seen` to `b` with `count` headers of its own.
@@ -57,6 +62,17 @@ impl Actor for RelayActor {
                 let to = relay("b").address().unwrap();
                 turn.send_raw(&to, "Seen", serde_json::json!({ "tag": "raw" }), SendOptions::new()).await?;
                 turn.send_to(&to, &seen("to"), SendOptions::new()).await?;
+            }
+            RelayMsg::FanLater => {
+                let delay = SendOptions::new().delay(Duration::from_secs(60));
+                let at = SendOptions::new().at(cicada::time::add(turn.now(), Duration::from_secs(60)).unwrap());
+                let me = turn.self_address().clone();
+                let own = turn.self_ref().clone();
+                turn.send_self_with(seen("self-with"), delay.clone())?;
+                turn.send_with(&own, seen("with-own-ref"), at.clone())?;
+                turn.send_to(&me, &seen("to"), delay.clone()).await?;
+                turn.send_raw(&me, "Seen", serde_json::json!({ "tag": "raw" }), at).await?;
+                turn.send_with(&relay("b"), seen("later-other"), delay)?;
             }
             RelayMsg::Own => {
                 turn.send_with(&relay("b"), seen("own"), SendOptions::new().header("x-run", "mine"))?;
@@ -175,4 +191,35 @@ async fn an_observer_header_never_fails_a_send_and_is_left_out_of_a_full_message
     assert!(errors.lock().unwrap().is_empty(), "{errors:?}");
     let headers = seen.lock().unwrap()["many"].clone();
     assert_eq!((headers.len(), headers.contains_key("x-run")), (64, false));
+}
+
+/// Adds `timer` for the timers of a turn and `work` for its other sends.
+struct Picks;
+
+impl TurnObserver for Picks {
+    fn turn_started(&self, turn: &mut TurnStart<'_>) -> Box<dyn ObservedTurn> {
+        turn.add_header_for(Sends::Timers, "timer", "t");
+        turn.add_header_for(Sends::Others, "work", "w");
+        Box::new(())
+    }
+}
+
+/// Scenario: Every send path uses the same timer classification.
+#[tokio::test(start_paused = true)]
+async fn every_send_method_to_the_actor_itself_with_a_later_delivery_is_a_timer() {
+    let actor = RelayActor { seen: Seen::default(), errors: Arc::default() };
+    let test = TestActors::builder().with(move |node| node.host(actor).observe(Picks)).build().await.unwrap();
+    test.create(&relay("a"), &cicada::NoState {}).await;
+    test.create(&relay("b"), &cicada::NoState {}).await;
+    test.send(&relay("a"), RelayMsg::FanLater).await;
+    test.run_until_idle().await;
+    let mut sent = test.pending(&relay("a")).await;
+    sent.extend(test.pending(&relay("b")).await);
+    assert_eq!(sent.len(), 5, "{sent:?}");
+    for message in &sent {
+        let tag = message.payload["tag"].as_str().unwrap();
+        let timer = tag != "later-other";
+        assert_eq!(message.headers.contains_key("timer"), timer, "{tag}: {:?}", message.headers);
+        assert_eq!(message.headers.contains_key("work"), !timer, "{tag}: {:?}", message.headers);
+    }
 }
