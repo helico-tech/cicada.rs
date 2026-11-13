@@ -74,6 +74,7 @@
 //! # }
 //! ```
 
+mod changes;
 mod handlers;
 mod problem;
 mod request;

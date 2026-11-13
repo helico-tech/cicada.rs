@@ -495,6 +495,47 @@
         }
       }
     },
+    "/changes": {
+      "get": {
+        "summary": "Hints that actors under a prefix may have changed, as Server-Sent Events (ADR 0035): best effort, with no state, history or replay. Read a changed actor again, and the whole prefix after a resync.",
+        "operationId": "streamActorChanges",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "prefix",
+            "description": "A literal prefix of the address, as for `GET /actors` (`sync/`, `sync/ac`); all actors when absent or empty.",
+            "schema": {
+              "description": "A literal prefix of the address, as for `GET /actors` (`sync/`, `sync/ac`); all actors when absent or empty.",
+              "type": "string"
+            },
+            "style": "form"
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "An error (RFC 9457).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Server-Sent Events, UTF-8, each ending in a blank line. `event: changed` with `data: {\"address\":\"<canonical address>\"}`: read that actor again (404 means it is gone). `event: resync` with `data: {}`: hints may have been missed, list the prefix again (`GET /actors/states`). The first event is `resync`, once the store's source of hints is live; `: keep-alive` comments follow each 15 seconds without output and do not mean it is live. No `id` or `retry` field and no replay: `Last-Event-ID` is ignored and every request starts with a `resync`. The body ends without a final event when the store is closed (at once when it was closed before); stopping the node leaves it open.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": "event: resync\ndata: {}\n\nevent: changed\ndata: {\"address\":\"order/42\"}\n\n: keep-alive\n\n"
+              }
+            }
+          }
+        }
+      }
+    },
     "/messages": {
       "get": {
         "summary": "The pending messages of every actor under a prefix.",
@@ -2685,6 +2726,18 @@
           "leaseUntil",
           "cancelRequested"
         ]
+      },
+      "ChangesQuery": {
+        "type": "object",
+        "properties": {
+          "prefix": {
+            "description": "A literal prefix of the address, as for `GET /actors` (`sync/`, `sync/ac`); all actors when absent or empty.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
       },
       "MessageViewPage": {
         "description": "One page of a listing (`GET /actors`, `GET /actors/{type}/{key}/children`, `GET /actors/{type}/{key}/mailbox`,\n`GET /messages`, `GET /outcomes`, `GET /turns`, `GET /watches`).\n\nPaging: pass [`Self::next`] back as the `cursor` query parameter to get the following page; it is null on the last\npage. The page size is the `limit` query parameter (1..1000, default 100).",

@@ -333,6 +333,17 @@ pub(crate) async fn list_actor_states(State(api): Shared, req: Request) -> Respo
     .await
 }
 
+/// `GET /changes?prefix=`: the change hints under the first `prefix` as Server-Sent Events, subscribed before the `200`
+/// with no store query, so a closed store gives an empty body and an unready one keep-alive comments.
+pub(crate) async fn changes(State(api): Shared, req: Request) -> Response {
+    let instance = request::instance(&req);
+    run(instance, async move {
+        let params = Params::of(req.uri())?;
+        Ok(crate::changes::event_stream(api.system.changes(&params.prefix())))
+    })
+    .await
+}
+
 pub(crate) async fn list_pending(State(api): Shared, req: Request) -> Response {
     let instance = request::instance(&req);
     run(instance, async move {

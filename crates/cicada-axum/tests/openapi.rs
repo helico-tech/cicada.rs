@@ -64,6 +64,33 @@ async fn both_routers_describe_the_state_listing_and_leave_the_address_listing_a
     }
 }
 
+/// Scenario: Generated documents.
+#[tokio::test(start_paused = true)]
+async fn both_routers_describe_the_change_stream_as_server_sent_events_with_only_a_prefix() {
+    let system = node_with(memory_store(), |b| b.host(CounterActor)).await;
+    for app in [actor_api(system.clone()), actor_api_read(system.clone())] {
+        let document = get_json(&app, "/openapi.json").await;
+        let changes = &document["paths"]["/changes"]["get"];
+        assert_eq!(changes["operationId"], "streamActorChanges");
+        let parameters: Vec<&str> =
+            changes["parameters"].as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
+        assert_eq!(parameters, ["prefix"], "no limit or cursor");
+        let ok = &changes["responses"]["200"];
+        let media: Vec<&String> = ok["content"].as_object().unwrap().keys().collect();
+        assert_eq!(media, ["text/event-stream"], "no JSON page");
+        let stream = &ok["content"]["text/event-stream"];
+        assert_eq!(stream["schema"]["type"], "string");
+        let example = stream["example"].as_str().unwrap();
+        assert!(example.contains("event: resync\ndata: {}\n\n"), "{example}");
+        assert!(example.contains("event: changed\ndata: {\"address\":\"order/42\"}\n\n"), "{example}");
+        let description = ok["description"].as_str().unwrap();
+        for words in ["keep-alive", "Last-Event-ID", "no replay", "store is closed", "first event is `resync`"] {
+            assert!(description.contains(words), "{words}: {description}");
+        }
+        assert!(changes["responses"]["default"]["content"][cicada_axum::PROBLEM_JSON].is_object());
+    }
+}
+
 #[tokio::test(start_paused = true)]
 async fn the_full_router_serves_the_whole_document() {
     let system = node_with(memory_store(), |b| b.host(CounterActor)).await;

@@ -1,13 +1,13 @@
 ## Implementation
 
-- [ ] 1. Reconcile the landed predecessor APIs, then add GET /changes on both routers using Params, a prefix-only
+- [x] 1. Reconcile the landed predecessor APIs, then add GET /changes on both routers using Params, a prefix-only
   query, axum Sse/Event JSON framing, fixed 15-second keep-alives and X-Accel-Buffering: no. Keep one core receiver,
   no preflight and no extra event queue. Add virtual-time tests in cicada-axum for both routers, first resync/frames,
   canonical encoding, prefix/duplicate/unknown query rules, ignored Last-Event-ID, headers, lag/backpressure, dropped
   bodies, close and worker stop. Test the framing adapter on a pending stream for pre-Up keep-alives without a private
   backend dependency. Add a protocol test for serialized resync/list/get with hints during paging, newer resync,
   bounded pending addresses and retry after failed reads. Run targeted axum tests.
-- [ ] 2. Add the private EventStream OperationOutput marker with text/event-stream, string schema, frame examples
+- [x] 2. Add the private EventStream OperationOutput marker with text/event-stream, string schema, frame examples
   and lifecycle/no-replay description, operationId streamActorChanges and the existing default problem response.
   Extend full/read-only OpenAPI tests for the route, prefix-only query and successful media type. Regenerate and
   commit docs/openapi.json with CICADA_UPDATE_OPENAPI=true; verify the document drift test and unchanged old routes.

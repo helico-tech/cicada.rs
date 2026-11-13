@@ -8,7 +8,7 @@ use std::sync::Arc;
 use aide::axum::ApiRouter;
 use aide::axum::routing::{get_with, post_with};
 use aide::generate::GenContext;
-use aide::openapi::{Info, OpenApi, Operation, Response};
+use aide::openapi::{Info, MediaType, OpenApi, Operation, Response, SchemaObject};
 use aide::operation::OperationOutput;
 use aide::transform::TransformOperation;
 use axum::Json;
@@ -46,6 +46,50 @@ impl OperationOutput for ProblemJson {
         response.description = "An error (RFC 9457).".to_owned();
         Some(response)
     }
+}
+
+/// The `text/event-stream` body of `GET /changes`. OpenAPI 3.1 has no schema for the items of a stream, so the body
+/// is a string with examples and the events are described in words.
+struct EventStream;
+
+/// Both events, as they are framed on the wire.
+const EVENT_STREAM_EXAMPLE: &str =
+    "event: resync\ndata: {}\n\nevent: changed\ndata: {\"address\":\"order/42\"}\n\n: keep-alive\n\n";
+
+impl OperationOutput for EventStream {
+    type Inner = String;
+
+    fn operation_response(_ctx: &mut GenContext, _operation: &mut Operation) -> Option<Response> {
+        let media = MediaType {
+            schema: Some(SchemaObject {
+                json_schema: schemars::json_schema!({"type": "string"}),
+                external_docs: None,
+                example: None,
+            }),
+            example: Some(serde_json::Value::String(EVENT_STREAM_EXAMPLE.to_owned())),
+            ..MediaType::default()
+        };
+        Some(Response {
+            description: "Server-Sent Events, UTF-8, each ending in a blank line. `event: changed` with `data: \
+                          {\"address\":\"<canonical address>\"}`: read that actor again (404 means it is gone). \
+                          `event: resync` with `data: {}`: hints may have been missed, list the prefix again \
+                          (`GET /actors/states`). The first event is `resync`, once the store's source of hints is \
+                          live; `: keep-alive` comments follow each 15 seconds without output and do not mean it is \
+                          live. No `id` or `retry` field and no replay: `Last-Event-ID` is ignored and every request \
+                          starts with a `resync`. The body ends without a final event when the store is closed (at \
+                          once when it was closed before); stopping the node leaves it open."
+                .to_owned(),
+            content: [("text/event-stream".to_owned(), media)].into_iter().collect(),
+            ..Response::default()
+        })
+    }
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct ChangesQuery {
+    /// A literal prefix of the address, as for `GET /actors` (`sync/`, `sync/ac`); all actors when absent or empty.
+    prefix: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -298,6 +342,20 @@ fn routes(access: Access) -> ApiRouter<Arc<Api>> {
                 described(op, "getTurn", "The turn running now on one actor; 404 when there is none.")
                     .input::<Path<ActorPath>>()
                     .response::<200, Json<RunningTurnView>>()
+            }),
+        )
+        .api_route(
+            "/changes",
+            get_with(handlers::changes, |op| {
+                described(
+                    op,
+                    "streamActorChanges",
+                    "Hints that actors under a prefix may have changed, as Server-Sent Events (ADR 0035): best \
+                     effort, with no state, history or replay. Read a changed actor again, and the whole prefix after \
+                     a resync.",
+                )
+                .input::<Query<ChangesQuery>>()
+                .response::<200, EventStream>()
             }),
         )
         .api_route(
