@@ -12,12 +12,18 @@ The preceding core worker and lease APIs need an HTTP transport usable through a
 - Exercise an unchanged Rust actor through HTTP, leasing on one server and finishing through another.
 - Document lost responses, body limits, timeouts, trusted workers and ordinary host authentication.
 
-## To decide
+## Settled decisions
 
-- Final routes and exact status/problem mappings, including lease loss, invalid reports and rejected effects.
-- Preserve raw encoded actor paths, duration precision, required envelope fields and source error categories.
-- Bound request time relative to the lease, avoid hidden claim retries, and retry completion without rerunning code.
-- HTTP and restart tests with independent servers on a shared store, plus a real Worker/ActorClient example.
+- Four full-router POST routes under /leases carry canonical addresses in JSON and core alternatives in tagged results.
+- Requests reject unknown envelope fields and duplicate keys; execution envelopes require all fields and valid policies.
+- ActorClient implements TurnSource, with bounded turn calls, explicit error mapping and no application-level retries.
+- Existing body limits and host authentication apply; failed or oversized completion never permits hidden fallback/release.
+
+## Capabilities
+
+### New Capabilities
+
+- `remote-turn-http`: language-neutral turn leasing/completion and the Rust HTTP TurnSource adapter.
 
 ## Out of scope
 
