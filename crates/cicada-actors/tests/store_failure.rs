@@ -10,8 +10,9 @@ use cicada::prelude::*;
 use cicada::store::{Message, MessageStatus, OutcomeStatus, SqliteOptions};
 use cicada::{ActorAddress, SendResult, Store};
 use cicada_actors::{
-    Child, Schedule, Scheduler, SchedulerActor, SchedulerMsg, SchedulerState, Supervisor, SupervisorActor,
-    SupervisorMsg, SupervisorState, Topic, TopicActor, TopicMsg, TopicState,
+    Child, RateLimiter, RateLimiterActor, RateLimiterMsg, RateLimiterState, Schedule, Scheduler, SchedulerActor,
+    SchedulerMsg, SchedulerState, Supervisor, SupervisorActor, SupervisorMsg, SupervisorState, Topic, TopicActor,
+    TopicMsg, TopicState,
 };
 use common::*;
 use sqlx::SqlitePool;
@@ -33,6 +34,7 @@ impl Sqlite {
             .host(SupervisorActor)
             .host(TopicActor)
             .host(SchedulerActor)
+            .host(RateLimiterActor)
             .host(WorkerActor)
             .build();
         system.initialize().await.unwrap();
@@ -173,6 +175,42 @@ async fn a_run_of_a_scheduler_whose_read_of_the_store_fails_is_tried_again_and_d
     assert_eq!(db.state::<WorkerState>(&addr(&worker("a"))).await.log, ["n"], "once, from a later attempt");
     assert_eq!(db.outcome(&run).await.0, OutcomeStatus::Done);
     assert_eq!(db.state::<SchedulerState>(&addr(&nightly)).await.runs, 1);
+    db.close().await;
+}
+
+/// Scenario: Temporary store failure. A submission with a retry policy whose read of the registry fails reserves
+/// nothing; its retry forwards once, at a slot of the store time of that attempt.
+#[tokio::test]
+async fn a_submission_to_a_rate_limiter_whose_read_of_the_store_fails_is_tried_again_and_forwards_once() {
+    let dir = TempDir::new().unwrap();
+    let db = Sqlite::open(dir.path()).await;
+    let api = RateLimiter::named("api");
+    let second = std::time::Duration::from_secs(1);
+    db.system.create(&api, &RateLimiterState::new(1, second, 1, second).unwrap()).await.unwrap();
+    db.system.create(&worker("a"), &WorkerState::default()).await.unwrap();
+    let submit = RateLimiterMsg::submit(&worker("a"), WorkerMsg::Note { text: "n".into() }, None).unwrap();
+    let policy = RetryPolicy::new(2, Backoff::fixed(second).unwrap()).unwrap();
+    let SendResult::Accepted(submission) =
+        db.system.send_with(&api, submit, SendOptions::new().retry(policy)).await.unwrap()
+    else {
+        panic!("not accepted")
+    };
+
+    db.registry(false).await;
+    assert_eq!(db.system.run_due_turns(1).await.unwrap(), 1, "the first attempt of the submission");
+    db.registry(true).await;
+    let retried = db.pending(&addr(&api)).await;
+    assert_eq!((retried.len(), retried[0].id.clone(), retried[0].failures), (1, submission.id.clone(), 1));
+    assert!(retried[0].last_error.as_deref().unwrap().contains("actor_types"), "{:?}", retried[0].last_error);
+    assert_eq!(db.state::<RateLimiterState>(&addr(&api)).await.idle_at, None, "nothing was reserved");
+    assert!(db.pending(&addr(&worker("a"))).await.is_empty(), "nothing was sent");
+
+    tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+    db.run_until_idle().await;
+    assert_eq!(db.state::<WorkerState>(&addr(&worker("a"))).await.log, ["n"], "once, from a later attempt");
+    assert_eq!(db.outcome(&submission).await.0, OutcomeStatus::Done);
+    let idle_at = db.state::<RateLimiterState>(&addr(&api)).await.idle_at.expect("a reservation");
+    assert!(idle_at > submission.deliver_at + second, "a slot of the retry's store time: {idle_at}");
     db.close().await;
 }
 

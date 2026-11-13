@@ -4,7 +4,7 @@
   in `crates/cicada-actors/src/rate_limiter.rs`, with crate exports. Implement checked slot arithmetic. Verify with
   unit tests for validation, fractional rounding, inclusive delay and timestamp overflow, and a compile-fail doctest
   for a message of the wrong family; run `cargo test -p cicada-actors --lib` and `cargo test -p cicada-actors --doc`.
-- [ ] 2. Implement atomic forwarding and failure handling. Add `tests/rate_limiter.rs` using virtual-time
+- [x] 2. Implement atomic forwarding and failure handling. Add `tests/rate_limiter.rs` using virtual-time
   `TestActors` for the spec's burst/spacing, rollback, creation, envelope, target retry, redrive, dedup and cancellation
   scenarios. Extend the existing `tests/store_failure.rs` fixture for retryable registry failures if needed.
   Verify with the limiter and store-failure integration tests; cover commit-time clamping through existing core
