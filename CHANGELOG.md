@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.16.12 — unreleased
+## 0.16.12 — 2026-11-13
 
 Nothing breaks: a server can register the contract of a type that runs elsewhere, so that it accepts the type's creates
 and sends before a worker runs it. The route and the operation are new; no schema, actor contract, command line or
