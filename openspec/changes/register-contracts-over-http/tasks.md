@@ -18,7 +18,7 @@
   descriptions after peer replacement and deep response JSON. Add operationId registerType and request/response
   schemas to OpenAPI; extend tests/openapi.rs for full/read differences and regenerate docs/openapi.json with
   CICADA_UPDATE_OPENAPI=true. Run the affected core API, axum API and OpenAPI tests.
-- [ ] 3. Add ActorClient::register_type(&Contract) -> ClientResult<TypeView>, using the contract's type name in
+- [x] 3. Add ActorClient::register_type(&Contract) -> ClientResult<TypeView>, using the contract's type name in
   the path and only state/messages in the body. Extend cicada-client/tests/client.rs for a generated Rust contract,
   equal registration returning original descriptions, ordinary problem errors on conflict/invalid contract and
   the 120-level schema boundary through both get_type and types. Ensure no supplied hash crosses the wire and no

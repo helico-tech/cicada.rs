@@ -14,6 +14,7 @@ use axum::middleware::{self, Next};
 use axum::response::IntoResponse;
 use cicada::address::TypeName;
 use cicada::api::{BulkRequest, MessageState, problem_types as pt};
+use cicada::contract::Contract;
 use cicada::prelude::*;
 use cicada::store::{Delivery, MessageId, NodeId, OutcomeStatus, RemoveTypeResult};
 use cicada::time::parse_instant;
@@ -591,6 +592,85 @@ async fn remove_type_answers_removed_absent_and_in_use() {
     assert_eq!(actors.remove_type(&TypeName::parse("account").unwrap()).await.unwrap(), RemoveTypeResult::Removed);
 }
 
+/// A server whose node hosts nothing, behind a layer that records the body of every `PUT /types/…`.
+async fn registry_test() -> (ActorClient, Arc<Mutex<Vec<Value>>>) {
+    let bodies = Arc::new(Mutex::new(Vec::new()));
+    let seen = bodies.clone();
+    let system = node_with(|b| b).await;
+    let app = actor_api(system).layer(middleware::from_fn(move |req: Request, next: Next| {
+        let seen = seen.clone();
+        async move {
+            if req.method() != Method::PUT {
+                return next.run(req).await;
+            }
+            let (parts, body) = req.into_parts();
+            let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+            seen.lock().unwrap().push(serde_json::from_slice(&bytes).unwrap());
+            next.run(Request::from_parts(parts, Body::from(bytes))).await
+        }
+    }));
+    (ActorClient::new(serve(app).await), bodies)
+}
+
+/// type-registry, Scenario: Typed registration. The stored hash is the generated one, an equal contract answers the
+/// first descriptions, and only the schemas cross the wire, also for a contract that carries another hash.
+#[tokio::test]
+async fn a_generated_contract_is_registered_over_http_without_a_handler() {
+    let (actors, bodies) = registry_test().await;
+    let generated = cicada::actor::contract_of::<AccountActor>().unwrap();
+    let stored = actors.register_type(&generated).await.unwrap();
+    assert_eq!((stored.name.as_str(), stored.hash.as_str()), ("account", generated.hash()));
+    assert_eq!(&stored.state, generated.state_schema());
+    assert_eq!(&stored.messages, generated.message_schemas());
+    assert_eq!(actors.get_type(&TypeName::parse("account").unwrap()).await.unwrap(), Some(stored.clone()));
+
+    let mut reworded = generated.message_schemas().clone();
+    reworded.values_mut().for_each(|s| s["description"] = json!("reworded"));
+    let reworded = Contract::new(generated.type_name().clone(), generated.state_schema().clone(), reworded);
+    let def = cicada::store::TypeDef { contract_hash: "sha256:supplied".into(), ..reworded.to_type_def() };
+    let carrying = Contract::of(&def).unwrap();
+    assert_eq!(actors.register_type(&carrying).await.unwrap(), stored, "the first descriptions stay");
+
+    for body in bodies.lock().unwrap().iter() {
+        let keys: Vec<&str> = body.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys, ["state", "messages"], "{body}");
+        assert!(!body.to_string().contains("sha256:"), "{body}");
+    }
+    assert_eq!(bodies.lock().unwrap().len(), 2);
+}
+
+/// type-registry, Scenario: Typed registration, a conflict and an invalid contract are ordinary problems.
+#[tokio::test]
+async fn a_refused_registration_is_a_problem() {
+    let (actors, _) = registry_test().await;
+    let generated = cicada::actor::contract_of::<AccountActor>().unwrap();
+    actors.register_type(&generated).await.unwrap();
+    let other = Contract::new(generated.type_name().clone(), json!({}), Default::default());
+    assert_problem(actors.register_type(&other).await, 409, pt::CONTRACT_CONFLICT);
+    let invalid = Contract::new(TypeName::parse("broken").unwrap(), json!(null), Default::default());
+    assert_problem(actors.register_type(&invalid).await, 422, pt::INVALID_CONTRACT);
+    let types = actors.types().await.unwrap();
+    assert_eq!(types.len(), 1);
+    assert_eq!(types[0].hash, generated.hash());
+}
+
+/// type-registry, Scenario: The accepted schema depth boundary, through the client's parser: 120 levels read back
+/// through `get_type` and `types`, 121 are refused.
+#[tokio::test]
+async fn schemas_at_the_depth_bound_read_back_through_the_client() {
+    let (actors, _) = registry_test().await;
+    let deep = |levels: usize| (1..levels).fold(json!({}), |inner, _| json!({"not": inner}));
+    let messages = |levels: usize| std::collections::BTreeMap::from([("Go".to_owned(), deep(levels))]);
+    let name = TypeName::parse("deep").unwrap();
+    let beyond = Contract::new(name.clone(), deep(121), messages(1));
+    assert_problem(actors.register_type(&beyond).await, 422, pt::INVALID_CONTRACT);
+    let at_bound = Contract::new(name.clone(), deep(120), messages(120));
+    let stored = actors.register_type(&at_bound).await.unwrap();
+    assert_eq!(stored.hash, at_bound.hash());
+    assert_eq!(actors.get_type(&name).await.unwrap().unwrap().state, deep(120));
+    assert_eq!(actors.types().await.unwrap()[0].messages["Go"], deep(120));
+}
+
 #[tokio::test]
 async fn health_follows_the_node() {
     let (actors, _, system) = client_test(|r| r).await;
@@ -739,6 +819,7 @@ fn the_client_only_calls_documented_routes() {
         ("get", "/stats"),
         ("get", "/types"),
         ("get", "/types/{name}"),
+        ("put", "/types/{name}"),
         ("delete", "/types/{name}"),
         ("get", "/health"),
     ];

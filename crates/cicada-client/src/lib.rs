@@ -39,9 +39,10 @@ use cicada::address::{TypeName, percent};
 use cicada::api::{
     ActorView, BulkRequest, BulkResponse, CreateActorRequest, CreateActorResponse, MailboxMessageView,
     MessageStatusView, MessageView, NodeDetailView, NodeListView, NodeView, OutcomeView, PageView, Problem,
-    PurgeResponse, RunningTurnView, SendRequest, SendResponse, StatsView, TypeListView, TypeView, WatchRequest,
-    WatchView, problem_types,
+    PurgeResponse, RegisterTypeRequest, RunningTurnView, SendRequest, SendResponse, StatsView, TypeListView, TypeView,
+    WatchRequest, WatchView, problem_types,
 };
+use cicada::contract::Contract;
 use cicada::store::{MessageId, NodeId, OutcomeStatus, RemoveTypeResult};
 use cicada::time::{Timestamp, format_instant};
 use cicada::{ActorAddress, ActorRef, SendOptions, WatchTarget, message};
@@ -609,6 +610,21 @@ impl ActorClient {
             StatusCode::NOT_FOUND => answer.absent(problem_types::NO_SUCH_TYPE),
             _ => Err(answer.failure()),
         }
+    }
+
+    /// Registers `contract` without hosting its type (`PUT /types/{name}`), so that the server accepts creates and sends
+    /// before a worker runs it; returns the stored type. Only the schemas are sent: the server computes the hash, also
+    /// for a contract read from a registry entry. An equal hash answers the stored type with its first descriptions.
+    /// Errors: `409 contract-conflict` when the name is registered with a different hash, `422 invalid-contract` for a
+    /// schema that is not an object or a boolean, nested deeper than 120 levels or with a NUL character, or a message
+    /// name beyond the send limits; nothing is replaced.
+    pub async fn register_type(&self, contract: &Contract) -> ClientResult<TypeView> {
+        let body = encode(&RegisterTypeRequest {
+            state: contract.state_schema().clone(),
+            messages: contract.message_schemas().clone(),
+        })?;
+        let url = self.url(&format!("/types/{}", contract.type_name()), &[])?;
+        self.call(Method::PUT, url, Some(body)).await?.ok()
     }
 
     /// Removes the registration of the type `name` (`DELETE /types/{name}`): [`RemoveTypeResult::Removed`] (`204`),
