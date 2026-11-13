@@ -17,6 +17,7 @@ use crate::runtime::{
     CompleteTurnResult, LeaseTurnsResult, NodeConfig, OpError, StateReport, TurnEffects, TurnFailure, TurnLease,
     TurnReport, TurnSend,
 };
+use crate::store::sqlite::CommitFault;
 use crate::store::{
     Backend, CommitRequest, CommitResult, Message, MessageId, MessageStatus, OutcomeStatus, StoreError, StoreResult,
     TurnOutcome,
@@ -25,6 +26,7 @@ use crate::testing::{VirtualClock, default_start};
 use crate::{ActorSystem, FailureCause, SendOptions, Store, WatchTarget};
 use async_trait::async_trait;
 use serde_json::json;
+use tokio::sync::Notify;
 use tokio::time::{sleep, timeout};
 
 const LEASE: Duration = Duration::from_secs(30);
@@ -244,6 +246,48 @@ async fn a_commit_whose_answer_is_lost_is_lease_lost_on_retry_and_nothing_applie
     assert!(events.all().is_empty());
 }
 
+/// Scenario: Server observers and wakes. A started server whose poll interval is an hour, and which gets no wake-ups
+/// from the store (the memory store sends none), delivers a message that a remote completion through it sent at once:
+/// after an acknowledged commit and after one whose answer was lost. Its observers hear of its own turns only.
+#[tokio::test(start_paused = true)]
+async fn a_remote_completion_wakes_the_local_dispatch_loop_also_when_its_answer_is_lost_and_tells_no_observer() {
+    const POLL: Duration = Duration::from_secs(3600);
+    let memory = virtual_store();
+    let events = Events::default();
+    let faulty = Faulty::new(memory.clone(), Chaos::default());
+    let config = NodeConfig { lease_ttl: LEASE, poll_interval: POLL, ..node_config("local") };
+    let local = node(faulty.clone(), "local").config(config).host(CounterActor).observe(Recorder::new(&events)).build();
+    local
+        .register_contract(&crate::actor::contract_of::<super::remote_claim_limit::JobActor>().unwrap())
+        .await
+        .unwrap();
+    local.start().await.unwrap();
+    create(&local, "a").await;
+    let counter = Counter::new("c");
+    local.create(&counter, &CounterState::default()).await.unwrap();
+
+    for (total, mode) in [(1, PASS), (2, LOSE_AFTER)] {
+        let held = leased(&local, "a").await; // a type the server does not host: its own loop never claims it
+        settle().await; // the loop sleeps for the poll interval
+        let add = TurnSend::new(counter.address(), "Add", json!({"n": 1}));
+        let effects = TurnEffects { sends: vec![add], ..TurnEffects::default() };
+        faulty.faults.set(mode);
+        let started = tokio::time::Instant::now();
+        let result = complete(&local, &held, TurnReport::Returned { state: StateReport::Unchanged, effects }).await;
+        if mode == PASS {
+            assert_eq!(completed(result), TurnOutcome::Done);
+        } else {
+            assert_uncertain(result);
+        }
+        eventually(secs(5), || async { state_of::<CounterState>(&memory, &counter.address()).await.total == total })
+            .await;
+        assert!(started.elapsed() < secs(1), "delivered at once, not after the poll interval");
+    }
+    assert_eq!(events.all(), ["start:Add:1", "end:Done:sent=0", "start:Add:1", "end:Done:sent=0"], "the counter's");
+    faulty.faults.assert_never_released();
+    local.stop().await;
+}
+
 /// Scenario: Concurrent reports.
 #[tokio::test(start_paused = true)]
 async fn identical_or_different_reports_racing_for_one_epoch_apply_at_most_once() {
@@ -437,49 +481,56 @@ async fn a_completion_dropped_during_its_commit_is_retried_through_a_peer_and_ap
     faulty.faults.assert_never_released();
 }
 
-/// A completion of `job/a` through `first`, dropped after a wait that grows each round (whatever its commit did by
-/// then), and the identical report through `second` once the first transaction settled: exactly one effect set applies
-/// each round, by the dropped call (the retry is lease lost) or by the retry.
-async fn dropped_completion_settles_once(first: &ActorSystem, second: &ActorSystem, rounds: u32) {
-    create(first, "a").await;
-    create(first, "b").await;
-    first.pause_mailbox(&addr(&job("b"))).await.unwrap();
-    for round in 0..rounds {
-        let held = leased(first, "a").await;
-        let report = sending("b");
-        let completing = tokio::spawn({
-            let (first, held, report) = (first.clone(), held.clone(), report.clone());
-            async move { complete(&first, &held, report).await }
-        });
-        sleep(Duration::from_micros(250) * round).await;
-        completing.abort();
-        let _ = completing.await;
-        // The settlement boundary: on SQLite the next write through the first handle settles a transaction the drop
-        // left open (rolled back unless its COMMIT went out); until then a writer on the file finds it locked, an
-        // uncertain answer the caller repeats its report after.
-        first.pause_mailbox(&addr(&job("b"))).await.unwrap();
-        match complete(second, &held, report).await.unwrap() {
-            CompleteTurnResult::Completed(_) | CompleteTurnResult::LeaseLost => {}
-            other => panic!("round {round}: {other:?}"),
-        }
-        let snapshot = first.get_actor(&addr(&job("a"))).await.unwrap().unwrap();
-        let sent = first.pending(&addr(&job("b")), None, 100).await.unwrap().unwrap().items.len();
-        assert_eq!((snapshot.version, sent), (round as i64 + 1, round as usize + 1), "round {round}: once");
-        assert!(second.running_turn(&held.actor).await.unwrap().is_none());
-    }
-}
-
-/// Scenario: Cancellation of the completion request, with two SQLite handles on one file as two processes have.
-#[tokio::test]
-async fn on_a_shared_sqlite_file_a_dropped_completion_settles_before_or_without_its_retry() {
+/// A completion of `job/a` through a first SQLite handle, stopped by `fault` at a known point of its transaction's
+/// ending and cancelled there, then the identical report through a second handle on the same file, as two processes
+/// have. A write through the first handle settles the cancelled transaction first: rolled back unless its `COMMIT` was
+/// in the driver (`lands`), in which case the retry is lease lost. Either way one effect set applies.
+async fn a_completion_cancelled_at(fault: fn(Arc<Notify>) -> CommitFault, lands: bool) {
     let db = crate::tests::sqlite::common::TempDb::new();
     let clock = Arc::new(VirtualClock::new(default_start()));
-    let first = Store::from_backend(Arc::new(db.open(clock.clone()).await));
-    let second = Store::from_backend(Arc::new(db.open(clock.clone()).await));
+    let raw = Arc::new(db.open(clock.clone()).await);
+    let (first, second) = (Store::from_backend(raw.clone()), Store::from_backend(Arc::new(db.open(clock).await)));
     let events = Events::default();
     let a = server(first.clone(), "a", &events).await;
     let b = server(second.clone(), "b", &events).await;
-    dropped_completion_settles_once(&a, &b, 24).await;
+    create(&a, "a").await;
+    create(&a, "b").await;
+    a.pause_mailbox(&addr(&job("b"))).await.unwrap();
+    let held = leased(&a, "a").await;
+    let report = sending("b");
+
+    // The completion's commit is the next write transaction of the first handle: no status read, an unstarted server.
+    let reached = Arc::new(Notify::new());
+    *raw.commit_fault.lock().unwrap() = Some(fault(reached.clone()));
+    let completing = tokio::spawn({
+        let (a, held, report) = (a.clone(), held.clone(), report.clone());
+        async move { complete(&a, &held, report).await }
+    });
+    reached.notified().await;
+    completing.abort();
+    assert!(completing.await.unwrap_err().is_cancelled(), "cancelled at the fault, before any answer");
+
+    a.pause_mailbox(&addr(&job("b"))).await.unwrap(); // the settlement boundary
+    let retried = complete(&b, &held, report).await.unwrap();
+    if lands {
+        assert_eq!(retried, CompleteTurnResult::LeaseLost, "the cancelled COMMIT applied");
+    } else {
+        assert_eq!(completed(Ok(retried)), TurnOutcome::Done, "the cancelled transaction rolled back");
+    }
+    let version = b.get_actor(&addr(&job("a"))).await.unwrap().unwrap().version;
+    let sent = b.pending(&addr(&job("b")), None, 100).await.unwrap().unwrap().items.len();
+    assert_eq!((version, sent), (1, 1), "one effect set");
+    assert!(b.running_turn(&held.actor).await.unwrap().is_none());
+    assert!(events.all().is_empty());
     first.close().await;
     second.close().await;
+}
+
+/// Scenario: Cancellation of the completion request, with two SQLite handles on one file: cancelled before `COMMIT` is
+/// asked for, while it is queued, and while it is in the driver.
+#[tokio::test]
+async fn on_a_shared_sqlite_file_a_completion_cancelled_at_each_commit_phase_applies_once() {
+    a_completion_cancelled_at(CommitFault::BeforeCommit, false).await;
+    a_completion_cancelled_at(CommitFault::Queued, false).await;
+    a_completion_cancelled_at(CommitFault::InFlight, true).await;
 }

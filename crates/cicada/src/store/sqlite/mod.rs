@@ -9,6 +9,8 @@ mod rows;
 pub(crate) mod schema;
 mod store;
 
+#[cfg(test)]
+pub(crate) use store::CommitFault;
 pub use store::SqliteOptions;
 pub(crate) use store::SqliteStore;
 
