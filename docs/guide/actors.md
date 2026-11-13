@@ -6,12 +6,13 @@ to work.
 
 | Crate | Contents |
 | --- | --- |
-| `cicada-actors` | Ready-made actors on the public API, each under a fixed type name: a supervisor (`SupervisorActor`), dead letters (`DeadLettersActor`), a topic (`TopicActor`), a scheduler (`SchedulerActor`), a rate limiter (`RateLimiterActor`), a debouncer (`DebouncerActor`) and a batcher (`BatcherActor`); `StoredMessage` and `Schedule`. |
+| `cicada-actors` | Ready-made actors on the public API, each under a fixed type name: a supervisor (`SupervisorActor`), dead letters (`DeadLettersActor`), a topic (`TopicActor`), a scheduler (`SchedulerActor`), a rate limiter (`RateLimiterActor`), a debouncer (`DebouncerActor`) and a batcher (`BatcherActor`); durable flows (`Flow`, `FlowActor`) under a type name the host chooses; `StoredMessage` and `Schedule`. |
 
 The Rust blocks of this guide are doctests of the `examples` crate (`cargo test -p cicada-examples --doc`).
 
 `cicada-actors` holds actors that use only the public API of the core (ADR 0018, ADR 0028). Each has a fixed type name;
-a node hosts it like any other type, and the host creates its instances.
+a node hosts it like any other type, and the host creates its instances. [Flows](#flows) are the exception: a host
+writes its own flow, names its type and hosts it with `FlowActor` (ADR 0031).
 
 | Actor | Type name | Key | What it does |
 | --- | --- | --- | --- |
@@ -22,12 +23,14 @@ a node hosts it like any other type, and the host creates its instances.
 | `RateLimiterActor` | `cicada.rate-limiter` | the name of the limit | Sends each submitted message to its target at the next free slot of a shared rate. |
 | `DebouncerActor` | `cicada.debouncer` | the key whose bursts it debounces | Keeps the latest submission of a burst and sends it to its target once the burst is quiet. |
 | `BatcherActor` | `cicada.batcher` | the stream or group whose items it batches | Collects items and sends them to its target as one message when the batch is full or has waited long enough. |
+| `FlowActor<F>` | chosen by the flow `F` | one run of the flow | Runs a multi-step job written as async code, one new step per turn, replaying the results it saved. |
 
 A message that one of them keeps to send later is a `StoredMessage`: a type name and a JSON payload,
 `{"type": …, "payload": …}`. The actor knows where it goes, so it holds no address. `StoredMessage::for_ref(&worker,
 WorkerMsg::Begin { batch: 7 })` builds one from a typed ref and a message, so a message of the wrong family does not
 compile. The contracts of the seven types are wire formats; their references in
-[docs/reference/contracts](../reference/contracts/) pin them, doc comments included.
+[docs/reference/contracts](../reference/contracts/) pin them, doc comments included. The contract of a flow holds the
+host's input, so the host pins it.
 
 Their states and messages are checked like any other, against the depth limit of 64 levels too
 ([How deep a value can be](core.md#how-deep-a-value-can-be)). As they hold values two to four levels down, they keep
@@ -648,3 +651,191 @@ curl -X POST localhost:8080/actors/cicada.batcher/audit/messages -H 'content-typ
   deeper item fails its `Add`, with the cause `handler` when it would be held and `refused` when it would be sent at
   once; the earlier batch and its timer stay as they were. The batcher is newer than 0.16.0, so no stored batch holds
   a deeper item.
+
+## Flows
+
+A flow is a multi-step job written as ordinary async code (ADR 0031): create an account, send a welcome mail,
+provision a workspace. Each run is one actor, hosted by `FlowActor<F>`, whose state holds the run's input and a
+journal of saved results. Every execution runs the flow's code from the top: a step whose result the journal holds
+returns it without running again, and the first new step runs its closure, whose result commits together with the
+next `Continue`. So a committed step never runs again, a failed step is retried by the flow's policy, and the order of
+the steps is plain code instead of a state machine like that of [examples/src/steps.rs](../../examples/src/steps.rs).
+Unlike the other actors of this crate, a flow has no fixed type name: its host chooses it.
+
+<!-- doctest
+# use cicada::prelude::*;
+# use serde::{Deserialize, Serialize};
+# struct Accounts;
+# impl Accounts {
+#     async fn create(&self, _email: &str, key: String) -> Result<String, HandlerError> { Ok(format!("acc-{key}")) }
+#     async fn welcome(&self, _account: &str, _key: String) -> Result<(), HandlerError> { Ok(()) }
+# }
+@@25
+# async fn host(store: cicada::Store, accounts: Accounts) -> Result<(), Box<dyn std::error::Error>> {
+@@1
+# let _ = system;
+# Ok(())
+# }
+-->
+```rust
+use cicada_actors::{Flow, FlowActor, Step};
+
+/// The input of a run: part of the contract, fixed at its create.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+struct Signup {
+    email: String,
+}
+
+/// The flow holds its clients, like an actor; it needs no Clone or Debug.
+struct Onboarding {
+    accounts: Accounts,
+}
+
+impl Flow for Onboarding {
+    const TYPE: &'static str = "flows.onboarding";
+    type Input = Signup;
+
+    async fn run(&self, step: &mut Step, signup: Signup) -> HandlerResult {
+        let accounts = &self.accounts;
+        let account: String = step.run("create-account", |key| accounts.create(&signup.email, key)).await?;
+        step.run("send-welcome", |key| accounts.welcome(&account, key)).await?;
+        Ok(())
+    }
+}
+
+let system = ActorSystem::builder(store).host(FlowActor::new(Onboarding { accounts })).build();
+```
+
+`step.run(id, closure)` gives the closure the step's idempotency key and returns its result; `?` passes on the error
+by which a new step suspends the execution, as any other error. In an `App` the flow is one more type:
+`App::new().host(FlowActor::new(Onboarding { accounts }))`. A host starts a run by creating it with
+`FlowState::new(input)` and sending it `Continue`; a producer can do both in one turn, as a turn's creates come
+before its sends:
+
+<!-- doctest
+# use cicada::prelude::*;
+# use serde::{Deserialize, Serialize};
+# #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+# struct Signup { email: String }
+# struct Onboarding;
+# impl cicada_actors::Flow for Onboarding {
+#     const TYPE: &'static str = "flows.onboarding";
+#     type Input = Signup;
+#     async fn run(&self, _step: &mut cicada_actors::Step, _input: Signup) -> HandlerResult { Ok(()) }
+# }
+# async fn start(system: ActorSystem) -> Result<(), Box<dyn std::error::Error>> {
+@@5
+# Ok(())
+# }
+-->
+```rust
+use cicada_actors::{FlowMsg, FlowRun, FlowState};
+
+let run = FlowRun::<Onboarding>::named("bob"); // flows.onboarding/bob
+system.create(&run, &FlowState::new(Signup { email: "bob@example.test".into() })).await?;
+system.send(&run, FlowMsg::Continue).await?; // or turn.create and turn.send in a producer's turn
+```
+
+[examples/src/flow_onboarding.rs](../../examples/src/flow_onboarding.rs) works this out, on the services of the steps
+example, and the sample service hosts it. Over HTTP:
+
+```sh
+curl -X PUT localhost:8080/actors/flows.onboarding/bob -H 'content-type: application/json' -d '{"state":
+  {"input": {"email": "bob@example.test"}}}'
+curl -X POST localhost:8080/actors/flows.onboarding/bob/messages -H 'content-type: application/json' \
+  -d '{"type": "Continue"}'
+```
+
+The state is an ordinary actor state, read with `GET /actors/flows.onboarding/bob` or `get_actor`; `FlowState::result`
+decodes one saved result:
+
+<!-- doctest
+# use cicada::prelude::*;
+# use serde::{Deserialize, Serialize};
+# #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+# struct Signup { email: String }
+# async fn read(system: ActorSystem, run: ActorAddress) -> Result<(), Box<dyn std::error::Error>> {
+@@6
+# Ok(())
+# }
+-->
+```rust
+use cicada_actors::{FlowState, FlowStatus};
+
+let snapshot = system.get_actor(&run).await?.expect("the run exists");
+let state: FlowState<Signup> = serde_json::from_value(snapshot.state)?;
+let account: Option<String> = state.result("create-account").transpose()?; // None until it is saved
+println!("{account:?}, done: {}", state.status == FlowStatus::Done);
+```
+
+On the wire: `{"input": {"email": "bob@example.test"}, "journal": [{"kind": "step", "id": "create-account",
+"result": "acc-1"}], "status": "running", "armed": "…"}`. `journal`, `status` and `armed` default to empty, `running`
+and null. A journal given at the create is trusted as progress: the replay checks its order and the types of its
+results against the code, not whether its effects happened.
+
+- **One new step per turn.** The first step the journal does not hold runs its closure; its result and the next
+  `Continue` commit together, and the next step runs in the next turn. A run of n steps takes n + 2 turns: the start,
+  one for each step, and the replay that completes it. A flow that returns `Ok` after replaying every saved entry is
+  `done`.
+- **Starting and recovering.** A `Continue` that is not the run's armed one cancels the armed one, if any, and arms a
+  fresh one, due now with the flow's retry policy and the incoming correlation id, without running flow code. Only the
+  armed `Continue` runs the flow, so pokes never race each other; each poke starts the attempts afresh. The policy is
+  `Flow::retry()`, by default the crate's shared policy (7 attempts, the waits doubling from one second).
+- **The key of a step.** Each closure receives `<run address>/<step id>`, such as
+  `flows.onboarding/bob/create-account`; the address is percent-encoded, so `/` in a run key is `%2F`. The key is the
+  same on every attempt, retry, redrive and recovery. A step runs at least once: one whose turn does not commit (a
+  crash, a timeout, a lost lease) runs again with the same key, so the service it calls deduplicates by that key.
+  Never reuse a run key for another job, not even after a delete: the new run's steps would get the old keys.
+- **Replay.** The code outside step closures runs again on every execution: it must be deterministic and free of
+  effects. Decide the next step only from the input and earlier results; read clocks, random numbers and services
+  inside a step. A call that does not match the saved entry at its place (another id or kind), a saved result that does
+  not decode as the type asked for, a step id used twice, and a flow that returns `Ok` before reaching all saved
+  entries fail the turn for good (the cause `refused`), and nothing new is saved.
+- **Errors of a step.** A closure's error fails the turn with its own retryability: an ordinary error is retried by the
+  flow's policy, a permanent one fails at once. Catching the error does not help: the first new step, or the first
+  misuse, decides the turn whatever the flow returns, and a later step runs nothing. A business outcome to branch on,
+  such as a declined card, is a successful result: return a `Result<T, String>` as the step's value.
+- **Timeouts belong inside the closure.** A step future dropped while its closure runs (a `tokio::time::timeout` or a
+  `select!` around `step.run`), or a panic caught around it, fails the turn for good, naming the step; a future never
+  polled does nothing. Put a timeout inside the closure, where its error is retried like any other. A flow that hangs
+  or panics follows the core's rules for a turn, and commits nothing.
+- **Done and stalled runs.** A done run ignores `Continue` and keeps its state, results included, until it is deleted;
+  nothing cleans it up. A run whose armed `Continue` was cancelled, purged or ran out of attempts stays `running` with
+  its saved steps; a public `Continue` resumes it. Watch the flow's type to hear of failures, as for any actor (dead
+  letters that watch it keep them); the runner sets no watch. Pause, resume, delete and the claim limit work as for
+  any actor.
+- **Changing a flow.** The contract holds the input's schema and the journal; pin it with a snapshot, as for any type
+  of the host ([Contract snapshots](core.md#contract-snapshots)). A change of the input is a contract change. A change
+  of the steps (their order, ids or result types) can break the replay of runs in progress without changing the
+  contract: let the old runs finish first, or give the new code a new type name.
+- **Limits.** A journal holds at most 1,000 entries; a new step after that fails for good without running. Step ids
+  are 1 through 100 characters of `A-Za-z0-9._~-:`, unique in a run. A result must encode as JSON, hold no NUL and be
+  at most 61 levels deep, as the state, the journal and the entry hold it three levels down; one that does not fails
+  for good before it is saved. The input may be 63 levels deep. Nothing bounds the bytes of a result beyond the core's
+  limits, and each step rewrites the whole state, so keep results small or save references to data kept elsewhere.
+- **The sleep entry.** A journal entry is `{"kind": "step", "id", "result"}` or `{"kind": "sleep", "id", "until"}`. The
+  sleep entry is in the contract for a durable sleep of a later release, so that release changes no contract; no
+  method writes one yet.
+
+A host pins the contract of its flow like that of any of its types:
+
+<!-- doctest
+# use cicada::prelude::*;
+# use serde::{Deserialize, Serialize};
+# #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+# struct Signup { email: String }
+# struct Onboarding;
+# impl cicada_actors::Flow for Onboarding {
+#     const TYPE: &'static str = "flows.onboarding";
+#     type Input = Signup;
+#     async fn run(&self, _step: &mut cicada_actors::Step, _input: Signup) -> HandlerResult { Ok(()) }
+# }
+# fn check() -> Result<(), Box<dyn std::error::Error>> {
+@@2
+# Ok(())
+# }
+-->
+```rust,no_run
+let contract = cicada::actor::contract_of::<cicada_actors::FlowActor<Onboarding>>()?;
+cicada_test::assert_contracts_match("tests/contracts", &[contract]); // in a test of the host
+```

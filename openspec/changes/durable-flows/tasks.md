@@ -17,7 +17,7 @@
   Test normal completion, failure/recovery and idempotency keys; host it in the sample service without automatic runs
   and add its contract snapshots/texts and message/state samples. Verify example and sample-service targeted tests;
   regenerate snapshots with `CICADA_UPDATE_CONTRACTS=true` where applicable.
-- [ ] 5. Add actors-guide doctests for hosting, creation, execution, result reads, watches/recovery and host contract
+- [x] 5. Add actors-guide doctests for hosting, creation, execution, result reads, watches/recovery and host contract
   snapshots. Document replay obligations, timeouts inside closures, run-key reuse, code evolution, limits and cleanup.
   Apply ADR 0031's architecture description; update guide tables, README, crate docs, AGENTS map and changelog.
   Verify `cargo test -p cicada-examples --doc` and `cargo test -p cicada-examples --test docs`.

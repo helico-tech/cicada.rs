@@ -7,6 +7,29 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.16.5 — unreleased
+
+Nothing breaks: durable flows, a new kind of ready-made actor whose type name the host chooses. A node that hosts a
+flow registers its contract at its first start; nothing changes for the other nodes, and no schema of the store
+changes.
+
+### Added
+
+- Durable flows (ADR 0031): a multi-step job written as async code. A host implements `Flow` (its type name `TYPE`,
+  its `Input`, `run` and, optionally, `retry`) and hosts it with `FlowActor::new`; each run is one actor, named by
+  `FlowRun::<F>::named(key)` and created with `FlowState::new(input)`. In `run`, `step.run(id, closure)` returns the
+  saved result of a step, or calls the closure with the key `<run address>/<step id>` and suspends: its result
+  commits with the next `Continue`, one new step per turn. A public `FlowMsg::Continue` starts a run or recovers one
+  whose continuation was cancelled, purged or ran out of attempts; it arms a fresh `Continue` with the flow's retry
+  policy (by default the crate's shared one) and the correlation id, and only that armed `Continue` runs flow code.
+  The state is `{"input", "journal", "status", "armed"}`, with journal entries `{"kind": "step", "id", "result"}` and
+  `{"kind": "sleep", "id", "until"}`; the sleep entry is for a durable sleep of a later release. `FlowState::result`
+  reads a saved result. A changed replay, a step id used twice, an early return, a step future dropped while its
+  closure runs, a result that cannot be saved and a 1,001st entry fail the turn for good; a closure's error keeps its
+  own retryability, even when the flow catches it. Done runs ignore `Continue` and stay until they are deleted. The
+  actors guide, "Flows", has the rules; `examples/src/flow_onboarding.rs` is a worked example beside the unchanged
+  `steps` example, and the sample service hosts it as `flows.onboarding` without starting a run.
+
 ## 0.16.4 — 2026-11-13
 
 Nothing breaks: a new ready-made actor, the batcher. A node that hosts it registers its contract at its first start;
