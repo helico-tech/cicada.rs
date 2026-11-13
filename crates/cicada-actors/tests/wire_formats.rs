@@ -1,6 +1,8 @@
 //! The wire formats of the seven ready-made actors (ADR 0028): their contracts against the references in
 //! `docs/reference/contracts`, the JSON their messages and states are written as, and sample checks for what the
-//! helpers and the actors write: both the registered schemas and the decoders take it (ADR 0026).
+//! helpers and the actors write: both the registered schemas and the decoders take it (ADR 0026). And the wire format
+//! of a flow (ADR 0031): a test flow's contract, whose type name its host chooses, pinned in `tests/contracts`, with the
+//! step and sleep entries of its journal.
 
 mod common;
 
@@ -12,13 +14,15 @@ use cicada::prelude::*;
 use cicada::{Failed, FailureCause, StopCause, Stopped, WatchTarget};
 use cicada_actors::{
     Batcher, BatcherActor, BatcherMsg, BatcherState, Child, DeadLetters, DeadLettersActor, DeadLettersMsg,
-    DeadLettersState, Debouncer, DebouncerActor, DebouncerMsg, DebouncerState, RateLimiter, RateLimiterActor,
-    RateLimiterMsg, RateLimiterState, Schedule, Scheduler, SchedulerActor, SchedulerMsg, SchedulerState, StoredMessage,
-    Supervisor, SupervisorActor, SupervisorMsg, SupervisorState, Topic, TopicActor, TopicMsg, TopicState,
+    DeadLettersState, Debouncer, DebouncerActor, DebouncerMsg, DebouncerState, Flow, FlowActor, FlowMsg, FlowRun,
+    FlowState, FlowStatus, JournalEntry, RateLimiter, RateLimiterActor, RateLimiterMsg, RateLimiterState, Schedule,
+    Scheduler, SchedulerActor, SchedulerMsg, SchedulerState, StoredMessage, Supervisor, SupervisorActor, SupervisorMsg,
+    SupervisorState, Topic, TopicActor, TopicMsg, TopicState,
 };
 use cicada_axum::{assert_message_sample, assert_state_sample};
 use cicada_test::{TestActors, UPDATE_CONTRACTS_ENV, describe_changes};
 use common::*;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 /// The references of the contracts: what a host depends on, so they live with the other references of the docs.
@@ -616,4 +620,126 @@ async fn the_states_the_actors_write_pass_their_samples() {
     let written = test.state_json(&bat).await.unwrap();
     assert_eq!((written["items"].clone(), written["armed"].clone()), (json!([]), Value::Null), "{written}");
     assert_state_sample::<BatcherState>(&written);
+}
+
+/// The input of the test flow.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+struct SignUp {
+    /// The user who signs up.
+    user: String,
+}
+
+/// The test flow, `test.sign-up`: an account, then a welcome.
+struct SignUpFlow;
+
+impl Flow for SignUpFlow {
+    const TYPE: &'static str = "test.sign-up";
+    type Input = SignUp;
+
+    async fn run(&self, step: &mut cicada_actors::Step, input: SignUp) -> HandlerResult {
+        let account: String = step.run("account", |key| async move { Ok(format!("{}@{key}", input.user)) }).await?;
+        step.run("welcome", |_key| async move { Ok(account.len()) }).await?;
+        Ok(())
+    }
+}
+
+/// A flow's contract is the host's: pinned with the actor tests, not in `docs/reference/contracts`. It holds the sleep
+/// entry of the journal already, so the sleep of a later release changes no hash.
+#[test]
+fn the_contract_of_a_test_flow_matches_its_fixture() {
+    let contract = contract_of::<FlowActor<SignUpFlow>>().unwrap();
+    assert_eq!(contract.type_name().as_str(), "test.sign-up");
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/contracts");
+    let update = std::env::var(UPDATE_CONTRACTS_ENV).is_ok_and(|v| v == "true");
+    if let Err(e) = check_references(&fixtures, std::slice::from_ref(&contract), update) {
+        panic!("{e}");
+    }
+    let state = contract.to_json()["state"].to_string();
+    for word in ["\"sleep\"", "\"until\"", "\"step\"", "\"result\"", "\"running\"", "\"done\"", "\"armed\""] {
+        assert!(state.contains(word), "{word} in {state}");
+    }
+    assert!(!contracts_dir().join("test.sign-up.json").exists(), "no fixed type name in the catalog");
+}
+
+#[test]
+fn a_flow_state_is_written_in_camel_case_passes_its_samples_and_refuses_invalid_states() {
+    type State = FlowState<SignUp>;
+    let input = json!({"user": "u1"});
+    let initial = json_of(FlowState::new(SignUp { user: "u1".into() }));
+    assert_eq!(initial, json!({"input": input, "journal": [], "status": "running", "armed": null}));
+    assert_state_sample::<State>(&initial);
+    assert_state_sample::<State>(&json!({"input": input}));
+    let account = json!({"kind": "step", "id": "account", "result": "u1@test.sign-up/u1/account"});
+    let progress = json!({"input": input, "journal": [account], "status": "running", "armed": "next-message"});
+    assert_state_sample::<State>(&progress);
+    let notify = json!({"kind": "step", "id": "notify", "result": null});
+    let wait = json!({"kind": "sleep", "id": "wait", "until": "2026-11-14T00:00:00Z"});
+    let slept = json!({"input": input, "journal": [notify, wait]});
+    assert_state_sample::<State>(&slept);
+    let decoded: State = serde_json::from_value(slept.clone()).unwrap();
+    let until = "2026-11-14T00:00:00Z".parse().unwrap();
+    assert_eq!(decoded.journal[1], JournalEntry::Sleep { id: "wait".into(), until });
+    let written = json!({"input": input, "journal": slept["journal"], "status": "running", "armed": null});
+    assert_eq!(json_of(&decoded), written, "the sleep round-trips");
+    let welcome = json!({"kind": "step", "id": "welcome", "result": 23});
+    let done = json!({"input": input, "journal": [account, welcome], "status": "done", "armed": null});
+    assert_state_sample::<State>(&done);
+    assert_eq!(serde_json::from_value::<State>(done).unwrap().status, FlowStatus::Done);
+
+    let many: Vec<Value> = (0..1001).map(|i| json!({"kind": "step", "id": format!("s{i}"), "result": i})).collect();
+    let entry = |entry: Value| json!({"input": input, "journal": [entry]});
+    for invalid in [
+        json!({}),
+        json!({"input": {"user": 1}}),
+        json!({"input": input, "journal": [account, account]}),
+        json!({"input": input, "journal": [notify, {"kind": "sleep", "id": "notify", "until": "2026-11-14T00:00:00Z"}]}),
+        entry(json!({"kind": "step", "id": "a/b", "result": 1})),
+        entry(json!({"kind": "step", "id": "", "result": 1})),
+        entry(json!({"kind": "step", "id": "x".repeat(101), "result": 1})),
+        entry(json!({"kind": "step", "id": "a"})),
+        entry(json!({"kind": "wait", "id": "a"})),
+        entry(json!({"kind": "sleep", "id": "a", "until": "soon"})),
+        entry(json!({"kind": "sleep", "id": "a", "until": "+10000-01-01T00:00:00Z"})),
+        json!({"input": input, "journal": many}),
+        json!({"input": input, "status": "paused"}),
+        json!({"input": input, "status": "done", "armed": "m1"}),
+    ] {
+        assert!(serde_json::from_value::<State>(invalid.clone()).is_err(), "{invalid}");
+    }
+}
+
+#[test]
+fn a_flow_message_and_saved_results_read_back() {
+    assert_eq!(json_of(FlowMsg::Continue), json!({"type": "Continue"}));
+    assert_message_sample::<FlowMsg>(&json!({"type": "Continue"}));
+    assert_eq!(FlowRun::<SignUpFlow>::named("u1").address().unwrap().as_str(), "test.sign-up/u1");
+    let state: FlowState<SignUp> = serde_json::from_value(json!({"input": {"user": "u1"}, "journal": [
+        {"kind": "step", "id": "account", "result": "a1"},
+        {"kind": "step", "id": "notify", "result": null},
+        {"kind": "sleep", "id": "wait", "until": "2026-11-14T00:00:00Z"},
+    ]}))
+    .unwrap();
+    assert_eq!(state.result::<String>("account").unwrap().unwrap(), "a1");
+    state.result::<()>("notify").unwrap().unwrap();
+    assert_eq!(state.result::<Option<String>>("notify").unwrap().unwrap(), None);
+    assert!(state.result::<u64>("account").unwrap().is_err(), "a bad type is an error");
+    assert!(state.result::<Value>("wait").is_none(), "a sleep is no step");
+    assert!(state.result::<Value>("absent").is_none());
+}
+
+/// The states a run writes on its way pass their samples.
+#[tokio::test(start_paused = true)]
+async fn the_states_a_flow_writes_pass_their_samples() {
+    let test = TestActors::builder().with(|node| node.host(FlowActor::new(SignUpFlow))).build().await.unwrap();
+    let run = FlowRun::<SignUpFlow>::named("u1");
+    test.create(&run, &FlowState::new(SignUp { user: "u1".into() })).await;
+    test.send(&run, FlowMsg::Continue).await;
+    for _ in 0..4 {
+        test.system().run_due_turns(1).await.unwrap();
+        assert_state_sample::<FlowState<SignUp>>(&test.state_json(&run).await.unwrap());
+    }
+    let written = test.state_json(&run).await.unwrap();
+    assert_eq!(written["status"], "done");
+    let account = json!({"kind": "step", "id": "account", "result": "u1@test.sign-up/u1/account"});
+    assert_eq!(written["journal"], json!([account, {"kind": "step", "id": "welcome", "result": 26}]));
 }

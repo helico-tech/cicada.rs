@@ -10,7 +10,7 @@
   stable external keys, public recovery, done/control semantics, depth/count limits, and swallowed failures.
   Include external timeout/select cancellation followed by Ok/Err/another step, caught invocation/serialization
   panics, an unpolled future, and timeout inside a closure; count actual closure invocations. Run those targeted tests.
-- [ ] 3. Pin a test flow's contract in actor-test fixtures, plus literal initial/progress/done/Sleep state samples
+- [x] 3. Pin a test flow's contract in actor-test fixtures, plus literal initial/progress/done/Sleep state samples
   and FlowState::result behavior in wire-format tests. Preserve the planned sleep representation without exposing
   Step::sleep yet. Verify valid and invalid state samples and regenerate only the intended fixtures.
 - [ ] 4. Add `examples/src/flow_onboarding.rs` alongside the unchanged steps example, using its service interface.
