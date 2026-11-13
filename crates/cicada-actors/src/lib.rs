@@ -1,4 +1,5 @@
-//! Ready-made actors on Cicada's public API (ADR 0018, ADR 0028), each under a fixed type name, and a schedule helper.
+//! Ready-made actors on Cicada's public API (ADR 0018, ADR 0028), each under a fixed type name, a schedule helper, and
+//! durable flows under a type name the host chooses (ADR 0031).
 //!
 //! | Item | Type name | What |
 //! | --- | --- | --- |
@@ -9,6 +10,7 @@
 //! | [`RateLimiterActor`] | `cicada.rate-limiter` | Sends each submitted message to its target at the next free slot of a rate |
 //! | [`DebouncerActor`] | `cicada.debouncer` | Keeps the latest submission of a burst and sends it once the burst is quiet |
 //! | [`BatcherActor`] | `cicada.batcher` | Collects items and sends them to its target as one batch on count or time |
+//! | [`FlowActor`] | chosen by the [`Flow`] | Runs a multi-step job written as async code, one step per turn, replaying saved results |
 //! | [`StoredMessage`] | | A message an actor keeps to send later: a type name and a JSON payload, built from a typed ref |
 //! | [`Schedule`] | | When a recurring job runs next |
 //!
@@ -19,6 +21,7 @@ pub mod batcher;
 pub mod dead_letters;
 pub mod debouncer;
 mod error;
+pub mod flow;
 pub mod rate_limiter;
 mod schedule;
 pub mod scheduler;
@@ -30,6 +33,7 @@ pub use batcher::{Batcher, BatcherActor, BatcherMsg, BatcherState, InvalidBatch}
 pub use dead_letters::{CapacityError, DeadLetter, DeadLetters, DeadLettersActor, DeadLettersMsg, DeadLettersState};
 pub use debouncer::{DebouncedMessage, Debouncer, DebouncerActor, DebouncerMsg, DebouncerState, InvalidDebounce};
 pub use error::EncodeError;
+pub use flow::{Flow, FlowActor, FlowMsg, FlowRun, FlowState, FlowStatus, JournalEntry, Step};
 pub use rate_limiter::{InvalidRate, RateLimiter, RateLimiterActor, RateLimiterMsg, RateLimiterState};
 pub use schedule::{Schedule, ScheduleError};
 pub use scheduler::{Scheduler, SchedulerActor, SchedulerMsg, SchedulerState};

@@ -1,6 +1,6 @@
 ## Implementation
 
-- [ ] 1. Add the public Flow/FlowActor/FlowRun/FlowState/FlowMsg/Step API, journal/status types and validated serde in
+- [x] 1. Add the public Flow/FlowActor/FlowRun/FlowState/FlowMsg/Step API, journal/status types and validated serde in
   `cicada-actors`, with exports. Implement ordered replay, lazy Step futures, InProgress and outcome latches, result
   validation and the armed continuation protocol. Add library tests for state/id/count/result validation and API
   doctests showing ordinary async closures, error propagation and typed refs without requiring F: Clone/Debug.
