@@ -4,9 +4,9 @@
 
 mod common;
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::Router;
@@ -22,6 +22,7 @@ use common::*;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use serde_json::Value;
+use tokio::time::Instant;
 use tower::ServiceExt;
 
 // ---- reading a stream ----
@@ -257,7 +258,8 @@ async fn a_body_that_is_not_read_gets_the_cores_resync_and_no_queue_of_its_own()
     assert_eq!(events.event().await, changed("counter/z"), "nothing of the 1100 creates was queued for the body");
 }
 
-/// Scenario: Client disconnect.
+/// Scenario: Client disconnect. That the dropped response releases its subscription and keep-alive is checked on the
+/// adapter, with a source that shows its drop (`src/changes.rs`); here, that nothing else is disturbed.
 #[tokio::test(start_paused = true)]
 async fn a_dropped_body_leaves_other_streams_and_requests_working() {
     let system = node(memory_store()).await;
@@ -310,22 +312,51 @@ async fn stopping_the_node_leaves_its_streams_open() {
 
 // ---- the guide's consumer ----
 
+/// The state of the connection, kept apart from the reads, as the guide's `connection`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Connection {
+    Connecting,
+    Live,
+    Reconnecting,
+    Stopped,
+}
+
+/// What happens to the page while a read is in flight: the source reports an error (`closed` is `readyState ==
+/// CLOSED`; otherwise the browser reconnects), or the page disposes the view.
+#[derive(Debug, Clone, Copy)]
+enum Outside {
+    Error { closed: bool },
+    Dispose,
+}
+
 /// The consumer of the HTTP guide, in Rust: one serialized worker, a bounded set of dirty addresses and a generation
-/// that a resync (or an overflow of the set) moves on, so that an older, incomplete listing is never published.
+/// that a resync (or an overflow of the set) moves on, so that an older, incomplete listing is never published; one
+/// retry timer; the state of the connection apart from the reads; and disposal.
 struct Consumer {
     app: Router,
     prefix: String,
+    uri: String,
     page: usize,
     max_dirty: usize,
-    events: Events,
+    /// The source; `None` once it is closed.
+    events: Option<Events>,
+    outside: Arc<Mutex<VecDeque<Outside>>>,
     view: BTreeMap<String, Value>,
     dirty: BTreeSet<String>,
     generation: u64,
     needs_listing: bool,
-    /// Listings published, listings dropped for a newer generation, and reads that failed.
+    connection: Connection,
+    /// The one retry timer: when it is due.
+    retry_at: Option<Instant>,
+    /// Disposed: the guide's aborted signal.
+    aborted: bool,
+    /// The connection state of each render.
+    shown: Vec<Connection>,
+    /// Listings published, listings dropped for a newer generation, reads that failed, and requests sent.
     published: usize,
     abandoned: usize,
     failures: usize,
+    requests: usize,
     most_dirty: usize,
 }
 
@@ -334,35 +365,55 @@ const RETRY: Duration = Duration::from_secs(1);
 impl Consumer {
     /// Opens the stream and waits for its first resync, as the page waits before its first full read.
     async fn open(app: &Router, prefix: &str, page: usize, max_dirty: usize) -> Self {
-        let events = open(app, &format!("/changes?prefix={}", enc(prefix))).await;
+        let uri = format!("/changes?prefix={}", enc(prefix));
+        let events = open(app, &uri).await;
         let mut consumer = Self {
             app: app.clone(),
             prefix: prefix.to_owned(),
+            uri,
             page,
             max_dirty,
-            events,
+            events: Some(events),
+            outside: Arc::default(),
             view: BTreeMap::new(),
             dirty: BTreeSet::new(),
             generation: 0,
             needs_listing: false,
+            connection: Connection::Connecting,
+            retry_at: None,
+            aborted: false,
+            shown: Vec::new(),
             published: 0,
             abandoned: 0,
             failures: 0,
+            requests: 0,
             most_dirty: 0,
         };
-        let first = consumer.events.event().await.expect("an event").expect("open");
+        let first = consumer.events.as_mut().unwrap().event().await.expect("an event").expect("open");
         consumer.handle(first);
         assert!(consumer.needs_listing, "the first event is a resync");
         consumer
     }
 
+    /// Where a test puts what happens while a read is in flight.
+    fn outside(&self) -> Arc<Mutex<VecDeque<Outside>>> {
+        self.outside.clone()
+    }
+
+    fn show(&mut self) {
+        self.shown.push(self.connection);
+    }
+
     fn handle(&mut self, (name, data): (String, String)) {
         match name.as_str() {
-            "resync" => self.resync(),
+            "resync" => {
+                self.connection = Connection::Live;
+                self.relist();
+            }
             "changed" => {
                 let address = serde_json::from_str::<Value>(&data).unwrap()["address"].as_str().unwrap().to_owned();
-                if !self.dirty.contains(&address) && self.dirty.len() == self.max_dirty {
-                    self.resync(); // too many to keep: read everything again
+                if !self.dirty.contains(&address) && self.dirty.len() >= self.max_dirty {
+                    self.relist(); // too many to keep: read everything again
                 } else {
                     self.dirty.insert(address);
                     self.most_dirty = self.most_dirty.max(self.dirty.len());
@@ -372,49 +423,116 @@ impl Consumer {
         }
     }
 
-    fn resync(&mut self) {
+    fn relist(&mut self) {
         self.generation += 1;
         self.dirty.clear();
         self.needs_listing = true;
     }
 
-    /// Handles the events that have arrived, as EventSource would while a read is in flight.
-    async fn pump(&mut self) {
-        while let Some(Some(event)) = self.events.ready().await {
-            self.handle(event);
+    /// The source's error handler: CLOSED stops for good; otherwise the browser reconnects, and the new stream starts
+    /// with a resync.
+    async fn error(&mut self, closed: bool) {
+        if closed {
+            self.events = None;
+            self.connection = Connection::Stopped;
+            self.show();
+        } else {
+            self.connection = Connection::Reconnecting;
+            self.show();
+            self.events = Some(open(&self.app, &self.uri).await);
         }
     }
 
-    /// Works until nothing is left to do; `between_pages` runs after each page of a listing is read.
-    async fn settle(&mut self, mut between_pages: impl AsyncFnMut(usize)) {
+    /// The function `follow` returns: the source closes, a read in flight is never applied, the timer is cleared.
+    fn dispose(&mut self) {
+        self.aborted = true;
+        self.events = None;
+        self.retry_at = None;
+    }
+
+    /// Handles what has happened meanwhile, as the page's handlers would while a read is in flight.
+    async fn pump(&mut self) {
         loop {
-            self.pump().await;
+            let next = self.outside.lock().unwrap().pop_front();
+            match next {
+                Some(Outside::Error { closed }) => self.error(closed).await,
+                Some(Outside::Dispose) => self.dispose(),
+                None => break,
+            }
+        }
+        loop {
+            let next = match &mut self.events {
+                Some(events) => events.ready().await,
+                None => None,
+            };
+            match next {
+                Some(Some(event)) => self.handle(event),
+                _ => break,
+            }
+        }
+    }
+
+    /// `kick` and `work`: works until nothing is left, or until a failure arms the one retry timer (`later`).
+    async fn work(&mut self, between_pages: &mut impl AsyncFnMut(usize)) {
+        self.pump().await;
+        if self.retry_at.is_some() {
+            return; // the timer will kick
+        }
+        while !self.aborted {
             if self.needs_listing {
                 self.needs_listing = false;
-                self.list(&mut between_pages).await;
+                match self.list(between_pages).await {
+                    Ok(Some(fresh)) => {
+                        self.view = fresh;
+                        self.published += 1;
+                        self.show();
+                    }
+                    Ok(None) => {} // a newer resync: list again
+                    Err(()) if self.aborted => return,
+                    Err(()) => {
+                        self.needs_listing = true;
+                        self.retry_at = Some(Instant::now() + RETRY);
+                        return;
+                    }
+                }
             } else if let Some(address) = self.dirty.pop_first() {
-                let reply = get(&self.app, &format!("/actors/{address}")).await;
-                match reply.status {
-                    StatusCode::OK => {
-                        self.view.insert(address, reply.json());
-                    }
-                    StatusCode::NOT_FOUND => {
-                        self.view.remove(&address);
-                    }
-                    _ => {
-                        self.failures += 1;
-                        self.dirty.insert(address); // kept for the retry
-                        tokio::time::sleep(RETRY).await;
+                match self.read(&address).await {
+                    Ok(()) => self.show(),
+                    Err(()) if self.aborted => return,
+                    Err(()) => {
+                        if self.dirty.len() >= self.max_dirty {
+                            self.relist();
+                        } else {
+                            self.dirty.insert(address); // never lose it
+                        }
+                        self.retry_at = Some(Instant::now() + RETRY);
+                        return;
                     }
                 }
             } else {
                 return;
             }
+            self.pump().await;
         }
     }
 
-    /// Reads every page into a fresh map and publishes it only when it is complete and still current.
-    async fn list(&mut self, between_pages: &mut impl AsyncFnMut(usize)) {
+    /// Works, then lets each armed retry timer fire and work again, until idle; `between_pages` runs after each page
+    /// of a listing is read.
+    async fn settle(&mut self, mut between_pages: impl AsyncFnMut(usize)) {
+        self.work(&mut between_pages).await;
+        while let Some(at) = self.retry_at {
+            tokio::time::sleep_until(at).await;
+            self.retry_at = None;
+            self.work(&mut between_pages).await;
+        }
+    }
+
+    /// Reads every page into a fresh map; `Ok(None)` when a newer resync came meanwhile, `Err` when a read failed or
+    /// the view was disposed while it was in flight.
+    async fn list(
+        &mut self,
+        between_pages: &mut impl AsyncFnMut(usize),
+    ) -> Result<Option<BTreeMap<String, Value>>, ()> {
         let generation = self.generation;
         let mut fresh = BTreeMap::new();
         let mut cursor: Option<String> = None;
@@ -423,30 +541,51 @@ impl Consumer {
             if let Some(cursor) = &cursor {
                 uri.push_str(&format!("&cursor={}", enc(cursor)));
             }
+            self.requests += 1;
             let reply = get(&self.app, &uri).await;
+            between_pages(n).await; // while the read is in flight
+            self.pump().await;
+            if self.aborted {
+                return Err(()); // the aborted fetch rejects: its page is never applied
+            }
             if reply.status != StatusCode::OK {
                 self.failures += 1;
-                self.needs_listing = true;
-                tokio::time::sleep(RETRY).await;
-                return;
+                return Err(());
+            }
+            if self.generation != generation {
+                self.abandoned += 1; // this listing may miss what the resync reports
+                return Ok(None);
             }
             let page = reply.json();
             for actor in items(&page) {
                 fresh.insert(actor["address"].as_str().unwrap().to_owned(), actor.clone());
-            }
-            between_pages(n).await;
-            self.pump().await;
-            if self.generation != generation {
-                self.abandoned += 1; // a newer resync: this listing may miss what it reports
-                return;
             }
             match page["next"].as_str() {
                 Some(next) => cursor = Some(next.to_owned()),
                 None => break,
             }
         }
-        self.view = fresh;
-        self.published += 1;
+        Ok(Some(fresh))
+    }
+
+    /// Reads one address: `200` sets it, `404` removes it, anything else fails.
+    async fn read(&mut self, address: &str) -> Result<(), ()> {
+        self.requests += 1;
+        let reply = get(&self.app, &format!("/actors/{address}")).await;
+        match reply.status {
+            StatusCode::OK => {
+                self.view.insert(address.to_owned(), reply.json());
+                Ok(())
+            }
+            StatusCode::NOT_FOUND => {
+                self.view.remove(address);
+                Ok(())
+            }
+            _ => {
+                self.failures += 1;
+                Err(())
+            }
+        }
     }
 }
 
@@ -537,20 +676,28 @@ async fn more_dirty_addresses_than_the_bound_turn_into_a_new_listing() {
     assert_eq!(consumer.view.len(), 7);
 }
 
-/// Scenario: Overflow or fetch failure (a failed listing and a failed read are retried, and nothing is lost).
-#[tokio::test(start_paused = true)]
-async fn a_failed_listing_and_a_failed_read_are_retried_without_losing_the_address() {
-    let system = node(memory_store()).await;
+/// The API behind a layer that answers `503` to the next `n` requests other than `GET /changes`, `n` in the counter.
+fn failing_app(system: &ActorSystem) -> (Router, Arc<AtomicUsize>) {
     let failing = Arc::new(AtomicUsize::new(0));
     let fail = failing.clone();
     let app = actor_api(system.clone()).layer(middleware::from_fn(move |req: Request, next: Next| {
         let fail = fail.clone();
         async move {
+            let left = fail.load(Ordering::SeqCst);
             let refuse = req.uri().path() != "/changes"
-                && fail.try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok();
+                && left > 0
+                && fail.compare_exchange(left, left - 1, Ordering::SeqCst, Ordering::SeqCst).is_ok();
             if refuse { StatusCode::SERVICE_UNAVAILABLE.into_response() } else { next.run(req).await }
         }
     }));
+    (app, failing)
+}
+
+/// Scenario: Overflow or fetch failure (a failed listing and a failed read are retried, and nothing is lost).
+#[tokio::test(start_paused = true)]
+async fn a_failed_listing_and_a_failed_read_are_retried_without_losing_the_address() {
+    let system = node(memory_store()).await;
+    let (app, failing) = failing_app(&system);
     counters(&system, &["a", "b"]).await;
     let mut consumer = Consumer::open(&app, "counter/", 2, 1000).await;
     failing.store(1, Ordering::SeqCst); // the first listing fails
@@ -564,6 +711,113 @@ async fn a_failed_listing_and_a_failed_read_are_retried_without_losing_the_addre
     assert_eq!(consumer.failures, 2);
     assert_eq!(consumer.view["counter/b"]["paused"], true, "b was kept and read again");
     assert_eq!(consumer.view, truth(&app, "counter/").await);
+}
+
+/// No render after the source closed for good shows the view as live.
+fn stays_stopped(shown: &[Connection]) -> bool {
+    shown.iter().skip_while(|c| **c != Connection::Stopped).all(|c| *c == Connection::Stopped)
+}
+
+/// Scenario: Browser reconnect and authentication (a CLOSED source during a read stays stopped).
+#[tokio::test(start_paused = true)]
+async fn a_source_closed_for_good_during_a_listing_stays_stopped_when_the_listing_succeeds() {
+    let system = node(memory_store()).await;
+    let app = actor_api(system.clone());
+    counters(&system, &["a", "b", "c"]).await;
+    let mut consumer = Consumer::open(&app, "counter/", 2, 1000).await;
+    let outside = consumer.outside();
+    consumer
+        .settle(async |page| {
+            if page == 0 {
+                outside.lock().unwrap().push_back(Outside::Error { closed: true });
+            }
+        })
+        .await;
+    assert_eq!(consumer.published, 1, "the listing in flight still completes");
+    assert_eq!(consumer.view, truth(&app, "counter/").await);
+    assert_eq!(consumer.shown, [Connection::Stopped, Connection::Stopped], "not live again");
+    assert!(consumer.events.is_none() && consumer.connection == Connection::Stopped);
+}
+
+/// Scenario: Browser reconnect and authentication (a CLOSED source during a delayed retry stays stopped).
+#[tokio::test(start_paused = true)]
+async fn a_source_closed_for_good_during_a_delayed_retry_stays_stopped_when_the_retry_succeeds() {
+    let system = node(memory_store()).await;
+    let (app, failing) = failing_app(&system);
+    counters(&system, &["a", "b"]).await;
+    let mut consumer = Consumer::open(&app, "counter/", 2, 1000).await;
+    failing.store(1, Ordering::SeqCst);
+    consumer.work(&mut async |_| {}).await;
+    assert!(consumer.retry_at.is_some(), "the failed listing armed the timer");
+    consumer.outside().lock().unwrap().push_back(Outside::Error { closed: true });
+    consumer.settle(async |_| {}).await;
+    assert_eq!((consumer.failures, consumer.published), (1, 1));
+    assert_eq!(consumer.view, truth(&app, "counter/").await);
+    assert_eq!(consumer.shown, [Connection::Stopped, Connection::Stopped]);
+    assert!(stays_stopped(&consumer.shown));
+}
+
+/// Scenario: Browser reconnect and authentication (an error while CONNECTING, then the browser's reconnect).
+#[tokio::test(start_paused = true)]
+async fn an_error_while_connecting_is_followed_by_a_new_stream_whose_resync_recovers_the_view() {
+    let system = node(memory_store()).await;
+    let app = actor_api(system.clone());
+    counters(&system, &["a"]).await;
+    let mut consumer = Consumer::open(&app, "counter/", 2, 1000).await;
+    consumer.settle(async |_| {}).await;
+    assert_eq!(consumer.shown, [Connection::Live]);
+    // The connection drops; a write goes unreported to this page, whose old stream is gone.
+    consumer.outside().lock().unwrap().push_back(Outside::Error { closed: false });
+    counters(&system, &["x"]).await;
+    consumer.settle(async |_| {}).await;
+    assert_eq!(consumer.shown, [Connection::Live, Connection::Reconnecting, Connection::Live]);
+    assert_eq!(consumer.published, 2, "the new stream's resync listed again");
+    assert_eq!(consumer.view, truth(&app, "counter/").await);
+    assert!(consumer.view.contains_key("counter/x"));
+}
+
+/// Scenario: Encoding and disposal (disposal during a read: the source closes and nothing later runs).
+#[tokio::test(start_paused = true)]
+async fn disposing_during_a_listing_closes_the_source_and_applies_and_starts_nothing() {
+    let system = node(memory_store()).await;
+    let app = actor_api(system.clone());
+    counters(&system, &["a", "b", "c"]).await;
+    let mut consumer = Consumer::open(&app, "counter/", 2, 1000).await;
+    let outside = consumer.outside();
+    consumer
+        .settle(async |page| {
+            if page == 0 {
+                outside.lock().unwrap().push_back(Outside::Dispose);
+            }
+        })
+        .await;
+    assert!(consumer.events.is_none() && consumer.retry_at.is_none(), "the source closed, no timer");
+    assert_eq!((consumer.published, consumer.requests), (0, 1), "the page in flight was not applied");
+    assert!(consumer.view.is_empty() && consumer.shown.is_empty());
+    counters(&system, &["d"]).await;
+    tokio::time::sleep(RETRY * 10).await;
+    consumer.settle(async |_| {}).await;
+    assert_eq!(consumer.requests, 1, "no later work");
+    assert!(consumer.view.is_empty());
+}
+
+/// Scenario: Encoding and disposal (disposal during a delayed retry: the timer is cleared and never fires).
+#[tokio::test(start_paused = true)]
+async fn disposing_during_a_delayed_retry_clears_the_timer_and_starts_nothing() {
+    let system = node(memory_store()).await;
+    let (app, failing) = failing_app(&system);
+    counters(&system, &["a", "b"]).await;
+    let mut consumer = Consumer::open(&app, "counter/", 2, 1000).await;
+    failing.store(1, Ordering::SeqCst);
+    consumer.work(&mut async |_| {}).await;
+    assert!(consumer.retry_at.is_some());
+    assert_eq!((consumer.failures, consumer.requests), (1, 1));
+    consumer.dispose();
+    assert!(consumer.events.is_none() && consumer.retry_at.is_none(), "the source closed and the timer cleared");
+    tokio::time::sleep(RETRY * 10).await;
+    consumer.settle(async |_| {}).await;
+    assert_eq!(consumer.requests, 1, "the retry never ran");
+    assert!(consumer.view.is_empty() && consumer.shown.is_empty());
 }
 
 // ---- the HTTP guide's standalone host ----

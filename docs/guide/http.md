@@ -312,8 +312,10 @@ A page keeps one `EventSource` and one worker that does one read at a time, not 
 first `resync`, lists the prefix into a fresh map and shows the map only when the listing is complete and no newer
 `resync` came meanwhile; then it reads the addresses that changed during the listing. It keeps at most 1000 of them
 and lists again when there would be more. A read that fails keeps its address, or asks for a new listing, and tries
-again after a pause, with one timer at most. This JavaScript is an illustration: no test runs it. The same protocol
-(hints during paging, a newer `resync`, the bound and the retries) is tested in Rust against a real stream in
+again after a pause, with one timer at most. The state of the connection is kept apart from the reads, so a read that
+succeeds after the source closed for good does not show the view as live again. This JavaScript is an illustration: no
+test runs it. The same protocol (hints during paging, a newer `resync`, the bound, the retries, the state of the
+connection and disposal) is tested in Rust against a real stream in
 [crates/cicada-axum/tests/changes.rs](../../crates/cicada-axum/tests/changes.rs).
 
 ```js
@@ -324,12 +326,14 @@ function follow(prefix, render) {
   const dirty = new Set();  // addresses to read again
   let generation = 0;       // moves on with each resync
   let needsListing = false, working = false, retry = null;
+  let connection = "connecting"; // the stream's state, apart from the reads: "live", "reconnecting" or "stopped"
   const abort = new AbortController();
   // Same origin: the session cookie goes along. URLSearchParams encodes the prefix once.
   const source = new EventSource(`/changes?${new URLSearchParams({ prefix })}`);
 
+  function show() { render(view, connection); }
   function relist() { generation += 1; dirty.clear(); needsListing = true; }
-  source.addEventListener("resync", () => { relist(); kick(); });
+  source.addEventListener("resync", () => { connection = "live"; relist(); kick(); });
   source.addEventListener("changed", (event) => {
     const { address } = JSON.parse(event.data); // canonical and already encoded: use it as it is
     if (!dirty.has(address) && dirty.size >= MAX_DIRTY) relist(); else dirty.add(address);
@@ -337,7 +341,9 @@ function follow(prefix, render) {
   });
   source.onerror = () => {
     // CONNECTING: the browser reconnects by itself, and the new stream starts with a resync.
-    if (source.readyState === EventSource.CLOSED) render(view, "stopped"); // no reconnect: show it
+    // CLOSED: no reconnect; the page keeps showing that, whatever a read in flight brings later.
+    connection = source.readyState === EventSource.CLOSED ? "stopped" : "reconnecting";
+    show();
   };
 
   function kick() { if (!working && retry === null) work(); }
@@ -346,12 +352,12 @@ function follow(prefix, render) {
   async function work() {
     working = true;
     try {
-      while (true) {
+      while (!abort.signal.aborted) {
         if (needsListing) {
           needsListing = false;
           let listed;
           try { listed = await list(generation); } catch (error) { needsListing = true; throw error; }
-          if (listed !== null) { view = listed; render(view, "live"); } // null: a newer resync, list again
+          if (listed !== null) { view = listed; show(); } // null: a newer resync, list again
         } else if (dirty.size > 0) {
           const address = dirty.values().next().value;
           dirty.delete(address);
@@ -359,7 +365,7 @@ function follow(prefix, render) {
             if (dirty.size >= MAX_DIRTY) relist(); else dirty.add(address); // never lose it
             throw error;
           }
-          render(view, "live");
+          show();
         } else return;
       }
     } catch (error) {
@@ -396,6 +402,7 @@ function follow(prefix, render) {
     return response.json();
   }
 
+  // Disposal: the source closes, a fetch in flight is aborted (its result is never applied) and the timer is cleared.
   return () => { abort.abort(); source.close(); clearTimeout(retry); retry = null; };
 }
 ```

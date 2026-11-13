@@ -87,6 +87,35 @@ mod tests {
         assert_eq!(frame(&mut body).await, None, "no comments after the end");
     }
 
+    /// Scenario: Client disconnect. The channel stands for the core's subscription: dropping the response drops it,
+    /// idle (only the keep-alive timer armed) and active (a hint unread), and no task is left behind for either.
+    #[tokio::test(start_paused = true)]
+    async fn dropping_the_response_drops_its_source_and_its_keep_alive_idle_or_active() {
+        let tasks = tokio::runtime::Handle::current().metrics().num_alive_tasks();
+
+        let (idle_tx, idle_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut idle = body_of(event_stream(tokio_stream_of(idle_rx)));
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        assert!(futures::poll!(idle.next()).is_pending(), "waiting: the source and the keep-alive timer are armed");
+        assert!(!idle_tx.is_closed());
+
+        let (active_tx, active_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut active = body_of(event_stream(tokio_stream_of(active_rx)));
+        active_tx.send(ActorChange::Resync).unwrap();
+        active_tx.send(ActorChange::Resync).unwrap();
+        assert_eq!(frame(&mut active).await.as_deref(), Some("event: resync\ndata: {}\n\n"));
+        assert!(!active_tx.is_closed());
+
+        assert_eq!(tokio::runtime::Handle::current().metrics().num_alive_tasks(), tasks, "no task per response");
+        drop(idle);
+        assert!(idle_tx.is_closed(), "the idle response's source is released with it");
+        drop(active);
+        assert!(active_tx.is_closed(), "the active response's source is released, its unread hint with it");
+        // The keep-alive timer belongs to the dropped body: nothing runs or fires for it later.
+        tokio::time::sleep(KEEP_ALIVE * 2).await;
+        assert_eq!(tokio::runtime::Handle::current().metrics().num_alive_tasks(), tasks);
+    }
+
     fn tokio_stream_of(
         mut rx: tokio::sync::mpsc::UnboundedReceiver<ActorChange>,
     ) -> impl Stream<Item = ActorChange> + Send + 'static {
