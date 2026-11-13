@@ -16,7 +16,7 @@
   state validation discarding effects, raw buffer order, peer/unstarted/stopped servers and close. Cover memory,
   SQLite and PostgreSQL where configured; use virtual time for runtime behavior. Run targeted completion tests and
   existing backend conformance unchanged.
-- [ ] 3. Add virtual-time fault/race tests in crates/cicada/src/tests/runtime/remote_completion.rs using Faulty/Faults.
+- [x] 3. Add virtual-time fault/race tests in crates/cicada/src/tests/runtime/remote_completion.rs using Faulty/Faults.
   Cover an error before commit, application followed by reply loss, concurrent identical/different reports, stale
   epochs and delete/recreate, status-read failure, hidden outcomes under retention, and lost rejection responses.
   Test the explicit acknowledged-Rejected transition: only the returned Failed report is retried after an uncertain

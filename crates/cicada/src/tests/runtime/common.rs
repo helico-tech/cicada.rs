@@ -511,6 +511,10 @@ pub trait Faults: Send + Sync + 'static {
         inner.commit(commit).await
     }
 
+    async fn status(&self, inner: &dyn Backend, id: &MessageId) -> StoreResult<Option<MessageStatus>> {
+        inner.status(id).await
+    }
+
     async fn sweep_expired(&self, inner: &dyn Backend) -> StoreResult<u64> {
         inner.sweep_expired().await
     }
@@ -668,7 +672,7 @@ impl<F: Faults> Backend for Faulty<F> {
     }
 
     async fn status(&self, id: &MessageId) -> StoreResult<Option<MessageStatus>> {
-        self.inner.status(id).await
+        self.faults.status(&self.inner, id).await
     }
 
     async fn outcomes(
