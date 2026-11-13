@@ -430,3 +430,156 @@ async fn a_type_is_removed_only_while_no_actor_of_it_exists_and_is_not_served_af
     system.store().register(def).await.unwrap();
     assert_eq!(system.create_actor(&address, json!({"total": 0})).await.unwrap(), CreateActorResult::Created);
 }
+
+// ---- list_actors_with_state (ADR 0033) ----
+
+/// type `tree`, key `{id}`: `Grow` creates the counter `child` as its child and keeps its name as the state.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct Tree {
+    id: String,
+}
+
+impl crate::ActorRef for Tree {
+    const TYPE: &'static str = "tree";
+    type Message = TreeMsg;
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(tag = "type")]
+enum TreeMsg {
+    Grow { child: String },
+}
+
+struct TreeActor;
+
+impl crate::Actor for TreeActor {
+    type Ref = Tree;
+    type State = Value;
+
+    async fn handle(&self, turn: &mut crate::Turn<Self>, message: TreeMsg) -> crate::HandlerResult {
+        let TreeMsg::Grow { child } = message;
+        turn.create_child(&Counter::new(&child), &CounterState::total(5))?;
+        turn.set_state(json!({"grown": child}));
+        Ok(())
+    }
+}
+
+/// The addresses of a page of snapshots.
+fn addresses(page: &crate::store::Page<crate::runtime::ActorSnapshot>) -> Vec<String> {
+    page.items.iter().map(|s| s.address.to_string()).collect()
+}
+
+/// Scenario: A page holds complete stored snapshots. Each row equals `get_actor`: the state and version after the
+/// committed turns, the paused flag, and the parent of a child a turn created.
+#[tokio::test(start_paused = true)]
+async fn list_actors_with_state_returns_what_get_actor_returns_for_each_actor() {
+    let test = TestActors::builder().with(|n| n.host(CounterActor).host(TreeActor)).build().await.unwrap();
+    let system = test.system();
+    test.create(&a(), &CounterState::default()).await;
+    test.create(&Counter::new("b"), &CounterState::total(7)).await;
+    test.create(&Tree { id: "t".into() }, &json!({})).await;
+    test.send(&a(), CounterMsg::Add { n: 1 }).await;
+    test.send(&a(), CounterMsg::Add { n: 2 }).await;
+    test.send(&Tree { id: "t".into() }, TreeMsg::Grow { child: "c".into() }).await;
+    test.run_until_idle().await;
+    assert!(system.pause_mailbox(&Counter::new("b").address()).await.unwrap());
+
+    let page = system.list_actors_with_state("", None, 100).await.unwrap();
+    assert_eq!(addresses(&page), vec!["counter/a", "counter/b", "counter/c", "tree/t"]);
+    assert_eq!(page.next, None);
+    for row in &page.items {
+        assert_eq!(Some(row), system.get_actor(&row.address).await.unwrap().as_ref());
+    }
+    let [counter_a, counter_b, child, tree] = &page.items[..] else { panic!("four rows") };
+    assert_eq!((counter_a.state["total"].clone(), counter_a.version), (json!(3), 2));
+    assert!(counter_b.paused && !counter_a.paused);
+    assert_eq!(child.parent.as_ref(), Some(&tree.address));
+    assert_eq!((child.state["total"].clone(), child.version), (json!(5), 0));
+    assert_eq!((tree.state.clone(), tree.parent.clone()), (json!({"grown": "c"}), None));
+    // The address listing is unchanged.
+    let listed = system.list_actors("", None, 100).await.unwrap();
+    assert_eq!(listed.items.iter().map(|a| a.to_string()).collect::<Vec<_>>(), addresses(&page));
+}
+
+/// Scenario: A running handler has not committed. A page read during a turn has the state and version before it; one
+/// read after its commit has both after it.
+#[tokio::test(start_paused = true)]
+async fn list_actors_with_state_shows_only_committed_state() {
+    let test = harness().await;
+    let system = test.system();
+    test.create(&a(), &CounterState::total(1)).await;
+    test.send(&a(), CounterMsg::Sleep { millis: 10_000 }).await;
+    let (ran, during) = tokio::join!(system.run_due_turns(1), async {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        system.list_actors_with_state("counter/", None, 10).await.unwrap()
+    });
+    assert_eq!(ran.unwrap(), 1);
+    assert_eq!((during.items[0].state.clone(), during.items[0].version), (json!({"total": 1, "log": []}), 0));
+    let after = system.list_actors_with_state("counter/", None, 10).await.unwrap();
+    assert_eq!(after.items[0].version, 1);
+    assert_eq!(after.items[0].state["log"], json!(["sleep:10000", "woke"]));
+}
+
+/// Scenario: A node need not host the actor type. The stored JSON of a registered type this node does not host is
+/// listed as it is, without decoding it.
+#[tokio::test(start_paused = true)]
+async fn list_actors_with_state_lists_a_type_the_node_does_not_host() {
+    let test = harness().await;
+    let system = test.system();
+    let ghost = crate::TypeName::parse("ghost").unwrap();
+    let def = Contract::new(
+        ghost.clone(),
+        schema::root_schema::<CounterState>(),
+        schema::message_schemas::<CounterMsg>().unwrap(),
+    )
+    .to_type_def();
+    system.store().register(def).await.unwrap();
+    let address = parse("ghost/g");
+    // Not a counter state: this node would refuse it for a type it hosts.
+    assert_eq!(system.create_actor(&address, json!({"total": "x"})).await.unwrap(), CreateActorResult::Created);
+    let page = system.list_actors_with_state("ghost/", None, 10).await.unwrap();
+    assert_eq!(addresses(&page), vec!["ghost/g"]);
+    assert_eq!(page.items[0].state, json!({"total": "x"}));
+}
+
+/// Scenario: Core keeps its existing limit rules. Zero is refused as by `list_actors`; 1001 is accepted.
+#[tokio::test(start_paused = true)]
+async fn list_actors_with_state_refuses_a_zero_limit_and_has_no_upper_cap() {
+    let test = harness().await;
+    let system = test.system();
+    test.create(&a(), &CounterState::default()).await;
+    let refused = |result: Result<(), crate::OpError>| matches!(result, Err(crate::OpError::Store(crate::store::StoreError::Invalid(e))) if e == "limit must be positive");
+    assert!(refused(system.list_actors_with_state("", None, 0).await.map(|_| ())));
+    assert!(refused(system.list_actors("", None, 0).await.map(|_| ())));
+    assert_eq!(addresses(&system.list_actors_with_state("", None, 1001).await.unwrap()), vec!["counter/a"]);
+}
+
+/// Scenario: Writes between pages. The next page misses an actor created before the cursor, leaves out a deleted one
+/// and shows a later commit; a deleted and re-created actor starts again at version 0.
+#[tokio::test(start_paused = true)]
+async fn list_actors_with_state_pages_see_writes_between_pages() {
+    let test = harness().await;
+    let system = test.system();
+    for id in ["b", "c", "d", "e"] {
+        test.create(&Counter::new(id), &CounterState::default()).await;
+    }
+    test.send(&Counter::new("e"), CounterMsg::Add { n: 1 }).await;
+    test.run_until_idle().await;
+    let first = system.list_actors_with_state("counter/", None, 2).await.unwrap();
+    assert_eq!(addresses(&first), vec!["counter/b", "counter/c"]);
+    assert_eq!(first.next, system.list_actors("counter/", None, 2).await.unwrap().next);
+
+    test.create(&a(), &CounterState::default()).await;
+    system.delete_actor(&Counter::new("d").address()).await.unwrap();
+    test.send(&Counter::new("e"), CounterMsg::Add { n: 1 }).await;
+    test.run_until_idle().await;
+    let second = system.list_actors_with_state("counter/", first.next.as_ref(), 2).await.unwrap();
+    assert_eq!(addresses(&second), vec!["counter/e"]);
+    assert_eq!((second.items[0].version, second.items[0].state["total"].clone()), (2, json!(2)));
+    assert_eq!(second.next, None);
+
+    system.delete_actor(&Counter::new("e").address()).await.unwrap();
+    test.create(&Counter::new("e"), &CounterState::default()).await;
+    let again = system.list_actors_with_state("counter/e", None, 2).await.unwrap();
+    assert_eq!(again.items[0].version, 0, "a version counts the writes of one life");
+}

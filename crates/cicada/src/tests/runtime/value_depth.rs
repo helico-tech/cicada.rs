@@ -176,6 +176,19 @@ async fn a_deep_state_from_before_is_read_as_before_and_cannot_be_written_back()
     assert_eq!((depth(&record.state), record.version), (100, 0), "the stored state is as it was");
 }
 
+/// Scenario: A legacy deep state remains readable. A state of 100 levels from before is listed with state as it was
+/// stored, with no depth error and nothing cut (ADR 0033), next to the current states.
+#[tokio::test(start_paused = true)]
+async fn a_deep_state_from_before_is_listed_with_state_as_it_was_stored() {
+    let test = test().await;
+    let store: &dyn Backend = test.store();
+    let old = deep("old").address().unwrap();
+    assert_eq!(store.create(&old, nested(100)).await.unwrap(), CreateResult::Created);
+    let page = test.system().list_actors_with_state("deep/", None, 10).await.unwrap();
+    let rows: Vec<(String, Value)> = page.items.into_iter().map(|s| (s.address.to_string(), s.state)).collect();
+    assert_eq!(rows, vec![("deep/a".to_owned(), json!({})), ("deep/old".to_owned(), nested(100))]);
+}
+
 /// Scenario: A retry of a deep message from before. A failed message with a payload 100 levels deep is refused with
 /// `RetryResult::TooDeep`, and no message is written.
 #[tokio::test(start_paused = true)]

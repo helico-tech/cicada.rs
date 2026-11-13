@@ -7,7 +7,7 @@
   prefixes and overlapping type names, before/after-range cursors, positive core limits including 1001, and coherent
   committed state/version and multi-row effects. Run targeted conformance tests on memory, SQLite and PostgreSQL
   with CICADA_PG_URL; document unavailable fixtures. Add new tests proving S2/S3 to docs/guarantees.md.
-- [ ] 2. Add ActorSystem::list_actors_with_state returning Page<ActorSnapshot>, sharing get_actor's private conversion.
+- [x] 2. Add ActorSystem::list_actors_with_state returning Page<ActorSnapshot>, sharing get_actor's private conversion.
   Add virtual-time TestActors cases in `tests/runtime/operations.rs` for versions after turns, uncommitted state,
   parent/paused metadata, unhosted types, direct limits 0/1001 and changes between pages. Extend the legacy-depth
   fixture in `tests/runtime/value_depth.rs` to list older states without applying write validation. Run these runtime

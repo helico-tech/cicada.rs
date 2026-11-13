@@ -25,8 +25,8 @@ use crate::message::{self, MessageFamily};
 use crate::observer::{Observers, TurnObserver};
 use crate::schema::SchemaCheck;
 use crate::store::{
-    Backend, CancelResult, Claim, CreateResult, DeleteResult, DeliverNowResult, EnqueueResult, Message, MessageId,
-    MessageStatus, NodeId, OutcomeRecord, OutcomeStatus, OutgoingMessage, Page, PageCursor, RegisterResult,
+    ActorRecord, Backend, CancelResult, Claim, CreateResult, DeleteResult, DeliverNowResult, EnqueueResult, Message,
+    MessageId, MessageStatus, NodeId, OutcomeRecord, OutcomeStatus, OutgoingMessage, Page, PageCursor, RegisterResult,
     RemoveTypeResult, RunningTurn, SetWatchResult, Store, StoreError, StoreStats,
 };
 use crate::time::{self, MAX_INSTANT, Timestamp};
@@ -59,6 +59,19 @@ fn refusal(detail: String) -> String {
     let mut cut: String = detail.chars().take(MAX_REFUSAL_DETAIL - MARK.chars().count()).collect();
     cut.push_str(MARK);
     cut
+}
+
+/// The snapshot of a stored instance, as [`ActorSystem::get_actor`] and [`ActorSystem::list_actors_with_state`]
+/// return it.
+fn snapshot(record: ActorRecord) -> ActorSnapshot {
+    ActorSnapshot {
+        address: record.address,
+        state: record.state,
+        version: record.version,
+        created_at: record.created_at,
+        paused: record.paused,
+        parent: record.parent,
+    }
 }
 
 /// A node could not start: an invalid actor type, an invalid configuration, or a contract conflict in the
@@ -765,17 +778,7 @@ impl ActorSystem {
 
     /// Address, state, version and parent of an instance (`GET /actors/{type}/{key}`).
     pub async fn get_actor(&self, address: &ActorAddress) -> Result<Option<ActorSnapshot>, OpError> {
-        let Some(record) = self.inner.store.get(address).await? else {
-            return Ok(None);
-        };
-        Ok(Some(ActorSnapshot {
-            address: record.address,
-            state: record.state,
-            version: record.version,
-            created_at: record.created_at,
-            paused: record.paused,
-            parent: record.parent,
-        }))
+        Ok(self.inner.store.get(address).await?.map(snapshot))
     }
 
     /// Admin delete (`DELETE /actors/{type}/{key}`): removes the instance and every descendant (the actors its turns
@@ -851,6 +854,22 @@ impl ActorSystem {
         limit: usize,
     ) -> Result<Page<ActorAddress>, OpError> {
         Ok(self.inner.store.list(prefix, cursor, limit).await?)
+    }
+
+    /// The instances [`Self::list_actors`] pages, each with the snapshot [`Self::get_actor`] returns
+    /// (`GET /actors/states?prefix=`; ADR 0033): the same order, literal prefix, cursors and limit rule (zero is
+    /// refused). The stored state is returned as it is, without an actor or a schema, so the node need not host the
+    /// types. A page is one read of the store: its rows share one committed snapshot, each state with its version. There
+    /// is no snapshot across pages: a later page shows later commits, misses an actor created before its cursor and
+    /// leaves out a deleted one. Large states make large pages; pick a smaller `limit` for them.
+    pub async fn list_actors_with_state(
+        &self,
+        prefix: &str,
+        cursor: Option<&PageCursor>,
+        limit: usize,
+    ) -> Result<Page<ActorSnapshot>, OpError> {
+        let page = self.inner.store.list_records(prefix, cursor, limit).await?;
+        Ok(Page { items: page.items.into_iter().map(snapshot).collect(), next: page.next })
     }
 
     /// Sends a message (`POST /actors/{type}/{key}/messages`). Idempotent on the id within the retention window.
