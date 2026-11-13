@@ -10,9 +10,9 @@ use cicada::prelude::*;
 use cicada::store::{Message, MessageStatus, OutcomeStatus, SqliteOptions};
 use cicada::{ActorAddress, SendResult, Store};
 use cicada_actors::{
-    Child, RateLimiter, RateLimiterActor, RateLimiterMsg, RateLimiterState, Schedule, Scheduler, SchedulerActor,
-    SchedulerMsg, SchedulerState, Supervisor, SupervisorActor, SupervisorMsg, SupervisorState, Topic, TopicActor,
-    TopicMsg, TopicState,
+    Child, Debouncer, DebouncerActor, DebouncerMsg, DebouncerState, RateLimiter, RateLimiterActor, RateLimiterMsg,
+    RateLimiterState, Schedule, Scheduler, SchedulerActor, SchedulerMsg, SchedulerState, Supervisor, SupervisorActor,
+    SupervisorMsg, SupervisorState, Topic, TopicActor, TopicMsg, TopicState,
 };
 use common::*;
 use sqlx::SqlitePool;
@@ -35,6 +35,7 @@ impl Sqlite {
             .host(TopicActor)
             .host(SchedulerActor)
             .host(RateLimiterActor)
+            .host(DebouncerActor)
             .host(WorkerActor)
             .build();
         system.initialize().await.unwrap();
@@ -212,6 +213,69 @@ async fn a_submission_to_a_rate_limiter_whose_read_of_the_store_fails_is_tried_a
     let idle_at = db.state::<RateLimiterState>(&addr(&api)).await.idle_at.expect("a reservation");
     assert!(idle_at > submission.deliver_at + second, "a slot of the retry's store time: {idle_at}");
     db.close().await;
+}
+
+/// Scenario: Temporary store error. The armed flush of a debouncer is made due now; its read of the registry fails,
+/// which clears nothing, and its retry forwards the kept value once.
+#[tokio::test]
+async fn a_flush_of_a_debouncer_whose_read_of_the_store_fails_is_tried_again_and_forwards_once() {
+    let dir = TempDir::new().unwrap();
+    let db = Sqlite::open(dir.path()).await;
+    let (deb, timer) = armed_debouncer(&db).await;
+
+    db.registry(false).await;
+    db.system.deliver_now(&timer.id).await.unwrap();
+    assert_eq!(db.system.run_due_turns(1).await.unwrap(), 1, "the first attempt of the flush");
+    db.registry(true).await;
+    let retried = db.pending(&addr(&deb)).await;
+    assert_eq!((retried.len(), retried[0].id.clone(), retried[0].failures), (1, timer.id.clone(), 1));
+    assert!(retried[0].last_error.as_deref().unwrap().contains("actor_types"), "{:?}", retried[0].last_error);
+    let held: DebouncerState = db.state(&addr(&deb)).await;
+    assert!(held.pending.is_some() && held.armed == Some(timer.id.clone()), "nothing cleared: {held:?}");
+    assert!(db.pending(&addr(&worker("a"))).await.is_empty(), "nothing was sent");
+
+    tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+    db.run_until_idle().await;
+    assert_eq!(db.state::<WorkerState>(&addr(&worker("a"))).await.log, ["n"], "once, from a later attempt");
+    assert_eq!(db.outcome(&timer).await.0, OutcomeStatus::Done);
+    let held: DebouncerState = db.state(&addr(&deb)).await;
+    assert!(held.pending.is_none() && held.first_at.is_none() && held.armed.is_none(), "cleared: {held:?}");
+    db.close().await;
+}
+
+/// Scenario: Replacement cancels a retrying timer.
+#[tokio::test]
+async fn a_submit_cancels_a_flush_that_waits_for_its_retry_and_arms_its_own() {
+    let dir = TempDir::new().unwrap();
+    let db = Sqlite::open(dir.path()).await;
+    let (deb, timer) = armed_debouncer(&db).await;
+    db.registry(false).await;
+    db.system.deliver_now(&timer.id).await.unwrap();
+    assert_eq!(db.system.run_due_turns(1).await.unwrap(), 1, "the first attempt of the flush");
+    db.registry(true).await;
+
+    let submit = DebouncerMsg::submit(&worker("a"), WorkerMsg::Note { text: "m".into() }, None).unwrap();
+    db.system.send(&deb, submit).await.unwrap();
+    db.run_until_idle().await;
+    assert_eq!(db.outcome(&timer).await.0, OutcomeStatus::Cancelled, "the retry is cancelled");
+    let pending = db.pending(&addr(&deb)).await;
+    let held: DebouncerState = db.state(&addr(&deb)).await;
+    assert_eq!(pending.len(), 1, "only the replacement timer");
+    assert_eq!(held.armed, Some(pending[0].id.clone()));
+    assert_eq!(held.pending.unwrap().message.payload["text"], "m");
+    db.close().await;
+}
+
+/// The debouncer `d`, an hour quiet, keeping a note for `worker/a`, and its armed flush.
+async fn armed_debouncer(db: &Sqlite) -> (Debouncer, Message) {
+    let deb = Debouncer::named("d");
+    db.system.create(&deb, &DebouncerState::new(HOUR, HOUR).unwrap()).await.unwrap();
+    db.system.create(&worker("a"), &WorkerState::default()).await.unwrap();
+    let submit = DebouncerMsg::submit(&worker("a"), WorkerMsg::Note { text: "n".into() }, None).unwrap();
+    db.system.send(&deb, submit).await.unwrap();
+    db.run_until_idle().await;
+    let timer = db.pending(&addr(&deb)).await.pop().expect("the armed flush");
+    (deb, timer)
 }
 
 const HOUR: std::time::Duration = std::time::Duration::from_secs(3600);

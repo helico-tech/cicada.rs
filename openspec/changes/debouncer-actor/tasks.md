@@ -1,10 +1,10 @@
 ## Implementation
 
-- [ ] 1. Add the debouncer ref, actor, state, checked constructor/decoder, pending-message type, messages and typed
+- [x] 1. Add the debouncer ref, actor, state, checked constructor/decoder, pending-message type, messages and typed
   helper with crate exports. Implement the single-turn Submit/Flush effects and checked times. Verify settings and
   state consistency in unit tests and the typed helper with a compile-fail doctest; run the actor crate's library
   tests and doctests.
-- [ ] 2. Add virtual-time `TestActors` integration tests in `tests/debouncer.rs` for every spec scenario: last-wins
+- [x] 2. Add virtual-time `TestActors` integration tests in `tests/debouncer.rs` for every spec scenario: last-wins
   replacement, quiet/maxWait, both sequence orders at an equal due time, public/empty Flush, rollback, timer-loss
   recovery, redrive into a later burst, depth boundaries, creation and target policies. Extend the existing SQLite
   store-failure fixture for registry retries and cancellation of a retrying timer if needed. Run those targeted tests.
