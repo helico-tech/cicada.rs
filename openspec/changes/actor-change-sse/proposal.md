@@ -13,12 +13,14 @@ same hints over HTTP, so the code-factory showcase and other dashboards can refr
 - Define event names/data, keep-alives, cancellation/shutdown and reconnect guidance; describe text/event-stream
   in OpenAPI and show a browser resync/read loop using the actor-state listing.
 
-## To decide
+## Settled decisions
 
-- Event names and JSON data, keep-alive interval, and how OpenAPI describes the stream.
-- HTTP shutdown/disconnect and store-close behaviour, subscription resource limits and Last-Event-ID handling
-  (there is no replay history).
-- Whether a typed cicada-client streaming method is needed in this small change or browser EventSource is sufficient.
+- `changed` carries JSON {"address":"<canonical>"}; `resync` carries {}. Emit no id/retry fields and ignore
+  Last-Event-ID. Every reconnection gets the core's fresh readiness/resync boundary.
+- Return 200 immediately, including while readiness is pending, with 15-second keep-alive comments. Store close
+  ends the body; worker stop alone does not. Keep the app's existing bounded drain and host-owned resource limits.
+- Publish text/event-stream in OpenAPI using a private output marker. No cicada-client streaming method or new
+  public event DTO: browser EventSource and in-process changes meet this scope. ADR 0035 records the wire convention.
 
 ## Capabilities
 
@@ -28,7 +30,7 @@ same hints over HTTP, so the code-factory showcase and other dashboards can refr
 
 ### Modified Capabilities
 
-- `management-api`: the read/full routers and OpenAPI describe the new streaming read.
+- `store-backends`: HTTP change streams end normally after close, the streaming exception to ordinary 503 reads.
 
 ## Out of scope
 
@@ -41,6 +43,6 @@ After `actor-change-feed`. No following change.
 
 ## Impact
 
-`cicada-axum` route/handler/tests and OpenAPI, HTTP guide and tested browser guidance, architecture and an ADR for
-SSE wire conventions, changelog/version; cicada-client only if the design chooses to include it. The core feed is
+`cicada-axum` route/handler/tests and OpenAPI, an app shutdown regression test, HTTP guide and protocol-tested browser
+guidance, architecture, ADR 0035 and changelog/version. No new client method or dependency. The core feed is
 the predecessor and supplies all event semantics. Host-specific code-factory adoption is outside this proposal.
