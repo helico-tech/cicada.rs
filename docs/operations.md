@@ -361,6 +361,10 @@ renewal no longer shortens a held lease. Nodes that share one `lease_ttl` see no
 0.16.13 can share a database. Lease and renew through nodes of 0.16.13 only: a node of 0.16.12 still sets a renewed
 lease to its own TTL, and one with a shorter TTL could end a lease a worker still holds.
 
+**Version 0.16.14 changes no schema, contract, route or store behaviour.** It adds the completion of leased turns
+(ADR 0038, [Complete a leased turn](guide/core.md#complete-a-leased-turn)); nodes of 0.16.13 and 0.16.14 can share a
+database. Complete through nodes of 0.16.14 only: an older node has no `complete_turn`.
+
 **Switching a type to `create_child`.** An actor created with `turn.create` stays independent: a later `create_child`
 of it by its creator does not adopt it, but fails the creator's message (the commit is rejected, and a handler cannot
 test for that). So switch a parent type from `create` to `create_child` only when no parent of it is left that created
@@ -509,6 +513,12 @@ of its actor under the executor's id, which has no row in the node table and is 
 serving node's `lease_ttl` and claim limit apply, and the executor keeps a deadline of its own. A lease that its
 executor loses, or whose response never reached it, expires after the TTL, and the claim that replaces it counts a
 lost claim, as a dead node's would. Stopping a node does not wait for the leases executors hold.
+
+An executor ends a leased turn with the report of its handler ([Complete a leased
+turn](guide/core.md#complete-a-leased-turn)) through any node of the store, stopped ones included. The node applies
+its own retry policy rules and storage limits, but runs no handler, tells its own observers nothing and never releases
+the lease. No receipt of a completion is stored: after a lost answer, the executor's repeat gets `LeaseLost`, and
+retention may already have removed the outcome, so reading the message cannot always settle an uncertain completion.
 
 ### Logs
 

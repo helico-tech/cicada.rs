@@ -768,8 +768,9 @@ impl ActorSystem {
     /// The claim uses this system's `lease_ttl`, records `owner` as the lease owner (shown by
     /// [`Self::list_running_turns`], with no node row and no count in [`Self::running_turns`]), and shares the store's
     /// lease exclusivity with every node. A message at this system's claim limit is not handed out: one fenced commit
-    /// fails it as a local node would, without loading a handler or asking its retry policy, and its watchers and then
-    /// this system's observers are told only when that commit is confirmed; otherwise its lease is released.
+    /// fails it as a local node would, without loading a handler or asking its retry policy. Its watchers' notifications
+    /// are stored atomically with that commit, also when its acknowledgement is lost; only this system's observers wait
+    /// until the commit is confirmed. Without a confirmed commit its lease is released.
     ///
     /// Claims are guarded until they are returned: when the future is dropped, when the system is seen stopping after
     /// the claim, or when the conservative deadline (the time this call sent the claim plus the TTL less

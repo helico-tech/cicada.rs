@@ -235,9 +235,10 @@ owner: the turn shows in the running turns under that id, with no node row and n
 `TurnLease` is the claim (actor, epoch, message, state, version, store times) plus the TTL the store was asked for.
 
 - **Admission.** A message at the serving system's claim limit is never handed out: one fenced commit fails it, as a
-  local node does, without a handler or the retry policy, concurrently for the batch. Watchers and then the observers
-  hear of it only when the commit is confirmed; any other result, an uncertain one included, is released. The local
-  executor keeps its own commit retries.
+  local node does, without a handler or the retry policy, concurrently for the batch. The notifications of its watchers
+  are stored atomically with that commit, so they are there also when its acknowledgement is lost; only the observers
+  wait until the commit is confirmed. Any other result, an uncertain one included, is released. The local executor
+  keeps its own commit retries.
 - **Deadlines.** The executor's deadline is its monotonic time when it sent the request plus the returned TTL, less
   `min(ttl / 10, 1 s)`; store times do not synchronise clocks. `lease_turns` applies the same rule to its own request
   and checks it after the claim and again after the claim limit's commits; a batch past it is not handed out.
@@ -258,8 +259,41 @@ owner: the turn shows in the running turns under that id, with no node row and n
   store, after the claim and before it hands out; renew and release work in every state. A stop does not wait for or
   release remote leases.
 
-Completing a leased turn is not part of this; until it is, a leased turn ends by release, expiry or the removal of its
-actor.
+`complete_turn(actor, epoch, message_id, report)` ends a leased turn with what its handler did (ADR 0038), through any
+system of the store, also an unstarted or stopped one or one with an invalid configuration, while the store is open.
+The report is `Returned { state, effects }` (state `Unchanged`, `Set(value)` or `Stop`; effects the finished buffer of
+watches, creates, sends, cancels and controls, after the executor applied `Turn`'s buffering rules),
+`Failed(TurnFailure { cause, retryable, reason })` or `Cancelled`. It never names an outcome, a retry policy, a sender
+or an event id: the serving system derives them, with the policy the local executor uses.
+
+- **Policy.** Only `handler`, `node` and `timeout` failures may be retryable; `refused`, `message`, `state` and `commit`
+  only not, and `claim-limit` never: any other combination is `OpError::Invalid` before the store. A retryable failure
+  reads the message once; when it is pending or running for the actor, its policy and `failures + 1` decide between a
+  reschedule after the capped backoff and `failed`, as for a local turn. The read is not atomic with the commit: while
+  the epoch is held nothing else changes them, and the epoch fences the commit. A failed read returns the store's error
+  with nothing committed. Every send gets the actor as sender and the message as cause and keeps the executor's id;
+  each call draws a new event id. Reasons get NUL replaced; a reschedule's error is cut to 1,000 characters.
+- **Validation.** The serving system checks storage limits, not types: a send beyond the send limits or delivery
+  bounds, or a create whose state is `null`, has a NUL or is too deep, commits the message `failed` without effects,
+  cause `commit`, `Commit refused: …`; a new own state that cannot be stored does the same with cause `handler`,
+  `State cannot be stored: …`. These derived failures commit in the same call. It compiles no schema, decodes no state
+  and ignores the types it hosts: registry lookups, type and state checks, watch permission, observer headers and the
+  buffering rules stay the executor's duty. The store's own checks (the claimed message, a self-cancel, child and
+  control conflicts, targets, ids, ancestors) still refuse a commit, some before the epoch is looked at.
+- **One attempt.** Each call makes one commit attempt. `Completed` returns the outcome, the cause of a failure, the
+  version (before removal for a stop), the sent envelopes and the cancelled ids, and wakes the local dispatch loop;
+  `LeaseLost` answers a stale, released, completed or deleted epoch, and also a report repeated after its commit
+  applied, so it proves nothing. A commit the store rejects or refuses returns `Rejected` with the failure the local
+  executor would commit instead (a refused reschedule keeps the handler's cause and reason with the refusal appended),
+  and commits nothing: the executor submits `Failed` with it next and never its original effects again, so a lost
+  answer cannot let a peer re-evaluate effects whose rejection the executor already knows. A failure the store turns
+  down is `OpError::Invalid`. Any other error may hide an applied commit: the system wakes its loop, and the executor
+  repeats its current report through any system within its deadline.
+- **Duties of the executor.** It decides cancellation (`Cancelled` only when the cancel request came before the
+  handler ended), keeps its conservative deadline and renews, never runs a finished handler again and never releases
+  after the handler ended (G6), and ends its observers only on an acknowledged `Completed`. The serving system never
+  releases a lease and tells its own observers nothing. No receipt is stored: retention may hide the outcome and a
+  reschedule leaves the message pending, so a later read of the message cannot always settle an uncertain completion.
 
 All local timing uses `tokio::time`, so tests on a paused runtime (`start_paused = true`) run on virtual time: the
 in-memory store reads its clock from `tokio::time::Instant` (`TokioClock`).

@@ -7,6 +7,34 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.16.14 — unreleased
+
+Nothing breaks: an executor outside the system can complete the turns it leased with the report of its handler, the
+second part of remote execution. No schema, contract, route, command line or store behaviour changes.
+
+### Added
+
+- `ActorSystem::complete_turn(&ActorAddress, i64, &MessageId, TurnReport)`, with `TurnReport` (`Returned` with a
+  `StateReport` and `TurnEffects`, `Failed(TurnFailure)`, `Cancelled`), `TurnSend`, `CompleteTurnResult` (`Completed`
+  with a `TurnCompletion`, `Rejected(TurnFailure)`, `LeaseLost`) (ADR 0038). Any system of the store, started or not,
+  commits the report in one fenced commit attempt. It derives the outcome, a failure's retry from the message's own
+  policy and failure count, each send's sender and cause, and the event id; a report cannot pick them. A retryable
+  failure is allowed only for the causes `handler`, `node` and `timeout`, and `claim-limit` never. A send or create
+  beyond the storage limits, or a new state that cannot be stored, fails the message at once without effects. A commit
+  the store rejects or refuses commits nothing and returns `Rejected` with the failure to submit next; the executor
+  then reports only that failure. A repeated report after its commit applied is `LeaseLost`; no receipt is kept.
+  The core has no worker yet.
+- `store::ActorCreate`, `store::Control`, `store::ControlEffect` and `watch::WatchChange` are public, as the records of
+  `TurnEffects`.
+- The core guide's Complete a leased turn, with a tested example, and the completion of leased turns in the
+  architecture.
+
+### Changed
+
+- The docs of the claim limit for leased turns now say what the code does: the watchers' notifications are stored
+  atomically with the commit that fails the message, also when its acknowledgement is lost; only the observers wait
+  until it is confirmed.
+
 ## 0.16.13 — 2026-11-13
 
 Nothing breaks: an executor outside the system can lease, renew and release turns through the core, the first part of

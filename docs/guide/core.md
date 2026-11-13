@@ -699,10 +699,9 @@ worker.initialize().await?;
 
 `ActorSystem::lease_turns` hands due turns to an executor that runs them outside the system, such as a worker process
 that reaches the server over a network (ADR 0037). The server needs no handler and may be unstarted; it registers the
-contract (above) and leases on the executor's behalf. `renew_turn` keeps a lease, `release_turn` gives it back.
-Completing a leased turn is not part of the core yet: in this release a leased turn ends by release, expiry or the
-removal of its actor. The block inspects and gives back the turns of the reports type of
-[examples/src/sync.rs](../../examples/src/sync.rs):
+contract (above) and leases on the executor's behalf. `renew_turn` keeps a lease, `release_turn` gives it back, and
+`complete_turn` ends it with the handler's report (next section). The block inspects and gives back the turns of the
+reports type of [examples/src/sync.rs](../../examples/src/sync.rs):
 
 <!-- doctest
 # #[tokio::main(flavor = "current_thread")]
@@ -752,9 +751,10 @@ for lease in leases {
   `ContractMismatch` and nothing is claimed. The check is not atomic with the claim: stop old executors before you
   replace a contract.
 - **The server's policy.** The serving system's `lease_ttl` and claim limit apply, not the caller's. A message at the
-  claim limit is never handed out: one fenced commit fails it as a local node would, and its watchers and then the
-  server's observers hear of it only when that commit is confirmed. An empty batch may mean that every claim was
-  filtered or came too late. A returned lease starts no observer.
+  claim limit is never handed out: one fenced commit fails it as a local node would. Its watchers' notifications are
+  stored atomically with that commit, so they arrive also when its acknowledgement is lost; only the server's observers
+  wait until the commit is confirmed. An empty batch may mean that every claim was filtered or came too late. A
+  returned lease starts no observer.
 - **Deadlines.** Keep the deadline on your own monotonic clock: the time you sent the request plus `ttl`, less
   `min(ttl / 10, 1 s)`, as in the block, and the same for each renewal; keep the later of the deadline you had and the
   new one. Do not run past it. `claimed_at` and `lease_until` are store times, for the handler's clock and for display.
@@ -774,6 +774,94 @@ for lease in leases {
 - **Life cycle.** A stopping or stopped server refuses to lease (`StoreError::Unavailable`); renew and release work in
   every state. Stopping a server does not wait for or release the leases executors hold. An invalid `NodeConfig` fails
   lease and renew with `OpError::Start`.
+
+### Complete a leased turn
+
+`ActorSystem::complete_turn` ends a leased turn with a report of how its handler ended (ADR 0038): `Returned` with the
+new state (`StateReport::Unchanged`, `Set` or `Stop`) and the finished buffer of its effects (`TurnEffects`: watches,
+creates, sends as `TurnSend`, cancels and controls), `Failed` with a `TurnFailure`, or `Cancelled`. The server derives
+the outcome and commits it with the state and effects in one fenced commit, through any system on the store: unstarted,
+stopped, or with another configuration. The core has no worker of its own; the block plays one, completing a turn of
+the reports type of [examples/src/sync.rs](../../examples/src/sync.rs):
+
+<!-- doctest
+# #[tokio::main(flavor = "current_thread")]
+# async fn main() -> Result<(), Box<dyn std::error::Error>> {
+# use cicada::prelude::*;
+# let store = cicada::Store::memory();
+@@39
+# Ok(())
+# }
+-->
+```rust
+use std::collections::BTreeMap;
+use cicada::OpError;
+use cicada::actor::contract_of;
+use cicada::runtime::{CompleteTurnResult, LeaseTurnsResult, StateReport, TurnEffects, TurnReport};
+use cicada::store::NodeId;
+use cicada_examples::sync::{Reports, ReportsActor, ReportsMsg, ReportsState};
+
+let server = ActorSystem::builder(store).build(); // hosts nothing and is not started
+let contract = contract_of::<ReportsActor>()?;
+server.register_contract(&contract).await?;
+let acme = Reports { tenant: "acme".into() };
+server.create(&acme, &ReportsState::default()).await?;
+server.send(&acme, ReportsMsg::SyncFinished { imported: 3 }).await?;
+let types = BTreeMap::from([(contract.type_name().clone(), contract.hash().to_owned())]);
+let LeaseTurnsResult::Leased(leases) = server.lease_turns(&NodeId::new("worker-1")?, &types, 10).await? else {
+    panic!("the worker was built with another contract");
+};
+for lease in leases {
+    // The worker ran the handler on the leased state and message; this is what it buffered.
+    let mut state: ReportsState = serde_json::from_value(lease.state.clone())?;
+    state.runs.push(3);
+    let effects = TurnEffects::default();
+    let mut report = TurnReport::Returned { state: StateReport::Set(serde_json::to_value(&state)?), effects };
+    loop {
+        // Within the lease's deadline, renewing as above; past it, stop.
+        match server.complete_turn(&lease.actor, lease.epoch, &lease.message.id, report.clone()).await {
+            Ok(CompleteTurnResult::Completed(done)) => break println!("{:?} at version {}", done.outcome, done.version),
+            // Nothing applied: report this failure from now on, never the original effects again.
+            Ok(CompleteTurnResult::Rejected(failure)) => report = TurnReport::Failed(failure),
+            // Replaced, or applied by an attempt whose answer was lost: stop, and do not release.
+            Ok(CompleteTurnResult::LeaseLost) => break,
+            // It may have applied: repeat the same report, through this or another server.
+            Err(OpError::Store(e)) => println!("uncertain, repeating: {e}"),
+            // A report the server refuses, or a failure the store turned down: abandon without release.
+            Err(e) => break println!("abandoned: {e}"),
+        }
+    }
+}
+assert_eq!(server.get_actor(&acme.address()?).await?.map(|a| a.version), Some(1));
+```
+
+- **A report, not an outcome.** The server decides between `done`, `failed`, `cancelled` and a reschedule. A
+  `TurnFailure` names its `cause`, whether it is `retryable`, and the `reason`. Only `handler`, `node` and `timeout`
+  may be retryable, `claim-limit` is never reported, and any other combination is `OpError::Invalid` before the store
+  is touched. A retryable failure uses the message's own retry policy and failure count, read from the store: the
+  report cannot pick them. Each send gets the leased actor as sender and the leased message as cause; its id is yours,
+  drawn once, so a repeated report sends the same message.
+- **A finished buffer.** Report the effects as a turn would leave them: a cancel of a message sent in the same turn
+  drops the send, of a pause and a resume of one actor only the last stays. A report that holds both a send and a
+  cancel of its id gets the store's order: the cancel finds nothing, and the message is sent.
+- **What the server checks.** Storage limits: each send's envelope and delivery, each create's state (`null`, NUL
+  characters, depth). A report that breaks one commits the message `failed` at once, without effects, with cause
+  `commit` and an error that starts with `Commit refused:`; a new state that cannot be stored does the same with cause
+  `handler` and `State cannot be stored:`. The server does not check schemas, decode states or look at the types it
+  hosts: registry lookups, type checks, watch permission and observer headers are the worker's.
+- **Rejected.** A commit the store rejects (a send to an absent actor, an id in use) or refuses (a wrong message id,
+  a reschedule it cannot schedule) is `Rejected` with the failure to submit next; nothing is committed in that call.
+  Switch to `TurnReport::Failed(failure)` for good, as in the block: a peer may answer your next request, and the
+  original effects must not come back. A failure report that the store turns down is `OpError::Invalid`: abandon the
+  turn without releasing it.
+- **Uncertain answers.** Each call makes one commit attempt. After a store error, a dropped call or a lost response,
+  repeat your current report until your deadline; never run the handler again and never release a turn whose handler
+  ended (G6). `LeaseLost` after a repeat may mean that the first attempt applied, or that the lease was replaced, so
+  end your observers only on an acknowledged `Completed`. Retention can hide the outcome, and a reschedule leaves the
+  message pending, so reading the message does not always tell which.
+- **Cancellation.** Report `Cancelled` only when an operator's cancel request (from `renew_turn`) came before your
+  handler ended; one that comes later is ignored, and the handler's report stands. The server trusts this.
+- **What the server does not do.** It runs no handler, never releases a lease, and tells its own observers nothing.
 
 ### Configuration
 

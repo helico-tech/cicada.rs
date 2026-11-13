@@ -24,7 +24,7 @@
   the current report through a peer, including SQL cancellation/settlement coverage. Assert at most one outcome and
   effect/notification set, no handler re-execution and no release call on every path. Run these tests and the existing
   local lease/commit failure suite; do not add sleep-based runtime race tests.
-- [ ] 4. Update ADR 0038/index as needed, architecture, core guide, operations and public API docs. Document a report
+- [x] 4. Update ADR 0038/index as needed, architecture, core guide, operations and public API docs. Document a report
   as a finished buffer, server policy versus executor duties, cancellation arbitration, one-attempt completion,
   validation-derived failures versus Rejected, retention/acknowledgement uncertainty and no release after handler
   end. Add a compiled example that handles Completed/Rejected/LeaseLost without implying the HTTP worker exists yet.
