@@ -1,12 +1,13 @@
 # Brief: build a ready change
 
-You build one OpenSpec change of this repository, completely, in your own git worktree. The caller names the change,
-its version and the path of the main checkout. The design of the change is agreed: build what it says. You do not
-change the design.
+You build one small OpenSpec change of this repository, completely, in your own git worktree. The caller names the
+change, its version, the path of the main checkout, and maybe a worktree. The design of the change is agreed: build
+what it says. You do not change the design. Work fast: the owner wants short iterations.
 
 ## Start
 
-1. `pwd` must be a folder under `.claude/worktrees/`. If it is not, stop and report; do not work anywhere else.
+1. If the caller names a worktree, `cd` into it. `pwd` must be a folder under `.claude/worktrees/`. If it is not,
+   stop and report; do not work anywhere else.
 2. Get onto the right commits and branch. The ready change is committed on the local branch `main`, which your
    worktree may not start from:
 
@@ -16,15 +17,17 @@ change the design.
    git branch -M feat/<change>
    ```
 
-3. `openspec instructions apply --change <change>` prints the files of the change and the project rules. Read them,
-   `AGENTS.md`, `docs/architecture.md` and the ADRs the change names.
+3. Read `openspec/changes/<change>/` (proposal, design, specs, tasks), `AGENTS.md`, and the parts of
+   `docs/architecture.md` and the ADRs that the change names.
 
 ## Build
 
-- Work through `openspec/changes/<change>/tasks.md` in order. Tick a task only after the verification it names has
-  passed. If some tasks are ticked already, check that their work is there and go on with the rest.
-- Commit after each group of tasks. Write the message like the ones in `git log`: one sentence that says what the
-  commit does. Every commit builds.
+- Work through `tasks.md` in order. Tick a task only after the verification it names has passed. If some tasks are
+  ticked already, check that their work is there and go on with the rest.
+- While you work, run only what a task touches: `cargo test -p <crate> <filter>` and
+  `cargo clippy -p <crate> --all-targets`. Run the whole workspace once, in the last task.
+- Commit after each task or group of tasks. Write the message like the ones in `git log`: one sentence that says what
+  the commit does. Every commit builds.
 - **Version.** The caller gives `X.Y.Z`. Set it in `[workspace.package]` of `Cargo.toml`, run `cargo check` (it
   updates `Cargo.lock`), and put the entries of this change under `## X.Y.Z — unreleased` in `CHANGELOG.md`. Leave the
   `tag = "v…"` lines of the README alone: they change at the release.
@@ -39,19 +42,19 @@ change the design.
 - Stay in your worktree. Never push, merge, tag or archive, and never touch another worktree or the main checkout.
 - Build the design as written. If the design is wrong or unclear, or a task cannot be done as written: commit what
   works, stop, and report the question. Do not decide it yourself, and do not widen the scope.
-- While you build, you are the only one who edits the files of this change. If the caller sends a decision that
-  changes the design, the spec or the tasks, make that edit in your branch.
+- If the caller sends a decision that changes the design, the spec or the tasks, make that edit in your branch.
 - Fix the cause of a failing test. Do not weaken a test or hide an error.
 - Never report a check as passed that you did not run.
 
-## Fix rounds
+## Fix round
 
-The caller may come back with findings from a validator. Fix each one, or say why it is not a fault. Run the checks
-the fix touches and the finishing checks again, commit, and report again.
+The caller may come back with the blocking findings of a review. Fix each one, or say why it is not a fault. Run the
+tests the fixes touch, then `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` and
+`cargo test --workspace` once. Commit, and report again.
 
 ## Report
 
-At most 600 words:
+At most 300 words:
 
 1. Each task: done, or not done and why.
 2. The checks you ran, with results in numbers (tests passed and failed), and the checks you did not run, with the

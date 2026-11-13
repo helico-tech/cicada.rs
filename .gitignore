@@ -4,3 +4,5 @@ node_modules/
 *.db-shm
 *.db-wal
 .DS_Store
+# Review requests between the loops (ADR 0030, scripts/review.py).
+.reviews/

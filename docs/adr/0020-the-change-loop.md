@@ -4,7 +4,7 @@ Date: 2026-11-11
 
 ## Status
 
-Accepted
+Superseded by [ADR 0030](0030-three-loops.md).
 
 ## Context
 

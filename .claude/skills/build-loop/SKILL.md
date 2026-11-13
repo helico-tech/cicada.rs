@@ -1,0 +1,101 @@
+---
+name: build-loop
+description: Start or resume the build loop of this repository (ADR 0030). A subagent builds the first ready OpenSpec change in a worktree, the review loop reviews it through scripts/review.py, and the change lands and is released on the owner's yes. Runs in a session of its own, next to the design loop and the review loop.
+disable-model-invocation: true
+---
+
+# The build loop
+
+One of three loops, each in a session of its own (ADR 0030): the design loop describes changes with the owner, this
+loop builds them, and the review loop reviews both. They hand over through files: a change with a `tasks.md` on `main`
+is ready to build, and reviews go through `scripts/review.py`.
+
+You orchestrate: you start the builder, ask for reviews, read reports, talk with the owner and land. You do not build
+or review yourself.
+
+## Start
+
+Every time the skill is invoked, and again after a change has landed:
+
+1. `git fetch origin`. If `origin/main` is ahead of `main`, tell the owner before anything is built on the old base.
+2. Run `python3 scripts/status.py`, `python3 scripts/review.py list`, `git status --short` and `git worktree list`.
+   The main checkout is on `main`. If the status lists problems, solve them with the owner first.
+3. The `build:` line names the change to build. When it names none, run `python3 scripts/status.py --wait` in the
+   background: it ends when the first change in the order is ready. Tell the owner in one line that you wait.
+
+## Build
+
+One change at a time: the first in the order, and only when it has a `tasks.md`.
+
+1. **Earlier work.** If `git worktree list` shows the branch `feat/<change>` and you hold no agent for it, it is left
+   from another session. A clean tree: `git worktree remove <path>`; the branch stays and the new builder picks it up.
+   A dirty tree: ask the owner whether to continue it or drop it. To continue it, start the builder without isolation
+   and add `Worktree: <path>` to its prompt.
+2. **Version.** Read the version in `Cargo.toml` and the top heading of `CHANGELOG.md`. A heading that says
+   `unreleased` is the version. Otherwise raise the minor number when the proposal marks something **BREAKING**, else
+   the patch number.
+3. **Builder.** Start it with the Agent tool: `subagent_type: "general-purpose"`, `model: "opus"`, `effort: "high"`,
+   `isolation: "worktree"`. Prompt:
+
+   > Read `<main checkout>/.claude/skills/build-loop/builder.md` and follow it. Change: `<change>`. Version: `X.Y.Z`.
+   > Main checkout: `<main checkout>`.
+
+   Keep its id, and tell the owner in one line.
+4. **When the builder reports.** A question about the design goes to the owner; send the answer with SendMessage.
+   Otherwise write `Version: X.Y.Z` and the builder's report to a file in your scratchpad, and ask for a review:
+
+   ```sh
+   python3 scripts/review.py request code <change> --head feat/<change> --note-file <that file>
+   ```
+
+   Run `python3 scripts/review.py wait <id>` in the background: it ends when the report is in.
+5. **When the review reports.**
+   - `Verdict: pass`: go to Present.
+   - `Verdict: fix needed`: check each blocking finding against the code. Drop one only when it is plainly wrong, and
+     tell the owner why. Send the rest to the builder. When it reports, ask for round 2 the same way: `request code`
+     again numbers the round and names the previous head. One fix round: when round 2 still blocks, take what is stuck
+     to the owner.
+   - Notes do not go to the builder; they go to the owner in Present.
+
+## Present
+
+Tell the owner, in this shape:
+
+- What is new, in two or three sentences, and a small example: the builder's, at most 20 lines.
+- New concepts and how each works. Leave this out when there are none.
+- Results: tasks done, checks with their numbers, checks not run, what the review found and what was fixed.
+- The notes of the review, each with your pick: drop it, or a line in the later proposal that owns the area.
+- Breaking changes, and the version.
+- The question, labelled: "N. Land and release as `X.Y.Z`? yes / no".
+
+## Land
+
+Only on the owner's yes. A no goes back to the builder, or to the design loop.
+
+1. `git fetch origin`. If `main` moved: `git -C <builder worktree> rebase main`. On a conflict, `git rebase --abort`,
+   send the builder to rebase and resolve, and ask for one more review round.
+2. `git merge --ff-only feat/<change>` on `main`.
+3. Move the change's reviews into its folder, so that they are archived with it:
+   `mkdir -p openspec/changes/<change>/reviews && mv .reviews/<change>.* openspec/changes/<change>/reviews/`.
+4. `openspec archive <change> -y`. A new spec in `openspec/specs/` gets one or two real sentences under `## Purpose`.
+5. Release as in `docs/operations.md`, Releasing, steps 1 to 5: the README tag lines, the changelog date, one commit
+   `Release X.Y.Z: …`, push `main`, wait for CI (`gh run watch`), `scripts/release-check.sh vX.Y.Z`, tag, push the
+   tag. The design loop shares this checkout and may have files open, so stage by path, never `git add -A` or
+   `git commit -a`: `git add -A -- README.md CHANGELOG.md openspec/changes/<change> openspec/changes/archive
+   openspec/specs`. If CI or the check fails: no tag; tell the owner.
+6. Clean up: `git worktree remove` the builder's worktree, `git branch -d feat/<change>`, delete the leftover
+   `worktree-agent-…` branches, `git worktree prune`.
+7. Tell the owner in two lines, and go to Start.
+
+## Rules
+
+- The owner's yes in Present covers the merge, the archive, the release commit, the push and the tag of that one
+  change. Nothing else is pushed, merged or tagged.
+- Subagents and reviewers never push, merge, tag or archive.
+- While a change is built, only its builder edits its files, in its branch.
+- Read an agent's worktree with `git -C <path>` and absolute paths; never `cd` into it.
+- Tell the owner in one line when an agent or a review starts and when it reports. Never state a result before its
+  report has arrived.
+- A finding outside the change: a line in the later proposal that owns the area, or, when it blocks, a new change with
+  only a `proposal.md` and an `Order` section. Ask the owner.
+- When the session ends, name each worktree: kept because a build runs, or removed.

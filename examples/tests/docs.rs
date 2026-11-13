@@ -195,8 +195,8 @@ fn a_function_is_found_by_its_whole_name() {
 // The links.
 
 /// The Markdown files of the repository under `root`: not those under `target`, `.git` or `node_modules`, nor the
-/// archive of changes (`openspec/changes/archive`) and the worktrees of agents (`.claude/worktrees`), which are no part
-/// of it.
+/// archive of changes (`openspec/changes/archive`), the worktrees of agents (`.claude/worktrees`) and the review
+/// requests between the loops (`.reviews`, ADR 0030), which are no part of it.
 fn markdown_files(root: &Path) -> Vec<PathBuf> {
     fn walk(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
         let Ok(entries) = fs::read_dir(dir) else { return };
@@ -207,7 +207,8 @@ fn markdown_files(root: &Path) -> Vec<PathBuf> {
                 let name = entry.file_name();
                 let skipped = ["target", ".git", "node_modules"].iter().any(|n| name == *n)
                     || relative == Path::new("openspec/changes/archive")
-                    || relative == Path::new(".claude/worktrees");
+                    || relative == Path::new(".claude/worktrees")
+                    || relative == Path::new(".reviews");
                 if !skipped {
                     walk(root, &path, out);
                 }

@@ -7,20 +7,24 @@ context: |
   Read docs/architecture.md first and follow it: it is the reference for behaviour (guarantees G1-G6, store
   requirements S1-S10, the HTTP contract), and it wins over openspec/specs/ if they differ. Decisions are in docs/adr/.
   Priorities, in order: simplicity, ease of use, correctness. Throughput is not a goal.
-  Changes go through the change loop (ADR 0020, .claude/skills/change-loop). A change with only a proposal.md is an
-  idea or a finding that is not started. Its design and specs are written together with the owner when it is next, one
-  change ahead of the one being built. Its tasks.md is written last, after a review, and means: ready to build.
+  Changes go through three loops (ADR 0030, .claude/skills/design-loop, build-loop and review-loop). A change with
+  only a proposal.md is an idea or a finding that is not started. Its design and specs are written together with the
+  owner in the design loop. Its tasks.md is written last, after a review, and means: ready to build. A change is
+  small, so that it is built and reviewed quickly.
 
 rules:
   proposal:
     - Start with the simplest version that meets the requirements
+    - Keep a change small - one behaviour, at most 5 tasks plus the finishing checks; split a bigger one into a line of changes
     - Always state what is out of scope
     - Add an Order section that names the change before it and the change after it
   design:
+    - Keep it short, about 80 lines - the decisions, each with its reason and the options not taken in one line
     - A change to a guarantee or a wire format needs a new ADR in docs/adr/ and an update of docs/architecture.md
     - A schema change is an appended migration
   tasks:
-    - Every task states how it is verified
+    - At most 5 tasks plus the finishing checks
+    - Every task states how it is verified, with the tests it touches; the builder runs those while building and the whole workspace only in the last task
     - Test runtime behaviour on virtual time with `#[tokio::test(start_paused = true)]` and `TestActors`
     - A store backend change must pass the conformance suite (`crates/cicada/src/tests/conformance`)
     - A public API change keeps the doctests of `cicada-examples` (README.md, the guides in docs/guide, docs/operations.md) compiling

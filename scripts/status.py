@@ -1,17 +1,24 @@
 #!/usr/bin/env python3
-"""Prints the open OpenSpec changes in their order, the state of each, and what the change loop does next.
+"""Prints the open OpenSpec changes in their order, the state of each, and what the design and build loops do next
+(ADR 0030).
 
 The order comes from the `## Order` section of each proposal ("After `x`", "before `y`"). The state comes from the
 files of the change: only a proposal, described (design or spec), ready (a `tasks.md`), in build (some tasks ticked),
-built (all ticked). While a change is being built, its `tasks.md` is read from its worktree.
+built (all ticked). While a change is being built, its `tasks.md` is read from its worktree. The design loop describes
+the first change without a `tasks.md`, unless two ready changes already wait for the build loop.
+
+    status.py          print the order and what to do
+    status.py --wait   wait until the first change in the order is ready, then print
 """
 
 import pathlib
 import re
 import subprocess
 import sys
+import time
 
-ROOT = pathlib.Path(__file__).resolve().parents[3]
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+WAITING = 2
 CHANGES = ROOT / "openspec" / "changes"
 TASK = re.compile(r"^\s*- \[( |x|X)\]", re.M)
 
@@ -69,7 +76,8 @@ def read(name, trees):
     }
 
 
-def main():
+def order():
+    """The changes by name, the queue of their names in order, and the problems with the order."""
     trees = worktrees()
     names = sorted(d.name for d in CHANGES.iterdir() if d.is_dir() and d.name != "archive")
     changes = {name: read(name, trees) for name in names}
@@ -101,6 +109,20 @@ def main():
         before = changes[earlier]["order"][1]
         if before is not None and before != later:
             problems.append(f"{earlier} says it comes before {before}, but {later} comes after it")
+    return names, changes, queue, problems
+
+
+def main():
+    if sys.argv[1:] == ["--wait"]:
+        while True:
+            _, changes, queue, _ = order()
+            if queue and changes[queue[0]]["tasks"] != "-":
+                break
+            time.sleep(30)
+    elif sys.argv[1:]:
+        print(__doc__)
+        return 2
+    names, changes, queue, problems = order()
 
     width = max((len(name) for name in names), default=6)
     print(f"{'#':>2}  {'change':<{width}}  {'state':<9}  {'tasks':<5}  worktree")
@@ -117,17 +139,16 @@ def main():
         if head["state"] in ("ready", "in build", "built"):
             tree = f"worktree {head['tree']}" if head["tree"] != "-" else "no worktree yet"
             print(f"build:    {head['name']} ({head['state']}, tasks {head['tasks']}, {tree})")
-            if len(queue) == 1:
-                print("describe: nothing; no change is left after it")
-            else:
-                ahead = changes[queue[1]]
-                if ahead["tasks"] == "-":
-                    print(f"describe: {ahead['name']} ({ahead['state']})")
-                else:
-                    print(f"describe: nothing; {ahead['name']}, one ahead, is ready. Wait until {head['name']} has landed")
         else:
             print(f"build:    nothing; {head['name']}, the first change, is not ready ({head['state']})")
-            print(f"describe: {head['name']} ({head['state']})")
+        waiting = [n for n in queue if changes[n]["state"] == "ready" and changes[n]["tree"] == "-"]
+        first_open = next((n for n in queue if changes[n]["tasks"] == "-"), None)
+        if first_open is None:
+            print("describe: nothing; every open change is ready")
+        elif len(waiting) >= WAITING:
+            print(f"describe: nothing; {' and '.join(waiting)} wait for the build loop")
+        else:
+            print(f"describe: {first_open} ({changes[first_open]['state']})")
     print("problems: " + ("none" if not problems else ""))
     for problem in problems:
         print(f"  - {problem}")
