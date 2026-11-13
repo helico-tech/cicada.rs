@@ -554,7 +554,7 @@ async fn stopping_a_new_worker_drains_and_cancels_its_manual_turns() {
     assert!(worker.stopped().await.is_none());
 }
 
-/// type `blocker`: a handler that blocks its thread, ignoring cancellation.
+/// type `blocker`: a handler that blocks its thread, ignoring cancellation, and fires `started` when it begins.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct Blocker {
     id: String,
@@ -571,7 +571,10 @@ enum BlockerMsg {
     Block { millis: u64 },
 }
 
-struct BlockerActor;
+#[derive(Default)]
+struct BlockerActor {
+    started: Arc<tokio::sync::Notify>,
+}
 
 impl crate::Actor for BlockerActor {
     type Ref = Blocker;
@@ -579,6 +582,7 @@ impl crate::Actor for BlockerActor {
 
     async fn handle(&self, _turn: &mut crate::Turn<Self>, message: BlockerMsg) -> crate::HandlerResult {
         let BlockerMsg::Block { millis } = message;
+        self.started.notify_one();
         std::thread::sleep(Duration::from_millis(millis));
         Ok(())
     }
@@ -595,7 +599,7 @@ async fn stop_returns_while_non_yielding_work_runs_on_and_nothing_is_released_un
     let m = accepted(server.send(&blocker, BlockerMsg::Block { millis: 2_000 }).await.unwrap());
     let source = Scripted::new(&server);
     let worker = Worker::builder(source.clone())
-        .host(BlockerActor)
+        .host(BlockerActor::default())
         .config(WorkerConfig {
             poll_interval: Duration::from_millis(20),
             shutdown_cancel_timeout: Duration::from_millis(200),
@@ -630,7 +634,7 @@ async fn a_cancelled_completion_after_a_shutdown_stays_within_the_confirmed_leas
     let source = Scripted::new(&server);
     source.script([Complete::Hang]);
     let worker = Worker::builder(source.clone())
-        .host(BlockerActor)
+        .host(BlockerActor::default())
         .config(WorkerConfig {
             poll_interval: Duration::from_millis(20),
             shutdown_cancel_timeout: secs(3),
@@ -670,8 +674,10 @@ async fn work_that_outlives_the_cancel_timeout_is_no_longer_renewed_and_its_leas
     // Blocked for more than four TTLs, ignoring cancellation.
     let m = accepted(server.send(&blocker, BlockerMsg::Block { millis: 2_500 }).await.unwrap());
     let source = Scripted::new(&server);
+    let blocker_actor = BlockerActor::default();
+    let started = blocker_actor.started.clone();
     let worker = Worker::builder(source.clone())
-        .host(BlockerActor)
+        .host(blocker_actor)
         .config(WorkerConfig {
             poll_interval: Duration::from_millis(20),
             shutdown_cancel_timeout: Duration::from_millis(200),
@@ -680,6 +686,8 @@ async fn work_that_outlives_the_cancel_timeout_is_no_longer_renewed_and_its_leas
         .build();
     worker.start().await.unwrap();
     eventually(secs(10), || async { matches!(status(&server, &m.id).await, MessageStatus::Running { .. }) }).await;
+    // Stop only once the handler is in its blocking section, not merely leased.
+    tokio::time::timeout(secs(10), started.notified()).await.expect("the handler started");
     let mark = std::time::Instant::now();
     worker.stop_with_grace(Duration::ZERO).await;
     assert!(mark.elapsed() < Duration::from_millis(600), "stop returned after {:?}", mark.elapsed());
