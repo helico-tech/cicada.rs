@@ -7,7 +7,7 @@
   i64 extremes/invalid numeric forms, nanosecond/overflow durations and canonical addresses. Explicitly assert the
   generated schema required lists for nullable-but-required fields match decoder behavior; ordinary Option derives
   alone are insufficient. Run targeted API tests and crate doctests.
-- [ ] 2. Add full-router lease handlers, routes, operationIds and OpenAPI entries. Share bounded byte reading and
+- [x] 2. Add full-router lease handlers, routes, operationIds and OpenAPI entries. Share bounded byte reading and
   add the route-specific duplicate-rejecting parser, leaving old routes unchanged. Cover escaped duplicate keys at
   every depth, empty/non-object/trailing bodies, missing/unknown/mistyped fields, size limits with/without length,
   parser depth versus core storage-depth validation and all operation/error alternatives. In

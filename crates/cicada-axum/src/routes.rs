@@ -15,6 +15,10 @@ use axum::Json;
 use axum::Router;
 use axum::extract::{Path, Query};
 use axum::routing::{get, post};
+use cicada::api::leases::{
+    CompleteTurnRequest, CompleteTurnResponse, LeaseTurnsRequest, LeaseTurnsResponse, ReleaseTurnRequest,
+    RenewTurnRequest, RenewTurnResponse,
+};
 use cicada::api::{
     ActorView, BulkRequest, BulkResponse, CreateActorRequest, CreateActorResponse, HealthView, MailboxMessageView,
     MessageStatusView, MessageView, NodeDetailView, NodeListView, OutcomeView, PageView, Problem, PurgeResponse,
@@ -538,6 +542,65 @@ fn write_routes(router: ApiRouter<Arc<Api>>) -> ApiRouter<Arc<Api>> {
                 )
                 .input::<Path<MessagePath>>()
                 .response_with::<202, Json<SendResponse>, _>(|r| r.description("Accepted."))
+            }),
+        )
+        .api_route(
+            "/leases",
+            post_with(handlers::lease_turns, |op| {
+                described(
+                    op,
+                    "leaseTurns",
+                    "Leases up to limit due turns of the given types for a trusted worker outside this server (ADR \
+                     0040), with every field the worker needs to run them. The server needs no handler for the types; \
+                     each type must be registered with exactly the given hash. Core alternatives are 200 results \
+                     tagged by result; an empty batch is leased, not a long poll. 503 while this server is stopping.",
+                )
+                .input::<Json<LeaseTurnsRequest>>()
+                .response_with::<200, Json<LeaseTurnsResponse>, _>(|r| r.description("Leased, or a contract mismatch."))
+            }),
+        )
+        .api_route(
+            "/leases/renew",
+            post_with(handlers::renew_turn, |op| {
+                described(
+                    op,
+                    "renewTurn",
+                    "Renews a lease through any server on the store; it never shortens. Reports an operator's cancel \
+                     request, or that the lease is lost.",
+                )
+                .input::<Json<RenewTurnRequest>>()
+                .response_with::<200, Json<RenewTurnResponse>, _>(|r| r.description("Renewed, or lease lost."))
+            }),
+        )
+        .api_route(
+            "/leases/release",
+            post_with(handlers::release_turn, |op| {
+                no_content(
+                    described(
+                        op,
+                        "releaseTurn",
+                        "Gives a lease back without an outcome; the message is claimable at once. Does nothing when \
+                         the epoch is not held, so a repeat is harmless. Never for a turn whose handler ended.",
+                    )
+                    .input::<Json<ReleaseTurnRequest>>(),
+                    "Released, or nothing to release.",
+                )
+            }),
+        )
+        .api_route(
+            "/leases/complete",
+            post_with(handlers::complete_turn, |op| {
+                described(
+                    op,
+                    "completeTurn",
+                    "Completes a leased turn with the report of its handler in one fenced commit, through any server \
+                     on the store; called once per request, without retry or fallback. A rejected commit applied \
+                     nothing: report the returned failure next. A lost lease says nothing about an earlier attempt.",
+                )
+                .input::<Json<CompleteTurnRequest>>()
+                .response_with::<200, Json<CompleteTurnResponse>, _>(|r| {
+                    r.description("Completed, rejected, or lease lost.")
+                })
             }),
         )
         .api_route(

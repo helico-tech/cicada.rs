@@ -774,3 +774,26 @@ fn addresses_in_bodies_are_canonical_and_not_encoded_again() {
     assert!(decode::<LeaseTurnsRequest>(json!({"owner": "w", "types": {"Bad Name": "h"}, "limit": 1})).is_err());
     assert!(decode::<LeaseTurnsRequest>(json!({"owner": " ", "types": {"counter": "h"}, "limit": 1})).is_err());
 }
+
+/// The schema says a required nullable field may be null, as the decoder does, and other fields may not.
+#[test]
+fn the_schema_allows_null_exactly_for_the_nullable_fields() {
+    let allows_null = |root: &Value, schema: &Value| {
+        let schema = resolve(root, schema);
+        schema["anyOf"].as_array().is_some_and(|a| a.iter().any(|s| s["type"] == "null"))
+    };
+    let root = schema_of::<TurnMessageView>();
+    for (field, schema) in root["properties"].as_object().unwrap() {
+        let nullable =
+            ["from", "correlationId", "lastError", "retry", "causedBy", "retention"].contains(&field.as_str());
+        assert_eq!(allows_null(&root, schema), nullable, "{field}: {schema}");
+    }
+    let root = schema_of::<LeaseTurnsResponse>();
+    let mismatch = object_schema(&root, &root, Some(("result", "contractMismatch")));
+    assert!(allows_null(&root, &mismatch["properties"]["registered"]));
+    assert!(!allows_null(&root, &mismatch["properties"]["requested"]));
+    let root = schema_of::<CompleteTurnResponse>();
+    let completed = object_schema(&root, &root, Some(("result", "completed")));
+    assert!(allows_null(&root, &completed["properties"]["cause"]));
+    assert!(!allows_null(&root, &completed["properties"]["version"]));
+}

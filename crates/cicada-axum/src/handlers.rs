@@ -8,6 +8,10 @@ use axum::extract::{Path, Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use cicada::address::TypeName;
+use cicada::api::leases::{
+    CompleteTurnRequest, CompleteTurnResponse, LeaseTurnsRequest, LeaseTurnsResponse, ReleaseTurnRequest,
+    RenewTurnRequest, RenewTurnResponse,
+};
 use cicada::api::{
     ActorView, BulkRequest, BulkResponse, CreateActorRequest, CreateActorResponse, HealthView, MailboxMessageView,
     MessageStatusView, MessageView, NodeDetailView, NodeListView, NodeView, OutcomeView, PageView, PurgeResponse,
@@ -15,7 +19,7 @@ use cicada::api::{
     WatchView, problem_types,
 };
 use cicada::contract::Contract;
-use cicada::runtime::{BulkResult, RegisterContractResult, RetryResult, WatchResult};
+use cicada::runtime::{BulkResult, RegisterContractResult, RetryResult, TurnReport, WatchResult};
 use cicada::store::{CancelResult, DeleteResult, DeliverNowResult, MessageId, NodeId, RemoveTypeResult};
 use cicada::{ActorAddress, CreateActorResult, SendOptions, SendResult};
 use futures::FutureExt;
@@ -655,6 +659,50 @@ pub(crate) async fn remove_type(State(api): Shared, Path(name): Path<String>, re
             )
             .into()),
         }
+    })
+    .await
+}
+
+// ---- remote turns (ADR 0040) ----
+
+pub(crate) async fn lease_turns(State(api): Shared, req: Request) -> Response {
+    let instance = request::instance(&req);
+    run(instance, async move {
+        let body: LeaseTurnsRequest = request::unique_body(req, api.max_body).await?;
+        let result = api.system.lease_turns(&body.owner, &body.types, body.limit).await?;
+        Ok(json(StatusCode::OK, &LeaseTurnsResponse::from(result)))
+    })
+    .await
+}
+
+pub(crate) async fn renew_turn(State(api): Shared, req: Request) -> Response {
+    let instance = request::instance(&req);
+    run(instance, async move {
+        let body: RenewTurnRequest = request::unique_body(req, api.max_body).await?;
+        let result = api.system.renew_turn(&body.actor, body.epoch).await?;
+        Ok(json(StatusCode::OK, &RenewTurnResponse::from(result)))
+    })
+    .await
+}
+
+pub(crate) async fn release_turn(State(api): Shared, req: Request) -> Response {
+    let instance = request::instance(&req);
+    run(instance, async move {
+        let body: ReleaseTurnRequest = request::unique_body(req, api.max_body).await?;
+        api.system.release_turn(&body.actor, body.epoch).await?;
+        Ok(StatusCode::NO_CONTENT.into_response())
+    })
+    .await
+}
+
+/// Calls the core completion once and answers its actual result; no retry, fallback or release here.
+pub(crate) async fn complete_turn(State(api): Shared, req: Request) -> Response {
+    let instance = request::instance(&req);
+    run(instance, async move {
+        let body: CompleteTurnRequest = request::unique_body(req, api.max_body).await?;
+        let report = TurnReport::try_from(body.report).map_err(|e| ApiProblem::bad_request(e.to_string()))?;
+        let result = api.system.complete_turn(&body.actor, body.epoch, &body.message_id, report).await?;
+        Ok(json(StatusCode::OK, &CompleteTurnResponse::from(result)))
     })
     .await
 }

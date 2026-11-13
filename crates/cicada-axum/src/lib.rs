@@ -34,6 +34,10 @@
 //! | `GET /types/{name}` | 200 | 404 |
 //! | `PUT /types/{name}` body `{state, messages}` (register a contract without hosting the type) | 200 new or equal | 400 a malformed body, another field or a bad name, 409 another hash is registered, 422 an invalid contract |
 //! | `DELETE /types/{name}` | 204 | 404, 409 actors of the type exist |
+//! | `POST /leases` body `{owner, types: {name: hash}, limit}` (lease turns for a trusted worker, ADR 0040) | 200 `{result: "leased", leases}` or `{result: "contractMismatch", type, registered, requested}` | 400, 413, 503 stopping |
+//! | `POST /leases/renew` body `{actor, epoch}` | 200 `{result: "renewed", leaseUntil, ttl, cancelRequested}` or `{result: "leaseLost"}` | 400, 413 |
+//! | `POST /leases/release` body `{actor, epoch}` | 204, also when nothing was held | 400, 413 |
+//! | `POST /leases/complete` body `{actor, epoch, messageId, report}` | 200 `{result: "completed", outcome, cause, version, sent, cancelled}`, `{result: "rejected", failure}` or `{result: "leaseLost"}` | 400, 413 |
 //! | `GET /health` | 200 | 503 |
 //!
 //! Every endpoint also answers `400` for a malformed body, path or query parameter, `503` when the store is unavailable
@@ -56,6 +60,15 @@
 //! repeat first. The check, with the validator `jsonschema` on draft 2020-12, asserts no `format`, loads nothing from
 //! outside the schema, and lets through what a schema it cannot compile would check, with a warning once per schema.
 //! [`assert_message_sample`] and [`assert_state_sample`] test a sample against both the schema and serde.
+//!
+//! **Remote turns** (ADR 0040). The four `/leases` routes are on [`actor_api`] only, and are trusted writes: an
+//! epoch is a fence, not a secret, so the host's authentication must cover `/leases` and its children (and
+//! `PUT /types/{name}`, which a worker registers with). Their bodies ([`cicada::api::leases`]) are stricter than the
+//! others: besides unknown keys, a key repeated in any object at any depth (also one spelled with other escapes), a
+//! missing body or field, and anything after the object are `400`, before any operation. Core alternatives (a lost
+//! lease, a contract mismatch, a rejected commit) are `200` results tagged by `result`, never a problem status, so a
+//! proxy's `404` or `409` cannot pass for one. A completion is attempted once per request, with no retry, fallback or
+//! release; a whole report must fit [`ApiConfig::max_request_body_bytes`] and every proxy's limit.
 //!
 //! **Paths.** The actor `sync/acme` is `/actors/sync/acme`; its key is written exactly as in the address.
 //!

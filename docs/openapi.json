@@ -1719,6 +1719,155 @@
         }
       }
     },
+    "/leases": {
+      "post": {
+        "summary": "Leases up to limit due turns of the given types for a trusted worker outside this server (ADR 0040), with every field the worker needs to run them. The server needs no handler for the types; each type must be registered with exactly the given hash. Core alternatives are 200 results tagged by result; an empty batch is leased, not a long poll. 503 while this server is stopping.",
+        "operationId": "leaseTurns",
+        "requestBody": {
+          "description": "Body of `POST /leases`: lease up to `limit` due turns of `types` for `owner`.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LeaseTurnsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "An error (RFC 9457).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Leased, or a contract mismatch.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeaseTurnsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/leases/renew": {
+      "post": {
+        "summary": "Renews a lease through any server on the store; it never shortens. Reports an operator's cancel request, or that the lease is lost.",
+        "operationId": "renewTurn",
+        "requestBody": {
+          "description": "Body of `POST /leases/renew`: renew the lease of `actor` held under `epoch`.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenewTurnRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "An error (RFC 9457).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Renewed, or lease lost.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenewTurnResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/leases/release": {
+      "post": {
+        "summary": "Gives a lease back without an outcome; the message is claimable at once. Does nothing when the epoch is not held, so a repeat is harmless. Never for a turn whose handler ended.",
+        "operationId": "releaseTurn",
+        "requestBody": {
+          "description": "Body of `POST /leases/release`: give back the lease of `actor` held under `epoch`, without an outcome.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReleaseTurnRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "An error (RFC 9457).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "Released, or nothing to release."
+          }
+        }
+      }
+    },
+    "/leases/complete": {
+      "post": {
+        "summary": "Completes a leased turn with the report of its handler in one fenced commit, through any server on the store; called once per request, without retry or fallback. A rejected commit applied nothing: report the returned failure next. A lost lease says nothing about an earlier attempt.",
+        "operationId": "completeTurn",
+        "requestBody": {
+          "description": "Body of `POST /leases/complete`: complete the leased turn of `actor` under `epoch` on `messageId` with the report of\nits handler. The server derives the outcome; a report names none.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompleteTurnRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "An error (RFC 9457).",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Completed, rejected, or lease lost.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompleteTurnResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/messages/{id}/deliver-now": {
       "post": {
         "summary": "Makes a pending message due now, at a new place in delivery order.",
@@ -3432,6 +3581,1106 @@
         "required": [
           "affected",
           "more"
+        ]
+      },
+      "LeaseTurnsRequest": {
+        "description": "Body of `POST /leases`: lease up to `limit` due turns of `types` for `owner`.",
+        "type": "object",
+        "properties": {
+          "owner": {
+            "description": "The worker that will hold the leases, recorded as their owner: at most 200 characters, no NUL.",
+            "type": "string",
+            "minLength": 1
+          },
+          "types": {
+            "description": "Each selected type name with the contract hash the worker was built with; 1 to 64 types. A type that is not\nregistered with exactly that hash answers `contractMismatch` and nothing is leased.",
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "limit": {
+            "description": "The most turns to lease, 1 to 256.",
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "owner",
+          "types",
+          "limit"
+        ]
+      },
+      "LeaseTurnsResponse": {
+        "description": "Response of `POST /leases` (`200`), tagged by `result`.",
+        "oneOf": [
+          {
+            "description": "The leased turns, at most the limit; empty when nothing was due (no long poll).",
+            "type": "object",
+            "properties": {
+              "leases": {
+                "description": "The leases.",
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/TurnLeaseView"
+                }
+              },
+              "result": {
+                "type": "string",
+                "const": "leased"
+              }
+            },
+            "required": [
+              "result",
+              "leases"
+            ]
+          },
+          {
+            "description": "A selected type is not registered with the requested hash; nothing was leased.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "description": "The first such type in name order.",
+                "type": "string"
+              },
+              "registered": {
+                "description": "The registered hash, or null when the type is not registered; required.",
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "requested": {
+                "description": "The hash the worker asked for.",
+                "type": "string"
+              },
+              "result": {
+                "type": "string",
+                "const": "contractMismatch"
+              }
+            },
+            "required": [
+              "result",
+              "type",
+              "registered",
+              "requested"
+            ]
+          }
+        ]
+      },
+      "TurnLeaseView": {
+        "description": "A leased turn ([`TurnLease`]): everything a worker needs to run it. The worker keeps its own deadline: its\nmonotonic time when it sent the lease request plus `ttl`, less the smaller of a tenth of it and one second.",
+        "type": "object",
+        "properties": {
+          "actor": {
+            "description": "The leased actor; echo it as it is.",
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9._-]*/[^/]+$"
+          },
+          "epoch": {
+            "description": "The fencing token of the lease.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "message": {
+            "description": "The head message, with `attempt` already counting this lease.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/TurnMessageView"
+              }
+            ]
+          },
+          "state": {
+            "description": "The actor's state."
+          },
+          "version": {
+            "description": "The actor's version.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "claimedAt": {
+            "description": "Store time at the claim; the handler's `now`.",
+            "type": "string",
+            "format": "date-time"
+          },
+          "leaseUntil": {
+            "description": "Store time at which the lease expires unless renewed; for display, not a deadline.",
+            "type": "string",
+            "format": "date-time"
+          },
+          "ttl": {
+            "description": "The TTL the server asked the store for, as an ISO-8601 duration.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "actor",
+          "epoch",
+          "message",
+          "state",
+          "version",
+          "claimedAt",
+          "leaseUntil",
+          "ttl"
+        ]
+      },
+      "TurnMessageView": {
+        "description": "A message as a worker runs it ([`Message`]): the fields of [`MessageView`](super::MessageView), every one required\n(nullable ones as `null`, counters also when 0) and the policies decoded strictly.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "description": "Unique id.",
+            "type": "string",
+            "minLength": 1
+          },
+          "to": {
+            "description": "The target instance.",
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9._-]*/[^/]+$"
+          },
+          "from": {
+            "description": "The sending instance, or null.",
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9._-]*/[^/]+$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "type": {
+            "description": "The message type name.",
+            "type": "string"
+          },
+          "payload": {
+            "description": "The payload."
+          },
+          "deliverAt": {
+            "description": "Effective delivery time (store time).",
+            "type": "string",
+            "format": "date-time"
+          },
+          "correlationId": {
+            "description": "Opaque string passed through, or null.",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "headers": {
+            "description": "Headers passed through.",
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "seq": {
+            "description": "Store-assigned sequence number.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "attempt": {
+            "description": "Number of claims, this lease included.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "failures": {
+            "description": "Number of failed runs that were retried.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "lostClaims": {
+            "description": "Number of claims another claim replaced.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "lastError": {
+            "description": "The error of the most recent retried failure, or null.",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retry": {
+            "description": "The retry policy, or null.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RetryPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "causedBy": {
+            "description": "The message whose turn sent this one, or null.",
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retention": {
+            "description": "The retention of the record, or null.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Retention"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "notification": {
+            "description": "True for a notification of a watch.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "to",
+          "from",
+          "type",
+          "payload",
+          "deliverAt",
+          "correlationId",
+          "headers",
+          "seq",
+          "attempt",
+          "failures",
+          "lostClaims",
+          "lastError",
+          "retry",
+          "causedBy",
+          "retention",
+          "notification"
+        ]
+      },
+      "RenewTurnRequest": {
+        "description": "Body of `POST /leases/renew`: renew the lease of `actor` held under `epoch`.",
+        "type": "object",
+        "properties": {
+          "actor": {
+            "description": "The leased actor, as the lease named it.",
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9._-]*/[^/]+$"
+          },
+          "epoch": {
+            "description": "The epoch of the lease.",
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "actor",
+          "epoch"
+        ]
+      },
+      "RenewTurnResponse": {
+        "description": "Response of `POST /leases/renew` (`200`), tagged by `result`.",
+        "oneOf": [
+          {
+            "description": "The lease is extended.",
+            "type": "object",
+            "properties": {
+              "leaseUntil": {
+                "description": "Store time at which the lease now expires: never earlier than before.",
+                "type": "string",
+                "format": "date-time"
+              },
+              "ttl": {
+                "description": "The TTL the server asked the store for.",
+                "type": "string"
+              },
+              "cancelRequested": {
+                "description": "An operator asked to cancel this turn; the lease is extended all the same.",
+                "type": "boolean"
+              },
+              "result": {
+                "type": "string",
+                "const": "renewed"
+              }
+            },
+            "required": [
+              "result",
+              "leaseUntil",
+              "ttl",
+              "cancelRequested"
+            ]
+          },
+          {
+            "description": "The epoch is no longer current or its lease was released, completed or deleted: abandon the turn.",
+            "type": "object",
+            "properties": {
+              "result": {
+                "type": "string",
+                "const": "leaseLost"
+              }
+            },
+            "required": [
+              "result"
+            ]
+          }
+        ]
+      },
+      "ReleaseTurnRequest": {
+        "description": "Body of `POST /leases/release`: give back the lease of `actor` held under `epoch`, without an outcome.",
+        "type": "object",
+        "properties": {
+          "actor": {
+            "description": "The leased actor, as the lease named it.",
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9._-]*/[^/]+$"
+          },
+          "epoch": {
+            "description": "The epoch of the lease.",
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "actor",
+          "epoch"
+        ]
+      },
+      "CompleteTurnRequest": {
+        "description": "Body of `POST /leases/complete`: complete the leased turn of `actor` under `epoch` on `messageId` with the report of\nits handler. The server derives the outcome; a report names none.",
+        "type": "object",
+        "properties": {
+          "actor": {
+            "description": "The leased actor, as the lease named it.",
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9._-]*/[^/]+$"
+          },
+          "epoch": {
+            "description": "The epoch of the lease.",
+            "type": "integer",
+            "format": "int64"
+          },
+          "messageId": {
+            "description": "The leased message.",
+            "type": "string",
+            "minLength": 1
+          },
+          "report": {
+            "description": "How the handler ended.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/TurnReportView"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "actor",
+          "epoch",
+          "messageId",
+          "report"
+        ]
+      },
+      "TurnReportView": {
+        "description": "How the handler of a leased turn ended ([`TurnReport`]), tagged by `kind`.",
+        "oneOf": [
+          {
+            "description": "The handler returned: its state and its effects, applied together or not at all.",
+            "type": "object",
+            "properties": {
+              "state": {
+                "description": "What happens to the actor's own state.",
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/StateReportView"
+                  }
+                ]
+              },
+              "effects": {
+                "description": "The effects the handler buffered; required, each of its arrays optional.",
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/TurnEffectsView"
+                  }
+                ]
+              },
+              "kind": {
+                "type": "string",
+                "const": "returned"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "state",
+              "effects"
+            ]
+          },
+          {
+            "description": "The handler failed, or the turn failed around it; no effects. Only `handler`, `node` and `timeout` may be\nretryable, and `claim-limit` cannot be reported.",
+            "type": "object",
+            "properties": {
+              "cause": {
+                "description": "Why the message fails.",
+                "oneOf": [
+                  {
+                    "description": "The handler returned an error or panicked, and no retry is left; or it returned a new state that cannot be\nstored.",
+                    "type": "string",
+                    "const": "handler"
+                  },
+                  {
+                    "description": "The node or the store failed around the turn: a read the node needed failed, also one the handler passed on,\nor a panic outside the handler.",
+                    "type": "string",
+                    "const": "node"
+                  },
+                  {
+                    "description": "The handler refused the message for good (a permanent failure).",
+                    "type": "string",
+                    "const": "refused"
+                  },
+                  {
+                    "description": "The turn ran past its maximum duration.",
+                    "type": "string",
+                    "const": "timeout"
+                  },
+                  {
+                    "description": "The message cannot be decoded.",
+                    "type": "string",
+                    "const": "message"
+                  },
+                  {
+                    "description": "The state or the address of the actor cannot be read by its type.",
+                    "type": "string",
+                    "const": "state"
+                  },
+                  {
+                    "description": "The effects of the turn were refused, or its commit was rejected or refused.",
+                    "type": "string",
+                    "const": "commit"
+                  },
+                  {
+                    "description": "The message reached the claim limit (ADR 0025).",
+                    "type": "string",
+                    "const": "claim-limit"
+                  }
+                ]
+              },
+              "retryable": {
+                "description": "True when the message's own retry policy may reschedule it.",
+                "type": "boolean"
+              },
+              "reason": {
+                "description": "The reason it is recorded with.",
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "const": "failed"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "cause",
+              "retryable",
+              "reason"
+            ]
+          },
+          {
+            "description": "An operator's cancel request came before the handler ended; no effects.",
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "cancelled"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "kind"
+            ]
+          }
+        ]
+      },
+      "StateReportView": {
+        "description": "What a returned handler did to its actor's own state ([`StateReport`]), tagged by `kind`.",
+        "oneOf": [
+          {
+            "description": "State and version stay as they are.",
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "unchanged"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "kind"
+            ]
+          },
+          {
+            "description": "The new state, written with the version increased by 1; required, also when it is `null` (which fails the\nmessage as a state that cannot be stored).",
+            "type": "object",
+            "properties": {
+              "value": {
+                "description": "The new state."
+              },
+              "kind": {
+                "type": "string",
+                "const": "set"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "value"
+            ]
+          },
+          {
+            "description": "The actor and its descendants stop.",
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "stop"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "kind"
+            ]
+          }
+        ]
+      },
+      "TurnEffectsView": {
+        "description": "The effects of a returned handler ([`TurnEffects`]), applied by the commit in the order the core gives them:\nwatches, deletes, creates, purges, pauses and resumes, then sends. Each array is optional and empty by default.",
+        "type": "object",
+        "properties": {
+          "sends": {
+            "description": "The messages to send, in order.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TurnSendView"
+            },
+            "default": []
+          },
+          "creates": {
+            "description": "The actors to create.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ActorCreateView"
+            },
+            "default": []
+          },
+          "cancels": {
+            "description": "Pending messages of the actor to cancel.",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "default": []
+          },
+          "watches": {
+            "description": "The watches set and removed, with the actor as watcher, in the order of the calls.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WatchChangeView"
+            },
+            "default": []
+          },
+          "controls": {
+            "description": "The control effects on actors.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ControlView"
+            },
+            "default": []
+          }
+        },
+        "additionalProperties": false
+      },
+      "TurnSendView": {
+        "description": "A message a returned handler sends ([`TurnSend`]). The server sets its sender to the leased actor and its cause to\nthe leased message; the id is the worker's and is never generated.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "description": "The message id, drawn once by the worker and kept when it repeats the report.",
+            "type": "string",
+            "minLength": 1
+          },
+          "to": {
+            "description": "The target.",
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9._-]*/[^/]+$"
+          },
+          "type": {
+            "description": "The message type name.",
+            "type": "string"
+          },
+          "payload": {
+            "description": "The payload."
+          },
+          "deliverAt": {
+            "description": "Optional absolute delivery time; not together with [`Self::delay`]. Neither means now.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "delay": {
+            "description": "Optional relative delivery time, as an ISO-8601 duration.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "correlationId": {
+            "description": "Optional opaque string passed through.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "headers": {
+            "description": "Optional headers passed through; `{}` by default, never null.",
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {}
+          },
+          "retry": {
+            "description": "Optional retry policy of the new message, as for a send.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RetryPolicy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retention": {
+            "description": "Optional retention of the new message's record, as for a send.",
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Retention"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "to",
+          "type",
+          "payload"
+        ]
+      },
+      "ActorCreateView": {
+        "description": "An actor a returned handler creates ([`ActorCreate`]).",
+        "type": "object",
+        "properties": {
+          "address": {
+            "description": "The instance to create.",
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9._-]*/[^/]+$"
+          },
+          "state": {
+            "description": "Its initial state."
+          },
+          "child": {
+            "description": "True for a child of the leased actor, false for an independent actor.",
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "address",
+          "state",
+          "child"
+        ]
+      },
+      "WatchChangeView": {
+        "description": "A watch a returned handler sets or removes, with the leased actor as watcher ([`WatchChange`]).",
+        "type": "object",
+        "properties": {
+          "target": {
+            "description": "What is watched.",
+            "type": "string"
+          },
+          "set": {
+            "description": "True to set the watch, false to remove it.",
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "target",
+          "set"
+        ]
+      },
+      "ControlView": {
+        "description": "A control effect of a returned handler on an actor ([`Control`]).",
+        "type": "object",
+        "properties": {
+          "effect": {
+            "description": "What happens to the actor.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ControlEffectView"
+              }
+            ]
+          },
+          "actor": {
+            "description": "The actor.",
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9._-]*/[^/]+$"
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "effect",
+          "actor"
+        ]
+      },
+      "ControlEffectView": {
+        "description": "What a control effect does ([`ControlEffect`]).",
+        "oneOf": [
+          {
+            "description": "No new turn is claimed for the actor.",
+            "type": "string",
+            "const": "pause"
+          },
+          {
+            "description": "Turns of the actor are claimed again.",
+            "type": "string",
+            "const": "resume"
+          },
+          {
+            "description": "Every pending message of the actor except one being handled ends `purged`.",
+            "type": "string",
+            "const": "purge"
+          },
+          {
+            "description": "The actor, its mailbox and its descendants go.",
+            "type": "string",
+            "const": "delete"
+          }
+        ]
+      },
+      "CompleteTurnResponse": {
+        "description": "Response of `POST /leases/complete` (`200`), tagged by `result`.",
+        "oneOf": [
+          {
+            "description": "The commit applied ([`TurnCompletion`]).",
+            "type": "object",
+            "properties": {
+              "outcome": {
+                "description": "How the message ended, or that it was rescheduled.",
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/TurnOutcomeView"
+                  }
+                ]
+              },
+              "cause": {
+                "description": "Why it failed, for a `failed` outcome; null otherwise, and required.",
+                "anyOf": [
+                  {
+                    "description": "Why a message ended `failed` (ADR 0028). The node decides it where it decides that the message fails. Written in\nkebab-case, in place in the schema of [`Failed`]. A closed set: a value added later changes the contract of every\ntype that watches.",
+                    "oneOf": [
+                      {
+                        "description": "The handler returned an error or panicked, and no retry is left; or it returned a new state that cannot be\nstored.",
+                        "type": "string",
+                        "const": "handler"
+                      },
+                      {
+                        "description": "The node or the store failed around the turn: a read the node needed failed, also one the handler passed on,\nor a panic outside the handler.",
+                        "type": "string",
+                        "const": "node"
+                      },
+                      {
+                        "description": "The handler refused the message for good (a permanent failure).",
+                        "type": "string",
+                        "const": "refused"
+                      },
+                      {
+                        "description": "The turn ran past its maximum duration.",
+                        "type": "string",
+                        "const": "timeout"
+                      },
+                      {
+                        "description": "The message cannot be decoded.",
+                        "type": "string",
+                        "const": "message"
+                      },
+                      {
+                        "description": "The state or the address of the actor cannot be read by its type.",
+                        "type": "string",
+                        "const": "state"
+                      },
+                      {
+                        "description": "The effects of the turn were refused, or its commit was rejected or refused.",
+                        "type": "string",
+                        "const": "commit"
+                      },
+                      {
+                        "description": "The message reached the claim limit (ADR 0025).",
+                        "type": "string",
+                        "const": "claim-limit"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "version": {
+                "description": "The actor's version after the commit.",
+                "type": "integer",
+                "format": "int64"
+              },
+              "sent": {
+                "description": "The sends as enqueued.",
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/TurnMessageView"
+                }
+              },
+              "cancelled": {
+                "description": "The cancels that found a pending message.",
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "result": {
+                "type": "string",
+                "const": "completed"
+              }
+            },
+            "required": [
+              "result",
+              "outcome",
+              "cause",
+              "version",
+              "sent",
+              "cancelled"
+            ]
+          },
+          {
+            "description": "Nothing was applied and no failure was committed: report `failed` with this failure next, and from then on only\nthat report.",
+            "type": "object",
+            "properties": {
+              "failure": {
+                "description": "The failure to report.",
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/TurnFailureView"
+                  }
+                ]
+              },
+              "result": {
+                "type": "string",
+                "const": "rejected"
+              }
+            },
+            "required": [
+              "result",
+              "failure"
+            ]
+          },
+          {
+            "description": "The lease is not held (any more): nothing was applied by this call, which says nothing about an earlier one.",
+            "type": "object",
+            "properties": {
+              "result": {
+                "type": "string",
+                "const": "leaseLost"
+              }
+            },
+            "required": [
+              "result"
+            ]
+          }
+        ]
+      },
+      "TurnOutcomeView": {
+        "description": "How a completed commit ended the message ([`TurnOutcome`]), tagged by `kind`.",
+        "oneOf": [
+          {
+            "description": "Outcome `done`.",
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "done"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          {
+            "description": "Outcome `cancelled`.",
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "cancelled"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          {
+            "description": "Outcome `failed`.",
+            "type": "object",
+            "properties": {
+              "error": {
+                "description": "The recorded error.",
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "const": "failed"
+              }
+            },
+            "required": [
+              "kind",
+              "error"
+            ]
+          },
+          {
+            "description": "Put back into the mailbox by its retry policy, without an outcome. The retry is due at `deliverAt`, after\n`delay`, or now when neither is given; never both.",
+            "type": "object",
+            "properties": {
+              "error": {
+                "description": "The failure, recorded as `lastError`.",
+                "type": "string"
+              },
+              "deliverAt": {
+                "description": "Absolute time of the retry.",
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "delay": {
+                "description": "Delay of the retry.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "kind": {
+                "type": "string",
+                "const": "rescheduled"
+              }
+            },
+            "required": [
+              "kind",
+              "error"
+            ]
+          }
+        ]
+      },
+      "TurnFailureView": {
+        "description": "A failure ([`TurnFailure`]).",
+        "type": "object",
+        "properties": {
+          "cause": {
+            "description": "Why the message fails.",
+            "oneOf": [
+              {
+                "description": "The handler returned an error or panicked, and no retry is left; or it returned a new state that cannot be\nstored.",
+                "type": "string",
+                "const": "handler"
+              },
+              {
+                "description": "The node or the store failed around the turn: a read the node needed failed, also one the handler passed on,\nor a panic outside the handler.",
+                "type": "string",
+                "const": "node"
+              },
+              {
+                "description": "The handler refused the message for good (a permanent failure).",
+                "type": "string",
+                "const": "refused"
+              },
+              {
+                "description": "The turn ran past its maximum duration.",
+                "type": "string",
+                "const": "timeout"
+              },
+              {
+                "description": "The message cannot be decoded.",
+                "type": "string",
+                "const": "message"
+              },
+              {
+                "description": "The state or the address of the actor cannot be read by its type.",
+                "type": "string",
+                "const": "state"
+              },
+              {
+                "description": "The effects of the turn were refused, or its commit was rejected or refused.",
+                "type": "string",
+                "const": "commit"
+              },
+              {
+                "description": "The message reached the claim limit (ADR 0025).",
+                "type": "string",
+                "const": "claim-limit"
+              }
+            ]
+          },
+          "retryable": {
+            "description": "True when the message's retry policy may reschedule it.",
+            "type": "boolean"
+          },
+          "reason": {
+            "description": "The reason.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cause",
+          "retryable",
+          "reason"
         ]
       }
     }

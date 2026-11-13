@@ -6,7 +6,8 @@ use cicada::store::{MessageId, NodeId, OutcomeStatus, Page, PageCursor};
 use cicada::time::{MAX_INSTANT, Timestamp, format_instant, parse_instant};
 use cicada::{ActorAddress, WatchTarget};
 use futures::StreamExt;
-use serde::de::DeserializeOwned;
+use serde::de::{DeserializeOwned, MapAccess, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer};
 
 use crate::MAX_PAGE_SIZE;
 use crate::problem::ApiProblem;
@@ -121,6 +122,24 @@ impl Params {
 /// bytes is refused with `413`: by its `Content-Length` when given, otherwise while reading, which stops one byte past
 /// the limit.
 pub(crate) async fn body<T: DeserializeOwned>(req: Request, limit: usize) -> Result<Option<T>, ApiProblem> {
+    let bytes = bounded_bytes(req, limit).await?;
+    let text = String::from_utf8(bytes)
+        .map_err(|e| ApiProblem::bad_request(format!("Unreadable request body: not UTF-8: {e}")))?;
+    if text.trim().is_empty() {
+        return Ok(None);
+    }
+    let malformed = |e: serde_json::Error| ApiProblem::bad_request(format!("Malformed JSON body: {e}"));
+    // Every request body is an object; serde's derived structs would also take an array of the fields.
+    let value: serde_json::Value = serde_json::from_str(&text).map_err(malformed)?;
+    if !value.is_object() {
+        return Err(ApiProblem::bad_request(format!("Malformed JSON body: expected a JSON object, was {text}")));
+    }
+    T::deserialize(value).map(Some).map_err(malformed)
+}
+
+/// The request body, refused with `413` when it is larger than `limit` bytes: by its `Content-Length` when given,
+/// otherwise while reading, which stops one byte past the limit.
+async fn bounded_bytes(req: Request, limit: usize) -> Result<Vec<u8>, ApiProblem> {
     let declared = req.headers().get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()?.parse::<u64>().ok());
     if declared.is_some_and(|len| len > limit as u64) {
         return Err(ApiProblem::too_large(limit));
@@ -134,18 +153,94 @@ pub(crate) async fn body<T: DeserializeOwned>(req: Request, limit: usize) -> Res
             return Err(ApiProblem::too_large(limit));
         }
     }
-    let text = String::from_utf8(bytes)
-        .map_err(|e| ApiProblem::bad_request(format!("Unreadable request body: not UTF-8: {e}")))?;
-    if text.trim().is_empty() {
-        return Ok(None);
-    }
+    Ok(bytes)
+}
+
+/// Decodes the body of a remote turn operation (`/leases`, ADR 0040) strictly, before any operation: the size limit
+/// of [`body`], then one JSON object with nothing after it, no key twice in any object at any depth (compared after
+/// decoding escapes), within serde_json's nesting limit, and the fields of `T` (see [`cicada::api::leases`]). Every
+/// refusal but the size is `400`.
+pub(crate) async fn unique_body<T: DeserializeOwned>(req: Request, limit: usize) -> Result<T, ApiProblem> {
+    let bytes = bounded_bytes(req, limit).await?;
     let malformed = |e: serde_json::Error| ApiProblem::bad_request(format!("Malformed JSON body: {e}"));
-    // Every request body is an object; serde's derived structs would also take an array of the fields.
-    let value: serde_json::Value = serde_json::from_str(&text).map_err(malformed)?;
-    if !value.is_object() {
-        return Err(ApiProblem::bad_request(format!("Malformed JSON body: expected a JSON object, was {text}")));
+    if bytes.iter().all(u8::is_ascii_whitespace) {
+        return Err(ApiProblem::bad_request("Malformed JSON body: the body is empty; expected a JSON object"));
     }
-    T::deserialize(value).map(Some).map_err(malformed)
+    let mut deserializer = serde_json::Deserializer::from_slice(&bytes);
+    let UniqueKeys(value) = UniqueKeys::deserialize(&mut deserializer).map_err(malformed)?;
+    deserializer.end().map_err(malformed)?;
+    if !value.is_object() {
+        return Err(ApiProblem::bad_request("Malformed JSON body: expected a JSON object"));
+    }
+    T::deserialize(value).map_err(malformed)
+}
+
+/// A JSON value read with the keys of every object unique: a repeated key, also one spelled with other escapes, is an
+/// error instead of the last value winning.
+struct UniqueKeys(serde_json::Value);
+
+impl<'de> Deserialize<'de> for UniqueKeys {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(UniqueKeysVisitor).map(UniqueKeys)
+    }
+}
+
+struct UniqueKeysVisitor;
+
+impl<'de> Visitor<'de> for UniqueKeysVisitor {
+    type Value = serde_json::Value;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a JSON value")
+    }
+
+    fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E> {
+        Ok(v.into())
+    }
+
+    fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E> {
+        Ok(v.into())
+    }
+
+    fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E> {
+        Ok(v.into())
+    }
+
+    fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E> {
+        Ok(serde_json::Number::from_f64(v).map_or(serde_json::Value::Null, serde_json::Value::Number))
+    }
+
+    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E> {
+        Ok(v.into())
+    }
+
+    fn visit_string<E>(self, v: String) -> Result<Self::Value, E> {
+        Ok(v.into())
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::Null)
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let mut items = Vec::new();
+        while let Some(UniqueKeys(item)) = seq.next_element()? {
+            items.push(item);
+        }
+        Ok(serde_json::Value::Array(items))
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut object = serde_json::Map::new();
+        while let Some(key) = map.next_key::<String>()? {
+            if object.contains_key(&key) {
+                return Err(serde::de::Error::custom(format!("duplicate key {key:?}")));
+            }
+            let UniqueKeys(value) = map.next_value()?;
+            object.insert(key, value);
+        }
+        Ok(serde_json::Value::Object(object))
+    }
 }
 
 #[cfg(test)]

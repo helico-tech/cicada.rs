@@ -41,6 +41,71 @@ fn every_operation_has_an_id_and_answers_errors_as_problems() {
     }
 }
 
+/// remote-turn-http, Scenario: Published contract and library example (the four operations, their schemas and the
+/// required fields of the execution message).
+#[tokio::test(start_paused = true)]
+async fn only_the_full_document_describes_the_remote_turn_operations() {
+    let system = node_with(memory_store(), |b| b).await;
+    let full = get_json(&actor_api(system.clone()), "/openapi.json").await;
+    assert_eq!(full, openapi_document());
+    let schemas = &full["components"]["schemas"];
+    for (path, id, request, response) in [
+        ("/leases", "leaseTurns", "LeaseTurnsRequest", Some("LeaseTurnsResponse")),
+        ("/leases/renew", "renewTurn", "RenewTurnRequest", Some("RenewTurnResponse")),
+        ("/leases/release", "releaseTurn", "ReleaseTurnRequest", None),
+        ("/leases/complete", "completeTurn", "CompleteTurnRequest", Some("CompleteTurnResponse")),
+    ] {
+        let item = full["paths"][path].as_object().unwrap();
+        assert_eq!(item.keys().collect::<Vec<_>>(), ["post"], "{path}");
+        let op = &item["post"];
+        assert_eq!(op["operationId"], id);
+        let body = &op["requestBody"]["content"]["application/json"]["schema"]["$ref"];
+        assert_eq!(body, &format!("#/components/schemas/{request}"));
+        assert_eq!(schemas[request]["additionalProperties"], false, "{request} is strict");
+        match response {
+            Some(r) => {
+                let ok = &op["responses"]["200"]["content"]["application/json"]["schema"]["$ref"];
+                assert_eq!(ok, &format!("#/components/schemas/{r}"));
+            }
+            None => assert!(op["responses"]["204"].is_object()),
+        }
+        assert!(op["responses"]["default"]["content"][cicada_axum::PROBLEM_JSON].is_object());
+    }
+    let required = |name: &str| {
+        let mut r: Vec<String> =
+            schemas[name]["required"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_owned()).collect();
+        r.sort();
+        r
+    };
+    let mut message = [
+        "id",
+        "to",
+        "from",
+        "type",
+        "payload",
+        "deliverAt",
+        "correlationId",
+        "headers",
+        "seq",
+        "attempt",
+        "failures",
+        "lostClaims",
+        "lastError",
+        "retry",
+        "causedBy",
+        "retention",
+        "notification",
+    ];
+    message.sort();
+    assert_eq!(required("TurnMessageView"), message, "nullable fields are required too");
+    assert_eq!(required("TurnSendView"), ["id", "payload", "to", "type"]);
+    assert_eq!(required("CompleteTurnRequest"), ["actor", "epoch", "messageId", "report"]);
+    assert!(schemas["TurnEffectsView"].get("required").is_none_or(|r| r.as_array().unwrap().is_empty()));
+
+    let read = get_json(&actor_api_read(system), "/openapi.json").await;
+    assert!(read["paths"].as_object().unwrap().keys().all(|p| !p.starts_with("/leases")));
+}
+
 /// Scenarios: The generated contract and client describe the new route; The address listing stays compatible.
 #[tokio::test(start_paused = true)]
 async fn both_routers_describe_the_state_listing_and_leave_the_address_listing_as_it_was() {

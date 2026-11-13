@@ -42,6 +42,24 @@ fn nullable<'de, D: Deserializer<'de>, T: Deserialize<'de>>(deserializer: D) -> 
     Option::<T>::deserialize(deserializer)
 }
 
+/// The schema of a field that is required and may be `null`: `T` or `null`. A field typed `Option<T>` would be
+/// optional in the schema, and `#[schemars(required)]` would drop the `null`.
+struct Nullable<T>(std::marker::PhantomData<T>);
+
+impl<T: JsonSchema> JsonSchema for Nullable<T> {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        format!("Nullable_{}", T::schema_name()).into()
+    }
+
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({ "anyOf": [generator.subschema_for::<T>(), { "type": "null" }] })
+    }
+}
+
 // ---- requests ----
 
 /// Body of `POST /leases`: lease up to `limit` due turns of `types` for `owner`.
@@ -257,7 +275,7 @@ pub enum LeaseTurnsResponse {
         type_name: TypeName,
         /// The registered hash, or null when the type is not registered; required.
         #[serde(deserialize_with = "nullable")]
-        #[schemars(required)]
+        #[schemars(with = "Nullable<String>")]
         registered: Option<String>,
         /// The hash the worker asked for.
         requested: String,
@@ -304,7 +322,7 @@ pub struct TurnMessageView {
     pub to: ActorAddress,
     /// The sending instance, or null.
     #[serde(deserialize_with = "nullable")]
-    #[schemars(required)]
+    #[schemars(with = "Nullable<ActorAddress>")]
     pub from: Option<ActorAddress>,
     /// The message type name.
     #[serde(rename = "type")]
@@ -317,7 +335,7 @@ pub struct TurnMessageView {
     pub deliver_at: Timestamp,
     /// Opaque string passed through, or null.
     #[serde(deserialize_with = "nullable")]
-    #[schemars(required)]
+    #[schemars(with = "Nullable<String>")]
     pub correlation_id: Option<String>,
     /// Headers passed through.
     pub headers: BTreeMap<String, String>,
@@ -331,19 +349,19 @@ pub struct TurnMessageView {
     pub lost_claims: u32,
     /// The error of the most recent retried failure, or null.
     #[serde(deserialize_with = "nullable")]
-    #[schemars(required)]
+    #[schemars(with = "Nullable<String>")]
     pub last_error: Option<String>,
     /// The retry policy, or null.
     #[serde(deserialize_with = "nullable")]
-    #[schemars(required)]
+    #[schemars(with = "Nullable<RetryPolicy>")]
     pub retry: Option<RetryPolicy>,
     /// The message whose turn sent this one, or null.
     #[serde(deserialize_with = "nullable")]
-    #[schemars(required)]
+    #[schemars(with = "Nullable<MessageId>")]
     pub caused_by: Option<MessageId>,
     /// The retention of the record, or null.
     #[serde(deserialize_with = "nullable")]
-    #[schemars(required)]
+    #[schemars(with = "Nullable<Retention>")]
     pub retention: Option<Retention>,
     /// True for a notification of a watch.
     pub notification: bool,
@@ -380,7 +398,7 @@ pub enum CompleteTurnResponse {
         outcome: TurnOutcomeView,
         /// Why it failed, for a `failed` outcome; null otherwise, and required.
         #[serde(deserialize_with = "nullable")]
-        #[schemars(required)]
+        #[schemars(with = "Nullable<FailureCause>")]
         cause: Option<FailureCause>,
         /// The actor's version after the commit.
         version: i64,
