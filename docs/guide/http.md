@@ -313,7 +313,8 @@ first `resync`, lists the prefix into a fresh map and shows the map only when th
 `resync` came meanwhile; then it reads the addresses that changed during the listing. It keeps at most 1000 of them
 and lists again when there would be more. A read that fails keeps its address, or asks for a new listing, and tries
 again after a pause, with one timer at most. The state of the connection is kept apart from the reads, so a read that
-succeeds after the source closed for good does not show the view as live again. This JavaScript is an illustration: no
+succeeds after the source closed for good does not show the view as live again. After each `await` it checks that the
+view was not disposed, so a result that arrived just before disposal changes and shows nothing. This JavaScript is an illustration: no
 test runs it. The same protocol (hints during paging, a newer `resync`, the bound, the retries, the state of the
 connection and disposal) is tested in Rust against a real stream in
 [crates/cicada-axum/tests/changes.rs](../../crates/cicada-axum/tests/changes.rs).
@@ -348,6 +349,9 @@ function follow(prefix, render) {
 
   function kick() { if (!working && retry === null) work(); }
   function later() { retry = setTimeout(() => { retry = null; kick(); }, RETRY_MS); }
+  // Called after every await: the page may have been disposed while a promise settled, and aborting cannot take back
+  // a result that has already arrived, so nothing is applied or shown after disposal.
+  function stillLive() { if (abort.signal.aborted) throw new DOMException("disposed", "AbortError"); }
 
   async function work() {
     working = true;
@@ -356,12 +360,12 @@ function follow(prefix, render) {
         if (needsListing) {
           needsListing = false;
           let listed;
-          try { listed = await list(generation); } catch (error) { needsListing = true; throw error; }
+          try { listed = await list(generation); stillLive(); } catch (error) { needsListing = true; throw error; }
           if (listed !== null) { view = listed; show(); } // null: a newer resync, list again
         } else if (dirty.size > 0) {
           const address = dirty.values().next().value;
           dirty.delete(address);
-          try { await read(address); } catch (error) {
+          try { await read(address); stillLive(); } catch (error) {
             if (dirty.size >= MAX_DIRTY) relist(); else dirty.add(address); // never lose it
             throw error;
           }
@@ -382,6 +386,7 @@ function follow(prefix, render) {
       const query = new URLSearchParams({ prefix, limit: "100" });
       if (cursor !== null) query.set("cursor", cursor);
       const page = await getJson(`/actors/states?${query}`);
+      stillLive();
       if (gen !== generation) return null; // a resync came: this listing may miss what it reported
       for (const actor of page.items) fresh.set(actor.address, actor);
       cursor = page.next;
@@ -391,18 +396,25 @@ function follow(prefix, render) {
 
   async function read(address) {
     const response = await fetch(`/actors/${address}`, { signal: abort.signal }); // not encoded again
-    if (response.status === 404) view.delete(address);
-    else if (response.ok) view.set(address, await response.json());
-    else throw new Error(`GET /actors/${address}: ${response.status}`);
+    stillLive();
+    if (response.status === 404) { view.delete(address); return; }
+    if (!response.ok) throw new Error(`GET /actors/${address}: ${response.status}`);
+    const actor = await response.json();
+    stillLive();
+    view.set(address, actor);
   }
 
   async function getJson(url) {
     const response = await fetch(url, { signal: abort.signal });
+    stillLive();
     if (!response.ok) throw new Error(`GET ${url}: ${response.status}`);
-    return response.json();
+    const body = await response.json();
+    stillLive();
+    return body;
   }
 
-  // Disposal: the source closes, a fetch in flight is aborted (its result is never applied) and the timer is cleared.
+  // Disposal: the source closes, a fetch in flight is aborted, a result that arrived meanwhile is dropped at the next
+  // stillLive(), and the timer is cleared.
   return () => { abort.abort(); source.close(); clearTimeout(retry); retry = null; };
 }
 ```

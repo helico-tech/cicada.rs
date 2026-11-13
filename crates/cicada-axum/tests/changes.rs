@@ -321,6 +321,20 @@ enum Connection {
     Stopped,
 }
 
+/// The guide's `stillLive()` checks, each right after an `await`: in `getJson` after the fetch and after
+/// `response.json()` of page `n`, in `list` after `getJson`, in `work` after `list`, in `read` after the fetch and after
+/// `response.json()`, and in `work` after `read`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    PageFetched(usize),
+    PageJson(usize),
+    PageListed(usize),
+    Listed,
+    ReadFetched,
+    ReadJson,
+    Read,
+}
+
 /// What happens to the page while a read is in flight: the source reports an error (`closed` is `readyState ==
 /// CLOSED`; otherwise the browser reconnects), or the page disposes the view.
 #[derive(Debug, Clone, Copy)]
@@ -472,8 +486,17 @@ impl Consumer {
         }
     }
 
+    /// One of the guide's `stillLive()` calls, right after an `await`: first `hook` and the page's handlers run, as they
+    /// may while the promise settles (a disposal among them), then the check. These are the only checks of disposal
+    /// on the way to the view.
+    async fn still_live(&mut self, step: Step, hook: &mut impl AsyncFnMut(Step)) -> Result<(), ()> {
+        hook(step).await;
+        self.pump().await;
+        if self.aborted { Err(()) } else { Ok(()) }
+    }
+
     /// `kick` and `work`: works until nothing is left, or until a failure arms the one retry timer (`later`).
-    async fn work(&mut self, between_pages: &mut impl AsyncFnMut(usize)) {
+    async fn work(&mut self, hook: &mut impl AsyncFnMut(Step)) {
         self.pump().await;
         if self.retry_at.is_some() {
             return; // the timer will kick
@@ -481,31 +504,41 @@ impl Consumer {
         while !self.aborted {
             if self.needs_listing {
                 self.needs_listing = false;
-                match self.list(between_pages).await {
+                let listed = match self.list(hook).await {
+                    Ok(listed) => self.still_live(Step::Listed, hook).await.map(|()| listed),
+                    Err(()) => Err(()),
+                };
+                match listed {
                     Ok(Some(fresh)) => {
                         self.view = fresh;
                         self.published += 1;
                         self.show();
                     }
                     Ok(None) => {} // a newer resync: list again
-                    Err(()) if self.aborted => return,
                     Err(()) => {
                         self.needs_listing = true;
-                        self.retry_at = Some(Instant::now() + RETRY);
+                        if !self.aborted {
+                            self.retry_at = Some(Instant::now() + RETRY);
+                        }
                         return;
                     }
                 }
             } else if let Some(address) = self.dirty.pop_first() {
-                match self.read(&address).await {
+                let read = match self.read(&address, hook).await {
+                    Ok(()) => self.still_live(Step::Read, hook).await,
+                    Err(()) => Err(()),
+                };
+                match read {
                     Ok(()) => self.show(),
-                    Err(()) if self.aborted => return,
                     Err(()) => {
                         if self.dirty.len() >= self.max_dirty {
                             self.relist();
                         } else {
                             self.dirty.insert(address); // never lose it
                         }
-                        self.retry_at = Some(Instant::now() + RETRY);
+                        if !self.aborted {
+                            self.retry_at = Some(Instant::now() + RETRY);
+                        }
                         return;
                     }
                 }
@@ -516,23 +549,18 @@ impl Consumer {
         }
     }
 
-    /// Works, then lets each armed retry timer fire and work again, until idle; `between_pages` runs after each page
-    /// of a listing is read.
-    async fn settle(&mut self, mut between_pages: impl AsyncFnMut(usize)) {
-        self.work(&mut between_pages).await;
+    /// Works, then lets each armed retry timer fire and work again, until idle; `hook` runs at each `stillLive()`.
+    async fn settle(&mut self, mut hook: impl AsyncFnMut(Step)) {
+        self.work(&mut hook).await;
         while let Some(at) = self.retry_at {
             tokio::time::sleep_until(at).await;
             self.retry_at = None;
-            self.work(&mut between_pages).await;
+            self.work(&mut hook).await;
         }
     }
 
-    /// Reads every page into a fresh map; `Ok(None)` when a newer resync came meanwhile, `Err` when a read failed or
-    /// the view was disposed while it was in flight.
-    async fn list(
-        &mut self,
-        between_pages: &mut impl AsyncFnMut(usize),
-    ) -> Result<Option<BTreeMap<String, Value>>, ()> {
+    /// `list`: every page into a fresh map; `Ok(None)` when a newer resync came meanwhile.
+    async fn list(&mut self, hook: &mut impl AsyncFnMut(Step)) -> Result<Option<BTreeMap<String, Value>>, ()> {
         let generation = self.generation;
         let mut fresh = BTreeMap::new();
         let mut cursor: Option<String> = None;
@@ -541,22 +569,12 @@ impl Consumer {
             if let Some(cursor) = &cursor {
                 uri.push_str(&format!("&cursor={}", enc(cursor)));
             }
-            self.requests += 1;
-            let reply = get(&self.app, &uri).await;
-            between_pages(n).await; // while the read is in flight
-            self.pump().await;
-            if self.aborted {
-                return Err(()); // the aborted fetch rejects: its page is never applied
-            }
-            if reply.status != StatusCode::OK {
-                self.failures += 1;
-                return Err(());
-            }
+            let page = self.get_json(&uri, n, hook).await?;
+            self.still_live(Step::PageListed(n), hook).await?;
             if self.generation != generation {
                 self.abandoned += 1; // this listing may miss what the resync reports
                 return Ok(None);
             }
-            let page = reply.json();
             for actor in items(&page) {
                 fresh.insert(actor["address"].as_str().unwrap().to_owned(), actor.clone());
             }
@@ -568,24 +586,37 @@ impl Consumer {
         Ok(Some(fresh))
     }
 
-    /// Reads one address: `200` sets it, `404` removes it, anything else fails.
-    async fn read(&mut self, address: &str) -> Result<(), ()> {
+    /// `read`: `404` removes the address, `200` sets it, anything else fails.
+    async fn read(&mut self, address: &str, hook: &mut impl AsyncFnMut(Step)) -> Result<(), ()> {
         self.requests += 1;
-        let reply = get(&self.app, &format!("/actors/{address}")).await;
-        match reply.status {
-            StatusCode::OK => {
-                self.view.insert(address.to_owned(), reply.json());
-                Ok(())
-            }
-            StatusCode::NOT_FOUND => {
-                self.view.remove(address);
-                Ok(())
-            }
-            _ => {
-                self.failures += 1;
-                Err(())
-            }
+        let reply = get(&self.app, &format!("/actors/{address}")).await; // fetch
+        self.still_live(Step::ReadFetched, hook).await?;
+        if reply.status == StatusCode::NOT_FOUND {
+            self.view.remove(address);
+            return Ok(());
         }
+        if reply.status != StatusCode::OK {
+            self.failures += 1;
+            return Err(());
+        }
+        let actor = reply.json(); // response.json()
+        self.still_live(Step::ReadJson, hook).await?;
+        self.view.insert(address.to_owned(), actor);
+        Ok(())
+    }
+
+    /// `getJson`: one page of the listing.
+    async fn get_json(&mut self, uri: &str, n: usize, hook: &mut impl AsyncFnMut(Step)) -> Result<Value, ()> {
+        self.requests += 1;
+        let reply = get(&self.app, uri).await; // fetch
+        self.still_live(Step::PageFetched(n), hook).await?;
+        if reply.status != StatusCode::OK {
+            self.failures += 1;
+            return Err(());
+        }
+        let body = reply.json(); // response.json()
+        self.still_live(Step::PageJson(n), hook).await?;
+        Ok(body)
     }
 }
 
@@ -610,8 +641,8 @@ async fn hints_during_paging_are_reread_after_the_listing_is_published() {
     counters(&system, &["a", "b", "c", "d", "e"]).await;
     let mut consumer = Consumer::open(&app, "counter/", 2, 1000).await;
     consumer
-        .settle(async |page| {
-            if page == 0 {
+        .settle(async |step| {
+            if step == Step::PageListed(0) {
                 // After a and b: one listed actor changes, one appears behind the cursor, one goes away.
                 system.pause_mailbox(&address("a")).await.unwrap();
                 counters(&system, &["aa"]).await;
@@ -634,8 +665,8 @@ async fn a_resync_during_paging_drops_the_incomplete_listing() {
     let mut consumer = Consumer::open(&app, "counter/", 2, 1000).await;
     let ids: Vec<String> = (0..101).map(|i| format!("a-{i:03}")).collect();
     consumer
-        .settle(async |page| {
-            if page == 0 && not_spawned_yet(&system).await {
+        .settle(async |step| {
+            if step == Step::PageListed(0) && not_spawned_yet(&system).await {
                 // One turn creates 101 children: more than 100 addresses in one commit are one resync.
                 system.send(&counter("a"), CounterMsg::Spawn { ids: ids.clone() }).await.unwrap();
                 eventually(async || {
@@ -664,8 +695,8 @@ async fn more_dirty_addresses_than_the_bound_turn_into_a_new_listing() {
     counters(&system, &["a", "b", "c"]).await;
     let mut consumer = Consumer::open(&app, "counter/", 2, 3).await;
     consumer
-        .settle(async |page| {
-            if page == 0 && system.get_actor(&address("n4")).await.unwrap().is_none() {
+        .settle(async |step| {
+            if step == Step::PageListed(0) && system.get_actor(&address("n4")).await.unwrap().is_none() {
                 counters(&system, &["n1", "n2", "n3", "n4"]).await;
             }
         })
@@ -727,8 +758,8 @@ async fn a_source_closed_for_good_during_a_listing_stays_stopped_when_the_listin
     let mut consumer = Consumer::open(&app, "counter/", 2, 1000).await;
     let outside = consumer.outside();
     consumer
-        .settle(async |page| {
-            if page == 0 {
+        .settle(async |step| {
+            if step == Step::PageListed(0) {
                 outside.lock().unwrap().push_back(Outside::Error { closed: true });
             }
         })
@@ -776,29 +807,81 @@ async fn an_error_while_connecting_is_followed_by_a_new_stream_whose_resync_reco
     assert!(consumer.view.contains_key("counter/x"));
 }
 
-/// Scenario: Encoding and disposal (disposal during a read: the source closes and nothing later runs).
+/// Scenario: Encoding and disposal (disposal while a listing's promise settles, at each of its checks: the source
+/// closes, nothing is applied or shown, and nothing later runs).
 #[tokio::test(start_paused = true)]
-async fn disposing_during_a_listing_closes_the_source_and_applies_and_starts_nothing() {
-    let system = node(memory_store()).await;
-    let app = actor_api(system.clone());
-    counters(&system, &["a", "b", "c"]).await;
-    let mut consumer = Consumer::open(&app, "counter/", 2, 1000).await;
-    let outside = consumer.outside();
-    consumer
-        .settle(async |page| {
-            if page == 0 {
-                outside.lock().unwrap().push_back(Outside::Dispose);
-            }
-        })
-        .await;
-    assert!(consumer.events.is_none() && consumer.retry_at.is_none(), "the source closed, no timer");
-    assert_eq!((consumer.published, consumer.requests), (0, 1), "the page in flight was not applied");
-    assert!(consumer.view.is_empty() && consumer.shown.is_empty());
-    counters(&system, &["d"]).await;
-    tokio::time::sleep(RETRY * 10).await;
-    consumer.settle(async |_| {}).await;
-    assert_eq!(consumer.requests, 1, "no later work");
-    assert!(consumer.view.is_empty());
+async fn disposing_while_a_listing_settles_closes_the_source_and_applies_shows_and_starts_nothing() {
+    let steps = [Step::PageFetched(0), Step::PageJson(0), Step::PageListed(0), Step::Listed];
+    for at in steps {
+        let system = node(memory_store()).await;
+        let app = actor_api(system.clone());
+        counters(&system, &["a", "b", "c"]).await;
+        let mut consumer = Consumer::open(&app, "counter/", 10, 1000).await;
+        let outside = consumer.outside();
+        consumer
+            .settle(async |step| {
+                if step == at {
+                    outside.lock().unwrap().push_back(Outside::Dispose);
+                }
+            })
+            .await;
+        assert!(consumer.events.is_none() && consumer.retry_at.is_none(), "{at:?}: the source closed, no timer");
+        assert_eq!((consumer.published, consumer.requests), (0, 1), "{at:?}: the page that arrived was dropped");
+        assert!(consumer.view.is_empty() && consumer.shown.is_empty(), "{at:?}: nothing applied or shown");
+        counters(&system, &["d"]).await;
+        tokio::time::sleep(RETRY * 10).await;
+        consumer.settle(async |_| {}).await;
+        assert_eq!(consumer.requests, 1, "{at:?}: no later work");
+        assert!(consumer.view.is_empty() && consumer.shown.is_empty());
+    }
+}
+
+/// Scenario: Encoding and disposal (disposal while an address read settles, at each of its checks, for a changed and a
+/// deleted actor). Disposed after the fetch or after `response.json()` fulfilled, the view keeps what it had; disposed
+/// after `read` itself fulfilled, `read` had already changed the view before the disposal. Either way no render follows.
+#[tokio::test(start_paused = true)]
+async fn disposing_while_an_address_read_settles_leaves_the_view_and_shows_nothing() {
+    let cases = [
+        (Step::ReadFetched, false),
+        (Step::ReadJson, false),
+        (Step::Read, false),
+        (Step::ReadFetched, true),
+        (Step::Read, true),
+    ];
+    for (at, deleted) in cases {
+        let system = node(memory_store()).await;
+        let app = actor_api(system.clone());
+        counters(&system, &["a"]).await;
+        let mut consumer = Consumer::open(&app, "counter/", 10, 1000).await;
+        consumer.settle(async |_| {}).await;
+        let before = consumer.view.clone();
+        assert_eq!((before.len(), consumer.shown.len()), (1, 1));
+        if deleted {
+            system.delete_actor(&address("a")).await.unwrap();
+        } else {
+            system.pause_mailbox(&address("a")).await.unwrap();
+        }
+        let outside = consumer.outside();
+        consumer
+            .settle(async |step| {
+                if step == at {
+                    outside.lock().unwrap().push_back(Outside::Dispose);
+                }
+            })
+            .await;
+        assert_eq!(consumer.requests, 2, "{at:?}: the read was sent");
+        if at == Step::Read {
+            assert_eq!(consumer.view, truth(&app, "counter/").await, "{at:?}: changed before the disposal");
+            assert_ne!(consumer.view, before);
+        } else {
+            assert_eq!(consumer.view, before, "{at:?}, deleted {deleted}: the result that arrived was dropped");
+        }
+        assert_eq!(consumer.shown.len(), 1, "{at:?}: no render after disposal");
+        assert!(consumer.events.is_none() && consumer.retry_at.is_none());
+        tokio::time::sleep(RETRY * 10).await;
+        consumer.settle(async |_| {}).await;
+        assert_eq!(consumer.requests, 2, "{at:?}: no later work");
+    }
 }
 
 /// Scenario: Encoding and disposal (disposal during a delayed retry: the timer is cleared and never fires).
