@@ -16,6 +16,7 @@
 //! | [`batching`] | Example 12: audit events in bulk; each change adds its event to a batcher that writes 50 at once. |
 //! | [`flow_onboarding`] | Example 13: the onboarding of example 6 as a durable flow; async code, one step per turn, a durable sleep. |
 //! | [`flow_events`] | Example 14: flows started by an event; a placed order starts a receipt and a fulfilment in one commit, a batcher a digest. |
+//! | [`remote_worker`] | Example 15: the cleanup singleton of example 1, unchanged, in a worker without database access that leases its turns over HTTP. |
 //! | [`sync`] | The architecture's example: a paged import, one turn per page, rescheduled hourly. |
 //!
 //! Every example has the same shape: a public ref struct per actor type (its one field is the key), a
@@ -32,6 +33,7 @@ pub mod flow_events;
 pub mod flow_onboarding;
 pub mod rate_limit;
 pub mod registry;
+pub mod remote_worker;
 pub mod reply;
 pub mod saga;
 pub mod singleton;

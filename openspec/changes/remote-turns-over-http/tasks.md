@@ -23,7 +23,7 @@
   shorter HTTP timeout, pending body timeout and request counts with send_attempts > 1 in client turn_source tests.
   Test a vanished registration conflict and stale cached Contract hash. Use controlled barriers and virtual time for
   timeout assertions; run targeted client tests.
-- [ ] 4. Add Worker/ActorClient integration and fault tests with unchanged Rust actors and two HTTP servers sharing
+- [x] 4. Add Worker/ActorClient integration and fault tests with unchanged Rust actors and two HTTP servers sharing
   a store. Lease on A, renew/complete on B, stop A mid-turn, and cover operator cancellation through renewal. Drop a
   completion response after application and prove one effect set without handler rerun; cover Rejected followed by
   an uncertain failed-report commit, with no restoration of original effects or release. Cover 413 abandonment and

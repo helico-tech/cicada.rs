@@ -10,6 +10,9 @@ publish.workspace = true
 [dependencies]
 cicada.workspace = true
 cicada-actors.workspace = true
+# Example 15 runs a worker over HTTP.
+cicada-client.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true
@@ -24,7 +27,6 @@ async-trait.workspace = true
 axum.workspace = true
 cicada-app = { workspace = true, features = ["sqlite", "postgres"] }
 cicada-axum.workspace = true
-cicada-client.workspace = true
 cicada-otel.workspace = true
 cicada-test.workspace = true
 # The core guide follows a stream of change hints.

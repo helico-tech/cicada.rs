@@ -17,12 +17,16 @@ tokio.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+# The worker tests serve two servers on SQLite and PostgreSQL too.
+cicada = { workspace = true, features = ["sqlite", "postgres"] }
 axum.workspace = true
 cicada-axum.workspace = true
 cicada-test.workspace = true
 futures.workspace = true
 schemars.workspace = true
+tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+tower.workspace = true
 
 [lints]
 workspace = true
