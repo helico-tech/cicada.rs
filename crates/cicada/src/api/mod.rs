@@ -9,7 +9,10 @@
 //! its `retry` and `retention` policies, is an error, so a misspelling is never silently ignored. Payloads and states
 //! inside them are plain JSON and stay lenient. Serialized, they leave absent optional fields out, so a node that does
 //! not know a field yet still accepts a request that does not set it.
+//!
+//! The bodies of the remote turn operations (`/leases`, ADR 0040) are stricter in both directions; see [`leases`].
 
+pub mod leases;
 mod mappings;
 
 use std::collections::BTreeMap;
@@ -26,6 +29,12 @@ use crate::runtime::{BulkSelection, NodeHealth};
 use crate::store::{MessageId, NodeId};
 use crate::time::{Timestamp, serde_duration, serde_instant};
 use crate::watch::WatchTarget;
+
+pub use leases::{
+    ActorCreateView, CompleteTurnRequest, CompleteTurnResponse, ControlEffectView, ControlView, LeaseTurnsRequest,
+    LeaseTurnsResponse, ReleaseTurnRequest, RenewTurnRequest, RenewTurnResponse, StateReportView, TurnEffectsView,
+    TurnFailureView, TurnLeaseView, TurnMessageView, TurnOutcomeView, TurnReportView, TurnSendView, WatchChangeView,
+};
 
 /// A request body whose fields contradict each other, e.g. "Give either deliverAt or delay, not both". The HTTP API
 /// answers it with `400` and this text.

@@ -1,6 +1,6 @@
 ## Implementation
 
-- [ ] 1. Reconcile the landed core completion/Worker names, then add the documented request/result/report/effect
+- [x] 1. Reconcile the landed core completion/Worker names, then add the documented request/result/report/effect
   views and strict TurnMessageView in cicada::api, with conversions preserving every core field, delivery kind,
   null and effect order. Keep existing management views unchanged. Add api unit tests for every result/report,
   all execution fields and policies, omitted versus null required fields, unknown envelope fields and variants,
