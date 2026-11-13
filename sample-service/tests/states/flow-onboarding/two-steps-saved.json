@@ -1,0 +1,19 @@
+{
+  "input": {
+    "email": "bob@example.test"
+  },
+  "journal": [
+    {
+      "kind": "step",
+      "id": "create-account",
+      "result": "acc-1"
+    },
+    {
+      "kind": "step",
+      "id": "send-welcome",
+      "result": null
+    }
+  ],
+  "status": "running",
+  "armed": "0b9f6a52-5c1e-4a55-9d0c-3f1f8f0f2a13"
+}

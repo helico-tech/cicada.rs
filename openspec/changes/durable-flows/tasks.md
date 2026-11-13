@@ -13,7 +13,7 @@
 - [x] 3. Pin a test flow's contract in actor-test fixtures, plus literal initial/progress/done/Sleep state samples
   and FlowState::result behavior in wire-format tests. Preserve the planned sleep representation without exposing
   Step::sleep yet. Verify valid and invalid state samples and regenerate only the intended fixtures.
-- [ ] 4. Add `examples/src/flow_onboarding.rs` alongside the unchanged steps example, using its service interface.
+- [x] 4. Add `examples/src/flow_onboarding.rs` alongside the unchanged steps example, using its service interface.
   Test normal completion, failure/recovery and idempotency keys; host it in the sample service without automatic runs
   and add its contract snapshots/texts and message/state samples. Verify example and sample-service targeted tests;
   regenerate snapshots with `CICADA_UPDATE_CONTRACTS=true` where applicable.

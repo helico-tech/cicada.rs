@@ -7,12 +7,13 @@ use cicada::actor::{DefinitionError, contract_of};
 use cicada::contract::Contract;
 use cicada::{Actor, ActorAddress, ActorRef, ActorType, NoState};
 use cicada_actors::{
-    BatcherActor, DeadLetters, DeadLettersActor, DeadLettersState, DebouncerActor, RateLimiterActor, SchedulerActor,
-    SupervisorActor, TopicActor,
+    BatcherActor, DeadLetters, DeadLettersActor, DeadLettersState, DebouncerActor, FlowActor, RateLimiterActor,
+    SchedulerActor, SupervisorActor, TopicActor,
 };
 use cicada_app::App;
 use cicada_examples::cron::CronJobActor;
 use cicada_examples::fanout::{BatchActor, BatchItemActor};
+use cicada_examples::flow_onboarding::OnboardingFlow;
 use cicada_examples::registry::{DeviceActor, DeviceRegistry, DeviceRegistryActor, RegistryState};
 use cicada_examples::reply::{CartActor, Pricing, PricingActor};
 use cicada_examples::saga::{InventoryActor, OrderActor, Payments, PaymentsActor};
@@ -108,6 +109,7 @@ impl Catalog {
             CatalogType::of(OrderActor),
             CatalogType::of(InventoryActor),
             CatalogType::of(PaymentsActor { gateway: fakes.payment_gateway }),
+            CatalogType::of(FlowActor::new(OnboardingFlow { services: fakes.onboarding.clone() })),
             CatalogType::of(OnboardingActor { services: fakes.onboarding }),
             CatalogType::of(BatchActor),
             CatalogType::of(BatchItemActor { processor: fakes.item_processor }),

@@ -5,12 +5,13 @@ use std::collections::BTreeMap;
 
 use cicada::store::MessageId;
 use cicada::time::Timestamp;
-use cicada_actors::Schedule;
+use cicada_actors::{FlowMsg, FlowState, FlowStatus, JournalEntry, Schedule};
 use cicada_axum::{assert_message_sample, assert_state_sample};
 use cicada_examples::batching::{AccountMsg, AccountState, AuditEvent, AuditLogMsg};
 use cicada_examples::cron::{CronMsg, CronState};
 use cicada_examples::debounce::{DocumentMsg, DocumentState, IndexerMsg};
 use cicada_examples::fanout::{BatchItemMsg, BatchItemState, BatchMsg, BatchState, BatchStatus};
+use cicada_examples::flow_onboarding::OnboardingInput;
 use cicada_examples::rate_limit::{SignupMsg, SignupState, SmsMsg};
 use cicada_examples::registry::{Device, DeviceMsg, DeviceState, RegistryMsg, RegistryState};
 use cicada_examples::reply::{CartLine, CartMsg, CartState, PendingLine, PricingMsg, PricingReply};
@@ -184,6 +185,18 @@ fn batching() {
     states([AccountState::default(), AccountState { name: "x".into() }]);
     let event = AuditEvent { account: "a1".into(), action: "renamed to x".into() };
     messages([AuditLogMsg::Write { items: vec![] }, AuditLogMsg::Write { items: vec![event] }]);
+}
+
+#[test]
+fn flow_onboarding() {
+    messages([FlowMsg::Continue]);
+    let initial = FlowState::new(OnboardingInput { email: "bob@example.test".into() });
+    let account = JournalEntry::Step { id: "create-account".into(), result: serde_json::json!("acc-1") };
+    let welcome = JournalEntry::Step { id: "send-welcome".into(), result: serde_json::Value::Null };
+    let workspace = JournalEntry::Step { id: "provision-workspace".into(), result: serde_json::json!("ws-1") };
+    let progress = FlowState { journal: vec![account.clone()], armed: Some(id()), ..initial.clone() };
+    let done = FlowState { journal: vec![account, welcome, workspace], status: FlowStatus::Done, ..initial.clone() };
+    states([initial, progress, done]);
 }
 
 #[test]

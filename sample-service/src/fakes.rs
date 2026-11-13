@@ -4,7 +4,8 @@
 //! - payments decline amounts above 100.00 (10 000 cents); for an amount ending in `13` cents the gateway is
 //!   "unavailable" on the first call of each charge *per node* (in memory), so it fails at most once per node and the
 //!   saga's charge retry policy (4 attempts) always gets it through on a cluster of up to three nodes;
-//! - onboarding fails to provision a workspace for users whose id contains `fail` (`onboarding/fail-1`);
+//! - onboarding fails to provision a workspace for users whose id contains `fail` (`onboarding/fail-1`, and the flow
+//!   `flows.onboarding/fail-1`);
 //! - the sync API serves three pages (10, 10 and 5 items).
 
 use std::collections::HashMap;
@@ -112,8 +113,9 @@ impl PaymentGateway for FakePaymentGateway {
     }
 }
 
-/// Derives ids from the idempotency keys; provisioning fails for keys containing `fail`.
-#[derive(Debug, Default)]
+/// Derives ids from the idempotency keys; provisioning fails for keys containing `fail`. The onboarding of the steps
+/// example and that of the flow example share it.
+#[derive(Debug, Clone, Default)]
 pub struct FakeOnboarding;
 
 impl OnboardingServices for FakeOnboarding {

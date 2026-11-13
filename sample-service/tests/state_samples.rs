@@ -9,10 +9,11 @@ use cicada::retry::{Backoff, RetryPolicy};
 use cicada::store::MessageId;
 use cicada::time::Timestamp;
 use cicada_actors::{
-    BatcherState, DeadLetter, DeadLettersState, DebouncedMessage, DebouncerState, RateLimiterState, Schedule,
-    SchedulerState, StoredMessage,
+    BatcherState, DeadLetter, DeadLettersState, DebouncedMessage, DebouncerState, FlowState, JournalEntry,
+    RateLimiterState, Schedule, SchedulerState, StoredMessage,
 };
 use cicada_examples::cron::CronState;
+use cicada_examples::flow_onboarding::OnboardingInput;
 use cicada_examples::timer::{CheckoutState, CheckoutStatus};
 use cicada_test::{assert_state_decodes, record_state_sample};
 use serde_json::json;
@@ -115,6 +116,21 @@ fn batcher() {
     };
     record_state_sample(&dir, "pending", &state);
     assert_state_decodes::<BatcherState>(&dir);
+}
+
+#[test]
+fn flow_onboarding() {
+    let dir = dir("flow-onboarding");
+    let state = FlowState {
+        journal: vec![
+            JournalEntry::Step { id: "create-account".into(), result: json!("acc-1") },
+            JournalEntry::Step { id: "send-welcome".into(), result: json!(null) },
+        ],
+        armed: Some(MessageId::new("0b9f6a52-5c1e-4a55-9d0c-3f1f8f0f2a13").unwrap()),
+        ..FlowState::new(OnboardingInput { email: "bob@example.test".into() })
+    };
+    record_state_sample(&dir, "two-steps-saved", &state);
+    assert_state_decodes::<FlowState<OnboardingInput>>(&dir);
 }
 
 /// The samples of the dead letters start again with 0.14.0: their contract changed, and the letters of 0.13.0 are lost

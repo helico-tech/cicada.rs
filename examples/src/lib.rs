@@ -14,16 +14,20 @@
 //! | [`rate_limit`] | Example 10: a shared rate limit; signups create a limiter and submit their texts to it in one turn. |
 //! | [`debounce`] | Example 11: a burst of edits, one reindex; each edit submits the latest version to a debouncer. |
 //! | [`batching`] | Example 12: audit events in bulk; each change adds its event to a batcher that writes 50 at once. |
+//! | [`flow_onboarding`] | Example 13: the onboarding of example 6 as a durable flow; async code, one step per turn. |
 //! | [`sync`] | The architecture's example: a paged import, one turn per page, rescheduled hourly. |
 //!
 //! Every example has the same shape: a public ref struct per actor type (its one field is the key), a
 //! message enum with `#[serde(tag = "type")]`, a state struct, and an actor struct whose fields are its dependencies
-//! (external services, faked in the tests), with one `impl Actor` whose `handle` matches on the message.
+//! (external services, faked in the tests), with one `impl Actor` whose `handle` matches on the message. A flow
+//! ([`flow_onboarding`]) is the exception: its code is a [`Flow`](cicada_actors::Flow), and its ref and state are the
+//! runner's.
 
 pub mod batching;
 pub mod cron;
 pub mod debounce;
 pub mod fanout;
+pub mod flow_onboarding;
 pub mod rate_limit;
 pub mod registry;
 pub mod reply;
