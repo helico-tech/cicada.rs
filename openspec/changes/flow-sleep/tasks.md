@@ -15,5 +15,8 @@
 
 ## Finishing checks
 
-- [ ] 4. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
+- [x] 4. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
   `openspec validate flow-sleep --strict`; record results and any unavailable optional checks.
+  Results: fmt clean; clippy with `-D warnings` clean; the workspace tests with PostgreSQL (`CICADA_PG_URL` set):
+  2256 passed, 0 failed; the OpenSpec validation passes; no contract fixture, snapshot or text changed. Not run: the
+  Docker E2E suite (`CICADA_E2E=1`).
