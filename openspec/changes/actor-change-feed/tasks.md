@@ -34,6 +34,9 @@
 
 ## Finishing checks
 
-- [ ] 6. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
+- [x] 6. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
   `openspec validate actor-change-feed --strict`; include PostgreSQL where configured and record unavailable optional
   checks. Record any limits of fault-injection coverage; no notification-queue exhaustion experiment is required.
+  All ran, PostgreSQL included. Limits: the SQLite in-flight `COMMIT` test relies on sqlx running a statement it was
+  sent after its caller is gone; a runtime shutdown during settlement is not tested; the PostgreSQL `54000` at
+  `COMMIT` comes from a deferred trigger, not a full queue; listener loss is a terminated backend only.
