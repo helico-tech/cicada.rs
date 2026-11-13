@@ -2,66 +2,55 @@
 
 ## Why
 
-Nothing tells a host that an actor's state changed. A live page has two ways today, and neither is enough:
-
-- Poll the API. Simple, but always behind by the interval, and it reads everything on every round.
-- Register a `TurnObserver`. It runs after a turn's commit, but in-process and per node: with several nodes it misses
-  the turns of the others. It also sees neither the new state nor its version, only the outcome and the sends.
-
-The store already knows: on PostgreSQL every commit that makes a message claimable sends a `NOTIFY` on
-`cicada_<schema>`. That listener is internal (`pub(crate)`), its payload is a type name, and it serves only to wake
-the dispatch loop.
-
-Found in cicada-code-factory: its showcase page polls once a second. Push through an observer would work on its one
-node, and break the day it runs a second.
+A live host page currently polls every actor or uses a TurnObserver that sees only its local node. Neither gives a
+host a cross-node hint that its displayed actors changed. The preceding state listing removes N+1 reads; a feed can
+avoid polling every row on every refresh. The code-factory showcase is the motivating host.
 
 ## What Changes
 
-- A public subscription to committed changes of actors, across nodes: each event names the actor and its new state
-  version (not the state; the subscriber reads what it needs). In-process as a stream on `ActorSystem`
-  (`changes(prefix)`), over HTTP as Server-Sent Events (`GET /changes?prefix=`), behind the host's layers like the
-  rest of the API.
-- Best effort, with a way back: after a lost connection or a dropped event the stream says "resync", as the internal
-  listener does with its empty payload, and the subscriber reads again.
-- This is more than one small change. The design loop splits it, for instance: (1) `TurnEnd` tells the observer
-  whether the turn wrote state, and its new version (per node, no store change); (2) the cross-node stream on
-  `ActorSystem`; (3) the SSE route.
+- Add ActorSystem::changes(prefix), a best-effort subscription yielding changed actor addresses and Resync hints.
+  The subscriber reads one actor after Changed and relists the prefix after Resync, including at initial connection.
+- Report creations, state writes, pause/resume and removals, including removed descendants. Events carry no state,
+  version or change kind: a fresh read is authoritative, and versions reset when an address is recreated.
+- PostgreSQL subscribers observe upgraded writers across nodes. Memory and SQLite cover writes through the same
+  Store and its clones; separately opened SQLite handles, including other processes, are outside this first version.
+- Bound subscriber buffering, signal detected gaps with Resync, and define startup/reconnect/close behaviour without
+  a durable log or a replay cursor. The design must state precisely which losses are detected and how hosts recover.
+- Keep the existing dispatch wake-ups and turn outcomes intact. ADR 0034 will record the feed's best-effort contract
+  and any inter-node notification format; no SQL schema change is planned.
+
+The owner delegated the split to an Opus 5.5 adviser: this core feed first, then actor-change-sse for HTTP transport.
+No TurnEnd extension is needed: an observer sees neither other nodes nor all operator-created snapshot changes.
 
 ## To decide
 
-- What an event carries: address and version (the proposal), or the state too (bigger payloads, `NOTIFY` is limited
-  to 8000 bytes).
-- How PostgreSQL carries it: the existing channel with a richer payload, or a channel of its own; batching of many
-  commits; what the dispatch loop's wake-ups keep.
-- SQLite: in-process only, or seeing the commits of other processes on the same file (WAL; a poll of
-  `data_version`).
-- Whether creates and deletes are events too, and whether a change of a mailbox (a paused actor) is.
-- A slow subscriber: a bounded buffer that ends in "resync", or a dropped stream.
-- Whether it is a new guarantee in `docs/architecture.md` (then an ADR), and how it relates to watches (ADR 0018,
-  ADR 0023), which notify actors, not hosts.
+- The exact source readiness and resync protocol, including races with subscription and shutdown.
+- PostgreSQL publication failure boundaries: no payload/queue failure should be hidden behind a claim of reliability.
+- The public stream type, buffer policy, and explicit limits of best-effort coverage and recovery.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `change-feed`: a host can subscribe to committed changes of actors under a prefix, across nodes.
+- `change-feed`: a host subscribes to hints that actors under a literal address prefix may have changed.
 
 ### Modified Capabilities
 
-- `turn-observer` (if the first piece is the observer's state version), `store-backends`, `management-api`.
+None planned; dispatch wake-ups and turn observers retain their behaviour.
 
 ## Out of scope
 
-The state in the event; a durable log of past changes or replay from a version; exactly-once delivery; filtering on
-fields of the state; any change to how turns are claimed or dispatched.
+HTTP/SSE (the next change), state or version in events, durable history/replay, exactly-once delivery, a snapshot
+across pages, state-field filters, changes to claiming/dispatch, SQL schema changes, SQLite writes through other
+Store handles/processes, CLI/TUI integration and a TurnEnd extension. Hosts needing coverage outside the feed's
+stated scope must keep their own refresh/recovery path.
 
 ## Order
 
-After `list-actors-with-state`, the last of the line.
+After `list-actors-with-state`, before `actor-change-sse`.
 
 ## Impact
 
-`crates/cicada` (the PostgreSQL listener and the SQLite backend, `ActorSystem`, perhaps `TurnEnd`), the conformance
-suite, `cicada-axum` (an SSE route) and `docs/openapi.json`, perhaps `cicada-client`, `docs/architecture.md` and an
-ADR if it is a guarantee, the core and HTTP guides, the changelog. Once it is released, cicada-code-factory's page
-can be pushed to instead of polling (ADR 0007 of that repository).
+`crates/cicada`: ActorSystem and public change types, private store forwarding, memory/SQLite publication,
+PostgreSQL listener/publication, conformance and runtime tests. ADR 0034, architecture, core guide, operations,
+changelog/version. No HTTP, client, actor contract or generated OpenAPI change in this piece.
