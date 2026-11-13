@@ -19,5 +19,7 @@
 
 ## Finishing checks
 
-- [ ] 5. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
+- [x] 5. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
   `openspec validate debouncer-actor --strict`; record results and any unavailable optional checks.
+  Results: fmt clean; clippy with `-D warnings` clean; `cargo test --workspace` with `CICADA_PG_URL` set: 2149
+  passed, 0 failed; the change is valid. Not run: the end-to-end suite in Docker (`CICADA_E2E=1`), which is optional.
