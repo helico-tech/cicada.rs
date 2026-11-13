@@ -884,6 +884,86 @@ async fn a_timer_queued_with_plain_headers_keeps_its_parent_until_it_rearms() {
     assert_linked_root(&ticks[1], &ticks[0]);
 }
 
+/// The telemetry observer as it was before 0.16.8, frozen: the parent from the plain headers (exact name first, then
+/// any case), a span from it, and the span's context on every send. It knows nothing of links.
+struct LegacyTelemetry {
+    tracer: opentelemetry_sdk::trace::SdkTracer,
+}
+
+/// The legacy reader of message headers.
+struct LegacyReader<'a>(&'a BTreeMap<String, String>);
+
+impl Extractor for LegacyReader<'_> {
+    fn get(&self, key: &str) -> Option<&str> {
+        self.0
+            .get(key)
+            .or_else(|| self.0.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v))
+            .map(String::as_str)
+    }
+
+    fn keys(&self) -> Vec<&str> {
+        self.0.keys().map(String::as_str).collect()
+    }
+}
+
+struct LegacySpan(Context);
+
+impl ObservedTurn for LegacySpan {
+    fn turn_ended(self: Box<Self>, _end: &cicada::observer::TurnEnd<'_>) {
+        self.0.span().end();
+    }
+}
+
+impl TurnObserver for LegacyTelemetry {
+    fn turn_started(&self, turn: &mut TurnStart<'_>) -> Box<dyn ObservedTurn> {
+        use opentelemetry::trace::Tracer;
+        let propagator = TraceContextPropagator::new();
+        let parent = propagator.extract_with_context(&Context::new(), &LegacyReader(&turn.message().headers));
+        let span = self
+            .tracer
+            .span_builder(format!("process {}", turn.type_name()))
+            .with_kind(SpanKind::Consumer)
+            .start_with_context(&self.tracer, &parent);
+        let cx = Context::new().with_span(span);
+        let mut headers = std::collections::HashMap::new();
+        propagator.inject_context(&cx, &mut headers);
+        for (name, value) in headers.into_iter().filter(|(_, v)| !v.is_empty()) {
+            turn.add_send_header(name, value);
+        }
+        Box::new(LegacySpan(cx))
+    }
+}
+
+/// Scenario: An older queued timer retains its parent until rearmed (an old node reads the new headers).
+#[tokio::test(start_paused = true)]
+async fn an_old_node_ignores_the_link_headers_of_a_new_timer_and_starts_a_root_without_a_link() {
+    // The headers a new node writes on a timer.
+    let t = Telemetry::new().await;
+    t.test.send(&traced(), later(&[])).await;
+    t.test.advance_time_by(Duration::from_secs(15)).await;
+    let generated = t.seen.lock().unwrap()[0].clone();
+    assert_eq!(generated.keys().collect::<Vec<_>>(), vec!["cicada-link-traceparent"]);
+
+    // An old node handles a message with those headers.
+    use opentelemetry::trace::TracerProvider;
+    let spans = InMemorySpanExporter::default();
+    let provider = SdkTracerProvider::builder().with_simple_exporter(spans.clone()).build();
+    let legacy = LegacyTelemetry { tracer: provider.tracer("legacy") };
+    let seen = Seen::default();
+    let actor = TracedActor { seen: seen.clone() };
+    let old = TestActors::builder().with(move |node| node.host(actor).observe(legacy)).build().await.unwrap();
+    old.create(&traced(), &TracedState::default()).await;
+    let options = SendOptions { headers: generated.clone(), ..SendOptions::default() };
+    let message = old.send_with(&traced(), TracedMsg::Hop { left: 0 }, options).await;
+    old.run_until_idle().await;
+    assert_eq!(old.outcome(&message).await.unwrap().status, cicada::store::OutcomeStatus::Done);
+    assert_eq!(*seen.lock().unwrap(), vec![generated], "handled with the new headers");
+    let spans = spans.get_finished_spans().unwrap();
+    assert_eq!(spans.len(), 1);
+    assert!(is_root(&spans[0]), "{:?}", spans[0]);
+    assert!(spans[0].links.links.is_empty(), "{:?}", spans[0].links);
+}
+
 /// Scenario: Notifications and redrive use their existing header rules.
 #[tokio::test(start_paused = true)]
 async fn a_notification_is_a_root_and_a_redrive_is_a_child_of_the_redriving_turn_without_the_link() {
