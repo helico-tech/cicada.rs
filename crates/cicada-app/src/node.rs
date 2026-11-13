@@ -125,10 +125,24 @@ pub(crate) async fn serve(
         return Err(AppError::Failed(anyhow!(e).context("cannot write to the output")));
     }
     tracing::info!("Serving the HTTP API on {address}");
-    let served = serve_until_stopped(listener, routes, &system, &stop, DRAIN).await;
-    system.stop().await; // at once when the stop stopped it; else the server failed first
-    store.close().await;
+    let served = serve_and_close(listener, routes, &system, &store, &stop, DRAIN).await;
     served.context("the HTTP server failed").map_err(AppError::Failed)
+}
+
+/// The end of `serve`: requests until the stop (see [`serve_until_stopped`]), then the node stops (at once when the
+/// stop stopped it; else the server failed first) and the store is closed.
+async fn serve_and_close(
+    listener: TcpListener,
+    routes: Router,
+    system: &ActorSystem,
+    store: &Store,
+    stop: &Stop,
+    drain: Duration,
+) -> std::io::Result<()> {
+    let served = serve_until_stopped(listener, routes, system, stop, drain).await;
+    system.stop().await;
+    store.close().await;
+    served
 }
 
 /// `worker`: steps 1, 4 and 5 of the start, then work until the stop.
@@ -454,5 +468,48 @@ mod tests {
         assert_eq!(open.map(|r| r.status()).ok(), Some(reqwest::StatusCode::SERVICE_UNAVAILABLE));
         let rest = tokio::time::timeout(Duration::from_secs(2), streaming.chunk()).await.expect("cut off");
         assert!(rest.is_err(), "the body ends with an error: {rest:?}");
+    }
+
+    /// Scenario: App shutdown with an open stream (the real `GET /changes`, with a short wait in place of five
+    /// seconds).
+    #[tokio::test]
+    async fn an_open_change_stream_gets_the_drain_after_the_node_stopped_then_is_cut_before_the_store_closes() {
+        let store = Store::memory();
+        let system = ActorSystem::builder(store.clone()).build();
+        system.start().await.unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let stop = Stop::watch(async move {
+            let _ = rx.await;
+        });
+        let drain = Duration::from_millis(300);
+        let serving = {
+            let (system, store) = (system.clone(), store.clone());
+            let routes = actor_api(system.clone());
+            tokio::spawn(async move { serve_and_close(listener, routes, &system, &store, &stop, drain).await })
+        };
+        let mut stream = reqwest::get(format!("http://{address}/changes")).await.unwrap();
+        assert_eq!(stream.headers()["content-type"], "text/event-stream");
+        let first = stream.chunk().await.unwrap().unwrap();
+        assert_eq!(&first[..], b"event: resync\ndata: {}\n\n");
+
+        let started = Instant::now();
+        tx.send(()).unwrap();
+        while system.state() != cicada::runtime::NodeState::Stopped {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let node_stopped = started.elapsed();
+        // The node has stopped, the store is still open: the stream stays open during the drain.
+        let open = tokio::time::timeout(Duration::from_millis(50), stream.chunk()).await;
+        assert!(open.is_err(), "neither ended nor cut yet: {open:?}");
+        let rest = tokio::time::timeout(Duration::from_secs(2), stream.chunk()).await.expect("cut off");
+        let cut = started.elapsed();
+        assert!(rest.is_err(), "the body ends with a transport error, not a final event: {rest:?}");
+        assert!(node_stopped < drain && cut >= drain && cut < Duration::from_secs(2), "{node_stopped:?}, {cut:?}");
+        serving.await.unwrap().expect("served");
+        assert!(started.elapsed() < Duration::from_secs(2), "the open stream added no wait beyond the drain");
+        assert!(system.now().await.is_err(), "the store is closed after the cut");
+        assert!(futures::StreamExt::next(&mut system.changes("")).await.is_none());
     }
 }

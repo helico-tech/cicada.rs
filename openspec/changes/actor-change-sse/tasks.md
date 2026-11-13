@@ -11,7 +11,7 @@
   and lifecycle/no-replay description, operationId streamActorChanges and the existing default problem response.
   Extend full/read-only OpenAPI tests for the route, prefix-only query and successful media type. Regenerate and
   commit docs/openapi.json with CICADA_UPDATE_OPENAPI=true; verify the document drift test and unchanged old routes.
-- [ ] 3. Add regression coverage using the real /changes route for cicada-app's current stop/drain/cutoff sequence,
+- [x] 3. Add regression coverage using the real /changes route for cicada-app's current stop/drain/cutoff sequence,
   asserting node stop precedes cutoff, the stream cannot block beyond the drain, and the serve lifecycle closes its
   store afterward. Retain production DRAIN=5s and use the existing shortened-drain harness/virtual-time controls in
   tests. Also cover the standalone guide's stop-then-close shutdown with an open stream. Run affected app tests;

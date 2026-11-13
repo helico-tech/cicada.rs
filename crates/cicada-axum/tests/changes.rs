@@ -565,3 +565,48 @@ async fn a_failed_listing_and_a_failed_read_are_retried_without_losing_the_addre
     assert_eq!(consumer.view["counter/b"]["paused"], true, "b was kept and read again");
     assert_eq!(consumer.view, truth(&app, "counter/").await);
 }
+
+// ---- the HTTP guide's standalone host ----
+
+/// Scenario: Embedded axum host. The shutdown future of the HTTP guide stops the node and then closes the store, so an
+/// open change stream ends and axum's graceful drain can finish; on real time and TCP, like a host.
+#[tokio::test]
+async fn the_guides_shutdown_stops_the_node_then_closes_the_store_and_so_ends_an_open_stream() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let store = memory_store();
+    let system = node(store.clone()).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    let server = {
+        let system = system.clone();
+        tokio::spawn(async move {
+            axum::serve(listener, actor_api(system.clone()))
+                .with_graceful_shutdown(async move {
+                    let _ = rx.await;
+                    system.stop().await;
+                    store.close().await;
+                })
+                .await
+        })
+    };
+    let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+    client.write_all(b"GET /changes HTTP/1.1\r\nHost: localhost\r\n\r\n").await.unwrap();
+    let mut received = Vec::new();
+    let mut chunk = [0u8; 1024];
+    while !String::from_utf8_lossy(&received).contains("event: resync") {
+        let n = tokio::time::timeout(Duration::from_secs(2), client.read(&mut chunk)).await.unwrap().unwrap();
+        assert!(n > 0, "the stream ended early");
+        received.extend_from_slice(&chunk[..n]);
+    }
+    tx.send(()).unwrap();
+    let served = tokio::time::timeout(Duration::from_secs(5), server).await.expect("the drain finishes");
+    served.unwrap().expect("served");
+    assert_eq!(system.state(), cicada::runtime::NodeState::Stopped);
+    tokio::time::timeout(Duration::from_secs(2), client.read_to_end(&mut received)).await.unwrap().unwrap();
+    let text = String::from_utf8_lossy(&received);
+    assert!(text.starts_with("HTTP/1.1 200 OK"), "{text}");
+    assert!(text.ends_with("0\r\n\r\n"), "the chunked body ended cleanly, with no final event: {text:?}");
+    assert_eq!(text.matches("event: ").count(), 1, "{text:?}");
+}
