@@ -11,7 +11,23 @@
 //! message or a state that cannot be decoded, or a rejected commit. Its parent is the trace context in the message's
 //! headers (W3C `traceparent`/`tracestate`, or whatever the configured propagator reads). Every message a turn sends
 //! carries the turn's trace context, so the turns of a chain of messages form one trace without any code in the
-//! handlers; code outside an actor puts its context on a send with [`current_trace_headers`]. A turn of which the node
+//! handlers; code outside an actor puts its context on a send with [`current_trace_headers`].
+//!
+//! **Timers.** A timer, a message an actor sends itself with a delay or an instant ([`Sends::Timers`]), starts a new
+//! trace instead, so that an actor that re-arms itself does not build one trace that never ends. It carries the same
+//! headers under names that start with `cicada-link-` (`cicada-link-traceparent`, …: the propagator's names with the
+//! prefix, a convention of this crate, ADR 0032), and its turn is a root span with one link to the turn that set it.
+//! A turn extracts its parent from the plain headers and, apart from it, a link from the prefixed ones, through the
+//! configured propagator, with the prefix matched in any case; a link never becomes a parent, and a turn without a
+//! valid parent is a root whatever the ambient context. So a timer that sets its own `traceparent` keeps it as its
+//! parent and has the link as well, and an invalid one (all zeros) makes a root with the link. Links are best effort: a
+//! missing or malformed field, another propagator or the limit of 64 headers leaves the link out and fails nothing.
+//! Each attempt of a timer, a retry too, is a root linked to the same sender, and the sampler decides about roots on
+//! its own. A timer queued by an older version keeps its plain headers, and with them its parent, until it re-arms.
+//! The ready-made flows and deadlines follow the same rule: a flow's sleep and a scheduler's `Tick` are timers, its
+//! immediate steps and the messages a timer's turn sends stay in that turn's trace.
+//!
+//! A turn of which the node
 //! saw no commit succeed (its lease was lost, its node stopped mid-turn, its commit did not get through) has no
 //! outcome; the OpenTelemetry SDK for Rust exports every span it drops, so its span is ended when the node drops the
 //! turn, with `cicada.outcome` `abandoned`, status unset and no `exception` event, also when its handler failed. The
@@ -35,12 +51,12 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use cicada::observer::{ObservedTurn, TurnEnd, TurnObserver, TurnStart};
+use cicada::observer::{ObservedTurn, Sends, TurnEnd, TurnObserver, TurnStart};
 use cicada::store::TurnOutcome;
 use opentelemetry::global::{self, BoxedTracer, ObjectSafeTracerProvider};
 use opentelemetry::metrics::{Histogram, Meter, MeterProvider};
 use opentelemetry::propagation::{Extractor, Injector, TextMapPropagator};
-use opentelemetry::trace::{SpanKind, Status, TraceContextExt, Tracer};
+use opentelemetry::trace::{Link, SpanKind, Status, TraceContextExt, Tracer};
 use opentelemetry::{Context, InstrumentationScope, KeyValue};
 
 /// The instrumentation scope name of the tracer and meter.
@@ -58,6 +74,8 @@ const ATTEMPT: &str = "cicada.attempt";
 const FAILURES: &str = "cicada.failures";
 const OUTCOME: &str = "cicada.outcome";
 const SENT: &str = "cicada.sent";
+/// Put before the names of the propagator's headers on a timer: the context of the sender, as a link (ADR 0032).
+const LINK_PREFIX: &str = "cicada-link-";
 
 /// OpenTelemetry traces and metrics for turns, an observer of a node; see the [crate] documentation.
 pub struct ActorTelemetry {
@@ -118,11 +136,14 @@ impl ActorTelemetry {
         headers.0
     }
 
-    /// The span of the turn that starts, as the child of the trace context in its message's headers.
+    /// The span of the turn that starts, as the child of the trace context in its message's plain headers, with a link
+    /// to the context in its prefixed ones when that is valid.
     fn start_span(&self, turn: &TurnStart<'_>) -> Context {
         let message = turn.message();
         let parent =
             self.with_propagator_do(|p| p.extract_with_context(&Context::new(), &HeaderReader(&message.headers)));
+        let link = self.with_propagator_do(|p| p.extract_with_context(&Context::new(), &LinkReader(&message.headers)));
+        let link = link.span().span_context().clone();
         let type_name = turn.type_name().as_str().to_owned();
         let mut attributes = vec![
             KeyValue::new(MESSAGING_SYSTEM, "cicada"),
@@ -142,6 +163,7 @@ impl ActorTelemetry {
             .span_builder(format!("process {type_name}"))
             .with_kind(SpanKind::Consumer)
             .with_attributes(attributes)
+            .with_links(if link.is_valid() { vec![Link::with_context(link)] } else { Vec::new() })
             .start_with_context(&self.tracer, &parent);
         Context::new().with_span(span)
     }
@@ -157,9 +179,10 @@ impl Default for ActorTelemetry {
 impl TurnObserver for ActorTelemetry {
     fn turn_started(&self, turn: &mut TurnStart<'_>) -> Box<dyn ObservedTurn> {
         let cx = self.start_span(turn);
-        // The messages this turn sends are children of its span.
+        // The messages this turn sends are children of its span; its timers link to it.
         for (name, value) in self.inject(&cx) {
-            turn.add_send_header(name, value);
+            turn.add_header_for(Sends::Timers, format!("{LINK_PREFIX}{name}"), value.clone());
+            turn.add_header_for(Sends::Others, name, value);
         }
         let message = turn.message();
         let (type_name, message_type) = (turn.type_name().as_str().to_owned(), message.message_type.clone());
@@ -248,15 +271,39 @@ struct HeaderReader<'a>(&'a BTreeMap<String, String>);
 
 impl Extractor for HeaderReader<'_> {
     fn get(&self, key: &str) -> Option<&str> {
-        self.0
-            .get(key)
-            .or_else(|| self.0.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v))
-            .map(String::as_str)
+        lookup(self.0, key)
     }
 
     fn keys(&self) -> Vec<&str> {
         self.0.keys().map(String::as_str).collect()
     }
+}
+
+/// Reads the prefixed headers of a message as if they were plain: `cicada-link-traceparent` as `traceparent`. The
+/// prefix is matched in any case; a key is looked up like [`HeaderReader`] does, the exact name first.
+struct LinkReader<'a>(&'a BTreeMap<String, String>);
+
+impl Extractor for LinkReader<'_> {
+    fn get(&self, key: &str) -> Option<&str> {
+        lookup(self.0, &format!("{LINK_PREFIX}{key}"))
+    }
+
+    fn keys(&self) -> Vec<&str> {
+        let n = LINK_PREFIX.len();
+        self.0
+            .keys()
+            .filter(|k| k.get(..n).is_some_and(|p| p.eq_ignore_ascii_case(LINK_PREFIX)))
+            .map(|k| &k[n..])
+            .collect()
+    }
+}
+
+/// The value of the header `key`: its exact name first, else the first name in order that matches it in any case.
+fn lookup<'a>(headers: &'a BTreeMap<String, String>, key: &str) -> Option<&'a str> {
+    headers
+        .get(key)
+        .or_else(|| headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|(_, v)| v))
+        .map(String::as_str)
 }
 
 /// Collects headers written by a propagator. Empty values are left out: the Rust W3C propagator writes an empty

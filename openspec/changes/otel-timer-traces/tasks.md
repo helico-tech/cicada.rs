@@ -6,7 +6,7 @@
   tests for every send path, zero/past/clamped delivery, delayed sends to other actors, call/observer precedence,
   explicit headers, per-kind capacity/validation and panic isolation. Run `cargo test -p cicada --lib tests::runtime::observer`,
   `cargo test -p cicada-test --test send_headers`, and `cargo check -p cicada` without features.
-- [ ] 2. Change ActorTelemetry to inject ordinary headers for Others and prefixed headers for Timers, and extract
+- [x] 2. Change ActorTelemetry to inject ordinary headers for Others and prefixed headers for Timers, and extract
   independent parent/link contexts with a prefix-stripping reader and one link before span start. Keep metrics,
   outcomes and baggage behaviour unchanged. Extend `crates/cicada-otel/tests/actor_telemetry.rs` on virtual-time
   TestActors with SDK in-memory exporters: assert parent/trace/link ids across recurring timers, immediate self-sends,

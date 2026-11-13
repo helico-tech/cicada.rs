@@ -620,6 +620,7 @@ name = "cicada-otel"
 version = "0.16.7"
 dependencies = [
  "cicada",
+ "cicada-actors",
  "cicada-test",
  "opentelemetry",
  "opentelemetry_sdk",

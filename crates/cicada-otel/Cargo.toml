@@ -12,6 +12,7 @@ cicada.workspace = true
 opentelemetry.workspace = true
 
 [dev-dependencies]
+cicada-actors.workspace = true
 cicada-test.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 schemars.workspace = true
