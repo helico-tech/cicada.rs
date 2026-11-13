@@ -12,13 +12,19 @@ not permission for the client to choose arbitrary message outcomes or bypass ret
 - Share validation and failure-to-retry decisions with the local executor; derive sender and caused-by identity.
 - Define stale epochs, rejected effects, repeated reports, lost acknowledgements and failure fallback.
 
-## To decide
+## Settled decisions
 
-- Complete report/result shapes, retryable failures and cause validation; distinguish omitted state from null.
-- Every current Turn operation's checks, registry lookups, effect order, generated ids and message retention.
-- Atomic validation against the claimed message/epoch; server reads needed to derive retry from stored policy.
-- Retrying an unchanged report, rejected-commit fallback and the G6 boundary after a handler has ended.
-- Preserve safe uncertainty after a lost response unless evidence requires durable completion receipts.
+- Returned/Failed/Cancelled reports distinguish unchanged, set and stopped state; all current effects are supported.
+- Shared server policy derives outcomes and retry from stored Pending or Running messages, never from caller counters.
+- One commit attempt per call; a known rejection returns the exact nonretryable failure report to submit next.
+- The caller retains that transition across uncertainty, never restores original effects and never releases after handler end.
+- No durable receipts: repeated committed epochs return LeaseLost with explicit acknowledgement uncertainty.
+
+## Capabilities
+
+### Modified Capabilities
+
+- `turn-leases`: report and settle leased turns through the public core API, including explicit rejection fallback.
 
 ## Out of scope
 
@@ -31,4 +37,4 @@ After `lease-turns-in-core`, before `remote-worker-runtime`.
 ## Impact
 
 Core completion types/operation, shared executor policy and validation, effect and failure tests, architecture,
-guarantee test references and the remote-turn ADR. Reconcile all names against the landed predecessor.
+guarantee test references and ADR 0038. No Backend or schema change. Reconcile names against the landed predecessor.
