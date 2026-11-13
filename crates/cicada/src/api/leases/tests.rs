@@ -797,3 +797,59 @@ fn the_schema_allows_null_exactly_for_the_nullable_fields() {
     assert!(allows_null(&root, &completed["properties"]["cause"]));
     assert!(!allows_null(&root, &completed["properties"]["version"]));
 }
+
+/// Scenario: Required fields and variants (a record is a JSON object, never its fields as a positional array).
+#[test]
+fn a_record_given_as_a_positional_array_is_refused_at_every_level() {
+    let request = |report: Value| json!({"actor": "a/b", "epoch": 1, "messageId": "m", "report": report});
+    let effects =
+        |effects: Value| request(json!({"kind": "returned", "state": {"kind": "unchanged"}, "effects": effects}));
+    let send = |extra: Value| {
+        let mut send = json!({"id": "s", "to": "c/d", "type": "T", "payload": {}});
+        send.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        effects(json!({"sends": [send]}))
+    };
+    decode::<CompleteTurnRequest>(effects(json!({"controls": [{"effect": "delete", "actor": "c/d"}]}))).unwrap();
+    for bad in [
+        json!(["a/b", 1, "m", {"kind": "cancelled"}]),
+        request(json!(["cancelled"])),
+        request(json!(["failed", "handler", false, "r"])),
+        request(json!({"kind": "returned", "state": ["set", {}], "effects": {}})),
+        effects(json!([])),
+        effects(json!([[], [], [], [], []])),
+        effects(json!({"controls": [["delete", "c/d"]]})),
+        effects(json!({"creates": [["c/d", {}, true]]})),
+        effects(json!({"watches": [["*", true]]})),
+        effects(json!({"sends": [["s", "c/d", "T", {}]]})),
+        send(json!({"retry": [2, {"kind": "fixed", "delay": "PT1S"}]})),
+        send(json!({"retry": {"maxAttempts": 2, "backoff": ["fixed", "PT1S"]}})),
+        send(json!({"retention": {"done": ["remove"]}})),
+        send(json!({"retention": [{"kind": "remove"}, null]})),
+    ] {
+        assert!(decode::<CompleteTurnRequest>(bad.clone()).is_err(), "{bad} was accepted");
+    }
+    assert!(decode::<LeaseTurnsRequest>(json!(["w", {"counter": "h"}, 1])).is_err());
+    assert!(decode::<RenewTurnRequest>(json!(["a/b", 1])).is_err());
+    assert!(decode::<ReleaseTurnRequest>(json!(["a/b", 1])).is_err());
+
+    // Responses too: a positional record is no result this version reads.
+    let leased =
+        serde_json::to_value(LeaseTurnsResponse::from(LeaseTurnsResult::Leased(vec![lease(full_message())]))).unwrap();
+    decode::<LeaseTurnsResponse>(leased.clone()).unwrap();
+    let positional = |v: &Value| Value::Array(v.as_object().unwrap().values().cloned().collect());
+    let mut v = leased.clone();
+    v["leases"][0] = positional(&leased["leases"][0]);
+    assert!(decode::<LeaseTurnsResponse>(v).is_err());
+    let mut v = leased.clone();
+    v["leases"][0]["message"] = positional(&leased["leases"][0]["message"]);
+    assert!(decode::<LeaseTurnsResponse>(v).is_err());
+    let mut v = leased.clone();
+    v["leases"][0]["message"]["retry"] = json!([4, {"kind": "fixed", "delay": "PT5S"}]);
+    assert!(decode::<LeaseTurnsResponse>(v).is_err());
+    assert!(decode::<LeaseTurnsResponse>(json!(["leased", []])).is_err());
+    assert!(decode::<RenewTurnResponse>(json!(["leaseLost"])).is_err());
+    let completed = |outcome: Value| json!({"result": "completed", "outcome": outcome, "cause": null, "version": 1, "sent": [], "cancelled": []});
+    decode::<CompleteTurnResponse>(completed(json!({"kind": "done"}))).unwrap();
+    assert!(decode::<CompleteTurnResponse>(completed(json!(["done"]))).is_err());
+    assert!(decode::<CompleteTurnResponse>(json!({"result": "rejected", "failure": ["commit", false, "r"]})).is_err());
+}

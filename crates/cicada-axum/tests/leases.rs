@@ -479,6 +479,42 @@ async fn malformed_bodies_are_400_before_any_operation_and_old_routes_keep_their
     assert_eq!(reply.status, StatusCode::ACCEPTED, "{}", reply.text);
 }
 
+/// Scenario: Required fields and variants (a record given as a positional array is no record).
+#[tokio::test(start_paused = true)]
+async fn a_record_given_as_a_positional_array_is_400_before_any_operation() {
+    let store = memory_store();
+    let heard = Heard::default();
+    let system = server(&store, config(Duration::from_secs(30)), &heard).await;
+    let id = pending_add(&system, "p", 1).await;
+    system.create(&Counter { id: "victim".into() }, &CounterState::default()).await.unwrap();
+    let app = actor_api(system.clone());
+    let lease = lease_one(&app).await;
+    let returned_with = |effects: Value| returned(json!({"kind": "unchanged"}), effects);
+    let reports = [
+        returned_with(json!([])),
+        returned_with(json!({"controls": [["delete", "counter/victim"]]})),
+        returned_with(json!({"creates": [["counter/new", {}, false]]})),
+        returned_with(json!({"watches": [["*", true]]})),
+        returned_with(json!({"sends": [["s", "counter/victim", "Add", {"n": 1}]]})),
+        returned_with(json!({"sends": [{"id": "s", "to": "counter/victim", "type": "Add", "payload": {"n": 1},
+            "retry": [2, {"kind": "fixed", "delay": "PT1S"}]}]})),
+        returned(json!(["set", {"total": 9}]), json!({})),
+        json!(["cancelled"]),
+    ];
+    for report in reports {
+        let reply = post(&app, "/leases/complete", &complete_body(&lease, report.clone())).await;
+        assert_problem(&reply, 400, pt::BAD_REQUEST);
+    }
+    assert!(matches!(status_of(&system, &id).await, MessageStatus::Running { .. }), "nothing was completed");
+    assert!(system.get_actor(&"counter/victim".parse().unwrap()).await.unwrap().is_some(), "not deleted");
+    assert!(system.get_actor(&"counter/new".parse().unwrap()).await.unwrap().is_none());
+    for (path, body) in [("/leases/renew", json!([lease["actor"], lease["epoch"]])), ("/leases", json!(["w", {}, 1]))] {
+        assert_problem(&post(&app, path, &body.to_string()).await, 400, pt::BAD_REQUEST);
+    }
+    let ok = post(&app, "/leases/complete", &complete_body(&lease, json!({"kind": "cancelled"}))).await;
+    assert_eq!(ok.json()["result"], "completed", "the lease was still held: {}", ok.text);
+}
+
 /// Scenario: Body and value depth limits (size).
 #[tokio::test(start_paused = true)]
 async fn a_body_beyond_the_limit_is_413_with_or_without_a_length() {
