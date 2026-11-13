@@ -598,8 +598,10 @@ async fn stop_returns_while_non_yielding_work_runs_on_and_nothing_is_released_un
     server.create(&blocker, &crate::NoState {}).await.unwrap();
     let m = accepted(server.send(&blocker, BlockerMsg::Block { millis: 2_000 }).await.unwrap());
     let source = Scripted::new(&server);
+    let blocker_actor = BlockerActor::default();
+    let started = blocker_actor.started.clone();
     let worker = Worker::builder(source.clone())
-        .host(BlockerActor::default())
+        .host(blocker_actor)
         .config(WorkerConfig {
             poll_interval: Duration::from_millis(20),
             shutdown_cancel_timeout: Duration::from_millis(200),
@@ -608,6 +610,8 @@ async fn stop_returns_while_non_yielding_work_runs_on_and_nothing_is_released_un
         .build();
     worker.start().await.unwrap();
     eventually(secs(10), || async { matches!(status(&server, &m.id).await, MessageStatus::Running { .. }) }).await;
+    // Only once the handler is in its blocking section, not merely leased.
+    tokio::time::timeout(secs(10), started.notified()).await.expect("the handler started");
     let mark = std::time::Instant::now();
     worker.stop_with_grace(Duration::ZERO).await;
     assert!(mark.elapsed() < Duration::from_millis(1_500), "stop returned after {:?}", mark.elapsed());
@@ -633,8 +637,10 @@ async fn a_cancelled_completion_after_a_shutdown_stays_within_the_confirmed_leas
     let m = accepted(server.send(&blocker, BlockerMsg::Block { millis: 1_200 }).await.unwrap());
     let source = Scripted::new(&server);
     source.script([Complete::Hang]);
+    let blocker_actor = BlockerActor::default();
+    let started = blocker_actor.started.clone();
     let worker = Worker::builder(source.clone())
-        .host(BlockerActor::default())
+        .host(blocker_actor)
         .config(WorkerConfig {
             poll_interval: Duration::from_millis(20),
             shutdown_cancel_timeout: secs(3),
@@ -643,6 +649,8 @@ async fn a_cancelled_completion_after_a_shutdown_stays_within_the_confirmed_leas
         .build();
     worker.start().await.unwrap();
     eventually(secs(10), || async { matches!(status(&server, &m.id).await, MessageStatus::Running { .. }) }).await;
+    // Only once the handler is in its blocking section, not merely leased.
+    tokio::time::timeout(secs(10), started.notified()).await.expect("the handler started");
     let mark = std::time::Instant::now();
     assert!(server.cancel_turn(&addr(&blocker)).await.unwrap());
     // The renewal after 500 ms brings the cancel, which wins (the handler blocks until 1.2 s) and confirms the lease
