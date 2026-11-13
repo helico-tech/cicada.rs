@@ -1,12 +1,12 @@
 ## Implementation
 
-- [ ] 1. Add ActorChange/ActorChanges, ActorSystem::changes, private backend/Store forwarding, the bounded collector
+- [x] 1. Add ActorChange/ActorChanges, ActorSystem::changes, private backend/Store forwarding, the bounded collector
   and shared hub/readiness state machine, with memory publication. Keep the stream Send + Unpin and next cancel-safe,
   apply literal prefix filtering with bounded poll work, and close it independently of worker stop. Add virtual-time
   fake-hub and TestActors tests in the core for startup/lag/reconnect/closed races, pending-resync receiver reset,
   cancellation/drop, dedup/count/byte overflow, unstarted/unhosted systems and memory write coverage. Run targeted
   module/runtime tests and `cargo check -p cicada` with no features and with testing.
-- [ ] 2. Collect SQLite changes within WriteTx and publish after confirmed commit. Add owned writer-guard settlement
+- [x] 2. Collect SQLite changes within WriteTx and publish after confirmed commit. Add owned writer-guard settlement
   for uncertain/cancelled endings, distinguishing pre-COMMIT cancellation, in-flight COMMIT, known rollback and success.
   Preserve transaction cleanup and close behaviour. Use deterministic private driver barriers/fault fixtures to test
   cancellation before COMMIT, queued/in-flight COMMIT, commit errors, confirmed rollback, no double publication,

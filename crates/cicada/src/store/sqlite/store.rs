@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::address::{ActorAddress, TypeName};
-use crate::change::{ChangeHub, SourceState};
+use crate::change::{ChangeBatch, ChangeCollector, ChangeHub, SourceState};
 use crate::retention::Retention;
 use crate::retry::RetryPolicy;
 use crate::store::support::{self, Notice, Removal, check_limit};
@@ -23,7 +23,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use sqlx::sqlite::{SqliteArguments, SqliteConnectOptions, SqliteRow, SqliteSynchronous};
 use sqlx::{AssertSqlSafe, Row, Sqlite, SqliteConnection};
-use tokio::sync::{Semaphore, SemaphorePermit};
+use tokio::sync::{OwnedMutexGuard, Semaphore, SemaphorePermit};
 
 use crate::store::sqlite::conn::{Conn, Mode, db_error};
 use crate::store::sqlite::rows::{self, col, instant, json, micros};
@@ -85,7 +85,8 @@ impl std::fmt::Debug for SqliteOptions {
 pub struct SqliteStore {
     clock: Arc<dyn Clock>,
     retention: Duration,
-    writer: tokio::sync::Mutex<Option<Conn>>,
+    /// The writer connection; a cancelled commit's settle task holds it until the commit settled (see [`WriteTx`]).
+    writer: Arc<tokio::sync::Mutex<Option<Conn>>>,
     readers: Mutex<Vec<Conn>>,
     reader_permits: Semaphore,
     /// The latest store time this instance handed out; see [`SqliteStore::store_now`].
@@ -93,6 +94,9 @@ pub struct SqliteStore {
     closed: AtomicBool,
     /// The change hints of the writes through this store, published after their commits.
     hub: Arc<ChangeHub>,
+    /// A fault the next write transaction takes, for the tests of commit endings.
+    #[cfg(test)]
+    pub(crate) commit_fault: Mutex<Option<CommitFault>>,
 }
 
 impl std::fmt::Debug for SqliteStore {
@@ -171,19 +175,131 @@ impl Drop for Reader<'_> {
     }
 }
 
-/// A transaction on the writer, holding the write lock; `now` is store time read inside it.
-struct WriteTx<'a> {
-    guard: tokio::sync::MutexGuard<'a, Option<Conn>>,
-    now: Timestamp,
+/// How far a write transaction got: open, `COMMIT` asked for (sent, or about to be), or ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Open,
+    Committing,
+    Done,
 }
 
-impl WriteTx<'_> {
-    fn conn(&mut self) -> &mut SqliteConnection {
-        self.guard.as_mut().expect("checked when the transaction began").raw()
+/// A fault of the tests of commit endings, taken by the next write transaction.
+#[cfg(test)]
+pub(crate) enum CommitFault {
+    /// At the start of the ending, before `COMMIT` is asked for: notifies, then never goes on.
+    BeforeCommit(Arc<tokio::sync::Notify>),
+    /// `COMMIT` is asked for but not sent to the driver: notifies, then never goes on.
+    Queued(Arc<tokio::sync::Notify>),
+    /// `COMMIT` is sent to the driver, which runs it, but its result is never awaited: notifies, then never goes on.
+    InFlight(Arc<tokio::sync::Notify>),
+    /// `COMMIT` fails without being sent.
+    Fail,
+}
+
+/// A transaction on the writer, holding the write lock; `now` is store time read inside it. It collects the change
+/// hints of its writes and publishes them after a confirmed `COMMIT`; a known rollback publishes nothing.
+///
+/// A `COMMIT` that fails, or whose caller is cancelled once it was asked for, may still land: sqlx runs a statement it
+/// was sent after its caller is gone. Such an ending with collected hints publishes one resync after the transaction
+/// settled: a cancelled one moves its writer guard into a task that queues `ROLLBACK` behind the outstanding work on the
+/// connection, awaits it, publishes the resync and only then releases the writer, so no next writer overtakes it.
+/// Without a running tokio runtime (also during its shutdown) no task runs: the next `BEGIN` rolls back first, as for
+/// every cancelled transaction, and no hint is sent.
+struct WriteTx {
+    guard: Option<OwnedMutexGuard<Option<Conn>>>,
+    now: Timestamp,
+    changes: ChangeCollector,
+    phase: Phase,
+    hub: Arc<ChangeHub>,
+    #[cfg(test)]
+    fault: Option<CommitFault>,
+}
+
+impl WriteTx {
+    fn connection(&mut self) -> &mut Conn {
+        self.guard.as_mut().and_then(|g| g.as_mut()).expect("checked when the transaction began")
     }
 
+    fn conn(&mut self) -> &mut SqliteConnection {
+        self.connection().raw()
+    }
+
+    /// The connection and the change hints, borrowed together.
+    fn parts(&mut self) -> (&mut SqliteConnection, &mut ChangeCollector) {
+        let conn = self.guard.as_mut().and_then(|g| g.as_mut()).expect("checked when the transaction began");
+        (conn.raw(), &mut self.changes)
+    }
+
+    /// Commits `result`'s transaction when it is `Ok` and publishes its hints, rolls it back otherwise; a failed commit
+    /// rolls back and, with hints collected, publishes a resync.
     async fn end<T>(mut self, result: StoreResult<T>) -> StoreResult<T> {
-        self.guard.as_mut().expect("checked when the transaction began").end(result).await
+        let value = match result {
+            Ok(value) => value,
+            Err(e) => {
+                self.connection().rollback().await;
+                self.phase = Phase::Done;
+                return Err(e);
+            }
+        };
+        #[cfg(test)]
+        if let Some(CommitFault::BeforeCommit(reached)) = &self.fault {
+            reached.notify_one();
+            std::future::pending::<()>().await;
+        }
+        self.phase = Phase::Committing;
+        match self.commit().await {
+            Ok(()) => {
+                self.phase = Phase::Done;
+                self.hub.publish_collected(&mut self.changes);
+                Ok(value)
+            }
+            Err(e) => {
+                self.connection().rollback().await;
+                self.phase = Phase::Done;
+                if !self.changes.is_empty() {
+                    self.hub.publish(ChangeBatch::Resync);
+                }
+                Err(db_error(e))
+            }
+        }
+    }
+
+    async fn commit(&mut self) -> Result<(), sqlx::Error> {
+        #[cfg(test)]
+        match self.fault.take() {
+            Some(CommitFault::Queued(reached)) => {
+                reached.notify_one();
+                std::future::pending::<()>().await;
+            }
+            Some(CommitFault::InFlight(reached)) => {
+                let mut commit = std::pin::pin!(self.connection().commit());
+                let _ = futures::poll!(commit.as_mut()); // sends COMMIT to the driver's worker
+                reached.notify_one();
+                std::future::pending::<()>().await;
+            }
+            Some(CommitFault::Fail) => return Err(sqlx::Error::Protocol("a commit failure of a test".into())),
+            Some(CommitFault::BeforeCommit(_)) | None => {}
+        }
+        self.connection().commit().await
+    }
+}
+
+impl Drop for WriteTx {
+    fn drop(&mut self) {
+        if self.phase != Phase::Committing || self.changes.is_empty() {
+            return; // ended, or never asked to commit (the next BEGIN rolls back), or nothing to tell
+        }
+        let (Some(mut guard), Ok(runtime)) = (self.guard.take(), tokio::runtime::Handle::try_current()) else {
+            return;
+        };
+        let hub = self.hub.clone();
+        runtime.spawn(async move {
+            if let Some(conn) = guard.as_mut() {
+                conn.rollback().await; // runs after a COMMIT still in the driver: the transaction has settled
+            }
+            hub.publish(ChangeBatch::Resync);
+            drop(guard);
+        });
     }
 }
 
@@ -245,11 +361,13 @@ impl SqliteStore {
             high_water: Mutex::new(time::truncate(options.clock.now())),
             clock: options.clock,
             retention: options.retention,
-            writer: tokio::sync::Mutex::new(Some(writer)),
+            writer: Arc::new(tokio::sync::Mutex::new(Some(writer))),
             reader_permits: Semaphore::new(readers.len()),
             readers: Mutex::new(readers),
             closed: AtomicBool::new(false),
             hub: Arc::new(ChangeHub::new(SourceState::Up)),
+            #[cfg(test)]
+            commit_fault: Mutex::new(None),
         })
     }
 
@@ -281,13 +399,21 @@ impl SqliteStore {
     }
 
     /// Starts a write transaction on the writer connection.
-    async fn write(&self) -> StoreResult<WriteTx<'_>> {
+    async fn write(&self) -> StoreResult<WriteTx> {
         self.check_open()?;
-        let mut guard = self.writer.lock().await;
+        let mut guard = self.writer.clone().lock_owned().await;
         let conn = guard.as_mut().ok_or_else(closed)?;
         conn.begin(Mode::Write).await.map_err(db_error)?;
         match self.store_now(conn.raw(), true).await {
-            Ok(now) => Ok(WriteTx { guard, now }),
+            Ok(now) => Ok(WriteTx {
+                guard: Some(guard),
+                now,
+                changes: ChangeCollector::default(),
+                phase: Phase::Open,
+                hub: self.hub.clone(),
+                #[cfg(test)]
+                fault: self.commit_fault.lock().unwrap_or_else(|e| e.into_inner()).take(),
+            }),
             Err(e) => {
                 conn.rollback().await;
                 Err(e)
@@ -343,6 +469,7 @@ impl SqliteStore {
 
     async fn create_in(
         c: &mut SqliteConnection,
+        changes: &mut ChangeCollector,
         address: &ActorAddress,
         state: &Value,
         parent: Option<&ActorAddress>,
@@ -365,6 +492,7 @@ impl SqliteStore {
         )
         .await?;
         if inserted == 1 {
+            changes.add(address);
             return Ok(CreateResult::Created);
         }
         let existing =
@@ -446,7 +574,14 @@ impl SqliteStore {
 
     /// Removes every instance of `tree` with its mailbox and the watches it holds as a watcher; returns how many
     /// messages were purged.
-    async fn remove_all(&self, c: &mut SqliteConnection, tree: &[ActorAddress], now: Timestamp) -> StoreResult<usize> {
+    async fn remove_all(
+        &self,
+        c: &mut SqliteConnection,
+        changes: &mut ChangeCollector,
+        tree: &[ActorAddress],
+        now: Timestamp,
+    ) -> StoreResult<usize> {
+        changes.add_all(tree);
         let mut purged = 0;
         for address in tree {
             purged += self.purge_mailbox(c, address, now).await?;
@@ -958,6 +1093,7 @@ impl SqliteStore {
     async fn commit_in(
         &self,
         c: &mut SqliteConnection,
+        changes: &mut ChangeCollector,
         commit: CommitRequest,
         now: Timestamp,
     ) -> StoreResult<CommitResult> {
@@ -1086,21 +1222,24 @@ impl SqliteStore {
         }
         // 3. deletes, 4. creates, 5. purges, 6. pauses and resumes, 7. sends
         let deleted: Vec<ActorAddress> = deleted.into_iter().collect();
-        self.remove_all(c, &deleted, now).await?;
+        self.remove_all(c, changes, &deleted, now).await?;
         for create in &creates {
-            Self::create_in(c, &create.address, &create.state, create.child.then_some(&address), now).await?;
+            Self::create_in(c, changes, &create.address, &create.state, create.child.then_some(&address), now).await?;
         }
         for target in support::purges(&controls) {
             self.purge_in(c, target, (*target == address).then_some(&message_id), now).await?;
         }
         for (target, paused) in support::pauses(&controls) {
-            execute(
+            let updated = execute(
                 c,
                 sqlx::query("UPDATE actors SET paused = ? WHERE address = ?")
                     .bind(i64::from(paused))
                     .bind(target.as_str()),
             )
             .await?;
+            if updated == 1 {
+                changes.add(target);
+            }
         }
         let mut sent = Vec::with_capacity(sends.len());
         for send in sends {
@@ -1116,6 +1255,7 @@ impl SqliteStore {
                     .bind(address.as_str()),
             )
             .await?;
+            changes.add(&address);
         }
         let version: i64 =
             fetch_optional(c, sqlx::query("SELECT version FROM actors WHERE address = ?").bind(address.as_str()))
@@ -1131,7 +1271,7 @@ impl SqliteStore {
         let failed = failed.as_ref().map(|(m, e)| (m, e.as_str(), cause));
         let notices = Self::notices(c, failed, (!removed.is_empty()).then_some((&removal, &removed[..]))).await?;
         if stop {
-            self.remove_all(c, &tree, now).await?;
+            self.remove_all(c, changes, &tree, now).await?;
         } else {
             execute(
                 c,
@@ -1180,6 +1320,10 @@ async fn next_value(c: &mut SqliteConnection, name: &str) -> StoreResult<i64> {
     .ok_or_else(|| StoreError::Corrupt(format!("the sequence '{name}' is missing")))?;
     Ok(row.get(0))
 }
+
+#[cfg(test)]
+#[path = "change_tests.rs"]
+mod change_tests;
 
 #[async_trait]
 impl Backend for SqliteStore {
@@ -1235,7 +1379,8 @@ impl Backend for SqliteStore {
     async fn create(&self, address: &ActorAddress, state: Value) -> StoreResult<CreateResult> {
         let mut tx = self.write().await?;
         let now = tx.now;
-        let result = Self::create_in(tx.conn(), address, &state, None, now).await;
+        let (c, changes) = tx.parts();
+        let result = Self::create_in(c, changes, address, &state, None, now).await;
         tx.end(result).await
     }
 
@@ -1296,14 +1441,14 @@ impl Backend for SqliteStore {
         let mut tx = self.write().await?;
         let now = tx.now;
         let result = async {
-            let c = tx.conn();
+            let (c, changes) = tx.parts();
             if !Self::actor_exists(c, address.as_str()).await? {
                 return Ok(DeleteResult::Absent);
             }
             let tree = Self::tree(c, address).await?;
             let removal = Removal::delete(address);
             let notices = Self::notices(c, None, Some((&removal, &tree[..]))).await?;
-            let purged = self.remove_all(c, &tree, now).await?;
+            let purged = self.remove_all(c, changes, &tree, now).await?;
             self.notify(c, event, notices, now).await?;
             Ok(DeleteResult::Deleted { purged })
         }
@@ -1775,14 +1920,18 @@ impl Backend for SqliteStore {
 
     async fn set_paused(&self, address: &ActorAddress, paused: bool) -> StoreResult<bool> {
         let mut tx = self.write().await?;
+        let (c, changes) = tx.parts();
         let result = execute(
-            tx.conn(),
+            c,
             sqlx::query("UPDATE actors SET paused = ? WHERE address = ?")
                 .bind(i64::from(paused))
                 .bind(address.as_str()),
         )
         .await
         .map(|updated| updated == 1);
+        if let Ok(true) = result {
+            changes.add(address);
+        }
         tx.end(result).await
     }
 
@@ -1899,7 +2048,8 @@ impl Backend for SqliteStore {
         support::check_controls(&commit.address, &commit.controls)?;
         let mut tx = self.write().await?;
         let now = tx.now;
-        let result = self.commit_in(tx.conn(), commit, now).await;
+        let (c, changes) = tx.parts();
+        let result = self.commit_in(c, changes, commit, now).await;
         tx.end(result).await
     }
 

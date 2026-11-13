@@ -9,5 +9,5 @@ mod fuzz;
 pub(crate) mod postgres;
 mod retry_policy;
 pub(crate) mod runtime;
-mod sqlite;
+pub(crate) mod sqlite;
 mod store_support;

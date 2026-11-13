@@ -82,6 +82,13 @@ impl Conn {
         }
     }
 
+    /// Sends `COMMIT`; marks the connection free of a transaction when it succeeds. The caller rolls back on an error.
+    pub(crate) async fn commit(&mut self) -> Result<(), sqlx::Error> {
+        sqlx::raw_sql("COMMIT").execute(&mut self.inner).await?;
+        self.open = false;
+        Ok(())
+    }
+
     /// Commits `result`'s transaction when it is `Ok`, rolls it back otherwise; a failed commit rolls back too.
     pub(crate) async fn end<T>(&mut self, result: StoreResult<T>) -> StoreResult<T> {
         match result {

@@ -1,0 +1,187 @@
+//! How a SQLite write transaction ends for the change feed (ADR 0034): a confirmed commit publishes its hints once, a
+//! known rollback nothing, and an uncertain ending one resync after the transaction settled, before the next writer.
+//! The faults stop a transaction at a known point of its ending, where the test cancels its caller.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use futures::StreamExt;
+use serde_json::json;
+use tokio::sync::Notify;
+
+use super::{CommitFault, SqliteStore};
+use crate::address::{ActorAddress, TypeName};
+use crate::change::{ActorChange, ActorChanges};
+use crate::store::{Backend, CreateResult, SqliteOptions, Store, StoreError};
+use crate::tests::conformance::type_def;
+use crate::tests::sqlite::common::TempDb;
+
+fn kind() -> TypeName {
+    TypeName::parse("x").unwrap()
+}
+
+fn instance(id: &str) -> ActorAddress {
+    ActorAddress::of(&kind(), id).unwrap()
+}
+
+async fn open(db: &TempDb) -> Arc<SqliteStore> {
+    let store = Arc::new(SqliteStore::open(&db.file, SqliteOptions::default()).await.unwrap());
+    store.register(type_def(&kind(), "h")).await.unwrap();
+    store
+}
+
+/// A live stream of every address: its first `Resync` is taken.
+async fn subscribe(store: &dyn Backend) -> ActorChanges {
+    let mut changes = ActorChanges::new(store.changes(), "");
+    assert_eq!(next(&mut changes).await, Some(ActorChange::Resync));
+    changes
+}
+
+async fn next(changes: &mut ActorChanges) -> Option<ActorChange> {
+    tokio::time::timeout(Duration::from_secs(10), changes.next()).await.expect("an item in time")
+}
+
+/// The items up to the hint of `marker`, which the test writes last.
+async fn until(changes: &mut ActorChanges, marker: &ActorAddress) -> Vec<ActorChange> {
+    let mut seen = Vec::new();
+    loop {
+        match next(changes).await {
+            Some(ActorChange::Changed { address, .. }) if &address == marker => return seen,
+            Some(change) => seen.push(change),
+            None => panic!("the stream ended after {seen:?}"),
+        }
+    }
+}
+
+async fn create(store: &dyn Backend, id: &str) {
+    assert_eq!(store.create(&instance(id), json!({})).await.unwrap(), CreateResult::Created);
+}
+
+/// Starts a create of `id` that stops at `fault`, and returns it once it got there.
+async fn stopped_create(store: &Arc<SqliteStore>, id: &str, fault: impl FnOnce(Arc<Notify>) -> CommitFault) {
+    let reached = Arc::new(Notify::new());
+    *store.commit_fault.lock().unwrap() = Some(fault(reached.clone()));
+    let task = {
+        let store = store.clone();
+        let address = instance(id);
+        tokio::spawn(async move { store.create(&address, json!({})).await })
+    };
+    reached.notified().await;
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+}
+
+#[tokio::test]
+async fn a_confirmed_commit_publishes_its_hints_once() {
+    let db = TempDb::new();
+    let store = open(&db).await;
+    let mut changes = subscribe(&*store).await;
+    create(&*store, "a").await;
+    create(&*store, "marker").await;
+    assert_eq!(until(&mut changes, &instance("marker")).await, vec![ActorChange::changed(instance("a"))]);
+    store.close().await;
+}
+
+#[tokio::test]
+async fn a_cancel_before_commit_is_asked_for_rolls_back_and_publishes_nothing() {
+    let db = TempDb::new();
+    let store = open(&db).await;
+    let mut changes = subscribe(&*store).await;
+    stopped_create(&store, "a", CommitFault::BeforeCommit).await;
+    create(&*store, "marker").await; // the next BEGIN rolls the open transaction back
+    assert_eq!(until(&mut changes, &instance("marker")).await, vec![]);
+    assert_eq!(store.get(&instance("a")).await.unwrap(), None);
+    store.close().await;
+}
+
+#[tokio::test]
+async fn a_cancel_while_commit_is_queued_settles_then_resyncs_and_the_create_did_not_land() {
+    let db = TempDb::new();
+    let store = open(&db).await;
+    let mut changes = subscribe(&*store).await;
+    stopped_create(&store, "a", CommitFault::Queued).await;
+    assert_eq!(next(&mut changes).await, Some(ActorChange::Resync));
+    assert_eq!(store.get(&instance("a")).await.unwrap(), None);
+    create(&*store, "marker").await;
+    assert_eq!(until(&mut changes, &instance("marker")).await, vec![], "one resync, no hint of the create");
+    store.close().await;
+}
+
+#[tokio::test]
+async fn a_cancel_during_an_in_flight_commit_resyncs_after_it_landed_and_before_the_next_writer() {
+    let db = TempDb::new();
+    let store = open(&db).await;
+    let mut changes = subscribe(&*store).await;
+    stopped_create(&store, "a", CommitFault::InFlight).await;
+    // The next writer waits for the settle task, which holds the writer until it published the resync.
+    let next_writer = {
+        let store = store.clone();
+        tokio::spawn(async move { create(&*store, "b").await })
+    };
+    assert_eq!(next(&mut changes).await, Some(ActorChange::Resync));
+    assert!(store.get(&instance("a")).await.unwrap().is_some(), "the commit sqlx ran after its caller left");
+    next_writer.await.unwrap();
+    assert_eq!(next(&mut changes).await, Some(ActorChange::changed(instance("b"))));
+    store.close().await;
+}
+
+#[tokio::test]
+async fn a_failed_commit_rolls_back_and_resyncs_and_a_known_rollback_publishes_nothing() {
+    let db = TempDb::new();
+    let store = open(&db).await;
+    let mut changes = subscribe(&*store).await;
+    *store.commit_fault.lock().unwrap() = Some(CommitFault::Fail);
+    let failed = store.create(&instance("a"), json!({})).await;
+    assert!(matches!(failed, Err(StoreError::Unavailable(_))), "{failed:?}");
+    assert_eq!(next(&mut changes).await, Some(ActorChange::Resync));
+    assert_eq!(store.get(&instance("a")).await.unwrap(), None);
+
+    // A transaction that ends in an error rolls back: its collected hints go nowhere.
+    let mut tx = store.write().await.unwrap();
+    let (_, collected) = tx.parts();
+    collected.add(&instance("never"));
+    let ended: Result<(), _> = tx.end(Err(StoreError::Invalid("refused".into()))).await;
+    assert!(ended.is_err());
+    // A commit without hints (a failed one too) publishes nothing.
+    *store.commit_fault.lock().unwrap() = Some(CommitFault::Fail);
+    assert!(store.purge(&instance("absent")).await.is_err());
+    create(&*store, "marker").await;
+    assert_eq!(until(&mut changes, &instance("marker")).await, vec![]);
+    store.close().await;
+}
+
+#[tokio::test]
+async fn close_waits_for_a_settling_commit_and_ends_the_streams() {
+    let db = TempDb::new();
+    let store = open(&db).await;
+    let mut changes = subscribe(&*store).await;
+    stopped_create(&store, "a", CommitFault::InFlight).await;
+    store.close().await;
+    assert_eq!(next(&mut changes).await, None);
+    assert!(store.get(&instance("a")).await.unwrap_err().is_unavailable());
+    let reopened = open(&db).await;
+    assert!(reopened.get(&instance("a")).await.unwrap().is_some(), "the settled commit is in the file");
+    reopened.close().await;
+}
+
+#[tokio::test]
+async fn clones_of_a_store_share_its_feed_and_a_separate_open_of_the_file_is_not_reported() {
+    let db = TempDb::new();
+    let store = Store::from_backend(open(&db).await);
+    let clone = store.clone();
+    let mut changes = subscribe(&store).await;
+    create(&clone, "through-the-clone").await;
+    let separate = Store::from_backend(open(&db).await);
+    create(&separate, "through-a-separate-open").await;
+    let mut its_own = subscribe(&separate).await;
+    create(&store, "marker").await;
+    assert_eq!(
+        until(&mut changes, &instance("marker")).await,
+        vec![ActorChange::changed(instance("through-the-clone"))]
+    );
+    assert!(store.get(&instance("through-a-separate-open")).await.unwrap().is_some(), "only the hint is missing");
+    create(&separate, "marker-2").await;
+    assert_eq!(until(&mut its_own, &instance("marker-2")).await, vec![]);
+    separate.close().await;
+    store.close().await;
+}
