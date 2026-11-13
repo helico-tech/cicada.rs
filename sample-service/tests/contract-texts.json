@@ -4,6 +4,7 @@
   "carts": "03435feb352af8ebe4631fcbdc64a4a2366e7856e9c0cc5196a74b0c1f6989f7",
   "checkouts": "3d933b0f64d63cae7b3700d9afa837bfc96bf330e2a202dad046f2ac304a30ad",
   "cicada.dead-letters": "8b602f837d22bfca07f7096614bba89537050230c0c77d3f70afc061b022203c",
+  "cicada.rate-limiter": "e72d6a2c16aefefa458eaebb27ad608bdc6a792a81f08dd743efc02240076692",
   "cicada.scheduler": "fcf0736747cf6a4245c245afee2277fbc37e43158570734e94e74d2208626236",
   "cicada.supervisor": "ddd9469284fac35728ca0744a5de93dc56f7531d195baf57760388abc7292ca3",
   "cicada.topic": "105d271c6ad38fee5b904fa431ce3dc23c742e678adcac02b8a9a38bc148ff05",

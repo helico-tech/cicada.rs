@@ -1,4 +1,4 @@
-//! The wire formats of the four ready-made actors (ADR 0028): their contracts against the references in
+//! The wire formats of the five ready-made actors (ADR 0028): their contracts against the references in
 //! `docs/reference/contracts`, the JSON their messages and states are written as, and sample checks for what the
 //! helpers and the actors write: both the registered schemas and the decoders take it (ADR 0026).
 
@@ -11,9 +11,9 @@ use cicada::contract::Contract;
 use cicada::prelude::*;
 use cicada::{Failed, FailureCause, StopCause, Stopped, WatchTarget};
 use cicada_actors::{
-    Child, DeadLetters, DeadLettersActor, DeadLettersMsg, DeadLettersState, Schedule, Scheduler, SchedulerActor,
-    SchedulerMsg, SchedulerState, StoredMessage, Supervisor, SupervisorActor, SupervisorMsg, SupervisorState, Topic,
-    TopicActor, TopicMsg, TopicState,
+    Child, DeadLetters, DeadLettersActor, DeadLettersMsg, DeadLettersState, RateLimiter, RateLimiterActor,
+    RateLimiterMsg, RateLimiterState, Schedule, Scheduler, SchedulerActor, SchedulerMsg, SchedulerState, StoredMessage,
+    Supervisor, SupervisorActor, SupervisorMsg, SupervisorState, Topic, TopicActor, TopicMsg, TopicState,
 };
 use cicada_axum::{assert_message_sample, assert_state_sample};
 use cicada_test::{TestActors, UPDATE_CONTRACTS_ENV, describe_changes};
@@ -83,20 +83,24 @@ fn check_references(dir: &Path, contracts: &[Contract], update: bool) -> Result<
     }
 }
 
-fn the_four_contracts() -> [Contract; 4] {
+fn the_five_contracts() -> [Contract; 5] {
     [
         contract_of::<SupervisorActor>().unwrap(),
         contract_of::<DeadLettersActor>().unwrap(),
         contract_of::<TopicActor>().unwrap(),
         contract_of::<SchedulerActor>().unwrap(),
+        contract_of::<RateLimiterActor>().unwrap(),
     ]
 }
 
 #[test]
-fn the_contracts_of_the_four_types_match_their_references() {
-    let contracts = the_four_contracts();
+fn the_contracts_of_the_five_types_match_their_references() {
+    let contracts = the_five_contracts();
     let names: Vec<&str> = contracts.iter().map(|c| c.type_name().as_str()).collect();
-    assert_eq!(names, ["cicada.supervisor", "cicada.dead-letters", "cicada.topic", "cicada.scheduler"]);
+    assert_eq!(
+        names,
+        ["cicada.supervisor", "cicada.dead-letters", "cicada.topic", "cicada.scheduler", "cicada.rate-limiter"]
+    );
     let update = std::env::var(UPDATE_CONTRACTS_ENV).is_ok_and(|v| v == "true");
     if let Err(e) = check_references(&contracts_dir(), &contracts, update) {
         panic!("{e}");
@@ -261,6 +265,55 @@ fn the_messages_are_written_in_camel_case_and_pass_their_samples() {
     for written in [json!({"type": "Run"}), json!({"type": "Update", "message": message})] {
         assert_message_sample::<SchedulerMsg>(&written);
     }
+
+    let fixed = json!({"maxAttempts": 2, "backoff": {"kind": "fixed", "delay": "PT10S"}});
+    let two = RetryPolicy::new(2, Backoff::fixed(std::time::Duration::from_secs(10)).unwrap()).unwrap();
+    let rate_limiter = [
+        (
+            RateLimiterMsg::submit(&worker("b"), WorkerMsg::Note { text: "hi".into() }, None).unwrap(),
+            json!({"type": "Submit", "to": "worker/b", "message": message, "retry": null}),
+        ),
+        (
+            RateLimiterMsg::submit(&worker("b"), WorkerMsg::Note { text: "hi".into() }, Some(two)).unwrap(),
+            json!({"type": "Submit", "to": "worker/b", "message": message, "retry": fixed}),
+        ),
+    ];
+    for (message, written) in rate_limiter {
+        assert_eq!(json_of(&message), written);
+        assert_message_sample::<RateLimiterMsg>(&written);
+    }
+    assert_message_sample::<RateLimiterMsg>(&json!({"type": "Submit", "to": "worker/b", "message": message}));
+    for invalid in [
+        json!({"message": message}),
+        json!({"to": "worker/b"}),
+        json!({"to": "worker/b", "message": message, "retry": {"maxAttempts": 0, "backoff": fixed["backoff"]}}),
+    ] {
+        assert!(cicada::message::decode::<RateLimiterMsg>("Submit", &invalid).is_err(), "{invalid}");
+    }
+}
+
+#[test]
+fn a_rate_limiter_state_is_written_in_camel_case_passes_its_samples_and_refuses_invalid_settings() {
+    let second = std::time::Duration::from_secs(1);
+    let state = RateLimiterState::new(2, second, 2, second).unwrap();
+    let written = json_of(&state);
+    assert_eq!(written, json!({"count": 2, "period": "PT1S", "burst": 2, "maxDelay": "PT1S", "idleAt": null}));
+    assert_state_sample::<RateLimiterState>(&written);
+    assert_state_sample::<RateLimiterState>(&json!({"count": 2, "period": "PT1S", "burst": 2, "maxDelay": "PT1S"}));
+    assert_state_sample::<RateLimiterState>(&json!(
+        {"count": 3, "period": "PT1M", "burst": 1, "maxDelay": "PT0S", "idleAt": "2026-11-13T02:00:00.333334Z"}
+    ));
+    for invalid in [
+        json!({"count": 0, "period": "PT1S", "burst": 1, "maxDelay": "PT1S"}),
+        json!({"count": 1, "period": "PT1S", "burst": 0, "maxDelay": "PT1S"}),
+        json!({"count": 1, "period": "PT0S", "burst": 1, "maxDelay": "PT1S"}),
+        json!({"count": 1, "period": "PT1S", "burst": 1, "maxDelay": "P365001D"}),
+        json!({"count": 1, "period": "PT1S", "burst": 1, "maxDelay": "PT1S", "idleAt": "soon"}),
+        json!({"count": 1, "period": 1000, "burst": 1, "maxDelay": "PT1S"}),
+        json!({"period": "PT1S", "burst": 1, "maxDelay": "PT1S"}),
+    ] {
+        assert!(serde_json::from_value::<RateLimiterState>(invalid.clone()).is_err(), "{invalid}");
+    }
 }
 
 #[test]
@@ -330,6 +383,7 @@ async fn the_states_the_actors_write_pass_their_samples() {
                 .host(DeadLettersActor::default())
                 .host(TopicActor)
                 .host(SchedulerActor)
+                .host(RateLimiterActor)
                 .host(WorkerActor)
         })
         .build()
@@ -388,4 +442,13 @@ async fn the_states_the_actors_write_pass_their_samples() {
     }
     assert_eq!(written["runs"], 1, "{written}");
     assert_state_sample::<SchedulerState>(&written);
+
+    let api = RateLimiter::named("api");
+    let second = std::time::Duration::from_secs(1);
+    test.create(&api, &RateLimiterState::new(3, second, 1, second).unwrap()).await;
+    test.send(&api, RateLimiterMsg::submit(&worker("a"), WorkerMsg::Note { text: "n".into() }, None).unwrap()).await;
+    test.run_until_idle().await;
+    let written = test.state_json(&api).await.unwrap();
+    assert!(written["idleAt"].is_string(), "{written}");
+    assert_state_sample::<RateLimiterState>(&written);
 }

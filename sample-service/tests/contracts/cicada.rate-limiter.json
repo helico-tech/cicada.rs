@@ -1,0 +1,181 @@
+{
+  "messages": {
+    "Submit": {
+      "$defs": {
+        "Backoff": {
+          "oneOf": [
+            {
+              "properties": {
+                "factor": {
+                  "default": 2.0,
+                  "minimum": 1,
+                  "type": "number"
+                },
+                "initial": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "integer"
+                    }
+                  ]
+                },
+                "kind": {
+                  "const": "exponential",
+                  "type": "string"
+                },
+                "max": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "integer"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "initial",
+                "max"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "delay": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "integer"
+                    }
+                  ]
+                },
+                "kind": {
+                  "const": "fixed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "delay"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "RetryPolicy": {
+          "properties": {
+            "backoff": {
+              "$ref": "#/$defs/Backoff"
+            },
+            "maxAttempts": {
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "maxAttempts",
+            "backoff"
+          ],
+          "type": "object"
+        },
+        "StoredMessage": {
+          "description": "A message an actor keeps to send later (ADR 0028): its type name and its JSON payload, as a store holds a message.\nThe actor that keeps it knows where it goes, so it holds no address. Build one with `StoredMessage::for_ref`.",
+          "properties": {
+            "payload": {
+              "description": "The payload: the fields of the variant, without the type tag."
+            },
+            "type": {
+              "description": "The type name: the variant of the family.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Reserves the next free slot and sends the message to the target, due at that slot, with the limiter as its\nsender, the correlation id of the submission, and `retry` as its retry policy. Refused for good, reserving\nnothing, when the slot is more than the longest delay away or the target does not take the message.",
+      "properties": {
+        "message": {
+          "$ref": "#/$defs/StoredMessage",
+          "description": "The message for the target."
+        },
+        "retry": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RetryPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The retry policy of the message at the target; none: one attempt. A retry there does not pass the limiter\nagain."
+        },
+        "to": {
+          "description": "The target.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "to",
+        "message"
+      ],
+      "title": "Submit",
+      "type": "object"
+    }
+  },
+  "state": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "The state of a [`RateLimiter`]: its rate, burst and longest delay, fixed at its create, and when its full burst is\nfree again. Build it with `RateLimiterState::new`; a decoded state is checked the same way.\n\nOn the wire: `{\"count\":2,\"period\":\"PT1S\",\"burst\":2,\"maxDelay\":\"PT1S\"}`, with `idleAt` once it forwarded.",
+    "properties": {
+      "burst": {
+        "description": "The messages that may be due at once after enough idle time, the first included; positive. 1 spaces every\nmessage.",
+        "format": "uint32",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "count": {
+        "description": "The messages per period; positive.",
+        "format": "uint32",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "idleAt": {
+        "description": "When the full burst is free again; absent or null for a limiter that has all of it.",
+        "format": "date-time",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "maxDelay": {
+        "description": "The longest time from handling a submission to its slot, as an ISO-8601 duration, at most `MAX_DELAY`; zero\ntakes only capacity that is free now. A submission whose slot is further away is refused for good.",
+        "type": "string"
+      },
+      "period": {
+        "description": "The period of the rate, as an ISO-8601 duration; positive and at most `MAX_DELAY`.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "count",
+      "period",
+      "burst",
+      "maxDelay"
+    ],
+    "title": "RateLimiterState",
+    "type": "object"
+  },
+  "type": "cicada.rate-limiter"
+}

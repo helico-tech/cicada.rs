@@ -9,7 +9,7 @@
   scenarios. Extend the existing `tests/store_failure.rs` fixture for retryable registry failures if needed.
   Verify with the limiter and store-failure integration tests; cover commit-time clamping through existing core
   delivery tests plus the guide's explicit limitation rather than introducing a private runtime hook.
-- [ ] 3. Pin the contract and valid/invalid message/state samples in `tests/wire_formats.rs`; register the type
+- [x] 3. Pin the contract and valid/invalid message/state samples in `tests/wire_formats.rs`; register the type
   without an automatic instance in the sample service. Regenerate and commit `docs/reference/contracts` and the
   sample-service contract snapshots/texts using `CICADA_UPDATE_CONTRACTS=true`. Verify the actor wire-format tests
   and the sample-service contract/samples tests, including unchanged existing contracts.

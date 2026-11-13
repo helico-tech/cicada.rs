@@ -8,7 +8,7 @@ use cicada::FailureCause;
 use cicada::retry::{Backoff, RetryPolicy};
 use cicada::store::MessageId;
 use cicada::time::Timestamp;
-use cicada_actors::{DeadLetter, DeadLettersState, Schedule, SchedulerState, StoredMessage};
+use cicada_actors::{DeadLetter, DeadLettersState, RateLimiterState, Schedule, SchedulerState, StoredMessage};
 use cicada_examples::cron::CronState;
 use cicada_examples::timer::{CheckoutState, CheckoutStatus};
 use cicada_test::{assert_state_decodes, record_state_sample};
@@ -65,6 +65,15 @@ fn scheduler() {
     };
     record_state_sample(&dir, "armed-daily", &state);
     assert_state_decodes::<SchedulerState>(&dir);
+}
+
+#[test]
+fn rate_limiter() {
+    let dir = dir("rate-limiter");
+    let second = std::time::Duration::from_secs(1);
+    let state = RateLimiterState { idle_at: Some(t()), ..RateLimiterState::new(3, second, 2, 10 * second).unwrap() };
+    record_state_sample(&dir, "reserved", &state);
+    assert_state_decodes::<RateLimiterState>(&dir);
 }
 
 /// The samples of the dead letters start again with 0.14.0: their contract changed, and the letters of 0.13.0 are lost
