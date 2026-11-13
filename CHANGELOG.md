@@ -7,6 +7,37 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.16.12 — unreleased
+
+Nothing breaks: a server can register the contract of a type that runs elsewhere, so that it accepts the type's creates
+and sends before a worker runs it. The route and the operation are new; no schema, actor contract, command line or
+existing route changes. Upgrade a server before a worker registers through it.
+
+### Added
+
+- `ActorSystem::register_contract(&Contract)` and `RegisterContractResult` (ADR 0036): registers a contract without
+  hosting the type, on any system, started or not, with no hosted type, node row or change hint. The hash is computed
+  from the name and the schemas, also for a contract that carries another one (`Contract::of`). The store's atomic
+  registration decides: an equal hash is `Registered` with the stored contract and its first descriptions, another is
+  `Conflict` with the registration that stays and the requested hash, and nothing is replaced, even without actors.
+  Before the store, each schema must be an object or a boolean, free of NUL characters and at most
+  `limits::MAX_SCHEMA_DEPTH` (120) arrays and objects deep, and each message name must obey the send limits; otherwise
+  `InvalidContract`. Schemas are not compiled. A node that hosts the type later starts only with an equal hash.
+- `PUT /types/{name}` on `actor_api` (operationId `registerType`) with the strict body `cicada::api::RegisterTypeRequest`
+  `{state, messages}`: `200` with the stored `TypeView` for a new and an equal registration, `400` for a malformed body,
+  any other field (`name`, `type`, `hash`, …) or a path that is no type name, `409 contract-conflict` naming the type
+  and both hashes, `422 invalid-contract`. `actor_api_read` answers `405`. The problem types `CONTRACT_CONFLICT` and
+  `INVALID_CONTRACT` are new.
+- `ActorClient::register_type(&Contract)`: sends only the schemas and returns the stored `TypeView`; a refusal is
+  `ClientError::Api` with the problem.
+- The core guide's Register a contract without hosting and the HTTP guide's Register a type over HTTP.
+
+### Fixed
+
+- A node's cache of parsed contracts is reused only when the stored JSON matches too, not only the hash: after another
+  system removed a type and registered it again with other descriptions, `GET /types` and the resolver of every node
+  show the new descriptions.
+
 ## 0.16.11 — 2026-11-13
 
 Nothing breaks: a browser page can follow the change hints over HTTP. The route is new; no schema, actor contract,

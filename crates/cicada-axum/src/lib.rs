@@ -32,6 +32,7 @@
 //! | `GET /stats?prefix=` | 200 `{actors, pending, oldestDue}` | |
 //! | `GET /types` | 200 | |
 //! | `GET /types/{name}` | 200 | 404 |
+//! | `PUT /types/{name}` body `{state, messages}` (register a contract without hosting the type) | 200 new or equal | 400 a malformed body, another field or a bad name, 409 another hash is registered, 422 an invalid contract |
 //! | `DELETE /types/{name}` | 204 | 404, 409 actors of the type exist |
 //! | `GET /health` | 200 | 503 |
 //!

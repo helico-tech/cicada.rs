@@ -23,7 +23,7 @@
   equal registration returning original descriptions, ordinary problem errors on conflict/invalid contract and
   the 120-level schema boundary through both get_type and types. Ensure no supplied hash crosses the wire and no
   problem detail is parsed. Run the targeted client tests and the documented-routes coverage check.
-- [ ] 4. Update architecture and the core/HTTP guides for registration without hosting, first-registration-wins,
+- [x] 4. Update architecture and the core/HTTP guides for registration without hosting, first-registration-wins,
   schema versus value limits, validator fallback, deferred execution and trusted write access. Add a tested example
   using contract_of rather than a handwritten approximation; it must keep the generated hash equal when a local
   host later initializes. Update the axum route table, ADR 0036/index as needed, CHANGELOG.md and workspace version.

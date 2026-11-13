@@ -184,6 +184,7 @@ request's path and query as `instance`.
 | `GET /stats?prefix=` — `{actors, pending, oldestDue}`: the number of actors and pending messages under the prefix, and the delivery time of the oldest message that is due (null when none is). It reads every row under the prefix | 200 | |
 | `GET /types` — type names, contract hashes, state and message JSON Schemas | 200 | |
 | `GET /types/{name}` — one type | 200 | 404 |
+| `PUT /types/{name}` body `{state, messages}` — register a contract without hosting the type; the server computes the hash, the first registration wins (see [Register a type over HTTP](#register-a-type-over-http)) | 200 the stored type, new or equal | 400 a malformed body, a missing field, any other field (`name`, `hash`, …) or a path that is no type name; 409 `contract-conflict`: the name holds another hash; 422 `invalid-contract`: a schema that is not an object or a boolean, has a NUL or is nested deeper than 120 levels, or a message name beyond the send limits |
 | `DELETE /types/{name}` — removes the type's registration (a node that hosts the type registers it again at its next start) | 204 | 404; 409 actors of the type exist |
 | `GET /watches?watcher=&target=&cursor=&limit=` — stored watches `{target, watcher}` in the order of target and watcher; `target` narrows to the watches stored with exactly that target | 200 | 400 a watcher or target that does not parse |
 | `PUT /watches` body `{target, watcher}` — set a watch; the target is an address, a type prefix or `*`, and need not exist | 201 set; 200 set already | 400 a target that is no target; 404 `no-such-type` or `no-such-instance` for the watcher; 422 `not-a-watcher` when its type does not declare `Failed` and `Stopped` |
@@ -228,6 +229,49 @@ of the failed message one level down. So no view of a value written from 0.16.0 
 every JSON parser that allows 128 reads, serde_json and `cicada-client` among them. System.Text.Json and Json.NET stop
 at 64 by default; each raises it with one setting (`MaxDepth`). A value stored before 0.16.0 can be deeper, and so can
 its view: one such state can make a whole page of `GET /actors/states` too deep for a client's parser.
+
+### Register a type over HTTP
+
+`PUT /types/{name}` registers a contract on a server that does not host the type (ADR 0036; in code
+`ActorSystem::register_contract`, [Register a contract without hosting](core.md#register-a-contract-without-hosting)).
+The body holds only the schemas; the name comes from the path, and the server computes the hash:
+
+```sh
+curl -X PUT localhost:8080/types/counter -H "Authorization: Bearer $API_TOKEN" \
+     -d '{"state":{"type":"object"},"messages":{"Add":{"type":"object"}}}'
+# 200 {"name":"counter","hash":"sha256:…","state":{"type":"object"},"messages":{"Add":{"type":"object"}}}
+```
+
+A worker registers the contract its actor type generates, with the typed client; this block registers the reports
+type of [examples/src/sync.rs](../../examples/src/sync.rs):
+
+<!-- doctest
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+@@7
+# Ok(()) }
+-->
+```rust,no_run
+use cicada::actor::contract_of;
+use cicada_client::ActorClient;
+use cicada_examples::sync::ReportsActor;
+
+let client = ActorClient::new("http://localhost:8080");
+let stored = client.register_type(&contract_of::<ReportsActor>()?).await?; // only the schemas cross the wire
+println!("{} {}", stored.name, stored.hash);
+```
+
+- **Retry freely.** A new and an equal registration both answer `200` with the stored type, which keeps the
+  descriptions of the first registration. A lost response is retried with the same body.
+- **No replacement.** Another hash for the name is `409 contract-conflict`, whose detail names the type and both
+  hashes; the client returns it as `ClientError::Api`. Delete the unused registration (`DELETE /types/{name}`) and
+  register again to change it.
+- **Before a worker runs.** Creates and sends are checked against the registered schemas at once, on every node, and
+  the messages wait until a node that hosts the type claims them. Registration runs nothing.
+- **Limits.** The schema checks are those of the core (a schema at most 120 levels deep, else `422 invalid-contract`);
+  the body limit and the JSON parser of every request still apply. The schemas are not compiled, so an unusable one is
+  accepted and the door warns about it later ([The schema check](#the-schema-check)).
+- **Who may register.** It is a write route: `actor_api` serves it, behind the host's authentication, and
+  `actor_api_read` answers `405`. It is not an identity or an authorization of a worker.
 
 ### List actors with their state
 

@@ -307,6 +307,20 @@ gets an empty `200`. Stopping a node leaves the streams open, so `cicada-app` bo
 the node stopped, then the body is cut), and a host that mounts the routers closes the store in its shutdown future
 or cancels them itself.
 
+A contract is registered by the start of a node that hosts its type, or without hosting by
+`ActorSystem::register_contract` and `PUT /types/{name}` on the full router (ADR 0036), for a type that runs elsewhere.
+The second works on any system, started or not, and adds no hosted type, node row or change hint; creates and sends are
+accepted at once and wait until a node that hosts the type claims them. Its body is `{state, messages}` and nothing
+else: the name comes from the path, and the hash is computed from the name and the schemas, never taken from the
+caller. The store's atomic registration decides: an equal hash answers `200` with the stored type and its first
+descriptions, another hash `409 contract-conflict` with no replacement, even without actors. Before the store, each
+schema must be an object or a boolean, NUL-free and at most 120 arrays and objects deep, so that the stored contract
+and its views fit parsers that allow 128 levels, and each message name obey the send limits; otherwise `422
+invalid-contract`. This bound is for schemas, apart from the 64 levels of a value, and a hosting node keeps its own
+rules. Schemas are not compiled: the door's fallback for an unusable schema applies later. The route is a trusted write
+behind the host's authentication. A node's resolver reuses a parsed contract only when both its hash and its stored
+JSON match, so descriptions that another system replaced after a removal are read fresh.
+
 ## Change hints
 
 `ActorSystem::changes(prefix)` (ADR 0034) is a best-effort stream of `ActorChange::Changed { address }` and

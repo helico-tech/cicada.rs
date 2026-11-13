@@ -480,7 +480,7 @@ async fn main() -> anyhow::Result<()> {
 - `ActorSystem` is cheap to clone; every clone is the same node. Its methods are the in-process API: `create`,
   `send`, `send_with`, `send_to`, `send_message`, `get_actor`, `delete_actor`, `list_actors`,
   `list_actors_with_state`, `changes`, `pending`, `list_pending`, `status`, `outcome`, `cancel`, `failures`, `types`,
-  `health`.
+  `register_contract`, `health`.
 - The runtime logs with [`tracing`](https://docs.rs/tracing); install a subscriber (such as `tracing_subscriber`) to
   see its output.
 
@@ -641,6 +641,59 @@ release before with `StartProblem::ContractConflict`. A type that is hit is depl
 a versioned type name, or with a stop of the world that deletes its actors and its registration
 ([Changing a contract](../operations.md#changing-a-contract)). The operations guide has the steps of the upgrade
 ([Upgrading](../operations.md#upgrading)).
+
+### Register a contract without hosting
+
+`ActorSystem::register_contract` registers a type's contract on a system that does not host the type (ADR 0036): a
+server whose actors run elsewhere, so that its HTTP door accepts their creates and sends before a worker runs them.
+Over HTTP it is `PUT /types/{name}` ([Register a type over HTTP](http.md#register-a-type-over-http)). Register the
+contract `contract_of` generates from the actor type, never a hand-written copy: a node that hosts the type later
+registers that generated contract, and only an equal hash lets it start. The block registers the reports type of
+[examples/src/sync.rs](../../examples/src/sync.rs):
+
+<!-- doctest
+# #[tokio::main(flavor = "current_thread")]
+# async fn main() -> Result<(), Box<dyn std::error::Error>> {
+# use cicada::prelude::*;
+# let store = cicada::Store::memory();
+@@15
+# Ok(())
+# }
+-->
+```rust
+use cicada::actor::contract_of;
+use cicada::runtime::RegisterContractResult;
+use cicada_examples::sync::ReportsActor;
+
+let server = ActorSystem::builder(store.clone()).build(); // hosts nothing and is not started
+let contract = contract_of::<ReportsActor>()?;
+match server.register_contract(&contract).await? {
+    RegisterContractResult::Registered(stored) => assert_eq!(stored.definition.contract_hash, contract.hash()),
+    RegisterContractResult::Conflict { .. } => panic!("the name holds another contract"),
+    RegisterContractResult::InvalidContract(why) => panic!("{why}"),
+}
+
+// A worker that hosts the type starts later with the same generated contract.
+let worker = ActorSystem::builder(store).host(ReportsActor).build();
+worker.initialize().await?;
+```
+
+- **No execution.** Registration starts nothing: no node, hosted type, node row or change hint. Creates and sends
+  through any node are accepted and wait until a node that hosts the type claims them.
+- **First registration wins.** The server computes the hash from the name and the schemas, also for a contract that
+  carries another one (`Contract::of`). An equal hash answers the stored contract with its first descriptions; a
+  different hash is `Conflict` and replaces nothing, even when no actor of the type exists. To change a contract,
+  delete the unused registration and register again.
+- **The checks.** Each schema is an object or a boolean, with no NUL character, and at most
+  `MAX_SCHEMA_DEPTH` (120) arrays and objects deep, so the stored contract and its views stay readable by parsers that
+  allow 128 levels; each message name obeys the send limits (200 characters, no NUL). A failure is `InvalidContract`,
+  before any write. This bound is for schemas; the 64 levels of [How deep a value can be](#how-deep-a-value-can-be) are
+  for payloads and states, and a node that hosts a type keeps its own rules.
+- **Schemas are not compiled.** A schema the validator cannot use is stored as it is; the HTTP door then lets through
+  what it would check and warns once ([The schema check](http.md#the-schema-check)). A registration says nothing about
+  whether a handler exists.
+- **Trusted.** Whoever can register decides the schemas the door checks. Over HTTP it is a write route of the full
+  router, behind the host's authentication.
 
 ### Configuration
 
