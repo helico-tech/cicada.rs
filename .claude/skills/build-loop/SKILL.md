@@ -42,7 +42,7 @@ One change at a time: the first in the order, and only when it has a `tasks.md`.
 
    Keep its id, and tell the owner in one line.
 4. **When the builder reports.** A question about the design goes to the owner; send the answer with SendMessage.
-   Otherwise write `Version: X.Y.Z` and the builder's report to a file in your scratchpad, and ask for a review:
+   `Docs: blocked` goes to Blocked on docs. Otherwise write `Version: X.Y.Z` and the builder's report to a file in your scratchpad, and ask for a review:
 
    ```sh
    python3 scripts/review.py request code <change> --head feat/<change> --note-file <that file>
@@ -57,6 +57,28 @@ One change at a time: the first in the order, and only when it has a `tasks.md`.
      to the owner.
    - Notes do not go to the builder; they go to the owner in Present.
 
+## Blocked on docs
+
+The docs session owns `README.md`, `AGENTS.md` and the handwritten docs under `docs/` (AGENTS.md, Documentation
+ownership; `protected()` in `scripts/docs-maintenance.py`). A builder never edits them; it writes what users must learn
+into `openspec/changes/<change>/docs-handoff.md`. Most changes land with that handoff alone, and the docs session
+writes the prose after they land. When a doctest, link, guarantee row or skill route cannot pass without new prose,
+the builder reports `Docs: blocked`, and nothing lands until the prose is in the branch:
+
+1. Write down the head (`git rev-parse feat/<change>`), the handoff and the paths of its Blocking items. Tell the owner,
+   labelled: the docs session must prepare those paths on its branch against that head and current `main`, as whole
+   files that keep its other edits, and name its commit and paths when done. It has no scan for unlanded branches yet,
+   so ask explicitly. While nobody prepares them, the build stays blocked: no waiting it out, no disabled check, no
+   hook bypass, no review.
+2. When the commit comes, check it: `git diff <commit>^ <commit> --stat` and the diff itself hold only the named docs,
+   no code, and both sides of a rename or deletion. Send the builder the commit and paths. It takes exactly those
+   files into its branch without a merge, folds them into the commit that breaks the block, runs the blocked and the
+   finishing checks and reports `Docs: owner fixes integrated`. Then ask for a review as in Build, step 4.
+3. After every fix round or rebase, check again that each integrated path equals the docs branch
+   (`git diff --quiet docs feat/<change> -- <paths>`) and that the prose still describes the code. A changed path or
+   behaviour needs a fresh preparation by the docs session, then the affected checks again; a clean rebase is no proof.
+   A conflict in a protected file is never solved by taking one side: the docs session reconciles it.
+
 ## Present
 
 Tell the owner, in this shape:
@@ -64,6 +86,8 @@ Tell the owner, in this shape:
 - What is new, in two or three sentences, and a small example: the builder's, at most 20 lines.
 - New concepts and how each works. Leave this out when there are none.
 - Results: tasks done, checks with their numbers, checks not run, what the review found and what was fixed.
+- Docs: what the handoff asks of the docs session, and whether it is only handed off (the prose comes after landing)
+  or owner fixes are integrated (name them, and the prose still to write). Never call handed-off prose written.
 - The notes of the review, each with your pick: drop it, or a line in the later proposal that owns the area.
 - Breaking changes, and the version.
 - The question, labelled: "N. Land and release as `X.Y.Z`? yes / no".
@@ -73,19 +97,22 @@ Tell the owner, in this shape:
 Only on the owner's yes. A no goes back to the builder, or to the design loop.
 
 1. `git fetch origin`. If `main` moved: `git -C <builder worktree> rebase main`. On a conflict, `git rebase --abort`,
-   send the builder to rebase and resolve, and ask for one more review round.
+   send the builder to rebase and resolve, and ask for one more review round. A branch with owner fixes integrated is
+   checked again after any rebase, also a clean one (Blocked on docs, step 3).
 2. `git merge --ff-only feat/<change>` on `main`.
 3. Move the change's reviews into its folder, so that they are archived with it:
    `mkdir -p openspec/changes/<change>/reviews && mv .reviews/<change>.* openspec/changes/<change>/reviews/`.
 4. `openspec archive <change> -y`. A new spec in `openspec/specs/` gets one or two real sentences under `## Purpose`.
-5. Release as in `docs/operations.md`, Releasing, steps 1 to 5: the README tag lines, the changelog date, one commit
+5. Release as in `docs/how-to/releasing.md`, steps 1 to 5: the README tag lines, the changelog date, one commit
    `Release X.Y.Z: …`, push `main`, wait for CI (`gh run watch`), `scripts/release-check.sh vX.Y.Z`, tag, push the
    tag. The design loop shares this checkout and may have files open, so stage by path, never `git add -A` or
    `git commit -a`: `git add -A -- README.md CHANGELOG.md openspec/changes/<change> openspec/changes/archive
    openspec/specs`. If CI or the check fails: no tag; tell the owner.
 6. Clean up: `git worktree remove` the builder's worktree, `git branch -d feat/<change>`, delete the leftover
    `worktree-agent-…` branches, `git worktree prune`.
-7. Tell the owner in two lines, and go to Start.
+7. Tell the owner in two lines, with the path of the archived handoff
+   (`openspec/changes/archive/<date>-<change>/docs-handoff.md`): the docs session writes its prose and refreshes the
+   installation pins from it. Go to Start.
 
 ## Rules
 

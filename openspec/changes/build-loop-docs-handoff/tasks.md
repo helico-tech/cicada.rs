@@ -6,7 +6,7 @@
   caveats, blocking checks/replacements or none, and truthful verification/docs status. Update it with behavior-changing
   fixes; review-request head identifies the source. Add the blocked-build report and skill metadata version step.
   Verify the additive/no-impact/fix-round walkthrough and `cargo test -p cicada-examples --test docs`.
-- [ ] 2. Update `.claude/skills/build-loop/SKILL.md`: record the concrete blocked head/paths, coordinate owner-prepared
+- [x] 2. Update `.claude/skills/build-loop/SKILL.md`: record the concrete blocked head/paths, coordinate owner-prepared
   fixes, integrate only agreed exact blobs/deletions without merging, and check current owner-branch identity and
   compatibility with the base. Preserve unrelated prose and cover rename/deletion sides. Fold required fixes with
   breaking source so main has no intermediate known docs break. Keep tasks/checks pending until the combined checks
