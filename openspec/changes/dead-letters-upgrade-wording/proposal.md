@@ -26,7 +26,7 @@ changes.
 
 ## Order
 
-After `build-loop-docs-handoff`. No following change.
+After `build-loop-docs-handoff`. Before `webhook-sink`.
 
 ## Impact
 
