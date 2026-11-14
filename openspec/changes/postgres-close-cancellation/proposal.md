@@ -26,7 +26,7 @@ The listener's probe ownership (the preceding fix), reconnect policy, wire forma
 
 ## Order
 
-After `usage-error-password-redaction`. No following change.
+After `usage-error-password-redaction`, before `flow-reply-waits`.
 
 ## Impact
 
