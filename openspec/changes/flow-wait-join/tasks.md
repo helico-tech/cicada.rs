@@ -37,7 +37,7 @@
 
 ## Finishing checks
 
-- [ ] 6. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
+- [x] 6. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
   `openspec validate flow-wait-join --strict`, with CICADA_PG_URL where available and skipped database checks recorded.
   Verify actual contract equality and non-Sync compile cases against the implemented predecessors. Earlier flow
   changes must land and archive first; follow normal build-loop review/release gates.
