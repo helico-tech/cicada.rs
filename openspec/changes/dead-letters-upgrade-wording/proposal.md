@@ -14,12 +14,14 @@ not be read as proving that the schema and the decoder agree everywhere.
 ## What Changes
 
 - The archived design and task 3 of `deep-failure-notices` say the upgrade checks the decoder and the store's limits
-  before deletion, not the schema. The original wording stays readable as a marked correction.
-- The doc comment of `check` keeps naming the schema/decoder test as covering the payload fields of a letter only.
+  before deletion, not the schema. Added correction notes retain every original line, and also scope the design's
+  "schema/serde agreement" proof claim to the payload fields tested.
+- Narrow the doc comment of `check` from "the fields of a letter" to the tested payload fields only.
+- Clarify the existing dead-letters upgrade requirement through a new spec delta; preserve all its scenarios.
 
 ## Out of scope
 
-Checking the JSON Schema in the upgrade; any change to `check`, `convert`, `reset` or `restore`; other archived
+Checking the JSON Schema in the upgrade; any behavior change to `check`, `convert`, `reset` or `restore`; other archived
 changes.
 
 ## Order
