@@ -1,16 +1,21 @@
-//! Example 13: the onboarding as a durable flow.
+//! Example 13: the onboarding as a durable flow; and its type name next to a registration of 0.17 (ADR 0044).
 
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use cicada::contract::Contract;
+use cicada::prelude::*;
+use cicada::runtime::RegisterContractResult;
 use cicada::store::OutcomeStatus;
-use cicada::time;
+use cicada::{Store, time};
 use cicada_actors::JournalEntry;
-use cicada_actors::{FlowActor, FlowMsg, FlowRun, FlowState, FlowStatus};
+use cicada_actors::{Flow, FlowActor, FlowMsg, FlowRun, FlowState, FlowStatus, Step};
 use cicada_examples::flow_onboarding::{COOL_OFF, OnboardingFlow, OnboardingInput, onboarding};
 use cicada_examples::steps::{OnboardingServices, ServiceError};
-use cicada_test::TestActors;
+use cicada_test::{TestActors, TokioClock, default_start};
+use serde_json::json;
 
 /// Notes each call as `<service> <idempotency key>`; the workspace service fails while it is down.
 #[derive(Clone, Default)]
@@ -146,4 +151,73 @@ async fn a_failing_step_is_retried_and_a_continue_resumes_it_without_repeating_t
     let workspace: Vec<&String> = calls.iter().filter(|c| c.starts_with("workspace")).collect();
     assert_eq!(workspace.len(), 4, "three attempts and the resumed one");
     assert!(workspace.iter().all(|c| *c == "workspace flows.onboarding/bob/provision-workspace"), "one key: {calls:?}");
+}
+
+/// The code of `flows.onboarding` under a new type name, as a host of 0.18.0 registers it next to a pinned binary of
+/// 0.17 that keeps hosting `flows.onboarding` (ADR 0044, "Upgrade and staged rollout").
+struct OnboardingV2(OnboardingFlow<FakeServices>);
+
+impl Flow for OnboardingV2 {
+    const TYPE: &'static str = "flows.onboarding-v2";
+    type Input = OnboardingInput;
+
+    fn retry() -> RetryPolicy {
+        OnboardingFlow::<FakeServices>::retry()
+    }
+
+    fn run(&self, step: &mut Step, input: OnboardingInput) -> impl Future<Output = HandlerResult> + Send {
+        self.0.run(step, input)
+    }
+}
+
+/// The contract of `flows.onboarding` as 0.17 registered it: the snapshot of the sample service at 0.17.4.
+fn contract_of_0_17() -> Contract {
+    let json = serde_json::from_str(include_str!("fixtures/flows.onboarding-0.17.json")).unwrap();
+    Contract::from_json(&json).unwrap()
+}
+
+/// The flow wire changed in 0.18.0, so every hosted flow's contract did. A state saved by 0.17 decodes with 0.18.0,
+/// but that does not make the registrations compatible: a binary of 0.18.0 that hosts `flows.onboarding` does not start
+/// against the registration of 0.17. The same code under a new type name registers on its own and runs next to it,
+/// while the old registration and the old run stay as they were, for the pinned old binary.
+#[tokio::test(start_paused = true)]
+async fn a_new_type_name_runs_next_to_a_registration_of_0_17_that_an_upgraded_binary_cannot_host() {
+    let store = Store::memory_on(Arc::new(TokioClock::new(default_start())));
+    let manage = ActorSystem::builder(store.clone()).build();
+    assert!(matches!(
+        manage.register_contract(&contract_of_0_17()).await.unwrap(),
+        RegisterContractResult::Registered(_)
+    ));
+    let saved = json!({"input": {"email": "bob@example.test"}, "status": "running", "armed": null,
+        "journal": [{"kind": "step", "id": "create-account", "result": "acc-1"}]});
+    let old_run = bob().address().unwrap();
+    manage.create_actor(&old_run, saved.clone()).await.unwrap();
+    let decoded: State = serde_json::from_value(saved.clone()).unwrap();
+    assert_eq!(decoded.result::<String>("create-account").unwrap().unwrap(), "acc-1", "the old state decodes");
+
+    let services = FakeServices::default();
+    let upgraded =
+        ActorSystem::builder(store.clone()).host(FlowActor::new(OnboardingFlow { services: services.clone() })).build();
+    assert!(upgraded.initialize().await.is_err(), "the old name keeps the contract of 0.17");
+
+    let flow = OnboardingV2(OnboardingFlow { services: services.clone() });
+    let node = ActorSystem::builder(store.clone()).host(FlowActor::new(flow)).build();
+    node.initialize().await.unwrap();
+    let run = FlowRun::<OnboardingV2>::named("bob");
+    node.create(&run, &FlowState::new(OnboardingInput { email: "bob@example.test".into() })).await.unwrap();
+    node.send(&run, FlowMsg::Continue).await.unwrap();
+    for _ in 0..2 {
+        while node.run_due_turns(10).await.unwrap() > 0 {}
+        tokio::time::advance(COOL_OFF).await;
+    }
+    let done: State =
+        serde_json::from_value(node.get_actor(&run.address().unwrap()).await.unwrap().unwrap().state).unwrap();
+    assert_eq!(done.status, FlowStatus::Done);
+    assert!(services.calls().iter().all(|c| c.contains("flows.onboarding-v2/bob/")), "{:?}", services.calls());
+
+    assert!(
+        matches!(manage.register_contract(&contract_of_0_17()).await.unwrap(), RegisterContractResult::Registered(_)),
+        "the registration of 0.17 stays"
+    );
+    assert_eq!(manage.get_actor(&old_run).await.unwrap().unwrap().state, saved, "the old run is untouched");
 }

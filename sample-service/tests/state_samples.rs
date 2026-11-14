@@ -9,8 +9,9 @@ use cicada::retry::{Backoff, RetryPolicy};
 use cicada::store::MessageId;
 use cicada::time::Timestamp;
 use cicada_actors::{
-    BatcherState, DeadLetter, DeadLettersState, DebouncedMessage, DebouncerState, EventState, FlowState, JournalEntry,
-    LetterPayload, RateLimiterState, Schedule, SchedulerState, StoredMessage,
+    BatcherState, CreateKind, DeadLetter, DeadLettersState, DebouncedMessage, DebouncerState, EventState, FlowReply,
+    FlowState, JournalEntry, LetterPayload, RateLimiterState, Schedule, SchedulerState, StoredMessage, WaitMode,
+    WaitOutcome,
 };
 use cicada_examples::cron::CronState;
 use cicada_examples::flow_onboarding::OnboardingInput;
@@ -142,6 +143,36 @@ fn flow_onboarding() {
     let until = "2026-11-14T00:01:00Z".parse().unwrap();
     sleeping.journal.push(JournalEntry::Sleep { id: "cool-off".into(), until });
     record_state_sample(&dir, "sleeping", &sleeping);
+    // The wire of 0.18.0 (ADR 0044): a send, a request answered with a null value, and the wait that selected it.
+    // The two samples above, written by 0.17, have neither `replies` nor `cleanup`, and still decode.
+    let request = MessageId::new("5d1c2b8e-1f0a-4e6b-9a7c-2b3d4e5f6a7b").unwrap();
+    let mut replied = sleeping.clone();
+    replied.journal.extend([
+        JournalEntry::Send {
+            id: "notify".into(),
+            to: "mailers/bob".parse().unwrap(),
+            message: MessageId::new("7e2d3c9f-2a1b-4f7c-8b8d-3c4e5f6a7b8c").unwrap(),
+            create: Some(CreateKind::Child),
+            reply: false,
+        },
+        JournalEntry::Send {
+            id: "review".into(),
+            to: "reviews/bob".parse().unwrap(),
+            message: request.clone(),
+            create: None,
+            reply: true,
+        },
+        JournalEntry::Wait {
+            id: "reviewed".into(),
+            requests: vec![request.clone()],
+            mode: WaitMode::All,
+            until: None,
+            outcome: Some(WaitOutcome::Received),
+            received: vec![request.clone()],
+        },
+    ]);
+    replied.replies.push(FlowReply { request, value: json!(null) });
+    record_state_sample(&dir, "sent-and-replied", &replied);
     assert_state_decodes::<FlowState<OnboardingInput>>(&dir);
 }
 

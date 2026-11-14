@@ -132,6 +132,14 @@ fn the_contract_of_the_dead_letters_has_a_new_hash_since_0_17_0() {
     assert_ne!(contract_of::<DeadLettersActor>().unwrap().hash(), HASH_OF_0_16);
 }
 
+/// The event writes `FlowState::new` as raw JSON into the runs it creates, so the new defaults of the flow wire of 0.18.0
+/// (ADR 0044) reach its runs, but its own contract holds no flow type: its hash is the one of 0.17.
+#[test]
+fn the_contract_of_the_event_is_unchanged_by_the_flow_wire_of_0_18_0() {
+    const HASH_OF_0_17: &str = "sha256:5508ca9407e13322672e7e30aafe16eeb4fc04174c55c098a1a02b1d8486f48b";
+    assert_eq!(contract_of::<EventActor>().unwrap().hash(), HASH_OF_0_17);
+}
+
 /// A temporary folder that holds the reference of `contract`, as the main test writes it, so that the scenarios below
 /// do not depend on the files in `docs/reference/contracts`, which a first run with the update variable writes.
 fn folder_with(contract: &Contract) -> tempfile::TempDir {

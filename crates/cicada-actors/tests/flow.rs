@@ -1583,3 +1583,42 @@ async fn a_saved_request_or_wait_stalls_replay_for_good() {
     test.run_until_idle().await;
     refused(&test, "early", "returned before reaching its saved request `go`").await;
 }
+
+// Upgrade.
+
+/// Scenario: Old supported progress. A state as 0.17 wrote it, without `replies` and `cleanup`, created as raw JSON:
+/// its steps and its elapsed sleep replay without calling their closures, and the run goes on with a send.
+#[tokio::test(start_paused = true)]
+async fn progress_saved_by_an_earlier_release_replays_and_goes_on() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    test.create(&worker("w1"), &WorkerState::default()).await;
+    let ops = vec![
+        op(|id| Op::Step { id }, "a"),
+        op(|id| Op::Step { id }, "n"),
+        sleep("w", MINUTE),
+        send_op("go", "w1", WorkerMsg::Work),
+        op(|id| Op::Step { id }, "b"),
+    ];
+    let old = json!({
+        "input": script(ops),
+        "journal": [
+            {"kind": "step", "id": "a", "result": "from-0.17"},
+            {"kind": "step", "id": "n", "result": "r-n"},
+            {"kind": "sleep", "id": "w", "until": "2025-12-31T00:00:00Z"},
+        ],
+        "status": "running",
+        "armed": "0b9f6a52-5c1e-4a55-9d0c-3f1f8f0f2a13",
+    });
+    test.system().create_actor(&addr(&run("k")), old).await.unwrap();
+    test.send(&run("k"), FlowMsg::Continue).await;
+    test.run_until_idle().await;
+    let done = state(&test, "k").await;
+    assert_eq!(done.status, FlowStatus::Done);
+    assert_eq!(done.result::<String>("a").unwrap().unwrap(), "from-0.17");
+    assert_eq!(journal(&test, "k").await, ["a", "n", "w", "go", "b"]);
+    assert_eq!(probe.ids(), ["b"], "the saved steps are replayed, not run");
+    assert_eq!(worker_state(&test, "w1").await.n, 1);
+    let written = test.state_json(&run("k")).await.unwrap();
+    assert_eq!((written["replies"].clone(), written["cleanup"].clone()), (json!([]), json!([])));
+}

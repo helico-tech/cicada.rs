@@ -21,7 +21,7 @@
   depth/NUL/null validation even for existing targets, and correlation/default retention/observer headers with no
   outgoing retry policy. Use the existing private fault harness where registry faults need it. Test reserved message
   refusals and terminal Continue behavior. Run the affected flow/runtime tests, including normal run/sleep recovery.
-- [ ] 4. Add supported old-state samples and replay regressions, and an example of distinct old/new hosted type
+- [x] 4. Add supported old-state samples and replay regressions, and an example of distinct old/new hosted type
   registration without pretending an upgraded host keeps the old schema. Add an EventActor regression that constructs
   FlowState::new as raw JSON, creates and starts the flow with the new defaults, and leaves Event's own contract
   unchanged. Verify old literal progress and required-null samples, event tests, contract hashes and example doctests.

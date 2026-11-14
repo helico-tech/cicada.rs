@@ -1,0 +1,136 @@
+{
+  "messages": {
+    "Continue": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Starts or recovers a running run; a done run ignores it. Sent by a host, it cancels the armed continuation and\narms a fresh one with the flow's retry policy, without running flow code; the armed one replays the flow and\nexecutes its next step.",
+      "properties": {},
+      "title": "Continue",
+      "type": "object"
+    }
+  },
+  "state": {
+    "$defs": {
+      "FlowStatus": {
+        "description": "Whether a run is still running.",
+        "oneOf": [
+          {
+            "const": "running",
+            "description": "Steps remain, or the flow has not yet returned.",
+            "type": "string"
+          },
+          {
+            "const": "done",
+            "description": "The flow returned `Ok` after replaying every saved entry; the run keeps its state until it is deleted.",
+            "type": "string"
+          }
+        ]
+      },
+      "JournalEntry": {
+        "description": "One saved entry of a journal.",
+        "oneOf": [
+          {
+            "description": "The saved result of a step.",
+            "properties": {
+              "id": {
+                "description": "The step id: 1 through 100 characters of `A-Za-z0-9._~-:`, unique in the run.",
+                "maxLength": 100,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9._~:-]+$",
+                "type": "string"
+              },
+              "kind": {
+                "const": "step",
+                "type": "string"
+              },
+              "result": {
+                "description": "The JSON result of its closure, `null` included."
+              }
+            },
+            "required": [
+              "kind",
+              "id",
+              "result"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A durable sleep of [`Step::sleep`] until a store time: the flow goes on in the first turn at or after it.",
+            "properties": {
+              "id": {
+                "description": "The sleep id, from the same namespace as the step ids.",
+                "maxLength": 100,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9._~:-]+$",
+                "type": "string"
+              },
+              "kind": {
+                "const": "sleep",
+                "type": "string"
+              },
+              "until": {
+                "description": "When the sleep ends; at most `MAX_INSTANT`.",
+                "format": "date-time",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "id",
+              "until"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "OnboardingInput": {
+        "description": "The input of an onboarding run.",
+        "properties": {
+          "email": {
+            "description": "The user's mail address.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "The state of a run: its input, the journal of saved results, its status and the id of its armed `Continue`.\n\nOn the wire: `{\"input\":{\"user\":\"u1\"},\"journal\":[{\"kind\":\"step\",\"id\":\"account\",\"result\":\"a1\"}],\n\"status\":\"running\",\"armed\":\"m1\"}`; `journal`, `status` and `armed` default to empty, running and null. A decoded\nstate is checked: at most 1000 entries with unique valid ids, sleeps until at most `MAX_INSTANT`, and no armed id\non a done run. A journal given at the create is trusted as progress: replay checks its order and result types\nagainst the flow's code, not whether its effects happened.",
+    "properties": {
+      "armed": {
+        "description": "The id of the armed `Continue`; absent or null when none is armed, and always on a done run.",
+        "minLength": 1,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "input": {
+        "$ref": "#/$defs/OnboardingInput",
+        "description": "The input of the run."
+      },
+      "journal": {
+        "default": [],
+        "description": "The saved entries, in the order the flow reached them; at most 1000, with unique ids; absent: none.",
+        "items": {
+          "$ref": "#/$defs/JournalEntry"
+        },
+        "maxItems": 1000,
+        "type": "array"
+      },
+      "status": {
+        "$ref": "#/$defs/FlowStatus",
+        "default": "running",
+        "description": "Running or done; absent: running."
+      }
+    },
+    "required": [
+      "input"
+    ],
+    "title": "FlowState",
+    "type": "object"
+  },
+  "type": "flows.onboarding"
+}
