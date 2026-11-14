@@ -49,16 +49,19 @@ PostgreSQL for tests: `docker compose up -d postgres` (port 55432). Tests that n
 | `openspec/` | Specs, changes in progress and finished changes |
 | `skills/cicada/` | The consumer skill (ADR 0041): `SKILL.md`, which routes a consumer's agent into the resolved source, and its read-only resolver `scripts/cicada_source.py`; checked by `examples/tests/skill.rs` with the Python tests in `examples/tests/skill/` |
 | `scripts/` | `release-check.sh`; `package-skill.py`, the skill's release archive; `status.py`, the order and state of the changes; `review.py`, the review requests between the loops |
-| `.claude/skills/` | The three loops (ADR 0030): `design-loop`, `build-loop` with the builder's brief, `review-loop` with the briefs of a design and a code review |
+| `.claude/skills/` | The three loops (ADR 0030): `design-loop`, `build-loop` with the builder's brief and docs handoff template, `review-loop` with the briefs of a design and a code review |
 
 ## Rules
 
-- **Documentation ownership.** The dedicated `docs` session owns README and handwritten user documentation.
+- **Documentation ownership.** The dedicated `docs` session owns README, AGENTS.md and handwritten documentation.
   Other sessions report source/test changes to it instead of editing the prose. ADRs, generated CLI/OpenAPI/contract
   references and README release pins stay with their producing change. Follow
   [the documentation maintenance procedure](docs/maintaining/maintenance.md); local hooks enforce commit ownership
   when installed. This does not provide filesystem or remote access isolation. The owner exempts documentation-only
-  maintenance from library releases: merge checked docs without a version bump or tag.
+  maintenance from library releases: merge checked docs without a version bump or tag. Builders write user guidance
+  into `openspec/changes/<change>/docs-handoff.md` (template in
+  [.claude/skills/build-loop/builder.md](.claude/skills/build-loop/builder.md)). A doctest, link, guarantee row or skill
+  route needing new prose blocks landing until this session prepares the fix ([ADR 0045](docs/adr/0045-docs-handoff-between-loops.md)).
 - [docs/architecture.md](docs/architecture.md) is the reference for behaviour. This repo has no contract with the
   Kotlin implementation (ADR 0008). A change to a guarantee or a wire format needs an ADR; a schema change is an
   appended migration.
@@ -66,27 +69,29 @@ PostgreSQL for tests: `docker compose up -d postgres` (port 55432). Tests that n
 - Store backends must pass the conformance suite (`crates/cicada/src/tests/conformance`). The backend trait is
   private to `cicada` (ADR 0018): a test that calls it lives in `crates/cicada/src/tests`, one that needs only the
   public API in a `tests/` folder.
-- Releases are tags on `main`; [docs/operations.md](docs/operations.md), Releasing, has the steps. Tag a release when
+- Releases are tags on `main`; [the release procedure](docs/how-to/releasing.md) has the steps. Tag a release when
   its change is implemented, every check in Releasing has passed, and the work is committed on `main`; never move or
   delete a tag that has a GitHub Release.
 - Public items have doc comments (`missing_docs` is an error). Keep comments as dense as the surrounding code.
 - The Rust blocks of `README.md`, of the guides in `docs/guide/` and of `docs/operations.md` are doctests of
   `cicada-examples` (`ReadmeDoctests`, `CoreGuideDoctests`, `HttpGuideDoctests`, `AppGuideDoctests`,
-  `ActorsGuideDoctests` and `OperationsDoctests` in `examples/src/lib.rs`): a change to a public API must keep them
-  compiling. Use `no_run` for blocks that start a server or need a database. A block that shows a worked example
-  names its file of `examples/`. User-facing behaviour is documented in the guide of its layer.
+  `ActorsGuideDoctests` and `OperationsDoctests` in `examples/src/lib.rs`): a public API change keeps them compiling
+  through fixes prepared by the docs session (ADR 0045). Use `no_run` for blocks that start a server or need a database.
+  A worked example names its file in `examples/`. User-facing behaviour goes in its layer guide, written by the docs
+  session from the change's handoff.
 - Generated references are checked for drift by a test and rewritten by a variable: a change to the command line
   regenerates `docs/reference/cli.md` (`CICADA_UPDATE_CLI=true`), one to a contract of a ready-made actor its file
   in `docs/reference/contracts/` (`CICADA_UPDATE_CONTRACTS=true`), one to the HTTP API `docs/openapi.json`
   (`CICADA_UPDATE_OPENAPI=true`). Commit what they write.
 - `docs/guarantees.md` names the tests behind each of G1–G6 and S1–S10, and `examples/tests/docs.rs` fails when a
-  named test is gone or a guarantee has no row: a change that adds a guarantee, or a test that proves one, adds it
-  to the table. The same file checks the relative links and anchors of every Markdown file outside `target` and
-  `openspec/changes/archive`.
+  named test is gone or a guarantee has no row: a change that adds a guarantee, or a test that proves one, names
+  the row in its handoff for the docs session to update. The same file checks relative links and anchors of every
+  Markdown file outside `target` and `openspec/changes/archive`.
 - A new ADR gets its row in [docs/adr/README.md](docs/adr/README.md).
 - `skills/cicada/SKILL.md` routes; the guides own the knowledge. Its `metadata.cicada-version` is the workspace version,
   and its routes name every consumer guide, how-to, reference and worked example: a new or renamed heading, guide or
-  example keeps them resolving (`examples/tests/skill.rs`). Missing consumer advice goes into its guide, not the skill.
+  example keeps them resolving (`examples/tests/skill.rs`). Missing consumer advice goes into its guide through the
+  docs handoff, not into the skill.
 
 ## Specs and changes: OpenSpec
 
@@ -103,9 +108,10 @@ Work on them goes through three loops (ADR 0030).
 - Flow: three sessions. `/design-loop` describes the next change with the owner, has it reviewed and commits it as
   ready. `/build-loop` has a subagent build the first ready change in a worktree under `.claude/worktrees/`, has it
   reviewed, and lands and releases it on the owner's yes. `/review-loop` reviews; any agent harness can run it by
-  reading `.claude/skills/review-loop/SKILL.md`. They hand over through files: `scripts/review.py` keeps the review
-  requests in `.reviews/`. A change is small (one behaviour, at most 5 tasks) and built through these loops unless the
-  owner says otherwise. Every landed implementation change is a release; documentation-only maintenance is exempt.
+  reading `.claude/skills/review-loop/SKILL.md`. They hand over through files: `scripts/review.py` keeps review
+  requests in `.reviews/`; each built change hands user prose to the docs session in `docs-handoff.md` (ADR 0045).
+  A change is small (one behaviour, at most 5 tasks) and built through these loops unless the owner says otherwise.
+  Every landed implementation change is a release; documentation-only maintenance is exempt.
   The rules for the artifacts are in `openspec/config.yaml`.
 - Out-of-scope findings become a change with only a `proposal.md` and an `Order` section.
 - Use the CLI (`openspec list`, `openspec show`, `openspec validate`) to read and check them.
