@@ -1,1035 +1,284 @@
-# Ready-made actors: `cicada-actors`
+# Ready-made actors: choose a pattern
 
-Layer 3 of Cicada. [The core guide](core.md) explains actors, watches and control effects, which these actors use;
-the worked example [examples/src/supervision.rs](../../examples/src/supervision.rs) puts a supervisor and dead letters
-to work.
+Host these types from `cicada-actors`, create their instances, then send their public messages.
+They use ordinary actor guarantees, watches and control effects from the [core](core.md).
 
-| Crate | Contents |
-| --- | --- |
-| `cicada-actors` | Ready-made actors on the public API, each under a fixed type name: a supervisor (`SupervisorActor`), dead letters (`DeadLettersActor`), a topic (`TopicActor`), a scheduler (`SchedulerActor`), a rate limiter (`RateLimiterActor`), a debouncer (`DebouncerActor`), a batcher (`BatcherActor`) and an event (`EventActor`); durable flows (`Flow`, `FlowActor`) under a type name the host chooses; `StoredMessage` and `Schedule`. |
+| Need | Actor / type | Complete example |
+| --- | --- | --- |
+| Restart a child at fault | `SupervisorActor` / `cicada.supervisor` | [supervision](../../examples/src/supervision.rs) |
+| Keep and redrive failed messages | `DeadLettersActor` / `cicada.dead-letters` | [supervision](../../examples/src/supervision.rs) |
+| Send to existing subscribers | `TopicActor` / `cicada.topic` | [topic tests](../../crates/cicada-actors/tests/) |
+| Send at recurring UTC slots | `SchedulerActor` / `cicada.scheduler` | [cron](../../examples/src/cron.rs) |
+| Space deliveries at a shared rate | `RateLimiterActor` / `cicada.rate-limiter` | [rate_limit](../../examples/src/rate_limit.rs) |
+| Keep the latest value of a burst | `DebouncerActor` / `cicada.debouncer` | [debounce](../../examples/src/debounce.rs) |
+| Collect items into one delivery | `BatcherActor` / `cicada.batcher` | [batching](../../examples/src/batching.rs) |
+| Run a durable multi-step job | `FlowActor<F>` / host-chosen name | [flow_onboarding](../../examples/src/flow_onboarding.rs) |
+| Start flows from a publication | `EventActor` / `cicada.event` | [flow_events](../../examples/src/flow_events.rs) |
 
-The Rust blocks of this guide are doctests of the `examples` crate (`cargo test -p cicada-examples --doc`).
+## Shared conventions
 
-`cicada-actors` holds actors that use only the public API of the core (ADR 0018, ADR 0028). Each has a fixed type name;
-a node hosts it like any other type, and the host creates its instances. [Flows](#flows) are the exception: a host
-writes its own flow, names its type and hosts it with `FlowActor` (ADR 0031).
+Use named refs such as `Scheduler::named("nightly")`; dead letters use `_` by convention.
+Creating an existing instance leaves its settings and progress untouched. Pause/resume/delete use the core controls.
+A delete drops stored work; already forwarded messages stay in their targets’ mailboxes.
 
-| Actor | Type name | Key | What it does |
-| --- | --- | --- | --- |
-| `SupervisorActor` | `cicada.supervisor` | any name | Starts its children, watches them, and restarts one that is at fault. |
-| `DeadLettersActor` | `cicada.dead-letters` | any name, `_` by convention | Keeps failed messages, told of them by a watch; an operator redrives or discards one. |
-| `TopicActor` | `cicada.topic` | the name of the topic | Sends each published message to all of its subscribers. |
-| `SchedulerActor` | `cicada.scheduler` | the name of the schedule | Sends a stored message to a target on each slot of a `Schedule`. |
-| `RateLimiterActor` | `cicada.rate-limiter` | the name of the limit | Sends each submitted message to its target at the next free slot of a shared rate. |
-| `DebouncerActor` | `cicada.debouncer` | the key whose bursts it debounces | Keeps the latest submission of a burst and sends it to its target once the burst is quiet. |
-| `BatcherActor` | `cicada.batcher` | the stream or group whose items it batches | Collects items and sends them to its target as one message when the batch is full or has waited long enough. |
-| `EventActor` | `cicada.event` | the name of the event | Creates and starts one run of each subscribed flow for each publication, all in one commit. |
-| `FlowActor<F>` | chosen by the flow `F` | one run of the flow | Runs a multi-step job written as async code, one new step or durable sleep per turn, replaying what it saved. |
+`StoredMessage` holds a type name and JSON payload, without an address. Build it with
+`StoredMessage::for_ref(&target, message)` for compile-time message-family checking.
+[Contract references](../reference/contracts/) contain the exact state and message formats.
 
-A message that one of them keeps to send later is a `StoredMessage`: a type name and a JSON payload,
-`{"type": …, "payload": …}`. The actor knows where it goes, so it holds no address. `StoredMessage::for_ref(&worker,
-WorkerMsg::Begin { batch: 7 })` builds one from a typed ref and a message, so a message of the wrong family does not
-compile. The contracts of the eight types are wire formats; their references in
-[docs/reference/contracts](../reference/contracts/) pin them, doc comments included. The contract of a flow holds the
-host's input, so the host pins it.
+Forwarded deliveries get new ids and the forwarding actor as sender. Put reply addresses in payloads.
+A submission’s retry policy governs the forwarding turn; the target’s policy is a separate setting.
+Target retries do not pass through a limiter, debouncer or batcher again.
 
-Their states and messages are checked like any other, against the depth limit of 64 levels too
-([How deep a value can be](core.md#how-deep-a-value-can-be)). As they hold values two to four levels down, they keep
-values of at most 60 to 62 levels; each section says how much, and what to do about a deeper value stored before
-0.16.0.
+**Due time is a lower bound.** Pauses, queueing, outages and slow commits can make delivery late.
+Each turn rewrites the state it changes: keep stored values small or store references to external data.
 
 ## Supervisor
 
-**A restart empties the mailbox of the child.** Its pending messages end `purged`, no dead letter is written for them,
-and the child gets the state of its entry again. So supervise only actors whose state can be built again from the state
-of their entry. Dead letters and a topic are not such actors: a restart would lose their letters, their subscribers and
-the watch that was set for them from outside. A supervisor may be supervised.
+Use a supervisor only when a child can restart from its configured initial state.
+**A restart deletes the old state, descendants and mailbox**; purged messages do not become dead letters.
+Do not supervise dead letters or a topic whose subscriptions you must keep.
 
-<!-- doctest
-# use cicada::prelude::*;
-# use serde::{Deserialize, Serialize};
-# #[derive(Debug, Clone, Serialize, Deserialize)]
-# struct Worker { id: String }
-# impl ActorRef for Worker { const TYPE: &'static str = "worker"; type Message = WorkerMsg; }
-# #[derive(Debug, Serialize, Deserialize, JsonSchema)]
-# #[serde(tag = "type")]
-# enum WorkerMsg { Begin { batch: u32 } }
-# #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
-# struct WorkerState { done: u32 }
-# #[derive(Debug, Clone, Serialize, Deserialize)]
-# struct Mailer;
-# impl ActorRef for Mailer { const TYPE: &'static str = "mailer"; type Message = MailerMsg; }
-# #[derive(Debug, Serialize, Deserialize, JsonSchema)]
-# #[serde(tag = "type")]
-# enum MailerMsg { Send { to: String } }
-@@2
-# async fn start(system: ActorSystem, worker: Worker, mailer: Mailer) -> Result<(), Box<dyn std::error::Error>> {
-@@7
-# Ok(())
-# }
--->
-```rust
-use cicada::NoState;
-use cicada_actors::{Child, Supervisor, SupervisorMsg, SupervisorState};
+Build `SupervisorState::new().child(Child::new(&ref, &state)?.start(message)?)`, create the supervisor, then send `Start`.
+Each child starts independently in its own `StartChild` turn: create as a child, watch, send its start message.
+An actor with another parent or no parent cannot be adopted.
 
-let supervisor = Supervisor::named("imports"); // hosted as SupervisorActor
-let state = SupervisorState::new()
-    .child(Child::new(&worker, &WorkerState::default())?.start(WorkerMsg::Begin { batch: 7 })?)
-    .child(Child::new(&mailer, &NoState {})?);
-system.create(&supervisor, &state).await?;
-system.send(&supervisor, SupervisorMsg::Start).await?;
-```
+| Child failure cause | Response |
+| --- | --- |
+| `handler`, `timeout` | Restart that child |
+| `state` | Give up without deleting its state; escalate permanently |
+| `refused`, `message`, `commit`, `node`, `claim-limit` | Leave it running |
 
-- **Start.** `Start` starts each child of the state that is not running, each in a turn of its own (`StartChild`): it
-  creates the child as its own child with the state of its entry (`turn.create_child_raw`), watches it, and sends it
-  its start message. A child that exists already, under another parent or with none, fails its own start with the
-  cause `commit`, and the others start. A start is tried again for 63 seconds (7 attempts, the waits doubling from one
-  second), so a type whose node is still starting is found; after that the supervisor gives the child up. A second
-  `Start` starts what the first could not, ends a restart whose `Restarted` was purged, and takes back a child that
-  was given up and still runs. The children are those of the state; a host that needs another set creates another
-  supervisor.
-- **What a failure of a child does**, by the cause of its `Failed`:
+A restart suppresses further failures of the same incident until `Restarted` is handled.
+The default limit is 3 restarts in 60 seconds; `restart_limit` changes it. Exceeding it fails a supervisor message
+as a handler failure, allowing a parent supervisor to restart its tree. A child that cannot start/read fails a
+supervisor message permanently instead. Start attempts use 7 attempts with waits doubling from 1 s (63 s total waits).
 
-  | Cause | The supervisor |
-  | --- | --- |
-  | `handler`, `timeout` | restarts the child: the child is at fault |
-  | `state` | gives the child up and keeps its state, and escalates without a restart above |
-  | `refused`, `message` | does nothing: the message is at fault |
-  | `commit` | does nothing: another actor is missing, or somebody made a mistake |
-  | `node` | does nothing: the store or the node failed, not the child |
-  | `claim-limit` | does nothing: the message that killed a node may be another one |
-
-  A child whose state its type cannot read is given up, also when a restart would have helped: mostly it comes from a
-  deploy that reads states more strictly, and a restart would reset every supervised actor of that type. The rule is
-  fixed, and there is one strategy: restart the one child.
-- **One incident is one restart.** A restart is one commit: it deletes the child, creates it again, sends it its start
-  message and sends the supervisor `Restarted`. Until that `Restarted` is handled, the supervisor ignores failures of
-  the child, so a child with five failed messages in its backlog is restarted once. This needs no clock, but on
-  PostgreSQL a step back of the database's clock can turn one incident into two restarts. A short outage of the store
-  while the supervisor handles a failure loses that restart; the child keeps running until it fails again.
-- **The restart limit.** At most `maxRestarts` restarts of one child within `withinSeconds`: 3 in 60 seconds, or
-  `SupervisorState::restart_limit`. One failure more gives the child up (it keeps running, without a supervisor) and
-  fails a message of the supervisor as a handler fails, with the error `restart limit: <child> failed <n> times in
-  <within>: <error>`: a supervisor above restarts this one, with its whole tree. A child that cannot be started, or
-  whose state cannot be read, fails a message with `cannot start <child>: …` or `cannot read <child>: …` that is
-  refused for good: nobody restarts for it, and dead letters and the watchers of the supervisor see it. A `Start`
-  takes such a child back.
-- **A child that goes away.** A child that stops itself, or that somebody else deletes, is forgotten, also while a
-  restart of it is under way; it may handle its start message once more before the supervisor deletes that new life.
-  A child that cannot exist (its type was removed, its entry is wrong) cannot be taken away while its supervisor
-  lives: each `Start`, and each restart from above, tries it for 63 seconds and escalates again. A child that stopped
-  itself comes back when a supervisor above restarts its supervisor.
-- **Its own messages.** `StartChild`, `Restarted` and `Escalate` count only when the supervisor sent them itself: from a
-  client, or redriven from dead letters, they end `done` and change nothing. A `Failed` or a `Stopped` counts only
-  when the store wrote it as a notification, so a client cannot make a supervisor restart or forget a child.
-- **Where to host it.** Host a supervisor on nodes that host the types of its children. Such a node checks an entry
-  when the child starts: an address or a state the type cannot read is refused, and the child is given up at once. On
-  another node a wrong entry is created, its child fails with the cause `state`, and the supervisor gives it up then.
-  The state of a child and its start message are stored as JSON: when the type of the child changes so that they no
-  longer fit, a restart deletes the child and cannot create it again, and the supervisor gives it up.
-
-- **How deep.** An entry holds the state of its child three levels into the state of the supervisor, and the payload of
-  its start message four. So a child state deeper than 61 levels, or a start payload deeper than 60, makes the state too
-  deep, and the create of the supervisor is refused. A supervisor whose state, stored before 0.16.0, holds such an
-  entry fails every turn that writes its state (`State cannot be stored: The state is nested deeper than 64 levels`).
-  Delete it, which deletes its children too, and create it again with a shallower state: its `Start` starts them
-  again.
-
-A supervisor is one actor: it handles the failures of its children one after the other.
+Send `Start` again to recover a child that was given up or an interrupted restart. A child that stops/is deleted is
+forgotten until a later restart of its supervisor. Only real store notifications drive failure handling; internal
+messages count only when self-sent. Host the supervisor with its child types to validate entries before creation.
+See [the implementation](../../crates/cicada-actors/src/supervisor.rs) for incident and restart details.
 
 ## Dead letters
 
-`DeadLettersActor` keeps failed messages as letters. The host creates the actor and sets its watch: on every type, or
-on the types it cares for. It is told of each failure by a `Failed` in its mailbox, in the transaction of the failure,
-with no timer:
+Create the actor and set its watch explicitly. This is the complete setup for a handler-free example host:
 
 <!-- doctest
-@@3
-# async fn node(store: cicada::Store) -> Result<(), Box<dyn std::error::Error>> {
-@@4
-# Ok(())
-# }
+@@2
+# async fn example(store: cicada::Store) -> Result<(), Box<dyn std::error::Error>> {
+@@6
+# Ok(()) }
 -->
-```rust
+```rust,no_run
 use cicada::{ActorRef, ActorSystem, WatchTarget};
 use cicada_actors::{DeadLetters, DeadLettersActor, DeadLettersState};
 
-let system = ActorSystem::builder(store).host(DeadLettersActor::with_capacity(1_000)? /* , … */).build();
+let system = ActorSystem::builder(store).host(DeadLettersActor::with_capacity(1_000)?).build();
 system.start().await?;
-system.create(&DeadLetters::default(), &DeadLettersState::default()).await?;
-system.watch(&WatchTarget::Every, &DeadLetters::default().address()?).await?;
+let letters = DeadLetters::default();
+system.create(&letters, &DeadLettersState::default()).await?;
+system.watch(&WatchTarget::Every, &letters.address()?).await?;
 ```
 
-Over HTTP and on the command line the watch is `PUT /watches` or `cicada create watch --target '*' --watcher
-cicada.dead-letters/_`. A letter holds the failed message (its actor, type, payload, correlation id and sender), its
-error, its cause, its attempts, when it was recorded, and the `seq` of the notification that told of it, which orders
-letters recorded at the same store time. The actor keeps at most its capacity of letters, 1,000 unless
-built with another, and drops the oldest first. Its own failures are no letters, and neither is a `Failed` that a client
-sent: only a notification counts.
+Only store `Failed` notifications create letters. Capacity defaults to 1000, with the oldest dropped first.
+Letters keep the message, error, cause, attempts, recorded time and notification sequence.
 
-- `Redrive { messageId }` sends the failed message again, once: to the same actor, with the same type, payload and
-  correlation id, from the dead-letters actor. The letter holds the id of the new message (`redrivenAs`), and a message
-  that fails again is a letter of its own. When the type of the actor no longer takes the message, or the kept payload
-  cannot be read or sent (below), nothing is sent and the letter says why (`redriveError`). When the actor is gone, the
-  `Redrive` itself ends `failed` with the cause `commit`, and the letter stays as it was.
-- `Discard { messageId }` forgets a letter. Over HTTP: `POST /actors/cicada.dead-letters/_/messages` with
-  `{"type": "Redrive", "payload": {"messageId": "…"}}`.
-- **How deep.** A letter holds the payload three levels into the state. So it keeps a payload of at most 61 levels
-  as it is, in the field `payload`, and a deeper one, up to the 64 levels of any accepted payload, as its compact JSON
-  text, in the field `payloadJson` (ADR 0043). A letter has exactly one of the two: the decoder and the schema of the
-  state both refuse a letter with both, with neither, or with `payloadJson: null` (over HTTP `422`), and `payload` may
-  be any value, `null` too. Nothing inside a payload is read as a marker, so a payload that looks like JSON text or
-  holds a key `payloadJson` stays a value. In Rust, `DeadLetter::payload` is a `LetterPayload`, `Value` or `Json`;
-  `value()` returns the payload, parsing the text only when it is called, so reading the state never fails for it.
-  The text is parsed with exact rounding: every integer and the bits of every finite float come back as the `Failed`
-  held them, though not the spelling of the original JSON, and a number that PostgreSQL normalised before (a negative
-  zero is stored as a zero) stays normalised. An operator who reads the state sees the text, not the value.
-- **A payload that cannot be sent.** A `Redrive` parses the text with serde_json's limit of 128 levels and then sends
-  it like any send of a turn. Text that is not JSON, or nested too deep for the parser, gives `redriveError` `The kept
-  payload cannot be read: …`; a payload deeper than 64 levels or with a NUL character gives the error of the send. In
-  each case nothing is sent, the letter keeps its text, and a `Discard` or the `Redrive` of another letter works as
-  before. A redrive checks the payload as it is checked now, so it can fail again for the reason it failed first.
-- **A deep letter from before 0.16.0.** Dead letters that hold a raw letter whose payload is deeper than 61 levels fail
-  every turn that writes their state: no later failure is recorded, and a `Redrive` or a `Discard` of another letter
-  fails. Nothing repairs such a letter by itself. `Discard` of the deep letter itself works, as the state is within the
-  limit without it; the upgrade to 0.17.0 can also move it to `payloadJson` ([Upgrading](../operations.md#upgrading)),
-  and deleting and creating the actor works too, and drops all its letters.
+| Message | Result |
+| --- | --- |
+| `Redrive { message_id }` (`messageId` on the wire) | Send again with a new id, keeping payload/correlation; record `redrivenAs` |
+| `Discard { message_id }` | Forget the letter |
+
+A successful redrive happens once per letter. It does not restore the original sender, retry policy or headers.
+An invalid message/type or unreadable payload records `redriveError`; a missing target rejects the commit and leaves
+the letter unchanged. A redriven failure becomes a new letter.
+
+Payloads up to 61 levels deep stay in `payload`; deeper accepted payloads use compact JSON in `payloadJson`.
+Exactly one field is present. In Rust, `LetterPayload::value()` decodes it on demand with exact numeric rounding.
+Redrive applies current send checks; retained text does not make invalid/deep data sendable.
+Legacy deep letters need conversion or discard: [upgrade procedure](../how-to/upgrading.md).
 
 ## Topic
 
-`TopicActor` keeps subscribers and sends each published message to all of them, each in a turn of its own:
+Create `TopicState::default()`, send `Subscribe { subscriber }`, then `TopicMsg::publish(message)`.
+`Publish` creates one self-sent `Deliver` per subscriber, so one broken subscriber does not block the others.
+Deliveries carry the publication’s correlation id. Per-subscriber publication order holds unless a delivery is retried.
 
-<!-- doctest
-# use cicada::prelude::*;
-# use serde::{Deserialize, Serialize};
-# #[derive(Debug, Serialize, Deserialize, JsonSchema)]
-# #[serde(tag = "type")]
-# enum OrderMsg { Shipped { id: u32 } }
-@@2
-# async fn publish(system: ActorSystem, shipping: ActorAddress) -> Result<(), Box<dyn std::error::Error>> {
-@@6
-# Ok(())
-# }
--->
-```rust
-use cicada::SendOptions;
-use cicada_actors::{Topic, TopicMsg, TopicState};
-
-let orders = Topic::named("orders"); // hosted as TopicActor
-system.create(&orders, &TopicState::default()).await?;
-system.send(&orders, TopicMsg::Subscribe { subscriber: shipping }).await?;
-let shipped = TopicMsg::publish(OrderMsg::Shipped { id: 7 })?; // any message of a family
-system.send_with(&orders, shipped, SendOptions::new().correlation_id("c1")).await?;
-```
-
-- `Publish` makes one `Deliver` for each subscriber, which the topic sends itself and which carries the correlation id
-  of the publish. A subscriber gets the messages in the order they were published, unless a delivery was tried again.
-  A `Deliver` from anybody else, or for an address that is no longer a subscriber, sends nothing.
-- A subscriber that is gone fails its own delivery and nobody else's (the cause `commit`). The topic watches itself,
-  not its subscribers: it is told of that failure and drops the subscriber. A `Failed` that a client sent drops
-  nobody.
-- A delivery whose send is refused at the call (no registered type for the address, or a type that does not take the
-  message) is refused for good, sends nothing, and keeps the subscriber; an address that never gets a type costs one
-  failed `Deliver` for each publish until it is unsubscribed. A delivery whose read of the store fails is tried again,
-  as a start of a supervisor is.
-- One turn for each subscriber and each publish: a topic with many subscribers is slow.
-- **How deep.** A `Publish` and a `Deliver` hold the published message two levels down, so a payload deeper than 62
-  levels makes the `Publish` too deep: the send of the publisher is refused at the call. A `Publish` stored before
-  0.16.0 with such a payload fails, as its `Deliver` is refused at the call; the topic goes on with the next message.
+A missing instance rejects its delivery and the topic drops that subscriber after the failure notification.
+An unregistered type or unsupported message permanently refuses delivery but keeps the subscription: unsubscribe it
+explicitly. The topic watches itself; forged notifications and non-self-sent deliveries do nothing.
+One turn per subscriber per publication makes large fan-outs expensive.
+[Source](../../crates/cicada-actors/src/topic.rs) and [wire contract](../reference/contracts/cicada.topic.json).
 
 ## Scheduler
 
-`SchedulerActor` sends a stored message to a target on each slot of a `Schedule`, one instance for each schedule. The
-type has no settings: the schedule, the target, the message and a retry policy for the delivered message are in the
-state, so an operator creates and edits a schedule at runtime, over HTTP or on the command line, with no deploy.
+Build `SchedulerState::new(schedule, &target, message)`, create the actor, then send `SchedulerMsg::Start`.
+A slot takes two turns: `Tick` arms the next tick and queues `Run`; `Run` forwards the currently configured message.
 
-<!-- doctest
-# use cicada::prelude::*;
-# use serde::{Deserialize, Serialize};
-# #[derive(Debug, Clone, Serialize, Deserialize)]
-# struct Reports;
-# impl ActorRef for Reports { const TYPE: &'static str = "reports"; type Message = ReportsMsg; }
-# #[derive(Debug, Serialize, Deserialize, JsonSchema)]
-# #[serde(tag = "type")]
-# enum ReportsMsg { Build { full: bool } }
-@@4
-# async fn schedule(system: ActorSystem) -> Result<(), Box<dyn std::error::Error>> {
-@@5
-# Ok(())
-# }
--->
-```rust
-use std::time::Duration;
-use cicada::retry::{Backoff, RetryPolicy};
-use cicada_actors::{Schedule, Scheduler, SchedulerMsg, SchedulerState};
+| Message | Use |
+| --- | --- |
+| `Start` | Start or repair the tick chain; safe to repeat |
+| `Run` | Deliver now, even before Start, without moving the tick |
+| `Update` | Replace supplied schedule/target/message/retry fields; a changed schedule rearms the tick |
 
-let nightly = Scheduler::named("nightly-report"); // hosted as SchedulerActor
-let mut state = SchedulerState::new(Schedule::daily(2, 0)?, &Reports, ReportsMsg::Build { full: true })?;
-state.retry = Some(RetryPolicy::new(3, Backoff::fixed(Duration::from_secs(300))?)?);
-system.create(&nightly, &state).await?;
-system.send(&nightly, SchedulerMsg::Start).await?;
-```
+Set `state.retry` for failures at the target. Scheduled deliveries carry `cicada-slot` in UTC to the second;
+a manual `Run` has no slot. Correlation ids are not forwarded. Internal ticks must be self-sent and armed.
 
-`SchedulerState::new` takes a typed ref and a message of its family, so a message the target does not take does not
-compile. Over HTTP a schedule takes two calls, a create and a `Start` (a turn does both in one commit, as its creates
-come before its sends):
-
-```sh
-curl -X PUT localhost:8080/actors/cicada.scheduler/nightly-report -H 'content-type: application/json' -d '{"state":
-  {"schedule": {"type": "daily", "hour": 2, "minute": 0}, "target": "reports/_",
-   "message": {"type": "Build", "payload": {"full": true}},
-   "retry": {"maxAttempts": 3, "backoff": {"kind": "fixed", "delay": "PT5M"}}}}'
-curl -X POST localhost:8080/actors/cicada.scheduler/nightly-report/messages -H 'content-type: application/json' \
-  -d '{"type": "Start"}'
-```
-
-The state also holds `nextRun` (the slot of the armed tick), `armedTick` (its id), `runs` (the deliveries that reached
-the target's mailbox) and `lastRun` (the store's time of the run that sent the last of them). A scheduler is
-**started** when `armedTick` is set; no slot delivers before a `Start`.
-
-- **Its messages.** `Start` arms a tick at the next slot; it is safe to repeat, as one tick stays armed. `Run` sends the
-  stored message to the target now and keeps the armed tick, also on a scheduler that was never started. `Update`
-  replaces each of `schedule`, `target`, `message` and `retry` that it gives and keeps the counts, as
-  `{"type": "Update", "payload": {"message": {"type": "Build", "payload": {"full": false}}}}`. A new schedule on a
-  started scheduler cancels the armed tick and arms the new schedule's next slot; a new target, message or retry policy
-  counts from the next `Run`, also one that is already waiting. Pause, resume and delete a scheduler with the core's
-  control: there are no messages for them.
-- **Each slot takes two turns.** The `Tick` arms the next tick and sends the scheduler a `Run` with its slot; the
-  `Run` reads the target, the message and the retry policy from the state and sends the message. The `Tick` is the
-  scheduler's own: from anybody else, or when it is not the armed tick, it ends `done` and changes nothing. A schedule
-  every second is two turns a second.
-- **What the target gets.** The stored message, with the scheduler as its sender, no correlation id and a new id for
-  each run. It carries the scheduler's retry policy (`retry`), so a failed run of the target is tried again after its
-  backoff instead of waiting for the next slot; with none, or a policy of one attempt, a failed run ends `failed` at
-  the target. A `Run` that commits puts exactly one message into the target's mailbox; the target handles it at least
-  once. A target slower than its schedule never runs two deliveries at once: they wait in its mailbox, and none is
-  skipped.
-- **Traces.** With `ActorTelemetry`, each `Tick` is a timer ([OpenTelemetry](core.md#opentelemetry)): its turn starts
-  a new trace with a link to the turn that armed it (the `Start`, an `Update` or the previous `Tick`), and its `Run`
-  and the delivery to the target are in the tick's trace. A run sent by a client is in the client's trace.
-- **The slot.** A run for a slot carries the header `cicada-slot`: the slot in UTC to the second, as
-  `2026-11-13T02:00:00Z`. The target knows which slot it handles also when the tick was late. The name and the form of
-  the header are stable. The payload is the same on every slot, so a target keys its work by the slot, or by the
-  message id:
-
-<!-- doctest
-# use cicada::prelude::*;
-# fn key<A: Actor>(turn: &Turn<A>) -> String {
-@@4
-# key
-# }
--->
-```rust
-let key = match turn.message().headers.get("cicada-slot") {
-    Some(slot) => slot.clone(), // "2026-11-13T02:00:00Z": a run for a slot
-    None => turn.message().id.as_str().to_owned(), // a run now, which has no slot
-};
-```
-
-- **A run now.** A client sends `{"type": "Run"}`, without a slot: the slot belongs to the scheduler, and a target that
-  keys its work by the slot would drop the real run of a slot that a client made up. Such a run has no `cicada-slot`
-  header. A `Run` just before a slot gives two deliveries close together.
-- **Missed slots are skipped.** A tick arms the next one at the first slot after the later of the store's time and
-  its own slot. Slots missed while no node ran, or while the scheduler was paused, are skipped: at the resume a late
-  tick delivers once, and the next tick goes to the next slot from then. A tick that an operator makes due early
-  (`deliver-now`) delivers its slot once, and the next tick goes to the slot after it.
-- **A failed delivery does not end the chain.** A target that is gone fails that `Run` with the cause `commit`; a
-  message its type does not take fails it with `refused`; the next slot delivers as usual. A `Run` whose read of the
-  store fails is tried again (7 attempts, the waits doubling from one second). A failed `Run` is a failed message of
-  the scheduler: its watchers are told, dead letters that watch it keep it, and an operator's retry or a redrive of
-  the dead letters delivers it again. The scheduler records no failure in its state and watches nothing.
-- **A target that is gone fails every slot** until an operator pauses the scheduler, deletes it, or creates the target
-  again; the scheduler does not stop by itself. With `every(60)` that is 1,440 failed messages a day, and dead letters
-  that watch the scheduler keep 1,000 by default and drop the oldest first: one forgotten scheduler pushes other
-  failures out within a day. Pause or delete such a scheduler.
-- **How a chain ends.** A chain ends when its armed tick goes without running: a purge of the scheduler's mailbox, an
-  operator's cancel of the tick, or a tick that fails for good (the claim limit). Only the last tells the scheduler's
-  watchers, and `armedTick` stays set in each case. A retry or a redrive of a failed tick ends `done` and arms
-  nothing. `Start`, or an `Update` with a schedule, arms the chain again.
-- **A scheduler that runs itself**, with itself as its target and `Run` as its message, runs without end until it is
-  paused. It is not refused; do not set one up.
-- **How deep.** The state holds the payload of its message two levels down, and so does an `Update` that sets a
-  message. A payload deeper than 62 levels is refused: at the create of the scheduler (`400` over HTTP,
-  `OpError::Invalid` from code), and at the send of the `Update`.
+A late tick delivers once, then skips missed slots. A failed Run does not stop future ticks; pause/delete an orphaned
+schedule to stop repeated failures. Cancelling/purging the armed tick can stall the chain; send Start to repair it.
+A retry/redrive of the old tick does not repair it. Never target the scheduler’s own Run: it creates an endless chain.
+[Source](../../crates/cicada-actors/src/scheduler.rs).
 
 ### Schedule
 
-`cicada_actors::Schedule` (`Schedule::every(seconds)`, aligned to the epoch, and `Schedule::daily(hour, minute)`,
-UTC) gives the scheduler, or a cron actor of the host, its next slot; it is serializable, so it can live in state. A
-cron actor that does host work in its own turn arms its next tick as a timer ([Timers](core.md#timers) in the core
-guide); [examples/src/cron.rs](../../examples/src/cron.rs) is that `Tick` chain. Cron expressions and time zones are
-not supported:
+`Schedule::every(seconds)` aligns intervals to the Unix epoch. `Schedule::daily(hour, minute)` uses UTC.
+`next(time)` returns the first slot strictly after the given time. There are no cron expressions or time zones.
 
+<!-- doctest
+@@5
+# Ok::<(), Box<dyn std::error::Error>>(())
+-->
 ```rust
 use cicada::time::Timestamp;
 use cicada_actors::Schedule;
 
-let t: Timestamp = "2026-10-02T10:15:30Z".parse().unwrap();
-assert_eq!(Schedule::every(3600).unwrap().next(t), "2026-10-02T11:00:00Z".parse::<Timestamp>().unwrap());
-assert_eq!(Schedule::daily(2, 30).unwrap().next(t), "2026-10-03T02:30:00Z".parse::<Timestamp>().unwrap());
+let now: Timestamp = "2026-10-02T10:15:30Z".parse()?;
+assert_eq!(Schedule::every(3600)?.next(now), "2026-10-02T11:00:00Z".parse::<Timestamp>()?);
 ```
+
+For work inside your own actor’s turn, use the [cron example](../../examples/src/cron.rs).
 
 ## Rate limiter
 
-`RateLimiterActor` gives many senders one shared rate: it sends each submitted message to its target at the next free
-slot, one instance for each limit. It shapes when messages become due; it does not enforce an outside API's quota at
-the time of the call, and nothing asks it "may I?". The rate, the burst and the longest delay are in the state, fixed
-at the create. A host creates its shared limiters at startup:
+Create `RateLimiterState::new(count, period, burst, max_delay)` and send
+`RateLimiterMsg::submit(&target, message, target_retry)`.
+It reserves a GCRA slot and forwards atomically. Count/burst/period must be positive; max delay may be zero.
+The interval rounds up to microseconds, and idle time restores the burst.
 
-<!-- doctest
-# use cicada::prelude::*;
-# async fn start(system: ActorSystem) -> Result<(), Box<dyn std::error::Error>> {
-@@6
-# Ok(())
-# }
--->
-```rust
-use std::time::Duration;
-use cicada_actors::{RateLimiter, RateLimiterState};
+A slot exactly at `maxDelay` is allowed; a later slot is refused permanently. The limit counts from handling time,
+excluding mailbox wait/commit. A failed forward reserves nothing; cancelling a forwarded message returns no capacity.
+Forwarded messages keep the submission’s correlation id but not its headers or retention.
 
-let sms = RateLimiter::named("sms"); // hosted as RateLimiterActor
-// One text a second, five at once after idle time, and none that waits longer than a minute.
-system.create(&sms, &RateLimiterState::new(1, Duration::from_secs(1), 5, Duration::from_secs(60))?).await?;
-```
-
-A producer can also create the limiter and submit to it in one turn, as a turn's creates come before its sends. The
-limiter is the sender of what it forwards, so a reply address belongs in the payload; the retry policy of the message
-at the target is chosen in the `Submit`. [examples/src/rate_limit.rs](../../examples/src/rate_limit.rs) is this
-signup:
-
-<!-- doctest
-# use cicada::prelude::*;
-# use serde::{Deserialize, Serialize};
-# #[derive(Debug, Clone, Serialize, Deserialize)]
-# struct Sms;
-# impl ActorRef for Sms { const TYPE: &'static str = "sms"; type Message = SmsMsg; }
-# #[derive(Debug, Serialize, Deserialize, JsonSchema)]
-# #[serde(tag = "type")]
-# enum SmsMsg { Send { phone: String, text: String, reply_to: ActorAddress } }
-@@3
-# fn register<A: Actor>(turn: &mut Turn<A>, phone: String, rate: RateLimiterState) -> HandlerResult {
-@@5
-# Ok(())
-# }
--->
-```rust
-use std::time::Duration;
-use cicada_actors::{RateLimiter, RateLimiterMsg, RateLimiterState};
-
-let sms = RateLimiter::named("sms");
-turn.create(&sms, &rate)?; // a limiter that exists keeps its settings and reservations
-let text = SmsMsg::Send { phone, text: "Welcome!".into(), reply_to: turn.self_address().clone() };
-let retry = RetryPolicy::new(3, Backoff::fixed(Duration::from_secs(5))?)?; // at the target
-turn.send(&sms, RateLimiterMsg::submit(&Sms, text, Some(retry))?)?;
-```
-
-`RateLimiterMsg::submit` takes a typed ref and a message of its family, so a message the target does not take does not
-compile. Over HTTP (the example's sender writes its fields in camelCase):
-
-```sh
-curl -X PUT localhost:8080/actors/cicada.rate-limiter/sms -H 'content-type: application/json' -d '{"state":
-  {"count": 1, "period": "PT1S", "burst": 5, "maxDelay": "PT1M"}}'
-curl -X POST localhost:8080/actors/cicada.rate-limiter/sms/messages -H 'content-type: application/json' -d '{"type":
-  "Submit", "payload": {"to": "sms/_", "message": {"type": "Send", "payload": {"phone": "+31 6 1", "text": "Hi",
-  "replyTo": "signups/1"}}}}'
-```
-
-- **Its settings.** `count` messages per `period`; `burst`, the messages that may be due at once after enough idle
-  time, the first included (1 spaces every message); `maxDelay`, the longest time from handling a submission to its
-  slot. Count and burst are positive, the period is positive, and the durations, and the burst's span of
-  `(burst - 1)` intervals, are at most `MAX_DELAY`; the constructor and the decoder refuse anything else. No message
-  changes them: replace the limiter (below).
-- **Its slots.** The limiter uses the generic cell rate algorithm (GCRA): the interval between slots is the period
-  divided by the count, rounded up to a whole microsecond (3 a second are 333,334 µs apart), and the state keeps one
-  timestamp, `idleAt`, when the full burst is free again. Idle time gives the burst back. At 2 a second with a burst
-  of 2 and a longest delay of one second, five submissions at once get now, now, +0.5 s and +1 s, and the fifth is
-  refused.
-- **The longest delay.** A slot exactly `maxDelay` away is taken; one further is refused for good (the cause
-  `refused`), so it reaches dead letters that watch the limiter. A `maxDelay` of zero takes only capacity that is free
-  now. The delay counts from the store's time when the turn that handles the submission was claimed: the time the
-  submission waited in the limiter's mailbox, and the time its commit takes, are not in it.
-- **What the target gets.** The stored message, due at its slot, with a new id, the limiter as its sender, the
-  correlation id of the submission and the default retention. Headers of the submission are not copied; an observer
-  still adds its own. Its retry policy is the `retry` of the `Submit`, none by default; the retry policy of the
-  submission's own envelope governs only the limiter's turn. A retry at the target goes after its own backoff,
-  without passing the limiter again.
-- **A failed forward reserves nothing.** The slot and the forwarded message commit in one turn. A slot beyond the
-  longest delay or past `MAX_INSTANT`, or a message the target does not take, is refused for good; a target that is
-  gone rejects the commit (`commit`); a read of the store that fails is tried by the submission's own retry policy.
-  An operator's retry or a redrive of the dead letters handles the `Submit` again, at a slot of that turn's store
-  time. A repeated message id follows the core's dedup rules.
-- **A forwarded message keeps its slot.** A failure at the target, or a cancel of the forwarded message, gives no slot
-  back.
-- **Slots are due times, not runs.** Messages that wait past their slots, behind a paused or slow target, or after an
-  outage, can run close together. A slot is clamped to the store's time at the commit, so a slow commit of the limiter
-  can narrow the spacing between the stored due times too. The limiter does not enforce an outside API's quota; a
-  worker that must never exceed one checks it at the call.
-- **Replacing a limiter.** Deleting a limiter and creating it with new settings starts its reservations fresh;
-  messages it forwarded keep their due times in their targets' mailboxes. Producers that share a key must agree on the
-  settings, as a create of a limiter that exists changes nothing.
-- **How deep.** A `Submit` holds the payload of its message two levels down: a payload deeper than 62 levels makes the
-  send of the submission too deep, and it is refused at the call.
+**This shapes due times, not external API calls.** A paused or slow target can run several overdue deliveries close
+together. Enforce strict external quotas at the call site. Replace the actor to change settings; existing forwards
+keep their slots. [Example](../../examples/src/rate_limit.rs).
 
 ## Debouncer
 
-`DebouncerActor` turns a burst of submissions into one delivery: it keeps only the latest submission, one instance
-for each key, and sends it to its target once the burst was quiet for a while, at the latest a fixed time after the
-burst began, or at once on a `Flush`. Use it for "re-index after edits" or "one notice after a run of changes". It
-delivers the trailing value only: it merges no payloads and has no leading edge. The quiet period and the longest
-wait are in the state, fixed at the create. A host creates a debouncer at startup, or a producer creates it and
-submits to it in one turn, as a turn's creates come before its sends:
+Create `DebouncerState::new(quiet, max_wait)` with `0 < quiet <= maxWait`, then submit through
+`DebouncerMsg::submit(&target, message, target_retry)`.
+The latest target, message, retry and correlation id replace the previous submission together.
+It keeps the trailing value only and checks the target at flush time.
 
-<!-- doctest
-# use cicada::prelude::*;
-# use serde::{Deserialize, Serialize};
-# #[derive(Debug, Clone, Serialize, Deserialize)]
-# struct Indexer;
-# impl ActorRef for Indexer { const TYPE: &'static str = "indexer"; type Message = IndexerMsg; }
-# #[derive(Debug, Serialize, Deserialize, JsonSchema)]
-# #[serde(tag = "type")]
-# enum IndexerMsg { Reindex { doc: String, version: u32, text: String, reply_to: ActorAddress } }
-@@3
-# fn edit<A: Actor>(turn: &mut Turn<A>, doc: String, version: u32, text: String) -> HandlerResult {
-@@7
-# Ok(())
-# }
--->
-```rust
-use std::time::Duration;
-use cicada_actors::{Debouncer, DebouncerMsg, DebouncerState};
-
-let debouncer = Debouncer::named(format!("reindex-{doc}")); // hosted as DebouncerActor
-// Two seconds quiet, at most ten seconds from the first submission of a burst.
-let settings = DebouncerState::new(Duration::from_secs(2), Duration::from_secs(10))?;
-turn.create(&debouncer, &settings)?; // a debouncer that exists keeps its settings and its burst
-let reindex = IndexerMsg::Reindex { doc, version, text, reply_to: turn.self_address().clone() };
-let retry = RetryPolicy::new(3, Backoff::fixed(Duration::from_secs(5))?)?; // at the target
-turn.send(&debouncer, DebouncerMsg::submit(&Indexer, reindex, Some(retry))?)?;
-```
-
-[examples/src/debounce.rs](../../examples/src/debounce.rs) is this document. `DebouncerMsg::submit` takes a typed ref
-and a message of its family, so a message the target does not take does not compile. Over HTTP (the example's indexer
-writes its fields in camelCase):
-
-```sh
-curl -X PUT localhost:8080/actors/cicada.debouncer/reindex-d1 -H 'content-type: application/json' -d '{"state":
-  {"quiet": "PT2S", "maxWait": "PT10S"}}'
-curl -X POST localhost:8080/actors/cicada.debouncer/reindex-d1/messages -H 'content-type: application/json' -d '{"type":
-  "Submit", "payload": {"to": "indexer/_", "message": {"type": "Reindex", "payload": {"doc": "d1", "version": 3,
-  "text": "abc", "replyTo": "documents/d1"}}}}'
-curl -X POST localhost:8080/actors/cicada.debouncer/reindex-d1/messages -H 'content-type: application/json' \
-  -d '{"type": "Flush"}'
-```
-
-- **Its settings.** `quiet`, how long a burst must be quiet before its submission is sent, and `maxWait`, the longest
-  time from the burst's first submission to its scheduled flush: `0 < quiet <= maxWait <= MAX_DELAY`, which the
-  constructor and the decoder check. With `quiet` equal to `maxWait`, a burst is a fixed window from its first
-  submission; that is not a rate limit. No message changes the settings: delete the debouncer and create it again.
-- **The latest submission wins, whole.** A `Submit` replaces the kept target, message, target retry policy and
-  correlation id together. The target is not looked up until the flush, so it need not exist yet. A superseded
-  submission ends `done`, and nobody is told that it was dropped.
-- **Its timer.** Each `Submit` cancels the armed `Flush` and arms one at `min(now + quiet, firstAt + maxWait)`, where
-  `now` is the store's time of the turn and `firstAt` that of the burst's first submission, with the crate's shared
-  retry policy (7 attempts, the waits doubling from one second). With `quiet` 2 s and `maxWait` 5 s, submissions
-  handled at 0, 1, 2, 3 and 4 s deliver only the last, at 5 s. A due time past `MAX_INSTANT` fails the `Submit` for
-  good (`refused`) and changes nothing. A `Submit` and the timer due at the same instant run in the core's order: the
-  `Submit` first replaces the kept value; the flush first delivers the old one, and the `Submit` starts a new burst.
-- **Flush is public.** A `Flush` sends the kept submission, cancels the armed timer and clears the burst in one commit;
-  with nothing kept it ends `done` and does nothing. Anyone may send one, so an operator delivers early, or recovers a
-  flush that failed. It sends what is kept when it runs: an old `Flush` that is retried or redriven while a new burst
-  waits flushes the new burst early.
-- **What the target gets.** The stored message, due now, with a new id, the debouncer as its sender, the kept
-  correlation id and retry policy, and the default retention. Headers of the submission are not kept; an observer
-  still adds its own to the flush's send. A reply address belongs in the payload. A retry at the target goes after its
-  own backoff, without passing the debouncer again; the timer's own retry policy governs only the flush.
-- **A failed flush clears nothing.** A message the target does not take, or a target type that is not registered,
-  fails the flush for good (`refused`); a target that is gone rejects the commit (`commit`); a read of the store that
-  fails is tried again by the flush's retry policy, and a `Submit` in between cancels that retry and arms its own
-  timer. Terminal failures reach the debouncer's watchers, and dead letters that watch it keep them; the debouncer
-  watches nothing. A failure at the target after the flush committed does not bring the value back.
-- **A lost timer.** A flush that failed for good, or that an operator cancelled or purged (which tells no watcher),
-  leaves the kept submission without a live timer. A `Flush` sends it; a new `Submit` replaces it and arms a timer from
-  the old `firstAt`, due at once when `maxWait` has passed.
-- **Due times are not run times.** `maxWait` bounds the scheduled flush from the store's time at which the burst's
-  first submission was handled. Time a submission waited in the mailbox, a pause of the debouncer, an outage or a slow
-  commit can all make the flush later; due times are rounded up to a microsecond and clamped to the store's time at
-  the commit. A paused debouncer flushes when it is resumed and its flush is claimed.
-- **It never stops itself.** Submissions may wait in its mailbox; delete an idle debouncer with the core's control.
-  Pause, resume and delete work as for any actor; a create of a debouncer that exists changes nothing.
-- **How deep.** The state holds the kept payload three levels down, so a payload may be at most 61 levels deep. A
-  `Submit` holds it two levels down and is accepted with 62 levels, but keeping it would make the state too deep: that
-  turn fails (the cause `handler`) and the earlier burst and its timer stay as they were.
+Each submission rearms a timer at `min(now + quiet, firstAt + maxWait)`.
+Public `Flush` sends the kept value, cancels the timer and clears the burst in one commit; an empty flush does nothing.
+Headers/retention are not copied. A failed flush leaves everything intact; send Flush to recover a lost timer, or
+submit a new value to replace the old one. A retried old Flush can flush a newer burst early.
+Delete/recreate to change settings. [Example](../../examples/src/debounce.rs).
 
 ## Batcher
 
-`BatcherActor` collects items, one instance for each stream or group, and sends them to a fixed target as one
-message: when the batch is full, at the latest a fixed time after its first item, or at once on a `Flush`. Use it for
-targets that work on lists: a bulk API, a digest email, one write for many rows. It keeps items in handling order and
-does not merge them. The target, the message type, the count limit, the longest wait and the target's retry policy
-are in the state, fixed at the create. A host creates a batcher at startup, or a producer creates it and adds to it in
-one turn, as a turn's creates come before its sends:
+Create `BatcherState::new(&target, message_type, max_items, max_wait)`; `maxItems` is 1–1000 and max wait positive.
+Send `BatcherMsg::add(item)` for each item. The target receives `{ "items": [...] }` in handling order.
+Set the state’s `retry` for failures at the target. Item headers/correlation ids are not retained.
 
-<!-- doctest
-# use cicada::prelude::*;
-# use serde::{Deserialize, Serialize};
-# #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-# struct AuditEvent { account: String, action: String }
-# #[derive(Debug, Clone, Serialize, Deserialize)]
-# struct AuditLog;
-# impl ActorRef for AuditLog { const TYPE: &'static str = "audit-log"; type Message = AuditLogMsg; }
-# #[derive(Debug, Serialize, Deserialize, JsonSchema)]
-# #[serde(tag = "type")]
-# enum AuditLogMsg { Write { items: Vec<AuditEvent> } }
-@@3
-# fn rename<A: Actor>(turn: &mut Turn<A>, account: String, action: String) -> HandlerResult {
-@@6
-# Ok(())
-# }
--->
-```rust
-use std::time::Duration;
-use cicada_actors::{Batcher, BatcherMsg, BatcherState};
+The first item arms a Flush timer. Filling the batch, an Add at/after the deadline, or a public Flush sends it and
+clears it atomically. A stored batch therefore has fewer than `maxItems` items. A failed flush keeps the batch.
+If the final Add cannot send, **that new item is not kept**; recover its failed message separately.
 
-let batcher = Batcher::named("audit"); // hosted as BatcherActor
-// A `Write { items }` to the audit log of at most 50 events, at most five seconds from the first.
-let mut settings = BatcherState::new(&AuditLog, "Write", 50, Duration::from_secs(5))?;
-settings.retry = Some(RetryPolicy::new(3, Backoff::fixed(Duration::from_secs(5))?)?); // at the target
-turn.create(&batcher, &settings)?; // a batcher that exists keeps its settings and its batch
-turn.send(&batcher, BatcherMsg::add(AuditEvent { account, action })?)?;
-```
-
-[examples/src/batching.rs](../../examples/src/batching.rs) works this out. The target's message holds the batch in a
-field `items`, here `Vec<AuditEvent>`, so the target decodes the batch like any message. Over HTTP:
-
-```sh
-curl -X PUT localhost:8080/actors/cicada.batcher/audit -H 'content-type: application/json' -d '{"state":
-  {"target": "audit-log/_", "messageType": "Write", "maxItems": 50, "maxWait": "PT5S"}}'
-curl -X POST localhost:8080/actors/cicada.batcher/audit/messages -H 'content-type: application/json' -d '{"type":
-  "Add", "payload": {"item": {"account": "a1", "action": "renamed to x"}}}'
-curl -X POST localhost:8080/actors/cicada.batcher/audit/messages -H 'content-type: application/json' \
-  -d '{"type": "Flush"}'
-```
-
-- **Its settings.** `target`, `messageType`, `maxItems`, from 1 through 1,000, and `maxWait`, the longest time from a
-  batch's first item to its scheduled flush, `0 < maxWait <= MAX_DELAY`; with `retry`, the retry policy of each batch
-  at the target, none by default. The constructor and the decoder check them, and the message type's length. Whether
-  the target type is registered and takes the message type is checked only when a batch is sent. There is no default
-  `maxItems`, and no message changes the settings: delete the batcher and create it again.
-- **Items, in handling order.** An `Add` holds one item, any JSON value, `null` included; `BatcherMsg::add` builds one
-  from any `Serialize` value. The batcher does not check items against the target's schema: the target decodes the
-  whole batch. Headers and the correlation id of an `Add` are not kept, so data to reply to or correlate belongs in
-  the item.
-- **A full batch goes at once.** The `Add` that brings the batch to `maxItems` sends it, with its own item, in its own
-  turn, and clears it. So a stored batch always holds fewer than `maxItems` items, even when `Add`s queue up. With
-  `maxItems` 1, each `Add` is sent on its own, with no timer.
-- **Its timer.** The first item of a batch sets `firstAt`, the store's time of that turn, and arms a `Flush` at
-  `firstAt + maxWait`, with the crate's shared retry policy (7 attempts, the waits doubling from one second); later
-  items keep that timer. An `Add` handled at or after that deadline sends the batch with its own item. With
-  `maxItems` 3 and `maxWait` 10 s, items handled at 0, 1 and 2 s go as one batch at 2 s, and an item at 4 s is due
-  alone at 14 s. A due time past `MAX_INSTANT` fails the `Add` for good (`refused`) and changes nothing. An `Add` and
-  the timer due at the same instant run in the core's order: the `Add` first joins the batch; the flush first sends the
-  batch, and the `Add` starts the next one.
-- **Flush is public.** A `Flush` sends the items held, cancels the armed timer and clears the batch in one commit; with
-  nothing held it ends `done` and does nothing. Anyone may send one, so an operator delivers early, or recovers a
-  flush that failed. It sends what is held when it runs: an old `Flush` that is retried or redriven while a new batch
-  waits flushes the new batch early.
-- **What the target gets.** The message type with the payload `{"items": [...]}`, due now, with a new id, the batcher
-  as its sender, the settings' retry policy, no correlation id, and the default retention. An observer still adds its
-  own headers to the send. A retry at the target goes after its own backoff, without passing the batcher again; the
-  policy of an `Add` or of the timer governs only that turn.
-- **A failed flush clears nothing.** A target type that is not registered or does not take the message, or a batch out
-  of bounds, fails the turn for good (`refused`); a target that is gone rejects the commit (`commit`); a read of the
-  store that fails is tried again by the incoming message's own retry policy. The batch and its timer stay as they
-  were. Terminal failures reach the batcher's watchers, and dead letters that watch it keep them; the batcher watches
-  nothing. A failure at the target after the flush committed fails the target's message, which holds the whole batch,
-  and brings nothing back to the batcher.
-- **A failed final `Add` keeps no item.** When the `Add` that fills the batch, or that comes after the deadline, cannot
-  send it, its item is not kept: the batch stays below `maxItems` however long the target is gone. That `Add`'s failure
-  holds the item, and dead letters that watch the batcher keep it. A retry or a redrive of it adds the item to the batch
-  held then, so it may come after later items.
-- **A lost timer.** A flush that failed for good, or that an operator cancelled or purged (which tells no watcher),
-  leaves the items without a live timer, and so does a batch created with items and no `armed`. An `Add` before the
-  old deadline does not arm a new timer; the batch goes when it is full, on an `Add` at or after the deadline, or on a
-  `Flush`. Send a `Flush` to recover it.
-- **Groups.** To collect a known number of parts, use one batcher for each group, with `maxItems` the number of parts
-  and `maxWait` the timeout: the batch goes when the last part comes, or at the timeout with the parts that came. Put
-  the group in each item, as the target is the same for all groups, and delete the batcher when the group is done.
-- **Count, not bytes.** `maxItems` bounds how many items are held, not their size, and each `Add` rewrites the whole
-  state. Keep items small, or batch references to data kept elsewhere.
-- **Due times are not run times.** `maxWait` bounds the scheduled flush from the store's time at which the batch's
-  first item was handled. Time an item waited in the mailbox, a pause of the batcher, an outage, a retry or a slow
-  commit can all make the flush later; due times are rounded up to a microsecond and clamped to the store's time at
-  the commit. A paused batcher flushes when it is resumed and its flush is claimed.
-- **It never stops itself.** A create of a batcher that exists changes nothing. Pause, resume and delete work as for
-  any actor; a delete discards the items held, and batches already sent stay with their target.
-- **How deep.** The state and the batch hold each item two levels down, so an item may be at most 62 levels deep. A
-  deeper item fails its `Add`, with the cause `handler` when it would be held and `refused` when it would be sent at
-  once; the earlier batch and its timer stay as they were. The batcher is newer than 0.16.0, so no stored batch holds
-  a deeper item.
+A cancelled/purged/failed timer can leave items stranded. Send Flush to recover; an Add before the old deadline does
+not rearm it. A retried old Flush can send a newer batch early. Count limits do not bound bytes; keep items small.
+Delete/recreate to change settings. [Example](../../examples/src/batching.rs).
 
 ## Flows
 
-A flow is a multi-step job written as ordinary async code (ADR 0031): create an account, wait a minute, send a welcome
-mail, provision a workspace. Each run is one actor, hosted by `FlowActor<F>`, whose state holds the run's input and a
-journal of saved results. Every execution runs the flow's code from the top: a step whose result the journal holds
-returns it without running again, and the first new step runs its closure, whose result commits together with the
-next `Continue`. So a committed step never runs again, a failed step is retried by the flow's policy, and the order of
-the steps is plain code instead of a state machine like that of [examples/src/steps.rs](../../examples/src/steps.rs).
-Unlike the other actors of this crate, a flow has no fixed type name: its host chooses it.
+Use a `Flow` for a job whose durable progress is an ordered sequence of results.
+Host it with `FlowActor::new(flow)` under the type name chosen by the flow.
+Create a `FlowRun<F>` with `FlowState::new(input)`, then send `FlowMsg::Continue`.
+
+The central part of [flow_onboarding.rs](../../examples/src/flow_onboarding.rs) is ordinary async code:
 
 <!-- doctest
-# use cicada::prelude::*;
-# use serde::{Deserialize, Serialize};
-# struct Accounts;
-# impl Accounts {
-#     async fn create(&self, _email: &str, key: String) -> Result<String, HandlerError> { Ok(format!("acc-{key}")) }
-#     async fn welcome(&self, _account: &str, _key: String) -> Result<(), HandlerError> { Ok(()) }
-# }
-@@27
-# async fn host(store: cicada::Store, accounts: Accounts) -> Result<(), Box<dyn std::error::Error>> {
-@@1
-# let _ = system;
-# Ok(())
-# }
+# use cicada::HandlerResult;
+# use cicada_actors::Step;
+# use std::time::Duration;
+# use cicada_examples::steps::OnboardingServices;
+# async fn run<S: OnboardingServices>(step: &mut Step, services: &S, email: &str) -> HandlerResult {
+@@7
+# Ok(()) }
 -->
 ```rust
-use std::time::Duration;
-use cicada_actors::{Flow, FlowActor, Step};
-
-/// The input of a run: part of the contract, fixed at its create.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-struct Signup {
-    email: String,
-}
-
-/// The flow holds its clients, like an actor; it needs no Clone or Debug.
-struct Onboarding {
-    accounts: Accounts,
-}
-
-impl Flow for Onboarding {
-    const TYPE: &'static str = "flows.onboarding";
-    type Input = Signup;
-
-    async fn run(&self, step: &mut Step, signup: Signup) -> HandlerResult {
-        let accounts = &self.accounts;
-        let account: String = step.run("create-account", |key| accounts.create(&signup.email, key)).await?;
-        step.sleep("cool-off", Duration::from_secs(60)).await?; // durable: no handler waits
-        step.run("send-welcome", |key| accounts.welcome(&account, key)).await?;
-        Ok(())
-    }
-}
-
-let system = ActorSystem::builder(store).host(FlowActor::new(Onboarding { accounts })).build();
+let account_id: String = step.run("create-account", |key| async move {
+    Ok(services.create_account(email, &key).await?)
+}).await?;
+step.run("send-welcome", |key| async move {
+    Ok(services.send_welcome(email, &key).await?)
+}).await?;
+step.sleep("cool-off", Duration::from_secs(60)).await?;
 ```
 
-`step.run(id, closure)` gives the closure the step's idempotency key and returns its result; `?` passes on the error
-by which a new step suspends the execution, as any other error. `step.sleep(id, duration)` waits until a store time
-saved in the journal, with no handler open meanwhile ([Durable sleep](#durable-sleep)). In an `App` the flow is one
-more type: `App::new().host(FlowActor::new(Onboarding { accounts }))`. A host starts a run by creating it with
-`FlowState::new(input)` and sending it `Continue`; a producer can do both in one turn, as a turn's creates come before
-its sends:
+The code runs from the top on each execution. Saved results replay without rerunning their closures; only one new
+step runs per turn. **Code outside steps must be deterministic and free of external effects.**
+Put service calls, clocks and randomness inside steps.
 
-<!-- doctest
-# use cicada::prelude::*;
-# use serde::{Deserialize, Serialize};
-# #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-# struct Signup { email: String }
-# struct Onboarding;
-# impl cicada_actors::Flow for Onboarding {
-#     const TYPE: &'static str = "flows.onboarding";
-#     type Input = Signup;
-#     async fn run(&self, _step: &mut cicada_actors::Step, _input: Signup) -> HandlerResult { Ok(()) }
-# }
-# async fn start(system: ActorSystem) -> Result<(), Box<dyn std::error::Error>> {
-@@5
-# Ok(())
-# }
--->
-```rust
-use cicada_actors::{FlowMsg, FlowRun, FlowState};
+Each closure receives `<run address>/<step id>` as an idempotency key. It can run again after an uncommitted turn;
+external effects remain at least once. Never reuse a run key for a different job, even after deletion.
 
-let run = FlowRun::<Onboarding>::named("bob"); // flows.onboarding/bob
-system.create(&run, &FlowState::new(Signup { email: "bob@example.test".into() })).await?;
-system.send(&run, FlowMsg::Continue).await?; // or turn.create and turn.send in a producer's turn
-```
+| Concern | Rule |
+| --- | --- |
+| Errors | `?` propagates the first new step’s suspension/error; catching it cannot continue the turn |
+| Business decisions | Save a successful value such as `Result<T, String>` and branch on it |
+| Timeouts | Put timeout/select inside the step closure, never around `step.run` |
+| Replay compatibility | Keep entry order, ids, kinds and result types stable for in-progress runs |
+| Ids and size | Unique ids, 1–100 chars of `A-Za-z0-9._~-:`; at most 1000 entries |
+| Recovery | Public Continue rearms a run whose armed message was cancelled/purged/exhausted |
+| Completion | Done runs ignore Continue and retain results until explicitly deleted |
 
-[examples/src/flow_onboarding.rs](../../examples/src/flow_onboarding.rs) works this out, on the services of the steps
-example, and the sample service hosts it. Over HTTP:
-
-```sh
-curl -X PUT localhost:8080/actors/flows.onboarding/bob -H 'content-type: application/json' -d '{"state":
-  {"input": {"email": "bob@example.test"}}}'
-curl -X POST localhost:8080/actors/flows.onboarding/bob/messages -H 'content-type: application/json' \
-  -d '{"type": "Continue"}'
-```
-
-The state is an ordinary actor state, read with `GET /actors/flows.onboarding/bob` or `get_actor`; `FlowState::result`
-decodes one saved result:
-
-<!-- doctest
-# use cicada::prelude::*;
-# use serde::{Deserialize, Serialize};
-# #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-# struct Signup { email: String }
-# async fn read(system: ActorSystem, run: ActorAddress) -> Result<(), Box<dyn std::error::Error>> {
-@@6
-# Ok(())
-# }
--->
-```rust
-use cicada_actors::{FlowState, FlowStatus};
-
-let snapshot = system.get_actor(&run).await?.expect("the run exists");
-let state: FlowState<Signup> = serde_json::from_value(snapshot.state)?;
-let account: Option<String> = state.result("create-account").transpose()?; // None until it is saved
-println!("{account:?}, done: {}", state.status == FlowStatus::Done);
-```
-
-On the wire: `{"input": {"email": "bob@example.test"}, "journal": [{"kind": "step", "id": "create-account",
-"result": "acc-1"}], "status": "running", "armed": "…"}`. `journal`, `status` and `armed` default to empty, `running`
-and null. A journal given at the create is trusted as progress: the replay checks its order and the types of its
-results against the code, not whether its effects happened.
-
-- **One new step per turn.** The first step the journal does not hold runs its closure; its result and the next
-  `Continue` commit together, and the next step runs in the next turn. A run of n steps and sleeps takes n + 2 turns:
-  the start, one for each step or sleep, and the replay that completes it. A flow that returns `Ok` after replaying
-  every saved entry is `done`.
-- **Starting and recovering.** A `Continue` that is not the run's armed one cancels the armed one, if any, and arms a
-  fresh one, due now with the flow's retry policy and the incoming correlation id, without running flow code. Only the
-  armed `Continue` runs the flow, so pokes never race each other; each poke starts the attempts afresh. The policy is
-  `Flow::retry()`, by default the crate's shared policy (7 attempts, the waits doubling from one second).
-- **The key of a step.** Each closure receives `<run address>/<step id>`, such as
-  `flows.onboarding/bob/create-account`; the address is percent-encoded, so `/` in a run key is `%2F`. The key is the
-  same on every attempt, retry, redrive and recovery. A step runs at least once: one whose turn does not commit (a
-  crash, a timeout, a lost lease) runs again with the same key, so the service it calls deduplicates by that key.
-  Never reuse a run key for another job, not even after a delete: the new run's steps would get the old keys.
-- **Replay.** The code outside step closures runs again on every execution: it must be deterministic and free of
-  effects. Decide the next step only from the input and earlier results; read clocks, random numbers and services
-  inside a step. A call that does not match the saved entry at its place (another id or kind), a saved result that does
-  not decode as the type asked for, a step id used twice, and a flow that returns `Ok` before reaching all saved
-  entries fail the turn for good (the cause `refused`), and nothing new is saved.
-- **Errors of a step.** A closure's error fails the turn with its own retryability: an ordinary error is retried by the
-  flow's policy, a permanent one fails at once. Catching the error does not help: the first new step, or the first
-  misuse, decides the turn whatever the flow returns, and a later step runs nothing. A business outcome to branch on,
-  such as a declined card, is a successful result: return a `Result<T, String>` as the step's value.
-- **Timeouts belong inside the closure.** A step future dropped while its closure runs (a `tokio::time::timeout` or a
-  `select!` around `step.run`), or a panic caught around it, fails the turn for good, naming the step; a future never
-  polled does nothing. Put a timeout inside the closure, where its error is retried like any other. A flow that hangs
-  or panics follows the core's rules for a turn, and commits nothing.
-- **Done and stalled runs.** A done run ignores `Continue` and keeps its state, results included, until it is deleted;
-  nothing cleans it up. A run whose armed `Continue` was cancelled, purged or ran out of attempts stays `running` with
-  its saved steps; a public `Continue` resumes it. Watch the flow's type to hear of failures, as for any actor (dead
-  letters that watch it keep them); the runner sets no watch. Pause, resume, delete and the claim limit work as for
-  any actor.
-- **Changing a flow.** The contract holds the input's schema and the journal; pin it with a snapshot, as for any type
-  of the host ([Contract snapshots](core.md#contract-snapshots)). A change of the input is a contract change. A change
-  of the steps (their order, ids or result types) can break the replay of runs in progress without changing the
-  contract: let the old runs finish first, or give the new code a new type name.
-- **Limits.** A journal holds at most 1,000 entries; a new step after that fails for good without running. Step ids
-  are 1 through 100 characters of `A-Za-z0-9._~-:`, unique in a run. A result must encode as JSON, hold no NUL and be
-  at most 61 levels deep, as the state, the journal and the entry hold it three levels down; one that does not fails
-  for good before it is saved. The input may be 63 levels deep. Nothing bounds the bytes of a result beyond the core's
-  limits, and each step rewrites the whole state, so keep results small or save references to data kept elsewhere.
-- **The sleep entry.** A journal entry is `{"kind": "step", "id", "result"}` or `{"kind": "sleep", "id", "until"}`. The
-  sleep entry was in the contract before `Step::sleep` wrote one (0.16.6), so a flow that starts to sleep keeps its
-  contract, hash and pinned text included.
+Only the armed Continue executes the flow; a public poke first replaces/arms it. Default retry is 7 attempts with
+waits doubling from 1 s. A replay mismatch is permanently refused. A journal supplied at creation is trusted progress.
+Input schema changes affect the contract; step-code changes can break replay **without changing the contract**.
+Drain old runs or use a new flow type. See [the flow source](../../crates/cicada-actors/src/flow.rs) for the journal API.
 
 ### Durable sleep
 
-`step.sleep("cool-off", Duration::from_secs(60)).await?` pauses a run between two steps without holding a handler, a
-lease or a timer in memory. The first time, it saves `{"kind": "sleep", "id": "cool-off", "until": …}`, the claim's
-store time plus the duration rounded up to microseconds, and ends the turn: the entry commits with the next `Continue`,
-due at `until`. When that `Continue` arrives, the replay passes the sleep and runs the next step in the same turn.
+`step.sleep(id, duration)` saves a store-time deadline and schedules Continue without retaining a running handler.
+Replay uses the saved time, even if the code’s duration changes. Early pokes/deliver-now cannot pass the sleep;
+late wakes proceed immediately. Zero sleep still creates a commit boundary.
 
-- **The saved time decides.** A replayed sleep compares store time with its saved `until`, and ignores the duration
-  the code passes now: a deploy that changes the duration does not move the wake time of a sleeping run, nor of one
-  that slept already. A replayed sleep before its `until` saves nothing and arms a `Continue` due at that same time.
-- **Nothing wakes it early.** A public `Continue` replaces the armed timer as for any run, and its execution replays
-  the sleep and arms it again at the saved time; a deliver-now of the timer, a retry and a redrive under a new id do the
-  same. One `Continue` stays armed, and no step after the sleep runs before `until`.
-- **Late is fine.** `until` is a lower bound. A paused run, an outage, a busy node or the claim limit makes the wake
-  later, and a late wake does not sleep the duration again. A run whose timer was cancelled, purged or failed for good
-  stalls with its sleep saved until a public `Continue` resumes it; once `until` has passed, it goes straight on. A step
-  after a sleep that fails is retried by the flow's policy, and its retries pass the sleep. A delete removes the run and
-  its timer; no sleep brings it back.
-- **A zero sleep is a commit.** A zero or sub-microsecond duration saves its entry and ends the turn like any other, so
-  every new sleep is a commit boundary. After a zero sleep the next turn is due at once; a positive duration under a
-  microsecond rounds up to one microsecond, so its turn is due a microsecond later.
-- **Limits.** A sleep id shares the namespace of the step ids and counts towards the 1,000 entries. A new sleep longer
-  than `MAX_DELAY` (365,000 days) or ending after `MAX_INSTANT` (the end of the year 9999) fails the turn for good, and
-  nothing is saved. A sleep caught with `let _ =` still ends the turn, as a caught step does, and a sleep after an
-  abandoned step adds nothing.
-- **Traces.** With `ActorTelemetry`, the `Continue` of a sleep is a timer ([OpenTelemetry](core.md#opentelemetry)):
-  the turn that wakes starts a new trace with a link to the turn that slept, after a zero sleep too, and the steps after
-  it, up to the next sleep, are in that trace. The immediate continuations between steps stay in one trace, and so do
-  pokes. A timer re-armed by a replay or a public `Continue` links to the turn that armed it.
-- **Deploy first.** That a node's schema accepts a sleep entry does not mean it can run the code that wrote it: a node
-  with the flow's code from before the sleep fails such a run for good, as a changed replay. Deploy the code that
-  sleeps, on 0.16.6 or later, to every node that hosts the flow before starting runs that use it.
-
-A host pins the contract of its flow like that of any of its types:
-
-<!-- doctest
-# use cicada::prelude::*;
-# use serde::{Deserialize, Serialize};
-# #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-# struct Signup { email: String }
-# struct Onboarding;
-# impl cicada_actors::Flow for Onboarding {
-#     const TYPE: &'static str = "flows.onboarding";
-#     type Input = Signup;
-#     async fn run(&self, _step: &mut cicada_actors::Step, _input: Signup) -> HandlerResult { Ok(()) }
-# }
-# fn check() -> Result<(), Box<dyn std::error::Error>> {
-@@2
-# Ok(())
-# }
--->
-```rust,no_run
-let contract = cicada::actor::contract_of::<cicada_actors::FlowActor<Onboarding>>()?;
-cicada_test::assert_contracts_match("tests/contracts", &[contract]); // in a test of the host
-```
+A lost timer is recovered with public Continue; deletion removes the run and timer. Deploy sleep-capable code to every
+host before starting sleeping runs. Sleep ids share the step namespace/1000-entry limit; durations are bounded by
+`MAX_DELAY` and year 9999. Timer continuations start linked traces with [OpenTelemetry](core.md#opentelemetry).
 
 ## Event
 
-`EventActor` starts flows from a business event: one instance for each event, such as `cicada.event/order-placed`,
-holds a list of flow types, and each publication creates and starts one run of each of them, all in one commit. A
-[topic](#topic) sends to actors that exist; a flow run must be created with its input before its first `Continue`,
-which the event does. The host creates each event and subscribes its flows, at its start or in the turn that creates
-the event; nothing subscribes itself:
+Create an `Event` with `EventState`, subscribe flow type names, then send `EventMsg::publish(input)`.
+Each publication creates and starts one independent run per subscribed type **in one commit**.
+`publish_batch(items)` supplies input `{ "items": [...] }`, so a batcher targeting PublishBatch feeds an event directly.
+[flow_events.rs](../../examples/src/flow_events.rs) shows the full producer and host setup.
 
-<!-- doctest
-# use cicada::prelude::*;
-# use cicada::SendResult;
-# use serde::{Deserialize, Serialize};
-# #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-# struct PlacedOrder { order: String }
-# struct Receipt;
-# impl cicada_actors::Flow for Receipt {
-#     const TYPE: &'static str = "orders.receipt";
-#     type Input = PlacedOrder;
-#     async fn run(&self, _step: &mut cicada_actors::Step, _input: PlacedOrder) -> HandlerResult { Ok(()) }
-# }
-# struct Fulfil;
-# impl cicada_actors::Flow for Fulfil {
-#     const TYPE: &'static str = "orders.fulfil";
-#     type Input = PlacedOrder;
-#     async fn run(&self, _step: &mut cicada_actors::Step, _input: PlacedOrder) -> HandlerResult { Ok(()) }
-# }
-# async fn host(store: cicada::Store) -> Result<(), Box<dyn std::error::Error>> {
-@@14
-# Ok(())
-# }
--->
-```rust
-use cicada_actors::{Event, EventActor, EventMsg, EventState, FlowActor, FlowRun};
+The run key is the publication’s message id, percent-encoded once. Do not reuse ids across jobs/events or manually
+create runs whose keys could collide. `.` and `..` cannot key subscribed runs. Up to 100 unique flow types can subscribe.
 
-let system =
-    ActorSystem::builder(store).host(EventActor).host(FlowActor::new(Receipt)).host(FlowActor::new(Fulfil)).build();
-let placed = Event::named("order-placed"); // cicada.event/order-placed
-system.create(&placed, &EventState::default()).await?; // an event that exists keeps its list
-for flow in ["orders.receipt", "orders.fulfil"] {
-    system.send(&placed, EventMsg::Subscribe { flow: flow.into() }).await?; // held already: nothing changes
-}
-let order = PlacedOrder { order: "o-1".into() };
-if let SendResult::Accepted(publication) = system.send(&placed, EventMsg::publish(&order)?).await? {
-    let receipt = FlowRun::<Receipt>::named(publication.id.as_str()); // orders.receipt/<publication id>
-    println!("{:?}", receipt.address()?);
-}
-```
+An unknown/invalid subscribed target can fail the entire publication: remove stale subscriptions, then retry.
+Registration alone cannot identify a flow; subscribe only flow types. On a non-hosting node, bad input may instead
+create a run that fails its first message as `state`. Watch both events and flow types to see the two failure paths.
 
-[examples/src/flow_events.rs](../../examples/src/flow_events.rs) works this out, with a digest fed by a batcher and
-dead letters that watch the events and the flows; the sample service hosts the event type, with no event at startup.
-Over HTTP:
+**Recover a started run with Continue, not another publication.** Operator retry/redrive gets a new publication id,
+and therefore new runs. Core deduplication only lasts for the retention window; existing runs retain their first input.
+Unsubscribe stops future runs; deleting an event does not delete its independent runs. No publication history is kept.
 
-```sh
-curl -X PUT localhost:8080/actors/cicada.event/order-placed -H 'content-type: application/json' -d '{"state": {}}'
-curl -X POST localhost:8080/actors/cicada.event/order-placed/messages -H 'content-type: application/json' \
-  -d '{"type": "Subscribe", "payload": {"flow": "orders.receipt"}}'
-curl -X POST localhost:8080/actors/cicada.event/order-placed/messages -H 'content-type: application/json' \
-  -d '{"id": "event-17", "type": "Publish", "payload": {"input": {"order": "o-1"}}}'
-```
+## Payload depth limits
 
-The state is `{"flows": ["orders.receipt", "orders.fulfil"]}`: at most 100 type names, each once, in the order they
-subscribed. `Publish { input }` carries any JSON value, `null` included; `EventMsg::publish` builds it from any
-`Serialize` value. `PublishBatch { items }` is a `Publish` whose input is `{"items": [...]}`: one run of each flow for
-the whole batch, an empty one included, and `EventMsg::publish_batch` builds it. A flow that takes a batch declares its
-own input with a field `items`. That is the payload a [batcher](#batcher) sends, so a batcher whose message type is
-`PublishBatch` feeds an event directly, and so can a scheduler, a rate limiter or a debouncer with a stored `Publish`:
+Wrapping values consumes the core’s 64-level depth budget. Constructors/sends and state writes enforce it.
 
-<!-- doctest
-# use cicada::prelude::*;
-# use serde::{Deserialize, Serialize};
-# #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-# struct PlacedOrder { order: String }
-# fn compose(order: PlacedOrder) -> Result<(), Box<dyn std::error::Error>> {
-@@15
-# let _ = (nightly, limited, debounced, batches);
-# Ok(())
-# }
--->
-```rust
-use std::time::Duration;
-use cicada_actors::{BatcherState, DebouncerMsg, Event, EventMsg, RateLimiterMsg, Schedule, SchedulerState};
+| Container | Maximum nested payload/input depth |
+| --- | --- |
+| Supervisor child state / start payload | 61 / 60 |
+| Dead letter | 61 as a value; deeper payloads use JSON text |
+| Topic, scheduler, rate-limiter payload | 62 |
+| Debouncer kept payload | 61 (a 62-level submission can enqueue but fails when stored) |
+| Batcher item | 62 |
+| Flow input / step result | 63 / 61 |
+| Event Publish input / PublishBatch item | 63 / 61 |
 
-/// The input of `orders.digest`: one run for each batch.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-struct Digest {
-    items: Vec<PlacedOrder>,
-}
-
-let (placed, report, digests) = (Event::named("order-placed"), Event::named("report"), Event::named("orders-digest"));
-let publish = EventMsg::publish(serde_json::json!({"kind": "nightly"}))?;
-let nightly = SchedulerState::new(Schedule::daily(2, 0)?, &report, publish)?; // a fresh run each slot
-let limited = RateLimiterMsg::submit(&placed, EventMsg::publish(&order)?, None)?; // to a cicada.rate-limiter
-let debounced = DebouncerMsg::submit(&placed, EventMsg::publish(&order)?, None)?; // to a cicada.debouncer
-let batches = BatcherState::new(&digests, "PublishBatch", 20, Duration::from_secs(3600))?; // one Digest per batch
-```
-
-- **One commit, all or nothing.** For each subscribed type, in order, a publication creates the run, an independent
-  actor and no child of the event, with `{"input": <input>, "journal": [], "status": "running", "armed": null}`, and
-  sends it a `Continue`. The creates and the sends commit together. A run that exists already keeps its state. With
-  no subscription a publication does nothing. No order of execution across the runs is promised.
-- **The key of a run is the publication's id.** The publication `event-17` starts `orders.receipt/event-17` and
-  `orders.fulfil/event-17`, so a run is found from the publication's id. The id is one name of the key, percent-encoded
-  once, with no prefix: `a/b` keys `a%2Fb`, and an id that reads `a%2Fb` keys `a%252Fb`, a different run. The ids `.`
-  and `..` cannot key a run: with a subscription, such a publication fails for good (the cause `refused`) and starts
-  nothing; without one it does nothing. Publish it again under another id.
-- **The first `Continue`.** Each has a new id, the event as its sender, the publication's correlation id, the default
-  retention and the crate's shared retry policy (7 attempts, the waits doubling from one second); the publication's
-  other headers are not copied, and an observer adds its own. The run's first turn arms the flow's own policy,
-  `Flow::retry()`, before any flow code runs, and the correlation id follows the chain. A publication's own retry
-  policy governs only its turn.
-- **What fails the publication.** A type that is not registered or does not take `Continue`, a dot id, and input that
-  a node hosting the flow cannot decode fail it for good (`refused`); a read of the store that fails is tried again by
-  the publication's own policy. Either way nothing of the turn commits: no run starts. So a stale subscription blocks
-  every publication of the event: unsubscribe it, then retry or redrive the failed one. The event watches nothing:
-  watch the events, and dead letters that watch them keep a failed publication; watch the flow types for the runs.
-- **What it does not check.** The registry cannot tell a flow from another actor that takes `Continue`, so subscribe
-  only flow types. A node that does not host the flow cannot decode its input: such a run commits and fails its first
-  message with the cause `state`, while the other runs of the publication go on. A failure of a run after the commit
-  is the run's: the publication stays `done`, and a public `Continue` to the run recovers it.
-- **A repeated id.** A runtime retry keeps the publication's id, and so the keys of its runs. Within the store's
-  retention, a send with an id that was accepted already is a duplicate and adds nothing. After it, the same id
-  publishes again with the current subscriptions: a run that exists keeps its first input and progress (a done run
-  ignores the `Continue`, a running one resumes), a type subscribed since gets a first run, and a deleted run is
-  created again. The input is still checked first, so input that a hosting node cannot decode fails the publication
-  although the run exists. No ledger of publications is kept.
-- **A retry or redrive is a new publication.** An operator's retry and a redrive of dead letters send the message under
-  a new id, so its runs get new keys. A failed publication started nothing, so nothing is started twice; but each retry
-  call starts runs of its own. Recover a run that started with a `Continue` to the run, not by publishing again. A
-  successful publication with no subscription is not replayed to a later subscriber: publish again.
-- **Keys are jobs.** Never reuse a publication id for another job, also across events and after retention or a delete:
-  message ids are unique only among pending and retained messages, and a run's steps would get the old keys
-  ([Flows](#flows)). A run created by hand for a subscribed type must not use an id that a publication may take. A
-  scheduler's slots and the forwards of a rate limiter, a debouncer and a batcher get fresh ids, so each starts fresh
-  runs.
-- **Independent runs.** `Unsubscribe` stops new runs of a type and deletes none; deleting the event leaves its runs.
-  Subscribing a type that is not registered yet is kept: the type is checked when an event is published. An absent
-  `Unsubscribe` changes nothing; an invalid name and a 101st type are refused for good.
-- **How deep.** The run state holds the input one level down, so a `Publish` input may be 63 levels deep, and a batch's
-  items three levels down, so an item may be 61. A batcher passes items up to 62 levels deep: a batch with such an item
-  reaches the event and fails its publication for good, and no run starts. The failure tells the event's watchers, and
-  dead letters keep it as JSON text ([Dead letters](#dead-letters)), but a redrive of it fails again in the same way:
-  keeping the payload does not make the run's state shallower. With no subscription nothing is checked.
+A batcher can accept an item the event cannot place in flow state; the publication then fails and starts no runs.
+Legacy deep values require the [upgrade procedure](../how-to/upgrading.md); retaining a payload does not relax send
+or state limits. Exact wire shapes remain in [contract references](../reference/contracts/).

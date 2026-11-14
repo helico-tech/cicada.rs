@@ -6,3 +6,6 @@ node_modules/
 .DS_Store
 # Review requests between the loops (ADR 0030, scripts/review.py).
 .reviews/
+
+# Python maintenance tools.
+__pycache__/

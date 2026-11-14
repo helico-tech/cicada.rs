@@ -31,6 +31,7 @@ fn main() {
         ("docs/guide/app.md", "guide-app.md"),
         ("docs/guide/actors.md", "guide-actors.md"),
         ("docs/operations.md", "operations.md"),
+        ("docs/how-to/upgrading.md", "upgrading.md"),
     ] {
         let path = root.join(source);
         println!("cargo:rerun-if-changed={}", path.display());

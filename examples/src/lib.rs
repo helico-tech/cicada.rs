@@ -74,3 +74,8 @@ pub struct ActorsGuideDoctests;
 #[cfg(doctest)]
 #[doc = include_str!(concat!(env!("OUT_DIR"), "/operations.md"))]
 pub struct OperationsDoctests;
+
+/// The Rust blocks of the upgrade procedure, compiled without running destructive operations.
+#[cfg(doctest)]
+#[doc = include_str!(concat!(env!("OUT_DIR"), "/upgrading.md"))]
+pub struct UpgradeGuideDoctests;

@@ -49,6 +49,11 @@ PostgreSQL for tests: `docker compose up -d postgres` (port 55432). Tests that n
 
 ## Rules
 
+- **Documentation ownership.** The dedicated `docs` session owns README and handwritten user documentation.
+  Other sessions report source/test changes to it instead of editing the prose. ADRs, generated CLI/OpenAPI/contract
+  references and README release pins stay with their producing change. Follow
+  [the documentation maintenance procedure](docs/maintaining/maintenance.md); local hooks enforce commit ownership
+  when installed. This does not provide filesystem or remote access isolation.
 - [docs/architecture.md](docs/architecture.md) is the reference for behaviour. This repo has no contract with the
   Kotlin implementation (ADR 0008). A change to a guarantee or a wire format needs an ADR; a schema change is an
   appended migration.

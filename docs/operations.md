@@ -1,753 +1,198 @@
-# Operating Cicada for Rust
+# Operate Cicada
 
-How to size, deploy, upgrade and watch Cicada nodes. The design is in [architecture.md](architecture.md), the API and
-the settings in the guides of [the core](guide/core.md), [HTTP](guide/http.md) and [the app](guide/app.md).
-Settings are `NodeConfig`, `PostgresOptions` and `SqliteOptions` ([Configuration](guide/core.md#configuration)), or
-the flags and `CICADA_…` variables of a binary built from `cicada-app` ([Run it as a
-binary](guide/app.md#run-it-as-a-binary)); handlers are tokio futures, logs go through `tracing`, and the host owns
-the store and the node's life cycle, or hands them to `App`.
+Use this runbook to size a deployment and diagnose a running system.
+For version changes use [the upgrade procedure](how-to/upgrading.md); for exact flags use [CLI help](reference/cli.md).
 
 ## Sizing
 
-- **`concurrency`** (default 16) is how many turns one node runs at once. Each running turn is a tokio task (plus a
-  heartbeat task), so idle waiting costs nothing, but a handler that blocks holds one of the runtime's worker threads
-  (by default one per CPU core) until it returns. Run blocking calls (blocking I/O, `std::thread::sleep`, long
-  computations) in `tokio::task::spawn_blocking`. Several blocking handlers can take every worker thread, and then
-  heartbeats and the dispatch loop stall too: leases expire and turns are run twice. A handler that is still running
-  a while after its maximum turn or after its lease was lost is logged as a warning (`… it does not yield (blocking
-  code? use spawn_blocking)`).
-- **PostgreSQL pool** (`PostgresOptions::max_pool_size`, default 20): a running turn uses a connection for its
-  claim, heartbeat and commit, and HTTP requests use the same pool. Keep it at least `concurrency + 4`. A pool that is
-  too small delays lease renewals, and a renewal that waits too long makes the node give up the turn. Mind the server
-  side too: `nodes × max_pool_size` plus up to two connections per node for the wake-up listener (`LISTEN` and its
-  probe) must stay under PostgreSQL's `max_connections`. A binary built from `cicada-app` sizes the pool as the larger
-  of 20 and `concurrency + 4` unless `--store-pool-size` (`CICADA_STORE_POOL_SIZE`) says otherwise; set it per
-  deployment so that the nodes together stay under the server's limit.
-- **`lease_ttl`** (30 s) is how long a dead node's turn waits before another node re-runs it. Shorter means faster
-  recovery but more heartbeat writes (every `lease_ttl / 3`) and more risk that a stalled runtime or a long pause
-  loses the lease.
-- **Maximum turn** (15 min, `NodeConfig::default_max_turn`, per type `Actor::MAX_TURN` or `ActorType::max_turn`)
-  bounds a turn. A turn that runs into it is `failed("timeout")`, or retried when the message has a retry policy. A
-  handler that does not yield is cancelled only when it returns.
-- **SQLite** has one writer: fine for one node, or a few processes on one host. Use PostgreSQL for more.
-- **Memory per request.** Reading a JSON body takes up to about 90 times its size as JSON values before any check runs:
-  a body of 1 MiB that is a list of 520,000 numbers takes about 90 MB. The decoder of a node that hosts the type takes
-  one copy of the payload more. Both grow with the size of the body, so one request cannot end a node, but many large
-  ones at once take memory: bound them with the body limit of the router (`ApiConfig::max_request_body_bytes`, 1 MiB by
-  default) and with the number of requests at once that the host's router lets through (such as tower's
-  `ConcurrencyLimitLayer`).
+| Resource | Starting point | Watch for |
+| --- | --- | --- |
+| Turn concurrency | 16 per node | Lag for busy types; slow dependencies |
+| PostgreSQL pool | At least concurrency + 4 (default 20) | Renewal delays from connection starvation |
+| PostgreSQL connections | Sum node pools plus up to 2 listener/probe connections per node | Server `max_connections` |
+| Lease TTL | 30 s, heartbeat every 10 s | Recovery speed versus tolerance of pauses |
+| Maximum turn | 15 min, overridable by type | Timeouts and blocking handlers |
+| Request body | 1 MiB default | Many large JSON requests exhausting memory |
+
+Bound HTTP concurrency as well as bytes: parsing a body into JSON can take roughly 90 times its byte size for a list
+of tiny values. Remote completion reports contain **all** effects and state, so size their limit for the whole turn.
+Use `spawn_blocking` for blocking work; blocked tokio threads also stall heartbeats.
+
+SQLite has one writer and belongs on local disk, on one host. Use PostgreSQL for multiple hosts.
+[Store configuration](reference/stores.md) covers timeouts, WAL and TLS.
 
 ## Deploying
 
-- **`serve` and `worker`.** A binary built from `cicada-app` runs a node with `serve` (the node and the HTTP API) or
-  `worker` (the node only), configured by flags and `CICADA_…` variables:
+1. Build a host with the store feature and actor types it needs.
+2. Set the same retention and claim limit on every node sharing the store.
+3. Add authentication to the HTTP router before binding beyond loopback.
+4. Configure readiness, process liveness and a sufficient stop timeout.
+5. Start the host and check contract registration, readiness and message lag.
 
-  ```sh
-  myapp serve --store "$DATABASE_URL" --listen 0.0.0.0:8080 --concurrency 32   # a node that serves; add a layer first
-  myapp serve --store "$DATABASE_URL" --listen 0.0.0.0:8080 --types none       # a node that only serves HTTP
-  myapp worker --store "$DATABASE_URL" --types billing.invoices                  # a node that only runs turns
-  myapp worker --server https://actors.internal --types billing.invoices         # runs turns through the API
-  ```
+```sh
+myapp serve --store "$DATABASE_URL" --listen 0.0.0.0:8080 --concurrency 32
+myapp worker --store "$DATABASE_URL" --types billing.invoices
+# Alternative worker without database credentials:
+myapp worker --server https://actors.internal --types billing.invoices
+```
 
-  `serve` listens on `127.0.0.1:8080` unless `--listen` (`CICADA_LISTEN`) says otherwise, so in a container nothing
-  answers from outside until it is set. The API has **no authentication** unless the host adds a layer with
-  `App::http`: it can change and delete everything, so open it to a network only behind one. `serve` refuses
-  `--token`, which belongs to the operator commands, so it cannot look like protection; `worker` takes it only over
-  HTTP ([A worker over HTTP](guide/app.md#a-worker-over-http)). `/ready` stays public.
-  Set the same `--retention` (`CICADA_RETENTION`, 7 days by default) on every node of a system: it is how long
-  outcomes are kept and the window in which a message id is known. On PostgreSQL a node waits about a minute for a
-  database that is not there yet, so containers may start in any order: it tries again a second after each try and
-  starts no try after a minute, but one try can take seconds (about 10 s for an address that does not answer), so a
-  node that gives up may do so after more than a minute. A wrong password counts as unavailable and is tried again for
-  the whole wait, like an unreachable database; the warnings in the log name the error. Exit codes: 0 after a stop, 2
-  for a command line or a variable that cannot be used, 1 for a node that cannot start (or a worker over HTTP that
-  cannot start or stops by itself).
-- **Graceful stop.** `serve` and `worker` stop on `SIGTERM` and `SIGINT`. `serve` stops the node first: it claims no
-  more and lets running turns finish within the grace period, while the API keeps answering and `/ready` answers
-  `503`; then the HTTP server stops, requests still open get 5 s and are cut off after that, and the store is closed.
-  An open change stream (`GET /changes`) does not end when the node stops, so with a dashboard open the stop of
-  `serve` takes the node's stop plus those 5 s. `worker` stops the node and closes the store; over HTTP it stops its
-  `Worker` with the same grace period and cancel timeout, and closes nothing. A host that uses the layers directly handles signals itself: it waits
-  for `SIGTERM` (and Ctrl-C), calls `system.stop()`, and closes the store afterwards. On stop a node stops claiming,
-  lets running turns finish within `shutdown_grace_period` (30 s), then cancels them and releases their leases; a
-  cancelled turn that does not end
-  within `shutdown_cancel_timeout` (5 s) is left to its lease. Give the platform's stop timeout more than the sum
-  (e.g. Kubernetes `terminationGracePeriodSeconds`, compose `stop_grace_period`); otherwise the process is killed and
-  its turns wait out their lease. A process killed without `stop` loses no message: its turns re-run elsewhere after
-  the lease TTL. But each of them is a lost claim of its message, and a message with five lost claims ends `failed`
-  ([The claim limit](#the-claim-limit)), so a deploy that kills nodes as a matter of routine uses up that limit.
+The first command assumes the host has installed authentication. App defaults to loopback and provides no auth.
+`serve --types none` serves without running turns. A worker serves no HTTP and has no readiness endpoint.
+See [App](guide/app.md) for mode selection and startup errors.
 
-  ```rust,no_run
-  use std::time::Duration;
+### Shutdown and probes
 
-  use cicada::runtime::NodeConfig;
-  use cicada::store::PostgresOptions;
-  use cicada::{ActorSystem, Store};
-  use tokio::signal::unix::{SignalKind, signal};
+Serve handles SIGTERM/SIGINT in this order: stop claims, drain/cancel turns, drain HTTP (up to 5 s), close store.
+Default turn grace is 30 s and cancellation timeout 5 s. Give the platform more than their sum plus HTTP drain,
+for example 45 s. A forced kill uses up lost claims and delays recovery until lease expiry.
 
-  #[tokio::main]
-  async fn main() -> anyhow::Result<()> {
-      tracing_subscriber::fmt().with_env_filter("info").init(); // or EnvFilter::from_default_env() for RUST_LOG
-      let options = PostgresOptions { max_pool_size: 36, ..PostgresOptions::for_schema("orders") };
-      let store = Store::postgres(&std::env::var("DATABASE_URL")?, options).await?;
-      let node = NodeConfig { concurrency: 32, shutdown_grace_period: Duration::from_secs(30), ..NodeConfig::default() };
-      let system = ActorSystem::builder(store.clone())
-          // .host(…) the types this node runs
-          .config(node)
-          .build();
-      system.start().await?;
-      // … serve the HTTP API (see the HTTP guide) …
+Use `/ready` for readiness: 200 when the node runs and reaches the store, 503 during outage/stop.
+Keep liveness independent of the database, so an outage does not restart every node.
+Embedded hosts stop the node inside axum’s shutdown future, then close the store or explicitly bound streams.
+See [HTTP lifecycle](guide/http.md#run-it-in-an-axum-service).
 
-      let mut terminate = signal(SignalKind::terminate())?;
-      tokio::select! {
-          _ = tokio::signal::ctrl_c() => {}
-          _ = terminate.recv() => {}
-      }
-      system.stop().await; // turns finish or are cancelled; leases released
-      store.close().await; // after the node, never before
-      Ok(())
-  }
-  ```
+### Streams and proxies
 
-  When the node serves HTTP, stop it inside axum's `with_graceful_shutdown` future, as the axum service of
-  [the HTTP guide](guide/http.md#run-it-in-an-axum-service) and `serve` do: the API keeps answering while turns
-  finish, and `/ready` answers `503` from the moment `stop` begins.
-  With the HTTP server first, one request that stays open (a route that streams) would hold up the stop of the node
-  until the platform kills the process, and every turn running then would be a lost claim. Close the store in that
-  future too, after the node: axum waits for every open response, and a change stream ends only when its store
-  closes (or when the host cuts it off after a time of its own, as `serve` does).
-- **Change streams behind a proxy.** `GET /changes` is a response that stays open (Server-Sent Events, ADR 0035; the
-  [HTTP guide](guide/http.md#follow-changes-over-http) has the protocol). It sends a comment after 15 s without
-  output and says `X-Accel-Buffering: no`, but configure the proxy or load balancer in front of it yourself: no
-  buffering and no compression for the route, and idle and response timeouts well above 15 s. Each open page holds
-  one connection and one subscription; limit them in the host's middleware or proxy, as the API sets no quota. The
-  browser's `EventSource` sends no `Authorization` header, so a page authenticates with a session cookie, and from
-  another origin with CORS that allows credentials.
-- **Rolling deploys** work as long as the contracts stay equal: a node refuses to start when a type's contract
-  differs from the registered one. Check that in CI with contract snapshots (`cicada_test::assert_contracts_match`,
-  [Contract snapshots](guide/core.md#contract-snapshots)) and keep stored states readable with state samples
-  (`assert_state_decodes`).
-- **Schema migrations** run when a store is opened (`Store::sqlite`, `Store::postgres`), so the first
-  node of a new version migrates the database. On PostgreSQL concurrent starts serialise on an advisory lock, and a current schema runs no DDL, so a node may connect
-  as a user without `CREATE` once the schema was migrated. A store does not open a schema newer than its own (`StoreError::Invalid`). Start the new nodes
-  first, then stop the old ones, and do not restart old nodes after the migration; a release whose migration is not
-  additive needs every old node stopped first (see [Upgrading](#upgrading)).
-- **A migration that violates a constraint** of the database (two old keys that become one name in migration 3) fails
-  the open on both stores with `StoreError::Invalid`, which names the schema version it could not reach and holds the
-  database's message. The database stays at its version, and a node stops instead of retrying, as trying again cannot
-  help: fix the data and start it again. A lost connection, a locked SQLite file, a PostgreSQL deadlock and a missing
-  privilege stay `StoreError::Unavailable`, which a node may retry.
-- **Send-only nodes** (a node that hosts nothing) serve the whole API for every registered type and are a safe place
-  for public traffic: they never run turns.
-- **Probes.** The API's `GET /health` usually sits behind the host's authentication layer, where a probe has no
-  credentials. Merge `actor_health(system, "/ready")` outside it (`serve` answers `/ready` outside the host's router by
-  itself): it answers like `/health` (`200` with the node id and state when the node runs and reaches its store, else
-  `503`). Use it for **readiness** only. A `worker` serves nothing, so it has **no readiness check**: whatever runs it
-  sees only the process, and a worker that cannot reach its store keeps running and retries; so does a worker over
-  HTTP whose server is unavailable, while one the server refuses (`401`, `403`, a redirect) exits 1. A store outage makes
-  every node unready, and restarting them does not bring the store back, so do not use it for liveness. A Kubernetes
-  example for a node with the default 30 s grace period:
-
-  ```yaml
-  spec:
-    terminationGracePeriodSeconds: 45     # > shutdown_grace_period (30 s) + shutdown_cancel_timeout (5 s)
-    containers:
-      - name: node
-        readinessProbe:
-          httpGet: { path: /ready, port: 8080 }
-          periodSeconds: 5
-          failureThreshold: 3
-        livenessProbe:                     # the process answers HTTP; no store check
-          tcpSocket: { port: 8080 }
-          periodSeconds: 10
-          failureThreshold: 6
-  ```
-
-  A rolling update of two pods on one SQLite file (one host, a `ReadWriteOnce` volume) hands over cleanly: the old pod
-  finishes its running turn within the grace period and releases its lease, and the new pod continues.
+For `GET /changes`, disable buffering/compression and use idle/response timeouts above 15 s.
+Limit concurrent subscriptions in the host/proxy. Browser EventSource uses cookies rather than custom authorization
+headers. A store close ends streams; node stop alone does not. App bounds the drain for you.
 
 ### Changing a contract
 
-A node refuses to start when one of its types has a contract other than the registered one, so mixed versions never
-decode each other's messages differently. That holds also for compatible changes, such as a new field with a default,
-and for a dependency upgrade that changes the generated schemas (schemars). A reworded doc comment is not a change: the
-hash leaves out the schemas' `description`s (ADR 0017). `GET /types` keeps showing the descriptions of the first
-registration until the type is registered again. Change a type in one of two ways:
+A node requires exact contract-hash equality, even for a field added with a serde default. Snapshot the contract and
+check old state samples before deployment. Descriptions do not affect hashes; schemars upgrades can.
 
-- **Add, then switch.** Keep the old type and add the new one under a **versioned type name**
-  (`billing.v2.invoices`). New instances are created at the new address; senders switch to it in a later
-  release. Old instances keep running on their old contract until they are done, or a handler of the old type moves
-  them: it creates the new instance with its state converted and stops itself (`turn.create(&new_ref, &converted)?`,
-  then `turn.stop()`), in one atomic turn.
-- **Stop the world** (a single node, or a deploy that stops every node before starting new ones): reset the type's
-  registration in the store and start the new version. Use contract snapshots to see the change in CI and state
-  samples to prove old states still decode. Stop every node that hosts the type first: a running node registers its
-  type again at its next start, and one that is still up keeps running on the old contract. Then delete the actors
-  of the type (`DELETE /actors/{type}/{key}`) and remove its registration with `DELETE /types/{name}`; the call is
-  refused with `409` while an actor of the type exists. Start the new version, which registers its contract.
+| Strategy | Procedure |
+| --- | --- |
+| Versioned type | Add `billing.v2.invoices`, switch new senders, let old actors finish or explicitly migrate them |
+| Maintenance window | Stop all hosts/executors of the type; back up/export as needed; delete its actors, then registration; start new hosts |
 
-A type that starts to watch adds the variants `Failed(cicada::Failed)` and `Stopped(cicada::Stopped)` to its message
-family, so its contract changes like any other: deploy it in one of the two ways above. The schema of `Failed` is part
-of the contract of every type that watches; it gained the field `cause` in 0.14.0, and a new value of the cause would
-change it again (ADR 0028).
+`DELETE /types/{name}` refuses while actors exist. Deleting an actor also removes descendants, purges its mailbox and
+notifies watchers: plan for those effects before resetting. A type gaining watch variants, or a new Failed cause,
+changes watcher contracts too. [Upgrading](how-to/upgrading.md) has the version-specific procedures.
 
 ## Upgrading
 
-Stores write schema version 6 and apply any missing migrations in place when they open a database. Migrations are
-additive, so nodes of the previous version keep working during a rolling deploy, unless a release says otherwise: a
-migration that is not additive breaks the nodes of the previous version, so every old node is stopped before the first
-new one starts. The changelog says so for each such release. From 0.11.0 on both stores name the columns they read, so
-a later migration that only adds a column with a default can be additive: the statements of a running node of the
-release before keep working while it is applied.
-
-**Version 0.4.0 is such a release.** Its migration 2 (every actor has state, ADR 0018) gives every actor without a
-state the state `{}`, makes the state column required, and removes the registrations of the types that were
-stateless; an old node that writes an actor without a state fails. Stop every node of the old version, then start the
-new ones, the nodes that host the formerly stateless types first. Until a node that hosts such a type starts, its
-actors can be read and deleted, and messages already in a mailbox wait; a create of one and a send to one from outside
-a turn are refused (over HTTP `404 no-such-type`), a retry of a failed message of one is accepted and waits, and a turn
-on another node that creates one ends `failed` without a retry. The
-changelog of 0.4.0 lists the steps, including the code changes.
-
-**Version 0.6.0 is such a release.** A key is one name (ADR 0021), so key fields leave every contract and every
-contract hash changes. Its migration 3 removes every registration and rewrites `%3A` to `:` in the address columns:
-a `:` is an ordinary character of a name now, so `account/acme:7` is the address of the name `acme:7`. Before the
-upgrade, find the old keys of two fields that become one name with the query in the changelog of 0.6.0 and delete one
-actor of each pair with the old version; otherwise the migration fails and the database stays at version 2. A store
-of 0.7.0 or later reports that on both stores as an invalid store that names schema version 3 and holds the database's
-message, and a node stops; a store of 0.6.0 reported it as unavailable (on SQLite the store did not open), so a node
-that retried an unavailable store kept retrying. Stop every
-node of the old version, then start the new ones: the nodes that host a type before the nodes whose turns create
-actors of it, and nodes that only send last. Until a node that hosts a type starts, that type is not registered, with
-the effects described for 0.4.0 above; where two kinds of nodes create actors of each other's types, hold back the
-messages that start such turns until every node is up. Upgrade `ActorClient` users together with the nodes: an old
-client cannot decode the views of a new node. A prefix that holds the encoded colon itself (`x%3A` in code,
-`%253A` in a URL) is written with `:`. The changelog of
-0.6.0 lists the steps, including the code changes and what happens to a ref that changes its shape.
-
-**Version 0.8.0 is such a release.** An actor may have a parent (ADR 0019), and a delete or a stop removes the actor's
-descendants with it. Its migration 4 adds the column `actors.parent` and an index on it; every existing actor is
-independent. A node of 0.7.0 that opens the migrated database refuses it, but one that is still running does not
-notice: its deletes and stops remove one row and leave the children behind, as orphans that never go away. So stop
-every node of the old version, then start the new ones. Clients of 0.7.0 keep working: they ignore the new field
-`parent` of an actor's view.
-
-**Version 0.9.0 is such a release.** A watcher is told of the failures and removals of the actors it watches, in the
-transaction of the event (ADR 0023). Its migration 5 adds the table `watches` and the column `messages.notification`;
-no existing message is a notification and no watch is stored. A node of 0.8.0 that opens the migrated database refuses
-it, but one that is still running does not notice: a message that fails there tells no watcher, and an actor it removes
-keeps its watches as a watcher. So stop every node of the old version, then start the new ones. Clients of 0.8.0 keep
-working: they ignore the new field `notification` of a message's view. A host that ran `FailureWatcher` kept it until
-0.14.0, which replaces it with a watch.
-
-**Version 0.10.0 changes no schema.** A turn can pause, resume, purge and delete another actor (ADR 0024); its commit
-applies those effects, and an actor on a node of 0.9.0 is paused or deleted as it would be from outside. So nodes of
-0.9.0 and 0.10.0 can share a database during a rolling deploy, and clients need no upgrade.
-
-**Version 0.11.0 is such a release.** A message counts its lost claims, and a node fails a message at its claim limit
-(ADR 0025, [The claim limit](#the-claim-limit)). Its migration 6 adds the column `messages.lost_claims`; no existing
-message starts with a lost claim. A node of 0.10.0 that opens the migrated database refuses it, but one that is still
-running does not notice: it counts no lost claim, so the claims it replaces escape the limit, and its statements that
-read a message with `*` break on the changed table. On PostgreSQL they fail ("cached plan must not change result
-type") until the connection is replaced; on SQLite the worker of the driver (sqlx) crashes on them, and the store
-answers unavailable. So stop every node of the old version, then start the new ones. Clients of 0.10.0 keep working:
-they ignore the new field `lostClaims` of a message's view. A node that had no `CrashLoopGuard` now has a limit of 5;
-the changelog of 0.11.0 lists the code changes.
-
-**Version 0.12.0 changes no schema.** A send and a create over HTTP are checked against the registered JSON Schema of
-their type on every node (ADR 0026), so nodes of 0.11.0 and 0.12.0 can share a database; during a rolling deploy a node
-of 0.11.0 still answers as before. A client gets `422 invalid-payload` or `422 invalid-state` where it got `202` or
-`201` in two cases: what it sends serde accepts and the schema refuses (a field under its `#[serde(alias)]`, a form
-that only a hand-written `Deserialize` takes), or it sent anything that does not match its schema to a node that does
-not host the type. Before the nodes are upgraded:
-
-1. Add `cicada_axum::assert_message_sample` and `assert_state_sample` to the tests of each type, with what the type
-   serialises and with what clients send over HTTP ([The schema check](guide/http.md#the-schema-check)).
-2. A sample that fails only the schema shows a type whose schema and serde disagree. When it is a form that only some
-   clients send (an alias), stop sending it. When it is what the type itself writes (a field with `#[serde(with)]` and
-   no `#[schemars(with)]`), the schema is wrong and every send of the typed client would be refused; there is no switch
-   to turn the check off. Making the schema right changes the contract of the type: follow
-   [Changing a contract](#changing-a-contract).
-
-Clients need no upgrade.
-
-**Version 0.13.0 changes no schema and no wire format.** It adds `cicada-app` (ADR 0027), so nodes of 0.12.0 and
-0.13.0 can share a database. A host may move its start-up code onto `App`; nothing forces it. The command line moved
-from `cicada-cli` into `cicada-app` and is still the binary `cicada`; install it with `--features tui` for the
-terminal UI. A deployment of the sample service renames its variables ([Sample service](guide/app.md#sample-service));
-a node of it refuses to start while one of the old ones is set.
-
-**Version 0.14.0 changes no schema of the store, but it changes a wire format.** A `Failed` holds its cause (ADR
-0028), so the contract of every type that watches changes, and `cicada-actors` replaces `cicada-extras`, whose dead
-letters get a new contract. A system without a type that watches and without dead letters can deploy it rolling: nodes
-of 0.13.0 and 0.14.0 share a database, and clients need no upgrade. A system with either cannot; follow the steps:
-
-1. **The crate.** Replace `cicada-extras` by `cicada-actors` in the manifests. `Schedule` keeps its name
-   (`cicada_actors::Schedule`). Drop `FailureWatcher` and the task that ran it: a watch replaces it (step 3).
-2. **A type that watches.** Its contract changes with `Failed`. A `Failed` that a node of 0.13.0 wrote has no cause, and
-   a watcher of 0.14.0 cannot decode it: that message ends `failed`, and a notification that fails tells nobody. So
-   first let the watchers handle the notifications in their mailboxes (`GET /stats?prefix=<type>/` shows none
-   pending), then follow [Changing a contract](#changing-a-contract) for each such type. A handler that builds a
-   `Failed` by hand adds the cause.
-3. **Dead letters.** Their contract changes too, and the letters of 0.13.0 are lost:
-   1. Save the letters if they matter: `cicada get actor cicada.dead-letters/_ -o json`.
-   2. Stop every node. While a node of 0.13.0 runs, its `FailureWatcher` creates the actor again after it is deleted.
-   3. Start one node of 0.14.0 that does not host the type (`serve --types none`). Delete the actor and then the
-      registration: `cicada delete actor cicada.dead-letters/_`, then `cicada delete type cicada.dead-letters`. A node
-      that hosts the type refuses to start until that is done: its contract conflicts with the registered one.
-   4. Start the other nodes, create the actor again (`DeadLetters::default()` with `DeadLettersState::default()`, or
-      `cicada create actor cicada.dead-letters/_ --state '{}'`) and set its watch on every type: `ActorSystem::watch`, or
-      `cicada create watch --target '*' --watcher cicada.dead-letters/_`.
-4. **A supervisor and a topic** are new: nothing moves. Both watch, so create them only when no node of 0.13.0 is left:
-   such a node writes a `Failed` without a cause. Host a supervisor on nodes that host the types of its children, so
-   that a wrong entry is refused when the child starts ([Supervisor](guide/actors.md#supervisor)).
-
-The sample service no longer reads `FAILURE_WATCHER_INTERVAL`: a node that hosts the dead letters creates them and their
-watch at the start.
-
-**Version 0.15.0 changes no schema of the store, but it changes the contracts of some types.** A message schema holds
-every definition it refers to, whatever its name, and a reference to a family that holds itself accepts any value;
-[The contract of a type](guide/core.md#the-contract-of-a-type) names the three kinds of type that are hit. The contract
-hash of such a type changes, so a node of 0.15.0 that hosts it refuses to start against the registration of the
-release before (`ContractConflict`). Every other type keeps its contract byte for byte: a system without a type that
-is hit can deploy 0.15.0 rolling, with nodes of 0.14 and 0.15.0 on one database. Clients need no upgrade. Before any
-node is deployed:
-
-1. Raise the dependency to 0.15.0 and run the contract snapshot tests of every type (`assert_contracts_match`) against
-   the snapshots of 0.14.0 (0.14.1 makes the same contracts). A snapshot that changes names a type that is hit.
-2. For such a type, follow [Changing a contract](#changing-a-contract): a versioned type name, or a stop of the world
-   that stops every node that hosts it, deletes its actors and then its registration (`DELETE /types/{name}` answers
-   `409` while an actor of the type exists).
-
-A type with a newtype variant of a type whose name a reference escapes could not start before 0.15.0, so nothing of it
-is registered: it registers its first contract.
-
-**Version 0.16.0 changes no schema of the store, but it refuses values nested deeper than 64 levels** (ADR 0029,
-[How deep a value can be](guide/core.md#how-deep-a-value-can-be)). Nodes of 0.15.0 and 0.16.0 can share a database.
-During a rolling deploy a node of 0.15.0 still takes a deeper value, and a client that repeats such a send to a node of
-0.16.0 gets `400`, not the answer to a repeated send, as the limits come before the repeated id. Clients need no
-upgrade. No check before the upgrade finds a deep value; it shows up as a refusal or a failed turn after it.
-
-1. A host that sends or stores values deeper than 64 levels makes them shallower before the upgrade. Over HTTP a
-   payload or a state of 65 to 126 levels was checked against its schema and is `400` now; from code any depth was
-   taken. Mind the values that a host keeps inside its own states: a state that holds them a few levels down holds
-   them a few levels less deep.
-2. After the upgrade, an actor whose turns fail with `State cannot be stored: The state is nested deeper than 64
-   levels` holds a state from before that is too deep. Its turns that leave the state as it is still end as before.
-   Give it a shallower state from its handler, or delete it and create it again, which also drops its mailbox and its
-   children and tells its watchers `Stopped` (a supervisor of it then forgets it as a child). A state deeper than 126
-   levels, whose view `cicada-client` refuses, can be read with a parser that allows more, such as `curl` and `jq`.
-3. The ready-made actors keep values a few levels down ([Ready-made actors](guide/actors.md)):
-   - **Dead letters** that hold a letter whose payload is deeper than 61 levels record nothing more, and a `Redrive` or
-     a `Discard` of another letter fails, until that letter is discarded: send `Discard` with its `messageId`.
-     Deleting and creating the actor works too, and drops all its letters.
-   - **A supervisor** whose state holds a child state deeper than 61 levels or a start payload deeper than 60 fails
-     every turn that writes its state. Delete it, which deletes its children too, and create it again with a shallower
-     state; its `Start` starts them again.
-   - **A topic** with a pending `Publish` whose payload is deeper than 62 levels fails that `Publish`, as its
-     `Deliver` is refused at the call; the topic goes on with the next message.
-4. An operator cannot retry a message stored before the upgrade whose payload is deeper than 64 levels (`409
-   message-not-retryable`); a bulk retry skips it.
-
-**Version 0.16.10 changes no schema and no wire format of the HTTP API.** It adds change hints (ADR 0034,
-[Follow changes](guide/core.md#follow-changes)). On PostgreSQL every transaction that changes an actor now also sends
-an `@` payload on the store's channel; nodes of 0.16.9 ignore those payloads, so both versions can share a database.
-Only nodes of 0.16.10 send hints, though: a host that follows changes sees the writes of an older node only at its
-next `Resync`. Upgrade every node that writes, then let the followers subscribe again (or restart them), so that they
-read everything once.
-
-**Version 0.16.11 changes no schema, contract or existing route.** It adds `GET /changes` (ADR 0035), so a page that
-uses it needs a server of 0.16.11; an older one answers `404`. A node that serves it still sees only the hints of
-nodes of 0.16.10 or later. With a page open, `serve` may now use its whole 5 s drain on stop.
-
-**Version 0.16.13 changes no schema, contract or route.** It adds leases for executors outside the node (ADR 0037,
-[Lease turns for an executor outside the node](guide/core.md#lease-turns-for-an-executor-outside-the-node)), and a
-renewal no longer shortens a held lease. Nodes that share one `lease_ttl` see no difference, so nodes of 0.16.12 and
-0.16.13 can share a database. Lease and renew through nodes of 0.16.13 only: a node of 0.16.12 still sets a renewed
-lease to its own TTL, and one with a shorter TTL could end a lease a worker still holds.
-
-**Version 0.16.14 changes no schema, contract, route or store behaviour.** It adds the completion of leased turns
-(ADR 0038, [Complete a leased turn](guide/core.md#complete-a-leased-turn)); nodes of 0.16.13 and 0.16.14 can share a
-database. Complete through nodes of 0.16.14 only: an older node has no `complete_turn`.
-
-**Version 0.16.15 changes no schema, contract, route or store behaviour.** It adds `Worker`, which runs Rust actors
-through a turn source (ADR 0039, [Run actors in a worker](guide/core.md#run-actors-in-a-worker)); a node runs its turns
-as before. A worker leases, renews and completes through its source, so serve it from nodes of 0.16.14 or later.
-
-**Version 0.16.16 changes no schema, contract, store behaviour or existing route.** It adds the four `/leases` routes
-of the full API and `ActorClient` as a turn source (ADR 0040, [Run a worker over
-HTTP](guide/http.md#run-a-worker-over-http)). Point a worker over HTTP only at servers of 0.16.16 or later behind its
-load balancer: an older server answers `404`, which stops the worker with a fatal error. Extend the host's
-authentication to `/leases` and its children before exposing them.
-
-**Version 0.16.17 changes no schema, contract, route or store behaviour.** `worker` of `cicada-app` can run over HTTP
-(ADR 0042, [A worker over HTTP](guide/app.md#a-worker-over-http)) with `--server`, `--context` and `--token`, which it
-refused before. A worker on the store stays one: `--store`, or a non-blank `CICADA_STORE`, wins over `CICADA_SERVER`
-and `CICADA_CONTEXT` set for the operator commands, and it reads neither the config file nor `CICADA_TOKEN`. Only a
-worker without a store that has `CICADA_SERVER` or `CICADA_CONTEXT`, which failed before, now runs over HTTP.
-
-**Version 0.17.0 changes no schema of the store, but it changes the contract of the dead letters** (ADR 0043). A
-letter keeps a payload deeper than 61 levels as JSON text in `payloadJson` ([Dead letters](guide/actors.md#dead-letters)),
-so the contract hash of `cicada.dead-letters` and the Rust type `DeadLetter` change; a `Failed`, every other contract
-and the store stay as they were. A system without dead letters can deploy 0.17.0 rolling, with nodes of 0.16 and
-0.17.0 on one database. JSON text is now parsed with exact float rounding on every node of 0.17.0, which only makes a
-read more exact. A system with dead letters cannot deploy rolling: a node of 0.17.0 that hosts them refuses to start
-against the registration of 0.16 (`ContractConflict`), and a worker of 0.16 that leases them is refused
-(`ContractMismatch`). But a start-time check does not stop a node that runs already, and a reader of 0.16 cannot
-decode a letter that holds `payloadJson`. Keep the letters across a new registration in a maintenance window, with the
-tested steps of [examples/src/dead_letters_upgrade.rs](../examples/src/dead_letters_upgrade.rs) (example 16):
-
-1. **Check the shape.** The steps keep dead-letters actors that are independent (no parent), have no children and that
-   no actor watches by address. Deleting another shape removes its children and sends `Stopped` to its watchers: give
-   it a migration of its own. `export` checks this and stops, and so do the steps below whenever a check fails.
-2. **Quiesce.** Stop the senders of the watched work and let the watched turns finish, then let every dead-letters
-   mailbox drain (`GET /stats?prefix=cicada.dead-letters/` shows nothing pending, and no turn runs). A failure that
-   happens while the dead letters are gone tells nobody, and no letter is written for it. If the work cannot stop,
-   that gap stays: an outcome may be expired or hidden by then, and retrying the business messages is no copy of the
-   letters, as it can repeat their external effects.
-3. **Stop every node of 0.16**, local and remote workers too, and every hook that creates the dead letters at its start
-   (the sample service does). A node of 0.16 still running would go on reading and writing the old shape.
-4. **Back up the database, and export.** On a management node of 0.17.0 that hosts nothing, `export` reads every
-   dead-letters actor: its state, version, pause flag and the watches it holds. Write it to a file with `serde_json`,
-   never through a tool that rounds numbers, and check the file before you go on. Keep the backup until the end.
-5. **Convert.** `convert` moves each raw payload deeper than 61 levels to `payloadJson`, keeps every letter with its
-   metadata and `redrivenAs`, and runs `check`: each state must be one that `restore` can create, with no NUL
-   character in a string or a key, at most 64 levels, and the state type of 0.17.0. A legacy payload deeper than 64 levels is kept as text; a redrive refuses it, and `Discard` drops it. An
-   export that cannot be read needs a recovery from the backup.
-6. **Reset.** `reset` runs `check` again and checks that the store holds exactly the exported actors at their exported
-   versions; only then does it delete them, remove the registration and register the contract of 0.17.0.
-7. **Restore.** `restore` creates each actor again at its address with its converted state, pauses the mailboxes that
-   were paused, sets its watches again and compares. The actors are new instances: their version, epoch and creation
-   time are new, and no lease held before is valid. Then start the nodes of 0.17.0 and resume the senders.
-
-<!-- doctest
-@@4
-# async fn upgrade(store: cicada::Store) -> Result<(), Box<dyn std::error::Error>> {
-@@7
-# Ok(())
-# }
--->
-```rust,no_run
-// examples/src/dead_letters_upgrade.rs
-use cicada::ActorSystem;
-use cicada_examples::dead_letters_upgrade::{Export, convert, export, reset, restore};
-
-let manage = ActorSystem::builder(store).build(); // hosts nothing
-std::fs::write("dead-letters.json", serde_json::to_string_pretty(&export(&manage).await?)?)?;
-// … check the file and keep the backup …
-let mut saved: Export = serde_json::from_str(&std::fs::read_to_string("dead-letters.json")?)?;
-convert(&mut saved)?;
-reset(&manage, &saved).await?;
-restore(&manage, &saved).await?;
-```
-
-Clients that read the state of the dead letters with `DeadLetter` upgrade with the nodes: `payload` is a
-`LetterPayload`, read with `value()`. A raw letter deeper than 61 levels in a state that is not converted still fails
-every turn that writes the state; nothing repairs it by itself.
-
-**Switching a type to `create_child`.** An actor created with `turn.create` stays independent: a later `create_child`
-of it by its creator does not adopt it, but fails the creator's message (the commit is rejected, and a handler cannot
-test for that). So switch a parent type from `create` to `create_child` only when no parent of it is left that created
-actors the old way: start its data anew, or let those parents finish first. New parents can use `create_child` from
-the start.
-
-**Order of a rolling deploy.** For an additive migration: the first node of the new version migrates the database;
-from then on a node of the old version refuses to start (it does not open a schema newer than its own), while old nodes
-that are already running keep working. So: start the new nodes, then stop the old ones. Do not restart an old node
-after the migration (a crash-looping or rescheduled old pod will not come back), and do not roll back against a
-migrated database.
-
-**Upgrade nodes before clients.** Nodes decode request bodies strictly, so a request field a node does not know yet
-is a `400`. `ActorClient` leaves absent optional fields out of request bodies (no `"retry": null`), so a new client
-works against an older node as long as it does not use a newer feature. A release whose views lose a field that old
-clients require, as 0.6.0 does, needs its clients upgraded together with the nodes; the changelog says so.
+Follow [Upgrade Cicada](how-to/upgrading.md) for every version crossed.
+Store opening applies missing migrations; it refuses a newer schema. Only additive migrations permit already-running
+old nodes to continue. Start new nodes first for an additive migration, then stop old ones; do not restart/roll back
+old nodes against the migrated schema. A non-additive migration requires stopping all old nodes first.
+Upgrade nodes before clients unless the release requires coordinated replacement.
 
 ## Releasing
 
-A release is a tag `vX.Y.Z` on `main` (ADR 0016). All crates share the version in `[workspace.package]`.
-
-1. On `main`, set the version in `Cargo.toml` and run `cargo check`, which updates `Cargo.lock`. A breaking change raises
-   the minor number while the version is 0.x, anything else the patch number;
-   [the README](../README.md#using-a-release-in-another-project) says what counts as breaking. `docs/openapi.json`
-   carries the version: regenerate it (a test says how when it is stale) and update the README's `tag = "vX.Y.Z"`
-   lines.
-2. In `CHANGELOG.md`, replace `unreleased` in the heading of that version with today's date, as `YYYY-MM-DD`.
-3. Commit and push to `main`, and wait for CI.
-4. Run `scripts/release-check.sh vX.Y.Z`. It prints the release notes, or says what is wrong.
-5. `git tag -a vX.Y.Z -m vX.Y.Z` and `git push origin vX.Y.Z`.
-
-The push starts `.github/workflows/release.yml`: the same check, CI, then the end-to-end suite, and only then a GitHub
-Release with the changelog section as its notes. If a check fails, no release exists yet: delete the tag
-(`git push origin :refs/tags/vX.Y.Z` and `git tag -d vX.Y.Z`), fix the cause on `main` and tag again. A tag with a
-GitHub Release is never moved or deleted; a correction is a new version.
-
-When the next change lands, add a section `## X.Y.Z — unreleased` to the changelog and set that version in `Cargo.toml`.
+Follow [Release Cicada](how-to/releasing.md). A release is an immutable tag on main after the required checks pass.
 
 ## On call
 
-- **Health.** `GET /health` is 200 while the node runs and its store answers, 503 otherwise (also while it stops).
-  Use it for readiness; for liveness, prefer a check that does not fail when only the database is down.
-- **Failures.** `GET /outcomes?status=failed&since=…` lists failed messages with envelope and error, kept for the outcome
-  retention (7 days). Without `status` it lists every finished message. For longer, host `DeadLettersActor`
-  (`cicada-actors`) and watch every type for it: failures become dead letters, each with its cause, that an operator
-  redrives or discards with a message. A watcher of `*` is told of every failure without polling, in the transaction
-  of the failure. A supervisor that gives up on a child fails a message of its own (`restart limit: …` with the cause
-  `handler`, or `cannot start …` and `cannot read …` with the cause `refused`), so dead letters show it; a `Start` to
-  the supervisor takes the child back.
-- **Watches.** `GET /watches` (`cicada get watches`, `:watches` in `cicada tui`) lists them by target and watcher. A
-  watcher of every type (`*`) gets a `Failed` in its mailbox for every failure of the system, and on PostgreSQL every
-  commit that ends a message `failed` locks its row; failures are the rare case, and removals do not reach it, as a
-  watch on a type tells of failures only. A watcher that does not keep up lets notifications pile up in its mailbox,
-  which `GET /stats?prefix=` and its mailbox show. One event can write many messages, for an actor with many watchers
-  or a tree whose actors are each watched; it is one transaction, like the removal of a tree. A watch on one actor
-  stays when that actor is gone for good: a watcher that is done with a target removes its watch, for example when it
-  handles the `Stopped`. A notification that fails tells nobody and is not retried; its outcome shows it, and
-  `POST /messages/{id}/retry` sends it again.
-- **A message that keeps killing its node** (out of memory, an abort, a native crash) ends `failed` at the claim limit,
-  with the error `claim limit: <n> lost claims`; see [The claim limit](#the-claim-limit).
-- **Stuck instances.** An instance whose state no longer decodes fails every turn: its messages end `failed` one by
-  one. Fix the state type (add `#[serde(default)]`), or delete and re-create the instance (`DELETE`, then
-  `PUT /actors/{type}/{key}`; the delete purges its mailbox and removes its descendants).
-- **What a delete removes.** `DELETE /actors/{type}/{key}` (`cicada delete actor`) removes the actor and every
-  descendant: the actors its turns created with `create_child`, theirs, and so on, in one transaction. Every pending
-  message of them ends `purged`, a turn running on one commits nothing, and the delete counts the purged messages of
-  the whole tree. Actors created with `create` are independent and stay. See what an actor owns first with
-  `GET /actors/{type}/{key}/children` (`cicada get children`, or the `children` tab of an actor in `cicada tui`), one
-  level at a time. A turn's `delete` removes the same, in the commit of that turn.
-- **Control effects of turns.** A turn can pause, resume, purge and delete other actors (ADR 0024), for example a
-  supervisor that restarts a worker with a delete and a create. Nothing in the store records who did it: the node logs
-  each such effect of a commit it saw succeed (see [Logs](#logs)), and a watcher of the actor gets a `Stopped` with
-  `by` for a delete. An effect on an actor that is not there does nothing, so a supervisor with a wrong address fails
-  silently; the log line shows the target. Any actor can control any other.
-- **What a restart does to a running handler.** A delete, from outside or by a turn, ends the lease of a turn running
-  on the actor: that turn commits nothing, and its message ends `purged` and is never handled again. Its handler runs on
-  until its next heartbeat finds the lease gone (within a third of the lease TTL) or, in blocking code, until it
-  returns. When the actor is created again at once, as a restart does, the first turn of the new actor can start
-  meanwhile, so for a moment two handlers run for one address: the old one commits nothing, but what it does outside
-  the store overlaps with the new one. Use the message id as the idempotency key of external calls, and keep handlers
-  that a supervisor may restart free of blocking code.
-- **A large tree** is removed in one transaction that writes one `purged` outcome per pending message of every
-  descendant; on SQLite it holds the single writer meanwhile. On PostgreSQL a removal that takes longer than
-  `socket_timeout` (30 s) cannot finish: every delete of the tree answers `503 store-unavailable`, and a `stop()` of
-  its root fails and is handled again and again. There are two ways out: remove the tree from the leaves up, listing
-  each level with `GET /actors/{type}/{key}/children` and deleting the deepest actors first, or raise `socket_timeout`
-  (`PostgresOptions`) for the node that runs the removal. A tree of many thousands of actors with full mailboxes is
-  better removed bottom-up by its own code. A turn that deletes the root of a large tree is such a removal too, in its
-  own commit, as a `stop()` is. One more reason: on PostgreSQL the watchers of the removed root are locked for the
-  whole removal, so a turn running on one of them cannot renew its lease meanwhile; a removal that takes nearly as long
-  as the lease costs that turn its lease, and its handler runs again.
-- **Store down.** Nothing proceeds and HTTP answers 503 `store-unavailable`; `ActorClient` retries sends with the same
-  id. Nodes recover on their own when the store returns: the dispatch loop retries claims after `poll_interval`, and
-  the PostgreSQL wake-up listener reconnects with a back-off (from 250 ms, doubling up to 30 s),
-  polling meanwhile.
+Start with `health`, `get nodes`, `get turns`, `get outcomes --status failed`, and `stats --prefix TYPE/`.
+Stats scans rows under the prefix: avoid frequent unfiltered polling on large stores.
+
+| Symptom | Check | Action |
+| --- | --- | --- |
+| Every node unready, HTTP 503 | Store connectivity/pool | Restore the store; nodes retry automatically |
+| Mailbox grows | Hosted types, paused flag, turn duration, concurrency | Resume or add capacity for the affected type |
+| Every message fails as state | Stored shape versus decoder | Restore compatibility/defaults or migrate data |
+| `claim limit: N lost claims` | Node crashes, pauses, blocked handlers, uncertain commits | Fix cause, then retry selected messages |
+| Failed send at commit | Target exists, child-parent/control conflicts | Repair the target/configuration before retrying |
+| Timer chain stopped | Cancelled/purged/exhausted timer | Scheduler: Start; debounce/batcher: Flush; flow: Continue |
+| Supervisor gave up | Child entry, state, restart limit | Correct the entry/deployment; send Start |
+| HTTP worker stops | `stopped()` error; auth, route versions, response format | Fix fatal source/protocol problem before restarting |
+
+For failures beyond outcome retention, host [dead letters](guide/actors.md#dead-letters) and explicitly set a watch.
+Watch their mailbox too: notifications can queue up. A notification that fails does not notify another watcher.
+
+### Destructive controls
+
+| Operation | Effect |
+| --- | --- |
+| Pause | Stop new claims; keep running turn and pending messages |
+| Purge | End pending messages except the running one as purged |
+| Cancel running turn | Request cancellation at heartbeat; only wins before the handler ends |
+| Delete | Remove actor and descendants; purge all their pending/running messages |
+| Operator retry | Create a new message/id; may repeat external work |
+
+Inspect direct children before deleting a tree. Independent actors created with `create` remain.
+A deleted handler may continue briefly and perform external calls, but cannot commit, even after recreation.
+Large trees delete in one transaction: remove leaves first or raise the management node’s PostgreSQL transaction timeout
+if the removal cannot finish. Long removals can also block watchers’ renewals.
 
 ### The claim limit
 
-A message counts its lost claims, and a node fails a message with as many as its limit, `NodeConfig::max_lost_claims`
-(5 by default), instead of running it (ADR 0025). The message ends `failed` with the error
-`claim limit: <n> lost claims`, without asking its retry policy, and its watchers get a `Failed`.
+The default limit is 5 lost claims. A claim is counted lost when another claimant replaces it without a commit/release.
+Hard kills, lease expiry and uncertain commits can cause it; committed handler retries and confirmed releases do not.
+The count never decreases, and includes losses beside the work that actually crashed a node.
 
-- **What counts.** A claim is lost when another claim takes its place although its turn neither committed nor gave the
-  lease back. That is a node that died or was killed hard, also as a matter of routine (a deploy that sends SIGKILL, an
-  out-of-memory kill, a crash), a lease that ran out (a long pause of the process, a partition from the store), and a
-  commit that did not get through. A node that stops in good order but leaves a lease to run out loses that claim
-  too: a stop that comes after a handler ended, while its commit is under way, or that a handler which does not yield
-  outlasts. So stop a node with its grace period (`shutdown_grace_period`), and give the limit room for routine kills,
-  or raise it.
-- **What does not count.** A release: a node that stops in good order and gives back the claims of handlers that had not
-  ended, or a claim it could not run, such as one whose answer came from a slow store only after the lease it asked for
-  had run out. A failed run that is committed as a retry. A lease that runs out with no claim
-  after it: its turn can still commit.
-- **One message takes others with it.** The limit cannot tell the message that kills a node from the messages that ran
-  beside it: each of them loses its claim when the node dies. A message that kills its node at once, as often as the
-  limit allows, takes every message that the node claimed with it each time to the limit too, and they all end `failed`
-  together. Their errors name the limit: send them again (`POST /messages/{id}/retry`, `cicada retry`, or a bulk retry
-  by prefix); the one that fails again is the cause. A supervisor that restarts an actor on every `Failed` restarts the
-  actors of those messages too.
-- **The count never goes back**, also not after a retry that was committed: it counts over the life of the message. A
-  message that lives long and is retried often can gather lost claims over weeks, and the limit then ends it although
-  its last loss is long ago. A message sent again is a new message with none.
-- **How to see it.** `lostClaims` in the view of a message (`GET /messages/{id}`, the mailbox, `/outcomes`), the
-  column `LOST` of `cicada get messages -o wide` and the line `Lost claims` of a message in `cicada tui`: a message on
-  its way to the limit before it gets there. A node logs each failure by the limit at the warning level (see
-  [Logs](#logs)). A watcher tells such a failure from a failure of a handler by the start of the error,
-  `claim limit:`; it is a hint, as a handler can return an error with the same start.
-- **Setting it.** `NodeConfig { max_lost_claims: Some(10), ..NodeConfig::default() }` raises it, `None` turns it off,
-  and `Some(0)` fails the start. Each node applies its own limit, so set one value on every node of a system.
+Inspect `lostClaims` / the wide listing’s `LOST` column. Keep `max_lost_claims` identical on every node;
+`None` disables the protection. Fix the underlying problem before retrying: each operator retry starts a fresh message.
+Use the structured `Failed.cause` when available, rather than matching an error-text prefix.
 
 ### Node table
 
-Every node, send-only ones too, writes a row to the `nodes` table every 10 s, with its id and hosted types; `GET /nodes`
-and `GET /nodes/{node}` read it. Status is derived from the age of the last heartbeat in the store's clock: `alive`
-(under 30 s), `suspect` (under 2 min), `dead`. Any node's heartbeat removes rows older than a day, and a clean stop
-removes the node's own row. The table is for display only: leases decide who runs what, so a wrong status cannot cause
-overlapping turns. A stopped turn is not forced away from a node that is alive: `POST
-/actors/{type}/{key}/turn/cancel` asks the owning node to cancel it within one heartbeat, and a dead node's lease
-expires by itself within the lease TTL.
+Nodes heartbeat every 10 s. Display status is alive below 30 s, suspect below 2 min, dead afterward.
+A clean stop removes its row; rows over a day old are cleaned by node heartbeats.
+The table is diagnostic: leases, not node status, determine ownership. Workers have no node rows.
 
 ### External leases
 
-A system can lease turns to executors outside it ([Lease turns for an executor outside the
-node](guide/core.md#lease-turns-for-an-executor-outside-the-node)). Such a turn shows in `GET /turns` and in the turn
-of its actor under the executor's id, which has no row in the node table and is not in the node's concurrency. The
-serving node's `lease_ttl` and claim limit apply, and the executor keeps a deadline of its own. A lease that its
-executor loses, or whose response never reached it, expires after the TTL, and the claim that replaces it counts a
-lost claim, as a dead node's would. Stopping a node does not wait for the leases executors hold.
+Remote turns appear under the executor’s id in running turns, outside local concurrency. The server’s TTL/claim limit
+apply; stopping a server does not release them. Workers own their lifecycle and never close their source.
 
-An executor ends a leased turn with the report of its handler ([Complete a leased
-turn](guide/core.md#complete-a-leased-turn)) through any node of the store, stopped ones included. The node applies
-its own retry policy rules and storage limits, but runs no handler, tells its own observers nothing and never releases
-the lease. No receipt of a completion is stored: after a lost answer, the executor's repeat gets `LeaseLost`, and
-retention may already have removed the outcome, so reading the message cannot always settle an uncertain completion.
+| Failure | Consequence |
+| --- | --- |
+| Lost completion response | It may have committed; repeat the same report within budget, never rerun the handler |
+| Rejected report | Replace it permanently with the returned failure |
+| 413 completion | Report too large; repeated losses can exhaust the claim limit |
+| Old deeply nested data | Lease response may be unreadable and fatal; repair data before restarting workers |
+| 401/403/404/500, redirect or unknown result | Fatal source error; inspect credentials, server version and protocol |
+| Failed renewal | No extension confirmed; work stops at its deadline unless a later renewal succeeds |
 
-A `Worker` is such an executor for Rust actors ([Run actors in a worker](guide/core.md#run-actors-in-a-worker)). It has
-no row in the node table and no sweep: its leases show under its `worker_id`, and its life cycle is its own, apart from
-the source's. Size its `concurrency` as a node's; it counts lease requests in flight as well as running turns. Watch
-`Worker::stopped`: a contract mismatch or a source that refuses its requests stops it by itself, with the error, rather
-than leaving it idle. A completion it cannot get through within one TTL is abandoned without release, logged as
-`Completion of … abandoned; the lease will expire` or `… dropped …; it may have applied`, and the lease expires as a
-dead node's would.
-
-A worker over HTTP ([Run a worker over HTTP](guide/http.md#run-a-worker-over-http)) needs only the URL of the full API
-behind a load balancer, no sticky sessions, and credentials the host's authentication accepts for `/leases`, its
-children and `PUT /types/{name}`: these are trusted writes, and an epoch is no secret. Give the worker a
-`reqwest::Client` without redirects and without a retry layer of its own. Each lease, renewal, release and completion
-takes at most `turn_timeout` (10 s by default) or the client's own shorter timeout; a load balancer's idle and request
-timeouts must be longer than that, and much shorter than the server's `lease_ttl`, or every renewal comes too late.
-
-`worker --server` (or `--context`) of an `App` builds that worker from its flags and the config file: no redirects,
-no retry of its own, 30 s for each request and the 10 s turn timeout for the lease calls. Its credentials also need
-`GET /types`, which it asks before the start while the server is unavailable (a second apart, no try after a minute,
-so about 90 s at most before the registration), and `GET /types/{name}`, read once after a contract conflict. It
-refuses the settings the server owns (`--lease-ttl`, `--heartbeat-interval`, `--max-lost-claims`, `--retention` and
-those of the store) and an `App` with `on_start`, which needs a node on the store: run that bootstrap with `serve` or a
-worker on the store.
-
-- **Body limits.** A completion carries the whole report of a turn. Size `ApiConfig::max_request_body_bytes` (1 MiB by
-  default) and every proxy's body limit for the largest report a handler can produce, not for one send. A report over
-  a limit is `413`: the worker abandons the turn, and the lease expires and is claimed again, so the handler runs again
-  and fails the same way. With a claim limit set ([The claim limit](#the-claim-limit)) the message then fails with cause
-  `claim-limit` after that many lost claims; without one it loops, repeating any external effect each time. Raise the
-  limit, or make the handler's output smaller, then retry the failed messages.
-- **Deep old states.** A state or payload stored before 0.16.0 can be nested deeper than a lease's JSON parser reads
-  (128 levels, less the three or four of the body around it); a lease of it answers a body the worker cannot parse,
-  which is fatal and stops the worker, and its claims expire. Restarting a loop of such workers only repeats it: fix
-  or delete the actor or the message first.
-- **Uncertain completions.** A completion whose answer was lost (a `502` of the proxy, a timeout) may have applied: the
-  worker repeats its report until it is answered or its budget runs out, and a `leaseLost` then proves nothing either
-  way. No receipt is stored, so treat effects as at least once and give external calls idempotency keys.
-- **Failure modes.** A `401`, `403`, `404` or `500` from the API, a redirect, or a response body that arrived whole
-  but is not a result this version reads is fatal (a body cut off in transit is unavailable): a lease request that gets it stops the worker (`Worker::stopped` returns it), and a completion that gets it
-  abandons that turn. A renewal that fails in any way extends nothing: the worker tries again, and abandons the turn at
-  its deadline unless a later renewal gets through. `503`, `502`, `504`, `429`, `408` and network errors are retried
-  by the worker in its own rhythm.
+Use an HTTP client without redirects or hidden mutation retries. Every selected server must support lease routes.
+Set timeouts below the lease budget; App uses a 10 s turn timeout and a 30 s overall request timeout.
+A proxy’s timeouts/body limit must accommodate those requests and whole completion reports.
+[HTTP workers](guide/http.md#run-a-worker-over-http) describes classifications and required permissions.
 
 ### Logs
 
-The runtime and the stores log with [`tracing`](https://docs.rs/tracing); the host installs a subscriber
-(`tracing_subscriber::fmt()`, filtered with `RUST_LOG` through `EnvFilter`). Nothing is printed without one. Events
-worth an alert:
+Install a `tracing` subscriber in embedded hosts. App does this and accepts `RUST_LOG`.
 
-| Level | Message | Meaning |
-| --- | --- | --- |
-| warn | `Claiming failed; retrying after …` | The store is unreachable or failing. |
-| warn | `Commit of … failed; retrying …`, `Commit of … refused: …` | A commit could not be written; the turn re-runs after its lease, or the message ends `failed`. |
-| info | `Commit of … rejected: lease lost` | A turn outlived its lease (a stalled runtime, a pause, a slow store); another node may have run it. |
-| warn | `Handler of … is still running … it does not yield` | Blocking code in a handler; move it to `spawn_blocking`. |
-| error | `Turn of … panicked …`, `A turn task failed` | A panic outside the handler (the runtime): a bug. A handler's own panic is an ordinary handler failure (`panic: …`). |
-| warn | `Message … has N lost claims, as many as the claim limit allows: it fails without running` | A message reached the [claim limit](#the-claim-limit): its turns kept dying, or ran beside one that did. |
-| warn | `Claim of … for … arrived after its lease deadline; it is given back` | The store answered a claim so late that its lease had run out: nothing ran, and the claim is not lost. Often it means a slow or overloaded store. When it adds that giving it back failed, the lease runs out and the claim counts as lost. |
-| warn | `An observer panicked when the turn started; it is left out of this turn: …`, `… when the turn ended: …`, `… when its turn was dropped: …` | An observer has a bug; the turn went on as if that observer were not there. |
-| warn | `A header of an observer is left out of the sends of the turn: …`, `The header '…' of an observer is left out of a send to …` | A header that the limits of a message refuse, or that did not fit into a message of 64 headers; a trace breaks at that message. |
-| warn | `Retention sweep failed`, `Store wake-ups ended; falling back to polling` | The node keeps working, slower or with more stored data. |
-| warn | `Ignoring the retry policy of …` | A stored policy that cannot be decoded is read as no policy. |
-| warn | `The schema of message type '…' of … cannot be used by the validator and is not enforced at the door: …`, `The schema of the state of … …` | The HTTP door cannot compile a registered schema (a `$ref` outside the document, a pattern its regular expressions do not know), so sends or creates of that type pass unchecked and a node that does not host it lets through what its decoder would refuse. Logged once per schema in the life of the process. The sample checks of the type fail too; fix its schema, which is a contract change. |
-| info | `Cancelling N turns after the grace period of …` | A stop that cut running turns off. |
-| info | `Turn of supervisor/main for 3f2c…: delete worker/w1` | A committed turn paused, resumed, purged or deleted an actor (fields `actor`, `effect`, `target`); whether the target existed, the commit does not say. Nothing else records who did it. |
+| Signal | Likely cause / response |
+| --- | --- |
+| Claiming failed / retention sweep failed | Store unavailable; inspect connectivity and capacity |
+| Commit refused or rejected | Inspect error, target and contract/control assumptions |
+| Lease lost / claim arrived after deadline | Slow store, process pause or blocked runtime |
+| Handler still running, does not yield | Move blocking work to spawn_blocking |
+| Runtime task panic | Runtime bug; preserve error/context |
+| Schema cannot be used and is not enforced | Fix schema and add representative sample tests |
+| Observer panic / omitted header | Observer bug or header limits; tracing can be incomplete |
+| Completion abandoned / may have applied | Uncertain remote commit; preserve idempotency |
+
+Committed control effects are logged with actor, effect and target. The store does not retain an audit history of
+who paused/purged/deleted an actor. A Stopped notification identifies the deleting actor when deletion came from a turn.
 
 ## Store tuning
 
-PostgreSQL (`PostgresOptions`, feature `postgres`):
-
-| Setting | Default | Notes |
-| --- | --- | --- |
-| `schema` | `public` | Created on start when absent. Separate schemas let environments or tests share a database. |
-| `retention` | 7 days | Outcome retention and the dedup window of message ids. |
-| `max_pool_size` | 20 | At least `concurrency + 4`; see [Sizing](#sizing). |
-| `socket_timeout` | 30 s | Longest single transaction attempt; then it fails and its connection is closed, so a dead peer without a TCP reset cannot block a claim, commit or stop. It also bounds the largest tree a delete or a stop can remove ([On call](#on-call)). Zero disables it. |
-
-Connection parameters (`sslmode`, `sslrootcert`, `application_name`, `options`, …) go in the URL of
-`Store::postgres(url, options)`; it is the one way to open the store, and a setting a URL cannot carry is added to
-`PostgresOptions` when a host needs it. For TLS see [TLS for PostgreSQL](#tls-for-postgresql). Store time
-is the server's `clock_timestamp()`, read after each transaction's row locks, so run PostgreSQL with a disciplined
-clock (NTP).
-
-Change hints (ADR 0034) ride on PostgreSQL's `NOTIFY`. A transaction that changes an actor (a create, a new state, a
-pause or resume, a removal) sends one notification of at most 7,998 bytes on the store's channel, with its wake-ups, in
-one statement before `COMMIT`; a commit that changes no actor sends what it sent before. A commit that only writes a
-state now notifies too: a little more work per commit, and one more entry in the server's notification queue (8 GB by
-default; `max_notify_queue_pages` from PostgreSQL 17 on). The queue is cleared as every listener reads it, so a session
-that listens on any channel and holds a transaction open, or stops reading, keeps it from being cleared;
-`SELECT pg_notification_queue_usage()` shows how full it is. A full queue fails the `COMMIT` with SQLSTATE `54000`,
-which the store reports as unavailable (`503`): the commit is not applied, and the usual rules for a commit that
-fails apply (the message stays pending). A `COMMIT` can also time out or lose its answer, as before; the hints follow what the server committed. Every
-store keeps one listening connection, started by the dispatch loop or by the first subscriber. Hints are best effort: a
-host that needs every change of an older node, of SQL by hand, or after a runtime shut down keeps its own periodic full
-read.
-
-SQLite (`SqliteOptions`, feature `sqlite`):
-
-| Setting | Default | Notes |
-| --- | --- | --- |
-| `retention` | 7 days | As for PostgreSQL. |
-| `busy_timeout` | 5 s | How long a write waits for another process's lock before it fails as unavailable. |
-| `clock` | system clock | The store clock; a virtual one in tests. |
-
-The file runs in WAL mode with `synchronous = FULL`. Keep it on a local disk, not a network file system. Store time
-never steps back (a persisted high-water mark), but a wall clock that jumps forward moves it forward too: leases
-expire early and delayed messages fall due early, so run the host with NTP slewing.
+[Store configuration](reference/stores.md) lists all settings and clock behavior.
+For PostgreSQL, monitor `pg_notification_queue_usage()`: a listener holding a transaction open or not reading can fill
+the queue. A full queue fails COMMIT with SQLSTATE 54000 (unavailable). Polling still handles work while the listener
+reconnects, but change feeds need Resync when listening resumes. Older writers/manual SQL need periodic full reads.
 
 ### TLS for PostgreSQL
 
-The feature `postgres` builds the driver with TLS (rustls); there is nothing else to switch on. Ask for TLS with
-`sslmode` in the URL:
-
-- `disable`, `allow`: plain text; the driver never tries TLS.
-- `prefer` (the default): TLS without checking the server's certificate when the server offers TLS, plain text when
-  it does not. Once the server has offered TLS, a failed handshake fails the connection; it does not go back to plain
-  text (`sslmode=disable` does).
-- `require`: TLS or no connection; the server's certificate is not checked.
-- `verify-ca`: as `require`, and the certificate must be signed by a trusted CA.
-- `verify-full`: as `verify-ca`, and the certificate must name the host of the URL.
-
-The trusted CAs are the built-in list of public CAs (webpki-roots) and those in the PEM file that `sslrootcert` names
-(`…?sslmode=verify-full&sslrootcert=/etc/ssl/db-ca.pem`); the certificate store of the operating system is not read.
-A database rarely has a certificate of a public CA: one with a private or cloud-provider CA needs `sslrootcert`.
-`sslcert` and `sslkey` name the files of a client certificate and its key, for a server that asks for one. For each of
-the four that the URL does not name, the driver reads `PGSSLMODE`, `PGSSLROOTCERT`, `PGSSLCERT` or `PGSSLKEY` from the
-environment, so the default mode can come from there. The default `prefer` neither insists on TLS nor checks the
-server, so set the mode on purpose: `sslmode=verify-full`, or at least `require`.
-
-The crates of Cicada build rustls on the crypto provider `aws-lc-rs`; a host that adds a library that builds rustls on
-`ring` has two providers, and must install a default at start
-(`rustls::crypto::aws_lc_rs::default_provider().install_default()`), or every call that leaves the choice to rustls
-panics.
+Set `sslmode=verify-full` and `sslrootcert` for a private CA; do not rely on the default prefer mode for verification.
+[The TLS reference](reference/stores.md#tls-for-postgresql) covers modes, environment variables and client certificates.
 
 ## Telemetry
 
-Add `ActorTelemetry` (`cicada-otel`, [OpenTelemetry](guide/core.md#opentelemetry)) to a node with `observe` to get a
-span per turn and the metrics `cicada.turn.duration` and `cicada.message.lag`. Useful signals:
+Attach [ActorTelemetry](guide/core.md#opentelemetry) and configure the host’s OpenTelemetry SDK/exporters.
 
-- **Lag** (`cicada.message.lag`) rising for one type: too few nodes host it, `concurrency` is too low, or its turns
-  got slower. A message is claimed at most `poll_interval` late when nodes are idle.
-- **Failed turns** (`cicada.turn.duration` count with `cicada.outcome="failed"`), by type. Each such span has an
-  `exception` event with the error, whatever failed: the handler, a timeout, a message or a state that does not decode,
-  a rejected commit, or the claim limit (`claim limit: …`).
-- **Retries** (`cicada.outcome="rescheduled"`) climbing: a dependency is failing and senders' retry policies are
-  absorbing it. These spans have an `exception` event too.
-- **Abandoned turns** (spans with `cicada.outcome="abandoned"`): turns of which the node saw no commit succeed. They
-  lost their lease, were cut off by a stop, or their commit did not get through. They have no `exception` event, also
-  when their handler failed; each one that another claim replaces is a lost claim of its message.
-- Mailbox depth is not a metric (it needs a store query); `GET /stats?prefix=` counts the actors and pending messages
-  under a prefix and names the delivery time of the oldest due message, and `GET /messages?prefix=` lists them. A
-  call reads every row under the prefix, so poll it rarely, and with a prefix on a big store.
+| Signal | Meaning |
+| --- | --- |
+| Rising `cicada.message.lag` | Too little capacity for a type or slower handlers/dependencies |
+| `cicada.turn.duration`, outcome failed | Terminal failures; inspect span exception |
+| Outcome rescheduled | Sender policies are absorbing failures; inspect the dependency |
+| Outcome abandoned | No acknowledged commit: lost lease, interrupted stop or uncertain commit |
+| Growing pending count / oldestDue | Queue backlog; read stats for a targeted prefix |
+
+Abandoned spans have no exception event even if the handler failed. Timer spans are new traces linked to the sending
+turn; ordinary messages propagate their parent. Mailbox depth requires a store query and is not an exported metric.
