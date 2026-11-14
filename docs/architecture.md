@@ -553,6 +553,18 @@ carries no state, version or kind of change, because a version starts again at 0
 - **PostgreSQL settings.** Connection parameters go in the URL; no type of the SQL driver is in the public API, so a
   setting a URL cannot carry is added to `PostgresOptions` when a host needs it (ADR 0018). `socket_timeout` bounds a whole transaction attempt (the
   connection is then closed), not every read, because sqlx has no per-read timeout.
+- **Closing a store.** Every `Store::close` call, on its first poll and before awaiting anything, refuses new operations,
+  closes the change hub and stops new connections: PostgreSQL marks its main pool closed and aborts its listener;
+  SQLite closes its reader permits. Each caller runs these idempotent steps; an unpolled future has no effect.
+  Callers then serialize cleanup through a mutex that retains progress until completion. PostgreSQL joins the aborted
+  listener, retaining its handle across a cancelled join, then closes the main pool and waits for borrowed connections.
+  SQLite waits for and closes its writer (which a write or settle task may hold), then closes idle readers one at a time.
+  A cancelled call leaves untouched connections for the next caller; a connection whose own close was cancelled is
+  left to the SQL driver's cleanup, which later calls do not join. No caller returns merely because the closed flag
+  is set, and no background task completes a cancelled close: call close again or drop the last store handle.
+  SQLite does not wait for reads in flight; returning readers check the closed flag under the pool lock and drop their
+  connections rather than refill a drained pool. Cleanup has no deadline. After runtime shutdown, remaining resources
+  follow Tokio/sqlx drop rules without graceful close. The memory store closes immediately.
 - **Cancelling `run_due_turns`.** Dropping its future cancels the turns like a node stop after the grace period: the
   worker is stopped first, then the lease is released only when the handler had not ended, and claims that arrive
   after the caller is gone are released.

@@ -199,6 +199,7 @@ async fn main() -> anyhow::Result<()> {
 `ReportsActor` is from [sync.rs](../../examples/src/sync.rs). Select the `sqlite` or `postgres` feature to open that store.
 `start()` checks hosted types and registers contracts; a different registered hash is `StartProblem::ContractConflict`.
 `Store` clones share one backend; `ActorSystem` clones share one node. The caller owns the store.
+For shutdown deadlines and a cancelled `close()`, see [shutdown guidance](../operations.md#shutdown-and-probes).
 
 ### List actors with their state
 

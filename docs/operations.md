@@ -51,6 +51,11 @@ Keep liveness independent of the database, so an outage does not restart every n
 Embedded hosts stop the node inside axum’s shutdown future, then close the store or explicitly bound streams.
 See [HTTP lifecycle](guide/http.md#run-it-in-an-axum-service).
 
+`Store::close` has no deadline: PostgreSQL waits for borrowed connections; SQLite waits for its writer, but not reads.
+A host may time it out and call it again: the store stays closed and the next call resumes cleanup. Cancellation
+leaves no background cleanup task, so call close again or drop the last store handle. The
+[architecture](architecture.md#design-notes) defines the close contract and driver/runtime limits.
+
 ### Streams and proxies
 
 For `GET /changes`, disable buffering/compression and use idle/response timeouts above 15 s.
