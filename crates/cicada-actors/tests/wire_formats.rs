@@ -726,12 +726,18 @@ impl Flow for SignUpFlow {
     }
 }
 
+/// The hash of the test flow's contract since 0.18.0 (ADR 0044): the releases that enabled replies, deadlines and joins
+/// changed descriptions only.
+const FLOW_HASH_OF_0_18_0: &str = "sha256:6ab4427f7456de8a94083af3f452df1aecbb70ac68c6e3702ad758bb280d5d13";
+
 /// A flow's contract is the host's: pinned with the actor tests, not in `docs/reference/contracts`. It holds the sleep
 /// entry of the journal, so a flow that sleeps, as this one does since sleeps were added, has the fixture of before.
+/// Scenario: Rollout and contract equality: its hash is that of 0.18.0, with no new wire field.
 #[test]
 fn the_contract_of_a_test_flow_matches_its_fixture() {
     let contract = contract_of::<FlowActor<SignUpFlow>>().unwrap();
     assert_eq!(contract.type_name().as_str(), "test.sign-up");
+    assert_eq!(contract.hash(), FLOW_HASH_OF_0_18_0);
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/contracts");
     let update = std::env::var(UPDATE_CONTRACTS_ENV).is_ok_and(|v| v == "true");
     if let Err(e) = check_references(&fixtures, std::slice::from_ref(&contract), update) {

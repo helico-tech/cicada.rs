@@ -8,14 +8,14 @@
   invalid new deadlines with replies, ignored new durations on replay, reordered/extended/mode-changed input, and
   single/all equivalence in both directions. Compile Send futures with Vec/array and a Send but non-Sync reply T.
   Run flow unit tests and API doctests; no iterator/builder API or new wire discriminator.
-- [ ] 2. Generalize Reply handling to sufficient all/first joins while preserving check order, terminal/reserved
+- [x] 2. Generalize Reply handling to sufficient all/first joins while preserving check order, terminal/reserved
   behavior, sender rules and value limits. Partial all replies keep armed/deadline/correlation; sufficient replies
   atomically save request-ordered selection, cancel older armed work and arm using the completing reply's correlation.
   Generalize New/Close/Parked/Waiting runner paths with no data returned before a committed decision. Keep unrelated
   early replies from changing the active wait. Test with start_paused/TestActors: partial and final all replies,
   parked waits, first winners, unrelated replies, no-flow-code counters, atomic failure, and metadata. Run targeted
   actor tests and existing single/timed wait regressions.
-- [ ] 3. Add virtual-time race/recovery coverage: both open and early first-arrival orders, earliest accepted reply
+- [x] 3. Add virtual-time race/recovery coverage: both open and early first-arrival orders, earliest accepted reply
   independent of input priority, supplied array order, partial all timeout in both arrival orders, zero timeout with
   partial versus sufficient replies, supplied progress past deadline, last-needed reply/timer equal-time seq orders,
   late loser/missing replies (also too-deep values), pause and purged-timer recovery. Prove decision then later-step

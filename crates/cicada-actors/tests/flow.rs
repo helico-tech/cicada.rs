@@ -735,8 +735,7 @@ impl ScriptFlow {
                     let values: Vec<u32> = typed_join(step, &wait, &asks).await?;
                     p.note(&wait, json!(values));
                 } else {
-                    let caught = AssertUnwindSafe(typed_join::<Boom>(step, &wait, &asks)).catch_unwind().await;
-                    assert!(caught.is_err(), "the decoder panicked");
+                    let _ = AssertUnwindSafe(typed_join::<Boom>(step, &wait, &asks)).catch_unwind().await;
                     step.run("after-boom", |key| p.call(key)).await?;
                 }
             }
@@ -3020,20 +3019,24 @@ async fn a_slow_commit_makes_the_timer_due_late_without_moving_the_saved_deadlin
 }
 
 /// The core `TurnSource` of a system, for a worker that hosts the flow. While `reject` is set, it turns down the
-/// completion of the first turn whose new state closes a wait as timed out, as a store that rejects the commit does
-/// (cause `commit`, not retryable), applying nothing, and keeps that report; every other call goes to the system.
+/// completion of the first turn whose new state closes a wait with `outcome` (`timedOut` or `received`), as a store that
+/// rejects the commit does (cause `commit`, not retryable), applying nothing, and keeps that report; every other call
+/// goes to the system.
 struct RejectingDecisions {
     system: ActorSystem,
+    outcome: &'static str,
     reject: Arc<AtomicBool>,
     rejected: Arc<Mutex<Vec<TurnReport>>>,
 }
 
-/// Whether `report` sets a state whose journal holds a wait closed as timed out.
-fn decides_timeout(report: &TurnReport) -> bool {
-    let TurnReport::Returned { state: StateReport::Set(state), .. } = report else {
-        return false;
-    };
-    state["journal"].as_array().is_some_and(|entries| entries.iter().any(|e| e["outcome"] == "timedOut"))
+impl RejectingDecisions {
+    /// Whether `report` sets a state whose journal holds a wait closed with the outcome this source rejects.
+    fn decides(&self, report: &TurnReport) -> bool {
+        let TurnReport::Returned { state: StateReport::Set(state), .. } = report else {
+            return false;
+        };
+        state["journal"].as_array().is_some_and(|entries| entries.iter().any(|e| e["outcome"] == self.outcome))
+    }
 }
 
 #[async_trait::async_trait]
@@ -3070,7 +3073,7 @@ impl TurnSource for RejectingDecisions {
         message_id: &MessageId,
         report: TurnReport,
     ) -> Result<CompleteTurnResult, SourceError> {
-        if decides_timeout(&report) && self.reject.swap(false, Ordering::SeqCst) {
+        if self.decides(&report) && self.reject.swap(false, Ordering::SeqCst) {
             self.rejected.lock().unwrap().push(report);
             let reason = "the store rejected the commit".to_owned();
             return Ok(CompleteTurnResult::Rejected(TurnFailure {
@@ -3105,8 +3108,9 @@ async fn a_rejected_timeout_decision_commits_nothing_and_a_reply_or_a_later_deci
         let test =
             TestActors::builder().with(|node| node.host(ResponderActor).host(WitnessActor)).build().await.unwrap();
         let (reject, rejected) = (Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(Vec::new())));
+        let system = test.system().clone();
         let source =
-            RejectingDecisions { system: test.system().clone(), reject: reject.clone(), rejected: rejected.clone() };
+            RejectingDecisions { system, outcome: "timedOut", reject: reject.clone(), rejected: rejected.clone() };
         let worker =
             cicada::runtime::Worker::builder(source).host(FlowActor::new(ScriptFlow { probe: probe.clone() })).build();
         worker.initialize().await.unwrap();
@@ -3156,4 +3160,690 @@ async fn a_rejected_timeout_decision_commits_nothing_and_a_reply_or_a_later_deci
         assert_eq!(probe.ids(), ["after"], "{recovery}");
         assert_eq!(state(&test, "k").await.status, FlowStatus::Done, "{recovery}");
     }
+}
+
+// Joins (flow-wait-join).
+
+/// A request `id` to `responder/<to>`, which keeps the route for a later answer.
+fn later(id: &str, to: &str) -> Op {
+    ask(id, to, Answer::Later)
+}
+
+/// The join `id` of every one of `requests`, with a timeout of `secs` seconds when given.
+fn all_op(id: &str, requests: &[&str], secs: Option<u64>) -> Op {
+    Op::WaitAll { id: id.into(), requests: requests.iter().map(|r| (*r).to_owned()).collect(), secs }
+}
+
+/// The join `id` of the first of `requests`, with a timeout of `secs` seconds when given.
+fn first_op(id: &str, requests: &[&str], secs: Option<u64>) -> Op {
+    Op::WaitFirst { id: id.into(), requests: requests.iter().map(|r| (*r).to_owned()).collect(), secs }
+}
+
+/// Creates the responders `names`.
+async fn responders(test: &TestActors, names: &[&str]) {
+    for name in names {
+        test.create(&responder(name), &ResponderState::default()).await;
+    }
+}
+
+/// Has `responder/<to>` reply `value` to its kept route, with the correlation id `correlation` when given.
+async fn answer(test: &TestActors, to: &str, value: Value, correlation: Option<&str>) {
+    let mut options = SendOptions::new();
+    options.correlation_id = correlation.map(str::to_owned);
+    test.send_with(&responder(to), ResponderMsg::Answer { value }, options).await;
+}
+
+/// The message ids of the requests `names` of the journal of `key`, in that order.
+async fn request_ids(test: &TestActors, key: &str, names: &[&str]) -> Vec<MessageId> {
+    let mut ids = Vec::new();
+    for name in names {
+        ids.push(request_id(test, key, name).await);
+    }
+    ids
+}
+
+/// What the probe notes for a first join won by the request at `index` with `value`.
+fn won(index: usize, value: Value) -> Value {
+    json!({"index": index, "value": value})
+}
+
+/// Scenarios: Partial and final all reply; Reply closes an open wait; and Partial typed results, of a received join. Each
+/// partial reply to a timed join keeps its value and leaves the deadline's `Continue`, its id, due time and correlation,
+/// as they were, without flow code; the last missing reply closes the join with every request in request order,
+/// cancels the deadline's `Continue` and arms one due now with its own correlation id; the next execution returns the
+/// values in request order.
+#[tokio::test(start_paused = true)]
+async fn partial_replies_keep_the_deadline_and_the_last_one_closes_the_join_in_request_order() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    responders(&test, &["r1", "r2", "r3"]).await;
+    let ops = vec![
+        later("a", "r1"),
+        later("b", "r2"),
+        later("c", "r3"),
+        all_op("done", &["a", "b", "c"], Some(SLOW.as_secs())),
+        op(|id| Op::Step { id }, "after"),
+    ];
+    start(&test, "k", script(ops)).await;
+    let until = after(test.now(), SLOW);
+    test.run_until_idle().await;
+    let timer = waiting(&test, "k", "done", until).await;
+    let asked = request_ids(&test, "k", &["a", "b", "c"]).await;
+
+    for (to, value, kept) in [("r3", "c", vec![2]), ("r1", "a", vec![2, 0])] {
+        let version = test.version(&run("k")).await;
+        answer(&test, to, json!(value), Some("c-partial")).await;
+        test.run_until_idle().await;
+        assert_eq!(test.version(&run("k")).await, version + 1, "{to}: the value alone commits");
+        let expected: Vec<FlowReply> = kept.iter().map(|&i| kept_reply(&asked[i], json!(["a", "b", "c"][i]))).collect();
+        assert_eq!(state(&test, "k").await.replies, expected, "{to}: kept in the order accepted");
+        let still = waiting(&test, "k", "done", until).await;
+        assert_eq!((still.id, still.correlation_id), (timer.id.clone(), timer.correlation_id.clone()), "{to}");
+        assert!(probe.keys().is_empty() && probe.got().is_empty(), "{to}: the Reply turn runs no flow code");
+    }
+
+    answer(&test, "r2", json!("b"), Some("c-last")).await;
+    test.system().run_due_turns(1).await.unwrap(); // the target
+    let version = test.version(&run("k")).await;
+    test.system().run_due_turns(1).await.unwrap(); // the last reply
+    assert_eq!(test.version(&run("k")).await, version + 1, "one commit");
+    assert_eq!(timed_entry(&test, "k", "done").await, (Some(until), Some(WaitOutcome::Received), asked.clone()));
+    assert_eq!(outcome(&test, &timer.id).await.unwrap().status, OutcomeStatus::Cancelled, "the deadline's timer");
+    let next = armed(&test, "k").await;
+    assert!(next.deliver_at <= test.now(), "due now");
+    assert_eq!((next.retry, next.correlation_id.as_deref()), (Some(three_attempts()), Some("c-last")));
+    assert!(probe.keys().is_empty() && probe.got().is_empty(), "the Reply turn runs no flow code");
+
+    test.run_until_idle().await;
+    let slots = json!([received(json!("a")), received(json!("b")), received(json!("c"))]);
+    assert_eq!(probe.got(), [("done".to_owned(), slots)], "request order, not arrival order");
+    assert_eq!(probe.ids(), ["after"]);
+    assert_eq!(state(&test, "k").await.status, FlowStatus::Done);
+}
+
+/// A kept reply to `request`.
+fn kept_reply(request: &MessageId, value: Value) -> FlowReply {
+    FlowReply { request: request.clone(), value }
+}
+
+/// Scenario: Parked or unrelated reply, of a parked join. A partial reply to an untimed join keeps `armed` null and
+/// arms nothing; the last one closes it.
+#[tokio::test(start_paused = true)]
+async fn a_partial_reply_to_a_parked_join_keeps_it_parked() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    responders(&test, &["r1", "r2"]).await;
+    let ops = vec![later("a", "r1"), later("b", "r2"), all_op("done", &["a", "b"], None)];
+    parked(&test, "k", script(ops), "done").await;
+    answer(&test, "r2", json!(2), None).await;
+    test.run_until_idle().await;
+    assert_parked(&test, "k", "done").await;
+    assert_eq!(state(&test, "k").await.replies.len(), 1, "the value is kept");
+    answer(&test, "r1", json!(1), None).await;
+    test.run_until_idle().await;
+    assert_eq!(probe.got(), [("done".to_owned(), json!([1, 2]))]);
+    assert_eq!(state(&test, "k").await.status, FlowStatus::Done);
+}
+
+/// Scenarios: First result; Late loser and cleanup; and Reply closes an open wait, of a first join. The first reply to
+/// any listed request closes the join with that request alone and arms with its correlation id; the next execution
+/// returns its position. A losing target's later reply, a deep one too, is ignored before its value is checked, the
+/// losing target is not stopped, and a later wait cannot name its request again.
+#[tokio::test(start_paused = true)]
+async fn the_first_reply_wins_a_first_join_and_a_late_loser_is_ignored() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    responders(&test, &["r1", "r2", "r3"]).await;
+    let ops = vec![
+        later("a", "r1"),
+        later("b", "r2"),
+        later("c", "r3"),
+        first_op("quote", &["a", "b", "c"], None),
+        op(|id| Op::Step { id }, "after"),
+        wait_op("again", "a"),
+    ];
+    parked(&test, "k", script(ops), "quote").await;
+    let asked = request_ids(&test, "k", &["a", "b", "c"]).await;
+    answer(&test, "r2", json!(20), Some("c-win")).await;
+    test.system().run_due_turns(1).await.unwrap(); // the target
+    test.system().run_due_turns(1).await.unwrap(); // the reply
+    assert_eq!(wait_entry(&test, "k", "quote").await, (Some(WaitOutcome::Received), vec![asked[1].clone()]));
+    assert_eq!(armed(&test, "k").await.correlation_id.as_deref(), Some("c-win"));
+    assert!(probe.got().is_empty(), "decided, not yet returned");
+    test.run_until_idle().await;
+    assert_eq!(probe.got(), [("quote".to_owned(), won(1, json!(20)))]);
+    assert_eq!(probe.ids(), ["after"]);
+    refused(&test, "k", "wait `again` names the request").await;
+    refused(&test, "k", "of the wait `quote`").await;
+
+    let before = unchanged(&test, "k").await;
+    test.send(&responder("r1"), ResponderMsg::Raw { run: addr(&run("k")), request: asked[0].clone(), depth: 62 }).await;
+    answer(&test, "r1", json!(10), None).await;
+    answer(&test, "r3", json!(30), None).await;
+    test.run_until_idle().await;
+    assert_eq!(unchanged(&test, "k").await, before, "late losers write nothing");
+    assert!(test.failures().await.iter().all(|f| f.envelope.message_type != "Reply"), "no reply failed");
+    assert!(test.exists(&responder("r1")).await, "the losing target is not stopped");
+    assert_eq!(responder_state(&test, "r3").await.routes.len(), 1, "and keeps its work");
+}
+
+/// Scenario: Parked or unrelated reply, of an unrelated reply. A reply to a request the active join does not name
+/// keeps its value and leaves the join and its armed continuation as they were, also when supplied progress already
+/// holds enough replies for that join; a later execution then decides it.
+#[tokio::test(start_paused = true)]
+async fn an_unrelated_reply_leaves_the_active_join_alone() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    responders(&test, &["r1", "r2", "r3"]).await;
+    let ops =
+        vec![later("a", "r1"), later("b", "r2"), later("c", "r3"), all_op("done", &["a", "b"], Some(SLOW.as_secs()))];
+    start(&test, "k", script(ops)).await;
+    let until = after(test.now(), SLOW);
+    test.run_until_idle().await;
+    let timer = waiting(&test, "k", "done", until).await;
+    answer(&test, "r3", json!(3), None).await;
+    test.run_until_idle().await;
+    assert_eq!(state(&test, "k").await.replies.len(), 1, "kept");
+    assert_eq!(waiting(&test, "k", "done", until).await.id, timer.id, "the join and its timer stay");
+
+    // Supplied progress: an open first join with a listed reply kept, and no armed continuation.
+    let ops = vec![later("a", "r1"), later("b", "r2"), later("c", "r3"), first_op("done", &["a", "b"], None)];
+    let journal = vec![
+        saved_request("a", "r1", "m1"),
+        saved_request("b", "r2", "m2"),
+        saved_request("c", "r3", "m3"),
+        open_wait("done", &["m1", "m2"], WaitMode::First, None),
+    ];
+    let progress = FlowState { replies: vec![kept("m1", json!(1))], ..restored(script(ops), journal) };
+    test.create(&run("supplied"), &progress).await;
+    let message = ResponderMsg::Raw { run: addr(&run("supplied")), request: MessageId::new("m3").unwrap(), depth: 1 };
+    test.send(&responder("r3"), message).await;
+    test.run_until_idle().await;
+    let held = state(&test, "supplied").await;
+    assert_eq!(held.replies, [kept("m1", json!(1)), kept("m3", json!([null]))]);
+    assert_eq!((held.armed, wait_entry(&test, "supplied", "done").await), (None, (None, vec![])), "left alone");
+    assert!(test.pending(&run("supplied")).await.is_empty());
+    test.send(&run("supplied"), FlowMsg::Continue).await;
+    test.run_until_idle().await;
+    assert_eq!(wait_entry(&test, "supplied", "done").await.1, vec![MessageId::new("m1").unwrap()]);
+    assert!(probe.got().contains(&("done".to_owned(), won(0, json!(1)))), "{:?}", probe.got());
+}
+
+/// Scenarios: Multiple early replies; and First waits select the earliest accepted listed reply, in both open and early
+/// arrival orders. The winner is the listed request accepted first, whatever its place in the request list and
+/// whether the join existed when the replies came.
+#[tokio::test(start_paused = true)]
+async fn the_earliest_accepted_reply_wins_a_first_join_whatever_the_order_of_its_requests() {
+    for (case, early, order, index) in [
+        ("open, b first", false, ["r2", "r1"], 1),
+        ("open, a first", false, ["r1", "r2"], 0),
+        ("early, b first", true, ["r2", "r1"], 1),
+        ("early, a first", true, ["r1", "r2"], 0),
+    ] {
+        let probe = Probe::default();
+        let test = node(&probe).await;
+        responders(&test, &["r1", "r2"]).await;
+        let mut ops = vec![later("a", "r1"), later("b", "r2")];
+        if early {
+            ops.push(sleep("nap", MINUTE));
+        }
+        ops.push(first_op("quote", &["a", "b"], None));
+        start(&test, "k", script(ops)).await;
+        test.run_until_idle().await;
+        for to in order {
+            answer(&test, to, json!(to), None).await;
+            test.run_until_idle().await;
+        }
+        test.advance_time_by(MINUTE).await;
+        let winner = request_id(&test, "k", ["a", "b"][index]).await;
+        assert_eq!(wait_entry(&test, "k", "quote").await, (Some(WaitOutcome::Received), vec![winner]), "{case}");
+        assert_eq!(probe.got(), [("quote".to_owned(), won(index, json!(order[0])))], "{case}");
+        let kept = if early { 2 } else { 1 };
+        assert_eq!(state(&test, "k").await.replies.len(), kept, "{case}: an early loser's value stays kept");
+    }
+}
+
+/// Scenario: Supplied open first wait. Supplied progress is trusted with the order of its kept replies: the earliest
+/// listed one in that array wins, and is committed before any data reaches the code.
+#[tokio::test(start_paused = true)]
+async fn supplied_first_progress_is_decided_by_the_order_of_its_kept_replies() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    let ops = vec![later("a", "r1"), later("b", "r2"), first_op("quote", &["a", "b"], None)];
+    let journal = vec![
+        saved_request("a", "r1", "m1"),
+        saved_request("b", "r2", "m2"),
+        open_wait("quote", &["m1", "m2"], WaitMode::First, None),
+    ];
+    for (key, replies, index) in [("b-first", ["m2", "m1"], 1), ("a-first", ["m1", "m2"], 0)] {
+        let kept_replies = replies.iter().map(|r| kept(r, json!(r))).collect();
+        let progress = FlowState { replies: kept_replies, ..restored(script(ops.clone()), journal.clone()) };
+        start_with(&test, key, progress).await;
+        test.system().run_due_turns(1).await.unwrap(); // the poke
+        test.system().run_due_turns(1).await.unwrap(); // the decision
+        let winner = MessageId::new(replies[0]).unwrap();
+        assert_eq!(wait_entry(&test, key, "quote").await, (Some(WaitOutcome::Received), vec![winner]), "{key}");
+        assert!(!probe.got().contains(&("quote".to_owned(), won(index, json!(replies[0])))), "{key}: not yet");
+        test.run_until_idle().await;
+        assert!(probe.got().contains(&("quote".to_owned(), won(index, json!(replies[0])))), "{key}");
+    }
+}
+
+/// Scenarios: Partial typed results, in both arrival orders; and Zero timeout and supplied progress, of a strict
+/// subset. At the deadline a join with replies missing commits timed out with the kept ones in request order, and the
+/// next execution returns a slot per request; a first join that times out returns no winner.
+#[tokio::test(start_paused = true)]
+async fn a_partial_join_times_out_with_its_kept_replies_in_request_order() {
+    for order in [["r1", "r3"], ["r3", "r1"]] {
+        let probe = Probe::default();
+        let test = node(&probe).await;
+        responders(&test, &["r1", "r2", "r3"]).await;
+        let ops =
+            vec![later("a", "r1"), later("b", "r2"), later("c", "r3"), all_op("done", &["a", "b", "c"], Some(60))];
+        start(&test, "k", script(ops)).await;
+        let until = after(test.now(), MINUTE);
+        test.run_until_idle().await;
+        for to in order {
+            answer(&test, to, json!(to), None).await;
+            test.run_until_idle().await;
+        }
+        let timer = waiting(&test, "k", "done", until).await;
+        tokio::time::sleep(MINUTE).await;
+        test.system().run_due_turns(1).await.unwrap(); // the deadline
+        let asked = request_ids(&test, "k", &["a", "c"]).await;
+        assert_eq!(
+            timed_entry(&test, "k", "done").await,
+            (Some(until), Some(WaitOutcome::TimedOut), asked),
+            "{order:?}"
+        );
+        assert_eq!(outcome(&test, &timer.id).await.unwrap().status, OutcomeStatus::Done);
+        assert!(probe.got().is_empty(), "{order:?}: decided, not yet returned");
+        test.run_until_idle().await;
+        let slots = json!([received(json!("r1")), timed_out(), received(json!("r3"))]);
+        assert_eq!(probe.got(), [("done".to_owned(), slots)], "{order:?}");
+    }
+
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    responders(&test, &["r1", "r2"]).await;
+    start(&test, "k", script(vec![later("a", "r1"), later("b", "r2"), first_op("quote", &["a", "b"], Some(60))])).await;
+    test.run_until_idle().await;
+    test.advance_time_by(MINUTE).await;
+    assert_eq!(wait_entry(&test, "k", "quote").await, (Some(WaitOutcome::TimedOut), vec![]));
+    assert_eq!(probe.got(), [("quote".to_owned(), timed_out())]);
+}
+
+/// Scenario: Zero timeout and supplied progress, of a new zero-timeout join: with a partial set of early replies it
+/// commits open first and times out in the next turn with that subset; with all of them it commits received at once.
+#[tokio::test(start_paused = true)]
+async fn a_zero_timeout_join_commits_open_first_unless_every_reply_came_early() {
+    for (key, early) in [("partial", vec!["r1"]), ("all", vec!["r1", "r2"])] {
+        let probe = Probe::default();
+        let test = node(&probe).await;
+        responders(&test, &["r1", "r2"]).await;
+        let ops = vec![later("a", "r1"), later("b", "r2"), sleep("nap", MINUTE), all_op("done", &["a", "b"], Some(0))];
+        start(&test, key, script(ops)).await;
+        test.run_until_idle().await;
+        for to in &early {
+            answer(&test, to, json!(to), None).await;
+        }
+        test.run_until_idle().await;
+        tokio::time::sleep(MINUTE).await;
+        test.system().run_due_turns(1).await.unwrap(); // the new join
+        let asked = request_ids(&test, key, &["a", "b"]).await;
+        if key == "partial" {
+            waiting(&test, key, "done", test.now()).await;
+            test.system().run_due_turns(1).await.unwrap(); // the timer, due at once
+            assert_eq!(wait_entry(&test, key, "done").await, (Some(WaitOutcome::TimedOut), asked[..1].to_vec()));
+        } else {
+            assert_eq!(wait_entry(&test, key, "done").await, (Some(WaitOutcome::Received), asked));
+        }
+        assert!(probe.got().is_empty(), "{key}: decided, not yet returned");
+        test.run_until_idle().await;
+        let slots = if key == "partial" {
+            json!([received(json!("r1")), timed_out()])
+        } else {
+            json!([received(json!("r1")), received(json!("r2"))])
+        };
+        assert_eq!(probe.got(), [("done".to_owned(), slots)], "{key}");
+    }
+}
+
+/// Scenario: Zero timeout and supplied progress, of supplied progress past its deadline: with every reply kept it
+/// closes received, not timed out; with a strict subset it closes timed out with that subset in request order.
+#[tokio::test(start_paused = true)]
+async fn supplied_timed_join_progress_past_its_deadline_decides_by_its_kept_replies() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    let ops = vec![later("a", "r1"), later("b", "r2"), later("c", "r3"), all_op("done", &["a", "b", "c"], Some(60))];
+    let journal = vec![
+        saved_request("a", "r1", "m1"),
+        saved_request("b", "r2", "m2"),
+        saved_request("c", "r3", "m3"),
+        open_wait("done", &["m1", "m2", "m3"], WaitMode::All, Some("2020-01-01T00:00:00Z")),
+    ];
+    let m = |ids: &[&str]| -> Vec<MessageId> { ids.iter().map(|i| MessageId::new(*i).unwrap()).collect() };
+    for (key, replies, decided, selected) in [
+        ("every", vec!["m3", "m1", "m2"], WaitOutcome::Received, m(&["m1", "m2", "m3"])),
+        ("subset", vec!["m3", "m1"], WaitOutcome::TimedOut, m(&["m1", "m3"])),
+    ] {
+        let kept_replies = replies.iter().map(|r| kept(r, json!(r))).collect();
+        let progress = FlowState { replies: kept_replies, ..restored(script(ops.clone()), journal.clone()) };
+        start_with(&test, key, progress).await;
+        test.system().run_due_turns(1).await.unwrap(); // the poke
+        test.system().run_due_turns(1).await.unwrap(); // the decision
+        assert_eq!(wait_entry(&test, key, "done").await, (Some(decided), selected), "{key}");
+        test.run_until_idle().await;
+        assert_eq!(state(&test, key).await.status, FlowStatus::Done, "{key}");
+    }
+    let slots = |middle: Value| json!([received(json!("m1")), middle, received(json!("m3"))]);
+    assert_eq!(
+        probe.got(),
+        [("done".to_owned(), slots(received(json!("m2")))), ("done".to_owned(), slots(timed_out()))]
+    );
+    assert!(!test.exists(&responder("r1")).await, "the saved requests are not sent again");
+}
+
+/// Scenario: Races and immutable replay, of equal delivery times in both orders. The last missing reply, due at the
+/// deadline, races the deadline's `Continue`: the lower sequence number is handled first and its decision wins.
+#[tokio::test(start_paused = true)]
+async fn the_last_needed_reply_and_the_deadline_due_at_the_same_time_are_handled_in_sequence_order() {
+    for reply_first in [false, true] {
+        let probe = Probe::default();
+        let test = node(&probe).await;
+        responders(&test, &["r1", "r2"]).await;
+        start(&test, "k", script(vec![later("a", "r1"), later("b", "r2"), all_op("done", &["a", "b"], Some(60))]))
+            .await;
+        let until = after(test.now(), MINUTE);
+        test.run_until_idle().await;
+        answer(&test, "r2", json!("b"), None).await;
+        test.send(&responder("r1"), ResponderMsg::AnswerAt { value: json!("a"), at: until }).await;
+        test.run_until_idle().await;
+        if reply_first {
+            test.send(&run("k"), FlowMsg::Continue).await;
+            test.run_until_idle().await;
+        }
+        let pending = test.pending(&run("k")).await;
+        let order: Vec<_> = pending.iter().map(|m| (m.message_type.as_str(), m.deliver_at)).collect();
+        let expected = if reply_first { ["Reply", "Continue"] } else { ["Continue", "Reply"] };
+        assert_eq!(order, [(expected[0], until), (expected[1], until)], "reply first: {reply_first}");
+
+        test.advance_time_by(MINUTE).await;
+        let asked = request_ids(&test, "k", &["a", "b"]).await;
+        let (decided, selected, slots) = if reply_first {
+            (WaitOutcome::Received, asked, json!([received(json!("a")), received(json!("b"))]))
+        } else {
+            (WaitOutcome::TimedOut, asked[1..].to_vec(), json!([timed_out(), received(json!("b"))]))
+        };
+        assert_eq!(wait_entry(&test, "k", "done").await, (Some(decided), selected), "reply first: {reply_first}");
+        assert_eq!(probe.got(), [("done".to_owned(), slots)], "reply first: {reply_first}");
+        assert!(test.failures().await.is_empty(), "the losing message is handled without failing");
+    }
+}
+
+/// Scenarios: Races and immutable replay, of a later failure; and Late loser and cleanup, of missing positions. After
+/// a partial timeout commits, the step after it fails; late replies to the missing requests, a deep one too, are
+/// ignored before their values are checked; the retry returns the same slots and sends no request again.
+#[tokio::test(start_paused = true)]
+async fn a_committed_join_survives_a_later_failure_and_late_replies() {
+    let probe = Probe::default();
+    probe.plan("after", &[Act::Fail]);
+    let test = node(&probe).await;
+    responders(&test, &["r1", "r2", "r3"]).await;
+    let ops = vec![
+        later("a", "r1"),
+        later("b", "r2"),
+        later("c", "r3"),
+        all_op("done", &["a", "b", "c"], Some(60)),
+        op(|id| Op::Step { id }, "after"),
+    ];
+    start(&test, "k", script(ops)).await;
+    test.run_until_idle().await;
+    answer(&test, "r2", json!("b"), None).await;
+    test.run_until_idle().await;
+    test.advance_time_by(MINUTE).await;
+    let asked = request_ids(&test, "k", &["a", "b", "c"]).await;
+    assert_eq!(wait_entry(&test, "k", "done").await, (Some(WaitOutcome::TimedOut), vec![asked[1].clone()]));
+    let failing = armed(&test, "k").await;
+    assert_eq!((failing.failures, failing.last_error.as_deref()), (1, Some("the service failed")));
+    let slots = json!([timed_out(), received(json!("b")), timed_out()]);
+    assert_eq!(probe.got(), [("done".to_owned(), slots.clone())]);
+
+    let before = unchanged(&test, "k").await;
+    test.send(&responder("r1"), ResponderMsg::Raw { run: addr(&run("k")), request: asked[0].clone(), depth: 62 }).await;
+    answer(&test, "r1", json!("late a"), None).await;
+    answer(&test, "r3", json!("late c"), None).await;
+    test.run_until_idle().await;
+    assert_eq!(unchanged(&test, "k").await, before, "late replies write nothing");
+    assert!(test.failures().await.is_empty(), "the deep reply is ignored before its value is checked");
+
+    test.advance_time_by(BACKOFF).await;
+    assert_eq!(state(&test, "k").await.status, FlowStatus::Done);
+    assert_eq!(probe.got(), [("done".to_owned(), slots)], "the same positions");
+    assert_eq!(probe.ids(), ["after", "after"]);
+    for to in ["r1", "r2", "r3"] {
+        assert_eq!(responder_state(&test, to).await.asked, 1, "{to}: asked once");
+    }
+}
+
+/// Scenario: Lost timer and pause. Replies to a paused run keep their mailbox order after resume, so one due before the
+/// deadline completes the join; a purged deadline `Continue` leaves the partial join open, with no polling and its
+/// deadline unchanged, until the last reply closes it or a public `Continue` times it out with the kept subset.
+#[tokio::test(start_paused = true)]
+async fn a_paused_join_keeps_mailbox_order_and_a_purged_timer_waits_for_a_reply_or_a_poke() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    responders(&test, &["r1", "r2"]).await;
+    let ops = || script(vec![later("a", "r1"), later("b", "r2"), all_op("done", &["a", "b"], Some(60))]);
+    start(&test, "paused", ops()).await;
+    test.run_until_idle().await;
+    answer(&test, "r1", json!("a"), None).await;
+    test.run_until_idle().await;
+    assert!(test.system().pause_mailbox(&addr(&run("paused"))).await.unwrap());
+    test.advance_time_by(SECOND * 30).await;
+    answer(&test, "r2", json!("b"), None).await;
+    test.advance_time_by(MINUTE * 3).await;
+    assert_eq!(state(&test, "paused").await.replies.len(), 1, "paused");
+    assert!(test.system().resume_mailbox(&addr(&run("paused"))).await.unwrap());
+    test.run_until_idle().await;
+    assert_eq!(wait_entry(&test, "paused", "done").await.0, Some(WaitOutcome::Received), "the reply came first");
+    assert!(test.failures().await.is_empty());
+
+    for recovery in ["reply", "poke"] {
+        let key = format!("purged-{recovery}");
+        let r = |n: u8| format!("{key}-r{n}");
+        responders(&test, &[r(1).as_str(), r(2).as_str()]).await;
+        start(&test, &key, script(vec![later("a", &r(1)), later("b", &r(2)), all_op("done", &["a", "b"], Some(60))]))
+            .await;
+        let until = after(test.now(), MINUTE);
+        test.run_until_idle().await;
+        answer(&test, &r(1), json!("a"), None).await;
+        test.run_until_idle().await;
+        test.system().purge_mailbox(&addr(&run(&key))).await.unwrap();
+        assert_eq!(test.advance_time_by(SLOW).await, 0, "{key}: nothing polls");
+        assert_eq!(timed_entry(&test, &key, "done").await, (Some(until), None, vec![]), "{key}: open, same deadline");
+        let asked = request_ids(&test, &key, &["a", "b"]).await;
+        if recovery == "reply" {
+            answer(&test, &r(2), json!("b"), Some("c-late")).await;
+            test.system().run_due_turns(1).await.unwrap(); // the target
+            test.system().run_due_turns(1).await.unwrap(); // the reply, past the deadline
+            assert_eq!(wait_entry(&test, &key, "done").await, (Some(WaitOutcome::Received), asked));
+            assert_eq!(armed(&test, &key).await.correlation_id.as_deref(), Some("c-late"));
+        } else {
+            test.send(&run(&key), FlowMsg::Continue).await;
+            test.run_until_idle().await;
+            assert_eq!(wait_entry(&test, &key, "done").await, (Some(WaitOutcome::TimedOut), asked[..1].to_vec()));
+        }
+        test.run_until_idle().await;
+        assert_eq!(state(&test, &key).await.status, FlowStatus::Done, "{key}");
+    }
+}
+
+/// Scenario: Decode selection and failure, through the runner. A join whose second selected reply does not decode
+/// fails for good naming that position, keeps its outcome, and fixed code recovers it with a poke without asking
+/// again; a decoder panic that the flow catches fails the execution for good, blocking the code after it.
+#[tokio::test(start_paused = true)]
+async fn a_join_decodes_its_selection_and_fixed_code_recovers_a_failure() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    responders(&test, &["r1", "r2", "r3"]).await;
+    let asks = || {
+        [("a", "r1", json!(1)), ("b", "r2", json!("two")), ("c", "r3", json!(3))]
+            .map(|(id, to, value)| Asked { id: id.into(), to: to.into(), answer: now(value) })
+            .to_vec()
+    };
+    let join = |decode| Op::TypedJoin { wait: "done".into(), asks: asks(), decode };
+    start(&test, "number", script(vec![join(Decode::Number)])).await;
+    test.run_until_idle().await;
+    let asked = request_ids(&test, "number", &["a", "b", "c"]).await;
+    let why = format!("does not decode as the type asked for, at position 1 (request {})", asked[1]);
+    refused(&test, "number", &why).await;
+    assert_eq!(wait_entry(&test, "number", "done").await, (Some(WaitOutcome::Received), asked));
+
+    start(&test, "exploding", script(vec![join(Decode::Exploding)])).await;
+    test.run_until_idle().await;
+    refused(&test, "exploding", "wait `done` panicked while its saved reply was decoded").await;
+    assert!(probe.ids().is_empty(), "the marker blocks the code after the caught panic");
+
+    probe.fixed.store(true, Ordering::SeqCst);
+    for key in ["number", "exploding"] {
+        test.send(&run(key), FlowMsg::Continue).await;
+    }
+    test.run_until_idle().await;
+    assert_eq!(probe.got(), [("done".to_owned(), json!([1, "two", 3]))]);
+    for key in ["number", "exploding"] {
+        assert_eq!(state(&test, key).await.status, FlowStatus::Done, "{key}");
+    }
+    for to in ["r1", "r2", "r3"] {
+        assert_eq!(responder_state(&test, to).await.asked, 2, "{to}: once per run");
+    }
+}
+
+/// Scenarios: Partial and final all reply, of a failed commit; and Failed decision, of a join. The flow runs in a
+/// worker whose completion of a deciding turn is rejected: the last reply's turn, which would keep the value, close the
+/// join, cancel the deadline's `Continue` and arm one, or the deadline's turn, which would time the partial join out.
+/// Nothing applies: the state and version stay, no prepared `Continue` is sent, and no data reaches flow code. Then the
+/// deadline times the join out with the reply kept before, or a reply completes it.
+#[tokio::test(start_paused = true)]
+async fn a_rejected_join_decision_commits_nothing() {
+    for rejected_outcome in ["received", "timedOut"] {
+        let probe = Probe::default();
+        let test =
+            TestActors::builder().with(|node| node.host(ResponderActor).host(WitnessActor)).build().await.unwrap();
+        let (reject, rejected) = (Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(Vec::new())));
+        let system = test.system().clone();
+        let source = RejectingDecisions {
+            system,
+            outcome: rejected_outcome,
+            reject: reject.clone(),
+            rejected: rejected.clone(),
+        };
+        let worker =
+            cicada::runtime::Worker::builder(source).host(FlowActor::new(ScriptFlow { probe: probe.clone() })).build();
+        worker.initialize().await.unwrap();
+        responders(&test, &["r1", "r2"]).await;
+        let ops = vec![later("a", "r1"), later("b", "r2"), all_op("done", &["a", "b"], Some(60))];
+        start(&test, "k", script(ops)).await;
+        let until = after(test.now(), MINUTE);
+        drive(&test, &worker).await;
+        answer(&test, "r2", json!("b"), None).await;
+        drive(&test, &worker).await;
+        let timer = waiting(&test, "k", "done", until).await;
+        let before = unchanged(&test, "k").await;
+
+        reject.store(true, Ordering::SeqCst);
+        let deciding = if rejected_outcome == "received" {
+            answer(&test, "r1", json!("a"), None).await;
+            test.run_until_idle().await;
+            test.pending(&run("k")).await.into_iter().find(|m| m.message_type == "Reply").unwrap().id
+        } else {
+            tokio::time::sleep(MINUTE).await;
+            timer.id.clone()
+        };
+        assert_eq!(worker.run_due_turns(10).await.unwrap(), 1, "{rejected_outcome}: the deciding turn");
+        let reports = rejected.lock().unwrap().clone();
+        assert_eq!(reports.len(), 1, "{rejected_outcome}: turned down");
+        let TurnReport::Returned { effects, .. } = &reports[0] else { panic!("{:?}", reports[0]) };
+        let prepared: Vec<_> = effects.sends.iter().filter(|s| s.message_type == "Continue").collect();
+        assert_eq!(prepared.len(), 1, "{rejected_outcome}: the decision prepared its continuation");
+        let cancels = if rejected_outcome == "received" { vec![timer.id.clone()] } else { vec![] };
+        assert_eq!(effects.cancels, cancels, "{rejected_outcome}: and the cancel of the deadline's timer");
+        assert_eq!(unchanged(&test, "k").await, before, "{rejected_outcome}: the state and the version stay");
+        assert!(outcome(&test, &prepared[0].id).await.is_none(), "{rejected_outcome}: never sent");
+        let record = outcome(&test, &deciding).await.unwrap();
+        assert_eq!(
+            (record.status, record.error.as_deref()),
+            (OutcomeStatus::Failed, Some("the store rejected the commit"))
+        );
+        assert!(probe.got().is_empty(), "{rejected_outcome}: no data reached flow code");
+
+        let asked = request_ids(&test, "k", &["a", "b"]).await;
+        let slots = if rejected_outcome == "received" {
+            assert_eq!(armed(&test, "k").await.id, timer.id, "the deadline's timer stays");
+            tokio::time::sleep(MINUTE).await;
+            drive(&test, &worker).await;
+            assert_eq!(wait_entry(&test, "k", "done").await, (Some(WaitOutcome::TimedOut), asked[1..].to_vec()));
+            json!([timed_out(), received(json!("b"))])
+        } else {
+            assert!(test.pending(&run("k")).await.is_empty(), "nothing pending");
+            answer(&test, "r1", json!("a"), None).await;
+            drive(&test, &worker).await;
+            assert_eq!(wait_entry(&test, "k", "done").await, (Some(WaitOutcome::Received), asked));
+            json!([received(json!("a")), received(json!("b"))])
+        };
+        assert_eq!(probe.got(), [("done".to_owned(), slots)], "{rejected_outcome}");
+        assert_eq!(state(&test, "k").await.status, FlowStatus::Done, "{rejected_outcome}");
+    }
+}
+
+/// Scenarios: One-request all structural equivalence; and Rollout and contract equality, of progress that 0.18.2 wrote.
+/// States of single waits as a node of 0.18.2 saved them, without and with a deadline, created as raw JSON, replay
+/// through joins of one request, and a join of one request saves the entry that `Step::wait` saves.
+#[tokio::test(start_paused = true)]
+async fn single_waits_saved_by_0_18_2_replay_through_joins_of_one_request() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    let ops = vec![
+        later("a", "r1"),
+        later("b", "r2"),
+        all_op("one", &["a"], None),
+        all_op("timed", &["b"], Some(60)),
+        op(|id| Op::Step { id }, "after"),
+    ];
+    let old = json!({
+        "input": script(ops),
+        "journal": [
+            {"kind": "send", "id": "a", "to": "responder/r1", "message": "m1", "create": null, "reply": true},
+            {"kind": "send", "id": "b", "to": "responder/r2", "message": "m2", "create": null, "reply": true},
+            {"kind": "wait", "id": "one", "requests": ["m1"], "mode": "all", "until": null, "outcome": "received",
+                "received": ["m1"]},
+            {"kind": "wait", "id": "timed", "requests": ["m2"], "mode": "all", "until": "2026-01-01T00:01:00Z",
+                "outcome": "timedOut", "received": []},
+        ],
+        "status": "running",
+        "armed": null,
+        "replies": [{"request": "m1", "value": "from-0.18.2"}],
+        "cleanup": [],
+    });
+    test.system().create_actor(&addr(&run("k")), old).await.unwrap();
+    test.send(&run("k"), FlowMsg::Continue).await;
+    test.run_until_idle().await;
+    assert_eq!(state(&test, "k").await.status, FlowStatus::Done);
+    assert_eq!(probe.got(), [("one".to_owned(), json!(["from-0.18.2"])), ("timed".to_owned(), json!([timed_out()]))]);
+    assert_eq!(probe.ids(), ["after"]);
+
+    responders(&test, &["r1"]).await;
+    let ops = |join: bool| {
+        script(vec![later("a", "r1"), if join { all_op("one", &["a"], None) } else { wait_op("one", "a") }])
+    };
+    for (key, join) in [("by-wait", false), ("by-join", true)] {
+        parked(&test, key, ops(join), "one").await;
+    }
+    let mut shapes = Vec::new();
+    for key in ["by-wait", "by-join"] {
+        let mut entry = serde_json::to_value(state(&test, key).await.journal[1].clone()).unwrap();
+        entry["requests"] = json!(["<a>"]);
+        shapes.push(entry);
+    }
+    assert_eq!(shapes[0], shapes[1], "the same entry");
 }
