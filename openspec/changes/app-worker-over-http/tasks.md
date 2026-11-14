@@ -15,7 +15,7 @@
   then success, permanent failure, no request at/after 60s including after sleep, a last request crossing the horizon
   and stop during a hung request. Test registration failure cleanup and automatic-error/signal arbitration. Run
   targeted node/worker lifecycle tests; preserve local start/stop behavior and existing operator clients.
-- [ ] 3. Add crates/cicada-app/tests/worker_http.rs against handler-free HTTP servers with unchanged actor handlers.
+- [x] 3. Add crates/cicada-app/tests/worker_http.rs against handler-free HTTP servers with unchanged actor handlers.
   Verify actor selection and observer start/end, poisoned PostgreSQL and SQLite store env without access/file
   creation, authenticated listing/registration/GET-of-conflicting-type/leases, contract conflict diagnostics, 307
   without a redirected POST, stop during registration and running work, fatal worker exit and refused hooks with
