@@ -1,7 +1,8 @@
 # Actor examples, visually
 
 Follow the messages to see where work runs and where progress becomes durable.
-Arrows between actors are queued messages; external calls happen inside a handler and can repeat after a crash.
+Arrows between actors name queued message variants. Dashed arrows to/from an external API are calls and return values,
+not actor messages; those calls can repeat after a crash.
 
 ## Paged import
 
@@ -9,14 +10,26 @@ Arrows between actors are queued messages; external calls happen inside a handle
 the last page reports the total and schedules the next run.
 
 ```mermaid
-flowchart TD
-    start["Run"] --> reset["Reset imported count"]
-    reset --> page["FetchPage turn"]
-    page --> api["Fetch one external page"]
-    api --> commit["Commit count + next message"]
-    commit -->|more pages| page
-    commit -->|finished| reports["Reports actor"]
-    commit -->|finished: delayed Run| start
+sequenceDiagram
+    participant U as Caller
+    participant S as Sync
+    participant A as External API
+    participant R as Reports
+    U->>S: SyncMsg::Run
+    Note over S: Commit reset + FetchPage
+    S->>S: SyncMsg::FetchPage { cursor: None }
+    loop One page per turn
+        S-->>A: SyncApi::fetch (external call)
+        A-->>S: Page (return value)
+        alt More pages
+            Note over S: Commit count + FetchPage
+            S->>S: SyncMsg::FetchPage { cursor: Some(next) }
+        else Last page
+            Note over S: Commit count + SyncFinished<br/>+ delayed Run
+            S->>R: ReportsMsg::SyncFinished { imported }
+            S->>S: SyncMsg::Run (after 1 hour)
+        end
+    end
 ```
 
 The external fetch uses the message id as its idempotency key. The diagram's cycle is a chain of committed turns,
@@ -29,20 +42,22 @@ The children can run in parallel; the parent handles their replies one at a time
 
 ```mermaid
 sequenceDiagram
+    participant U as Caller
     participant P as Batch parent
-    participant S as Shared SQL store
     participant A as Item 0
     participant B as Item 1
-    P->>S: Commit children + ProcessItem sends
-    S->>A: Deliver ProcessItem
-    S->>B: Deliver ProcessItem
+    U->>P: BatchMsg::StartBatch { items }
+    Note over P: Create children + sends<br/>in one commit
+    P->>A: BatchItemMsg::ProcessItem
+    P->>B: BatchItemMsg::ProcessItem
     par Independent child turns
-        A->>S: Commit ItemDone + stop child
+        A->>P: BatchMsg::ItemDone { index: 0, result }
+        Note over A: ItemDone + stop<br/>commit together
     and
-        B->>S: Commit ItemDone + stop child
+        B->>P: BatchMsg::ItemDone { index: 1, result }
+        Note over B: ItemDone + stop<br/>commit together
     end
-    S->>P: Deliver ItemDone messages serially
-    Note over P: Save results<br/>by child index
+    Note over P: Handle ItemDone serially<br/>save each index once
 ```
 
 Reply order is unspecified. The parent counts each index once; deleting it removes any children still running.
@@ -54,12 +69,19 @@ keeping a handler open while waiting.
 
 ```mermaid
 sequenceDiagram
-    participant C as Caller actor
-    participant R as Responder actor
-    C->>R: Request message
-    Note over C: Commit and finish this turn
-    R->>C: Reply to message.from, same correlation id
-    Note over C: Handle reply in a new turn
+    participant U as Caller
+    participant C as Cart
+    participant P as Pricing
+    U->>C: CartMsg::AddItem { sku, quantity }
+    Note over C: Commit awaiting entry<br/>+ QuoteRequest
+    C->>P: PricingMsg::QuoteRequest { sku, quantity }
+    alt Price available
+        P->>C: CartMsg::Quote
+    else Invalid quantity or unknown SKU
+        P->>C: CartMsg::QuoteRejected
+    end
+    Note over C,P: Reply goes to message.from<br/>with the same correlation id
+    Note over C: Reply handled<br/>in a new turn
 ```
 
 This is a message convention, not a synchronous ask API. The responder knows the return address from the request.
@@ -72,19 +94,22 @@ Every execution starts at the top; saved entries replay without repeating their 
 
 ```mermaid
 flowchart TD
-    replay["Replay saved entries"] --> next{"Next entry?"}
+    start["Caller"] -->|FlowMsg::Continue| replay["Replay saved entries"]
+    replay --> next{"Next entry?"}
     next -->|new step| executeStep["Run closure with stable key"]
     executeStep --> commit["Commit result + Continue"]
-    commit --> replay
+    commit -->|FlowMsg::Continue| replay
     next -->|new sleep| sleep["Commit deadline + delayed Continue"]
-    sleep -->|deadline reached| replay
-    next -->|new send| send["Commit optional create + message<br/>+ entry + Continue"]
-    send --> replay
+    sleep -->|"FlowMsg::Continue (when due)"| replay
+    next -->|new send| send["Commit optional create + send<br/>+ entry + Continue"]
+    send -->|ReportsMsg::SyncFinished| reports["Reports actor"]
+    send -->|FlowMsg::Continue| replay
     next -->|none| done["Keep completed run + results"]
 ```
 
 The closure can repeat if its turn never commits; the external service must deduplicate by the step key.
-The send branch enqueues once per committed entry; it does not wait for the target to succeed.
+The send branch uses `ReportsMsg::SyncFinished` from [the send example](actors.md#sending-to-actors). It enqueues once
+per committed entry and does not wait for the target to succeed.
 See [flow rules](actors.md#flows) before changing entry ids, order or result types.
 
 For ready-made composition, see [supervision](actors.md#supervisor), [message processing](actors.md#message-processing),

@@ -47,6 +47,8 @@ style and explicit omissions. Cicada uses these rules:
 
 Use Mermaid to explain message paths, ownership or replay when a picture removes the need for more prose.
 Label the actual messages and commit boundaries, and give each diagram a short caption with its ordering limits.
+Use exact message variant names on arrows; when an actor forwards a wrapped message, name both the envelope and
+the target's message. Mark external calls and return values separately from queued messages.
 Keep diagrams narrow enough for a guide page; parse and render them with the [visual tooling](../assets/README.md)
 before committing. Screenshots show the real application against isolated sample data, with instructions to refresh
 when the interface changes. Never use an invented UI as evidence of current behavior.

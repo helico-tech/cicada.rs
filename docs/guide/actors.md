@@ -39,11 +39,17 @@ These are three alternatives, not stages of one pipeline.
 
 ```mermaid
 flowchart LR
-    a["Submitted messages"] --> limiter["Rate limiter"] --> slots["Messages due at reserved slots"]
-    b["Burst of edits"] --> debounce["Debouncer"] --> latest["Latest message after quiet / maxWait"]
-    c["Stream of items"] --> batcher["Batcher"] --> batch["One items array at count / maxWait"]
+    a["Signup"] -->|"Submit (Send)"| limiter["Rate limiter"] -->|"Send (due at slot)"| sms["SMS actor"]
+    b["Document"] -->|"Submit (Reindex)"| debounce["Debouncer"] -->|"Reindex (latest)"| indexer["Indexer"]
+    debounce -->|"Flush (when due)"| debounce
+    c["Account"] -->|Add| batcher["Batcher"] -->|"Write { items }"| audit["Audit log"]
+    batcher -->|"Flush (when due)"| batcher
 ```
 
+Labels are the message variants from [rate_limit.rs](../../examples/src/rate_limit.rs),
+[debounce.rs](../../examples/src/debounce.rs) and [batching.rs](../../examples/src/batching.rs):
+`RateLimiterMsg::Submit` wraps `SmsMsg::Send`; `DebouncerMsg::Submit` wraps `IndexerMsg::Reindex`;
+`BatcherMsg::Add` becomes `AuditLogMsg::Write`. A full batch sends during Add without waiting for Flush.
 Due times do not bound execution time; a paused or busy target can run later.
 
 ## Supervisor
@@ -54,15 +60,17 @@ Do not supervise dead letters or a topic whose subscriptions you must keep.
 
 ```mermaid
 sequenceDiagram
-    participant C as Child actor
+    participant C as Mailer child
     participant S as SQL store
     participant P as Supervisor
     participant D as Dead letters
-    C->>S: Commit terminal handler failure
-    S->>P: Failed notification (watch)
-    S->>D: Failed notification (watch)
+    Note over C: MailerMsg::SendMail fails
+    C->>S: Commit terminal failure
+    S->>P: SupervisorMsg::Failed (watch)
+    S->>D: DeadLettersMsg::Failed (watch)
     Note over S: Failure + notifications<br/>commit together
-    P->>S: Commit restart + start message
+    P->>S: Commit child restart + Restarted
+    S->>P: SupervisorMsg::Restarted
     D->>S: Commit retained letter
 ```
 
@@ -130,12 +138,21 @@ Legacy deep letters need conversion or discard: [upgrade procedure](../how-to/up
 ## Topic
 
 ```mermaid
-flowchart LR
-    publish["Publish"] --> topic["Topic actor"]
-    topic --> a["Self-sent Deliver for A"] --> existingA["Existing subscriber A"]
-    topic --> b["Self-sent Deliver for B"] --> existingB["Existing subscriber B"]
+sequenceDiagram
+    participant U as Publisher
+    participant T as Topic
+    participant A as Subscriber A
+    participant B as Subscriber B
+    U->>T: TopicMsg::Publish (Note)
+    Note over T: Commit one Deliver<br/>per subscriber
+    T->>T: TopicMsg::Deliver { subscriber: A, message }
+    T->>A: WorkerMsg::Note { text }
+    T->>T: TopicMsg::Deliver { subscriber: B, message }
+    T->>B: WorkerMsg::Note { text }
 ```
 
+Here the published message is `WorkerMsg::Note`, as in [the topic tests](../../crates/cicada-actors/tests/topic.rs).
+`Publish` and `Deliver` wrap that message; subscribers receive `Note`, not `Deliver`.
 Each Deliver is a separate topic turn; neither subscriber is created by the topic.
 
 Create `TopicState::default()`, send `Subscribe { subscriber }`, then `TopicMsg::publish(message)`.
@@ -161,15 +178,19 @@ A slot takes two turns: `Tick` arms the next tick and queues `Run`; `Run` forwar
 
 ```mermaid
 sequenceDiagram
+    participant U as Caller
     participant Q as Scheduler
-    participant S as SQL store
-    participant T as Target actor
-    Q->>S: Tick commit: next delayed Tick + Run
-    S->>Q: Deliver Run
-    Q->>S: Run commit: send stored message
-    S->>T: Deliver message with cicada-slot
+    participant T as Worker
+    U->>Q: SchedulerMsg::Start
+    Q->>Q: SchedulerMsg::Tick { slot } (when due)
+    Note over Q: Tick commits next delayed Tick<br/>+ Run
+    Q->>Q: SchedulerMsg::Run { slot }
+    Q->>T: WorkerMsg::Note { text }
+    Note over T: cicada-slot header<br/>identifies the UTC slot
+    Q->>Q: SchedulerMsg::Tick { slot: next } (when due)
 ```
 
+Here the configured target message is `WorkerMsg::Note`, as in [the scheduler tests](../../crates/cicada-actors/tests/scheduler.rs).
 Set `state.retry` for failures at the target. Scheduled deliveries carry `cicada-slot` in UTC to the second;
 a manual `Run` has no slot. Correlation ids are not forwarded. Internal ticks must be self-sent and armed.
 
@@ -353,18 +374,18 @@ Each publication creates and starts one independent run per subscribed type **in
 [flow_events.rs](../../examples/src/flow_events.rs) shows the full producer and host setup.
 
 ```mermaid
-flowchart LR
-    order["Placed order"] --> event["Event actor"]
-    event --> tx["One commit: create runs + send Continue"]
-    tx --> receipt["Receipt flow run"]
-    tx --> fulfil["Fulfilment flow run"]
-    orders["Order items"] --> batcher["Batcher"]
-    batcher -->|PublishBatch| digestEvent["Digest event"]
-    digestEvent --> digest["Create + start one digest run"]
+flowchart TD
+    order["Order publisher"] -->|"EventMsg::Publish"| event["Order event"]
+    event -->|FlowMsg::Continue| receipt["New receipt run"]
+    event -->|FlowMsg::Continue| fulfil["New fulfilment run"]
+    orders["Order publisher"] -->|BatcherMsg::Add| batcher["Batcher"]
+    batcher -->|EventMsg::PublishBatch| digestEvent["Digest event"]
+    digestEvent -->|FlowMsg::Continue| digest["New digest run"]
 ```
 
 This is [flow_events.rs](../../examples/src/flow_events.rs): a topic delivers to existing actors; an event creates
-independent flow runs. A failure after creation belongs to that run, not to the successful publication.
+independent flow runs. Each event commits its run creates and Continue messages together.
+A failure after creation belongs to that run, not to the successful publication.
 
 The run key is the publication’s message id, percent-encoded once. Do not reuse ids across jobs/events or manually
 create runs whose keys could collide. `.` and `..` cannot key subscribed runs. Up to 100 unique flow types can subscribe.
