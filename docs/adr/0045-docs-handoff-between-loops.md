@@ -22,7 +22,8 @@ identified by the review request's head, not a self-referential commit hash in t
 update the handoff. After landing it travels with archived reviews for the docs session to reconcile against source.
 
 The builder continues owning source, rustdoc, worked example code, consumer skill routes/version, ADRs, generated
-references and changelog. Docs owns protected handwritten prose, including its Rust blocks and guarantee table.
+references and changelog. Docs owns README, AGENTS.md and the other handwritten prose, including its Rust blocks and
+guarantee table; the hook enforces the README and `docs/` part (`protected()` in `scripts/docs-maintenance.py`).
 README release pins keep their narrow existing exception; install-guide pins belong to docs. Existing tasks asking
 for protected edits become handoff work, but their verification requirements remain. No ownership hook changes.
 
@@ -52,3 +53,8 @@ Additive changes can land with green checks and a complete handoff; breaking exa
 The builder reports that distinction. Existing ownership tests exercise the blob exception; process scenarios are
 verified by brief review/walkthrough, not tests matching prose strings. This workflow/config implementation follows
 normal patch release policy; the separate docs-only maintenance exemption stays unchanged.
+
+In 0.18.6 the procedure lives in the briefs: the handoff template and the blocked report in
+`.claude/skills/build-loop/builder.md`; the blocked path, the recheck after fixes and rebases, Present and Land in
+the build loop's `SKILL.md`; the named breaks in the design loop and `openspec/config.yaml`; and the handoff check in
+both review briefs.

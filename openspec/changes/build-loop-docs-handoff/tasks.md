@@ -20,7 +20,7 @@
   evidence for these process-only scenarios in the scenario-test rule; no prose-mirroring tests. Known failed docs
   checks block normal completed-build review and landing even when listed in the handoff. Verify with the docs test,
   `openspec validate --all --strict`, and a consistency walkthrough across the four briefs and config.
-- [ ] 4. Reconcile ADR 0045/index and AGENTS.md pointers with the implemented workflow; write this change's own
+- [x] 4. Reconcile ADR 0045/index and AGENTS.md pointers with the implemented workflow; write this change's own
   `docs-handoff.md`. Request the docs-owned maintenance procedure for named feature-head preparation, compatibility
   with current main and explicit coordination until adopted. Hand off architecture/maintenance/guide/guarantee prose
   instead of editing it. Keep the owner's queue order. Set the next patch version at build time, including skill

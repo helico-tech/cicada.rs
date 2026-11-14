@@ -7,6 +7,17 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.18.6 — unreleased
+
+A process-only release: the loops that build Cicada hand user documentation to the docs session (ADR 0045). The
+library, its API, wire formats, store schema and guarantees are those of 0.18.5.
+
+### Changed
+
+- Every built change carries `docs-handoff.md` for the docs session instead of editing the README or the handwritten
+  docs, and a doctest, link, guarantee row or skill route that needs new prose keeps the change from landing until the
+  docs session prepares the fix (the build, design and review loops and `openspec/config.yaml`).
+
 ## 0.18.5 — 2026-11-14
 
 A cancelled flow runs its cleanup: `Flow::on_cancel`, with a default that does nothing, runs over a journal of its own
