@@ -84,7 +84,9 @@ type connects the target message to the flow's Request<T>; it carries no authent
 
 A wait records one durable decision before code branches on it. Reply turns run no flow code. A reply that completes
 the active wait saves the outcome and arms Continue; an expired wait saves timedOut and arms in a separate turn before
-later user code can run. Timeout is data. Handling order chooses a race; pauses, commits, scheduling and recovery can
+later user code can run. The deadline is the earliest time an executing Continue may choose timedOut; reply turns
+never consult time, so a reply handled first is received even after the deadline. A new wait never times out in its
+creating turn. Timeout is data. Handling order chooses a race; pauses, commits, scheduling and recovery can
 delay it. Retained values support single waits, homogeneous typed joins, first-winner selection and partial timeouts.
 Target failure/deletion adds no automatic watch; targets report business failure as data or the flow uses a timeout.
 
