@@ -326,3 +326,15 @@ would close them. The target must resend such a refused reply after upgrading; d
 Keep existing waits on their original helper. Switching a saved wait between `wait` and `wait_timeout` permanently
 fails replay; drain those runs or introduce deadlines only in new runs. Changing a timed wait's timeout leaves its
 saved deadline intact. See [request and wait rules](../guide/actors.md#requests-and-reply-waits) for ordering and recovery.
+
+## Enable flow joins in 0.18.3
+
+No store schema or flow contract hash changes. Upgrade **every host and worker of the flow type** before joining more
+than one request or using a first wait, or use a new type name: 0.18.2 cannot replay these joins and permanently
+refuses replies that would close them, despite equal hashes. The target must resend refused replies after upgrading;
+dead-letter redrive has the wrong sender.
+
+A one-request all join is the matching single wait: `wait` and `wait_all` replay each other's entries, as do
+`wait_timeout` and `wait_all_timeout`. 0.18.2 runs both pairs; 0.18.1 runs only the untimed pair. Keep each running
+join's list, order, all/first mode and deadline presence stable; drain old runs or change joins only for new ones.
+See [join rules](../guide/actors.md#joins-waiting-for-several-replies) for results, limits and cleanup.

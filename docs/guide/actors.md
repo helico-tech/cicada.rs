@@ -304,10 +304,10 @@ external effects remain at least once. Never reuse a run key for a different job
 | Replay compatibility | Keep entry order, ids, kinds and result types stable for in-progress runs |
 | Ids and size | Unique ids shared by steps, sleeps, sends, requests and waits; 1–100 chars of `A-Za-z0-9._~-:`, at most 1000 entries |
 | Recovery | Public Continue rearms a run whose armed message was cancelled/purged/exhausted |
-| Completion | Done and cancelled runs ignore Continue/Reply and retain results; 0.18.2 cannot produce cancelled runs |
+| Completion | Done and cancelled runs ignore Continue/Reply and retain results; 0.18.3 cannot produce cancelled runs |
 | Send delivery | One enqueue per committed entry; the target's execution is at least once, with no retry policy |
-| Waiting | Single reply waits, with an optional saved deadline; the committed outcome is stable |
-| Available in 0.18.2 | Steps, sleeps, sends, requests and single reply waits; joins and cancellation remain refused |
+| Waiting | Single waits or joins of up to 100 requests, for all replies or the first; optional saved deadlines, stable committed outcomes |
+| Available in 0.18.3 | Steps, sleeps, sends, requests, single waits and joins; cancellation remains refused |
 
 Only the armed Continue executes the flow; a public poke first replaces/arms it. Default retry is 7 attempts with
 waits doubling from 1 s. A replay mismatch is permanently refused. A journal supplied at creation is trusted progress.
@@ -445,7 +445,82 @@ as that target. This checks actor addresses, not human identity; control who can
 
 Keep each running wait's helper stable: switching between `wait` and `wait_timeout` permanently fails replay.
 Upgrade every host and worker before enabling [requests](../how-to/upgrading.md#enable-flow-replies-in-0181) or
-[deadlines](../how-to/upgrading.md#enable-flow-wait-deadlines-in-0182); equal contract hashes do not prove support.
+[deadlines](../how-to/upgrading.md#enable-flow-wait-deadlines-in-0182), and again before
+[joins](../how-to/upgrading.md#enable-flow-joins-in-0183); equal contract hashes do not prove support.
+
+### Joins: waiting for several replies
+
+Start independent jobs with `step.request`, then join their replies with one wait entry. Choose the result you need:
+
+| Helper | Returns |
+| --- | --- |
+| `step.wait_all(id, &requests)` | `Vec<T>` in request-list order, after every reply |
+| `step.wait_all_timeout(id, &requests, timeout)` | `Vec<Waited<T>>` in request-list order; missing replies become `TimedOut` when the timeout decision commits |
+| `step.wait_first(id, &requests)` | `(index, value)` for the listed request whose reply the run **accepted first** |
+| `step.wait_first_timeout(id, &requests, timeout)` | `Waited::Received((index, value))`, or `Waited::TimedOut` with no winner |
+
+The sign-off in [flow_approval.rs](../../examples/src/flow_approval.rs) asks every team and sets a one-week deadline:
+
+<!-- doctest
+# use cicada::HandlerResult;
+# use cicada_actors::{Step, Target, Waited};
+# use cicada_examples::flow_approval::{Approvals, ApprovalsMsg, ApprovalsState, DECISION_TIMEOUT, Decision, SignOffInput};
+# async fn sign_off(step: &mut Step, input: SignOffInput) -> HandlerResult {
+# let empty = ApprovalsState::default();
+@@8
+# let _: Vec<Waited<Decision>> = slots;
+# Ok(()) }
+-->
+```rust
+let mut requests = Vec::new();
+for team in &input.teams {
+    let approvals = Approvals { team: team.clone() };
+    let ask = |reply| ApprovalsMsg::Ask { item: input.item.clone(), cents: input.cents, reply };
+    requests.push(step.request(&format!("ask-{team}"), Target::create(&approvals, &empty), ask).await?);
+}
+// One slot per team, in the order of `input.teams`.
+let slots = step.wait_all_timeout("sign-offs", &requests, DECISION_TIMEOUT).await?;
+```
+
+A timed-out all join keeps partial results: each slot is `Received(reply)` or `TimedOut`. It times out when the
+decision commits at or after the deadline, with the replies kept then; the [single-wait ordering rules](#requests-and-reply-waits)
+apply. The same example's quote buys from the first supplier to offer:
+
+<!-- doctest
+# use cicada::HandlerResult;
+# use cicada_actors::{Request, Step};
+# use cicada_examples::flow_approval::{Offer, QuoteInput};
+# async fn first(step: &mut Step, input: QuoteInput, quotes: Vec<Request<Offer>>) -> HandlerResult {
+@@2
+# let _: (&str, Offer) = (supplier, offer);
+# Ok(()) }
+-->
+```rust
+let (winner, offer) = step.wait_first("first-quote", &quotes).await?;
+let supplier = input.suppliers[winner].as_str();
+```
+
+Build the borrowed slice (`Vec` or array) deterministically from input and earlier results; replay compares its exact
+order and mode. All handles share one reply type `T`; use an enum for several shapes. A join takes 1–100 distinct
+earlier requests that no other wait names. With 100 requests, their join uses 101 of the 1000 journal entries.
+
+Replies are kept as accepted, even before the join exists. A partial reply leaves the run parked or its deadline
+Continue unchanged. Only the completing reply closes the join, cancels any timer and arms Continue with its correlation
+id; no reply turn runs flow code. The next execution returns the saved selection and decodes only those replies.
+For a first join, **acceptance order decides the winner**, including early replies. Preserve the `replies` order when
+restoring progress. Once committed, every slot and winner stays stable on replay.
+
+Closing a join closes **all** its requests. Losing or late targets keep working; their later replies are ignored without
+a write. Cleanup needs new requests, since no later wait can reuse any of the closed join's handles.
+
+| Situation | Recovery or limit |
+| --- | --- |
+| Empty list, more than 100 handles, duplicates, unknown or already-used requests | Permanently fails execution before checking kept replies |
+| Changed list/order, all versus first, or deadline presence | Permanently fails replay; change joins only for new runs or drain old ones |
+| Selected reply does not decode as `T` | Permanent failure names its position; fix code and send public Continue. The saved outcome stays |
+
+A one-request all join replays the matching single wait; a first join stays distinct even with one request.
+See [0.18.3 rollout](../how-to/upgrading.md#enable-flow-joins-in-0183) before enabling joins.
 
 ## Event
 

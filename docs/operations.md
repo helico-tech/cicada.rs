@@ -102,7 +102,8 @@ Stats scans rows under the prefix: avoid frequent unfiltered polling on large st
 | `claim limit: N lost claims` | Node crashes, pauses, blocked handlers, uncertain commits | Fix cause, then retry selected messages |
 | Failed send at commit | Target exists, child-parent/control conflicts | Repair the target/configuration before retrying |
 | Timer chain stopped | Cancelled/purged/exhausted timer | Scheduler: Start; debounce/batcher: Flush; flow: Continue |
-| Flow run parked for long | Untimed open wait as last journal entry, `armed: null`; target mailbox/state | Have the target reply through its saved route, or delete the run; Continue only parks it again |
+| Flow run parked for long | Untimed open wait as last journal entry, `armed: null`; target mailbox/state | Have targets send missing replies through their saved routes, or delete the run; Continue only parks it again |
+| Flow join has only some replies | Open wait names several requests; `replies` holds a subset | Find the missing targets; a timed join keeps partial results when its timeout decision commits. Replies to closed joins are ignored |
 | Flow wait past deadline | Paused run or cancelled/purged/failed deadline Continue | Resume / send public Continue to decide timeout; a reply handled first can still win |
 | Supervisor gave up | Child entry, state, restart limit | Correct the entry/deployment; send Start |
 | HTTP worker stops | `stopped()` error; auth, route versions, response format | Fix fatal source/protocol problem before restarting |

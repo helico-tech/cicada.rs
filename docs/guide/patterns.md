@@ -144,5 +144,9 @@ Only the Continue after an outcome commits returns it to flow code. The target m
 Mailbox order decides the race: a reply handled first can win after the deadline. Timeout leaves target work running.
 See [request and wait rules](actors.md#requests-and-reply-waits) for ignored replies and recovery.
 
+The same example joins all teams’ approvals and selects the first supplier’s quote. Each reply is kept as accepted;
+only the completing reply closes the join and arms the next Continue. See [joins](actors.md#joins-waiting-for-several-replies)
+for partial timeouts and result ordering.
+
 For ready-made composition, see [supervision](actors.md#supervisor), [message processing](actors.md#message-processing),
 and [events starting flows](actors.md#event).
