@@ -129,6 +129,42 @@ impl<F: Flow> ActorRef for FlowRun<F> {
 /// The messages of a [`FlowRun`]. A host or a worker of 0.18.3 or earlier refuses `Cancel` for good, although the
 /// contract is the same (ADR 0044): upgrade every host and worker of a flow type before sending it. `Reply` is what
 /// [`ReplyTo::send`] sends; a host or a worker of 0.18.0 refuses it for good, so upgrade them all before a flow requests.
+///
+/// A host cancels a run by sending it `Cancel`, as any other message, and reads its status to learn that it ended:
+///
+/// ```
+/// # use std::time::Duration;
+/// # use cicada::prelude::*;
+/// # use cicada_actors::{Flow, FlowActor, FlowMsg, FlowRun, FlowState, FlowStatus, Step};
+/// # use cicada_test::TestActors;
+/// struct Nightly;
+///
+/// impl Flow for Nightly {
+///     const TYPE: &'static str = "nightly";
+///     type Input = String;
+///
+///     async fn run(&self, step: &mut Step, _input: String) -> HandlerResult {
+///         step.sleep("wait", Duration::from_secs(3600)).await?;
+///         step.run("report", |_key| async { Ok(()) }).await
+///     }
+/// }
+///
+/// # #[tokio::main(flavor = "current_thread", start_paused = true)]
+/// # async fn main() {
+/// let test = TestActors::builder().with(|node| node.host(FlowActor::new(Nightly))).build().await.unwrap();
+/// let run = FlowRun::<Nightly>::named("n1");
+/// test.create(&run, &FlowState::new("n1".to_owned())).await;
+/// test.send(&run, FlowMsg::Continue).await;
+/// test.run_until_idle().await; // the run sleeps, its `Continue` armed for the wake time
+///
+/// test.send(&run, FlowMsg::Cancel).await; // queued: the run is not cancelled yet
+/// test.run_until_idle().await;
+/// let state: FlowState<String> = test.state(&run).await;
+/// assert_eq!((state.status, state.armed), (FlowStatus::Cancelled, None));
+/// assert_eq!(state.journal.len(), 1, "the saved sleep stays");
+/// assert!(test.pending(&run).await.is_empty(), "the timer is cancelled");
+/// # }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type")]
 pub enum FlowMsg {

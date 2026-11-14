@@ -13,7 +13,7 @@
   unknown acknowledgement separately with the existing fault harness: reread/resend idempotently, never assume an
   unknown commit rolled back or invokes handler retry. Distinguish lease/claim-limit recovery from sender retry.
   Run targeted race/fault tests and existing join/timeout recovery tests; use barriers rather than elapsed sleeps.
-- [ ] 3. Test ordinary control/observation boundaries: deleted-run send rejection, queued Cancel purged by delete,
+- [x] 3. Test ordinary control/observation boundaries: deleted-run send rejection, queued Cancel purged by delete,
   create-plus-Cancel, successful Cancel observed as done, no synthetic watch notification, no turn for cancelled
   armed work, retained target/child actors, outside/arbitrary actor sender and an ordinary best-effort change hint.
   Update public Cancel/status doc comments and regenerate flow snapshots if descriptions change. Compare hashes and

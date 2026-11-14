@@ -2,7 +2,7 @@
   "messages": {
     "Cancel": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "Asks the run to stop; refused for good by this release.",
+      "description": "Ends a running run, without running flow code: in its turn's one commit it cancels the armed `Continue`, marks\nthe run cancelled and clears `armed`, keeping the input, the journal and the replies; a done or cancelled run\nignores it. It waits for the turn before it in the mailbox, does not undo effects already made and runs no\ncleanup. Sending it only queues it: read the run's status to learn that it was cancelled.",
       "properties": {},
       "title": "Cancel",
       "type": "object"
@@ -71,7 +71,7 @@
         "type": "object"
       },
       "FlowStatus": {
-        "description": "The phase of a run. This release executes only running runs; `cancelling` and `cancelled` are on the wire for later\nreleases (ADR 0044).",
+        "description": "The phase of a run. This release executes running runs and cancels them; `cancelling` is on the wire for a later\nrelease (ADR 0044).",
         "oneOf": [
           {
             "const": "running",
@@ -90,7 +90,7 @@
           },
           {
             "const": "cancelled",
-            "description": "A cancelled run; it keeps its state until it is deleted.",
+            "description": "A run ended by `Cancel`; it keeps its state until it is deleted, and ignores `Continue` and `Reply`.",
             "type": "string"
           }
         ]

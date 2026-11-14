@@ -8,7 +8,10 @@
 //! headers, and the messages and phases this release refuses; and requests, replies and waits: parked and closed waits,
 //! early, late, ignored, duplicate and invalid replies, replies refused at a reserved wait, the sender check (a remote
 //! worker's leased target passes it, a dead-letter redrive does not), correlations, pokes, pauses, lost
-//! continuations, typed decoding and its recovery, rejected request commits and replies to a deleted run. A probe
+//! continuations, typed decoding and its recovery, rejected request commits and replies to a deleted run; and
+//! cancellation: new, parked, stalled and broken runs, armed and own ids, interrupted sleeps, waits and joins, races
+//! in sequence order, queued continues, held handlers, retries, pauses, purges, deletes, rejected, lost and unanswered
+//! commits, observers, hints and watches, other senders, operator cancels and a refusal by an older host. A probe
 //! counts every closure invocation and notes what each wait returned.
 
 mod common;
@@ -24,12 +27,13 @@ use std::time::Duration;
 use cicada::FailureCause;
 use cicada::address::TypeName;
 use cicada::contract::Contract;
+use cicada::observer::{ObservedTurn, TurnEnd, TurnObserver, TurnStart};
 use cicada::prelude::*;
 use cicada::runtime::{
     CompleteTurnResult, LeaseTurnsResult, RegisterContractResult, RenewTurnResult, RetryResult, SourceError,
     StateReport, TurnFailure, TurnReport, TurnSource,
 };
-use cicada::store::{DeliverNowResult, Message, NodeId, OutcomeStatus, TypeDef};
+use cicada::store::{DeliverNowResult, Message, NodeId, OutcomeStatus, TurnOutcome, TypeDef};
 use cicada::time::{self, MAX_DELAY, Timestamp};
 use cicada::turn::TurnError;
 use cicada_actors::{
@@ -38,7 +42,7 @@ use cicada_actors::{
 };
 use cicada_test::TestActors;
 use common::*;
-use futures::FutureExt;
+use futures::{FutureExt, StreamExt};
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Value, json};
 
@@ -806,7 +810,7 @@ enum ProducerMsg {
         key: String,
         script: Script,
     },
-    /// Sends the run `key` a `Cancel`, after creating it with `create` when given.
+    /// Sends the run `key` a `Cancel` with this message's correlation id, after creating it with `create` when given.
     Cancel {
         key: String,
         create: Option<Script>,
@@ -829,7 +833,9 @@ impl Actor for ProducerActor {
                 if let Some(script) = create {
                     turn.create(&run(&key), &FlowState::new(script))?;
                 }
-                turn.send(&run(&key), FlowMsg::Cancel)?;
+                let mut options = SendOptions::new();
+                options.correlation_id = turn.message().correlation_id.clone();
+                turn.send_with(&run(&key), FlowMsg::Cancel, options)?;
             }
         }
         Ok(())
@@ -4451,5 +4457,245 @@ async fn an_unapplied_cancel_commit_is_reclaimed_after_its_lease_and_fails_at_th
             assert_eq!(armed(&test, "k").await.id, timer.id, "with its timer");
         }
         assert!(probe.ids().is_empty());
+    }
+}
+
+/// Scenario: Pause purge and delete, of a delete and of an absent run. A delete purges a queued `Cancel` with the run,
+/// and no handler runs; a `Cancel` to an absent run is refused like any send, and in a turn its commit is rejected; a
+/// turn that creates a run and sends it `Cancel` commits both, and the new run is cancelled before it ever starts.
+#[tokio::test(start_paused = true)]
+async fn delete_purges_a_queued_cancel_an_absent_run_refuses_one_and_a_create_with_cancel_commits_together() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    start(&test, "deleted", script(vec![sleep("nap", MINUTE), op(|id| Op::Step { id }, "after")])).await;
+    test.run_until_idle().await;
+    let later = SendOptions::new().delay(MINUTE / 2);
+    let cancel = test.send_with(&run("deleted"), FlowMsg::Cancel, later).await;
+    test.system().delete_actor(&addr(&run("deleted"))).await.unwrap();
+    assert!(test.pending(&run("deleted")).await.is_empty(), "the queued cancel is purged with the run");
+    assert_eq!(test.advance_time_by(MINUTE * 2).await, 0, "no cancellation handler runs");
+    assert_ne!(outcome(&test, &cancel.id).await.map(|o| o.status), Some(OutcomeStatus::Done));
+    assert!(!test.exists(&run("deleted")).await);
+
+    let refused = test.system().send(&run("deleted"), FlowMsg::Cancel).await.unwrap();
+    assert!(matches!(refused, cicada::SendResult::NoSuchInstance), "{refused:?}");
+    let turn = test.send(&Producer, ProducerMsg::Cancel { key: "absent".into(), create: None }).await;
+    test.run_until_idle().await;
+    let record = outcome(&test, &turn.id).await.unwrap();
+    assert_eq!(record.status, OutcomeStatus::Failed, "the producer's commit is rejected");
+    assert!(!test.exists(&run("absent")).await);
+
+    let create = Some(script(steps(&["a"])));
+    test.send(&Producer, ProducerMsg::Cancel { key: "fresh".into(), create }).await;
+    test.run_until_idle().await;
+    assert_cancelled(
+        &test,
+        "fresh",
+        &json!({"input": {"ops": [{"op": "step", "id": "a"}], "end": "ok"},
+        "journal": [], "replies": [], "cleanup": []}),
+    )
+    .await;
+    assert!(probe.keys().is_empty());
+}
+
+/// The turns a node committed, as an observer is told them: the actor, the message's id, type and correlation id,
+/// the outcome and how many messages the commit sent.
+#[derive(Clone, Default)]
+struct Ended(Arc<Mutex<Vec<Observed>>>);
+
+/// A committed turn: the actor, the message's id, type and correlation id, the outcome and the count of sends.
+type Observed = (ActorAddress, MessageId, String, Option<String>, TurnOutcome, usize);
+
+/// One turn of [`Ended`].
+struct EndedTurn {
+    log: Ended,
+    actor: ActorAddress,
+    message: Message,
+}
+
+impl TurnObserver for Ended {
+    fn turn_started(&self, turn: &mut TurnStart<'_>) -> Box<dyn ObservedTurn> {
+        Box::new(EndedTurn { log: self.clone(), actor: turn.actor().clone(), message: turn.message().clone() })
+    }
+}
+
+impl ObservedTurn for EndedTurn {
+    fn turn_ended(self: Box<Self>, end: &TurnEnd<'_>) {
+        let EndedTurn { log, actor, message } = *self;
+        let turn =
+            (actor, message.id, message.message_type, message.correlation_id, end.outcome().clone(), end.sent().len());
+        log.0.lock().unwrap().push(turn);
+    }
+}
+
+/// Scenarios: Observers and watches; and Targets and senders. Another actor cancels a run that has requested a job of
+/// a responder and created a child worker: observers see an ordinary done turn with the incoming correlation id and
+/// nothing sent, the cancelled timer has no turn, the witness of the type is told nothing, the run stays readable, a
+/// change hint names it, and the target and the child keep existing; the target's later reply is ignored.
+#[tokio::test(start_paused = true)]
+async fn a_cancel_from_another_actor_is_an_ordinary_turn_with_a_hint_and_no_notification_and_leaves_targets_alone() {
+    let probe = Probe::default();
+    let ended = Ended::default();
+    let (flow, observer) = (ScriptFlow { probe: probe.clone() }, ended.clone());
+    let test = TestActors::builder()
+        .with(move |node| {
+            node.host(FlowActor::new(flow))
+                .host(ProducerActor)
+                .host(WitnessActor)
+                .host(WorkerActor)
+                .host(ResponderActor)
+                .observe(observer)
+        })
+        .build()
+        .await
+        .unwrap();
+    test.create(&Producer, &NoState {}).await;
+    witness(&test, "test.flow").await;
+    test.create(&responder("r1"), &ResponderState::default()).await;
+    let ops = vec![
+        later("job", "r1"),
+        create_op("kid", "w1", CreateKind::Child, initial(0), WorkerMsg::Work),
+        sleep("nap", MINUTE),
+        wait_op("done", "job"),
+    ];
+    start(&test, "k", script(ops)).await;
+    test.run_until_idle().await;
+    let timer = armed(&test, "k").await;
+    let before = progress(&test, "k").await;
+    let mut changes = test.system().changes("test.flow/");
+    assert_eq!(changes.next().await, Some(cicada::ActorChange::Resync));
+
+    let options = SendOptions::new().correlation_id("c-cancel");
+    let order = test.send_with(&Producer, ProducerMsg::Cancel { key: "k".into(), create: None }, options).await;
+    test.run_until_idle().await;
+    assert_eq!(outcome(&test, &order.id).await.unwrap().status, OutcomeStatus::Done);
+    assert_cancelled(&test, "k", &before).await;
+    let turns = ended.0.lock().unwrap().clone();
+    let cancels: Vec<_> = turns.iter().filter(|t| t.0 == addr(&run("k")) && t.2 == "Cancel").collect();
+    assert_eq!(cancels.len(), 1);
+    let (actor, _, _, correlation, outcome_of_cancel, sent) = cancels[0].clone();
+    assert_eq!((actor, correlation.as_deref()), (addr(&run("k")), Some("c-cancel")), "the incoming correlation id");
+    assert_eq!((outcome_of_cancel, sent), (TurnOutcome::Done, 0), "an ordinary done turn that sends nothing");
+    assert!(turns.iter().all(|t| t.1 != timer.id), "no turn for the cancelled timer");
+    let cancel = test.list("test.flow/").await;
+    assert_eq!(cancel, [addr(&run("k"))], "the run stays readable");
+    let hint = tokio::time::timeout(MINUTE, changes.next()).await.unwrap().unwrap();
+    assert!(matches!(&hint, cicada::ActorChange::Changed { address, .. } if *address == addr(&run("k"))), "{hint:?}");
+    assert_eq!(state(&test, "k").await.status, FlowStatus::Cancelled, "the reread after the hint");
+
+    test.send(&responder("r1"), ResponderMsg::Answer { value: json!("late") }).await;
+    test.advance_time_by(MINUTE * 2).await;
+    assert_cancelled(&test, "k", &before).await;
+    assert!(test.exists(&responder("r1")).await && test.exists(&worker("w1")).await, "the target and the child stay");
+    assert_eq!(worker_state(&test, "w1").await.n, 1);
+    assert!(turns.iter().chain(ended.0.lock().unwrap().iter()).all(|t| t.0 != addr(&Witness)), "no notification");
+    assert!(told(&test).await.is_empty() && test.pending(&Witness).await.is_empty());
+    assert!(probe.got().is_empty());
+}
+
+/// Scenario: Core controls and later cleanup, of an operator's cancel of the running turn. The armed execution, held in
+/// its code, is cancelled by the node at its next heartbeat: the message ends cancelled and the run stalls, still
+/// running. A `FlowMsg::Cancel` then ends it, and a later `Continue` does not reopen it.
+#[tokio::test(start_paused = true)]
+async fn an_operator_cancel_of_the_running_turn_stalls_the_run_and_a_flow_cancel_ends_it() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    start(&test, "k", script(vec![op(|id| Op::Gate { id }, "g"), op(|id| Op::Step { id }, "a")])).await;
+    test.system().run_due_turns(1).await.unwrap(); // the poke
+    let execution = armed(&test, "k").await;
+    probe.plan("g", &[Act::Slow]);
+    let system = test.system().clone();
+    let turn = tokio::spawn(async move { system.run_due_turns(1).await.unwrap() });
+    tokio::time::sleep(SECOND).await;
+    assert!(test.system().cancel_turn(&addr(&run("k"))).await.unwrap(), "a turn is running");
+    assert_eq!(turn.await.unwrap(), 1);
+    assert_eq!(outcome(&test, &execution.id).await.unwrap().status, OutcomeStatus::Cancelled);
+    let held = state(&test, "k").await;
+    assert_eq!((held.status, held.armed), (FlowStatus::Running, Some(execution.id)), "stalled, not cancelled");
+    assert!(test.pending(&run("k")).await.is_empty());
+
+    let before = progress(&test, "k").await;
+    test.send(&run("k"), FlowMsg::Cancel).await;
+    test.run_until_idle().await;
+    assert_cancelled(&test, "k", &before).await;
+    let version = test.version(&run("k")).await;
+    test.send(&run("k"), FlowMsg::Continue).await;
+    test.run_until_idle().await;
+    assert_eq!(test.version(&run("k")).await, version, "not reopened");
+    assert_cancelled(&test, "k", &before).await;
+    assert!(probe.ids().is_empty());
+}
+
+/// A host of `test.flow` as 0.18.3 was, on today's contract: it refuses `Cancel` for good and ignores the rest.
+struct OldHost;
+
+impl Actor for OldHost {
+    type Ref = FlowRun<ScriptFlow>;
+    type State = FlowState<Script>;
+
+    async fn handle(&self, _turn: &mut Turn<Self>, message: FlowMsg) -> HandlerResult {
+        match message {
+            FlowMsg::Cancel => {
+                Err(HandlerError::permanent("this release of cicada-actors refuses FlowMsg::Cancel for good"))
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Scenario: Refused Cancel recovery. A worker of the old release refuses a `Cancel` for good, although the contract
+/// is the same, and the run stays running. Once a worker of this release hosts the type, a fresh `Cancel`, an
+/// operator's retry of the failed one or its redrive by the dead letters, from another sender, cancels it.
+#[tokio::test(start_paused = true)]
+async fn a_cancel_refused_by_an_older_host_is_recovered_by_a_fresh_cancel_a_retry_or_a_redrive_after_the_upgrade() {
+    for recovery in ["fresh", "retry", "redrive"] {
+        let probe = Probe::default();
+        let test = TestActors::builder()
+            .with(|node| node.host(DeadLettersActor::default()).host(WitnessActor))
+            .build()
+            .await
+            .unwrap();
+        test.create(&DeadLetters::default(), &DeadLettersState::default()).await;
+        let letters = addr(&DeadLetters::default());
+        test.system().watch(&cicada::WatchTarget::parse("test.flow").unwrap(), &letters).await.unwrap();
+        let old = cicada::runtime::Worker::builder(test.system().clone()).host(OldHost).build();
+        old.initialize().await.unwrap();
+        let progress_saved = restored(script(steps(&["a", "b"])), vec![saved("a", json!("r-a"))]);
+        test.create(&run("k"), &progress_saved).await;
+        let before = progress(&test, "k").await;
+        let refused = test.send(&run("k"), FlowMsg::Cancel).await;
+        assert_eq!(old.run_due_turns(10).await.unwrap(), 1, "{recovery}");
+        test.run_until_idle().await;
+        let record = outcome(&test, &refused.id).await.unwrap();
+        assert_eq!(record.status, OutcomeStatus::Failed, "{recovery}: refused for good");
+        assert_eq!(state(&test, "k").await.status, FlowStatus::Running, "{recovery}: a refusal does not cancel");
+        drop(old);
+
+        let new = cicada::runtime::Worker::builder(test.system().clone())
+            .host(FlowActor::new(ScriptFlow { probe: probe.clone() }))
+            .build();
+        new.initialize().await.unwrap();
+        match recovery {
+            "fresh" => drop(test.send(&run("k"), FlowMsg::Cancel).await),
+            "retry" => {
+                let RetryResult::Accepted(_) = test.system().retry_message(&refused.id).await.unwrap() else {
+                    panic!("retried")
+                };
+            }
+            _ => {
+                let letters_state = test.state::<_, DeadLettersState>(&DeadLetters::default()).await.letters;
+                assert!(letters_state.contains_key(&refused.id), "kept as a letter");
+                test.send(&DeadLetters::default(), DeadLettersMsg::Redrive { message_id: refused.id.clone() }).await;
+                test.run_until_idle().await;
+                let redriven = test.pending(&run("k")).await;
+                assert_eq!(
+                    (redriven[0].message_type.as_str(), redriven[0].from.clone()),
+                    ("Cancel", Some(letters.clone()))
+                );
+            }
+        }
+        assert_eq!(new.run_due_turns(10).await.unwrap(), 1, "{recovery}");
+        assert_cancelled(&test, "k", &before).await;
+        assert!(probe.keys().is_empty(), "{recovery}");
     }
 }
