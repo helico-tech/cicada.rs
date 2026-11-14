@@ -25,7 +25,7 @@
   the example and guide doctest with the real API. Compare regenerated existing flow and ready-made actor contracts
   against the landed flow-reply-waits predecessor: no schema/hash changes or new result wire format. Current main's
   pre-send snapshots cannot establish this equality. Run targeted contract tests and examples doctests.
-- [ ] 5. Update actors guide, architecture, ADR 0044 clarification, operations, public doc comments and changelog/
+- [x] 5. Update actors guide, architecture, ADR 0044 clarification, operations, public doc comments and changelog/
   version at build time. State claim-of-wait deadline origin, rounding, actual handling-order race, no reply cutoff,
   zero-timeout turns, immutable decisions, missing-timer recovery and no target cancellation/cleanup. Explain all-host/
   worker upgrade before enabling deadlines despite equal hashes. Preserve indefinite-wait guidance and deferred joins/

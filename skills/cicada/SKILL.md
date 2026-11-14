@@ -2,7 +2,7 @@
 name: cicada
 description: Build, test and operate Rust projects that use Cicada, the durable actor library on a SQL store (crates cicada, cicada-test, cicada-axum, cicada-client, cicada-app, cicada-actors, cicada-otel). Use it when a project depends on these crates, or the user asks to add Cicada, design actor types or messages, write durable flows, call external services from actors, test with TestActors, serve the HTTP API, run workers, or deploy and upgrade nodes. It finds the exact Cicada source the project resolves and routes to that version's guides, examples and code.
 metadata:
-  cicada-version: 0.18.1
+  cicada-version: 0.18.2
 ---
 
 # Cicada

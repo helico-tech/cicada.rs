@@ -7,6 +7,39 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.18.2 — unreleased
+
+A flow's reply wait can give up at a deadline: `Step::wait_timeout` returns `Waited::Received(T)` or
+`Waited::TimedOut` as data, decided once in a commit of its own before later code runs (ADR 0044). The flow wire and
+every contract hash stay those of 0.18.0; no store schema and no guarantee changes. A node of 0.18.1 refuses for good the
+reply to a wait with a deadline, so upgrade every host and worker of a flow type before its code waits with one.
+
+### Added
+
+- `Step::wait_timeout(id, &request, timeout)` returns `Waited<T>` (`#[must_use]`, `Received(T)` or `TimedOut`). The
+  deadline is the store time of the claim of the turn that creates the wait plus `timeout`, rounded up to microseconds,
+  saved in the wait entry's `until`; replay uses it and ignores `timeout`. A timeout longer than `MAX_DELAY`, or a
+  deadline after `MAX_INSTANT`, fails the turn for good, also when the reply is already kept. A new wait without its
+  reply commits open with a `Continue` due at the deadline, a timer for observers; a zero timeout commits open first
+  too. A new wait whose reply came early commits received and arms a `Continue` due now.
+- At or after the deadline, a `Continue` that executes the flow with no reply kept commits the wait timed out
+  (`received` empty) and a `Continue` due now with its own correlation id, running no code after the wait; the next
+  execution returns `TimedOut`. Before the deadline, an execution (a poke, a retry, a deliver-now) re-arms at the same
+  deadline and saves nothing. A kept reply decides received, also past the deadline.
+- Example 17, `flow_approval`, waits a week for the decision and tells the requester when the purchase expired.
+
+### Changed
+
+- A reply closes an open wait with a deadline as it closes one without: it never reads the clock, cancels the
+  deadline's `Continue` and arms one due now with its own correlation id. Which of a reply and the deadline's
+  `Continue` wins is the run's mailbox order; a committed outcome never changes, and a later reply is ignored before its
+  value is checked. A timeout stops nothing of the target's work. A cancelled, purged or failed deadline `Continue`
+  leaves the wait open, with no polling, until a reply or a public `Continue`.
+- `Step::wait` on a saved wait with a deadline, and `Step::wait_timeout` on one without, fail for good with a
+  diagnostic that names the other helper. Only a saved join, and a reply that would close one, still name a later
+  release.
+- The description of the wait entry in a flow's contract describes the new behaviour; the hashes are those of 0.18.0.
+
 ## 0.18.1 — 2026-11-14
 
 A flow can ask an actor for work and wait for its reply, durably: `Step::request` sends a message that carries a typed

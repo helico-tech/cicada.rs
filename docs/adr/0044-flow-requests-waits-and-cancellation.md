@@ -54,6 +54,23 @@ not serialized; `Step::wait(id, &request)` is the single wait (one request, mode
 which checks the value when called and returns a future that borrows only the turn. A wait without its reply parks
 the run: `armed` becomes null and no continuation is sent. Joins, deadlines and cancellation stay refused.
 
+In Rust (0.18.2, `flow-wait-timeout`): `Step::wait_timeout(id, &request, timeout)` is the single wait with a deadline
+and returns the `#[must_use]` enum `Waited<T>::{Received(T), TimedOut}`; `Step::wait` replays only waits without a
+deadline and `wait_timeout` only waits with one. The deadline is ceil(claim time of the turn that creates the wait +
+timeout) to microseconds, not the request's time; the timeout is at most MAX_DELAY and the deadline at most
+MAX_INSTANT, checked before an early reply is used, and replay uses the saved `until`, ignoring the passed timeout. A
+new timed wait without its reply commits open with a `Continue` due at `until` (a timer); a zero timeout commits open
+first too. An executing `Continue` before `until` re-arms at `until` and saves nothing; at or after it, with no kept
+reply, it commits timedOut (received empty) and an immediate `Continue` with its own correlation id; a kept reply
+commits received instead, also past `until`. A reply turn closes a timed wait as it closes one without a deadline,
+cancelling the deadline's `Continue`, and never reads the clock. The run's mailbox order (deliverAt, then seq) decides a
+race between a reply and the deadline's `Continue`; a committed outcome never changes, and later replies are ignored
+before their value is checked. A timeout cancels nothing of the target's work and cleans nothing up. A cancelled,
+purged or failed deadline `Continue` leaves the wait open with no polling until a reply or a public `Continue`. The
+wire, the schema and every contract hash stay those of 0.18.0; a 0.18.1 node refuses a reply to an open wait with a
+deadline for good, so upgrade every host and worker of the flow type before a flow waits with one. Joins and
+cancellation stay refused.
+
 ### State invariants
 
 - Ids remain 1..100 ASCII characters from A-Za-z0-9._~-:, unique within each journal. Main and cleanup have separate
