@@ -112,5 +112,30 @@ The send branch uses `ReportsMsg::SyncFinished` from [the send example](actors.m
 per committed entry and does not wait for the target to succeed.
 See [flow rules](actors.md#flows) before changing entry ids, order or result types.
 
+## Flow requests and replies
+
+[flow_approval.rs](../../examples/src/flow_approval.rs) asks an actor for a human decision. Unlike the ordinary
+cart/pricing protocol, the flow library saves the request and wait outcome and parks the run for you.
+
+```mermaid
+sequenceDiagram
+    participant F as Purchase flow
+    participant A as Approvals
+    participant U as Human / caller
+    Note over F: Commit Ask + entry<br/>+ Continue
+    F->>A: ApprovalsMsg::Ask (ReplyTo route)
+    F->>F: FlowMsg::Continue
+    Note over F: Open wait saved<br/>no Continue or polling
+    U->>A: ApprovalsMsg::Decide
+    A->>F: FlowMsg::Reply { request, value }
+    Note over F: Save reply + close wait<br/>+ arm Continue
+    F->>F: FlowMsg::Continue
+    Note over F: Replay wait<br/>and return Decision
+```
+
+The reply turn runs no flow code; only the next Continue returns the saved decision. An early reply is kept until
+the wait records its outcome. The target must send the reply itself, and a wait has no timeout in 0.18.1.
+See [request and wait rules](actors.md#requests-and-reply-waits) for ignored replies and recovery.
+
 For ready-made composition, see [supervision](actors.md#supervisor), [message processing](actors.md#message-processing),
 and [events starting flows](actors.md#event).

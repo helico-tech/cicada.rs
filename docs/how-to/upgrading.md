@@ -306,3 +306,13 @@ Equal hashes therefore cannot prove feature support: upgrade **every host and wo
 new flow code or newly supported messages, or use a new versioned type name. A 0.18.0 host permanently refuses Reply,
 Cancel, cancelling runs and replay of saved requests/waits.
 
+## Enable flow replies in 0.18.1
+
+No store schema or flow contract hash changes. `Step::request`, `Step::wait` and `ReplyTo::send` now support a single
+reply wait without a timeout. Upgrade **every host and worker of the flow type** before deploying flow code that
+requests, or use a new type name: 0.18.0 permanently refuses Reply and cannot replay a saved request despite equal hashes.
+
+A reply refused by 0.18.0 must be sent again by its target after upgrading. Dead-letter redrive sends as the dead
+letters actor, so the run ignores it. A run stalled at a saved request recovers with public Continue after upgrading.
+Adding `ReplyTo<T>` to a target's message changes that target's contract: follow
+[Changing a contract](../operations.md#changing-a-contract).

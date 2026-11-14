@@ -20,6 +20,7 @@ The guides assume you know Rust, serde and async functions.
 | Run actors without database credentials | [HTTP worker](guide/app.md#a-worker-over-http) |
 | Choose a scheduler, limiter, debouncer or batcher | [Ready-made actors](guide/actors.md) |
 | Write a durable multi-step job | [Flows](guide/actors.md#flows) |
+| Wait durably for another actor or a human decision | [Flow requests and replies](guide/actors.md#requests-and-reply-waits) |
 | Build a live view of actor state | [Change hints](guide/http.md#follow-changes-over-http) |
 | Deploy, diagnose or tune a node | [Operations](operations.md) |
 | Upgrade a version or contract | [Upgrade](how-to/upgrading.md), [contract changes](operations.md#changing-a-contract) |

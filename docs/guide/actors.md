@@ -290,7 +290,7 @@ step.sleep("cool-off", Duration::from_secs(60)).await?;
 [The flow replay diagram](patterns.md#durable-flows) shows the commit boundaries.
 
 The code runs from the top on each execution. Saved results replay without rerunning their closures; only one new
-step, sleep or send runs per turn. **Code outside steps must be deterministic and free of external effects.**
+step, sleep, send, request or wait runs per turn. **Code outside steps must be deterministic and free of external effects.**
 Put service calls, clocks and randomness inside steps.
 
 Each closure receives `<run address>/<step id>` as an idempotency key. It can run again after an uncommitted turn;
@@ -302,11 +302,12 @@ external effects remain at least once. Never reuse a run key for a different job
 | Business decisions | Save a successful value such as `Result<T, String>` and branch on it |
 | Timeouts | Put timeout/select inside the step closure, never around `step.run` |
 | Replay compatibility | Keep entry order, ids, kinds and result types stable for in-progress runs |
-| Ids and size | Unique ids shared by steps, sleeps and sends; 1–100 chars of `A-Za-z0-9._~-:`, at most 1000 entries |
+| Ids and size | Unique ids shared by steps, sleeps, sends, requests and waits; 1–100 chars of `A-Za-z0-9._~-:`, at most 1000 entries |
 | Recovery | Public Continue rearms a run whose armed message was cancelled/purged/exhausted |
-| Completion | Done and cancelled runs ignore Continue and retain results; 0.18.0 cannot produce cancelled runs |
+| Completion | Done and cancelled runs ignore Continue/Reply and retain results; 0.18.1 cannot produce cancelled runs |
 | Send delivery | One enqueue per committed entry; the target's execution is at least once, with no retry policy |
-| Available in 0.18.0 | Steps, sleeps and sends; Reply, Cancel and replay of saved requests/waits are permanently refused |
+| Waiting | A single wait parks with no Continue; the first eligible reply closes it. No timeout |
+| Available in 0.18.1 | Steps, sleeps, sends, requests and single reply waits; joins, deadlines and cancellation remain refused |
 
 Only the armed Continue executes the flow; a public poke first replaces/arms it. Default retry is 7 attempts with
 waits doubling from 1 s. A replay mismatch is permanently refused. A journal supplied at creation is trusted progress.
@@ -365,6 +366,69 @@ retry policy**. Target failure leaves flow progress intact; design business-fail
 
 A failed turn commits no create, message or entry. After a rejected commit, public Continue attempts the send afresh
 with a new message id. [Flow tests](../../crates/cicada-actors/tests/flow.rs) cover atomicity, replay and recovery.
+
+### Requests and reply waits
+
+`step.request(id, to, build)` sends work carrying a typed `ReplyTo<T>` route; `step.wait(id, &request)` returns its
+reply as `T`. Targets use the same existing/create/child choices as `step.send`. From
+[flow_approval.rs](../../examples/src/flow_approval.rs):
+
+<!-- doctest
+# use cicada::HandlerResult;
+# use cicada_actors::{Step, Target};
+# use cicada_examples::flow_approval::{Approvals, ApprovalsMsg, ApprovalsState, Decision, PurchaseInput};
+# async fn ask(step: &mut Step, input: PurchaseInput) -> HandlerResult {
+# let approvals = Approvals { team: input.team.clone() };
+# let empty = ApprovalsState::default();
+@@3
+# let _: Decision = decision;
+# Ok(()) }
+-->
+```rust
+let ask = |reply| ApprovalsMsg::Ask { item: input.item.clone(), cents: input.cents, reply };
+let request = step.request("ask-approval", Target::create(&approvals, &empty), ask).await?;
+let decision = step.wait("decision", &request).await?;
+```
+
+The target stores the route until it can reply from one of its own turns:
+
+<!-- doctest
+# use cicada::{HandlerResult, Turn};
+# use cicada_examples::flow_approval::{ApprovalsActor, Decision, Pending};
+# async fn decide(turn: &mut Turn<ApprovalsActor>, decided: Pending, approved: bool, by: String) -> HandlerResult {
+@@1
+# Ok(()) }
+-->
+```rust
+decided.reply.send(turn, &Decision { approved, by }).await?;
+```
+
+The route is `{run, request}`: run address and request message id, with the same wire form for every `T`.
+The request/create/entry/Continue commit together; replay returns the saved request without calling its builder.
+The reply commits with the target's turn, is due now, carries that turn's correlation id and has no retry policy.
+`reply.send` rejects encoding errors, NUL and values deeper than 61 levels with `TurnError::Invalid`.
+
+A wait saves an open entry and **parks** with `armed: null`: no handler stays open and nothing polls.
+The reply turn runs no flow code; it saves the value, closes the wait and arms Continue with the reply's correlation id
+atomically. That Continue
+replays the committed outcome and returns the value. An early reply is kept; creating its wait still commits the
+outcome before returning it on the next execution. See [the message diagram](patterns.md#flow-requests-and-replies).
+
+Only the **first eligible reply from the saved target address** counts. Unknown, duplicate, closed or wrong-sender
+replies write nothing. Direct HTTP sends have no sender; delegates, children and dead-letter redrives have their own
+addresses. Delegates must return results through the target. Trusted workers executing the target's leased turn send
+as that target. This checks actor addresses, not human identity; control who can make the target reply.
+
+| Situation | Recovery or limit |
+| --- | --- |
+| Target fails, disappears or never replies | No timeout: the run stays parked. Report business failure as reply data, such as `Result<T, String>` |
+| Public Continue while parked | Replays and parks again without another entry or request |
+| Saved reply does not decode as `T` | Permanently fails execution; fix code and poke with Continue. The saved outcome stays |
+| Run deleted before target replies | The target's whole commit is rejected |
+| Run paused / continuation lost after closure | Resume to handle replies / send public Continue to replay the saved reply |
+
+Upgrade every host and worker before enabling requests; [0.18.1 rollout](../how-to/upgrading.md#enable-flow-replies-in-0181)
+explains why equal contract hashes do not prove support.
 
 ## Event
 

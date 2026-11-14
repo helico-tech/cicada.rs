@@ -66,6 +66,7 @@ headers. A store close ends streams; node stop alone does not. App bounds the dr
 
 A node requires exact contract-hash equality, even for a field added with a serde default. Snapshot the contract and
 check old state samples before deployment. Descriptions do not affect hashes; schemars upgrades can.
+Adding a `ReplyTo<T>` field to a target actor's message changes that target's contract like any other field.
 
 | Strategy | Procedure |
 | --- | --- |
@@ -101,6 +102,7 @@ Stats scans rows under the prefix: avoid frequent unfiltered polling on large st
 | `claim limit: N lost claims` | Node crashes, pauses, blocked handlers, uncertain commits | Fix cause, then retry selected messages |
 | Failed send at commit | Target exists, child-parent/control conflicts | Repair the target/configuration before retrying |
 | Timer chain stopped | Cancelled/purged/exhausted timer | Scheduler: Start; debounce/batcher: Flush; flow: Continue |
+| Flow run parked for long | Open wait as last journal entry, `armed: null`; target mailbox/state | Have the target reply through its saved route, or delete the run; Continue only parks it again |
 | Supervisor gave up | Child entry, state, restart limit | Correct the entry/deployment; send Start |
 | HTTP worker stops | `stopped()` error; auth, route versions, response format | Fix fatal source/protocol problem before restarting |
 
