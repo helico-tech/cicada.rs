@@ -37,8 +37,9 @@ use cicada::store::{DeliverNowResult, Message, NodeId, OutcomeStatus, TurnOutcom
 use cicada::time::{self, MAX_DELAY, Timestamp};
 use cicada::turn::TurnError;
 use cicada_actors::{
-    CreateKind, DeadLetters, DeadLettersActor, DeadLettersMsg, DeadLettersState, Flow, FlowActor, FlowMsg, FlowReply,
-    FlowRun, FlowState, FlowStatus, JournalEntry, ReplyTo, Request, Step, Target, WaitMode, WaitOutcome, Waited,
+    Cleanup, CreateKind, DeadLetters, DeadLettersActor, DeadLettersMsg, DeadLettersState, Flow, FlowActor, FlowMsg,
+    FlowReply, FlowRun, FlowState, FlowStatus, JournalEntry, MainReply, ReplyTo, Request, Step, Target, WaitMode,
+    WaitOutcome, Waited,
 };
 use cicada_test::TestActors;
 use common::*;
@@ -202,6 +203,8 @@ enum Op {
     },
     /// A send to `ghost/_`, a type no node registers.
     SendGhost { id: String },
+    /// A send of `Continue` to the run `test.flow/<key>`.
+    SendRun { id: String, key: String },
     /// A send to `worker/<to>` of a message type the worker does not accept.
     SendForeign { id: String, to: String },
     /// A request to `responder/<to>` that asks it to `answer`; created first, of `create`, when given.
@@ -250,6 +253,35 @@ enum Op {
     },
     /// The requests `asks` and their join `wait`, decoded as `decode` until the probe's code is fixed, as any JSON after.
     TypedJoin { wait: String, asks: Vec<Asked>, decode: Decode },
+    /// Cleanup only: notes `main_key:<id>` and the main key of `id`.
+    MainKey { id: String },
+    /// Cleanup only: notes `main_result:<id>` and the saved main result of `id` as any JSON, or null when absent;
+    /// as a `u32` when `number`; an error is passed on, or ignored when `catch`.
+    MainResult {
+        id: String,
+        #[serde(default)]
+        number: bool,
+        #[serde(default)]
+        catch: bool,
+    },
+    /// Cleanup only: decodes the saved main result of `id` with a decoder that panics, and catches the panic.
+    MainBoom { id: String },
+    /// Cleanup only: the main request `id`, kept under its id for later ops, noting `main_request:<id>` and whether it
+    /// is saved; an error is passed on, or ignored when `catch`.
+    MainRequest {
+        id: String,
+        #[serde(default)]
+        catch: bool,
+    },
+    /// Cleanup only: notes `main_reply:<request>` and `"open"`, `{"replied": value}` or `"closed"` for the request kept
+    /// under `request`; an error is passed on, or ignored when `catch`.
+    MainReply {
+        request: String,
+        #[serde(default)]
+        catch: bool,
+    },
+    /// Cleanup only: notes `main_journal` and the ids of the main journal.
+    MainJournal,
 }
 
 /// A request of [`Op::TypedJoin`]: `id` to `responder/<to>`, which answers as `answer`.
@@ -502,14 +534,22 @@ struct Script {
     ops: Vec<Op>,
     #[serde(default)]
     end: End,
+    /// What the cleanup does, in `Flow::on_cancel`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    cleanup: Vec<Op>,
 }
 
 fn script(ops: Vec<Op>) -> Script {
-    Script { ops, end: End::Ok }
+    Script { ops, end: End::Ok, cleanup: Vec::new() }
 }
 
 fn ending(ops: Vec<Op>, end: End) -> Script {
-    Script { ops, end }
+    Script { ops, end, cleanup: Vec::new() }
+}
+
+/// A script that runs `ops`, and `cleanup` once cancelled.
+fn finalized(ops: Vec<Op>, cleanup: Vec<Op>) -> Script {
+    Script { ops, end: End::Ok, cleanup }
 }
 
 fn steps(ids: &[&str]) -> Vec<Op> {
@@ -569,9 +609,74 @@ impl Flow for ScriptFlow {
             End::Panic => panic!("the flow panicked"),
         }
     }
+
+    async fn on_cancel(&self, cleanup: &mut Cleanup, script: Script) -> HandlerResult {
+        let mut requests = HashMap::new();
+        for op in script.cleanup {
+            self.cleanup_op(cleanup, op, &mut requests).await?;
+        }
+        Ok(())
+    }
 }
 
 impl ScriptFlow {
+    /// One op of the cleanup: a lookup, or an op of the main code through the cleanup's `Step`.
+    async fn cleanup_op(
+        &self,
+        cleanup: &mut Cleanup,
+        op: Op,
+        requests: &mut HashMap<String, Request<Value>>,
+    ) -> HandlerResult {
+        let p = &self.probe;
+        let caught = |catch: bool, e: HandlerError| if catch { Ok(()) } else { Err(e) };
+        match op {
+            Op::MainKey { id } => {
+                let key = cleanup.main_key(&id)?;
+                p.note(&format!("main_key:{id}"), json!(key));
+            }
+            Op::MainResult { id, number, catch } => {
+                let found = if number {
+                    cleanup.main_result::<u32>(&id).map(|n| json!(n))
+                } else {
+                    cleanup.main_result::<Value>(&id).map(|v| json!(v))
+                };
+                match found {
+                    Ok(value) => p.note(&format!("main_result:{id}"), value),
+                    Err(e) => caught(catch, e)?,
+                }
+            }
+            Op::MainBoom { id } => {
+                let _ = std::panic::catch_unwind(AssertUnwindSafe(|| cleanup.main_result::<Boom>(&id)));
+            }
+            Op::MainRequest { id, catch } => match cleanup.main_request::<Value>(&id) {
+                Ok(found) => {
+                    p.note(&format!("main_request:{id}"), json!(found.is_some()));
+                    if let Some(request) = found {
+                        requests.insert(id, request);
+                    }
+                }
+                Err(e) => caught(catch, e)?,
+            },
+            Op::MainReply { request, catch } => match cleanup.main_reply(&requests[&request]) {
+                Ok(answer) => {
+                    let noted = match answer {
+                        MainReply::Open => json!("open"),
+                        MainReply::Replied(value) => json!({"replied": value}),
+                        MainReply::Closed => json!("closed"),
+                    };
+                    p.note(&format!("main_reply:{request}"), noted);
+                }
+                Err(e) => caught(catch, e)?,
+            },
+            Op::MainJournal => {
+                let ids: Vec<&str> = cleanup.main_journal().iter().map(JournalEntry::id).collect();
+                p.note("main_journal", json!(ids));
+            }
+            other => self.op(cleanup, other, requests).await?,
+        }
+        Ok(())
+    }
+
     async fn op(&self, step: &mut Step, op: Op, requests: &mut HashMap<String, Request<Value>>) -> HandlerResult {
         let p = &self.probe;
         match op {
@@ -665,6 +770,7 @@ impl ScriptFlow {
                 }
             }
             Op::SendGhost { id } => step.send(&id, &Ghost, WorkerMsg::Work).await?,
+            Op::SendRun { id, key } => step.send(&id, &run(&key), FlowMsg::Continue).await?,
             Op::SendForeign { id, to } => step.send(&id, Target::existing(&Foreign(to)), ForeignMsg::Unknown).await?,
             Op::Request { id, to, answer, create } => {
                 let target = responder(&to);
@@ -742,6 +848,14 @@ impl ScriptFlow {
                     let _ = AssertUnwindSafe(typed_join::<Boom>(step, &wait, &asks)).catch_unwind().await;
                     step.run("after-boom", |key| p.call(key)).await?;
                 }
+            }
+            Op::MainKey { .. }
+            | Op::MainResult { .. }
+            | Op::MainBoom { .. }
+            | Op::MainRequest { .. }
+            | Op::MainReply { .. }
+            | Op::MainJournal => {
+                return Err(HandlerError::permanent("a lookup of the main journal is for the cleanup"));
             }
             Op::Typed { id, wait, to, answer } => {
                 let target = responder(&to);
@@ -1908,11 +2022,13 @@ async fn observer_headers_go_on_a_send() {
     assert_eq!(sent[0].headers, [("work".to_owned(), "w".to_owned())].into());
 }
 
-/// Scenarios: Reserved message and phase; Reserved cleanup phase; and Terminal commands. Every message to a cancelling
-/// run fails for good without effects; a done or cancelled run takes `Continue`, `Reply` (a too-deep one too) and
-/// `Cancel` without writing, sending or running flow code.
+/// Scenarios: Reserved message and phase; Reserved cleanup phase; and Terminal commands. A structurally valid
+/// cancelling run takes a public `Continue` as a recovery of its cleanup, which normalizes and then runs the cleanup,
+/// never the main code; a `Reply` that names no request is ignored and a `Cancel` is a no-op, both without a write. A
+/// done or cancelled run takes `Continue`, `Reply` (a too-deep one too) and `Cancel` without writing, sending or running
+/// flow code.
 #[tokio::test(start_paused = true)]
-async fn a_cancelling_run_refuses_every_message_and_terminal_runs_ignore_continue_reply_and_cancel() {
+async fn a_cancelling_run_runs_only_its_cleanup_and_terminal_runs_ignore_continue_reply_and_cancel() {
     let probe = Probe::default();
     let test = node(&probe).await;
     let reply = |value: Value| FlowMsg::Reply { request: MessageId::new("m1").unwrap(), value };
@@ -1921,13 +2037,20 @@ async fn a_cancelling_run_refuses_every_message_and_terminal_runs_ignore_continu
         let key = format!("cancelling-{name}");
         let cancelling = FlowState { status: FlowStatus::Cancelling, ..FlowState::new(script(steps(&["a"]))) };
         test.create(&run(&key), &cancelling).await;
+        let saved = progress(&test, &key).await;
         let sent = test.send(&run(&key), message).await;
-        test.run_until_idle().await;
-        let record = outcome(&test, &sent.id).await.unwrap();
-        assert_eq!((record.status, record.envelope.failures), (OutcomeStatus::Failed, 0), "{key}");
-        assert!(record.error.unwrap().contains("refuses the cleanup of a cancelling run for good"), "{key}");
-        assert_eq!(test.version(&run(&key)).await, 0, "{key}: no effects");
-        assert!(test.pending(&run(&key)).await.is_empty(), "{key}");
+        assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1, "{key}");
+        assert_eq!(outcome(&test, &sent.id).await.unwrap().status, OutcomeStatus::Done, "{key}");
+        if name == "continue" {
+            assert_cancelling(&test, &key, &saved).await;
+            assert_eq!(test.version(&run(&key)).await, 1, "{key}: normalized");
+            test.run_until_idle().await;
+            assert_cancelled(&test, &key, &saved).await;
+        } else {
+            assert_eq!(test.version(&run(&key)).await, 0, "{key}: no write");
+            assert_eq!(state(&test, &key).await.status, FlowStatus::Cancelling, "{key}");
+            assert!(test.pending(&run(&key)).await.is_empty(), "{key}: nothing armed");
+        }
     }
 
     for status in [FlowStatus::Done, FlowStatus::Cancelled] {
@@ -1945,8 +2068,8 @@ async fn a_cancelling_run_refuses_every_message_and_terminal_runs_ignore_continu
             assert!(test.pending(&run(&key)).await.is_empty(), "{key}: no continuation");
         }
     }
-    assert!(probe.keys().is_empty(), "no flow code ran");
-    assert!(test.failures().await.iter().all(|f| f.envelope.to.key().starts_with("cancelling-")));
+    assert!(probe.keys().is_empty(), "no main code ran");
+    assert!(test.failures().await.is_empty());
 }
 
 /// Scenario: Replay misuse, through the runner: a saved request does not replay as a send, and a saved join, first wait
@@ -3889,9 +4012,24 @@ async fn assert_cancelled(test: &TestActors, key: &str, saved: &Value) {
     assert!(test.pending(&run(key)).await.is_empty(), "{key}: nothing pending");
 }
 
+/// Asserts that `key` is cancelling with its cleanup `Continue` armed and pending, due now with the flow's policy, and
+/// still holds `saved`.
+async fn assert_cancelling(test: &TestActors, key: &str, saved: &Value) -> Message {
+    let held = state(test, key).await;
+    assert_eq!(held.status, FlowStatus::Cancelling, "{key}");
+    assert_eq!(&progress(test, key).await, saved, "{key}: the input, the journals and the replies stay");
+    let cleanup = armed(test, key).await;
+    assert_eq!((cleanup.message_type.as_str(), cleanup.deliver_at), ("Continue", test.now()), "{key}");
+    assert_eq!(cleanup.retry, Some(three_attempts()), "{key}: the flow's policy");
+    assert_eq!(test.pending(&run(key)).await.len(), 1, "{key}: only the cleanup's continuation");
+    cleanup
+}
+
 /// Scenario: Never started or stalled. A run that was never started, a parked join with a partial reply, a run whose
-/// sleep timer was cancelled and a run whose replay failed for good each become cancelled in one commit of the
-/// `Cancel` turn, without flow code, keeping their saved progress; later replies and time change nothing.
+/// sleep timer was cancelled and a run whose replay failed for good each become cancelling in one commit of the
+/// `Cancel` turn, without flow code, keeping their saved progress, with the cleanup's `Continue` armed; that
+/// `Continue`, with the default cleanup of the test flow's empty script, marks them cancelled in a commit of its own.
+/// Later replies and time change nothing.
 #[tokio::test(start_paused = true)]
 async fn cancel_ends_a_new_parked_timerless_or_broken_run_without_flow_code() {
     let probe = Probe::default();
@@ -3914,9 +4052,12 @@ async fn cancel_ends_a_new_parked_timerless_or_broken_run_without_flow_code() {
     for key in ["new", "parked", "timerless", "broken"] {
         let (before, version) = (progress(&test, key).await, test.version(&run(key)).await);
         let sent = test.send(&run(key), FlowMsg::Cancel).await;
-        assert_eq!(test.run_until_idle().await, 1, "{key}: one turn");
+        assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1, "{key}: the cancel's turn");
         assert_eq!(outcome(&test, &sent.id).await.unwrap().status, OutcomeStatus::Done, "{key}");
         assert_eq!(test.version(&run(key)).await, version + 1, "{key}: one commit");
+        assert_cancelling(&test, key, &before).await;
+        assert_eq!(test.run_until_idle().await, 1, "{key}: the cleanup's turn");
+        assert_eq!(test.version(&run(key)).await, version + 2, "{key}: a commit of its own");
         assert_cancelled(&test, key, &before).await;
     }
     let before = progress(&test, "parked").await;
@@ -3966,10 +4107,15 @@ async fn cancel_neither_runs_the_flow_nor_clones_its_input() {
     let (clones, runs) = (CLONES.load(Ordering::SeqCst), RUNS.load(Ordering::SeqCst));
     assert_eq!(runs, 1, "the sleep's execution");
     test.send(&counted, FlowMsg::Cancel).await;
-    assert_eq!(test.run_until_idle().await, 1);
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1, "the cancel");
+    let held: FlowState<Counted> = test.state(&counted).await;
+    assert_eq!(held.status, FlowStatus::Cancelling);
+    assert_eq!((CLONES.load(Ordering::SeqCst), RUNS.load(Ordering::SeqCst)), (clones, runs), "no clone, no run");
+    assert_eq!(test.run_until_idle().await, 1, "the default cleanup");
     let held: FlowState<Counted> = test.state(&counted).await;
     assert_eq!((held.status, held.armed), (FlowStatus::Cancelled, None));
-    assert_eq!((CLONES.load(Ordering::SeqCst), RUNS.load(Ordering::SeqCst)), (clones, runs), "no clone, no run");
+    let after = (CLONES.load(Ordering::SeqCst), RUNS.load(Ordering::SeqCst));
+    assert_eq!(after, (clones + 1, runs), "the cleanup's turn clones the input for the hook, and never runs the flow");
 }
 
 /// Scenario: Armed message and current id. Another armed message still pending ends cancelled, and no handler runs
@@ -4071,8 +4217,9 @@ async fn cancel_interrupts_a_sleep_a_parked_wait_and_a_timed_join_and_later_repl
 }
 
 /// Scenario: Reply or timer decision race, of a deadline. A `Cancel` and the deadline's `Continue` due at the same time
-/// are handled in sequence order. Cancel first: the timer is cancelled and the wait stays open. Deadline first: the
-/// timeout commits, and the `Cancel` cancels the `Continue` it armed, so no flow code consumes the decision.
+/// are handled in sequence order. Cancel first: the timer is cancelled, the wait stays open and the cleanup's
+/// `Continue` is armed. Deadline first: the timeout commits, and the `Cancel` cancels the `Continue` it armed, so no
+/// main code consumes the decision.
 #[tokio::test(start_paused = true)]
 async fn a_cancel_and_the_deadline_due_at_the_same_time_are_handled_in_sequence_order() {
     for cancel_first in [true, false] {
@@ -4098,8 +4245,11 @@ async fn a_cancel_and_the_deadline_due_at_the_same_time_are_handled_in_sequence_
 
         tokio::time::sleep(MINUTE).await;
         assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1, "cancel first: {cancel_first}: the first due");
-        let decision = state(&test, "k").await.armed;
-        assert_eq!(decision.is_none(), cancel_first, "the timeout arms a continuation, the cancel clears it");
+        let first = state(&test, "k").await;
+        let phase = if cancel_first { FlowStatus::Cancelling } else { FlowStatus::Running };
+        assert_eq!(first.status, phase, "the timeout arms a continuation, the cancel the cleanup's");
+        let decision = first.armed;
+        assert_ne!(decision.as_ref(), Some(&timer), "cancel first: {cancel_first}");
         test.advance_time_by(MINUTE).await;
         let decided = if cancel_first { None } else { Some(WaitOutcome::TimedOut) };
         assert_eq!(
@@ -4124,8 +4274,9 @@ async fn a_cancel_and_the_deadline_due_at_the_same_time_are_handled_in_sequence_
 }
 
 /// Scenario: Reply or timer decision race, of a reply. A `Cancel` and the reply that closes a parked wait due at the
-/// same time are handled in sequence order. Cancel first: the reply is ignored and the wait stays open. Reply first: the
-/// wait commits received with its value, and the `Cancel` cancels the `Continue` it armed before code consumes it.
+/// same time are handled in sequence order. Cancel first: the reply comes while the run is cancelling, so it is kept
+/// for the cleanup and the main wait stays open. Reply first: the wait commits received with its value, and the
+/// `Cancel` cancels the `Continue` it armed before code consumes it.
 #[tokio::test(start_paused = true)]
 async fn a_cancel_and_the_closing_reply_due_at_the_same_time_are_handled_in_sequence_order() {
     for cancel_first in [true, false] {
@@ -4155,8 +4306,8 @@ async fn a_cancel_and_the_closing_reply_due_at_the_same_time_are_handled_in_sequ
         let held = state(&test, "k").await;
         assert_eq!((held.status, held.armed.clone()), (FlowStatus::Cancelled, None), "cancel first: {cancel_first}");
         if cancel_first {
-            assert_eq!(wait_entry(&test, "k", "done").await, (None, vec![]), "the wait stays open");
-            assert!(held.replies.is_empty(), "the reply is ignored");
+            assert_eq!(wait_entry(&test, "k", "done").await, (None, vec![]), "the main wait stays open");
+            assert_eq!(held.replies, [kept_reply(&asked, json!("v"))], "kept for the cleanup, which did not use it");
         } else {
             assert_eq!(wait_entry(&test, "k", "done").await, (Some(WaitOutcome::Received), vec![asked.clone()]));
             assert_eq!(held.replies, [kept_reply(&asked, json!("v"))], "the decision stays saved");
@@ -4168,9 +4319,10 @@ async fn a_cancel_and_the_closing_reply_due_at_the_same_time_are_handled_in_sequ
 }
 
 /// Scenario: Finishing and queued continuations. A public `Continue` queued before the `Cancel` normalizes as ever,
-/// replacing the armed timer; the `Cancel` then cancels the fresh continuation, and a `Continue` queued after it does
-/// nothing. A `Cancel` that runs after the last step committed but before the run recorded done still cancels it,
-/// although every effect ran; once done is recorded a `Cancel` is a no-op.
+/// replacing the armed timer; the `Cancel` then cancels the fresh continuation and arms the cleanup's, a `Continue`
+/// queued after the `Cancel` normalizes the cleanup, and one after cancelled does nothing. A `Cancel` that runs after
+/// the last step committed but before the run recorded done still cancels it, although every effect ran, and the
+/// cleanup runs before cancelled; once done is recorded a `Cancel` is a no-op.
 #[tokio::test(start_paused = true)]
 async fn queued_continues_keep_mailbox_order_around_a_cancel_and_a_cancel_after_the_last_step_still_wins() {
     let probe = Probe::default();
@@ -4186,19 +4338,33 @@ async fn queued_continues_keep_mailbox_order_around_a_cancel_and_a_cancel_after_
     assert_eq!(outcome(&test, &timer.id).await.unwrap().status, OutcomeStatus::Cancelled, "replaced as ever");
     let fresh = armed(&test, "queued").await;
     assert_eq!(test.version(&run("queued")).await, version + 1);
-    assert_eq!(test.run_until_idle().await, 2, "the cancel and the later Continue; the fresh one never runs");
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1, "the cancel");
     assert_eq!(outcome(&test, &fresh.id).await.unwrap().status, OutcomeStatus::Cancelled, "by the cancel");
+    let cleanup = armed(&test, "queued").await;
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1, "the later Continue, queued before the cleanup's");
+    assert_eq!(outcome(&test, &cleanup.id).await.unwrap().status, OutcomeStatus::Cancelled, "normalized");
+    assert_eq!(
+        state(&test, "queued").await.status,
+        FlowStatus::Cancelling,
+        "the later Continue normalizes the cleanup"
+    );
+    assert_eq!(test.run_until_idle().await, 1, "its fresh continuation runs the cleanup");
     for message in [&before, &cancel, &behind] {
         assert_eq!(outcome(&test, &message.id).await.unwrap().status, OutcomeStatus::Done);
     }
-    assert_eq!(test.version(&run("queued")).await, version + 2, "the later Continue writes nothing");
+    assert_eq!(test.version(&run("queued")).await, version + 4);
     assert_eq!(state(&test, "queued").await.status, FlowStatus::Cancelled);
-    assert!(test.pending(&run("queued")).await.is_empty(), "the later Continue arms nothing");
+    let after = test.send(&run("queued"), FlowMsg::Continue).await;
+    test.run_until_idle().await;
+    assert_eq!(outcome(&test, &after.id).await.unwrap().status, OutcomeStatus::Done);
+    assert_eq!(test.version(&run("queued")).await, version + 4, "a Continue after cancelled writes nothing");
+    assert!(test.pending(&run("queued")).await.is_empty(), "and arms nothing");
+    assert!(probe.ids().is_empty(), "the step after the sleep never ran");
 
     start(&test, "last", script(steps(&["a"]))).await;
     assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1, "the poke arms the execution");
     test.send(&run("last"), FlowMsg::Cancel).await;
-    assert_eq!(test.run_until_idle().await, 2, "the last step, then the cancel before the completion");
+    assert_eq!(test.run_until_idle().await, 3, "the last step, the cancel before the completion, the cleanup");
     assert_eq!(probe.ids(), ["a"], "its effect ran");
     let held = state(&test, "last").await;
     assert_eq!((held.status, held.journal), (FlowStatus::Cancelled, vec![saved("a", json!("r-a"))]));
@@ -4238,7 +4404,7 @@ async fn cancel_waits_for_a_running_handler_and_cancels_a_retry_in_backoff() {
     assert_eq!(turn.await.unwrap(), 1);
     assert_eq!(journal(&test, "held").await, ["a"], "the held step committed first");
     let successor = armed(&test, "held").await;
-    assert_eq!(test.run_until_idle().await, 1, "the cancel");
+    assert_eq!(test.run_until_idle().await, 2, "the cancel, then the cleanup");
     assert_eq!(outcome(&test, &cancel.id).await.unwrap().status, OutcomeStatus::Done);
     assert_eq!(outcome(&test, &successor.id).await.unwrap().status, OutcomeStatus::Cancelled);
     assert_eq!(state(&test, "held").await.status, FlowStatus::Cancelled);
@@ -4250,7 +4416,7 @@ async fn cancel_waits_for_a_running_handler_and_cancels_a_retry_in_backoff() {
     let retry = armed(&test, "backoff").await;
     assert_eq!(retry.failures, 1, "in backoff");
     test.send(&run("backoff"), FlowMsg::Cancel).await;
-    assert_eq!(test.run_until_idle().await, 1, "due before the retry");
+    assert_eq!(test.run_until_idle().await, 2, "the cancel, due before the retry, then the cleanup");
     assert_eq!(outcome(&test, &retry.id).await.unwrap().status, OutcomeStatus::Cancelled);
     assert_eq!(test.advance_time_by(BACKOFF * 2).await, 0);
     assert_eq!(probe.ids(), ["a", "x"], "the step ran once, and is neither run again nor compensated");
@@ -4287,7 +4453,7 @@ async fn a_paused_run_takes_its_cancel_after_resume_and_a_purged_cancel_leaves_i
     }
 }
 
-/// What [`CancelFaults`] does to the completion of a turn whose new state is cancelled.
+/// What [`CancelFaults`] does to the completion of a turn whose new state has a planned status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Fault {
     /// Turns it down as a store that rejects the commit does (cause `commit`, not retryable), applying nothing.
@@ -4298,11 +4464,12 @@ enum Fault {
     LoseAnswer,
 }
 
-/// The core `TurnSource` of a system, for a worker that hosts the flow: the completion of a turn whose new state is
-/// cancelled meets the next planned fault, if any; every other call goes to the system.
+/// The core `TurnSource` of a system, for a worker that hosts the flow: the completion of a turn whose new state has
+/// the status of the next planned fault (`cancelling` at the phase's entry, `cancelled` at its end) meets that fault;
+/// every other call goes to the system.
 struct CancelFaults {
     system: ActorSystem,
-    faults: Arc<Mutex<VecDeque<Fault>>>,
+    faults: Arc<Mutex<VecDeque<(&'static str, Fault)>>>,
 }
 
 #[async_trait::async_trait]
@@ -4339,9 +4506,15 @@ impl TurnSource for CancelFaults {
         message_id: &MessageId,
         report: TurnReport,
     ) -> Result<CompleteTurnResult, SourceError> {
-        let cancels =
-            matches!(&report, TurnReport::Returned { state: StateReport::Set(s), .. } if s["status"] == "cancelled");
-        let fault = if cancels { self.faults.lock().unwrap().pop_front() } else { None };
+        let status = match &report {
+            TurnReport::Returned { state: StateReport::Set(s), .. } => s["status"].as_str().map(str::to_owned),
+            _ => None,
+        };
+        let fault = {
+            let mut faults = self.faults.lock().unwrap();
+            let planned = faults.front().is_some_and(|(at, _)| status.as_deref() == Some(*at));
+            if planned { faults.pop_front().map(|(_, fault)| fault) } else { None }
+        };
         match fault {
             None => TurnSource::complete_turn(&self.system, actor, epoch, message_id, report).await,
             Some(Fault::Reject) => Ok(CompleteTurnResult::Rejected(TurnFailure {
@@ -4360,7 +4533,7 @@ impl TurnSource for CancelFaults {
 
 /// A node that hosts the responders and the witness, and a worker on it that hosts the test flow on `probe` through a
 /// [`CancelFaults`], with the faults it will meet.
-async fn faulty(probe: &Probe) -> (TestActors, cicada::runtime::Worker, Arc<Mutex<VecDeque<Fault>>>) {
+async fn faulty(probe: &Probe) -> (TestActors, cicada::runtime::Worker, Arc<Mutex<VecDeque<(&'static str, Fault)>>>) {
     let test = TestActors::builder().with(|node| node.host(ResponderActor).host(WitnessActor)).build().await.unwrap();
     witness(&test, "test.flow").await;
     let faults = Arc::new(Mutex::new(VecDeque::new()));
@@ -4375,9 +4548,9 @@ async fn faulty(probe: &Probe) -> (TestActors, cicada::runtime::Worker, Arc<Mute
 const LEASE: Duration = Duration::from_secs(30);
 
 /// Scenarios: Atomic failure; and Unknown commit acknowledgement. A rejected commit of the `Cancel` saves neither the
-/// status nor the cancel of the armed timer, and fails the `Cancel` without its sender's retry policy retrying it; a
-/// fresh `Cancel` then commits. A commit whose answer was lost did apply: a reread shows the run cancelled, and a
-/// fresh `Cancel` is a no-op.
+/// status, the cleanup's `Continue` nor the cancel of the armed timer, and fails the `Cancel` without its sender's
+/// retry policy retrying it; a fresh `Cancel` then commits. A commit whose answer was lost did apply: a reread shows
+/// the run cancelling, and a fresh `Cancel` is a no-op; the cleanup then marks it cancelled.
 #[tokio::test(start_paused = true)]
 async fn a_cancel_commits_whole_or_not_at_all_and_an_unknown_answer_is_settled_by_a_reread() {
     for fault in [Fault::Reject, Fault::LoseAnswer] {
@@ -4387,7 +4560,7 @@ async fn a_cancel_commits_whole_or_not_at_all_and_an_unknown_answer_is_settled_b
         drive(&test, &worker).await;
         let timer = armed(&test, "k").await;
         let (before, saved) = (unchanged(&test, "k").await, progress(&test, "k").await);
-        faults.lock().unwrap().push_back(fault);
+        faults.lock().unwrap().push_back(("cancelling", fault));
         let retried = SendOptions::new().retry(three_attempts());
         let cancel = test.send_with(&run("k"), FlowMsg::Cancel, retried).await;
         assert_eq!(worker.run_due_turns(10).await.unwrap(), 1, "{fault:?}: the cancel's turn");
@@ -4406,10 +4579,11 @@ async fn a_cancel_commits_whole_or_not_at_all_and_an_unknown_answer_is_settled_b
             assert_eq!(record.status, OutcomeStatus::Done, "it applied although the worker got no answer");
             let version = test.version(&run("k")).await;
             assert_eq!(version, before.1 + 1);
+            assert_eq!(state(&test, "k").await.status, FlowStatus::Cancelling, "a reread shows the phase entered");
             let again = test.send(&run("k"), FlowMsg::Cancel).await;
             drive(&test, &worker).await;
             assert_eq!(outcome(&test, &again.id).await.unwrap().status, OutcomeStatus::Done, "a fresh cancel");
-            assert_eq!(test.version(&run("k")).await, version, "is a no-op");
+            assert_eq!(test.version(&run("k")).await, version + 1, "is a no-op: the one commit is the cleanup's");
         }
         assert_eq!(outcome(&test, &timer.id).await.unwrap().status, OutcomeStatus::Cancelled, "{fault:?}");
         assert_cancelled(&test, "k", &saved).await;
@@ -4432,7 +4606,7 @@ async fn an_unapplied_cancel_commit_is_reclaimed_after_its_lease_and_fails_at_th
         drive(&test, &worker).await;
         let timer = armed(&test, "k").await;
         let (before, saved) = (unchanged(&test, "k").await, progress(&test, "k").await);
-        faults.lock().unwrap().extend(std::iter::repeat_n(Fault::Drop, drops));
+        faults.lock().unwrap().extend(std::iter::repeat_n(("cancelling", Fault::Drop), drops));
         let cancel = test.send_with(&run("k"), FlowMsg::Cancel, SendOptions::new().retry(three_attempts())).await;
         for claim in 0..drops {
             assert_eq!(worker.run_due_turns(10).await.unwrap(), 1, "{drops}: claim {claim}");
@@ -4529,8 +4703,9 @@ impl ObservedTurn for EndedTurn {
 }
 
 /// Scenarios: Observers and watches; and Targets and senders. Another actor cancels a run that has requested a job of
-/// a responder and created a child worker: observers see an ordinary done turn with the incoming correlation id and
-/// nothing sent, the cancelled timer has no turn, the witness of the type is told nothing, the run stays readable, a
+/// a responder and created a child worker: observers see an ordinary done `Cancel` turn with the incoming correlation
+/// id that sends only the cleanup's `Continue`, then that `Continue`'s done turn with the same correlation id; the
+/// cancelled timer has no turn, the witness of the type is told nothing, the run stays readable, a
 /// change hint names it, and the target and the child keep existing; the target's later reply is ignored.
 #[tokio::test(start_paused = true)]
 async fn a_cancel_from_another_actor_is_an_ordinary_turn_with_a_hint_and_no_notification_and_leaves_targets_alone() {
@@ -4571,11 +4746,15 @@ async fn a_cancel_from_another_actor_is_an_ordinary_turn_with_a_hint_and_no_noti
     assert_eq!(outcome(&test, &order.id).await.unwrap().status, OutcomeStatus::Done);
     assert_cancelled(&test, "k", &before).await;
     let turns = ended.0.lock().unwrap().clone();
-    let cancels: Vec<_> = turns.iter().filter(|t| t.0 == addr(&run("k")) && t.2 == "Cancel").collect();
-    assert_eq!(cancels.len(), 1);
-    let (actor, _, _, correlation, outcome_of_cancel, sent) = cancels[0].clone();
+    let of_run: Vec<_> = turns.iter().filter(|t| t.0 == addr(&run("k")) && t.1 != timer.id).collect();
+    let types: Vec<&str> = of_run.iter().skip_while(|t| t.2 != "Cancel").map(|t| t.2.as_str()).collect();
+    assert_eq!(types, ["Cancel", "Continue"], "the cancel, then the cleanup's continuation");
+    let cancel_turn = of_run.iter().find(|t| t.2 == "Cancel").unwrap();
+    let (actor, _, _, correlation, outcome_of_cancel, sent) = (*cancel_turn).clone();
     assert_eq!((actor, correlation.as_deref()), (addr(&run("k")), Some("c-cancel")), "the incoming correlation id");
-    assert_eq!((outcome_of_cancel, sent), (TurnOutcome::Done, 0), "an ordinary done turn that sends nothing");
+    assert_eq!((outcome_of_cancel, sent), (TurnOutcome::Done, 1), "an ordinary done turn that sends the cleanup's");
+    let cleanup_turn = of_run.last().unwrap();
+    assert_eq!((cleanup_turn.3.as_deref(), &cleanup_turn.4, cleanup_turn.5), (Some("c-cancel"), &TurnOutcome::Done, 0));
     assert!(turns.iter().all(|t| t.1 != timer.id), "no turn for the cancelled timer");
     let cancel = test.list("test.flow/").await;
     assert_eq!(cancel, [addr(&run("k"))], "the run stays readable");
@@ -4694,8 +4873,225 @@ async fn a_cancel_refused_by_an_older_host_is_recovered_by_a_fresh_cancel_a_retr
                 );
             }
         }
-        assert_eq!(new.run_due_turns(10).await.unwrap(), 1, "{recovery}");
+        assert_eq!(new.run_due_turns(10).await.unwrap(), 1, "{recovery}: the cancel");
+        assert_eq!(state(&test, "k").await.status, FlowStatus::Cancelling, "{recovery}");
+        assert_eq!(new.run_due_turns(10).await.unwrap(), 1, "{recovery}: the cleanup");
         assert_cancelled(&test, "k", &before).await;
         assert!(probe.keys().is_empty(), "{recovery}");
     }
+}
+
+// Finalization (flow-finalizer).
+
+/// The ids of the cleanup journal of `key`.
+async fn cleanup_journal(test: &TestActors, key: &str) -> Vec<String> {
+    state(test, key).await.cleanup.iter().map(|e| e.id().to_owned()).collect()
+}
+
+/// The main journal of `key` as JSON, to compare byte for byte.
+async fn main_json(test: &TestActors, key: &str) -> Value {
+    test.state_json(&run(key)).await.unwrap()["journal"].clone()
+}
+
+/// A cancelling state of `script` with the saved `journal` and `cleanup`, and nothing armed.
+fn cancelling(script: Script, journal: Vec<JournalEntry>, cleanup: Vec<JournalEntry>) -> FlowState<Script> {
+    FlowState { status: FlowStatus::Cancelling, cleanup, ..restored(script, journal) }
+}
+
+/// Scenarios: Default and custom hooks; Separate namespaces. The `Cancel` turn commits cancelling and the cleanup's
+/// `Continue` without running the cleanup; each cleanup turn then saves one new entry of the cleanup journal with the
+/// next continuation, which keeps the `Cancel`'s correlation id, and a last turn of its own marks the run cancelled.
+/// A cleanup step with the id of a main step gets the key `<run>/cancel/<id>`; the main journal stays as it was.
+#[tokio::test(start_paused = true)]
+async fn a_cleanup_saves_one_entry_per_turn_under_its_own_keys_and_a_last_turn_marks_the_run_cancelled() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    let ops = vec![op(|id| Op::Step { id }, "a"), sleep("nap", MINUTE), op(|id| Op::Step { id }, "after")];
+    start(&test, "k", finalized(ops, steps(&["a", "b"]))).await;
+    test.run_until_idle().await;
+    let main = main_json(&test, "k").await;
+    let version = test.version(&run("k")).await;
+    test.send_with(&run("k"), FlowMsg::Cancel, SendOptions::new().correlation_id("c-cancel")).await;
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1, "the cancel");
+    assert_eq!(probe.ids(), ["a"], "no cleanup in the cancel's turn");
+    for (turn, saved) in [(1, vec!["a"]), (2, vec!["a", "b"])] {
+        let next = armed(&test, "k").await;
+        assert_eq!(next.correlation_id.as_deref(), Some("c-cancel"), "turn {turn}");
+        assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1, "turn {turn}");
+        assert_eq!(cleanup_journal(&test, "k").await, saved, "turn {turn}: one new entry");
+        assert_eq!(state(&test, "k").await.status, FlowStatus::Cancelling, "turn {turn}");
+        assert_eq!(test.version(&run("k")).await, version + 1 + turn, "turn {turn}");
+    }
+    assert_eq!(test.run_until_idle().await, 1, "the turn that replays both and marks the run cancelled");
+    let held = state(&test, "k").await;
+    assert_eq!((held.status, held.armed.clone()), (FlowStatus::Cancelled, None));
+    assert_eq!(test.version(&run("k")).await, version + 4);
+    assert_eq!(probe.keys(), ["test.flow/k/a", "test.flow/k/cancel/a", "test.flow/k/cancel/b"]);
+    assert_eq!(main_json(&test, "k").await, main, "the main journal never changes");
+    assert_eq!(held.cleanup, [saved("a", json!("r-a")), saved("b", json!("r-b"))]);
+    assert!(test.pending(&run("k")).await.is_empty() && test.failures().await.is_empty());
+}
+
+/// Scenario: No normal-finally behavior. A run whose flow returned `Ok` is done, and a `Cancel` then changes nothing and
+/// runs no cleanup; a run cancelled by 0.18.4, before this release, is never reopened or finalized by `Continue`,
+/// `Reply` or `Cancel`.
+#[tokio::test(start_paused = true)]
+async fn a_done_run_or_one_cancelled_by_an_earlier_release_never_runs_its_cleanup() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    start(&test, "done", finalized(steps(&["a"]), steps(&["undo"]))).await;
+    test.run_until_idle().await;
+    let earlier = FlowState {
+        status: FlowStatus::Cancelled,
+        ..restored(finalized(steps(&["a", "b"]), steps(&["undo"])), vec![saved("a", json!("r-a"))])
+    };
+    test.create(&run("earlier"), &earlier).await;
+    let reply = FlowMsg::Reply { request: MessageId::random(), value: json!(1) };
+    for (key, message) in
+        [("done", FlowMsg::Cancel), ("earlier", FlowMsg::Continue), ("earlier", reply), ("earlier", FlowMsg::Cancel)]
+    {
+        let before = unchanged(&test, key).await;
+        test.send(&run(key), message).await;
+        test.run_until_idle().await;
+        assert_eq!(unchanged(&test, key).await, before, "{key}: nothing written");
+        assert!(test.pending(&run(key)).await.is_empty(), "{key}");
+    }
+    assert_eq!(state(&test, "done").await.status, FlowStatus::Done);
+    assert_eq!(state(&test, "earlier").await.status, FlowStatus::Cancelled);
+    assert_eq!(probe.ids(), ["a"], "no cleanup ran");
+}
+
+/// Scenario: Stale continuation and repeated Cancel, of a stale continuation. The main step fails for good, the run
+/// is cancelled, and its first cleanup attempt fails for good too, so the run stays cancelling. Then a main `Continue`
+/// reaches it: one delayed since before the `Cancel`, an operator's retry of the failed main continuation, or its
+/// redrive by the dead letters. Each only normalizes, and the fresh continuation runs the cleanup, never main code.
+#[tokio::test(start_paused = true)]
+async fn a_stale_retried_or_redriven_main_continue_reaching_a_cancelling_run_runs_only_the_cleanup() {
+    for how in ["delayed", "retried", "redriven"] {
+        let probe = Probe::default();
+        let flow = ScriptFlow { probe: probe.clone() };
+        let test = TestActors::builder()
+            .with(move |node| node.host(FlowActor::new(flow)).host(DeadLettersActor::default()))
+            .build()
+            .await
+            .unwrap();
+        test.create(&DeadLetters::default(), &DeadLettersState::default()).await;
+        let letters = addr(&DeadLetters::default());
+        test.system().watch(&cicada::WatchTarget::parse("test.flow").unwrap(), &letters).await.unwrap();
+        probe.plan("x", &[Act::Refuse]);
+        probe.plan("c", &[Act::Refuse]);
+        start(&test, "k", finalized(steps(&["x", "y"]), steps(&["c"]))).await;
+        if how == "delayed" {
+            test.send_with(&run("k"), FlowMsg::Continue, SendOptions::new().delay(MINUTE)).await;
+        }
+        test.run_until_idle().await;
+        let failed = state(&test, "k").await.armed.unwrap();
+        assert_eq!(outcome(&test, &failed).await.unwrap().status, OutcomeStatus::Failed, "{how}");
+        test.send(&run("k"), FlowMsg::Cancel).await;
+        test.run_until_idle().await;
+        let stalled = state(&test, "k").await;
+        assert_eq!(stalled.status, FlowStatus::Cancelling, "{how}: a permanent cleanup failure stays cancelling");
+        assert_eq!(outcome(&test, stalled.armed.as_ref().unwrap()).await.unwrap().status, OutcomeStatus::Failed);
+        assert_eq!(probe.ids(), ["x", "c"], "{how}");
+
+        match how {
+            "delayed" => drop(test.advance_time_by(MINUTE).await),
+            "retried" => {
+                let RetryResult::Accepted(_) = test.system().retry_message(&failed).await.unwrap() else {
+                    panic!("retried")
+                };
+            }
+            _ => drop(test.send(&DeadLetters::default(), DeadLettersMsg::Redrive { message_id: failed.clone() }).await),
+        }
+        test.run_until_idle().await;
+        let held = state(&test, "k").await;
+        assert_eq!((held.status, held.armed.clone()), (FlowStatus::Cancelled, None), "{how}");
+        assert_eq!(probe.ids(), ["x", "c", "c"], "{how}: the cleanup ran again, and y never did");
+        assert_eq!(held.journal, [], "{how}: the main journal stays empty");
+    }
+}
+
+/// Scenario: Stale continuation and repeated Cancel, of a repeated `Cancel`. While the cleanup's continuation waits
+/// out a retry's backoff, `Cancel`s change nothing: no state write, the same armed continuation with its failure
+/// count, the saved cleanup entry kept. The retry then runs the cleanup on to cancelled.
+#[tokio::test(start_paused = true)]
+async fn repeated_cancels_during_the_cleanup_reset_nothing_and_do_not_starve_it() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    probe.plan("c", &[Act::Fail]);
+    start(&test, "k", finalized(vec![sleep("nap", MINUTE)], steps(&["b", "c"]))).await;
+    test.run_until_idle().await;
+    test.send(&run("k"), FlowMsg::Cancel).await;
+    test.run_until_idle().await;
+    let retry = armed(&test, "k").await;
+    assert_eq!((retry.failures, cleanup_journal(&test, "k").await), (1, vec!["b".to_owned()]), "c in backoff");
+    let before = unchanged(&test, "k").await;
+    for _ in 0..2 {
+        let again = test.send(&run("k"), FlowMsg::Cancel).await;
+        assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1);
+        assert_eq!(outcome(&test, &again.id).await.unwrap().status, OutcomeStatus::Done);
+    }
+    assert_eq!(unchanged(&test, "k").await, before, "no state or version change");
+    let still = armed(&test, "k").await;
+    assert_eq!((still.id, still.failures), (retry.id, 1), "the same continuation, attempts kept");
+    test.advance_time_by(BACKOFF).await;
+    assert_eq!(state(&test, "k").await.status, FlowStatus::Cancelled);
+    assert_eq!(cleanup_journal(&test, "k").await, ["b", "c"]);
+    assert_eq!(probe.ids(), ["b", "c", "c"]);
+}
+
+/// Scenario: Separate namespaces, of addresses. A cleanup request's route names the run's own address, not its key
+/// prefix, and the reply closes the cleanup wait; a cleanup send to the run itself is refused for good.
+#[tokio::test(start_paused = true)]
+async fn a_cleanup_request_routes_replies_to_the_run_and_a_cleanup_send_to_the_run_itself_is_refused() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    responders(&test, &["r1"]).await;
+    let cleanup = vec![later("stop", "r1"), wait_op("stopped", "stop")];
+    start(&test, "k", finalized(vec![sleep("nap", MINUTE)], cleanup)).await;
+    test.run_until_idle().await;
+    test.send(&run("k"), FlowMsg::Cancel).await;
+    test.run_until_idle().await;
+    let route = responder_state(&test, "r1").await.routes[0].clone();
+    assert_eq!(route.run, addr(&run("k")), "the run's address");
+    assert_eq!(state(&test, "k").await.armed, None, "parked on the cleanup wait");
+    answer(&test, "r1", json!("gone"), None).await;
+    test.run_until_idle().await;
+    assert_eq!(state(&test, "k").await.status, FlowStatus::Cancelled);
+    assert_eq!(probe.got(), [("stopped".to_owned(), json!("gone"))]);
+
+    let cleanup = vec![Op::SendRun { id: "poke".into(), key: "self".into() }];
+    start(&test, "self", finalized(vec![sleep("nap", MINUTE)], cleanup)).await;
+    test.run_until_idle().await;
+    test.send(&run("self"), FlowMsg::Cancel).await;
+    test.run_until_idle().await;
+    refused(&test, "self", "send `poke` names the run itself, test.flow/self").await;
+    assert_eq!(state(&test, "self").await.status, FlowStatus::Cancelling);
+}
+
+/// Scenario: Completion discipline. A cleanup that returns `Ok` before reaching a saved cleanup entry, or that calls
+/// another entry where one is saved, fails for good and stays cancelling; a new cleanup entry after 1000 fails for good
+/// without changing the main journal.
+#[tokio::test(start_paused = true)]
+async fn an_early_return_a_mismatch_or_entry_1001_of_the_cleanup_fails_for_good_and_stays_cancelling() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    let main = vec![saved("m", json!("r-m"))];
+    let z = vec![saved("z", json!("r-z"))];
+    let full: Vec<JournalEntry> = (0..1000).map(|i| saved(&format!("s{i}"), json!(format!("r-s{i}")))).collect();
+    let thousand_and_one = vec![Op::Repeat { prefix: "s".into(), count: 1001 }];
+    for (key, cleanup, saved_cleanup, why) in [
+        ("early", vec![], z.clone(), "the cleanup returned before reaching its saved step `z`"),
+        ("mismatch", steps(&["a"]), z, "calls step `a` where its journal holds step `z`"),
+        ("full", thousand_and_one, full, "step `s1000` would be entry 1001 of a journal that holds at most 1000"),
+    ] {
+        let held = cancelling(finalized(steps(&["m"]), cleanup), main.clone(), saved_cleanup);
+        start_with(&test, key, held).await;
+        let before = main_json(&test, key).await;
+        test.run_until_idle().await;
+        refused(&test, key, why).await;
+        assert_eq!(state(&test, key).await.status, FlowStatus::Cancelling, "{key}");
+        assert_eq!(main_json(&test, key).await, before, "{key}: the main journal stays");
+    }
+    assert!(probe.ids().is_empty(), "no closure ran");
 }

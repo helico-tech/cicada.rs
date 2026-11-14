@@ -3,15 +3,17 @@
 //! and arming the next `Continue` in the same commit; a sleep's `Continue` is due at its saved wake time, a send's or a
 //! request's create and message commit with its entry, and a wait for replies that have not come parks the run with no
 //! `Continue` until a `Reply` turn closes it, or, with a deadline, arms a `Continue` due then that closes it as timed
-//! out. A wait names one request or joins up to 100, for all their replies or the first. A `Cancel` ends a running run
-//! in one turn of its own: it cancels the armed `Continue`, marks the run cancelled and keeps its progress; the wire
-//! also holds the cleanup of a cancelling run for a later release, which this one refuses.
+//! out. A wait names one request or joins up to 100, for all their replies or the first. A `Cancel` stops a running
+//! run's main code in one turn of its own: it cancels the armed `Continue`, marks the run cancelling and arms a cleanup
+//! `Continue`, keeping its progress; the cleanup, [`Flow::on_cancel`], then runs over a journal of its own with the same
+//! helpers, and only its success marks the run cancelled.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::future::Future;
 use std::marker::PhantomData;
+use std::ops::{Deref, DerefMut};
 use std::time::Duration;
 
 use cicada::prelude::*;
@@ -86,6 +88,55 @@ pub trait Flow: Send + Sync + 'static {
     /// [`Step::wait_first`] for several, and passes their errors on with `?`; it returns `Ok(())` once every step is
     /// done.
     fn run(&self, step: &mut Step, input: Self::Input) -> impl Future<Output = HandlerResult> + Send;
+
+    /// The cleanup of a cancelled run: it runs only after a `Cancel` reached the run while it was running, never after
+    /// [`Flow::run`] returned `Ok`, and by default does nothing. The `Cancel` turn marks the run cancelling and arms a
+    /// cleanup `Continue` without calling this; that `Continue`, with [`Flow::retry`], calls it with a clone of the
+    /// saved input, and only a return of `Ok` after it replayed every saved cleanup entry, with no new entry, marks the
+    /// run cancelled. Main code never runs again.
+    ///
+    /// It is replayed like `run`, over a journal of its own: `cleanup` dereferences to a [`Step`] whose ids are a
+    /// namespace of their own and whose step keys are `<run address>/cancel/<id>`, and the same rules hold (one new
+    /// entry per turn, the first latch wins, 1000 entries at most). Its lookups ([`Cleanup::main_result`],
+    /// [`Cleanup::main_request`], [`Cleanup::main_reply`], [`Cleanup::main_key`], [`Cleanup::main_journal`]) read the
+    /// main journal, which stays as it was; its waits may also name a main request that no closed main wait names. A
+    /// failure keeps the run cancelling with its cleanup progress: the `Continue`'s retry policy applies, and a public
+    /// `Continue` recovers it; a second `Cancel` does not.
+    ///
+    /// A missing main result does not prove that its effect did not happen: a step can act and fail before its result
+    /// is saved. Release what a step may have made by its stable key ([`Cleanup::main_key`]), with an owner that
+    /// resolves a late create. Every host and worker of the type must run this same code before it is relied on: a
+    /// release before 0.18.5, or code with the default, marks the run cancelled with no cleanup, although the contract
+    /// is the same.
+    ///
+    /// ```
+    /// use cicada::prelude::*;
+    /// use cicada_actors::{Cleanup, Flow, Step};
+    ///
+    /// # async fn reserve(key: &str) -> Result<(), std::io::Error> { Ok(()) }
+    /// # async fn release(key: &str) -> Result<(), std::io::Error> { Ok(()) }
+    /// struct Job;
+    ///
+    /// impl Flow for Job {
+    ///     const TYPE: &'static str = "job";
+    ///     type Input = String;
+    ///
+    ///     async fn run(&self, step: &mut Step, _name: String) -> HandlerResult {
+    ///         step.run("reserve", |key| async move { Ok(reserve(&key).await?) }).await?;
+    ///         step.run("work", |_key| async { Ok(()) }).await
+    ///     }
+    ///
+    ///     async fn on_cancel(&self, cleanup: &mut Cleanup, _name: String) -> HandlerResult {
+    ///         // By the reservation's own key, also when its result was never saved.
+    ///         let reserved = cleanup.main_key("reserve")?;
+    ///         cleanup.run("release", |_key| async move { Ok(release(&reserved).await?) }).await
+    ///     }
+    /// }
+    /// ```
+    fn on_cancel(&self, cleanup: &mut Cleanup, input: Self::Input) -> impl Future<Output = HandlerResult> + Send {
+        let _ = (cleanup, input);
+        async { Ok(()) }
+    }
 }
 
 /// A run of the flow `F`, `<F::TYPE>/<key>`: a typed ref whose one string is the key. It needs no `Clone` or `Debug`
@@ -126,11 +177,13 @@ impl<F: Flow> ActorRef for FlowRun<F> {
     type Message = FlowMsg;
 }
 
-/// The messages of a [`FlowRun`]. A host or a worker of 0.18.3 or earlier refuses `Cancel` for good, although the
-/// contract is the same (ADR 0044): upgrade every host and worker of a flow type before sending it. `Reply` is what
-/// [`ReplyTo::send`] sends; a host or a worker of 0.18.0 refuses it for good, so upgrade them all before a flow requests.
+/// The messages of a [`FlowRun`]. A host or a worker of 0.18.3 or earlier refuses `Cancel` for good, and one of 0.18.4
+/// marks the run cancelled without its cleanup, although the contract is the same (ADR 0044): upgrade every host and
+/// worker of a flow type before sending it. `Reply` is what [`ReplyTo::send`] sends; a host or a worker of 0.18.0
+/// refuses it for good, so upgrade them all before a flow requests.
 ///
-/// A host cancels a run by sending it `Cancel`, as any other message, and reads its status to learn that it ended:
+/// A host cancels a run by sending it `Cancel`, as any other message, and reads its status to learn that it ended: the
+/// `Cancel` marks it cancelling, and the cleanup's own turns mark it cancelled.
 ///
 /// ```
 /// # use std::time::Duration;
@@ -158,7 +211,7 @@ impl<F: Flow> ActorRef for FlowRun<F> {
 /// test.run_until_idle().await; // the run sleeps, its `Continue` armed for the wake time
 ///
 /// test.send(&run, FlowMsg::Cancel).await; // queued: the run is not cancelled yet
-/// test.run_until_idle().await;
+/// test.run_until_idle().await; // the cancel, then the default cleanup in a turn of its own
 /// let state: FlowState<String> = test.state(&run).await;
 /// assert_eq!((state.status, state.armed), (FlowStatus::Cancelled, None));
 /// assert_eq!(state.journal.len(), 1, "the saved sleep stays");
@@ -168,38 +221,41 @@ impl<F: Flow> ActorRef for FlowRun<F> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type")]
 pub enum FlowMsg {
-    /// Starts or recovers a running run; a done or cancelled run ignores it. Sent by a host, it cancels the armed
-    /// continuation and arms a fresh one with the flow's retry policy, without running flow code; the armed one replays
-    /// the flow and executes its next step.
+    /// Starts or recovers a running or cancelling run; a done or cancelled run ignores it. Sent by a host, it cancels
+    /// the armed continuation and arms a fresh one with the flow's retry policy, without running flow code; the armed
+    /// one replays the flow, or its cleanup once the run is cancelling, and executes its next step.
     Continue,
     /// The reply of a target to a request of the run, sent with [`ReplyTo::send`]. The run keeps the first one from the
-    /// request's target and ignores any other, without running flow code.
+    /// request's target and ignores any other, without running flow code; a cancelling run closes only a cleanup wait
+    /// with it.
     Reply {
         /// The id of the request's message, saved with its send entry.
         request: MessageId,
         /// The reply's JSON, `null` included; required, so a missing value is not `null`.
         value: Value,
     },
-    /// Ends a running run, without running flow code: in its turn's one commit it cancels the armed `Continue`, marks
-    /// the run cancelled and clears `armed`, keeping the input, the journal and the replies; a done or cancelled run
-    /// ignores it. It waits for the turn before it in the mailbox, does not undo effects already made and runs no
-    /// cleanup. Sending it only queues it: read the run's status to learn that it was cancelled.
+    /// Stops a running run's main code, without running flow code: in its turn's one commit it cancels the armed
+    /// `Continue`, marks the run cancelling and arms a cleanup `Continue` with the flow's retry policy and its own
+    /// correlation id, keeping the input, the journal and the replies; a cancelling, done or cancelled run ignores it,
+    /// writing nothing. It waits for the turn before it in the mailbox and does not undo effects already made; the
+    /// cleanup, [`Flow::on_cancel`], runs in later turns and marks the run cancelled when it succeeds. Sending it only
+    /// queues it: read the run's status to learn that it was cancelled.
     Cancel,
 }
 
-/// The phase of a run. This release executes running runs and cancels them; `cancelling` is on the wire for a later
-/// release (ADR 0044).
+/// The phase of a run (ADR 0044): its main code runs while it is running, its cleanup while it is cancelling.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum FlowStatus {
     /// Steps remain, or the flow has not yet returned.
     #[default]
     Running,
-    /// A cancelled run whose cleanup has not finished; refused for good by this release.
+    /// A run that took `Cancel` while running and whose cleanup, [`Flow::on_cancel`], has not yet succeeded.
     Cancelling,
     /// The flow returned `Ok` after replaying every saved entry; the run keeps its state until it is deleted.
     Done,
-    /// A run ended by `Cancel`; it keeps its state until it is deleted, and ignores `Continue` and `Reply`.
+    /// A run ended by `Cancel` whose cleanup succeeded; it keeps its state until it is deleted, and ignores
+    /// `Continue`, `Reply` and `Cancel`.
     Cancelled,
 }
 
@@ -881,9 +937,9 @@ struct Outbox {
 /// What the first new entry, the first sleep not yet due, the first open wait, or the first misuse, of an execution
 /// decided. It wins over what the flow returns.
 enum Latch {
-    /// A step's closure was invoked and has not finished, a send's or a request's arguments are being converted, or a
-    /// wait's saved reply is being decoded: of the entry with this id; if this is left, the closure's future was
-    /// dropped, or the closure, a conversion or a decoder panicked.
+    /// A step's closure was invoked and has not finished, a send's or a request's arguments are being converted, a
+    /// wait's saved reply is being decoded, or a cleanup's lookup decodes a saved main value: of the entry with this id;
+    /// if this is left, the closure's future was dropped, or the closure, a conversion or a decoder panicked.
     InProgress(&'static str, String),
     /// A new entry to save with the next continuation, which a sleep's wake time delays and an open wait leaves out,
     /// and a send's or a request's actor effects.
@@ -920,14 +976,20 @@ impl std::error::Error for Suspend {}
 
 /// The steps of one execution of a flow: it replays saved results, elapsed sleeps, saved sends and requests and closed
 /// waits in journal order and executes at most one new step, sleep, send, request or wait. A flow sees it only through
-/// [`Flow::run`]; it gives no access to the turn: a send's effects are buffered by the runner.
+/// [`Flow::run`], or through the [`Cleanup`] of [`Flow::on_cancel`], which replays the cleanup journal; it gives no
+/// access to the turn: a send's effects are buffered by the runner.
 pub struct Step {
     journal: Vec<JournalEntry>,
     cursor: usize,
     seen: HashSet<String>,
     /// The replies the run keeps, by request, in the order they were accepted.
     replies: Vec<(MessageId, Value)>,
+    /// The run's address: where replies go, and what a send may not target.
     address: ActorAddress,
+    /// What a step key starts with: the run's address, or `<run address>/cancel` for the cleanup.
+    prefix: String,
+    /// The fixed main journal, for the cleanup only.
+    main: Option<Vec<JournalEntry>>,
     /// Store time at the claim: what a sleep counts from and is compared with.
     now: Timestamp,
     latch: Option<Latch>,
@@ -943,6 +1005,7 @@ impl fmt::Debug for Step {
 }
 
 impl Step {
+    /// The main code's steps over `journal`.
     fn new(journal: Vec<JournalEntry>, address: &ActorAddress, now: Timestamp) -> Self {
         Self {
             journal,
@@ -950,14 +1013,22 @@ impl Step {
             seen: HashSet::new(),
             replies: Vec::new(),
             address: address.clone(),
+            prefix: address.as_str().to_owned(),
+            main: None,
             now,
             latch: None,
         }
     }
 
+    /// The cleanup's steps over `cleanup`, with the fixed `main` journal for its lookups and waits.
+    fn cleanup(cleanup: Vec<JournalEntry>, main: Vec<JournalEntry>, address: &ActorAddress, now: Timestamp) -> Self {
+        Self { prefix: format!("{address}/cancel"), main: Some(main), ..Self::new(cleanup, address, now) }
+    }
+
     /// The step `id`. When the journal holds its result, returns it decoded as a `T` without calling `call`.
-    /// Otherwise calls `call` with the idempotency key `<run address>/<id>`, saves its result and the next
-    /// continuation in this turn's commit, and returns an error that suspends the flow: pass it on with `?`.
+    /// Otherwise calls `call` with the idempotency key `<run address>/<id>`, or `<run address>/cancel/<id>` in the
+    /// cleanup, saves its result and the next continuation in this turn's commit, and returns an error that suspends
+    /// the flow: pass it on with `?`.
     ///
     /// The first new step of an execution, or its first misuse, decides the turn: a later step invokes nothing, and
     /// catching the error changes nothing. A closure's error fails the turn with its own retryability; a result that
@@ -1012,7 +1083,7 @@ impl Step {
             return Err(self.refuse(reason));
         }
         self.latch = Some(Latch::InProgress("step", id.to_owned()));
-        let outcome = call(format!("{}/{id}", self.address)).await;
+        let outcome = call(format!("{}/{id}", self.prefix)).await;
         let latch = match outcome {
             Err(e) => Latch::Failed(e),
             Ok(value) => match encode(id, &value) {
@@ -1273,7 +1344,8 @@ impl Step {
     /// saving nothing. The wait has no timeout: a target that fails or is deleted without replying leaves the run
     /// parked; [`Step::wait_timeout`] gives up at a deadline.
     ///
-    /// The request must be one of this run's earlier requests that no other wait names. Wait ids share the namespace
+    /// The request must be one of this run's earlier requests that no other wait names; in the cleanup, a request of
+    /// the cleanup or a main request that no closed main wait names (see [`Cleanup`]). Wait ids share the namespace
     /// and the limit of 1000 entries of the step ids. Another request, an invalid or repeated id, a saved entry at its
     /// place that is not this wait (a wait for other requests or of mode first, or a wait with a deadline, which only
     /// the timed helpers replay, included), and a new wait after 1000 entries fail the turn for good. A saved reply that
@@ -1734,7 +1806,8 @@ impl Step {
         })
     }
 
-    /// Checks that a new wait `id` names only earlier requests of the journal that no other wait names.
+    /// Checks that a new wait `id` names only earlier requests of the journal that no other wait of it names; in the
+    /// cleanup also main requests that no closed main wait names, an interrupted open one's included (ADR 0044).
     fn unused(&self, id: &str, asked: &[&MessageId]) -> Result<(), String> {
         let mut known = HashSet::new();
         let mut waited = HashMap::new();
@@ -1749,9 +1822,28 @@ impl Step {
                 _ => {}
             }
         }
+        let mut closed = HashMap::new();
+        for entry in self.main.iter().flatten() {
+            match entry {
+                JournalEntry::Send { message, reply: true, .. } => {
+                    known.insert(message);
+                }
+                JournalEntry::Wait { id: other, requests, outcome: Some(_), .. } => {
+                    closed.extend(requests.iter().map(|request| (request, other.as_str())));
+                }
+                _ => {}
+            }
+        }
         for request in asked {
             if !known.contains(request) {
-                return Err(format!("wait `{id}` names {request}, no earlier request of the journal"));
+                let journals = if self.main.is_some() { "the cleanup or main journal" } else { "the journal" };
+                return Err(format!("wait `{id}` names {request}, no earlier request of {journals}"));
+            }
+            if let Some(other) = closed.get(request) {
+                return Err(format!(
+                    "wait `{id}` names the request {request}, which the closed main wait `{other}` names: a later \
+                     reply to it is ignored, so the cleanup needs a new request"
+                ));
             }
             if let Some(other) = waited.get(request) {
                 return Err(format!("wait `{id}` names the request {request} of the wait `{other}`"));
@@ -1851,6 +1943,219 @@ impl Step {
     }
 }
 
+/// The steps of one execution of a cancelled run's cleanup, [`Flow::on_cancel`]: a [`Step`] over the cleanup journal,
+/// through `Deref` and `DerefMut`, with lookups of the main journal, which stays as it was when the run was cancelled.
+///
+/// The cleanup's ids are a namespace of their own, apart from the main code's, and its step keys are
+/// `<run address>/cancel/<id>`; a request's route and the check that a send does not target the run use the run's own
+/// address. Its waits may name its own earlier requests and main requests that no closed main wait names, the
+/// requests of an interrupted open main wait and requests the main code never waited for included, mixed in one
+/// join; each in one cleanup wait only. A request a closed main wait names, a first wait's loser included, needs a new
+/// cleanup request. While the run is cancelling, a reply closes only a cleanup wait: the main journal never changes.
+///
+/// The lookups consume no id and leave the replay where it was, so they may repeat, in any order. Like the helpers,
+/// after the first new entry, decision or misuse of an execution they do nothing and suspend; an invalid id, an entry
+/// of another kind and a decoding failure fail the turn for good, also when the error is caught.
+///
+/// ```
+/// use cicada::prelude::*;
+/// use cicada_actors::{Cleanup, Flow, MainReply, ReplyTo, Step};
+/// use serde::{Deserialize, Serialize};
+///
+/// #[derive(Clone, Serialize, Deserialize)]
+/// struct Job(String);
+///
+/// impl ActorRef for Job {
+///     const TYPE: &'static str = "jobs";
+///     type Message = JobMsg;
+/// }
+///
+/// #[derive(Serialize, Deserialize, JsonSchema)]
+/// #[serde(tag = "type")]
+/// enum JobMsg {
+///     Start { reply: ReplyTo<String> },
+///     Stop { reply: ReplyTo<()> },
+/// }
+///
+/// struct Build;
+///
+/// impl Flow for Build {
+///     const TYPE: &'static str = "build";
+///     type Input = String;
+///
+///     async fn run(&self, step: &mut Step, name: String) -> HandlerResult {
+///         let start = step.request("start", &Job(name), |reply| JobMsg::Start { reply }).await?;
+///         let artifact = step.wait("built", &start).await?;
+///         step.run("publish", |_key| async move { Ok(artifact) }).await?;
+///         Ok(())
+///     }
+///
+///     async fn on_cancel(&self, cleanup: &mut Cleanup, name: String) -> HandlerResult {
+///         let Some(start) = cleanup.main_request::<String>("start")? else {
+///             return Ok(()); // the job was never started
+///         };
+///         if let MainReply::Replied(_artifact) = cleanup.main_reply(&start)? {
+///             return Ok(()); // the job finished, and the main code decided on it
+///         }
+///         let stop = cleanup.request("stop", &Job(name), |reply| JobMsg::Stop { reply }).await?;
+///         cleanup.wait("stopped", &stop).await
+///     }
+/// }
+/// ```
+pub struct Cleanup {
+    step: Step,
+}
+
+impl Deref for Cleanup {
+    type Target = Step;
+
+    fn deref(&self) -> &Step {
+        &self.step
+    }
+}
+
+impl DerefMut for Cleanup {
+    fn deref_mut(&mut self) -> &mut Step {
+        &mut self.step
+    }
+}
+
+impl fmt::Debug for Cleanup {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Cleanup")
+            .field("run", &self.step.address.as_str())
+            .field("cursor", &self.step.cursor)
+            .finish_non_exhaustive()
+    }
+}
+
+/// What [`Cleanup::main_reply`] knows of a main request: decided by the main journal alone, so the answer stays the
+/// same through the whole cleanup, whatever replies come meanwhile.
+#[must_use]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MainReply<T> {
+    /// No closed main wait names the request, also when its reply was kept early or a cleanup wait closed it since: the
+    /// main code never decided on it. A cleanup wait that names the request decides on it durably.
+    Open,
+    /// A closed main wait names the request and the run keeps its reply, decoded: the winner of the wait, or a reply
+    /// that came before the wait closed, a first wait's loser included.
+    Replied(T),
+    /// A closed main wait names the request and the run keeps no reply to it: a timed-out wait, or a first wait's
+    /// loser that had not replied.
+    Closed,
+}
+
+impl Cleanup {
+    /// The idempotency key the main step `id` had, or would have had: `<run address>/<id>`, also when the main journal
+    /// holds no entry of that id, as a step can act and fail before its result is saved. Checks only the id's syntax:
+    /// an invalid id fails the turn for good.
+    pub fn main_key(&mut self, id: &str) -> Result<String, HandlerError> {
+        self.main_entry(id, "main_key")?;
+        Ok(format!("{}/{id}", self.step.address))
+    }
+
+    /// The saved result of the main step `id` decoded as a `T`, or `None` when the main journal holds no entry of that
+    /// id. `None` does not prove that the step's effect did not happen: release by [`Cleanup::main_key`]. An entry of
+    /// another kind (a sleep, a send, a request or a wait), an invalid id and a result that does not decode as a `T`
+    /// fail the turn for good, as does a panic of a custom `Deserialize`, if caught.
+    pub fn main_result<T: DeserializeOwned>(&mut self, id: &str) -> Result<Option<T>, HandlerError> {
+        let Some(entry) = self.main_entry(id, "main_result")? else {
+            return Ok(None);
+        };
+        let JournalEntry::Step { result, .. } = entry else {
+            return Err(self.step.refuse(format!(
+                "main_result asks for the step `{id}`, but the main journal holds {} `{id}`",
+                entry.kind()
+            )));
+        };
+        self.step.latch = Some(Latch::InProgress("lookup", id.to_owned()));
+        match T::deserialize(&result) {
+            Ok(value) => {
+                self.step.latch = None;
+                Ok(Some(value))
+            }
+            Err(e) => Err(self.step.refuse(format!(
+                "the saved result of main step `{id}` does not decode as the type asked for: {e}; it stays saved: fix \
+                 the code and send a public Continue"
+            ))),
+        }
+    }
+
+    /// The main request `id`, as [`Step::request`] returned it, for [`Cleanup::main_reply`] or a cleanup wait; `None`
+    /// when the main journal holds no entry of that id: its send did not commit. An entry of another kind, a plain
+    /// send included, and an invalid id fail the turn for good. `T` types the reply, as at the request.
+    pub fn main_request<T>(&mut self, id: &str) -> Result<Option<Request<T>>, HandlerError> {
+        match self.main_entry(id, "main_request")? {
+            None => Ok(None),
+            Some(JournalEntry::Send { message, reply: true, .. }) => Ok(Some(Request::new(message))),
+            Some(entry) => Err(self.step.refuse(format!(
+                "main_request asks for the request `{id}`, but the main journal holds {} `{id}`",
+                entry.kind()
+            ))),
+        }
+    }
+
+    /// What the main journal decided on `request`, a request of the main journal: [`MainReply::Open`] when no closed
+    /// main wait names it, else [`MainReply::Replied`] with its kept reply decoded as a `T`, or [`MainReply::Closed`]
+    /// without one. The answer never changes during the cleanup: a reply that comes meanwhile, or a cleanup wait that
+    /// closes the request, leaves it `Open`; await an open request with a cleanup wait. A request of the cleanup, one
+    /// that is no request of the run and a reply that does not decode as a `T` fail the turn for good, as does a panic
+    /// of a custom `Deserialize`, if caught.
+    pub fn main_reply<T: DeserializeOwned>(&mut self, request: &Request<T>) -> Result<MainReply<T>, HandlerError> {
+        if self.step.latch.is_some() {
+            return Err(HandlerError::new(Suspend));
+        }
+        let asked = request.id();
+        let main = self.main_journal();
+        let send = main.iter().find_map(|entry| match entry {
+            JournalEntry::Send { id, message, reply: true, .. } if message == asked => Some(id.clone()),
+            _ => None,
+        });
+        let closed = main.iter().any(
+            |entry| matches!(entry, JournalEntry::Wait { requests, outcome: Some(_), .. } if requests.contains(asked)),
+        );
+        let Some(id) = send else {
+            let reason = format!("main_reply was given {asked}, which is no request of the main journal");
+            return Err(self.step.refuse(reason));
+        };
+        if !closed {
+            return Ok(MainReply::Open);
+        }
+        let Some(value) = self.step.reply(asked).cloned() else {
+            return Ok(MainReply::Closed);
+        };
+        self.step.latch = Some(Latch::InProgress("lookup", id.clone()));
+        match T::deserialize(&value) {
+            Ok(value) => {
+                self.step.latch = None;
+                Ok(MainReply::Replied(value))
+            }
+            Err(e) => Err(self.step.refuse(format!(
+                "the kept reply to main request `{id}` does not decode as the type asked for: {e}; it stays saved: fix \
+                 the code and send a public Continue"
+            ))),
+        }
+    }
+
+    /// The main journal's saved entries, as they were when the run was cancelled: raw data, step values and send
+    /// destinations included, with no lookup's protection and no replies. Code that decodes them is ordinary replayed
+    /// code: a caught error or panic there does not stop the cleanup from succeeding, as it does for the typed lookups.
+    pub fn main_journal(&self) -> &[JournalEntry] {
+        self.step.main.as_deref().unwrap_or_default()
+    }
+
+    /// The main entry `id`, if any, after the latch and the id's syntax are checked; `lookup` names the caller.
+    fn main_entry(&mut self, id: &str, lookup: &str) -> Result<Option<JournalEntry>, HandlerError> {
+        if self.step.latch.is_some() {
+            return Err(HandlerError::new(Suspend));
+        }
+        if let Err(reason) = check_id(id) {
+            return Err(self.step.refuse(format!("{lookup}: {reason}")));
+        }
+        Ok(self.main_journal().iter().find(|entry| entry.id() == id).cloned())
+    }
+}
+
 /// The wake time of a new sleep, or the deadline of a new wait, of `kind`: `now + duration`, rounded up to
 /// microseconds; the duration at most [`MAX_DELAY`] and the time at most [`MAX_INSTANT`].
 fn wake_time(kind: &str, id: &str, now: Timestamp, duration: Duration) -> Result<Timestamp, String> {
@@ -1908,7 +2213,7 @@ fn check_result(value: &Value, depth: usize) -> Result<(), String> {
 
 /// The runner of the flow `F`: each run is one actor of type `F::TYPE`, hosted like any other.
 ///
-/// A public `Continue` to a running run cancels its armed continuation, if any, and arms a fresh one due now with
+/// A public `Continue` to a running or cancelling run cancels its armed continuation, if any, and arms a fresh one due now with
 /// `F::retry()` and its own correlation id, without running flow code; so a host starts a run, or recovers one whose
 /// continuation was cancelled, purged or failed, with a `Continue`, and a poke resets the attempts. Only the armed
 /// `Continue` executes the flow: it replays the journal, and the first new step's result commits with the next armed
@@ -1921,12 +2226,11 @@ fn check_result(value: &Value, depth: usize) -> Result<(), String> {
 /// deadline, it arms one due then and saves nothing; replayed at or after it with too few replies kept, it commits timed
 /// out, selecting the kept replies of an all wait, with the next armed `Continue`, due now; a replayed open wait for
 /// which the run keeps enough replies commits received the same way, deadline or not. A flow that returns `Ok` after
-/// replaying every
-/// entry marks the run done and clears `armed`; a done or cancelled run ignores `Continue` and keeps its state until it
-/// is deleted. An execution that fails commits nothing; its message follows its retry policy, and its watchers are told
+/// replaying every entry marks the run done and clears `armed`; a done or cancelled run ignores `Continue` and keeps its
+/// state until it is deleted. An execution that fails commits nothing; its message follows its retry policy, and its watchers are told
 /// as for any actor. The runner installs no watch.
 ///
-/// A `Reply` runs no flow code. A running run ignores it, writing nothing, unless it names a request of the run, comes
+/// A `Reply` runs no flow code. A running or cancelling run ignores it, writing nothing, unless it names a request of the run, comes
 /// from the address the request went to, and its request has no kept reply and no closed wait; only then is its value
 /// checked (no NUL, at most 61 levels deep, or it fails for good) and kept, after the replies kept before it. When the
 /// open wait at the end of the journal names its request and now has enough replies, the same commit closes that wait
@@ -1936,13 +2240,23 @@ fn check_result(value: &Value, depth: usize) -> Result<(), String> {
 /// join. A done or cancelled run ignores every `Reply`.
 ///
 /// A `Cancel` runs no flow code either. To a running run it cancels the armed continuation, unless that is the `Cancel`
-/// itself, marks the run cancelled and clears `armed`, in one commit; the input, both journals, the replies and an open
-/// wait stay as they were, and it sends nothing. It does not preempt a turn already running, which may commit first. A
-/// done or cancelled run ignores it, writing nothing. This release refuses every message to a cancelling run, with a
-/// diagnostic that names the later release it needs (ADR 0044). A host or a worker of 0.18.3 or earlier refuses
-/// `Cancel` for good: upgrade every host and worker of a flow type before sending it. A host or a worker of 0.18.1
-/// refuses the reply to a wait with a deadline, and one of 0.18.2 the reply to a join of several requests or of mode
-/// first, for good, although the contract is the same: upgrade them all before a flow waits that way.
+/// itself, marks the run cancelling and arms a cleanup `Continue` due now with `F::retry()` and its own correlation id,
+/// in one commit; the input, both journals, the replies and an open wait stay as they were, and it sends nothing else.
+/// It does not preempt a turn already running, which may commit first. A cancelling, done or cancelled run ignores it,
+/// writing nothing.
+///
+/// A cancelling run executes its cleanup, [`Flow::on_cancel`], in place of the flow: the phase comes from the saved
+/// status, never from where a `Continue` came from, so no `Continue` runs main code once the `Cancel` committed. A
+/// public `Continue` normalizes as above, and the armed one replays the cleanup journal and saves its first new entry
+/// there, by the rules above; a cleanup that returns `Ok` after replaying every cleanup entry marks the run cancelled
+/// and clears `armed`, in a turn of its own. A `Reply` to a cancelling run passes the same checks, closed waits of both
+/// journals included, and closes only the open wait at the end of the cleanup journal; the main journal never changes.
+///
+/// A host or a worker of 0.18.3 or earlier refuses `Cancel` for good, and one of 0.18.4 marks the run cancelled
+/// without its cleanup, or refuses the messages of a cancelling run for good: upgrade every host and worker of a flow
+/// type before sending it. A host or a worker of 0.18.1 refuses the reply to a wait with a deadline, and one of 0.18.2
+/// the reply to a join of several requests or of mode first, for good, although the contract is the same: upgrade them
+/// all before a flow waits that way.
 pub struct FlowActor<F> {
     flow: F,
 }
@@ -1959,20 +2273,16 @@ impl<F: Flow> Actor for FlowActor<F> {
     type State = FlowState<F::Input>;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: FlowMsg) -> HandlerResult {
-        match turn.state().status {
-            FlowStatus::Running => {}
+        let phase = match turn.state().status {
+            FlowStatus::Running => Phase::Main,
+            FlowStatus::Cancelling => Phase::Cleanup,
             FlowStatus::Done | FlowStatus::Cancelled => return Ok(()),
-            FlowStatus::Cancelling => {
-                return Err(HandlerError::permanent(later_release("the cleanup of a cancelling run")));
-            }
-        }
-        let reply = match message {
-            FlowMsg::Continue => None,
-            FlowMsg::Reply { request, value } => Some((request, value)),
-            FlowMsg::Cancel => return cancel(turn),
         };
-        if let Some((request, value)) = reply {
-            return accept::<F>(turn, request, value);
+        match message {
+            FlowMsg::Continue => {}
+            FlowMsg::Reply { request, value } => return accept::<F>(turn, phase, request, value),
+            FlowMsg::Cancel if phase == Phase::Main => return cancel::<F>(turn),
+            FlowMsg::Cancel => return Ok(()),
         }
         if turn.state().armed.as_ref() != Some(&turn.message().id) {
             if let Some(old) = turn.state().armed.clone() {
@@ -1981,72 +2291,115 @@ impl<F: Flow> Actor for FlowActor<F> {
             return arm(turn, None);
         }
         let state = turn.state();
-        let mut step = Step::new(state.journal.clone(), turn.self_address(), turn.now());
-        step.replies = state.replies.iter().map(|r| (r.request.clone(), r.value.clone())).collect();
-        let returned = self.flow.run(&mut step, state.input.clone()).await;
-        match step.latch.take() {
-            Some(Latch::InProgress("step", id)) => Err(HandlerError::permanent(format!(
-                "step `{id}` was abandoned while its closure ran (its future was dropped, or it panicked); a timeout \
-                 belongs inside the closure"
-            ))),
-            Some(Latch::InProgress("wait", id)) => Err(HandlerError::permanent(format!(
-                "wait `{id}` panicked while its saved reply was decoded, and the flow caught the panic; the outcome \
-                 stays saved"
-            ))),
-            Some(Latch::InProgress(kind, id)) => Err(HandlerError::permanent(format!(
-                "{kind} `{id}` panicked while its target, message or initial state was converted, built or encoded, \
-                 and the flow caught the panic"
-            ))),
-            Some(Latch::Failed(e)) => Err(e),
-            Some(Latch::Permanent(reason)) => Err(HandlerError::permanent(reason)),
-            Some(Latch::New(entry, outbox)) => {
-                let (wake, park) = match &entry {
-                    JournalEntry::Sleep { until, .. } => (Some(*until), false),
-                    JournalEntry::Wait { outcome: None, until, .. } => (*until, until.is_none()),
-                    _ => (None, false),
-                };
-                if let Some(outbox) = outbox {
-                    apply(turn, &entry, *outbox).await?;
-                }
-                turn.state_mut().journal.push(entry);
-                if park {
-                    turn.state_mut().armed = None;
-                    return Ok(());
-                }
-                arm(turn, wake)
+        let replies = state.replies.iter().map(|r| (r.request.clone(), r.value.clone())).collect();
+        let (step, returned) = match phase {
+            Phase::Main => {
+                let mut step = Step::new(state.journal.clone(), turn.self_address(), turn.now());
+                step.replies = replies;
+                let returned = self.flow.run(&mut step, state.input.clone()).await;
+                (step, returned)
             }
-            Some(Latch::Waiting(until)) => arm(turn, Some(until)),
-            Some(Latch::Close(index, outcome, selected)) => {
-                close(&mut turn.state_mut().journal[index], outcome, selected);
-                arm(turn, None)
+            Phase::Cleanup => {
+                let step = Step::cleanup(state.cleanup.clone(), state.journal.clone(), turn.self_address(), turn.now());
+                let mut cleanup = Cleanup { step: Step { replies, ..step } };
+                let returned = self.flow.on_cancel(&mut cleanup, state.input.clone()).await;
+                (cleanup.step, returned)
             }
-            Some(Latch::Parked) => {
+        };
+        settle(turn, phase, step, returned).await
+    }
+}
+
+/// The journal of `phase`.
+fn active<I>(state: &mut FlowState<I>, phase: Phase) -> &mut Vec<JournalEntry> {
+    match phase {
+        Phase::Main => &mut state.journal,
+        Phase::Cleanup => &mut state.cleanup,
+    }
+}
+
+/// Commits what one execution of `phase` decided: its latch, or, when it returned `Ok` with every saved entry replayed,
+/// done for the main code and cancelled for the cleanup.
+async fn settle<F: Flow>(
+    turn: &mut Turn<FlowActor<F>>,
+    phase: Phase,
+    mut step: Step,
+    returned: HandlerResult,
+) -> HandlerResult {
+    match step.latch.take() {
+        Some(Latch::InProgress("step", id)) => Err(HandlerError::permanent(format!(
+            "step `{id}` was abandoned while its closure ran (its future was dropped, or it panicked); a timeout \
+             belongs inside the closure"
+        ))),
+        Some(Latch::InProgress("wait", id)) => Err(HandlerError::permanent(format!(
+            "wait `{id}` panicked while its saved reply was decoded, and the flow caught the panic; the outcome \
+             stays saved"
+        ))),
+        Some(Latch::InProgress("lookup", id)) => Err(HandlerError::permanent(format!(
+            "the lookup of main entry `{id}` panicked while its saved value was decoded, and the cleanup caught the \
+             panic; the value stays saved"
+        ))),
+        Some(Latch::InProgress(kind, id)) => Err(HandlerError::permanent(format!(
+            "{kind} `{id}` panicked while its target, message or initial state was converted, built or encoded, \
+             and the flow caught the panic"
+        ))),
+        Some(Latch::Failed(e)) => Err(e),
+        Some(Latch::Permanent(reason)) => Err(HandlerError::permanent(reason)),
+        Some(Latch::New(entry, outbox)) => {
+            let (wake, park) = match &entry {
+                JournalEntry::Sleep { until, .. } => (Some(*until), false),
+                JournalEntry::Wait { outcome: None, until, .. } => (*until, until.is_none()),
+                _ => (None, false),
+            };
+            if let Some(outbox) = outbox {
+                apply(turn, &entry, *outbox).await?;
+            }
+            active(turn.state_mut(), phase).push(entry);
+            if park {
                 turn.state_mut().armed = None;
-                Ok(())
+                return Ok(());
             }
-            None => {
-                returned?;
-                if step.cursor < step.journal.len() {
-                    let next = &step.journal[step.cursor];
-                    return Err(HandlerError::permanent(format!(
-                        "the flow returned before reaching its saved {} `{}`: {}",
-                        next.kind(),
-                        next.id(),
-                        unreplayable(next)
-                    )));
-                }
-                let state = turn.state_mut();
-                state.status = FlowStatus::Done;
-                state.armed = None;
-                Ok(())
+            arm(turn, wake)
+        }
+        Some(Latch::Waiting(until)) => arm(turn, Some(until)),
+        Some(Latch::Close(index, outcome, selected)) => {
+            close(&mut active(turn.state_mut(), phase)[index], outcome, selected);
+            arm(turn, None)
+        }
+        Some(Latch::Parked) => {
+            turn.state_mut().armed = None;
+            Ok(())
+        }
+        None => {
+            returned?;
+            if step.cursor < step.journal.len() {
+                let next = &step.journal[step.cursor];
+                let code = match phase {
+                    Phase::Main => "flow",
+                    Phase::Cleanup => "cleanup",
+                };
+                return Err(HandlerError::permanent(format!(
+                    "the {code} returned before reaching its saved {} `{}`: {}",
+                    next.kind(),
+                    next.id(),
+                    unreplayable(next)
+                )));
             }
+            let state = turn.state_mut();
+            state.status = match phase {
+                Phase::Main => FlowStatus::Done,
+                Phase::Cleanup => FlowStatus::Cancelled,
+            };
+            state.armed = None;
+            Ok(())
         }
     }
 }
 
-/// Handles a `Reply` to a running run, without flow code (ADR 0044): the checks that ignore it come before the check of
-/// its value, and nothing is written unless it is kept.
-fn accept<F: Flow>(turn: &mut Turn<FlowActor<F>>, request: MessageId, value: Value) -> HandlerResult {
+/// Handles a `Reply` to a running or cancelling run, without flow code (ADR 0044): the checks that ignore it come before
+/// the check of its value, closed waits of both journals included, and nothing is written unless it is kept. Only the
+/// open wait at the end of the journal of `phase` can close.
+fn accept<F: Flow>(turn: &mut Turn<FlowActor<F>>, phase: Phase, request: MessageId, value: Value) -> HandlerResult {
     let state = turn.state();
     let target = state.journal.iter().chain(&state.cleanup).find_map(|entry| match entry {
         JournalEntry::Send { to, message, reply: true, .. } if *message == request => Some(to),
@@ -2065,23 +2418,24 @@ fn accept<F: Flow>(turn: &mut Turn<FlowActor<F>>, request: MessageId, value: Val
     check_result(&value, 0).map_err(|problem| {
         HandlerError::permanent(format!("the reply to request {request} cannot be kept: {problem}"))
     })?;
-    let lists = |entry: &JournalEntry| matches!(entry, JournalEntry::Wait { requests, outcome: None, .. } if requests.contains(&request));
-    let open = state.journal.last().is_some_and(lists);
     let current = turn.message().id.clone();
     let state = turn.state_mut();
-    state.replies.push(FlowReply { request, value });
-    if !open {
-        return Ok(());
-    }
+    state.replies.push(FlowReply { request: request.clone(), value });
     let accepted: Vec<&MessageId> = state.replies.iter().map(|r| &r.request).collect();
-    let selected = match state.journal.last() {
-        Some(JournalEntry::Wait { requests, mode, .. }) => select(requests, *mode, &accepted),
-        _ => None,
+    let journal = match phase {
+        Phase::Main => &state.journal,
+        Phase::Cleanup => &state.cleanup,
     };
-    let (Some(selected), Some(last)) = (selected, state.journal.last_mut()) else {
-        return Ok(()); // a partial reply of a join: its deadline and armed continuation stay
+    let selected = match journal.last() {
+        Some(JournalEntry::Wait { requests, mode, outcome: None, .. }) if requests.contains(&request) => {
+            select(requests, *mode, &accepted)
+        }
+        _ => None, // no open wait names it, or a partial reply of a join: its deadline and armed continuation stay
     };
-    close(last, WaitOutcome::Received, selected);
+    let Some(selected) = selected else {
+        return Ok(());
+    };
+    close(active(state, phase).last_mut().expect("the open wait"), WaitOutcome::Received, selected);
     if let Some(old) = state.armed.clone().filter(|old| *old != current) {
         turn.cancel(&old)?;
     }
@@ -2089,16 +2443,14 @@ fn accept<F: Flow>(turn: &mut Turn<FlowActor<F>>, request: MessageId, value: Val
 }
 
 /// Handles a `Cancel` to a running run, without flow code (ADR 0044): cancels the armed continuation unless it is the
-/// current message, marks the run cancelled and clears `armed`, in the turn's one commit. The journals, the replies and
-/// an open wait stay as they were.
+/// current message, marks the run cancelling and arms the cleanup's `Continue`, in the turn's one commit. The journals,
+/// the replies and an open wait stay as they were.
 fn cancel<F: Flow>(turn: &mut Turn<FlowActor<F>>) -> HandlerResult {
     if let Some(old) = turn.state().armed.clone().filter(|old| *old != turn.message().id) {
         turn.cancel(&old)?;
     }
-    let state = turn.state_mut();
-    state.status = FlowStatus::Cancelled;
-    state.armed = None;
-    Ok(())
+    turn.state_mut().status = FlowStatus::Cancelling;
+    arm(turn, None)
 }
 
 /// Closes an open wait with `decided` and the replies it selected.
@@ -2199,14 +2551,6 @@ impl std::error::Error for SendFailed {
 /// Why replay stopped at a saved entry.
 fn unreplayable(_saved: &JournalEntry) -> String {
     "changed flow code cannot replay this run".to_owned()
-}
-
-/// The diagnostic of a message or a phase this release refuses for good.
-fn later_release(what: &str) -> String {
-    format!(
-        "this release of cicada-actors refuses {what} for good; a later release can handle it, once every host and \
-         worker of the flow type runs it"
-    )
 }
 
 /// Self-sends a `Continue`, due at `wake` or now, with the flow's retry policy and the incoming correlation id, and

@@ -1,6 +1,6 @@
 ## Implementation
 
-- [ ] 1. Reconcile the five landed predecessors before editing. Add default-success Flow::on_cancel, public Cleanup
+- [x] 1. Reconcile the five landed predecessors before editing. Add default-success Flow::on_cancel, public Cleanup
   wrapping/dereferencing Step, and phase-aware journal/key handling with the actual ActorAddress separate from the
   external key prefix. Running Cancel must commit cancelling/armed cleanup without invoking user code; repeated
   Cancel there is a state-write-free no-op. Executing Continue selects main or cleanup solely from status. Record
