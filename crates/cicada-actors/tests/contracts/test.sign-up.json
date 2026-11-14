@@ -54,7 +54,7 @@
             "type": "object"
           },
           {
-            "description": "A durable sleep until a store time; reserved for the sleep of a flow, which a later release adds.",
+            "description": "A durable sleep of [`Step::sleep`] until a store time: the flow goes on in the first turn at or after it.",
             "properties": {
               "id": {
                 "description": "The sleep id, from the same namespace as the step ids.",

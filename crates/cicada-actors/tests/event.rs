@@ -17,8 +17,8 @@ use cicada::{FailureCause, SendResult, WatchTarget};
 use cicada_actors::{
     Batcher, BatcherActor, BatcherMsg, BatcherState, DeadLetters, DeadLettersActor, DeadLettersMsg, DeadLettersState,
     Debouncer, DebouncerActor, DebouncerMsg, DebouncerState, Event, EventActor, EventMsg, EventState, Flow, FlowActor,
-    FlowMsg, FlowRun, FlowState, FlowStatus, RateLimiter, RateLimiterActor, RateLimiterMsg, RateLimiterState, Schedule,
-    Scheduler, SchedulerActor, SchedulerMsg, SchedulerState, Step,
+    FlowMsg, FlowRun, FlowState, FlowStatus, LetterPayload, RateLimiter, RateLimiterActor, RateLimiterMsg,
+    RateLimiterState, Schedule, Scheduler, SchedulerActor, SchedulerMsg, SchedulerState, Step,
 };
 use cicada_test::TestActors;
 use common::*;
@@ -636,7 +636,8 @@ async fn each_scheduler_slot_and_each_forward_starts_a_fresh_run() {
     }
 }
 
-/// Scenario: Removing an event.
+/// Scenario: Removing an event. The `Unsubscribe` runs while the runs of a publication exist and leaves them; then the
+/// event is deleted, and the runs still finish.
 #[tokio::test(start_paused = true)]
 async fn unsubscribing_or_deleting_the_event_leaves_its_runs() {
     let probe = Probe::default();
@@ -645,8 +646,21 @@ async fn unsubscribing_or_deleting_the_event_leaves_its_runs() {
     subscribe(&test, &["shop.email", "shop.fulfil"]).await;
     publish_as(&test, "e1", EventMsg::publish(1).unwrap()).await;
     test.system().run_due_turns(1).await.unwrap();
-    test.send(&ev(), EventMsg::Unsubscribe { flow: "shop.fulfil".into() }).await;
+    assert_eq!(runs(&test).await, ["shop.email/e1", "shop.fulfil/e1"]);
+    for run in [addr(&email("e1")), addr(&fulfil("e1"))] {
+        test.system().pause_mailbox(&run).await.unwrap();
+    }
+    let unsubscribe = test.send(&ev(), EventMsg::Unsubscribe { flow: "shop.fulfil".into() }).await;
+    test.run_until_idle().await;
+    assert_eq!(outcome_of(&test, &unsubscribe).await.0, OutcomeStatus::Done);
+    assert_eq!(flows(&test).await, ["shop.email"]);
+    assert_eq!(runs(&test).await, ["shop.email/e1", "shop.fulfil/e1"], "the runs are kept");
+    assert_eq!(test.state::<_, FlowState<Value>>(&fulfil("e1")).await.status, FlowStatus::Running);
+
     test.system().delete_actor(&addr(&ev())).await.unwrap();
+    for run in [addr(&email("e1")), addr(&fulfil("e1"))] {
+        test.system().resume_mailbox(&run).await.unwrap();
+    }
     test.advance_time_by(HOUR).await;
     assert!(!test.exists(&ev()).await);
     assert_eq!(test.state::<_, FlowState<Value>>(&fulfil("e1")).await.status, FlowStatus::Done, "ran on");
@@ -674,4 +688,35 @@ async fn a_batch_item_may_be_61_deep_and_one_62_deep_refuses_the_publication() {
     let none = test.send_with(&empty, batch, SendOptions::new().id(id("j62"))).await;
     test.run_until_idle().await;
     assert_eq!(outcome_of(&test, &none).await.0, OutcomeStatus::Done, "no run, no check");
+}
+
+/// Scenario: A refused batch publication (ADR 0043). The publication of an item 62 levels deep, a payload of 64, fails
+/// for the state of its run; the dead letters keep it as JSON text, and its redrive sends the same payload, which fails
+/// again for the same reason and becomes a letter of its own: keeping the payload does not make the run's state valid.
+#[tokio::test(start_paused = true)]
+async fn a_refused_batch_publication_is_kept_and_redriven_unchanged_and_fails_again_for_the_state_of_its_run() {
+    let test = node(&Probe::default()).await;
+    test.create(&DeadLetters::default(), &DeadLettersState::default()).await;
+    test.system().watch(&WatchTarget::parse("cicada.event").unwrap(), &addr(&DeadLetters::default())).await.unwrap();
+    subscribe(&test, &["shop.email"]).await;
+    let refused = publish_as(&test, "i62", EventMsg::PublishBatch { items: vec![nested(62)] }).await;
+    test.run_until_idle().await;
+    assert_eq!(outcome_of(&test, &refused).await.0, OutcomeStatus::Failed);
+    let letters: DeadLettersState = test.state(&DeadLetters::default()).await;
+    let kept = &letters.letters[&refused.id];
+    assert!(matches!(kept.payload, LetterPayload::Json(_)), "{:?}", kept.payload);
+    assert_eq!(kept.payload.value().unwrap(), refused.payload);
+
+    test.send(&DeadLetters::default(), DeadLettersMsg::Redrive { message_id: refused.id.clone() }).await;
+    test.run_until_idle().await;
+    let letters: DeadLettersState = test.state(&DeadLetters::default()).await;
+    let sent = letters.letters[&refused.id].redriven_as.clone().expect("the redrive sent it");
+    let Some(cicada::store::MessageStatus::Finished(again)) = test.system().status(&sent).await.unwrap() else {
+        panic!("the redriven publication has no outcome")
+    };
+    assert_eq!(again.status, OutcomeStatus::Failed);
+    assert!(again.error.unwrap_or_default().contains("The initial state is nested deeper than 64 levels"));
+    assert_eq!(again.envelope.payload, refused.payload, "the same payload");
+    assert_eq!(letters.letters[&sent].payload.value().unwrap(), refused.payload, "a letter of its own");
+    assert!(runs(&test).await.is_empty(), "no run");
 }

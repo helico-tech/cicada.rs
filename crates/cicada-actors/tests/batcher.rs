@@ -150,7 +150,7 @@ async fn failed(test: &TestActors) -> Vec<Failed> {
 }
 
 /// The causes of the failures of the batcher's messages, as the core told them to the witness, read from the
-/// witness's own failed turns: a `Failed` that holds a deep item is too deep for the witness to read.
+/// witness's own failed turns: the witness reads a `Failed` that holds a deep item, but its state cannot keep it.
 async fn causes_too_deep_to_tell(test: &TestActors, m: &Message) -> Vec<Value> {
     test.failures()
         .await

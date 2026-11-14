@@ -27,7 +27,7 @@
   refusal of an old contract; cover preflight rejection of parent/child/incoming-watch topology and incomplete data
   in the example's checks where automated. Document the manual quiescence/backup obligations explicitly. Run the
   example's tests/doctests and affected actor/runtime tests on virtual time; do not operate on a real user database.
-- [ ] 4. Add a batch/event boundary scenario proving an accepted failed publication is retained and redriven
+- [x] 4. Add a batch/event boundary scenario proving an accepted failed publication is retained and redriven
   unchanged while its flow state can fail again for the original depth limit. Confine the two independent repairs
   to their proposal scope: correct JournalEntry::Sleep's shipped behavior comment and regenerate description-only
   test.sign-up/sample-service flow fixtures with unchanged hashes; fix the event lifecycle test to execute

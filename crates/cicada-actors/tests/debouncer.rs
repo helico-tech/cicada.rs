@@ -575,16 +575,17 @@ async fn a_payload_of_61_levels_is_kept_and_flushed_and_one_of_62_fails_and_keep
     assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Failed));
     let error = test.outcome(&m).await.unwrap().error.unwrap_or_default();
     assert!(error.contains("64"), "the state check: {error}");
-    // The `Failed` holds the payload a level deeper than the Submit did, too deep for the witness to read: the
-    // witness's own turn fails, and its envelope tells the cause.
+    // The `Failed` holds the payload a level deeper than the Submit did, 65 levels: the witness reads it, but keeping
+    // it in its state fails the state check, so the witness's own turn fails, and its envelope tells the cause.
     let told: Vec<_> = test
         .failures()
         .await
         .into_iter()
         .filter(|f| f.envelope.message_type == "Failed" && f.envelope.payload["messageId"] == json!(m.id))
-        .map(|f| f.envelope.payload["cause"].clone())
+        .map(|f| (f.envelope.payload["cause"].clone(), f.error.unwrap_or_default()))
         .collect();
-    assert_eq!(told, [json!("handler")]);
+    let state_check = "State cannot be stored: The state is nested deeper than 64 levels".to_owned();
+    assert_eq!(told, [(json!("handler"), state_check)]);
     assert_eq!(held(&test).await, before);
     assert_eq!(flushes(&test, start).await, [secs(2)], "the earlier timer stays");
 }

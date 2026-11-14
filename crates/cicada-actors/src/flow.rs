@@ -144,7 +144,7 @@ pub enum JournalEntry {
         /// The JSON result of its closure, `null` included.
         result: Value,
     },
-    /// A durable sleep until a store time; reserved for the sleep of a flow, which a later release adds.
+    /// A durable sleep of [`Step::sleep`] until a store time: the flow goes on in the first turn at or after it.
     Sleep {
         /// The sleep id, from the same namespace as the step ids.
         #[schemars(length(min = 1, max = 100), regex(pattern = r"^[A-Za-z0-9._~:-]+$"))]
