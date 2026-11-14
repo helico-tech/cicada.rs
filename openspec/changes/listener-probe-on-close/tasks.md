@@ -23,5 +23,5 @@
   CICADA_PG_URL for PostgreSQL tests/conformance, `cargo check -p cicada` with no features and with `--features postgres`,
   and `openspec validate listener-probe-on-close --strict`. Record any unavailable database checks explicitly; a
   skipped PostgreSQL test does not establish that the regression passes. Confirm no public API, wire, schema or
-  guarantee changes and no edits to the deferred postgres-close-cancellation behavior. Follow the build loop's
+  guarantee changes and no edits to the deferred store-close-cancellation behavior. Follow the build loop's
   normal code-review and release gates.

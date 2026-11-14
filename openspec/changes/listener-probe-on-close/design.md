@@ -67,4 +67,4 @@ Two implementation tasks plus finishing suffice, with PostgreSQL conformance inc
 The adjacent ready changes touch other areas; reconcile against the landed predecessor before building. The owner's
 instruction to describe this change overrides the design loop's two-ready-change queue limit for this item.
 Separately, PostgresStore::close sets closed before awaiting listener/main-pool shutdown; cancellation can leave the
-main pool open and a later close returns early. Track that in postgres-close-cancellation, not in this ownership fix.
+main pool open and a later close returns early. Track that in store-close-cancellation, not in this ownership fix.

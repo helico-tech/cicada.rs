@@ -64,7 +64,7 @@ the state; any change to how turns are claimed or dispatched.
 
 ## Order
 
-After `postgres-close-cancellation`, before `flow-cancellation`.
+After `store-close-cancellation`, before `flow-cancellation`.
 
 ## Impact
 
