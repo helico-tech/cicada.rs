@@ -229,14 +229,20 @@ and optional single feed payload together before COMMIT through one parameterize
 
 The listener SHALL publish typed Up/Down/Payload source events. Both first connection and reconnection SHALL announce
 Up only after LISTEN succeeds. PgListener eager reconnect SHALL be disabled; try_recv Ok(None) SHALL trigger the
-store's reconnect loop. Wake-up streams SHALL wake on Up and lag and retain their type filtering. Listener stop SHALL
-abort/join work, including its scoped probe, and close the hub without leaving idle feed transactions open.
+store's reconnect loop. Wake-up streams SHALL wake on Up and lag and retain type filtering. Store close SHALL stop
+and join listener work, including its scoped probe, through resumable cleanup, and close the hub without idle feed transactions.
 
 #### Scenario: Lost connection
 
 - **WHEN** the listener's backend is terminated or sqlx signals connection loss with Ok(None)
 - **THEN** it transitions Down, reconnects and performs LISTEN before announcing Up
 - **AND** a feed resync after that Up is followed by hints from later covered writes, while ordinary workers are woken
+
+#### Scenario: Resuming close
+
+- **WHEN** a store close caller stops waiting for listener shutdown and another close follows
+- **THEN** listener start stays disabled, the hub remains Closed and the retained join is completed by resumed cleanup
+- **AND** this does not await driver-owned cleanup of the attempt's pool or reopen the feed
 
 ### Requirement: Feed limitations and infrastructure failures are explicit
 
@@ -270,7 +276,7 @@ costs and optional host reconciliation outside coverage. Watches and G1â€“G6/S1â
 The PostgreSQL probe SHALL run inside the listener's future, not as a detached task. Dropping that future or ending
 its connection attempt SHALL drop its probe and release Cicada's handles for that attempt. Driver-owned connection
 cleanup MAY finish later; the listener SHALL NOT await that cleanup. Probe cadence, receive timeout and reconnect
-behavior SHALL remain unchanged. This SHALL NOT add a completion guarantee for cancelled or concurrent Store::close.
+behavior SHALL remain unchanged. Cancelled/concurrent Store::close completion SHALL follow the resumable store-close contract.
 
 #### Scenario: Close with a live probe connection
 

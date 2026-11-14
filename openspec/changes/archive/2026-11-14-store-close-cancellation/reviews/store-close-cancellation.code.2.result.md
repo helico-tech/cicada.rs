@@ -1,0 +1,9 @@
+Verdict: fix needed
+
+Blocking findings:
+
+1. crates/cicada/src/store/sqlite/change_tests.rs:426: the immediate `num_alive_tasks()` equality can fail on correct code. `close_cancelled_after_taking` spawns a task and awaits its aborted JoinHandle, but pinned Tokio 1.53.2 publishes completion/wakes the joiner before scheduler release removes the task from this metric (`runtime/task/harness.rs`, `complete`). The multi-thread runtime can therefore still report the helper task. A standalone outside-repository experiment reproducing the helper's Notify → abort → join → block_on return → metric sequence observed 5 false positives in 100,000 iterations, with no shutdown task created. Drive and cancel close directly in the test future, or boundedly synchronize the helper's scheduler removal before asserting the task count. Preserve the retained-reader and final-drop checks.
+
+Notes: All three previous blockers are addressed: cancellation hooks assert exact untouched-reader counts, both reader-return/drain orders are controlled, and both SQL backends cover overtaking first polls and cancellation followed by final drop/runtime teardown. The new synchronous hooks release their blocked threads on test panic. No new production defect found; the non-test reader refactor preserves its locking order. Builder-reported mutation failures support the regression tests. The authorized docs handoff remains applicable.
+
+Not checked: No repository tests, builds, validation suite, or Docker E2E run. Reviewed only the round-two diff and necessary context. Finishing checks assessed from the builder's report (workspace with PostgreSQL: 2726 passed; close tests: ten successful runs; fmt/clippy passed). Docker E2E remains reported unrun. The focused Tokio-only experiment is at /tmp/cicada-review-task-metric.
