@@ -9,8 +9,8 @@ For an app binary backed by SQLite:
 
 ```toml
 [dependencies]
-cicada = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.18.1" }
-cicada-app = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.18.1", features = ["sqlite"] }
+cicada = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.18.2" }
+cicada-app = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.18.2", features = ["sqlite"] }
 serde = { version = "1", features = ["derive"] }
 schemars = "1"
 ```
@@ -63,8 +63,8 @@ without `.claude/skills/cicada`:
 
 ```sh
 staging=$(mktemp -d)
-gh release download v0.18.1 --repo helico-tech/cicada.rs --pattern 'cicada-skill-*.tar.gz' --dir "$staging"
-tar -xzf "$staging/cicada-skill-v0.18.1.tar.gz" -C "$staging"
+gh release download v0.18.2 --repo helico-tech/cicada.rs --pattern 'cicada-skill-*.tar.gz' --dir "$staging"
+tar -xzf "$staging/cicada-skill-v0.18.2.tar.gz" -C "$staging"
 # Inspect the skill and helper before copying them into your agent's project skill folder.
 mkdir -p .claude/skills
 cp -R "$staging/cicada" .claude/skills/

@@ -115,7 +115,7 @@ See [flow rules](actors.md#flows) before changing entry ids, order or result typ
 ## Flow requests and replies
 
 [flow_approval.rs](../../examples/src/flow_approval.rs) asks an actor for a human decision. Unlike the ordinary
-cart/pricing protocol, the flow library saves the request and wait outcome and parks the run for you.
+cart/pricing protocol, the flow library saves the request and wait outcome. This purchase sets a one-week decision deadline.
 
 ```mermaid
 sequenceDiagram
@@ -125,16 +125,23 @@ sequenceDiagram
     Note over F: Commit Ask + entry<br/>+ Continue
     F->>A: ApprovalsMsg::Ask (ReplyTo route)
     F->>F: FlowMsg::Continue
-    Note over F: Open wait saved<br/>no Continue or polling
-    U->>A: ApprovalsMsg::Decide
-    A->>F: FlowMsg::Reply { request, value }
-    Note over F: Save reply + close wait<br/>+ arm Continue
-    F->>F: FlowMsg::Continue
-    Note over F: Replay wait<br/>and return Decision
+    Note over F: Save open wait<br/>+ deadline Continue
+    alt Reply handled before timeout commits
+        U->>A: ApprovalsMsg::Decide
+        A->>F: FlowMsg::Reply { request, value }
+        Note over F: Save reply + close wait<br/>Cancel deadline timer<br/>+ arm Continue
+        F->>F: FlowMsg::Continue
+        Note over F: Return Waited::Received<br/>with Decision
+    else Deadline handled first with no reply
+        F->>F: FlowMsg::Continue (deadline)
+        Note over F: Commit TimedOut<br/>+ arm Continue
+        F->>F: FlowMsg::Continue
+        Note over F: Return Waited::TimedOut
+    end
 ```
 
-The reply turn runs no flow code; only the next Continue returns the saved decision. An early reply is kept until
-the wait records its outcome. The target must send the reply itself, and a wait has no timeout in 0.18.1.
+Only the Continue after an outcome commits returns it to flow code. The target must send the reply itself.
+Mailbox order decides the race: a reply handled first can win after the deadline. Timeout leaves target work running.
 See [request and wait rules](actors.md#requests-and-reply-waits) for ignored replies and recovery.
 
 For ready-made composition, see [supervision](actors.md#supervisor), [message processing](actors.md#message-processing),

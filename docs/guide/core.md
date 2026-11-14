@@ -430,7 +430,7 @@ Each implementation has tests in [examples/tests](../../examples/tests/). Open t
 | Latest edit wins | [debounce.rs](../../examples/src/debounce.rs) |
 | Bulk output | [batching.rs](../../examples/src/batching.rs) |
 | Durable flow and sleep | [flow_onboarding.rs](../../examples/src/flow_onboarding.rs) |
-| Flow waiting for approval | [flow_approval.rs](../../examples/src/flow_approval.rs) |
+| Flow approval with a one-week deadline | [flow_approval.rs](../../examples/src/flow_approval.rs) |
 | Events starting flows | [flow_events.rs](../../examples/src/flow_events.rs) |
 | Worker without database access | [remote_worker.rs](../../examples/src/remote_worker.rs) |
 | Preserve dead letters during upgrade | [dead_letters_upgrade.rs](../../examples/src/dead_letters_upgrade.rs) |

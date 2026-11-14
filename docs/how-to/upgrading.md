@@ -316,3 +316,13 @@ A reply refused by 0.18.0 must be sent again by its target after upgrading. Dead
 letters actor, so the run ignores it. A run stalled at a saved request recovers with public Continue after upgrading.
 Adding `ReplyTo<T>` to a target's message changes that target's contract: follow
 [Changing a contract](../operations.md#changing-a-contract).
+
+## Enable flow wait deadlines in 0.18.2
+
+No store schema or flow contract hash changes. Upgrade **every host and worker of the flow type** before enabling
+`Step::wait_timeout`, or use a new type name: 0.18.1 cannot replay timed waits and permanently refuses replies that
+would close them. The target must resend such a refused reply after upgrading; dead-letter redrive has the wrong sender.
+
+Keep existing waits on their original helper. Switching a saved wait between `wait` and `wait_timeout` permanently
+fails replay; drain those runs or introduce deadlines only in new runs. Changing a timed wait's timeout leaves its
+saved deadline intact. See [request and wait rules](../guide/actors.md#requests-and-reply-waits) for ordering and recovery.
