@@ -1,10 +1,12 @@
 # Cicada for Rust — agent guide
 
-Durable actors on a shared SQL store, in Rust. Read [docs/architecture.md](docs/architecture.md) first, then the ADRs
-([docs/adr/README.md](docs/adr/README.md) is their index). The user guide is one guide per layer in
-[docs/guide/](docs/guide/): [core.md](docs/guide/core.md), [http.md](docs/guide/http.md),
-[app.md](docs/guide/app.md) and [actors.md](docs/guide/actors.md); [README.md](README.md) is an overview that
-points into them. [docs/operations.md](docs/operations.md) covers sizing, deploying, upgrading and watching nodes.
+Durable actors on a shared SQL store, in Rust. [docs/README.md](docs/README.md) is the documentation entry point;
+[docs/agents.md](docs/agents.md) routes agents using Cicada in another project to their resolved version's sources.
+For behavior changes, read [docs/architecture.md](docs/architecture.md) first, then the relevant
+[ADRs](docs/adr/README.md). User tasks belong in the layer guides: [core](docs/guide/core.md),
+[HTTP](docs/guide/http.md), [app](docs/guide/app.md) and [actors](docs/guide/actors.md).
+[Operations](docs/operations.md) covers running nodes; [upgrading](docs/how-to/upgrading.md) and
+[releasing](docs/how-to/releasing.md) have their own procedures.
 
 ## Build and test
 

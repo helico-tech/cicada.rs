@@ -6,6 +6,18 @@ in [guarantees.md](guarantees.md).
 
 Priorities, in order: simplicity, ease of use, correctness. Throughput is not a goal.
 
+Use this as a behavior reference. For a first implementation, start with the [core tutorial](guide/core.md).
+
+| Look up | Section |
+| --- | --- |
+| Model and terminology | [Scope](#scope), [domain language](#domain-language) |
+| Guarantees and backend requirements | [G1–G6](#guarantees), [S1–S10](#store-requirements) |
+| Turn outcomes, failures and control effects | [Turn semantics](#turn-semantics) |
+| Custom executor or worker protocol | [Remote leases](#leases-outside-the-node), [workers](#workers) |
+| Wire validation and routes | [HTTP contract](#http-contract) |
+| Live actor views | [Change hints](#change-hints) |
+| Tradeoffs and limits | [Design notes](#design-notes), [limitations](#known-limitations) |
+
 ## Scope
 
 A library embedded in Rust services. Every service that runs an `ActorSystem` is a **node**. Nodes are peers that
