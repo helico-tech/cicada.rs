@@ -37,7 +37,7 @@ not security. Changing which checks run. Publishing to a registry.
 
 ## Order
 
-After `pg-close-test-flake`. Before `webhook-sink`.
+After `pg-close-test-flake`. Before `heartbeat-watch`.
 
 ## Impact
 
