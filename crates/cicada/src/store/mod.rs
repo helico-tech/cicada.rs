@@ -385,5 +385,10 @@ pub(crate) trait Backend: Send + Sync + 'static {
     }
 
     /// Releases resources such as connections. The store must not be used afterwards.
+    ///
+    /// The first poll, before any await, makes operations unavailable, closes the hub and stops new connections; a
+    /// future dropped unpolled has no effect. Cleanup is resumable: a cancelled call leaves what it did not finish to
+    /// the next call, which awaits it like any concurrent caller; no call returns only because the store is already
+    /// closed, and no background task finishes it. See [`Store::close`](crate::Store::close) for each backend's limits.
     async fn close(&self) {}
 }

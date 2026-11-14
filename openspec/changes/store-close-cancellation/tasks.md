@@ -30,7 +30,7 @@
   a controlled handle fixture is preferable to racing task scheduling. Run the new PostgreSQL regressions green and
   the predecessor's PID-close, reconnect/resync and wake-up tests. No new runtime capture/task or Arc cycle; reconcile
   with the landed scoped-probe implementation before editing listener.rs.
-- [ ] 5. Update Store::close and Backend::close docs, architecture, operations and changelog/version at build time.
+- [x] 5. Update Store::close and Backend::close docs, architecture, operations and changelog/version at build time.
   Explain first-poll effect, never-polled no-op, resumability, concurrent waiters and unfinished cleanup when no caller
   resumes. State the distinct backend completion limits: PostgreSQL borrowed connections, SQLite writer/active reads,
   and driver cleanup after an owned connection close is cancelled. No fixed shutdown deadline or graceful cleanup

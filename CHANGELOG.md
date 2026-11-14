@@ -7,6 +7,23 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.17.4 — unreleased
+
+A fix of closing a SQL store; no public API, contract, wire format or schema changes.
+
+### Fixed
+
+- `Store::close` on PostgreSQL and SQLite finishes its cleanup even when an earlier call was cancelled, for instance by
+  a host's shutdown timeout. Before, the first call set the store closed before it awaited anything, and every later
+  call returned at once: a cancelled first call left the main pool's connections (PostgreSQL) or the writer and idle
+  readers (SQLite) open until the store was dropped. Now the first poll of every call closes the store to new work,
+  ends its change streams and stops new connections; then the calls take turns: a later call resumes the unfinished
+  cleanup, and concurrent calls all return once it is done. A close future that is never polled has no effect.
+  Cleanup has no time bound: PostgreSQL waits for connections that operations still borrow, SQLite for its writer but
+  not for reads in flight. Nothing runs in the background after a cancelled call; the next call or the final drop of
+  the store finishes it.
+- A SQLite read that ends while its store is closing can no longer put its connection back into the drained pool.
+
 ## 0.17.3 — 2026-11-14
 
 A fix of the command line's usage errors; no public API, contract, wire format or schema changes.

@@ -158,6 +158,15 @@ impl Store {
     /// ([`ActorSystem::changes`](crate::ActorSystem::changes)), which end normally, without their backlog, and a new
     /// one ends at once. Stopping a system does not close its store, nor its change streams: the host closes the store
     /// it opened, after its systems have stopped.
+    ///
+    /// The store counts as closed from the first poll of this future: a future that is dropped without being polled
+    /// does nothing. It returns once the cleanup is done, which has no time bound: on PostgreSQL it waits for the
+    /// connections that operations still borrow, on SQLite for the writer, but not for reads in flight (their
+    /// connections are dropped when they end). A caller that stops waiting leaves the store closed and the cleanup
+    /// unfinished; nothing goes on with it in the background. The next call resumes it, and concurrent calls all
+    /// return once it is done, so a host may bound a close with a timeout and call it again. Connections whose own
+    /// close was cancelled are left to the SQL driver, which may finish them later; after the runtime shuts down,
+    /// what is left is dropped without a graceful close. The in-memory store closes at once.
     pub async fn close(&self) {
         self.backend.close().await
     }
