@@ -14,7 +14,7 @@
 mod common;
 
 use std::cell::Cell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,9 +22,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use cicada::FailureCause;
+use cicada::address::TypeName;
+use cicada::contract::Contract;
 use cicada::prelude::*;
-use cicada::runtime::RetryResult;
-use cicada::store::{DeliverNowResult, Message, OutcomeStatus};
+use cicada::runtime::{
+    CompleteTurnResult, LeaseTurnsResult, RegisterContractResult, RenewTurnResult, RetryResult, SourceError,
+    StateReport, TurnFailure, TurnReport, TurnSource,
+};
+use cicada::store::{DeliverNowResult, Message, NodeId, OutcomeStatus, TypeDef};
 use cicada::time::{self, MAX_DELAY, Timestamp};
 use cicada::turn::TurnError;
 use cicada_actors::{
@@ -2877,8 +2882,9 @@ async fn a_paused_run_decides_by_mailbox_order_after_resume() {
     }
 }
 
-/// Scenario: Failed decision. The timer's execution latches the timeout, then the flow code panics: nothing commits,
-/// no branch was returned and the wait stays open; a reply handled before the retry closes it as received.
+/// An aborted execution, beside the rejected decision below: the timer's execution latches the timeout, then the flow
+/// code panics before the runner handles the latch: nothing commits, no branch was returned and the wait stays open; a
+/// reply handled before the retry closes it as received.
 #[tokio::test(start_paused = true)]
 async fn a_decision_that_does_not_commit_lets_a_reply_win() {
     let probe = Probe::default();
@@ -2937,4 +2943,143 @@ async fn a_slow_commit_makes_the_timer_due_late_without_moving_the_saved_deadlin
     test.run_until_idle().await;
     assert_eq!(timed_entry(&test, "k", "done").await, (Some(until), Some(WaitOutcome::TimedOut), vec![]));
     assert_eq!(probe.got(), [("done".to_owned(), timed_out())]);
+}
+
+/// The core `TurnSource` of a system, for a worker that hosts the flow. While `reject` is set, it turns down the
+/// completion of the first turn whose new state closes a wait as timed out, as a store that rejects the commit does
+/// (cause `commit`, not retryable), applying nothing, and keeps that report; every other call goes to the system.
+struct RejectingDecisions {
+    system: ActorSystem,
+    reject: Arc<AtomicBool>,
+    rejected: Arc<Mutex<Vec<TurnReport>>>,
+}
+
+/// Whether `report` sets a state whose journal holds a wait closed as timed out.
+fn decides_timeout(report: &TurnReport) -> bool {
+    let TurnReport::Returned { state: StateReport::Set(state), .. } = report else {
+        return false;
+    };
+    state["journal"].as_array().is_some_and(|entries| entries.iter().any(|e| e["outcome"] == "timedOut"))
+}
+
+#[async_trait::async_trait]
+impl TurnSource for RejectingDecisions {
+    async fn register_contract(&self, contract: &Contract) -> Result<RegisterContractResult, SourceError> {
+        TurnSource::register_contract(&self.system, contract).await
+    }
+
+    async fn list_types(&self) -> Result<Vec<TypeDef>, SourceError> {
+        TurnSource::list_types(&self.system).await
+    }
+
+    async fn lease_turns(
+        &self,
+        owner: &NodeId,
+        types: &BTreeMap<TypeName, String>,
+        limit: usize,
+    ) -> Result<LeaseTurnsResult, SourceError> {
+        TurnSource::lease_turns(&self.system, owner, types, limit).await
+    }
+
+    async fn renew_turn(&self, actor: &ActorAddress, epoch: i64) -> Result<RenewTurnResult, SourceError> {
+        TurnSource::renew_turn(&self.system, actor, epoch).await
+    }
+
+    async fn release_turn(&self, actor: &ActorAddress, epoch: i64) -> Result<(), SourceError> {
+        TurnSource::release_turn(&self.system, actor, epoch).await
+    }
+
+    async fn complete_turn(
+        &self,
+        actor: &ActorAddress,
+        epoch: i64,
+        message_id: &MessageId,
+        report: TurnReport,
+    ) -> Result<CompleteTurnResult, SourceError> {
+        if decides_timeout(&report) && self.reject.swap(false, Ordering::SeqCst) {
+            self.rejected.lock().unwrap().push(report);
+            let reason = "the store rejected the commit".to_owned();
+            return Ok(CompleteTurnResult::Rejected(TurnFailure {
+                cause: FailureCause::Commit,
+                retryable: false,
+                reason,
+            }));
+        }
+        TurnSource::complete_turn(&self.system, actor, epoch, message_id, report).await
+    }
+}
+
+/// Runs the node's turns (the responders) and the worker's (the flow) until neither has one due.
+async fn drive(test: &TestActors, worker: &cicada::runtime::Worker) {
+    loop {
+        let ran = test.run_until_idle().await + worker.run_due_turns(10).await.unwrap();
+        if ran == 0 {
+            return;
+        }
+    }
+}
+
+/// Scenario: Failed decision. The flow runs in a worker whose completion of the deciding turn is rejected after the
+/// runner prepared the timed-out wait and its immediate `Continue`: nothing applies, so the saved wait and the version
+/// stay, the prepared `Continue` is never sent, and no timeout reached flow code. The run then waits with nothing
+/// pending; a reply from the target commits received, and without one a public `Continue` makes another timeout
+/// decision, which commits.
+#[tokio::test(start_paused = true)]
+async fn a_rejected_timeout_decision_commits_nothing_and_a_reply_or_a_later_decision_wins() {
+    for recovery in ["reply", "poke"] {
+        let probe = Probe::default();
+        let test =
+            TestActors::builder().with(|node| node.host(ResponderActor).host(WitnessActor)).build().await.unwrap();
+        let (reject, rejected) = (Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(Vec::new())));
+        let source =
+            RejectingDecisions { system: test.system().clone(), reject: reject.clone(), rejected: rejected.clone() };
+        let worker =
+            cicada::runtime::Worker::builder(source).host(FlowActor::new(ScriptFlow { probe: probe.clone() })).build();
+        worker.initialize().await.unwrap();
+        test.create(&responder("r1"), &ResponderState::default()).await;
+        let ops =
+            vec![ask("ask", "r1", Answer::Later), timed_op("done", "ask", MINUTE), op(|id| Op::Step { id }, "after")];
+        start(&test, "k", script(ops)).await;
+        let until = after(test.now(), MINUTE);
+        drive(&test, &worker).await;
+        let timer = waiting(&test, "k", "done", until).await;
+        let before = unchanged(&test, "k").await;
+
+        reject.store(true, Ordering::SeqCst);
+        tokio::time::sleep(MINUTE).await;
+        assert_eq!(worker.run_due_turns(10).await.unwrap(), 1, "{recovery}: the timer's turn");
+        let reports = rejected.lock().unwrap().clone();
+        assert_eq!(reports.len(), 1, "{recovery}: the deciding completion was turned down");
+        let TurnReport::Returned { effects, .. } = &reports[0] else { panic!("{recovery}: {:?}", reports[0]) };
+        let prepared: Vec<_> = effects.sends.iter().filter(|s| s.message_type == "Continue").collect();
+        assert_eq!(prepared.len(), 1, "{recovery}: the decision prepared its continuation");
+        assert_eq!(prepared[0].delivery, cicada::store::Delivery::Now, "{recovery}: due now");
+        let prepared = prepared[0].id.clone();
+
+        assert_eq!(unchanged(&test, "k").await, before, "{recovery}: the saved wait and the version stay");
+        assert_eq!(timed_entry(&test, "k", "done").await, (Some(until), None, vec![]), "{recovery}: still open");
+        assert!(test.pending(&run("k")).await.is_empty(), "{recovery}: nothing pending");
+        assert!(outcome(&test, &prepared).await.is_none(), "{recovery}: the prepared continuation was never sent");
+        let record = outcome(&test, &timer.id).await.unwrap();
+        assert_eq!(
+            (record.status, record.error.as_deref()),
+            (OutcomeStatus::Failed, Some("the store rejected the commit"))
+        );
+        assert!(probe.got().is_empty() && probe.ids().is_empty(), "{recovery}: no timeout reached flow code");
+
+        if recovery == "reply" {
+            test.send(&responder("r1"), ResponderMsg::Answer { value: json!("v") }).await;
+            drive(&test, &worker).await;
+            assert_eq!(timed_entry(&test, "k", "done").await.1, Some(WaitOutcome::Received));
+            assert_eq!(probe.got(), [("done".to_owned(), received(json!("v")))]);
+        } else {
+            test.send(&run("k"), FlowMsg::Continue).await;
+            drive(&test, &worker).await;
+            assert_eq!(timed_entry(&test, "k", "done").await.1, Some(WaitOutcome::TimedOut));
+            assert_eq!(probe.got(), [("done".to_owned(), timed_out())]);
+        }
+        assert_eq!(timed_entry(&test, "k", "done").await.0, Some(until), "{recovery}: the saved deadline stays");
+        assert_eq!(probe.ids(), ["after"], "{recovery}");
+        assert_eq!(state(&test, "k").await.status, FlowStatus::Done, "{recovery}");
+    }
 }

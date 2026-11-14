@@ -15,6 +15,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+async-trait.workspace = true
 axum.workspace = true
 cicada = { workspace = true, features = ["sqlite", "testing"] }
 cicada-axum.workspace = true

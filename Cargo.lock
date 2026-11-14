@@ -494,6 +494,7 @@ dependencies = [
 name = "cicada-actors"
 version = "0.18.2"
 dependencies = [
+ "async-trait",
  "axum",
  "cicada",
  "cicada-axum",
