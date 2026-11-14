@@ -23,11 +23,10 @@ touches user-facing behaviour will hit the same wall.
 - The design loop and `openspec/config.yaml`: tasks ask for a docs handoff instead of guide or README edits.
 - The code review brief: check the handoff instead of the prose.
 - The build loop: when a change lands, point the docs session at its archived handoff.
-- Release pins: `docs/how-to/releasing.md` step 1 has the release update the dependency examples in
-  `docs/how-to/install.md`, but the hook refuses that file from the main checkout (0.17.2 left them on v0.17.1 for the
-  docs session). Make the procedure and the hook agree on who moves those pins.
+- Release pins: the current `docs/how-to/releasing.md` already gives installation-guide pins to the docs session
+  and README pins to release. Align loop references/version handoffs with that policy; change no ownership hook.
 - Decide how a public API change keeps the doctests of README and the guides compiling when the builder may not edit
-  them. The docs session follows main every 10 minutes, so for a while main can fail those doctests.
+  them. The docs session follows main periodically; blocking fixes must be prepared before landing rather than leaving main broken.
 
 ## Out of scope
 
