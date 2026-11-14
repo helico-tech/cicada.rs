@@ -35,7 +35,7 @@
   the debouncer witness comment to identify state validation, not notice decoding. Run the affected event, debouncer,
   flow-contract and sample-service snapshot tests with CICADA_UPDATE_CONTRACTS=true only for regeneration, then verify
   with regeneration disabled. Do not broaden these repairs into runtime or flow changes.
-- [ ] 5. Update architecture, ADR 0043/index if implementation wording requires it, core and actors guides, operations,
+- [x] 5. Update architecture, ADR 0043/index if implementation wording requires it, core and actors guides, operations,
   public API docs and changelog. Explain encoded-state visibility/value(), existing batch/event limits, no automatic
   legacy repair and exact parsing versus database normalization. Write the maintenance instructions from the tested
   example: all actor names, verified backup/export/restore, quiescence, stopped local/remote hosts/bootstrappers,

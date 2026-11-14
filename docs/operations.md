@@ -386,6 +386,65 @@ refused before. A worker on the store stays one: `--store`, or a non-blank `CICA
 and `CICADA_CONTEXT` set for the operator commands, and it reads neither the config file nor `CICADA_TOKEN`. Only a
 worker without a store that has `CICADA_SERVER` or `CICADA_CONTEXT`, which failed before, now runs over HTTP.
 
+**Version 0.17.0 changes no schema of the store, but it changes the contract of the dead letters** (ADR 0043). A
+letter keeps a payload deeper than 61 levels as JSON text in `payloadJson` ([Dead letters](guide/actors.md#dead-letters)),
+so the contract hash of `cicada.dead-letters` and the Rust type `DeadLetter` change; a `Failed`, every other contract
+and the store stay as they were. A system without dead letters can deploy 0.17.0 rolling, with nodes of 0.16 and
+0.17.0 on one database. JSON text is now parsed with exact float rounding on every node of 0.17.0, which only makes a
+read more exact. A system with dead letters cannot deploy rolling: a node of 0.17.0 that hosts them refuses to start
+against the registration of 0.16 (`ContractConflict`), and a worker of 0.16 that leases them is refused
+(`ContractMismatch`). But a start-time check does not stop a node that runs already, and a reader of 0.16 cannot
+decode a letter that holds `payloadJson`. Keep the letters across a new registration in a maintenance window, with the
+tested steps of [examples/src/dead_letters_upgrade.rs](../examples/src/dead_letters_upgrade.rs) (example 16):
+
+1. **Check the shape.** The steps keep dead-letters actors that are independent (no parent), have no children and that
+   no actor watches by address. Deleting another shape removes its children and sends `Stopped` to its watchers: give
+   it a migration of its own. `export` checks this and stops, and so do the steps below whenever a check fails.
+2. **Quiesce.** Stop the senders of the watched work and let the watched turns finish, then let every dead-letters
+   mailbox drain (`GET /stats?prefix=cicada.dead-letters/` shows nothing pending, and no turn runs). A failure that
+   happens while the dead letters are gone tells nobody, and no letter is written for it. If the work cannot stop,
+   that gap stays: an outcome may be expired or hidden by then, and retrying the business messages is no copy of the
+   letters, as it can repeat their external effects.
+3. **Stop every node of 0.16**, local and remote workers too, and every hook that creates the dead letters at its start
+   (the sample service does). A node of 0.16 still running would go on reading and writing the old shape.
+4. **Back up the database, and export.** On a management node of 0.17.0 that hosts nothing, `export` reads every
+   dead-letters actor: its state, version, pause flag and the watches it holds. Write it to a file with `serde_json`,
+   never through a tool that rounds numbers, and check the file before you go on. Keep the backup until the end.
+5. **Convert.** `convert` moves each raw payload deeper than 61 levels to `payloadJson`, keeps every letter with its
+   metadata and `redrivenAs`, and checks each state against the new type and the depth limit before anything is
+   deleted. A legacy payload deeper than 64 levels is kept as text; a redrive refuses it, and `Discard` drops it. An
+   export that cannot be read needs a recovery from the backup.
+6. **Reset.** `reset` checks that the store holds exactly the exported actors at their exported versions, deletes them,
+   removes the registration and registers the contract of 0.17.0.
+7. **Restore.** `restore` creates each actor again at its address with its converted state, pauses the mailboxes that
+   were paused, sets its watches again and compares. The actors are new instances: their version, epoch and creation
+   time are new, and no lease held before is valid. Then start the nodes of 0.17.0 and resume the senders.
+
+<!-- doctest
+@@4
+# async fn upgrade(store: cicada::Store) -> Result<(), Box<dyn std::error::Error>> {
+@@7
+# Ok(())
+# }
+-->
+```rust,no_run
+// examples/src/dead_letters_upgrade.rs
+use cicada::ActorSystem;
+use cicada_examples::dead_letters_upgrade::{Export, convert, export, reset, restore};
+
+let manage = ActorSystem::builder(store).build(); // hosts nothing
+std::fs::write("dead-letters.json", serde_json::to_string_pretty(&export(&manage).await?)?)?;
+// … check the file and keep the backup …
+let mut saved: Export = serde_json::from_str(&std::fs::read_to_string("dead-letters.json")?)?;
+convert(&mut saved)?;
+reset(&manage, &saved).await?;
+restore(&manage, &saved).await?;
+```
+
+Clients that read the state of the dead letters with `DeadLetter` upgrade with the nodes: `payload` is a
+`LetterPayload`, read with `value()`. A raw letter deeper than 61 levels in a state that is not converted still fails
+every turn that writes the state; nothing repairs it by itself.
+
 **Switching a type to `create_child`.** An actor created with `turn.create` stays independent: a later `create_child`
 of it by its creator does not adopt it, but fails the creator's message (the commit is rejected, and a handler cannot
 test for that). So switch a parent type from `create` to `create_child` only when no parent of it is left that created

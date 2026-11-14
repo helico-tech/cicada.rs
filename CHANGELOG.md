@@ -7,6 +7,46 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.17.0 — unreleased
+
+A breaking release for systems with dead letters: a letter keeps every payload that was accepted when it was sent, so
+a failure at the depth limit can be watched, kept and redriven (ADR 0043). The contract of `cicada.dead-letters` and
+the type `DeadLetter` change; a `Failed`, every other contract and the store stay as they were, and no schema of the
+store changes. A system without dead letters can deploy it rolling: nodes of 0.16 and 0.17.0 share a database. A system
+with dead letters moves its letters in a maintenance window ([Upgrading](docs/operations.md#upgrading)).
+
+### Changed
+
+- **Breaking.** A dead letter holds its payload in `payload`, as before, when it is at most 61 levels deep, and
+  otherwise as compact JSON text in the new field `payloadJson`; a letter holds exactly one of the two, which the
+  decoder and the schema of the state both check (`422` over HTTP for both, neither or `payloadJson: null`). No value
+  inside a payload is read as a marker. Before, the turn that would record a payload of 62 to 64 levels failed and no
+  letter was kept. The contract hash of `cicada.dead-letters` changes, so a node of 0.17.0 that hosts it refuses to
+  start against the registration of 0.16.
+- **Breaking.** `DeadLetter::payload` is a `LetterPayload` (`Value` or `Json`, re-exported by `cicada-actors`), whose
+  `value()` returns the payload and parses the text only when it is called; reading a state never parses it, and a
+  letter is written back in the form it was read in.
+- A `Redrive` of a letter whose text cannot be parsed records `redriveError` `The kept payload cannot be read: …`, and
+  one whose payload the send refuses (deeper than 64 levels, a NUL character) records the error of the send; nothing
+  is sent and the letter keeps its text, and a `Discard` or another letter's `Redrive` works as before.
+- serde_json parses JSON text with exact rounding (`float_roundtrip`, on the shared dependency of the workspace, so a
+  crate that depends on Cicada gets it): a finite float read back from SQLite, a view or the text of a letter has the
+  bits it was written with. PostgreSQL still stores a negative zero as a zero.
+- The doc comment of `JournalEntry::Sleep` describes the sleep of `Step::sleep`, which shipped in 0.16.6; the contract
+  texts of flows change in that description only, and their hashes stay.
+
+### Added
+
+- Example 16, [examples/src/dead_letters_upgrade.rs](examples/src/dead_letters_upgrade.rs): the tested steps of the
+  upgrade of the dead letters (`export`, `convert`, `reset`, `restore`), which keep every letter, pause flag and watch
+  of independent, childless dead-letters actors that no actor watches, and refuse any other shape, a busy actor and an
+  export that is incomplete or stale before anything is deleted. The operations guide's Upgrading says what they
+  cannot do: quiescing, the backup, stopping every node of 0.16, and the new identity of the restored actors.
+- Tests at the depth limit: a `Failed` of a 64-level payload is written and claimed whole on every backend and read by
+  a typed watcher on a node and in a worker over HTTP; numbers in states, payloads and notices are read back with their
+  bits on every backend; a refused batch publication is kept by the dead letters and its redrive fails again for the
+  state of its run; the event's lifecycle test runs an `Unsubscribe` while its runs exist.
+
 ## 0.16.17 — 2026-11-14
 
 Nothing breaks: an `App`'s `worker` runs its actors through a server's HTTP API, without the database, the fifth part

@@ -169,20 +169,31 @@ sent: only a notification counts.
 
 - `Redrive { messageId }` sends the failed message again, once: to the same actor, with the same type, payload and
   correlation id, from the dead-letters actor. The letter holds the id of the new message (`redrivenAs`), and a message
-  that fails again is a letter of its own. When the type of the actor no longer takes the message, nothing is sent and
-  the letter says why (`redriveError`). When the actor is gone, the `Redrive` itself ends `failed` with the cause
-  `commit`, and the letter stays as it was.
+  that fails again is a letter of its own. When the type of the actor no longer takes the message, or the kept payload
+  cannot be read or sent (below), nothing is sent and the letter says why (`redriveError`). When the actor is gone, the
+  `Redrive` itself ends `failed` with the cause `commit`, and the letter stays as it was.
 - `Discard { messageId }` forgets a letter. Over HTTP: `POST /actors/cicada.dead-letters/_/messages` with
   `{"type": "Redrive", "payload": {"messageId": "…"}}`.
-- **How deep.** A letter holds the payload three levels into the state, so a failed message whose payload is deeper
-  than 61 levels cannot be kept: the turn that would record it fails with the cause `handler` (`State cannot be stored:
-  The state is nested deeper than 64 levels`), and no letter is recorded. That failure is a notification, which tells
-  nobody: the outcome of the notification (`GET /outcomes?status=failed&prefix=cicada.dead-letters/`) holds the error
-  and the id of the failed message, for as long as outcomes are kept. The next failure is recorded as before.
-- **A deep letter from before 0.16.0.** Dead letters that hold a letter whose payload is deeper than 61 levels fail
+- **How deep.** A letter holds the payload three levels into the state. So it keeps a payload of at most 61 levels
+  as it is, in the field `payload`, and a deeper one, up to the 64 levels of any accepted payload, as its compact JSON
+  text, in the field `payloadJson` (ADR 0043). A letter has exactly one of the two: the decoder and the schema of the
+  state both refuse a letter with both, with neither, or with `payloadJson: null` (over HTTP `422`), and `payload` may
+  be any value, `null` too. Nothing inside a payload is read as a marker, so a payload that looks like JSON text or
+  holds a key `payloadJson` stays a value. In Rust, `DeadLetter::payload` is a `LetterPayload`, `Value` or `Json`;
+  `value()` returns the payload, parsing the text only when it is called, so reading the state never fails for it.
+  The text is parsed with exact rounding: every integer and the bits of every finite float come back as the `Failed`
+  held them, though not the spelling of the original JSON, and a number that PostgreSQL normalised before (a negative
+  zero is stored as a zero) stays normalised. An operator who reads the state sees the text, not the value.
+- **A payload that cannot be sent.** A `Redrive` parses the text with serde_json's limit of 128 levels and then sends
+  it like any send of a turn. Text that is not JSON, or nested too deep for the parser, gives `redriveError` `The kept
+  payload cannot be read: …`; a payload deeper than 64 levels or with a NUL character gives the error of the send. In
+  each case nothing is sent, the letter keeps its text, and a `Discard` or the `Redrive` of another letter works as
+  before. A redrive checks the payload as it is checked now, so it can fail again for the reason it failed first.
+- **A deep letter from before 0.16.0.** Dead letters that hold a raw letter whose payload is deeper than 61 levels fail
   every turn that writes their state: no later failure is recorded, and a `Redrive` or a `Discard` of another letter
-  fails. `Discard` of the deep letter itself works, as the state is within the limit without it; deleting and creating
-  the actor works too, and drops all its letters.
+  fails. Nothing repairs such a letter by itself. `Discard` of the deep letter itself works, as the state is within the
+  limit without it; the upgrade to 0.17.0 can also move it to `payloadJson` ([Upgrading](../operations.md#upgrading)),
+  and deleting and creating the actor works too, and drops all its letters.
 
 ## Topic
 
@@ -1019,5 +1030,6 @@ let batches = BatcherState::new(&digests, "PublishBatch", 20, Duration::from_sec
   `Unsubscribe` changes nothing; an invalid name and a 101st type are refused for good.
 - **How deep.** The run state holds the input one level down, so a `Publish` input may be 63 levels deep, and a batch's
   items three levels down, so an item may be 61. A batcher passes items up to 62 levels deep: a batch with such an item
-  reaches the event and fails its publication for good, and no run starts. The failure tells the event's watchers;
-  dead letters cannot keep a payload that deep ([Dead letters](#dead-letters)). With no subscription nothing is checked.
+  reaches the event and fails its publication for good, and no run starts. The failure tells the event's watchers, and
+  dead letters keep it as JSON text ([Dead letters](#dead-letters)), but a redrive of it fails again in the same way:
+  keeping the payload does not make the run's state shallower. With no subscription nothing is checked.

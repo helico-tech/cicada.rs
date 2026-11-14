@@ -218,8 +218,16 @@ ADR 0029): `{"a": {"b": 1}}` is 2 deep, a number 0. A deeper value is refused li
 The error names the payload or the state and the limit: `The payload is nested deeper than 64 levels`. The check stops
 at the first level beyond the limit, so it refuses a value of any depth with an error, and nothing after it (the store,
 the decoder, a view) meets a deeper value; a `Failed` that the store writes holds the payload of the failed message
-one level down, so it can be 65 deep. A value stored before 0.16.0 is delivered and decoded as before: only what is
+one level down, so it can be 65 deep. A typed watcher reads such a `Failed`, on a node and in a worker over HTTP, but a
+watcher that keeps its payload in its state needs room for it: a state that holds the whole `Failed` fails the state
+check of its turn, as any other state too deep does. The dead letters keep a deep payload as JSON text
+([Dead letters](actors.md#dead-letters)). A value stored before 0.16.0 is delivered and decoded as before: only what is
 written is checked, so a turn that writes such a state back fails ([Upgrading](../operations.md#upgrading)).
+
+JSON text is parsed with exact rounding (serde_json's `float_roundtrip`, set on the shared dependency, ADR 0043): a
+finite float read back from a SQLite store, a view or a text of a dead letter has the bits it was written with, and an
+integer stays exact. PostgreSQL keeps JSON numbers as `numeric`, which has no negative zero: a `-0.0` is read back as
+`0.0`. The spelling of a number is not kept.
 
 The limit leaves three things to the host:
 
