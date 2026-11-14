@@ -120,8 +120,22 @@ failure keeps cancelling progress for recovery. It does not automatically stop c
 
 Done/cancelled state remains readable. No synthetic core Stopped is emitted: that notification means removal.
 Use status reads/change hints or an application message. A final application send and terminal status are separate
-turns, not atomic. Deleting a run stays immediate and runs no cleanup. Exact finalizer/recovery APIs are designed in
-their own piece against this representation.
+turns, not atomic. Deleting a run stays immediate and runs no cleanup.
+
+Flow::on_cancel is a cancellation-only, default-success hook over Cleanup, which exposes Step helpers through Deref.
+Even default flows enter cancelling and arm a separate cleanup Continue. Cancel while cancelling is a no-op; public
+Continue recovers cleanup. The active phase comes from status, not the continuation's origin. Cleanup uses F::retry.
+Main lookups read the fixed main journal; main_key also works for unsaved ids. main_result/main_request return absent
+or typed data, refusing wrong kinds. MainReply is Open without a closed main wait (even with an early reply), Replied
+for a retained value under a closed main wait, or Closed without one. Thus mutable early replies cannot change cleanup
+branches; Open requests must be consumed through cleanup waits. Fallible lookups share Step's permanent/in-progress
+latch protections. Raw main_journal reads expose no mutable reply list and host decoding is ordinary replay code.
+During cancelling, any closed wait in either journal rejects further replies; only cleanup's active wait is closed.
+
+A missing external-step result does not prove no effect happened. Cleanup by main_key needs an idempotent external
+owner that resolves/fences late creation, or another application protocol proving cleanup completed. The library
+cannot infer ownership or compensate effects. Mixed crate versions or host binaries using a default/older hook can
+record cancelled without intended cleanup despite equal hashes; upgrade all hosts or version the flow type.
 
 ### Upgrade and staged rollout
 
