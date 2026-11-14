@@ -5,12 +5,18 @@
 //! changed-duration replay, early pokes, deliver-now, retries and redrives, lost timers, pause, delete, failures after
 //! a sleep and the limits of a new sleep; and sends (ADR 0044): the create, message, entry and continuation of one
 //! commit, replay without another message, core create rules, rejected commits and their recovery, refusals, observer
-//! headers, and the messages and phases this release refuses. A probe counts every closure invocation.
+//! headers, and the messages and phases this release refuses; and requests, replies and waits: parked and closed waits,
+//! early, late, ignored, duplicate and invalid replies, the sender check, correlations, pokes, pauses, lost
+//! continuations, typed decoding and its recovery, rejected request commits and replies to a deleted run. A probe
+//! counts every closure invocation and notes what each wait returned.
 
 mod common;
 
+use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
+use std::future::Future;
 use std::panic::AssertUnwindSafe;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -19,7 +25,11 @@ use cicada::prelude::*;
 use cicada::runtime::RetryResult;
 use cicada::store::{DeliverNowResult, Message, OutcomeStatus};
 use cicada::time::{self, MAX_DELAY, Timestamp};
-use cicada_actors::{CreateKind, Flow, FlowActor, FlowMsg, FlowRun, FlowState, FlowStatus, JournalEntry, Step, Target};
+use cicada::turn::TurnError;
+use cicada_actors::{
+    CreateKind, Flow, FlowActor, FlowMsg, FlowReply, FlowRun, FlowState, FlowStatus, JournalEntry, ReplyTo, Request,
+    Step, Target, WaitMode, WaitOutcome,
+};
 use cicada_test::TestActors;
 use common::*;
 use futures::FutureExt;
@@ -62,9 +72,27 @@ enum Act {
 struct Probe {
     keys: Arc<Mutex<Vec<String>>>,
     plans: Arc<Mutex<HashMap<String, VecDeque<Act>>>>,
+    /// The values the flow code got from its waits, by wait id, in order.
+    got: Arc<Mutex<Vec<(String, Value)>>>,
+    /// Whether the flow's code is fixed: a typed wait then decodes any JSON.
+    fixed: Arc<AtomicBool>,
 }
 
 impl Probe {
+    /// What the flow code got from its waits.
+    fn got(&self) -> Vec<(String, Value)> {
+        self.got.lock().unwrap().clone()
+    }
+
+    /// Notes what a wait returned, once: every replay returns the same.
+    fn note(&self, wait: &str, value: Value) {
+        let mut got = self.got.lock().unwrap();
+        let entry = (wait.to_owned(), value);
+        if !got.contains(&entry) {
+            got.push(entry);
+        }
+    }
+
     fn plan(&self, id: &str, acts: &[Act]) {
         self.plans.lock().unwrap().insert(id.to_owned(), acts.iter().copied().collect());
     }
@@ -164,6 +192,163 @@ enum Op {
     SendGhost { id: String },
     /// A send to `worker/<to>` of a message type the worker does not accept.
     SendForeign { id: String, to: String },
+    /// A request to `responder/<to>` that asks it to `answer`; created first, of `create`, when given.
+    Request {
+        id: String,
+        to: String,
+        answer: Answer,
+        #[serde(default)]
+        create: Option<CreateKind>,
+    },
+    /// The wait `id` for the request `request` of this execution; the probe notes what it returns.
+    Wait { id: String, request: String },
+    /// A request `id` to `responder/<to>` asking for a number, and its wait `wait`: typed `u32` until the probe's code
+    /// is fixed, any JSON after.
+    Typed { id: String, wait: String, to: String, answer: Answer },
+}
+
+/// How a responder answers a request.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "how", rename_all = "camelCase", rename_all_fields = "camelCase")]
+enum Answer {
+    /// Replies `value` in the turn of the request, with the helper.
+    Now { value: Value },
+    /// Keeps the route; [`ResponderMsg::Answer`] replies later.
+    Later,
+    /// Sends `FlowMsg::Reply` itself, past the helper's checks, naming `request` in place of the route's when given;
+    /// the value is `depth` arrays deep when given, made by the responder: what an input may not hold.
+    Raw {
+        value: Value,
+        #[serde(default)]
+        depth: Option<u32>,
+        #[serde(default)]
+        request: Option<MessageId>,
+    },
+    /// Hands the route to `responder/<to>`, a delegate, which replies `value`.
+    Delegate { to: String, value: Value },
+    /// Hands the route to a new child of the responder, which replies `value`.
+    Child { value: Value },
+}
+
+/// `responder/<id>`: the target of the test flow's requests.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+struct Responder(String);
+
+impl ActorRef for Responder {
+    const TYPE: &'static str = "responder";
+    type Message = ResponderMsg;
+}
+
+fn responder(id: &str) -> Responder {
+    Responder(id.to_owned())
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type")]
+enum ResponderMsg {
+    /// A request of a flow for any JSON.
+    Ask { reply: ReplyTo<Value>, answer: Answer },
+    /// A request of a flow for a number.
+    AskNumber { reply: ReplyTo<u32>, answer: Answer },
+    /// Replies `value` to every kept route, with the helper.
+    Answer { value: Value },
+    /// Replies `value` to `reply`, with the helper.
+    Forward { reply: ReplyTo<Value>, value: Value },
+    /// Sends `FlowMsg::Reply` with `request` and a value `depth` arrays deep to `run` itself, for a run created with
+    /// its progress.
+    Raw { run: ActorAddress, request: MessageId, depth: u32 },
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+struct ResponderState {
+    /// The routes kept for a later answer.
+    #[serde(default)]
+    routes: Vec<ReplyTo<Value>>,
+    /// The requests it got.
+    #[serde(default)]
+    asked: u32,
+}
+
+struct ResponderActor;
+
+impl Actor for ResponderActor {
+    type Ref = Responder;
+    type State = ResponderState;
+
+    async fn handle(&self, turn: &mut Turn<Self>, message: ResponderMsg) -> HandlerResult {
+        match message {
+            ResponderMsg::Ask { reply, answer } => answer_with(turn, reply, answer).await?,
+            ResponderMsg::AskNumber { reply, answer: Answer::Now { value: Value::Number(n) } } => {
+                turn.state_mut().asked += 1;
+                let n = u32::try_from(n.as_u64().unwrap()).unwrap();
+                reply_cell(turn, retype(&reply), Cell::new(n)).await?;
+            }
+            ResponderMsg::AskNumber { reply, answer } => answer_with(turn, retype(&reply), answer).await?,
+            ResponderMsg::Answer { value } => {
+                for route in turn.state().routes.clone() {
+                    route.send(turn, &value).await?;
+                }
+            }
+            ResponderMsg::Forward { reply, value } => {
+                reply.send(turn, &value).await?;
+            }
+            ResponderMsg::Raw { run, request, depth } => raw_reply(turn, &run, request, nested(depth)).await?,
+        }
+        Ok(())
+    }
+}
+
+/// The same route for another reply type: the wire form does not depend on it.
+fn retype<T, U>(route: &ReplyTo<T>) -> ReplyTo<U> {
+    serde_json::from_value(serde_json::to_value(route).unwrap()).unwrap()
+}
+
+/// Scenario: Owned encoded value. The helper's future outlives the route and the value, both dropped here, and is
+/// `Send` for a reply type that is not `Sync`.
+fn reply_cell<'t>(
+    turn: &'t mut Turn<ResponderActor>,
+    reply: ReplyTo<Cell<u32>>,
+    value: Cell<u32>,
+) -> impl Future<Output = Result<MessageId, TurnError>> + Send + 't {
+    reply.send(turn, &value)
+}
+
+async fn answer_with(turn: &mut Turn<ResponderActor>, reply: ReplyTo<Value>, answer: Answer) -> HandlerResult {
+    turn.state_mut().asked += 1;
+    match answer {
+        Answer::Now { value } => {
+            reply.send(turn, &value).await?;
+        }
+        Answer::Later => turn.state_mut().routes.push(reply),
+        Answer::Raw { value, depth, request } => {
+            let value = depth.map_or(value, nested);
+            raw_reply(turn, &reply.run, request.unwrap_or(reply.request.clone()), value).await?;
+        }
+        Answer::Delegate { to, value } => {
+            turn.send(&responder(&to), ResponderMsg::Forward { reply, value })?;
+        }
+        Answer::Child { value } => {
+            let child = responder(&format!("{}-child", turn.self_ref().0));
+            turn.create_child(&child, &ResponderState::default())?;
+            turn.send(&child, ResponderMsg::Forward { reply, value })?;
+        }
+    }
+    Ok(())
+}
+
+/// Sends a `Reply` past the helper, with the turn's correlation id.
+async fn raw_reply(
+    turn: &mut Turn<ResponderActor>,
+    run: &ActorAddress,
+    request: MessageId,
+    value: Value,
+) -> HandlerResult {
+    let encoded = cicada::message::encode(&FlowMsg::Reply { request, value }).unwrap();
+    let mut options = SendOptions::new();
+    options.correlation_id = turn.message().correlation_id.clone();
+    turn.send_raw(run, &encoded.message_type, encoded.payload, options).await?;
+    Ok(())
 }
 
 /// The initial state of a send's create, made when the flow runs: what a state may not be cannot be in the input.
@@ -288,8 +473,9 @@ impl Flow for ScriptFlow {
     }
 
     async fn run(&self, step: &mut Step, script: Script) -> HandlerResult {
+        let mut requests = HashMap::new();
         for op in script.ops {
-            self.op(step, op).await?;
+            self.op(step, op, &mut requests).await?;
         }
         match script.end {
             End::Ok => Ok(()),
@@ -304,7 +490,7 @@ impl Flow for ScriptFlow {
 }
 
 impl ScriptFlow {
-    async fn op(&self, step: &mut Step, op: Op) -> HandlerResult {
+    async fn op(&self, step: &mut Step, op: Op, requests: &mut HashMap<String, Request<Value>>) -> HandlerResult {
         let p = &self.probe;
         match op {
             Op::Step { id } => {
@@ -398,6 +584,35 @@ impl ScriptFlow {
             }
             Op::SendGhost { id } => step.send(&id, &Ghost, WorkerMsg::Work).await?,
             Op::SendForeign { id, to } => step.send(&id, Target::existing(&Foreign(to)), ForeignMsg::Unknown).await?,
+            Op::Request { id, to, answer, create } => {
+                let target = responder(&to);
+                let initial = ResponderState::default();
+                let build = |reply| ResponderMsg::Ask { reply, answer };
+                let request = match create {
+                    None => step.request(&id, &target, build).await?,
+                    Some(CreateKind::Independent) => {
+                        step.request(&id, Target::create(&target, &initial), build).await?
+                    }
+                    Some(CreateKind::Child) => step.request(&id, Target::child(&target, &initial), build).await?,
+                };
+                requests.insert(id, request);
+            }
+            Op::Wait { id, request } => {
+                let value = step.wait(&id, &requests[&request]).await?;
+                p.note(&id, value);
+            }
+            Op::Typed { id, wait, to, answer } => {
+                let target = responder(&to);
+                if p.fixed.load(Ordering::SeqCst) {
+                    let request = step.request(&id, &target, |reply| ResponderMsg::Ask { reply, answer }).await?;
+                    let value: Value = step.wait(&wait, &request).await?;
+                    p.note(&wait, value);
+                } else {
+                    let request = step.request(&id, &target, |reply| ResponderMsg::AskNumber { reply, answer }).await?;
+                    let value: u32 = step.wait(&wait, &request).await?;
+                    p.note(&wait, json!(value));
+                }
+            }
         }
         Ok(())
     }
@@ -458,6 +673,7 @@ async fn node(probe: &Probe) -> TestActors {
                 .host(ProducerActor)
                 .host(WitnessActor)
                 .host(WorkerActor)
+                .host(ResponderActor)
         })
         .build()
         .await
@@ -1511,77 +1727,521 @@ async fn observer_headers_go_on_a_send() {
 
 /// Scenario: Reserved message and phase.
 #[tokio::test(start_paused = true)]
-async fn reply_cancel_and_cancelling_are_refused_and_terminal_runs_ignore_continue() {
+async fn cancel_and_cancelling_are_refused_and_terminal_runs_ignore_continue_and_reply() {
     let probe = Probe::default();
     let test = node(&probe).await;
-    let reply = FlowMsg::Reply { request: MessageId::new("m1").unwrap(), value: Value::Null };
-    for (key, message, why) in
-        [("reply", reply, "FlowMsg::Reply needs a later release"), ("cancel", FlowMsg::Cancel, "FlowMsg::Cancel")]
-    {
-        test.create(&run(key), &FlowState::new(script(steps(&["a"])))).await;
+    test.create(&run("cancel"), &FlowState::new(script(steps(&["a"])))).await;
+    let sent = test.send(&run("cancel"), FlowMsg::Cancel).await;
+    test.run_until_idle().await;
+    let record = outcome(&test, &sent.id).await.unwrap();
+    assert_eq!((record.status, record.envelope.failures), (OutcomeStatus::Failed, 0));
+    assert!(record.error.unwrap().contains("refuses FlowMsg::Cancel for good"));
+    assert_eq!(test.version(&run("cancel")).await, 0, "no effects");
+    assert!(test.pending(&run("cancel")).await.is_empty());
+
+    let reply = || FlowMsg::Reply { request: MessageId::new("m1").unwrap(), value: Value::Null };
+    for (key, message) in [("cancelling", FlowMsg::Continue), ("cancelling-reply", reply())] {
+        let cancelling = FlowState { status: FlowStatus::Cancelling, ..FlowState::new(script(steps(&["a"]))) };
+        test.create(&run(key), &cancelling).await;
         let sent = test.send(&run(key), message).await;
         test.run_until_idle().await;
         let record = outcome(&test, &sent.id).await.unwrap();
-        assert_eq!((record.status, record.envelope.failures), (OutcomeStatus::Failed, 0), "{key}");
-        assert!(record.error.unwrap().contains(why), "{key}");
-        assert_eq!(test.version(&run(key)).await, 0, "{key}: no effects");
-        assert!(test.pending(&run(key)).await.is_empty(), "{key}");
+        assert_eq!(record.status, OutcomeStatus::Failed, "{key}");
+        assert!(record.error.unwrap().contains("refuses the cleanup of a cancelling run for good"), "{key}");
+        assert_eq!(test.version(&run(key)).await, 0, "{key}");
     }
-    let cancelling = FlowState { status: FlowStatus::Cancelling, ..FlowState::new(script(steps(&["a"]))) };
-    let poke = start_with(&test, "cancelling", cancelling).await;
-    test.run_until_idle().await;
-    let record = outcome(&test, &poke.id).await.unwrap();
-    assert_eq!(record.status, OutcomeStatus::Failed);
-    assert!(record.error.unwrap().contains("cannot run the cleanup of a cancelling run"));
 
     for status in [FlowStatus::Done, FlowStatus::Cancelled] {
-        let key = format!("{status:?}");
-        let terminal = FlowState { status, ..restored(script(steps(&["a"])), vec![saved("a", json!("r-a"))]) };
-        let poke = start_with(&test, &key, terminal.clone()).await;
-        test.run_until_idle().await;
-        assert_eq!(outcome(&test, &poke.id).await.unwrap().status, OutcomeStatus::Done, "{key}");
-        let kept = test.state_json(&run(&key)).await.unwrap();
-        assert_eq!(kept, serde_json::to_value(&terminal).unwrap(), "{key}: the state stays");
-        assert_eq!(test.version(&run(&key)).await, 0, "{key}");
+        for message in [FlowMsg::Continue, reply()] {
+            let key = format!("{status:?}-{message:?}");
+            let terminal = FlowState { status, ..restored(script(steps(&["a"])), vec![saved("a", json!("r-a"))]) };
+            test.create(&run(&key), &terminal).await;
+            let sent = test.send(&run(&key), message).await;
+            test.run_until_idle().await;
+            assert_eq!(outcome(&test, &sent.id).await.unwrap().status, OutcomeStatus::Done, "{key}");
+            let kept = test.state_json(&run(&key)).await.unwrap();
+            assert_eq!(kept, serde_json::to_value(&terminal).unwrap(), "{key}: the state stays");
+            assert_eq!(test.version(&run(&key)).await, 0, "{key}");
+        }
     }
     assert!(probe.keys().is_empty(), "no flow code ran");
 }
 
-/// Scenario: Replay misuse, through the runner: a saved request or wait cannot replay in this release.
+/// Scenario: Replay misuse, through the runner: a saved request does not replay as a send, and a saved join or wait
+/// with a deadline cannot replay in this release.
 #[tokio::test(start_paused = true)]
-async fn a_saved_request_or_wait_stalls_replay_for_good() {
+async fn a_saved_request_or_a_reserved_wait_stalls_replay_for_good() {
     let probe = Probe::default();
     let test = node(&probe).await;
-    let request = JournalEntry::Send {
-        id: "go".into(),
-        to: addr(&worker("w1")),
-        message: MessageId::new("m1").unwrap(),
-        create: None,
-        reply: true,
-    };
-    let wait = JournalEntry::Wait {
-        id: "x".into(),
-        requests: vec![MessageId::new("m1").unwrap()],
-        mode: cicada_actors::WaitMode::All,
-        until: None,
-        outcome: None,
-        received: vec![],
-    };
-    // A wait follows its request, so replay stops at the request first.
-    let cases = [("request", vec![request.clone()]), ("wait", vec![request.clone(), wait.clone()])];
-    for (key, saved) in cases {
-        let ops = vec![send_op("go", "w1", WorkerMsg::Work)];
-        let why = "calls send `go` where its journal holds request `go` at entry 1";
+    let request = saved_request("go", "w1", "m1");
+    let ops = vec![send_op("go", "w1", WorkerMsg::Work)];
+    start_with(&test, "request", restored(script(ops), vec![request.clone()])).await;
+    test.run_until_idle().await;
+    refused(&test, "request", "calls send `go` where its journal holds request `go` at entry 1").await;
+    refused(&test, "request", "changed flow code cannot replay this run").await;
+
+    let second = saved_request("q", "w1", "m2");
+    let join = open_wait("x", &["m1", "m2"], WaitMode::All, None);
+    let first = open_wait("x", &["m1"], WaitMode::First, None);
+    let deadline = open_wait("x", &["m1"], WaitMode::All, Some("2026-01-01T00:00:00Z"));
+    for (key, wait) in [("join", join), ("first", first), ("deadline", deadline)] {
+        let ops = vec![ask("go", "w1", Answer::Later), ask("q", "w1", Answer::Later), wait_op("x", "go")];
+        let saved = vec![request.clone(), second.clone(), wait];
         start_with(&test, key, restored(script(ops), saved.clone())).await;
         test.run_until_idle().await;
-        refused(&test, key, why).await;
-        refused(&test, key, "cannot replay waits or requests").await;
+        refused(&test, key, "wait `x` is saved as a join or a wait with a deadline").await;
         assert_eq!(state(&test, key).await.journal, saved, "{key}");
     }
     let after = vec![op(|id| Op::Step { id }, "a")];
-    start_with(&test, "early", restored(script(after), vec![saved("a", json!("r-a")), request, wait])).await;
+    let join = open_wait("x", &["m1", "m2"], WaitMode::All, None);
+    let saved = vec![saved("a", json!("r-a")), request, second, join];
+    start_with(&test, "early", restored(script(after), saved)).await;
     test.run_until_idle().await;
-    refused(&test, "early", "returned before reaching its saved request `go`").await;
+    refused(&test, "early", "returned before reaching its saved request `go`: changed flow code").await;
+    assert!(probe.got().is_empty());
+}
+
+// Requests, replies and waits (flow-reply-waits).
+
+/// A request to `responder/<to>` that asks it to `answer`.
+fn ask(id: &str, to: &str, answer: Answer) -> Op {
+    Op::Request { id: id.into(), to: to.into(), answer, create: None }
+}
+
+fn wait_op(id: &str, request: &str) -> Op {
+    Op::Wait { id: id.into(), request: request.into() }
+}
+
+fn now(value: Value) -> Answer {
+    Answer::Now { value }
+}
+
+/// A saved request entry to `responder/<to>` with the message id `message`.
+fn saved_request(id: &str, to: &str, message: &str) -> JournalEntry {
+    JournalEntry::Send {
+        id: id.into(),
+        to: addr(&responder(to)),
+        message: MessageId::new(message).unwrap(),
+        create: None,
+        reply: true,
+    }
+}
+
+fn open_wait(id: &str, requests: &[&str], mode: WaitMode, until: Option<&str>) -> JournalEntry {
+    JournalEntry::Wait {
+        id: id.into(),
+        requests: requests.iter().map(|r| MessageId::new(*r).unwrap()).collect(),
+        mode,
+        until: until.map(|u| time::parse_instant(u).unwrap()),
+        outcome: None,
+        received: vec![],
+    }
+}
+
+fn kept(request: &str, value: Value) -> FlowReply {
+    FlowReply { request: MessageId::new(request).unwrap(), value }
+}
+
+/// The message id of the request `id` of the journal of `key`.
+async fn request_id(test: &TestActors, key: &str, id: &str) -> MessageId {
+    match state(test, key).await.journal.iter().find(|e| e.id() == id) {
+        Some(JournalEntry::Send { message, reply: true, .. }) => message.clone(),
+        other => panic!("{key}: no request `{id}`: {other:?}"),
+    }
+}
+
+async fn responder_state(test: &TestActors, id: &str) -> ResponderState {
+    test.state(&responder(id)).await
+}
+
+/// The wait entry `id` of the journal of `key`, as its outcome and its selection.
+async fn wait_entry(test: &TestActors, key: &str, id: &str) -> (Option<WaitOutcome>, Vec<MessageId>) {
+    match state(test, key).await.journal.iter().find(|e| e.id() == id) {
+        Some(JournalEntry::Wait { outcome, received, .. }) => (*outcome, received.clone()),
+        other => panic!("{key}: no wait `{id}`: {other:?}"),
+    }
+}
+
+/// Starts `key` with `script`, runs until idle and asserts that it is parked at the open wait `wait`: no armed and no
+/// pending continuation.
+async fn parked(test: &TestActors, key: &str, script: Script, wait: &str) {
+    start(test, key, script).await;
+    test.run_until_idle().await;
+    assert_parked(test, key, wait).await;
+}
+
+async fn assert_parked(test: &TestActors, key: &str, wait: &str) {
+    let held = state(test, key).await;
+    assert_eq!((held.status, held.armed.clone()), (FlowStatus::Running, None), "{key}: parked");
+    assert_eq!(held.journal.last().map(JournalEntry::id), Some(wait), "{key}");
+    assert_eq!(wait_entry(test, key, wait).await, (None, vec![]), "{key}: open");
+    assert!(test.pending(&run(key)).await.is_empty(), "{key}: no continuation, no polling");
+}
+
+/// Scenario: Wait before reply; Reply closes an open wait; and Owned encoded value. A run parks at its open wait with
+/// no continuation; the target's later reply commits the value, closes the wait and arms a `Continue` with the reply's
+/// correlation id, without flow code; the next execution returns the value.
+#[tokio::test(start_paused = true)]
+async fn a_late_reply_closes_the_parked_wait_and_arms_with_its_correlation() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    let ops = vec![
+        Op::Request { id: "ask".into(), to: "r1".into(), answer: Answer::Later, create: Some(CreateKind::Child) },
+        wait_op("done", "ask"),
+        op(|id| Op::Step { id }, "after"),
+    ];
+    test.create(&run("k"), &FlowState::new(script(ops))).await;
+    test.send_with(&run("k"), FlowMsg::Continue, SendOptions::new().correlation_id("c-start")).await;
+    test.run_until_idle().await;
+    assert_parked(&test, "k", "done").await;
+    let asked = request_id(&test, "k", "ask").await;
+    let routes = responder_state(&test, "r1").await.routes;
+    assert_eq!(serde_json::to_value(&routes).unwrap(), json!([{"run": "test.flow/k", "request": asked.as_str()}]));
+    let record = test.system().get_actor(&addr(&responder("r1"))).await.unwrap().unwrap();
+    assert_eq!(record.parent, Some(addr(&run("k"))), "created as a child in the request's commit");
+    let version = test.version(&run("k")).await;
+
+    test.send_with(
+        &responder("r1"),
+        ResponderMsg::Answer { value: json!({"ok": 1}) },
+        SendOptions::new().correlation_id("c-answer"),
+    )
+    .await;
+    test.system().run_due_turns(1).await.unwrap();
+    let replies = test.pending(&run("k")).await;
+    assert_eq!(replies.len(), 1);
+    let reply = &replies[0];
+    assert_eq!(reply.message_type, "Reply");
+    assert_eq!(reply.payload, json!({"request": asked.as_str(), "value": {"ok": 1}}));
+    assert_eq!(reply.from, Some(addr(&responder("r1"))));
+    assert_eq!(reply.correlation_id.as_deref(), Some("c-answer"), "the replier's turn's correlation");
+    assert_eq!((reply.retry.clone(), reply.retention.clone()), (None, None), "no retry policy, default retention");
+    assert!(reply.deliver_at <= test.now(), "due now");
+
+    test.system().run_due_turns(1).await.unwrap();
+    assert_eq!(test.version(&run("k")).await, version + 1, "one commit");
+    let held = state(&test, "k").await;
+    assert_eq!(held.replies, [kept(asked.as_str(), json!({"ok": 1}))]);
+    assert_eq!(wait_entry(&test, "k", "done").await, (Some(WaitOutcome::Received), vec![asked.clone()]));
+    let next = armed(&test, "k").await;
+    assert_eq!((next.retry, next.correlation_id.as_deref()), (Some(three_attempts()), Some("c-answer")));
+    assert!(probe.keys().is_empty() && probe.got().is_empty(), "the Reply turn runs no flow code");
+
+    test.run_until_idle().await;
+    assert_eq!(probe.got(), [("done".to_owned(), json!({"ok": 1}))]);
+    assert_eq!(probe.ids(), ["after"]);
+    assert_eq!(state(&test, "k").await.status, FlowStatus::Done);
+    assert_eq!(responder_state(&test, "r1").await.asked, 1, "asked once");
+}
+
+/// Scenario: Ignored reply; and Sender boundary. Every ignored reply ends `done` without a write, even when its value
+/// would fail the depth check: unknown ids, a plain send's id, another sender (outside, delegate, child) and a
+/// duplicate with another value.
+#[tokio::test(start_paused = true)]
+async fn ignored_replies_change_nothing() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    test.create(&worker("w1"), &WorkerState::default()).await;
+    test.create(&responder("r2"), &ResponderState::default()).await;
+    test.create(&responder("r1"), &ResponderState::default()).await;
+    let ops = vec![send_op("go", "w1", WorkerMsg::Work), ask("ask", "r1", Answer::Later), wait_op("done", "ask")];
+    parked(&test, "k", script(ops), "done").await;
+    let asked = request_id(&test, "k", "ask").await;
+    let (_, plain, _) = send_entry(&test, "k", "go").await;
+    let deep = nested(63);
+
+    let before = unchanged(&test, "k").await;
+    let raw = |request: MessageId| Answer::Raw { value: Value::Null, depth: Some(63), request: Some(request) };
+    let cases = [
+        ("unknown id", raw(MessageId::random())),
+        ("plain send", raw(plain.clone())),
+        ("delegate", Answer::Delegate { to: "r2".into(), value: json!("delegated") }),
+        ("child", Answer::Child { value: json!("child") }),
+    ];
+    for (case, answer) in cases {
+        test.send(&responder("r1"), ResponderMsg::Ask { reply: route(&asked), answer }).await;
+        test.run_until_idle().await;
+        assert_eq!(unchanged(&test, "k").await, before, "{case}");
+        assert!(test.failures().await.is_empty(), "{case}: {:?}", test.failures().await);
+        assert!(test.pending(&run("k")).await.is_empty(), "{case}");
+    }
+    assert!(test.exists(&responder("r1-child")).await, "the child replied");
+    let outside = test.send(&run("k"), FlowMsg::Reply { request: asked.clone(), value: deep.clone() }).await;
+    test.run_until_idle().await;
+    assert_eq!(outcome(&test, &outside.id).await.unwrap().status, OutcomeStatus::Done, "no sender: ignored");
+    assert_eq!(unchanged(&test, "k").await, before);
+    assert!(probe.got().is_empty() && probe.keys().is_empty(), "no flow code ran");
+
+    // Duplicates, while the run sleeps before its wait: the first value stays.
+    test.create(&responder("r3"), &ResponderState::default()).await;
+    let ops = vec![ask("ask", "r3", Answer::Later), sleep("nap", MINUTE), wait_op("done", "ask")];
+    start(&test, "dup", script(ops)).await;
+    test.run_until_idle().await;
+    test.send(&responder("r3"), ResponderMsg::Answer { value: json!("first") }).await;
+    test.run_until_idle().await;
+    let first = unchanged(&test, "dup").await;
+    let asked = request_id(&test, "dup", "ask").await;
+    assert_eq!(state(&test, "dup").await.replies, [kept(asked.as_str(), json!("first"))]);
+    test.send(&responder("r3"), ResponderMsg::Answer { value: json!("second") }).await;
+    let reply = serde_json::from_value(json!({"run": "test.flow/dup", "request": asked.as_str()})).unwrap();
+    let answer = Answer::Raw { value: Value::Null, depth: Some(63), request: None };
+    test.send(&responder("r3"), ResponderMsg::Ask { reply, answer }).await;
+    test.run_until_idle().await;
+    assert_eq!(unchanged(&test, "dup").await, first, "a duplicate replaces nothing");
+    assert!(test.failures().await.is_empty(), "a deep duplicate is ignored before its value is checked");
+    test.advance_time_by(MINUTE).await;
+    assert_eq!(probe.got(), [("done".to_owned(), json!("first"))], "the first value wins");
+}
+
+/// The state of `key` as JSON, and its version.
+async fn unchanged(test: &TestActors, key: &str) -> (Value, i64) {
+    (test.state_json(&run(key)).await.unwrap(), test.version(&run(key)).await)
+}
+
+/// The route of the request `asked` of `test.flow/k`.
+fn route<T>(asked: &MessageId) -> ReplyTo<T> {
+    serde_json::from_value(json!({"run": "test.flow/k", "request": asked.as_str()})).unwrap()
+}
+
+/// Scenario: Ignored reply, of a request that a closed wait names; supplied progress with a timed-out wait.
+#[tokio::test(start_paused = true)]
+async fn a_reply_to_a_request_a_closed_wait_names_is_ignored() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    test.create(&responder("r1"), &ResponderState::default()).await;
+    let mut closed = open_wait("x", &["m1"], WaitMode::All, Some("2026-01-01T00:00:00Z"));
+    if let JournalEntry::Wait { outcome, .. } = &mut closed {
+        *outcome = Some(WaitOutcome::TimedOut);
+    }
+    let progress = restored(script(vec![]), vec![saved_request("ask", "r1", "m1"), closed]);
+    test.create(&run("k"), &progress).await;
+    let message = ResponderMsg::Raw { run: addr(&run("k")), request: MessageId::new("m1").unwrap(), depth: 63 };
+    test.send(&responder("r1"), message).await;
+    test.run_until_idle().await;
+    assert!(test.failures().await.is_empty());
+    assert_eq!(unchanged(&test, "k").await, (serde_json::to_value(&progress).unwrap(), 0));
+}
+
+/// Scenario: Missing and deep values; null retained. A new eligible value is checked: 61 levels and null are kept,
+/// 62 and 63 fail for good and save nothing, and a missing value fails to decode before the runner sees it.
+#[tokio::test(start_paused = true)]
+async fn a_new_reply_value_is_checked_before_it_is_kept() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    for (key, depth) in [("deepest", Some(61)), ("null", None), ("deeper", Some(62)), ("deeper-still", Some(63))] {
+        let answer = Answer::Raw { value: Value::Null, depth, request: None };
+        let request = Op::Request { id: "ask".into(), to: key.into(), answer, create: Some(CreateKind::Independent) };
+        start(&test, key, script(vec![request, wait_op("done", "ask")])).await;
+    }
+    test.run_until_idle().await;
+    assert_eq!(state(&test, "deepest").await.status, FlowStatus::Done);
+    assert_eq!(state(&test, "null").await.status, FlowStatus::Done);
+    let got = probe.got();
+    assert!(got.contains(&("done".to_owned(), Value::Null)), "null is present data: {got:?}");
+    assert!(got.iter().any(|(_, v)| depth(v) == 61));
+    for key in ["deeper", "deeper-still"] {
+        let failed: Vec<_> = test.failures().await.into_iter().filter(|r| r.envelope.to == addr(&run(key))).collect();
+        assert_eq!(failed.len(), 1, "{key}");
+        assert_eq!(failed[0].envelope.message_type, "Reply", "{key}");
+        assert_eq!(failed[0].envelope.failures, 0, "{key}: for good");
+        assert!(failed[0].error.as_deref().unwrap().contains("cannot be kept: it is more than 61"), "{key}");
+        assert!(state(&test, key).await.replies.is_empty(), "{key}: nothing saved");
+        assert_parked(&test, key, "done").await;
+    }
+
+    let asked = request_id(&test, "deeper", "ask").await;
+    let payload = json!({"request": asked.as_str()});
+    match test.send_raw(&addr(&run("deeper")), "Reply", payload, SendOptions::new()).await {
+        cicada::runtime::SendResult::InvalidPayload { error, .. } => assert!(error.contains("missing field `value`")),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Scenario: Early reply; and Reply before wait. A reply that comes before its wait is kept without touching `armed`;
+/// the new wait then saves itself closed and arms a `Continue` with that execution's correlation id, and the value
+/// reaches the code only in the next execution.
+#[tokio::test(start_paused = true)]
+async fn an_early_reply_is_kept_and_its_new_wait_commits_closed_before_returning_it() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    test.create(&responder("r1"), &ResponderState::default()).await;
+    let ops = vec![ask("ask", "r1", now(json!(7))), op(|id| Op::Step { id }, "a"), wait_op("done", "ask")];
+    test.create(&run("k"), &FlowState::new(script(ops))).await;
+    test.send_with(&run("k"), FlowMsg::Continue, SendOptions::new().correlation_id("c1")).await;
+    test.system().run_due_turns(1).await.unwrap(); // the poke
+    test.system().run_due_turns(1).await.unwrap(); // the request
+    test.system().run_due_turns(1).await.unwrap(); // the target, which replies at once
+    test.system().run_due_turns(1).await.unwrap(); // the step
+    let armed_before = state(&test, "k").await.armed.clone();
+    let reply = test.pending(&run("k")).await.into_iter().find(|m| m.message_type == "Reply").unwrap();
+    assert_eq!(reply.correlation_id.as_deref(), Some("c1"), "the request's correlation, through the target");
+    test.system().run_due_turns(1).await.unwrap(); // the reply, before the wait
+    let held = state(&test, "k").await;
+    assert_eq!(held.replies.len(), 1);
+    assert_eq!(held.armed, armed_before, "an early reply leaves armed");
+    assert_eq!(journal(&test, "k").await, ["ask", "a"]);
+
+    test.system().run_due_turns(1).await.unwrap(); // the new wait, closed at once
+    let asked = request_id(&test, "k", "ask").await;
+    assert_eq!(wait_entry(&test, "k", "done").await, (Some(WaitOutcome::Received), vec![asked]));
+    assert!(probe.got().is_empty(), "the value waits for the next execution");
+    assert_eq!(armed(&test, "k").await.correlation_id.as_deref(), Some("c1"));
+    test.run_until_idle().await;
+    assert_eq!(probe.got(), [("done".to_owned(), json!(7))]);
+    assert_eq!(state(&test, "k").await.status, FlowStatus::Done);
+}
+
+/// Scenario: Supplied open wait with a reply. Replay commits the closure and arms before returning the value.
+#[tokio::test(start_paused = true)]
+async fn a_supplied_open_wait_with_its_reply_closes_on_replay() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    let ops = vec![ask("ask", "r1", Answer::Later), wait_op("done", "ask")];
+    let journal = vec![saved_request("ask", "r1", "m1"), open_wait("done", &["m1"], WaitMode::All, None)];
+    let progress = FlowState { replies: vec![kept("m1", json!("given"))], ..restored(script(ops), journal) };
+    start_with(&test, "k", progress).await;
+    test.system().run_due_turns(1).await.unwrap(); // the poke
+    test.system().run_due_turns(1).await.unwrap(); // the closure
+    assert_eq!(
+        wait_entry(&test, "k", "done").await,
+        (Some(WaitOutcome::Received), vec![MessageId::new("m1").unwrap()])
+    );
+    assert!(probe.got().is_empty());
+    test.run_until_idle().await;
+    assert_eq!(probe.got(), [("done".to_owned(), json!("given"))]);
+    assert_eq!(state(&test, "k").await.status, FlowStatus::Done);
+    assert!(!test.exists(&responder("r1")).await, "the saved request is not sent again");
+}
+
+/// Scenario: Public Continue while parked; and Lost continuation after closure. A poke of a parked run normalizes and
+/// parks again without a new entry; a closing continuation that is purged leaves the run stalled until a poke, which
+/// replays the saved reply without asking again; an extra poke after closure replaces the armed continuation.
+#[tokio::test(start_paused = true)]
+async fn pokes_park_again_and_recover_a_lost_closing_continuation() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    test.create(&responder("r1"), &ResponderState::default()).await;
+    parked(&test, "k", script(vec![ask("ask", "r1", Answer::Later), wait_op("done", "ask")]), "done").await;
+    let version = test.version(&run("k")).await;
+    test.send(&run("k"), FlowMsg::Continue).await;
+    test.system().run_due_turns(1).await.unwrap();
+    assert!(state(&test, "k").await.armed.is_some(), "the poke arms");
+    test.run_until_idle().await;
+    assert_parked(&test, "k", "done").await;
+    assert_eq!(test.version(&run("k")).await, version + 2, "arm, then park; no entry");
+    assert_eq!(journal(&test, "k").await, ["ask", "done"]);
+
+    test.send(&responder("r1"), ResponderMsg::Answer { value: json!("v") }).await;
+    test.system().run_due_turns(1).await.unwrap(); // the target
+    test.system().run_due_turns(1).await.unwrap(); // the reply, which closes and arms
+    let closing = armed(&test, "k").await;
+    test.system().purge_mailbox(&addr(&run("k"))).await.unwrap();
+    test.run_until_idle().await;
+    assert!(probe.got().is_empty(), "stalled");
+    assert_eq!(wait_entry(&test, "k", "done").await.0, Some(WaitOutcome::Received), "the outcome stays");
+    assert_eq!(state(&test, "k").await.armed, Some(closing.id));
+
+    test.send(&run("k"), FlowMsg::Continue).await;
+    test.send(&run("k"), FlowMsg::Continue).await;
+    test.run_until_idle().await;
+    assert_eq!(probe.got(), [("done".to_owned(), json!("v"))], "replayed once");
+    assert_eq!(state(&test, "k").await.status, FlowStatus::Done);
+    assert_eq!(responder_state(&test, "r1").await.asked, 1, "not asked again");
+}
+
+/// Scenario: Pause and target failure. Replies to a paused run wait in its mailbox and are handled after resume; a
+/// target that never replies leaves the run parked.
+#[tokio::test(start_paused = true)]
+async fn a_paused_run_handles_its_replies_after_resume_and_a_silent_target_leaves_it_parked() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    test.create(&responder("r1"), &ResponderState::default()).await;
+    parked(&test, "k", script(vec![ask("ask", "r1", Answer::Later), wait_op("done", "ask")]), "done").await;
+    test.system().pause_mailbox(&addr(&run("k"))).await.unwrap();
+    test.send(&responder("r1"), ResponderMsg::Answer { value: json!(1) }).await;
+    test.run_until_idle().await;
+    assert_eq!(test.pending(&run("k")).await.len(), 1, "the reply waits");
+    assert!(state(&test, "k").await.replies.is_empty());
+    test.system().resume_mailbox(&addr(&run("k"))).await.unwrap();
+    test.run_until_idle().await;
+    assert_eq!(probe.got(), [("done".to_owned(), json!(1))]);
+
+    let ops = vec![ask("ask", "r1", Answer::Later), wait_op("done", "ask")];
+    parked(&test, "silent", script(ops), "done").await;
+    test.system().delete_actor(&addr(&responder("r1"))).await.unwrap();
+    assert_eq!(test.advance_time_by(Duration::from_secs(30 * 24 * 3600)).await, 0, "nothing polls");
+    assert_parked(&test, "silent", "done").await;
+}
+
+/// Scenario: Typed decode failure; and Owned encoded value. A number replied through the helper with a reply type that
+/// is not `Sync` decodes; a value that does not decode fails the execution for good and keeps the outcome, and fixed
+/// code recovers it with a poke without asking again.
+#[tokio::test(start_paused = true)]
+async fn a_typed_wait_decodes_its_reply_and_fixed_code_recovers_a_mismatch() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    test.create(&responder("r1"), &ResponderState::default()).await;
+    let typed = |answer| Op::Typed { id: "ask".into(), wait: "done".into(), to: "r1".into(), answer };
+    start(&test, "number", script(vec![typed(now(json!(7)))])).await;
+    test.run_until_idle().await;
+    assert_eq!(probe.got(), [("done".to_owned(), json!(7))]);
+
+    start(&test, "text", script(vec![typed(now(json!("seven")))])).await;
+    test.run_until_idle().await;
+    refused(&test, "text", "the saved reply of wait `done` does not decode as the type asked for").await;
+    let asked = request_id(&test, "text", "ask").await;
+    assert_eq!(wait_entry(&test, "text", "done").await, (Some(WaitOutcome::Received), vec![asked.clone()]));
+    assert_eq!(state(&test, "text").await.replies, [kept(asked.as_str(), json!("seven"))]);
+
+    probe.fixed.store(true, Ordering::SeqCst);
+    test.send(&run("text"), FlowMsg::Continue).await;
+    test.run_until_idle().await;
+    assert_eq!(probe.got()[1], ("done".to_owned(), json!("seven")));
+    assert_eq!(state(&test, "text").await.status, FlowStatus::Done);
+    assert_eq!(responder_state(&test, "r1").await.asked, 2, "one request per run");
+}
+
+/// Scenario: Rejected request commit. A child create of an actor owned elsewhere rejects the commit: no entry, no id,
+/// no message; after the collision is gone, a poke sends the request afresh.
+#[tokio::test(start_paused = true)]
+async fn a_rejected_request_commit_saves_nothing_and_a_poke_requests_afresh() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    test.create(&responder("owned"), &ResponderState::default()).await;
+    let ops = vec![
+        Op::Request { id: "ask".into(), to: "owned".into(), answer: now(json!(1)), create: Some(CreateKind::Child) },
+        wait_op("done", "ask"),
+    ];
+    start(&test, "k", script(ops)).await;
+    test.run_until_idle().await;
+    rejected(&test, "k").await;
+    assert!(journal(&test, "k").await.is_empty(), "no entry");
+    assert_eq!(responder_state(&test, "owned").await.asked, 0, "no message");
+
+    test.system().delete_actor(&addr(&responder("owned"))).await.unwrap();
+    test.send(&run("k"), FlowMsg::Continue).await;
+    test.run_until_idle().await;
+    assert_eq!(state(&test, "k").await.status, FlowStatus::Done);
+    assert_eq!(probe.got(), [("done".to_owned(), json!(1))]);
+    let record = test.system().get_actor(&addr(&responder("owned"))).await.unwrap().unwrap();
+    assert_eq!(record.parent, Some(addr(&run("k"))));
+}
+
+/// Scenario: Deleted run. A target that replies to a deleted run has its whole commit rejected: its state and effects.
+#[tokio::test(start_paused = true)]
+async fn a_reply_to_a_deleted_run_rejects_the_targets_commit() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    test.create(&responder("r1"), &ResponderState::default()).await;
+    parked(&test, "k", script(vec![ask("ask", "r1", Answer::Later), wait_op("done", "ask")]), "done").await;
+    test.system().delete_actor(&addr(&run("k"))).await.unwrap();
+    let before = test.version(&responder("r1")).await;
+    let answer = test.send(&responder("r1"), ResponderMsg::Answer { value: json!(1) }).await;
+    test.run_until_idle().await;
+    let record = outcome(&test, &answer.id).await.unwrap();
+    assert_eq!(record.status, OutcomeStatus::Failed, "the commit is rejected");
+    assert_eq!(test.version(&responder("r1")).await, before, "no state of the turn");
+    assert!(!test.exists(&run("k")).await, "not recreated");
 }
 
 // Upgrade.

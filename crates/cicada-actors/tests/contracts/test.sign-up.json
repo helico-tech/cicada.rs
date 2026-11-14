@@ -16,7 +16,7 @@
     },
     "Reply": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "The reply of a target to a request of the run; refused for good by this release, which sends no requests.",
+      "description": "The reply of a target to a request of the run, sent with [`ReplyTo::send`]. The run keeps the first one from the\nrequest's target and ignores any other, without running flow code.",
       "properties": {
         "request": {
           "description": "The id of the request's message, saved with its send entry.",
@@ -182,7 +182,7 @@
               },
               "reply": {
                 "default": false,
-                "description": "Whether the message is a request that a reply answers; absent: false. This release sends no requests.",
+                "description": "Whether the message is a request of [`Step::request`] that a reply answers; absent: false.",
                 "type": "boolean"
               },
               "to": {
@@ -200,7 +200,7 @@
             "type": "object"
           },
           {
-            "description": "A wait for the replies of earlier requests; this release does not execute waits.",
+            "description": "A wait for the replies of earlier requests. This release executes the wait of [`Step::wait`]: one request, mode\nall and no deadline; a join or a deadline needs a later release.",
             "properties": {
               "id": {
                 "description": "The wait id, from the same namespace as the step ids.",

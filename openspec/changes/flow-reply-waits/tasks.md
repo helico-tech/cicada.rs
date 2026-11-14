@@ -1,6 +1,6 @@
 ## Implementation
 
-- [ ] 1. Reconcile the landed flow-step-sends APIs, wire, checks and outbox with this design before extending them.
+- [x] 1. Reconcile the landed flow-step-sends APIs, wire, checks and outbox with this design before extending them.
   Implement Request<T>, ReplyTo<T>, the reply helper and Step::request. Keep route schemas/traits independent of T,
   private request construction, borrowed Target inference, and all user conversion/build/encode work behind the
   request's InProgress marker. Compile examples with &ref/create/child and Send flow futures. Prove the reply helper's
@@ -8,14 +8,14 @@
   needs no T:Sync bound. Unit tests cover conversions/builders skipped on replay/after latch/unpolled, caught panics,
   mismatches, self targets, entry 1000/1001, null/depth/NUL and encoding errors. Verify targeted flow unit tests and
   doctests; preserve Store error chains and the predecessor's atomic outbox/error policy.
-- [ ] 2. Implement Reply handling in the runner without executing flow code. Check terminal/reserved phase, known
+- [x] 2. Implement Reply handling in the runner without executing flow code. Check terminal/reserved phase, known
   request, sender, duplicate and closed status before value limits. Store early replies without changing armed;
   atomically close a supported open wait, cancel old armed work and arm with the reply's correlation. Preserve
   unsupported join/deadline refusal until their pieces land. Add start_paused TestActors cases for every ignore/fail
   path, state/version unchanged on ignores, first value wins, null, 61/62/63 depths, required value, target versus
   child/delegate/absent sender, no-flow-run counter, correlation and no outgoing retry. Include request child collision
   rollback/recovery and a registry fault through the existing harness where needed. Run targeted flow actor tests.
-- [ ] 3. Implement Step::wait and the Parked/Close/new-wait latch paths. Commit a closed outcome before any typed
+- [x] 3. Implement Step::wait and the Parked/Close/new-wait latch paths. Commit a closed outcome before any typed
   decode or later flow code, including early and supplied replies; park with armed=null and no recurring message.
   Validate handle identity, unused earlier request, exact single/all/no-deadline replay shape and shared id/capacity
   rules. Protect custom Deserialize with the marker; ordinary decode failure and caught panic must block later helpers

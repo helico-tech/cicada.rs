@@ -39,8 +39,8 @@ pub use debouncer::{DebouncedMessage, Debouncer, DebouncerActor, DebouncerMsg, D
 pub use error::EncodeError;
 pub use event::{Event, EventActor, EventMsg, EventState};
 pub use flow::{
-    CreateKind, Flow, FlowActor, FlowMsg, FlowReply, FlowRun, FlowState, FlowStatus, JournalEntry, Step, Target,
-    WaitMode, WaitOutcome,
+    CreateKind, Flow, FlowActor, FlowMsg, FlowReply, FlowRun, FlowState, FlowStatus, JournalEntry, ReplyTo, Request,
+    Step, Target, WaitMode, WaitOutcome,
 };
 pub use rate_limiter::{InvalidRate, RateLimiter, RateLimiterActor, RateLimiterMsg, RateLimiterState};
 pub use schedule::{Schedule, ScheduleError};
