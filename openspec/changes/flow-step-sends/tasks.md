@@ -36,7 +36,7 @@
 
 ## Finishing checks
 
-- [ ] 6. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace`, and
+- [x] 6. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace`, and
   `openspec validate flow-step-sends --strict`. Include PostgreSQL with CICADA_PG_URL where available and record any
   skipped database verification. Check regenerated flow contracts, unchanged Event contract and all existing flow
   behavior. Follow the build loop's normal review/release gates; this design changes no core or store schema.
