@@ -81,6 +81,7 @@ These hold in current Cicada; check the details for the version in hand.
 | Task | Read in the source |
 | --- | --- |
 | Choose layers, crates and features; add Cicada | `README.md#layers`, `README.md#quick-start`, `README.md#using-a-release-in-another-project`, `docs/how-to/install.md#choose-the-crates`, `docs/how-to/install.md#authenticate-cargo`, `CHANGELOG.md` |
+| Understand example message paths visually | `docs/guide/patterns.md` |
 | Behaviour and guarantees | `docs/architecture.md#guarantees`, `docs/architecture.md#turn-semantics`, `docs/architecture.md#known-limitations`, `docs/guarantees.md` |
 | Actor design: boundaries, keys, state, messages | `docs/guide/core.md#define-an-actor-type`, `docs/guide/core.md#design-an-actor`, `docs/guide/core.md#how-deep-a-value-can-be`, `examples/src/sync.rs`, `examples/src/fanout.rs`, `examples/src/registry.rs`, `examples/src/singleton.rs` |
 | Children, watches, control effects | `docs/guide/core.md#child-actors`, `docs/guide/core.md#watches`, `docs/guide/core.md#control-effects`, `examples/src/supervision.rs` |

@@ -5,6 +5,9 @@ This page routes consumer tasks; repository contributors also follow [AGENTS.md]
 
 ## Resolve the source first
 
+The [consumer skill](how-to/install.md#install-the-coding-agent-skill) automates this discovery.
+With its Python helper, pass the project's actual target/features and follow the returned source groups.
+
 Run `cargo metadata --locked --offline --format-version 1` in the consumer project with its actual target/features.
 Find the exact Cicada package entries and use their `manifest_path` directories. Report missing sources, multiple
 versions, path dependencies or local modifications; do not guess a Cargo cache path or fetch/upgrade implicitly.

@@ -82,8 +82,28 @@ Choose the key for the work that must run serially: one account, import or docum
 Keep dependencies on the actor struct and durable progress in state. A handler processes one bounded piece of work;
 send the next piece to yourself when it must survive a crash.
 
-Use `turn.message().id` as the idempotency key of external calls. Handler execution is at least once; only committed
-state and mailbox effects are exactly once. Put blocking work in `tokio::task::spawn_blocking`.
+| Design decision | Rule of thumb | Example |
+| --- | --- | --- |
+| Consistency boundary | Keep data for one invariant together; cross-actor agreement requires messages | [Saga](../../examples/src/saga/) |
+| Key | Use a stable tenant/order id; distinguish reused identities when work from an old life can remain | [Registry](../../examples/src/registry.rs) |
+| State size | Keep bounded history, child actors or references to external data | [Fan-out](../../examples/src/fanout.rs) |
+| Turn size | Process one bounded piece and queue the next; a singleton serializes all its work | [Paged import](../../examples/src/sync.rs), [singleton](../../examples/src/singleton.rs) |
+| Message content | Carry the command/fact and data the receiver needs, including an explicit reply address when forwarding | [Request/reply](../../examples/src/reply/) |
+
+Internal effects commit once; external calls can repeat after an abandoned claim or sender-requested retry.
+Use `turn.message().id`, a flow step's key, or a business id that must deduplicate across messages. Attempt numbers,
+clocks and new random ids do not protect repeated work. Put separate durable steps between external effects that
+must retain independent progress; see [steps.rs](../../examples/src/steps.rs).
+
+A turn cut off at its maximum duration retries only under its message's policy. A handler that returns only after the
+maximum (blocking code) fails without replay. Use `spawn_blocking` for blocking work, but remember that cancelling its
+await does not stop the underlying call. Exact rules are in [turn semantics](../architecture.md#turn-semantics).
+
+Wait durably with [timers](#timers) or [flow sleep](actors.md#durable-sleep), rather than keeping a handler open to wait
+for time or another actor. Bounded service calls within the turn timeout are fine.
+Reading old state with serde defaults does not make its contract equal: snapshot changes still need a
+[contract deployment plan](../operations.md#changing-a-contract). Check the [ready-made actors](actors.md) first when
+one matches the job.
 
 | In a handler | Use |
 | --- | --- |

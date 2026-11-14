@@ -69,4 +69,5 @@ cargo test --workspace
 ```
 
 [AGENTS.md](AGENTS.md) has the contributor rules and commands, including optional PostgreSQL and Docker tests.
-For agents using Cicada in another project, start with the [agent reading map](docs/agents.md).
+For agents using Cicada in another project, [install the consumer skill](docs/how-to/install.md#install-the-coding-agent-skill)
+or start with the [agent reading map](docs/agents.md).
