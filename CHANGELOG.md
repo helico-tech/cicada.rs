@@ -7,6 +7,18 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.17.2 — 2026-11-14
+
+Documentation refresh; no runtime API, actor contract, wire format or store schema changes.
+
+### Changed
+
+- Rebuild README and the layer guides around reader tasks, with one complete starter actor and links to tested examples.
+- Separate installation, upgrade history, release steps and store settings from everyday guides and operations.
+- Add a documentation entry point, a version-aware agent reading map, and a researched writing standard.
+- Give the docs session local ownership hooks and a durable review cursor; check competing-writer protection in CI.
+- Keep the upgrade procedure's Rust example compiled after moving it to its own page.
+
 ## 0.17.1 — 2026-11-14
 
 A fix for PostgreSQL stores; no public API, contract, wire format or schema changes.

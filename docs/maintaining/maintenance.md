@@ -31,8 +31,9 @@ this session’s hooks/owner record when the owner retires it. Pause the recurri
    complete examples, and preserve architecture guarantees, accepted ADRs and generated references.
 5. Check prose against [the writing standard](writing.md). Run the docs links/guarantees test, all documentation
    doctests, and any targeted example/maintenance tests affected. Review the diff; stage only owned files and commit.
-6. Recheck main immediately before integration. Merge into main after checks pass and the docs worktree is clean. Preserve unrelated work in main: inspect its diff
-   and integrate only when the changed paths do not overlap; otherwise wait for that work to finish.
+6. Recheck main immediately before integration. Merge after checks pass and the docs worktree is clean.
+   Preserve unrelated work in main: inspect its diff and integrate only when changed paths do not overlap;
+   otherwise wait for that work to finish.
    The user authorized these documentation merges. Stop on conflict or unresolved behavior; never overwrite a builder’s work.
    Follow the repository’s [release procedure](../how-to/releasing.md) for landed changes; do not bypass its checks.
 7. Fast-forward docs to the integrated main, then `acknowledge <exact-reviewed-main-sha>`. Advance only after review,

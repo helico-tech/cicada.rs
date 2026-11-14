@@ -48,6 +48,20 @@ class OwnershipTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("belongs to the docs session", result.stderr)
 
+    def test_release_pin_exception_does_not_allow_prose_edits(self):
+        (self.other / "README.md").write_text('Use tag = "v0.17.2"\nExtra prose\n')
+        self.git("add", "README.md", cwd=self.other)
+        result = self.run_script("check-owner", cwd=self.other, check=False)
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_existing_unrelated_hook_is_not_replaced(self):
+        hook = self.root / ".git" / "hooks" / "pre-commit"
+        custom = "#!/bin/sh\n# Another tool owns this hook.\n"
+        hook.write_text(custom)
+        result = self.run_script("claim", check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(hook.read_text(), custom)
+
     def test_owner_commit_and_main_integration_are_allowed(self):
         (self.root / "docs" / "guide.md").write_text("# Better guide\n")
         self.git("add", "docs/guide.md")
