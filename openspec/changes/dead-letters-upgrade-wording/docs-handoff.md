@@ -27,8 +27,11 @@ None. Every doctest, link, guarantee row and skill route passes without prose ed
 
 ## Status
 
-Checks run on the code branch: `cargo test -p cicada-examples --test dead_letters_upgrade`, the payload-fields test,
-`cargo doc -p cicada-examples --no-deps` (no warnings), `cargo test -p cicada-examples --test docs`, `--test skill` and
-the finishing checks of `tasks.md` (results in the review request). Optional, not required: step 5 of the 0.17.0
-upgrade lists three of the four checks; the docs session may add "and no address is in the export twice". Nothing above
-is written in docs-owned files, and no owner fix is integrated.
+Checks run on the code branch: `cargo test -p cicada-examples --test dead_letters_upgrade` (5 passed), the
+payload-fields test (1 passed), `cargo doc -p cicada-examples --no-deps` (no warnings), `cargo fmt --all --check`,
+`cargo clippy --workspace --all-targets -- -D warnings` (clean), `openspec validate dead-letters-upgrade-wording
+--strict` (valid) and `cargo test --workspace` with PostgreSQL (2905 passed, 0 failed). After the rebase onto the docs
+commit `a5980e7`: `cargo test -p cicada-examples --doc` (28 passed), `--test docs` (11 passed) and `--test skill`
+(8 passed). Optional, not required: step 5 of the 0.17.0 upgrade lists three of the four checks; the docs session may
+add "and no address is in the export twice". Nothing above is written in docs-owned files, and no owner fix is
+integrated.

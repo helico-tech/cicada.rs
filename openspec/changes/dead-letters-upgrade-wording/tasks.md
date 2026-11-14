@@ -21,7 +21,7 @@
 
 ## Finishing checks
 
-- [ ] 4. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
+- [x] 4. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
   `openspec validate dead-letters-upgrade-wording --strict`, with PostgreSQL where configured and skipped checks
   recorded. Inspect the final diff for comment/artifact/release-only scope: no behavior, API, contract hash, schema
   or guarantee change. Follow normal build-loop review and owner-approved landing/release gates.
