@@ -121,8 +121,9 @@ pub struct Overrides {
     pub token: Option<String>,
 }
 
-/// The server a command talks to, and how.
-#[derive(Debug, Clone, PartialEq)]
+/// The server a command talks to, and how. Its `Debug` leaves out the token and the values of the headers, and hides the
+/// password of the URL.
+#[derive(Clone, PartialEq)]
 pub struct Target {
     /// The context it came from, if any.
     pub context: Option<String>,
@@ -160,9 +161,41 @@ pub fn resolve(flags: &Overrides, env: &Env, config: &Config, bin: &str) -> anyh
     })
 }
 
+impl std::fmt::Debug for Target {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Target")
+            .field("context", &self.context)
+            .field("server", &crate::command::hide_passwords(&self.server))
+            .field("token", &self.token.as_ref().map(|_| "***"))
+            .field("headers", &self.headers.keys().map(|name| (name, "***")).collect::<BTreeMap<_, _>>())
+            .finish()
+    }
+}
+
+/// How long a request of a worker over HTTP may take in all; a lease, a renewal, a release and a completion are bounded
+/// by the turn timeout of [`ActorClient`] (10 s) as well.
+pub(crate) const WORKER_TIMEOUT: Duration = Duration::from_secs(30);
+
 impl Target {
     /// A client for this target whose requests carry the token and headers and give up after `timeout`.
     pub fn client(&self, timeout: Duration) -> anyhow::Result<ActorClient> {
+        let http = reqwest::Client::builder().default_headers(self.headers()?).timeout(timeout).build()?;
+        Ok(ActorClient::with_client(&self.server, http))
+    }
+
+    /// The client of a worker over HTTP: the token and headers of [`Self::client`], [`WORKER_TIMEOUT`], and no
+    /// redirects, as a `307` or `308` would send a POST of a lease call again. It adds no retry of its own.
+    pub(crate) fn worker_client(&self) -> anyhow::Result<ActorClient> {
+        let http = reqwest::Client::builder()
+            .default_headers(self.headers()?)
+            .timeout(WORKER_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?;
+        Ok(ActorClient::with_client(&self.server, http))
+    }
+
+    /// The headers of every request: those of the context, and the token as a sensitive `Authorization`.
+    fn headers(&self) -> anyhow::Result<HeaderMap> {
         let mut headers = HeaderMap::new();
         for (name, value) in &self.headers {
             let name = HeaderName::try_from(name.as_str()).with_context(|| format!("invalid header name '{name}'"))?;
@@ -174,8 +207,7 @@ impl Target {
             value.set_sensitive(true);
             headers.insert(AUTHORIZATION, value);
         }
-        let http = reqwest::Client::builder().default_headers(headers).timeout(timeout).build()?;
-        Ok(ActorClient::with_client(&self.server, http))
+        Ok(headers)
     }
 }
 
@@ -248,6 +280,21 @@ mod tests {
         let flags = Overrides { server: Some("http://x".into()), ..Overrides::default() };
         let target = resolve(&flags, &Env::new(), &Config::default(), "cicada").unwrap();
         assert_eq!(target, Target { context: None, server: "http://x".into(), token: None, headers: BTreeMap::new() });
+    }
+
+    #[test]
+    fn the_debug_of_a_target_hides_its_credentials() {
+        let target = Target {
+            context: Some("prod".into()),
+            server: "https://user:hunter2@actors.internal/api".into(),
+            token: Some("s3cret".into()),
+            headers: BTreeMap::from([("X-Api-Key".to_owned(), "k3y".to_owned())]),
+        };
+        let text = format!("{target:?}");
+        for secret in ["hunter2", "s3cret", "k3y"] {
+            assert!(!text.contains(secret), "{text}");
+        }
+        assert!(text.contains("prod") && text.contains("user:***@actors.internal") && text.contains("X-Api-Key"));
     }
 
     #[test]

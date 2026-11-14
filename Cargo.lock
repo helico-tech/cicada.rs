@@ -512,6 +512,7 @@ name = "cicada-app"
 version = "0.16.16"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "chrono",
  "cicada",

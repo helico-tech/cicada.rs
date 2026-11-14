@@ -1,17 +1,20 @@
 //! The settings of `serve` and `worker`: the store, the address, the types and the node. Each comes from its flag, else
 //! its variable `CICADA_…` (a blank one counts as unset), else for the node the host's `NodeConfig`, else the default.
 //! [`resolve`] is a function of the flags, the variables and the host's values, so it is tested without a process.
+//! A worker first picks its mode ([`worker_mode`]): on the store it resolves as above, over HTTP ([`resolve_http`]) it
+//! takes only the settings a [`WorkerConfig`] has and refuses those the server owns (ADR 0042).
 
 use std::fmt;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use cicada::runtime::NodeConfig;
+use cicada::runtime::{NodeConfig, WorkerConfig};
 use cicada::store::NodeId;
 use clap::{Args, Parser};
 
 use crate::Env;
+use crate::config::{self, Config, Overrides, Target};
 
 /// Where `serve` listens unless told otherwise: the loopback address, as `App` has no authentication of its own.
 pub(crate) const DEFAULT_LISTEN: &str = "127.0.0.1:8080";
@@ -36,6 +39,15 @@ pub(crate) struct WorkerArgs {
     /// The settings of the node.
     #[command(flatten)]
     pub node: NodeArgs,
+    /// The base URL of a server's API, which selects HTTP mode [env: CICADA_SERVER]
+    #[arg(long, value_name = "URL", help_heading = "HTTP")]
+    pub server: Option<String>,
+    /// The context of the config file, which selects HTTP mode [env: CICADA_CONTEXT]
+    #[arg(long, value_name = "NAME", help_heading = "HTTP")]
+    pub context: Option<String>,
+    /// The bearer token, in HTTP mode only [env: CICADA_TOKEN]
+    #[arg(long, value_name = "TOKEN", help_heading = "HTTP")]
+    pub token: Option<String>,
 }
 
 /// The flags that `serve` and `worker` share.
@@ -290,6 +302,137 @@ pub(crate) fn resolve(
         node,
         listen: setting(listen, env, "CICADA_LISTEN", socket_address)?.unwrap_or(default_listen),
     })
+}
+
+/// Where a worker runs its turns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WorkerMode {
+    /// On the store, through an `ActorSystem`.
+    Store,
+    /// Through a server's HTTP API, with a `Worker`.
+    Http,
+}
+
+/// The mode of a worker, from its flags and the variables alone: `--store` selects the store, `--server` or `--context`
+/// HTTP, and both are an error. Without them a non-blank `CICADA_STORE` selects the store, else a non-blank
+/// `CICADA_SERVER` or `CICADA_CONTEXT` HTTP. A token or the current context of the config file alone selects nothing,
+/// and `--token` on the store is an error. An error is a command line that cannot be used.
+pub(crate) fn worker_mode(args: &WorkerArgs, env: &Env) -> Result<WorkerMode, String> {
+    let http_flag = match (&args.server, &args.context) {
+        (Some(_), _) => Some("--server"),
+        (None, Some(_)) => Some("--context"),
+        (None, None) => None,
+    };
+    let mode = match (args.node.store.is_some(), http_flag) {
+        (true, Some(flag)) => {
+            return Err(format!(
+                "worker takes --store or {flag}, not both: --store runs the turns on the store, {flag} through a \
+                 server's HTTP API"
+            ));
+        }
+        (true, None) => WorkerMode::Store,
+        (false, Some(_)) => WorkerMode::Http,
+        (false, None) if variable(env, "CICADA_STORE").is_some() => WorkerMode::Store,
+        (false, None) if variable(env, "CICADA_SERVER").is_some() || variable(env, "CICADA_CONTEXT").is_some() => {
+            WorkerMode::Http
+        }
+        (false, None) => {
+            return Err("worker needs a store or a server: pass --store or set CICADA_STORE to run on the store, or \
+                        pass --server or --context, or set CICADA_SERVER or CICADA_CONTEXT, to run through a server's \
+                        HTTP API"
+                .to_owned());
+        }
+    };
+    if mode == WorkerMode::Store && args.token.is_some() {
+        return Err("--token is for a worker over HTTP: add --server or --context, or leave --token out on the store"
+            .to_owned());
+    }
+    Ok(mode)
+}
+
+/// What a worker over HTTP runs with: the types and the configuration of its `Worker`. The server comes from
+/// [`http_target`].
+#[derive(Debug, Clone)]
+pub(crate) struct HttpSettings {
+    /// The names of the types to host, in the order the binary hosts them.
+    pub types: Vec<&'static str>,
+    /// The worker.
+    pub worker: WorkerConfig,
+}
+
+/// The settings of a worker over HTTP from its flags `args`, the variables `env`, the host's `NodeConfig` and the names
+/// of the types the binary hosts. The id, the concurrency, the poll interval, the longest turn and the grace period
+/// come from the flag, else the variable, else the host, else the default of `WorkerConfig`; the host's cancel timeout
+/// is kept. The settings the server owns are refused as flags, and neither their variables, the host's values of them
+/// nor `CICADA_LISTEN` are read. An error is a command line that cannot be used.
+pub(crate) fn resolve_http(
+    args: &NodeArgs,
+    env: &Env,
+    host: Option<&NodeConfig>,
+    hosted: &[&'static str],
+) -> Result<HttpSettings, String> {
+    let refused: Vec<&str> = [
+        (args.store_schema.is_some(), "--store-schema"),
+        (args.store_pool_size.is_some(), "--store-pool-size"),
+        (args.retention.is_some(), "--retention"),
+        (args.lease_ttl.is_some(), "--lease-ttl"),
+        (args.heartbeat_interval.is_some(), "--heartbeat-interval"),
+        (args.max_lost_claims.is_some(), "--max-lost-claims"),
+    ]
+    .into_iter()
+    .filter_map(|(given, flag)| given.then_some(flag))
+    .collect();
+    if !refused.is_empty() {
+        return Err(format!(
+            "a worker over HTTP does not take {}: the server owns the store and the leases",
+            refused.join(", ")
+        ));
+    }
+    let types = match (&args.types, variable(env, "CICADA_TYPES")) {
+        (Some(value), _) => pick_types(Kind::Worker, value, hosted).map_err(|e| format!("--types: {e}"))?,
+        (None, Some(value)) => pick_types(Kind::Worker, value, hosted).map_err(|e| format!("CICADA_TYPES: {e}"))?,
+        (None, None) => hosted.to_vec(),
+    };
+    let mut worker = WorkerConfig::default();
+    if let Some(host) = host {
+        worker.worker_id = host.node_id.clone();
+        worker.concurrency = host.concurrency;
+        worker.poll_interval = host.poll_interval;
+        worker.default_max_turn = host.default_max_turn;
+        worker.shutdown_grace_period = host.shutdown_grace_period;
+        worker.shutdown_cancel_timeout = host.shutdown_cancel_timeout;
+    }
+    if let Some(id) = setting(args.node_id.clone(), env, "CICADA_NODE_ID", node_id)? {
+        worker.worker_id = id;
+    }
+    if let Some(concurrency) = setting(args.concurrency, env, "CICADA_CONCURRENCY", number)? {
+        worker.concurrency = concurrency;
+    }
+    if let Some(poll) = setting(args.poll_interval, env, "CICADA_POLL_INTERVAL", duration)? {
+        worker.poll_interval = poll;
+    }
+    if let Some(grace) = setting(args.shutdown_grace_period, env, "CICADA_SHUTDOWN_GRACE_PERIOD", duration)? {
+        worker.shutdown_grace_period = grace;
+    }
+    if let Some(max_turn) = setting(args.max_turn, env, "CICADA_MAX_TURN", duration)? {
+        worker.default_max_turn = max_turn;
+    }
+    Ok(HttpSettings { types, worker })
+}
+
+/// The server of a worker over HTTP, with its token and headers, as the operator commands resolve them: each from its
+/// flag, else its variable, else the context of the config file (which may give its token and headers when `--server`
+/// overrides its URL). A blank `CICADA_SERVER` or `CICADA_CONTEXT` counts as unset. `bin` is the binary as it was
+/// called, for the hint. Reads the config file; an error is a failure of the command.
+pub(crate) fn http_target(args: &WorkerArgs, env: &Env, bin: &str) -> anyhow::Result<Target> {
+    let mut env = env.clone();
+    for name in ["CICADA_SERVER", "CICADA_CONTEXT"] {
+        if variable(&env, name).is_none() {
+            env.remove(name);
+        }
+    }
+    let flags = Overrides { context: args.context.clone(), server: args.server.clone(), token: args.token.clone() };
+    config::resolve(&flags, &env, &Config::load(&config::path(&env)?)?, bin)
 }
 
 /// The value of variable `name`, trimmed; `None` when it is unset or blank.
@@ -688,5 +831,235 @@ mod tests {
     fn a_worker_must_host_a_type() {
         let error = try_read(Kind::Worker, &["--store", "a.db", "--types", "none"], &Env::new(), None, &HOSTED);
         assert!(error.unwrap_err().contains("a worker must host a type"));
+    }
+
+    // ---- a worker over HTTP ----
+
+    fn worker_args(flags: &[&str]) -> WorkerArgs {
+        WorkerArgs::try_parse_from(std::iter::once("worker").chain(flags.iter().copied()))
+            .unwrap_or_else(|e| panic!("{flags:?}: {e}"))
+    }
+
+    fn mode(flags: &[&str], env: &Env) -> Result<WorkerMode, String> {
+        worker_mode(&worker_args(flags), env)
+    }
+
+    fn http(flags: &[&str], env: &Env, host: Option<&NodeConfig>) -> Result<HttpSettings, String> {
+        resolve_http(&worker_args(flags).node, env, host, &HOSTED)
+    }
+
+    /// Scenario: Explicit selection overrides ambient settings.
+    #[test]
+    fn an_explicit_mode_flag_wins_over_the_variables_and_the_two_cannot_be_combined() {
+        let ambient = env(&[("CICADA_STORE", "mysql://not-a-store"), ("CICADA_SERVER", "http://env")]);
+        assert_eq!(mode(&["--server", "http://x"], &ambient), Ok(WorkerMode::Http), "the store value is not parsed");
+        assert_eq!(mode(&["--context", "prod"], &ambient), Ok(WorkerMode::Http));
+        let http_env = env(&[("CICADA_SERVER", "http://env"), ("CICADA_CONTEXT", "prod"), ("CICADA_TOKEN", "t")]);
+        assert_eq!(mode(&["--store", "a.db"], &http_env), Ok(WorkerMode::Store));
+        for flag in ["--server", "--context"] {
+            let error = mode(&["--store", "a.db", flag, "x"], &Env::new()).unwrap_err();
+            assert!(error.starts_with(&format!("worker takes --store or {flag}, not both")), "{error}");
+        }
+    }
+
+    /// Scenario: Existing deployments with operator variables.
+    #[test]
+    fn without_a_mode_flag_the_store_variable_wins_and_blank_variables_are_unset() {
+        let both = env(&[("CICADA_STORE", "a.db"), ("CICADA_SERVER", "http://x"), ("CICADA_CONTEXT", "prod")]);
+        assert_eq!(mode(&[], &both), Ok(WorkerMode::Store));
+        assert_eq!(mode(&[], &env(&[("CICADA_SERVER", "http://x")])), Ok(WorkerMode::Http));
+        assert_eq!(mode(&[], &env(&[("CICADA_CONTEXT", "prod")])), Ok(WorkerMode::Http));
+        let blank_store = env(&[("CICADA_STORE", "  "), ("CICADA_SERVER", "http://x")]);
+        assert_eq!(mode(&[], &blank_store), Ok(WorkerMode::Http));
+        let blank_server = env(&[("CICADA_SERVER", " "), ("CICADA_CONTEXT", "\t")]);
+        assert!(mode(&[], &blank_server).is_err(), "whitespace selects nothing");
+    }
+
+    /// Scenario: Context and token alone.
+    #[test]
+    fn a_token_alone_selects_nothing_and_a_token_flag_needs_http() {
+        for (flags, e) in [
+            (&[][..], env(&[("CICADA_TOKEN", "t")])),
+            (&["--token", "t"][..], Env::new()),
+            (&[][..], env(&[("CICADA_CONFIG", "/some/config.toml")])),
+        ] {
+            let error = mode(flags, &e).unwrap_err();
+            assert!(error.starts_with("worker needs a store or a server"), "{flags:?}: {error}");
+            for named in ["--store", "CICADA_STORE", "--server", "--context", "CICADA_SERVER", "CICADA_CONTEXT"] {
+                assert!(error.contains(named), "{error}");
+            }
+        }
+        let error = mode(&["--token", "t"], &env(&[("CICADA_STORE", "a.db")])).unwrap_err();
+        assert!(error.starts_with("--token is for a worker over HTTP"), "{error}");
+        let error = mode(&["--store", "a.db", "--token", "t"], &Env::new()).unwrap_err();
+        assert!(error.starts_with("--token is for a worker over HTTP"), "{error}");
+        assert_eq!(mode(&[], &env(&[("CICADA_STORE", "a.db"), ("CICADA_TOKEN", "t")])), Ok(WorkerMode::Store));
+    }
+
+    /// Scenario: Applicable settings.
+    #[test]
+    fn the_settings_of_the_worker_come_from_the_flag_the_variable_the_host_and_the_default() {
+        let host = NodeConfig {
+            node_id: NodeId::new("host").unwrap(),
+            concurrency: 4,
+            poll_interval: Duration::from_millis(700),
+            default_max_turn: Duration::from_secs(60),
+            shutdown_grace_period: Duration::from_secs(9),
+            shutdown_cancel_timeout: Duration::from_secs(2),
+            ..NodeConfig::default()
+        };
+        let from_host = http(&[], &Env::new(), Some(&host)).unwrap().worker;
+        assert_eq!(from_host.worker_id.as_str(), "host");
+        assert_eq!(from_host.concurrency, 4);
+        assert_eq!(from_host.poll_interval, Duration::from_millis(700));
+        assert_eq!(from_host.default_max_turn, Duration::from_secs(60));
+        assert_eq!(from_host.shutdown_grace_period, Duration::from_secs(9));
+        assert_eq!(from_host.shutdown_cancel_timeout, Duration::from_secs(2), "the host's cancel timeout is kept");
+
+        let e = env(&[
+            ("CICADA_NODE_ID", "env"),
+            ("CICADA_CONCURRENCY", "8"),
+            ("CICADA_POLL_INTERVAL", "100ms"),
+            ("CICADA_MAX_TURN", "2m"),
+            ("CICADA_SHUTDOWN_GRACE_PERIOD", "3s"),
+        ]);
+        let from_env = http(&[], &e, Some(&host)).unwrap().worker;
+        assert_eq!(from_env.worker_id.as_str(), "env");
+        assert_eq!(from_env.concurrency, 8);
+        assert_eq!(from_env.poll_interval, Duration::from_millis(100));
+        assert_eq!(from_env.default_max_turn, Duration::from_secs(120));
+        assert_eq!(from_env.shutdown_grace_period, Duration::from_secs(3));
+
+        let flags = [
+            "--node-id",
+            "flag",
+            "--concurrency",
+            "12",
+            "--poll-interval",
+            "50ms",
+            "--max-turn",
+            "1h",
+            "--shutdown-grace-period",
+            "1s",
+        ];
+        let from_flags = http(&flags, &e, Some(&host)).unwrap().worker;
+        assert_eq!(from_flags.worker_id.as_str(), "flag");
+        assert_eq!(from_flags.concurrency, 12);
+        assert_eq!(from_flags.poll_interval, Duration::from_millis(50));
+        assert_eq!(from_flags.default_max_turn, Duration::from_secs(3600));
+        assert_eq!(from_flags.shutdown_grace_period, Duration::from_secs(1));
+
+        let defaults = http(&[], &Env::new(), None).unwrap().worker;
+        let library = WorkerConfig::default();
+        assert_eq!(
+            (defaults.concurrency, defaults.poll_interval, defaults.default_max_turn),
+            (library.concurrency, library.poll_interval, library.default_max_turn)
+        );
+        assert_eq!(
+            (defaults.shutdown_grace_period, defaults.shutdown_cancel_timeout),
+            (library.shutdown_grace_period, library.shutdown_cancel_timeout)
+        );
+    }
+
+    /// Scenario: Applicable settings (the types), and a value that cannot be read.
+    #[test]
+    fn the_types_are_picked_as_on_the_store_and_a_bad_applicable_value_is_named() {
+        assert_eq!(http(&["--types", "b"], &Env::new(), None).unwrap().types, ["b"]);
+        assert_eq!(http(&[], &env(&[("CICADA_TYPES", "b,a")]), None).unwrap().types, ["a", "b"]);
+        assert_eq!(http(&[], &Env::new(), None).unwrap().types, ["a", "b"]);
+        let none = http(&["--types", "none"], &Env::new(), None).unwrap_err();
+        assert!(none.contains("a worker must host a type"), "{none}");
+        let error = http(&[], &env(&[("CICADA_CONCURRENCY", "many")]), None).unwrap_err();
+        assert!(error.starts_with("CICADA_CONCURRENCY: invalid value 'many'"), "{error}");
+    }
+
+    /// Scenario: Explicit server settings.
+    #[test]
+    fn the_flags_of_settings_the_server_owns_are_refused_by_name() {
+        for (flag, value) in [
+            ("--store-schema", "orders"),
+            ("--store-pool-size", "9"),
+            ("--retention", "1d"),
+            ("--lease-ttl", "5s"),
+            ("--heartbeat-interval", "1s"),
+            ("--max-lost-claims", "off"),
+        ] {
+            let error = http(&[flag, value], &Env::new(), None).unwrap_err();
+            assert!(error.starts_with(&format!("a worker over HTTP does not take {flag}:")), "{error}");
+            assert!(error.contains("the server owns"), "{error}");
+        }
+        let error = http(&["--lease-ttl", "5s", "--retention", "1d"], &Env::new(), None).unwrap_err();
+        assert!(error.contains("--retention, --lease-ttl"), "every refused flag is named: {error}");
+    }
+
+    /// Scenario: Ignored settings cannot break HTTP execution.
+    #[test]
+    fn the_variables_and_host_values_the_server_owns_are_not_read() {
+        let poisoned = env(&[
+            ("CICADA_STORE_SCHEMA", "not;a;schema"),
+            ("CICADA_STORE_POOL_SIZE", "lots"),
+            ("CICADA_RETENTION", "forever"),
+            ("CICADA_LEASE_TTL", "soon"),
+            ("CICADA_HEARTBEAT_INTERVAL", "often"),
+            ("CICADA_MAX_LOST_CLAIMS", "never"),
+            ("CICADA_LISTEN", "localhost"),
+        ]);
+        let host = NodeConfig {
+            lease_ttl: Duration::ZERO,
+            heartbeat_interval: Some(Duration::ZERO),
+            sweep_interval: Duration::ZERO,
+            max_lost_claims: Some(0),
+            ..NodeConfig::default()
+        };
+        let settings = http(&[], &poisoned, Some(&host)).expect("nothing of the server's is read");
+        assert_eq!(settings.types, ["a", "b"]);
+    }
+
+    fn config_file(dir: &std::path::Path, text: &str) -> Env {
+        let path = dir.join("config.toml");
+        std::fs::write(&path, text).unwrap();
+        env(&[("CICADA_CONFIG", path.to_str().unwrap())])
+    }
+
+    /// Scenario: HTTP target resolution.
+    #[test]
+    fn the_target_is_resolved_as_for_the_operator_commands() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = r#"
+            current-context = "a"
+            [contexts.a]
+            server = "http://a"
+            token = "ta"
+            headers = { "X-Tenant" = "ops" }
+            [contexts.b]
+            server = "http://b"
+        "#;
+        let mut e = config_file(dir.path(), file);
+        let target = http_target(&worker_args(&["--server", "http://flag"]), &e, "myapp").unwrap();
+        assert_eq!(target.server, "http://flag");
+        assert_eq!(target.token.as_deref(), Some("ta"), "the current context gives its token under a --server");
+        assert_eq!(target.headers["X-Tenant"], "ops");
+        e.insert("CICADA_SERVER".into(), "   ".into());
+        e.insert("CICADA_CONTEXT".into(), "b".into());
+        let target = http_target(&worker_args(&[]), &e, "myapp").unwrap();
+        assert_eq!((target.server.as_str(), target.token.as_deref()), ("http://b", None), "a blank server is unset");
+        e.insert("CICADA_CONTEXT".into(), " ".into());
+        let target = http_target(&worker_args(&[]), &e, "myapp").unwrap();
+        assert_eq!(target.server, "http://a", "a blank context is unset");
+        let target = http_target(&worker_args(&["--context", "b", "--token", "tf"]), &e, "myapp").unwrap();
+        assert_eq!((target.server.as_str(), target.token.as_deref()), ("http://b", Some("tf")));
+        let error = http_target(&worker_args(&["--context", "nope"]), &e, "myapp").unwrap_err();
+        assert!(error.to_string().contains("no context 'nope'"), "{error}");
+        let broken = config_file(dir.path(), "this is = not [toml");
+        let error = http_target(&worker_args(&["--server", "http://x"]), &broken, "myapp").unwrap_err();
+        assert!(error.to_string().starts_with("cannot read"), "{error}");
+    }
+
+    /// The `Debug` of the settings of a worker over HTTP holds no credential: they are in the target, apart.
+    #[test]
+    fn the_debug_of_the_http_settings_holds_no_credential() {
+        let settings = http(&[], &Env::new(), None).unwrap();
+        let text = format!("{settings:?}");
+        assert!(text.contains("worker_id") && !text.contains("token"), "{text}");
     }
 }

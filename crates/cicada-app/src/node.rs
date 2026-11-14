@@ -17,9 +17,9 @@ use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use cicada::observer::TurnObserver;
-use cicada::runtime::ActorSystemBuilder;
+use cicada::runtime::{ActorSystemBuilder, SourceError, TurnSource, Worker, WorkerBuilder, WorkerConfig};
 use cicada::store::StoreError;
-use cicada::{ActorSystem, Store};
+use cicada::{Actor, ActorSystem, ActorType, Store};
 use cicada_axum::{actor_api, actor_health};
 use futures::future::BoxFuture;
 use tokio::net::TcpListener;
@@ -27,7 +27,8 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 
 use crate::AppError;
-use crate::settings::{Settings, StoreSpec, check_built_in};
+use crate::config::Target;
+use crate::settings::{HttpSettings, Settings, StoreSpec, check_built_in};
 
 /// How long `serve` and `worker` wait for a PostgreSQL store that answers "unavailable", and how often they try.
 #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
@@ -37,10 +38,55 @@ const STORE_RETRY: Duration = Duration::from_secs(1);
 /// How long requests that are still open may take to end once the node stopped.
 const DRAIN: Duration = Duration::from_secs(5);
 
-/// A type of the binary: its name, and how a node hosts it.
+/// How long a worker over HTTP waits for a server whose type listing answers "unavailable" before it starts, and how
+/// often it asks.
+const SERVER_WAIT: Duration = Duration::from_secs(60);
+const SERVER_RETRY: Duration = Duration::from_secs(1);
+
+/// A type of the binary: its name, and how a node or a worker hosts it.
 pub(crate) struct HostedType {
     pub name: &'static str,
-    pub host: Box<dyn FnOnce(ActorSystemBuilder) -> ActorSystemBuilder + Send>,
+    pub host: Box<dyn FnOnce(Hosting) -> Hosting + Send>,
+}
+
+/// What hosts the types of a command: the node of `serve` and of a worker on the store, or the `Worker` of a worker
+/// over HTTP. Each type moves once into the one that runs.
+pub(crate) enum Hosting {
+    /// A node.
+    System(ActorSystemBuilder),
+    /// A worker over a turn source.
+    Worker(WorkerBuilder),
+}
+
+impl Hosting {
+    /// Hosts `actor`, as both builders do.
+    pub(crate) fn host<A: Actor>(self, actor: ActorType<A>) -> Self {
+        match self {
+            Self::System(builder) => Self::System(builder.host(actor)),
+            Self::Worker(builder) => Self::Worker(builder.host(actor)),
+        }
+    }
+
+    /// Adds `observer`, as both builders do.
+    fn observe(self, observer: Arc<dyn TurnObserver>) -> Self {
+        match self {
+            Self::System(builder) => Self::System(builder.observe(observer)),
+            Self::Worker(builder) => Self::Worker(builder.observe(observer)),
+        }
+    }
+
+    /// `builder` with the types of `types` that `selected` names and every observer.
+    fn with(
+        mut self,
+        types: Vec<HostedType>,
+        selected: &[&'static str],
+        observers: Vec<Arc<dyn TurnObserver>>,
+    ) -> Self {
+        for hosted in types.into_iter().filter(|t| selected.contains(&t.name)) {
+            self = (hosted.host)(self);
+        }
+        observers.into_iter().fold(self, Self::observe)
+    }
 }
 
 /// A function of `App::http`.
@@ -158,6 +204,120 @@ pub(crate) async fn worker(parts: Parts, settings: Settings, stop: Stop) -> Resu
     Ok(())
 }
 
+/// A worker over HTTP: waits for the server ([`wait_for_server`]), starts a `Worker` of the selected types on the
+/// client of `target`, and runs until the stop or until the worker stops by itself. It opens no store and no listener,
+/// and never stops or closes the source.
+pub(crate) async fn http_worker(
+    parts: Parts,
+    settings: HttpSettings,
+    target: Target,
+    stop: Stop,
+) -> Result<(), AppError> {
+    let client = target.worker_client().map_err(AppError::Failed)?;
+    run_worker(parts, settings, Arc::new(client), stop).await
+}
+
+/// [`http_worker`] on any `source`.
+async fn run_worker(
+    parts: Parts,
+    settings: HttpSettings,
+    source: Arc<dyn TurnSource>,
+    stop: Stop,
+) -> Result<(), AppError> {
+    match wait_for_server(source.as_ref(), &stop).await {
+        Ok(true) => {}
+        Ok(false) => return Ok(()),
+        Err(e) => return Err(AppError::Failed(anyhow!(e).context("the server is not ready"))),
+    }
+    let worker = build_worker(parts.types, parts.observers, &settings.types, settings.worker, source);
+    let started = tokio::select! {
+        biased;
+        () = stop.wait() => None,
+        started = worker.start() => Some(started),
+    };
+    match started {
+        // The stop came while the contracts were registered: those already registered stay.
+        None => {
+            worker.stop().await;
+            return stopped(&worker).await;
+        }
+        Some(Err(e)) => {
+            worker.stop().await;
+            return Err(AppError::Failed(anyhow!(e).context("the worker cannot start")));
+        }
+        Some(Ok(())) => {}
+    }
+    run_until_stopped(&worker, &stop).await
+}
+
+/// Runs a started `worker` until the stop, which stops it with its grace period and cancel timeout, or until it stops
+/// by itself; then its end (see [`stopped`]).
+async fn run_until_stopped(worker: &Worker, stop: &Stop) -> Result<(), AppError> {
+    tokio::select! {
+        biased;
+        () = stop.wait() => worker.stop().await,
+        _ = worker.stopped() => {}
+    }
+    stopped(worker).await
+}
+
+/// The end of a stopped `worker`: an error it recorded when it stopped by itself, also when a stop came at the same
+/// time, else success.
+async fn stopped(worker: &Worker) -> Result<(), AppError> {
+    match worker.stopped().await {
+        None => Ok(()),
+        Some(e) => Err(AppError::Failed(anyhow!(e).context("the worker stopped"))),
+    }
+}
+
+/// The `Worker` of `source` with the types `selected` picks, the host's observers and `config`.
+fn build_worker(
+    types: Vec<HostedType>,
+    observers: Vec<Arc<dyn TurnObserver>>,
+    selected: &[&'static str],
+    config: WorkerConfig,
+    source: Arc<dyn TurnSource>,
+) -> Worker {
+    match Hosting::Worker(Worker::builder(source).config(config)).with(types, selected, observers) {
+        Hosting::Worker(builder) => builder.build(),
+        Hosting::System(_) => unreachable!("a worker builder stays a worker builder"),
+    }
+}
+
+/// Lists the types of `source` until it answers, while it answers "unavailable": [`SERVER_RETRY`] after each try, and
+/// no try at or after [`SERVER_WAIT`] from the first one. A try that began before then may end later, within the timeout
+/// of the client. False when the stop came first, which interrupts a try and a wait; an error other than "unavailable"
+/// at once. A server that answers is no promise that the registration that follows succeeds. On tokio's clock, so a
+/// test runs it on virtual time.
+async fn wait_for_server(source: &dyn TurnSource, stop: &Stop) -> Result<bool, SourceError> {
+    let deadline = tokio::time::Instant::now() + SERVER_WAIT;
+    loop {
+        let listed = tokio::select! {
+            biased;
+            () = stop.wait() => return Ok(false),
+            listed = source.list_types() => listed,
+        };
+        match listed {
+            Ok(_) => return Ok(true),
+            Err(e @ SourceError::Unavailable(_)) => {
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(e);
+                }
+                tracing::warn!("The server is unavailable; trying again in {SERVER_RETRY:?}: {e}");
+                tokio::select! {
+                    biased;
+                    () = stop.wait() => return Ok(false),
+                    () = tokio::time::sleep(SERVER_RETRY) => {}
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(e);
+                }
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 /// The store of `settings`, or `None` when the stop came while it was waited for.
 async fn open_unless_stopped(settings: &Settings, stop: &Stop) -> Result<Option<Store>, AppError> {
     check_built_in(&settings.store, &crate::settings::built_in()).map_err(|e| AppError::Failed(anyhow!(e)))?;
@@ -245,14 +405,11 @@ fn build(
     settings: &Settings,
     store: &Store,
 ) -> ActorSystem {
-    let mut builder = ActorSystem::builder(store.clone()).config(settings.node.clone());
-    for hosted in types.into_iter().filter(|t| settings.types.contains(&t.name)) {
-        builder = (hosted.host)(builder);
+    let builder = ActorSystem::builder(store.clone()).config(settings.node.clone());
+    match Hosting::System(builder).with(types, &settings.types, observers) {
+        Hosting::System(builder) => builder.build(),
+        Hosting::Worker(_) => unreachable!("a node builder stays a node builder"),
     }
-    for observer in observers {
-        builder = builder.observe(observer);
-    }
-    builder.build()
 }
 
 /// The API with the host's functions applied in order, behind `/ready`, which `App` answers outside the host's router:
@@ -511,5 +668,353 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2), "the open stream added no wait beyond the drain");
         assert!(system.now().await.is_err(), "the store is closed after the cut");
         assert!(futures::StreamExt::next(&mut system.changes("")).await.is_none());
+    }
+}
+
+/// The worker over HTTP on in-process sources, on virtual time: the wait for the server, the start, the stop and the
+/// end.
+#[cfg(test)]
+mod worker_tests {
+    use std::sync::Mutex;
+
+    use async_trait::async_trait;
+    use cicada::actor::contract_of;
+    use cicada::address::TypeName;
+    use cicada::contract::Contract;
+    use cicada::prelude::*;
+    use cicada::runtime::{
+        CompleteTurnResult, LeaseTurnsResult, RegisterContractResult, RenewTurnResult, TurnReport, TurnSource,
+    };
+    use cicada::store::{MessageId, NodeId, TypeDef};
+    use serde::{Deserialize, Serialize};
+    use tokio::time::Instant;
+
+    use super::*;
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct Tick {
+        id: String,
+    }
+
+    impl ActorRef for Tick {
+        const TYPE: &'static str = "tick";
+        type Message = TickMsg;
+    }
+
+    #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+    #[serde(tag = "type")]
+    enum TickMsg {
+        Tick,
+    }
+
+    struct TickActor;
+
+    impl Actor for TickActor {
+        type Ref = Tick;
+        type State = NoState;
+
+        async fn handle(&self, _: &mut Turn<Self>, _: TickMsg) -> HandlerResult {
+            Ok(())
+        }
+    }
+
+    /// Type `tick` with another contract.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct OtherTick {
+        id: String,
+    }
+
+    impl ActorRef for OtherTick {
+        const TYPE: &'static str = "tick";
+        type Message = OtherTickMsg;
+    }
+
+    #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+    #[serde(tag = "type")]
+    enum OtherTickMsg {
+        Tock,
+    }
+
+    struct OtherTickActor;
+
+    impl Actor for OtherTickActor {
+        type Ref = OtherTick;
+        type State = NoState;
+
+        async fn handle(&self, _: &mut Turn<Self>, _: OtherTickMsg) -> HandlerResult {
+            Ok(())
+        }
+    }
+
+    type Answer<T> = BoxFuture<'static, Result<T, SourceError>>;
+
+    /// An in-process node as the source, whose type listing, registration and leases a test can replace; it records
+    /// each call with the time it began.
+    struct Fake {
+        system: ActorSystem,
+        list: Box<dyn Fn(usize) -> Answer<Vec<TypeDef>> + Send + Sync>,
+        register: Option<Box<dyn Fn() -> Answer<RegisterContractResult> + Send + Sync>>,
+        lease_error: Option<SourceError>,
+        calls: Mutex<Vec<(&'static str, Instant)>>,
+    }
+
+    impl Fake {
+        fn new() -> Self {
+            Self {
+                system: ActorSystem::builder(Store::memory()).build(),
+                list: Box::new(|_| listed()),
+                register: None,
+                lease_error: None,
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+
+        /// Type listings answered by `answer` of the number of the call, from 0.
+        fn listing(mut self, answer: impl Fn(usize) -> Answer<Vec<TypeDef>> + Send + Sync + 'static) -> Self {
+            self.list = Box::new(answer);
+            self
+        }
+
+        fn registering(mut self, answer: impl Fn() -> Answer<RegisterContractResult> + Send + Sync + 'static) -> Self {
+            self.register = Some(Box::new(answer));
+            self
+        }
+
+        fn record(&self, call: &'static str) -> usize {
+            let mut calls = self.calls.lock().unwrap();
+            calls.push((call, Instant::now()));
+            calls.iter().filter(|(c, _)| *c == call).count() - 1
+        }
+
+        fn times(&self, call: &str) -> Vec<Instant> {
+            self.calls.lock().unwrap().iter().filter(|(c, _)| *c == call).map(|(_, at)| *at).collect()
+        }
+
+        fn count(&self, call: &str) -> usize {
+            self.times(call).len()
+        }
+    }
+
+    #[async_trait]
+    impl TurnSource for Fake {
+        async fn register_contract(&self, contract: &Contract) -> Result<RegisterContractResult, SourceError> {
+            self.record("register");
+            match &self.register {
+                Some(answer) => answer().await,
+                None => TurnSource::register_contract(&self.system, contract).await,
+            }
+        }
+
+        async fn list_types(&self) -> Result<Vec<TypeDef>, SourceError> {
+            let number = self.record("list");
+            (self.list)(number).await
+        }
+
+        async fn lease_turns(
+            &self,
+            owner: &NodeId,
+            types: &std::collections::BTreeMap<TypeName, String>,
+            limit: usize,
+        ) -> Result<LeaseTurnsResult, SourceError> {
+            self.record("lease");
+            match &self.lease_error {
+                Some(e) => Err(e.clone()),
+                None => TurnSource::lease_turns(&self.system, owner, types, limit).await,
+            }
+        }
+
+        async fn renew_turn(&self, actor: &ActorAddress, epoch: i64) -> Result<RenewTurnResult, SourceError> {
+            TurnSource::renew_turn(&self.system, actor, epoch).await
+        }
+
+        async fn release_turn(&self, actor: &ActorAddress, epoch: i64) -> Result<(), SourceError> {
+            TurnSource::release_turn(&self.system, actor, epoch).await
+        }
+
+        async fn complete_turn(
+            &self,
+            actor: &ActorAddress,
+            epoch: i64,
+            message_id: &MessageId,
+            report: TurnReport,
+        ) -> Result<CompleteTurnResult, SourceError> {
+            TurnSource::complete_turn(&self.system, actor, epoch, message_id, report).await
+        }
+    }
+
+    fn unavailable<T: Send + 'static>() -> Answer<T> {
+        Box::pin(async { Err(SourceError::Unavailable("connection refused".into())) })
+    }
+
+    fn listed() -> Answer<Vec<TypeDef>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    fn never() -> Stop {
+        Stop::watch(std::future::pending())
+    }
+
+    fn stop_after(after: Duration) -> Stop {
+        Stop::watch(tokio::time::sleep(after))
+    }
+
+    fn parts() -> Parts {
+        let actor = ActorType::from(TickActor);
+        let tick = HostedType { name: "tick", host: Box::new(move |hosting| hosting.host(actor)) };
+        Parts { types: vec![tick], observers: Vec::new(), http: Vec::new(), on_start: Vec::new() }
+    }
+
+    fn settings() -> HttpSettings {
+        let worker = WorkerConfig {
+            poll_interval: Duration::from_millis(50),
+            shutdown_grace_period: Duration::from_secs(1),
+            ..WorkerConfig::default()
+        };
+        HttpSettings { types: vec!["tick"], worker }
+    }
+
+    /// Scenario: The server comes up late.
+    #[tokio::test(start_paused = true)]
+    async fn a_server_that_comes_up_late_is_waited_for() {
+        let fake = Fake::new().listing(|n| if n < 5 { unavailable() } else { listed() });
+        let started = Instant::now();
+        assert_eq!(wait_for_server(&fake, &never()).await, Ok(true));
+        assert_eq!(started.elapsed(), Duration::from_secs(5));
+        assert_eq!(fake.count("list"), 6);
+        assert_eq!(fake.count("register") + fake.count("lease"), 0, "a probe runs nothing");
+    }
+
+    /// Scenario: Retry horizon: no try at or after a minute from the first, also after a wait.
+    #[tokio::test(start_paused = true)]
+    async fn a_server_that_stays_unavailable_gets_no_try_after_a_minute() {
+        let fake = Fake::new().listing(|_| unavailable());
+        let started = Instant::now();
+        let error = wait_for_server(&fake, &never()).await.unwrap_err();
+        assert!(matches!(error, SourceError::Unavailable(_)), "{error}");
+        let times = fake.times("list");
+        assert_eq!(times.len(), 60, "one try a second");
+        assert_eq!(times.last().unwrap().duration_since(started), Duration::from_secs(59));
+        assert_eq!(started.elapsed(), SERVER_WAIT, "the wait after the last try reaches the minute: no try then");
+    }
+
+    /// Scenario: Retry horizon: a try that began before the minute ends after it.
+    #[tokio::test(start_paused = true)]
+    async fn the_last_try_may_end_after_the_minute() {
+        let fake = Fake::new().listing(|_| {
+            Box::pin(async {
+                tokio::time::sleep(Duration::from_secs(25)).await;
+                Err(SourceError::Unavailable("timed out".into()))
+            })
+        });
+        let started = Instant::now();
+        assert!(wait_for_server(&fake, &never()).await.is_err());
+        let began: Vec<Duration> = fake.times("list").iter().map(|t| t.duration_since(started)).collect();
+        assert_eq!(began, [Duration::ZERO, Duration::from_secs(26), Duration::from_secs(52)]);
+        assert_eq!(started.elapsed(), Duration::from_secs(77), "the third try ended after the minute");
+    }
+
+    /// Scenario: Permanent refusal or stop: a refusal fails at once.
+    #[tokio::test(start_paused = true)]
+    async fn a_permanent_refusal_fails_at_once() {
+        for refusal in [SourceError::Invalid("bad request".into()), SourceError::Fatal("HTTP 401".into())] {
+            let answer = refusal.clone();
+            let fake = Fake::new().listing(move |_| {
+                let answer = answer.clone();
+                Box::pin(async move { Err(answer) })
+            });
+            let started = Instant::now();
+            assert_eq!(wait_for_server(&fake, &never()).await, Err(refusal));
+            assert_eq!((fake.count("list"), started.elapsed()), (1, Duration::ZERO));
+        }
+    }
+
+    /// Scenario: Permanent refusal or stop: a stop interrupts a try that hangs, and a wait.
+    #[tokio::test(start_paused = true)]
+    async fn a_stop_interrupts_a_hung_try_and_a_wait() {
+        let hung = Fake::new().listing(|_| Box::pin(std::future::pending()));
+        let started = Instant::now();
+        assert_eq!(wait_for_server(&hung, &stop_after(Duration::from_secs(3))).await, Ok(false));
+        assert_eq!(started.elapsed(), Duration::from_secs(3));
+
+        let away = Fake::new().listing(|_| unavailable());
+        let started = Instant::now();
+        assert_eq!(wait_for_server(&away, &stop_after(Duration::from_millis(2500))).await, Ok(false));
+        assert_eq!(started.elapsed(), Duration::from_millis(2500));
+        assert_eq!(away.count("list"), 3, "at 0, 1 and 2 s");
+    }
+
+    /// Scenario: Permanent refusal or stop: a stop before the server answered starts no worker.
+    #[tokio::test(start_paused = true)]
+    async fn a_stop_while_the_server_is_waited_for_starts_no_worker() {
+        let fake = Arc::new(Fake::new().listing(|_| unavailable()));
+        run_worker(parts(), settings(), fake.clone(), stop_after(Duration::from_millis(1500))).await.unwrap();
+        assert_eq!(fake.count("register") + fake.count("lease"), 0);
+    }
+
+    /// Scenario: Stop during registration.
+    #[tokio::test(start_paused = true)]
+    async fn a_stop_during_registration_stops_the_worker_before_any_lease() {
+        let fake = Arc::new(Fake::new().registering(|| Box::pin(std::future::pending())));
+        let started = Instant::now();
+        run_worker(parts(), settings(), fake.clone(), stop_after(Duration::from_secs(2))).await.expect("success");
+        assert_eq!(started.elapsed(), Duration::from_secs(2));
+        assert_eq!((fake.count("register"), fake.count("lease")), (1, 0));
+    }
+
+    /// Scenario: Registration fails after successful preflight: a conflict, with its diagnostics.
+    #[tokio::test(start_paused = true)]
+    async fn a_conflicting_contract_fails_the_start_with_its_diagnostics() {
+        let fake = Fake::new();
+        fake.system.register_contract(&contract_of::<OtherTickActor>().unwrap()).await.unwrap();
+        let fake = Arc::new(fake);
+        let error = run_worker(parts(), settings(), fake.clone(), never()).await.unwrap_err();
+        assert_eq!(error.exit_code(), 1);
+        let text = error.to_string();
+        assert!(text.starts_with("the worker cannot start") && text.contains("tick"), "{text}");
+        assert_eq!((fake.count("register"), fake.count("lease")), (1, 0));
+    }
+
+    /// Scenario: Registration fails after successful preflight: a temporary failure is not tried again.
+    #[tokio::test(start_paused = true)]
+    async fn an_unavailable_registration_fails_the_start_without_a_retry() {
+        let fake = Arc::new(Fake::new().registering(unavailable));
+        let error = run_worker(parts(), settings(), fake.clone(), never()).await.unwrap_err();
+        assert_eq!(error.exit_code(), 1);
+        assert!(error.to_string().contains("connection refused"), "{error}");
+        assert_eq!((fake.count("list"), fake.count("register"), fake.count("lease")), (1, 1, 0));
+    }
+
+    /// Scenario: A stopped worker and a failed worker: a stop of a healthy worker succeeds.
+    #[tokio::test(start_paused = true)]
+    async fn a_stop_of_a_healthy_worker_succeeds() {
+        let fake = Arc::new(Fake::new());
+        run_worker(parts(), settings(), fake.clone(), stop_after(Duration::from_secs(2))).await.expect("exit 0");
+        assert!(fake.count("lease") >= 2, "it leased until the stop");
+    }
+
+    /// Scenario: A stopped worker and a failed worker: a worker that stops by itself fails the command.
+    #[tokio::test(start_paused = true)]
+    async fn a_worker_that_stops_by_itself_fails_the_command() {
+        let fake = Fake { lease_error: Some(SourceError::Fatal("Leasing turns: HTTP 307".into())), ..Fake::new() };
+        let error = run_worker(parts(), settings(), Arc::new(fake), never()).await.unwrap_err();
+        assert_eq!(error.exit_code(), 1);
+        assert!(error.to_string().starts_with("the worker stopped") && error.to_string().contains("307"), "{error}");
+    }
+
+    /// Scenario: A stopped worker and a failed worker: a stop that meets a failure already recorded keeps it.
+    #[tokio::test(start_paused = true)]
+    async fn a_failure_recorded_before_a_stop_still_fails_the_command() {
+        let fake = Fake { lease_error: Some(SourceError::Invalid("refused".into())), ..Fake::new() };
+        let worker = build_worker(parts().types, Vec::new(), &["tick"], settings().worker, Arc::new(fake));
+        worker.start().await.unwrap();
+        assert!(worker.stopped().await.is_some(), "it stopped by itself");
+        let stop = Stop::watch(async {});
+        while !stop.is_set() {
+            tokio::task::yield_now().await;
+        }
+        // Both are ready; the stop is taken first.
+        let error = run_until_stopped(&worker, &stop).await.unwrap_err();
+        assert_eq!(error.exit_code(), 1);
+        assert!(error.to_string().contains("refused"), "{error}");
     }
 }

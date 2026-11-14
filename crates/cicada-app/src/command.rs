@@ -25,9 +25,11 @@ pub(crate) enum Parsed {
     Version,
 }
 
-/// The flags of the operator commands, by id, which `serve` and `worker` refuse.
+/// The flags of the operator commands, by id, which `serve` refuses.
 const OPERATOR_FLAGS: [(&str, &str); 4] =
     [("context", "--context"), ("server", "--server"), ("token", "--token"), ("output", "-o")];
+/// The flag of the operator commands that `worker` refuses: it takes the others, for HTTP mode (ADR 0042).
+const OUTPUT_FLAG: [(&str, &str); 1] = [("output", "-o")];
 
 /// The name of the binary as it was called: the file name of `args[0]`.
 pub(crate) fn program_name(args: &[OsString]) -> String {
@@ -46,18 +48,30 @@ pub(crate) fn command(name: &str, node: bool) -> Command {
     let serve = ServeArgs::command()
         .about("Host the types and serve the HTTP API, until SIGTERM or SIGINT; it has no authentication of its own")
         .display_order(0);
-    let worker =
-        WorkerArgs::command().about("Host the types and serve nothing, until SIGTERM or SIGINT").display_order(0);
+    let worker = WorkerArgs::command()
+        .about("Host the types and serve nothing, on a store or through a server's HTTP API, until SIGTERM or SIGINT")
+        .after_help(WORKER_HELP)
+        .display_order(0);
     command
         .about("Run a Cicada node, or talk to one over its HTTP API.")
-        .subcommand(hide_operator_flags(serve))
-        .subcommand(hide_operator_flags(worker))
+        .subcommand(hide_flags(serve, &OPERATOR_FLAGS))
+        .subcommand(hide_flags(worker, &OUTPUT_FLAG))
 }
 
-/// The flags of the operator commands, hidden: clap then does not give the global ones to `command`, so its help does
-/// not show them, and [`refuse_operator_flags`] still sees them.
-fn hide_operator_flags(command: Command) -> Command {
-    command.args(OPERATOR_FLAGS.map(|(id, flag)| {
+/// What the help of `worker` says after its flags.
+const WORKER_HELP: &str = "\
+Mode: --store runs the turns on the store, --server or --context through a server's HTTP API; not both.
+Without either, a non-blank CICADA_STORE selects the store, else a non-blank CICADA_SERVER or CICADA_CONTEXT
+selects HTTP; a token, or the current context of the config file, alone selects nothing.
+
+Over HTTP the server owns the store and the leases: --store-schema, --store-pool-size, --retention, --lease-ttl,
+--heartbeat-interval and --max-lost-claims are refused, and their variables are not read. The server, the token
+and the headers come as for the operator commands. A binary with App::on_start cannot run over HTTP.";
+
+/// The flags `flags` of the operator commands, hidden: clap then does not give the global ones to `command`, so its
+/// help does not show them, and [`refuse_flags`] still sees them.
+fn hide_flags(command: Command, flags: &[(&'static str, &'static str)]) -> Command {
+    command.args(flags.iter().map(|&(id, flag)| {
         let arg = Arg::new(id).value_name("VALUE").hide(true);
         match flag.strip_prefix("--") {
             Some(long) => arg.long(long),
@@ -86,22 +100,27 @@ pub(crate) fn parse(args: &[OsString], node: bool) -> Result<Parsed, String> {
     };
     match matches.subcommand() {
         Some(("serve", sub)) => {
-            refuse_operator_flags("serve", &matches, sub)?;
+            refuse_flags("serve", &OPERATOR_FLAGS, &matches, sub)?;
             ServeArgs::from_arg_matches(sub).map(|args| Parsed::Serve(Box::new(args))).map_err(|e| usage(&e))
         }
         Some(("worker", sub)) => {
-            refuse_operator_flags("worker", &matches, sub)?;
-            WorkerArgs::from_arg_matches(sub).map(|args| Parsed::Worker(Box::new(args))).map_err(|e| usage(&e))
+            refuse_flags("worker", &OUTPUT_FLAG, &matches, sub)?;
+            let mut args = WorkerArgs::from_arg_matches(sub).map_err(|e| usage(&e))?;
+            // A global flag before `worker` is in the matches of the top: the one after `worker` wins.
+            let top = |id: &str| matches.get_one::<String>(id).cloned();
+            args.server = args.server.or_else(|| top("server"));
+            args.context = args.context.or_else(|| top("context"));
+            args.token = args.token.or_else(|| top("token"));
+            Ok(Parsed::Worker(Box::new(args)))
         }
         _ => Cli::from_arg_matches(&matches).map(|cli| Parsed::Operator(Box::new(cli))).map_err(|e| usage(&e)),
     }
 }
 
 /// The flags of the operator commands are global, so clap takes them before `serve` and `worker` too, and after them as
-/// the hidden flags of [`hide_operator_flags`]; there they would do nothing, and `serve --token` would look like
-/// protection.
-fn refuse_operator_flags(command: &str, top: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
-    let given: Vec<&str> = OPERATOR_FLAGS
+/// the hidden flags of [`hide_flags`]; there `flags` would do nothing, and `serve --token` would look like protection.
+fn refuse_flags(command: &str, flags: &[(&str, &str)], top: &ArgMatches, sub: &ArgMatches) -> Result<(), String> {
+    let given: Vec<&str> = flags
         .iter()
         .filter(|(id, _)| [top, sub].iter().any(|m| m.value_source(id) == Some(ValueSource::CommandLine)))
         .map(|(_, flag)| *flag)
@@ -109,14 +128,14 @@ fn refuse_operator_flags(command: &str, top: &ArgMatches, sub: &ArgMatches) -> R
     if given.is_empty() {
         return Ok(());
     }
-    let why = match command {
-        "serve" => "serve has no authentication of its own: a host protects the API with a layer in App::http",
-        _ => "worker serves no HTTP",
-    };
-    Err(format!(
-        "{command} does not take {}: --context, --server, --token and -o are flags of the operator commands, and {why}",
-        given.join(", ")
-    ))
+    if command == "serve" {
+        return Err(format!(
+            "serve does not take {}: --context, --server, --token and -o are flags of the operator commands, and serve \
+             has no authentication of its own: a host protects the API with a layer in App::http",
+            given.join(", ")
+        ));
+    }
+    Err(format!("{command} does not take {}: it prints no results, only its log", given.join(", ")))
 }
 
 /// The text of a clap error without its leading `error: ` and its trailing newline, and without passwords: clap quotes
@@ -220,7 +239,34 @@ mod tests {
             assert!(error.starts_with("serve does not take "), "{line:?}: {error}");
             assert!(error.contains("no authentication of its own") && error.contains("App::http"), "{error}");
         }
-        let Err(error) = parse(&args(&["myapp", "worker", "--token", "secret"]), true) else { panic!("an error") };
-        assert!(error.starts_with("worker does not take --token"), "{error}");
+        for line in [&["myapp", "worker", "-o", "json"][..], &["myapp", "-o", "json", "worker"]] {
+            let Err(error) = parse(&args(line), true) else { panic!("{line:?}: an error") };
+            assert!(error.starts_with("worker does not take -o"), "{line:?}: {error}");
+        }
+    }
+
+    /// The worker flags of HTTP mode, before or after `worker`.
+    #[test]
+    fn worker_takes_the_server_context_and_token_before_or_after_the_command() {
+        for line in [
+            &["myapp", "worker", "--server", "http://x", "--context", "c", "--token", "t"][..],
+            &["myapp", "--server", "http://x", "--context", "c", "--token", "t", "worker"],
+            &["myapp", "--server", "http://x", "worker", "--context", "c", "--token", "t"],
+        ] {
+            let Ok(Parsed::Worker(worker)) = parse(&args(line), true) else { panic!("{line:?}: a worker") };
+            let given = (worker.server.as_deref(), worker.context.as_deref(), worker.token.as_deref());
+            assert_eq!(given, (Some("http://x"), Some("c"), Some("t")), "{line:?}");
+        }
+        let Ok(Parsed::Worker(worker)) =
+            parse(&args(&["myapp", "--server", "http://a", "worker", "--server", "http://b"]), true)
+        else {
+            panic!("a worker")
+        };
+        assert_eq!(worker.server.as_deref(), Some("http://b"), "the flag after the command wins");
+        assert!(crate::node_command(&args(&["myapp", "--server", "http://x", "worker"])));
+        assert!(crate::node_command(&args(&["myapp", "worker", "--context", "prod"])));
+        let Ok(Parsed::Help(help)) = parse(&args(&["myapp", "worker", "--help"]), true) else { panic!("help") };
+        assert!(help.contains("--server <URL>") && help.contains("--token <TOKEN>"), "{help}");
+        assert!(!help.contains("--output"), "{help}");
     }
 }

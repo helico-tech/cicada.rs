@@ -1,6 +1,6 @@
 ## Implementation
 
-- [ ] 1. Add worker HTTP mode selection and mode-specific settings while preserving the direct-store resolver.
+- [x] 1. Add worker HTTP mode selection and mode-specific settings while preserving the direct-store resolver.
   Accept server/context/token globals before and after worker, reject output flags, keep serve's refusal and the
   no-hosted-types restriction. Resolve explicit-mode conflicts, ambient store precedence, blank mode variables,
   context credentials and the applicable WorkerConfig mapping. Refuse explicit server-owned settings and do not
@@ -8,7 +8,7 @@
   access. Add pure command/settings tests for every precedence/refusal row, invalid ignored fields, selected types,
   node_command and config-file isolation. Redact Target/settings Debug credentials/header values/URL passwords.
   Run affected App command/settings/config tests and existing store-worker tests.
-- [ ] 2. Add private shared Hosting builder variants and the remote-worker execution path with selected actors and
+- [x] 2. Add private shared Hosting builder variants and the remote-worker execution path with selected actors and
   Arc observers. Build its client using shared credential/header construction with redirects off, no added mutation
   retry and 30s total timeout alongside the existing 10s turn timeout. Implement readiness preflight and stop/start/
   stopped handling without source lifecycle calls. Test preflight with fake sources and virtual time: Unavailable

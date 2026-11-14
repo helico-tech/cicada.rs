@@ -69,7 +69,7 @@ use cicada::{Actor, ActorSystem, ActorType};
 
 use crate::command::Parsed;
 use crate::node::{HostedType, HttpFn, OnStartFn, Parts, Stop};
-use crate::settings::Kind;
+use crate::settings::{Kind, WorkerMode};
 
 /// Environment variables, by name: the process environment in [`App::run`], a literal map in tests.
 pub type Env = BTreeMap<String, String>;
@@ -121,7 +121,7 @@ impl App {
     pub fn host<A: Actor>(mut self, actor: impl Into<ActorType<A>>) -> Self {
         let actor = actor.into();
         let name = actor.type_name();
-        self.types.push(HostedType { name, host: Box::new(move |builder| builder.host(actor)) });
+        self.types.push(HostedType { name, host: Box::new(move |hosting| hosting.host(actor)) });
         self
     }
 
@@ -239,10 +239,28 @@ impl App {
                 }
                 Parsed::Worker(args) => {
                     let stop = Stop::watch(shutdown);
-                    let settings =
-                        settings::resolve(Kind::Worker, &args.node, None, &env, self.node_config.as_ref(), &names)
-                            .map_err(AppError::usage)?;
-                    node::worker(self.into_parts(), settings, stop).await
+                    match settings::worker_mode(&args, &env).map_err(AppError::usage)? {
+                        WorkerMode::Store => {
+                            let host = self.node_config.as_ref();
+                            let settings = settings::resolve(Kind::Worker, &args.node, None, &env, host, &names)
+                                .map_err(AppError::usage)?;
+                            node::worker(self.into_parts(), settings, stop).await
+                        }
+                        WorkerMode::Http => {
+                            if !self.on_start.is_empty() {
+                                return Err(AppError::usage(
+                                    "a worker over HTTP cannot run App::on_start: its functions need an ActorSystem, \
+                                     which only a node on the store has; bootstrap with serve or a worker on the store, \
+                                     or move that work out of this binary's App"
+                                        .to_owned(),
+                                ));
+                            }
+                            let settings = settings::resolve_http(&args.node, &env, self.node_config.as_ref(), &names)
+                                .map_err(AppError::usage)?;
+                            let target = settings::http_target(&args, &env, &name).map_err(AppError::Failed)?;
+                            node::http_worker(self.into_parts(), settings, target, stop).await
+                        }
+                    }
                 }
             }
         }

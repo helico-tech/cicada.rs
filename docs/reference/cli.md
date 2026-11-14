@@ -2052,7 +2052,7 @@ Node:
 ## `myapp worker`
 
 ```text
-Host the types and serve nothing, until SIGTERM or SIGINT
+Host the types and serve nothing, on a store or through a server's HTTP API, until SIGTERM or SIGINT
 
 Usage: myapp worker [OPTIONS]
 
@@ -2085,4 +2085,17 @@ Node:
           The longest turn of a type that sets none [env: CICADA_MAX_TURN] [default: 15m]
       --max-lost-claims <N|off>
           The claim limit: a number, or off [env: CICADA_MAX_LOST_CLAIMS] [default: 5]
+
+HTTP:
+      --server <URL>    The base URL of a server's API, which selects HTTP mode [env: CICADA_SERVER]
+      --context <NAME>  The context of the config file, which selects HTTP mode [env: CICADA_CONTEXT]
+      --token <TOKEN>   The bearer token, in HTTP mode only [env: CICADA_TOKEN]
+
+Mode: --store runs the turns on the store, --server or --context through a server's HTTP API; not both.
+Without either, a non-blank CICADA_STORE selects the store, else a non-blank CICADA_SERVER or CICADA_CONTEXT
+selects HTTP; a token, or the current context of the config file, alone selects nothing.
+
+Over HTTP the server owns the store and the leases: --store-schema, --store-pool-size, --retention, --lease-ttl,
+--heartbeat-interval and --max-lost-claims are refused, and their variables are not read. The server, the token
+and the headers come as for the operator commands. A binary with App::on_start cannot run over HTTP.
 ```

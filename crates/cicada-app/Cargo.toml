@@ -46,6 +46,7 @@ tracing-subscriber.workspace = true
 # The crate itself with both stores, so that its tests serve on SQLite and PostgreSQL; `tui` stays off, so that
 # `cargo test -p cicada-app` builds the crate without the terminal UI.
 cicada-app = { path = ".", features = ["sqlite", "postgres"] }
+async-trait.workspace = true
 cicada-test.workspace = true
 schemars.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
