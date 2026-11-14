@@ -48,7 +48,7 @@ semantics. This does not impose Cicada's contributor loops or release workflow o
 
 ## Order
 
-After `listener-probe-on-close`. No following change.
+After `listener-probe-on-close`. Before `usage-error-password-redaction`.
 
 ## Impact
 
