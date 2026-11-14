@@ -1,6 +1,6 @@
 ## Implementation
 
-- [ ] 1. Reconcile landed request/wait/latch APIs with the two predecessors; add Waited<T> and Step::wait_timeout.
+- [x] 1. Reconcile landed request/wait/latch APIs with the two predecessors; add Waited<T> and Step::wait_timeout.
   Parameterize the sleep wake-time helper's diagnostic kind without changing sleep behavior. Implement exact single/
   all/present-until replay matching, saved-duration precedence, new deadline validation before early replies, and
   New/Close/TimedOut/Waiting paths. Unit tests cover zero/1ns, MAX_DELAY and MAX_INSTANT boundaries, invalid duration

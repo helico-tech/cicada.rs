@@ -1768,8 +1768,8 @@ async fn cancel_and_cancelling_are_refused_and_terminal_runs_ignore_continue_and
     assert!(probe.keys().is_empty(), "no flow code ran");
 }
 
-/// Scenario: Replay misuse, through the runner: a saved request does not replay as a send, and a saved join or wait
-/// with a deadline cannot replay in this release.
+/// Scenario: Replay misuse, through the runner: a saved request does not replay as a send, a saved join cannot replay
+/// in this release, and a saved wait with a deadline does not replay through `Step::wait`.
 #[tokio::test(start_paused = true)]
 async fn a_saved_request_or_a_reserved_wait_stalls_replay_for_good() {
     let probe = Probe::default();
@@ -1790,7 +1790,8 @@ async fn a_saved_request_or_a_reserved_wait_stalls_replay_for_good() {
         let saved = vec![request.clone(), second.clone(), wait];
         start_with(&test, key, restored(script(ops), saved.clone())).await;
         test.run_until_idle().await;
-        refused(&test, key, "wait `x` is saved as a join or a wait with a deadline").await;
+        let why = if key == "deadline" { "wait `x` is saved with a deadline, which Step::wait" } else { "a join" };
+        refused(&test, key, why).await;
         assert_eq!(state(&test, key).await.journal, saved, "{key}");
     }
     let after = vec![op(|id| Op::Step { id }, "a")];
@@ -2284,8 +2285,8 @@ async fn progress_saved_by_an_earlier_release_replays_and_goes_on() {
     assert_eq!((written["replies"].clone(), written["cleanup"].clone()), (json!([]), json!([])));
 }
 
-/// Scenario: Reserved active wait. An eligible reply from the saved target that would close a saved open join, first
-/// or deadline wait fails for good with a later-feature diagnostic, and saves no reply, no outcome and no continuation.
+/// Scenario: Reserved active wait. An eligible reply from the saved target that would close a saved open join or first
+/// wait fails for good with a later-feature diagnostic, and saves no reply, no outcome and no continuation.
 #[tokio::test(start_paused = true)]
 async fn a_reply_that_would_close_a_reserved_wait_is_refused_for_good_and_saves_nothing() {
     let probe = Probe::default();
@@ -2294,8 +2295,7 @@ async fn a_reply_that_would_close_a_reserved_wait_is_refused_for_good_and_saves_
     let ops = vec![ask("go", "r1", Answer::Later), ask("q", "r1", Answer::Later), wait_op("x", "go")];
     let join = open_wait("x", &["m1", "m2"], WaitMode::All, None);
     let first = open_wait("x", &["m1", "m2"], WaitMode::First, None);
-    let deadline = open_wait("x", &["m1"], WaitMode::All, Some("2026-01-02T00:00:00Z"));
-    for (key, wait) in [("join", join), ("first", first), ("deadline", deadline)] {
+    for (key, wait) in [("join", join), ("first", first)] {
         let saved = vec![saved_request("go", "r1", "m1"), saved_request("q", "r1", "m2"), wait];
         let progress = restored(script(ops.clone()), saved);
         test.create(&run(key), &progress).await;
@@ -2310,7 +2310,7 @@ async fn a_reply_that_would_close_a_reserved_wait_is_refused_for_good_and_saves_
         assert_eq!(record.envelope.from, Some(addr(&responder("r1"))), "{key}: from the saved target");
         let error = record.error.as_deref().unwrap();
         assert!(error.contains("the reply to request m1 would close wait `x`"), "{key}: {error}");
-        assert!(error.contains("a join or a wait with a deadline") && error.contains("a later release"), "{key}");
+        assert!(error.contains("a join, which this release") && error.contains("a later release"), "{key}");
         let told = told(&test).await;
         assert!(told.iter().any(|f| f.message_id == record.message_id && f.cause == FailureCause::Refused), "{key}");
         assert_eq!(unchanged(&test, key).await, before, "{key}: state and version unchanged");

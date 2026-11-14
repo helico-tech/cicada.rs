@@ -2,8 +2,8 @@
 //! replays the results its journal holds and executes one new step, sleep, send, request or wait per turn, saving it
 //! and arming the next `Continue` in the same commit; a sleep's `Continue` is due at its saved wake time, a send's or a
 //! request's create and message commit with its entry, and a wait for a reply that has not come parks the run with no
-//! `Continue` until a `Reply` turn closes it. The wire also holds joins, deadlines and cancellation for later releases,
-//! which this one refuses.
+//! `Continue` until a `Reply` turn closes it, or, with a deadline, arms a `Continue` due then that closes it as timed
+//! out. The wire also holds joins and cancellation for later releases, which this one refuses.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -80,7 +80,8 @@ pub trait Flow: Send + Sync + 'static {
 
     /// The flow's code. It calls [`Step::run`] for each external step, [`Step::sleep`] for each durable sleep,
     /// [`Step::send`] for each message to an actor, [`Step::request`] for each message that a reply answers and
-    /// [`Step::wait`] for that reply, and passes their errors on with `?`; it returns `Ok(())` once every step is done.
+    /// [`Step::wait`] or [`Step::wait_timeout`] for that reply, and passes their errors on with `?`; it returns `Ok(())`
+    /// once every step is done.
     fn run(&self, step: &mut Step, input: Self::Input) -> impl Future<Output = HandlerResult> + Send;
 }
 
@@ -238,8 +239,8 @@ pub enum JournalEntry {
         #[serde(default)]
         reply: bool,
     },
-    /// A wait for the replies of earlier requests. This release executes the wait of [`Step::wait`]: one request, mode
-    /// all and no deadline; a join or a deadline needs a later release.
+    /// A wait for the replies of earlier requests. This release executes the single waits of [`Step::wait`] and
+    /// [`Step::wait_timeout`]: one request, mode all, without or with a deadline; a join needs a later release.
     #[serde(rename_all = "camelCase")]
     Wait {
         /// The wait id, from the same namespace as the step ids.
@@ -676,6 +677,17 @@ impl<T> fmt::Debug for Request<T> {
     }
 }
 
+/// How a wait of [`Step::wait_timeout`] ended, as committed in its journal entry: data to branch on, also when `T` is
+/// an `Option`. A timeout is no error, so the flow's retry policy never sees it.
+#[must_use]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Waited<T> {
+    /// The target's reply, decoded.
+    Received(T),
+    /// The deadline passed before a reply was handled; the target is not stopped and may still be working.
+    TimedOut,
+}
+
 /// Where a target sends the reply `T` to a request of a flow: the run's address and the request's message id. A field
 /// `reply: ReplyTo<JobResult>` of the target's message carries it and types the flow's [`Request`].
 ///
@@ -833,11 +845,13 @@ enum Latch {
     /// A new entry to save with the next continuation, which a sleep's wake time delays and an open wait leaves out,
     /// and a send's or a request's actor effects.
     New(JournalEntry, Option<Box<Outbox>>),
-    /// A saved sleep whose wake time has not come: the next continuation is due then, and nothing is saved.
+    /// A saved sleep whose wake time has not come, or a saved open wait whose deadline has not come and whose reply has
+    /// not: the next continuation is due then, and nothing is saved.
     Waiting(Timestamp),
-    /// The saved open wait at this index of the journal, whose reply the run keeps: close it and arm now.
-    Close(usize),
-    /// A saved open wait whose reply has not come: no continuation is armed, and nothing is saved.
+    /// The saved open wait at this index of the journal, closed with this outcome: received when the run keeps its
+    /// reply, timed out when its deadline has passed without one. Close it and arm now.
+    Close(usize, WaitOutcome),
+    /// A saved open wait without a deadline whose reply has not come: no continuation is armed, and nothing is saved.
     Parked,
     /// The closure's own error, with its retryability.
     Failed(HandlerError),
@@ -852,8 +866,8 @@ struct Suspend;
 impl fmt::Display for Suspend {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(
-            "the flow is suspended after a new step, send, request or wait, or at a sleep or an open wait; pass this \
-             error on with `?`",
+            "the flow is suspended after a new step, send, request or wait, at a sleep or an open wait, or after a \
+             wait's decision; pass this error on with `?`",
         )
     }
 }
@@ -1011,7 +1025,7 @@ impl Step {
             Ok(Some(JournalEntry::Sleep { until, .. })) if self.now >= until => return Ok(()),
             Ok(Some(JournalEntry::Sleep { until, .. })) => Latch::Waiting(until),
             Ok(Some(_)) => unreachable!("replay matches the kind"),
-            Ok(None) => match self.room(id, "sleep").and_then(|()| wake_time(id, self.now, duration)) {
+            Ok(None) => match self.room(id, "sleep").and_then(|()| wake_time("sleep", id, self.now, duration)) {
                 Ok(until) => Latch::New(JournalEntry::Sleep { id: id.to_owned(), until }, None),
                 Err(reason) => Latch::Permanent(reason),
             },
@@ -1213,19 +1227,110 @@ impl Step {
     /// correlation id. Either way the value reaches the code after the wait only in a later execution, once the
     /// outcome is committed. A parked run sends no polling message; a public `Continue` replays it and parks it again,
     /// saving nothing. The wait has no timeout: a target that fails or is deleted without replying leaves the run
-    /// parked.
+    /// parked; [`Step::wait_timeout`] gives up at a deadline.
     ///
     /// The request must be one of this run's earlier requests that no other wait names. Wait ids share the namespace
     /// and the limit of 1000 entries of the step ids. Another request, an invalid or repeated id, a saved entry at its
-    /// place that is not this wait (a join or a wait with a deadline included), and a new wait after 1000 entries fail
-    /// the turn for good. A saved reply that does not decode as a `T` fails it for good and keeps the outcome: fix the
-    /// code and send a public `Continue`. A panic in a custom `Deserialize`, if caught, fails it for good too. Like
-    /// [`Step::run`], after the first new entry of an execution, or its first misuse, it does nothing.
+    /// place that is not this wait (a join, or a wait with a deadline, which only `wait_timeout` replays, included), and
+    /// a new wait after 1000 entries fail the turn for good. A saved reply that does not decode as a `T` fails it for
+    /// good and keeps the outcome: fix the code and send a public `Continue`. A panic in a custom `Deserialize`, if
+    /// caught, fails it for good too. Like [`Step::run`], after the first new entry of an execution, or its first
+    /// misuse, it does nothing.
     pub async fn wait<T: DeserializeOwned + Send>(
         &mut self,
         id: &str,
         request: &Request<T>,
     ) -> Result<T, HandlerError> {
+        match self.wait_for(id, request, None).await? {
+            Waited::Received(reply) => Ok(reply),
+            Waited::TimedOut => Err(self.refuse(format!("wait `{id}` is saved timed out without a deadline"))),
+        }
+    }
+
+    /// The wait `id` for the reply to `request`, which gives up at a deadline: returns [`Waited::Received`] with the
+    /// reply decoded as a `T`, or [`Waited::TimedOut`], once the journal holds this wait closed with that outcome.
+    /// Otherwise it saves the wait or its decision and suspends the flow: pass its error on with `?`. A timeout is
+    /// data to branch on, not an error.
+    ///
+    /// The deadline is saved with the new wait: the store time of the claim of the turn that creates the wait, plus
+    /// `timeout` rounded up to microseconds; not the time of the request's turn. Replay uses the saved deadline and
+    /// ignores `timeout`, also when the code changed it. A new wait whose reply came early saves itself closed as
+    /// received and arms the next `Continue` due now, also for a zero timeout; one whose reply has not come saves itself
+    /// open and arms a `Continue` due at the deadline, and no handler stays open meanwhile. A new wait never times out
+    /// in its own turn: a zero timeout commits it open first.
+    ///
+    /// The outcome is decided once and committed before any later code runs. A `Reply` turn that brings the reply
+    /// closes the wait as received, cancels the deadline's `Continue` and arms one due now with the reply's correlation
+    /// id, without reading the clock: a reply handled before the timeout is decided wins, also after the deadline. A
+    /// `Continue` that executes the flow at or after the deadline with no reply kept closes the wait as timed out,
+    /// keeping its own correlation id; one before the deadline arms a `Continue` due at the same deadline and saves
+    /// nothing, so a poke, a retry or a deliver-now cannot shorten it. Which of a reply and the deadline's `Continue`
+    /// wins is the order in which the run's mailbox handles them. Once committed the outcome never changes: a later
+    /// reply is ignored, and a retry of a later step replays the same outcome without asking again. A timeout stops
+    /// nothing of the target's work and cleans nothing up. The deadline is a lower bound: a pause, an outage or a
+    /// delayed commit makes the timeout later, and a run whose deadline `Continue` was cancelled, purged or failed stays
+    /// open, with no polling, until a reply or a public `Continue`.
+    ///
+    /// A `timeout` longer than [`MAX_DELAY`], or a deadline after [`MAX_INSTANT`], fails the turn for good, checked
+    /// before an early reply is used. A saved wait without a deadline, which only [`Step::wait`] replays, and every
+    /// misuse of `wait` fail it for good as they fail `wait`; so do the decoding failures of a received reply, which
+    /// keep the outcome. Upgrade every host and worker of the flow type before a flow waits with a deadline: an older
+    /// release refuses the reply to such a wait for good, although the contract is the same.
+    ///
+    /// ```
+    /// use std::time::Duration;
+    /// use cicada::prelude::*;
+    /// use cicada_actors::{Flow, ReplyTo, Step, Target, Waited};
+    /// use serde::{Deserialize, Serialize};
+    ///
+    /// #[derive(Clone, Serialize, Deserialize)]
+    /// struct Job(String);
+    ///
+    /// impl ActorRef for Job {
+    ///     const TYPE: &'static str = "jobs";
+    ///     type Message = JobMsg;
+    /// }
+    ///
+    /// #[derive(Serialize, Deserialize, JsonSchema)]
+    /// #[serde(tag = "type")]
+    /// enum JobMsg {
+    ///     Start { reply: ReplyTo<String> },
+    /// }
+    ///
+    /// struct Build;
+    ///
+    /// impl Flow for Build {
+    ///     const TYPE: &'static str = "build";
+    ///     type Input = String;
+    ///
+    ///     async fn run(&self, step: &mut Step, name: String) -> HandlerResult {
+    ///         let job = Job(name);
+    ///         let start = Target::child(&job, &NoState {});
+    ///         let request = step.request("start", start, |reply| JobMsg::Start { reply }).await?;
+    ///         match step.wait_timeout("done", &request, Duration::from_secs(3600)).await? {
+    ///             Waited::Received(artifact) => step.run("publish", |_key| async move { Ok(artifact) }).await?,
+    ///             Waited::TimedOut => step.run("report-stuck", |key| async move { Ok(key) }).await?,
+    ///         };
+    ///         Ok(())
+    ///     }
+    /// }
+    /// ```
+    pub async fn wait_timeout<T: DeserializeOwned + Send>(
+        &mut self,
+        id: &str,
+        request: &Request<T>,
+        timeout: Duration,
+    ) -> Result<Waited<T>, HandlerError> {
+        self.wait_for(id, request, Some(timeout)).await
+    }
+
+    /// The single wait of [`Step::wait`], without a timeout, and of [`Step::wait_timeout`], with one.
+    async fn wait_for<T: DeserializeOwned + Send>(
+        &mut self,
+        id: &str,
+        request: &Request<T>,
+        timeout: Option<Duration>,
+    ) -> Result<Waited<T>, HandlerError> {
         if self.latch.is_some() {
             return Err(HandlerError::new(Suspend));
         }
@@ -1235,37 +1340,42 @@ impl Step {
         };
         let asked = request.id();
         let Some(JournalEntry::Wait { requests, mode, until, outcome, .. }) = saved else {
-            let latch = match self.room(id, "wait").and_then(|()| self.unused(id, asked)) {
-                Ok(()) => {
-                    let replied = self.replies.contains_key(asked);
-                    let entry = JournalEntry::Wait {
-                        id: id.to_owned(),
-                        requests: vec![asked.clone()],
-                        mode: WaitMode::All,
-                        until: None,
-                        outcome: replied.then_some(WaitOutcome::Received),
-                        received: if replied { vec![asked.clone()] } else { Vec::new() },
-                    };
-                    Latch::New(entry, None)
-                }
+            let latch = match self.new_wait(id, asked, timeout) {
+                Ok(entry) => Latch::New(entry, None),
                 Err(reason) => Latch::Permanent(reason),
             };
             self.latch = Some(latch);
             return Err(HandlerError::new(Suspend));
         };
-        if requests.len() != 1 || mode != WaitMode::All || until.is_some() {
+        if requests.len() != 1 || mode != WaitMode::All {
             return Err(self.refuse(format!("wait `{id}` is saved as {}", later_wait())));
+        }
+        match (until, timeout) {
+            (Some(_), None) => {
+                return Err(self.refuse(format!(
+                    "wait `{id}` is saved with a deadline, which Step::wait cannot replay: the code called \
+                     Step::wait_timeout there"
+                )));
+            }
+            (None, Some(_)) => {
+                return Err(self.refuse(format!(
+                    "wait `{id}` is saved without a deadline, which Step::wait_timeout cannot replay: the code called \
+                     Step::wait there"
+                )));
+            }
+            _ => {}
         }
         if requests[0] != *asked {
             return Err(self.refuse(format!("wait `{id}` is saved for the request {}, not for {asked}", requests[0])));
         }
-        match (outcome, self.replies.get(asked).cloned()) {
-            (Some(WaitOutcome::Received), Some(value)) => {
+        let index = self.cursor - 1;
+        match (outcome, self.replies.get(asked).cloned(), until) {
+            (Some(WaitOutcome::Received), Some(value), _) => {
                 self.latch = Some(Latch::InProgress("wait", id.to_owned()));
                 match T::deserialize(&value) {
                     Ok(reply) => {
                         self.latch = None;
-                        Ok(reply)
+                        Ok(Waited::Received(reply))
                     }
                     Err(e) => Err(self.refuse(format!(
                         "the saved reply of wait `{id}` does not decode as the type asked for: {e}; the outcome stays \
@@ -1273,16 +1383,45 @@ impl Step {
                     ))),
                 }
             }
-            (None, Some(_)) => {
-                self.latch = Some(Latch::Close(self.cursor - 1));
+            // A decoded state holds a timed-out wait only with a deadline, which only a timed call replays.
+            (Some(WaitOutcome::TimedOut), _, _) => Ok(Waited::TimedOut),
+            (None, Some(_), _) => {
+                self.latch = Some(Latch::Close(index, WaitOutcome::Received));
                 Err(HandlerError::new(Suspend))
             }
-            (None, None) => {
+            (None, None, Some(until)) if self.now >= until => {
+                self.latch = Some(Latch::Close(index, WaitOutcome::TimedOut));
+                Err(HandlerError::new(Suspend))
+            }
+            (None, None, Some(until)) => {
+                self.latch = Some(Latch::Waiting(until));
+                Err(HandlerError::new(Suspend))
+            }
+            (None, None, None) => {
                 self.latch = Some(Latch::Parked);
                 Err(HandlerError::new(Suspend))
             }
-            (Some(_), _) => Err(self.refuse(format!("wait `{id}` is saved closed without its reply"))),
+            (Some(WaitOutcome::Received), None, _) => {
+                Err(self.refuse(format!("wait `{id}` is saved closed without its reply")))
+            }
         }
+    }
+
+    /// The entry of a new single wait `id` for `request`: checked for room and for its request, with its deadline when
+    /// it has a `timeout`, checked before an early reply is used; closed as received when the run keeps that reply.
+    fn new_wait(&self, id: &str, request: &MessageId, timeout: Option<Duration>) -> Result<JournalEntry, String> {
+        self.room(id, "wait")?;
+        self.unused(id, request)?;
+        let until = timeout.map(|timeout| wake_time("wait", id, self.now, timeout)).transpose()?;
+        let replied = self.replies.contains_key(request);
+        Ok(JournalEntry::Wait {
+            id: id.to_owned(),
+            requests: vec![request.clone()],
+            mode: WaitMode::All,
+            until,
+            outcome: replied.then_some(WaitOutcome::Received),
+            received: if replied { vec![request.clone()] } else { Vec::new() },
+        })
     }
 
     /// Checks that a new wait `id` names an earlier request of the journal that no other wait names.
@@ -1381,20 +1520,20 @@ impl Step {
     }
 }
 
-/// The wake time of a new sleep: `now + duration`, rounded up to microseconds; the duration at most [`MAX_DELAY`] and
-/// the time at most [`MAX_INSTANT`].
-fn wake_time(id: &str, now: Timestamp, duration: Duration) -> Result<Timestamp, String> {
+/// The wake time of a new sleep, or the deadline of a new wait, of `kind`: `now + duration`, rounded up to
+/// microseconds; the duration at most [`MAX_DELAY`] and the time at most [`MAX_INSTANT`].
+fn wake_time(kind: &str, id: &str, now: Timestamp, duration: Duration) -> Result<Timestamp, String> {
     if duration > MAX_DELAY {
         return Err(format!(
-            "sleep `{id}` lasts {}, longer than the most a sleep may last, {}",
+            "{kind} `{id}` lasts {}, longer than the most a {kind} may last, {}",
             time::format_duration(duration),
             time::format_duration(MAX_DELAY)
         ));
     }
-    let until = time::add(now, duration).map(time::ceil).map_err(|e| format!("sleep `{id}` cannot end: {e}"))?;
+    let until = time::add(now, duration).map(time::ceil).map_err(|e| format!("{kind} `{id}` cannot end: {e}"))?;
     if until > MAX_INSTANT {
         return Err(format!(
-            "sleep `{id}` would end at {}, after {}",
+            "{kind} `{id}` would end at {}, after {}",
             time::format_instant(until),
             time::format_instant(MAX_INSTANT)
         ));
@@ -1446,21 +1585,25 @@ fn check_result(value: &Value, depth: usize) -> Result<(), String> {
 /// a replayed sleep not yet due arms one due at that same time and saves nothing. A new send or request commits its
 /// create, its message and its entry with the next armed `Continue`. A new wait whose reply the run keeps commits
 /// closed with the next armed `Continue`; one whose reply has not come commits open and clears `armed`, and a replayed
-/// open wait clears it again, saving nothing else. A flow that returns `Ok` after replaying every entry marks the run
-/// done and clears `armed`; a done or cancelled run ignores `Continue` and keeps its state until it is deleted. An
-/// execution that fails commits nothing; its message follows its retry policy, and its watchers are told as for any
-/// actor. The runner installs no watch.
+/// open wait clears it again, saving nothing else. A new wait with a deadline and no reply commits open with an armed
+/// `Continue` due at its deadline; replayed before the deadline, it arms one due then and saves nothing; replayed at or
+/// after it with no reply kept, it commits timed out with the next armed `Continue`, due now; a replayed open wait whose
+/// reply the run keeps commits received the same way, deadline or not. A flow that returns `Ok` after replaying every
+/// entry marks the run done and clears `armed`; a done or cancelled run ignores `Continue` and keeps its state until it
+/// is deleted. An execution that fails commits nothing; its message follows its retry policy, and its watchers are told
+/// as for any actor. The runner installs no watch.
 ///
 /// A `Reply` runs no flow code. A running run ignores it, writing nothing, unless it names a request of the run, comes
 /// from the address the request went to, and its request has no kept reply and no closed wait; only then is its value
 /// checked (no NUL, at most 61 levels deep, or it fails for good) and kept. When the open wait at the end of the
-/// journal waits for it, the same commit closes that wait, cancels the armed continuation, if any, and arms a fresh one
-/// due now with `F::retry()` and the reply's correlation id; otherwise `armed` stays. A done or cancelled run ignores
-/// every `Reply`.
+/// journal waits for it, the same commit closes that wait as received, deadline or not and without reading the clock,
+/// cancels the armed continuation, if any (a deadline's), and arms a fresh one due now with `F::retry()` and the reply's
+/// correlation id; otherwise `armed` stays. A done or cancelled run ignores every `Reply`.
 ///
 /// This release refuses `Cancel` for good, a `Continue` or a `Reply` to a cancelling run, and a reply that would close
-/// a join or a wait with a deadline, with a diagnostic that names the later release they need (ADR 0044): upgrade every
-/// host and worker of a flow type before using them.
+/// a join, with a diagnostic that names the later release they need (ADR 0044): upgrade every host and worker of a flow
+/// type before using them. A host or a worker of 0.18.1 refuses the reply to a wait with a deadline for good, so
+/// upgrade them all before a flow waits with one.
 pub struct FlowActor<F> {
     flow: F,
 }
@@ -1520,7 +1663,7 @@ impl<F: Flow> Actor for FlowActor<F> {
             Some(Latch::New(entry, outbox)) => {
                 let (wake, park) = match &entry {
                     JournalEntry::Sleep { until, .. } => (Some(*until), false),
-                    JournalEntry::Wait { outcome, .. } => (None, outcome.is_none()),
+                    JournalEntry::Wait { outcome: None, until, .. } => (*until, until.is_none()),
                     _ => (None, false),
                 };
                 if let Some(outbox) = outbox {
@@ -1534,8 +1677,8 @@ impl<F: Flow> Actor for FlowActor<F> {
                 arm(turn, wake)
             }
             Some(Latch::Waiting(until)) => arm(turn, Some(until)),
-            Some(Latch::Close(index)) => {
-                close(&mut turn.state_mut().journal[index]);
+            Some(Latch::Close(index, outcome)) => {
+                close(&mut turn.state_mut().journal[index], outcome);
                 arm(turn, None)
             }
             Some(Latch::Parked) => {
@@ -1584,10 +1727,8 @@ fn accept<F: Flow>(turn: &mut Turn<FlowActor<F>>, request: MessageId, value: Val
         HandlerError::permanent(format!("the reply to request {request} cannot be kept: {problem}"))
     })?;
     let open = match state.journal.last() {
-        Some(entry @ JournalEntry::Wait { requests, mode, until, outcome: None, .. })
-            if requests.contains(&request) =>
-        {
-            if requests.len() != 1 || *mode != WaitMode::All || until.is_some() {
+        Some(entry @ JournalEntry::Wait { requests, mode, outcome: None, .. }) if requests.contains(&request) => {
+            if requests.len() != 1 || *mode != WaitMode::All {
                 return Err(HandlerError::permanent(format!(
                     "the reply to request {request} would close wait `{}`, {}",
                     entry.id(),
@@ -1605,7 +1746,7 @@ fn accept<F: Flow>(turn: &mut Turn<FlowActor<F>>, request: MessageId, value: Val
         return Ok(());
     }
     if let Some(last) = state.journal.last_mut() {
-        close(last);
+        close(last, WaitOutcome::Received);
     }
     if let Some(old) = state.armed.clone().filter(|old| *old != current) {
         turn.cancel(&old)?;
@@ -1613,11 +1754,15 @@ fn accept<F: Flow>(turn: &mut Turn<FlowActor<F>>, request: MessageId, value: Val
     arm(turn, None)
 }
 
-/// Closes an open wait as received with every request it names: the single wait of this release.
-fn close(entry: &mut JournalEntry) {
+/// Closes an open single wait of this release with `decided`: received selects its request, whose reply the run keeps;
+/// timed out selects none, as it has no reply.
+fn close(entry: &mut JournalEntry, decided: WaitOutcome) {
     if let JournalEntry::Wait { requests, outcome, received, .. } = entry {
-        *outcome = Some(WaitOutcome::Received);
-        *received = requests.clone();
+        *outcome = Some(decided);
+        *received = match decided {
+            WaitOutcome::Received => requests.clone(),
+            WaitOutcome::TimedOut => Vec::new(),
+        };
     }
 }
 
@@ -1669,22 +1814,18 @@ impl std::error::Error for SendFailed {
     }
 }
 
-/// Why replay stopped at `saved`: a join or a wait with a deadline needs a later release; anything else, changed code.
+/// Why replay stopped at `saved`: a join needs a later release; anything else, changed code.
 fn unreplayable(saved: &JournalEntry) -> String {
     match saved {
-        JournalEntry::Wait { requests, mode, until, .. }
-            if requests.len() != 1 || *mode != WaitMode::All || until.is_some() =>
-        {
-            later_wait()
-        }
+        JournalEntry::Wait { requests, mode, .. } if requests.len() != 1 || *mode != WaitMode::All => later_wait(),
         _ => "changed flow code cannot replay this run".to_owned(),
     }
 }
 
-/// The diagnostic of a saved join or wait with a deadline.
+/// The diagnostic of a saved join: more than one request, or mode first.
 fn later_wait() -> String {
-    "a join or a wait with a deadline, which this release of cicada-actors cannot run; a later release can, once \
-     every host and worker of the flow type runs it"
+    "a join, which this release of cicada-actors cannot run; a later release can, once every host and worker of the \
+     flow type runs it"
         .to_owned()
 }
 
@@ -2272,8 +2413,8 @@ mod send_tests {
             None => "none".to_owned(),
             Some(Latch::InProgress(kind, id)) => format!("in progress {kind} {id}"),
             Some(Latch::New(entry, _)) => format!("new {}", entry.id()),
-            Some(Latch::Waiting(_)) => "waiting".to_owned(),
-            Some(Latch::Close(index)) => format!("close {index}"),
+            Some(Latch::Waiting(until)) => format!("waiting {}", time::format_instant(*until)),
+            Some(Latch::Close(index, outcome)) => format!("close {index} {outcome:?}"),
             Some(Latch::Parked) => "parked".to_owned(),
             Some(Latch::Failed(e)) => format!("failed {e}"),
             Some(Latch::Permanent(reason)) => format!("permanent {reason}"),
@@ -2714,7 +2855,7 @@ mod sleep_tests {
             Some(Latch::InProgress(kind, id)) => format!("in progress {kind} {id}"),
             Some(Latch::New(entry, _)) => format!("new {}", serde_json::to_string(entry).unwrap()),
             Some(Latch::Waiting(until)) => format!("waiting {}", time::format_instant(*until)),
-            Some(Latch::Close(index)) => format!("close {index}"),
+            Some(Latch::Close(index, outcome)) => format!("close {index} {outcome:?}"),
             Some(Latch::Parked) => "parked".to_owned(),
             Some(Latch::Failed(e)) => format!("failed {e}"),
             Some(Latch::Permanent(reason)) => format!("permanent {reason}"),
@@ -2896,8 +3037,8 @@ mod wait_tests {
             Some(Latch::New(entry, outbox)) => {
                 format!("new {} {}", serde_json::to_string(entry).unwrap(), outbox.is_some())
             }
-            Some(Latch::Waiting(_)) => "waiting".to_owned(),
-            Some(Latch::Close(index)) => format!("close {index}"),
+            Some(Latch::Waiting(until)) => format!("waiting {}", time::format_instant(*until)),
+            Some(Latch::Close(index, outcome)) => format!("close {index} {outcome:?}"),
             Some(Latch::Parked) => "parked".to_owned(),
             Some(Latch::Failed(e)) => format!("failed {e}"),
             Some(Latch::Permanent(reason)) => format!("permanent {reason}"),
@@ -2957,7 +3098,7 @@ mod wait_tests {
 
         let mut step = execution(journal, &[("m1", json!("v"))]);
         assert!(replay_and_wait::<Value>(&mut step, "ask", "done").is_err(), "the value waits for the closure");
-        assert_eq!(latched(&step), "close 1");
+        assert_eq!(latched(&step), "close 1 Received");
 
         let journal = vec![request("ask", "m1"), wait("done", &["m1"], Some(WaitOutcome::Received))];
         let mut step = execution(journal.clone(), &[("m1", json!("v"))]);
@@ -3018,9 +3159,9 @@ mod wait_tests {
             *mode = WaitMode::First;
         }
         for (journal, why) in [
-            (saved(wait("done", &["m1", "m2"], None)), "wait `done` is saved as a join or a wait with a deadline"),
+            (saved(wait("done", &["m1", "m2"], None)), "wait `done` is saved as a join, which this release"),
             (saved(first), "is saved as a join"),
-            (saved(deadline), "is saved as a join"),
+            (saved(deadline), "wait `done` is saved with a deadline, which Step::wait cannot replay"),
             (saved(wait("done", &["m2"], None)), "wait `done` is saved for the request m2, not for m1"),
             (saved(JournalEntry::Step { id: "done".into(), result: Value::Null }), "where its journal holds step"),
             (saved(wait("later", &["m1"], None)), "calls wait `done` where its journal holds wait `later`"),
@@ -3107,5 +3248,357 @@ mod wait_tests {
         step.latch = Some(Latch::InProgress("step", "a".to_owned()));
         assert!(block_on(step.wait("done", &Request::<Value>::new(id("m1")))).is_err());
         assert_eq!((latched(&step), step.seen.len()), ("in progress step a".to_owned(), 0), "an earlier latch wins");
+    }
+}
+
+#[cfg(test)]
+mod wait_timeout_tests {
+    //! Step::wait_timeout without a runner: the deadline of a new wait and its limits, checked before an early reply;
+    //! replay by the saved deadline; the paths of an open, received and timed-out wait; misuse; latches and decoding.
+
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    use super::*;
+    use futures::executor::block_on;
+    use serde::Deserializer;
+    use serde_json::json;
+
+    const SECOND: Duration = Duration::from_secs(1);
+    const NOW: &str = "2026-11-14T00:00:00Z";
+    const DEADLINE: &str = "2026-11-14T00:01:00Z";
+
+    fn at(text: &str) -> Timestamp {
+        time::parse_instant(text).unwrap()
+    }
+
+    fn id(text: &str) -> MessageId {
+        MessageId::new(text).unwrap()
+    }
+
+    fn execution(journal: Vec<JournalEntry>, replies: &[(&str, Value)], now: Timestamp) -> Step {
+        let mut step = Step::new(journal, &ActorAddress::parse("test.flow/k").unwrap(), now);
+        step.replies = replies.iter().map(|(request, value)| (id(request), value.clone())).collect();
+        step
+    }
+
+    fn request(name: &str, message: &str) -> JournalEntry {
+        JournalEntry::Send {
+            id: name.into(),
+            to: ActorAddress::parse("jobs/j1").unwrap(),
+            message: id(message),
+            create: None,
+            reply: true,
+        }
+    }
+
+    /// A single wait `name` for `m1` with the deadline `until`, if any, and `outcome`.
+    fn wait(name: &str, until: Option<&str>, outcome: Option<WaitOutcome>) -> JournalEntry {
+        let received = if outcome == Some(WaitOutcome::Received) { vec![id("m1")] } else { Vec::new() };
+        JournalEntry::Wait {
+            id: name.into(),
+            requests: vec![id("m1")],
+            mode: WaitMode::All,
+            until: until.map(at),
+            outcome,
+            received,
+        }
+    }
+
+    fn latched(step: &Step) -> String {
+        match &step.latch {
+            None => "none".to_owned(),
+            Some(Latch::InProgress(kind, id)) => format!("in progress {kind} {id}"),
+            Some(Latch::New(entry, outbox)) => {
+                format!("new {} {}", serde_json::to_string(entry).unwrap(), outbox.is_some())
+            }
+            Some(Latch::Waiting(until)) => format!("waiting {}", time::format_instant(*until)),
+            Some(Latch::Close(index, outcome)) => format!("close {index} {outcome:?}"),
+            Some(Latch::Parked) => "parked".to_owned(),
+            Some(Latch::Failed(e)) => format!("failed {e}"),
+            Some(Latch::Permanent(reason)) => format!("permanent {reason}"),
+        }
+    }
+
+    /// `jobs/j1`.
+    #[derive(Clone, Serialize, Deserialize)]
+    #[serde(transparent)]
+    struct Job(String);
+
+    impl ActorRef for Job {
+        const TYPE: &'static str = "jobs";
+        type Message = Never;
+    }
+
+    fn job() -> Job {
+        Job("j1".into())
+    }
+
+    /// A message that replay never builds.
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    #[serde(tag = "type")]
+    enum Never {
+        Go,
+    }
+
+    /// Replays the request `ask` and returns its handle.
+    fn ask<T>(step: &mut Step) -> Request<T> {
+        block_on(step.request("ask", &job(), |_: ReplyTo<T>| Never::Go)).expect("the request replays")
+    }
+
+    /// Replays the request `ask` and waits `done` for it with `timeout`: the wait's result.
+    fn timed<T: DeserializeOwned + Send>(step: &mut Step, timeout: Duration) -> Result<Waited<T>, HandlerError> {
+        let handle = ask::<T>(step);
+        block_on(step.wait_timeout("done", &handle, timeout))
+    }
+
+    /// The new wait entry `done` for `m1` with the deadline `until`, `outcome` and `received`, as latched.
+    fn new_entry(until: &str, outcome: &str, received: &str) -> String {
+        format!(
+            r#"new {{"kind":"wait","id":"done","requests":["m1"],"mode":"all","until":"{until}","outcome":{outcome},"received":[{received}]}} false"#
+        )
+    }
+
+    /// Scenarios: New timed wait; Early reply and zero duration; Time limits, of 1ns.
+    #[test]
+    fn a_new_timed_wait_saves_its_deadline_from_the_claim_open_or_received() {
+        for (timeout, until) in [
+            (Duration::ZERO, NOW),
+            (Duration::from_nanos(1), "2026-11-14T00:00:00.000001Z"),
+            (Duration::from_nanos(1_001), "2026-11-14T00:00:00.000002Z"),
+            (SECOND * 60, DEADLINE),
+        ] {
+            let mut step = execution(vec![request("ask", "m1")], &[], at(NOW));
+            assert!(timed::<Value>(&mut step, timeout).is_err(), "{timeout:?}: a new wait suspends");
+            assert_eq!(latched(&step), new_entry(until, "null", ""), "{timeout:?}: open, never timed out at once");
+
+            let mut step = execution(vec![request("ask", "m1")], &[("m1", json!(7))], at(NOW));
+            assert!(timed::<Value>(&mut step, timeout).is_err(), "{timeout:?}: a closed new wait suspends too");
+            assert_eq!(latched(&step), new_entry(until, r#""received""#, r#""m1""#), "{timeout:?}");
+        }
+    }
+
+    /// Scenario: Time limits. MAX_DELAY fits, one nanosecond more does not; at MAX_INSTANT - 1s, 1s fits and 1s + 1ns
+    /// does not; an invalid timeout fails even when the reply is already kept.
+    #[test]
+    fn a_new_deadline_is_bounded_by_max_delay_and_max_instant_before_an_early_reply_is_used() {
+        for replies in [vec![], vec![("m1", json!(1))]] {
+            let mut step = execution(vec![request("ask", "m1")], &replies, at(NOW));
+            assert!(timed::<Value>(&mut step, MAX_DELAY).is_err());
+            assert!(latched(&step).starts_with(r#"new {"kind":"wait""#), "MAX_DELAY fits: {}", latched(&step));
+
+            let mut step = execution(vec![request("ask", "m1")], &replies, at(NOW));
+            assert!(timed::<Value>(&mut step, MAX_DELAY + Duration::from_nanos(1)).is_err());
+            assert!(latched(&step).starts_with("permanent wait `done` lasts"), "{replies:?}: {}", latched(&step));
+            assert!(latched(&step).contains("longer than the most a wait may last"), "{}", latched(&step));
+
+            let late = time::sub(MAX_INSTANT, SECOND);
+            let mut step = execution(vec![request("ask", "m1")], &replies, late);
+            assert!(timed::<Value>(&mut step, SECOND).is_err());
+            assert!(latched(&step).contains(r#""until":"9999-12-31T23:59:59.999999Z""#), "{}", latched(&step));
+            for timeout in [SECOND + Duration::from_nanos(1), MAX_DELAY] {
+                let mut step = execution(vec![request("ask", "m1")], &replies, late);
+                assert!(timed::<Value>(&mut step, timeout).is_err());
+                let why = "permanent wait `done` would end at";
+                assert!(latched(&step).starts_with(why), "{timeout:?}: {}", latched(&step));
+                assert!(latched(&step).contains("after 9999-12-31T23:59:59.999999Z"), "{}", latched(&step));
+            }
+        }
+    }
+
+    /// Scenarios: Replay matching, with another and an invalid duration; Early execution; Timer execution; and
+    /// Supplied reply past the deadline.
+    #[test]
+    fn a_saved_open_wait_closes_times_out_or_waits_by_its_saved_deadline_whatever_the_timeout() {
+        let open = vec![request("ask", "m1"), wait("done", Some(DEADLINE), None)];
+        for timeout in [Duration::ZERO, SECOND * 3600, MAX_DELAY + SECOND] {
+            let mut step = execution(open.clone(), &[], at("2026-11-14T00:00:59.999999Z"));
+            assert!(timed::<Value>(&mut step, timeout).is_err(), "{timeout:?}");
+            assert_eq!((latched(&step), step.cursor), (format!("waiting {DEADLINE}"), 2), "{timeout:?}: re-armed");
+
+            for now in [DEADLINE, "2026-11-15T00:00:00Z"] {
+                let mut step = execution(open.clone(), &[], at(now));
+                assert!(timed::<Value>(&mut step, timeout).is_err(), "{timeout:?} at {now}");
+                assert_eq!(latched(&step), "close 1 TimedOut", "{timeout:?} at {now}: decided, not returned");
+
+                let mut step = execution(open.clone(), &[("m1", json!("v"))], at(now));
+                assert!(timed::<Value>(&mut step, timeout).is_err(), "{timeout:?} at {now}");
+                assert_eq!(latched(&step), "close 1 Received", "{timeout:?} at {now}: a kept reply wins past it");
+            }
+        }
+    }
+
+    /// Scenario: Timer execution and later replay. A committed outcome is returned; a timeout is not decoded and does
+    /// not look at a reply kept later, nor at the clock.
+    #[test]
+    fn a_saved_decision_returns_its_outcome_and_later_helpers_go_on() {
+        let received = vec![request("ask", "m1"), wait("done", Some(DEADLINE), Some(WaitOutcome::Received))];
+        let mut step = execution(received.clone(), &[("m1", json!(7))], at("2027-01-01T00:00:00Z"));
+        assert_eq!(timed::<u32>(&mut step, SECOND).unwrap(), Waited::Received(7));
+        assert_eq!(latched(&step), "none", "the decoding marker is cleared");
+        let mut step = execution(received, &[("m1", Value::Null)], at(NOW));
+        assert_eq!(timed::<Option<u32>>(&mut step, SECOND).unwrap(), Waited::Received(None), "null is data");
+
+        let timed_out = vec![request("ask", "m1"), wait("done", Some(DEADLINE), Some(WaitOutcome::TimedOut))];
+        for replies in [vec![], vec![("m1", json!("not a number"))]] {
+            let mut step = execution(timed_out.clone(), &replies, at(NOW));
+            assert_eq!(timed::<u32>(&mut step, SECOND).unwrap(), Waited::TimedOut, "{replies:?}");
+            assert_eq!(latched(&step), "none");
+            assert!(block_on(step.run("next", |_key| async { Ok(()) })).is_err(), "later helpers go on");
+            assert!(latched(&step).starts_with(r#"new {"kind":"step""#), "{}", latched(&step));
+        }
+    }
+
+    /// Scenario: Replay matching, of misuse: swapped APIs, another handle, a join, a reused request, an invalid or
+    /// repeated id, and entry 1001.
+    #[test]
+    fn a_timed_wait_matches_only_a_saved_single_wait_with_a_deadline() {
+        let saved = |entry: JournalEntry| vec![request("ask", "m1"), request("other", "m2"), entry];
+        let mut join = wait("done", Some(DEADLINE), None);
+        if let JournalEntry::Wait { requests, .. } = &mut join {
+            requests.push(id("m2"));
+        }
+        let mut first = wait("done", Some(DEADLINE), None);
+        if let JournalEntry::Wait { mode, .. } = &mut first {
+            *mode = WaitMode::First;
+        }
+        let mut other = wait("done", Some(DEADLINE), None);
+        if let JournalEntry::Wait { requests, .. } = &mut other {
+            requests[0] = id("m2");
+        }
+        for (journal, why) in [
+            (saved(wait("done", None, None)), "wait `done` is saved without a deadline, which Step::wait_timeout"),
+            (saved(join), "wait `done` is saved as a join, which this release"),
+            (saved(first), "wait `done` is saved as a join"),
+            (saved(other), "wait `done` is saved for the request m2, not for m1"),
+            (saved(JournalEntry::Step { id: "done".into(), result: Value::Null }), "where its journal holds step"),
+        ] {
+            let mut step = execution(journal, &[], at(NOW));
+            let handle = ask::<Value>(&mut step);
+            block_on(step.request("other", &job(), |_: ReplyTo<Value>| Never::Go)).unwrap();
+            assert!(block_on(step.wait_timeout("done", &handle, SECOND)).is_err());
+            assert!(latched(&step).contains(why), "{why}: {}", latched(&step));
+        }
+
+        // Step::wait on a saved wait with a deadline.
+        let mut step = execution(saved(wait("done", Some(DEADLINE), None)), &[], at(NOW));
+        let handle = ask::<Value>(&mut step);
+        block_on(step.request("other", &job(), |_: ReplyTo<Value>| Never::Go)).unwrap();
+        assert!(block_on(step.wait("done", &handle)).is_err());
+        let why = "is saved with a deadline, which Step::wait cannot replay";
+        assert!(latched(&step).contains(why), "{}", latched(&step));
+
+        // A new timed wait for a request another wait names, or for none of the journal.
+        let journal = vec![request("ask", "m1"), wait("first", Some(DEADLINE), Some(WaitOutcome::TimedOut))];
+        let mut step = execution(journal, &[], at(NOW));
+        let handle = ask::<Value>(&mut step);
+        assert_eq!(block_on(step.wait_timeout("first", &handle, SECOND)).unwrap(), Waited::TimedOut);
+        assert!(block_on(step.wait_timeout("again", &handle, SECOND)).is_err());
+        assert!(latched(&step).contains("names the request m1 of the wait `first`"), "{}", latched(&step));
+        let mut step = execution(vec![request("ask", "m1")], &[], at(NOW));
+        ask::<Value>(&mut step);
+        assert!(block_on(step.wait_timeout("done", &Request::<Value>::new(id("m9")), SECOND)).is_err());
+        assert!(latched(&step).contains("names m9, no earlier request"), "{}", latched(&step));
+
+        // Entry 1000 fits, 1001 does not; an invalid or a repeated id.
+        for (count, fits) in [(998, true), (999, false)] {
+            let mut journal: Vec<JournalEntry> =
+                (0..count).map(|i| JournalEntry::Step { id: format!("s{i}"), result: Value::Null }).collect();
+            journal.push(request("ask", "m1"));
+            let mut step = execution(journal, &[], at(NOW));
+            for i in 0..count {
+                block_on(step.run(&format!("s{i}"), |_key| async { Ok(()) })).unwrap();
+            }
+            assert!(timed::<Value>(&mut step, SECOND).is_err());
+            let expected = if fits { r#"new {"kind":"wait""# } else { "permanent wait `done` would be entry 1001" };
+            assert!(latched(&step).starts_with(expected), "{count}: {}", latched(&step));
+        }
+        for (wait, why) in [("ask", "calls the id `ask` twice"), ("a b", "a step id is")] {
+            let mut step = execution(vec![request("ask", "m1")], &[], at(NOW));
+            let handle = ask::<Value>(&mut step);
+            assert!(block_on(step.wait_timeout(wait, &handle, SECOND)).is_err());
+            assert!(latched(&step).contains(why), "{why}: {}", latched(&step));
+        }
+    }
+
+    /// Scenario: Latch and decoding: an unpolled call changes nothing, the first latch wins over a swallowed decision,
+    /// an earlier latch wins over the wait, a received reply that does not decode or whose decoder panics fails for
+    /// good and blocks later helpers.
+    #[test]
+    fn the_first_latch_wins_and_decoding_failures_keep_the_outcome() {
+        let mut step = execution(vec![request("ask", "m1")], &[], at(NOW));
+        let handle = ask::<Value>(&mut step);
+        drop(step.wait_timeout("done", &handle, SECOND));
+        assert_eq!((latched(&step), step.cursor, step.seen.len()), ("none".to_owned(), 1, 1), "unpolled: nothing");
+
+        for (journal, now) in [
+            (vec![request("ask", "m1")], NOW),
+            (vec![request("ask", "m1"), wait("done", Some(DEADLINE), None)], NOW),
+            (vec![request("ask", "m1"), wait("done", Some(DEADLINE), None)], DEADLINE),
+        ] {
+            let mut step = execution(journal, &[], at(now));
+            let handle = ask::<Value>(&mut step);
+            let _ = block_on(step.wait_timeout("done", &handle, SECOND));
+            let first = latched(&step);
+            let mut invoked = false;
+            let caught = block_on(step.run("next", |_key| {
+                invoked = true;
+                async { Ok(()) }
+            }));
+            assert!(caught.is_err() && !invoked, "{first}: a later step invokes nothing");
+            assert!(block_on(step.wait_timeout("other", &handle, SECOND)).is_err());
+            assert_eq!(latched(&step), first, "the swallowed latch stays");
+        }
+
+        let mut step = execution(vec![request("ask", "m1"), wait("done", Some(DEADLINE), None)], &[], at(DEADLINE));
+        step.latch = Some(Latch::InProgress("step", "a".to_owned()));
+        assert!(block_on(step.wait_timeout("done", &Request::<Value>::new(id("m1")), SECOND)).is_err());
+        assert_eq!((latched(&step), step.seen.len()), ("in progress step a".to_owned(), 0), "an earlier latch wins");
+
+        let received = vec![request("ask", "m1"), wait("done", Some(DEADLINE), Some(WaitOutcome::Received))];
+        let mut step = execution(received.clone(), &[("m1", json!("seven"))], at(NOW));
+        assert!(timed::<u32>(&mut step, SECOND).is_err());
+        assert!(latched(&step).contains("the saved reply of wait `done` does not decode"), "{}", latched(&step));
+        assert!(latched(&step).contains("fix the code and send a public Continue"), "{}", latched(&step));
+
+        /// A reply whose decoder panics.
+        struct Exploding;
+        impl<'de> Deserialize<'de> for Exploding {
+            fn deserialize<D: Deserializer<'de>>(_: D) -> Result<Self, D::Error> {
+                panic!("the decoder panicked")
+            }
+        }
+        let mut step = execution(received, &[("m1", json!(1))], at(NOW));
+        let handle = ask::<Exploding>(&mut step);
+        let panicked = catch_unwind(AssertUnwindSafe(|| block_on(step.wait_timeout("done", &handle, SECOND))));
+        assert!(panicked.is_err());
+        assert_eq!(latched(&step), "in progress wait done");
+        let mut invoked = false;
+        let _ = block_on(step.run("next", |_key| {
+            invoked = true;
+            async { Ok(()) }
+        }));
+        assert!(!invoked && latched(&step) == "in progress wait done", "the marker blocks later helpers");
+    }
+
+    /// The reply type is inferred from the request, and a flow that waits with a timeout has a `Send` future.
+    #[test]
+    fn the_reply_type_is_inferred_and_a_timed_flow_is_send() {
+        struct Timed;
+        impl Flow for Timed {
+            const TYPE: &'static str = "timed";
+            type Input = String;
+
+            async fn run(&self, step: &mut Step, name: String) -> HandlerResult {
+                let request = step.request("ask", &Job(name), |_reply: ReplyTo<u32>| Never::Go).await?;
+                match step.wait_timeout("done", &request, SECOND).await? {
+                    Waited::Received(n) => step.run("got", |_key| async move { Ok(n + 1) }).await?,
+                    Waited::TimedOut => step.run("late", |_key| async { Ok(0) }).await?,
+                };
+                Ok(())
+            }
+        }
+        fn send<F: Future + Send>(_: F) {}
+        let mut step = execution(vec![], &[], at(NOW));
+        send(Timed.run(&mut step, "j1".into()));
     }
 }
