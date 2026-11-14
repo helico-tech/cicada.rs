@@ -494,6 +494,7 @@ dependencies = [
 name = "cicada-actors"
 version = "0.17.0"
 dependencies = [
+ "axum",
  "cicada",
  "cicada-axum",
  "cicada-test",
@@ -505,6 +506,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tower",
 ]
 
 [[package]]

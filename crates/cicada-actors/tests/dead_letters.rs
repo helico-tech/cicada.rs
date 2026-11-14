@@ -1,5 +1,5 @@
 //! Dead letters, on virtual time with `TestActors` (ADR 0028): told of failed messages by a watch, with no timer; a
-//! capacity; a redrive, once; and a discard.
+//! capacity; a redrive, once; and a discard. A payload too deep to keep as a value is kept as its JSON text (ADR 0043).
 
 mod common;
 
@@ -8,7 +8,8 @@ use std::time::Duration;
 use cicada::prelude::*;
 use cicada::store::{Message, MessageStatus, OutcomeStatus, SqliteOptions};
 use cicada::{Failed, FailureCause, Store, WatchTarget};
-use cicada_actors::{DeadLetter, DeadLetters, DeadLettersActor, DeadLettersMsg, DeadLettersState};
+use cicada_actors::{DeadLetter, DeadLetters, DeadLettersActor, DeadLettersMsg, DeadLettersState, LetterPayload};
+use cicada_axum::assert_state_sample;
 use cicada_test::TestActors;
 use common::*;
 use serde::{Deserialize, Serialize};
@@ -127,7 +128,7 @@ async fn a_watch_on_every_type_records_a_letter_for_every_failed_message() {
         DeadLetter {
             actor: addr(&worker("w")),
             message_type: "Fail".into(),
-            payload: json!({}),
+            payload: LetterPayload::Value(json!({})),
             correlation_id: Some("c-1".into()),
             from: None,
             error: "boom".into(),
@@ -409,48 +410,269 @@ fn nested(levels: usize) -> Value {
     (0..levels).fold(json!(1), |inner, _| Value::Array(vec![inner]))
 }
 
-/// The error of a turn of the dead-letters actor whose letter would make its state too deep.
+/// The error of a turn of the dead-letters actor whose state would be too deep.
 const TOO_DEEP: &str = "State cannot be stored: The state is nested deeper than 64 levels";
+
+/// How many arrays and objects `value` holds inside each other, empty ones too, counted without recursion.
+fn depth(value: &Value) -> usize {
+    let mut deepest = 0;
+    let mut open = vec![(value, 0)];
+    while let Some((value, level)) = open.pop() {
+        let inner: Vec<&Value> = match value {
+            Value::Array(items) => items.iter().collect(),
+            Value::Object(fields) => fields.values().collect(),
+            _ => continue,
+        };
+        deepest = deepest.max(level + 1);
+        open.extend(inner.into_iter().map(|v| (v, level + 1)));
+    }
+    deepest
+}
 
 /// Sends `billing.invoices/a` a message whose payload is `levels` deep, which fails; runs the invoice's turn and
 /// returns the message and the `Failed` that the dead-letters actor gets, which waits in its paused mailbox.
 async fn fail_deep(test: &TestActors, levels: usize) -> (Message, Message) {
-    test.create(&Invoice { id: "a".into() }, &NoState {}).await;
+    fail_with(test, json!({"type": "Deep", "v": nested(levels - 1)})).await
+}
+
+/// Sends `billing.invoices/a` the message `{"type": …, …}` of `message`, which fails, like [`fail_deep`].
+async fn fail_with(test: &TestActors, message: Value) -> (Message, Message) {
+    let invoice = Invoice { id: "a".into() };
+    if !test.exists(&invoice).await {
+        test.create(&invoice, &NoState {}).await;
+    }
     test.system().pause_mailbox(&addr(&letters_actor())).await.unwrap();
-    let failed = test.send(&Invoice { id: "a".into() }, Failing::Deep { v: nested(levels - 1) }).await;
+    let mut payload = message;
+    let message_type = payload.as_object_mut().unwrap().remove("type").unwrap();
+    let options = SendOptions::new().correlation_id("c-deep");
+    let sent = test.system().send_message(&addr(&invoice), message_type.as_str().unwrap(), payload, options).await;
+    let cicada::SendResult::Accepted(failed) = sent.unwrap() else { panic!("not accepted") };
     test.run_until_idle().await;
     let notification = test.pending(&letters_actor()).await.pop().expect("the Failed");
     test.system().resume_mailbox(&addr(&letters_actor())).await.unwrap();
     (failed, notification)
 }
 
-/// Scenario: The deepest payload a letter keeps. A letter holds its payload three levels into the state, so a payload
-/// of 61 levels makes a state of 64.
+/// Redrives the letter of `failed` with the invoice's mailbox paused; returns the message it sent, still pending.
+async fn redriven(test: &TestActors, failed: &Message) -> Message {
+    test.system().pause_mailbox(&addr(&Invoice { id: "a".into() })).await.unwrap();
+    to_letters(test, DeadLettersMsg::Redrive { message_id: failed.id.clone() }).await;
+    let sent = letter(test, &failed.id).await.redriven_as.expect("a redrive sent it");
+    let pending = test.pending(&Invoice { id: "a".into() }).await;
+    pending.into_iter().find(|m| m.id == sent).expect("the sent message")
+}
+
+/// Scenario: Raw boundary and null. A payload of 61 levels makes a state of 64, and stays a value.
 #[tokio::test(start_paused = true)]
-async fn a_letter_keeps_a_payload_of_61_levels() {
+async fn a_letter_keeps_a_payload_of_61_levels_as_a_value() {
     let test = node(1_000, "*").await;
     let (failed, notification) = fail_deep(&test, 61).await;
     test.run_until_idle().await;
     assert_eq!(status(&test, &notification).await, Some(OutcomeStatus::Done));
-    assert_eq!(letter(&test, &failed.id).await.payload, json!({"v": nested(60)}));
+    assert_eq!(letter(&test, &failed.id).await.payload, LetterPayload::Value(json!({"v": nested(60)})));
+    let written = test.state_json(&letters_actor()).await.unwrap();
+    let held = &written["letters"][failed.id.as_str()];
+    assert!(held.get("payload").is_some() && held.get("payloadJson").is_none(), "{}", depth(held));
+    assert_eq!(depth(&written), 64);
 }
 
-/// Scenario: A payload too deep for a letter. With a payload of 62 levels the state would be 65 deep: the turn that
-/// would record it fails and records nothing, and the next failure is recorded as before. The `Failed` that fails is a
-/// notification, which tells nobody, so its cause shows only in what the node writes for a new state that cannot be
-/// stored, with the cause `handler`: its error.
+/// Scenario: Encoded boundary. A payload of 62 or 64 levels is kept as its JSON text, the notice turn ends `done`, the
+/// state stays within 64 levels, and a redrive sends the captured payload with the same type and correlation id.
 #[tokio::test(start_paused = true)]
-async fn a_payload_too_deep_for_a_letter_fails_the_turn_and_records_nothing() {
-    let test = node(1_000, "*").await;
-    let (failed, notification) = fail_deep(&test, 62).await;
-    test.run_until_idle().await;
-    let outcome = test.outcome(&notification).await.expect("an outcome");
-    assert_eq!((outcome.status, outcome.error.as_deref()), (OutcomeStatus::Failed, Some(TOO_DEEP)));
-    assert!(letters(&test).await.is_empty(), "no letter for {}", failed.id);
-    assert!(told(&test).await.is_empty(), "a notification that fails tells nobody");
+async fn a_letter_keeps_a_payload_of_62_or_64_levels_as_json_text_and_redrives_it_unchanged() {
+    for levels in [62, 64] {
+        let test = node(1_000, "*").await;
+        let (failed, notification) = fail_deep(&test, levels).await;
+        test.run_until_idle().await;
+        assert_eq!(status(&test, &notification).await, Some(OutcomeStatus::Done), "{levels}");
+        let captured = notification.payload["payload"].clone();
+        assert_eq!(depth(&captured), levels);
+        let kept = letter(&test, &failed.id).await;
+        assert_eq!(kept.payload, LetterPayload::Json(captured.to_string()), "{levels}: compact text");
+        assert_eq!(kept.payload.value().unwrap(), captured);
+        let written = test.state_json(&letters_actor()).await.unwrap();
+        let held = &written["letters"][failed.id.as_str()];
+        assert!(held.get("payload").is_none() && held["payloadJson"].is_string(), "{levels}");
+        assert!(depth(&written) <= 64, "{levels}: {}", depth(&written));
 
-    let next = fail_work(&test).await;
-    assert_eq!(letters(&test).await.keys().collect::<Vec<_>>(), [&next.id]);
+        let again = redriven(&test, &failed).await;
+        assert_eq!((again.message_type.as_str(), &again.payload), ("Deep", &captured), "{levels}");
+        assert_eq!(again.correlation_id.as_deref(), Some("c-deep"));
+        assert_eq!(again.from, Some(addr(&letters_actor())));
+    }
+}
+
+/// Scenario: Raw boundary and null; Old and new values that resemble an encoding. A new failure whose payload is null,
+/// a JSON-looking string, a number, or an object with a `payloadJson` or `$cicada.json` key is kept as that value and
+/// redriven as it was; a deep object with a `payloadJson` key is kept in the separate field and redriven whole.
+#[tokio::test(start_paused = true)]
+async fn payloads_that_resemble_an_encoding_are_kept_as_they_are_and_redriven_unchanged() {
+    let test = node(1_000, "*").await;
+    let elsewhere = ActorSystem::builder(test.store().clone()).build();
+    let mut deep_marker = nested(62);
+    for _ in 0..2 {
+        deep_marker = json!({"payloadJson": deep_marker});
+    }
+    let payloads = [
+        Value::Null,
+        json!("{\"payloadJson\": \"[1]\"}"),
+        json!(12.5),
+        json!({"payloadJson": "[1, 2]"}),
+        json!({"$cicada.json": "{}"}),
+        deep_marker.clone(),
+    ];
+    for payload in payloads {
+        let invoice = addr(&Invoice { id: "a".into() });
+        test.create(&Invoice { id: "a".into() }, &NoState {}).await;
+        test.system().resume_mailbox(&invoice).await.unwrap();
+        // A node that does not host the invoice does not decode the payload, which need not be an object; the
+        // invoice's turn cannot decode it and fails.
+        let sent = elsewhere.send_message(&invoice, "Fail", payload.clone(), SendOptions::new()).await.unwrap();
+        let cicada::SendResult::Accepted(failed) = sent else { panic!("not accepted: {payload}: {sent:?}") };
+        test.run_until_idle().await;
+        let kept = letter(&test, &failed.id).await;
+        if payload == deep_marker {
+            assert!(matches!(kept.payload, LetterPayload::Json(_)), "deep: {:?}", kept.payload);
+        } else {
+            assert_eq!(kept.payload, LetterPayload::Value(payload.clone()));
+            let written = test.state_json(&letters_actor()).await.unwrap();
+            assert_eq!(written["letters"][failed.id.as_str()]["payload"], payload, "raw");
+        }
+        let again = redriven(&test, &failed).await;
+        assert_eq!(again.payload, payload);
+        test.system().delete_actor(&invoice).await.unwrap();
+    }
+}
+
+/// Scenario: Exact numeric conversion. Floats and integers at their bounds in a payload too deep for a value are kept
+/// as text and read back by `value()` with the bits of the captured `Failed`.
+#[tokio::test(start_paused = true)]
+async fn a_payload_kept_as_text_reads_back_every_number_exactly() {
+    let floats = [1.0715660391465826e-75, -1.0715660391465826e-75, f64::from_bits(1), f64::MAX, -0.0];
+    let mut numbers: Vec<Value> = floats.into_iter().map(Value::from).collect();
+    numbers.extend([Value::from(i64::MIN), Value::from(i64::MAX), Value::from(u64::MAX)]);
+    let numbers = Value::Array(numbers);
+    let wrapped = (0..62).fold(numbers.clone(), |inner, _| Value::Array(vec![inner]));
+
+    let test = node(1_000, "*").await;
+    let (failed, notification) = fail_with(&test, json!({"type": "Deep", "v": wrapped})).await;
+    test.run_until_idle().await;
+    let captured = notification.payload["payload"].clone();
+    let kept = letter(&test, &failed.id).await;
+    assert!(matches!(kept.payload, LetterPayload::Json(_)));
+    let read = kept.payload.value().unwrap();
+    assert_eq!(read, captured);
+    let bits = |v: &Value| -> Vec<(Option<u64>, Option<i64>, Option<u64>)> {
+        let mut inner = &v["v"];
+        while inner.as_array().is_some_and(|a| a.len() == 1) {
+            inner = &inner[0];
+        }
+        inner.as_array().unwrap().iter().map(|n| (n.as_f64().map(f64::to_bits), n.as_i64(), n.as_u64())).collect()
+    };
+    assert_eq!(bits(&read), bits(&captured));
+    assert_eq!(bits(&read), bits(&json!({"v": numbers})), "the captured value is what was sent");
+    assert_eq!(bits(&read)[4].0, Some((-0.0f64).to_bits()), "a negative zero");
+}
+
+/// A dead-letters actor named `x` whose state holds `letters`, each for a failed `Fail` to `worker/w`, by message id.
+async fn preset(test: &TestActors, letters: Vec<(&str, LetterPayload)>) -> DeadLetters {
+    let at = test.now();
+    let letters = letters.into_iter().map(|(id, payload)| {
+        let letter = DeadLetter {
+            actor: addr(&worker("w")),
+            message_type: "Fail".into(),
+            payload,
+            correlation_id: None,
+            from: None,
+            error: "boom".into(),
+            cause: FailureCause::Handler,
+            attempts: 1,
+            recorded_at: at,
+            seq: 1,
+            redriven_as: None,
+            redrive_error: None,
+        };
+        (MessageId::new(id).unwrap(), letter)
+    });
+    let named = DeadLetters::named("x");
+    test.create(&named, &DeadLettersState { letters: letters.collect() }).await;
+    named
+}
+
+/// Scenarios: Invalid and excessively nested JSON text; Parsed data is invalid to send. Text that is not JSON, text
+/// nested deeper than the parser's 128 levels, text of a payload of 65 levels and text with a NUL character each send
+/// nothing, record why and keep the text; a discard and the redrive of a valid letter still work.
+#[tokio::test(start_paused = true)]
+async fn a_letter_whose_text_cannot_be_read_or_sent_records_why_and_blocks_nothing() {
+    let test = node(1_000, "*").await;
+    let open = "[".repeat(200) + &"]".repeat(200);
+    let cases = vec![
+        ("m-broken", LetterPayload::Json("{not json".into())),
+        ("m-parser", LetterPayload::Json(open)),
+        ("m-deep", LetterPayload::Json(json!({"v": nested(64)}).to_string())),
+        ("m-nul", LetterPayload::Json(r#"{"text": "a\u0000b"}"#.into())),
+        ("m-key", LetterPayload::Json(r#"{"a\u0000b": 1}"#.into())),
+        ("m-good", LetterPayload::Json("{}".into())),
+    ];
+    let named = preset(&test, cases.clone()).await;
+    let before: DeadLettersState = test.state(&named).await;
+    test.system().pause_mailbox(&addr(&worker("w"))).await.unwrap();
+    let pending = test.pending(&worker("w")).await.len();
+    for (id, _) in &cases[..5] {
+        let m = test.send(&named, DeadLettersMsg::Redrive { message_id: MessageId::new(*id).unwrap() }).await;
+        test.run_until_idle().await;
+        assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done), "{id}");
+    }
+    assert_eq!(test.pending(&worker("w")).await.len(), pending, "nothing is sent");
+    let after: DeadLettersState = test.state(&named).await;
+    let error = |id: &str| after.letters[&MessageId::new(id).unwrap()].redrive_error.clone().unwrap_or_default();
+    assert!(error("m-broken").starts_with("The kept payload cannot be read: "), "{}", error("m-broken"));
+    assert!(error("m-parser").starts_with("The kept payload cannot be read: recursion limit"), "{}", error("m-parser"));
+    assert_eq!(error("m-deep"), "The payload is nested deeper than 64 levels");
+    assert_eq!(error("m-nul"), "The payload contains a NUL character");
+    assert_eq!(error("m-key"), "The payload contains a NUL character");
+    for (id, payload) in &cases {
+        let letter = &after.letters[&MessageId::new(*id).unwrap()];
+        assert_eq!((&letter.payload, &letter.redriven_as), (payload, &None), "{id} keeps its text");
+    }
+
+    let m = test.send(&named, DeadLettersMsg::Discard { message_id: MessageId::new("m-broken").unwrap() }).await;
+    test.run_until_idle().await;
+    assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done));
+    let m = test.send(&named, DeadLettersMsg::Redrive { message_id: MessageId::new("m-good").unwrap() }).await;
+    test.run_until_idle().await;
+    assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done));
+    let last: DeadLettersState = test.state(&named).await;
+    assert_eq!(last.letters.len(), before.letters.len() - 1, "the discard");
+    let sent = last.letters[&MessageId::new("m-good").unwrap()].redriven_as.clone().expect("the valid letter is sent");
+    let again = test.pending(&worker("w")).await.into_iter().find(|m| m.id == sent).expect("pending");
+    assert_eq!((again.message_type.as_str(), &again.payload), ("Fail", &json!({})));
+}
+
+/// Scenario: On-demand decoding. A letter is read without parsing its text, and a shallow value kept as text is
+/// written back as text.
+#[test]
+fn a_letter_is_read_without_parsing_its_text_and_written_back_in_its_form() {
+    let letter = |payload: Value| {
+        let mut letter = json!({
+            "actor": "worker/w", "messageType": "Fail", "correlationId": null, "from": null, "error": "boom",
+            "cause": "handler", "attempts": 1,
+            "recordedAt": "2026-11-14T00:00:00Z", "seq": 1,
+        });
+        letter.as_object_mut().unwrap().extend(payload.as_object().unwrap().clone());
+        letter
+    };
+    let broken: DeadLetter = serde_json::from_value(letter(json!({"payloadJson": "{not json"}))).unwrap();
+    assert_eq!(broken.payload, LetterPayload::Json("{not json".into()));
+    assert!(broken.payload.value().is_err());
+    let shallow = letter(json!({"payloadJson": "[1]"}));
+    let read: DeadLetter = serde_json::from_value(shallow.clone()).unwrap();
+    assert_eq!(read.payload.value().unwrap(), json!([1]));
+    assert_eq!(serde_json::to_value(&read).unwrap(), shallow, "written back as text");
+    let null = letter(json!({"payload": null}));
+    let read: DeadLetter = serde_json::from_value(null.clone()).unwrap();
+    assert_eq!(read.payload, LetterPayload::Value(Value::Null), "a present null");
+    assert_eq!(serde_json::to_value(&read).unwrap(), null);
 }
 
 /// A node on a SQLite store in `dir` with dead letters watching every type and the worker `worker/w`, and a second
@@ -499,7 +721,7 @@ async fn a_deep_letter_from_before_stops_the_letters_until_it_is_discarded() {
     let letter = DeadLetter {
         actor: addr(&worker("w")),
         message_type: "Fail".into(),
-        payload: nested(70),
+        payload: LetterPayload::Value(nested(70)),
         correlation_id: None,
         from: None,
         error: "boom".into(),
@@ -542,4 +764,53 @@ fn the_dead_letters_actor_is_at_cicada_dead_letters_underscore_by_convention() {
     assert_eq!(addr(&DeadLetters::named("ops")).as_str(), "cicada.dead-letters/ops");
     assert_eq!(DeadLettersActor::with_capacity(0).unwrap_err().to_string(), "capacity must be positive");
     assert_eq!(DeadLettersActor::default().capacity(), 1_000);
+}
+
+/// `PUT /actors/{address}` with `{"state": state}` on `api`: the status of the answer.
+async fn put_state(api: &axum::Router, address: &str, state: &Value) -> u16 {
+    use tower::ServiceExt;
+    let request = axum::http::Request::put(format!("/actors/{address}"))
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(json!({ "state": state }).to_string()))
+        .unwrap();
+    api.clone().oneshot(request).await.unwrap().status().as_u16()
+}
+
+/// A state with one letter whose payload fields are `fields`.
+fn one_letter(fields: Value) -> Value {
+    let mut letter = json!({
+        "actor": "worker/w", "messageType": "Fail", "correlationId": null, "from": null, "error": "boom",
+        "cause": "handler", "attempts": 1, "recordedAt": "2026-11-14T00:00:00Z", "seq": 1,
+    });
+    letter.as_object_mut().unwrap().extend(fields.as_object().unwrap().clone());
+    json!({"letters": {"m-1": letter}})
+}
+
+/// Scenario: Presence and schema agreement. Over HTTP a letter with both payload fields, neither, or a null
+/// `payloadJson` is refused with 422 and no actor is created, and the decoder refuses the same states; `payload: null`,
+/// a string `payloadJson` and a raw value that resembles an encoding pass both, and an unknown field stays allowed.
+#[tokio::test(start_paused = true)]
+async fn the_schema_and_the_decoder_agree_on_the_payload_fields_of_a_letter() {
+    let test = node(1_000, "*").await;
+    // A node that does not host the type: only the schema of the registered contract checks the state.
+    let api = cicada_axum::actor_api(ActorSystem::builder(test.store().clone()).build());
+    let refused = [json!({"payload": 1, "payloadJson": "1"}), json!({}), json!({"payloadJson": null})];
+    for (n, fields) in refused.into_iter().enumerate() {
+        let state = one_letter(fields.clone());
+        assert_eq!(put_state(&api, &format!("cicada.dead-letters/r{n}"), &state).await, 422, "{fields}");
+        assert!(!test.exists(&DeadLetters::named(format!("r{n}"))).await, "{fields}");
+        assert!(serde_json::from_value::<DeadLettersState>(state).is_err(), "{fields}");
+    }
+    let taken = [
+        json!({"payload": null}),
+        json!({"payloadJson": "[1]"}),
+        json!({"payload": {"payloadJson": "[1]"}}),
+        json!({"payload": "{\"$cicada.json\": 1}"}),
+        json!({"payload": 1, "note": "an unknown field"}),
+    ];
+    for (n, fields) in taken.into_iter().enumerate() {
+        let state = one_letter(fields.clone());
+        assert_state_sample::<DeadLettersState>(&state);
+        assert_eq!(put_state(&api, &format!("cicada.dead-letters/t{n}"), &state).await, 201, "{fields}");
+    }
 }

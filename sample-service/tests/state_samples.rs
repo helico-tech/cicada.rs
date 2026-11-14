@@ -10,7 +10,7 @@ use cicada::store::MessageId;
 use cicada::time::Timestamp;
 use cicada_actors::{
     BatcherState, DeadLetter, DeadLettersState, DebouncedMessage, DebouncerState, EventState, FlowState, JournalEntry,
-    RateLimiterState, Schedule, SchedulerState, StoredMessage,
+    LetterPayload, RateLimiterState, Schedule, SchedulerState, StoredMessage,
 };
 use cicada_examples::cron::CronState;
 use cicada_examples::flow_onboarding::OnboardingInput;
@@ -146,14 +146,15 @@ fn flow_onboarding() {
 }
 
 /// The samples of the dead letters start again with 0.14.0: their contract changed, and the letters of 0.13.0 are lost
-/// in the upgrade (the operations guide, "Upgrading to 0.14.0").
+/// in the upgrade (the operations guide, "Upgrading to 0.14.0"). From 0.17.0 a letter holds its payload as a value, as
+/// before, or as JSON text in `payloadJson` (ADR 0043).
 #[test]
 fn dead_letters() {
     let dir = dir("dead-letters");
     let letter = DeadLetter {
         actor: "mailers/m".parse().unwrap(),
         message_type: "SendMail".into(),
-        payload: json!({"to": "a@example.test"}),
+        payload: LetterPayload::Value(json!({"to": "a@example.test"})),
         correlation_id: None,
         from: None,
         error: "smtp down".into(),
@@ -166,5 +167,10 @@ fn dead_letters() {
     };
     let state = DeadLettersState { letters: [(MessageId::new("m-1").unwrap(), letter)].into() };
     record_state_sample(&dir, "one-letter", &state);
+    let mut text = state.clone();
+    for letter in text.letters.values_mut() {
+        letter.payload = LetterPayload::Json(r#"{"to":"a@example.test"}"#.into());
+    }
+    record_state_sample(&dir, "payload-json", &text);
     assert_state_decodes::<DeadLettersState>(&dir);
 }

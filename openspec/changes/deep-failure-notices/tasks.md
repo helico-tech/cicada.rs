@@ -8,7 +8,7 @@
   watcher compares the deep payload through a probe and stores only shallow metadata. Run targeted cicada conformance
   and runtime tests plus the affected cicada-client test target, including PostgreSQL when configured. Check the
   feature in a temporary consumer outside the checkout so workspace dev-feature unification cannot hide its absence.
-- [ ] 2. Add and re-export LetterPayload with value(), change DeadLetter.payload, and implement the private wire
+- [x] 2. Add and re-export LetterPayload with value(), change DeadLetter.payload, and implement the private wire
   conversion/schema with exactly one raw payload or string payloadJson. Track raw null as present; avoid flatten or
   untagged buffering over deep data. Add the bounded depth walk, raw<=61/text>61 recording and redrive error handling
   without decoding text on state reads or adding live repair. Extend dead_letters.rs tests for depths 61/62/64,

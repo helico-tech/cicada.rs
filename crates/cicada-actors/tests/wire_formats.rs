@@ -124,6 +124,14 @@ fn the_contracts_of_the_eight_types_match_their_references() {
     }
 }
 
+/// The contract of the dead letters changed in 0.17.0 (ADR 0043): a letter holds `payload` or `payloadJson`, so its hash
+/// is not the one of 0.16, and a node of 0.16 is refused against a registration of 0.17 and the other way round.
+#[test]
+fn the_contract_of_the_dead_letters_has_a_new_hash_since_0_17_0() {
+    const HASH_OF_0_16: &str = "sha256:815160096f14f71d655450107b35a78fcc22e0f4fc774b77e5bfd7b040e2fb50";
+    assert_ne!(contract_of::<DeadLettersActor>().unwrap().hash(), HASH_OF_0_16);
+}
+
 /// A temporary folder that holds the reference of `contract`, as the main test writes it, so that the scenarios below
 /// do not depend on the files in `docs/reference/contracts`, which a first run with the update variable writes.
 fn folder_with(contract: &Contract) -> tempfile::TempDir {

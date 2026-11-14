@@ -185,7 +185,19 @@
   "state": {
     "$defs": {
       "DeadLetter": {
-        "description": "One failed message, as the `Failed` of its watch told it, and what became of a redrive of it.",
+        "description": "One failed message, as the `Failed` of its watch told it, and what became of a redrive of it. It holds exactly one\nof `payload` and `payloadJson`.",
+        "oneOf": [
+          {
+            "required": [
+              "payload"
+            ]
+          },
+          {
+            "required": [
+              "payloadJson"
+            ]
+          }
+        ],
         "properties": {
           "actor": {
             "description": "The actor the failed message was for.",
@@ -267,7 +279,11 @@
             "type": "string"
           },
           "payload": {
-            "description": "Its payload."
+            "description": "Its payload, when it is at most 61 levels deep: any JSON value, null too."
+          },
+          "payloadJson": {
+            "description": "The compact JSON text of its payload, when it is deeper than 61 levels.",
+            "type": "string"
           },
           "recordedAt": {
             "description": "When the letter was recorded (store time).",
@@ -275,7 +291,7 @@
             "type": "string"
           },
           "redriveError": {
-            "description": "Why the last redrive sent nothing: the type of the actor no longer takes the message.",
+            "description": "Why the last redrive sent nothing: the kept payload cannot be read or sent, or the type of the actor no longer\ntakes the message.",
             "type": [
               "string",
               "null"
@@ -298,7 +314,6 @@
         "required": [
           "actor",
           "messageType",
-          "payload",
           "error",
           "cause",
           "attempts",

@@ -32,7 +32,9 @@ pub mod supervisor;
 pub mod topic;
 
 pub use batcher::{Batcher, BatcherActor, BatcherMsg, BatcherState, InvalidBatch};
-pub use dead_letters::{CapacityError, DeadLetter, DeadLetters, DeadLettersActor, DeadLettersMsg, DeadLettersState};
+pub use dead_letters::{
+    CapacityError, DeadLetter, DeadLetters, DeadLettersActor, DeadLettersMsg, DeadLettersState, LetterPayload,
+};
 pub use debouncer::{DebouncedMessage, Debouncer, DebouncerActor, DebouncerMsg, DebouncerState, InvalidDebounce};
 pub use error::EncodeError;
 pub use event::{Event, EventActor, EventMsg, EventState};
