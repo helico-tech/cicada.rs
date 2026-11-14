@@ -147,17 +147,27 @@ fn usage(error: &clap::Error) -> String {
 }
 
 /// `text` with the password of every address in it that has one (`scheme://user:secret@host` becomes
-/// `scheme://user:***@host`). It leaves alone a raw password with `/`, `#`, `?`, a quote or a space, an address without
-/// `//` (`postgres:u:pw@h`) and the libpq form (`host=h password=…`).
+/// `scheme://user:***@host`): everything between the first `:` and the last `@` of the authority, also a raw `'` or
+/// another sub-delimiter, so that a quote of clap or a following address never cuts the password short. Where the end
+/// of an address is unclear it hides more, not less, and hiding twice gives what hiding once gave. It leaves alone a
+/// password with a raw `/`, `#`, `?`, `"`, `` ` `` or a space, which end the authority, an authority without `@`, an
+/// address without `//` (`postgres:u:pw@h`) and the libpq form (`host=h password=…`).
 pub(crate) fn hide_passwords(text: &str) -> String {
     let mut hidden = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(i) = rest.find("://") {
         let (before, after) = rest.split_at(i + 3);
         hidden.push_str(before);
-        let end = after
-            .find(|c: char| c.is_whitespace() || matches!(c, '/' | '?' | '#' | '\'' | '"' | '`'))
-            .unwrap_or(after.len());
+        let boundary =
+            after.find(|c: char| c.is_whitespace() || matches!(c, '/' | '?' | '#' | '"' | '`')).unwrap_or(after.len());
+        // A following address (`a://h,b://u:pw@k`) starts a scan of its own: its scheme is not this one's port.
+        let end = match after[..boundary].strip_suffix(':') {
+            Some(prefix) if after[boundary..].starts_with("//") => {
+                let scheme = prefix.bytes().rev().take_while(|b| b.is_ascii_alphanumeric() || b"+-.".contains(b));
+                prefix.len() - scheme.count()
+            }
+            _ => boundary,
+        };
         let authority = &after[..end];
         match authority.rfind('@').and_then(|at| authority[..at].find(':').map(|colon| (colon, at))) {
             Some((colon, at)) => {
@@ -189,6 +199,45 @@ mod tests {
         );
         assert_eq!(hide_passwords("a://x:p@q@h b://n@h c://h:1 d://u:@h"), "a://x:***@h b://n@h c://h:1 d://u:***@h");
         assert_eq!(hide_passwords("no address here"), "no address here");
+    }
+
+    /// Each pair is a text and what is printed of it; hiding the result again changes nothing.
+    #[test]
+    fn a_password_is_hidden_also_with_an_apostrophe_or_a_following_address() {
+        let cases = [
+            // A raw `'` in the password, the user name or just before the `@`, also inside clap's quotes.
+            (
+                "unexpected argument 'postgres://u:S3'CRET@h/db' found",
+                "unexpected argument 'postgres://u:***@h/db' found",
+            ),
+            ("postgres://o'neil:S3'CRET@h/db", "postgres://o'neil:***@h/db"),
+            ("'a://u:pw'@h'", "'a://u:***@h'"),
+            // Sub-delimiters, percent escapes and Unicode, copied as they are.
+            ("a://u:!$&'()*+,;=:@h:1/x", "a://u:***@h:1/x"),
+            ("a://u%40x:p%27q@h", "a://u%40x:***@h"),
+            ("a://ü:pässwörd@hôst/ß", "a://ü:***@hôst/ß"),
+            // Empty and multiple `@`: the last `@` ends the password.
+            ("a://u:@h", "a://u:***@h"),
+            ("a://u:p@q@h", "a://u:***@h"),
+            // Adjacent addresses, quoted or after an empty name of --types.
+            ("'a://u:p'q@h','b://v:r's@k'", "'a://u:***@h','b://v:***@k'"),
+            ("a://h,,b://u:secret@k", "a://h,,b://u:***@k"),
+            ("a://h/x,b+c.d-e://u:p@k,c://h:1", "a://h/x,b+c.d-e://u:***@k,c://h:1"),
+            ("a://u:p@h,://x", "a://u:***@h,://x"),
+            // No password, a port, IPv6, an authority without `@`, plain text.
+            (
+                "a://user@host b://host:5432 c://[::1]:5432/db d://u@[::1]:1",
+                "a://user@host b://host:5432 c://[::1]:5432/db d://u@[::1]:1",
+            ),
+            ("a://u:p@[::1]:5432/db", "a://u:***@[::1]:5432/db"),
+            ("a://u:secret", "a://u:secret"),
+            ("ünïcode, no address: here", "ünïcode, no address: here"),
+        ];
+        for (text, printed) in cases {
+            let once = hide_passwords(text);
+            assert_eq!(once, printed, "{text}");
+            assert_eq!(hide_passwords(&once), once, "{text}: twice");
+        }
     }
 
     #[test]

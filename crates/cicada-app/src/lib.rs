@@ -291,9 +291,10 @@ pub fn node_command(args: &[OsString]) -> bool {
 /// Why a command did not succeed.
 #[derive(Debug)]
 pub enum AppError {
-    /// The command line cannot be used: exit code 2. `run_with` hides the password of an address the message quotes
-    /// (`scheme://user:***@host`); it leaves alone a raw password with `/`, `#`, `?`, a quote or a space, an address
-    /// without `//` (`postgres:u:pw@h`) and the libpq form (`host=h password=…`).
+    /// The command line cannot be used: exit code 2. In the usage errors of `run_with`, the password of an address the
+    /// message quotes is hidden (`scheme://user:***@host`), also one with a raw `'`, and each of adjacent addresses
+    /// separately. It leaves alone a password with a raw `/`, `#`, `?`, `"`, `` ` `` or a space, an authority without
+    /// `@`, an address without `//` (`postgres:u:pw@h`) and the libpq form (`host=h password=…`).
     Usage(String),
     /// The command failed: exit code 1.
     Failed(anyhow::Error),
