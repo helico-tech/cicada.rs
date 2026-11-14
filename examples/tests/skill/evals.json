@@ -1,0 +1,119 @@
+{
+  "about": "Requests a coding agent with skills/cicada should handle in a consumer project. A reviewer runs a representative subset in temporary projects and judges the decisions and artifacts against `expect` and `avoid`, not the wording. CI checks only that the cases are here and well formed (examples/tests/skill.rs).",
+  "cases": [
+    {
+      "id": "new-sqlite-integration",
+      "request": "Add Cicada to this new Rust service: one counter actor on a SQLite store, with a test.",
+      "setup": "A fresh cargo package with no Cicada dependency; the helper reports none.",
+      "expect": [
+        "Every Cicada crate comes from one published stable release, named once, or the agent says it could not verify which release is the latest.",
+        "The store feature is named explicitly (`sqlite`); no crate or feature the task does not need is added.",
+        "The test uses TestActors on virtual time (`start_paused = true`) and runs."
+      ],
+      "avoid": [
+        "A dependency on a branch or the latest main presented as a release.",
+        "An offline skill version presented as the verified latest release."
+      ]
+    },
+    {
+      "id": "duplicate-payment",
+      "request": "Customers were charged twice after a node crashed. Fix the payments actor.",
+      "setup": "A project on a resolved Cicada source whose payments handler calls a gateway with a random request id.",
+      "expect": [
+        "Explains that handlers and external calls run at least once, and effects inside the system once.",
+        "Passes the gateway a key that is stable across runs: the message id, a flow step's key or a business id such as the order id.",
+        "Leaves retry to the sender's policy and adds a test of the repeated run."
+      ],
+      "avoid": [
+        "A claim that Cicada makes external effects exactly once.",
+        "A key built from the attempt, the clock or a random number."
+      ]
+    },
+    {
+      "id": "flow-cancellation",
+      "request": "Add an admin endpoint that cancels a running onboarding flow.",
+      "setup": "A project whose resolved source has durable flows but whose flows guide names no cancel operation for a run.",
+      "expect": [
+        "Reads the flows section of the resolved source and says what it supports for stopping a run (for example deleting the run, or cancelling its armed Continue) or that a cancel operation is unverified there.",
+        "Keeps cancellation cooperative: a handler stops at an await, blocking code runs on."
+      ],
+      "avoid": [
+        "An invented cancel API, or one taken from an open proposal or a newer release.",
+        "A claim that blocking code stops when a turn is cancelled."
+      ]
+    },
+    {
+      "id": "offline-old-source",
+      "request": "Add a dead-letters actor to this service.",
+      "setup": "Offline. The project locks Cicada v0.16.x from git and the checkout is fetched; the skill is 0.17.2.",
+      "expect": [
+        "Says once that the project is older than the skill, and reads the dead-letters section of the 0.16 checkout.",
+        "Uses only the API that source shows."
+      ],
+      "avoid": [
+        "A fetch, an upgrade or a lockfile change the user did not ask for.",
+        "An API of 0.17 presented as available in 0.16."
+      ]
+    },
+    {
+      "id": "moved-heading",
+      "request": "How do I lease turns for an executor outside the node?",
+      "setup": "The resolved source has no heading matching the route; the function is documented under another heading.",
+      "expect": [
+        "Searches the resolved source's README, docs and public code, and finds the function or says it is unverified."
+      ],
+      "avoid": [
+        "A claim that the feature is unsupported only because the routed heading is missing."
+      ]
+    },
+    {
+      "id": "mixed-fork",
+      "request": "Add a retry policy to the sends of the order saga.",
+      "setup": "The helper reports mixed: cicada from a fork by path, cicada-test from the upstream tag of the same version.",
+      "expect": [
+        "Shows both groups and asks which source the task is about before advice that assumes one.",
+        "Continues with inspection that does not depend on the answer."
+      ],
+      "avoid": [
+        "Silently picking one source, or replacing the fork with the upstream release."
+      ]
+    },
+    {
+      "id": "http-auth",
+      "request": "Expose the actor HTTP API to our web frontend.",
+      "setup": "A project on a resolved source with cicada-axum or cicada-app.",
+      "expect": [
+        "Adds the host's own authentication layer around the API, and keeps the readiness probe outside it.",
+        "Says that the API has no authentication of its own and can change and delete everything."
+      ],
+      "avoid": [
+        "A claim of built-in authentication, or the operator `--token` presented as protection for `serve`."
+      ]
+    },
+    {
+      "id": "unshipped-feature",
+      "request": "Give the flow's wait for a reply a timeout.",
+      "setup": "The resolved source has no flow wait with a timeout; such a change exists only as a proposal in the Cicada repository.",
+      "expect": [
+        "Says the feature is not in the resolved source, with the evidence, and offers what it does support (a delayed message, a flow sleep)."
+      ],
+      "avoid": [
+        "An API taken from a proposal or from latest main presented as available."
+      ]
+    },
+    {
+      "id": "contract-change-deploy",
+      "request": "Add a field to the order actor's state and roll it out with a rolling deploy.",
+      "setup": "A project with contract snapshots and state samples on a resolved source.",
+      "expect": [
+        "Reads old states with a serde default and checks them with state samples.",
+        "Says the contract changes, so a node of the new version refuses to start against the old registration, and deploys under a versioned type name or with a stop of the world, as the resolved source's operations guide says.",
+        "Updates the contract snapshot deliberately."
+      ],
+      "avoid": [
+        "A rolling deploy presented as safe because the new type decodes old data.",
+        "Deleting a registration or actors without the user's decision."
+      ]
+    }
+  ]
+}

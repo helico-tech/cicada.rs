@@ -15,6 +15,7 @@ cargo build --workspace
 cargo test --workspace                 # unit, runtime, SQLite, HTTP, doctest and docs tests; every feature of cicada and cicada-app on
 cargo test -p cicada-examples --doc    # only the Rust blocks of README.md, the guides and docs/operations.md
 cargo test -p cicada-examples --test docs   # the table of guarantees and the links between the Markdown files
+cargo test -p cicada-examples --test skill  # the consumer skill: version, routes, resolver and packaging (python3 3.11+)
 cargo clippy --workspace --all-targets
 cargo fmt --all                        # rustfmt.toml: 120 columns; CI checks it
 cargo check -p cicada [--features sqlite|postgres|testing]   # the core with no feature or one alone; CI builds each
@@ -46,7 +47,8 @@ PostgreSQL for tests: `docker compose up -d postgres` (port 55432). Tests that n
 | `e2e/` | End-to-end and fault tests against sample nodes in Docker |
 | `docs/` | `architecture.md`; `guarantees.md`, the tests behind each guarantee; `guide/`, one guide per layer; `operations.md`; `reference/`, the generated help of the command line (`cli.md`) and the contracts of the ready-made actors (`contracts/`); `openapi.json`; `adr/` and its index `adr/README.md` |
 | `openspec/` | Specs, changes in progress and finished changes |
-| `scripts/` | `release-check.sh`; `status.py`, the order and state of the changes; `review.py`, the review requests between the loops |
+| `skills/cicada/` | The consumer skill (ADR 0041): `SKILL.md`, which routes a consumer's agent into the resolved source, and its read-only resolver `scripts/cicada_source.py`; checked by `examples/tests/skill.rs` with the Python tests in `examples/tests/skill/` |
+| `scripts/` | `release-check.sh`; `package-skill.py`, the skill's release archive; `status.py`, the order and state of the changes; `review.py`, the review requests between the loops |
 | `.claude/skills/` | The three loops (ADR 0030): `design-loop`, `build-loop` with the builder's brief, `review-loop` with the briefs of a design and a code review |
 
 ## Rules
@@ -82,6 +84,9 @@ PostgreSQL for tests: `docker compose up -d postgres` (port 55432). Tests that n
   to the table. The same file checks the relative links and anchors of every Markdown file outside `target` and
   `openspec/changes/archive`.
 - A new ADR gets its row in [docs/adr/README.md](docs/adr/README.md).
+- `skills/cicada/SKILL.md` routes; the guides own the knowledge. Its `metadata.cicada-version` is the workspace version,
+  and its routes name every consumer guide, how-to, reference and worked example: a new or renamed heading, guide or
+  example keeps them resolving (`examples/tests/skill.rs`). Missing consumer advice goes into its guide, not the skill.
 
 ## Specs and changes: OpenSpec
 

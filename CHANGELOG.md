@@ -7,6 +7,24 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.17.2 — 2026-11-14
+
+A skill for coding agents in projects that use Cicada (ADR 0041); no public API, contract, wire format or schema
+changes.
+
+### Added
+
+- `skills/cicada`: a skill for coding agents that work in projects using Cicada. Its `SKILL.md` routes each task to the
+  guides, examples and code of the Cicada source the project resolves, instead of repeating them, so a project on an
+  older release reads that release's docs. Its helper `scripts/cicada_source.py` (Python 3.11 or newer) finds that
+  source with locked, offline `cargo metadata` for one target and feature selection, and reports each source group
+  with its version, full Cargo source, commit, local changes and docs as JSON. A checkout that git cannot read is
+  reported as unknown, never as a match. It never fetches, installs, writes a lockfile or changes the project.
+- Each GitHub Release from this one on attaches `cicada-skill-vX.Y.Z.tar.gz`: the skill, its helper and `SOURCE.json`
+  (repository, tag, commit, version), packaged from the tag's commit by `scripts/package-skill.py`. A skill that cannot
+  be packaged, or whose version differs from the tag, stops the release; `scripts/release-check.sh` checks the version
+  too.
+
 ## 0.17.1 — 2026-11-14
 
 A fix for PostgreSQL stores; no public API, contract, wire format or schema changes.

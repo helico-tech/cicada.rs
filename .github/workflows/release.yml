@@ -1,5 +1,6 @@
 # A pushed version tag becomes a GitHub Release, once the version check, CI and the E2E suite have passed on that commit.
-# docs/operations.md, Releasing, has the steps.
+# The release carries the consumer skill packaged from the tag (cicada-skill-vX.Y.Z.tar.gz, ADR 0041); a packaging
+# failure stops the release. docs/operations.md, Releasing, has the steps.
 name: Release
 
 on:
@@ -18,6 +19,8 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - run: scripts/release-check.sh "$GITHUB_REF_NAME"
+      # Fails early when the skill of the tag cannot be packaged.
+      - run: python3 scripts/package-skill.py "$GITHUB_REF_NAME" dist
 
   checks:
     needs: verify
@@ -46,6 +49,9 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - run: scripts/release-check.sh "$GITHUB_REF_NAME" > release-notes.md
-      - run: gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --notes-file release-notes.md
+      - run: python3 scripts/package-skill.py "$GITHUB_REF_NAME" dist
+      - run: >-
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --notes-file release-notes.md
+          "dist/cicada-skill-$GITHUB_REF_NAME.tar.gz"
         env:
           GH_TOKEN: ${{ github.token }}

@@ -109,6 +109,10 @@ Cancel is handled in mailbox order after any current turn, not an interrupt of a
 armed continuation and stops normal flow replay. The cancellation piece marks cancelled with no user finalizer; the
 finalizer piece changes this to cancelling followed by a separate finalizer over cleanup. The main journal is never
 rewritten to mark an interrupted sleep/wait. Finalization may inspect it and await still-open main requests.
+Before the finalizer release, cancelling refuses every message. Cancel in done/cancelled is a no-op, and cancelled
+ignores late replies before value checks. Cancel acknowledges enqueueing only; an older host's refusal leaves the
+run running, so resend after upgrading. Runs cancelled before finalizers are available are not finalized later.
+FlowMsg::Cancel is distinct from cancelling one pending message or asking the runtime to cancel a running turn.
 
 The finalizer has its own ids and keys `<run address>/cancel/<id>`, distinct from `<run address>/<id>` because ids
 contain no slash. It uses the saved input and ordinary steps/sends/waits. Successful completion alone records cancelled;
