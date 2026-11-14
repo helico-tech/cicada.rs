@@ -108,7 +108,7 @@ child-ownership rules SHALL remain the core's.
 ### Requirement: Reserved flow behavior is explicit during rollout
 
 This release SHALL preserve the ADR 0044 wire shape and enable requests and single/all/first reply waits with or without deadlines. It SHALL
-enable Cancel for running flows and permanently refuse every message in cancelling state until finalization is available. Continue and Cancel in done/cancelled SHALL
+enable Cancel to enter cancelling and support cleanup continuations/replies in that phase; repeated Cancel there is a no-op. Continue and Cancel in done/cancelled SHALL
 do nothing and Reply in those states SHALL be ignored. Wait and request-send entries SHALL not replay through
 plain-send/step/sleep APIs. Docs SHALL require all hosts/workers of a type upgraded before later features
 are enabled, since equal contract hashes do not establish equal supported behavior.
@@ -116,7 +116,7 @@ are enabled, since equal contract hashes do not establish equal supported behavi
 #### Scenario: Reserved message and phase
 
 - **WHEN** Continue, Reply or Cancel reaches cancelling state
-- **THEN** the message fails permanently with a later-release diagnostic and no effects
+- **THEN** Continue normalizes or executes cleanup, Reply routes to cleanup, and Cancel is a no-op
 - **WHEN** Continue reaches structurally valid done/cancelled state
 - **THEN** the state stays and no flow code runs
 

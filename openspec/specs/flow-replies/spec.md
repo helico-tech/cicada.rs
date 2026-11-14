@@ -66,12 +66,12 @@ buffering. Raw-send errors SHALL retain their ordinary variants. The helper SHAL
 
 ### Requirement: A flow accepts only the first eligible reply from its target
 
-Running flows SHALL check known reply-enabled request, sender equality, absence of a saved reply and absence of a
-closed wait before validating a value. Failing these checks SHALL succeed without state writes. A new eligible value
+Running and cancelling flows SHALL check known reply-enabled request, sender equality, absence of a saved reply and absence of any
+closed wait in either journal before validating a value. Failing these checks SHALL succeed without state writes. A new eligible value
 SHALL be retained once, within ADR 0044's bounds; NUL/depth above 61 SHALL fail permanently without state change.
 Reply turns SHALL NOT run flow code or consult time to choose an outcome. An eligible reply SHALL close a supported
 open wait with or without a deadline when sufficient replies are present, even after that deadline. Partial all
-replies SHALL keep armed unchanged. Done/cancelled SHALL ignore Reply; cancelling remains unavailable in this piece.
+replies SHALL keep armed unchanged. Done/cancelled SHALL ignore Reply; cancelling SHALL route only to the active cleanup wait without changing main progress.
 
 #### Scenario: Ignored reply
 
@@ -97,8 +97,8 @@ replies SHALL keep armed unchanged. Done/cancelled SHALL ignore Reply; cancellin
 
 #### Scenario: Early reply
 
-- **WHEN** an eligible reply arrives before its request has a wait
-- **THEN** the value is retained and armed is unchanged
+- **WHEN** an eligible reply arrives before its request has an active-phase wait
+- **THEN** the value is retained and armed is unchanged, including a main request retained during cancelling
 - **AND** unique replies to bounded sends cannot exceed the existing 2000-record bound
 
 #### Scenario: Reply closes an open wait
@@ -110,7 +110,8 @@ replies SHALL keep armed unchanged. Done/cancelled SHALL ignore Reply; cancellin
 ### Requirement: A single wait commits its outcome before returning data
 
 Step::wait SHALL accept a borrowed Request<T> and return T only by replaying a committed received wait. New waits SHALL
-reference an earlier unused reply-enabled send in the same journal, use mode all, one request and no deadline. A new
+reference an unused earlier request in the active journal, or during cleanup a main request not covered by a closed
+main wait; use mode all, one request and no deadline. A new
 wait or closure SHALL suspend even if the value is already present. An open wait SHALL park without polling, with
 armed=null. The first latch SHALL control the returned flow regardless of swallowed suspension or later helper calls.
 
@@ -350,7 +351,8 @@ The helpers SHALL reuse the existing journal and wait protocol, without exposing
 
 ### Requirement: Join inputs and replay matching preserve request positions
 
-New waits SHALL require 1..100 distinct known earlier reply-enabled requests unused by another wait in the phase,
+New waits SHALL require 1..100 distinct known reply-enabled requests unused by another wait in the phase: earlier active-journal requests, or
+during cleanup main requests not covered by a closed main wait,
 a valid id and journal room. Timed bounds SHALL be checked before early replies. Replay SHALL match the exact ordered
 requests, mode and deadline presence, ignoring a new duration. A one-request all wait SHALL be structurally equivalent
 to the corresponding single wait. A first wait SHALL remain a different mode even with one request.
