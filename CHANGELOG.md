@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.16.17 — unreleased
+## 0.16.17 — 2026-11-14
 
 Nothing breaks: an `App`'s `worker` runs its actors through a server's HTTP API, without the database, the fifth part
 of remote execution. No schema, contract, route, wire format or store behaviour changes; a worker on the store runs as
