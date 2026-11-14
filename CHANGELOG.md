@@ -7,6 +7,57 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.18.0 — unreleased
+
+A breaking release for systems with flows: a flow can send actor work atomically with its progress (`Step::send`), and
+the flow wire gains the shape that later releases fill with requests, reply waits, timeouts, joins and cancellation
+(ADR 0044). Every hosted flow's contract changes, so a node of 0.18.0 that hosts a flow type refuses to start against
+its registration of 0.17; no schema of the store, no other contract and no guarantee changes. Keep the flow types
+running on pinned 0.17 binaries and host the new code under new type names, or drain and archive the runs and reset
+the registrations before upgrading ([Upgrading](docs/operations.md#upgrading)).
+
+### Changed
+
+- **Breaking.** The contract of every flow type changes. `FlowMsg` gains `Reply { request, value }` (`value` is
+  required and may be `null`) and `Cancel`; `FlowStatus` gains `Cancelling` and `Cancelled`; `JournalEntry` gains
+  `Send { id, to, message, create, reply }` and `Wait { id, requests, mode, until, outcome, received }`; `FlowState`
+  gains `replies` (at most 2000 `FlowReply { request, value }`) and `cleanup` (a second journal of at most 1000
+  entries, with ids of its own). The new types `CreateKind`, `WaitMode`, `WaitOutcome` and `FlowReply` are re-exported
+  by `cicada-actors`. An exhaustive `match` on `FlowMsg`, `FlowStatus` or `JournalEntry`, and a `FlowState { .. }`
+  literal without `..FlowState::new(input)`, no longer compiles.
+- A state saved by 0.17 decodes: the new fields default to empty, and the depth of a saved step result is not checked
+  again. That does not make the registrations compatible; a decoded state is not a migration.
+- Decoding a `FlowState` checks the rules of ADR 0044 across fields: send message ids unique across both journals,
+  waits that name earlier requests of their journal (cleanup may name a main request that no closed main wait names),
+  at most one wait per request in a journal, an open wait only last, a saved selection that matches its outcome and
+  mode and names kept replies in request order, replies that name requests once, deadlines at most `MAX_INSTANT`, and a
+  status that agrees with `armed`, `cleanup` and any open wait. The schema describes the fields, lengths, patterns and
+  names; these checks are not part of it.
+- This release refuses `Reply` and `Cancel` for good, and a `Continue` to a cancelling run, with a diagnostic that names
+  the later release they need; a `Continue` to a done or cancelled run does nothing; replay stops for good at a saved
+  request or wait. Equal contract hashes in the later releases do not mean equal behaviour: upgrade every host and
+  worker of a flow type before using a feature of a later release.
+
+### Added
+
+- `Step::send(id, to, message)`: a new send creates its target first if asked (`Target::create`, independent, or
+  `Target::child`, a child of the run) and enqueues the message, and the runner commits the create, the message, the
+  send entry and the next `Continue` together. The entry saves the destination, the generated message id and the
+  create kind, never the message or the state. The message is due now, carries the executing `Continue`'s correlation
+  id and has no retry policy: a send promises enqueueing once per committed entry, not the target's success. Replay
+  compares only the id and the kind and never converts or serializes the arguments; the code that builds them still
+  runs on every replay. A send to the run itself, a target or message that does not convert or encode, a type that is
+  not registered or does not accept the message, and an initial state that is `null`, holds a NUL or is too deep (also
+  for a target that exists) fail the turn for good; a failed read of the type registry is an ordinary failure of the
+  cause `node`; a missing target or a child create of an actor owned elsewhere rejects the commit, and a public
+  `Continue` recovers the run. A caught panic while the arguments are converted fails the turn for good.
+- `Target<'a, R, S>`: a borrowed ref with an optional borrowed initial state; `&ref` converts into
+  `Target::existing(&ref)`.
+- Tests: the typed state checks, the latch and conversion order of a send, atomic create and send on virtual time,
+  replay without another message, core create rules, rejected commits and their recovery, a registry outage on SQLite,
+  observer headers, the refused messages and phases, progress saved by 0.17, the event's runs with the new defaults
+  while its contract keeps its hash, and the onboarding example under a new type name next to a registration of 0.17.
+
 ## 0.17.4 — 2026-11-14
 
 A fix of closing a SQL store; no public API, contract, wire format or schema changes.

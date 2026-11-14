@@ -26,7 +26,7 @@
   FlowState::new as raw JSON, creates and starts the flow with the new defaults, and leaves Event's own contract
   unchanged. Verify old literal progress and required-null samples, event tests, contract hashes and example doctests.
   Do not add a generic export/restore utility or claim registration compatibility from successful state decoding.
-- [ ] 5. Update architecture, actors guide, worked examples, operations, public doc comments and changelog. Keep
+- [x] 5. Update architecture, actors guide, worked examples, operations, public doc comments and changelog. Keep
   ADR 0044 and its index consistent with the final implementation. Explain enqueueing versus target success, strict
   raw-send membership checks, replay argument rules, error policy, and the breaking contract/source changes (enum
   matches and FlowState literals). Document draining/archiving and pinned-old-binary deployment, the host-specific

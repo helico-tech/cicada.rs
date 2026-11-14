@@ -9,7 +9,8 @@
 //! `Continue` due then; no handler waits meanwhile, and an early `Continue` replays it and waits for the same time. A
 //! run that ran out of attempts keeps its saved steps; a public `Continue` resumes it there (see
 //! `tests/flow_onboarding.rs`). Each call receives the key `flows.onboarding/<user>/<step id>`, the same on every
-//! attempt.
+//! attempt. The flow wire of 0.18.0 changed every flow's contract (ADR 0044): the same test file runs this code under
+//! a new type name next to a registration of 0.17 that an upgraded binary cannot host.
 //!
 //! A host registers the flow like any actor type, creates a run and sends it `Continue`:
 //!

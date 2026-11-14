@@ -42,6 +42,11 @@ The schema describes field types, required presence, list lengths, id patterns a
 enforce cross-field references; do not claim JSON Schema enforces those. Existing supported step/sleep states decode
 with empty new lists; this does not promise to repair arbitrary historical or hand-written states.
 
+In Rust (0.18.0, `flow-step-sends`): `FlowMsg::{Continue, Reply, Cancel}`, `FlowStatus::{Running, Cancelling, Done,
+Cancelled}`, `JournalEntry::{Step, Sleep, Send, Wait}`, `CreateKind::{Independent, Child}`, `WaitMode::{All, First}`,
+`WaitOutcome::{Received, TimedOut}` and `FlowReply { request, value }` in `FlowState::replies`; the send helper is
+`Step::send` with a borrowed `Target`.
+
 ### State invariants
 
 - Ids remain 1..100 ASCII characters from A-Za-z0-9._~-:, unique within each journal. Main and cleanup have separate
