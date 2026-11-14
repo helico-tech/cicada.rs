@@ -10,9 +10,6 @@ The debouncer is close but not the same. It also fires after a quiet period, but
 submissions still arrive, which here is a false alarm, and each submission must carry the alarm itself. A heartbeat
 watch has no longest wait, keeps the alarm in its settings, and raises it once per silence.
 
-It is the first small business-level actor after the three integration actors, and it gives a webhook sink something
-useful to send.
-
 ## What Changes
 
 - **A heartbeat watch actor** (`cicada.heartbeat-watch`), one instance per watched thing. Its state holds the
@@ -30,14 +27,14 @@ useful to send.
 
 ## Out of scope
 
-Repeating the alarm while the silence lasts, and escalating to a second target. Checking the outside thing actively:
-that is the HTTP poller. Watching a Cicada actor for failure: watches do that. Expecting a beat at fixed clock times
+Repeating the alarm while the silence lasts, and escalating to a second target. Checking the outside thing actively.
+Watching a Cicada actor for failure: watches do that. Expecting a beat at fixed clock times
 ("every day before 06:00") instead of within a period. Changing the settings of an existing watch: delete and
 recreate it, as with the debouncer.
 
 ## Order
 
-After `webhook-inbox`. No following change.
+After `local-push-gate`. No following change.
 
 ## Impact
 
