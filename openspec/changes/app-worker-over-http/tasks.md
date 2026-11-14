@@ -34,7 +34,7 @@
 
 ## Finishing checks
 
-- [ ] 5. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
+- [x] 5. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
   `openspec validate app-worker-over-http --strict`. Check cicada-app with no default features and each sqlite,
   postgres and tui feature separately; include PostgreSQL tests where available and record unavailable optional
   checks. Reconcile against the finally landed HTTP/Worker APIs, preserve existing serve/store-worker/operator tests
