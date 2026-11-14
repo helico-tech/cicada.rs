@@ -22,7 +22,7 @@
   without losing the saved outcome. Test first-latch precedence, unknown/reused handles, 1000/1001 entries, early reply,
   public Continue normalization then parking, pause/resume, lost/extra continuation and recovery after fixed decoding.
   Use start_paused/TestActors; run the relevant unit/flow tests and existing sleep/send replay regressions.
-- [ ] 4. Pin ReplyTo's required fields/address/id schema, equality for different T, and a new target contract fixture.
+- [x] 4. Pin ReplyTo's required fields/address/id schema, equality for different T, and a new target contract fixture.
   Add a worked example of a job or approval actor replying later and a flow requesting/waiting; its Rust code compiles
   as an examples doctest. Compare actual generated contracts to the landed predecessor, not the current pre-send
   checkout: existing test/sample-service flows and ready-made actors must have no schema/hash diff. Regeneration may

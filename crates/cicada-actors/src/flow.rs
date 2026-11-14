@@ -789,7 +789,8 @@ impl<T> PartialEq for ReplyTo<T> {
 
 impl<T> Eq for ReplyTo<T> {}
 
-/// The schema of every [`ReplyTo`], whatever its reply type.
+/// Where a target sends the reply to a request of a flow: the run that waits and the id of the request's message. The
+/// schema of every [`ReplyTo`], whatever its reply type.
 #[derive(JsonSchema)]
 #[schemars(rename = "ReplyTo")]
 #[allow(dead_code)]

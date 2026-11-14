@@ -16,8 +16,9 @@ use cicada_actors::{
     Batcher, BatcherActor, BatcherMsg, BatcherState, Child, DeadLetters, DeadLettersActor, DeadLettersMsg,
     DeadLettersState, Debouncer, DebouncerActor, DebouncerMsg, DebouncerState, Event, EventActor, EventMsg, EventState,
     Flow, FlowActor, FlowMsg, FlowRun, FlowState, FlowStatus, JournalEntry, RateLimiter, RateLimiterActor,
-    RateLimiterMsg, RateLimiterState, Schedule, Scheduler, SchedulerActor, SchedulerMsg, SchedulerState, StoredMessage,
-    Supervisor, SupervisorActor, SupervisorMsg, SupervisorState, Topic, TopicActor, TopicMsg, TopicState,
+    RateLimiterMsg, RateLimiterState, ReplyTo, Schedule, Scheduler, SchedulerActor, SchedulerMsg, SchedulerState,
+    StoredMessage, Supervisor, SupervisorActor, SupervisorMsg, SupervisorState, Topic, TopicActor, TopicMsg,
+    TopicState,
 };
 use cicada_axum::{assert_message_sample, assert_state_sample};
 use cicada_test::{TestActors, UPDATE_CONTRACTS_ENV, describe_changes};
@@ -886,4 +887,103 @@ async fn the_states_a_flow_writes_pass_their_samples() {
     let written = test.state_json(&run).await.unwrap();
     assert_eq!(written["status"], "done");
     assert_eq!(written["journal"], json!([account, sleep, {"kind": "step", "id": "welcome", "result": 26}]));
+}
+
+/// The result a job replies with.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+struct JobResult {
+    /// What the job made.
+    artifact: String,
+}
+
+/// `test.job/<id>`: a target of flow requests, whose message carries the route of its reply.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+struct Job(String);
+
+impl ActorRef for Job {
+    const TYPE: &'static str = "test.job";
+    type Message = JobMsg;
+}
+
+/// The messages of a job.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type")]
+enum JobMsg {
+    /// Starts the job; its result goes to `reply`.
+    Start {
+        /// The size of the job.
+        size: u32,
+        /// Where the result goes.
+        reply: ReplyTo<JobResult>,
+    },
+}
+
+struct JobActor;
+
+impl Actor for JobActor {
+    type Ref = Job;
+    type State = NoState;
+
+    async fn handle(&self, turn: &mut Turn<Self>, message: JobMsg) -> HandlerResult {
+        let JobMsg::Start { size, reply } = message;
+        reply.send(turn, &JobResult { artifact: format!("a{size}") }).await?;
+        Ok(())
+    }
+}
+
+/// Scenario: Stable schema. A target that carries a `ReplyTo` exposes the route in its contract, pinned in
+/// `tests/contracts`: two required fields, the address and the message id, the same for every reply type. Adding the
+/// route to a target changes its contract like any new field.
+#[test]
+fn a_reply_route_is_pinned_in_the_contract_of_its_target() {
+    let contract = contract_of::<JobActor>().unwrap();
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/contracts");
+    let update = std::env::var(UPDATE_CONTRACTS_ENV).is_ok_and(|v| v == "true");
+    if let Err(e) = check_references(&fixtures, std::slice::from_ref(&contract), update) {
+        panic!("{e}");
+    }
+    let json = contract.to_json();
+    let start = &json["messages"]["Start"];
+    assert_eq!(start["required"], json!(["size", "reply"]));
+    assert_eq!(start["properties"]["reply"]["$ref"], "#/$defs/ReplyTo");
+    let route = &start["$defs"]["ReplyTo"];
+    assert_eq!(route["type"], "object");
+    assert_eq!(route["required"], json!(["run", "request"]));
+    let flow = contract_of::<FlowActor<SignUpFlow>>().unwrap().to_json();
+    let entries = flow["state"]["$defs"]["JournalEntry"]["oneOf"].as_array().unwrap().clone();
+    let send = entries.iter().find(|e| e["properties"]["kind"]["const"] == "send").unwrap();
+    let without = |schema: &Value| {
+        let mut schema = schema.clone();
+        schema.as_object_mut().unwrap().remove("description");
+        schema
+    };
+    let (run, request) = (&route["properties"]["run"], &route["properties"]["request"]);
+    assert_eq!(without(run), without(&send["properties"]["to"]), "the run is an actor address");
+    assert_eq!(without(request), without(&send["properties"]["message"]), "the request is a message id");
+
+    let schema = |s: schemars::Schema| serde_json::to_value(s).unwrap();
+    assert_eq!(schema(schemars::schema_for!(ReplyTo<String>)), schema(schemars::schema_for!(ReplyTo<u64>)));
+    let text: ReplyTo<String> = serde_json::from_value(json!({"run": "test.sign-up/u1", "request": "m1"})).unwrap();
+    let number: ReplyTo<u64> = serde_json::from_value(json_of(&text)).unwrap();
+    assert_eq!(json_of(&text), json_of(&number), "one wire form for every reply type");
+    assert_message_sample::<JobMsg>(&json!({"type": "Start", "size": 3, "reply": {"run": "f/k", "request": "m1"}}));
+    assert!(cicada::message::decode::<JobMsg>("Start", &json!({"size": 3, "reply": {"run": "f/k"}})).is_err());
+}
+
+/// Scenario: Owned encoded value, through a node: the reply a target sends is a `FlowMsg::Reply` the run's family takes.
+#[tokio::test(start_paused = true)]
+async fn the_reply_a_target_sends_is_a_flow_message() {
+    let test =
+        TestActors::builder().with(|node| node.host(JobActor).host(FlowActor::new(SignUpFlow))).build().await.unwrap();
+    let run = FlowRun::<SignUpFlow>::named("u1");
+    test.create(&run, &FlowState::new(SignUp { user: "u1".into() })).await;
+    test.create(&Job("j1".into()), &NoState {}).await;
+    let reply: ReplyTo<JobResult> = serde_json::from_value(json!({"run": "test.sign-up/u1", "request": "m1"})).unwrap();
+    test.send(&Job("j1".into()), JobMsg::Start { size: 3, reply }).await;
+    test.system().run_due_turns(1).await.unwrap();
+    let sent = test.pending(&run).await;
+    assert_eq!(sent[0].message_type, "Reply");
+    assert_eq!(sent[0].payload, json!({"request": "m1", "value": {"artifact": "a3"}}));
+    assert_message_sample::<FlowMsg>(&json!({"type": "Reply", "request": "m1", "value": sent[0].payload["value"]}));
 }

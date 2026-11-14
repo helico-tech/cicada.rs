@@ -1,0 +1,56 @@
+{
+  "messages": {
+    "Start": {
+      "$defs": {
+        "ReplyTo": {
+          "description": "Where a target sends the reply to a request of a flow: the run that waits and the id of the request's message. The\nschema of every [`ReplyTo`], whatever its reply type.",
+          "properties": {
+            "request": {
+              "description": "The id of the request's message.",
+              "minLength": 1,
+              "type": "string"
+            },
+            "run": {
+              "description": "The run that waits for the reply.",
+              "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "run",
+            "request"
+          ],
+          "type": "object"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Starts the job; its result goes to `reply`.",
+      "properties": {
+        "reply": {
+          "$ref": "#/$defs/ReplyTo",
+          "description": "Where the result goes."
+        },
+        "size": {
+          "description": "The size of the job.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "size",
+        "reply"
+      ],
+      "title": "Start",
+      "type": "object"
+    }
+  },
+  "state": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "The state of an actor type that keeps no data: an empty struct, stored as `{}`. A state with a field does not\ndecode as `NoState`.",
+    "title": "NoState",
+    "type": "object"
+  },
+  "type": "test.job"
+}
