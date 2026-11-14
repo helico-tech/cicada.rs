@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.17.3 — unreleased
+## 0.17.3 — 2026-11-14
 
 A fix of the command line's usage errors; no public API, contract, wire format or schema changes.
 
