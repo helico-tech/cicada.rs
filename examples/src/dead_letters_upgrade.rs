@@ -10,10 +10,10 @@
 //!    or running message: deleting those would remove other actors or tell watchers it stopped, and work still in
 //!    flight would be lost. Write the export to a file with `serde_json`; never pass it through a tool that rounds
 //!    numbers.
-//! 2. [`convert`] moves each raw payload deeper than 61 levels to `payloadJson` and checks every state against the new
-//!    state type and the depth limit, before anything is deleted.
-//! 3. [`reset`] checks that the store still holds exactly the exported actors, unchanged, then deletes them, removes the
-//!    registration and registers the contract of 0.17.0.
+//! 2. [`convert`] moves each raw payload deeper than 61 levels to `payloadJson` and runs [`check`]: every state must be
+//!    one that [`restore`] can create, with no NUL character, at most 64 levels and the state type of 0.17.0.
+//! 3. [`reset`] runs [`check`] again and checks that the store still holds exactly the exported actors, unchanged; only
+//!    then does it delete them, remove the registration and register the contract of 0.17.0.
 //! 4. [`restore`] creates each actor again at its address with its converted state, pauses the mailboxes that were
 //!    paused, sets the watches again and checks the result.
 //!
@@ -156,12 +156,11 @@ async fn watches_of(system: &ActorSystem, watcher: &ActorAddress) -> Result<Vec<
     }
 }
 
-/// Moves each raw payload deeper than 61 levels of `export` to `payloadJson`, as compact JSON text, and checks every
-/// state: it decodes as the state of 0.17.0 and holds at most 64 levels. Every letter is kept, with its metadata and its
-/// `redrivenAs`; a payload too deep to send stays readable as text, and the operator can discard it.
+/// Moves each raw payload deeper than 61 levels of `export` to `payloadJson`, as compact JSON text, then runs
+/// [`check`]. Every letter is kept, with its metadata and its `redrivenAs`; a payload too deep to send stays readable as
+/// text, and the operator can discard it.
 pub fn convert(export: &mut Export) -> Result<(), UpgradeError> {
     for saved in &mut export.actors {
-        let invalid = |why: String| UpgradeError::Invalid { address: saved.address.clone(), why };
         let letters = saved.state.get_mut("letters").and_then(Value::as_object_mut);
         for letter in letters.into_iter().flat_map(|letters| letters.values_mut()) {
             let Some(fields) = letter.as_object_mut() else { continue };
@@ -173,20 +172,39 @@ pub fn convert(export: &mut Export) -> Result<(), UpgradeError> {
                 fields.insert("payloadJson".to_owned(), Value::String(text));
             }
         }
+    }
+    check(export)
+}
+
+/// Checks every state of `export` against what [`restore`] refuses, so that nothing is deleted for a state that cannot
+/// be created again: no string or key holds a NUL character, the state holds at most 64 levels, and it decodes as the
+/// state of 0.17.0, which also refuses `null`. And no address is there twice. [`reset`] runs it before it deletes
+/// anything.
+///
+/// The core's own checks of a value are not public, so this is a copy of the checks `ActorSystem::create_actor` makes on
+/// a node that hosts the type. `create_actor` does not check the JSON Schema of the contract; the decoder agrees with it
+/// on the fields of a letter (`crates/cicada-actors/tests/dead_letters.rs`).
+pub fn check(export: &Export) -> Result<(), UpgradeError> {
+    let mut seen = BTreeSet::new();
+    for saved in &export.actors {
+        let invalid = |why: String| UpgradeError::Invalid { address: saved.address.clone(), why };
+        if !seen.insert(&saved.address) {
+            return Err(invalid("the address is in the export twice".into()));
+        }
+        value_problem(&saved.state).map_or(Ok(()), |why| Err(invalid(why)))?;
         if let Err(e) = serde_json::from_value::<DeadLettersState>(saved.state.clone()) {
             return Err(invalid(e.to_string()));
-        }
-        if deeper_than(&saved.state, MAX_DEPTH) {
-            return Err(invalid(format!("the state is nested deeper than {MAX_DEPTH} levels")));
         }
     }
     Ok(())
 }
 
-/// Checks that the store holds exactly the actors of `export`, at the versions it read, then deletes them, removes the
+/// Runs [`check`] and checks that the store holds exactly the actors of `export`, at the versions it read, then deletes
+/// them, removes the
 /// registration of `cicada.dead-letters` and registers the contract of 0.17.0. Every node of 0.16 must be stopped
 /// first.
 pub async fn reset(system: &ActorSystem, export: &Export) -> Result<(), UpgradeError> {
+    check(export)?;
     let exported: BTreeSet<&ActorAddress> = export.actors.iter().map(|saved| &saved.address).collect();
     let mut stored = BTreeSet::new();
     let mut cursor = None;
@@ -250,6 +268,28 @@ pub async fn restore(system: &ActorSystem, export: &Export) -> Result<(), Upgrad
         }
     }
     Ok(())
+}
+
+/// What `create_actor` would refuse in a state: a string or a key with a NUL character (PostgreSQL text and JSONB cannot
+/// hold one), or more than 64 arrays and objects inside each other. Walks with a stack, never recursing.
+fn value_problem(value: &Value) -> Option<String> {
+    let mut open = vec![(value, 0)];
+    while let Some((value, level)) = open.pop() {
+        let inner: Vec<&Value> = match value {
+            Value::String(text) if text.contains('\0') => return Some("a string holds a NUL character".into()),
+            Value::Array(items) => items.iter().collect(),
+            Value::Object(fields) if fields.keys().any(|key| key.contains('\0')) => {
+                return Some("a key holds a NUL character".into());
+            }
+            Value::Object(fields) => fields.values().collect(),
+            _ => continue,
+        };
+        if level + 1 > MAX_DEPTH {
+            return Some(format!("the state is nested deeper than {MAX_DEPTH} levels"));
+        }
+        open.extend(inner.into_iter().map(|inner| (inner, level + 1)));
+    }
+    None
 }
 
 /// True when `value` holds more than `limit` arrays and objects inside each other; empty ones count. Walks with a stack

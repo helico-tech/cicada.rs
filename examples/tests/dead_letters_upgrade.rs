@@ -13,7 +13,7 @@ use cicada::runtime::{LeaseTurnsResult, RegisterContractResult, WatchResult};
 use cicada::store::NodeId;
 use cicada::{Store, TypeName, WatchTarget};
 use cicada_actors::{DeadLetters, DeadLettersActor, DeadLettersMsg, DeadLettersState, LetterPayload};
-use cicada_examples::dead_letters_upgrade::{Export, UpgradeError, convert, export, reset, restore};
+use cicada_examples::dead_letters_upgrade::{Export, UpgradeError, check, convert, export, reset, restore};
 use cicada_test::{TokioClock, default_start};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -294,5 +294,27 @@ async fn a_deep_legacy_payload_is_converted_to_text_restored_refused_by_a_redriv
         }]});
         let mut read: Export = serde_json::from_value(text).unwrap();
         assert!(matches!(convert(&mut read).unwrap_err(), UpgradeError::Invalid { .. }), "{broken}");
+    }
+}
+
+/// Scenario: Incomplete export or unquiesced work. A state that `restore` would refuse only for a NUL character, in a
+/// value or in a key, is refused by the check of `convert` and by `reset`, which deletes nothing and leaves the
+/// registration of 0.16.
+#[tokio::test(start_paused = true)]
+async fn a_state_with_a_nul_character_is_refused_before_anything_is_deleted() {
+    let (_, manage, _) = as_0_16_left_it().await;
+    let before = export(&manage).await.unwrap();
+    for (what, extra) in [("value", json!({"extra": "a\u{0}b"})), ("key", json!({"a\u{0}b": 1}))] {
+        let mut broken = before.clone();
+        broken.actors[0].state.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        let refused = convert(&mut broken.clone()).unwrap_err();
+        assert!(matches!(&refused, UpgradeError::Invalid { why, .. } if why.contains("NUL")), "{what}: {refused}");
+        assert!(matches!(check(&broken), Err(UpgradeError::Invalid { .. })), "{what}");
+        let refused = reset(&manage, &broken).await.unwrap_err();
+        assert!(matches!(&refused, UpgradeError::Invalid { why, .. } if why.contains("NUL")), "{what}: {refused}");
+
+        assert_eq!(export(&manage).await.unwrap(), before, "{what}: every actor as it was");
+        let registered = manage.register_contract(&contract_of_0_16()).await.unwrap();
+        assert!(matches!(registered, RegisterContractResult::Registered(_)), "{what}: still 0.16: {registered:?}");
     }
 }

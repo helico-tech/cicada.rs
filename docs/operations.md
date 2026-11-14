@@ -411,11 +411,11 @@ tested steps of [examples/src/dead_letters_upgrade.rs](../examples/src/dead_lett
    dead-letters actor: its state, version, pause flag and the watches it holds. Write it to a file with `serde_json`,
    never through a tool that rounds numbers, and check the file before you go on. Keep the backup until the end.
 5. **Convert.** `convert` moves each raw payload deeper than 61 levels to `payloadJson`, keeps every letter with its
-   metadata and `redrivenAs`, and checks each state against the new type and the depth limit before anything is
-   deleted. A legacy payload deeper than 64 levels is kept as text; a redrive refuses it, and `Discard` drops it. An
+   metadata and `redrivenAs`, and runs `check`: each state must be one that `restore` can create, with no NUL
+   character in a string or a key, at most 64 levels, and the state type of 0.17.0. A legacy payload deeper than 64 levels is kept as text; a redrive refuses it, and `Discard` drops it. An
    export that cannot be read needs a recovery from the backup.
-6. **Reset.** `reset` checks that the store holds exactly the exported actors at their exported versions, deletes them,
-   removes the registration and registers the contract of 0.17.0.
+6. **Reset.** `reset` runs `check` again and checks that the store holds exactly the exported actors at their exported
+   versions; only then does it delete them, remove the registration and register the contract of 0.17.0.
 7. **Restore.** `restore` creates each actor again at its address with its converted state, pauses the mailboxes that
    were paused, sets its watches again and compares. The actors are new instances: their version, epoch and creation
    time are new, and no lease held before is valid. Then start the nodes of 0.17.0 and resume the senders.
