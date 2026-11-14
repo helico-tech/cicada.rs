@@ -76,7 +76,11 @@ preempting user code. Sends are enqueued once per committed entry, not an exactl
 A request uses a newly generated message id saved with its send. Replies must name that request and come from its
 recorded target address; the target's helper carries the run address and request id. Unknown, wrong-sender, duplicate
 or closed replies do not grow state. A target can reply before a wait exists because its request entry was committed
-with the send. Valid reply data is retained for replay; malformed typed data is handled by the later wait design.
+with the send. Ignore checks precede value checks. A new eligible reply with NUL or more than 61 container levels
+fails permanently.
+Valid reply data is retained for replay; a typed decode mismatch fails wait replay permanently, keeping the outcome.
+ReplyTo<T> is a required {run: ActorAddress, request: MessageId} route with a schema independent of T. Its phantom
+type connects the target message to the flow's Request<T>; it carries no authenticated external identity.
 
 A wait records one durable decision before code branches on it. Reply turns run no flow code. A reply that completes
 the active wait saves the outcome and arms Continue; an expired wait saves timedOut and arms in a separate turn before
@@ -85,7 +89,10 @@ delay it. Retained values support single waits, homogeneous typed joins, first-w
 Target failure/deletion adds no automatic watch; targets report business failure as data or the flow uses a timeout.
 
 Continue armed by a reply uses that reply's correlation id. The reply helper copies its current turn's correlation;
-there is no root-correlation field. Replying to a deleted run can reject the replier's entire commit under core rules.
+there is no root-correlation field. An early reply closed later by Continue uses that executing Continue's correlation,
+not the earlier reply's. A parked indefinite wait has armed=null and sends no polling continuation. The reply count
+bound follows from unique replies to bounded send entries. Replying to a deleted run can reject the replier's entire
+commit under core rules.
 Hosts must not reuse run keys for new jobs: external step keys remain address-based even though request ids are random.
 
 ### Cancellation and finalization
