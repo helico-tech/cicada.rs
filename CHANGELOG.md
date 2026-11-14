@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.17.0 — unreleased
+## 0.17.0 — 2026-11-14
 
 A breaking release for systems with dead letters: a letter keeps every payload that was accepted when it was sent, so
 a failure at the depth limit can be watched, kept and redriven (ADR 0043). The contract of `cicada.dead-letters` and
