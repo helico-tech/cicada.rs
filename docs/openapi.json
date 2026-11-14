@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Cicada actor API",
-    "version": "0.17.3"
+    "version": "0.17.4"
   },
   "paths": {
     "/actors": {
