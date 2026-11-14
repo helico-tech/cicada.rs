@@ -7,6 +7,51 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.18.5 — unreleased
+
+A cancelled flow runs its cleanup: `Flow::on_cancel`, with a default that does nothing, runs over a journal of its own
+after `FlowMsg::Cancel`, and only its success marks the run cancelled (ADR 0044). This completes the six changes of
+the flow line. The flow wire and every contract hash stay those of 0.18.0; no store schema and no guarantee changes.
+Every host and worker of a flow type must run this release and the same cleanup code before a run is cancelled: a node
+of 0.18.4, or code with the default cleanup, marks the run cancelled without the intended cleanup, although the hash
+is the same, and a node of 0.18.4 refuses the messages of a cancelling run for good. Runs cancelled by 0.18.4 stay
+cancelled and are never finalized.
+
+### Added
+
+- `Flow::on_cancel(&self, cleanup: &mut Cleanup, input)`, a default-success hook that runs only after a `Cancel`
+  reached a running run, never after the flow returned `Ok`. `Cleanup` dereferences to a `Step` over the cleanup
+  journal: the same helpers, rules and limits (one new entry per turn, the first latch wins, 1000 entries), ids of
+  its own and step keys `<run address>/cancel/<id>`; request routes and the self-send check use the run's own address.
+- Lookups of the main journal, which never changes once the run is cancelling: `Cleanup::main_key(id)`, the key a main
+  step had or would have had, also when its result was never saved; `main_result::<T>(id)` and `main_request::<T>(id)`,
+  `None` only when the id is absent; `main_reply(&request)`, a `#[must_use]` `MainReply::{Open, Replied(T), Closed}`
+  decided by closed main waits alone, so it stays the same through the cleanup whatever replies come; and the raw
+  `main_journal()`. Lookups consume no id and may repeat; a wrong kind, an invalid id or a decoding failure fails the
+  turn for good, also when the error is caught, and a caught decoder panic leaves the in-progress marker.
+- A cleanup wait may name its own earlier requests and main requests that no closed main wait names (never-awaited
+  ones and those of an interrupted open main wait), mixed in one join; each in one cleanup wait only. A request a
+  closed main wait names, a first wait's loser included, needs a new cleanup request.
+- Example 18, `flow_resources`: a job that owns a sandbox; cancelled, its cleanup stops the sandbox, waits for the
+  confirmed removal, releases the capacity by the reservation's key and reports, with owners that fence late work.
+
+### Changed
+
+- `FlowMsg::Cancel` to a running run now marks it `cancelling` and arms a cleanup `Continue` (due now, with
+  `Flow::retry` and the `Cancel`'s correlation id) in its one commit, still without running flow code or cloning the
+  input; the cleanup marks it `cancelled` in later turns, at least one even with the default hook. A status read right
+  after the `Cancel` turn shows `cancelling`, and the `Cancel` turn now sends one message, the cleanup's `Continue`.
+- A cancelling run executes only its cleanup: the phase comes from the saved status, so a stale, retried, redriven or
+  public `Continue` normalizes and runs the cleanup, never main code. `Cancel` to a cancelling run is a no-op that
+  writes nothing and resets no retry; a public `Continue` recovers a cleanup whose continuation failed, ran out of
+  attempts or was purged. A `Reply` to a cancelling run passes the same checks, closed waits of both journals included,
+  and closes only the open cleanup wait; the main journal is never rewritten.
+- A cleanup that fails keeps the run cancelling with its cleanup progress. A cleanup's last send and the status
+  `cancelled` are separate commits. Delete stays immediate and runs no cleanup. Successful finalization sends no
+  synthetic `Failed` or `Stopped`.
+- The descriptions of `FlowMsg` and `FlowStatus` in every flow contract describe the new behaviour; the schema and
+  the contract hashes are unchanged.
+
 ## 0.18.4 — 2026-11-14
 
 A host can cancel a running flow: `FlowMsg::Cancel` ends the run in one turn of its own, keeping its progress (ADR

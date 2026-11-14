@@ -111,6 +111,31 @@ refuses Cancel for good and leaves the run running, so upgrade every host and wo
 fresh Cancel, an operator retry or a dead-letter redrive of the refused one cancels the run. The finalizer stays for
 `flow-finalizer`, and runs cancelled by 0.18.4 are not finalized later.
 
+In Rust (0.18.5, `flow-finalizer`): `Flow::on_cancel(&self, cleanup: &mut Cleanup, input) -> impl Future<Output =
+HandlerResult> + Send` has a default that returns `Ok` at once. Cancel to a running run now commits, with its own
+completion and still without flow code or an input clone, the cancel of the saved armed message (never the current
+one), status cancelling and an immediate cleanup Continue with `F::retry()` and the Cancel's correlation id; the
+default hook too completes in a later turn. The runner picks the phase from the committed status alone: in
+cancelling, a non-armed Continue normalizes as in running and the armed one calls `on_cancel` with a clone of the
+input, never `run`; Cancel there is a no-op without a state write; done and cancelled stay terminal. `Cleanup` derefs
+to a `Step` over `cleanup`, whose external keys are `<run address>/cancel/<id>` while request routes and the self-send
+check keep the actual address; it replays from its first entry, appends only there, and records cancelled with
+`armed` null only when the hook returns `Ok` with no latch after consuming every cleanup entry. Its lookups are
+synchronous and read a fixed copy of the main journal: `main_key(id)` checks only the id's syntax; `main_result::<T>`
+and `main_request::<T>` return `None` only for an absent id; `main_reply(&request)` returns the `#[must_use]`
+`MainReply::{Open, Replied(T), Closed}`, Open whenever no closed main wait names the request (even with a kept reply,
+or after a cleanup wait closed it), otherwise Replied for a kept value, an early first-wait loser included, or Closed;
+`main_journal()` is the raw slice. Fallible lookups honour the first latch, consume no id or cursor, latch Permanent
+for an invalid id, a wrong kind or a handle that is no main request, and decode under the in-progress marker. A new
+cleanup wait may name earlier cleanup requests and main requests that no closed main wait names, mixed in one join,
+each in one cleanup wait; the structural checks above are unchanged. In cancelling, a reply passes the same checks with
+closed waits of both journals and closes only the open wait at the end of the cleanup journal; the main journal is
+never rewritten. A cleanup deadline counts from the claim of the cleanup turn that creates its wait. Failures keep
+cancelling progress; a public Continue recovers it. These clarify the decisions above; the wire, the schema and every
+contract hash stay those of 0.18.0. A 0.18.4 node marks cancelled without the cleanup, and refuses every message of a
+cancelling run; every host and worker of a type must run this release and the same `on_cancel` code, or the type needs
+a new name.
+
 ### State invariants
 
 - Ids remain 1..100 ASCII characters from A-Za-z0-9._~-:, unique within each journal. Main and cleanup have separate

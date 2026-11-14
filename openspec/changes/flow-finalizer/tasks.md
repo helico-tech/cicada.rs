@@ -30,7 +30,7 @@
   main_key even when the result never committed, and model idempotent owner fencing/tombstones against late creation.
   Test that a main reply arriving between cleanup turns cannot flip its Open-based branch, and that the final
   application notification commits separately before cancelled. Run example and targeted fault/flow tests.
-- [ ] 5. Update rustdoc, ADR 0044 clarifications, changelog/version and any description-only flow snapshots. Compare
+- [x] 5. Update rustdoc, ADR 0044 clarifications, changelog/version and any description-only flow snapshots. Compare
   hashes and description-stripped schemas against the landed cancellation predecessor; ReplyTo, Event and other actor
   contracts stay unchanged. Write docs-handoff.md under this change for the dedicated docs session, following current
   AGENTS.md ownership: give exact source/tests, actors-guide/API/example content, architecture phase rules, current
