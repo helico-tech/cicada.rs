@@ -47,6 +47,7 @@ accepted ADR is not rewritten: a later one supersedes it. A change that makes a 
 | [0040](0040-remote-turns-over-http.md) | Four JSON lease routes and ActorClient's TurnSource adapter preserve explicit completion results, fencing and uncertainty across HTTP peers. |
 | [0041](0041-a-consumer-skill-with-each-release.md) | A consumer skill ships with each release and routes agents to the project's resolved Cicada source; guides own the knowledge and CI checks provenance and drift. |
 | [0042](0042-app-workers-over-http.md) | App worker selects store or HTTP execution with explicit mode precedence, shared hosting, server-owned lease policy and independent Worker shutdown. |
+| [0043](0043-deep-payloads-of-dead-letters.md) | Deep dead-letter payloads use an explicit JSON-text field with exact numeric parsing, ordinary redrive validation and a breaking backup/restore upgrade. |
 
 ## Design questions
 
