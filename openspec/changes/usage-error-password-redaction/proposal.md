@@ -29,7 +29,7 @@ libpq form, which the helper leaves alone today; other output than usage errors;
 
 ## Order
 
-After `cicada-agent-skill`. Before `store-close-cancellation`.
+After `build-loop-docs-handoff`. Before `store-close-cancellation`.
 
 ## Impact
 
