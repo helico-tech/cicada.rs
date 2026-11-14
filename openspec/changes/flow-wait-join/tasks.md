@@ -1,6 +1,6 @@
 ## Implementation
 
-- [ ] 1. Reconcile with the landed send/reply/timeout predecessors, then add the four join helpers over one private
+- [x] 1. Reconcile with the landed send/reply/timeout predecessors, then add the four join helpers over one private
   wait engine and pure sufficiency/selection functions. Validate ordered slices, duplicates, phase references, reuse,
   1..100 size, shared journal room and new deadlines before early replies. Replay exact ordered ids/mode/deadline
   presence, allowing single/all one-request equivalence. Decode only saved selections under InProgress; keep permanent

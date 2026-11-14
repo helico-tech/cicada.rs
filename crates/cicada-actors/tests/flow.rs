@@ -228,6 +228,51 @@ enum Op {
     Crash { id: String },
     /// Flow code that waits at the probe's barrier when the probe plans a wait for `id`.
     Gate { id: String },
+    /// The join `id` for every one of `requests`, in that order, with a timeout of `secs` seconds when given; the probe
+    /// notes the values, or `{"received": value}` and `"timedOut"` slots.
+    WaitAll {
+        id: String,
+        requests: Vec<String>,
+        #[serde(default)]
+        secs: Option<u64>,
+    },
+    /// The join `id` for the first of `requests`, with a timeout of `secs` seconds when given; the probe notes
+    /// `{"index": i, "value": value}`, wrapped as `{"received": ..}` or `"timedOut"` when timed.
+    WaitFirst {
+        id: String,
+        requests: Vec<String>,
+        #[serde(default)]
+        secs: Option<u64>,
+    },
+    /// The requests `asks` and their join `wait`, decoded as `decode` until the probe's code is fixed, as any JSON after.
+    TypedJoin { wait: String, asks: Vec<Asked>, decode: Decode },
+}
+
+/// A request of [`Op::TypedJoin`]: `id` to `responder/<to>`, which answers as `answer`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+struct Asked {
+    id: String,
+    to: String,
+    answer: Answer,
+}
+
+/// What [`Op::TypedJoin`] decodes its replies as before the code is fixed.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+enum Decode {
+    /// `u32`.
+    Number,
+    /// A type whose decoder panics; the flow catches the panic and goes on.
+    Exploding,
+}
+
+/// A reply whose decoder panics.
+struct Boom;
+
+impl<'de> Deserialize<'de> for Boom {
+    fn deserialize<D: serde::Deserializer<'de>>(_: D) -> Result<Self, D::Error> {
+        panic!("the decoder panicked")
+    }
 }
 
 /// How a responder answers a request.
@@ -655,6 +700,46 @@ impl ScriptFlow {
                     p.gate.notified().await;
                 }
             }
+            Op::WaitAll { id, requests: names, secs } => {
+                let handles: Vec<Request<Value>> = names.iter().map(|name| requests[name].clone()).collect();
+                match secs {
+                    None => {
+                        let values = step.wait_all(&id, &handles).await?;
+                        p.note(&id, Value::Array(values));
+                    }
+                    Some(secs) => {
+                        let slots = step.wait_all_timeout(&id, &handles, Duration::from_secs(secs)).await?;
+                        p.note(&id, Value::Array(slots.into_iter().map(noted).collect()));
+                    }
+                }
+            }
+            Op::WaitFirst { id, requests: names, secs } => {
+                let handles: Vec<Request<Value>> = names.iter().map(|name| requests[name].clone()).collect();
+                let won = |(index, value): (usize, Value)| json!({"index": index, "value": value});
+                match secs {
+                    None => {
+                        let first = step.wait_first(&id, &handles).await?;
+                        p.note(&id, won(first));
+                    }
+                    Some(secs) => match step.wait_first_timeout(&id, &handles, Duration::from_secs(secs)).await? {
+                        Waited::Received(first) => p.note(&id, json!({"received": won(first)})),
+                        Waited::TimedOut => p.note(&id, json!("timedOut")),
+                    },
+                }
+            }
+            Op::TypedJoin { wait, asks, decode } => {
+                if p.fixed.load(Ordering::SeqCst) {
+                    let values: Vec<Value> = typed_join(step, &wait, &asks).await?;
+                    p.note(&wait, Value::Array(values));
+                } else if let Decode::Number = decode {
+                    let values: Vec<u32> = typed_join(step, &wait, &asks).await?;
+                    p.note(&wait, json!(values));
+                } else {
+                    let caught = AssertUnwindSafe(typed_join::<Boom>(step, &wait, &asks)).catch_unwind().await;
+                    assert!(caught.is_err(), "the decoder panicked");
+                    step.run("after-boom", |key| p.call(key)).await?;
+                }
+            }
             Op::Typed { id, wait, to, answer } => {
                 let target = responder(&to);
                 if p.fixed.load(Ordering::SeqCst) {
@@ -670,6 +755,28 @@ impl ScriptFlow {
         }
         Ok(())
     }
+}
+
+/// What the probe notes for a slot of a timed join.
+fn noted(slot: Waited<Value>) -> Value {
+    match slot {
+        Waited::Received(value) => json!({"received": value}),
+        Waited::TimedOut => json!("timedOut"),
+    }
+}
+
+/// The requests `asks`, each typed by the reply `T` whatever the target's message says, and their join `wait`.
+async fn typed_join<T: serde::de::DeserializeOwned + Send>(
+    step: &mut Step,
+    wait: &str,
+    asks: &[Asked],
+) -> Result<Vec<T>, HandlerError> {
+    let mut handles = Vec::new();
+    for Asked { id, to, answer } in asks {
+        let build = |reply: ReplyTo<T>| ResponderMsg::Ask { reply: retype(&reply), answer: answer.clone() };
+        handles.push(step.request(id, &responder(to), build).await?);
+    }
+    step.wait_all(wait, &handles).await
 }
 
 /// `test.plain`: one step, with the default retry policy.
@@ -1821,10 +1928,10 @@ async fn cancel_and_cancelling_are_refused_and_terminal_runs_ignore_continue_and
     assert!(probe.keys().is_empty(), "no flow code ran");
 }
 
-/// Scenario: Replay misuse, through the runner: a saved request does not replay as a send, a saved join cannot replay
-/// in this release, and a saved wait with a deadline does not replay through `Step::wait`.
+/// Scenario: Replay misuse, through the runner: a saved request does not replay as a send, and a saved join, first wait
+/// or wait with a deadline does not replay through `Step::wait` of one request.
 #[tokio::test(start_paused = true)]
-async fn a_saved_request_or_a_reserved_wait_stalls_replay_for_good() {
+async fn a_saved_request_or_another_wait_stalls_replay_for_good() {
     let probe = Probe::default();
     let test = node(&probe).await;
     let request = saved_request("go", "w1", "m1");
@@ -1843,7 +1950,11 @@ async fn a_saved_request_or_a_reserved_wait_stalls_replay_for_good() {
         let saved = vec![request.clone(), second.clone(), wait];
         start_with(&test, key, restored(script(ops), saved.clone())).await;
         test.run_until_idle().await;
-        let why = if key == "deadline" { "wait `x` is saved with a deadline, which Step::wait" } else { "a join" };
+        let why = match key {
+            "join" => "wait `x` is saved for all of the requests m1, m2, not for the request m1",
+            "first" => "wait `x` is saved for the first of the requests m1, not for the request m1",
+            _ => "wait `x` is saved with a deadline, which Step::wait",
+        };
         refused(&test, key, why).await;
         assert_eq!(state(&test, key).await.journal, saved, "{key}");
     }
@@ -2336,43 +2447,6 @@ async fn progress_saved_by_an_earlier_release_replays_and_goes_on() {
     assert_eq!(worker_state(&test, "w1").await.n, 1);
     let written = test.state_json(&run("k")).await.unwrap();
     assert_eq!((written["replies"].clone(), written["cleanup"].clone()), (json!([]), json!([])));
-}
-
-/// Scenario: Reserved active wait. An eligible reply from the saved target that would close a saved open join or first
-/// wait fails for good with a later-feature diagnostic, and saves no reply, no outcome and no continuation.
-#[tokio::test(start_paused = true)]
-async fn a_reply_that_would_close_a_reserved_wait_is_refused_for_good_and_saves_nothing() {
-    let probe = Probe::default();
-    let test = node(&probe).await;
-    test.create(&responder("r1"), &ResponderState::default()).await;
-    let ops = vec![ask("go", "r1", Answer::Later), ask("q", "r1", Answer::Later), wait_op("x", "go")];
-    let join = open_wait("x", &["m1", "m2"], WaitMode::All, None);
-    let first = open_wait("x", &["m1", "m2"], WaitMode::First, None);
-    for (key, wait) in [("join", join), ("first", first)] {
-        let saved = vec![saved_request("go", "r1", "m1"), saved_request("q", "r1", "m2"), wait];
-        let progress = restored(script(ops.clone()), saved);
-        test.create(&run(key), &progress).await;
-        let before = unchanged(&test, key).await;
-        let reply = ResponderMsg::Raw { run: addr(&run(key)), request: MessageId::new("m1").unwrap(), depth: 1 };
-        test.send(&responder("r1"), reply).await;
-        test.run_until_idle().await;
-        let failed: Vec<_> = test.failures().await.into_iter().filter(|r| r.envelope.to == addr(&run(key))).collect();
-        assert_eq!(failed.len(), 1, "{key}");
-        let record = &failed[0];
-        assert_eq!((record.envelope.message_type.as_str(), record.envelope.failures), ("Reply", 0), "{key}: for good");
-        assert_eq!(record.envelope.from, Some(addr(&responder("r1"))), "{key}: from the saved target");
-        let error = record.error.as_deref().unwrap();
-        assert!(error.contains("the reply to request m1 would close wait `x`"), "{key}: {error}");
-        assert!(error.contains("a join, which this release") && error.contains("a later release"), "{key}");
-        let told = told(&test).await;
-        assert!(told.iter().any(|f| f.message_id == record.message_id && f.cause == FailureCause::Refused), "{key}");
-        assert_eq!(unchanged(&test, key).await, before, "{key}: state and version unchanged");
-        let held = state(&test, key).await;
-        assert!(held.replies.is_empty() && held.armed.is_none(), "{key}: no reply, no armed continuation");
-        assert_eq!(wait_entry(&test, key, "x").await, (None, vec![]), "{key}: no outcome");
-        assert!(test.pending(&run(key)).await.is_empty(), "{key}: no continuation");
-    }
-    assert!(probe.keys().is_empty() && probe.got().is_empty(), "no flow code ran");
 }
 
 /// Scenario: Sender boundary, of a trusted remote worker. The target runs in a worker that leases its turns through the
