@@ -47,6 +47,13 @@ Cancelled}`, `JournalEntry::{Step, Sleep, Send, Wait}`, `CreateKind::{Independen
 `WaitOutcome::{Received, TimedOut}` and `FlowReply { request, value }` in `FlowState::replies`; the send helper is
 `Step::send` with a borrowed `Target`.
 
+In Rust (0.18.1, `flow-reply-waits`): `Step::request(id, to, build)` takes the same borrowed `Target` and a builder
+`FnOnce(ReplyTo<T>) -> R::Message`, and returns a `Request<T>`, which has a private constructor, exposes its id and is
+not serialized; `Step::wait(id, &request)` is the single wait (one request, mode all, no deadline) and returns `T`;
+`ReplyTo<T>` is the route `{run, request}` with public fields, and `ReplyTo::send(turn, &value)` is the target's helper,
+which checks the value when called and returns a future that borrows only the turn. A wait without its reply parks
+the run: `armed` becomes null and no continuation is sent. Joins, deadlines and cancellation stay refused.
+
 ### State invariants
 
 - Ids remain 1..100 ASCII characters from A-Za-z0-9._~-:, unique within each journal. Main and cleanup have separate

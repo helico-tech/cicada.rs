@@ -7,6 +7,47 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.18.1 — unreleased
+
+A flow can ask an actor for work and wait for its reply, durably: `Step::request` sends a message that carries a typed
+reply route, and `Step::wait` parks the run with no handler open and no polling until the target replies (ADR 0044).
+The flow wire and every contract hash stay those of 0.18.0; no store schema and no guarantee changes. A node of 0.18.0
+refuses `Reply` for good and cannot replay a request, so upgrade every host and worker of a flow type before its code
+requests.
+
+### Added
+
+- `Step::request(id, to, build)` returns a `Request<T>`. `build` gets a `ReplyTo<T>`, `{run, request}`: the run's
+  address and the request's fresh message id, which the target's message carries (a field `reply: ReplyTo<JobResult>`
+  types the request). The create, the message, the request entry (`reply: true`) and the next `Continue` commit
+  together, as for `Step::send`; replay returns the saved request without converting, building or serializing anything.
+  A caught panic in the builder fails the turn for good.
+- `Step::wait(id, &request)` returns the reply decoded as `T`, only on replay of a committed outcome. A new wait whose
+  reply came early saves itself closed and arms the next `Continue`; one whose reply has not come saves itself open and
+  parks the run: `armed` is `null` and no `Continue` is sent. A public `Continue` replays a parked run and parks it
+  again without a new entry. A reply that does not decode as `T` fails the turn for good and keeps the outcome: fix the
+  code and send a public `Continue`. The wait has no timeout; joins and deadlines come later.
+- `ReplyTo::send(turn, &value)` replies from the target's turn: it encodes and checks the value at once (no NUL, at most
+  61 levels deep, else `TurnError::Invalid`), and its future borrows only the turn. The reply is due now, carries the
+  turn's correlation id and has no retry policy. A reply to a deleted run rejects the target's whole commit.
+  `ReplyTo<T>` has one schema and wire form for every `T`; adding it to a target's message changes that target's
+  contract like any field.
+
+### Changed
+
+- A running run handles `FlowMsg::Reply` without running flow code. It ignores, writing nothing, a reply that names no
+  request of the run, comes from another address than the request's target (an HTTP send has none; a delegate, a child
+  and a dead-letter redrive have their own), repeats a kept reply or names a closed wait; only then is the value
+  checked, and a NUL or more than 61 levels fails it for good. The first eligible value is kept. When the open wait
+  waits for it, the same commit closes the wait, cancels any armed continuation and arms a `Continue` with the flow's
+  policy and the reply's correlation id; an early reply leaves `armed` alone. A done or cancelled run ignores `Reply`;
+  a cancelling run still refuses it.
+- A saved request or single wait replays; a saved join or wait with a deadline, and a reply that would close one, fail
+  for good with a diagnostic that names a later release. A failed send or request now names its kind in its error
+  (`request \`go\` to … could not be checked`). The diagnostics of `Cancel` and of a cancelling run are reworded.
+- The descriptions of `FlowMsg::Reply`, the send entry's `reply` and the wait entry in a flow's contract describe the new
+  behaviour. Descriptions are not part of a contract's hash: the hashes are those of 0.18.0.
+
 ## 0.18.0 — 2026-11-14
 
 A breaking release for systems with flows: a flow can send actor work atomically with its progress (`Step::send`), and

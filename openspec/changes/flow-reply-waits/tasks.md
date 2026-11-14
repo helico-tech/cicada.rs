@@ -28,7 +28,7 @@
   checkout: existing test/sample-service flows and ready-made actors must have no schema/hash diff. Regeneration may
   add the new target fixture but must not silently change existing contracts. Run targeted contract/snapshot tests,
   examples doctests and a virtual-time end-to-end request/reply example, including deletion causing reply commit refusal.
-- [ ] 5. Update architecture, actors guide, operations, public API docs, ADR 0044 and its index, and changelog/version
+- [x] 5. Update architecture, actors guide, operations, public API docs, ADR 0044 and its index, and changelog/version
   at build time. Explain sender-address trust (HTTP cannot supply from; trusted remote completion uses its actor),
   delegates forwarding through the target, first eligible value, indefinite waits on target failure, deleted-run commit
   rejection, early-reply correlation, committed outcomes and typed decode recovery. Document all-host/worker upgrade
