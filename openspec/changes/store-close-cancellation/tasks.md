@@ -40,7 +40,7 @@
 
 ## Finishing checks
 
-- [ ] 6. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` with
+- [x] 6. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` with
   CICADA_PG_URL, `cargo check -p cicada` with no features and each of `--features sqlite` and `--features postgres`,
   and `openspec validate store-close-cancellation --strict`. Include both SQL conformance suites and existing memory,
   feed-close and SQLite settlement tests. Record unavailable database checks, verify all targeted cancellation tests
