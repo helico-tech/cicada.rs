@@ -24,7 +24,7 @@ changes.
 
 ## Order
 
-After `flow-cancellation`. No following change.
+After `flow-finalizer`. No following change.
 
 ## Impact
 

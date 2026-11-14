@@ -2,62 +2,32 @@
 
 ## Why
 
-A running flow can only be stopped by deleting its actor. A delete runs no handler, so the flow gets no chance to
-clean up: work it started in other actors or outside the store keeps running, and nothing reports when it has
-stopped. The durable-flows change left cancellation out on purpose.
-
-Found in cicada-code-factory: a run of its work owns containers, networks and a volume. When a person stops a ticket,
-the run must stop starting stages, stop the containers that run, save what they produced, remove the resources, and
-only then say "cancelled", because capacity is given back at that moment. Today a hand-written actor does this
-(`docs/proposals/development-workflow-actors.md` of that repository).
+Deleting a run executes no cleanup handler. A public cancel message should stop future normal work, interrupt its saved sleep or wait, and preserve an observable terminal run. Durable user cleanup is the next piece.
 
 ## What Changes
 
-- A public cancel request for a run. It is safe to repeat, and a run that is done or already cancelled ignores it.
-- From that request on the run starts no new work: no new step, send or wait.
-- An open sleep or wait (`flow-reply-waits`) is interrupted, and the flow's code sees the cancellation at that point.
-- The flow then runs its own finalization: it asks the actors and resources it started to shut down and waits for
-  their answers, durably, with the same steps and waits as before. A restart in the middle continues the cleanup.
-- Only when finalization has finished does the run report `cancelled`, as a status of its own beside `done`, with a
-  watch notification like any other stop.
-- A delete stays what it is: immediate, with no cleanup. Cleanup outside the store stays the host's job.
-- This is more than one small change. The design loop splits it, for instance: (1) the cancel request, the status and
-  no new work; (2) interrupting a sleep or a wait; (3) finalization that can step and wait.
+- Add idempotent Cancel handling using the reserved contract: once handled, stop normal replay, cancel the armed continuation and mark the run cancelled.
+- Preserve actor serialization: a running turn finishes first; Cancel does not preempt its handler. Done/cancelled runs ignore repeated requests.
+- Retain the run and its journal; report status through reads/change hints or application messages, not a synthetic core Stopped notification.
+- Define interruption of sleeps/open waits and late replies. State explicitly that this piece performs no user cleanup and the following finalizer piece defers cancelled until cleanup finishes.
 
-## To decide
+## Design boundaries
 
-- How the flow's code sees a cancellation: an error value from the interrupted step, sleep or wait that the flow
-  handles, or a separate finalizer function on `Flow`.
-- A step that is running when the request arrives: it finishes and commits first (the proposal), or its handler is
-  interrupted.
-- Finalization that fails for good, or never ends: the run's status then, and whether a second cancel or a deadline
-  forces the end.
-- Whether a cancel reaches the children of the run by itself, or only through the flow's own finalization.
-- What the journal holds for the request and the cleanup against the 1,000 entries, and how replay stays the same for
-  a run that was cancelled half-way.
-- The flow's contract: a new message and a new status. In-flight runs of older code must keep replaying.
-
-## Capabilities
-
-### New Capabilities
-
-- `flow-cancellation`: a run can be asked to stop, cleans up durably, and reports `cancelled` when that is finished.
-
-### Modified Capabilities
-
-- `flows` (the status, the messages), `flow-sleep` and `flow-waits` (interruption).
+Part of the six-change flow line requested by the owner. The shared architecture and wire choices are settled in the
+first design; each later piece gets its own design, spec delta, review and tasks. The original use case is durable
+job/resource work in cicada-code-factory. No core or store change is proposed. Exact API and edge cases remain subject
+to that piece's design review; this proposal does not claim its behavior is already available.
 
 ## Out of scope
 
-Compensation of finished steps (a saga's undo); a forced stop with a deadline that kills a running handler; cleanup of
-anything outside the store by the library; pausing and resuming a run; any change to delete or to watches.
+User finalization (next change), compensation, forced handler interruption, automatic child/resource cleanup, changing delete or core watches.
 
 ## Order
 
-After `flow-reply-waits`. Before `dead-letters-upgrade-wording`.
+After `flow-wait-join`. Before `flow-finalizer`.
 
 ## Impact
 
-`crates/cicada-actors` (`flow`, its contract in `docs/reference/contracts` and `tests/contracts`), an ADR beside
-ADR 0031, the actors guide and its doctests, an example, the changelog. No store or core change is proposed. Once it
-is released, cicada-code-factory can stop a run and give back its capacity only after its containers are gone.
+`crates/cicada-actors` flow implementation, host flow contract fixtures, actor guide and examples, architecture/ADR
+as required, operations and changelog. The first piece introduces the shared contract break; later pieces are intended
+to use that shape without another contract change, subject to verification during design.
