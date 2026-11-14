@@ -46,7 +46,7 @@
 
 ## Finishing checks
 
-- [ ] 6. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
+- [x] 6. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
   `openspec validate deep-failure-notices --strict`. Run the PostgreSQL conformance and numeric/notice cases with
   CICADA_PG_URL, recording any unavailable checks. Confirm exact parsing in the isolated consumer, run the upgrade
   rehearsal against disposable storage, and verify core/HTTP boundary tests run on ordinary debug runtime stacks.
