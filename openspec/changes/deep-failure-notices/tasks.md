@@ -18,7 +18,7 @@
   including HTTP 422 for both/neither/null-text fields, and compatibility with old raw state samples. Regenerate the
   dead-letter contract, assert its hash changes, and update affected public-field uses. Run cicada-actors dead-letter
   and wire-format tests and the targeted HTTP validation test; ordinary depth limits and other watcher hashes stay.
-- [ ] 3. Add a tested Rust export-state conversion example using exact JSON parsing, with no lossy intermediate
+- [x] 3. Add a tested Rust export-state conversion example using exact JSON parsing, with no lossy intermediate
   tool. Preserve every letter and metadata, converting readable legacy raw payloads to text when needed for restore;
   validate converted states against the new schema/limits before any deletion. Test old raw null/markers/floats,
   readable deep legacy data, malformed exports and already-redriven letters. Exercise the documented maintenance

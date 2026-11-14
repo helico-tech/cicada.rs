@@ -1,0 +1,327 @@
+{
+  "messages": {
+    "Discard": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Forgets a letter.",
+      "properties": {
+        "messageId": {
+          "description": "The id of the failed message.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "messageId"
+      ],
+      "title": "Discard",
+      "type": "object"
+    },
+    "Failed": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The notification of a message to a watched actor that ended `failed`: what the failed message was and why it\nfailed. Its type name is `Failed`. A watcher's message family declares it as `Failed(cicada::Failed)`.\n\nIts schema is part of every watcher's contract; a snapshot test pins it.",
+      "properties": {
+        "actor": {
+          "description": "The actor the failed message was for: the actor of the event, not the target of the watch.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": "string"
+        },
+        "attempts": {
+          "description": "How often the message was claimed: its `attempt`.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cause": {
+          "description": "What failed, one of:\n- `handler`: the handler returned an error or panicked and no retry is left, or it returned a state that cannot\n  be stored;\n- `node`: a read of the store the node needed failed, also one the handler passed on, or a panic outside the\n  handler;\n- `refused`: the handler refused the message for good;\n- `timeout`: the turn ran past its maximum duration;\n- `message`: the message cannot be decoded;\n- `state`: the state or the address of the actor cannot be read by its type;\n- `commit`: the effects of the turn were refused, or its commit was rejected or refused;\n- `claim-limit`: the message reached the claim limit.",
+          "oneOf": [
+            {
+              "const": "handler",
+              "description": "The handler returned an error or panicked, and no retry is left; or it returned a new state that cannot be\nstored.",
+              "type": "string"
+            },
+            {
+              "const": "node",
+              "description": "The node or the store failed around the turn: a read the node needed failed, also one the handler passed on,\nor a panic outside the handler.",
+              "type": "string"
+            },
+            {
+              "const": "refused",
+              "description": "The handler refused the message for good (a permanent failure).",
+              "type": "string"
+            },
+            {
+              "const": "timeout",
+              "description": "The turn ran past its maximum duration.",
+              "type": "string"
+            },
+            {
+              "const": "message",
+              "description": "The message cannot be decoded.",
+              "type": "string"
+            },
+            {
+              "const": "state",
+              "description": "The state or the address of the actor cannot be read by its type.",
+              "type": "string"
+            },
+            {
+              "const": "commit",
+              "description": "The effects of the turn were refused, or its commit was rejected or refused.",
+              "type": "string"
+            },
+            {
+              "const": "claim-limit",
+              "description": "The message reached the claim limit (ADR 0025).",
+              "type": "string"
+            }
+          ]
+        },
+        "correlationId": {
+          "description": "The correlation id of the failed message; null when it has none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "error": {
+          "description": "The error it failed with.",
+          "type": "string"
+        },
+        "from": {
+          "description": "The sender of the failed message; null for a message sent from outside a turn.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "messageId": {
+          "description": "The id of the failed message.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "messageType": {
+          "description": "The type name of the failed message.",
+          "type": "string"
+        },
+        "payload": {
+          "description": "The payload of the failed message."
+        }
+      },
+      "required": [
+        "actor",
+        "messageId",
+        "messageType",
+        "payload",
+        "error",
+        "attempts",
+        "cause"
+      ],
+      "title": "Failed",
+      "type": "object"
+    },
+    "Redrive": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Sends the failed message of a letter again, once: to the same actor, with the same type, payload and\ncorrelation id. Its sender is the dead-letters actor.",
+      "properties": {
+        "messageId": {
+          "description": "The id of the failed message.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "messageId"
+      ],
+      "title": "Redrive",
+      "type": "object"
+    },
+    "Stopped": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The notification of a watched actor that went away. Its type name is `Stopped`. A watcher's message family declares\nit as `Stopped(cicada::Stopped)`. Only a watch on the actor's own address tells of it.\n\nIts schema is part of every watcher's contract; a snapshot test pins it.",
+      "properties": {
+        "actor": {
+          "description": "The actor that went away.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": "string"
+        },
+        "by": {
+          "description": "The actor whose turn removed it: the actor itself when it stopped, the stopping ancestor when it went with it;\nnull for a removal from outside a turn.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cause": {
+          "description": "Why it went away.",
+          "oneOf": [
+            {
+              "const": "stopped",
+              "description": "Its own turn stopped it.",
+              "type": "string"
+            },
+            {
+              "const": "deleted",
+              "description": "It was deleted from outside a turn.",
+              "type": "string"
+            },
+            {
+              "const": "parent",
+              "description": "It was removed with its parent (ADR 0019).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "required": [
+        "actor",
+        "cause"
+      ],
+      "title": "Stopped",
+      "type": "object"
+    }
+  },
+  "state": {
+    "$defs": {
+      "DeadLetter": {
+        "description": "One failed message, as the `Failed` of its watch told it, and what became of a redrive of it.",
+        "properties": {
+          "actor": {
+            "description": "The actor the failed message was for.",
+            "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+            "type": "string"
+          },
+          "attempts": {
+            "description": "How often it was claimed.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "cause": {
+            "description": "What failed.",
+            "oneOf": [
+              {
+                "const": "handler",
+                "description": "The handler returned an error or panicked, and no retry is left; or it returned a new state that cannot be\nstored.",
+                "type": "string"
+              },
+              {
+                "const": "node",
+                "description": "The node or the store failed around the turn: a read the node needed failed, also one the handler passed on,\nor a panic outside the handler.",
+                "type": "string"
+              },
+              {
+                "const": "refused",
+                "description": "The handler refused the message for good (a permanent failure).",
+                "type": "string"
+              },
+              {
+                "const": "timeout",
+                "description": "The turn ran past its maximum duration.",
+                "type": "string"
+              },
+              {
+                "const": "message",
+                "description": "The message cannot be decoded.",
+                "type": "string"
+              },
+              {
+                "const": "state",
+                "description": "The state or the address of the actor cannot be read by its type.",
+                "type": "string"
+              },
+              {
+                "const": "commit",
+                "description": "The effects of the turn were refused, or its commit was rejected or refused.",
+                "type": "string"
+              },
+              {
+                "const": "claim-limit",
+                "description": "The message reached the claim limit (ADR 0025).",
+                "type": "string"
+              }
+            ]
+          },
+          "correlationId": {
+            "description": "Its correlation id; null when it has none.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "description": "The error it failed with.",
+            "type": "string"
+          },
+          "from": {
+            "description": "Its sender; null for a message sent from outside a turn.",
+            "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "messageType": {
+            "description": "Its type name.",
+            "type": "string"
+          },
+          "payload": {
+            "description": "Its payload."
+          },
+          "recordedAt": {
+            "description": "When the letter was recorded (store time).",
+            "format": "date-time",
+            "type": "string"
+          },
+          "redriveError": {
+            "description": "Why the last redrive sent nothing: the type of the actor no longer takes the message.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "redrivenAs": {
+            "description": "The id of the message a redrive sent; once set, the letter is not sent again.",
+            "minLength": 1,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "seq": {
+            "description": "The `seq` of the notification that told of it: it grows with every message of the store, so it orders letters\nrecorded at the same store time.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "actor",
+          "messageType",
+          "payload",
+          "error",
+          "cause",
+          "attempts",
+          "recordedAt",
+          "seq"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "The state of [`DeadLetters`]: the letters by the id of the failed message. The order of the keys means nothing (a\nstore may sort them); age is told by [`DeadLetter::recorded_at`] and then [`DeadLetter::seq`].",
+    "properties": {
+      "letters": {
+        "additionalProperties": {
+          "$ref": "#/$defs/DeadLetter"
+        },
+        "default": {},
+        "description": "The letters by the id of the failed message.",
+        "type": "object"
+      }
+    },
+    "title": "DeadLettersState",
+    "type": "object"
+  },
+  "type": "cicada.dead-letters"
+}

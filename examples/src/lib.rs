@@ -17,6 +17,7 @@
 //! | [`flow_onboarding`] | Example 13: the onboarding of example 6 as a durable flow; async code, one step per turn, a durable sleep. |
 //! | [`flow_events`] | Example 14: flows started by an event; a placed order starts a receipt and a fulfilment in one commit, a batcher a digest. |
 //! | [`remote_worker`] | Example 15: the cleanup singleton of example 1, unchanged, in a worker without database access that leases its turns over HTTP. |
+//! | [`dead_letters_upgrade`] | Example 16: the upgrade of dead letters to 0.17.0; export, convert, reset and restore around the new contract. |
 //! | [`sync`] | The architecture's example: a paged import, one turn per page, rescheduled hourly. |
 //!
 //! Every example has the same shape: a public ref struct per actor type (its one field is the key), a
@@ -27,6 +28,7 @@
 
 pub mod batching;
 pub mod cron;
+pub mod dead_letters_upgrade;
 pub mod debounce;
 pub mod fanout;
 pub mod flow_events;
