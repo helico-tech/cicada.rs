@@ -42,7 +42,7 @@
 
 ## Finishing checks
 
-- [ ] 6. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
+- [x] 6. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
   `openspec validate flow-finalizer --strict`, with CICADA_PG_URL where available and skipped checks recorded.
   Verify actual compilation, retained main/cleanup overlap, stable lookup regressions and contract equality against
   implemented predecessors. They must land/archive first. Follow normal build-loop code-review/release and current

@@ -15,7 +15,8 @@
 //! finalization: the two-turn entry, cleanup keys and journals, done and earlier-cancelled runs, stale, retried and
 //! redriven continuations, repeated cancels, addresses, completion discipline, lookups and their decoding, cleanup
 //! waits over unclosed main requests, joins, early replies, refused requests, deadlines, exhausted, paused, purged and
-//! parked cleanups, rejected, lost and unanswered cleanup commits, notifications and deletes. A probe counts every
+//! parked cleanups, rejected, lost and unanswered cleanup commits, notifications and deletes, and older hosts and
+//! default hooks that skip the cleanup. A probe counts every
 //! closure invocation and notes what each wait and lookup returned.
 
 mod common;
@@ -29,6 +30,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use cicada::FailureCause;
+use cicada::actor::contract_of;
 use cicada::address::TypeName;
 use cicada::contract::Contract;
 use cicada::observer::{ObservedTurn, TurnEnd, TurnObserver, TurnStart};
@@ -5582,4 +5584,144 @@ async fn deleting_a_cancelling_run_runs_no_cleanup_and_removes_its_children() {
     assert_eq!(test.advance_time_by(MINUTE * 2).await, 0, "nothing runs");
     assert!(!test.exists(&run("k")).await && !test.exists(&worker("w1")).await, "the run and its child are gone");
     assert!(probe.ids().is_empty(), "no cleanup");
+}
+
+/// `test.flow` with the code of the test flow but the default cleanup: an older binary of the same type.
+struct NoCleanup {
+    probe: Probe,
+}
+
+impl Flow for NoCleanup {
+    const TYPE: &'static str = "test.flow";
+    type Input = Script;
+
+    fn retry() -> RetryPolicy {
+        three_attempts()
+    }
+
+    async fn run(&self, step: &mut Step, script: Script) -> HandlerResult {
+        ScriptFlow { probe: self.probe.clone() }.run(step, script).await
+    }
+}
+
+/// A host of `test.flow` as 0.18.4 was, on today's contract: a `Cancel` marks a running run cancelled at once, and
+/// every message to a cancelling run fails for good.
+struct CancelOnlyHost;
+
+impl Actor for CancelOnlyHost {
+    type Ref = FlowRun<ScriptFlow>;
+    type State = FlowState<Script>;
+
+    async fn handle(&self, turn: &mut Turn<Self>, message: FlowMsg) -> HandlerResult {
+        match (turn.state().status, message) {
+            (FlowStatus::Cancelling, _) => {
+                Err(HandlerError::permanent("this release of cicada-actors refuses the cleanup of a cancelling run"))
+            }
+            (FlowStatus::Running, FlowMsg::Cancel) => {
+                if let Some(old) = turn.state().armed.clone() {
+                    turn.cancel(&old)?;
+                }
+                let state = turn.state_mut();
+                state.status = FlowStatus::Cancelled;
+                state.armed = None;
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+/// A node with the responders and the witness, on which workers host `test.flow`.
+async fn bare() -> TestActors {
+    let test = TestActors::builder().with(|node| node.host(ResponderActor).host(WitnessActor)).build().await.unwrap();
+    witness(&test, "test.flow").await;
+    test
+}
+
+/// Runs the node's turns and the worker's until neither has one due.
+async fn settle(test: &TestActors, worker: &cicada::runtime::Worker) {
+    drive(test, worker).await;
+}
+
+/// Scenarios: Mixed finalizer implementations; and Old host or default hook. A binary of the same type whose flow
+/// keeps the default cleanup, with an equal contract hash, marks a cancelled run cancelled without the cleanup; so does
+/// a host of 0.18.4, in the `Cancel` turn itself. Neither run is finalized later by an upgraded host.
+#[tokio::test(start_paused = true)]
+async fn an_older_host_or_a_binary_with_the_default_hook_marks_the_run_cancelled_without_its_cleanup() {
+    let probe = Probe::default();
+    let (older, newer) =
+        (contract_of::<FlowActor<NoCleanup>>().unwrap(), contract_of::<FlowActor<ScriptFlow>>().unwrap());
+    assert_eq!(older.hash(), newer.hash(), "an equal contract hash");
+    for old in ["default hook", "0.18.4"] {
+        let test = bare().await;
+        let worker = match old {
+            "default hook" => cicada::runtime::Worker::builder(test.system().clone())
+                .host(FlowActor::new(NoCleanup { probe: probe.clone() }))
+                .build(),
+            _ => cicada::runtime::Worker::builder(test.system().clone()).host(CancelOnlyHost).build(),
+        };
+        worker.initialize().await.unwrap();
+        let held = restored(finalized(steps(&["a", "b"]), steps(&["undo"])), vec![saved("a", json!("r-a"))]);
+        test.create(&run("k"), &held).await;
+        test.send(&run("k"), FlowMsg::Cancel).await;
+        settle(&test, &worker).await;
+        let cancelled = state(&test, "k").await;
+        assert_eq!((cancelled.status, cancelled.cleanup.len()), (FlowStatus::Cancelled, 0), "{old}: no cleanup");
+        let before = unchanged(&test, "k").await;
+        drop(worker);
+
+        let upgraded = cicada::runtime::Worker::builder(test.system().clone())
+            .host(FlowActor::new(ScriptFlow { probe: probe.clone() }))
+            .build();
+        upgraded.initialize().await.unwrap();
+        test.send(&run("k"), FlowMsg::Continue).await;
+        settle(&test, &upgraded).await;
+        assert_eq!(unchanged(&test, "k").await, before, "{old}: never finalized later");
+    }
+    assert!(probe.ids().is_empty(), "the cleanup never ran");
+}
+
+/// Scenario: Lost cleanup reply on an older host. A cleanup parks at a wait; a host of 0.18.4 refuses the target's
+/// reply for good, so the value is lost. After the upgrade a public `Continue` resumes the cleanup, which parks again:
+/// it cannot bring the value back. The target's second reply closes the wait, and the cleanup ends.
+#[tokio::test(start_paused = true)]
+async fn a_cleanup_reply_refused_by_an_older_host_is_not_restored_by_a_continue() {
+    let probe = Probe::default();
+    let test = bare().await;
+    responders(&test, &["s1"]).await;
+    let new_host = || {
+        cicada::runtime::Worker::builder(test.system().clone())
+            .host(FlowActor::new(ScriptFlow { probe: probe.clone() }))
+            .build()
+    };
+    let first = new_host();
+    first.initialize().await.unwrap();
+    let cleanup = vec![later("stop", "s1"), wait_op("stopped", "stop")];
+    start(&test, "k", finalized(vec![sleep("nap", MINUTE)], cleanup)).await;
+    settle(&test, &first).await;
+    test.send(&run("k"), FlowMsg::Cancel).await;
+    settle(&test, &first).await;
+    assert_eq!((state(&test, "k").await.status, state(&test, "k").await.armed), (FlowStatus::Cancelling, None));
+    drop(first);
+
+    let old = cicada::runtime::Worker::builder(test.system().clone()).host(CancelOnlyHost).build();
+    old.initialize().await.unwrap();
+    answer(&test, "s1", json!("gone"), None).await;
+    settle(&test, &old).await;
+    let failed = test.failures().await;
+    assert!(failed.iter().any(|f| f.envelope.message_type == "Reply"), "the reply is refused for good: {failed:?}");
+    assert!(state(&test, "k").await.replies.is_empty(), "its value is lost");
+    drop(old);
+
+    let upgraded = new_host();
+    upgraded.initialize().await.unwrap();
+    test.send(&run("k"), FlowMsg::Continue).await;
+    settle(&test, &upgraded).await;
+    let parked_again = state(&test, "k").await;
+    assert_eq!((parked_again.status, parked_again.armed), (FlowStatus::Cancelling, None), "parked again");
+    assert!(parked_again.replies.is_empty(), "a Continue cannot bring the value back");
+    answer(&test, "s1", json!("gone"), None).await;
+    settle(&test, &upgraded).await;
+    assert_eq!(state(&test, "k").await.status, FlowStatus::Cancelled, "the target's second reply");
+    assert_eq!(probe.got(), [("stopped".to_owned(), json!("gone"))]);
 }
