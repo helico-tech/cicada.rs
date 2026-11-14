@@ -853,3 +853,43 @@ fn a_record_given_as_a_positional_array_is_refused_at_every_level() {
     assert!(decode::<CompleteTurnResponse>(completed(json!(["done"]))).is_err());
     assert!(decode::<CompleteTurnResponse>(json!({"result": "rejected", "failure": ["commit", false, "r"]})).is_err());
 }
+
+/// The same through `Type::deserialize` called directly, as a caller with a deserializer of its own does: no public
+/// decoder of a record skips the object check.
+#[test]
+fn every_record_called_directly_refuses_a_positional_array_and_takes_its_object() {
+    macro_rules! check {
+        ($($record:ty: $array:expr, $object:expr;)*) => {$(
+            let text = |text: &str| <$record>::deserialize(&mut serde_json::Deserializer::from_str(text));
+            assert!(text($array).is_err(), "{} took {}", stringify!($record), $array);
+            assert!(text(&$object.to_string()).is_ok(), "{} refused {}", stringify!($record), $object);
+            assert!(<$record>::deserialize(serde_json::from_str::<Value>($array).unwrap()).is_err());
+            assert!(<$record>::deserialize($object.clone()).is_ok());
+        )*};
+    }
+    let leased =
+        serde_json::to_value(LeaseTurnsResponse::from(LeaseTurnsResult::Leased(vec![lease(full_message())]))).unwrap();
+    let send = json!({"id": "s", "to": "c/d", "type": "T", "payload": {}});
+    let completed = json!({"result": "completed", "outcome": {"kind": "done"}, "cause": null, "version": 1, "sent": [], "cancelled": []});
+    check! {
+        LeaseTurnsRequest: r#"["w", {"counter": "h"}, 1]"#, json!({"owner": "w", "types": {"counter": "h"}, "limit": 1});
+        RenewTurnRequest: r#"["a/b", 1]"#, json!({"actor": "a/b", "epoch": 1});
+        ReleaseTurnRequest: r#"["a/b", 1]"#, json!({"actor": "a/b", "epoch": 1});
+        CompleteTurnRequest: r#"["a/b", 1, "m", {"kind": "cancelled"}]"#,
+            json!({"actor": "a/b", "epoch": 1, "messageId": "m", "report": {"kind": "cancelled"}});
+        TurnReportView: r#"["cancelled"]"#, json!({"kind": "cancelled"});
+        StateReportView: r#"["set", {}]"#, json!({"kind": "set", "value": {}});
+        TurnEffectsView: "[]", json!({});
+        TurnSendView: r#"["s", "c/d", "T", {}]"#, send;
+        ActorCreateView: r#"["c/d", {}, true]"#, json!({"address": "c/d", "state": {}, "child": true});
+        WatchChangeView: r#"["*", true]"#, json!({"target": "*", "set": true});
+        ControlView: r#"["delete", "c/d"]"#, json!({"effect": "delete", "actor": "c/d"});
+        LeaseTurnsResponse: r#"["leased", []]"#, leased;
+        TurnLeaseView: "[]", leased["leases"][0];
+        TurnMessageView: "[]", leased["leases"][0]["message"];
+        RenewTurnResponse: r#"["leaseLost"]"#, json!({"result": "leaseLost"});
+        CompleteTurnResponse: r#"["leaseLost"]"#, completed;
+        TurnFailureView: r#"["commit", false, "r"]"#, json!({"cause": "commit", "retryable": false, "reason": "r"});
+        TurnOutcomeView: r#"["done"]"#, json!({"kind": "done"});
+    }
+}

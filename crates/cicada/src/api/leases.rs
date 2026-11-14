@@ -128,52 +128,38 @@ impl<'de, D: Deserializer<'de>> Deserializer<'de> for ObjectOnly<D> {
     }
 }
 
-/// Serde for the records of these bodies: derived with `#[serde(remote = "Self")]`, and decoded only from a JSON
-/// object, never from a positional array.
-macro_rules! object_records {
-    ($($record:ty),* $(,)?) => {$(
-        impl Serialize for $record {
-            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-                <$record>::serialize(self, serializer)
-            }
-        }
+/// A record of these bodies, declared once: the public type, with `Serialize` and `JsonSchema` derived, and a private
+/// shadow `$wire` that derives the field decoder with `#[serde(remote = ...)]`. The public type's `Deserialize` runs that
+/// decoder through [`ObjectOnly`], so a record is decoded only from a JSON object, never from a positional array, and no
+/// public method decodes it without that check.
+macro_rules! record {
+    ($(#[$meta:meta])* pub $kind:ident $name:ident via $wire:ident = $remote:literal $body:tt) => {
+        #[derive(Serialize, JsonSchema)]
+        $(#[$meta])*
+        pub $kind $name $body
 
-        impl<'de> Deserialize<'de> for $record {
+        /// The private decoder of the record of the same name, without the object check.
+        #[derive(Deserialize, JsonSchema)]
+        #[serde(remote = $remote)]
+        #[allow(dead_code)]
+        $(#[$meta])*
+        $kind $wire $body
+
+        impl<'de> Deserialize<'de> for $name {
             fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-                <$record>::deserialize(ObjectOnly(deserializer))
+                $wire::deserialize(ObjectOnly(deserializer))
             }
         }
-    )*};
+    };
 }
-
-object_records!(
-    LeaseTurnsRequest,
-    RenewTurnRequest,
-    ReleaseTurnRequest,
-    CompleteTurnRequest,
-    TurnReportView,
-    StateReportView,
-    TurnEffectsView,
-    TurnSendView,
-    ActorCreateView,
-    WatchChangeView,
-    ControlView,
-    LeaseTurnsResponse,
-    TurnLeaseView,
-    TurnMessageView,
-    RenewTurnResponse,
-    CompleteTurnResponse,
-    TurnFailureView,
-    TurnOutcomeView,
-);
 
 // ---- requests ----
 
+record! {
 /// Body of `POST /leases`: lease up to `limit` due turns of `types` for `owner`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(remote = "Self")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct LeaseTurnsRequest {
+pub struct LeaseTurnsRequest via LeaseTurnsRequestWire = "LeaseTurnsRequest" {
     /// The worker that will hold the leases, recorded as their owner: at most 200 characters, no NUL.
     pub owner: NodeId,
     /// Each selected type name with the contract hash the worker was built with; 1 to 64 types. A type that is not
@@ -183,35 +169,38 @@ pub struct LeaseTurnsRequest {
     /// The most turns to lease, 1 to 256.
     pub limit: usize,
 }
+}
 
+record! {
 /// Body of `POST /leases/renew`: renew the lease of `actor` held under `epoch`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(remote = "Self")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct RenewTurnRequest {
+pub struct RenewTurnRequest via RenewTurnRequestWire = "RenewTurnRequest" {
     /// The leased actor, as the lease named it.
     pub actor: ActorAddress,
     /// The epoch of the lease.
     pub epoch: i64,
 }
+}
 
+record! {
 /// Body of `POST /leases/release`: give back the lease of `actor` held under `epoch`, without an outcome.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(remote = "Self")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct ReleaseTurnRequest {
+pub struct ReleaseTurnRequest via ReleaseTurnRequestWire = "ReleaseTurnRequest" {
     /// The leased actor, as the lease named it.
     pub actor: ActorAddress,
     /// The epoch of the lease.
     pub epoch: i64,
 }
+}
 
+record! {
 /// Body of `POST /leases/complete`: complete the leased turn of `actor` under `epoch` on `messageId` with the report of
 /// its handler. The server derives the outcome; a report names none.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(remote = "Self")]
+#[derive(Debug, Clone, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CompleteTurnRequest {
+pub struct CompleteTurnRequest via CompleteTurnRequestWire = "CompleteTurnRequest" {
     /// The leased actor, as the lease named it.
     pub actor: ActorAddress,
     /// The epoch of the lease.
@@ -221,12 +210,13 @@ pub struct CompleteTurnRequest {
     /// How the handler ended.
     pub report: TurnReportView,
 }
+}
 
+record! {
 /// How the handler of a leased turn ended ([`TurnReport`]), tagged by `kind`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(remote = "Self")]
+#[derive(Debug, Clone, PartialEq)]
 #[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
-pub enum TurnReportView {
+pub enum TurnReportView via TurnReportViewWire = "TurnReportView" {
     /// The handler returned: its state and its effects, applied together or not at all.
     Returned {
         /// What happens to the actor's own state.
@@ -247,12 +237,13 @@ pub enum TurnReportView {
     /// An operator's cancel request came before the handler ended; no effects.
     Cancelled {},
 }
+}
 
+record! {
 /// What a returned handler did to its actor's own state ([`StateReport`]), tagged by `kind`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(remote = "Self")]
+#[derive(Debug, Clone, PartialEq)]
 #[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
-pub enum StateReportView {
+pub enum StateReportView via StateReportViewWire = "StateReportView" {
     /// State and version stay as they are.
     Unchanged {},
     /// The new state, written with the version increased by 1; required, also when it is `null` (which fails the
@@ -264,13 +255,14 @@ pub enum StateReportView {
     /// The actor and its descendants stop.
     Stop {},
 }
+}
 
+record! {
 /// The effects of a returned handler ([`TurnEffects`]), applied by the commit in the order the core gives them:
 /// watches, deletes, creates, purges, pauses and resumes, then sends. Each array is optional and empty by default.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(remote = "Self")]
+#[derive(Debug, Clone, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct TurnEffectsView {
+pub struct TurnEffectsView via TurnEffectsViewWire = "TurnEffectsView" {
     /// The messages to send, in order.
     #[serde(default)]
     pub sends: Vec<TurnSendView>,
@@ -287,13 +279,14 @@ pub struct TurnEffectsView {
     #[serde(default)]
     pub controls: Vec<ControlView>,
 }
+}
 
+record! {
 /// A message a returned handler sends ([`TurnSend`]). The server sets its sender to the leased actor and its cause to
 /// the leased message; the id is the worker's and is never generated.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(remote = "Self")]
+#[derive(Debug, Clone, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct TurnSendView {
+pub struct TurnSendView via TurnSendViewWire = "TurnSendView" {
     /// The message id, drawn once by the worker and kept when it repeats the report.
     pub id: MessageId,
     /// The target.
@@ -324,12 +317,13 @@ pub struct TurnSendView {
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "policy")]
     pub retention: Option<Retention>,
 }
+}
 
+record! {
 /// An actor a returned handler creates ([`ActorCreate`]).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(remote = "Self")]
+#[derive(Debug, Clone, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct ActorCreateView {
+pub struct ActorCreateView via ActorCreateViewWire = "ActorCreateView" {
     /// The instance to create.
     pub address: ActorAddress,
     /// Its initial state.
@@ -337,27 +331,30 @@ pub struct ActorCreateView {
     /// True for a child of the leased actor, false for an independent actor.
     pub child: bool,
 }
+}
 
+record! {
 /// A watch a returned handler sets or removes, with the leased actor as watcher ([`WatchChange`]).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(remote = "Self")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct WatchChangeView {
+pub struct WatchChangeView via WatchChangeViewWire = "WatchChangeView" {
     /// What is watched.
     pub target: WatchTarget,
     /// True to set the watch, false to remove it.
     pub set: bool,
 }
+}
 
+record! {
 /// A control effect of a returned handler on an actor ([`Control`]).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(remote = "Self")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct ControlView {
+pub struct ControlView via ControlViewWire = "ControlView" {
     /// What happens to the actor.
     pub effect: ControlEffectView,
     /// The actor.
     pub actor: ActorAddress,
+}
 }
 
 /// What a control effect does ([`ControlEffect`]).
@@ -376,11 +373,11 @@ pub enum ControlEffectView {
 
 // ---- responses ----
 
+record! {
 /// Response of `POST /leases` (`200`), tagged by `result`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(remote = "Self")]
+#[derive(Debug, Clone, PartialEq)]
 #[serde(tag = "result", rename_all = "camelCase", rename_all_fields = "camelCase")]
-pub enum LeaseTurnsResponse {
+pub enum LeaseTurnsResponse via LeaseTurnsResponseWire = "LeaseTurnsResponse" {
     /// The leased turns, at most the limit; empty when nothing was due (no long poll).
     Leased {
         /// The leases.
@@ -400,13 +397,14 @@ pub enum LeaseTurnsResponse {
         requested: String,
     },
 }
+}
 
+record! {
 /// A leased turn ([`TurnLease`]): everything a worker needs to run it. The worker keeps its own deadline: its
 /// monotonic time when it sent the lease request plus `ttl`, less the smaller of a tenth of it and one second.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(remote = "Self")]
+#[derive(Debug, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct TurnLeaseView {
+pub struct TurnLeaseView via TurnLeaseViewWire = "TurnLeaseView" {
     /// The leased actor; echo it as it is.
     pub actor: ActorAddress,
     /// The fencing token of the lease.
@@ -430,13 +428,14 @@ pub struct TurnLeaseView {
     #[serde(with = "serde_duration")]
     pub ttl: Duration,
 }
+}
 
+record! {
 /// A message as a worker runs it ([`Message`]): the fields of [`MessageView`](super::MessageView), every one required
 /// (nullable ones as `null`, counters also when 0) and the policies decoded strictly.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(remote = "Self")]
+#[derive(Debug, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct TurnMessageView {
+pub struct TurnMessageView via TurnMessageViewWire = "TurnMessageView" {
     /// Unique id.
     pub id: MessageId,
     /// The target instance.
@@ -487,12 +486,13 @@ pub struct TurnMessageView {
     /// True for a notification of a watch.
     pub notification: bool,
 }
+}
 
+record! {
 /// Response of `POST /leases/renew` (`200`), tagged by `result`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(remote = "Self")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[serde(tag = "result", rename_all = "camelCase", rename_all_fields = "camelCase")]
-pub enum RenewTurnResponse {
+pub enum RenewTurnResponse via RenewTurnResponseWire = "RenewTurnResponse" {
     /// The lease is extended.
     Renewed {
         /// Store time at which the lease now expires: never earlier than before.
@@ -509,12 +509,13 @@ pub enum RenewTurnResponse {
     /// The epoch is no longer current or its lease was released, completed or deleted: abandon the turn.
     LeaseLost,
 }
+}
 
+record! {
 /// Response of `POST /leases/complete` (`200`), tagged by `result`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(remote = "Self")]
+#[derive(Debug, Clone, PartialEq)]
 #[serde(tag = "result", rename_all = "camelCase", rename_all_fields = "camelCase")]
-pub enum CompleteTurnResponse {
+pub enum CompleteTurnResponse via CompleteTurnResponseWire = "CompleteTurnResponse" {
     /// The commit applied ([`TurnCompletion`]).
     Completed {
         /// How the message ended, or that it was rescheduled.
@@ -539,11 +540,12 @@ pub enum CompleteTurnResponse {
     /// The lease is not held (any more): nothing was applied by this call, which says nothing about an earlier one.
     LeaseLost,
 }
+}
 
+record! {
 /// A failure ([`TurnFailure`]).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(remote = "Self")]
-pub struct TurnFailureView {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnFailureView via TurnFailureViewWire = "TurnFailureView" {
     /// Why the message fails.
     pub cause: FailureCause,
     /// True when the message's retry policy may reschedule it.
@@ -551,12 +553,13 @@ pub struct TurnFailureView {
     /// The reason.
     pub reason: String,
 }
+}
 
+record! {
 /// How a completed commit ended the message ([`TurnOutcome`]), tagged by `kind`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(remote = "Self")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "lowercase", rename_all_fields = "camelCase")]
-pub enum TurnOutcomeView {
+pub enum TurnOutcomeView via TurnOutcomeViewWire = "TurnOutcomeView" {
     /// Outcome `done`.
     Done,
     /// Outcome `cancelled`.
@@ -580,6 +583,7 @@ pub enum TurnOutcomeView {
         #[serde(default, skip_serializing_if = "Option::is_none", with = "serde_duration::option")]
         delay: Option<Duration>,
     },
+}
 }
 
 // ---- conversions ----
