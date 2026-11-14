@@ -488,6 +488,35 @@ async fn a_usage_error_of_the_settings_hides_the_password_of_an_address() {
     assert!(!db.path.exists(), "nothing started");
 }
 
+/// Scenario: Apostrophe in a clap-rejected argument. Scenario: Apostrophes in a settings error. Scenario: Adjacent
+/// addresses. A raw `'` is legal in a password and clap quotes with `'`: the whole password is hidden all the same.
+#[tokio::test]
+async fn a_usage_error_hides_a_password_with_an_apostrophe_and_each_of_adjacent_addresses() {
+    let db = TempDb::new();
+    let line = ["myapp", "serve", "postgres://u:S3'CRET@h/db"];
+    let Err(error) = run(counter_app(), &db.env(), &line).await else { panic!("a usage error") };
+    assert!(matches!(error, AppError::Usage(_)) && error.exit_code() == 2, "{error}");
+    let error = error.to_string();
+    assert!(error.starts_with("unexpected argument 'postgres://u:***@h/db'"), "{error}");
+    assert!(!error.contains("S3") && !error.contains("CRET"), "{error}");
+
+    let mut env = db.env();
+    env.insert("CICADA_LISTEN".into(), "postgres://o'neil:S3'CRET@h/db".into());
+    let listen = run(counter_app(), &env, &["myapp", "serve"]).await.unwrap_err();
+    assert!(matches!(listen, AppError::Usage(_)) && listen.exit_code() == 2, "{listen}");
+    let listen = listen.to_string();
+    assert!(listen.starts_with("CICADA_LISTEN: invalid value 'postgres://o'neil:***@h/db'"), "{listen}");
+    assert!(!listen.contains("S3") && !listen.contains("CRET"), "{listen}");
+
+    let line = ["myapp", "serve", "--types", "a://h,,b://u:secret@k"];
+    let types = run(counter_app(), &db.env(), &line).await.unwrap_err();
+    assert!(matches!(types, AppError::Usage(_)) && types.exit_code() == 2, "{types}");
+    let types = types.to_string();
+    assert!(types.starts_with("--types: an empty name in 'a://h,,b://u:***@k'"), "{types}");
+    assert!(!types.contains("secret"), "{types}");
+    assert!(!db.path.exists(), "nothing started");
+}
+
 /// A node setting that can be read and is not valid fails the start: exit code 1.
 #[tokio::test]
 async fn a_setting_that_is_not_valid_fails_the_start() {
