@@ -28,7 +28,7 @@ try {
       document.body.innerHTML = '<div id="screen"><div id="terminal"></div></div>';
       const term = new window.Terminal({
         cols: recording.cols, rows: recording.rows, fontFamily: 'Menlo, monospace', fontSize: 14,
-        lineHeight: 1.3, cursorBlink: false, allowProposedApi: true,
+        lineHeight: 1.3, cursorBlink: false, drawBoldTextInBrightColors: false, allowProposedApi: true,
         theme: {
           background: '#151b24', foreground: '#d9e2ef', black: '#151b24',
           red: '#e06c75', green: '#98c379', yellow: '#e5c07b', blue: '#61afef',
