@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.18.1 — unreleased
+## 0.18.1 — 2026-11-14
 
 A flow can ask an actor for work and wait for its reply, durably: `Step::request` sends a message that carries a typed
 reply route, and `Step::wait` parks the run with no handler open and no polling until the target replies (ADR 0044).
