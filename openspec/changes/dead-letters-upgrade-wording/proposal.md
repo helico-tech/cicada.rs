@@ -24,7 +24,7 @@ changes.
 
 ## Order
 
-After `flow-finalizer`. No following change.
+After `build-loop-docs-handoff`. No following change.
 
 ## Impact
 

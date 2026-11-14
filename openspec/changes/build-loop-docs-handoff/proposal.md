@@ -35,7 +35,7 @@ The docs session's own procedure and hooks; access isolation; rewriting earlier 
 
 ## Order
 
-After `cicada-agent-skill`. Before `usage-error-password-redaction`.
+After `flow-finalizer`. Before `dead-letters-upgrade-wording`.
 
 ## Impact
 

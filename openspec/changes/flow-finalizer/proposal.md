@@ -24,7 +24,7 @@ Library-managed external-resource cleanup, compensation of completed steps, forc
 
 ## Order
 
-After `flow-cancellation`. Before `dead-letters-upgrade-wording`.
+After `flow-cancellation`. Before `build-loop-docs-handoff`.
 
 ## Impact
 
