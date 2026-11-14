@@ -54,7 +54,7 @@ anything outside the store by the library; pausing and resuming a run; any chang
 
 ## Order
 
-After `flow-reply-waits`, the last of the line.
+After `flow-reply-waits`. Before `dead-letters-upgrade-wording`.
 
 ## Impact
 
