@@ -21,8 +21,11 @@
 //!    run cancelled: the report and the status are not one commit.
 //!
 //! Both owners fence late work. A [`Sandbox`] that was stopped ignores a later `Start`, such as an operator's retry of
-//! a failed one, and creates nothing; [`Capacity::release`] keeps a tombstone, so a late reserve of a released key is
-//! refused. The library promises neither: a cleanup by key is safe only with owners that settle such races (see
+//! a failed one. That covers only durable messages: a create the runtime accepted, whose call then failed or timed
+//! out, may still be under way when `Stop` runs. So [`Containers::remove`] tombstones its key before it returns: a
+//! create of that key, in flight or late, creates nothing, and `Stopped` means that no container of the key exists or
+//! can appear. [`Capacity::release`] keeps a tombstone the same way, so a late reserve of a released key is refused.
+//! The library promises neither: a cleanup by key is safe only with owners that settle such races (see
 //! `tests/flow_resources.rs`). Every host and worker of the flow type must run this cleanup before a run is cancelled:
 //! a release before 0.18.5, or code with the default cleanup, marks the run cancelled without it.
 //!
@@ -67,9 +70,12 @@ pub trait Capacity: Send + Sync + 'static {
 
 /// The container runtime of the sandboxes; both calls are idempotent by key.
 pub trait Containers: Send + Sync + 'static {
-    /// Creates the container `key`.
+    /// Creates the container `key`; a key removed before creates nothing. A create can be accepted by the runtime and
+    /// still return an error, such as a timeout, and complete later.
     fn create(&self, key: &str) -> impl Future<Output = Result<(), ServiceError>> + Send;
-    /// Removes the container `key`, if it exists.
+    /// Removes the container `key`, if it exists, and keeps a tombstone of `key` before it returns: every create of
+    /// `key` the runtime accepted earlier and has not completed, and every later one, creates nothing. Once it returns
+    /// `Ok`, no container of `key` exists or can appear.
     fn remove(&self, key: &str) -> impl Future<Output = Result<(), ServiceError>> + Send;
 }
 
@@ -112,7 +118,8 @@ pub enum SandboxMsg {
         /// The workload's output.
         output: String,
     },
-    /// Removes the container, fences later starts and replies [`Stopped`] through `reply`; idempotent.
+    /// Removes the container and tombstones its key at the runtime, so that a create in flight creates nothing, fences
+    /// later starts and replies [`Stopped`] through `reply`; idempotent.
     Stop {
         /// Where the confirmation goes.
         reply: ReplyTo<Stopped>,

@@ -30,6 +30,12 @@ struct Fakes {
     fail_after_reserve: Arc<AtomicBool>,
     /// The next create fails.
     fail_create: Arc<AtomicBool>,
+    /// The next create is accepted by the runtime, but its call times out; it completes at [`Fakes::complete_creates`].
+    slow_create: Arc<AtomicBool>,
+    /// The creates accepted and not yet completed.
+    in_flight: Arc<Mutex<Vec<String>>>,
+    /// The removed keys: the runtime's tombstones.
+    removed: Arc<Mutex<BTreeSet<String>>>,
 }
 
 impl Fakes {
@@ -47,6 +53,16 @@ impl Fakes {
 
     fn containers(&self) -> Vec<String> {
         self.containers.lock().unwrap().iter().cloned().collect()
+    }
+
+    /// The runtime completes the creates it accepted: one of a removed key creates nothing.
+    fn complete_creates(&self) {
+        let accepted = std::mem::take(&mut *self.in_flight.lock().unwrap());
+        for key in accepted {
+            if !self.removed.lock().unwrap().contains(&key) {
+                self.containers.lock().unwrap().insert(key);
+            }
+        }
     }
 }
 
@@ -74,8 +90,15 @@ impl Capacity for Fakes {
 impl Containers for Fakes {
     async fn create(&self, key: &str) -> Result<(), ServiceError> {
         self.note("create", key);
+        if self.removed.lock().unwrap().contains(key) {
+            return Err(ServiceError(format!("{key} was removed")));
+        }
         if self.fail_create.swap(false, Ordering::SeqCst) {
             return Err(ServiceError("the runtime is busy".into()));
+        }
+        if self.slow_create.swap(false, Ordering::SeqCst) {
+            self.in_flight.lock().unwrap().push(key.to_owned());
+            return Err(ServiceError("the create timed out".into()));
         }
         self.containers.lock().unwrap().insert(key.to_owned());
         Ok(())
@@ -83,6 +106,7 @@ impl Containers for Fakes {
 
     async fn remove(&self, key: &str) -> Result<(), ServiceError> {
         self.note("remove", key);
+        self.removed.lock().unwrap().insert(key.to_owned()); // before it returns: an accepted create is settled too
         self.containers.lock().unwrap().remove(key);
         Ok(())
     }
@@ -296,5 +320,29 @@ async fn a_reply_between_cleanup_turns_does_not_change_the_branch_and_a_decided_
     assert_eq!(ids(&ended.journal), ["reserve", "start", "finished", "release"]);
     assert_eq!(ids(&ended.cleanup), ["release", "report"], "a decided start needs no stop; the release is idempotent");
     assert!(fakes.reserved().is_empty());
+    assert_eq!(notices(&test).await, ["cancelled j1"]);
+}
+
+/// A create the runtime accepted, whose call timed out, is still under way when the run is cancelled: the cleanup's
+/// `Stop` removes the container's key at the runtime, which tombstones it, so when that create completes after the run
+/// is cancelled, it creates nothing, and no container outlives the released capacity.
+#[tokio::test(start_paused = true)]
+async fn a_create_in_flight_when_the_sandbox_stops_creates_nothing_when_it_completes_late() {
+    let fakes = Fakes::default();
+    fakes.slow_create.store(true, Ordering::SeqCst);
+    let test = harness(&fakes).await;
+    let run: Run = job("j1");
+    test.create(&run, &State::new(JobInput { job: "j1".into(), owner: "team-a".into() })).await;
+    test.send(&run, FlowMsg::Continue).await;
+    test.run_until_idle().await;
+    assert_eq!(*fakes.in_flight.lock().unwrap(), [CONTAINER], "accepted, its call timed out");
+    assert!(fakes.containers().is_empty(), "not yet created");
+    test.send(&run, FlowMsg::Cancel).await;
+    test.run_until_idle().await;
+    assert_eq!(state(&test, &run).await.status, FlowStatus::Cancelled);
+    assert!(fakes.reserved().is_empty(), "the capacity is released");
+
+    fakes.complete_creates();
+    assert!(fakes.containers().is_empty(), "the late create created nothing: no container outlives the capacity");
     assert_eq!(notices(&test).await, ["cancelled j1"]);
 }

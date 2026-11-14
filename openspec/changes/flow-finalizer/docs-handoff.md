@@ -82,8 +82,10 @@ same hidden lines:
 > | `main_journal()` | The raw saved entries |
 >
 > `None` from `main_result` does not prove that the step did nothing: a step can act and then fail before its result
-> is saved. Release what a main step may have made by its key, with an owner that is idempotent by key and refuses a
-> late create of a released key (a tombstone); the library cannot know what a step made.
+> is saved. Release what a main step may have made by its key, with an owner that is idempotent by key and keeps a
+> tombstone of a released key before it confirms: a create of that key that is still in flight (accepted, though its
+> call failed or timed out) or comes later must create nothing. Fencing later messages is not enough; the library
+> cannot know what a step or a target made.
 >
 > `main_reply` is decided by the main journal alone, so its answer never changes during the cleanup. A reply that comes
 > after the `Cancel` is kept but leaves the answer `Open`; to use it, wait for the request in the cleanup. A cleanup
