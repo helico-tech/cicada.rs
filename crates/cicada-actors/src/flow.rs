@@ -1,6 +1,8 @@
-//! Durable flows (ADR 0031): a multi-step job written as ordinary async code. Each run is one actor that replays the
-//! results its journal holds and executes one new step or sleep per turn, saving it and arming the next `Continue` in
-//! the same commit; a sleep's `Continue` is due at its saved wake time.
+//! Durable flows (ADR 0031, ADR 0044): a multi-step job written as ordinary async code. Each run is one actor that
+//! replays the results its journal holds and executes one new step, sleep or send per turn, saving it and arming the
+//! next `Continue` in the same commit; a sleep's `Continue` is due at its saved wake time, and a send's create and
+//! message commit with its entry. The wire also holds requests, waits, replies and cancellation for later releases,
+//! which this one refuses.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -10,6 +12,7 @@ use std::time::Duration;
 
 use cicada::prelude::*;
 use cicada::time::{self, MAX_DELAY, MAX_INSTANT, Timestamp};
+use cicada::turn::TurnError;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -66,14 +69,16 @@ pub trait Flow: Send + Sync + 'static {
     /// The input of a run, fixed at its create; its schema is part of the contract.
     type Input: Serialize + DeserializeOwned + JsonSchema + Clone + Send + Sync + 'static;
 
-    /// The retry policy of every `Continue` the runner sends itself, and so of every step; by default the crate's
-    /// shared policy (7 attempts, exponential from 1 s to 32 s).
+    /// The retry policy of every `Continue` the runner sends itself, and so of every step and of a send's check of the
+    /// registry; by default the crate's shared policy (7 attempts, exponential from 1 s to 32 s). A message of
+    /// [`Step::send`] has none.
     fn retry() -> RetryPolicy {
         retry_policy()
     }
 
-    /// The flow's code. It calls [`Step::run`] for each external step and [`Step::sleep`] for each durable wait, and
-    /// passes their errors on with `?`; it returns `Ok(())` once every step is done.
+    /// The flow's code. It calls [`Step::run`] for each external step, [`Step::sleep`] for each durable wait and
+    /// [`Step::send`] for each message to an actor, and passes their errors on with `?`; it returns `Ok(())` once every
+    /// step is done.
     fn run(&self, step: &mut Step, input: Self::Input) -> impl Future<Output = HandlerResult> + Send;
 }
 
@@ -587,13 +592,67 @@ fn check_id(id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Where a [`Step::send`] goes: a borrowed ref, and for a send that creates its target first, the borrowed initial
+/// state and whether the target is independent or a child of the run. It converts and serializes nothing: a send does
+/// that only for a new entry, never on replay.
+///
+/// A plain `&ref` converts into a target that exists already; [`Target::create`] and [`Target::child`] create it in the
+/// same commit, before the message, by the rules of [`Turn::create_raw`] and [`Turn::create_child_raw`].
+pub struct Target<'a, R, S: ?Sized = ()> {
+    actor: &'a R,
+    create: Option<(&'a S, CreateKind)>,
+}
+
+impl<'a, R> Target<'a, R> {
+    /// The actor `actor`, which must exist when the send commits; the same as `&actor`.
+    pub fn existing(actor: &'a R) -> Self {
+        Self { actor, create: None }
+    }
+}
+
+impl<'a, R, S: ?Sized> Target<'a, R, S> {
+    /// The actor `actor`, created as an independent actor with `state` in the same commit; an actor that exists already
+    /// keeps its state. The state is still checked for `null`, a NUL character and its depth.
+    pub fn create(actor: &'a R, state: &'a S) -> Self {
+        Self { actor, create: Some((state, CreateKind::Independent)) }
+    }
+
+    /// The actor `actor`, created as a child of the run with `state` in the same commit: deleting the run removes it. A
+    /// child of the run that exists already keeps its state; an actor that exists with another parent, or with none,
+    /// rejects the commit.
+    pub fn child(actor: &'a R, state: &'a S) -> Self {
+        Self { actor, create: Some((state, CreateKind::Child)) }
+    }
+}
+
+impl<'a, R> From<&'a R> for Target<'a, R> {
+    fn from(actor: &'a R) -> Self {
+        Self::existing(actor)
+    }
+}
+
+impl<R, S: ?Sized> fmt::Debug for Target<'_, R, S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Target").field("create", &self.create.map(|(_, kind)| kind)).finish_non_exhaustive()
+    }
+}
+
+/// The actor effects of a new send entry, applied by the runner in the commit that saves the entry.
+struct Outbox {
+    message_type: String,
+    payload: Value,
+    /// The initial state of a create; the entry says which kind.
+    state: Option<Value>,
+}
+
 /// What the first new step or sleep, the first sleep not yet due, or the first misuse, of an execution decided. It
 /// wins over what the flow returns.
 enum Latch {
-    /// A closure was invoked and has not finished: its future was dropped, or it panicked, if this is left.
-    InProgress(String),
-    /// A new entry to save with the next continuation, which a sleep's wake time delays.
-    New(JournalEntry),
+    /// A step's closure was invoked and has not finished, or a send's arguments are being converted: of the step or
+    /// send with this id; if this is left, the closure's future was dropped, or the closure or a conversion panicked.
+    InProgress(&'static str, String),
+    /// A new entry to save with the next continuation, which a sleep's wake time delays, and a send's actor effects.
+    New(JournalEntry, Option<Box<Outbox>>),
     /// A saved sleep whose wake time has not come: the next continuation is due then, and nothing is saved.
     Waiting(Timestamp),
     /// The closure's own error, with its retryability.
@@ -602,26 +661,27 @@ enum Latch {
     Permanent(String),
 }
 
-/// The private error by which [`Step::run`] and [`Step::sleep`] suspend a flow: passed on with `?`, it ends the
-/// execution.
+/// The private error by which [`Step::run`], [`Step::sleep`] and [`Step::send`] suspend a flow: passed on with `?`, it
+/// ends the execution.
 #[derive(Debug)]
 struct Suspend;
 
 impl fmt::Display for Suspend {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("the flow is suspended after a new step or at a sleep; pass this error on with `?`")
+        f.write_str("the flow is suspended after a new step or send, or at a sleep; pass this error on with `?`")
     }
 }
 
 impl std::error::Error for Suspend {}
 
-/// The steps of one execution of a flow: it replays saved results and elapsed sleeps in journal order and executes at
-/// most one new step or sleep. A flow sees it only through [`Flow::run`]; it gives no access to the turn.
+/// The steps of one execution of a flow: it replays saved results, elapsed sleeps and saved sends in journal order and
+/// executes at most one new step, sleep or send. A flow sees it only through [`Flow::run`]; it gives no access to the
+/// turn: a send's effects are buffered by the runner.
 pub struct Step {
     journal: Vec<JournalEntry>,
     cursor: usize,
     seen: HashSet<String>,
-    address: String,
+    address: ActorAddress,
     /// Store time at the claim: what a sleep counts from and is compared with.
     now: Timestamp,
     latch: Option<Latch>,
@@ -629,13 +689,16 @@ pub struct Step {
 
 impl fmt::Debug for Step {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Step").field("run", &self.address).field("cursor", &self.cursor).finish_non_exhaustive()
+        f.debug_struct("Step")
+            .field("run", &self.address.as_str())
+            .field("cursor", &self.cursor)
+            .finish_non_exhaustive()
     }
 }
 
 impl Step {
     fn new(journal: Vec<JournalEntry>, address: &ActorAddress, now: Timestamp) -> Self {
-        Self { journal, cursor: 0, seen: HashSet::new(), address: address.as_str().to_owned(), now, latch: None }
+        Self { journal, cursor: 0, seen: HashSet::new(), address: address.clone(), now, latch: None }
     }
 
     /// The step `id`. When the journal holds its result, returns it decoded as a `T` without calling `call`.
@@ -694,12 +757,12 @@ impl Step {
         if let Err(reason) = self.room(id, "step") {
             return Err(self.refuse(reason));
         }
-        self.latch = Some(Latch::InProgress(id.to_owned()));
+        self.latch = Some(Latch::InProgress("step", id.to_owned()));
         let outcome = call(format!("{}/{id}", self.address)).await;
         let latch = match outcome {
             Err(e) => Latch::Failed(e),
             Ok(value) => match encode(id, &value) {
-                Ok(result) => Latch::New(JournalEntry::Step { id: id.to_owned(), result }),
+                Ok(result) => Latch::New(JournalEntry::Step { id: id.to_owned(), result }, None),
                 Err(reason) => Latch::Permanent(reason),
             },
         };
@@ -753,7 +816,7 @@ impl Step {
             Ok(Some(JournalEntry::Sleep { until, .. })) => Latch::Waiting(until),
             Ok(Some(_)) => unreachable!("replay matches the kind"),
             Ok(None) => match self.room(id, "sleep").and_then(|()| wake_time(id, self.now, duration)) {
-                Ok(until) => Latch::New(JournalEntry::Sleep { id: id.to_owned(), until }),
+                Ok(until) => Latch::New(JournalEntry::Sleep { id: id.to_owned(), until }, None),
                 Err(reason) => Latch::Permanent(reason),
             },
         };
@@ -761,7 +824,140 @@ impl Step {
         Err(HandlerError::new(Suspend))
     }
 
-    /// Checks that the journal has room for the new step or sleep `id`.
+    /// The send `id`: `message` for `to`, with an optional create of the target first. When the journal holds this
+    /// send, returns `Ok(())` and does nothing else. Otherwise it prepares the send, and the runner commits the create,
+    /// the message, the send entry and the next continuation together; it returns an error that suspends the flow: pass
+    /// it on with `?`.
+    ///
+    /// `to` is a `&ref` of an actor that exists, or a [`Target::create`] or [`Target::child`]. The message is due now,
+    /// carries the correlation id of the executing `Continue` and has no retry policy: a failure of the target's
+    /// handler ends it, whatever the flow's policy, and saved progress stays. A send enqueues its message once per
+    /// committed entry; the target executes it under the ordinary at-least-once rules, and the flow learns nothing of
+    /// its outcome.
+    ///
+    /// Replay compares the id and the kind only. It never converts `to` or `message`, computes an address or serializes
+    /// the message or the state: the saved entry says where the message went, also when the code now names another
+    /// target. The code that builds the arguments still runs on every replay, so it must be deterministic and free of
+    /// effects, and dropping them runs their ordinary `Drop`.
+    ///
+    /// A target that is the run itself, or has no address, a message or a state that does not encode, an invalid or
+    /// repeated id, a saved entry at its place that is not this send (a request included), and a new send after 1000
+    /// entries fail the turn for good. When the send commits, the core checks the rest: a type that is not registered
+    /// or does not accept the message, or an initial state that is `null`, holds a NUL or is too deep, fails the turn
+    /// for good, also when the target exists already; a failed read of the type registry is an ordinary failure of
+    /// cause `node`, retried by the flow's policy; a target that does not exist, or a child create of an actor owned
+    /// elsewhere, rejects the commit, and the run waits for a public `Continue`. A panic while the arguments are
+    /// converted or encoded, if caught, fails the turn for good. Like [`Step::run`], after the first new step, sleep or
+    /// send of an execution, or its first misuse, it does nothing.
+    ///
+    /// ```
+    /// use cicada::prelude::*;
+    /// use cicada_actors::{Flow, Step, Target};
+    /// use serde::{Deserialize, Serialize};
+    ///
+    /// #[derive(Clone, Serialize, Deserialize)]
+    /// struct Job(String);
+    ///
+    /// impl ActorRef for Job {
+    ///     const TYPE: &'static str = "jobs";
+    ///     type Message = JobMsg;
+    /// }
+    ///
+    /// #[derive(Serialize, Deserialize, JsonSchema)]
+    /// #[serde(tag = "type")]
+    /// enum JobMsg {
+    ///     Start { size: u32 },
+    ///     Stop,
+    /// }
+    ///
+    /// #[derive(Serialize)]
+    /// struct JobState {
+    ///     size: u32,
+    /// }
+    ///
+    /// struct Build;
+    ///
+    /// impl Flow for Build {
+    ///     const TYPE: &'static str = "build";
+    ///     type Input = String;
+    ///
+    ///     async fn run(&self, step: &mut Step, name: String) -> HandlerResult {
+    ///         let job = Job(name);
+    ///         // Creates the job as a child of the run and starts it, in the commit that saves the entry.
+    ///         step.send("start", Target::child(&job, &JobState { size: 3 }), JobMsg::Start { size: 3 }).await?;
+    ///         step.run("wait-for-it", |_key| async { Ok(()) }).await?;
+    ///         step.send("stop", &job, JobMsg::Stop).await?;
+    ///         Ok(())
+    ///     }
+    /// }
+    /// ```
+    pub async fn send<'a, R, S>(
+        &mut self,
+        id: &str,
+        to: impl Into<Target<'a, R, S>> + Send,
+        message: impl Into<R::Message> + Send,
+    ) -> HandlerResult
+    where
+        R: ActorRef + Sync + 'a,
+        S: Serialize + Sync + ?Sized + 'a,
+    {
+        if self.latch.is_some() {
+            return Err(HandlerError::new(Suspend));
+        }
+        match self.replay(id, "send") {
+            Err(reason) => return Err(self.refuse(reason)),
+            Ok(Some(_)) => return Ok(()),
+            Ok(None) => {}
+        }
+        if let Err(reason) = self.room(id, "send") {
+            return Err(self.refuse(reason));
+        }
+        self.latch = Some(Latch::InProgress("send", id.to_owned()));
+        let latch = match self.prepare(id, to, message) {
+            Ok((entry, outbox)) => Latch::New(entry, Some(Box::new(outbox))),
+            Err(reason) => Latch::Permanent(reason),
+        };
+        self.latch = Some(latch);
+        Err(HandlerError::new(Suspend))
+    }
+
+    /// Converts and encodes a new send, in the order of ADR 0044: the target and its address, the message, then the
+    /// initial state. A panic here leaves the send's in-progress latch.
+    fn prepare<'a, R, S>(
+        &self,
+        id: &str,
+        to: impl Into<Target<'a, R, S>>,
+        message: impl Into<R::Message>,
+    ) -> Result<(JournalEntry, Outbox), String>
+    where
+        R: ActorRef + 'a,
+        S: Serialize + ?Sized + 'a,
+    {
+        let target = to.into();
+        let address = target.actor.address().map_err(|e| format!("the target of send `{id}` has no address: {e}"))?;
+        if address == self.address {
+            return Err(format!("send `{id}` names the run itself, {address}; a flow sends nothing to itself"));
+        }
+        let encoded = cicada::message::encode(&message.into())
+            .map_err(|e| format!("the message of send `{id}` does not encode: {e}"))?;
+        let state = match target.create {
+            None => None,
+            Some((state, _)) => Some(
+                serde_json::to_value(state)
+                    .map_err(|e| format!("the initial state of send `{id}` does not encode: {e}"))?,
+            ),
+        };
+        let entry = JournalEntry::Send {
+            id: id.to_owned(),
+            to: address,
+            message: MessageId::random(),
+            create: target.create.map(|(_, kind)| kind),
+            reply: false,
+        };
+        Ok((entry, Outbox { message_type: encoded.message_type, payload: encoded.payload, state }))
+    }
+
+    /// Checks that the journal has room for the new entry `id`.
     fn room(&self, id: &str, kind: &str) -> Result<(), String> {
         if self.journal.len() >= MAX_ENTRIES {
             return Err(format!(
@@ -866,10 +1062,14 @@ fn check_result(value: &Value, depth: usize) -> Result<(), String> {
 /// continuation was cancelled, purged or failed, with a `Continue`, and a poke resets the attempts. Only the armed
 /// `Continue` executes the flow: it replays the journal, and the first new step's result commits with the next armed
 /// `Continue`, which keeps the correlation id. A new sleep commits with an armed `Continue` due at its wake time, and
-/// a replayed sleep not yet due arms one due at that same time and saves nothing. A flow that returns `Ok` after replaying every entry marks the run done
-/// and clears `armed`; a done run ignores `Continue` and keeps its state until it is deleted. An execution that fails
-/// commits nothing; its message follows its retry policy, and its watchers are told as for any actor. The runner
-/// installs no watch.
+/// a replayed sleep not yet due arms one due at that same time and saves nothing. A new send commits its create, its
+/// message and its entry with the next armed `Continue`. A flow that returns `Ok` after replaying every entry marks the
+/// run done and clears `armed`; a done or cancelled run ignores `Continue` and keeps its state until it is deleted. An
+/// execution that fails commits nothing; its message follows its retry policy, and its watchers are told as for any
+/// actor. The runner installs no watch.
+///
+/// This release refuses `Reply` and `Cancel` for good, and a `Continue` to a cancelling run, with a diagnostic that
+/// names the later release they need (ADR 0044): upgrade every host and worker of a flow type before using them.
 pub struct FlowActor<F> {
     flow: F,
 }
@@ -910,17 +1110,24 @@ impl<F: Flow> Actor for FlowActor<F> {
         let mut step = Step::new(state.journal.clone(), turn.self_address(), turn.now());
         let returned = self.flow.run(&mut step, state.input.clone()).await;
         match step.latch.take() {
-            Some(Latch::InProgress(id)) => Err(HandlerError::permanent(format!(
+            Some(Latch::InProgress("step", id)) => Err(HandlerError::permanent(format!(
                 "step `{id}` was abandoned while its closure ran (its future was dropped, or it panicked); a timeout \
                  belongs inside the closure"
             ))),
+            Some(Latch::InProgress(kind, id)) => Err(HandlerError::permanent(format!(
+                "{kind} `{id}` panicked while its target, message or initial state was converted or encoded, and the \
+                 flow caught the panic"
+            ))),
             Some(Latch::Failed(e)) => Err(e),
             Some(Latch::Permanent(reason)) => Err(HandlerError::permanent(reason)),
-            Some(Latch::New(entry)) => {
+            Some(Latch::New(entry, outbox)) => {
                 let wake = match &entry {
                     JournalEntry::Sleep { until, .. } => Some(*until),
                     _ => None,
                 };
+                if let Some(outbox) = outbox {
+                    apply(turn, &entry, *outbox).await?;
+                }
                 turn.state_mut().journal.push(entry);
                 arm(turn, wake)
             }
@@ -942,6 +1149,51 @@ impl<F: Flow> Actor for FlowActor<F> {
                 Ok(())
             }
         }
+    }
+}
+
+/// Buffers the create and the message of a new send entry with the turn's raw operations, so that they commit with
+/// the entry and the next continuation, or not at all. The message keeps the entry's id and the executing message's
+/// correlation id, and has no retry policy and the default retention. A failed read of the registry keeps its typed
+/// error, so the failure's cause is `node` and the executing `Continue`'s policy retries it; a refusal is permanent.
+async fn apply<F: Flow>(turn: &mut Turn<FlowActor<F>>, entry: &JournalEntry, outbox: Outbox) -> HandlerResult {
+    let JournalEntry::Send { id, to, message, create, .. } = entry else {
+        unreachable!("only a send entry has an outbox");
+    };
+    let failed = |e: TurnError| match e {
+        TurnError::Store(_) => HandlerError::new(SendFailed { id: id.clone(), to: to.clone(), source: e }),
+        e => HandlerError::permanent(format!("send `{id}` to {to} is refused: {e}")),
+    };
+    match (create, outbox.state) {
+        (Some(CreateKind::Independent), Some(state)) => turn.create_raw(to, state).await.map_err(failed)?,
+        (Some(CreateKind::Child), Some(state)) => turn.create_child_raw(to, state).await.map_err(failed)?,
+        (None, None) => {}
+        _ => unreachable!("a send creates exactly when it has an initial state"),
+    }
+    let mut options = SendOptions::new();
+    options.id = Some(message.clone());
+    options.correlation_id = turn.message().correlation_id.clone();
+    turn.send_raw(to, &outbox.message_type, outbox.payload, options).await.map_err(failed)?;
+    Ok(())
+}
+
+/// A send whose check of the type registry failed: the store's error stays in its chain of causes.
+#[derive(Debug)]
+struct SendFailed {
+    id: String,
+    to: ActorAddress,
+    source: TurnError,
+}
+
+impl fmt::Display for SendFailed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "send `{}` to {} could not be checked", self.id, self.to)
+    }
+}
+
+impl std::error::Error for SendFailed {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
     }
 }
 
@@ -1373,6 +1625,338 @@ mod state_tests {
 }
 
 #[cfg(test)]
+mod send_tests {
+    //! Step::send without a runner: what it latches, what it converts and when, and its replay.
+
+    use std::borrow::Cow;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use futures::executor::block_on;
+    use serde::{Deserializer, Serializer};
+    use serde_json::json;
+
+    /// The user-code boundaries of a new send, in the order a send reaches them.
+    const POINTS: [&str; 5] = ["target", "address", "message", "encode", "state"];
+
+    /// Counts each conversion of a send's arguments, and panics or fails at a planned one.
+    #[derive(Default)]
+    struct Counters {
+        hits: Mutex<Vec<&'static str>>,
+        panic_at: Mutex<Option<&'static str>>,
+        fail_at: Mutex<Option<&'static str>>,
+    }
+
+    impl Counters {
+        fn hit(&self, point: &'static str) -> Result<(), String> {
+            self.hits.lock().unwrap().push(point);
+            if *self.panic_at.lock().unwrap() == Some(point) {
+                panic!("{point} panicked");
+            }
+            if *self.fail_at.lock().unwrap() == Some(point) {
+                return Err(format!("{point} failed"));
+            }
+            Ok(())
+        }
+
+        fn hits(&self) -> Vec<&'static str> {
+            self.hits.lock().unwrap().clone()
+        }
+    }
+
+    /// A ref of `jobs` whose serialization, and so its address, is counted.
+    #[derive(Clone)]
+    struct Job {
+        name: String,
+        counters: Arc<Counters>,
+    }
+
+    impl Serialize for Job {
+        fn serialize<Z: Serializer>(&self, s: Z) -> Result<Z::Ok, Z::Error> {
+            self.counters.hit("address").map_err(serde::ser::Error::custom)?;
+            s.serialize_str(&self.name)
+        }
+    }
+
+    impl<'de> Deserialize<'de> for Job {
+        fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            Ok(Job { name: String::deserialize(d)?, counters: Arc::default() })
+        }
+    }
+
+    impl ActorRef for Job {
+        const TYPE: &'static str = "jobs";
+        type Message = JobMsg;
+    }
+
+    /// A field whose serialization is counted.
+    struct Counted(Arc<Counters>);
+
+    impl Serialize for Counted {
+        fn serialize<Z: Serializer>(&self, s: Z) -> Result<Z::Ok, Z::Error> {
+            self.0.hit("encode").map_err(serde::ser::Error::custom)?;
+            s.serialize_u32(3)
+        }
+    }
+
+    impl<'de> Deserialize<'de> for Counted {
+        fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            u32::deserialize(d).map(|_| Counted(Arc::default()))
+        }
+    }
+
+    impl JsonSchema for Counted {
+        fn schema_name() -> Cow<'static, str> {
+            "Counted".into()
+        }
+
+        fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+            schemars::json_schema!({"type": "integer"})
+        }
+    }
+
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    #[serde(tag = "type")]
+    enum JobMsg {
+        Start { size: Counted },
+    }
+
+    /// A message argument whose conversion is counted.
+    struct Start(Arc<Counters>);
+
+    impl From<Start> for JobMsg {
+        fn from(start: Start) -> Self {
+            start.0.hit("message").unwrap();
+            JobMsg::Start { size: Counted(start.0) }
+        }
+    }
+
+    /// An initial state whose serialization is counted.
+    struct Initial(Arc<Counters>);
+
+    impl Serialize for Initial {
+        fn serialize<Z: Serializer>(&self, s: Z) -> Result<Z::Ok, Z::Error> {
+            self.0.hit("state").map_err(serde::ser::Error::custom)?;
+            json!({"size": 3}).serialize(s)
+        }
+    }
+
+    /// A target argument whose conversion is counted: a child create of the job with its initial state.
+    struct To<'a>(&'a Job, &'a Initial);
+
+    impl<'a> From<To<'a>> for Target<'a, Job, Initial> {
+        fn from(to: To<'a>) -> Self {
+            to.0.counters.hit("target").unwrap();
+            Target::child(to.0, to.1)
+        }
+    }
+
+    fn execution(journal: Vec<JournalEntry>) -> Step {
+        let now = time::parse_instant("2026-11-14T00:00:00Z").unwrap();
+        Step::new(journal, &ActorAddress::parse("test.flow/k").unwrap(), now)
+    }
+
+    fn job(counters: &Arc<Counters>) -> Job {
+        Job { name: "j1".into(), counters: counters.clone() }
+    }
+
+    fn saved_send(id: &str, reply: bool) -> JournalEntry {
+        JournalEntry::Send {
+            id: id.into(),
+            to: ActorAddress::parse("jobs/elsewhere").unwrap(),
+            message: MessageId::new("m-saved").unwrap(),
+            create: None,
+            reply,
+        }
+    }
+
+    /// Calls the counted send `id` in `step` with `counters` and returns whether it suspended.
+    fn send(step: &mut Step, id: &str, counters: &Arc<Counters>) -> bool {
+        let (job, initial) = (job(counters), Initial(counters.clone()));
+        block_on(step.send(id, To(&job, &initial), Start(counters.clone()))).is_err()
+    }
+
+    fn latched(step: &Step) -> String {
+        match &step.latch {
+            None => "none".to_owned(),
+            Some(Latch::InProgress(kind, id)) => format!("in progress {kind} {id}"),
+            Some(Latch::New(entry, _)) => format!("new {}", entry.id()),
+            Some(Latch::Waiting(_)) => "waiting".to_owned(),
+            Some(Latch::Failed(e)) => format!("failed {e}"),
+            Some(Latch::Permanent(reason)) => format!("permanent {reason}"),
+        }
+    }
+
+    /// Scenario: Create and send, as far as the step goes.
+    #[test]
+    fn a_new_send_converts_in_order_and_latches_its_entry_and_outbox() {
+        let counters = Arc::new(Counters::default());
+        let mut step = execution(vec![]);
+        assert!(send(&mut step, "start", &counters), "a new send suspends");
+        assert_eq!(counters.hits(), POINTS, "each conversion once, in order");
+        let Some(Latch::New(JournalEntry::Send { id, to, message, create, reply }, Some(outbox))) = &step.latch else {
+            panic!("{}", latched(&step));
+        };
+        assert_eq!((id.as_str(), to.as_str(), *create, *reply), ("start", "jobs/j1", Some(CreateKind::Child), false));
+        assert_eq!((outbox.message_type.as_str(), &outbox.payload), ("Start", &json!({"size": 3})));
+        assert_eq!(outbox.state, Some(json!({"size": 3})));
+        let first = message.clone();
+        let mut again = execution(vec![]);
+        send(&mut again, "start", &Arc::default());
+        let Some(Latch::New(JournalEntry::Send { message, .. }, _)) = &again.latch else { panic!() };
+        assert_ne!(message, &first, "a fresh message id each time");
+
+        let mut plain = execution(vec![]);
+        let counters = Arc::new(Counters::default());
+        let target = job(&counters);
+        assert!(block_on(plain.send("plain", &target, Start(counters.clone()))).is_err());
+        let Some(Latch::New(JournalEntry::Send { create: None, .. }, Some(outbox))) = &plain.latch else {
+            panic!("{}", latched(&plain));
+        };
+        assert!(outbox.state.is_none(), "no create, no initial state");
+        assert_eq!(counters.hits(), ["address", "message", "encode"]);
+    }
+
+    /// Scenario: Proposed arguments change after commit.
+    #[test]
+    fn a_replayed_send_converts_nothing_and_keeps_its_saved_destination() {
+        for point in POINTS {
+            let counters = Arc::new(Counters::default());
+            *counters.panic_at.lock().unwrap() = Some(point);
+            let mut step = execution(vec![saved_send("start", false)]);
+            assert!(!send(&mut step, "start", &counters), "{point}: replayed");
+            assert!(counters.hits().is_empty(), "{point}: no conversion on replay");
+            assert_eq!((latched(&step), step.cursor), ("none".to_owned(), 1), "{point}");
+            assert_eq!(step.journal[0], saved_send("start", false), "the saved destination stays");
+        }
+    }
+
+    /// Scenario: Latch and unpolled future.
+    #[test]
+    fn an_earlier_latch_or_an_unpolled_send_converts_nothing() {
+        let counters = Arc::new(Counters::default());
+        let mut step = execution(vec![]);
+        step.latch = Some(Latch::InProgress("step", "a".to_owned()));
+        assert!(send(&mut step, "start", &counters));
+        assert_eq!(latched(&step), "in progress step a");
+        assert!(counters.hits().is_empty() && step.seen.is_empty());
+
+        let mut step = execution(vec![]);
+        let (target, initial) = (job(&counters), Initial(counters.clone()));
+        drop(step.send("start", To(&target, &initial), Start(counters.clone())));
+        assert!(counters.hits().is_empty(), "an unpolled send does nothing");
+        assert_eq!((latched(&step), step.seen.len()), ("none".to_owned(), 0));
+    }
+
+    /// Scenario: Swallowed suspension.
+    #[test]
+    fn a_new_send_latch_wins_over_later_helpers() {
+        let mut step = execution(vec![]);
+        let _ = send(&mut step, "start", &Arc::default());
+        let mut invoked = false;
+        let caught = block_on(step.run("next", |_key| {
+            invoked = true;
+            async { Ok(()) }
+        }));
+        assert!(caught.is_err() && !invoked);
+        let later = Arc::new(Counters::default());
+        assert!(send(&mut step, "other", &later));
+        assert!(block_on(step.sleep("nap", Duration::ZERO)).is_err());
+        assert!(later.hits().is_empty());
+        assert_eq!(latched(&step), "new start", "one outbox, one new entry");
+    }
+
+    /// Scenario: Caught conversion panic.
+    #[test]
+    fn a_caught_panic_at_each_conversion_leaves_the_send_in_progress() {
+        for (at, point) in POINTS.iter().enumerate() {
+            let counters = Arc::new(Counters::default());
+            *counters.panic_at.lock().unwrap() = Some(point);
+            let mut step = execution(vec![]);
+            let panicked = catch_unwind(AssertUnwindSafe(|| send(&mut step, "start", &counters)));
+            assert!(panicked.is_err(), "{point}");
+            assert_eq!(counters.hits(), POINTS[..=at], "{point}: nothing after the panic");
+            assert_eq!(latched(&step), "in progress send start", "{point}");
+            let later = Arc::new(Counters::default());
+            assert!(send(&mut step, "other", &later), "{point}");
+            let mut invoked = false;
+            let _ = block_on(step.run("next", |_key| {
+                invoked = true;
+                async { Ok(()) }
+            }));
+            assert!(later.hits().is_empty() && !invoked, "{point}: no later helper runs");
+            assert_eq!(latched(&step), "in progress send start", "{point}");
+        }
+    }
+
+    #[test]
+    fn a_failed_conversion_or_a_self_target_is_permanent() {
+        for (point, why) in [
+            ("address", "the target of send `start` has no address"),
+            ("encode", "the message of send `start` does not encode"),
+            ("state", "the initial state of send `start` does not encode"),
+        ] {
+            let counters = Arc::new(Counters::default());
+            *counters.fail_at.lock().unwrap() = Some(point);
+            let mut step = execution(vec![]);
+            assert!(send(&mut step, "start", &counters));
+            assert!(latched(&step).starts_with(&format!("permanent {why}")), "{point}: {}", latched(&step));
+        }
+
+        struct Myself;
+        impl Flow for Myself {
+            const TYPE: &'static str = "test.flow";
+            type Input = ();
+            async fn run(&self, _step: &mut Step, _input: ()) -> HandlerResult {
+                Ok(())
+            }
+        }
+        let mut step = execution(vec![]);
+        let me = FlowRun::<Myself>::named("k");
+        assert!(block_on(step.send("loop", Target::create(&me, &FlowState::new(())), FlowMsg::Continue)).is_err());
+        assert!(latched(&step).contains("send `loop` names the run itself, test.flow/k"), "{}", latched(&step));
+        let mut step = execution(vec![]);
+        let other = FlowRun::<Myself>::named("other");
+        assert!(block_on(step.send("sibling", &other, FlowMsg::Continue)).is_err());
+        assert_eq!(latched(&step), "new sibling", "another run of the same type is no self target");
+    }
+
+    /// Scenario: Replay misuse.
+    #[test]
+    fn ids_kinds_requests_and_capacity_are_checked_before_any_conversion() {
+        let journal_full: Vec<JournalEntry> =
+            (0..1000).map(|i| JournalEntry::Step { id: format!("s{i}"), result: Value::Null }).collect();
+        let cases: Vec<(Vec<JournalEntry>, &str, &str)> = vec![
+            (vec![], "a b", "a step id is"),
+            (vec![JournalEntry::Step { id: "start".into(), result: Value::Null }], "start", "journal holds step"),
+            (vec![saved_send("other", false)], "start", "calls send `start` where its journal holds send `other`"),
+            (vec![saved_send("start", true)], "start", "holds request `start` at entry 1: this release"),
+        ];
+        for (journal, id, why) in cases {
+            let counters = Arc::new(Counters::default());
+            let mut step = execution(journal);
+            assert!(send(&mut step, id, &counters));
+            assert!(latched(&step).contains(why), "{id}: {}", latched(&step));
+            assert!(counters.hits().is_empty(), "{id}");
+        }
+        let mut step = execution(vec![saved_send("start", false)]);
+        assert!(!send(&mut step, "start", &Arc::default()));
+        assert!(send(&mut step, "start", &Arc::default()));
+        assert!(latched(&step).contains("calls the id `start` twice"), "{}", latched(&step));
+
+        let mut step = execution(journal_full);
+        for i in 0..1000 {
+            block_on(step.run(&format!("s{i}"), |_key| async { Ok(()) })).unwrap();
+        }
+        let counters = Arc::new(Counters::default());
+        assert!(send(&mut step, "start", &counters));
+        assert!(latched(&step).contains("send `start` would be entry 1001"), "{}", latched(&step));
+        assert!(counters.hits().is_empty());
+    }
+}
+
+#[cfg(test)]
 mod sleep_tests {
     use super::*;
     use futures::executor::block_on;
@@ -1399,8 +1983,8 @@ mod sleep_tests {
     fn latched(step: &Step) -> String {
         match &step.latch {
             None => "none".to_owned(),
-            Some(Latch::InProgress(id)) => format!("in progress {id}"),
-            Some(Latch::New(entry)) => format!("new {}", serde_json::to_string(entry).unwrap()),
+            Some(Latch::InProgress(kind, id)) => format!("in progress {kind} {id}"),
+            Some(Latch::New(entry, _)) => format!("new {}", serde_json::to_string(entry).unwrap()),
             Some(Latch::Waiting(until)) => format!("waiting {}", time::format_instant(*until)),
             Some(Latch::Failed(e)) => format!("failed {e}"),
             Some(Latch::Permanent(reason)) => format!("permanent {reason}"),
@@ -1512,9 +2096,9 @@ mod sleep_tests {
     fn an_earlier_latch_wins_over_a_sleep_and_a_sleep_latch_over_a_later_step() {
         let now = at("2026-11-14T00:00:00Z");
         let mut step = execution(vec![], now);
-        step.latch = Some(Latch::InProgress("a".to_owned()));
+        step.latch = Some(Latch::InProgress("step", "a".to_owned()));
         assert!(sleep(&mut step, "w", SECOND));
-        assert_eq!(latched(&step), "in progress a", "an abandoned step stays the outcome");
+        assert_eq!(latched(&step), "in progress step a", "an abandoned step stays the outcome");
         assert!(step.seen.is_empty() && step.cursor == 0, "the sleep did nothing");
 
         for journal in [vec![], vec![saved_sleep("w", "2026-11-15T00:00:00Z")]] {

@@ -8,13 +8,13 @@
   CICADA_UPDATE_CONTRACTS=true; check required-null fields and bounds in the actual schemas. Verify with the flow
   unit tests and targeted contract snapshot tests. Reserve later behavior explicitly; do not expose working wait,
   request or finalizer helpers in this piece.
-- [ ] 2. Implement borrowed Target and Step::send with the specified inference, first-poll ordering, replay and
+- [x] 2. Implement borrowed Target and Step::send with the specified inference, first-poll ordering, replay and
   outbox. Set InProgress before user Into/address/message/state conversion, preserve first-latch precedence, and
   refuse self targets. Test conversion counters and caught panics at each user-code boundary, unpolled futures,
   repeated/mismatched ids and request flags, capacity, and changed arguments on replay. Compile examples using &ref,
   Target::create and Target::child with a Send flow future. Keep the existing run/sleep tests green; run the targeted
   flow unit and actor tests. Distinguish caller argument construction/Drop from conversion and serialization.
-- [ ] 3. Apply the outbox through ordinary Turn raw create/send operations, then save the entry and arm Continue
+- [x] 3. Apply the outbox through ordinary Turn raw create/send operations, then save the entry and arm Continue
   in the same turn. Preserve node errors and retryability through the typed Store error chain; map Invalid and
   SendRejected permanently. With start_paused and TestActors, prove atomic create/send/progress, existing-state reuse,
   wrong-parent and missing-target commit rollback, recovery by Continue, registry failure retry, no replayed send,

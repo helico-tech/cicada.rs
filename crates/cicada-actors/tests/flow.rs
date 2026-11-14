@@ -3,7 +3,9 @@
 //! pokes and recovery, done runs, swallowed suspensions and failures, abandoned, unpolled and panicking step futures,
 //! timeouts inside closures, result limits and the journal's count limit; and durable sleeps: the saved wake time,
 //! changed-duration replay, early pokes, deliver-now, retries and redrives, lost timers, pause, delete, failures after
-//! a sleep and the limits of a new sleep. A probe counts every closure invocation.
+//! a sleep and the limits of a new sleep; and sends (ADR 0044): the create, message, entry and continuation of one
+//! commit, replay without another message, core create rules, rejected commits and their recovery, refusals, observer
+//! headers, and the messages and phases this release refuses. A probe counts every closure invocation.
 
 mod common;
 
@@ -17,7 +19,7 @@ use cicada::prelude::*;
 use cicada::runtime::RetryResult;
 use cicada::store::{DeliverNowResult, Message, OutcomeStatus};
 use cicada::time::{self, MAX_DELAY, Timestamp};
-use cicada_actors::{Flow, FlowActor, FlowMsg, FlowRun, FlowState, FlowStatus, JournalEntry, Step};
+use cicada_actors::{CreateKind, Flow, FlowActor, FlowMsg, FlowRun, FlowState, FlowStatus, JournalEntry, Step, Target};
 use cicada_test::TestActors;
 use common::*;
 use futures::FutureExt;
@@ -148,6 +150,72 @@ enum Op {
     SwallowSleep { id: String },
     /// An error of the flow code itself, outside any step, when the probe plans one for `id`.
     Glitch { id: String },
+    /// A send of `message` to `worker/<to>`, with a create of `create` and the initial state `state` first.
+    Send {
+        id: String,
+        to: String,
+        message: WorkerMsg,
+        #[serde(default)]
+        create: Option<CreateKind>,
+        #[serde(default)]
+        state: Option<Shape>,
+    },
+    /// A send to `ghost/_`, a type no node registers.
+    SendGhost { id: String },
+    /// A send to `worker/<to>` of a message type the worker does not accept.
+    SendForeign { id: String, to: String },
+}
+
+/// The initial state of a send's create, made when the flow runs: what a state may not be cannot be in the input.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "shape", rename_all = "camelCase", rename_all_fields = "camelCase")]
+enum Shape {
+    Value {
+        value: Value,
+    },
+    Null,
+    /// A worker state with a NUL in its log.
+    Nul,
+    /// A worker state `depth` levels deep.
+    Deep {
+        depth: u32,
+    },
+}
+
+impl Shape {
+    fn make(self) -> Value {
+        match self {
+            Shape::Value { value } => value,
+            Shape::Null => Value::Null,
+            Shape::Nul => json!({"n": 0, "log": ["a\0b"]}),
+            Shape::Deep { depth } => json!({"n": 0, "extra": nested(depth - 1)}),
+        }
+    }
+}
+
+/// `ghost/_`: a ref of a type that no node registers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Ghost;
+
+impl ActorRef for Ghost {
+    const TYPE: &'static str = "ghost";
+    type Message = WorkerMsg;
+}
+
+/// `worker/{id}` with a family the worker does not accept.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+struct Foreign(String);
+
+impl ActorRef for Foreign {
+    const TYPE: &'static str = "worker";
+    type Message = ForeignMsg;
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type")]
+enum ForeignMsg {
+    Unknown,
 }
 
 /// How the test flow ends after its steps.
@@ -316,6 +384,20 @@ impl ScriptFlow {
                     return Err(HandlerError::msg("the flow glitched"));
                 }
             }
+            Op::Send { id, to, message, create, state } => {
+                let target = worker(&to);
+                let state = state.map(Shape::make);
+                match (create, &state) {
+                    (None, _) => step.send(&id, &target, message).await?,
+                    (Some(CreateKind::Independent), Some(s)) => {
+                        step.send(&id, Target::create(&target, s), message).await?
+                    }
+                    (Some(CreateKind::Child), Some(s)) => step.send(&id, Target::child(&target, s), message).await?,
+                    (Some(_), None) => unreachable!("a create has a state"),
+                }
+            }
+            Op::SendGhost { id } => step.send(&id, &Ghost, WorkerMsg::Work).await?,
+            Op::SendForeign { id, to } => step.send(&id, Target::existing(&Foreign(to)), ForeignMsg::Unknown).await?,
         }
         Ok(())
     }
@@ -375,6 +457,7 @@ async fn node(probe: &Probe) -> TestActors {
                 .host(FlowActor::new(PlainFlow))
                 .host(ProducerActor)
                 .host(WitnessActor)
+                .host(WorkerActor)
         })
         .build()
         .await
@@ -1226,4 +1309,277 @@ async fn an_invalid_new_sleep_fails_for_good_and_keeps_earlier_progress() {
         assert_eq!(state(&test, key).await.journal, before, "{key}: no new progress");
     }
     assert!(probe.keys().is_empty());
+}
+
+// Sends (ADR 0044).
+
+/// A send of `message` to `worker/<to>`, with no create.
+fn send_op(id: &str, to: &str, message: WorkerMsg) -> Op {
+    Op::Send { id: id.into(), to: to.into(), message, create: None, state: None }
+}
+
+/// A send of `message` to `worker/<to>` that creates it first, of `kind`, with the initial state `shape`.
+fn create_op(id: &str, to: &str, kind: CreateKind, shape: Shape, message: WorkerMsg) -> Op {
+    Op::Send { id: id.into(), to: to.into(), message, create: Some(kind), state: Some(shape) }
+}
+
+fn initial(n: u32) -> Shape {
+    Shape::Value { value: json!({"n": n}) }
+}
+
+async fn worker_state(test: &TestActors, id: &str) -> WorkerState {
+    test.state(&worker(id)).await
+}
+
+/// The send entry `id` of the journal of `key`.
+async fn send_entry(test: &TestActors, key: &str, id: &str) -> (ActorAddress, MessageId, Option<CreateKind>) {
+    let journal = state(test, key).await.journal;
+    match journal.iter().find(|e| e.id() == id) {
+        Some(JournalEntry::Send { to, message, create, reply: false, .. }) => (to.clone(), message.clone(), *create),
+        other => panic!("{key}: no send `{id}`: {other:?}"),
+    }
+}
+
+/// Asserts that the armed `Continue` of `key` ended `failed` with the cause `commit` and that nothing is pending.
+async fn rejected(test: &TestActors, key: &str) {
+    let id = state(test, key).await.armed.expect("the failed continuation stays armed");
+    let record = outcome(test, &id).await.expect("an outcome");
+    assert_eq!(record.status, OutcomeStatus::Failed, "{key}");
+    let told = told(test).await;
+    assert!(told.iter().any(|f| f.message_id == id && f.cause == FailureCause::Commit), "{key}: {told:?}");
+    assert!(test.pending(&run(key)).await.is_empty(), "{key}: no continuation");
+}
+
+/// Scenario: Create and send; and Metadata and target failure.
+#[tokio::test(start_paused = true)]
+async fn a_send_commits_its_create_message_entry_and_continuation_together() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    let ops =
+        vec![create_op("start", "w1", CreateKind::Child, initial(5), WorkerMsg::Work), op(|id| Op::Step { id }, "a")];
+    test.create(&run("k"), &FlowState::new(script(ops))).await;
+    test.send_with(&run("k"), FlowMsg::Continue, SendOptions::new().correlation_id("c1")).await;
+    test.system().run_due_turns(1).await.unwrap();
+    test.system().run_due_turns(1).await.unwrap();
+    assert_eq!(test.version(&run("k")).await, 2, "the poke, then one commit of the send");
+    let (to, message, create) = send_entry(&test, "k", "start").await;
+    assert_eq!((to, create), (addr(&worker("w1")), Some(CreateKind::Child)));
+    assert_eq!(worker_state(&test, "w1").await.n, 5, "created in the same commit");
+    let record = test.system().get_actor(&addr(&worker("w1"))).await.unwrap().unwrap();
+    assert_eq!(record.parent, Some(addr(&run("k"))), "a child of the run");
+    let sent = test.pending(&worker("w1")).await;
+    assert_eq!(sent.len(), 1);
+    let work = &sent[0];
+    assert_eq!((&work.id, work.message_type.as_str()), (&message, "Work"), "the entry's message id");
+    assert_eq!(work.from, Some(addr(&run("k"))));
+    assert_eq!(work.correlation_id.as_deref(), Some("c1"), "the executing Continue's correlation");
+    assert_eq!((work.retry.clone(), work.retention.clone()), (None, None), "no retry policy, default retention");
+    assert!(work.deliver_at <= test.now(), "due now");
+    let next = armed(&test, "k").await;
+    assert_eq!((next.retry, next.correlation_id.as_deref()), (Some(three_attempts()), Some("c1")));
+
+    test.run_until_idle().await;
+    assert_eq!(worker_state(&test, "w1").await.n, 6);
+    let done = state(&test, "k").await;
+    assert_eq!((done.status, done.journal.len()), (FlowStatus::Done, 2));
+    assert_eq!(probe.ids(), ["a"]);
+}
+
+/// Scenario: Later failure; and the target's failure ends its message without undoing progress.
+#[tokio::test(start_paused = true)]
+async fn a_saved_send_replays_without_another_create_or_message() {
+    let probe = Probe::default();
+    probe.plan("after", &[Act::Fail]);
+    let test = node(&probe).await;
+    test.create(&worker("w1"), &WorkerState::default()).await;
+    let ops = vec![
+        send_op("go", "w1", WorkerMsg::Work),
+        send_op("boom", "w1", WorkerMsg::Fail),
+        op(|id| Op::Step { id }, "after"),
+    ];
+    start(&test, "k", script(ops)).await;
+    test.run_until_idle().await;
+    assert_eq!(journal(&test, "k").await, ["go", "boom"]);
+    let (_, failing, _) = send_entry(&test, "k", "boom").await;
+    let record = outcome(&test, &failing).await.unwrap();
+    assert_eq!((record.status, record.envelope.attempt), (OutcomeStatus::Failed, 1), "no retry of its own");
+    assert_eq!(state(&test, "k").await.status, FlowStatus::Running, "the target's failure undoes nothing");
+
+    assert_eq!(test.advance_time_by(BACKOFF).await, 2, "the retry of `after` and the completion");
+    assert_eq!(probe.ids(), ["after", "after"]);
+    let done = state(&test, "k").await;
+    assert_eq!(done.status, FlowStatus::Done);
+    assert_eq!(worker_state(&test, "w1").await.n, 1, "one message for one entry, after two replays");
+    assert!(test.pending(&worker("w1")).await.is_empty());
+}
+
+/// Scenario: Existing actor and child collision; and Missing destination and recovery.
+#[tokio::test(start_paused = true)]
+async fn creates_follow_core_rules_and_a_rejected_commit_stalls_until_a_public_continue() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    test.create(&worker("kept"), &WorkerState { n: 5, ..WorkerState::default() }).await;
+    start(&test, "reuse", script(vec![create_op("go", "kept", CreateKind::Independent, initial(0), WorkerMsg::Work)]))
+        .await;
+    test.run_until_idle().await;
+    assert_eq!(state(&test, "reuse").await.status, FlowStatus::Done);
+    assert_eq!(worker_state(&test, "kept").await.n, 6, "the existing state, untouched, then the message");
+
+    test.create(&worker("owned"), &WorkerState::default()).await;
+    start(&test, "child", script(vec![create_op("go", "owned", CreateKind::Child, initial(0), WorkerMsg::Work)])).await;
+    start(&test, "absent", script(vec![send_op("go", "later", WorkerMsg::Work)])).await;
+    test.run_until_idle().await;
+    for key in ["child", "absent"] {
+        rejected(&test, key).await;
+        assert!(journal(&test, key).await.is_empty(), "{key}: no entry");
+    }
+    assert_eq!(worker_state(&test, "owned").await.n, 0, "not taken over, no message");
+    assert!(test.pending(&worker("owned")).await.is_empty());
+
+    test.create(&worker("later"), &WorkerState::default()).await;
+    test.system().delete_actor(&addr(&worker("owned"))).await.unwrap();
+    test.run_until_idle().await;
+    for key in ["child", "absent"] {
+        test.send(&run(key), FlowMsg::Continue).await;
+    }
+    test.run_until_idle().await;
+    for (key, target) in [("child", "owned"), ("absent", "later")] {
+        assert_eq!(state(&test, key).await.status, FlowStatus::Done, "{key}: recovered");
+        assert_eq!(worker_state(&test, target).await.n, 1, "{key}: sent afresh");
+    }
+    let record = test.system().get_actor(&addr(&worker("owned"))).await.unwrap().unwrap();
+    assert_eq!(record.parent, Some(addr(&run("child"))));
+}
+
+/// Scenario: Registry failure and invalid target, the refusals; and Existing actor and child collision, the checks of
+/// an initial state that apply when the target exists.
+#[tokio::test(start_paused = true)]
+async fn refused_targets_messages_and_initial_states_fail_for_good_without_effects() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    test.create(&worker("w1"), &WorkerState::default()).await;
+    let x = || op(|id| Op::Step { id }, "x");
+    let invalid = |shape: Shape| create_op("go", "w1", CreateKind::Independent, shape, WorkerMsg::Work);
+    let cases = [
+        ("ghost", Op::SendGhost { id: "go".into() }, "send `go` to ghost/_ is refused"),
+        ("foreign", Op::SendForeign { id: "go".into(), to: "w1".into() }, "is refused"),
+        ("null", invalid(Shape::Null), "null"),
+        ("nul", invalid(Shape::Nul), "NUL"),
+        ("deep", invalid(Shape::Deep { depth: 65 }), "nested deeper than 64"),
+        ("child-null", create_op("go", "w1", CreateKind::Child, Shape::Null, WorkerMsg::Work), "null"),
+    ];
+    for (key, send, why) in cases {
+        let before = vec![saved("x", json!("r-x"))];
+        start_with(&test, key, restored(script(vec![x(), send]), before.clone())).await;
+        test.run_until_idle().await;
+        refused(&test, key, why).await;
+        refused(&test, key, "send `go`").await;
+        assert_eq!(state(&test, key).await.journal, before, "{key}: no new progress");
+    }
+    assert_eq!(worker_state(&test, "w1").await, WorkerState::default(), "untouched");
+    assert!(test.pending(&worker("w1")).await.is_empty(), "nothing sent");
+
+    start(&test, "deepest", script(vec![invalid(Shape::Deep { depth: 64 })])).await;
+    test.run_until_idle().await;
+    assert_eq!(state(&test, "deepest").await.status, FlowStatus::Done, "64 levels is the core's limit");
+}
+
+/// Observer headers go on a flow's sends as on any send.
+#[tokio::test(start_paused = true)]
+async fn observer_headers_go_on_a_send() {
+    struct Picks;
+    impl cicada::observer::TurnObserver for Picks {
+        fn turn_started(&self, turn: &mut cicada::observer::TurnStart<'_>) -> Box<dyn cicada::observer::ObservedTurn> {
+            turn.add_header_for(cicada::observer::Sends::Others, "work", "w");
+            Box::new(())
+        }
+    }
+    let probe = Probe::default();
+    let flow = ScriptFlow { probe: probe.clone() };
+    let test = TestActors::builder()
+        .with(move |node| node.host(FlowActor::new(flow)).host(WorkerActor).observe(Picks))
+        .build()
+        .await
+        .unwrap();
+    test.create(&worker("w1"), &WorkerState::default()).await;
+    start(&test, "k", script(vec![send_op("go", "w1", WorkerMsg::Work)])).await;
+    test.system().run_due_turns(1).await.unwrap();
+    test.system().run_due_turns(1).await.unwrap();
+    let sent = test.pending(&worker("w1")).await;
+    assert_eq!(sent[0].headers, [("work".to_owned(), "w".to_owned())].into());
+}
+
+/// Scenario: Reserved message and phase.
+#[tokio::test(start_paused = true)]
+async fn reply_cancel_and_cancelling_are_refused_and_terminal_runs_ignore_continue() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    let reply = FlowMsg::Reply { request: MessageId::new("m1").unwrap(), value: Value::Null };
+    for (key, message, why) in
+        [("reply", reply, "FlowMsg::Reply needs a later release"), ("cancel", FlowMsg::Cancel, "FlowMsg::Cancel")]
+    {
+        test.create(&run(key), &FlowState::new(script(steps(&["a"])))).await;
+        let sent = test.send(&run(key), message).await;
+        test.run_until_idle().await;
+        let record = outcome(&test, &sent.id).await.unwrap();
+        assert_eq!((record.status, record.envelope.failures), (OutcomeStatus::Failed, 0), "{key}");
+        assert!(record.error.unwrap().contains(why), "{key}");
+        assert_eq!(test.version(&run(key)).await, 0, "{key}: no effects");
+        assert!(test.pending(&run(key)).await.is_empty(), "{key}");
+    }
+    let cancelling = FlowState { status: FlowStatus::Cancelling, ..FlowState::new(script(steps(&["a"]))) };
+    let poke = start_with(&test, "cancelling", cancelling).await;
+    test.run_until_idle().await;
+    let record = outcome(&test, &poke.id).await.unwrap();
+    assert_eq!(record.status, OutcomeStatus::Failed);
+    assert!(record.error.unwrap().contains("cannot run the cleanup of a cancelling run"));
+
+    for status in [FlowStatus::Done, FlowStatus::Cancelled] {
+        let key = format!("{status:?}");
+        let terminal = FlowState { status, ..restored(script(steps(&["a"])), vec![saved("a", json!("r-a"))]) };
+        let poke = start_with(&test, &key, terminal.clone()).await;
+        test.run_until_idle().await;
+        assert_eq!(outcome(&test, &poke.id).await.unwrap().status, OutcomeStatus::Done, "{key}");
+        let kept = test.state_json(&run(&key)).await.unwrap();
+        assert_eq!(kept, serde_json::to_value(&terminal).unwrap(), "{key}: the state stays");
+        assert_eq!(test.version(&run(&key)).await, 0, "{key}");
+    }
+    assert!(probe.keys().is_empty(), "no flow code ran");
+}
+
+/// Scenario: Replay misuse, through the runner: a saved request or wait cannot replay in this release.
+#[tokio::test(start_paused = true)]
+async fn a_saved_request_or_wait_stalls_replay_for_good() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    let request = JournalEntry::Send {
+        id: "go".into(),
+        to: addr(&worker("w1")),
+        message: MessageId::new("m1").unwrap(),
+        create: None,
+        reply: true,
+    };
+    let wait = JournalEntry::Wait {
+        id: "x".into(),
+        requests: vec![MessageId::new("m1").unwrap()],
+        mode: cicada_actors::WaitMode::All,
+        until: None,
+        outcome: None,
+        received: vec![],
+    };
+    // A wait follows its request, so replay stops at the request first.
+    let cases = [("request", vec![request.clone()]), ("wait", vec![request.clone(), wait.clone()])];
+    for (key, saved) in cases {
+        let ops = vec![send_op("go", "w1", WorkerMsg::Work)];
+        let why = "calls send `go` where its journal holds request `go` at entry 1";
+        start_with(&test, key, restored(script(ops), saved.clone())).await;
+        test.run_until_idle().await;
+        refused(&test, key, why).await;
+        refused(&test, key, "cannot replay waits or requests").await;
+        assert_eq!(state(&test, key).await.journal, saved, "{key}");
+    }
+    let after = vec![op(|id| Op::Step { id }, "a")];
+    start_with(&test, "early", restored(script(after), vec![saved("a", json!("r-a")), request, wait])).await;
+    test.run_until_idle().await;
+    refused(&test, "early", "returned before reaching its saved request `go`").await;
 }

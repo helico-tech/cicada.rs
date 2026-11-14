@@ -8,13 +8,13 @@ use std::path::Path;
 
 use cicada::prelude::*;
 use cicada::store::{Message, MessageStatus, OutcomeStatus, SqliteOptions};
-use cicada::{ActorAddress, SendResult, Store};
+use cicada::{ActorAddress, FailureCause, SendResult, Store, WatchTarget};
 use cicada_actors::{
     Batcher, BatcherActor, BatcherMsg, BatcherState, Child, Debouncer, DebouncerActor, DebouncerMsg, DebouncerState,
     Event, EventActor, EventMsg, EventState, Flow, FlowActor, FlowRun, FlowState, FlowStatus, RateLimiter,
     RateLimiterActor, RateLimiterMsg, RateLimiterState, Schedule, Scheduler, SchedulerActor, SchedulerMsg,
-    SchedulerState, Step, Supervisor, SupervisorActor, SupervisorMsg, SupervisorState, Topic, TopicActor, TopicMsg,
-    TopicState,
+    SchedulerState, Step, Supervisor, SupervisorActor, SupervisorMsg, SupervisorState, Target, Topic, TopicActor,
+    TopicMsg, TopicState,
 };
 use common::*;
 use sqlx::SqlitePool;
@@ -42,7 +42,9 @@ impl Sqlite {
             .host(EventActor)
             .host(FlowActor::new(Mail))
             .host(FlowActor::new(Ship))
+            .host(FlowActor::new(Order))
             .host(WorkerActor)
+            .host(WitnessActor)
             .build();
         system.initialize().await.unwrap();
         let pool = SqlitePool::connect(&format!("sqlite://{}", path.display())).await.unwrap();
@@ -369,6 +371,62 @@ async fn a_publication_whose_read_of_the_store_fails_starts_no_run_and_its_retry
         let state: FlowState<serde_json::Value> = db.state(run).await;
         assert_eq!((state.status, state.journal.len()), (FlowStatus::Done, 1), "started once: {run}");
     }
+    db.close().await;
+}
+
+/// `shop.order`: creates `worker/a` and sends it `Work`, with two attempts a second apart.
+struct Order;
+
+impl Flow for Order {
+    const TYPE: &'static str = "shop.order";
+    type Input = serde_json::Value;
+
+    fn retry() -> RetryPolicy {
+        RetryPolicy::new(2, Backoff::fixed(std::time::Duration::from_secs(1)).unwrap()).unwrap()
+    }
+
+    async fn run(&self, step: &mut Step, _input: serde_json::Value) -> HandlerResult {
+        step.send("go", Target::create(&worker("a"), &WorkerState::default()), WorkerMsg::Work).await
+    }
+}
+
+/// Scenario: Registry failure and invalid target, the failed read. A send whose check of the registry fails is an
+/// ordinary failure of the cause `node`, retried by the flow's policy, with no create, message or entry; a public
+/// `Continue` recovers the run, which then sends once.
+#[tokio::test]
+async fn a_flow_send_whose_read_of_the_registry_fails_is_retried_and_commits_nothing() {
+    let dir = TempDir::new().unwrap();
+    let db = Sqlite::open(dir.path()).await;
+    db.system.create(&Witness, &Told::default()).await.unwrap();
+    db.system.watch(&WatchTarget::parse("shop.order").unwrap(), &addr(&Witness)).await.unwrap();
+    let run = FlowRun::<Order>::named("o1");
+    db.system.create(&run, &FlowState::new(serde_json::json!({}))).await.unwrap();
+    db.system.send(&run, cicada_actors::FlowMsg::Continue).await.unwrap();
+    assert_eq!(db.system.run_due_turns(1).await.unwrap(), 1, "the poke arms the continuation");
+
+    db.registry(false).await;
+    assert_eq!(db.system.run_due_turns(1).await.unwrap(), 1, "the first attempt");
+    let retried = db.pending(&addr(&run)).await;
+    assert_eq!(retried.len(), 1);
+    let error = retried[0].last_error.clone().unwrap();
+    assert!(error.contains("send `go` to worker/a could not be checked") && error.contains("actor_types"), "{error}");
+    assert_eq!(retried[0].failures, 1, "an ordinary failure, retried by the flow's policy");
+    tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+    assert_eq!(db.system.run_due_turns(1).await.unwrap(), 1, "the second and last attempt");
+    db.registry(true).await;
+    db.run_until_idle().await;
+    let told: Told = db.state(&addr(&Witness)).await;
+    assert_eq!(told.failed.len(), 1);
+    assert_eq!((told.failed[0].cause, told.failed[0].attempts), (FailureCause::Node, 2));
+    let held: FlowState<serde_json::Value> = db.state(&addr(&run)).await;
+    assert!(held.journal.is_empty(), "no entry");
+    assert!(db.system.get_actor(&addr(&worker("a"))).await.unwrap().is_none(), "no create");
+
+    db.system.send(&run, cicada_actors::FlowMsg::Continue).await.unwrap();
+    db.run_until_idle().await;
+    let held: FlowState<serde_json::Value> = db.state(&addr(&run)).await;
+    assert_eq!((held.status, held.journal.len()), (FlowStatus::Done, 1));
+    assert_eq!(db.state::<WorkerState>(&addr(&worker("a"))).await.n, 1, "sent once");
     db.close().await;
 }
 
