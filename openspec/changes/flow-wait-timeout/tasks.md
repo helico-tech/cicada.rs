@@ -33,7 +33,7 @@
 
 ## Finishing checks
 
-- [ ] 6. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
+- [x] 6. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
   `openspec validate flow-wait-timeout --strict`, with CICADA_PG_URL where available and skipped checks recorded.
   Confirm existing contract equality and request/send/wait/sleep behavior. The predecessors must land and archive
   before this delta; follow the build loop's normal review/release gates.
