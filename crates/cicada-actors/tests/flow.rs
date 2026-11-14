@@ -5131,3 +5131,271 @@ async fn a_swallowed_lookup_failure_keeps_the_run_cancelling_until_fixed_code_is
     assert!(probe.got().contains(&("main_result:a".to_owned(), json!("r-a"))));
     assert_eq!(progress(&test, "caught").await["journal"], before["journal"]);
 }
+
+/// The cleanup wait `id` of `key`: its deadline, outcome and selection.
+async fn cleanup_wait(
+    test: &TestActors,
+    key: &str,
+    id: &str,
+) -> (Option<Timestamp>, Option<WaitOutcome>, Vec<MessageId>) {
+    match state(test, key).await.cleanup.iter().find(|e| e.id() == id) {
+        Some(JournalEntry::Wait { until, outcome, received, .. }) => (*until, *outcome, received.clone()),
+        other => panic!("{key}: no cleanup wait `{id}`: {other:?}"),
+    }
+}
+
+/// The message id of the cleanup request `id` of `key`.
+async fn cleanup_request(test: &TestActors, key: &str, id: &str) -> MessageId {
+    match state(test, key).await.cleanup.iter().find(|e| e.id() == id) {
+        Some(JournalEntry::Send { message, reply: true, .. }) => message.clone(),
+        other => panic!("{key}: no cleanup request `{id}`: {other:?}"),
+    }
+}
+
+/// What the flow code got from its waits, without what the lookups noted.
+fn waited(probe: &Probe) -> Vec<(String, Value)> {
+    probe.got().into_iter().filter(|(label, _)| !label.starts_with("main_")).collect()
+}
+
+fn main_request(id: &str) -> Op {
+    Op::MainRequest { id: id.into(), catch: false }
+}
+
+fn main_reply(request: &str) -> Op {
+    Op::MainReply { request: request.into(), catch: false }
+}
+
+/// Scenarios: Interrupted main and closed cleanup overlap; and Reply arrives during cleanup. A cleanup waits for the
+/// request of the interrupted open main wait: the reply closes the cleanup wait only, the main journal stays byte for
+/// byte, `main_reply` answers open before and after, and the cleanup finishes. While the run is still cancelling, a
+/// duplicate reply is ignored.
+#[tokio::test(start_paused = true)]
+async fn a_cleanup_wait_closes_on_the_reply_of_an_interrupted_main_wait_whose_entry_stays_open() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    responders(&test, &["r1"]).await;
+    probe.plan("release", &[Act::Fail]);
+    let release = op(|id| Op::Step { id }, "release");
+    let cleanup = vec![main_request("ask"), main_reply("ask"), wait_op("stopped", "ask"), main_reply("ask"), release];
+    let ops = vec![later("ask", "r1"), wait_op("done", "ask"), op(|id| Op::Step { id }, "after")];
+    parked(&test, "k", finalized(ops, cleanup), "done").await;
+    let main = main_json(&test, "k").await;
+    test.send(&run("k"), FlowMsg::Cancel).await;
+    test.run_until_idle().await;
+    let asked = request_id(&test, "k", "ask").await;
+    assert_eq!(cleanup_wait(&test, "k", "stopped").await, (None, None, vec![]), "parked on the cleanup wait");
+    assert_eq!(state(&test, "k").await.armed, None);
+
+    answer(&test, "r1", json!("v"), Some("c-reply")).await;
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1, "the responder");
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1, "the reply");
+    assert_eq!(cleanup_wait(&test, "k", "stopped").await, (None, Some(WaitOutcome::Received), vec![asked.clone()]));
+    assert_eq!(armed(&test, "k").await.correlation_id.as_deref(), Some("c-reply"));
+    assert_eq!(main_json(&test, "k").await, main, "the main wait stays open, byte for byte");
+    test.run_until_idle().await;
+    assert_eq!(state(&test, "k").await.status, FlowStatus::Cancelling, "release in backoff");
+
+    let before = unchanged(&test, "k").await;
+    let duplicate = Answer::Raw { value: json!("again"), depth: None, request: None };
+    let reply: ReplyTo<Value> = route(&asked);
+    test.send(&responder("r1"), ResponderMsg::Ask { reply: retype(&reply), answer: duplicate }).await;
+    test.run_until_idle().await;
+    assert_eq!(unchanged(&test, "k").await, before, "a duplicate is ignored");
+    test.advance_time_by(BACKOFF).await;
+    assert_eq!(state(&test, "k").await.status, FlowStatus::Cancelled);
+    assert_eq!(main_json(&test, "k").await, main);
+    let got = probe.got();
+    assert_eq!(
+        got.iter().filter(|(label, _)| label == "main_reply:ask").collect::<Vec<_>>(),
+        [&("main_reply:ask".to_owned(), json!("open"))]
+    );
+    assert!(got.contains(&("stopped".to_owned(), json!("v"))));
+}
+
+/// Scenario: Mixed join and early reply, of a join. A cleanup joins a main request the main code never waited for, the
+/// request of an interrupted open main wait and a new cleanup request: partial replies are kept and leave nothing
+/// armed, the last one closes the join with its correlation id, and the values come back in the join's order.
+#[tokio::test(start_paused = true)]
+async fn a_cleanup_join_mixes_never_awaited_and_interrupted_main_requests_with_a_cleanup_request() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    responders(&test, &["r1", "r2", "s1"]).await;
+    let ops = vec![later("a", "r1"), later("b", "r2"), wait_op("done", "b"), op(|id| Op::Step { id }, "after")];
+    let cleanup = vec![main_request("a"), main_request("b"), later("c", "s1"), all_op("all", &["a", "b", "c"], None)];
+    parked(&test, "k", finalized(ops, cleanup), "done").await;
+    let main = main_json(&test, "k").await;
+    test.send(&run("k"), FlowMsg::Cancel).await;
+    test.run_until_idle().await;
+    assert_eq!(cleanup_wait(&test, "k", "all").await, (None, None, vec![]));
+    for (to, value) in [("r1", "one"), ("s1", "three")] {
+        answer(&test, to, json!(value), None).await;
+        test.run_until_idle().await;
+        assert_eq!(state(&test, "k").await.armed, None, "{to}: a partial reply arms nothing");
+        assert_eq!(cleanup_wait(&test, "k", "all").await.1, None, "{to}");
+    }
+    answer(&test, "r2", json!("two"), Some("c-last")).await;
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1, "the responder");
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1, "the last reply");
+    let ids =
+        [request_id(&test, "k", "a").await, request_id(&test, "k", "b").await, cleanup_request(&test, "k", "c").await];
+    assert_eq!(cleanup_wait(&test, "k", "all").await, (None, Some(WaitOutcome::Received), ids.to_vec()));
+    assert_eq!(armed(&test, "k").await.correlation_id.as_deref(), Some("c-last"));
+    test.run_until_idle().await;
+    assert_eq!(state(&test, "k").await.status, FlowStatus::Cancelled);
+    assert_eq!(waited(&probe), [("all".to_owned(), json!(["one", "two", "three"]))]);
+    assert_eq!(main_json(&test, "k").await, main, "the interrupted main wait stays open");
+}
+
+/// Scenario: Mixed join and early reply, of early replies. While the cleanup waits out a backoff, the replies to both
+/// requests of an interrupted main join come, the second listed first: both are kept in that order and the main join
+/// stays open. A first cleanup join over them then commits closed at once, won by the reply accepted first.
+#[tokio::test(start_paused = true)]
+async fn early_replies_in_cancelling_keep_their_order_and_win_a_first_cleanup_join_without_closing_the_main_join() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    responders(&test, &["r1", "r2"]).await;
+    probe.plan("gate", &[Act::Fail]);
+    let ops = vec![later("a", "r1"), later("b", "r2"), all_op("both", &["a", "b"], None)];
+    let gate = op(|id| Op::Step { id }, "gate");
+    let cleanup = vec![gate, main_request("a"), main_request("b"), first_op("first", &["a", "b"], None)];
+    parked(&test, "k", finalized(ops, cleanup), "both").await;
+    let main = main_json(&test, "k").await;
+    test.send(&run("k"), FlowMsg::Cancel).await;
+    test.run_until_idle().await;
+    for (to, value) in [("r2", "two"), ("r1", "one")] {
+        answer(&test, to, json!(value), None).await;
+        test.run_until_idle().await;
+    }
+    let (a, b) = (request_id(&test, "k", "a").await, request_id(&test, "k", "b").await);
+    assert_eq!(state(&test, "k").await.replies, [kept_reply(&b, json!("two")), kept_reply(&a, json!("one"))]);
+    assert_eq!(main_json(&test, "k").await, main, "both replies kept, the main join still open");
+    test.advance_time_by(BACKOFF).await;
+    assert_eq!(cleanup_wait(&test, "k", "first").await, (None, Some(WaitOutcome::Received), vec![b]));
+    assert_eq!(state(&test, "k").await.status, FlowStatus::Cancelled);
+    assert_eq!(waited(&probe), [("first".to_owned(), won(1, json!("two")))]);
+    assert_eq!(main_json(&test, "k").await, main);
+}
+
+/// Scenario: Closed or reused request. A closed main first wait decides its winner (replied) and its loser (closed);
+/// a cleanup wait for either is refused for good, as is a second cleanup wait for a main request a first cleanup wait
+/// named.
+#[tokio::test(start_paused = true)]
+async fn a_cleanup_wait_for_a_closed_main_request_or_a_reused_one_fails_for_good() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    responders(&test, &["r1", "r2", "r3"]).await;
+    let first = vec![later("a", "r1"), later("b", "r2"), first_op("won", &["a", "b"], None), sleep("nap", MINUTE)];
+    let lookups = vec![main_request("a"), main_request("b"), main_reply("a"), main_reply("b")];
+    let cases = [
+        (
+            "winner",
+            first.clone(),
+            [lookups.clone(), vec![wait_op("w", "a")]].concat(),
+            "the closed main wait `won` names",
+        ),
+        ("loser", first, [lookups, vec![wait_op("w", "b")]].concat(), "the closed main wait `won` names"),
+        (
+            "reused",
+            vec![later("x", "r3"), sleep("nap", MINUTE)],
+            vec![main_request("x"), wait_op("w1", "x"), wait_op("w2", "x")],
+            "of the wait `w1`",
+        ),
+    ];
+    for (key, ops, cleanup, why) in cases {
+        start(&test, key, finalized(ops, cleanup)).await;
+        test.run_until_idle().await;
+        answer(&test, if key == "reused" { "r3" } else { "r1" }, json!("one"), None).await;
+        test.run_until_idle().await;
+        test.send(&run(key), FlowMsg::Cancel).await;
+        test.run_until_idle().await;
+        refused(&test, key, why).await;
+        assert_eq!(state(&test, key).await.status, FlowStatus::Cancelling, "{key}");
+    }
+    let got = probe.got();
+    assert!(got.contains(&("main_reply:a".to_owned(), json!({"replied": "one"}))), "{got:?}");
+    assert!(got.contains(&("main_reply:b".to_owned(), json!("closed"))), "{got:?}");
+    assert_eq!(cleanup_wait(&test, "reused", "w1").await.1, Some(WaitOutcome::Received), "the first cleanup wait");
+}
+
+/// Scenario: Cleanup time and reply races. A timed cleanup wait counts its deadline from the claim of the cleanup turn
+/// that creates it, not from the interrupted main wait's saved deadline, which stays; it times out at its own deadline,
+/// and a reply that comes later, while the run is still cancelling, is ignored because the cleanup wait closed its
+/// request. A zero timeout commits open first and times out in the next turn; a timed join keeps its partial replies;
+/// and a reply handled after the deadline but before a timeout is decided (its timer lost) wins.
+#[tokio::test(start_paused = true)]
+async fn timed_cleanup_waits_count_from_their_own_claim_and_keep_the_rules_of_deadlines() {
+    for case in ["own", "zero", "partial", "late"] {
+        let probe = Probe::default();
+        let test = node(&probe).await;
+        responders(&test, &["r1", "s1"]).await;
+        probe.plan("after", &[Act::Fail]);
+        let secs = if case == "zero" { 0 } else { 60 };
+        let wait = match case {
+            "partial" => vec![later("c", "s1"), all_op("stop", &["a", "c"], Some(secs))],
+            _ => vec![timed_op("stop", "a", Duration::from_secs(secs))],
+        };
+        let cleanup = [vec![main_request("a")], wait, steps(&["after"])].concat();
+        start(&test, case, finalized(vec![later("a", "r1"), timed_op("done", "a", MINUTE)], cleanup)).await;
+        test.run_until_idle().await;
+        let main_until = timed_entry(&test, case, "done").await.0.unwrap();
+        test.advance_time_by(MINUTE / 2).await;
+        test.send(&run(case), FlowMsg::Cancel).await;
+        if case == "zero" {
+            assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1, "the cancel");
+            assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1, "the cleanup's new wait");
+        } else {
+            test.run_until_idle().await;
+        }
+        if case == "partial" {
+            answer(&test, "r1", json!("one"), None).await;
+            test.run_until_idle().await;
+        }
+        let claimed = test.now();
+        let (until, outcome, _) = cleanup_wait(&test, case, "stop").await;
+        assert_eq!((until, outcome), (Some(after(claimed, Duration::from_secs(secs))), None), "{case}: from its claim");
+        assert_ne!(until, Some(main_until), "{case}");
+        assert_eq!(
+            timed_entry(&test, case, "done").await,
+            (Some(main_until), None, vec![]),
+            "{case}: the main wait stays"
+        );
+        let a = request_id(&test, case, "a").await;
+        match case {
+            "zero" => {
+                assert_eq!(armed(&test, case).await.deliver_at, claimed, "{case}: open first, then due now");
+                test.system().run_due_turns(1).await.unwrap();
+                assert_eq!(cleanup_wait(&test, case, "stop").await.1, Some(WaitOutcome::TimedOut), "{case}");
+            }
+            "late" => {
+                let timer = armed(&test, case).await;
+                drop(test.system().cancel(&timer.id).await.unwrap());
+                test.advance_time_by(MINUTE * 2).await;
+                answer(&test, "r1", json!("late"), None).await;
+                test.run_until_idle().await;
+                assert_eq!(cleanup_wait(&test, case, "stop").await.1, Some(WaitOutcome::Received), "{case}");
+            }
+            _ => {
+                test.advance_time_by(MINUTE).await;
+                let selected = if case == "partial" { vec![a.clone()] } else { vec![] };
+                assert_eq!(cleanup_wait(&test, case, "stop").await.1, Some(WaitOutcome::TimedOut), "{case}");
+                assert_eq!(cleanup_wait(&test, case, "stop").await.2, selected, "{case}");
+            }
+        }
+        test.run_until_idle().await;
+        assert_eq!(state(&test, case).await.status, FlowStatus::Cancelling, "{case}: after in backoff");
+        if case == "own" {
+            let before = unchanged(&test, case).await;
+            answer(&test, "r1", json!("late"), None).await;
+            test.run_until_idle().await;
+            assert_eq!(unchanged(&test, case).await, before, "the cleanup wait closed the request; main lists it open");
+        }
+        test.advance_time_by(BACKOFF).await;
+        assert_eq!(state(&test, case).await.status, FlowStatus::Cancelled, "{case}");
+        let expected = match case {
+            "late" => json!({"received": "late"}),
+            "partial" => json!([{"received": "one"}, "timedOut"]),
+            _ => json!("timedOut"),
+        };
+        assert_eq!(waited(&probe), [("stop".to_owned(), expected)], "{case}");
+    }
+}

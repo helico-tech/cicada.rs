@@ -2,21 +2,21 @@
   "messages": {
     "Cancel": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "Ends a running run, without running flow code: in its turn's one commit it cancels the armed `Continue`, marks\nthe run cancelled and clears `armed`, keeping the input, the journal and the replies; a done or cancelled run\nignores it. It waits for the turn before it in the mailbox, does not undo effects already made and runs no\ncleanup. Sending it only queues it: read the run's status to learn that it was cancelled.",
+      "description": "Stops a running run's main code, without running flow code: in its turn's one commit it cancels the armed\n`Continue`, marks the run cancelling and arms a cleanup `Continue` with the flow's retry policy and its own\ncorrelation id, keeping the input, the journal and the replies; a cancelling, done or cancelled run ignores it,\nwriting nothing. It waits for the turn before it in the mailbox and does not undo effects already made; the\ncleanup, [`Flow::on_cancel`], runs in later turns and marks the run cancelled when it succeeds. Sending it only\nqueues it: read the run's status to learn that it was cancelled.",
       "properties": {},
       "title": "Cancel",
       "type": "object"
     },
     "Continue": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "Starts or recovers a running run; a done or cancelled run ignores it. Sent by a host, it cancels the armed\ncontinuation and arms a fresh one with the flow's retry policy, without running flow code; the armed one replays\nthe flow and executes its next step.",
+      "description": "Starts or recovers a running or cancelling run; a done or cancelled run ignores it. Sent by a host, it cancels\nthe armed continuation and arms a fresh one with the flow's retry policy, without running flow code; the armed\none replays the flow, or its cleanup once the run is cancelling, and executes its next step.",
       "properties": {},
       "title": "Continue",
       "type": "object"
     },
     "Reply": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "The reply of a target to a request of the run, sent with [`ReplyTo::send`]. The run keeps the first one from the\nrequest's target and ignores any other, without running flow code.",
+      "description": "The reply of a target to a request of the run, sent with [`ReplyTo::send`]. The run keeps the first one from the\nrequest's target and ignores any other, without running flow code; a cancelling run closes only a cleanup wait\nwith it.",
       "properties": {
         "request": {
           "description": "The id of the request's message, saved with its send entry.",
@@ -71,7 +71,7 @@
         "type": "object"
       },
       "FlowStatus": {
-        "description": "The phase of a run. This release executes running runs and cancels them; `cancelling` is on the wire for a later\nrelease (ADR 0044).",
+        "description": "The phase of a run (ADR 0044): its main code runs while it is running, its cleanup while it is cancelling.",
         "oneOf": [
           {
             "const": "running",
@@ -80,7 +80,7 @@
           },
           {
             "const": "cancelling",
-            "description": "A cancelled run whose cleanup has not finished; refused for good by this release.",
+            "description": "A run that took `Cancel` while running and whose cleanup, [`Flow::on_cancel`], has not yet succeeded.",
             "type": "string"
           },
           {
@@ -90,7 +90,7 @@
           },
           {
             "const": "cancelled",
-            "description": "A run ended by `Cancel`; it keeps its state until it is deleted, and ignores `Continue` and `Reply`.",
+            "description": "A run ended by `Cancel` whose cleanup succeeded; it keeps its state until it is deleted, and ignores\n`Continue`, `Reply` and `Cancel`.",
             "type": "string"
           }
         ]

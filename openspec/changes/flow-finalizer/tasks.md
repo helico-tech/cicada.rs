@@ -15,7 +15,7 @@
   lookups, post-latch calls, decode errors/caught panics followed by Ok, and stable Open despite arriving replies.
   Compile default and overriding hooks, helper resolution through DerefMut, sequential lookup/wait borrows and a
   Send future with a Send but non-Sync reply type. Run flow unit tests and API doctests.
-- [ ] 3. Enable cleanup waits over earlier cleanup requests and unclosed main requests, including mixed joins;
+- [x] 3. Enable cleanup waits over earlier cleanup requests and unclosed main requests, including mixed joins;
   preserve the existing structural rules rather than tightening decoding. Route replies during cancelling only to
   cleanup, checking closed waits across both journals. Test interrupted open main wait plus closed cleanup wait
   with main byte-identical, and explicitly assert main_reply stays Open after that cleanup wait closes. Cover late
