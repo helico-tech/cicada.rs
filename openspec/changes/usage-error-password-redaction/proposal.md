@@ -23,7 +23,7 @@ libpq form, which the helper leaves alone today; other output than usage errors;
 
 ## Order
 
-After `cicada-agent-skill`. No following change.
+After `cicada-agent-skill`. Before `postgres-close-cancellation`.
 
 ## Impact
 
