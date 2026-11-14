@@ -88,6 +88,12 @@ later user code can run. The deadline is the earliest time an executing Continue
 never consult time, so a reply handled first is received even after the deadline. A new wait never times out in its
 creating turn. Timeout is data. Handling order chooses a race; pauses, commits, scheduling and recovery can
 delay it. Retained values support single waits, homogeneous typed joins, first-winner selection and partial timeouts.
+For first waits, the earliest accepted listed reply wins, using the replies array's order even when replies arrive
+before the wait. All selections and partial timeout results follow request order. Supplied progress is trusted,
+including reply order; restoration must preserve it. Replay uses the saved selection, never recalculates it.
+A join means more than one request or mode first. A one-request all wait is structurally identical to a single wait,
+so the single/all helpers may replay it interchangeably when deadline presence matches. Closing a first wait closes
+all listed requests; losing targets keep running and cannot be waited on again. Cleanup needs a new request for them.
 Target failure/deletion adds no automatic watch; targets report business failure as data or the flow uses a timeout.
 
 Continue armed by a reply uses that reply's correlation id. The reply helper copies its current turn's correlation;
