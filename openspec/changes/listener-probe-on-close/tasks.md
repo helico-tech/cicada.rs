@@ -21,7 +21,7 @@
 
 ## Finishing checks
 
-- [ ] 3. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` with
+- [x] 3. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` with
   CICADA_PG_URL for PostgreSQL tests/conformance, `cargo check -p cicada` with no features and with `--features postgres`,
   and `openspec validate listener-probe-on-close --strict`. Record any unavailable database checks explicitly; a
   skipped PostgreSQL test does not establish that the regression passes. Confirm no public API, wire, schema or
