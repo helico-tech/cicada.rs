@@ -222,8 +222,9 @@ tested steps of [examples/src/dead_letters_upgrade.rs](../../examples/src/dead_l
    never through a tool that rounds numbers, and check the file before you go on. Keep the backup until the end.
 5. **Convert.** `convert` moves each raw payload deeper than 61 levels to `payloadJson`, keeps every letter with its
    metadata and `redrivenAs`, and runs `check`: each state must be one that `restore` can create, with no NUL
-   character in a string or a key, at most 64 levels, and the state type of 0.17.0. A legacy payload deeper than 64 levels is kept as text; a redrive refuses it, and `Discard` drops it. An
-   export that cannot be read needs a recovery from the backup.
+   character in a string or a key, at most 64 levels, and the state type of 0.17.0. No address may appear twice in the
+   export. A legacy payload deeper than 64 levels is kept as text; a redrive refuses it, and `Discard` drops it.
+   An export that cannot be read needs a recovery from the backup.
 6. **Reset.** `reset` runs `check` again and checks that the store holds exactly the exported actors at their exported
    versions; only then does it delete them, remove the registration and register the contract of 0.17.0.
 7. **Restore.** `restore` creates each actor again at its address with its converted state, pauses the mailboxes that
