@@ -11,7 +11,7 @@
   change no function body, signature, test logic or fixture. Run `cargo test -p cicada-examples --test dead_letters_upgrade`,
   `cargo test -p cicada-actors --test dead_letters the_schema_and_the_decoder_agree_on_the_payload_fields_of_a_letter`
   and `cargo doc -p cicada-examples --no-deps`; inspect rustdoc output for new warnings.
-- [ ] 3. Write `docs-handoff.md` under the predecessor's rules: report the corrected archive/rustdoc claims, the
+- [x] 3. Write `docs-handoff.md` under the predecessor's rules: report the corrected archive/rustdoc claims, the
   evidence and checks; no new guide work and Blocking: none because `docs/how-to/upgrading.md` already describes the
   pre-deletion checks accurately. Supply the release version for docs-owned installation pins. Add a correction-only
   changelog entry and the normal next patch version chosen at build time, including skill metadata and required

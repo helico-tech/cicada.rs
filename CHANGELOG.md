@@ -7,6 +7,21 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.18.7 — unreleased
+
+A correction-only release: the record of the dead-letter upgrade of 0.17.0 now says what its check does. The library,
+its API, wire formats, contract hashes, store schema and guarantees are those of 0.18.6.
+
+### Fixed
+
+- The doc comment of `check` in the worked example `examples/src/dead_letters_upgrade.rs` no longer suggests that the
+  schema and the decoder agree on every field of a letter: neither `check` nor `ActorSystem::create_actor` evaluates the
+  JSON Schema, and the cited test covers the payload fields of a letter only. Before anything is deleted, `check`
+  refuses NUL in strings or keys, a state deeper than 64 levels, a state that does not decode as the 0.17.0 state, and an
+  address repeated in the export.
+- The archived design and task 3 of `deep-failure-notices` carry marked correction notes saying the same; their
+  original wording is kept.
+
 ## 0.18.6 — 2026-11-14
 
 A process-only release: the loops that build Cicada hand user documentation to the docs session (ADR 0045). The
