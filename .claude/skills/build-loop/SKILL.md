@@ -74,10 +74,13 @@ the builder reports `Docs: blocked`, and nothing lands until the prose is in the
    no code, and both sides of a rename or deletion. Send the builder the commit and paths. It takes exactly those
    files into its branch without a merge, folds them into the commit that breaks the block, runs the blocked and the
    finishing checks and reports `Docs: owner fixes integrated`. Then ask for a review as in Build, step 4.
-3. After every fix round or rebase, check again that each integrated path equals the docs branch
-   (`git diff --quiet docs feat/<change> -- <paths>`) and that the prose still describes the code. A changed path or
-   behaviour needs a fresh preparation by the docs session, then the affected checks again; a clean rebase is no proof.
-   A conflict in a protected file is never solved by taking one side: the docs session reconciles it.
+3. After every fix round or rebase, a clean one too, check again that each integrated path equals the docs branch
+   (`git diff --quiet docs feat/<change> -- <paths>`) and that the prose still describes the code. Then the builder
+   runs the affected checks in its worktree on the combined result, also when nothing changed:
+   `cargo test -p cicada-examples --doc`, `--test docs` and `--test skill`. Unchanged prose can stop compiling against
+   a new base. Only a changed path or behaviour needs a fresh preparation by the docs session first. A failing check
+   sends the build back to step 1. A conflict in a protected file is never solved by taking one side: the docs session
+   reconciles it.
 
 ## Present
 
@@ -98,7 +101,8 @@ Only on the owner's yes. A no goes back to the builder, or to the design loop.
 
 1. `git fetch origin`. If `main` moved: `git -C <builder worktree> rebase main`. On a conflict, `git rebase --abort`,
    send the builder to rebase and resolve, and ask for one more review round. A branch with owner fixes integrated is
-   checked again after any rebase, also a clean one (Blocked on docs, step 3).
+   checked again after any rebase, also a clean one: you check the paths, and the builder runs the affected checks in
+   its worktree on the rebased branch (Blocked on docs, step 3). Merge only when they pass.
 2. `git merge --ff-only feat/<change>` on `main`.
 3. Move the change's reviews into its folder, so that they are archived with it:
    `mkdir -p openspec/changes/<change>/reviews && mv .reviews/<change>.* openspec/changes/<change>/reviews/`.

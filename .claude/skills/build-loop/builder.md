@@ -63,8 +63,10 @@ version, ADRs, the generated references, `CHANGELOG.md` and the change's own fil
   accepts a staged file only when it equals the docs branch's current one; if it refuses, the branch moved: report it,
   do not edit the file. Fold the fix into the commit that breaks the block (amend it, or squash a fixup into that one
   commit only), so that no commit of the branch has the break. Then run the blocked checks and the finishing checks,
-  tick the tasks, and report `Docs: owner fixes integrated`. A later fix or rebase that changes what that prose
-  describes needs a fresh preparation: report it; never resolve a conflict in a protected file yourself.
+  tick the tasks, and report `Docs: owner fixes integrated`. After every later fix or rebase, a clean one too, run
+  `cargo test -p cicada-examples --doc`, `--test docs` and `--test skill` again on the combined result. A fix or
+  rebase that changes what that prose describes needs a fresh preparation first: report it; never resolve a conflict
+  in a protected file yourself.
 
 The handoff, in this shape (the archived flow changes hold real examples):
 
