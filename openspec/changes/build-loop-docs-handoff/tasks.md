@@ -1,6 +1,6 @@
 ## Implementation
 
-- [ ] 1. Update `.claude/skills/build-loop/builder.md`: describe the existing ownership boundary and its precedence
+- [x] 1. Update `.claude/skills/build-loop/builder.md`: describe the existing ownership boundary and its precedence
   over earlier tasks, require `docs-handoff.md` even for no impact, and keep its template here alone. Include version,
   source/public items and proving tests/examples, destination paths/headings as code spans, proposed substance,
   caveats, blocking checks/replacements or none, and truthful verification/docs status. Update it with behavior-changing
