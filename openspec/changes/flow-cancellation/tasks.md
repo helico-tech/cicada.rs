@@ -28,7 +28,7 @@
 
 ## Finishing checks
 
-- [ ] 5. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
+- [x] 5. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
   `openspec validate flow-cancellation --strict`, with CICADA_PG_URL where available and skipped checks recorded.
   Verify hash equality/description-only differences against implemented predecessors. They must land/archive first;
   follow normal build-loop review/release gates without changing core/store behavior.
