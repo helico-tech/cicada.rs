@@ -36,7 +36,7 @@ window.
 
 ## Order
 
-After `http-poller`. No following change.
+After `http-poller`. Before `heartbeat-watch`.
 
 ## Impact
 
