@@ -24,7 +24,7 @@ Timeouts, joined waits and cancellation/finalization (following changes); topic/
 
 ## Order
 
-After `flow-step-sends`. Before `local-push-gate`.
+After `flow-step-sends`. Before `flow-wait-timeout`.
 
 ## Impact
 

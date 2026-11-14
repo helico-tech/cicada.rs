@@ -26,7 +26,7 @@ changes.
 
 ## Order
 
-After `build-loop-docs-handoff`. Before `webhook-sink`.
+After `build-loop-docs-handoff`. Before `pg-close-test-flake`.
 
 ## Impact
 

@@ -24,7 +24,7 @@ Joined waits and cancellation/finalization; automatic target watches; changing c
 
 ## Order
 
-After `local-push-gate`. Before `flow-wait-join`.
+After `flow-reply-waits`. Before `flow-wait-join`.
 
 ## Impact
 

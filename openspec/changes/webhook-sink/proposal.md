@@ -36,7 +36,7 @@ limit: a host puts a rate limiter in front. Polling and incoming webhooks, which
 
 ## Order
 
-After `dead-letters-upgrade-wording`. Before `http-poller`.
+After `local-push-gate`. Before `http-poller`.
 
 ## Impact
 

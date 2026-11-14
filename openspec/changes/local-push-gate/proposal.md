@@ -37,7 +37,7 @@ not security. Changing which checks run. Publishing to a registry.
 
 ## Order
 
-After `flow-reply-waits`. Before `flow-wait-timeout`.
+After `pg-close-test-flake`. Before `webhook-sink`.
 
 ## Impact
 
