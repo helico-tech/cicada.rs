@@ -139,6 +139,11 @@ A delete includes descendants. Retry creates a new message; purge/cancel/delete 
 read [the incident guide](../operations.md#on-call) first. Listings show one page; `--all` traverses every page.
 Missing items and API failures exit 1. Usage errors exit 2.
 
+A usage error hides URL passwords: `postgres://u:pw@h/db` prints as `postgres://u:***@h/db`, including passwords
+with a raw `'` and each address in a list. This covers only `scheme://user:password@host` in usage errors;
+other output and libpq-style settings are not scrubbed. Percent-encode `/`, `?`, `#`, `"`, `` ` `` and spaces
+in passwords, as URLs require.
+
 ### Server and credentials
 
 Resolve each field independently:

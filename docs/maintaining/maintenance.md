@@ -26,6 +26,8 @@ this session’s hooks/owner record when the owner retires it. Pause the recurri
 
 1. Confirm this is the recorded docs worktree/branch. Check both its status and main’s status. Preserve others’ work.
 2. Fetch `origin/main` when reachable; inspect local main as well. A failed fetch is a limitation, not evidence of no changes.
+   Check the latest published release too: main can hold a new version before its tag and skill archive exist.
+   Keep installation commands on published releases; revisit these pins after publication even if main has no new commits.
 3. Run `python3 scripts/docs-maintenance.py scan`. Read the diff, tests and changelog for commits since `reviewed_main`.
    A non-linear ref needs manual reconciliation; never reset or force-update a branch.
 4. Merge the reviewed main commits into docs before editing. Cover user-visible behavior in the relevant layer, link
