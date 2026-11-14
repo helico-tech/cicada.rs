@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.18.2 — unreleased
+## 0.18.2 — 2026-11-14
 
 A flow's reply wait can give up at a deadline: `Step::wait_timeout` returns `Waited::Received(T)` or
 `Waited::TimedOut` as data, decided once in a commit of its own before later code runs (ADR 0044). The flow wire and

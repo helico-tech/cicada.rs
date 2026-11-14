@@ -301,7 +301,7 @@ wait reuse SHALL be refused. Stored reply ids SHALL be unique references to repl
 An open wait SHALL have empty received. A closed wait's received SHALL be a duplicate-free subset in request order,
 with stored reply values. Received/all SHALL include every request and received/first exactly one. TimedOut SHALL
 require a deadline; timedOut/all SHALL include a strict subset and timedOut/first none. These are structural rules;
-this release SHALL execute only single all waits without a deadline; other shapes remain reserved.
+this release SHALL execute single all waits with or without a deadline; joins remain reserved.
 
 #### Scenario: Invalid outcome
 
