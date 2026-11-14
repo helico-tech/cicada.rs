@@ -1,18 +1,22 @@
-//! Example 17 — a purchase that waits for a person's approval.
+//! Example 17 — a purchase that waits for a person's approval, for at most a week.
 //!
 //! A flow asks an approvals actor for a decision and waits for it, durably: no handler stays open while a person takes
 //! minutes or days to decide. [`Step::request`] sends `Ask` to `approvals/<team>`, created first if it does not exist,
 //! with a [`ReplyTo<Decision>`](ReplyTo) route; the request, its entry and the next `Continue` commit together. The
-//! [`Step::wait`] that follows finds no reply yet, saves an open wait and parks the run: no `Continue` is armed and
-//! nothing polls. The approvals actor keeps the route with the pending purchase. When a person decides, its `Decide`
-//! turn replies through the route with [`ReplyTo::send`], in the same commit that removes the pending entry. The run's
-//! `Reply` turn keeps the decision, closes the wait and arms a `Continue`, without running flow code; that `Continue`
-//! replays the wait, which returns the decision, and the flow places the order or tells the requester.
+//! [`Step::wait_timeout`] that follows finds no reply yet and saves an open wait with its deadline, a week after the
+//! claim of its turn, together with a `Continue` due then; nothing polls meanwhile. The approvals actor keeps the route
+//! with the pending purchase. When a person decides, its `Decide` turn replies through the route with
+//! [`ReplyTo::send`], in the same commit that removes the pending entry. The run's `Reply` turn keeps the decision,
+//! closes the wait as received, cancels the deadline's `Continue` and arms one due now, without running flow code; that
+//! `Continue` replays the wait, which returns [`Waited::Received`], and the flow places the order or tells the requester.
+//! When nobody decides within the week, the deadline's `Continue` closes the wait as timed out in a turn of its own,
+//! and the next one returns [`Waited::TimedOut`]: the flow tells the requester that the purchase expired. The
+//! purchase stays pending at the approvals actor, as a timeout cleans nothing up; a decision made after it is ignored
+//! by the run.
 //!
 //! The run accepts only the first reply from the actor its request went to: a reply sent by anyone else, such as a
 //! delegate or a direct HTTP send, is ignored. A decision for a run that was deleted rejects the whole `Decide` commit,
-//! so the purchase stays pending (see `tests/flow_approval.rs`). The wait has no timeout: a purchase nobody decides
-//! leaves its run parked.
+//! so the purchase stays pending (see `tests/flow_approval.rs`).
 //!
 //! A host registers both types, creates a run and sends it `Continue`:
 //!
@@ -34,13 +38,16 @@ use std::future::Future;
 use std::time::Duration;
 
 use cicada::prelude::*;
-use cicada_actors::{Flow, FlowRun, ReplyTo, Step, Target};
+use cicada_actors::{Flow, FlowRun, ReplyTo, Step, Target, Waited};
 use serde::{Deserialize, Serialize};
 
 use crate::steps::ServiceError;
 
 /// The most purchases an approvals actor keeps pending.
 pub const MAX_PENDING: usize = 100;
+
+/// How long a purchase waits for a decision before it expires: a week.
+pub const DECISION_TIMEOUT: Duration = Duration::from_secs(7 * 24 * 3600);
 
 /// The approvals of a team, `approvals/<team>`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -159,6 +166,9 @@ pub trait Orders: Send + Sync + 'static {
         by: &str,
         idempotency_key: &str,
     ) -> impl Future<Output = Result<(), ServiceError>> + Send;
+
+    /// Tells the requester that nobody decided the purchase in time.
+    fn expire(&self, item: &str, idempotency_key: &str) -> impl Future<Output = Result<(), ServiceError>> + Send;
 }
 
 /// The purchase flow, `flows.purchase`, calling `orders`.
@@ -185,13 +195,18 @@ impl<O: Orders> Flow for PurchaseFlow<O> {
         let (approvals, empty) = (Approvals { team: input.team.clone() }, ApprovalsState::default());
         let ask = |reply| ApprovalsMsg::Ask { item: input.item.clone(), cents: input.cents, reply };
         let request = step.request("ask-approval", Target::create(&approvals, &empty), ask).await?;
-        let decision = step.wait("decision", &request).await?;
-        if decision.approved {
-            let _order: String =
-                step.run("place-order", |key| async move { Ok(orders.place(item, &key).await?) }).await?;
-        } else {
-            let by = decision.by.as_str();
-            step.run("notify-rejected", |key| async move { Ok(orders.reject(item, by, &key).await?) }).await?;
+        match step.wait_timeout("decision", &request, DECISION_TIMEOUT).await? {
+            Waited::Received(Decision { approved: true, .. }) => {
+                let _order: String =
+                    step.run("place-order", |key| async move { Ok(orders.place(item, &key).await?) }).await?;
+            }
+            Waited::Received(Decision { approved: false, by }) => {
+                let by = by.as_str();
+                step.run("notify-rejected", |key| async move { Ok(orders.reject(item, by, &key).await?) }).await?;
+            }
+            Waited::TimedOut => {
+                step.run("notify-expired", |key| async move { Ok(orders.expire(item, &key).await?) }).await?;
+            }
         }
         Ok(())
     }

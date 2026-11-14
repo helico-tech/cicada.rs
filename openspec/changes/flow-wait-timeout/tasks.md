@@ -21,7 +21,7 @@
   late reply before retry: it must still return TimedOut and not reissue the request. Check slow commit/clamping
   without rewriting the saved deadline; use controlled barriers, not sleeps. Run targeted tests plus existing
   request/reply and sleep recovery tests.
-- [ ] 4. Extend the predecessor's worked reply example with a match on Waited and a tested timeout branch. Compile
+- [x] 4. Extend the predecessor's worked reply example with a match on Waited and a tested timeout branch. Compile
   the example and guide doctest with the real API. Compare regenerated existing flow and ready-made actor contracts
   against the landed flow-reply-waits predecessor: no schema/hash changes or new result wire format. Current main's
   pre-send snapshots cannot establish this equality. Run targeted contract tests and examples doctests.
