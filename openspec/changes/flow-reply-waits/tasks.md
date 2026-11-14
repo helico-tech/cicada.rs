@@ -38,7 +38,7 @@
 
 ## Finishing checks
 
-- [ ] 6. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
+- [x] 6. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
   `openspec validate flow-reply-waits --strict`, with PostgreSQL through CICADA_PG_URL where available; record skipped
   database checks. Confirm actual contract equality and existing flow/event/send/sleep behavior. flow-step-sends must
   land and archive first: its new requirements are the targets of this change's MODIFIED deltas. Follow normal
