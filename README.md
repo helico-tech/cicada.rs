@@ -50,8 +50,8 @@ The crates are private Git dependencies. Use the **same tag for every Cicada cra
 
 ```toml
 [dependencies]
-cicada = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.17.4" }
-cicada-app = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.17.4", features = ["sqlite"] }
+cicada = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.18.0" }
+cicada-app = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.18.0", features = ["sqlite"] }
 serde = { version = "1", features = ["derive"] }
 schemars = "1"
 ```

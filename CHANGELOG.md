@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.18.0 — unreleased
+## 0.18.0 — 2026-11-14
 
 A breaking release for systems with flows: a flow can send actor work atomically with its progress (`Step::send`), and
 the flow wire gains the shape that later releases fill with requests, reply waits, timeouts, joins and cancellation
