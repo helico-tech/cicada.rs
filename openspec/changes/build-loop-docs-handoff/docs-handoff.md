@@ -77,5 +77,7 @@ None. Every doctest, link, guarantee row and skill route passes without prose ed
 ## Status
 
 Checks run on the code branch: `cargo test -p cicada-examples --test docs` (11 passed),
-`openspec validate build-loop-docs-handoff --strict` (valid), and the finishing checks the build report lists. Items 1
+`openspec validate build-loop-docs-handoff --strict` (valid), `cargo test -p cicada-examples --test skill` (8 passed),
+`python3 -m unittest scripts/test_docs_maintenance.py` (8 passed, the hooks unchanged), `cargo fmt --all --check`,
+`cargo clippy --workspace --all-targets` (clean) and `cargo test --workspace` with PostgreSQL (2905 passed, 0 failed). Items 1
 and 2 are proposed text; nothing above is written yet in the docs-owned files, and no owner fix is integrated.

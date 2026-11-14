@@ -29,7 +29,7 @@
 
 ## Finishing checks
 
-- [ ] 5. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
+- [x] 5. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
   `openspec validate build-loop-docs-handoff --strict`. Run PostgreSQL checks where configured and record any skips.
   Review the additive, blocking, absent-owner, revised-head (including a conflict-free late rebase) and release-pin
   walkthrough evidence. Confirm no ownership-hook or library behavior changes and no claim that unpublished feature
