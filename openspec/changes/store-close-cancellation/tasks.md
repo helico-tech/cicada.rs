@@ -15,14 +15,14 @@
   where needed and review both lock orders for deadlocks. Run the new tests green plus existing SQLite close/settle
   tests; distinguish the before-writer-lock cancellation proof from the weaker driver-cleanup boundary after ownership
   transfer. Do not add a background close task or wait for active readers.
-- [ ] 3. Add PostgreSQL regressions in the private PostgreSQL tests using minimal test-only pool access. Start LISTEN,
+- [x] 3. Add PostgreSQL regressions in the private PostgreSQL tests using minimal test-only pool access. Start LISTEN,
   hold a main-pool connection and leave an idle connection, poll close to Pending and cancel. Assert pool admission is
   closed, store operations are unavailable and streams end. A later/concurrent close must stay pending while the
   borrowed connection is held, finish after release and leave main-pool size zero; another close must finish normally.
   Add never-polled coverage. Demonstrate the regression on old code, whether cancellation occurred at the listener join
   or pool wait. Use the existing real-PostgreSQL multi-thread harness, bounded waits and positive barriers/polling, not
   arbitrary sleeps. Run targeted PostgreSQL lifecycle tests with CICADA_PG_URL; skipped tests are not successful proof.
-- [ ] 4. Implement PostgreSQL's repeated synchronous prefix, marking pool admission closed by explicitly dropping
+- [x] 4. Implement PostgreSQL's repeated synchronous prefix, marking pool admission closed by explicitly dropping
   the future returned by sqlx Pool::close, and document why this works with the pinned API. Split listener stop into
   synchronous abort/disable-start and handle transfer; retain and await the JoinHandle by mutable reference inside
   shared Closing progress. Complete main-pool close under the gate and write done only last. Add a deterministic

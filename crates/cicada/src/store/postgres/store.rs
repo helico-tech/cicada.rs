@@ -147,13 +147,24 @@ pub struct PostgresStore {
     socket_timeout: Duration,
     channel: String,
     listener: NotificationListener,
+    /// Set by the first poll of [`Backend::close`]: no new work is admitted. Cleanup may still be unfinished.
     closed: AtomicBool,
+    /// How far close got; its lock serialises the callers of [`Backend::close`].
+    closing: tokio::sync::Mutex<Closing>,
     /// The change hints of every upgraded node on this schema, fed by the listener.
     hub: Arc<ChangeHub>,
     /// Makes the next attempt that would commit roll back, run this future, and run again as after a deadlock, for
     /// the tests.
     #[cfg(test)]
     pub(crate) rerun_next_commit: std::sync::Mutex<Option<futures::future::BoxFuture<'static, ()>>>,
+}
+
+/// The cleanup progress of [`Backend::close`], kept across cancelled callers.
+struct Closing {
+    /// The aborted listener task, taken from the listener and not yet joined.
+    listener: Option<tokio::task::JoinHandle<()>>,
+    /// Set last, once the listener is joined and the main pool closed.
+    done: bool,
 }
 
 impl std::fmt::Debug for PostgresStore {
@@ -211,6 +222,7 @@ impl PostgresStore {
             channel,
             listener,
             closed: AtomicBool::new(false),
+            closing: tokio::sync::Mutex::new(Closing { listener: None, done: false }),
             hub,
             #[cfg(test)]
             rerun_next_commit: std::sync::Mutex::new(None),
@@ -221,6 +233,25 @@ impl PostgresStore {
     #[cfg(test)]
     pub(crate) fn is_listening(&self) -> bool {
         self.listener.is_listening()
+    }
+
+    /// The main pool, for the tests of close.
+    #[cfg(test)]
+    pub(crate) fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
+    /// Puts `task` in place of the listener's task, for the tests of close.
+    #[cfg(test)]
+    pub(crate) fn replace_listener_task(&self, task: tokio::task::JoinHandle<()>) {
+        self.listener.replace_task(task);
+    }
+
+    /// Whether close keeps an unjoined listener task and whether it finished, or `None` while a close holds the
+    /// gate. For the tests of close.
+    #[cfg(test)]
+    pub(crate) fn close_progress(&self) -> Option<(bool, bool)> {
+        self.closing.try_lock().ok().map(|closing| (closing.listener.is_some(), closing.done))
     }
 
     // ---- execution ----
@@ -2430,14 +2461,32 @@ impl Backend for PostgresStore {
         self.hub.clone()
     }
 
-    /// Closes the listener and the connection pool. Idempotent.
+    /// Closes the listener and the connection pool. Every call first stops admission, before it awaits: an
+    /// idempotent prefix that each caller runs, so none skips it because another set the flag first. Then the callers
+    /// take turns at the cleanup gate: the first that gets there joins the aborted listener task and waits for the
+    /// borrowed connections of the main pool while closing its idle ones. A cancelled caller leaves the rest, and the
+    /// unjoined task, to the next one; nothing runs on its behalf in the meantime.
     async fn close(&self) {
-        if self.closed.swap(true, Ordering::SeqCst) {
+        self.closed.store(true, Ordering::SeqCst);
+        self.hub.close();
+        self.listener.request_stop();
+        // sqlx 0.9's `Pool::close` marks the pool closed when it is called, before its future is polled: no new
+        // acquisition, no maintenance, and returned connections are closed. The gate below awaits a second call.
+        drop(self.pool.close());
+        let mut closing = self.closing.lock().await;
+        if closing.done {
             return;
         }
-        self.hub.close();
-        self.listener.stop().await;
+        if closing.listener.is_none() {
+            closing.listener = self.listener.take_task();
+        }
+        if let Some(task) = closing.listener.as_mut() {
+            // By reference: a cancelled caller leaves the handle for the next one.
+            let _ = task.await;
+            closing.listener = None;
+        }
         self.pool.close().await;
+        closing.done = true;
     }
 }
 

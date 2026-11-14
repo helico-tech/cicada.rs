@@ -27,7 +27,7 @@ pub(crate) const PROBE_PAYLOAD: &str = "!cicada-listener-probe";
 
 /// Holds one dedicated connection that `LISTEN`s on `channel` and feeds the store's [`ChangeHub`]: the hub goes up only
 /// once `LISTEN` succeeded, down when the connection is lost, and gets every notification's payload (a feed batch, or a
-/// type name for the wake-ups). Started lazily by [`Self::start`]; runs until [`Self::stop`].
+/// type name for the wake-ups). Started lazily by [`Self::start`]; runs until [`Self::request_stop`].
 ///
 /// Robustness: the listener sends itself a probe notification every 5 s (sqlx only notices a dead socket when it
 /// reads from it, and a dead peer without a TCP reset never answers); when nothing arrives for 10 s, or the connection
@@ -35,7 +35,7 @@ pub(crate) const PROBE_PAYLOAD: &str = "!cicada-listener-probe";
 /// own eager reconnect is off, so that every reconnect goes through `LISTEN` before the hub goes up again:
 /// notifications sent while disconnected are lost, and the hub's `Up` makes every subscriber resync and every wake-up
 /// stream wake. The probe runs inside the listener's task, not in one of its own: it ends with its connection attempt,
-/// or with the task when [`Self::stop`] or `Drop` aborts it, so nothing keeps the attempt's pool after the store closes.
+/// or with the task when [`Self::request_stop`] or `Drop` aborts it, so nothing keeps the attempt's pool after the store closes.
 pub(crate) struct NotificationListener {
     channel: String,
     options: PgConnectOptions,
@@ -65,18 +65,37 @@ impl NotificationListener {
         task.0 = Some(tokio::spawn(run.run()));
     }
 
-    /// Stops listening for good and closes the connections; a later [`Self::start`] does nothing.
-    pub(crate) async fn stop(&self) {
-        let task = {
-            let mut task = self.task.lock().unwrap_or_else(|e| e.into_inner());
-            task.1 = true;
-            task.0.take()
-        };
-        if let Some(task) = task {
-            task.abort();
-            let _ = task.await;
+    /// Stops listening for good, without waiting: a later [`Self::start`] does nothing, and the running task is
+    /// aborted but kept, for [`Self::take_task`]. The abort holds even when nobody joins the task.
+    pub(crate) fn request_stop(&self) {
+        let task = self.stopped();
+        if let Some(running) = &task.0 {
+            running.abort();
         }
-        self.hub.down();
+    }
+
+    /// Stops listening for good as [`Self::request_stop`] does, and hands over the aborted task for joining.
+    pub(crate) fn take_task(&self) -> Option<JoinHandle<()>> {
+        let task = self.stopped().0.take();
+        if let Some(running) = &task {
+            running.abort();
+        }
+        task
+    }
+
+    /// The task slot, marked stopped for good.
+    fn stopped(&self) -> std::sync::MutexGuard<'_, (Option<JoinHandle<()>>, bool)> {
+        let mut task = self.task.lock().unwrap_or_else(|e| e.into_inner());
+        task.1 = true;
+        task
+    }
+
+    /// Puts `task` in place of the listener's task, for the tests of close.
+    #[cfg(test)]
+    pub(crate) fn replace_task(&self, task: JoinHandle<()>) {
+        if let Some(old) = self.task.lock().unwrap_or_else(|e| e.into_inner()).0.replace(task) {
+            old.abort();
+        }
     }
 }
 

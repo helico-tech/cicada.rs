@@ -375,3 +375,91 @@ async fn closing_the_store_ends_its_streams_and_a_later_subscription_and_never_r
     assert!(matches!(store.create(&addr("x"), json!({})).await, Err(StoreError::Unavailable(_))));
     db.cleanup().await;
 }
+
+/// Polls `close` until it has marked the main pool closed, asserting that it stays pending; panics after 10 s.
+async fn pending_until_pool_closed(store: &PostgresStore, close: &mut std::pin::Pin<&mut impl Future<Output = ()>>) {
+    timeout(Duration::from_secs(10), async {
+        loop {
+            assert!(futures::poll!(close.as_mut()).is_pending(), "a borrowed connection keeps close waiting");
+            if store.pool().is_closed() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("close marks the pool closed in time");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_close_cancelled_while_a_connection_is_borrowed_is_finished_by_a_later_close_after_its_release() {
+    let db = test_db!("cc");
+    let store = open(&db).await;
+    let mut changes = subscribe(&store, "").await;
+    let pool = store.pool();
+    let borrowed = pool.acquire().await.unwrap();
+    drop(pool.acquire().await.unwrap()); // sqlx returns it to the pool in a task of its own
+    eventually(Duration::from_secs(10), "an idle connection in the pool", || async { pool.num_idle() >= 1 }).await;
+    {
+        let mut first = std::pin::pin!(store.close());
+        pending_until_pool_closed(&store, &mut first).await;
+    }
+    assert!(pool.is_closed(), "the cancelled close leaves the pool closed to acquisition");
+    assert_eq!(next(&mut changes).await, None);
+    assert_eq!(next(&mut ActorChanges::new(store.changes(), "")).await, None);
+    assert!(matches!(store.create(&addr("x"), json!({})).await, Err(StoreError::Unavailable(_))));
+    assert!(matches!(store.get(&addr("x")).await, Err(StoreError::Unavailable(_))));
+    assert!(pool.size() > 0, "the borrowed connection is still counted");
+    // Two later callers: the one that holds the gate is cancelled and the other one takes over.
+    let mut second = Box::pin(store.close());
+    let mut third = Box::pin(store.close());
+    assert!(futures::poll!(second.as_mut()).is_pending(), "the closed flag alone does not finish a close");
+    assert!(futures::poll!(third.as_mut()).is_pending());
+    drop(second);
+    assert!(futures::poll!(third.as_mut()).is_pending(), "the borrowed connection keeps the takeover waiting");
+    drop(borrowed);
+    timeout(Duration::from_secs(10), third).await.expect("close finishes once the connection is back");
+    assert_eq!(pool.size(), 0);
+    timeout(Duration::from_secs(10), store.close()).await.expect("a closed store closes at once");
+    db.cleanup().await;
+}
+
+/// The listener's task is replaced by one that blocks its worker thread inside a poll, so its abort cannot finish:
+/// the join of close stays pending until the test lets the task return.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_close_cancelled_while_it_joins_the_listener_leaves_the_handle_to_a_later_close() {
+    let db = test_db!("cj");
+    let store = db.open().await;
+    let (entered, running) = tokio::sync::oneshot::channel();
+    let (go, wait) = std::sync::mpsc::channel::<()>();
+    store.replace_listener_task(tokio::spawn(async move {
+        entered.send(()).unwrap();
+        wait.recv().unwrap(); // blocks this worker thread, inside the task's poll
+    }));
+    running.await.unwrap();
+    {
+        let mut first = std::pin::pin!(store.close());
+        assert!(futures::poll!(first.as_mut()).is_pending(), "the aborted task is still inside its poll");
+    }
+    assert_eq!(store.close_progress(), Some((true, false)), "the cancelled join leaves the handle in the progress");
+    assert!(store.pool().is_closed());
+    let mut second = std::pin::pin!(store.close());
+    assert!(futures::poll!(second.as_mut()).is_pending(), "the later close joins the same task");
+    go.send(()).unwrap();
+    timeout(Duration::from_secs(10), second).await.expect("close finishes once the task returned");
+    assert_eq!(store.close_progress(), Some((false, true)));
+    assert_eq!(store.pool().size(), 0);
+    db.cleanup().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_close_future_that_is_never_polled_leaves_the_store_open() {
+    let db = test_db!("cn");
+    let store = open(&db).await;
+    drop(store.close());
+    assert!(!store.pool().is_closed());
+    let mut changes = subscribe(&store, "").await;
+    store.create(&addr("after"), json!({})).await.unwrap();
+    assert_eq!(until(&mut changes, &addr("after")).await, vec![]);
+    db.cleanup().await;
+}
