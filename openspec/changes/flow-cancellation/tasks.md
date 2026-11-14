@@ -6,7 +6,7 @@
   and counters for never-started, armed, sleeping, missing-timer and permanently mismatched runs; repeated Cancel and
   done no-op; all messages in reserved cancelling; and trusted progress with armed=current id. Run targeted flow
   tests and existing send/sleep/wait regressions. No new API, permission check, self-purge or automatic target control.
-- [ ] 2. Add virtual-time wait/race coverage: parked wait, timed join with partial replies, too-deep late replies,
+- [x] 2. Add virtual-time wait/race coverage: parked wait, timed join with partial replies, too-deep late replies,
   both equal-delivery orders of wait closure versus Cancel, queued public Continues on both sides, last helper before
   done, a long handler held by a controlled future, retry backoff, pause/resume and purged Cancel. Assert retained
   journal/value equality and no normal work after committed cancellation. Test known unapplied commit atomicity and

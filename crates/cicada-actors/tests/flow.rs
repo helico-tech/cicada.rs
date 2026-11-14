@@ -4005,3 +4005,451 @@ async fn cancel_cancels_another_armed_continuation_and_never_its_own_message() {
     }
     assert!(probe.keys().is_empty());
 }
+
+/// Scenario: Interrupted waits and sleeps. A `Cancel` cancels a sleep's timer, finds a parked wait with nothing armed,
+/// and cancels the deadline of a timed join that has kept a partial reply; the open waits, the journal and the replies
+/// stay as they were. Later replies, one too deep to keep among them, and the time of the deadlines change nothing.
+#[tokio::test(start_paused = true)]
+async fn cancel_interrupts_a_sleep_a_parked_wait_and_a_timed_join_and_later_replies_are_ignored() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    responders(&test, &["r1", "r2", "r3", "p1"]).await;
+    start(&test, "sleep", script(vec![sleep("nap", MINUTE), op(|id| Op::Step { id }, "after")])).await;
+    start(&test, "parked", script(vec![later("a", "p1"), wait_op("done", "a"), op(|id| Op::Step { id }, "after")]))
+        .await;
+    let join = vec![
+        later("a", "r1"),
+        later("b", "r2"),
+        later("c", "r3"),
+        all_op("done", &["a", "b", "c"], Some(MINUTE.as_secs())),
+        op(|id| Op::Step { id }, "after"),
+    ];
+    start(&test, "join", script(join)).await;
+    test.run_until_idle().await;
+    answer(&test, "r1", json!("a"), None).await;
+    test.run_until_idle().await;
+    assert_eq!(state(&test, "join").await.replies.len(), 1, "a partial reply");
+    let timers = [
+        ("sleep", Some(armed(&test, "sleep").await.id)),
+        ("parked", None),
+        ("join", Some(armed(&test, "join").await.id)),
+    ];
+
+    for (key, timer) in timers {
+        let before = progress(&test, key).await;
+        test.send(&run(key), FlowMsg::Cancel).await;
+        test.run_until_idle().await;
+        assert_cancelled(&test, key, &before).await;
+        if let Some(timer) = timer {
+            assert_eq!(outcome(&test, &timer).await.unwrap().status, OutcomeStatus::Cancelled, "{key}: its timer");
+        }
+    }
+    let kept = [("parked", unchanged(&test, "parked").await), ("join", unchanged(&test, "join").await)];
+    let deep = Answer::Raw { value: Value::Null, depth: Some(63), request: None };
+    for (to, run_key) in [("p1", "parked"), ("r2", "join")] {
+        answer(&test, to, json!("late"), None).await;
+        let asked = request_id(&test, run_key, if to == "p1" { "a" } else { "b" }).await;
+        let reply = serde_json::from_value(json!({"run": format!("test.flow/{run_key}"), "request": asked.as_str()}));
+        test.send(&responder(to), ResponderMsg::Ask { reply: reply.unwrap(), answer: deep.clone() }).await;
+    }
+    test.send(&responder("r3"), ResponderMsg::Answer { value: json!("c") }).await;
+    test.advance_time_by(MINUTE * 2).await;
+    for (key, before) in kept {
+        assert_eq!(unchanged(&test, key).await, before, "{key}: no state or version change");
+    }
+    assert!(
+        test.failures().await.iter().all(|f| f.envelope.to.type_name().as_str() != "test.flow"),
+        "ignored, not failed"
+    );
+    assert!(probe.keys().is_empty() && probe.got().is_empty(), "no flow code after the cancel");
+}
+
+/// Scenario: Reply or timer decision race, of a deadline. A `Cancel` and the deadline's `Continue` due at the same time
+/// are handled in sequence order. Cancel first: the timer is cancelled and the wait stays open. Deadline first: the
+/// timeout commits, and the `Cancel` cancels the `Continue` it armed, so no flow code consumes the decision.
+#[tokio::test(start_paused = true)]
+async fn a_cancel_and_the_deadline_due_at_the_same_time_are_handled_in_sequence_order() {
+    for cancel_first in [true, false] {
+        let probe = Probe::default();
+        let test = node(&probe).await;
+        test.create(&responder("r1"), &ResponderState::default()).await;
+        let ops = vec![later("ask", "r1"), timed_op("done", "ask", MINUTE), op(|id| Op::Step { id }, "after")];
+        start(&test, "k", script(ops)).await;
+        let until = after(test.now(), MINUTE);
+        let at = SendOptions::new().at(until);
+        if cancel_first {
+            test.send_with(&run("k"), FlowMsg::Cancel, at.clone()).await;
+        }
+        test.run_until_idle().await;
+        let timer = state(&test, "k").await.armed.unwrap();
+        if !cancel_first {
+            test.send_with(&run("k"), FlowMsg::Cancel, at).await;
+        }
+        let pending = test.pending(&run("k")).await;
+        let order: Vec<_> = pending.iter().map(|m| (m.message_type.as_str(), m.deliver_at)).collect();
+        let expected = if cancel_first { ["Cancel", "Continue"] } else { ["Continue", "Cancel"] };
+        assert_eq!(order, [(expected[0], until), (expected[1], until)], "cancel first: {cancel_first}");
+
+        tokio::time::sleep(MINUTE).await;
+        assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1, "cancel first: {cancel_first}: the first due");
+        let decision = state(&test, "k").await.armed;
+        assert_eq!(decision.is_none(), cancel_first, "the timeout arms a continuation, the cancel clears it");
+        test.advance_time_by(MINUTE).await;
+        let decided = if cancel_first { None } else { Some(WaitOutcome::TimedOut) };
+        assert_eq!(
+            timed_entry(&test, "k", "done").await,
+            (Some(until), decided, vec![]),
+            "cancel first: {cancel_first}"
+        );
+        let held = state(&test, "k").await;
+        assert_eq!((held.status, held.armed), (FlowStatus::Cancelled, None), "cancel first: {cancel_first}");
+        let timer_outcome = outcome(&test, &timer).await.unwrap().status;
+        if cancel_first {
+            assert_eq!(timer_outcome, OutcomeStatus::Cancelled, "the deadline's timer");
+        } else {
+            assert_eq!(timer_outcome, OutcomeStatus::Done, "the timeout committed");
+            let decision = outcome(&test, &decision.unwrap()).await.unwrap().status;
+            assert_eq!(decision, OutcomeStatus::Cancelled, "the decision's continuation, by the cancel");
+        }
+        assert!(probe.got().is_empty() && probe.ids().is_empty(), "cancel first: {cancel_first}: no flow code");
+        assert!(test.pending(&run("k")).await.is_empty());
+        assert!(test.failures().await.is_empty());
+    }
+}
+
+/// Scenario: Reply or timer decision race, of a reply. A `Cancel` and the reply that closes a parked wait due at the
+/// same time are handled in sequence order. Cancel first: the reply is ignored and the wait stays open. Reply first: the
+/// wait commits received with its value, and the `Cancel` cancels the `Continue` it armed before code consumes it.
+#[tokio::test(start_paused = true)]
+async fn a_cancel_and_the_closing_reply_due_at_the_same_time_are_handled_in_sequence_order() {
+    for cancel_first in [true, false] {
+        let probe = Probe::default();
+        let test = node(&probe).await;
+        test.create(&responder("r1"), &ResponderState::default()).await;
+        let ops = vec![later("ask", "r1"), wait_op("done", "ask"), op(|id| Op::Step { id }, "after")];
+        parked(&test, "k", script(ops), "done").await;
+        let until = after(test.now(), MINUTE);
+        let reply = ResponderMsg::AnswerAt { value: json!("v"), at: until };
+        if cancel_first {
+            test.send_with(&run("k"), FlowMsg::Cancel, SendOptions::new().at(until)).await;
+            test.send(&responder("r1"), reply).await;
+            test.run_until_idle().await;
+        } else {
+            test.send(&responder("r1"), reply).await;
+            test.run_until_idle().await;
+            test.send_with(&run("k"), FlowMsg::Cancel, SendOptions::new().at(until)).await;
+        }
+        let pending = test.pending(&run("k")).await;
+        let order: Vec<_> = pending.iter().map(|m| (m.message_type.as_str(), m.deliver_at)).collect();
+        let expected = if cancel_first { ["Cancel", "Reply"] } else { ["Reply", "Cancel"] };
+        assert_eq!(order, [(expected[0], until), (expected[1], until)], "cancel first: {cancel_first}");
+        let asked = request_id(&test, "k", "ask").await;
+
+        test.advance_time_by(MINUTE * 2).await;
+        let held = state(&test, "k").await;
+        assert_eq!((held.status, held.armed.clone()), (FlowStatus::Cancelled, None), "cancel first: {cancel_first}");
+        if cancel_first {
+            assert_eq!(wait_entry(&test, "k", "done").await, (None, vec![]), "the wait stays open");
+            assert!(held.replies.is_empty(), "the reply is ignored");
+        } else {
+            assert_eq!(wait_entry(&test, "k", "done").await, (Some(WaitOutcome::Received), vec![asked.clone()]));
+            assert_eq!(held.replies, [kept_reply(&asked, json!("v"))], "the decision stays saved");
+        }
+        assert!(probe.got().is_empty() && probe.ids().is_empty(), "cancel first: {cancel_first}: no flow code");
+        assert!(test.pending(&run("k")).await.is_empty());
+        assert!(test.failures().await.is_empty(), "the losing message is handled without failing");
+    }
+}
+
+/// Scenario: Finishing and queued continuations. A public `Continue` queued before the `Cancel` normalizes as ever,
+/// replacing the armed timer; the `Cancel` then cancels the fresh continuation, and a `Continue` queued after it does
+/// nothing. A `Cancel` that runs after the last step committed but before the run recorded done still cancels it,
+/// although every effect ran; once done is recorded a `Cancel` is a no-op.
+#[tokio::test(start_paused = true)]
+async fn queued_continues_keep_mailbox_order_around_a_cancel_and_a_cancel_after_the_last_step_still_wins() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    start(&test, "queued", script(vec![sleep("nap", MINUTE), op(|id| Op::Step { id }, "after")])).await;
+    test.run_until_idle().await;
+    let timer = armed(&test, "queued").await;
+    let version = test.version(&run("queued")).await;
+    let before = test.send(&run("queued"), FlowMsg::Continue).await;
+    let cancel = test.send(&run("queued"), FlowMsg::Cancel).await;
+    let behind = test.send(&run("queued"), FlowMsg::Continue).await;
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1, "the earlier Continue");
+    assert_eq!(outcome(&test, &timer.id).await.unwrap().status, OutcomeStatus::Cancelled, "replaced as ever");
+    let fresh = armed(&test, "queued").await;
+    assert_eq!(test.version(&run("queued")).await, version + 1);
+    assert_eq!(test.run_until_idle().await, 2, "the cancel and the later Continue; the fresh one never runs");
+    assert_eq!(outcome(&test, &fresh.id).await.unwrap().status, OutcomeStatus::Cancelled, "by the cancel");
+    for message in [&before, &cancel, &behind] {
+        assert_eq!(outcome(&test, &message.id).await.unwrap().status, OutcomeStatus::Done);
+    }
+    assert_eq!(test.version(&run("queued")).await, version + 2, "the later Continue writes nothing");
+    assert_eq!(state(&test, "queued").await.status, FlowStatus::Cancelled);
+    assert!(test.pending(&run("queued")).await.is_empty(), "the later Continue arms nothing");
+
+    start(&test, "last", script(steps(&["a"]))).await;
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1, "the poke arms the execution");
+    test.send(&run("last"), FlowMsg::Cancel).await;
+    assert_eq!(test.run_until_idle().await, 2, "the last step, then the cancel before the completion");
+    assert_eq!(probe.ids(), ["a"], "its effect ran");
+    let held = state(&test, "last").await;
+    assert_eq!((held.status, held.journal), (FlowStatus::Cancelled, vec![saved("a", json!("r-a"))]));
+
+    start(&test, "done", script(steps(&["a"]))).await;
+    test.run_until_idle().await;
+    let version = test.version(&run("done")).await;
+    test.send(&run("done"), FlowMsg::Cancel).await;
+    test.run_until_idle().await;
+    assert_eq!(state(&test, "done").await.status, FlowStatus::Done, "a no-op once done");
+    assert_eq!(test.version(&run("done")).await, version);
+}
+
+/// Scenario: Running handler and retry backoff. A `Cancel` queued while the armed execution is held in a step does not
+/// preempt it: no turn of the run can be claimed meanwhile, the step commits, and the `Cancel` then cancels its
+/// successor. A `Cancel` due during an armed retry's backoff cancels the retry without running the step again; the
+/// failed attempt's effect is not compensated.
+#[tokio::test(start_paused = true)]
+async fn cancel_waits_for_a_running_handler_and_cancels_a_retry_in_backoff() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    start(
+        &test,
+        "held",
+        script(vec![op(|id| Op::Gate { id }, "g"), op(|id| Op::Step { id }, "a"), op(|id| Op::Step { id }, "b")]),
+    )
+    .await;
+    test.system().run_due_turns(1).await.unwrap(); // the poke
+    probe.plan("g", &[Act::Slow]);
+    let system = test.system().clone();
+    let turn = tokio::spawn(async move { system.run_due_turns(1).await.unwrap() });
+    tokio::time::sleep(SECOND).await;
+    let cancel = test.send(&run("held"), FlowMsg::Cancel).await;
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 0, "the run's turn is held; the cancel waits");
+    assert!(!turn.is_finished(), "held at the barrier");
+    probe.gate.notify_one();
+    assert_eq!(turn.await.unwrap(), 1);
+    assert_eq!(journal(&test, "held").await, ["a"], "the held step committed first");
+    let successor = armed(&test, "held").await;
+    assert_eq!(test.run_until_idle().await, 1, "the cancel");
+    assert_eq!(outcome(&test, &cancel.id).await.unwrap().status, OutcomeStatus::Done);
+    assert_eq!(outcome(&test, &successor.id).await.unwrap().status, OutcomeStatus::Cancelled);
+    assert_eq!(state(&test, "held").await.status, FlowStatus::Cancelled);
+    assert_eq!(probe.ids(), ["a"], "b never ran");
+
+    probe.plan("x", &[Act::Fail]);
+    start(&test, "backoff", script(steps(&["x"]))).await;
+    test.run_until_idle().await;
+    let retry = armed(&test, "backoff").await;
+    assert_eq!(retry.failures, 1, "in backoff");
+    test.send(&run("backoff"), FlowMsg::Cancel).await;
+    assert_eq!(test.run_until_idle().await, 1, "due before the retry");
+    assert_eq!(outcome(&test, &retry.id).await.unwrap().status, OutcomeStatus::Cancelled);
+    assert_eq!(test.advance_time_by(BACKOFF * 2).await, 0);
+    assert_eq!(probe.ids(), ["a", "x"], "the step ran once, and is neither run again nor compensated");
+    assert_eq!(state(&test, "backoff").await.status, FlowStatus::Cancelled);
+}
+
+/// Scenario: Pause purge and delete, of a pause and a purge. A paused run takes its `Cancel` when it is resumed, before
+/// its later timer; a purge of a paused mailbox discards the queued `Cancel` with the timer, and the run stays running.
+#[tokio::test(start_paused = true)]
+async fn a_paused_run_takes_its_cancel_after_resume_and_a_purged_cancel_leaves_it_running() {
+    for purge in [false, true] {
+        let probe = Probe::default();
+        let test = node(&probe).await;
+        start(&test, "k", script(vec![sleep("nap", MINUTE), op(|id| Op::Step { id }, "after")])).await;
+        test.run_until_idle().await;
+        let before = progress(&test, "k").await;
+        assert!(test.system().pause_mailbox(&addr(&run("k"))).await.unwrap());
+        let cancel = test.send(&run("k"), FlowMsg::Cancel).await;
+        assert_eq!(test.advance_time_by(MINUTE * 2).await, 0, "purge: {purge}: paused");
+        assert_eq!(state(&test, "k").await.status, FlowStatus::Running, "purge: {purge}: not before resume");
+        if purge {
+            assert_eq!(test.system().purge_mailbox(&addr(&run("k"))).await.unwrap(), Some(2));
+        }
+        assert!(test.system().resume_mailbox(&addr(&run("k"))).await.unwrap());
+        test.advance_time_by(MINUTE).await;
+        if purge {
+            assert_ne!(outcome(&test, &cancel.id).await.map(|o| o.status), Some(OutcomeStatus::Done), "never handled");
+            assert_eq!(state(&test, "k").await.status, FlowStatus::Running, "the run stays running");
+        } else {
+            assert_eq!(outcome(&test, &cancel.id).await.unwrap().status, OutcomeStatus::Done);
+            assert_cancelled(&test, "k", &before).await;
+        }
+        assert!(probe.ids().is_empty(), "purge: {purge}: the step after the sleep never ran");
+    }
+}
+
+/// What [`CancelFaults`] does to the completion of a turn whose new state is cancelled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fault {
+    /// Turns it down as a store that rejects the commit does (cause `commit`, not retryable), applying nothing.
+    Reject,
+    /// Loses it on the way to the store, applying nothing: the worker abandons the turn and its lease runs out.
+    Drop,
+    /// Applies it and loses the answer: the worker cannot know that it applied.
+    LoseAnswer,
+}
+
+/// The core `TurnSource` of a system, for a worker that hosts the flow: the completion of a turn whose new state is
+/// cancelled meets the next planned fault, if any; every other call goes to the system.
+struct CancelFaults {
+    system: ActorSystem,
+    faults: Arc<Mutex<VecDeque<Fault>>>,
+}
+
+#[async_trait::async_trait]
+impl TurnSource for CancelFaults {
+    async fn register_contract(&self, contract: &Contract) -> Result<RegisterContractResult, SourceError> {
+        TurnSource::register_contract(&self.system, contract).await
+    }
+
+    async fn list_types(&self) -> Result<Vec<TypeDef>, SourceError> {
+        TurnSource::list_types(&self.system).await
+    }
+
+    async fn lease_turns(
+        &self,
+        owner: &NodeId,
+        types: &BTreeMap<TypeName, String>,
+        limit: usize,
+    ) -> Result<LeaseTurnsResult, SourceError> {
+        TurnSource::lease_turns(&self.system, owner, types, limit).await
+    }
+
+    async fn renew_turn(&self, actor: &ActorAddress, epoch: i64) -> Result<RenewTurnResult, SourceError> {
+        TurnSource::renew_turn(&self.system, actor, epoch).await
+    }
+
+    async fn release_turn(&self, actor: &ActorAddress, epoch: i64) -> Result<(), SourceError> {
+        TurnSource::release_turn(&self.system, actor, epoch).await
+    }
+
+    async fn complete_turn(
+        &self,
+        actor: &ActorAddress,
+        epoch: i64,
+        message_id: &MessageId,
+        report: TurnReport,
+    ) -> Result<CompleteTurnResult, SourceError> {
+        let cancels =
+            matches!(&report, TurnReport::Returned { state: StateReport::Set(s), .. } if s["status"] == "cancelled");
+        let fault = if cancels { self.faults.lock().unwrap().pop_front() } else { None };
+        match fault {
+            None => TurnSource::complete_turn(&self.system, actor, epoch, message_id, report).await,
+            Some(Fault::Reject) => Ok(CompleteTurnResult::Rejected(TurnFailure {
+                cause: FailureCause::Commit,
+                retryable: false,
+                reason: "the store rejected the commit".to_owned(),
+            })),
+            Some(Fault::Drop) => Err(SourceError::Invalid("the commit was lost on its way".to_owned())),
+            Some(Fault::LoseAnswer) => {
+                TurnSource::complete_turn(&self.system, actor, epoch, message_id, report).await?;
+                Err(SourceError::Unavailable("the answer was lost".to_owned()))
+            }
+        }
+    }
+}
+
+/// A node that hosts the responders and the witness, and a worker on it that hosts the test flow on `probe` through a
+/// [`CancelFaults`], with the faults it will meet.
+async fn faulty(probe: &Probe) -> (TestActors, cicada::runtime::Worker, Arc<Mutex<VecDeque<Fault>>>) {
+    let test = TestActors::builder().with(|node| node.host(ResponderActor).host(WitnessActor)).build().await.unwrap();
+    witness(&test, "test.flow").await;
+    let faults = Arc::new(Mutex::new(VecDeque::new()));
+    let source = CancelFaults { system: test.system().clone(), faults: faults.clone() };
+    let worker =
+        cicada::runtime::Worker::builder(source).host(FlowActor::new(ScriptFlow { probe: probe.clone() })).build();
+    worker.initialize().await.unwrap();
+    (test, worker, faults)
+}
+
+/// The node's lease of a turn.
+const LEASE: Duration = Duration::from_secs(30);
+
+/// Scenarios: Atomic failure; and Unknown commit acknowledgement. A rejected commit of the `Cancel` saves neither the
+/// status nor the cancel of the armed timer, and fails the `Cancel` without its sender's retry policy retrying it; a
+/// fresh `Cancel` then commits. A commit whose answer was lost did apply: a reread shows the run cancelled, and a
+/// fresh `Cancel` is a no-op.
+#[tokio::test(start_paused = true)]
+async fn a_cancel_commits_whole_or_not_at_all_and_an_unknown_answer_is_settled_by_a_reread() {
+    for fault in [Fault::Reject, Fault::LoseAnswer] {
+        let probe = Probe::default();
+        let (test, worker, faults) = faulty(&probe).await;
+        start(&test, "k", script(vec![sleep("nap", MINUTE), op(|id| Op::Step { id }, "after")])).await;
+        drive(&test, &worker).await;
+        let timer = armed(&test, "k").await;
+        let (before, saved) = (unchanged(&test, "k").await, progress(&test, "k").await);
+        faults.lock().unwrap().push_back(fault);
+        let retried = SendOptions::new().retry(three_attempts());
+        let cancel = test.send_with(&run("k"), FlowMsg::Cancel, retried).await;
+        assert_eq!(worker.run_due_turns(10).await.unwrap(), 1, "{fault:?}: the cancel's turn");
+        assert!(faults.lock().unwrap().is_empty(), "{fault:?}: the fault was met");
+        let record = outcome(&test, &cancel.id).await.unwrap();
+        if fault == Fault::Reject {
+            assert_eq!(unchanged(&test, "k").await, before, "neither the status nor anything else is saved");
+            assert_eq!(armed(&test, "k").await.id, timer.id, "the timer is still pending");
+            let failed = (record.status, record.envelope.failures, record.error.as_deref());
+            assert_eq!(failed, (OutcomeStatus::Failed, 0, Some("the store rejected the commit")), "not retried");
+            test.run_until_idle().await;
+            assert_eq!(told(&test).await.len(), 1, "a failed message, as for any actor");
+            test.send(&run("k"), FlowMsg::Cancel).await;
+            drive(&test, &worker).await;
+        } else {
+            assert_eq!(record.status, OutcomeStatus::Done, "it applied although the worker got no answer");
+            let version = test.version(&run("k")).await;
+            assert_eq!(version, before.1 + 1);
+            let again = test.send(&run("k"), FlowMsg::Cancel).await;
+            drive(&test, &worker).await;
+            assert_eq!(outcome(&test, &again.id).await.unwrap().status, OutcomeStatus::Done, "a fresh cancel");
+            assert_eq!(test.version(&run("k")).await, version, "is a no-op");
+        }
+        assert_eq!(outcome(&test, &timer.id).await.unwrap().status, OutcomeStatus::Cancelled, "{fault:?}");
+        assert_cancelled(&test, "k", &saved).await;
+        tokio::time::sleep(MINUTE * 2).await;
+        drive(&test, &worker).await;
+        assert!(probe.ids().is_empty(), "{fault:?}: no progress undone, no flow restarted");
+    }
+}
+
+/// Scenario: Atomic failure, of a commit that does not get through after the handler returned. The `Cancel` stays
+/// leased until its lease runs out, then is claimed again and commits, with no failure counted against a retry
+/// policy; a `Cancel` whose commit never gets through fails at the claim limit, leaving the run running with its timer.
+#[tokio::test(start_paused = true)]
+async fn an_unapplied_cancel_commit_is_reclaimed_after_its_lease_and_fails_at_the_claim_limit() {
+    for drops in [1, 5] {
+        let probe = Probe::default();
+        let (test, worker, faults) = faulty(&probe).await;
+        start(&test, "k", script(vec![sleep("nap", Duration::from_secs(3600)), op(|id| Op::Step { id }, "after")]))
+            .await;
+        drive(&test, &worker).await;
+        let timer = armed(&test, "k").await;
+        let (before, saved) = (unchanged(&test, "k").await, progress(&test, "k").await);
+        faults.lock().unwrap().extend(std::iter::repeat_n(Fault::Drop, drops));
+        let cancel = test.send_with(&run("k"), FlowMsg::Cancel, SendOptions::new().retry(three_attempts())).await;
+        for claim in 0..drops {
+            assert_eq!(worker.run_due_turns(10).await.unwrap(), 1, "{drops}: claim {claim}");
+            assert_eq!(unchanged(&test, "k").await, before, "{drops}: claim {claim}: nothing applied");
+            assert!(outcome(&test, &cancel.id).await.is_none(), "{drops}: claim {claim}: still leased");
+            assert_eq!(worker.run_due_turns(10).await.unwrap(), 0, "{drops}: claim {claim}: until the lease runs out");
+            tokio::time::sleep(LEASE + SECOND).await;
+        }
+        drive(&test, &worker).await;
+        let record = outcome(&test, &cancel.id).await.unwrap();
+        if drops == 1 {
+            let reclaimed = (record.status, record.envelope.attempt, record.envelope.failures);
+            assert_eq!(reclaimed, (OutcomeStatus::Done, 2, 0), "claimed again, not retried");
+            assert_eq!(outcome(&test, &timer.id).await.unwrap().status, OutcomeStatus::Cancelled);
+            assert_cancelled(&test, "k", &saved).await;
+        } else {
+            assert_eq!(record.status, OutcomeStatus::Failed);
+            assert_eq!(record.error.as_deref(), Some("claim limit: 5 lost claims"));
+            test.run_until_idle().await;
+            assert_eq!(told(&test).await[0].cause, FailureCause::ClaimLimit);
+            assert_eq!(unchanged(&test, "k").await, before, "the run stays running");
+            assert_eq!(armed(&test, "k").await.id, timer.id, "with its timer");
+        }
+        assert!(probe.ids().is_empty());
+    }
+}
