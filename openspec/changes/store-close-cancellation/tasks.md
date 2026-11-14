@@ -1,6 +1,6 @@
 ## Implementation
 
-- [ ] 1. Add SQLite cancellation/concurrency regressions beside the private store change/lifecycle tests. Use the
+- [x] 1. Add SQLite cancellation/concurrency regressions beside the private store change/lifecycle tests. Use the
   existing commit fault/settle harness to hold the writer, poll close to Pending, cancel it, and show a later caller
   actually removes writer/readers after the blocker is released. A concurrent second close must remain pending while
   the blocker is held. Inspect writer contents only after releasing its lock; do not deadlock the test on its own
@@ -8,7 +8,7 @@
   without refilling the pool. Record the cancellation/concurrency failures on the unfixed code. Use controlled
   readiness/polling, not elapsed sleeps; keep the existing SQLite driver harness and virtual time where no I/O deadline
   depends on real time. Run the targeted lifecycle/change test module.
-- [ ] 2. Implement SQLite's idempotent admission-stop prefix and tokio cleanup gate/done flag. Retain untouched
+- [x] 2. Implement SQLite's idempotent admission-stop prefix and tokio cleanup gate/done flag. Retain untouched
   resources across cancellation: take the writer for its close, then pop and close idle readers one at a time. Move
   Reader::drop's closed check under the readers mutex. Preserve reads already in flight, writer settlement and driver
   cleanup of a connection whose own close future is cancelled. Test return/drain ordering with controlled concurrency

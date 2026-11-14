@@ -91,7 +91,10 @@ pub struct SqliteStore {
     reader_permits: Semaphore,
     /// The latest store time this instance handed out; see [`SqliteStore::store_now`].
     high_water: Mutex<Timestamp>,
+    /// Set by the first poll of [`Backend::close`]: no new work is admitted. Cleanup may still be unfinished.
     closed: AtomicBool,
+    /// Whether close finished its cleanup; its lock serialises the callers of [`Backend::close`].
+    cleaned_up: tokio::sync::Mutex<bool>,
     /// The change hints of the writes through this store, published after their commits.
     hub: Arc<ChangeHub>,
     /// A fault the next write transaction takes, for the tests of commit endings.
@@ -166,11 +169,16 @@ impl Reader<'_> {
 }
 
 impl Drop for Reader<'_> {
+    /// Returns the connection to the pool, or drops it once the store is closed. The flag is read under the pool's
+    /// lock, which close sets it before draining under: a return cannot refill a pool that close has drained.
     fn drop(&mut self) {
-        if let Some(conn) = self.conn.take()
-            && !self.store.closed.load(Ordering::SeqCst)
-        {
-            self.store.readers.lock().unwrap_or_else(|e| e.into_inner()).push(conn);
+        let Some(conn) = self.conn.take() else { return };
+        let mut readers = self.store.readers.lock().unwrap_or_else(|e| e.into_inner());
+        if self.store.closed.load(Ordering::SeqCst) {
+            drop(readers);
+            drop(conn);
+        } else {
+            readers.push(conn);
         }
     }
 }
@@ -365,6 +373,7 @@ impl SqliteStore {
             reader_permits: Semaphore::new(readers.len()),
             readers: Mutex::new(readers),
             closed: AtomicBool::new(false),
+            cleaned_up: tokio::sync::Mutex::new(false),
             hub: Arc::new(ChangeHub::new(SourceState::Up)),
             #[cfg(test)]
             commit_fault: Mutex::new(None),
@@ -2061,18 +2070,29 @@ impl Backend for SqliteStore {
         self.hub.clone()
     }
 
+    /// Every call first stops admission, before it awaits: an idempotent prefix that each caller runs, so none skips
+    /// it because another set the flag first. Then the callers take turns at the cleanup gate: the first that gets
+    /// there waits for the writer (a write or its settle task may hold it) and closes it, then pops and closes the idle
+    /// readers one at a time. A cancelled caller leaves the connections it did not take for the next one; a connection
+    /// taken for its own close drops into sqlx's cleanup. Reads in flight are not waited for: their connections drop
+    /// on return (see [`Reader`]).
     async fn close(&self) {
-        if self.closed.swap(true, Ordering::SeqCst) {
-            return;
-        }
+        self.closed.store(true, Ordering::SeqCst);
         self.hub.close();
         self.reader_permits.close();
-        if let Some(writer) = self.writer.lock().await.take() {
+        let mut cleaned_up = self.cleaned_up.lock().await;
+        if *cleaned_up {
+            return;
+        }
+        let writer = self.writer.lock().await.take();
+        if let Some(writer) = writer {
             writer.close().await;
         }
-        let readers = std::mem::take(&mut *self.readers.lock().unwrap_or_else(|e| e.into_inner()));
-        for reader in readers {
+        loop {
+            let reader = self.readers.lock().unwrap_or_else(|e| e.into_inner()).pop();
+            let Some(reader) = reader else { break };
             reader.close().await;
         }
+        *cleaned_up = true;
     }
 }

@@ -219,3 +219,140 @@ async fn clones_of_a_store_share_its_feed_and_a_separate_open_of_the_file_is_not
     separate.close().await;
     store.close().await;
 }
+
+// ---- resumable close ----
+
+/// Starts a create that stops before its commit while it holds the writer, and returns its task once it got there.
+async fn held_writer(store: &Arc<SqliteStore>) -> tokio::task::JoinHandle<Result<CreateResult, StoreError>> {
+    let reached = Arc::new(Notify::new());
+    *store.commit_fault.lock().unwrap() = Some(CommitFault::BeforeCommit(reached.clone()));
+    let task = {
+        let store = store.clone();
+        tokio::spawn(async move { store.create(&instance("held"), json!({})).await })
+    };
+    reached.notified().await;
+    task
+}
+
+/// Cancels the create of [`held_writer`]: its transaction never asked to commit, so it frees the writer at once.
+async fn release(task: tokio::task::JoinHandle<Result<CreateResult, StoreError>>) {
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+}
+
+/// True when the writer slot is empty; the writer lock must be free.
+fn writer_taken(store: &SqliteStore) -> bool {
+    store.writer.try_lock().expect("nothing holds the writer").is_none()
+}
+
+fn idle_readers(store: &SqliteStore) -> usize {
+    store.readers.lock().unwrap().len()
+}
+
+/// Asserts that `store` refuses work and that its change streams, existing and new, end.
+async fn assert_closed(store: &SqliteStore, changes: &mut ActorChanges) {
+    assert_eq!(next(changes).await, None);
+    assert_eq!(next(&mut ActorChanges::new(store.changes(), "")).await, None);
+    assert!(store.get(&instance("a")).await.unwrap_err().is_unavailable());
+    assert!(store.create(&instance("b"), json!({})).await.unwrap_err().is_unavailable());
+}
+
+#[tokio::test]
+async fn a_close_cancelled_while_it_waits_for_the_writer_is_finished_by_a_later_close() {
+    let db = TempDb::new();
+    let store = open(&db).await;
+    let mut changes = subscribe(&*store).await;
+    let blocker = held_writer(&store).await;
+    {
+        let mut first = std::pin::pin!(store.close());
+        assert!(futures::poll!(first.as_mut()).is_pending(), "the create holds the writer");
+    }
+    assert_closed(&store, &mut changes).await;
+    assert_eq!(idle_readers(&store), super::READERS, "the cancelled close took no connection");
+    let mut second = std::pin::pin!(store.close());
+    assert!(futures::poll!(second.as_mut()).is_pending(), "a later close waits for the held writer");
+    release(blocker).await;
+    tokio::time::timeout(Duration::from_secs(10), second).await.expect("closes once the writer is free");
+    assert!(writer_taken(&store));
+    assert_eq!(idle_readers(&store), 0);
+    tokio::time::timeout(Duration::from_secs(10), store.close()).await.expect("a closed store closes at once");
+}
+
+#[tokio::test]
+async fn a_waiting_close_takes_over_from_a_cancelled_one_and_both_wait_for_the_writer() {
+    let db = TempDb::new();
+    let store = open(&db).await;
+    let blocker = held_writer(&store).await;
+    let mut first = Box::pin(store.close());
+    let mut second = Box::pin(store.close());
+    assert!(futures::poll!(first.as_mut()).is_pending());
+    assert!(futures::poll!(second.as_mut()).is_pending(), "the closed flag alone does not finish a close");
+    drop(first);
+    assert!(futures::poll!(second.as_mut()).is_pending(), "the second close now waits for the writer");
+    release(blocker).await;
+    tokio::time::timeout(Duration::from_secs(10), second).await.expect("closes once the writer is free");
+    assert!(writer_taken(&store));
+    assert_eq!(idle_readers(&store), 0);
+}
+
+#[tokio::test]
+async fn a_close_cancelled_while_it_closes_a_connection_leaves_the_untouched_ones_to_a_later_close() {
+    let db = TempDb::new();
+    let store = open(&db).await;
+    {
+        let mut first = std::pin::pin!(store.close());
+        // The writer and readers close on the driver's threads: the first poll ends inside one of those closes.
+        assert!(futures::poll!(first.as_mut()).is_pending());
+    }
+    // The connection whose close was cancelled is the driver's to clean up; the writer was taken first.
+    assert!(writer_taken(&store));
+    assert!(idle_readers(&store) <= super::READERS);
+    tokio::time::timeout(Duration::from_secs(10), store.close()).await.expect("the later close finishes");
+    assert_eq!(idle_readers(&store), 0);
+}
+
+#[tokio::test]
+async fn a_close_future_that_is_never_polled_has_no_effect() {
+    let db = TempDb::new();
+    let store = open(&db).await;
+    drop(store.close());
+    let mut changes = subscribe(&*store).await;
+    create(&*store, "after").await;
+    assert_eq!(next(&mut changes).await, Some(ActorChange::changed(instance("after"))));
+    assert!(!writer_taken(&store));
+    store.close().await;
+}
+
+#[tokio::test]
+async fn a_reader_held_across_close_returns_to_no_pool() {
+    let db = TempDb::new();
+    let store = open(&db).await;
+    let read = store.read().await.unwrap();
+    assert_eq!(idle_readers(&store), super::READERS - 1);
+    tokio::time::timeout(Duration::from_secs(10), store.close()).await.expect("close does not wait for reads");
+    assert_eq!(idle_readers(&store), 0);
+    drop(read);
+    assert_eq!(idle_readers(&store), 0, "the returned connection is dropped");
+}
+
+/// A reader returns on another thread while close drains the pool: whichever takes the readers' lock first, the pool
+/// ends empty, because the return checks the closed flag under that lock.
+#[test]
+fn a_reader_returning_while_close_drains_never_refills_the_pool() {
+    let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+    for _ in 0..20 {
+        let db = TempDb::new();
+        let store = runtime.block_on(open(&db));
+        let read = runtime.block_on(store.read()).unwrap();
+        let start = std::sync::Barrier::new(2);
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                start.wait();
+                drop(read);
+            });
+            start.wait();
+            runtime.block_on(store.close());
+        });
+        assert_eq!(idle_readers(&store), 0);
+    }
+}
