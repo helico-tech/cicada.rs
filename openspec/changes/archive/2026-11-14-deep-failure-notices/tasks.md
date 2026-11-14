@@ -27,6 +27,9 @@
   refusal of an old contract; cover preflight rejection of parent/child/incoming-watch topology and incomplete data
   in the example's checks where automated. Document the manual quiescence/backup obligations explicitly. Run the
   example's tests/doctests and affected actor/runtime tests on virtual time; do not operate on a real user database.
+  > **Correction (added by `dead-letters-upgrade-wording`).** "validate converted states against the new
+  > schema/limits" was built as `check`: typed decode of the 0.17.0 state, the depth limit, NUL characters and repeated
+  > addresses. It is not JSON Schema validation. See the correction in `design.md`.
 - [x] 4. Add a batch/event boundary scenario proving an accepted failed publication is retained and redriven
   unchanged while its flow state can fail again for the original depth limit. Confine the two independent repairs
   to their proposal scope: correct JournalEntry::Sleep's shipped behavior comment and regenerate description-only

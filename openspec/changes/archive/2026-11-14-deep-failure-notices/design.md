@@ -75,6 +75,14 @@ A legacy payload deeper than 64 can be retained as text but still cannot be redr
 live repair is added: a raw legacy state deeper than 64 still cannot be written unchanged. Unreadable old exports need
 an operator-specific recovery from the backup. No promise for arbitrary historical depth or already-lost float bits.
 
+> **Correction (added by `dead-letters-upgrade-wording`).** The built example does not validate against the JSON
+> Schema, and neither does `create_actor`, which `restore` calls. Before anything is deleted, `check` (run by
+> `convert` and again by `reset`) refuses NUL in strings or keys, a state deeper than 64 levels, a state that does not
+> decode as the 0.17.0 state, and an address repeated in the export. The test
+> `the_schema_and_the_decoder_agree_on_the_payload_fields_of_a_letter` covers the payload fields of one letter only.
+> It does not prove schema/decoder agreement on the whole state. This also qualifies "schema/serde agreement" under
+> Proofs and scope. The original wording is kept as written.
+
 ## Proofs and scope
 
 Conformance tests write/claim Failed with original depth64 on every backend; local and HTTP workers decode it on

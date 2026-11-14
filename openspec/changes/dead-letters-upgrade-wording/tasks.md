@@ -1,6 +1,6 @@
 ## Implementation
 
-- [ ] 1. Add the design's marked correction notes to the archived `2026-11-14-deep-failure-notices/design.md`
+- [x] 1. Add the design's marked correction notes to the archived `2026-11-14-deep-failure-notices/design.md`
   export-conversion paragraph and `tasks.md` task 3. Preserve every existing line and checkbox; the design note also
   qualifies the Proofs section's broad schema/serde wording. Do not edit the archived spec delta or other archives.
   Verify that the two file diffs contain added lines only, the original claims remain verbatim, and no added note
