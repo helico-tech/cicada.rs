@@ -13,7 +13,7 @@
   the target error. Assert Usage/exit2, useful diagnostic prefixes, absence of secret fragments and the existing
   no-start property. Retain old regressions. Run `cargo test -p cicada-app --test app usage_error` and the related
   settings tests; no database/network should open on these paths.
-- [ ] 3. Add the scoped usage-error clause to the app guide and the changelog entry, and choose the next patch version
+- [x] 3. Add the scoped usage-error clause to the app guide and the changelog entry, and choose the next patch version
   after the preceding changes when built. Avoid claiming all error text or arbitrary malformed credentials are
   scrubbed. Run `cargo test -p cicada-examples --test docs` and examples doctests if their source changed. No command,
   flag or help change is expected; verify the generated CLI reference remains current rather than rewriting it blindly.

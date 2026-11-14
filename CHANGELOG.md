@@ -7,6 +7,19 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.17.3 — unreleased
+
+A fix of the command line's usage errors; no public API, contract, wire format or schema changes.
+
+### Fixed
+
+- A usage error of an `App` binary no longer prints the password of an address whose password holds a raw `'` (legal in
+  a URL, and the character clap quotes with): `postgres://u:S3'CRET@h/db` is printed as `postgres://u:***@h/db`, also in
+  the errors of the settings, such as `CICADA_LISTEN`. Adjacent addresses in one value are each hidden:
+  `--types 'a://h,,b://u:secret@k'` printed the second password. Hiding stays limited to
+  `scheme://user:password@host` in usage errors; a password with a raw `/`, `?`, `#`, `"`, `` ` `` or a space is not
+  covered.
+
 ## 0.17.2 — 2026-11-14
 
 A skill for coding agents in projects that use Cicada (ADR 0041); no public API, contract, wire format or schema
