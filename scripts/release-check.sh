@@ -3,8 +3,9 @@
 #
 #   scripts/release-check.sh vX.Y.Z
 #
-# Run it on the commit to release. It fails, naming the problem, when the tag is malformed, the workspace version
-# differs, the changelog has no dated section for the version, or the commit is not on origin/main.
+# Run it on the commit to release. It fails, naming the problem, when the tag is malformed, the workspace version or
+# the version of the consumer skill (skills/cicada/SKILL.md) differs, the changelog has no dated section for the
+# version, or the commit is not on origin/main.
 # CHANGELOG_FILE reads another changelog than CHANGELOG.md.
 set -euo pipefail
 
@@ -21,6 +22,9 @@ version=${tag#v}
 # Every crate of the workspace, so also one that sets its own version.
 versions=$(cargo metadata --no-deps --format-version 1 | jq -r '[.packages[].version] | unique | join(" ")')
 [ "$versions" = "$version" ] || fail "the tag is $tag, but the workspace version is $versions"
+
+skill=$(sed -n 's/^  cicada-version: *//p' skills/cicada/SKILL.md | head -n 1)
+[ "$skill" = "$version" ] || fail "the tag is $tag, but skills/cicada/SKILL.md says cicada-version ${skill:-nothing}"
 
 changelog=${CHANGELOG_FILE:-CHANGELOG.md}
 heading=$(grep -E "^## ${version//./\\.}( |$)" "$changelog" | head -n 1 || true)
