@@ -7,6 +7,42 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.18.3 — unreleased
+
+A flow can wait for several replies with one durable wait: `Step::wait_all` and `Step::wait_all_timeout` join every
+reply, `Step::wait_first` and `Step::wait_first_timeout` take the first (ADR 0044). The flow wire and every contract hash
+stay those of 0.18.0; no store schema and no guarantee changes. A node of 0.18.2 refuses for good the reply that would
+close a join of several requests or of mode first, so upgrade every host and worker of a flow type before its code
+joins. A join of one request is the single wait that 0.18.1 and 0.18.2 already run.
+
+### Added
+
+- `Step::wait_all(id, &requests)` returns `Vec<T>` and `Step::wait_all_timeout(id, &requests, timeout)` returns
+  `Vec<Waited<T>>`, one slot per request in the order of `requests`: `Received` with the reply, or `TimedOut` for a
+  request whose reply had not come when the join timed out, so a timeout keeps the replies that came.
+  `Step::wait_first(id, &requests)` returns `(usize, T)`, the winning request's position in `requests` and its reply,
+  and `Step::wait_first_timeout` returns `Waited<(usize, T)>`. Each borrows a slice (a `Vec` or an array) of 1 through
+  100 distinct earlier requests that no other wait names, typed by one reply `T`; an enum gives replies of several
+  shapes one type. One wait entry holds a join; deadlines, early replies, zero timeouts, the first latch and decode
+  failures follow the single timed wait.
+- The winner of a first join is the listed request whose reply the run accepted first, in the order its replies are
+  kept, also when they came before the join; not the first in `requests`.
+- Example 17, `flow_approval`, adds a sign-off that joins the approvals of several teams for a week, and a quote that
+  buys from the first supplier to offer.
+
+### Changed
+
+- A reply to a request of the open wait keeps its value and closes the wait only once it has enough replies (all of
+  them, or any one for a first join), cancelling the deadline's `Continue` and arming one due now with its correlation
+  id; a partial reply leaves the armed continuation and the deadline as they were. Closing a join closes all its
+  requests: late replies to losers or missing positions are ignored before their values are checked, their targets
+  keep running, and no later wait can name them.
+- `Step::wait` and `Step::wait_all` of one request save the same entry and replay each other's, as do `wait_timeout` and
+  `wait_all_timeout`. A saved wait whose list, order, mode or deadline presence differs from the call fails for good
+  with a diagnostic that names both lists; a saved join no longer names a later release.
+- A decode failure of a saved reply names its position and request.
+- The description of the wait entry in a flow's contract describes joins; the hashes are those of 0.18.0.
+
 ## 0.18.2 — 2026-11-14
 
 A flow's reply wait can give up at a deadline: `Step::wait_timeout` returns `Waited::Received(T)` or

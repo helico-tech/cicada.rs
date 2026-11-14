@@ -71,6 +71,30 @@ wire, the schema and every contract hash stay those of 0.18.0; a 0.18.1 node ref
 deadline for good, so upgrade every host and worker of the flow type before a flow waits with one. Joins and
 cancellation stay refused.
 
+In Rust (0.18.3, `flow-wait-join`): `Step::wait_all(id, &requests)` returns `Vec<T>`, `wait_all_timeout(id, &requests,
+timeout)` returns `Vec<Waited<T>>` with one slot per request, `wait_first(id, &requests)` returns `(usize, T)`, the
+winner's position in the list, and `wait_first_timeout(id, &requests, timeout)` returns `Waited<(usize, T)>`. Each
+borrows a slice of homogeneous `Request<T>` handles (`T: DeserializeOwned + Send`, no `Sync`), which it neither sorts
+nor deduplicates; results follow the order of the slice. One private engine serves these and the single helpers. A
+new wait checks, in order, its id and room, a list of 1 through 100 distinct handles, each an earlier reply-enabled
+request of this journal that no other wait names (a losing request of a closed first wait included), then its
+deadline, all before it looks at kept replies; 100 requests and their join take 101 entries. Replay compares the
+exact ordered list, the mode and deadline presence, ignoring a newly passed timeout. Matching is structural: a
+one-request all wait is the same entry whichever helper wrote it, so `wait` and `wait_all([r])` replay each other,
+as do `wait_timeout` and `wait_all_timeout([r])`; mode first never matches all, also with one request. These
+clarify the decisions above: the replies array keeps acceptance order and selection is computed from it once, all
+selecting every request in request order, first the listed request that appears earliest in that array (also when
+replies came before the wait, and as supplied progress gives it), and a timed-out all join its kept subset in request
+order. A reply turn that makes the active wait sufficient commits the selection, cancels the older armed message and
+arms now with its own correlation id; a partial reply of an all join, or a reply to a request the active wait does
+not name, keeps only its value and leaves `armed` and the deadline as they were. An executing `Continue` selects
+sufficient replies before it looks at the deadline. Only the saved selection is decoded, in request order, under the
+in-progress marker: a first wait's losers and a timed-out join's missing positions never are. Closing a join closes
+all its requests: their late replies are ignored before value checks, their targets keep running, and no later wait
+can name them, so cleanup needs new requests. The wire, the schema and every contract hash stay those of 0.18.0; a
+0.18.2 node refuses for good a reply that would close a join of several requests or of mode first, so upgrade every
+host and worker of the flow type before a flow joins. Cancellation stays refused.
+
 ### State invariants
 
 - Ids remain 1..100 ASCII characters from A-Za-z0-9._~-:, unique within each journal. Main and cleanup have separate

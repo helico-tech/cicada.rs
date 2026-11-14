@@ -28,7 +28,7 @@
   flow-wait-timeout: there must be no schema/hash diff. Use predecessor fixtures or a focused compatibility check to
   show its one-request all support and genuine join refusal; do not introduce a public feature flag or second runtime.
   Run contract tests, examples doctests and the virtual-time worked example.
-- [ ] 5. Update ADR 0044 clarifications, architecture, actors guide, operations, public docs and changelog/version
+- [x] 5. Update ADR 0044 clarifications, architecture, actors guide, operations, public docs and changelog/version
   at build. Document stable input/result positions, reply acceptance order and restore-order preservation, closed
   losers still running, new cleanup requests for closed main requests, limits, partial timeout and typed decode
   recovery. Explain upgrade of every host/worker despite equal hashes and structural one-request equivalence.
