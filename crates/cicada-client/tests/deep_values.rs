@@ -1,12 +1,16 @@
 //! Every value accepted from 0.16.0 on can be read back over HTTP (value-depth, ADR 0029): the views of a payload and a
 //! state at the depth limit, also the deepest view, a page of outcomes that holds a `Failed` about such a payload, are
-//! read by the client, whose JSON parser allows 128 levels. Against a real `actor_api()` server, in real time.
+//! read by the client, whose JSON parser allows 128 levels; a `Worker` over the client leases and decodes the `Failed` of
+//! a payload at the limit. Against a real `actor_api()` server, in real time.
 
 mod common;
 
 use cicada::api::MessageState;
+use std::time::Duration;
+
 use cicada::prelude::*;
 use cicada::runtime::limits::MAX_DEPTH;
+use cicada::runtime::{Worker, WorkerConfig};
 use cicada::store::OutcomeStatus;
 use cicada::{Failed, Stopped, WatchTarget};
 use cicada_axum::actor_api;
@@ -81,6 +85,37 @@ impl Actor for RefuserActor {
 
     async fn handle(&self, _: &mut Turn<Self>, _: RefuserMsg) -> HandlerResult {
         Err(HandlerError::msg("refused"))
+    }
+}
+
+/// `probe/_`: a typed watcher that compares the payload of each `Failed` with the one it expects and keeps only the id
+/// of the failed message and whether it matched, never the payload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Probe;
+
+impl ActorRef for Probe {
+    const TYPE: &'static str = "probe";
+    type Message = RefuserMsg;
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+struct Probed {
+    seen: Vec<(MessageId, bool)>,
+}
+
+struct ProbeActor {
+    expected: Value,
+}
+
+impl Actor for ProbeActor {
+    type Ref = Probe;
+    type State = Probed;
+
+    async fn handle(&self, turn: &mut Turn<Self>, message: RefuserMsg) -> HandlerResult {
+        if let RefuserMsg::Failed(failed) = message {
+            turn.state_mut().seen.push((failed.message_id, failed.payload == self.expected));
+        }
+        Ok(())
     }
 }
 
@@ -170,4 +205,33 @@ async fn an_actor_at_the_limit_is_read_in_a_page_of_states() {
     let page = actors.list_actors_with_state("deep/", None, None).await.unwrap();
     let states: Vec<(&str, &Value)> = page.items.iter().map(|v| (v.address.as_str(), &v.state)).collect();
     assert_eq!(states, vec![("deep/a", &json!({})), ("deep/b", &nested(MAX_DEPTH))]);
+}
+
+/// Scenario: HTTP worker watcher. The probe runs in a `Worker` over the client, not on the server: the `Failed` of a
+/// payload of 64 levels, 65 deep, is leased over HTTP and decoded, the handler sees the whole payload, and the notice
+/// turn ends `done`.
+#[tokio::test]
+async fn a_worker_over_http_leases_and_decodes_the_failed_of_a_payload_at_the_limit() {
+    let system = node_with(|b| b.host(DeepActor)).await;
+    let base = serve(actor_api(system.clone())).await;
+    let actors = ActorClient::new(&base);
+    actors.create(&deep("a"), &json!({})).await.unwrap();
+    let config = WorkerConfig { poll_interval: Duration::from_millis(20), ..WorkerConfig::default() };
+    let worker = Worker::builder(ActorClient::new(&base))
+        .host(ProbeActor { expected: payload(MAX_DEPTH) })
+        .config(config)
+        .build();
+    worker.start().await.expect("the worker starts over HTTP");
+    actors.create(&Probe, &Probed::default()).await.unwrap();
+    let probe = Probe.address().unwrap();
+    assert!(actors.watch(&WatchTarget::Actor(deep("a").address().unwrap()), &probe).await.unwrap());
+
+    let failed = actors.send(&deep("a"), DeepMsg::Fail { v: nested(MAX_DEPTH - 1) }).await.unwrap();
+    let probed = async || actors.state::<_, Probed>(&Probe).await.unwrap().unwrap_or_default().seen;
+    eventually(async || !probed().await.is_empty()).await;
+    assert_eq!(probed().await, [(failed.id.clone(), true)], "the handler saw the whole payload");
+    let page = actors.outcomes(None, "probe/", None, None, None).await.unwrap();
+    let [notice] = page.items.as_slice() else { panic!("one notice: {page:?}") };
+    assert_eq!((notice.status, notice.message.payload["payload"].clone()), (MessageState::Done, payload(MAX_DEPTH)));
+    worker.stop().await;
 }

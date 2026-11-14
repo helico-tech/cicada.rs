@@ -259,6 +259,8 @@ macro_rules! for_each_case {
             watches_a_watcher_that_does_not_exist_is_skipped_and_loses_all_its_watches,
             watches_a_delete_racing_a_send_from_a_watcher_that_sorts_first_ends_without_an_error,
             watches_a_watch_set_while_a_message_of_its_target_fails_ends_without_an_error,
+            watches_the_failed_of_a_payload_at_the_depth_limit_is_written_and_claimed_whole,
+            watches_numbers_in_a_state_a_payload_and_its_failed_are_read_back_exactly,
             // control.rs
             control_a_pause_a_resume_and_a_purge_by_a_commit_do_what_the_calls_from_outside_do_also_to_the_committing_actor,
             control_a_delete_by_a_commit_removes_the_actor_its_mailbox_and_its_descendants_and_voids_a_turn,

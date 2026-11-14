@@ -54,6 +54,12 @@ pub trait StoreFixture: Send + Sync + 'static {
         panic!("remove_row is not supported")
     }
 
+    /// True when the backend stores a negative zero as a zero (PostgreSQL JSONB keeps numbers as `numeric`, which has no
+    /// negative zero). Every other number of a state or a payload is read back as it was written.
+    fn normalizes_negative_zero(&self) -> bool {
+        false
+    }
+
     /// True when [`reopen`](Self::reopen) is supported, i.e. the backend is durable (S1).
     fn supports_reopen(&self) -> bool {
         false

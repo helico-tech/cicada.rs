@@ -1,6 +1,6 @@
 ## Implementation
 
-- [ ] 1. Enable serde_json float_roundtrip in the workspace dependency. Add conformance cases under
+- [x] 1. Enable serde_json float_roundtrip in the workspace dependency. Add conformance cases under
   crates/cicada/src/tests/conformance for numeric state/message reads and a failed depth-64 payload whose complete
   depth-65 notice is claimed. Cover the regression float and its negative, minimum subnormal, maximum finite f64,
   signed zero and i64/u64 limits; compare float bits and explicitly pin PostgreSQL JSONB normalization separately.

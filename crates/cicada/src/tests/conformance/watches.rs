@@ -6,12 +6,13 @@ use std::collections::BTreeMap;
 
 use crate::address::{ActorAddress, TypeName};
 use crate::retention::{Keep, Retention};
+use crate::runtime::limits::MAX_DEPTH;
 use crate::store::{
     ActorCreate, Backend, CommitRequest, CommitResult, DeleteResult, Message, MessageId, OutcomeStatus,
     OutgoingMessage, SetWatchResult, StateChange, StoreError, TurnOutcome,
 };
 use crate::watch::{Failed, FailureCause, StopCause, Stopped, WatchChange, WatchTarget};
-use serde_json::json;
+use serde_json::{Map, Value, json};
 use std::sync::LazyLock;
 
 use crate::tests::conformance::env::*;
@@ -734,6 +735,114 @@ pub async fn watches_a_watch_set_while_a_message_of_its_target_fails_ends_withou
                 assert_matches!(store.delete(a, &MessageId::random()).await.unwrap(), DeleteResult::Deleted { .. });
             }
         }
+    })
+    .await
+}
+
+/// A value `levels` deep: arrays and objects in turn around a number, built without recursion.
+fn nested(levels: usize) -> Value {
+    (0..levels).fold(json!(1), |inner, level| {
+        if level % 2 == 0 { Value::Array(vec![inner]) } else { Value::Object(Map::from_iter([("n".into(), inner)])) }
+    })
+}
+
+/// How deep a value of [`nested`] is, counted without recursion.
+fn depth_of(mut value: &Value) -> usize {
+    let mut levels = 0;
+    loop {
+        let inner = match value {
+            Value::Array(items) => items.first(),
+            Value::Object(fields) => fields.values().next(),
+            _ => None,
+        };
+        match inner {
+            Some(inner) => (levels, value) = (levels + 1, inner),
+            None => return levels,
+        }
+    }
+}
+
+/// watches - a message whose payload is at the depth limit fails, and its `Failed`, a level deeper, is written and
+/// claimed whole
+pub async fn watches_the_failed_of_a_payload_at_the_depth_limit_is_written_and_claimed_whole<B: FixtureFactory>(
+    backend: &B,
+) {
+    store_test(backend, async |t| {
+        let store = t.store();
+        let x = t.new_actor_named(&TYPE, "x", json!({})).await;
+        let w = watcher(t, "a").await;
+        watch(&*store, x.as_str(), &w).await;
+        let payload = nested(MAX_DEPTH);
+        assert_eq!(depth_of(&payload), MAX_DEPTH);
+        let message = OutgoingMessage::new(x.clone(), "Deep", payload.clone());
+        let failed = end_with(t, message, TurnOutcome::Failed("declined".into()), "e1").await;
+        assert_eq!(failed.payload, payload, "the message is read whole");
+
+        let c = t.claim_one_types(&[&W]).await;
+        assert_eq!((c.message.id.as_str(), c.message.to.as_str()), ("e1.0", w.as_str()));
+        assert_eq!(depth_of(&c.message.payload["payload"]), MAX_DEPTH, "the notice is a level deeper: 65");
+        let told = failed_of(&c.message);
+        assert_eq!((told.message_id, told.payload), (failed.id, payload));
+        t.commit_ok(done(&c)).await;
+    })
+    .await
+}
+
+/// The numbers of the numeric case: a float that a parser without exact rounding reads one bit off, and its negative,
+/// the smallest subnormal, the largest finite f64, a negative zero and the bounds of i64 and u64.
+fn numbers() -> Value {
+    let floats = [1.0715660391465826e-75, -1.0715660391465826e-75, f64::from_bits(1), f64::MAX, -0.0];
+    let mut all: Vec<Value> = floats.into_iter().map(Value::from).collect();
+    all.extend([Value::from(i64::MIN), Value::from(i64::MAX), Value::from(u64::MAX)]);
+    Value::Array(all)
+}
+
+/// Asserts that `got` holds [`numbers`] exactly: integers as the same integers and floats with the same bits, the
+/// negative zero as a zero where the backend normalizes it.
+fn assert_numbers(got: &Value, normalizes_negative_zero: bool, what: &str) {
+    let (got, sent) = (got.as_array().expect(what), numbers());
+    let sent = sent.as_array().unwrap();
+    assert_eq!(got.len(), sent.len(), "{what}");
+    for (got, sent) in got.iter().zip(sent) {
+        if sent.is_f64() {
+            let mut bits = sent.as_f64().unwrap().to_bits();
+            if normalizes_negative_zero && bits == (-0.0f64).to_bits() {
+                bits = 0.0f64.to_bits();
+            }
+            let read = got.as_f64().unwrap_or_else(|| panic!("{what}: {got} is not a number"));
+            assert_eq!((read.to_bits(), got.is_f64()), (bits, true), "{what}: {sent} was read as {got}");
+        } else {
+            assert_eq!((got, got.is_f64()), (sent, false), "{what}: an exact integer");
+        }
+    }
+}
+
+/// watches - numbers in a state, in a payload and in the `Failed` of that payload are read back exactly: integers as
+/// they were and floats with the same bits; PostgreSQL stores a negative zero as a zero
+pub async fn watches_numbers_in_a_state_a_payload_and_its_failed_are_read_back_exactly<B: FixtureFactory>(backend: &B) {
+    store_test(backend, async |t| {
+        let store = t.store();
+        let normalizes = t.fixture.normalizes_negative_zero();
+        let x = t.new_actor_named(&TYPE, "x", json!({"n": numbers()})).await;
+        let record = store.get(&x).await.unwrap().expect("the actor");
+        assert_numbers(&record.state["n"], normalizes, "the state");
+        let w = watcher(t, "a").await;
+        watch(&*store, x.as_str(), &w).await;
+
+        let message = OutgoingMessage::new(x.clone(), "Numbers", json!({"n": numbers()}));
+        enqueue_ok(&*store, message).await;
+        assert_numbers(&t.pending(&x).await[0].payload["n"], normalizes, "the pending payload");
+        let c = t.claim_one().await;
+        assert_numbers(&c.message.payload["n"], normalizes, "the claimed payload");
+        t.commit_ok(CommitRequest { state: StateChange::NewState(json!({"m": numbers()})), ..done(&c) }).await;
+        let record = store.get(&x).await.unwrap().expect("the actor");
+        assert_numbers(&record.state["m"], normalizes, "the state a commit wrote");
+
+        let message = OutgoingMessage::new(x.clone(), "Numbers", json!({"n": numbers()}));
+        end_with(t, message, TurnOutcome::Failed("boom".into()), "e1").await;
+        let c = t.claim_one_types(&[&W]).await;
+        assert_numbers(&failed_of(&c.message).payload["n"], normalizes, "the payload of the Failed");
+        t.commit_ok(done(&c)).await;
     })
     .await
 }

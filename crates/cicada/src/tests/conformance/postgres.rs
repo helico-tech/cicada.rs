@@ -80,6 +80,10 @@ impl StoreFixture for PostgresFixture {
         self.db.sql(&format!("DELETE FROM \"{}\".actors WHERE address = '{address}'", self.db.schema)).await;
     }
 
+    fn normalizes_negative_zero(&self) -> bool {
+        true
+    }
+
     fn supports_reopen(&self) -> bool {
         true
     }

@@ -14,6 +14,23 @@ fn parse(s: &str) -> Value {
     serde_json::from_str(s).unwrap()
 }
 
+// ---- exact numbers ----
+
+/// JSON text is parsed with exact rounding (serde_json's `float_roundtrip`, ADR 0043): a float that the default parser
+/// reads one bit off is read back with its bits. The feature is set on the shared dependency of the workspace, which
+/// every crate inherits, so a consumer of the crates gets it without a dev dependency of this workspace.
+#[test]
+fn json_text_is_parsed_with_exact_rounding_and_the_shared_dependency_sets_it() {
+    for x in [1.0715660391465826e-75, -1.0715660391465826e-75, f64::from_bits(1), f64::MAX, -0.0] {
+        let read: Value = serde_json::from_str(&serde_json::to_string(&json!(x)).unwrap()).unwrap();
+        assert_eq!(read.as_f64().map(f64::to_bits), Some(x.to_bits()), "{x:e}");
+    }
+    let manifest = include_str!("../../../Cargo.toml");
+    let line = manifest.lines().find(|l| l.starts_with("serde_json =")).expect("the shared dependency");
+    assert!(line.contains("\"float_roundtrip\""), "{line}");
+    assert!(include_str!("../Cargo.toml").contains("serde_json.workspace = true"), "cicada inherits it");
+}
+
 // ---- canonical JSON ----
 
 #[test]

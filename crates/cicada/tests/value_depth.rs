@@ -42,6 +42,8 @@ enum DeepMsg {
     /// Sends a payload and creates `deep/made` with a state, each `levels` deep, by a typed ref and as raw JSON, and
     /// keeps how each call ended as the state.
     Try { levels: usize },
+    /// Fails.
+    Fail { v: Value },
 }
 
 struct DeepActor;
@@ -67,6 +69,7 @@ impl Actor for DeepActor {
                 let create_raw = ended(turn.create_raw(&made_at, nested(levels)).await);
                 turn.set_state(json!({"send": send, "send_raw": send_raw, "create": create, "create_raw": create_raw}));
             }
+            DeepMsg::Fail { .. } => return Err(HandlerError::msg("declined")),
         }
         Ok(())
     }
@@ -112,6 +115,37 @@ impl Actor for WitnessActor {
     async fn handle(&self, turn: &mut Turn<Self>, message: WitnessMsg) -> HandlerResult {
         if let WitnessMsg::Failed(failed) = message {
             turn.state_mut().failed.push(failed);
+        }
+        Ok(())
+    }
+}
+
+/// `probe/_`: a typed watcher that compares the payload of each `Failed` with the one it expects and keeps only the id
+/// of the failed message and whether it matched, never the payload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Probe;
+
+impl ActorRef for Probe {
+    const TYPE: &'static str = "probe";
+    type Message = WitnessMsg;
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+struct Probed {
+    seen: Vec<(MessageId, bool)>,
+}
+
+struct ProbeActor {
+    expected: Value,
+}
+
+impl Actor for ProbeActor {
+    type Ref = Probe;
+    type State = Probed;
+
+    async fn handle(&self, turn: &mut Turn<Self>, message: WitnessMsg) -> HandlerResult {
+        if let WitnessMsg::Failed(failed) = message {
+            turn.state_mut().seen.push((failed.message_id, failed.payload == self.expected));
         }
         Ok(())
     }
@@ -252,4 +286,47 @@ async fn a_value_1000_levels_deep_sent_from_code_is_refused_and_the_node_goes_on
     test.send(&deep("a"), DeepMsg::Keep { v: json!("still here") }).await;
     test.run_until_idle().await;
     assert_eq!(test.state_json(&deep("a")).await, Some(json!("still here")));
+}
+
+/// Scenarios: Store and local typed watcher; Retaining the notice in an ordinary state. A message whose payload is 64
+/// levels deep fails: the probe decodes its `Failed`, 65 deep, compares the payload and ends `done`; the witness, which
+/// copies the notice into its state, fails at the state check, not at decoding the message.
+#[tokio::test(start_paused = true)]
+async fn a_typed_watcher_reads_the_failed_of_a_payload_at_the_limit_and_keeping_it_fails_at_the_state_check() {
+    let payload = keep(nested(MAX_DEPTH - 1));
+    let expected = payload.clone();
+    let test = TestActors::builder()
+        .with(move |node| node.host(DeepActor).host(WitnessActor).host(ProbeActor { expected: expected.clone() }))
+        .build()
+        .await
+        .unwrap();
+    test.create(&Witness, &Told::default()).await;
+    test.system().watch(&WatchTarget::Every, &Witness.address().unwrap()).await.unwrap();
+    test.create(&Probe, &Probed::default()).await;
+    test.system().watch(&WatchTarget::Actor(deep("a").address().unwrap()), &Probe.address().unwrap()).await.unwrap();
+    test.create(&deep("a"), &json!({})).await;
+
+    let m = test.send(&deep("a"), DeepMsg::Fail { v: nested(MAX_DEPTH - 1) }).await;
+    assert_eq!(m.payload, payload, "the payload is 64 levels deep");
+    test.run_until_idle().await;
+    assert_eq!(test.outcome(&m).await.unwrap().status, OutcomeStatus::Failed);
+    let probed = test.state::<_, Probed>(&Probe).await;
+    assert_eq!(probed.seen, [(m.id.clone(), true)], "the probe read the whole payload");
+
+    let notices: Vec<_> = test
+        .system()
+        .outcomes(None, "", None, None, 100)
+        .await
+        .unwrap()
+        .items
+        .into_iter()
+        .filter(|o| o.envelope.message_type == "Failed" && o.envelope.payload["messageId"] == json!(m.id))
+        .map(|o| (o.envelope.to.to_string(), o.status, o.error))
+        .collect();
+    let error = format!("State cannot be stored: {TOO_DEEP_STATE}");
+    let expected = [
+        ("probe/_".to_owned(), OutcomeStatus::Done, None),
+        ("witness/_".to_owned(), OutcomeStatus::Failed, Some(error)),
+    ];
+    assert_eq!(notices, expected, "each notice was decoded; keeping it is what fails");
 }
