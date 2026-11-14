@@ -8,7 +8,7 @@
   the full status/message matrix, default two-turn transition, done and old-cancelled no-hook cases, current-id guard,
   stale/public/redriven Continue, repeated Cancel not starving cleanup, same ids/distinct keys, self-target/ReplyTo
   addresses, early return/mismatch and entry 1001. Run targeted flow tests with start_paused/TestActors.
-- [ ] 2. Implement main_key/result/request/reply/journal and MainReply with stable main-state semantics. Fallible
+- [x] 2. Implement main_key/result/request/reply/journal and MainReply with stable main-state semantics. Fallible
   lookups must check the shared latch, validate ids/kinds/handle ownership, distinguish None from wrong kind, and
   protect custom decoding with InProgress/Permanent. They consume no ids/cursor. Keep raw journal reads documented
   as ordinary host code. Test absent/present/wrong-kind/invalid input, cleanup handles refused by main_reply, repeated

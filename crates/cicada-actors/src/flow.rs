@@ -4913,3 +4913,397 @@ mod join_tests {
         send(Joins.run(&mut step, "j1".into()));
     }
 }
+
+#[cfg(test)]
+mod cleanup_tests {
+    //! Cleanup without a runner: the lookups of the main journal, their latch and decoding, the main requests a cleanup
+    //! wait may name, the keys of its steps, and what compiles.
+
+    use std::cell::Cell;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    use super::*;
+    use futures::executor::block_on;
+    use serde::Deserializer;
+    use serde_json::json;
+
+    fn id(text: &str) -> MessageId {
+        MessageId::new(text).unwrap()
+    }
+
+    fn step(name: &str, result: Value) -> JournalEntry {
+        JournalEntry::Step { id: name.into(), result }
+    }
+
+    fn send(name: &str, message: &str, reply: bool) -> JournalEntry {
+        let to = ActorAddress::parse("jobs/j1").unwrap();
+        JournalEntry::Send { id: name.into(), to, message: id(message), create: None, reply }
+    }
+
+    fn wait(
+        name: &str,
+        requests: &[&str],
+        mode: WaitMode,
+        outcome: Option<WaitOutcome>,
+        received: &[&str],
+    ) -> JournalEntry {
+        JournalEntry::Wait {
+            id: name.into(),
+            requests: requests.iter().map(|r| id(r)).collect(),
+            mode,
+            until: None,
+            outcome,
+            received: received.iter().map(|r| id(r)).collect(),
+        }
+    }
+
+    /// The main journal of the tests: a step `a`, a sleep, requests `ask`, `lost`, `late`, `open` and `never`, a plain
+    /// send `note`, a first wait `w` that `ask` (m1) won over `lost` (m2), a wait `t` that timed out on `late` (m3), and
+    /// an interrupted open wait `i` on `open` (m4).
+    fn main() -> Vec<JournalEntry> {
+        vec![
+            step("a", json!("r-a")),
+            JournalEntry::Sleep { id: "nap".into(), until: time::parse_instant("2026-11-14T01:00:00Z").unwrap() },
+            send("ask", "m1", true),
+            send("lost", "m2", true),
+            send("note", "m9", false),
+            wait("w", &["m1", "m2"], WaitMode::First, Some(WaitOutcome::Received), &["m1"]),
+            send("late", "m3", true),
+            JournalEntry::Wait {
+                id: "t".into(),
+                requests: vec![id("m3")],
+                mode: WaitMode::All,
+                until: Some(time::parse_instant("2026-11-14T00:00:00Z").unwrap()),
+                outcome: Some(WaitOutcome::TimedOut),
+                received: vec![],
+            },
+            send("never", "m5", true),
+            send("open", "m4", true),
+            wait("i", &["m4"], WaitMode::All, None, &[]),
+        ]
+    }
+
+    /// A cleanup over `cleanup` and the tests' main journal, which keeps the replies to `ask`, to the loser `lost`
+    /// (kept before `w` closed) and to `open` (kept while cancelling).
+    fn execution(cleanup: Vec<JournalEntry>) -> Cleanup {
+        let now = time::parse_instant("2026-11-14T00:00:00Z").unwrap();
+        let address = ActorAddress::parse("test.flow/k").unwrap();
+        let mut step = Step::cleanup(cleanup, main(), &address, now);
+        step.replies = vec![(id("m2"), json!("early loser")), (id("m1"), json!("one")), (id("m4"), json!("four"))];
+        Cleanup { step }
+    }
+
+    fn latched(cleanup: &Cleanup) -> String {
+        match &cleanup.latch {
+            None => "none".to_owned(),
+            Some(Latch::InProgress(kind, id)) => format!("in progress {kind} {id}"),
+            Some(Latch::New(entry, _)) => format!("new {}", entry.id()),
+            Some(Latch::Permanent(reason)) => format!("permanent {reason}"),
+            Some(Latch::Close(index, outcome, _)) => format!("close {index} {outcome:?}"),
+            Some(Latch::Parked) => "parked".to_owned(),
+            Some(Latch::Waiting(_)) => "waiting".to_owned(),
+            Some(Latch::Failed(e)) => format!("failed {e}"),
+        }
+    }
+
+    fn handle<T>(message: &str) -> Request<T> {
+        Request::new(id(message))
+    }
+
+    /// A reply whose decoder panics.
+    struct Boom;
+
+    impl<'de> Deserialize<'de> for Boom {
+        fn deserialize<D: Deserializer<'de>>(_: D) -> Result<Self, D::Error> {
+            panic!("the decoder panicked")
+        }
+    }
+
+    impl fmt::Debug for Boom {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("Boom")
+        }
+    }
+
+    /// Scenario: Missing and wrong kind. A valid id gives the main key whether saved or not; a saved step or request is
+    /// found, an absent one is `None`; an entry of another kind and an invalid id fail for good, not as absence.
+    #[test]
+    fn lookups_find_saved_main_entries_and_tell_absence_from_another_kind() {
+        let mut cleanup = execution(Vec::new());
+        assert_eq!(cleanup.main_key("a").unwrap(), "test.flow/k/a");
+        assert_eq!(cleanup.main_key("unsaved").unwrap(), "test.flow/k/unsaved", "a valid unsaved id");
+        assert_eq!(cleanup.main_result::<String>("a").unwrap(), Some("r-a".to_owned()));
+        assert_eq!(cleanup.main_result::<String>("missing").unwrap(), None);
+        assert_eq!(cleanup.main_request::<Value>("ask").unwrap().map(|r| r.id().clone()), Some(id("m1")));
+        assert!(cleanup.main_request::<Value>("missing").unwrap().is_none());
+        assert_eq!(latched(&cleanup), "none");
+
+        type Lookup = fn(&mut Cleanup) -> Result<(), HandlerError>;
+        let wrong: [(Lookup, &str); 7] = [
+            (
+                |c| c.main_result::<Value>("nap").map(drop),
+                "main_result asks for the step `nap`, but the main journal holds sleep `nap`",
+            ),
+            (|c| c.main_result::<Value>("ask").map(drop), "holds request `ask`"),
+            (|c| c.main_result::<Value>("w").map(drop), "holds wait `w`"),
+            (
+                |c| c.main_request::<Value>("note").map(drop),
+                "main_request asks for the request `note`, but the main journal holds send `note`",
+            ),
+            (|c| c.main_request::<Value>("a").map(drop), "holds step `a`"),
+            (|c| c.main_key("a/b").map(drop), "main_key: a step id is"),
+            (|c| c.main_result::<Value>("").map(drop), "main_result: a step id is"),
+        ];
+        for (lookup, why) in wrong {
+            let mut cleanup = execution(Vec::new());
+            assert!(lookup(&mut cleanup).is_err(), "{why}");
+            assert!(
+                latched(&cleanup).starts_with("permanent ") && latched(&cleanup).contains(why),
+                "{}",
+                latched(&cleanup)
+            );
+        }
+        let mut cleanup = execution(Vec::new());
+        assert!(cleanup.main_request::<Value>("é").is_err());
+        assert!(latched(&cleanup).contains("main_request: a step id is"));
+    }
+
+    /// Scenarios: Closed main winner or loser; and Reply arrives during cleanup. Only a closed main wait decides: its
+    /// winner and its early loser are replied, a timed-out request is closed, and a request of an open main wait or of
+    /// no wait is open, also with a kept reply. A cleanup request, or one the run never made, fails for good.
+    #[test]
+    fn main_reply_answers_from_closed_main_waits_alone() {
+        let mut cleanup = execution(vec![send("stop", "c1", true)]);
+        assert_eq!(cleanup.main_reply(&handle::<String>("m1")).unwrap(), MainReply::Replied("one".to_owned()));
+        assert_eq!(cleanup.main_reply(&handle::<String>("m2")).unwrap(), MainReply::Replied("early loser".to_owned()));
+        assert_eq!(cleanup.main_reply(&handle::<String>("m3")).unwrap(), MainReply::Closed, "timed out");
+        assert_eq!(cleanup.main_reply(&handle::<String>("m4")).unwrap(), MainReply::Open, "a kept reply, no decision");
+        assert_eq!(cleanup.main_reply(&handle::<String>("m5")).unwrap(), MainReply::Open, "never awaited");
+        assert_eq!(latched(&cleanup), "none");
+        for (message, why) in [("c1", "a cleanup request"), ("m9", "a plain send"), ("zz", "unknown")] {
+            let mut cleanup = execution(vec![send("stop", "c1", true)]);
+            assert!(cleanup.main_reply(&handle::<Value>(message)).is_err(), "{why}");
+            let expected = format!("main_reply was given {message}, which is no request of the main journal");
+            assert!(latched(&cleanup).contains(&expected), "{why}: {}", latched(&cleanup));
+        }
+    }
+
+    /// Scenario: Pure repeated lookup. Lookups repeat with the same answers and leave both journals, the used ids and
+    /// the replay cursor as they were; a cleanup step may then use a main id, which it does not share.
+    #[test]
+    fn lookups_consume_no_id_and_leave_the_replay_where_it_was() {
+        let mut cleanup = execution(vec![step("a", json!("c-a"))]);
+        block_on(cleanup.run("a", |_key| async { Ok::<_, HandlerError>("never".to_owned()) })).unwrap();
+        let before = (cleanup.journal.clone(), cleanup.seen.clone(), cleanup.cursor, cleanup.main.clone());
+        for _ in 0..2 {
+            assert_eq!(cleanup.main_key("b").unwrap(), "test.flow/k/b");
+            assert_eq!(cleanup.main_result::<String>("a").unwrap().as_deref(), Some("r-a"));
+            assert!(cleanup.main_request::<Value>("never").unwrap().is_some());
+            assert_eq!(cleanup.main_reply(&handle::<String>("m4")).unwrap(), MainReply::Open);
+            assert_eq!(cleanup.main_journal(), main().as_slice());
+        }
+        let after = (cleanup.journal.clone(), cleanup.seen.clone(), cleanup.cursor, cleanup.main.clone());
+        assert_eq!(after, before);
+        assert_eq!(latched(&cleanup), "none");
+        let next = block_on(cleanup.run("nap", |key| async move { Ok::<_, HandlerError>(key) }));
+        assert!(next.is_err(), "suspends");
+        assert_eq!(latched(&cleanup), "new nap", "a main id is free in the cleanup");
+    }
+
+    /// Scenario: Pure repeated lookup, after a latch. Every lookup then suspends without decoding (a decoder that would
+    /// panic is not called) and keeps the first latch, a permanent one or a new entry.
+    #[test]
+    fn after_a_latch_lookups_suspend_without_decoding_or_replacing_it() {
+        let mut refused = execution(Vec::new());
+        assert!(refused.main_result::<Value>("nap").is_err());
+        let mut fresh = execution(Vec::new());
+        assert!(block_on(fresh.run("x", |_key| async { Ok::<_, HandlerError>(1) })).is_err());
+        for mut cleanup in [refused, fresh] {
+            let first = latched(&cleanup);
+            assert!(cleanup.main_key("a").is_err_and(|e| e.error().is::<Suspend>()));
+            assert!(cleanup.main_key("a/b").is_err_and(|e| e.error().is::<Suspend>()), "not even the id is checked");
+            assert!(cleanup.main_result::<Boom>("a").is_err_and(|e| e.error().is::<Suspend>()), "never decoded");
+            assert!(cleanup.main_request::<Value>("a").is_err_and(|e| e.error().is::<Suspend>()));
+            assert!(
+                cleanup.main_reply(&handle::<Boom>("m1")).is_err_and(|e| e.error().is::<Suspend>()),
+                "never decoded"
+            );
+            assert_eq!(latched(&cleanup), first);
+        }
+    }
+
+    /// Scenario: Lookup decoding cannot be swallowed. A typed lookup that does not decode latches a permanent failure,
+    /// and a decoder's caught panic leaves the in-progress marker; a decode that succeeds clears its marker.
+    #[test]
+    fn a_decoding_failure_latches_for_good_and_a_caught_decoder_panic_leaves_the_marker() {
+        let mut cleanup = execution(Vec::new());
+        assert!(cleanup.main_result::<u32>("a").is_err());
+        assert!(latched(&cleanup).contains("the saved result of main step `a` does not decode as the type asked for"));
+        let mut cleanup = execution(Vec::new());
+        assert!(cleanup.main_reply(&handle::<u32>("m1")).is_err());
+        assert!(latched(&cleanup).contains("the kept reply to main request `ask` does not decode"));
+
+        let mut cleanup = execution(Vec::new());
+        assert!(catch_unwind(AssertUnwindSafe(|| cleanup.main_result::<Boom>("a"))).is_err());
+        assert_eq!(latched(&cleanup), "in progress lookup a");
+        let mut cleanup = execution(Vec::new());
+        assert!(catch_unwind(AssertUnwindSafe(|| cleanup.main_reply(&handle::<Boom>("m2")))).is_err());
+        assert_eq!(latched(&cleanup), "in progress lookup lost");
+        let mut cleanup = execution(Vec::new());
+        assert!(catch_unwind(AssertUnwindSafe(|| cleanup.main_reply(&handle::<Boom>("m3")))).is_ok(), "no value");
+        assert_eq!(latched(&cleanup), "none");
+    }
+
+    /// Scenario: Raw journal view. The raw journal is the fixed main journal, as saved.
+    #[test]
+    fn the_raw_view_is_the_saved_main_journal() {
+        let cleanup = execution(Vec::new());
+        assert_eq!(cleanup.main_journal(), main().as_slice());
+        assert!(
+            matches!(&cleanup.main_journal()[4], JournalEntry::Send { to, reply: false, .. } if to.as_str() == "jobs/j1")
+        );
+    }
+
+    /// Scenarios: Mixed join and early reply; and Closed or reused request. A new cleanup wait may name its own earlier
+    /// request with main requests no closed main wait names, an interrupted open one's and a never-awaited one's; a
+    /// request a closed main wait names (its winner, its loser or a timed-out one) or one another cleanup wait names is
+    /// refused for good. The main code's waits name only main requests.
+    #[test]
+    fn a_cleanup_wait_names_cleanup_requests_and_main_requests_no_closed_main_wait_names() {
+        let ours = vec![send("stop", "c1", true)];
+        let mut cleanup = execution(ours.clone());
+        block_on(cleanup.request("stop", &Job, |_: ReplyTo<Value>| Never::Go)).unwrap();
+        let asked = [handle::<Value>("m4"), handle("c1"), handle("m5")];
+        let _ = block_on(cleanup.wait_all("both", &asked));
+        assert_eq!(latched(&cleanup), "new both");
+        let JournalEntry::Wait { outcome, received, .. } = (match &cleanup.latch {
+            Some(Latch::New(entry, _)) => entry.clone(),
+            _ => unreachable!(),
+        }) else {
+            unreachable!()
+        };
+        assert_eq!((outcome, received), (None, vec![]), "only m4 has a kept reply: open");
+
+        for (message, why) in [
+            ("m1", "the closed main wait `w` names"),
+            ("m2", "the closed main wait `w` names"),
+            ("m3", "the closed main wait `t` names"),
+            ("m9", "no earlier request of the cleanup or main journal"),
+        ] {
+            let mut cleanup = execution(ours.clone());
+            block_on(cleanup.request("stop", &Job, |_: ReplyTo<Value>| Never::Go)).unwrap();
+            let _ = block_on(cleanup.wait("w2", &handle::<Value>(message)));
+            assert!(latched(&cleanup).contains(why), "{message}: {}", latched(&cleanup));
+        }
+        let reused = vec![send("stop", "c1", true), wait("first", &["m4"], WaitMode::All, None, &[])];
+        let mut cleanup = execution(reused);
+        block_on(cleanup.request("stop", &Job, |_: ReplyTo<Value>| Never::Go)).unwrap();
+        let _ = block_on(cleanup.wait("first", &handle::<Value>("m4")));
+        assert_eq!(latched(&cleanup), "close 1 Received", "the open cleanup wait closes on the kept reply");
+        let mut cleanup = execution(vec![
+            send("stop", "c1", true),
+            wait("first", &["m4"], WaitMode::All, Some(WaitOutcome::Received), &["m4"]),
+        ]);
+        block_on(cleanup.request("stop", &Job, |_: ReplyTo<Value>| Never::Go)).unwrap();
+        assert_eq!(block_on(cleanup.wait("first", &handle::<Value>("m4"))).unwrap(), json!("four"));
+        let _ = block_on(cleanup.wait("again", &handle::<Value>("m4")));
+        assert!(latched(&cleanup).contains("names the request m4 of the wait `first`"), "{}", latched(&cleanup));
+
+        let now = time::parse_instant("2026-11-14T00:00:00Z").unwrap();
+        let address = ActorAddress::parse("test.flow/k").unwrap();
+        let mut main_code = Step::new(vec![send("stop", "c1", true)], &address, now);
+        block_on(main_code.request("stop", &Job, |_: ReplyTo<Value>| Never::Go)).unwrap();
+        let _ = block_on(main_code.wait("w", &handle::<Value>("m4")));
+        assert!(latched_step(&main_code).contains("no earlier request of the journal"));
+    }
+
+    fn latched_step(step: &Step) -> String {
+        match &step.latch {
+            Some(Latch::Permanent(reason)) => reason.clone(),
+            _ => "other".to_owned(),
+        }
+    }
+
+    /// Scenario: Separate namespaces. A cleanup step's key is `<run>/cancel/<id>`, a main step's `<run>/<id>`.
+    #[test]
+    fn cleanup_step_keys_have_their_own_prefix() {
+        let mut cleanup = execution(Vec::new());
+        let key = std::sync::Mutex::new(String::new());
+        let _ = block_on(cleanup.run("a", |k| {
+            *key.lock().unwrap() = k;
+            async { Ok::<_, HandlerError>(()) }
+        }));
+        assert_eq!(*key.lock().unwrap(), "test.flow/k/cancel/a");
+        assert_eq!(format!("{cleanup:?}"), r#"Cleanup { run: "test.flow/k", cursor: 0, .. }"#);
+    }
+
+    /// `jobs/j1`.
+    #[derive(Clone, Serialize, Deserialize)]
+    struct Job;
+
+    impl ActorRef for Job {
+        const TYPE: &'static str = "jobs";
+        type Message = Never;
+    }
+
+    /// A message that replay never builds.
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    enum Never {
+        Go,
+    }
+
+    /// A flow that keeps the default cleanup.
+    struct Plain;
+
+    impl Flow for Plain {
+        const TYPE: &'static str = "test.plain";
+        type Input = ();
+
+        async fn run(&self, _step: &mut Step, _input: ()) -> HandlerResult {
+            Ok(())
+        }
+    }
+
+    /// A cleanup that holds a reply type that is `Send` but not `Sync` across its awaits, and borrows the cleanup in
+    /// turn for lookups, a helper through `DerefMut` and a wait.
+    struct Custom;
+
+    impl Flow for Custom {
+        const TYPE: &'static str = "test.custom";
+        type Input = String;
+
+        async fn run(&self, _step: &mut Step, _input: String) -> HandlerResult {
+            Ok(())
+        }
+
+        async fn on_cancel(&self, cleanup: &mut Cleanup, input: String) -> HandlerResult {
+            let started: Option<Request<Cell<u32>>> = cleanup.main_request("start")?;
+            let Some(started) = started else {
+                return Ok(());
+            };
+            let answer: MainReply<Cell<u32>> = cleanup.main_reply(&started)?;
+            let key = cleanup.main_key("start")?;
+            cleanup.run("note", |_key| async move { Ok(format!("{input} {key}")) }).await?;
+            if let MainReply::Replied(size) = answer {
+                cleanup.run("size", |_key| async move { Ok(size.get()) }).await?;
+            } else {
+                let size: Cell<u32> = cleanup.wait("started", &started).await?;
+                cleanup.run("late-size", |_key| async move { Ok(size.get()) }).await?;
+            }
+            Ok(())
+        }
+    }
+
+    fn require_send<T: Send>(_: T) {}
+
+    /// The default and a custom cleanup compile, and both cleanup futures are `Send`.
+    #[test]
+    fn default_and_custom_cleanups_are_send() {
+        let mut cleanup = execution(Vec::new());
+        require_send(Plain.on_cancel(&mut cleanup, ()));
+        require_send(Custom.on_cancel(&mut cleanup, "in".to_owned()));
+        assert!(block_on(Plain.on_cancel(&mut cleanup, ())).is_ok());
+        assert_eq!(latched(&cleanup), "none", "the default does nothing");
+        assert!(block_on(Custom.on_cancel(&mut cleanup, "in".to_owned())).is_ok(), "no request `start`: done");
+    }
+}

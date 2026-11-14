@@ -256,7 +256,7 @@ enum Op {
     /// Cleanup only: notes `main_key:<id>` and the main key of `id`.
     MainKey { id: String },
     /// Cleanup only: notes `main_result:<id>` and the saved main result of `id` as any JSON, or null when absent;
-    /// as a `u32` when `number`; an error is passed on, or ignored when `catch`.
+    /// as a `u32` when `number`, until the probe's code is fixed; an error is passed on, or ignored when `catch`.
     MainResult {
         id: String,
         #[serde(default)]
@@ -635,7 +635,7 @@ impl ScriptFlow {
                 p.note(&format!("main_key:{id}"), json!(key));
             }
             Op::MainResult { id, number, catch } => {
-                let found = if number {
+                let found = if number && !p.fixed.load(Ordering::SeqCst) {
                     cleanup.main_result::<u32>(&id).map(|n| json!(n))
                 } else {
                     cleanup.main_result::<Value>(&id).map(|v| json!(v))
@@ -5094,4 +5094,40 @@ async fn an_early_return_a_mismatch_or_entry_1001_of_the_cleanup_fails_for_good_
         assert_eq!(main_json(&test, key).await, before, "{key}: the main journal stays");
     }
     assert!(probe.ids().is_empty(), "no closure ran");
+}
+
+/// Scenario: Lookup decoding cannot be swallowed, through the runner. A cleanup that catches a typed lookup's decoding
+/// failure, or a lookup decoder's panic, and returns `Ok` fails for good and stays cancelling, its later helpers doing
+/// nothing; the saved data stays, and once the code is fixed a public `Continue` runs the cleanup on to cancelled. The
+/// raw view of the main journal is read as saved.
+#[tokio::test(start_paused = true)]
+async fn a_swallowed_lookup_failure_keeps_the_run_cancelling_until_fixed_code_is_poked() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    let main = steps(&["a"]);
+    let lookups = [
+        ("caught", Op::MainResult { id: "a".into(), number: true, catch: true }, "main step `a` does not decode"),
+        ("panicked", Op::MainBoom { id: "a".into() }, "the lookup of main entry `a` panicked"),
+    ];
+    for (key, lookup, why) in lookups {
+        let cleanup = vec![Op::MainJournal, lookup, Op::Swallow { id: "after".into() }];
+        let held = cancelling(finalized(main.clone(), cleanup), vec![saved("a", json!("r-a"))], vec![]);
+        start_with(&test, key, held).await;
+        let before = progress(&test, key).await;
+        test.run_until_idle().await;
+        refused(&test, key, why).await;
+        assert_eq!(state(&test, key).await.status, FlowStatus::Cancelling, "{key}: not cancelled");
+        assert_eq!(progress(&test, key).await, before, "{key}: the saved data stays");
+    }
+    assert!(probe.ids().is_empty(), "the later step did nothing");
+    assert_eq!(probe.got(), [("main_journal".to_owned(), json!(["a"]))]);
+
+    probe.fixed.store(true, Ordering::SeqCst);
+    let before = progress(&test, "caught").await;
+    test.send(&run("caught"), FlowMsg::Continue).await;
+    assert_eq!(test.run_until_idle().await, 3, "the poke, the cleanup's step, its completion");
+    assert_eq!(state(&test, "caught").await.status, FlowStatus::Cancelled);
+    assert_eq!(probe.ids(), ["after"]);
+    assert!(probe.got().contains(&("main_result:a".to_owned(), json!("r-a"))));
+    assert_eq!(progress(&test, "caught").await["journal"], before["journal"]);
 }
