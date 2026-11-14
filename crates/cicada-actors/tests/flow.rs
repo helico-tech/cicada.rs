@@ -6,7 +6,8 @@
 //! a sleep and the limits of a new sleep; and sends (ADR 0044): the create, message, entry and continuation of one
 //! commit, replay without another message, core create rules, rejected commits and their recovery, refusals, observer
 //! headers, and the messages and phases this release refuses; and requests, replies and waits: parked and closed waits,
-//! early, late, ignored, duplicate and invalid replies, the sender check, correlations, pokes, pauses, lost
+//! early, late, ignored, duplicate and invalid replies, replies refused at a reserved wait, the sender check (a remote
+//! worker's leased target passes it, a dead-letter redrive does not), correlations, pokes, pauses, lost
 //! continuations, typed decoding and its recovery, rejected request commits and replies to a deleted run. A probe
 //! counts every closure invocation and notes what each wait returned.
 
@@ -27,8 +28,8 @@ use cicada::store::{DeliverNowResult, Message, OutcomeStatus};
 use cicada::time::{self, MAX_DELAY, Timestamp};
 use cicada::turn::TurnError;
 use cicada_actors::{
-    CreateKind, Flow, FlowActor, FlowMsg, FlowReply, FlowRun, FlowState, FlowStatus, JournalEntry, ReplyTo, Request,
-    Step, Target, WaitMode, WaitOutcome,
+    CreateKind, DeadLetters, DeadLettersActor, DeadLettersMsg, DeadLettersState, Flow, FlowActor, FlowMsg, FlowReply,
+    FlowRun, FlowState, FlowStatus, JournalEntry, ReplyTo, Request, Step, Target, WaitMode, WaitOutcome,
 };
 use cicada_test::TestActors;
 use common::*;
@@ -2281,4 +2282,114 @@ async fn progress_saved_by_an_earlier_release_replays_and_goes_on() {
     assert_eq!(worker_state(&test, "w1").await.n, 1);
     let written = test.state_json(&run("k")).await.unwrap();
     assert_eq!((written["replies"].clone(), written["cleanup"].clone()), (json!([]), json!([])));
+}
+
+/// Scenario: Reserved active wait. An eligible reply from the saved target that would close a saved open join, first
+/// or deadline wait fails for good with a later-feature diagnostic, and saves no reply, no outcome and no continuation.
+#[tokio::test(start_paused = true)]
+async fn a_reply_that_would_close_a_reserved_wait_is_refused_for_good_and_saves_nothing() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    test.create(&responder("r1"), &ResponderState::default()).await;
+    let ops = vec![ask("go", "r1", Answer::Later), ask("q", "r1", Answer::Later), wait_op("x", "go")];
+    let join = open_wait("x", &["m1", "m2"], WaitMode::All, None);
+    let first = open_wait("x", &["m1", "m2"], WaitMode::First, None);
+    let deadline = open_wait("x", &["m1"], WaitMode::All, Some("2026-01-02T00:00:00Z"));
+    for (key, wait) in [("join", join), ("first", first), ("deadline", deadline)] {
+        let saved = vec![saved_request("go", "r1", "m1"), saved_request("q", "r1", "m2"), wait];
+        let progress = restored(script(ops.clone()), saved);
+        test.create(&run(key), &progress).await;
+        let before = unchanged(&test, key).await;
+        let reply = ResponderMsg::Raw { run: addr(&run(key)), request: MessageId::new("m1").unwrap(), depth: 1 };
+        test.send(&responder("r1"), reply).await;
+        test.run_until_idle().await;
+        let failed: Vec<_> = test.failures().await.into_iter().filter(|r| r.envelope.to == addr(&run(key))).collect();
+        assert_eq!(failed.len(), 1, "{key}");
+        let record = &failed[0];
+        assert_eq!((record.envelope.message_type.as_str(), record.envelope.failures), ("Reply", 0), "{key}: for good");
+        assert_eq!(record.envelope.from, Some(addr(&responder("r1"))), "{key}: from the saved target");
+        let error = record.error.as_deref().unwrap();
+        assert!(error.contains("the reply to request m1 would close wait `x`"), "{key}: {error}");
+        assert!(error.contains("a join or a wait with a deadline") && error.contains("a later release"), "{key}");
+        let told = told(&test).await;
+        assert!(told.iter().any(|f| f.message_id == record.message_id && f.cause == FailureCause::Refused), "{key}");
+        assert_eq!(unchanged(&test, key).await, before, "{key}: state and version unchanged");
+        let held = state(&test, key).await;
+        assert!(held.replies.is_empty() && held.armed.is_none(), "{key}: no reply, no armed continuation");
+        assert_eq!(wait_entry(&test, key, "x").await, (None, vec![]), "{key}: no outcome");
+        assert!(test.pending(&run(key)).await.is_empty(), "{key}: no continuation");
+    }
+    assert!(probe.keys().is_empty() && probe.got().is_empty(), "no flow code ran");
+}
+
+/// Scenario: Sender boundary, of a trusted remote worker. The target runs in a worker that leases its turns through the
+/// core `TurnSource`; the completion of its leased turn sends the reply as the target, which passes the run's sender
+/// check: the value is kept, the wait closed and the flow goes on.
+#[tokio::test(start_paused = true)]
+async fn a_reply_from_a_target_leased_by_a_remote_worker_passes_the_sender_check() {
+    let probe = Probe::default();
+    let flow = ScriptFlow { probe: probe.clone() };
+    let test = TestActors::builder().with(move |node| node.host(FlowActor::new(flow))).build().await.unwrap();
+    let worker = cicada::runtime::Worker::builder(test.system().clone()).host(ResponderActor).build();
+    worker.initialize().await.unwrap();
+    test.create(&responder("r1"), &ResponderState::default()).await;
+    let ops = vec![ask("ask", "r1", Answer::Later), wait_op("done", "ask"), op(|id| Op::Step { id }, "after")];
+    start(&test, "k", script(ops)).await;
+    test.run_until_idle().await;
+    assert_eq!(worker.run_due_turns(10).await.unwrap(), 1, "the worker leases and runs the request");
+    assert_parked(&test, "k", "done").await;
+    let asked = request_id(&test, "k", "ask").await;
+
+    test.send(&responder("r1"), ResponderMsg::Answer { value: json!({"from": "worker"}) }).await;
+    assert_eq!(worker.run_due_turns(10).await.unwrap(), 1, "the answer, completed through the source");
+    let reply = test.pending(&run("k")).await;
+    assert_eq!(reply.len(), 1);
+    assert_eq!(reply[0].from, Some(addr(&responder("r1"))), "the leased actor is the sender");
+    test.run_until_idle().await;
+    let held = state(&test, "k").await;
+    assert_eq!(held.replies, [kept(asked.as_str(), json!({"from": "worker"}))], "accepted");
+    assert_eq!(wait_entry(&test, "k", "done").await, (Some(WaitOutcome::Received), vec![asked]), "closed");
+    assert_eq!(held.status, FlowStatus::Done);
+    assert_eq!(probe.got(), [("done".to_owned(), json!({"from": "worker"}))]);
+    assert_eq!(probe.ids(), ["after"]);
+}
+
+/// Scenario: Sender boundary, of a dead-letter redrive. A reply that failed is redriven by the dead letters, whose
+/// address is the redrive's sender: the run ignores it, before checking its value, and writes nothing.
+#[tokio::test(start_paused = true)]
+async fn a_reply_redriven_by_the_dead_letters_is_ignored() {
+    let probe = Probe::default();
+    let flow = ScriptFlow { probe: probe.clone() };
+    let test = TestActors::builder()
+        .with(move |node| {
+            node.host(FlowActor::new(flow)).host(ResponderActor).host(DeadLettersActor::default()).host(WitnessActor)
+        })
+        .build()
+        .await
+        .unwrap();
+    test.create(&DeadLetters::default(), &DeadLettersState::default()).await;
+    let letters = addr(&DeadLetters::default());
+    test.system().watch(&cicada::WatchTarget::parse("test.flow").unwrap(), &letters).await.unwrap();
+    test.create(&responder("r1"), &ResponderState::default()).await;
+    let answer = Answer::Raw { value: Value::Null, depth: Some(62), request: None };
+    parked(&test, "k", script(vec![ask("ask", "r1", answer), wait_op("done", "ask")]), "done").await;
+    let failed: Vec<_> = test.failures().await.into_iter().filter(|r| r.envelope.to == addr(&run("k"))).collect();
+    assert_eq!(failed.len(), 1, "the target's deep reply fails for good");
+    let failed = failed[0].envelope.clone();
+    assert_eq!((failed.message_type.as_str(), failed.from.clone()), ("Reply", Some(addr(&responder("r1")))));
+    let kept_letters = test.state::<_, DeadLettersState>(&DeadLetters::default()).await.letters;
+    assert!(kept_letters.contains_key(&failed.id), "kept as a letter");
+    let before = unchanged(&test, "k").await;
+
+    test.send(&DeadLetters::default(), DeadLettersMsg::Redrive { message_id: failed.id.clone() }).await;
+    test.system().run_due_turns(1).await.unwrap(); // the redrive
+    let redriven = test.pending(&run("k")).await;
+    assert_eq!(redriven.len(), 1);
+    assert_eq!((redriven[0].message_type.as_str(), redriven[0].from.clone()), ("Reply", Some(letters)));
+    let redriven = redriven[0].clone();
+    test.run_until_idle().await;
+    assert_eq!(outcome(&test, &redriven.id).await.unwrap().status, OutcomeStatus::Done, "ignored, not failed");
+    assert_eq!(unchanged(&test, "k").await, before, "nothing written");
+    assert_parked(&test, "k", "done").await;
+    assert!(probe.got().is_empty());
 }
