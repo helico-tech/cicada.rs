@@ -61,5 +61,5 @@ accepted ADR is not rewritten: a later one supersedes it. A change that makes a 
 | Observer data | `headers` on the envelope, which an observer may add to a turn's sends; `correlation_id` is kept (the HTTP contract uses it). |
 | Send to an absent instance inside a turn | The whole turn fails at commit: outcome `failed` with the reason, no effects. |
 | Admin delete | Allowed: `DELETE /actors/{type}/{key}`. |
-| One-way messaging | Kept; no ask/await. |
+| One-way messaging | Core keeps one-way sends; flows add durable reply waits (ADR 0044). |
 | Defaults | Lease 30 s, heartbeat 10 s, poll 500 ms, max turn 15 min, retention 7 days; all configurable. |
