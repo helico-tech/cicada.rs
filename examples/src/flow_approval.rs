@@ -1,4 +1,5 @@
-//! Example 17 — a purchase that waits for a person's approval, for at most a week.
+//! Example 17 — a purchase that waits for a person's approval, for at most a week; a sign-off by several teams; and
+//! the first of several quotes.
 //!
 //! A flow asks an approvals actor for a decision and waits for it, durably: no handler stays open while a person takes
 //! minutes or days to decide. [`Step::request`] sends `Ask` to `approvals/<team>`, created first if it does not exist,
@@ -17,6 +18,15 @@
 //! The run accepts only the first reply from the actor its request went to: a reply sent by anyone else, such as a
 //! delegate or a direct HTTP send, is ignored. A decision for a run that was deleted rejects the whole `Decide` commit,
 //! so the purchase stays pending (see `tests/flow_approval.rs`).
+//!
+//! Two joins wait for several replies with one wait entry. [`SignOffFlow`] asks the approvals of every team its input
+//! lists, in that order, and waits for all decisions for at most a week with [`Step::wait_all_timeout`]: one slot per
+//! team, in the order of the input, whichever team decided first, `Received` with the decision or `TimedOut` for a
+//! team that had not decided at the deadline. Every slot approved places the order; a rejection or a silent team tells
+//! the requester. [`QuoteFlow`] asks every supplier of its input for a quote and takes the first offer with
+//! [`Step::wait_first`]: the position of the winning supplier in the input, which stays the same on every replay, and
+//! its offer. A losing supplier is not stopped, and its later offer is ignored. Each effect is a step: the code
+//! between steps only reads committed data.
 //!
 //! A host registers both types, creates a run and sends it `Continue`:
 //!
@@ -169,12 +179,193 @@ pub trait Orders: Send + Sync + 'static {
 
     /// Tells the requester that nobody decided the purchase in time.
     fn expire(&self, item: &str, idempotency_key: &str) -> impl Future<Output = Result<(), ServiceError>> + Send;
+
+    /// Buys the item from `supplier` at the offered price and returns the order's id.
+    fn buy(
+        &self,
+        item: &str,
+        supplier: &str,
+        cents: u64,
+        idempotency_key: &str,
+    ) -> impl Future<Output = Result<String, ServiceError>> + Send;
 }
 
 /// The purchase flow, `flows.purchase`, calling `orders`.
 pub struct PurchaseFlow<O> {
     /// The ordering service.
     pub orders: O,
+}
+
+/// The input of a sign-off run: a purchase that every listed team must approve.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SignOffInput {
+    /// The teams whose approvals decide, at most 100: one request each, in this order.
+    pub teams: Vec<String>,
+    /// What to buy.
+    pub item: String,
+    /// Its price in cents.
+    pub cents: u64,
+}
+
+/// The sign-off flow, `flows.sign-off`, calling `orders`: every team of the input approves, within a week, or the
+/// purchase does not go ahead.
+pub struct SignOffFlow<O> {
+    /// The ordering service.
+    pub orders: O,
+}
+
+/// The sign-off run `key`, `flows.sign-off/<key>`.
+pub fn sign_off<O: Orders>(key: &str) -> FlowRun<SignOffFlow<O>> {
+    FlowRun::named(key)
+}
+
+impl<O: Orders> Flow for SignOffFlow<O> {
+    const TYPE: &'static str = "flows.sign-off";
+    type Input = SignOffInput;
+
+    async fn run(&self, step: &mut Step, input: SignOffInput) -> HandlerResult {
+        let (orders, item) = (&self.orders, input.item.as_str());
+        let empty = ApprovalsState::default();
+        let mut requests = Vec::new();
+        for team in &input.teams {
+            let approvals = Approvals { team: team.clone() };
+            let ask = |reply| ApprovalsMsg::Ask { item: input.item.clone(), cents: input.cents, reply };
+            requests.push(step.request(&format!("ask-{team}"), Target::create(&approvals, &empty), ask).await?);
+        }
+        // One slot per team, in the order of `input.teams`.
+        let slots = step.wait_all_timeout("sign-offs", &requests, DECISION_TIMEOUT).await?;
+        let rejected = slots.iter().find_map(|slot| match slot {
+            Waited::Received(Decision { approved: false, by }) => Some(by.as_str()),
+            _ => None,
+        });
+        if let Some(by) = rejected {
+            step.run("notify-rejected", |key| async move { Ok(orders.reject(item, by, &key).await?) }).await?;
+        } else if slots.contains(&Waited::TimedOut) {
+            step.run("notify-expired", |key| async move { Ok(orders.expire(item, &key).await?) }).await?;
+        } else {
+            let _order: String =
+                step.run("place-order", |key| async move { Ok(orders.place(item, &key).await?) }).await?;
+        }
+        Ok(())
+    }
+}
+
+/// A supplier, `suppliers/<name>`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Supplier {
+    /// The supplier's name.
+    pub name: String,
+}
+
+impl ActorRef for Supplier {
+    const TYPE: &'static str = "suppliers";
+    type Message = SupplierMsg;
+}
+
+/// What a supplier offers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Offer {
+    /// Its price in cents.
+    pub cents: u64,
+}
+
+/// The messages of a supplier.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type")]
+pub enum SupplierMsg {
+    /// A flow asks for a quote; the offer goes to `reply` once the supplier makes one.
+    Quote {
+        /// What would be bought.
+        item: String,
+        /// Where the offer goes.
+        reply: ReplyTo<Offer>,
+    },
+    /// The supplier offers a price for the quote asked by the request `request`.
+    Offer {
+        /// The id of the request's message.
+        request: MessageId,
+        /// The price in cents.
+        cents: u64,
+    },
+}
+
+/// The quotes a supplier has not answered yet, oldest first.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SupplierState {
+    /// The routes of the open quotes; at most [`MAX_PENDING`].
+    #[serde(default)]
+    pub quotes: Vec<ReplyTo<Offer>>,
+}
+
+/// The supplier actor: it keeps each quote's route until it offers, then replies through it.
+pub struct SupplierActor;
+
+impl Actor for SupplierActor {
+    type Ref = Supplier;
+    type State = SupplierState;
+
+    async fn handle(&self, turn: &mut Turn<Self>, message: SupplierMsg) -> HandlerResult {
+        match message {
+            SupplierMsg::Quote { reply, .. } => {
+                if turn.state().quotes.contains(&reply) {
+                    return Ok(()); // a redelivered request
+                }
+                if turn.state().quotes.len() >= MAX_PENDING {
+                    return Err(turn.fail(format!("at most {MAX_PENDING} quotes wait for an offer")));
+                }
+                turn.state_mut().quotes.push(reply);
+            }
+            SupplierMsg::Offer { request, cents } => {
+                let Some(at) = turn.state().quotes.iter().position(|q| q.request == request) else {
+                    return Err(turn.fail(format!("no quote waits for the request {request}")));
+                };
+                let quote = turn.state_mut().quotes.remove(at);
+                quote.send(turn, &Offer { cents }).await?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The input of a quote run: an item and the suppliers to ask, at most 100.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct QuoteInput {
+    /// What to buy.
+    pub item: String,
+    /// The suppliers to ask: one request each, in this order.
+    pub suppliers: Vec<String>,
+}
+
+/// The quote flow, `flows.quote`, calling `orders`: it buys from the supplier that offers first.
+pub struct QuoteFlow<O> {
+    /// The ordering service.
+    pub orders: O,
+}
+
+/// The quote run `key`, `flows.quote/<key>`.
+pub fn quote<O: Orders>(key: &str) -> FlowRun<QuoteFlow<O>> {
+    FlowRun::named(key)
+}
+
+impl<O: Orders> Flow for QuoteFlow<O> {
+    const TYPE: &'static str = "flows.quote";
+    type Input = QuoteInput;
+
+    async fn run(&self, step: &mut Step, input: QuoteInput) -> HandlerResult {
+        let (orders, item) = (&self.orders, input.item.as_str());
+        let (empty, mut quotes) = (SupplierState::default(), Vec::new());
+        for name in &input.suppliers {
+            let supplier = Supplier { name: name.clone() };
+            let ask = |reply| SupplierMsg::Quote { item: input.item.clone(), reply };
+            quotes.push(step.request(&format!("quote-{name}"), Target::create(&supplier, &empty), ask).await?);
+        }
+        // The position in `input.suppliers` of the first offer accepted, the same on every replay.
+        let (winner, offer) = step.wait_first("first-quote", &quotes).await?;
+        let supplier = input.suppliers[winner].as_str();
+        let _order: String =
+            step.run("order", |key| async move { Ok(orders.buy(item, supplier, offer.cents, &key).await?) }).await?;
+        Ok(())
+    }
 }
 
 /// The purchase run `key`, `flows.purchase/<key>`.

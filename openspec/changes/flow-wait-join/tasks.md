@@ -22,7 +22,7 @@
   failure then late reply then retry preserves result positions and sends no request again. Test a decode error in
   the second selected value, caught deserializer panic and recovery after fixed code; losers/missing positions must
   never decode. Run the race/flow tests using controlled events and virtual time, not sleeps.
-- [ ] 4. Extend the worked examples and guide doctests with fan-out/all partial results and first-quote winner index.
+- [x] 4. Extend the worked examples and guide doctests with fan-out/all partial results and first-quote winner index.
   Keep external effects inside steps, and show a deterministic input list. Pin acceptance order versus request order
   and the interpretation of Vec<Waited<T>>. Compare existing generated flow/actor contracts against landed
   flow-wait-timeout: there must be no schema/hash diff. Use predecessor fixtures or a focused compatibility check to

@@ -18,7 +18,7 @@
 //! | [`flow_events`] | Example 14: flows started by an event; a placed order starts a receipt and a fulfilment in one commit, a batcher a digest. |
 //! | [`remote_worker`] | Example 15: the cleanup singleton of example 1, unchanged, in a worker without database access that leases its turns over HTTP. |
 //! | [`dead_letters_upgrade`] | Example 16: the upgrade of dead letters to 0.17.0; export, convert, reset and restore around the new contract. |
-//! | [`flow_approval`] | Example 17: a purchase flow that requests a person's approval and waits for the reply for at most a week, with no handler open, then expires. |
+//! | [`flow_approval`] | Example 17: a purchase flow that requests a person's approval and waits for the reply for at most a week, with no handler open, then expires; a sign-off that joins the approvals of several teams, with partial results at the deadline; and the first of several quotes. |
 //! | [`sync`] | The architecture's example: a paged import, one turn per page, rescheduled hourly. |
 //!
 //! Every example has the same shape: a public ref struct per actor type (its one field is the key), a
