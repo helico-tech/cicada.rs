@@ -9,7 +9,7 @@ checkout of your own.
 
 - `AGENTS.md`.
 - The change at `head`: `git ls-tree -r --name-only <head> openspec/changes/<change>` lists its files, and
-  `git show <head>:<path>` prints one (proposal, design, specs, tasks).
+  `git show <head>:<path>` prints one (proposal, design, specs, tasks, docs handoff).
 - `git log --oneline <base>..<head>` and `git diff <base>..<head>`.
 - Round 2 and later: only `git diff <previous>..<head>`, and the blocking findings of the round before in
   `.reviews/<change>.code.<round before>.result.md`. Check that each is fixed and that the fixes break nothing.
@@ -17,13 +17,20 @@ checkout of your own.
 ## Check
 
 1. **Tasks.** Each task is ticked, and its work is in the diff.
-2. **Spec.** Each scenario in the change's specs has a test. Name only the scenarios without one.
+2. **Spec.** Each scenario in the change's specs has a test. Name only the scenarios without one. A scenario about
+   the loops themselves (briefs, config, the handoff) is proven by the builder's walkthrough and the existing checks,
+   not by a test that repeats the prose.
 3. **Bugs.** Wrong behaviour, an error path that is not handled, a race.
 4. **Scope.** Behaviour that the design does not describe.
-5. **The rules of `AGENTS.md`.** A schema change is an appended migration, public items have doc comments, the docs
-   and `CHANGELOG.md` say what changed, generated references are regenerated, and the version in `Cargo.toml` is the
-   one the note names.
-6. **The builder's example and concepts** are true to the code.
+5. **The rules of `AGENTS.md`.** A schema change is an appended migration, public items have doc comments,
+   `CHANGELOG.md` says what changed, generated references are regenerated, and the version in `Cargo.toml` and the
+   skill's `cicada-version` is the one the note names.
+6. **Docs.** The builder edits no protected docs (`README.md` beyond its release tag lines, `AGENTS.md`, `docs/` except
+   ADRs and generated references). `docs-handoff.md` is there and true to the code at `head`: what users must learn,
+   where it goes, caveats, Blocking, and a status that calls no prose written that is not. A protected file in the
+   diff is allowed only as owner fixes the handoff names (commit and paths): it equals that commit
+   (`git diff <commit> <head> -- <paths>` is empty) and holds no code.
+7. **The builder's example and concepts** are true to the code.
 
 Do not run the test suite: the builder ran the finishing checks (its report says which), and CI runs them before the
 tag. To prove a finding you may run one targeted test in a checkout of your own:
@@ -32,7 +39,8 @@ tag. To prove a finding you may run one targeted test in a checkout of your own:
 ## What blocks
 
 Only these start a fix round: wrong behaviour, a scenario without a test, a broken rule of `AGENTS.md`, a check that
-fails. Everything else is a note, at most five: wording, style, a better name, something nice to have.
+fails, a missing or untrue docs handoff. A failing check blocks also when the handoff lists it under Blocking.
+Everything else is a note, at most five: wording, style, a better name, something nice to have.
 
 ## Report
 

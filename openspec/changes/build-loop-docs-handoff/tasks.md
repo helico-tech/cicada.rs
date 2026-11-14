@@ -14,7 +14,7 @@
   conflict-free ones; never resolve protected conflicts by blindly choosing a side. Add truthful Docs state in Present,
   archived handoff in Land, and the `docs/how-to/releasing.md` reference. Verify docs links and walk through breaking,
   unavailable-owner, changed-head, clean-rebase and release-pin cases against the existing hook's actual rules.
-- [ ] 3. Reconcile the design-loop skill, both review briefs and `openspec/config.yaml`: design identifies blocking
+- [x] 3. Reconcile the design-loop skill, both review briefs and `openspec/config.yaml`: design identifies blocking
   doc blocks/links/guarantee rows/routes, tasks hand off protected changes while retaining verification obligations,
   and code review checks both handoff and integrated owner content against its head. Explicitly accept walkthrough
   evidence for these process-only scenarios in the scenario-test rule; no prose-mirroring tests. Known failed docs

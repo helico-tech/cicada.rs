@@ -40,14 +40,18 @@ the first piece.
    Label every question, yes/no ones too, with labels that are unique in the message, and end with the labels and
    your picks in one line. Write each decision into `design.md` when it is made, so that a new session can go on.
 3. **Write** the rest of `design.md` (the decisions, each with its reason and the options not taken in a line) and the
-   spec deltas in `specs/<capability>/spec.md`. `openspec validate <change> --strict` passes. No `tasks.md` yet.
+   spec deltas in `specs/<capability>/spec.md`. Name the doc blocks, links, guarantee rows and skill routes the change
+   breaks: the builder cannot fix them, as the docs session owns that prose (AGENTS.md, Documentation ownership).
+   `openspec validate <change> --strict` passes. No `tasks.md` yet.
 4. **Review.** `python3 scripts/review.py request design <change>`, then run `python3 scripts/review.py wait <id>` in
    the background: it ends when the report is in. Tell the owner in one line. One round; a second only when the design
    changed much.
 5. **Bring the findings to the owner**, each with your own view. Decide together, and update the design and the spec.
 6. **Tasks**, when the owner agrees. Write `tasks.md` by the rules in `openspec/config.yaml`; the last task runs the
-   finishing checks. Validate again. Commit on `main` as `Ready <change>: <what it does>`: only the change's folder,
-   and its ADR with its row in `docs/adr/README.md` if it has one. The build loop shares this checkout, so stage by
+   finishing checks. A task never asks the builder to edit `README.md`, `AGENTS.md` or the handwritten docs: it asks
+   for that content in `docs-handoff.md` and keeps the checks; a block the design names as broken gets a fix prepared
+   by the docs session before landing. Validate again. Commit on `main` as `Ready <change>: <what it does>`: only the
+   change's folder, and its ADR with its row in `docs/adr/README.md` if it has one. The build loop shares this checkout, so stage by
    path, never `git add -A` or `git commit -a`. Do not push; the next release pushes `main`.
 7. Go to Start.
 

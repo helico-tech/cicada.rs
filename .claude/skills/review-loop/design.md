@@ -23,6 +23,8 @@ reasoning, on purpose: judge what is written. The request (`.reviews/<id>.md`) n
 - **A simpler way.** A smaller design that meets the same Why.
 - **Contradictions.** With `docs/architecture.md`, an ADR, a spec in `openspec/specs/`, or inside the change.
 - **Gaps.** An error path or an upgrade without a scenario.
+- **Docs.** A doc block, link, guarantee row or skill route the change breaks and does not name. The builder may not
+  edit `README.md`, `AGENTS.md` or the handwritten docs: the prose goes into a docs handoff.
 
 ## What blocks
 

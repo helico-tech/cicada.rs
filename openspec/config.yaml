@@ -20,12 +20,14 @@ rules:
     - Add an Order section that names the change before it and the change after it
   design:
     - Keep it short, about 80 lines - the decisions, each with its reason and the options not taken in one line
-    - A change to a guarantee or a wire format needs a new ADR in docs/adr/ and an update of docs/architecture.md
+    - A change to a guarantee or a wire format needs a new ADR in docs/adr/ and its docs/architecture.md text in the docs handoff
+    - Name the doc blocks, links, guarantee rows and skill routes the change breaks; the docs session owns that prose
     - A schema change is an appended migration
   tasks:
     - At most 5 tasks plus the finishing checks
     - Every task states how it is verified, with the tests it touches; the builder runs those while building and the whole workspace only in the last task
     - Test runtime behaviour on virtual time with `#[tokio::test(start_paused = true)]` and `TestActors`
     - A store backend change must pass the conformance suite (`crates/cicada/src/tests/conformance`)
-    - A public API change keeps the doctests of `cicada-examples` (README.md, the guides in docs/guide, docs/operations.md) compiling
+    - Never ask the builder to edit README.md, AGENTS.md or the handwritten docs (AGENTS.md, Documentation ownership); ask for the content in docs-handoff.md, which every change writes
+    - A public API change keeps the doctests of `cicada-examples` (README.md, the guides in docs/guide, docs/operations.md), the links, the guarantee rows and the skill routes passing; a break the design names is fixed by the docs session before landing
     - End with `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and `openspec validate <change> --strict`
