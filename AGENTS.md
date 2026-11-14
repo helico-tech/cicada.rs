@@ -55,7 +55,8 @@ PostgreSQL for tests: `docker compose up -d postgres` (port 55432). Tests that n
   Other sessions report source/test changes to it instead of editing the prose. ADRs, generated CLI/OpenAPI/contract
   references and README release pins stay with their producing change. Follow
   [the documentation maintenance procedure](docs/maintaining/maintenance.md); local hooks enforce commit ownership
-  when installed. This does not provide filesystem or remote access isolation.
+  when installed. This does not provide filesystem or remote access isolation. The owner exempts documentation-only
+  maintenance from library releases: merge checked docs without a version bump or tag.
 - [docs/architecture.md](docs/architecture.md) is the reference for behaviour. This repo has no contract with the
   Kotlin implementation (ADR 0008). A change to a guarantee or a wire format needs an ADR; a schema change is an
   appended migration.
@@ -99,6 +100,7 @@ Work on them goes through three loops (ADR 0030).
   reviewed, and lands and releases it on the owner's yes. `/review-loop` reviews; any agent harness can run it by
   reading `.claude/skills/review-loop/SKILL.md`. They hand over through files: `scripts/review.py` keeps the review
   requests in `.reviews/`. A change is small (one behaviour, at most 5 tasks) and built through these loops unless the
-  owner says otherwise. Every landed change is a release. The rules for the artifacts are in `openspec/config.yaml`.
+  owner says otherwise. Every landed implementation change is a release; documentation-only maintenance is exempt.
+  The rules for the artifacts are in `openspec/config.yaml`.
 - Out-of-scope findings become a change with only a `proposal.md` and an `Order` section.
 - Use the CLI (`openspec list`, `openspec show`, `openspec validate`) to read and check them.

@@ -9,8 +9,8 @@ For an app binary backed by SQLite:
 
 ```toml
 [dependencies]
-cicada = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.17.2" }
-cicada-app = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.17.2", features = ["sqlite"] }
+cicada = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.17.1" }
+cicada-app = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.17.1", features = ["sqlite"] }
 serde = { version = "1", features = ["derive"] }
 schemars = "1"
 ```

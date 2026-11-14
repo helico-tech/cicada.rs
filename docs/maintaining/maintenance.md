@@ -1,7 +1,8 @@
 # Maintain documentation from the docs session
 
 The owner requested one docs session, a persistent `docs` worktree, automatic updates, and merging into main when
-ready. This is an explicit documentation workflow alongside the normal design/build/review loops.
+ready. The owner explicitly exempted documentation-only updates from library releases on 2026-11-14.
+This is a documentation workflow alongside the normal design/build/review loops.
 
 ## Ownership
 
@@ -35,7 +36,8 @@ this session’s hooks/owner record when the owner retires it. Pause the recurri
    Preserve unrelated work in main: inspect its diff and integrate only when changed paths do not overlap;
    otherwise wait for that work to finish.
    The user authorized these documentation merges. Stop on conflict or unresolved behavior; never overwrite a builder’s work.
-   Follow the repository’s [release procedure](../how-to/releasing.md) for landed changes; do not bypass its checks.
+   Documentation-only upkeep needs no library version bump, release changelog entry, OpenAPI version change or tag.
+   Runtime changes belong to their builder and retain the normal [release procedure](../how-to/releasing.md).
 7. Fast-forward docs to the integrated main, then `acknowledge <exact-reviewed-main-sha>`. Advance only after review,
    verification and integration. If there are no source changes, acknowledge the inspected main without a no-op docs commit.
 

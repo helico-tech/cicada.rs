@@ -1,5 +1,8 @@
 # Release Cicada
 
+Documentation-only updates from the dedicated docs session merge after checks without a library release,
+version bump or tag (owner decision, 2026-11-14). Implementation changes use the procedure below.
+
 A release is a tag `vX.Y.Z` on `main` (ADR 0016). All crates share the version in `[workspace.package]`.
 
 1. On `main`, set the version in `Cargo.toml` and run `cargo check`, which updates `Cargo.lock`. A breaking change raises
