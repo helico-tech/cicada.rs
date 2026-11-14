@@ -7,6 +7,40 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.18.4 — unreleased
+
+A host can cancel a running flow: `FlowMsg::Cancel` ends the run in one turn of its own, keeping its progress (ADR
+0044). The flow wire and every contract hash stay those of 0.18.0; no store schema and no guarantee changes. A node of
+0.18.3 refuses `Cancel` for good and leaves the run running, so upgrade every host and worker of a flow type before
+sending it. This release runs no cleanup: a cancelled run's requests, children and external resources keep running.
+
+### Added
+
+- `FlowMsg::Cancel` to a running run cancels its armed `Continue` (a sleep's timer, a deadline, a retry in backoff or
+  the next execution), sets the status `cancelled` and clears `armed`, in one commit with the `Cancel`'s completion. It
+  runs no flow code, clones no input and keeps the input, the journal, the replies and an open wait exactly as they
+  were. It needs no armed message: a run that was never started, is parked at a wait, lost its timer or cannot replay
+  is cancelled the same way. It sends nothing, installs no watch, stops nothing and purges nothing.
+- Any sender may cancel: an outside caller, another actor, an operator retry of a failed `Cancel` or its redrive by
+  the dead letters. There is no sender check beyond the host's own authorization.
+
+### Changed
+
+- A cancelled run ignores `Continue`, `Reply` (before its value is checked) and `Cancel`, writing nothing, as a done run
+  does; a `Cancel` to a done run is a no-op. A new job needs a new run key.
+- A cancelling run now refuses `Cancel` for good too, as it refuses `Continue` and `Reply`: the cleanup phase needs
+  the finalizer of a later release.
+- `Cancel` is handled in mailbox order (deliverAt, then seq) and never preempts a turn: a running execution may commit
+  its step first, and its effects are not undone. A reply or a timeout decision committed before the `Cancel` stays
+  saved, but no flow code consumes it. Sending `Cancel` only queues it; read the run's status (or reread after a change
+  hint) to learn that it was cancelled. A paused run takes it after resume; a purge or a delete discards a queued one.
+- A successful `Cancel` is an ordinary done turn: the cancelled armed message has no turn and tells no watcher, and no
+  synthetic `Failed` or `Stopped` is sent. A rejected commit saves nothing and is not retried by the sender's retry
+  policy; a commit whose answer was lost may have applied, so reread the status or resend `Cancel`, which is
+  idempotent.
+- The descriptions of `FlowMsg::Cancel` and `FlowStatus` in every flow contract describe the new behaviour; the schema
+  and the contract hashes are unchanged.
+
 ## 0.18.3 — 2026-11-14
 
 A flow can wait for several replies with one durable wait: `Step::wait_all` and `Step::wait_all_timeout` join every

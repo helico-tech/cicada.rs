@@ -19,7 +19,7 @@
   Update public Cancel/status doc comments and regenerate flow snapshots if descriptions change. Compare hashes and
   description-stripped schemas against landed flow-wait-join; other ready-made/Event contracts stay unchanged.
   Run targeted control, flow and contract tests; generated descriptions are committed normally.
-- [ ] 4. Update actors guide with a compiled Cancel example and the table separating flow Cancel, pending-message
+- [x] 4. Update actors guide with a compiled Cancel example and the table separating flow Cancel, pending-message
   cancel, operator running-turn cancel, pause, purge, delete and Continue. Update architecture, operations, ADR 0044
   clarification and changelog/version at build time. Explain enqueue versus completion, lack of preemption/cleanup,
   retained terminal progress, earlier effects, status reads/hints, all-host/worker upgrade and safe resend/retry/redrive

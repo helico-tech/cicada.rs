@@ -95,6 +95,22 @@ can name them, so cleanup needs new requests. The wire, the schema and every con
 0.18.2 node refuses for good a reply that would close a join of several requests or of mode first, so upgrade every
 host and worker of the flow type before a flow joins. Cancellation stays refused.
 
+In Rust (0.18.4, `flow-cancellation`): `FlowMsg::Cancel` is sent like any message, with no new helper, field, sender
+check or contract change. The runner checks the status first: a cancelling run refuses every message for good, and a
+done or cancelled run takes Continue, Reply and Cancel without a state write. To a running run, Cancel skips Continue
+normalization and runs no flow code, clones no input and decodes no result: it cancels the saved armed message unless
+that is the current message (also in supplied progress), sets cancelled and clears `armed`, and that commits with the
+Cancel's own completion or not at all. Input, both journals and the replies stay exactly; an open main wait stays
+open and a sleep keeps its saved time. It sends, watches, purges, stops and controls nothing. A successful Cancel is an
+ordinary done turn, the cancelled armed message has no turn, no synthetic watch notification is sent, and the state
+write may produce an ordinary best-effort change hint. Mailbox order decides every race; a committed decision stays
+saved but no flow code consumes it. A rejected commit saves nothing and is not retried by the sender's policy; a
+commit whose answer is lost may have applied, so callers reread the status or resend Cancel, which is idempotent.
+These clarify the decisions above; the wire, the schema and every contract hash stay those of 0.18.0. A 0.18.3 node
+refuses Cancel for good and leaves the run running, so upgrade every host and worker before sending it; afterwards a
+fresh Cancel, an operator retry or a dead-letter redrive of the refused one cancels the run. The finalizer stays for
+`flow-finalizer`, and runs cancelled by 0.18.4 are not finalized later.
+
 ### State invariants
 
 - Ids remain 1..100 ASCII characters from A-Za-z0-9._~-:, unique within each journal. Main and cleanup have separate
