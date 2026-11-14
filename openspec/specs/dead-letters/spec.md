@@ -171,8 +171,10 @@ SHALL retain their existing behavior. No parse failure SHALL prevent a subsequen
 
 The changed state contract SHALL have a new hash. The guide SHALL provide a tested backup/restore procedure for
 independent, childless actors with no incoming watches, covering all names, states, pause flags and outgoing watches.
-It SHALL require quiescence, verified backups and exports, stopping old hosts, validating restore data before deletion,
-and verification before resuming. It SHALL disclose unsupported topology, new instance identity and notification gaps.
+It SHALL require quiescence, verified backups and exports, stopping old hosts, and checks before deletion that each
+restore state decodes as the new typed state, is at most 64 levels deep and contains no NUL in strings or keys, and
+that no address repeats in the export. These example checks SHALL NOT be described as JSON Schema validation.
+It SHALL require verification before resuming and disclose unsupported topology, new instance identity and notification gaps.
 
 #### Scenario: Maintenance safeguards
 
@@ -202,7 +204,7 @@ and verification before resuming. It SHALL disclose unsupported topology, new in
 
 - **WHEN** a readable export contains a raw payload too deep to restore inside a letter
 - **THEN** the documented exact-parsing conversion can move it to `payloadJson` without discarding the letter
-- **AND** restore validates the resulting state, redrive still refuses payload depth greater than 64, and Discard works
+- **AND** the check before deletion accepts the converted state, redrive still refuses payload depth greater than 64, and Discard works
 
 #### Scenario: Raw legacy state is not automatically repaired
 
