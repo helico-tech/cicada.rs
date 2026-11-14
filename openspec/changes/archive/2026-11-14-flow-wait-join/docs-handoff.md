@@ -53,7 +53,7 @@ reply for good despite equal hashes.
 > A flow that starts several independent jobs waits for their replies with one join instead of a wait per job.
 > `step.wait_all(id, &requests)` returns every reply as a `Vec<T>`, in the order of `requests`, whichever came first.
 > `step.wait_all_timeout(id, &requests, timeout)` returns a `Vec<Waited<T>>`: one slot per request, in the same order,
-> `Received` with the reply or `TimedOut` for a request whose reply had not come at the deadline. Every slot is
+> `Received` with the reply or `TimedOut` for a request whose reply had not come when the timeout was decided. Every slot is
 > `Received` when all replies came in time; one `TimedOut` slot means the join timed out, and the other slots keep the
 > replies that came. From flow_approval.rs (linked as `../../examples/src/flow_approval.rs`), whose sign-off asks every
 > team of its input:
@@ -133,7 +133,7 @@ waits`):
 | --- | --- |
 | Empty list, more than 100 handles, a handle twice, or a request another wait names | Permanently fails execution, before kept replies are looked at |
 | Code reorders, extends or changes the list, or switches between all and first, for a running run | Permanently fails execution; the saved join stays. Change joins only for new runs |
-| A target of a join never replies | `wait_all`/`wait_first` stay parked; the timed helpers give up at the deadline with the replies that came |
+| A target of a join never replies | `wait_all`/`wait_first` stay parked; the timed helpers time out once the timeout decision commits after the deadline, with the replies that came |
 | A selected reply does not decode as `T` | Permanently fails execution, naming the position; fix code and poke with Continue. The saved outcome stays |
 | A loser or a late target replies after the join closed | Ignored without a write; its work is not stopped |
 
@@ -165,7 +165,7 @@ open past its deadline".
 
 **Change.** New row after "Flow run parked for long": "Flow join waits for some of its replies" | "Open wait naming
 several requests as last journal entry; `replies` holds some of them" | "Find the targets whose requests have no kept
-reply and make them reply; a timed join times out at its deadline with the replies that came. A reply to a request of
+reply and make them reply; a timed join times out when its timeout decision commits after the deadline, with the replies that came. A reply to a request of
 a closed join is ignored by design". In the row "Flow run parked for long", if it says "the reply", read "the reply, or
 for a join the missing replies".
 
@@ -183,7 +183,7 @@ for a join the missing replies".
 > 0.18.2 permanently refuses a reply that would close such a wait, despite equal hashes, and cannot replay it.
 >
 > A join of one request is the same entry as a single wait: `step.wait` and `step.wait_all` of one request replay each
-> other's, as do `step.wait_timeout` and `step.wait_all_timeout`, and 0.18.1 and 0.18.2 already run them. Changing the
+> other's, as do `step.wait_timeout` and `step.wait_all_timeout`; 0.18.2 already runs both pairs, 0.18.1 only the untimed one. Changing the
 > list of a running run's join, its order, or all to first breaks its replay: change joins only for new runs, or drain
 > the old ones first. A reply that 0.18.2 refused for good must be sent again by its target after upgrading; a
 > dead-letter redrive is ignored, as for any reply.

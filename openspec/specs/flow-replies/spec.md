@@ -70,7 +70,8 @@ Running flows SHALL check known reply-enabled request, sender equality, absence 
 closed wait before validating a value. Failing these checks SHALL succeed without state writes. A new eligible value
 SHALL be retained once, within ADR 0044's bounds; NUL/depth above 61 SHALL fail permanently without state change.
 Reply turns SHALL NOT run flow code or consult time to choose an outcome. An eligible reply SHALL close a supported
-open single wait with or without a deadline, even after that deadline; joins remain reserved. Done/cancelled SHALL ignore Reply; cancelling remains unavailable in this piece.
+open wait with or without a deadline when sufficient replies are present, even after that deadline. Partial all
+replies SHALL keep armed unchanged. Done/cancelled SHALL ignore Reply; cancelling remains unavailable in this piece.
 
 #### Scenario: Ignored reply
 
@@ -102,7 +103,7 @@ open single wait with or without a deadline, even after that deadline; joins rem
 
 #### Scenario: Reply closes an open wait
 
-- **WHEN** an eligible reply reaches a supported open single wait with or without a deadline
+- **WHEN** an eligible reply reaches a supported open wait with or without a deadline and makes it sufficient
 - **THEN** value, received outcome, cancellation of an older armed message and an immediate Continue commit together
 - **AND** the Continue uses Flow::retry and the reply's correlation, with no flow code executed in the Reply turn
 
@@ -132,7 +133,7 @@ armed=null. The first latch SHALL control the returned flow regardless of swallo
 
 #### Scenario: Wait misuse
 
-- **WHEN** wait sees another handle, id or kind, a saved join/deadline, a reused request, an unknown request or entry 1001
+- **WHEN** wait sees another handle, id or kind, a saved multi-request/first/deadline wait, a reused request, an unknown request or entry 1001
 - **THEN** it latches permanent failure without new progress
 - **AND** request/wait ids share the phase journal's ordinary id and capacity rules
 
@@ -142,6 +143,12 @@ armed=null. The first latch SHALL control the returned flow regardless of swallo
 - **THEN** the turn fails permanently and the saved outcome remains available after code is fixed and Continue sent
 - **WHEN** custom deserialization panics and flow code catches it
 - **THEN** an InProgress marker blocks later work and makes the returned flow fail permanently
+
+#### Scenario: One-request all structural equivalence
+
+- **WHEN** wait and wait_all with one handle replay the same id and ordered request
+- **THEN** both accept the same all/no-deadline decision, returning their respective result containers
+- **AND** the timed pair behaves likewise with a present deadline, while mode first never matches all
 
 ### Requirement: Parked and closed waits preserve normal continuation recovery
 
@@ -190,7 +197,8 @@ workers upgraded before enabling requests/waits; host targets adding ReplyTo SHA
 Step::wait_timeout SHALL return Waited<T>::Received(T) or TimedOut only from a committed wait decision. A new wait
 SHALL save until=ceil(claim time + timeout), bounded by MAX_DELAY and MAX_INSTANT, with one request and mode all.
 It SHALL check the time bounds before using an early reply. Replay SHALL use the saved until and ignore the newly
-passed duration. An indefinite wait, join or different handle SHALL NOT match this API.
+passed duration. An indefinite, multi-request, first-mode or different-handle wait SHALL NOT match this API; a one-request all
+wait written by a join helper SHALL match.
 
 #### Scenario: New timed wait
 
@@ -219,14 +227,15 @@ passed duration. An indefinite wait, join or different handle SHALL NOT match th
 
 - **WHEN** a matching timed wait is replayed with another duration, even an invalid one
 - **THEN** the saved deadline still decides
-- **WHEN** indefinite and timed APIs are swapped, the handle differs, a request is reused, a join is encountered or entry 1001 is needed
+- **WHEN** indefinite and timed APIs are swapped, the handle differs, a request is reused, a multi-request or first-mode wait is encountered or entry 1001 is needed
 - **THEN** the turn fails permanently without progress
 
 ### Requirement: A timeout decision commits before subsequent flow work
 
-Only a flow-executing Continue with an open timed wait, no saved reply and claim time at/after until SHALL choose
-timedOut. It SHALL save received=[] and arm now in one commit, returning no data to later flow code in that turn.
-An early execution SHALL re-arm at the saved until without a new entry. A saved reply in an open wait SHALL instead
+Only a flow-executing Continue with an open timed wait, insufficient saved replies and claim time at/after until SHALL choose
+timedOut. It SHALL save the timeout selection (empty for single/first, the available subset in request order for all) and arm
+now in one commit, returning no data to later flow code in that turn.
+An early execution SHALL re-arm at the saved until without a new entry. Sufficient saved replies in an open wait SHALL instead
 cause a committed received decision. The first latch and predecessor decode-error/panic rules SHALL apply.
 
 #### Scenario: Timer execution and later replay
@@ -264,19 +273,19 @@ cause a committed received decision. The first latch and predecessor decode-erro
 ### Requirement: Reply and timeout races follow actual mailbox handling order
 
 A deadline SHALL be the earliest time timeout may be selected, not a reply acceptance cutoff. Reply turns SHALL
-close eligible open single waits without reading the clock. Mailbox ordering SHALL remain (deliverAt,seq). Once a
+close eligible open waits when enough replies are present, without reading the clock. Mailbox ordering SHALL remain (deliverAt,seq). Once a
 choice commits it SHALL NOT change; later replies for a closed wait SHALL be ignored before value checks. Timeout
 SHALL NOT cancel target work or perform cleanup.
 
 #### Scenario: Equal delivery times
 
-- **WHEN** an eligible reply and armed timer have the same deliverAt
+- **WHEN** an eligible reply that makes the wait sufficient and the armed timer have the same deliverAt
 - **THEN** the lower seq is handled first and its successful decision wins
 - **AND** both sequence orders are supported without introducing a separate race rule
 
 #### Scenario: Reply after deadline with no timer
 
-- **WHEN** a timer was purged or cancelled and an eligible reply is handled after until while the wait remains open
+- **WHEN** a timer was purged or cancelled and an eligible reply making the wait sufficient is handled after until while the wait remains open
 - **THEN** received commits and arms now using that reply's correlation
 
 #### Scenario: Late reply after timeout
@@ -313,3 +322,150 @@ self-sends SHALL count as timers, and arm-now continuations as immediate sends u
 - **WHEN** a wait arms At(until) then closes timedOut
 - **THEN** the first send is a timer and the continuation after the decision is immediate
 - **AND** timeout keeps the executing timer chain's correlation, while early-reply closure uses the closing Continue's correlation
+
+### Requirement: Typed joins return ordered all results or a stable winner
+
+Step SHALL provide wait_all, wait_all_timeout, wait_first and wait_first_timeout over a borrowed slice of homogeneous
+Request<T>, with T:DeserializeOwned+Send and no T:Sync requirement. All SHALL return Vec<T>; timed all SHALL return
+Vec<Waited<T>> with one slot per input. First SHALL return (input index,T); timed first SHALL return Waited<(index,T)>.
+The helpers SHALL reuse the existing journal and wait protocol, without exposing Turn or running concurrent steps.
+
+#### Scenario: Partial typed results
+
+- **WHEN** a timed all wait over [a,b,c] commits timeout with selected replies [a,c]
+- **THEN** replay returns [Received(a),TimedOut,Received(c)] regardless of a/c arrival order
+- **AND** at least one TimedOut slot indicates timeout; a received outcome has only Received slots
+
+#### Scenario: First result
+
+- **WHEN** a first wait over [a,b] selects b
+- **THEN** replay returns index 1 and b's decoded value, wrapped in Received for a timed first wait
+- **WHEN** a first wait times out
+- **THEN** its timed helper returns TimedOut without a value or winner index
+
+#### Scenario: Send future and borrowed handles
+
+- **WHEN** a flow passes a borrowed Vec or array of Request<T> where T is Send but not Sync
+- **THEN** its helper future remains Send and the helper invokes no iterator or conversion code
+
+### Requirement: Join inputs and replay matching preserve request positions
+
+New waits SHALL require 1..100 distinct known earlier reply-enabled requests unused by another wait in the phase,
+a valid id and journal room. Timed bounds SHALL be checked before early replies. Replay SHALL match the exact ordered
+requests, mode and deadline presence, ignoring a new duration. A one-request all wait SHALL be structurally equivalent
+to the corresponding single wait. A first wait SHALL remain a different mode even with one request.
+
+#### Scenario: Invalid list or reuse
+
+- **WHEN** the list is empty, has 101 handles, duplicates, unknown requests or requests already in another wait
+- **THEN** the turn fails permanently without progress
+- **AND** a losing request of a closed first wait cannot be reused
+
+#### Scenario: Order changed on replay
+
+- **WHEN** replay reorders, extends or replaces the saved list, or switches all and first mode
+- **THEN** it fails permanently and keeps the saved decision
+- **AND** the helper does not sort or deduplicate the list
+
+#### Scenario: Capacity and deadline
+
+- **WHEN** 100 requests are joined as journal entry 1000
+- **THEN** one join entry is accepted
+- **WHEN** entry 1001 is needed or a new deadline exceeds the time limits even with enough early replies
+- **THEN** the turn fails permanently
+- **WHEN** a matching saved timed join is replayed with an invalid new duration
+- **THEN** the saved deadline is used without validating that new duration
+
+### Requirement: First waits select the earliest accepted listed reply
+
+The replies array SHALL preserve acceptance order. A first wait with multiple saved listed replies SHALL select the
+one appearing earliest in that array, not the first in the request list. Supplied progress SHALL be trusted including
+array order. All selection SHALL follow request order. A committed selection SHALL never be recomputed from later
+replies or the clock, and only selected values SHALL be decoded.
+
+#### Scenario: Multiple early replies
+
+- **WHEN** b is accepted before a and both are saved before wait_first([a,b])
+- **THEN** the deciding turn saves [b] and later replay returns index 1
+- **AND** reversing acceptance order selects a, even though the request list is unchanged
+
+#### Scenario: Supplied open first wait
+
+- **WHEN** supplied open first-wait progress contains multiple listed replies
+- **THEN** it commits the earliest in the stored replies array before exposing any data
+
+#### Scenario: Decode selection and failure
+
+- **WHEN** an all result's second selected value fails typed decoding
+- **THEN** the turn fails permanently and the committed decision remains for recovery after fixing code
+- **WHEN** a selected value's deserializer panics and flow code catches it
+- **THEN** InProgress blocks later helpers and makes the returned flow fail permanently
+- **AND** first losers and missing timed-all positions are never decoded
+
+### Requirement: Partial join replies preserve the current wait until a decision
+
+A new eligible reply to an active open all wait SHALL retain armed unchanged until all requests have replies. A
+sufficient all/first wait SHALL close received, cancel older armed work and arm now using the completing reply's
+correlation. A reply unrelated to that wait SHALL retain only its value. Reply turns SHALL run no flow code or clock
+checks. State, outcome selection and continuation effects SHALL commit atomically.
+
+#### Scenario: Partial and final all reply
+
+- **WHEN** the first of two required replies arrives at a timed all wait
+- **THEN** its timer id, deadline and timer correlation stay unchanged
+- **WHEN** the last missing reply arrives
+- **THEN** the received selection is in request order, the timer is cancelled and the next Continue uses that reply's correlation
+
+#### Scenario: Parked or unrelated reply
+
+- **WHEN** an incomplete untimed all wait accepts a partial reply
+- **THEN** armed remains null
+- **WHEN** an early reply names a request outside the active wait
+- **THEN** that wait and its armed work are unchanged
+
+### Requirement: Joined decisions commit before flow code consumes partial or complete data
+
+New joins with enough replies SHALL commit received; otherwise they SHALL commit open and park or arm At(until).
+A new zero-timeout incomplete join SHALL still commit open first. Replayed open joins SHALL select sufficient replies
+before consulting time; due incomplete timed joins SHALL select timedOut with the current strict subset for all or
+none for first. Every deciding path SHALL suspend until committed replay; inherited first-latch/recovery rules apply.
+
+#### Scenario: Zero timeout and supplied progress
+
+- **WHEN** a new zero-timeout all wait has only a partial set of replies
+- **THEN** it commits open and arms, then a later deciding turn may commit timedOut with that subset
+- **WHEN** supplied open progress past its deadline has all needed replies
+- **THEN** it closes received instead of timedOut
+- **WHEN** only a strict subset is present
+- **THEN** it closes timedOut with that subset in request order
+
+#### Scenario: Races and immutable replay
+
+- **WHEN** the last required reply and timer have equal deliverAt
+- **THEN** their seq order decides which successful outcome commits, in either order
+- **WHEN** a decision commits, a later step fails, a late reply arrives and the flow retries
+- **THEN** it returns the same selection/timeout slots without resending requests
+
+#### Scenario: Lost timer and pause
+
+- **WHEN** the timer is purged or the run paused
+- **THEN** the predecessor's public Continue recovery and mailbox ordering remain in force
+- **AND** joins do not add periodic polling or extend their saved deadlines
+
+### Requirement: Closing a join closes all its requests without stopping targets
+
+A closed join SHALL reject further replies for every listed request before value checks, including first losers and
+missing timeout positions. Previously retained early loser values SHALL remain within existing bounds. The join SHALL
+NOT cancel target work or perform cleanup. Closed main requests SHALL remain unavailable for later cleanup waits.
+
+#### Scenario: Late loser and cleanup
+
+- **WHEN** a losing first request later replies, even with an otherwise invalid deep value
+- **THEN** state/version stay unchanged and the target is not automatically stopped
+- **AND** a later finalizer must issue new cleanup work rather than wait again on that closed request
+
+#### Scenario: Rollout and contract equality
+
+- **WHEN** existing flow and actor contracts are regenerated after join support
+- **THEN** they match the landed timeout predecessor without new wire fields or decoding restrictions
+- **AND** docs require upgrading every host/worker before real joins, while acknowledging predecessors already handle one-request all waits

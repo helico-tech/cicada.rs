@@ -107,10 +107,10 @@ child-ownership rules SHALL remain the core's.
 
 ### Requirement: Reserved flow behavior is explicit during rollout
 
-This release SHALL preserve the ADR 0044 wire shape and enable requests and single reply waits with or without deadlines. It SHALL
+This release SHALL preserve the ADR 0044 wire shape and enable requests and single/all/first reply waits with or without deadlines. It SHALL
 permanently refuse Cancel and execution of cancelling state as unavailable features. Continue in done/cancelled SHALL
 do nothing and Reply in those states SHALL be ignored. Wait and request-send entries SHALL not replay through
-plain-send/step/sleep APIs. Joins SHALL remain unavailable. Docs SHALL require all hosts/workers of a type upgraded before later features
+plain-send/step/sleep APIs. Docs SHALL require all hosts/workers of a type upgraded before later features
 are enabled, since equal contract hashes do not establish equal supported behavior.
 
 #### Scenario: Reserved message and phase
@@ -129,8 +129,8 @@ are enabled, since equal contract hashes do not establish equal supported behavi
 
 #### Scenario: Reserved active wait
 
-- **WHEN** an eligible reply would execute a saved open join
-- **THEN** it fails permanently with a later-feature diagnostic and saves no reply or outcome
+- **WHEN** a predecessor host without join support handles an eligible reply for a multi-request or first-mode open wait
+- **THEN** that predecessor fails it permanently with a later-feature diagnostic and saves no reply or outcome
 
 #### Scenario: Deadline behavior on an older host
 

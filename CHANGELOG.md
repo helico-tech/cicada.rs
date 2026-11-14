@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.18.3 — unreleased
+## 0.18.3 — 2026-11-14
 
 A flow can wait for several replies with one durable wait: `Step::wait_all` and `Step::wait_all_timeout` join every
 reply, `Step::wait_first` and `Step::wait_first_timeout` take the first (ADR 0044). The flow wire and every contract hash
