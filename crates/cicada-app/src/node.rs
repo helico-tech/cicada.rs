@@ -686,6 +686,7 @@ mod worker_tests {
         CompleteTurnResult, LeaseTurnsResult, RegisterContractResult, RenewTurnResult, TurnReport, TurnSource,
     };
     use cicada::store::{MessageId, NodeId, TypeDef};
+    use cicada_client::ActorClient;
     use serde::{Deserialize, Serialize};
     use tokio::time::Instant;
 
@@ -1016,5 +1017,280 @@ mod worker_tests {
         let error = run_until_stopped(&worker, &stop).await.unwrap_err();
         assert_eq!(error.exit_code(), 1);
         assert!(error.to_string().contains("refused"), "{error}");
+    }
+
+    // ---- over HTTP, on virtual time ----
+    //
+    // The client of `Target::worker_client` against a real socket, every call held at a barrier that stops the paused
+    // clock while it is in flight (the harness of `cicada-client`'s `remote_worker` tests): virtual time moves only
+    // between requests, so timing assertions are exact.
+
+    /// Holds the paused clock while a call is in flight: a blocking task stops tokio's auto-advance on a
+    /// current-thread runtime until the call ends.
+    struct InFlight(#[allow(dead_code)] std::sync::mpsc::Sender<()>);
+
+    fn in_flight() -> InFlight {
+        let (held, released) = std::sync::mpsc::channel::<()>();
+        tokio::task::spawn_blocking(move || {
+            let _ = released.recv();
+        });
+        InFlight(held)
+    }
+
+    /// A source with every call held at the barrier of [`in_flight`].
+    struct Held(ActorClient);
+
+    #[async_trait]
+    impl TurnSource for Held {
+        async fn register_contract(&self, contract: &Contract) -> Result<RegisterContractResult, SourceError> {
+            let _held = in_flight();
+            self.0.register_contract(contract).await
+        }
+
+        async fn list_types(&self) -> Result<Vec<TypeDef>, SourceError> {
+            let _held = in_flight();
+            self.0.list_types().await
+        }
+
+        async fn lease_turns(
+            &self,
+            owner: &NodeId,
+            types: &std::collections::BTreeMap<TypeName, String>,
+            limit: usize,
+        ) -> Result<LeaseTurnsResult, SourceError> {
+            let _held = in_flight();
+            self.0.lease_turns(owner, types, limit).await
+        }
+
+        async fn renew_turn(&self, actor: &ActorAddress, epoch: i64) -> Result<RenewTurnResult, SourceError> {
+            let _held = in_flight();
+            self.0.renew_turn(actor, epoch).await
+        }
+
+        async fn release_turn(&self, actor: &ActorAddress, epoch: i64) -> Result<(), SourceError> {
+            let _held = in_flight();
+            self.0.release_turn(actor, epoch).await
+        }
+
+        async fn complete_turn(
+            &self,
+            actor: &ActorAddress,
+            epoch: i64,
+            message_id: &MessageId,
+            report: TurnReport,
+        ) -> Result<CompleteTurnResult, SourceError> {
+            let _held = in_flight();
+            self.0.complete_turn(actor, epoch, message_id, report).await
+        }
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    struct Gated {
+        id: String,
+    }
+
+    impl ActorRef for Gated {
+        const TYPE: &'static str = "gated";
+        type Message = GatedMsg;
+    }
+
+    #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+    #[serde(tag = "type")]
+    enum GatedMsg {
+        /// Tells the test it began, then waits until the gate opens.
+        Wait,
+    }
+
+    #[derive(Clone)]
+    struct Gate {
+        began: Arc<tokio::sync::Notify>,
+        open: tokio::sync::watch::Sender<bool>,
+    }
+
+    struct GatedActor(Gate);
+
+    impl Actor for GatedActor {
+        type Ref = Gated;
+        type State = NoState;
+
+        async fn handle(&self, _: &mut Turn<Self>, _: GatedMsg) -> HandlerResult {
+            self.0.began.notify_one();
+            let _ = self.0.open.subscribe().wait_for(|open| *open).await;
+            Ok(())
+        }
+    }
+
+    /// A request the server saw: method, path, `Authorization` and `X-Tenant`.
+    type SeenRequest = (String, String, Option<String>, Option<String>);
+
+    /// A node that hosts nothing, on an in-memory store on tokio's clock (store time is virtual time), with a lease of
+    /// 3 s, serving the API on a real socket behind a layer that records each request and answers `401` without
+    /// `Authorization: Bearer s3cret` and `X-Tenant: ops`.
+    struct Server {
+        system: ActorSystem,
+        base: String,
+        seen: Arc<Mutex<Vec<SeenRequest>>>,
+    }
+
+    impl Server {
+        async fn start() -> Self {
+            let store = Store::memory_on(Arc::new(cicada_test::TokioClock::new(cicada_test::default_start())));
+            let config = cicada::runtime::NodeConfig { lease_ttl: Duration::from_secs(3), ..Default::default() };
+            let system = ActorSystem::builder(store).config(config).build();
+            let seen: Arc<Mutex<Vec<SeenRequest>>> = Arc::default();
+            let record = seen.clone();
+            let routes = actor_api(system.clone()).layer(axum::middleware::from_fn(move |request: Request, next: Next| {
+                let header = |name: &str| request.headers().get(name).map(|v| v.to_str().unwrap().to_owned());
+                let request_seen =
+                    (request.method().to_string(), request.uri().path().to_owned(), header("authorization"), header("x-tenant"));
+                let allowed = request_seen.2.as_deref() == Some("Bearer s3cret") && request_seen.3.as_deref() == Some("ops");
+                record.lock().unwrap().push(request_seen);
+                async move {
+                    if allowed { next.run(request).await } else { StatusCode::UNAUTHORIZED.into_response() }
+                }
+            }));
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            tokio::spawn(async move { axum::serve(listener, routes).await });
+            Self { system, base, seen }
+        }
+
+        /// The source of a worker over HTTP with `token` and the header `X-Tenant: ops`, held at the barrier.
+        fn source(&self, token: &str) -> Arc<dyn TurnSource> {
+            let target = Target {
+                context: None,
+                server: self.base.clone(),
+                token: Some(token.to_owned()),
+                headers: std::collections::BTreeMap::from([("X-Tenant".to_owned(), "ops".to_owned())]),
+            };
+            Arc::new(Held(target.worker_client().unwrap()))
+        }
+
+        fn count(&self, method: &str, path: &str) -> usize {
+            self.seen.lock().unwrap().iter().filter(|s| s.0 == method && s.1 == path).count()
+        }
+
+        /// Waits until `gated` is registered, then sends it `Wait`.
+        async fn send_wait(&self) -> MessageId {
+            while !self.system.types().await.unwrap().iter().any(|t| t.definition.name.as_str() == "gated") {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            let gated = Gated { id: "g".into() };
+            self.system.create(&gated, &NoState {}).await.unwrap();
+            match self.system.send(&gated, GatedMsg::Wait).await.unwrap() {
+                cicada::SendResult::Accepted(m) => m.id,
+                other => panic!("not accepted: {other:?}"),
+            }
+        }
+
+        async fn finished(&self, id: &MessageId) -> Option<cicada::store::OutcomeStatus> {
+            match self.system.status(id).await.unwrap()? {
+                cicada::store::MessageStatus::Finished(o) => Some(o.status),
+                _ => None,
+            }
+        }
+    }
+
+    fn gated_parts(gate: &Gate) -> Parts {
+        let actor = ActorType::from(GatedActor(gate.clone()));
+        let gated = HostedType { name: "gated", host: Box::new(move |hosting| hosting.host(actor)) };
+        Parts { types: vec![gated], observers: Vec::new(), http: Vec::new(), on_start: Vec::new() }
+    }
+
+    fn gated_settings() -> HttpSettings {
+        let worker = WorkerConfig {
+            poll_interval: Duration::from_millis(50),
+            shutdown_grace_period: Duration::from_secs(30),
+            ..WorkerConfig::default()
+        };
+        HttpSettings { types: vec!["gated"], worker }
+    }
+
+    fn gate() -> Gate {
+        Gate { began: Arc::default(), open: tokio::sync::watch::channel(false).0 }
+    }
+
+    /// A stop that completes when `tx` sends or is dropped.
+    fn signal() -> (tokio::sync::oneshot::Sender<()>, Stop) {
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        (
+            tx,
+            Stop::watch(async move {
+                let _ = rx.await;
+            }),
+        )
+    }
+
+    /// Scenario: Credentials and diagnostics: the token and header reach the type and every lease route, renewals of a
+    /// held turn included (a renewal a third of the TTL of 3 s after the lease, then each second).
+    #[tokio::test(start_paused = true)]
+    async fn over_http_the_token_and_header_reach_every_route_and_a_held_turn_is_renewed() {
+        let server = Server::start().await;
+        let gate = gate();
+        let (stop, stopped) = signal();
+        let worker = tokio::spawn(run_worker(gated_parts(&gate), gated_settings(), server.source("s3cret"), stopped));
+        let id = server.send_wait().await;
+        gate.began.notified().await;
+        tokio::time::sleep(Duration::from_millis(4500)).await;
+        assert_eq!(server.count("POST", "/leases/renew"), 4, "at 1, 2, 3 and 4 s");
+        assert_eq!(server.finished(&id).await, None, "held for longer than the TTL");
+        gate.open.send_replace(true);
+        while server.finished(&id).await.is_none() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(server.finished(&id).await, Some(cicada::store::OutcomeStatus::Done));
+        stop.send(()).unwrap();
+        worker.await.unwrap().expect("exit code 0");
+        for (method, path) in
+            [("GET", "/types"), ("PUT", "/types/gated"), ("POST", "/leases"), ("POST", "/leases/complete")]
+        {
+            assert!(server.count(method, path) >= 1, "{method} {path}");
+        }
+        let seen = server.seen.lock().unwrap().clone();
+        assert!(
+            seen.iter().all(|s| s.2.as_deref() == Some("Bearer s3cret") && s.3.as_deref() == Some("ops")),
+            "{seen:?}"
+        );
+    }
+
+    /// Scenario: Permanent refusal or stop: a refused token fails at once, on the first try.
+    #[tokio::test(start_paused = true)]
+    async fn over_http_a_refused_token_fails_at_once() {
+        let server = Server::start().await;
+        let started = Instant::now();
+        let error = run_worker(gated_parts(&gate()), gated_settings(), server.source("wrong"), never()).await;
+        let error = error.unwrap_err();
+        assert_eq!(error.exit_code(), 1);
+        assert!(
+            error.to_string().starts_with("the server is not ready") && error.to_string().contains("401"),
+            "{error}"
+        );
+        assert!(!error.to_string().contains("wrong"), "the token is not printed: {error}");
+        assert_eq!(started.elapsed(), Duration::ZERO, "no wait");
+        assert_eq!(server.seen.lock().unwrap().len(), 1, "one try");
+    }
+
+    /// Scenario: A stopped worker and a failed worker: a stop takes effect at once (no more lease requests) and waits
+    /// for the running turn within the grace period of 30 s; the finished handler is completed, not released.
+    #[tokio::test(start_paused = true)]
+    async fn over_http_a_stop_waits_for_the_running_turn_within_the_grace_period() {
+        let server = Server::start().await;
+        let gate = gate();
+        let (stop, stopped) = signal();
+        let mut worker =
+            tokio::spawn(run_worker(gated_parts(&gate), gated_settings(), server.source("s3cret"), stopped));
+        let id = server.send_wait().await;
+        gate.began.notified().await;
+        stop.send(()).unwrap();
+        let signalled = Instant::now();
+        assert!(tokio::time::timeout(Duration::from_secs(5), &mut worker).await.is_err(), "still waiting at 5 s");
+        let leases = server.count("POST", "/leases");
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        assert_eq!(server.count("POST", "/leases"), leases, "the stop was taken: no lease request since");
+        gate.open.send_replace(true);
+        worker.await.unwrap().expect("exit code 0");
+        assert_eq!(signalled.elapsed(), Duration::from_secs(10), "it ended when the handler did");
+        assert_eq!(server.finished(&id).await, Some(cicada::store::OutcomeStatus::Done));
+        assert_eq!(server.count("POST", "/leases/release"), 0);
     }
 }

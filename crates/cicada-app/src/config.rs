@@ -165,10 +165,31 @@ impl std::fmt::Debug for Target {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Target")
             .field("context", &self.context)
-            .field("server", &crate::command::hide_passwords(&self.server))
+            .field("server", &redacted_url(&self.server))
             .field("token", &self.token.as_ref().map(|_| "***"))
             .field("headers", &self.headers.keys().map(|name| (name, "***")).collect::<BTreeMap<_, _>>())
             .finish()
+    }
+}
+
+/// `url` with its password, if any, as `***`, read as a URL rather than scanned as text, so that no character of a
+/// password ends it early. A value that is not a URL with a host (`user:pw@host` reads as the scheme `user`) keeps
+/// only its scheme: `scheme://***`, else `***`.
+fn redacted_url(url: &str) -> String {
+    match reqwest::Url::parse(url) {
+        Ok(mut parsed) if parsed.has_host() => {
+            if parsed.password().is_some() {
+                // A URL that has a password has an authority, which takes a password.
+                let _ = parsed.set_password(Some("***"));
+            }
+            parsed.to_string()
+        }
+        _ => match url.split_once("://") {
+            Some((scheme, _)) if !scheme.is_empty() && scheme.chars().all(|c| c.is_ascii_alphanumeric()) => {
+                format!("{scheme}://***")
+            }
+            _ => "***".to_owned(),
+        },
     }
 }
 
@@ -295,6 +316,30 @@ mod tests {
             assert!(!text.contains(secret), "{text}");
         }
         assert!(text.contains("prod") && text.contains("user:***@actors.internal") && text.contains("X-Api-Key"));
+    }
+
+    /// A password with a character that ends an address in a text (`'`, `"`, a backtick, `#`, `/`) is hidden whole;
+    /// a value that is not a URL keeps only its scheme.
+    #[test]
+    fn the_debug_of_a_target_hides_any_password_and_an_unparsable_server() {
+        let debug = |server: &str| {
+            let target = Target { context: None, server: server.to_owned(), token: None, headers: BTreeMap::new() };
+            format!("{target:?}")
+        };
+        for (server, secret) in [
+            ("https://user:can'ary@actors.internal/api", "can'ary"),
+            ("https://user:a%22b%60c@actors.internal", "a%22b%60c"),
+            ("https://user:p%2Fq%23r@actors.internal", "p%2Fq%23r"),
+        ] {
+            let text = debug(server);
+            assert!(!text.contains(secret) && !text.contains("ary"), "{text}");
+            assert!(text.contains("https://user:***@actors.internal"), "{text}");
+        }
+        assert!(debug("http://actors.internal:8080").contains("http://actors.internal:8080"), "no password, as it is");
+        for (server, shown) in [("https://user:can'ary@[bad", "https://***"), ("user:can'ary@host", "***")] {
+            let text = debug(server);
+            assert!(!text.contains("can'ary") && !text.contains("host") && text.contains(shown), "{text}");
+        }
     }
 
     #[test]

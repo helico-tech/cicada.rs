@@ -1,13 +1,13 @@
 //! `worker` over HTTP through `App::run_with` (spec `app`, ADR 0042): unchanged actors run through a server that hosts
 //! nothing, on real sockets in real time. The server's router records every request and can require credentials,
-//! redirect, hang or refuse; the assertions wait for what they observe and make no timing claim. The races of the wait
-//! for the server, the start and the stop are tested on virtual time in `src/node.rs`.
+//! redirect, hang or refuse; the assertions wait for what they observe and make no timing claim. Timing (the wait for
+//! the server, renewals, how long a stop waits) and the races of the start and the stop are tested on virtual time in
+//! `src/node.rs`, also over a real socket with the worker's own client held at a barrier.
 
 mod common;
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use axum::Router;
 use axum::extract::{Request, State};
@@ -18,7 +18,6 @@ use cicada::actor::contract_of;
 use cicada::api::MessageState;
 use cicada::observer::{ObservedTurn, TurnEnd, TurnObserver, TurnStart};
 use cicada::prelude::*;
-use cicada::runtime::NodeConfig;
 use cicada::{HandlerResult, Store, Turn};
 use cicada_app::{App, AppError, Env};
 use cicada_client::ActorClient;
@@ -105,11 +104,7 @@ struct Server {
 
 impl Server {
     async fn start() -> Self {
-        Self::with(NodeConfig::default()).await
-    }
-
-    async fn with(config: NodeConfig) -> Self {
-        let system = ActorSystem::builder(Store::memory()).config(config).build();
+        let system = ActorSystem::builder(Store::memory()).build();
         system.start().await.unwrap();
         let behaviour = Arc::new(Behaviour::default());
         let routes: Router =
@@ -248,10 +243,11 @@ async fn an_http_worker_runs_the_selected_actors_without_opening_the_store_of_th
     assert!(!unused.exists(), "the SQLite file was not created");
 }
 
-/// Scenario: Credentials and diagnostics: the token and the headers of a context reach the type and lease routes.
+/// Scenario: Credentials and diagnostics: the token and the headers of a context reach the type and lease routes
+/// (renewals are covered on virtual time in `src/node.rs`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_token_and_headers_of_a_context_reach_every_route_of_the_worker() {
-    let server = Server::with(NodeConfig { lease_ttl: Duration::from_secs(1), ..NodeConfig::default() }).await;
+    let server = Server::start().await;
     *server.behaviour.require.lock().unwrap() = Some("s3cret".into());
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join("config.toml");
@@ -270,18 +266,13 @@ async fn the_token_and_headers_of_a_context_reach_every_route_of_the_worker() {
     let operator =
         ActorClient::with_client(&server.base, reqwest::Client::builder().default_headers(headers).build().unwrap());
     server.registers("counter").await;
-    // Held longer than a third of the TTL of 1 s: the lease is renewed.
-    let id = send(&operator, "c", CounterMsg::Hold { millis: 800 }).await;
+    let id = send(&operator, "c", CounterMsg::Add { amount: 1 }).await;
     done(&operator, &id).await;
     node.stop().await.expect("exit code 0");
     let seen = server.behaviour.seen();
-    for (method, path) in [
-        ("GET", "/types"),
-        ("PUT", "/types/counter"),
-        ("POST", "/leases"),
-        ("POST", "/leases/renew"),
-        ("POST", "/leases/complete"),
-    ] {
+    for (method, path) in
+        [("GET", "/types"), ("PUT", "/types/counter"), ("POST", "/leases"), ("POST", "/leases/complete")]
+    {
         assert!(server.behaviour.count(method, path) >= 1, "{method} {path}: {seen:?}");
     }
     assert!(
@@ -290,18 +281,17 @@ async fn the_token_and_headers_of_a_context_reach_every_route_of_the_worker() {
     );
 }
 
-/// Scenario: Permanent refusal or stop: a refusal of the credentials fails at once, without waiting a minute.
+/// Scenario: Permanent refusal or stop: a refusal of the credentials fails on the first try, without a retry (that it
+/// takes no time is proven on virtual time in `src/node.rs`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_refused_token_fails_the_worker_at_once() {
+async fn a_refused_token_fails_the_worker_on_the_first_try() {
     let server = Server::start().await;
     *server.behaviour.require.lock().unwrap() = Some("s3cret".into());
-    let started = std::time::Instant::now();
     let args = ["myapp", "worker", "--server", &server.base, "--token", "wrong"];
     let error = run(App::new().host(CounterActor), &http_env(), &args).await.unwrap_err();
     assert_eq!(error.exit_code(), 1);
     assert!(error.to_string().starts_with("the server is not ready") && error.to_string().contains("401"), "{error}");
     assert!(!error.to_string().contains("wrong"), "the token is not printed: {error}");
-    assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
     assert_eq!(server.behaviour.seen().len(), 1, "one try");
 }
 
@@ -374,9 +364,10 @@ async fn a_stop_during_registration_ends_the_worker_without_a_lease() {
     assert_eq!(server.behaviour.count("POST", "/leases"), 0);
 }
 
-/// Scenario: Stop during running work: the turn finishes within the grace period, and the command succeeds.
+/// Scenario: Stop during running work: with a long grace period the turn that was running when the stop came is
+/// completed, and the command succeeds (that the stop waits for it is proven on virtual time in `src/node.rs`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_stop_during_running_work_lets_the_turn_finish() {
+async fn a_stop_during_running_work_completes_the_turn() {
     let server = Server::start().await;
     let gate = Gate { began: Arc::new(Notify::new()), open: watch::channel(false).0 };
     let mut env = http_env();
@@ -390,13 +381,45 @@ async fn a_stop_during_running_work_lets_the_turn_finish() {
     let id = client.send(&gated, GatedMsg::Wait).await.unwrap().id;
     gate.began.notified().await;
     node.signal();
-    // The handler cannot end before the gate opens, and the grace period is long: the command waits for it.
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(!node.is_finished(), "the stop waits for the running turn");
     gate.open.send_replace(true);
     node.ended().await.expect("exit code 0");
     assert_eq!(state(&client, &id).await, Some(MessageState::Done));
     assert_eq!(server.behaviour.count("POST", "/leases/release"), 0, "a finished handler is completed, not released");
+}
+
+/// Scenario: Uncooperative or finished work: without a grace period the stop cancels a turn whose handler has not
+/// ended, and its lease is released with the token: the message is not done and waits for another worker.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stop_without_a_grace_period_releases_the_lease_of_an_unfinished_handler() {
+    let server = Server::start().await;
+    *server.behaviour.require.lock().unwrap() = Some("s3cret".into());
+    let gate = Gate { began: Arc::new(Notify::new()), open: watch::channel(false).0 };
+    let mut env = http_env();
+    env.insert("CICADA_SHUTDOWN_GRACE_PERIOD".into(), "0s".into());
+    let config = tempfile::NamedTempFile::new().unwrap();
+    let file = format!(
+        "[contexts.c]\nserver = \"{}\"\ntoken = \"s3cret\"\nheaders = {{ \"X-Tenant\" = \"ops\" }}\n",
+        server.base
+    );
+    std::fs::write(config.path(), file).unwrap();
+    env.insert("CICADA_CONFIG".into(), config.path().display().to_string());
+    let app = App::new().host(GatedActor(gate.clone()));
+    let mut node = Running::spawn(app, &env, &["myapp", "worker", "--context", "c"]);
+    server.registers("gated").await;
+    let gated = Gated { name: "g".into() };
+    server.system.create(&gated, &NoState {}).await.unwrap();
+    let id = match server.system.send(&gated, GatedMsg::Wait).await.unwrap() {
+        cicada::SendResult::Accepted(m) => m.id,
+        other => panic!("not accepted: {other:?}"),
+    };
+    gate.began.notified().await;
+    node.signal();
+    node.ended().await.expect("exit code 0");
+    assert_eq!(server.behaviour.count("POST", "/leases/release"), 1, "{:?}", server.behaviour.seen());
+    assert_eq!(server.behaviour.count("POST", "/leases/complete"), 0);
+    let status = server.system.status(&id).await.unwrap();
+    assert!(matches!(status, Some(cicada::store::MessageStatus::Pending(_))), "{status:?}");
+    assert!(server.behaviour.seen().iter().all(|s| s.authorization.as_deref() == Some("Bearer s3cret")));
 }
 
 /// Scenario: Startup hooks require an ActorSystem: refused before the config file or the network.
