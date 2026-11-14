@@ -26,6 +26,10 @@ cargo run -p cicada-app -- get actor e2e.counter/demo -o json
 The state’s `count` becomes 1 after the message runs. Keep the API on loopback until you
 [add authentication](docs/guide/http.md#run-it-in-an-axum-service).
 
+Inspect actors and their mailboxes with the [terminal UI](docs/guide/app.md#command-line-and-terminal-ui):
+
+![Cicada terminal UI: actor state and pending mailbox messages](docs/assets/tui.png)
+
 ## Documentation
 
 [Start here](docs/README.md) for the reading paths. Each guide starts with the task it helps you complete.

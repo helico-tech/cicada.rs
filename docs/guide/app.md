@@ -118,6 +118,11 @@ cicada get actors
 cicada tui
 ```
 
+![Cicada TUI showing sync/acme, its persisted state, and a paused mailbox with three pending messages](../assets/tui.png)
+
+The actor view keeps state, mailbox, outcomes and children together. This capture uses the sample service on
+an isolated SQLite store; [capture instructions](../assets/README.md) explain how to refresh it.
+
 All operator commands call HTTP. Omit `--features tui` to build without terminal libraries.
 Use [generated CLI help](../reference/cli.md) for flags and command details.
 

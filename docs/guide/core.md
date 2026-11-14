@@ -390,6 +390,8 @@ field might silently use a default, so assert important values too.
 
 ## Examples
 
+[Trace the examples visually](patterns.md): paged import, fan-out/fan-in, request/reply and durable flow replay.
+
 Each implementation has tests in [examples/tests](../../examples/tests/). Open the source for a complete pattern:
 
 | Task | Source |

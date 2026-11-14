@@ -43,6 +43,14 @@ style and explicit omissions. Cicada uses these rules:
 - Compile every Rust block. Use `no_run` only when a database/server or other external resource is needed.
 - Keep important executable coverage in examples/tests; shortening prose must not remove the only behavioral test.
 
+## Visuals
+
+Use Mermaid to explain message paths, ownership or replay when a picture removes the need for more prose.
+Label the actual messages and commit boundaries, and give each diagram a short caption with its ordering limits.
+Keep diagrams narrow enough for a guide page; parse and render them with the [visual tooling](../assets/README.md)
+before committing. Screenshots show the real application against isolated sample data, with instructions to refresh
+when the interface changes. Never use an invented UI as evidence of current behavior.
+
 ## Retrieval by agents
 
 [Anthropic’s context-engineering guidance](https://www.anthropic.com/research/effective-context-engineering-for-ai-agents)

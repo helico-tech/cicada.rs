@@ -32,11 +32,42 @@ Target retries do not pass through a limiter, debouncer or batcher again.
 **Due time is a lower bound.** Pauses, queueing, outages and slow commits can make delivery late.
 Each turn rewrites the state it changes: keep stored values small or store references to external data.
 
+## Message processing
+
+Choose what should reach the target: accepted messages at reserved due times, the latest value after quiet, or a list.
+These are three alternatives, not stages of one pipeline.
+
+```mermaid
+flowchart LR
+    a["Submitted messages"] --> limiter["Rate limiter"] --> slots["Messages due at reserved slots"]
+    b["Burst of edits"] --> debounce["Debouncer"] --> latest["Latest message after quiet / maxWait"]
+    c["Stream of items"] --> batcher["Batcher"] --> batch["One items array at count / maxWait"]
+```
+
+Due times do not bound execution time; a paused or busy target can run later.
+
 ## Supervisor
 
 Use a supervisor only when a child can restart from its configured initial state.
 **A restart deletes the old state, descendants and mailbox**; purged messages do not become dead letters.
 Do not supervise dead letters or a topic whose subscriptions you must keep.
+
+```mermaid
+sequenceDiagram
+    participant C as Child actor
+    participant S as SQL store
+    participant P as Supervisor
+    participant D as Dead letters
+    C->>S: Commit terminal handler failure
+    S->>P: Failed notification (watch)
+    S->>D: Failed notification (watch)
+    Note over S: Failure + notifications<br/>commit together
+    P->>S: Commit restart + start message
+    D->>S: Commit retained letter
+```
+
+The two watchers act independently. Restarting does not replay the failed message; an operator redrives its letter.
+The diagram assumes a handler fault below the restart limit and both watches already configured.
 
 Build `SupervisorState::new().child(Child::new(&ref, &state)?.start(message)?)`, create the supervisor, then send `Start`.
 Each child starts independently in its own `StartChild` turn: create as a child, watch, send its start message.
@@ -98,6 +129,15 @@ Legacy deep letters need conversion or discard: [upgrade procedure](../how-to/up
 
 ## Topic
 
+```mermaid
+flowchart LR
+    publish["Publish"] --> topic["Topic actor"]
+    topic --> a["Self-sent Deliver for A"] --> existingA["Existing subscriber A"]
+    topic --> b["Self-sent Deliver for B"] --> existingB["Existing subscriber B"]
+```
+
+Each Deliver is a separate topic turn; neither subscriber is created by the topic.
+
 Create `TopicState::default()`, send `Subscribe { subscriber }`, then `TopicMsg::publish(message)`.
 `Publish` creates one self-sent `Deliver` per subscriber, so one broken subscriber does not block the others.
 Deliveries carry the publication’s correlation id. Per-subscriber publication order holds unless a delivery is retried.
@@ -118,6 +158,17 @@ A slot takes two turns: `Tick` arms the next tick and queues `Run`; `Run` forwar
 | `Start` | Start or repair the tick chain; safe to repeat |
 | `Run` | Deliver now, even before Start, without moving the tick |
 | `Update` | Replace supplied schedule/target/message/retry fields; a changed schedule rearms the tick |
+
+```mermaid
+sequenceDiagram
+    participant Q as Scheduler
+    participant S as SQL store
+    participant T as Target actor
+    Q->>S: Tick commit: next delayed Tick + Run
+    S->>Q: Deliver Run
+    Q->>S: Run commit: send stored message
+    S->>T: Deliver message with cicada-slot
+```
 
 Set `state.retry` for failures at the target. Scheduled deliveries carry `cicada-slot` in UTC to the second;
 a manual `Run` has no slot. Correlation ids are not forwarded. Internal ticks must be self-sent and armed.
@@ -215,6 +266,8 @@ step.run("send-welcome", |key| async move {
 step.sleep("cool-off", Duration::from_secs(60)).await?;
 ```
 
+[The flow replay diagram](patterns.md#durable-flows) shows the commit boundaries.
+
 The code runs from the top on each execution. Saved results replay without rerunning their closures; only one new
 step runs per turn. **Code outside steps must be deterministic and free of external effects.**
 Put service calls, clocks and randomness inside steps.
@@ -253,6 +306,20 @@ Create an `Event` with `EventState`, subscribe flow type names, then send `Event
 Each publication creates and starts one independent run per subscribed type **in one commit**.
 `publish_batch(items)` supplies input `{ "items": [...] }`, so a batcher targeting PublishBatch feeds an event directly.
 [flow_events.rs](../../examples/src/flow_events.rs) shows the full producer and host setup.
+
+```mermaid
+flowchart LR
+    order["Placed order"] --> event["Event actor"]
+    event --> tx["One commit: create runs + send Continue"]
+    tx --> receipt["Receipt flow run"]
+    tx --> fulfil["Fulfilment flow run"]
+    orders["Order items"] --> batcher["Batcher"]
+    batcher -->|PublishBatch| digestEvent["Digest event"]
+    digestEvent --> digest["Create + start one digest run"]
+```
+
+This is [flow_events.rs](../../examples/src/flow_events.rs): a topic delivers to existing actors; an event creates
+independent flow runs. A failure after creation belongs to that run, not to the successful publication.
 
 The run key is the publication’s message id, percent-encoded once. Do not reuse ids across jobs/events or manually
 create runs whose keys could collide. `.` and `..` cannot key subscribed runs. Up to 100 unique flow types can subscribe.

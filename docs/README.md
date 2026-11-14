@@ -14,6 +14,7 @@ The guides assume you know Rust, serde and async functions.
 | Task | Read |
 | --- | --- |
 | Send, retry or schedule a message | [Core](guide/core.md#retry) |
+| Understand message paths in the examples | [Visual patterns](guide/patterns.md) |
 | Test a timer without waiting | [TestActors](guide/core.md#testing-with-testactors) |
 | Own child actors or react to failures | [Children](guide/core.md#child-actors), [watches](guide/core.md#watches) |
 | Run actors without database credentials | [HTTP worker](guide/app.md#a-worker-over-http) |
