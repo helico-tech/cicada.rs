@@ -200,7 +200,7 @@
             "type": "object"
           },
           {
-            "description": "A wait for the replies of earlier requests. This release executes the wait of [`Step::wait`]: one request, mode\nall and no deadline; a join or a deadline needs a later release.",
+            "description": "A wait for the replies of earlier requests. This release executes the single waits of [`Step::wait`] and\n[`Step::wait_timeout`]: one request, mode all, without or with a deadline; a join needs a later release.",
             "properties": {
               "id": {
                 "description": "The wait id, from the same namespace as the step ids.",

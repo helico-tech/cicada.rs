@@ -29,7 +29,7 @@ use cicada::time::{self, MAX_DELAY, Timestamp};
 use cicada::turn::TurnError;
 use cicada_actors::{
     CreateKind, DeadLetters, DeadLettersActor, DeadLettersMsg, DeadLettersState, Flow, FlowActor, FlowMsg, FlowReply,
-    FlowRun, FlowState, FlowStatus, JournalEntry, ReplyTo, Request, Step, Target, WaitMode, WaitOutcome,
+    FlowRun, FlowState, FlowStatus, JournalEntry, ReplyTo, Request, Step, Target, WaitMode, WaitOutcome, Waited,
 };
 use cicada_test::TestActors;
 use common::*;
@@ -77,6 +77,8 @@ struct Probe {
     got: Arc<Mutex<Vec<(String, Value)>>>,
     /// Whether the flow's code is fixed: a typed wait then decodes any JSON.
     fixed: Arc<AtomicBool>,
+    /// The barrier a planned [`Op::Gate`] waits at.
+    gate: Arc<tokio::sync::Notify>,
 }
 
 impl Probe {
@@ -206,6 +208,21 @@ enum Op {
     /// A request `id` to `responder/<to>` asking for a number, and its wait `wait`: typed `u32` until the probe's code
     /// is fixed, any JSON after.
     Typed { id: String, wait: String, to: String, answer: Answer },
+    /// The wait `id` with a timeout of `secs` seconds and `nanos` nanoseconds for the request `request`; the probe notes
+    /// `{"received": value}` or `"timedOut"`.
+    TimedWait {
+        id: String,
+        request: String,
+        secs: u64,
+        #[serde(default)]
+        nanos: u32,
+    },
+    /// A timed wait of a minute whose suspension the flow catches; the probe notes what it returns.
+    SwallowTimed { id: String, request: String },
+    /// A panic of the flow code itself, outside any step, when the probe plans one for `id`.
+    Crash { id: String },
+    /// Flow code that waits at the probe's barrier when the probe plans a wait for `id`.
+    Gate { id: String },
 }
 
 /// How a responder answers a request.
@@ -259,6 +276,8 @@ enum ResponderMsg {
     /// Sends `FlowMsg::Reply` with `request` and a value `depth` arrays deep to `run` itself, for a run created with
     /// its progress.
     Raw { run: ActorAddress, request: MessageId, depth: u32 },
+    /// Replies `value` to every kept route, past the helper, due at `at`.
+    AnswerAt { value: Value, at: Timestamp },
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -295,6 +314,14 @@ impl Actor for ResponderActor {
                 reply.send(turn, &value).await?;
             }
             ResponderMsg::Raw { run, request, depth } => raw_reply(turn, &run, request, nested(depth)).await?,
+            ResponderMsg::AnswerAt { value, at } => {
+                for route in turn.state().routes.clone() {
+                    let reply = FlowMsg::Reply { request: route.request.clone(), value: value.clone() };
+                    let encoded = cicada::message::encode(&reply).unwrap();
+                    let options = SendOptions::new().at(at);
+                    turn.send_raw(&route.run, &encoded.message_type, encoded.payload, options).await?;
+                }
+            }
         }
         Ok(())
     }
@@ -601,6 +628,27 @@ impl ScriptFlow {
             Op::Wait { id, request } => {
                 let value = step.wait(&id, &requests[&request]).await?;
                 p.note(&id, value);
+            }
+            Op::TimedWait { id, request, secs, nanos } => {
+                match step.wait_timeout(&id, &requests[&request], Duration::new(secs, nanos)).await? {
+                    Waited::Received(value) => p.note(&id, json!({"received": value})),
+                    Waited::TimedOut => p.note(&id, json!("timedOut")),
+                }
+            }
+            Op::SwallowTimed { id, request } => match step.wait_timeout(&id, &requests[&request], MINUTE).await {
+                Ok(Waited::Received(value)) => p.note(&id, json!({"received": value})),
+                Ok(Waited::TimedOut) => p.note(&id, json!("timedOut")),
+                Err(_) => {}
+            },
+            Op::Crash { id } => {
+                if p.glitch(&id) {
+                    panic!("the flow crashed");
+                }
+            }
+            Op::Gate { id } => {
+                if p.glitch(&id) {
+                    p.gate.notified().await;
+                }
             }
             Op::Typed { id, wait, to, answer } => {
                 let target = responder(&to);
@@ -2392,4 +2440,501 @@ async fn a_reply_redriven_by_the_dead_letters_is_ignored() {
     assert_eq!(unchanged(&test, "k").await, before, "nothing written");
     assert_parked(&test, "k", "done").await;
     assert!(probe.got().is_empty());
+}
+
+// Waits with a deadline (flow-wait-timeout).
+
+/// The timed wait `id` for the request `request`, with `timeout`.
+fn timed_op(id: &str, request: &str, timeout: Duration) -> Op {
+    Op::TimedWait { id: id.into(), request: request.into(), secs: timeout.as_secs(), nanos: timeout.subsec_nanos() }
+}
+
+/// What the probe notes for a received reply.
+fn received(value: Value) -> Value {
+    json!({ "received": value })
+}
+
+/// What the probe notes for a timeout.
+fn timed_out() -> Value {
+    json!("timedOut")
+}
+
+/// The wait entry `id` of the journal of `key`, as its deadline, its outcome and its selection.
+async fn timed_entry(
+    test: &TestActors,
+    key: &str,
+    id: &str,
+) -> (Option<Timestamp>, Option<WaitOutcome>, Vec<MessageId>) {
+    match state(test, key).await.journal.iter().find(|e| e.id() == id) {
+        Some(JournalEntry::Wait { until, outcome, received, .. }) => (*until, *outcome, received.clone()),
+        other => panic!("{key}: no wait `{id}`: {other:?}"),
+    }
+}
+
+/// Asserts that `key` waits at the open wait `wait` with the deadline `until`: its one pending message is the armed
+/// `Continue`, due then; returns it.
+async fn waiting(test: &TestActors, key: &str, wait: &str, until: Timestamp) -> Message {
+    assert_eq!(timed_entry(test, key, wait).await, (Some(until), None, vec![]), "{key}: open until its deadline");
+    let timer = armed(test, key).await;
+    assert_eq!(timer.deliver_at, until, "{key}: the armed continuation is due at the deadline");
+    assert_eq!(test.pending(&run(key)).await.len(), 1, "{key}: one continuation, no polling");
+    timer
+}
+
+/// Scenarios: New timed wait; Timer execution and later replay; and Correlation. The deadline counts from the claim
+/// of the wait's own turn, after a sleep, not from the request's; the open wait and its timer commit together; at the
+/// deadline a turn of its own commits the timeout and an immediate `Continue` with the timer chain's correlation id,
+/// running no code after the wait; the next execution returns `TimedOut`.
+#[tokio::test(start_paused = true)]
+async fn a_timed_wait_arms_its_deadline_from_its_own_claim_and_times_out_in_a_turn_of_its_own() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    test.create(&responder("r1"), &ResponderState::default()).await;
+    let ops = vec![
+        ask("ask", "r1", Answer::Later),
+        sleep("nap", MINUTE),
+        timed_op("done", "ask", MINUTE),
+        op(|id| Op::Step { id }, "after"),
+    ];
+    test.create(&run("k"), &FlowState::new(script(ops))).await;
+    test.send_with(&run("k"), FlowMsg::Continue, SendOptions::new().correlation_id("c-start")).await;
+    let t0 = test.now();
+    test.run_until_idle().await;
+    let version = test.version(&run("k")).await;
+    assert_eq!(test.advance_time_by(MINUTE).await, 1, "the sleep ends: the wait's turn");
+    assert_eq!(test.version(&run("k")).await, version + 1, "the open wait and its timer commit together");
+    let until = after(t0, MINUTE * 2);
+    let timer = waiting(&test, "k", "done", until).await;
+    assert_eq!((timer.retry.clone(), timer.correlation_id.as_deref()), (Some(three_attempts()), Some("c-start")));
+    assert!(probe.ids().is_empty() && probe.got().is_empty());
+
+    let ms = Duration::from_millis(1);
+    assert_eq!(test.advance_time_by(MINUTE - ms).await, 0, "no handler runs before the deadline");
+    tokio::time::sleep(ms).await;
+    let version = test.version(&run("k")).await;
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1, "the timer");
+    assert_eq!(test.version(&run("k")).await, version + 1, "one commit: the decision");
+    assert_eq!(timed_entry(&test, "k", "done").await, (Some(until), Some(WaitOutcome::TimedOut), vec![]));
+    assert_eq!(outcome(&test, &timer.id).await.unwrap().status, OutcomeStatus::Done);
+    assert!(probe.ids().is_empty() && probe.got().is_empty(), "the deciding turn runs no code after the wait");
+    let next = armed(&test, "k").await;
+    assert!(next.deliver_at <= test.now(), "due now");
+    assert_eq!((next.retry, next.correlation_id.as_deref()), (Some(three_attempts()), Some("c-start")));
+
+    test.run_until_idle().await;
+    assert_eq!(probe.got(), [("done".to_owned(), timed_out())]);
+    assert_eq!(probe.ids(), ["after"]);
+    assert_eq!(state(&test, "k").await.status, FlowStatus::Done);
+    assert_eq!(timed_entry(&test, "k", "done").await.0, Some(until), "the saved deadline stays");
+}
+
+/// Scenarios: Reply closes an open wait, with a deadline; and Correlation. The target's reply commits its value, the
+/// received outcome, the cancel of the deadline's `Continue` and an immediate one with the reply's correlation id,
+/// without flow code; the next execution returns the value.
+#[tokio::test(start_paused = true)]
+async fn a_reply_closes_a_timed_wait_cancels_its_deadline_and_arms_with_its_correlation() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    test.create(&responder("r1"), &ResponderState::default()).await;
+    let ops = vec![ask("ask", "r1", Answer::Later), timed_op("done", "ask", SLOW), op(|id| Op::Step { id }, "after")];
+    start(&test, "k", script(ops)).await;
+    let until = after(test.now(), SLOW);
+    test.run_until_idle().await;
+    let timer = waiting(&test, "k", "done", until).await;
+    let version = test.version(&run("k")).await;
+
+    let answer = ResponderMsg::Answer { value: json!({"ok": 1}) };
+    test.send_with(&responder("r1"), answer, SendOptions::new().correlation_id("c-answer")).await;
+    test.system().run_due_turns(1).await.unwrap(); // the target
+    test.system().run_due_turns(1).await.unwrap(); // the reply
+    assert_eq!(test.version(&run("k")).await, version + 1, "one commit");
+    let asked = request_id(&test, "k", "ask").await;
+    assert_eq!(timed_entry(&test, "k", "done").await, (Some(until), Some(WaitOutcome::Received), vec![asked.clone()]));
+    assert_eq!(state(&test, "k").await.replies, [kept(asked.as_str(), json!({"ok": 1}))]);
+    assert_eq!(outcome(&test, &timer.id).await.unwrap().status, OutcomeStatus::Cancelled, "the deadline's timer");
+    let next = armed(&test, "k").await;
+    assert!(next.deliver_at <= test.now(), "due now");
+    assert_eq!((next.retry, next.correlation_id.as_deref()), (Some(three_attempts()), Some("c-answer")));
+    assert!(probe.keys().is_empty() && probe.got().is_empty(), "the Reply turn runs no flow code");
+
+    test.run_until_idle().await;
+    assert_eq!(probe.got(), [("done".to_owned(), received(json!({"ok": 1})))]);
+    assert_eq!(probe.ids(), ["after"]);
+    assert_eq!(state(&test, "k").await.status, FlowStatus::Done);
+}
+
+/// Scenarios: Early reply and zero duration, of a reply kept before the wait; and Correlation. The new wait commits
+/// received with its deadline and an immediate `Continue` with the executing `Continue`'s correlation id; no timer.
+#[tokio::test(start_paused = true)]
+async fn an_early_reply_closes_a_new_timed_wait_at_once_with_its_deadline() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    test.create(&responder("r1"), &ResponderState::default()).await;
+    let ops = vec![ask("ask", "r1", now(json!(7))), op(|id| Op::Step { id }, "a"), timed_op("done", "ask", MINUTE)];
+    test.create(&run("k"), &FlowState::new(script(ops))).await;
+    test.send_with(&run("k"), FlowMsg::Continue, SendOptions::new().correlation_id("c1")).await;
+    for _ in 0..5 {
+        test.system().run_due_turns(1).await.unwrap(); // the poke, the request, the target, the step, the reply
+    }
+    assert_eq!(state(&test, "k").await.replies.len(), 1, "kept before the wait");
+    let version = test.version(&run("k")).await;
+    test.system().run_due_turns(1).await.unwrap(); // the new wait
+    assert_eq!(test.version(&run("k")).await, version + 1);
+    let asked = request_id(&test, "k", "ask").await;
+    let until = after(test.now(), MINUTE);
+    assert_eq!(timed_entry(&test, "k", "done").await, (Some(until), Some(WaitOutcome::Received), vec![asked]));
+    let next = armed(&test, "k").await;
+    assert!(next.deliver_at <= test.now(), "due now, not at the deadline");
+    assert_eq!(next.correlation_id.as_deref(), Some("c1"));
+    assert_eq!(test.pending(&run("k")).await.len(), 1, "no timer");
+    assert!(probe.got().is_empty());
+    test.run_until_idle().await;
+    assert_eq!(probe.got(), [("done".to_owned(), received(json!(7)))]);
+    assert_eq!(state(&test, "k").await.status, FlowStatus::Done);
+}
+
+/// Scenario: Correlation and timer classification. The deadline's `Continue` is a timer for observers; the immediate
+/// `Continue` after the timeout is one of the other sends.
+#[tokio::test(start_paused = true)]
+async fn the_deadline_continue_is_a_timer_and_the_one_after_the_decision_is_not() {
+    struct Picks;
+    impl cicada::observer::TurnObserver for Picks {
+        fn turn_started(&self, turn: &mut cicada::observer::TurnStart<'_>) -> Box<dyn cicada::observer::ObservedTurn> {
+            turn.add_header_for(cicada::observer::Sends::Timers, "timer", "yes");
+            turn.add_header_for(cicada::observer::Sends::Others, "timer", "no");
+            Box::new(())
+        }
+    }
+    let probe = Probe::default();
+    let flow = ScriptFlow { probe: probe.clone() };
+    let test = TestActors::builder()
+        .with(move |node| node.host(FlowActor::new(flow)).host(ResponderActor).observe(Picks))
+        .build()
+        .await
+        .unwrap();
+    test.create(&responder("r1"), &ResponderState::default()).await;
+    start(&test, "k", script(vec![ask("ask", "r1", Answer::Later), timed_op("done", "ask", MINUTE)])).await;
+    test.run_until_idle().await;
+    let timer = armed(&test, "k").await;
+    assert_eq!(timer.headers, [("timer".to_owned(), "yes".to_owned())].into());
+    tokio::time::sleep(MINUTE).await;
+    test.system().run_due_turns(1).await.unwrap();
+    assert_eq!(timed_entry(&test, "k", "done").await.1, Some(WaitOutcome::TimedOut));
+    assert_eq!(armed(&test, "k").await.headers, [("timer".to_owned(), "no".to_owned())].into());
+}
+
+/// Scenarios: Late reply after timeout; and Later failure cannot change the branch. After the timeout commits, the
+/// step after it fails transiently; a late reply from the target, also one 62 levels deep, is ignored before its value
+/// is checked, writing nothing; the retry still returns `TimedOut` and asks the target nothing again.
+#[tokio::test(start_paused = true)]
+async fn a_committed_timeout_survives_a_later_failure_and_a_late_reply() {
+    let probe = Probe::default();
+    probe.plan("after", &[Act::Fail]);
+    let test = node(&probe).await;
+    test.create(&responder("r1"), &ResponderState::default()).await;
+    let ops = vec![ask("ask", "r1", Answer::Later), timed_op("done", "ask", MINUTE), op(|id| Op::Step { id }, "after")];
+    start(&test, "k", script(ops)).await;
+    test.run_until_idle().await;
+    test.advance_time_by(MINUTE).await;
+    assert_eq!(timed_entry(&test, "k", "done").await.1, Some(WaitOutcome::TimedOut));
+    let failing = armed(&test, "k").await;
+    assert_eq!((failing.failures, failing.last_error.as_deref()), (1, Some("the service failed")));
+    assert_eq!(probe.got(), [("done".to_owned(), timed_out())], "the failed execution got the timeout");
+
+    let before = unchanged(&test, "k").await;
+    let asked = request_id(&test, "k", "ask").await;
+    test.send(&responder("r1"), ResponderMsg::Raw { run: addr(&run("k")), request: asked.clone(), depth: 62 }).await;
+    test.send(&responder("r1"), ResponderMsg::Answer { value: json!("late") }).await;
+    test.run_until_idle().await;
+    assert_eq!(unchanged(&test, "k").await, before, "late replies write nothing");
+    assert!(test.failures().await.is_empty(), "the deep reply is ignored before its value is checked");
+    assert!(state(&test, "k").await.replies.is_empty());
+
+    test.advance_time_by(BACKOFF).await;
+    assert_eq!(state(&test, "k").await.status, FlowStatus::Done);
+    assert_eq!(probe.got(), [("done".to_owned(), timed_out())], "still timed out");
+    assert_eq!(probe.ids(), ["after", "after"]);
+    assert_eq!(responder_state(&test, "r1").await.asked, 1, "the request is not sent again");
+}
+
+/// Scenario: Equal delivery times, in both orders. A reply due at the deadline races the deadline's `Continue`: the
+/// lower sequence number is handled first and its decision wins. A poke before the deadline re-arms the timer behind
+/// the reply.
+#[tokio::test(start_paused = true)]
+async fn a_reply_and_the_deadline_due_at_the_same_time_are_handled_in_sequence_order() {
+    for reply_first in [false, true] {
+        let probe = Probe::default();
+        let test = node(&probe).await;
+        test.create(&responder("r1"), &ResponderState::default()).await;
+        start(&test, "k", script(vec![ask("ask", "r1", Answer::Later), timed_op("done", "ask", MINUTE)])).await;
+        let until = after(test.now(), MINUTE);
+        test.run_until_idle().await;
+        test.send(&responder("r1"), ResponderMsg::AnswerAt { value: json!("v"), at: until }).await;
+        test.run_until_idle().await;
+        if reply_first {
+            test.send(&run("k"), FlowMsg::Continue).await;
+            test.run_until_idle().await;
+        }
+        let pending = test.pending(&run("k")).await;
+        let order: Vec<_> = pending.iter().map(|m| (m.message_type.as_str(), m.deliver_at)).collect();
+        let expected = if reply_first { ["Reply", "Continue"] } else { ["Continue", "Reply"] };
+        assert_eq!(order, [(expected[0], until), (expected[1], until)], "reply first: {reply_first}");
+
+        test.advance_time_by(MINUTE).await;
+        let (wins, outcome) = if reply_first {
+            (received(json!("v")), WaitOutcome::Received)
+        } else {
+            (timed_out(), WaitOutcome::TimedOut)
+        };
+        assert_eq!(probe.got(), [("done".to_owned(), wins)], "reply first: {reply_first}");
+        assert_eq!(timed_entry(&test, "k", "done").await.1, Some(outcome), "reply first: {reply_first}");
+        assert_eq!(state(&test, "k").await.status, FlowStatus::Done);
+        assert!(test.failures().await.is_empty(), "the losing message is handled without failing");
+    }
+}
+
+/// Scenario: Early reply and zero duration. Without a reply a zero timeout commits the wait open first and times out
+/// in the next turn; a reply kept before the wait closes it at once; a reply queued before the zero timer wins it.
+#[tokio::test(start_paused = true)]
+async fn a_zero_timeout_commits_open_first_and_a_queued_or_early_reply_still_wins() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    test.create(&responder("r1"), &ResponderState::default()).await;
+    start(&test, "k", script(vec![ask("ask", "r1", Answer::Later), timed_op("done", "ask", Duration::ZERO)])).await;
+    for _ in 0..3 {
+        test.system().run_due_turns(1).await.unwrap(); // the poke, the request, the target
+    }
+    let version = test.version(&run("k")).await;
+    test.system().run_due_turns(1).await.unwrap(); // the new wait
+    assert_eq!(test.version(&run("k")).await, version + 1);
+    waiting(&test, "k", "done", test.now()).await;
+    assert!(probe.got().is_empty());
+    test.system().run_due_turns(1).await.unwrap(); // the timer, due at once
+    assert_eq!(timed_entry(&test, "k", "done").await, (Some(test.now()), Some(WaitOutcome::TimedOut), vec![]));
+    assert!(probe.got().is_empty(), "decided, not yet returned");
+    test.run_until_idle().await;
+    assert_eq!(probe.got(), [("done".to_owned(), timed_out())]);
+
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    test.create(&responder("r1"), &ResponderState::default()).await;
+    let early =
+        vec![ask("ask", "r1", now(json!(1))), op(|id| Op::Step { id }, "a"), timed_op("done", "ask", Duration::ZERO)];
+    start(&test, "early", script(early)).await;
+    start(&test, "queued", script(vec![ask("ask", "r1", now(json!(2))), timed_op("done", "ask", Duration::ZERO)]))
+        .await;
+    test.run_until_idle().await;
+    let got = probe.got();
+    assert!(got.contains(&("done".to_owned(), received(json!(1)))), "{got:?}");
+    assert!(got.contains(&("done".to_owned(), received(json!(2)))), "{got:?}");
+    for key in ["early", "queued"] {
+        assert_eq!(timed_entry(&test, key, "done").await.1, Some(WaitOutcome::Received), "{key}");
+        assert_eq!(state(&test, key).await.status, FlowStatus::Done, "{key}");
+    }
+}
+
+/// Scenario: Supplied reply past the deadline. Supplied progress with an open timed wait past its deadline commits
+/// received when it keeps the reply, and timed out when it does not, each before a later turn returns it.
+#[tokio::test(start_paused = true)]
+async fn supplied_open_timed_progress_past_its_deadline_decides_by_its_kept_reply() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    let ops = vec![ask("ask", "r1", Answer::Later), timed_op("done", "ask", MINUTE)];
+    let journal =
+        vec![saved_request("ask", "r1", "m1"), open_wait("done", &["m1"], WaitMode::All, Some("2020-01-01T00:00:00Z"))];
+    let replied =
+        FlowState { replies: vec![kept("m1", json!("given"))], ..restored(script(ops.clone()), journal.clone()) };
+    let m1 = MessageId::new("m1").unwrap();
+    for (key, progress, decided, selected, got) in [
+        ("replied", replied, WaitOutcome::Received, vec![m1], received(json!("given"))),
+        ("silent", restored(script(ops), journal), WaitOutcome::TimedOut, vec![], timed_out()),
+    ] {
+        start_with(&test, key, progress).await;
+        test.system().run_due_turns(1).await.unwrap(); // the poke
+        test.system().run_due_turns(1).await.unwrap(); // the decision
+        assert_eq!(timed_entry(&test, key, "done").await.1, Some(decided), "{key}");
+        assert_eq!(timed_entry(&test, key, "done").await.2, selected, "{key}");
+        assert!(!probe.got().iter().any(|(_, v)| *v == got), "{key}: decided, not yet returned");
+        test.run_until_idle().await;
+        assert!(probe.got().contains(&("done".to_owned(), got)), "{key}");
+        assert_eq!(state(&test, key).await.status, FlowStatus::Done, "{key}");
+    }
+    assert!(!test.exists(&responder("r1")).await, "the saved request is not sent again");
+}
+
+/// Scenarios: Recovery after a missing timer; and Reply after deadline with no timer. A deadline `Continue` that is
+/// cancelled, purged or failed for good leaves the wait open past its deadline with nothing pending; a reply handled
+/// then wins with its correlation id, and otherwise a public `Continue` recovers the timeout.
+#[tokio::test(start_paused = true)]
+async fn a_lost_deadline_continue_leaves_the_wait_open_for_a_reply_or_a_public_continue() {
+    for how in ["cancel", "purge", "fail"] {
+        for recovery in ["reply", "poke"] {
+            let case = format!("{how} then {recovery}");
+            let probe = Probe::default();
+            let test = node(&probe).await;
+            test.create(&responder("r1"), &ResponderState::default()).await;
+            let ops = vec![
+                ask("ask", "r1", Answer::Later),
+                op(|id| Op::Glitch { id }, "g"),
+                timed_op("done", "ask", MINUTE),
+                op(|id| Op::Step { id }, "after"),
+            ];
+            start(&test, "k", script(ops)).await;
+            let until = after(test.now(), MINUTE);
+            test.run_until_idle().await;
+            let timer = waiting(&test, "k", "done", until).await;
+            match how {
+                "cancel" => drop(test.system().cancel(&timer.id).await.unwrap()),
+                "purge" => drop(test.system().purge_mailbox(&addr(&run("k"))).await.unwrap()),
+                _ => probe.plan("g", &[Act::Fail, Act::Fail, Act::Fail]),
+            }
+            test.advance_time_by(MINUTE * 2).await;
+            if how == "fail" {
+                let record = outcome(&test, &timer.id).await.unwrap();
+                assert_eq!((record.status, record.envelope.failures), (OutcomeStatus::Failed, 2), "{case}");
+            }
+            assert_eq!(test.advance_time_by(SLOW).await, 0, "{case}: nothing polls");
+            assert_eq!(timed_entry(&test, "k", "done").await, (Some(until), None, vec![]), "{case}: still open");
+            assert!(test.pending(&run("k")).await.is_empty(), "{case}");
+            assert!(probe.got().is_empty(), "{case}");
+
+            if recovery == "reply" {
+                let answer = ResponderMsg::Answer { value: json!("late") };
+                test.send_with(&responder("r1"), answer, SendOptions::new().correlation_id("c-late")).await;
+                test.system().run_due_turns(1).await.unwrap(); // the target
+                test.system().run_due_turns(1).await.unwrap(); // the reply, past the deadline
+                assert_eq!(timed_entry(&test, "k", "done").await.1, Some(WaitOutcome::Received), "{case}");
+                assert_eq!(armed(&test, "k").await.correlation_id.as_deref(), Some("c-late"), "{case}");
+            } else {
+                test.send(&run("k"), FlowMsg::Continue).await;
+            }
+            test.run_until_idle().await;
+            let wins = if recovery == "reply" { received(json!("late")) } else { timed_out() };
+            assert_eq!(probe.got(), [("done".to_owned(), wins)], "{case}");
+            assert_eq!(state(&test, "k").await.status, FlowStatus::Done, "{case}");
+        }
+    }
+}
+
+/// Scenarios: Early execution; and Recovery. A public `Continue` before the deadline normalizes and re-arms at the
+/// saved deadline without a new entry; a deliver-now of the timer does the same; the timeout still comes at the
+/// deadline.
+#[tokio::test(start_paused = true)]
+async fn a_poke_or_a_deliver_now_before_the_deadline_rearms_at_the_saved_deadline() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    test.create(&responder("r1"), &ResponderState::default()).await;
+    start(&test, "k", script(vec![ask("ask", "r1", Answer::Later), timed_op("done", "ask", MINUTE)])).await;
+    let until = after(test.now(), MINUTE);
+    test.run_until_idle().await;
+    let timer = waiting(&test, "k", "done", until).await;
+    let journal = state(&test, "k").await.journal;
+    test.advance_time_by(SECOND * 10).await;
+
+    let version = test.version(&run("k")).await;
+    test.send(&run("k"), FlowMsg::Continue).await;
+    test.run_until_idle().await;
+    assert_eq!(outcome(&test, &timer.id).await.unwrap().status, OutcomeStatus::Cancelled, "replaced");
+    let rearmed = waiting(&test, "k", "done", until).await;
+    assert!(rearmed.id != timer.id);
+    assert_eq!(test.version(&run("k")).await, version + 2, "arm now, then re-arm; no entry");
+    assert_eq!(state(&test, "k").await.journal, journal);
+
+    let DeliverNowResult::Delivered(_) = test.system().deliver_now(&rearmed.id).await.unwrap() else {
+        panic!("delivered now")
+    };
+    assert_eq!(test.run_until_idle().await, 1);
+    assert_eq!(outcome(&test, &rearmed.id).await.unwrap().status, OutcomeStatus::Done, "not cancelled by itself");
+    let again = waiting(&test, "k", "done", until).await;
+    assert!(again.id != rearmed.id);
+    assert!(probe.got().is_empty(), "nothing shortened the deadline");
+
+    test.advance_time_by(MINUTE).await;
+    assert_eq!(probe.got(), [("done".to_owned(), timed_out())]);
+}
+
+/// Scenario: Delayed commit and pause, of a pause. Messages of a paused run keep their mailbox order: a reply due
+/// before the deadline wins after resume, and one due after it loses to the timer and is ignored.
+#[tokio::test(start_paused = true)]
+async fn a_paused_run_decides_by_mailbox_order_after_resume() {
+    for reply_first in [true, false] {
+        let probe = Probe::default();
+        let test = node(&probe).await;
+        test.create(&responder("r1"), &ResponderState::default()).await;
+        start(&test, "k", script(vec![ask("ask", "r1", Answer::Later), timed_op("done", "ask", MINUTE)])).await;
+        test.run_until_idle().await;
+        assert!(test.system().pause_mailbox(&addr(&run("k"))).await.unwrap());
+        let answer_after = if reply_first { SECOND * 30 } else { MINUTE * 2 };
+        test.advance_time_by(answer_after).await;
+        test.send(&responder("r1"), ResponderMsg::Answer { value: json!("v") }).await;
+        test.advance_time_by(MINUTE * 3).await;
+        assert!(probe.got().is_empty() && state(&test, "k").await.replies.is_empty(), "paused");
+        assert!(test.system().resume_mailbox(&addr(&run("k"))).await.unwrap());
+        test.run_until_idle().await;
+        let wins = if reply_first { received(json!("v")) } else { timed_out() };
+        assert_eq!(probe.got(), [("done".to_owned(), wins)], "reply first: {reply_first}");
+        assert!(test.failures().await.is_empty(), "reply first: {reply_first}");
+    }
+}
+
+/// Scenario: Failed decision. The timer's execution latches the timeout, then the flow code panics: nothing commits,
+/// no branch was returned and the wait stays open; a reply handled before the retry closes it as received.
+#[tokio::test(start_paused = true)]
+async fn a_decision_that_does_not_commit_lets_a_reply_win() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    test.create(&responder("r1"), &ResponderState::default()).await;
+    let ops = vec![
+        ask("ask", "r1", Answer::Later),
+        Op::SwallowTimed { id: "done".into(), request: "ask".into() },
+        op(|id| Op::Crash { id }, "x"),
+        op(|id| Op::Step { id }, "after"),
+    ];
+    start(&test, "k", script(ops)).await;
+    test.run_until_idle().await;
+    let timer = armed(&test, "k").await;
+    probe.plan("x", &[Act::Panic]);
+    test.advance_time_by(MINUTE).await;
+    let retried = armed(&test, "k").await;
+    assert_eq!(retried.id, timer.id);
+    assert_eq!((retried.failures, retried.last_error.as_deref()), (1, Some("panic: the flow crashed")));
+    assert_eq!(timed_entry(&test, "k", "done").await.1, None, "the latched timeout did not commit");
+    assert!(probe.got().is_empty() && probe.ids().is_empty());
+
+    test.send(&responder("r1"), ResponderMsg::Answer { value: json!("v") }).await;
+    test.run_until_idle().await;
+    assert_eq!(timed_entry(&test, "k", "done").await.1, Some(WaitOutcome::Received));
+    assert_eq!(outcome(&test, &timer.id).await.unwrap().status, OutcomeStatus::Cancelled, "the retry is replaced");
+    assert_eq!(probe.got(), [("done".to_owned(), received(json!("v")))]);
+    assert_eq!(probe.ids(), ["after"]);
+}
+
+/// Scenario: Delayed commit and pause, of a slow commit. The wait's turn is held at a barrier past its deadline: the
+/// saved deadline still counts from the claim, the core makes the past timer due at commit, and the timeout decided
+/// next leaves the saved deadline as it was.
+#[tokio::test(start_paused = true)]
+async fn a_slow_commit_makes_the_timer_due_late_without_moving_the_saved_deadline() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    test.create(&responder("r1"), &ResponderState::default()).await;
+    let ops = vec![ask("ask", "r1", Answer::Later), op(|id| Op::Gate { id }, "g"), timed_op("done", "ask", MINUTE)];
+    start(&test, "k", script(ops)).await;
+    for _ in 0..3 {
+        test.system().run_due_turns(1).await.unwrap(); // the poke, the request, the target
+    }
+    probe.plan("g", &[Act::Slow]);
+    let claim = test.now();
+    let system = test.system().clone();
+    let turn = tokio::spawn(async move { system.run_due_turns(1).await.unwrap() });
+    tokio::time::sleep(MINUTE * 2).await;
+    assert!(!turn.is_finished(), "held at the barrier");
+    probe.gate.notify_one();
+    assert_eq!(turn.await.unwrap(), 1);
+    let until = after(claim, MINUTE);
+    assert_eq!(timed_entry(&test, "k", "done").await, (Some(until), None, vec![]), "from the claim");
+    let timer = armed(&test, "k").await;
+    assert!(timer.deliver_at > until, "due at commit, after the deadline: {} > {until}", timer.deliver_at);
+    test.run_until_idle().await;
+    assert_eq!(timed_entry(&test, "k", "done").await, (Some(until), Some(WaitOutcome::TimedOut), vec![]));
+    assert_eq!(probe.got(), [("done".to_owned(), timed_out())]);
 }

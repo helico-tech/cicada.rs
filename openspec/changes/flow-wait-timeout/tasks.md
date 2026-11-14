@@ -7,13 +7,13 @@
   with an early reply, ignored invalid duration on replay, handle/id/API misuse, 1000/1001, first latch, unpolled calls,
   typed decode errors and caught deserializer panic. Run the flow unit tests and public API doctests; verify inferred
   T and a Send flow future. Preserve existing indefinite wait and sleep tests.
-- [ ] 2. Extend runner handling to arm At(until) for new timed waits, close and arm now for decisions, and re-arm
+- [x] 2. Extend runner handling to arm At(until) for new timed waits, close and arm now for decisions, and re-arm
   unchanged saved times before due. Reply turns close eligible timed single waits without consulting the clock;
   cancel older armed work without cancelling the current message. Keep joins/Cancel/cancelling refused. With
   start_paused/TestActors, prove open and closing effects are atomic, deciding turns run no code after the wait,
   Received/TimedOut data appears only on committed replay, late replies leave state/version unchanged even with a
   depth-62 value, and correlations and timer/immediate classification follow existing rules. Run targeted flow tests.
-- [ ] 3. Add virtual-time race/recovery tests for equal deliverAt in both seq orders, zero timeout with and without
+- [x] 3. Add virtual-time race/recovery tests for equal deliverAt in both seq orders, zero timeout with and without
   an early/queued reply, supplied open timed progress with a reply past until, a purged/cancelled/failed timer,
   public Continue normalization, deliver-now before the deadline, and pause/resume with both mailbox orders. Use
   existing fault/rejection harnesses to prove a failed decision has no committed branch and a reply can win before a
