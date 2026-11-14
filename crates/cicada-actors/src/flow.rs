@@ -511,13 +511,17 @@ fn check_waits<'s>(
 ) -> Result<Waits<'s>, String> {
     let mut waits = Waits::default();
     for (index, entry) in journal.iter().enumerate() {
+        if let Some(open) = waits.open {
+            return Err(format!(
+                "{} `{}` of {phase} follows the open wait `{open}`, which must be the last entry",
+                entry.kind(),
+                entry.id()
+            ));
+        }
         let JournalEntry::Wait { id, requests, mode, until, outcome, received } = entry else {
             continue;
         };
         let refuse = |problem: String| Err(format!("wait `{id}` of {phase} {problem}"));
-        if let Some(open) = waits.open {
-            return refuse(format!("follows the open wait `{open}`"));
-        }
         if requests.is_empty() || requests.len() > MAX_WAIT_REQUESTS {
             return refuse(format!("names 1 through {MAX_WAIT_REQUESTS} requests, had {}", requests.len()));
         }
@@ -1551,6 +1555,19 @@ mod state_tests {
         journal.push(json!({"kind": "wait", "id": "w", "requests": names[..100], "mode": "all"}));
         accepted(running(journal, vec![]));
         refused(with("cancelling", vec![], vec![], vec![open("w", &["m1"], "all")]), "no earlier request");
+        let sleep = json!({"kind": "sleep", "id": "after", "until": "2026-11-14T00:00:00Z"});
+        for (successor, kind) in [
+            (step("after"), "step"),
+            (sleep, "sleep"),
+            (send("after", "m9"), "send"),
+            (request("after", "m9"), "request"),
+        ] {
+            let why = format!("{kind} `after` of the journal follows the open wait `w`");
+            refused(running(vec![r("r", "m1"), open("w", &["m1"], "all"), successor.clone()], vec![]), &why);
+            let cleanup = vec![r("c", "c1"), open("w", &["c1"], "all"), successor];
+            let why = format!("{kind} `after` of the cleanup journal follows the open wait `w`");
+            refused(with("cancelling", vec![], vec![], cleanup), &why);
+        }
         refused(with("cancelling", vec![open("w", &["c1"], "all")], vec![], vec![r("c", "c1")]), "no earlier request");
     }
 
