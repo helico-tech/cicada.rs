@@ -7,6 +7,16 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.17.1 — unreleased
+
+A fix for PostgreSQL stores; no public API, contract, wire format or schema changes.
+
+### Fixed
+
+- Closing a PostgreSQL store no longer leaves the listener's probe running. The probe ran in a task of its own, which
+  the stop of the listener did not end, so it kept the listener's pool of two connections open after the store was
+  closed. It now runs inside the listener's task and ends with it, and both connections close.
+
 ## 0.17.0 — 2026-11-14
 
 A breaking release for systems with dead letters: a letter keeps every payload that was accepted when it was sent, so

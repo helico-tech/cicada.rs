@@ -1,6 +1,6 @@
 ## Implementation
 
-- [ ] 1. Strengthen the PostgreSQL close regression in crates/cicada/src/tests/postgres/changes.rs. Keep its stream,
+- [x] 1. Strengthen the PostgreSQL close regression in crates/cicada/src/tests/postgres/changes.rs. Keep its stream,
   unavailable and no-restart assertions. Use a separate test PgListener on the isolated TestDb channel, wait with a
   timeout for PROBE_PAYLOAD and save its notification sender PID. Capture the production listener PID before close
   from its application name and LISTEN query containing the test channel; require one distinct listener and keep
@@ -9,7 +9,9 @@
   production application_name or introduce test hooks. Run this targeted test with CICADA_PG_URL against the unfixed
   listener first and record the expected failure with the surviving probe PID. Use the existing real-PostgreSQL
   multi-thread harness and bounded positive-condition waits, not paused-time socket waits or a fixed pre-close sleep.
-- [ ] 2. In Run::run, replace the spawned probe and its explicit abort with tokio::select! over receive and a scoped
+  Recorded: against the unfixed listener it timed out after 10 s with both saved PIDs left (listener 542244, probe
+  542258): the detached probe kept the shared pool, so the returned listener connection stayed too.
+- [x] 2. In Run::run, replace the spawned probe and its explicit abort with tokio::select! over receive and a scoped
   probe borrowing the attempt's pool/channel. Have the probe loop return Infallible; preserve cadence, silence timeout,
   error logging, hub transitions, fresh pools and reconnect backoff. Update listener/connect doc comments to describe
   scoped ownership and asynchronous driver cleanup; add the changelog entry and next patch version at build time.

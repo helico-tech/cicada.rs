@@ -1,5 +1,6 @@
 //! The listener: one dedicated connection that `LISTEN`s on the store's channel and feeds the store's change hub.
 
+use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -33,7 +34,8 @@ pub(crate) const PROBE_PAYLOAD: &str = "!cicada-listener-probe";
 /// fails or is lost, it is dropped and re-opened after a back-off that starts at 250 ms and doubles up to 30 s. sqlx's
 /// own eager reconnect is off, so that every reconnect goes through `LISTEN` before the hub goes up again:
 /// notifications sent while disconnected are lost, and the hub's `Up` makes every subscriber resync and every wake-up
-/// stream wake.
+/// stream wake. The probe runs inside the listener's task, not in one of its own: it ends with its connection attempt,
+/// or with the task when [`Self::stop`] or `Drop` aborts it, so nothing keeps the attempt's pool after the store closes.
 pub(crate) struct NotificationListener {
     channel: String,
     options: PgConnectOptions,
@@ -100,9 +102,12 @@ impl Run {
                 Ok((mut listener, pool)) => {
                     self.hub.up();
                     backoff = RECONNECT_DELAY;
-                    let probe = tokio::spawn(probe(pool, self.channel.clone()));
-                    let error = self.receive(&mut listener).await;
-                    probe.abort();
+                    // The probe runs inside this future, so it ends with the attempt, or with the task when it is
+                    // aborted: no separate task can keep the attempt's pool alive.
+                    let error = tokio::select! {
+                        error = self.receive(&mut listener) => error,
+                        never = probe(&pool, &self.channel) => match never {},
+                    };
                     self.hub.down();
                     tracing::warn!(
                         "Listener on '{}' lost its connection ({error}); reconnecting in {backoff:?}",
@@ -120,7 +125,8 @@ impl Run {
 
     /// A listener on a fresh pool of two connections: one for `LISTEN`, one for probes. Fresh, so that a hanging
     /// connection of an earlier attempt (whose clean-up may never finish) cannot block this one. Returns once `LISTEN`
-    /// succeeded.
+    /// succeeded. The attempt's future owns the pool: dropping it releases Cicada's handles, while sqlx may still finish
+    /// returning or closing a connection in its own tasks, which the listener does not wait for.
     async fn connect(&self) -> Result<(PgListener, PgPool), sqlx::Error> {
         let pool = PgPoolOptions::new()
             .max_connections(2)
@@ -154,11 +160,12 @@ impl Run {
     }
 }
 
-/// Sends a probe notification on `channel` every [`PROBE_INTERVAL`].
-async fn probe(pool: PgPool, channel: String) {
+/// Sends a probe notification on `channel` every [`PROBE_INTERVAL`], on the attempt's `pool`; never returns, so it ends
+/// only when the attempt's future drops it.
+async fn probe(pool: &PgPool, channel: &str) -> Infallible {
     loop {
         sleep(PROBE_INTERVAL).await;
-        let sent = sqlx::query("SELECT pg_notify($1, $2)").bind(&channel).bind(PROBE_PAYLOAD).execute(&pool).await;
+        let sent = sqlx::query("SELECT pg_notify($1, $2)").bind(channel).bind(PROBE_PAYLOAD).execute(pool).await;
         if let Err(e) = sent {
             tracing::debug!("Listener probe on '{channel}' failed: {e}");
         }

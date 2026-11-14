@@ -8,6 +8,7 @@ use std::time::Duration;
 use futures::StreamExt;
 use serde_json::json;
 use sqlx::AssertSqlSafe;
+use sqlx::postgres::PgListener;
 use tokio::time::timeout;
 
 use super::common::{TestDb, eventually, test_db};
@@ -327,24 +328,48 @@ async fn closing_the_store_ends_its_streams_and_a_later_subscription_and_never_r
     let db = test_db!("c");
     let store = open(&db).await;
     let mut changes = subscribe(&store, "").await;
+    let channel = db.config().effective_channel();
+    // The probe's connection: the sender of a probe notification, seen by an observer outside the store's pools.
+    let mut observer = PgListener::connect(&db.url).await.unwrap();
+    observer.listen(&channel).await.unwrap();
+    let probe = timeout(Duration::from_secs(15), async {
+        loop {
+            let notification = observer.recv().await.unwrap();
+            if notification.payload() == "!cicada-listener-probe" {
+                return notification.process_id() as i32;
+            }
+        }
+    })
+    .await
+    .expect("a probe in time");
+    drop(observer);
+    let mut c = db.connect().await;
+    let listener: Vec<i32> = sqlx::query_scalar(
+        "SELECT pid FROM pg_stat_activity WHERE application_name = 'cicada-listener' AND query LIKE '%' || $1 || '%'",
+    )
+    .bind(&channel)
+    .fetch_all(&mut c)
+    .await
+    .unwrap();
+    assert_eq!(listener.len(), 1, "one listener backend");
+    let listener = listener[0];
+    assert_ne!(listener, probe, "the probe has its own connection");
     store.create(&addr("queued"), json!({})).await.unwrap();
     store.close().await;
     assert_eq!(next(&mut changes).await, None);
     let mut later = ActorChanges::new(store.changes(), "");
     assert_eq!(next(&mut later).await, None);
     assert!(!store.is_listening());
-    let channel = db.config().effective_channel();
-    eventually(Duration::from_secs(10), "no listener connection is left", || async {
+    // By the saved process ids: the probe's query has parameters, and the listener's last one may be its UNLISTEN.
+    drop(c);
+    eventually(Duration::from_secs(10), "neither the listener's nor the probe's connection is left", || async {
         let mut c = db.connect().await;
-        let listeners: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM pg_stat_activity
-             WHERE application_name = 'cicada-listener' AND query LIKE '%' || $1 || '%'",
-        )
-        .bind(&channel)
-        .fetch_one(&mut c)
-        .await
-        .unwrap();
-        listeners == 0
+        let left: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE pid = ANY($1)")
+            .bind(vec![listener, probe])
+            .fetch_one(&mut c)
+            .await
+            .unwrap();
+        left == 0
     })
     .await;
     assert!(matches!(store.create(&addr("x"), json!({})).await, Err(StoreError::Unavailable(_))));
