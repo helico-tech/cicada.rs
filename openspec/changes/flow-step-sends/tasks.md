@@ -1,6 +1,6 @@
 ## Implementation
 
-- [ ] 1. Add the shared flow wire types and typed state checks from ADR 0044: Reply/Cancel, statuses, send/wait
+- [x] 1. Add the shared flow wire types and typed state checks from ADR 0044: Reply/Cancel, statuses, send/wait
   entries, replies and cleanup. Keep required JSON values distinct from missing fields, and schema bounds distinct
   from cross-field validation. Add unit cases for every invariant, including interrupted main/closed cleanup overlap,
   deadlines, reply references, duplicate ids, separate phase ids and terminal states. Preserve supported old step/sleep

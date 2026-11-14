@@ -292,7 +292,9 @@ async fn one_commit_creates_and_starts_a_run_of_each_subscribed_flow_keyed_by_th
     assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1, "the publication alone");
     assert_eq!(outcome_of(&test, &publish).await.0, OutcomeStatus::Done);
     assert_eq!(runs(&test).await, ["shop.email/event-17", "shop.fulfil/event-17"]);
-    let initial = json!({"input": {"order": 7}, "journal": [], "status": "running", "armed": null});
+    // FlowState::new as raw JSON, with the defaults of ADR 0044; the event's own contract stays as it was.
+    let initial = json!({"input": {"order": 7}, "journal": [], "status": "running", "armed": null, "replies": [],
+        "cleanup": []});
     for run in [addr(&email("event-17")), addr(&fulfil("event-17"))] {
         assert_eq!(test.system().get_actor(&run).await.unwrap().unwrap().state, initial, "{run}");
         let pending = test.pending_at(&run).await;

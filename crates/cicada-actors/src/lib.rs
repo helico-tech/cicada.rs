@@ -38,7 +38,10 @@ pub use dead_letters::{
 pub use debouncer::{DebouncedMessage, Debouncer, DebouncerActor, DebouncerMsg, DebouncerState, InvalidDebounce};
 pub use error::EncodeError;
 pub use event::{Event, EventActor, EventMsg, EventState};
-pub use flow::{Flow, FlowActor, FlowMsg, FlowRun, FlowState, FlowStatus, JournalEntry, Step};
+pub use flow::{
+    CreateKind, Flow, FlowActor, FlowMsg, FlowReply, FlowRun, FlowState, FlowStatus, JournalEntry, Step, WaitMode,
+    WaitOutcome,
+};
 pub use rate_limiter::{InvalidRate, RateLimiter, RateLimiterActor, RateLimiterMsg, RateLimiterState};
 pub use schedule::{Schedule, ScheduleError};
 pub use scheduler::{Scheduler, SchedulerActor, SchedulerMsg, SchedulerState};

@@ -2,7 +2,7 @@
 //! results its journal holds and executes one new step or sleep per turn, saving it and arming the next `Continue` in
 //! the same commit; a sleep's `Continue` is due at its saved wake time.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::future::Future;
 use std::marker::PhantomData;
@@ -18,6 +18,10 @@ use crate::supervisor::retry_policy;
 
 /// The most entries a journal may hold.
 const MAX_ENTRIES: usize = 1_000;
+/// The most replies a run keeps: one per request, of at most 2000 sends.
+const MAX_REPLIES: usize = 2_000;
+/// The most requests a wait names.
+const MAX_WAIT_REQUESTS: usize = 100;
 /// The longest step id, in characters.
 const MAX_ID_LENGTH: usize = 100;
 /// The deepest result: the state, the journal and the entry add three levels to the core's 64.
@@ -111,25 +115,80 @@ impl<F: Flow> ActorRef for FlowRun<F> {
     type Message = FlowMsg;
 }
 
-/// The messages of a [`FlowRun`].
+/// The messages of a [`FlowRun`]. The wire holds `Reply` and `Cancel` (ADR 0044) ahead of the releases that implement
+/// them: this release refuses both for good, so upgrade every host and worker of a flow type before sending them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type")]
 pub enum FlowMsg {
-    /// Starts or recovers a running run; a done run ignores it. Sent by a host, it cancels the armed continuation and
-    /// arms a fresh one with the flow's retry policy, without running flow code; the armed one replays the flow and
-    /// executes its next step.
+    /// Starts or recovers a running run; a done or cancelled run ignores it. Sent by a host, it cancels the armed
+    /// continuation and arms a fresh one with the flow's retry policy, without running flow code; the armed one replays
+    /// the flow and executes its next step.
     Continue,
+    /// The reply of a target to a request of the run; refused for good by this release, which sends no requests.
+    Reply {
+        /// The id of the request's message, saved with its send entry.
+        request: MessageId,
+        /// The reply's JSON, `null` included; required, so a missing value is not `null`.
+        value: Value,
+    },
+    /// Asks the run to stop; refused for good by this release.
+    Cancel,
 }
 
-/// Whether a run is still running.
+/// The phase of a run. This release executes only running runs; `cancelling` and `cancelled` are on the wire for later
+/// releases (ADR 0044).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum FlowStatus {
     /// Steps remain, or the flow has not yet returned.
     #[default]
     Running,
+    /// A cancelled run whose cleanup has not finished; refused for good by this release.
+    Cancelling,
     /// The flow returned `Ok` after replaying every saved entry; the run keeps its state until it is deleted.
     Done,
+    /// A cancelled run; it keeps its state until it is deleted.
+    Cancelled,
+}
+
+/// How a send entry created its target before its message: as an independent actor or as a child of the run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum CreateKind {
+    /// Created with no parent, as [`Turn::create_raw`] does: an actor that exists already is left untouched.
+    Independent,
+    /// Created as a child of the run, as [`Turn::create_child_raw`] does: an actor owned elsewhere rejects the commit.
+    Child,
+}
+
+/// Whether a wait needs every listed reply or the first one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum WaitMode {
+    /// Every request's reply.
+    All,
+    /// The first accepted reply of any request.
+    First,
+}
+
+/// How a wait ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum WaitOutcome {
+    /// The replies it needed arrived.
+    Received,
+    /// Its deadline passed first.
+    TimedOut,
+}
+
+/// A reply a run kept for a request of one of its send entries.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FlowReply {
+    /// The id of the request's message.
+    pub request: MessageId,
+    /// The reply's JSON, `null` included; required, so a missing value is not `null`.
+    pub value: Value,
 }
 
 /// One saved entry of a journal.
@@ -138,7 +197,7 @@ pub enum FlowStatus {
 pub enum JournalEntry {
     /// The saved result of a step.
     Step {
-        /// The step id: 1 through 100 characters of `A-Za-z0-9._~-:`, unique in the run.
+        /// The step id: 1 through 100 characters of `A-Za-z0-9._~-:`, unique in its journal.
         #[schemars(length(min = 1, max = 100), regex(pattern = r"^[A-Za-z0-9._~:-]+$"))]
         id: String,
         /// The JSON result of its closure, `null` included.
@@ -152,31 +211,83 @@ pub enum JournalEntry {
         /// When the sleep ends; at most `MAX_INSTANT`.
         until: Timestamp,
     },
+    /// A message of [`Step::send`], enqueued in the commit that saved this entry, after the create of its target if
+    /// any. Neither the message nor the initial state is saved.
+    #[serde(rename_all = "camelCase")]
+    Send {
+        /// The send id, from the same namespace as the step ids.
+        #[schemars(length(min = 1, max = 100), regex(pattern = r"^[A-Za-z0-9._~:-]+$"))]
+        id: String,
+        /// Where the message went.
+        to: ActorAddress,
+        /// The id of the message; unique among the sends of both journals.
+        message: MessageId,
+        /// How the target was created in the same commit; absent or null: not created.
+        #[serde(default)]
+        create: Option<CreateKind>,
+        /// Whether the message is a request that a reply answers; absent: false. This release sends no requests.
+        #[serde(default)]
+        reply: bool,
+    },
+    /// A wait for the replies of earlier requests; this release does not execute waits.
+    #[serde(rename_all = "camelCase")]
+    Wait {
+        /// The wait id, from the same namespace as the step ids.
+        #[schemars(length(min = 1, max = 100), regex(pattern = r"^[A-Za-z0-9._~:-]+$"))]
+        id: String,
+        /// The message ids of the requests it waits for: 1 through 100, unique.
+        #[schemars(length(min = 1, max = 100))]
+        requests: Vec<MessageId>,
+        /// Every reply or the first one.
+        mode: WaitMode,
+        /// Its deadline; absent or null: none. At most `MAX_INSTANT`.
+        #[serde(default)]
+        until: Option<Timestamp>,
+        /// How it ended; absent or null: it is open.
+        #[serde(default)]
+        outcome: Option<WaitOutcome>,
+        /// The requests whose replies it selected, in the order of `requests`; absent: none. At most 100.
+        #[serde(default)]
+        #[schemars(length(max = 100))]
+        received: Vec<MessageId>,
+    },
 }
 
 impl JournalEntry {
-    /// The id of the step or sleep.
+    /// The id of the entry.
     pub fn id(&self) -> &str {
         match self {
-            JournalEntry::Step { id, .. } | JournalEntry::Sleep { id, .. } => id,
+            JournalEntry::Step { id, .. }
+            | JournalEntry::Sleep { id, .. }
+            | JournalEntry::Send { id, .. }
+            | JournalEntry::Wait { id, .. } => id,
         }
     }
 
+    /// The kind in messages: a send that awaits a reply is a request.
     fn kind(&self) -> &'static str {
         match self {
             JournalEntry::Step { .. } => "step",
             JournalEntry::Sleep { .. } => "sleep",
+            JournalEntry::Send { reply: false, .. } => "send",
+            JournalEntry::Send { reply: true, .. } => "request",
+            JournalEntry::Wait { .. } => "wait",
         }
     }
 }
 
-/// The state of a run: its input, the journal of saved results, its status and the id of its armed `Continue`.
+/// The state of a run: its input, the journal of saved results, its status, the id of its armed `Continue`, the
+/// replies it kept and the journal of its cleanup.
 ///
 /// On the wire: `{"input":{"user":"u1"},"journal":[{"kind":"step","id":"account","result":"a1"}],
-/// "status":"running","armed":"m1"}`; `journal`, `status` and `armed` default to empty, running and null. A decoded
-/// state is checked: at most 1000 entries with unique valid ids, sleeps until at most `MAX_INSTANT`, and no armed id
-/// on a done run. A journal given at the create is trusted as progress: replay checks its order and result types
-/// against the flow's code, not whether its effects happened.
+/// "status":"running","armed":"m1","replies":[],"cleanup":[]}`; `journal`, `status`, `armed`, `replies` and `cleanup`
+/// default to empty, running, null, empty and empty, so a state of an earlier release decodes. A decoded state is
+/// checked (ADR 0044): each journal holds at most 1000 entries with unique valid ids, sleeps and deadlines end at most
+/// at `MAX_INSTANT`, send message ids are unique across both journals, waits and replies name earlier requests
+/// consistently, at most 2000 replies, and the status agrees with `armed`, `cleanup` and any open wait. The schema
+/// describes field types, presence, lengths, patterns and names; the checks across fields are typed checks, not part of
+/// it. A journal given at the create is trusted as progress: replay checks its order and result types against the
+/// flow's code, not whether its effects happened.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(
     rename_all = "camelCase",
@@ -188,10 +299,14 @@ pub struct FlowState<I> {
     pub input: I,
     /// The saved entries, in the order the flow reached them.
     pub journal: Vec<JournalEntry>,
-    /// Running or done.
+    /// The phase of the run.
     pub status: FlowStatus,
     /// The `Continue` that executes the next step; none before the start, after recovery is needed, and once done.
     pub armed: Option<MessageId>,
+    /// The replies kept for requests of either journal.
+    pub replies: Vec<FlowReply>,
+    /// The entries of the cleanup of a cancelled run; empty while running and once done.
+    pub cleanup: Vec<JournalEntry>,
 }
 
 /// The wire form of a [`FlowState`], unchecked: its schema is the contract's.
@@ -204,19 +319,34 @@ struct RawState<I> {
     #[serde(default)]
     #[schemars(length(max = 1000))]
     journal: Vec<JournalEntry>,
-    /// Running or done; absent: running.
+    /// Running, cancelling, done or cancelled; absent: running.
     #[serde(default)]
     status: FlowStatus,
-    /// The id of the armed `Continue`; absent or null when none is armed, and always on a done run.
+    /// The id of the armed `Continue`; absent or null when none is armed, and always on a done or cancelled run.
     #[serde(default)]
     armed: Option<MessageId>,
+    /// The replies kept for requests, one per request; at most 2000; absent: none.
+    #[serde(default)]
+    #[schemars(length(max = 2000))]
+    replies: Vec<FlowReply>,
+    /// The cleanup's entries, with ids of their own; at most 1000; absent: none.
+    #[serde(default)]
+    #[schemars(length(max = 1000))]
+    cleanup: Vec<JournalEntry>,
 }
 
 impl<I> TryFrom<RawState<I>> for FlowState<I> {
     type Error = String;
 
     fn try_from(raw: RawState<I>) -> Result<Self, String> {
-        let state = Self { input: raw.input, journal: raw.journal, status: raw.status, armed: raw.armed };
+        let state = Self {
+            input: raw.input,
+            journal: raw.journal,
+            status: raw.status,
+            armed: raw.armed,
+            replies: raw.replies,
+            cleanup: raw.cleanup,
+        };
         state.check()?;
         Ok(state)
     }
@@ -231,15 +361,22 @@ impl<I> FlowState<I> {
     ///
     /// let state = FlowState::new(serde_json::json!({"user": "u1"}));
     /// assert_eq!(serde_json::to_value(&state)?, serde_json::json!({
-    ///     "input": {"user": "u1"}, "journal": [], "status": "running", "armed": null}));
+    ///     "input": {"user": "u1"}, "journal": [], "status": "running", "armed": null, "replies": [], "cleanup": []}));
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn new(input: I) -> Self {
-        Self { input, journal: Vec::new(), status: FlowStatus::Running, armed: None }
+        Self {
+            input,
+            journal: Vec::new(),
+            status: FlowStatus::Running,
+            armed: None,
+            replies: Vec::new(),
+            cleanup: Vec::new(),
+        }
     }
 
-    /// The saved result of the step `id` as a `T`: `None` when no step of that id is saved (a sleep is no step), and
-    /// `Some(Err(..))` when it does not decode as a `T`.
+    /// The saved result of the step `id` of the main journal as a `T`: `None` when no step of that id is saved (a
+    /// sleep or a send is no step), and `Some(Err(..))` when it does not decode as a `T`.
     ///
     /// ```
     /// use cicada_actors::FlowState;
@@ -258,27 +395,187 @@ impl<I> FlowState<I> {
         })
     }
 
+    /// The typed checks of ADR 0044, beyond what the schema says.
     fn check(&self) -> Result<(), String> {
-        if self.journal.len() > MAX_ENTRIES {
-            return Err(format!("a journal holds at most {MAX_ENTRIES} entries, had {}", self.journal.len()));
+        if self.replies.len() > MAX_REPLIES {
+            return Err(format!("a run keeps at most {MAX_REPLIES} replies, had {}", self.replies.len()));
         }
-        let mut ids = HashSet::new();
-        for entry in &self.journal {
-            check_id(entry.id())?;
-            if !ids.insert(entry.id()) {
-                return Err(format!("the journal holds the id `{}` twice", entry.id()));
+        let mut messages = HashSet::new();
+        let mut sends = HashMap::new();
+        for (phase, journal) in [(Phase::Main, &self.journal), (Phase::Cleanup, &self.cleanup)] {
+            check_entries(phase, journal, &mut messages, &mut sends)?;
+        }
+        let mut replied = HashSet::new();
+        for reply in &self.replies {
+            if !replied.insert(&reply.request) {
+                return Err(format!("the run keeps two replies to {}", reply.request));
             }
-            if let JournalEntry::Sleep { id, until } = entry
-                && *until > MAX_INSTANT
-            {
-                return Err(format!("sleep `{id}` must not end after {}", time::format_instant(MAX_INSTANT)));
+        }
+        let main = check_waits(Phase::Main, &self.journal, &sends, &replied, None)?;
+        let cleanup = check_waits(Phase::Cleanup, &self.cleanup, &sends, &replied, Some(&main))?;
+        if let Some(reply) = self.replies.iter().find(|r| !sends.get(&r.request).is_some_and(|at| at.reply)) {
+            return Err(format!("the reply to {} names no request of the run", reply.request));
+        }
+        let open = |waits: &Waits| waits.open.is_some();
+        match self.status {
+            FlowStatus::Running if !self.cleanup.is_empty() => Err("a running run has no cleanup entries".to_owned()),
+            FlowStatus::Done if self.armed.is_some() => Err("a done run has no armed continuation".to_owned()),
+            FlowStatus::Done if !self.cleanup.is_empty() => Err("a done run has no cleanup entries".to_owned()),
+            FlowStatus::Done if open(&main) => Err("a done run has no open wait".to_owned()),
+            FlowStatus::Cancelled if self.armed.is_some() => {
+                Err("a cancelled run has no armed continuation".to_owned())
             }
+            FlowStatus::Cancelled if open(&cleanup) => Err("a cancelled run has no open cleanup wait".to_owned()),
+            _ => Ok(()),
         }
-        if self.status == FlowStatus::Done && self.armed.is_some() {
-            return Err("a done run has no armed continuation".to_owned());
-        }
-        Ok(())
     }
+}
+
+/// The journal of a run's main code, or of its cleanup: two namespaces of ids.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Main,
+    Cleanup,
+}
+
+impl fmt::Display for Phase {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Phase::Main => "the journal",
+            Phase::Cleanup => "the cleanup journal",
+        })
+    }
+}
+
+/// Where a send entry is: its phase, its place in that journal and whether it is a request.
+#[derive(Debug, Clone, Copy)]
+struct SendAt {
+    phase: Phase,
+    index: usize,
+    reply: bool,
+}
+
+/// The waits of one journal: the requests each wait names, with whether that wait is closed, and the open wait.
+#[derive(Debug, Default)]
+struct Waits<'s> {
+    requests: HashMap<&'s MessageId, bool>,
+    open: Option<&'s str>,
+}
+
+/// Checks the count, ids, times and send message ids of one journal, and notes where each send is.
+fn check_entries<'s>(
+    phase: Phase,
+    journal: &'s [JournalEntry],
+    messages: &mut HashSet<&'s MessageId>,
+    sends: &mut HashMap<&'s MessageId, SendAt>,
+) -> Result<(), String> {
+    if journal.len() > MAX_ENTRIES {
+        return Err(format!("{phase} holds at most {MAX_ENTRIES} entries, had {}", journal.len()));
+    }
+    let late = |what: &str, id: &str| format!("{what} `{id}` must not end after {}", time::format_instant(MAX_INSTANT));
+    let mut ids = HashSet::new();
+    for (index, entry) in journal.iter().enumerate() {
+        check_id(entry.id())?;
+        if !ids.insert(entry.id()) {
+            return Err(format!("{phase} holds the id `{}` twice", entry.id()));
+        }
+        match entry {
+            JournalEntry::Sleep { id, until } if *until > MAX_INSTANT => return Err(late("sleep", id)),
+            JournalEntry::Wait { id, until: Some(until), .. } if *until > MAX_INSTANT => return Err(late("wait", id)),
+            JournalEntry::Send { id, message, reply, .. } => {
+                if !messages.insert(message) {
+                    return Err(format!("send `{id}` repeats the message id {message} of another send"));
+                }
+                sends.insert(message, SendAt { phase, index, reply: *reply });
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Checks the waits of one journal (ADR 0044): requests, their reuse, the open wait and each saved selection. A
+/// cleanup wait may also name a main request that no closed main wait names; one that an open main wait names is the
+/// interrupted wait's request, which only a cancelling or cancelled run has, as only those have cleanup entries.
+fn check_waits<'s>(
+    phase: Phase,
+    journal: &'s [JournalEntry],
+    sends: &HashMap<&'s MessageId, SendAt>,
+    replied: &HashSet<&'s MessageId>,
+    main: Option<&Waits<'s>>,
+) -> Result<Waits<'s>, String> {
+    let mut waits = Waits::default();
+    for (index, entry) in journal.iter().enumerate() {
+        let JournalEntry::Wait { id, requests, mode, until, outcome, received } = entry else {
+            continue;
+        };
+        let refuse = |problem: String| Err(format!("wait `{id}` of {phase} {problem}"));
+        if let Some(open) = waits.open {
+            return refuse(format!("follows the open wait `{open}`"));
+        }
+        if requests.is_empty() || requests.len() > MAX_WAIT_REQUESTS {
+            return refuse(format!("names 1 through {MAX_WAIT_REQUESTS} requests, had {}", requests.len()));
+        }
+        if received.len() > MAX_WAIT_REQUESTS {
+            return refuse(format!("selects at most {MAX_WAIT_REQUESTS} replies, had {}", received.len()));
+        }
+        let mut listed = HashSet::new();
+        for request in requests {
+            if !listed.insert(request) {
+                return refuse(format!("names the request {request} twice"));
+            }
+            let earlier = match sends.get(request) {
+                Some(at) if !at.reply => false,
+                Some(at) if at.phase == phase => at.index < index,
+                Some(_) => main.is_some_and(|main| main.requests.get(request) != Some(&true)),
+                None => false,
+            };
+            if !earlier {
+                let what = match (main, sends.get(request)) {
+                    (Some(_), Some(at)) if at.reply && at.phase == Phase::Main => "a request a closed main wait names",
+                    _ => "no earlier request of its journal",
+                };
+                return refuse(format!("names {request}, {what}"));
+            }
+            if waits.requests.insert(request, outcome.is_some()).is_some() {
+                return refuse(format!("names the request {request} of another wait"));
+            }
+        }
+        if outcome.is_none() {
+            if !received.is_empty() {
+                return refuse("is open but selects replies".to_owned());
+            }
+            waits.open = Some(id);
+            continue;
+        }
+        let mut positions = Vec::with_capacity(received.len());
+        for request in received {
+            match requests.iter().position(|r| r == request) {
+                Some(at) if positions.last().is_none_or(|last| *last < at) => positions.push(at),
+                Some(_) => return refuse("selects replies out of the order of its requests, or twice".to_owned()),
+                None => return refuse(format!("selects {request}, which it does not name")),
+            }
+            if !replied.contains(request) {
+                return refuse(format!("selects {request}, whose reply the run does not keep"));
+            }
+        }
+        let fits = match (outcome, mode) {
+            (Some(WaitOutcome::Received), WaitMode::All) => received.len() == requests.len(),
+            (Some(WaitOutcome::Received), WaitMode::First) => received.len() == 1,
+            (Some(WaitOutcome::TimedOut), _) if until.is_none() => return refuse("timed out with no deadline".into()),
+            (Some(WaitOutcome::TimedOut), WaitMode::All) => received.len() < requests.len(),
+            (Some(WaitOutcome::TimedOut), WaitMode::First) => received.is_empty(),
+            (None, _) => unreachable!("an open wait went on above"),
+        };
+        if !fits {
+            return refuse(format!(
+                "selects {} of {} replies, which its outcome and mode do not allow",
+                received.len(),
+                requests.len()
+            ));
+        }
+    }
+    Ok(waits)
 }
 
 /// Checks a step id: 1 through 100 characters of `A-Za-z0-9._~-:`.
@@ -391,7 +688,7 @@ impl Step {
                     self.refuse(format!("the saved result of step `{id}` does not decode as the type asked for: {e}"))
                 });
             }
-            Ok(Some(JournalEntry::Sleep { .. })) => unreachable!("replay matches the kind"),
+            Ok(Some(_)) => unreachable!("replay matches the kind"),
             Ok(None) => {}
         }
         if let Err(reason) = self.room(id, "step") {
@@ -454,7 +751,7 @@ impl Step {
             Err(reason) => Latch::Permanent(reason),
             Ok(Some(JournalEntry::Sleep { until, .. })) if self.now >= until => return Ok(()),
             Ok(Some(JournalEntry::Sleep { until, .. })) => Latch::Waiting(until),
-            Ok(Some(JournalEntry::Step { .. })) => unreachable!("replay matches the kind"),
+            Ok(Some(_)) => unreachable!("replay matches the kind"),
             Ok(None) => match self.room(id, "sleep").and_then(|()| wake_time(id, self.now, duration)) {
                 Ok(until) => Latch::New(JournalEntry::Sleep { id: id.to_owned(), until }),
                 Err(reason) => Latch::Permanent(reason),
@@ -491,11 +788,11 @@ impl Step {
                 Ok(Some(saved))
             }
             other => Err(format!(
-                "the flow calls {kind} `{id}` where its journal holds {} `{}` at entry {}: changed flow code cannot \
-                 replay this run",
+                "the flow calls {kind} `{id}` where its journal holds {} `{}` at entry {}: {}",
                 other.kind(),
                 other.id(),
-                self.cursor + 1
+                self.cursor + 1,
+                unreplayable(other)
             )),
         }
     }
@@ -589,9 +886,19 @@ impl<F: Flow> Actor for FlowActor<F> {
     type State = FlowState<F::Input>;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: FlowMsg) -> HandlerResult {
-        let FlowMsg::Continue = message;
-        if turn.state().status == FlowStatus::Done {
-            return Ok(());
+        match message {
+            FlowMsg::Continue => {}
+            FlowMsg::Reply { .. } | FlowMsg::Cancel => return Err(HandlerError::permanent(later_release(&message))),
+        }
+        match turn.state().status {
+            FlowStatus::Running => {}
+            FlowStatus::Done | FlowStatus::Cancelled => return Ok(()),
+            FlowStatus::Cancelling => {
+                return Err(HandlerError::permanent(
+                    "this release of cicada-actors cannot run the cleanup of a cancelling run; a later release can, \
+                     once every host and worker of the flow type runs it",
+                ));
+            }
         }
         if turn.state().armed.as_ref() != Some(&turn.message().id) {
             if let Some(old) = turn.state().armed.clone() {
@@ -612,7 +919,7 @@ impl<F: Flow> Actor for FlowActor<F> {
             Some(Latch::New(entry)) => {
                 let wake = match &entry {
                     JournalEntry::Sleep { until, .. } => Some(*until),
-                    JournalEntry::Step { .. } => None,
+                    _ => None,
                 };
                 turn.state_mut().journal.push(entry);
                 arm(turn, wake)
@@ -623,9 +930,10 @@ impl<F: Flow> Actor for FlowActor<F> {
                 if step.cursor < step.journal.len() {
                     let next = &step.journal[step.cursor];
                     return Err(HandlerError::permanent(format!(
-                        "the flow returned before reaching its saved {} `{}`: changed flow code cannot replay this run",
+                        "the flow returned before reaching its saved {} `{}`: {}",
                         next.kind(),
-                        next.id()
+                        next.id(),
+                        unreplayable(next)
                     )));
                 }
                 let state = turn.state_mut();
@@ -635,6 +943,29 @@ impl<F: Flow> Actor for FlowActor<F> {
             }
         }
     }
+}
+
+/// Why replay stopped at `saved`: a wait or a request needs a later release; anything else, changed code.
+fn unreplayable(saved: &JournalEntry) -> &'static str {
+    match saved {
+        JournalEntry::Wait { .. } | JournalEntry::Send { reply: true, .. } => {
+            "this release of cicada-actors cannot replay waits or requests; a later release can, once every host and \
+             worker of the flow type runs it"
+        }
+        _ => "changed flow code cannot replay this run",
+    }
+}
+
+/// The diagnostic of a message this release refuses for good.
+fn later_release(message: &FlowMsg) -> String {
+    let name = match message {
+        FlowMsg::Reply { .. } => "Reply",
+        _ => "Cancel",
+    };
+    format!(
+        "FlowMsg::{name} needs a later release of cicada-actors; this one refuses it for good. Upgrade every host and \
+         worker of the flow type before sending it"
+    )
 }
 
 /// Self-sends a `Continue`, due at `wake` or now, with the flow's retry policy and the incoming correlation id, and
@@ -756,6 +1087,288 @@ mod tests {
         let back: FlowRun<NoTraits> = serde_json::from_value(serde_json::json!("k")).unwrap();
         assert_eq!(back.clone().key, "k");
         assert!(cicada::address::RefBinding::<FlowRun<NoTraits>>::new().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod state_tests {
+    //! The typed checks of ADR 0044 on the shared wire of sends, waits, replies and cleanup.
+
+    use super::*;
+    use serde_json::json;
+
+    fn decode(json: Value) -> Result<FlowState<Value>, String> {
+        serde_json::from_value(json).map_err(|e| e.to_string())
+    }
+
+    /// Asserts that `state` is refused with `why` in the error.
+    #[track_caller]
+    fn refused(state: Value, why: &str) {
+        match decode(state.clone()) {
+            Ok(_) => panic!("accepted {state}, expected {why}"),
+            Err(e) => assert!(e.contains(why), "{e} lacks {why} for {state}"),
+        }
+    }
+
+    #[track_caller]
+    fn accepted(state: Value) -> FlowState<Value> {
+        decode(state.clone()).unwrap_or_else(|e| panic!("refused {state}: {e}"))
+    }
+
+    fn step(id: &str) -> Value {
+        json!({"kind": "step", "id": id, "result": null})
+    }
+
+    fn send(id: &str, message: &str) -> Value {
+        json!({"kind": "send", "id": id, "to": "jobs/j1", "message": message})
+    }
+
+    fn request(id: &str, message: &str) -> Value {
+        json!({"kind": "send", "id": id, "to": "jobs/j1", "message": message, "create": null, "reply": true})
+    }
+
+    fn open(id: &str, requests: &[&str], mode: &str) -> Value {
+        json!({"kind": "wait", "id": id, "requests": requests, "mode": mode})
+    }
+
+    fn closed(id: &str, requests: &[&str], mode: &str, outcome: &str, received: &[&str]) -> Value {
+        let until = if outcome == "timedOut" { json!("2026-11-14T00:00:00Z") } else { Value::Null };
+        json!({"kind": "wait", "id": id, "requests": requests, "mode": mode, "until": until, "outcome": outcome,
+            "received": received})
+    }
+
+    fn reply(request: &str) -> Value {
+        json!({"request": request, "value": null})
+    }
+
+    fn running(journal: Vec<Value>, replies: Vec<Value>) -> Value {
+        json!({"input": 1, "journal": journal, "replies": replies})
+    }
+
+    fn with(status: &str, journal: Vec<Value>, replies: Vec<Value>, cleanup: Vec<Value>) -> Value {
+        json!({"input": 1, "status": status, "journal": journal, "replies": replies, "cleanup": cleanup})
+    }
+
+    /// Scenario: Literal progress state; and Journal wire forms.
+    #[test]
+    fn every_entry_kind_round_trips_with_its_defaults() {
+        let state = accepted(running(
+            vec![
+                step("notify"),
+                json!({"kind": "sleep", "id": "wait", "until": "2026-11-14T00:00:00Z"}),
+                send("start", "m1"),
+                json!({"kind": "send", "id": "child", "to": "jobs/j2", "message": "m2", "create": "child"}),
+                request("ask", "m3"),
+                open("answer", &["m3"], "all"),
+            ],
+            vec![],
+        ));
+        assert_eq!(
+            state.journal[2],
+            JournalEntry::Send {
+                id: "start".into(),
+                to: ActorAddress::parse("jobs/j1").unwrap(),
+                message: MessageId::new("m1").unwrap(),
+                create: None,
+                reply: false,
+            }
+        );
+        let written = serde_json::to_value(&state).unwrap();
+        assert_eq!(written["journal"][0], step("notify"));
+        assert_eq!(
+            written["journal"][2],
+            json!({"kind": "send", "id": "start", "to": "jobs/j1", "message": "m1", "create": null, "reply": false})
+        );
+        assert_eq!(written["journal"][3]["create"], json!("child"));
+        assert_eq!(
+            written["journal"][5],
+            json!({"kind": "wait", "id": "answer", "requests": ["m3"], "mode": "all", "until": null, "outcome": null,
+                "received": []})
+        );
+        assert_eq!((written["replies"].clone(), written["cleanup"].clone()), (json!([]), json!([])));
+        assert_eq!(decode(written).unwrap(), state);
+        refused(running(vec![json!({"kind": "wait", "id": "w", "requests": ["m1"]})], vec![]), "mode");
+        refused(running(vec![json!({"kind": "send", "id": "s", "to": "jobs/j1"})], vec![]), "message");
+        refused(running(vec![json!({"kind": "send", "id": "s", "to": "Jobs", "message": "m"})], vec![]), "");
+    }
+
+    /// Scenario: Old supported progress.
+    #[test]
+    fn an_old_state_decodes_without_a_new_depth_check_of_its_results() {
+        let deep = (0..70).fold(Value::Null, |inner, _| Value::Array(vec![inner]));
+        let old = json!({"input": 1, "journal": [{"kind": "step", "id": "a", "result": deep}], "status": "running",
+            "armed": "m1"});
+        let state = accepted(old);
+        assert_eq!((state.replies.len(), state.cleanup.len()), (0, 0));
+    }
+
+    /// Scenario: Required nullable values.
+    #[test]
+    fn reply_values_are_required_and_may_be_null() {
+        let message: FlowMsg =
+            serde_json::from_value(json!({"type": "Reply", "request": "m1", "value": null})).unwrap();
+        assert_eq!(message, FlowMsg::Reply { request: MessageId::new("m1").unwrap(), value: Value::Null });
+        assert!(serde_json::from_value::<FlowMsg>(json!({"type": "Reply", "request": "m1"})).is_err());
+        assert_eq!(serde_json::to_value(FlowMsg::Cancel).unwrap(), json!({"type": "Cancel"}));
+
+        let state = accepted(running(vec![request("ask", "m1")], vec![reply("m1")]));
+        assert_eq!(state.replies, [FlowReply { request: MessageId::new("m1").unwrap(), value: Value::Null }]);
+        refused(running(vec![request("ask", "m1")], vec![json!({"request": "m1"})]), "missing field `value`");
+    }
+
+    /// Scenario: Invalid state.
+    #[test]
+    fn counts_ids_message_ids_and_deadlines_are_checked() {
+        let late = time::format_instant(time::add(MAX_INSTANT, Duration::from_micros(1)).unwrap());
+        refused(running(vec![send("a", "m1"), send("b", "m1")], vec![]), "repeats the message id m1");
+        refused(with("cancelling", vec![send("a", "m1")], vec![], vec![send("b", "m1")]), "repeats the message id");
+        refused(running(vec![send("a", "m1"), step("a")], vec![]), "holds the id `a` twice");
+        refused(running(vec![send("a/b", "m1")], vec![]), "a step id is");
+        let mut wait = open("w", &["m1"], "all");
+        wait["until"] = json!(late);
+        refused(running(vec![request("r", "m1"), wait], vec![]), "wait `w` must not end after");
+        let full: Vec<Value> = (0..1000).map(|i| step(&format!("s{i}"))).collect();
+        accepted(with("cancelling", full.clone(), vec![], full.clone()));
+        let mut over = full.clone();
+        over.push(step("x"));
+        refused(with("cancelling", vec![], vec![], over), "the cleanup journal holds at most 1000");
+
+        let sends: Vec<Value> = (0..1000).map(|i| request(&format!("r{i}"), &format!("m{i}"))).collect();
+        let cleanup: Vec<Value> = (0..1000).map(|i| request(&format!("r{i}"), &format!("c{i}"))).collect();
+        let mut replies: Vec<Value> = (0..1000).map(|i| reply(&format!("m{i}"))).collect();
+        replies.extend((0..1000).map(|i| reply(&format!("c{i}"))));
+        accepted(with("cancelling", sends.clone(), replies.clone(), cleanup.clone()));
+        replies.push(reply("m0"));
+        refused(with("cancelling", sends, replies, cleanup), "at most 2000 replies");
+    }
+
+    #[test]
+    fn replies_name_requests_once() {
+        refused(running(vec![], vec![reply("m1")]), "names no request");
+        refused(running(vec![send("s", "m1")], vec![reply("m1")]), "names no request");
+        refused(running(vec![request("r", "m1")], vec![reply("m1"), reply("m1")]), "two replies to m1");
+        accepted(with("cancelling", vec![], vec![reply("c1")], vec![request("r", "c1")]));
+    }
+
+    /// Scenario: Separate phases.
+    #[test]
+    fn phases_have_separate_ids_and_the_status_rules() {
+        accepted(with("cancelling", vec![step("a")], vec![], vec![step("a")]));
+        accepted(with("cancelled", vec![step("a")], vec![], vec![step("a")]));
+        refused(with("running", vec![], vec![], vec![step("a")]), "a running run has no cleanup");
+        refused(with("done", vec![], vec![], vec![step("a")]), "a done run has no cleanup");
+        refused(json!({"input": 1, "status": "done", "armed": "m9"}), "a done run has no armed");
+        refused(json!({"input": 1, "status": "cancelled", "armed": "m9"}), "a cancelled run has no armed");
+        accepted(json!({"input": 1, "status": "cancelling", "armed": "m9"}));
+        let asked = vec![request("r", "m1"), open("w", &["m1"], "all")];
+        accepted(running(asked.clone(), vec![]));
+        refused(with("done", asked.clone(), vec![], vec![]), "a done run has no open wait");
+        accepted(with("cancelled", asked.clone(), vec![], vec![]));
+        let cleanup = vec![request("c", "m2"), open("cw", &["m2"], "all")];
+        accepted(with("cancelling", vec![], vec![], cleanup.clone()));
+        refused(with("cancelled", vec![], vec![], cleanup), "a cancelled run has no open cleanup wait");
+    }
+
+    /// Scenario: Unknown or reused request.
+    #[test]
+    fn a_wait_names_unique_earlier_requests_of_its_journal() {
+        let r = |id: &str, m: &str| request(id, m);
+        for (journal, why) in [
+            (vec![open("w", &["m1"], "all")], "names m1, no earlier request"),
+            (vec![send("s", "m1"), open("w", &["m1"], "all")], "no earlier request"),
+            (vec![open("w", &["m1"], "all"), r("r", "m1")], "no earlier request"),
+            (vec![r("r", "m1"), open("w", &["m1", "m1"], "all")], "names the request m1 twice"),
+            (
+                vec![r("r", "m1"), r("q", "m2"), open("w", &["m1"], "all"), open("v", &["m2"], "all")],
+                "follows the open",
+            ),
+            (
+                vec![r("r", "m1"), closed("w", &["m1"], "all", "received", &["m1"]), open("v", &["m1"], "all")],
+                "names the request m1 of another wait",
+            ),
+            (vec![json!({"kind": "wait", "id": "w", "requests": [], "mode": "all"})], "1 through 100 requests"),
+        ] {
+            refused(running(journal, vec![reply("m1")]), why);
+        }
+        let many: Vec<Value> = (0..101).map(|i| r(&format!("r{i}"), &format!("m{i}"))).collect();
+        let names: Vec<String> = (0..101).map(|i| format!("m{i}")).collect();
+        let mut journal = many.clone();
+        journal.push(json!({"kind": "wait", "id": "w", "requests": names, "mode": "all"}));
+        refused(running(journal, vec![]), "1 through 100 requests, had 101");
+        let mut journal = many[..100].to_vec();
+        journal.push(json!({"kind": "wait", "id": "w", "requests": names[..100], "mode": "all"}));
+        accepted(running(journal, vec![]));
+        refused(with("cancelling", vec![], vec![], vec![open("w", &["m1"], "all")]), "no earlier request");
+        refused(with("cancelling", vec![open("w", &["c1"], "all")], vec![], vec![r("c", "c1")]), "no earlier request");
+    }
+
+    /// Scenario: Cleanup consumes an interrupted request.
+    #[test]
+    fn cleanup_may_wait_only_for_main_requests_no_closed_main_wait_names() {
+        let main = vec![request("r", "m1"), request("q", "m2"), open("w", &["m1", "m2"], "all")];
+        for status in ["cancelling", "cancelled"] {
+            accepted(with(
+                status,
+                main.clone(),
+                vec![reply("m1")],
+                vec![closed("cw", &["m1"], "all", "received", &["m1"])],
+            ));
+            let partial = closed("cw", &["m1", "m2"], "all", "timedOut", &["m1"]);
+            accepted(with(status, main.clone(), vec![reply("m1")], vec![partial]));
+        }
+        accepted(with("cancelling", main.clone(), vec![], vec![open("cw", &["m2"], "all")]));
+        let unwaited = vec![request("r", "m1")];
+        accepted(with("cancelling", unwaited, vec![], vec![open("cw", &["m1"], "all")]));
+        let done = vec![request("r", "m1"), closed("w", &["m1"], "all", "received", &["m1"])];
+        refused(
+            with("cancelling", done, vec![reply("m1")], vec![open("cw", &["m1"], "all")]),
+            "names m1, a request a closed main wait names",
+        );
+        let twice = vec![open("cw", &["m1"], "all"), open("cv", &["m1"], "all")];
+        refused(with("cancelling", main, vec![], twice), "follows the open wait");
+    }
+
+    /// Scenario: Invalid outcome; and Partial timeout and interrupted main wait.
+    #[test]
+    fn a_closed_wait_selects_kept_replies_in_request_order() {
+        let asked = || vec![request("a", "m1"), request("b", "m2"), request("c", "m3")];
+        let all = ["m1", "m2", "m3"];
+        let replies = || vec![reply("m1"), reply("m2"), reply("m3")];
+        let case = |wait: Value| {
+            let mut journal = asked();
+            journal.push(wait);
+            running(journal, replies())
+        };
+        for wait in [
+            closed("w", &all, "all", "received", &all),
+            closed("w", &all, "first", "received", &["m2"]),
+            closed("w", &all, "all", "timedOut", &["m1", "m3"]),
+            closed("w", &all, "all", "timedOut", &[]),
+            closed("w", &all, "first", "timedOut", &[]),
+        ] {
+            accepted(case(wait));
+        }
+        let mut selecting = open("w", &all, "all");
+        selecting["received"] = json!(["m1"]);
+        for (wait, why) in [
+            (selecting, "is open but selects replies"),
+            (closed("w", &all, "all", "received", &["m1", "m2"]), "selects 2 of 3"),
+            (closed("w", &all, "first", "received", &["m1", "m2"]), "selects 2 of 3"),
+            (closed("w", &all, "first", "received", &[]), "selects 0 of 3"),
+            (closed("w", &all, "all", "timedOut", &all), "selects 3 of 3"),
+            (closed("w", &all, "first", "timedOut", &["m1"]), "selects 1 of 3"),
+            (closed("w", &all, "all", "received", &["m2", "m1", "m3"]), "out of the order"),
+            (closed("w", &all, "all", "timedOut", &["m1", "m1"]), "out of the order of its requests, or twice"),
+            (closed("w", &["m1"], "all", "timedOut", &["m2"]), "selects m2, which it does not name"),
+        ] {
+            refused(case(wait), why);
+        }
+        let mut journal = asked();
+        journal.push(closed("w", &all, "all", "received", &all));
+        refused(running(journal, vec![reply("m1"), reply("m2")]), "selects m3, whose reply the run does not keep");
+        let mut no_deadline = closed("w", &all, "all", "timedOut", &[]);
+        no_deadline["until"] = Value::Null;
+        refused(case(no_deadline), "timed out with no deadline");
     }
 }
 

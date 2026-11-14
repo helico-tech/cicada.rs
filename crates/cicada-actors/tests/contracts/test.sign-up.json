@@ -1,17 +1,77 @@
 {
   "messages": {
+    "Cancel": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Asks the run to stop; refused for good by this release.",
+      "properties": {},
+      "title": "Cancel",
+      "type": "object"
+    },
     "Continue": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "Starts or recovers a running run; a done run ignores it. Sent by a host, it cancels the armed continuation and\narms a fresh one with the flow's retry policy, without running flow code; the armed one replays the flow and\nexecutes its next step.",
+      "description": "Starts or recovers a running run; a done or cancelled run ignores it. Sent by a host, it cancels the armed\ncontinuation and arms a fresh one with the flow's retry policy, without running flow code; the armed one replays\nthe flow and executes its next step.",
       "properties": {},
       "title": "Continue",
+      "type": "object"
+    },
+    "Reply": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The reply of a target to a request of the run; refused for good by this release, which sends no requests.",
+      "properties": {
+        "request": {
+          "description": "The id of the request's message, saved with its send entry.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "value": {
+          "description": "The reply's JSON, `null` included; required, so a missing value is not `null`."
+        }
+      },
+      "required": [
+        "request",
+        "value"
+      ],
+      "title": "Reply",
       "type": "object"
     }
   },
   "state": {
     "$defs": {
+      "CreateKind": {
+        "description": "How a send entry created its target before its message: as an independent actor or as a child of the run.",
+        "oneOf": [
+          {
+            "const": "independent",
+            "description": "Created with no parent, as [`Turn::create_raw`] does: an actor that exists already is left untouched.",
+            "type": "string"
+          },
+          {
+            "const": "child",
+            "description": "Created as a child of the run, as [`Turn::create_child_raw`] does: an actor owned elsewhere rejects the commit.",
+            "type": "string"
+          }
+        ]
+      },
+      "FlowReply": {
+        "description": "A reply a run kept for a request of one of its send entries.",
+        "properties": {
+          "request": {
+            "description": "The id of the request's message.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "value": {
+            "description": "The reply's JSON, `null` included; required, so a missing value is not `null`."
+          }
+        },
+        "required": [
+          "request",
+          "value"
+        ],
+        "type": "object"
+      },
       "FlowStatus": {
-        "description": "Whether a run is still running.",
+        "description": "The phase of a run. This release executes only running runs; `cancelling` and `cancelled` are on the wire for later\nreleases (ADR 0044).",
         "oneOf": [
           {
             "const": "running",
@@ -19,8 +79,18 @@
             "type": "string"
           },
           {
+            "const": "cancelling",
+            "description": "A cancelled run whose cleanup has not finished; refused for good by this release.",
+            "type": "string"
+          },
+          {
             "const": "done",
             "description": "The flow returned `Ok` after replaying every saved entry; the run keeps its state until it is deleted.",
+            "type": "string"
+          },
+          {
+            "const": "cancelled",
+            "description": "A cancelled run; it keeps its state until it is deleted.",
             "type": "string"
           }
         ]
@@ -32,7 +102,7 @@
             "description": "The saved result of a step.",
             "properties": {
               "id": {
-                "description": "The step id: 1 through 100 characters of `A-Za-z0-9._~-:`, unique in the run.",
+                "description": "The step id: 1 through 100 characters of `A-Za-z0-9._~-:`, unique in its journal.",
                 "maxLength": 100,
                 "minLength": 1,
                 "pattern": "^[A-Za-z0-9._~:-]+$",
@@ -79,6 +149,121 @@
               "until"
             ],
             "type": "object"
+          },
+          {
+            "description": "A message of [`Step::send`], enqueued in the commit that saved this entry, after the create of its target if\nany. Neither the message nor the initial state is saved.",
+            "properties": {
+              "create": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/CreateKind"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "How the target was created in the same commit; absent or null: not created."
+              },
+              "id": {
+                "description": "The send id, from the same namespace as the step ids.",
+                "maxLength": 100,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9._~:-]+$",
+                "type": "string"
+              },
+              "kind": {
+                "const": "send",
+                "type": "string"
+              },
+              "message": {
+                "description": "The id of the message; unique among the sends of both journals.",
+                "minLength": 1,
+                "type": "string"
+              },
+              "reply": {
+                "default": false,
+                "description": "Whether the message is a request that a reply answers; absent: false. This release sends no requests.",
+                "type": "boolean"
+              },
+              "to": {
+                "description": "Where the message went.",
+                "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "id",
+              "to",
+              "message"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A wait for the replies of earlier requests; this release does not execute waits.",
+            "properties": {
+              "id": {
+                "description": "The wait id, from the same namespace as the step ids.",
+                "maxLength": 100,
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9._~:-]+$",
+                "type": "string"
+              },
+              "kind": {
+                "const": "wait",
+                "type": "string"
+              },
+              "mode": {
+                "$ref": "#/$defs/WaitMode",
+                "description": "Every reply or the first one."
+              },
+              "outcome": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/WaitOutcome"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "How it ended; absent or null: it is open."
+              },
+              "received": {
+                "default": [],
+                "description": "The requests whose replies it selected, in the order of `requests`; absent: none. At most 100.",
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              "requests": {
+                "description": "The message ids of the requests it waits for: 1 through 100, unique.",
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 100,
+                "minItems": 1,
+                "type": "array"
+              },
+              "until": {
+                "description": "Its deadline; absent or null: none. At most `MAX_INSTANT`.",
+                "format": "date-time",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "id",
+              "requests",
+              "mode"
+            ],
+            "type": "object"
           }
         ]
       },
@@ -94,18 +279,57 @@
           "user"
         ],
         "type": "object"
+      },
+      "WaitMode": {
+        "description": "Whether a wait needs every listed reply or the first one.",
+        "oneOf": [
+          {
+            "const": "all",
+            "description": "Every request's reply.",
+            "type": "string"
+          },
+          {
+            "const": "first",
+            "description": "The first accepted reply of any request.",
+            "type": "string"
+          }
+        ]
+      },
+      "WaitOutcome": {
+        "description": "How a wait ended.",
+        "oneOf": [
+          {
+            "const": "received",
+            "description": "The replies it needed arrived.",
+            "type": "string"
+          },
+          {
+            "const": "timedOut",
+            "description": "Its deadline passed first.",
+            "type": "string"
+          }
+        ]
       }
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "description": "The state of a run: its input, the journal of saved results, its status and the id of its armed `Continue`.\n\nOn the wire: `{\"input\":{\"user\":\"u1\"},\"journal\":[{\"kind\":\"step\",\"id\":\"account\",\"result\":\"a1\"}],\n\"status\":\"running\",\"armed\":\"m1\"}`; `journal`, `status` and `armed` default to empty, running and null. A decoded\nstate is checked: at most 1000 entries with unique valid ids, sleeps until at most `MAX_INSTANT`, and no armed id\non a done run. A journal given at the create is trusted as progress: replay checks its order and result types\nagainst the flow's code, not whether its effects happened.",
+    "description": "The state of a run: its input, the journal of saved results, its status, the id of its armed `Continue`, the\nreplies it kept and the journal of its cleanup.\n\nOn the wire: `{\"input\":{\"user\":\"u1\"},\"journal\":[{\"kind\":\"step\",\"id\":\"account\",\"result\":\"a1\"}],\n\"status\":\"running\",\"armed\":\"m1\",\"replies\":[],\"cleanup\":[]}`; `journal`, `status`, `armed`, `replies` and `cleanup`\ndefault to empty, running, null, empty and empty, so a state of an earlier release decodes. A decoded state is\nchecked (ADR 0044): each journal holds at most 1000 entries with unique valid ids, sleeps and deadlines end at most\nat `MAX_INSTANT`, send message ids are unique across both journals, waits and replies name earlier requests\nconsistently, at most 2000 replies, and the status agrees with `armed`, `cleanup` and any open wait. The schema\ndescribes field types, presence, lengths, patterns and names; the checks across fields are typed checks, not part of\nit. A journal given at the create is trusted as progress: replay checks its order and result types against the\nflow's code, not whether its effects happened.",
     "properties": {
       "armed": {
-        "description": "The id of the armed `Continue`; absent or null when none is armed, and always on a done run.",
+        "description": "The id of the armed `Continue`; absent or null when none is armed, and always on a done or cancelled run.",
         "minLength": 1,
         "type": [
           "string",
           "null"
         ]
+      },
+      "cleanup": {
+        "default": [],
+        "description": "The cleanup's entries, with ids of their own; at most 1000; absent: none.",
+        "items": {
+          "$ref": "#/$defs/JournalEntry"
+        },
+        "maxItems": 1000,
+        "type": "array"
       },
       "input": {
         "$ref": "#/$defs/SignUp",
@@ -120,10 +344,19 @@
         "maxItems": 1000,
         "type": "array"
       },
+      "replies": {
+        "default": [],
+        "description": "The replies kept for requests, one per request; at most 2000; absent: none.",
+        "items": {
+          "$ref": "#/$defs/FlowReply"
+        },
+        "maxItems": 2000,
+        "type": "array"
+      },
       "status": {
         "$ref": "#/$defs/FlowStatus",
         "default": "running",
-        "description": "Running or done; absent: running."
+        "description": "Running, cancelling, done or cancelled; absent: running."
       }
     },
     "required": [

@@ -1,8 +1,8 @@
 //! The wire formats of the eight ready-made actors (ADR 0028): their contracts against the references in
 //! `docs/reference/contracts`, the JSON their messages and states are written as, and sample checks for what the
 //! helpers and the actors write: both the registered schemas and the decoders take it (ADR 0026). And the wire format
-//! of a flow (ADR 0031): a test flow's contract, whose type name its host chooses, pinned in `tests/contracts`, with the
-//! step and sleep entries of its journal.
+//! of a flow (ADR 0031, ADR 0044): a test flow's contract, whose type name its host chooses, pinned in `tests/contracts`,
+//! with the step, sleep, send and wait entries of its journals, its replies, its four statuses and its three messages.
 
 mod common;
 
@@ -728,10 +728,43 @@ fn the_contract_of_a_test_flow_matches_its_fixture() {
     if let Err(e) = check_references(&fixtures, std::slice::from_ref(&contract), update) {
         panic!("{e}");
     }
-    let state = contract.to_json()["state"].to_string();
-    for word in ["\"sleep\"", "\"until\"", "\"step\"", "\"result\"", "\"running\"", "\"done\"", "\"armed\""] {
-        assert!(state.contains(word), "{word} in {state}");
+    let json = contract.to_json();
+    let state = json["state"].to_string();
+    for word in
+        ["sleep", "until", "step", "result", "running", "done", "armed", "send", "wait", "cancelling", "cancelled"]
+    {
+        assert!(state.contains(&format!("\"{word}\"")), "{word} in {state}");
     }
+    // Scenario: Required nullable values; and Schema bounds, in the schema a host registers.
+    let required = |schema: &Value| schema["required"].as_array().unwrap().clone();
+    assert_eq!(required(&json["messages"]["Reply"]), [json!("request"), json!("value")]);
+    assert!(json["messages"]["Cancel"]["properties"].as_object().unwrap().is_empty());
+    let defs = &json["state"]["$defs"];
+    assert_eq!(required(&defs["FlowReply"]), [json!("request"), json!("value")]);
+    let fields = &json["state"]["properties"];
+    for (field, most) in [("journal", 1000), ("cleanup", 1000), ("replies", 2000)] {
+        assert_eq!(fields[field]["maxItems"], most, "{field}");
+    }
+    let entries = defs["JournalEntry"]["oneOf"].as_array().unwrap();
+    let kind = |name: &str| entries.iter().find(|e| e["properties"]["kind"]["const"] == name).unwrap().clone();
+    let (send, wait) = (kind("send"), kind("wait"));
+    assert_eq!(required(&send), [json!("kind"), json!("id"), json!("to"), json!("message")]);
+    assert_eq!(send["properties"]["reply"]["default"], false);
+    assert_eq!(required(&wait), [json!("kind"), json!("id"), json!("requests"), json!("mode")]);
+    let requests = &wait["properties"]["requests"];
+    assert_eq!((requests["minItems"].clone(), requests["maxItems"].clone()), (json!(1), json!(100)));
+    assert_eq!(wait["properties"]["received"]["maxItems"], 100);
+    for entry in [&send, &wait] {
+        assert_eq!(entry["properties"]["id"]["pattern"], "^[A-Za-z0-9._~:-]+$");
+        assert_eq!(entry["properties"]["id"]["maxLength"], 100);
+    }
+    let names = |def: &str| -> Vec<Value> {
+        defs[def]["oneOf"].as_array().unwrap().iter().map(|v| v["const"].clone()).collect()
+    };
+    assert_eq!(names("FlowStatus"), [json!("running"), json!("cancelling"), json!("done"), json!("cancelled")]);
+    assert_eq!(names("CreateKind"), [json!("independent"), json!("child")]);
+    assert_eq!(names("WaitMode"), [json!("all"), json!("first")]);
+    assert_eq!(names("WaitOutcome"), [json!("received"), json!("timedOut")]);
     assert!(!contracts_dir().join("test.sign-up.json").exists(), "no fixed type name in the catalog");
 }
 
@@ -740,7 +773,9 @@ fn a_flow_state_is_written_in_camel_case_passes_its_samples_and_refuses_invalid_
     type State = FlowState<SignUp>;
     let input = json!({"user": "u1"});
     let initial = json_of(FlowState::new(SignUp { user: "u1".into() }));
-    assert_eq!(initial, json!({"input": input, "journal": [], "status": "running", "armed": null}));
+    let empty =
+        json!({"input": input, "journal": [], "status": "running", "armed": null, "replies": [], "cleanup": []});
+    assert_eq!(initial, empty);
     assert_state_sample::<State>(&initial);
     assert_state_sample::<State>(&json!({"input": input}));
     let account = json!({"kind": "step", "id": "account", "result": "u1@test.sign-up/u1/account"});
@@ -753,12 +788,24 @@ fn a_flow_state_is_written_in_camel_case_passes_its_samples_and_refuses_invalid_
     let decoded: State = serde_json::from_value(slept.clone()).unwrap();
     let until = "2026-11-14T00:00:00Z".parse().unwrap();
     assert_eq!(decoded.journal[1], JournalEntry::Sleep { id: "wait".into(), until });
-    let written = json!({"input": input, "journal": slept["journal"], "status": "running", "armed": null});
+    let written = json!({"input": input, "journal": slept["journal"], "status": "running", "armed": null,
+        "replies": [], "cleanup": []});
     assert_eq!(json_of(&decoded), written, "the sleep round-trips");
     let welcome = json!({"kind": "step", "id": "welcome", "result": 23});
     let done = json!({"input": input, "journal": [account, welcome], "status": "done", "armed": null});
     assert_state_sample::<State>(&done);
     assert_eq!(serde_json::from_value::<State>(done).unwrap().status, FlowStatus::Done);
+    let sent = json!({"kind": "send", "id": "start", "to": "jobs/j1", "message": "m1", "create": "child"});
+    let asked = json!({"kind": "send", "id": "ask", "to": "jobs/j1", "message": "m2", "create": null, "reply": true});
+    let waited = json!({"kind": "wait", "id": "answer", "requests": ["m2"], "mode": "all", "until": null,
+        "outcome": "received", "received": ["m2"]});
+    let replies = json!([{"request": "m2", "value": null}]);
+    assert_state_sample::<State>(&json!({"input": input, "journal": [sent, asked, waited], "replies": replies}));
+    let open = json!({"kind": "wait", "id": "answer", "requests": ["m2"], "mode": "first"});
+    let interrupted = json!({"input": input, "journal": [asked, open], "status": "cancelling", "armed": "m3",
+        "cleanup": [{"kind": "wait", "id": "answer", "requests": ["m2"], "mode": "all", "until": "2026-11-14T00:00:00Z",
+            "outcome": "timedOut"}]});
+    assert_state_sample::<State>(&interrupted);
 
     let many: Vec<Value> = (0..1001).map(|i| json!({"kind": "step", "id": format!("s{i}"), "result": i})).collect();
     let entry = |entry: Value| json!({"input": input, "journal": [entry]});
@@ -777,6 +824,10 @@ fn a_flow_state_is_written_in_camel_case_passes_its_samples_and_refuses_invalid_
         json!({"input": input, "journal": many}),
         json!({"input": input, "status": "paused"}),
         json!({"input": input, "status": "done", "armed": "m1"}),
+        json!({"input": input, "journal": [asked], "replies": [{"request": "m2"}]}),
+        entry(json!({"kind": "wait", "id": "w", "requests": ["m2"]})),
+        entry(json!({"kind": "send", "id": "s", "to": "jobs/j1"})),
+        json!({"input": input, "cleanup": [notify]}),
     ] {
         assert!(serde_json::from_value::<State>(invalid.clone()).is_err(), "{invalid}");
     }
@@ -786,6 +837,10 @@ fn a_flow_state_is_written_in_camel_case_passes_its_samples_and_refuses_invalid_
 fn a_flow_message_and_saved_results_read_back() {
     assert_eq!(json_of(FlowMsg::Continue), json!({"type": "Continue"}));
     assert_message_sample::<FlowMsg>(&json!({"type": "Continue"}));
+    assert_message_sample::<FlowMsg>(&json!({"type": "Reply", "request": "m1", "value": null}));
+    assert_message_sample::<FlowMsg>(&json!({"type": "Reply", "request": "m1", "value": {"ok": [1]}}));
+    assert_message_sample::<FlowMsg>(&json!({"type": "Cancel"}));
+    assert!(cicada::message::decode::<FlowMsg>("Reply", &json!({"request": "m1"})).is_err(), "a missing value");
     assert_eq!(FlowRun::<SignUpFlow>::named("u1").address().unwrap().as_str(), "test.sign-up/u1");
     let state: FlowState<SignUp> = serde_json::from_value(json!({"input": {"user": "u1"}, "journal": [
         {"kind": "step", "id": "account", "result": "a1"},
