@@ -7,6 +7,38 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.16.17 — unreleased
+
+Nothing breaks: an `App`'s `worker` runs its actors through a server's HTTP API, without the database, the fifth part
+of remote execution. No schema, contract, route, wire format or store behaviour changes; a worker on the store runs as
+before.
+
+### Added
+
+- `worker --server URL`, `--context NAME` and `--token TOKEN`, before or after `worker` (ADR 0042, which amends ADR
+  0027 for `worker`): HTTP mode, with `cicada::runtime::Worker` over `ActorClient`. `--store` and `--server` or
+  `--context` together are a usage error; without them a non-blank `CICADA_STORE` selects the store, else a non-blank
+  `CICADA_SERVER` or `CICADA_CONTEXT` HTTP; a token or the config file's current context alone selects nothing. The
+  server, token and headers resolve as for the operator commands (a context's token and headers also under a
+  `--server`); a worker on the store reads neither the config file nor `CICADA_TOKEN`.
+- Over HTTP, `--node-id`, `--concurrency`, `--poll-interval`, `--max-turn` and `--shutdown-grace-period` (flag,
+  variable, host's `NodeConfig`, default) and the host's `shutdown_cancel_timeout` set the `WorkerConfig`;
+  `--store-schema`, `--store-pool-size`, `--retention`, `--lease-ttl`, `--heartbeat-interval` and `--max-lost-claims`
+  are refused (exit 2), and their variables, the host's values of them and `CICADA_LISTEN` are not read. No store is
+  opened and no store feature is needed. An `App` with `on_start` refuses HTTP mode (exit 2) before any request.
+- The worker's client follows no redirect, retries nothing of its own and gives each request 30 s, with
+  `ActorClient`'s 10 s turn timeout for the lease calls. Before the start it lists the types while the server answers
+  "unavailable", a second apart and no try after a minute; a refusal fails at once (exit 1). A failed registration
+  fails the command (exit 1). A stop calls `Worker::stop` (exit 0); a worker that stops by itself exits 1 with its
+  error, also when a stop came at the same time.
+- The app guide's [A worker over HTTP](docs/guide/app.md#a-worker-over-http), with a compiled example, and the new
+  flags and help of `worker` in `docs/reference/cli.md`.
+
+### Changed
+
+- `worker` without a mode says how to give a store or a server, and `worker -o` says that a worker prints no results;
+  `worker --token` on the store is refused as needing HTTP mode.
+
 ## 0.16.16 — 2026-11-14
 
 Nothing breaks: a worker runs unchanged Rust actors through any server of the HTTP API, the fourth part of remote

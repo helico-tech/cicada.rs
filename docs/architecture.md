@@ -339,6 +339,20 @@ renewal and explicit rejection, and not to retry a mutation behind the caller's 
   records the first error and stops the worker from a task of its own; `stopped` returns it to every waiter, `None`
   after a requested stop. The worker never stops or closes its source.
 
+**App workers over HTTP** (ADR 0042). `cicada-app`'s `worker` picks its mode before it resolves anything else:
+`--store` the store, `--server` or `--context` HTTP, the two together a usage error; without them a non-blank
+`CICADA_STORE` wins over `CICADA_SERVER` and `CICADA_CONTEXT`, and a token or the current context alone selects
+nothing. Over HTTP it maps the id, concurrency, poll interval, longest turn and grace period (flag, variable, host's
+`NodeConfig`, default) and the host's cancel timeout to a `WorkerConfig`, refuses the flags of the store and of the
+lease policy, which the server owns, and reads none of their variables; it opens no store and no listener, and resolves
+the server, token and headers as the operator commands do. The types and observers move into a private
+`Hosting::{System, Worker}`, so one `App` feeds either builder; `on_start`, which needs an `ActorSystem`, is refused
+before any request. The client has no redirects (a `307` would send a POST again), no retry of its own, a 30 s total
+timeout and `ActorClient`'s 10 s turn timeout. Before the start it lists the types while the server answers
+"unavailable", a second apart and no try after a minute; then `Worker::start` registers, and a failure there fails the
+command. A stop calls `Worker::stop`; an error the worker recorded when it stopped by itself fails the command, also
+when a stop came at the same time. The source is never stopped or closed.
+
 All local timing uses `tokio::time`, so tests on a paused runtime (`start_paused = true`) run on virtual time: the
 in-memory store reads its clock from `tokio::time::Instant` (`TokioClock`).
 
@@ -381,7 +395,7 @@ impl Actor for SyncActor {
 | `cicada-test` | Exports the test support of `cicada` (`TestActors`, clocks, `claim_and_abandon`); contract snapshots and state samples |
 | `cicada-axum` | `actor_api()`, `actor_api_read()` and `actor_health()` as axum routers, the change hints as Server-Sent Events (`GET /changes`), the OpenAPI document, the schema check of the HTTP door (the JSON Schema validator `jsonschema`) and the sample checks |
 | `cicada-client` | Typed HTTP client (reqwest) |
-| `cicada-app` | Layer 2 (ADR 0018, ADR 0027): `App` turns a set of actor types into a binary with `serve` (the node and the HTTP API at the root, with a public `/ready` outside the host's router), `worker` (the node only) and the operator commands, which go over HTTP through `cicada-client`; settings from flags and `CICADA_…` variables over the host's `NodeConfig`. It only composes `cicada`, `cicada-axum` and `cicada-client`, and builds the binary `cicada` (no hosted type, so neither `serve` nor `worker`). Features `sqlite`, `postgres` and `tui` (the terminal UI), none on by default |
+| `cicada-app` | Layer 2 (ADR 0018, ADR 0027): `App` turns a set of actor types into a binary with `serve` (the node and the HTTP API at the root, with a public `/ready` outside the host's router), `worker` (the node only, or a `Worker` over a server's HTTP API, ADR 0042) and the operator commands, which go over HTTP through `cicada-client`; settings from flags and `CICADA_…` variables over the host's `NodeConfig`. It only composes `cicada`, `cicada-axum` and `cicada-client`, and builds the binary `cicada` (no hosted type, so neither `serve` nor `worker`). Features `sqlite`, `postgres` and `tui` (the terminal UI), none on by default |
 | `cicada-otel` | OpenTelemetry observer (`ActorTelemetry`) |
 | `cicada-actors` | Layer 3 (ADR 0018, ADR 0028): ready-made actors on the public API only, each under a fixed type name: a supervisor (`cicada.supervisor`) that restarts a child at fault once per incident and escalates by failing a message of its own, dead letters (`cicada.dead-letters`) told of failures by a watch, a topic (`cicada.topic`) that delivers to each subscriber in a turn of its own, a scheduler (`cicada.scheduler`) that sends a stored message to a target on each slot of a `Schedule`, in a turn of its own, a rate limiter (`cicada.rate-limiter`) that sends each submitted message to its target at the next free slot of a shared rate, keeping one GCRA timestamp, a debouncer (`cicada.debouncer`) that keeps the latest submission of a burst and sends it once the burst is quiet, at the longest wait or on a public `Flush`, a batcher (`cicada.batcher`) that collects items in handling order and sends them to a fixed target as one message when the batch is full, at the longest wait or on a public `Flush`, and an event (`cicada.event`) that keeps a list of subscribed flow types and, for each publication, creates and starts one run of each in one commit, keyed by the publication's message id; durable flows (ADR 0031), the one exception to the fixed names: a host's `Flow` names its type and is hosted by `FlowActor`, each run an actor whose state holds the input and an ordered journal of saved results (at most 1,000 `step` or `sleep` entries); each execution, only by the armed `Continue`, replays the journal and runs one new step, whose result commits with the next `Continue`, or one new sleep, whose wake time commits with a `Continue` due then and is never recomputed, so a step runs at least once with the key `<run address>/<step id>`, code outside steps must be deterministic, and a public `Continue` starts or recovers a run; `StoredMessage`, a message an actor keeps as a type name and a payload; `Schedule` (interval, daily) |
 | `examples` | Worked examples with tests |

@@ -339,6 +339,8 @@ worker.start().await?; // registers the contract, then polls for turns
   (`PT0.000000002S`). The actor in a body is its canonical address, echoed as it is.
 - **Older servers.** A server before 0.16.16 has no `/leases` routes: its `404` is `Fatal`, and the worker stops with
   that error at its first lease request.
+- **From the command line.** An `App`'s `worker --server` (or `--context`) builds this client and worker from its
+  flags and the config file, without the store: see [A worker over HTTP](app.md#a-worker-over-http).
 
 ### List actors with their state
 

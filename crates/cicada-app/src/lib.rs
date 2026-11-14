@@ -25,7 +25,13 @@
 //! - `serve` hosts the types, serves the HTTP API at the root and a public `/ready`, and stops in good order on SIGTERM
 //!   or SIGINT. It listens on `127.0.0.1:8080` unless `--listen` or `CICADA_LISTEN` says otherwise, and has no
 //!   authentication of its own: a host adds its layer with [`App::http`].
-//! - `worker` hosts the types and serves nothing.
+//! - `worker` hosts the types and serves nothing: on the store, or through a server's HTTP API with a
+//!   [`cicada::runtime::Worker`] (ADR 0042). `--store` selects the store, `--server` or `--context` HTTP (not both);
+//!   without them a non-blank `CICADA_STORE` wins over `CICADA_SERVER` and `CICADA_CONTEXT`. Over HTTP the server,
+//!   token and headers resolve as for the operator commands, the settings the server owns (`--lease-ttl`,
+//!   `--retention`, the store's, …) are refused, no store is opened (no store feature is needed), and an `App` with
+//!   [`App::on_start`] is refused. It lists the server's types while they answer "unavailable", a second apart and no
+//!   try after a minute, then registers its contracts and runs until the stop or until the worker stops by itself.
 //! - The operator commands of `cicada` (`get`, `send`, `create`, …), which talk to a node only over HTTP, through
 //!   [`cicada_client::ActorClient`], also in a binary that serves. The server comes from `--server`, `CICADA_SERVER` or
 //!   a context of the config file.
@@ -116,8 +122,9 @@ impl App {
         }
     }
 
-    /// Adds a type, as [`cicada::runtime::ActorSystemBuilder::host`]. A binary with a type has `serve` and `worker`,
-    /// which host every type unless `--types` names some.
+    /// Adds a type, as [`cicada::runtime::ActorSystemBuilder::host`] (or [`cicada::runtime::WorkerBuilder::host`] for a
+    /// worker over HTTP). A binary with a type has `serve` and `worker`, which host every type unless `--types` names
+    /// some.
     pub fn host<A: Actor>(mut self, actor: impl Into<ActorType<A>>) -> Self {
         let actor = actor.into();
         let name = actor.type_name();
@@ -125,14 +132,15 @@ impl App {
         self
     }
 
-    /// Adds an observer of the turns of the node, as [`cicada::runtime::ActorSystemBuilder::observe`]; for telemetry,
-    /// `cicada_otel::ActorTelemetry`.
+    /// Adds an observer of the turns of the node or of a worker over HTTP, as
+    /// [`cicada::runtime::ActorSystemBuilder::observe`]; for telemetry, `cicada_otel::ActorTelemetry`.
     pub fn observe(mut self, observer: impl TurnObserver) -> Self {
         self.observers.push(Arc::new(observer));
         self
     }
 
-    /// The host's `NodeConfig`. A flag of `serve` or `worker`, and its variable `CICADA_…`, override a field of it.
+    /// The host's `NodeConfig`. A flag of `serve` or `worker`, and its variable `CICADA_…`, override a field of it. A
+    /// worker over HTTP takes only its id, concurrency, poll interval, longest turn, grace period and cancel timeout.
     pub fn node_config(mut self, config: NodeConfig) -> Self {
         self.node_config = Some(config);
         self
@@ -151,9 +159,11 @@ impl App {
         self
     }
 
-    /// Runs `f` once after the node started, in `serve` before it listens and in `worker`: to create an actor that must
-    /// exist, for example. An error stops the node and fails the command; a stop while it runs drops it. Functions of
-    /// several calls run in the order of the calls.
+    /// Runs `f` once after the node started, in `serve` before it listens and in a `worker` on the store: to create an
+    /// actor that must exist, for example. An error stops the node and fails the command; a stop while it runs drops
+    /// it. Functions of several calls run in the order of the calls. A worker over HTTP has no `ActorSystem` to give
+    /// `f`, so an `App` with `on_start` refuses to run one (exit code 2), before it reads the config file or sends a
+    /// request.
     pub fn on_start<F, Fut>(mut self, f: F) -> Self
     where
         F: FnOnce(ActorSystem) -> Fut + Send + 'static,

@@ -46,24 +46,28 @@ the store and the node's life cycle, or hands them to `App`.
   myapp serve --store "$DATABASE_URL" --listen 0.0.0.0:8080 --concurrency 32   # a node that serves; add a layer first
   myapp serve --store "$DATABASE_URL" --listen 0.0.0.0:8080 --types none       # a node that only serves HTTP
   myapp worker --store "$DATABASE_URL" --types billing.invoices                  # a node that only runs turns
+  myapp worker --server https://actors.internal --types billing.invoices         # runs turns through the API
   ```
 
   `serve` listens on `127.0.0.1:8080` unless `--listen` (`CICADA_LISTEN`) says otherwise, so in a container nothing
   answers from outside until it is set. The API has **no authentication** unless the host adds a layer with
-  `App::http`: it can change and delete everything, so open it to a network only behind one. `serve` and `worker`
-  refuse `--token`, which belongs to the operator commands, so it cannot look like protection. `/ready` stays public.
+  `App::http`: it can change and delete everything, so open it to a network only behind one. `serve` refuses
+  `--token`, which belongs to the operator commands, so it cannot look like protection; `worker` takes it only over
+  HTTP ([A worker over HTTP](guide/app.md#a-worker-over-http)). `/ready` stays public.
   Set the same `--retention` (`CICADA_RETENTION`, 7 days by default) on every node of a system: it is how long
   outcomes are kept and the window in which a message id is known. On PostgreSQL a node waits about a minute for a
   database that is not there yet, so containers may start in any order: it tries again a second after each try and
   starts no try after a minute, but one try can take seconds (about 10 s for an address that does not answer), so a
   node that gives up may do so after more than a minute. A wrong password counts as unavailable and is tried again for
   the whole wait, like an unreachable database; the warnings in the log name the error. Exit codes: 0 after a stop, 2
-  for a command line or a variable that cannot be used, 1 for a node that cannot start.
+  for a command line or a variable that cannot be used, 1 for a node that cannot start (or a worker over HTTP that
+  cannot start or stops by itself).
 - **Graceful stop.** `serve` and `worker` stop on `SIGTERM` and `SIGINT`. `serve` stops the node first: it claims no
   more and lets running turns finish within the grace period, while the API keeps answering and `/ready` answers
   `503`; then the HTTP server stops, requests still open get 5 s and are cut off after that, and the store is closed.
   An open change stream (`GET /changes`) does not end when the node stops, so with a dashboard open the stop of
-  `serve` takes the node's stop plus those 5 s. `worker` stops the node and closes the store. A host that uses the layers directly handles signals itself: it waits
+  `serve` takes the node's stop plus those 5 s. `worker` stops the node and closes the store; over HTTP it stops its
+  `Worker` with the same grace period and cancel timeout, and closes nothing. A host that uses the layers directly handles signals itself: it waits
   for `SIGTERM` (and Ctrl-C), calls `system.stop()`, and closes the store afterwards. On stop a node stops claiming,
   lets running turns finish within `shutdown_grace_period` (30 s), then cancels them and releases their leases; a
   cancelled turn that does not end
@@ -139,7 +143,8 @@ the store and the node's life cycle, or hands them to `App`.
   credentials. Merge `actor_health(system, "/ready")` outside it (`serve` answers `/ready` outside the host's router by
   itself): it answers like `/health` (`200` with the node id and state when the node runs and reaches its store, else
   `503`). Use it for **readiness** only. A `worker` serves nothing, so it has **no readiness check**: whatever runs it
-  sees only the process, and a worker that cannot reach its store keeps running and retries. A store outage makes
+  sees only the process, and a worker that cannot reach its store keeps running and retries; so does a worker over
+  HTTP whose server is unavailable, while one the server refuses (`401`, `403`, a redirect) exits 1. A store outage makes
   every node unready, and restarting them does not bring the store back, so do not use it for liveness. A Kubernetes
   example for a node with the default 30 s grace period:
 
@@ -375,6 +380,12 @@ HTTP](guide/http.md#run-a-worker-over-http)). Point a worker over HTTP only at s
 load balancer: an older server answers `404`, which stops the worker with a fatal error. Extend the host's
 authentication to `/leases` and its children before exposing them.
 
+**Version 0.16.17 changes no schema, contract, route or store behaviour.** `worker` of `cicada-app` can run over HTTP
+(ADR 0042, [A worker over HTTP](guide/app.md#a-worker-over-http)) with `--server`, `--context` and `--token`, which it
+refused before. A worker on the store stays one: `--store`, or a non-blank `CICADA_STORE`, wins over `CICADA_SERVER`
+and `CICADA_CONTEXT` set for the operator commands, and it reads neither the config file nor `CICADA_TOKEN`. Only a
+worker without a store that has `CICADA_SERVER` or `CICADA_CONTEXT`, which failed before, now runs over HTTP.
+
 **Switching a type to `create_child`.** An actor created with `turn.create` stays independent: a later `create_child`
 of it by its creator does not adopt it, but fails the creator's message (the commit is rejected, and a handler cannot
 test for that). So switch a parent type from `create` to `create_child` only when no parent of it is left that created
@@ -544,6 +555,14 @@ children and `PUT /types/{name}`: these are trusted writes, and an epoch is no s
 `reqwest::Client` without redirects and without a retry layer of its own. Each lease, renewal, release and completion
 takes at most `turn_timeout` (10 s by default) or the client's own shorter timeout; a load balancer's idle and request
 timeouts must be longer than that, and much shorter than the server's `lease_ttl`, or every renewal comes too late.
+
+`worker --server` (or `--context`) of an `App` builds that worker from its flags and the config file: no redirects,
+no retry of its own, 30 s for each request and the 10 s turn timeout for the lease calls. Its credentials also need
+`GET /types`, which it asks before the start while the server is unavailable (a second apart, no try after a minute,
+so about 90 s at most before the registration), and `GET /types/{name}`, read once after a contract conflict. It
+refuses the settings the server owns (`--lease-ttl`, `--heartbeat-interval`, `--max-lost-claims`, `--retention` and
+those of the store) and an `App` with `on_start`, which needs a node on the store: run that bootstrap with `serve` or a
+worker on the store.
 
 - **Body limits.** A completion carries the whole report of a turn. Size `ApiConfig::max_request_body_bytes` (1 MiB by
   default) and every proxy's body limit for the largest report a handler can produce, not for one send. A report over

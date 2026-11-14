@@ -23,7 +23,7 @@
   AGENTS.md, reusing the predecessor's harness where suitable. Socket framing tests need no timing-sensitive sleeps.
   Test applicable configuration errors separately from ignored server settings. Run targeted integration tests and
   `cargo check -p cicada-app --no-default-features` to prove the production path has no store-feature requirement.
-- [ ] 4. Update ADR 0042/index as needed, architecture's App section, app guide, crate docs, README and operations.
+- [x] 4. Update ADR 0042/index as needed, architecture's App section, app guide, crate docs, README and operations.
   Include a compiled no_run App HTTP-worker example, mode/setting precedence, startup-hook incompatibility, separate
   bootstrap, preserved context credentials on URL override, permissions for GET /types and /types/{name}, PUT
   /types/{name} and all lease routes, and cooperative shutdown/error exits. State that the preflight horizon excludes

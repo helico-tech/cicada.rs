@@ -5,7 +5,7 @@ composes [the core](core.md) and [the HTTP layer](http.md); a host that needs mo
 
 | Crate | Contents |
 | --- | --- |
-| `cicada-app` | `App`: a set of actor types as a binary with `serve` (the node and the HTTP API), `worker` (the node only) and the operator commands, configured by flags and `CICADA_…` variables; see [Run it as a binary](#run-it-as-a-binary). It builds the binary `cicada`: kubectl-style commands and a k9s-style terminal UI over the HTTP API; see [Command line and terminal UI](#command-line-and-terminal-ui). The stores are its features `sqlite` and `postgres`, the terminal UI its feature `tui`; none is on by default. |
+| `cicada-app` | `App`: a set of actor types as a binary with `serve` (the node and the HTTP API), `worker` (the node only, or a worker over a server's HTTP API) and the operator commands, configured by flags and `CICADA_…` variables; see [Run it as a binary](#run-it-as-a-binary). It builds the binary `cicada`: kubectl-style commands and a k9s-style terminal UI over the HTTP API; see [Command line and terminal UI](#command-line-and-terminal-ui). The stores are its features `sqlite` and `postgres`, the terminal UI its feature `tui`; none is on by default. |
 
 The Rust blocks of this guide are doctests of the `examples` crate (`cargo test -p cicada-examples --doc`).
 
@@ -75,6 +75,7 @@ The binary has three kinds of commands:
 myapp serve --store actors.db                              # the node and the HTTP API on 127.0.0.1:8080, until SIGTERM
 myapp serve --store "$DATABASE_URL" --listen 0.0.0.0:8080   # PostgreSQL; open to every network, so add a layer first
 myapp worker --store "$DATABASE_URL" --types sync           # hosts only `sync` and serves nothing
+myapp worker --server https://actors.internal --types sync  # the same, through a server's HTTP API, without the database
 myapp get actors --server http://127.0.0.1:8080             # an operator command, over HTTP
 ```
 
@@ -88,13 +89,15 @@ myapp get actors --server http://127.0.0.1:8080             # an operator comman
   it. `/ready` is answered by `App` outside that router: no layer covers it, and a route `/ready` of the host is never
   reached. A route that the API already has makes axum panic: its message goes to standard error, and the command
   fails with it before the node starts.
-- `worker` hosts the types and serves nothing; it has no `/ready`. `--types` picks the types of a node: `all` (the
-  default), or type names with commas; `serve --types none` serves the API and hosts nothing.
+- `worker` hosts the types and serves nothing; it has no `/ready`. It runs them on the store, or through a server's
+  HTTP API ([A worker over HTTP](#a-worker-over-http)). `--types` picks the types of a node: `all` (the default), or
+  type names with commas; `serve --types none` serves the API and hosts nothing.
 - The operator commands are those of the [command line](#command-line-and-terminal-ui), over HTTP, also in a binary
-  that serves. `serve` and `worker` refuse their flags `--context`, `--server`, `--token` and `-o`. A binary without
-  types has neither `serve` nor `worker`, so the plain `cicada` binary never serves.
-- `App::on_start` runs after the node started, in `serve` before it listens and in `worker`: to create an actor that
-  must exist. Its error stops the node and fails the command. `App::observe` adds an observer (for telemetry,
+  that serves. `serve` refuses their flags `--context`, `--server`, `--token` and `-o`; `worker` takes the first three
+  for HTTP mode and refuses `-o`. A binary without types has neither `serve` nor `worker`, so the plain `cicada` binary
+  never serves.
+- `App::on_start` runs after the node started, in `serve` before it listens and in a `worker` on the store: to create
+  an actor that must exist. Its error stops the node and fails the command; a worker over HTTP refuses it. `App::observe` adds an observer (for telemetry,
   `cicada-otel`'s `ActorTelemetry`), `App::node_config` the host's `NodeConfig`, and `App::version` what `--version`
   prints. A host whose `main` is async calls `run_async`; `run_with` takes the arguments, the environment, the output
   and the stop from its caller, for tests. What the host builds before `run` is built for every command, also for
@@ -103,14 +106,14 @@ myapp get actors --server http://127.0.0.1:8080             # an operator comman
 - Exit codes: 0 for success, the help, the version and a node that was stopped; 2 for a command line that cannot be
   used (an unknown flag, a value that cannot be read, no store, a type the binary does not host); 1 for everything
   else that fails (a store that stays away, an address that is taken, a node that cannot start, an `on_start` that
-  fails, an operator command that fails). `serve` and `worker` log with `tracing` to standard output, filtered by
+  fails, an operator command that fails, a worker over HTTP that cannot start or stops by itself). `serve` and `worker` log with `tracing` to standard output, filtered by
   `RUST_LOG` (`info,sqlx=warn` when unset).
 
 Every setting has a flag and a variable; a flag wins over its variable, and a blank variable counts as unset:
 
 | Flag | Variable | Default | Meaning |
 | --- | --- | --- | --- |
-| `--store` | `CICADA_STORE` | required | `postgres://…` or `postgresql://…` (PostgreSQL), `sqlite:FILE`, or the path of a SQLite file. Another value with `://`, or one that starts with `postgres:`, is refused and never printed, as it may hold a password |
+| `--store` | `CICADA_STORE` | required, but for a worker over HTTP | `postgres://…` or `postgresql://…` (PostgreSQL), `sqlite:FILE`, or the path of a SQLite file. Another value with `://`, or one that starts with `postgres:`, is refused and never printed, as it may hold a password |
 | `--store-schema` | `CICADA_STORE_SCHEMA` | `public` | the schema, on PostgreSQL |
 | `--store-pool-size` | `CICADA_STORE_POOL_SIZE` | the larger of 20 and the concurrency plus 4 | the connections of this node, on PostgreSQL |
 | `--retention` | `CICADA_RETENTION` | 7 days | how long outcomes are kept, also the window in which a message id is known (S10); set one value on every node |
@@ -137,6 +140,75 @@ order: a second after each try, and no new try after a minute. One try can take 
 that does not answer), so the wait is about a minute and can be longer, and a wrong password counts as unavailable and
 is tried again like an unreachable database. A store whose feature the binary was built without fails the command and
 names the feature.
+
+### A worker over HTTP
+
+`worker` can lease its turns from a server instead of the store (ADR 0042): any node with the HTTP API on the same
+store, `serve --types none` for one, runs them through the `Worker` of [the core](core.md) and `ActorClient`'s turn
+source of [the HTTP layer](http.md). The actors are unchanged, and the binary needs no store feature and no database
+credentials. The same `App` runs either way, as long as it has no `on_start`:
+
+<!-- doctest
+# use cicada_examples::sync::{Page, ReportsActor, SyncActor, SyncApi};
+# struct HttpSyncApi;
+# impl SyncApi for HttpSyncApi {
+#     async fn fetch(&self, _: &str, _: Option<&str>, _: &str) -> Page { Page { size: 0, next: None } }
+# }
+@@8
+-->
+```rust,no_run
+use std::process::ExitCode;
+
+use cicada_app::App;
+
+fn main() -> ExitCode {
+    // No App::on_start: a worker over HTTP refuses it. Bootstrap with `serve` or a worker on the store instead.
+    App::new().host(SyncActor { api: HttpSyncApi }).host(ReportsActor).run()
+}
+```
+
+```sh
+myapp worker --server https://actors.internal --token "$TOKEN"   # or CICADA_SERVER and CICADA_TOKEN
+myapp worker --context prod --types sync                          # the server, token and headers of a context
+```
+
+- **The mode.** `--store` selects the store, `--server` or `--context` HTTP, before or after `worker`; the two
+  together are a usage error. Without them a non-blank `CICADA_STORE` selects the store, also when `CICADA_SERVER` or
+  `CICADA_CONTEXT` is set, so a deployment that has the operator variables keeps its worker on the store; else a
+  non-blank `CICADA_SERVER` or `CICADA_CONTEXT` selects HTTP. A token, or the `current-context` of the config file,
+  alone selects nothing: without a mode the command fails and names both ways. `--token` on the store is a usage error,
+  and a worker on the store reads neither the config file nor `CICADA_TOKEN`.
+- **The server and its credentials** come as for the [operator commands](#command-line-and-terminal-ui): each of the
+  server, the context and the token from its flag, else its variable, else the config file. A context's token and
+  headers apply also when `--server` or `CICADA_SERVER` overrides its URL. A config file that cannot be read fails the
+  command (exit 1).
+- **The settings.** `--node-id`, `--concurrency`, `--poll-interval`, `--max-turn` and `--shutdown-grace-period`, with
+  their variables, set the `WorkerConfig` (`worker_id`, `concurrency`, `poll_interval`, `default_max_turn`,
+  `shutdown_grace_period`) over the host's `NodeConfig`, over the default; the host's `shutdown_cancel_timeout` is kept
+  (5 s by default). The server owns the store and the leases: `--store-schema`, `--store-pool-size`, `--retention`,
+  `--lease-ttl`, `--heartbeat-interval` and `--max-lost-claims` are refused (exit 2), and their variables, the host's
+  values of them and `CICADA_LISTEN` are not read. A value that cannot be read is exit 2; a value the worker refuses
+  when it starts (`--concurrency 0`) is exit 1.
+- **`on_start` is refused** (exit 2) before the config file is read or a request is sent: its functions need an
+  `ActorSystem`, which only a node on the store has. Bootstrap with `serve` or a worker on the store, or move that work
+  out of the worker's `App`.
+- **Permissions.** A host layer on the server must let the worker's token through to `GET /types`,
+  `GET /types/{name}` (read once after a contract conflict, for the diagnostic), `PUT /types/{name}`, `POST /leases`,
+  `POST /leases/renew`, `POST /leases/release` and `POST /leases/complete` ([Run a worker over HTTP](http.md#run-a-worker-over-http)).
+- **The client** follows no redirect, as a `307` or `308` would send a lease call again (a redirect is a fatal error),
+  and retries nothing of its own. Each request has 30 s in all; a lease, renewal, release and completion also has
+  `ActorClient`'s turn timeout of 10 s.
+- **The start.** The worker lists the types while the server answers that it is unavailable: a second after each try,
+  and no try at or after a minute from the first. A try that began before then may run to the 30 s timeout, so the
+  wait is about 90 s at most; it does not include the registration that follows, and nothing bounds the whole start.
+  A refusal (`401`, `403`, `404`, a redirect) fails at once (exit 1). Then the worker registers its contracts one by
+  one; a conflict or a failure there fails the command (exit 1) without a retry.
+- **The stop.** SIGTERM or SIGINT, also while it waits or registers (exit 0; contracts already registered stay), stops
+  the `Worker`: no new lease, running turns get the grace period, then they are cancelled and get the cancel timeout. A
+  turn whose handler has not ended releases its lease; one whose handler ended completes; work that ignores
+  cancellation is left behind and its lease expires. The worker stops by itself on a contract mismatch, an invalid
+  request or a fatal answer of a lease call, such as a `403`: exit 1 with that error, also when a stop came at the same
+  time. A worker over HTTP has no `/ready` and no row in `GET /nodes`.
 
 ## Command line and terminal UI
 
