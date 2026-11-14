@@ -3,8 +3,9 @@
 //! and arming the next `Continue` in the same commit; a sleep's `Continue` is due at its saved wake time, a send's or a
 //! request's create and message commit with its entry, and a wait for replies that have not come parks the run with no
 //! `Continue` until a `Reply` turn closes it, or, with a deadline, arms a `Continue` due then that closes it as timed
-//! out. A wait names one request or joins up to 100, for all their replies or the first. The wire also holds
-//! cancellation for a later release, which this one refuses.
+//! out. A wait names one request or joins up to 100, for all their replies or the first. A `Cancel` ends a running run
+//! in one turn of its own: it cancels the armed `Continue`, marks the run cancelled and keeps its progress; the wire
+//! also holds the cleanup of a cancelling run for a later release, which this one refuses.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -125,8 +126,8 @@ impl<F: Flow> ActorRef for FlowRun<F> {
     type Message = FlowMsg;
 }
 
-/// The messages of a [`FlowRun`]. The wire holds `Cancel` (ADR 0044) ahead of the release that implements it: this
-/// release refuses it for good, so upgrade every host and worker of a flow type before sending it. `Reply` is what
+/// The messages of a [`FlowRun`]. A host or a worker of 0.18.3 or earlier refuses `Cancel` for good, although the
+/// contract is the same (ADR 0044): upgrade every host and worker of a flow type before sending it. `Reply` is what
 /// [`ReplyTo::send`] sends; a host or a worker of 0.18.0 refuses it for good, so upgrade them all before a flow requests.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type")]
@@ -143,12 +144,15 @@ pub enum FlowMsg {
         /// The reply's JSON, `null` included; required, so a missing value is not `null`.
         value: Value,
     },
-    /// Asks the run to stop; refused for good by this release.
+    /// Ends a running run, without running flow code: in its turn's one commit it cancels the armed `Continue`, marks
+    /// the run cancelled and clears `armed`, keeping the input, the journal and the replies; a done or cancelled run
+    /// ignores it. It waits for the turn before it in the mailbox, does not undo effects already made and runs no
+    /// cleanup. Sending it only queues it: read the run's status to learn that it was cancelled.
     Cancel,
 }
 
-/// The phase of a run. This release executes only running runs; `cancelling` and `cancelled` are on the wire for later
-/// releases (ADR 0044).
+/// The phase of a run. This release executes running runs and cancels them; `cancelling` is on the wire for a later
+/// release (ADR 0044).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum FlowStatus {
@@ -159,7 +163,7 @@ pub enum FlowStatus {
     Cancelling,
     /// The flow returned `Ok` after replaying every saved entry; the run keeps its state until it is deleted.
     Done,
-    /// A cancelled run; it keeps its state until it is deleted.
+    /// A run ended by `Cancel`; it keeps its state until it is deleted, and ignores `Continue` and `Reply`.
     Cancelled,
 }
 
@@ -1895,11 +1899,14 @@ fn check_result(value: &Value, depth: usize) -> Result<(), String> {
 /// due now with `F::retry()` and the reply's correlation id; otherwise `armed` stays, also for a partial reply of a
 /// join. A done or cancelled run ignores every `Reply`.
 ///
-/// This release refuses `Cancel` for good, and a `Continue` or a `Reply` to a cancelling run, with a diagnostic that
-/// names the later release they need (ADR 0044): upgrade every host and worker of a flow type before using them. A
-/// host or a worker of 0.18.1 refuses the reply to a wait with a deadline, and one of 0.18.2 the reply to a join of
-/// several requests or of mode first, for good, although the contract is the same: upgrade them all before a flow
-/// waits that way.
+/// A `Cancel` runs no flow code either. To a running run it cancels the armed continuation, unless that is the `Cancel`
+/// itself, marks the run cancelled and clears `armed`, in one commit; the input, both journals, the replies and an open
+/// wait stay as they were, and it sends nothing. It does not preempt a turn already running, which may commit first. A
+/// done or cancelled run ignores it, writing nothing. This release refuses every message to a cancelling run, with a
+/// diagnostic that names the later release it needs (ADR 0044). A host or a worker of 0.18.3 or earlier refuses
+/// `Cancel` for good: upgrade every host and worker of a flow type before sending it. A host or a worker of 0.18.1
+/// refuses the reply to a wait with a deadline, and one of 0.18.2 the reply to a join of several requests or of mode
+/// first, for good, although the contract is the same: upgrade them all before a flow waits that way.
 pub struct FlowActor<F> {
     flow: F,
 }
@@ -1916,11 +1923,6 @@ impl<F: Flow> Actor for FlowActor<F> {
     type State = FlowState<F::Input>;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: FlowMsg) -> HandlerResult {
-        let reply = match message {
-            FlowMsg::Continue => None,
-            FlowMsg::Reply { request, value } => Some((request, value)),
-            FlowMsg::Cancel => return Err(HandlerError::permanent(later_release("FlowMsg::Cancel"))),
-        };
         match turn.state().status {
             FlowStatus::Running => {}
             FlowStatus::Done | FlowStatus::Cancelled => return Ok(()),
@@ -1928,6 +1930,11 @@ impl<F: Flow> Actor for FlowActor<F> {
                 return Err(HandlerError::permanent(later_release("the cleanup of a cancelling run")));
             }
         }
+        let reply = match message {
+            FlowMsg::Continue => None,
+            FlowMsg::Reply { request, value } => Some((request, value)),
+            FlowMsg::Cancel => return cancel(turn),
+        };
         if let Some((request, value)) = reply {
             return accept::<F>(turn, request, value);
         }
@@ -2043,6 +2050,19 @@ fn accept<F: Flow>(turn: &mut Turn<FlowActor<F>>, request: MessageId, value: Val
         turn.cancel(&old)?;
     }
     arm(turn, None)
+}
+
+/// Handles a `Cancel` to a running run, without flow code (ADR 0044): cancels the armed continuation unless it is the
+/// current message, marks the run cancelled and clears `armed`, in the turn's one commit. The journals, the replies and
+/// an open wait stay as they were.
+fn cancel<F: Flow>(turn: &mut Turn<FlowActor<F>>) -> HandlerResult {
+    if let Some(old) = turn.state().armed.clone().filter(|old| *old != turn.message().id) {
+        turn.cancel(&old)?;
+    }
+    let state = turn.state_mut();
+    state.status = FlowStatus::Cancelled;
+    state.armed = None;
+    Ok(())
 }
 
 /// Closes an open wait with `decided` and the replies it selected.

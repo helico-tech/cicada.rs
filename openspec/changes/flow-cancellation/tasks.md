@@ -1,6 +1,6 @@
 ## Implementation
 
-- [ ] 1. Reconcile the landed four predecessors, then implement status/message dispatch before normalization and
+- [x] 1. Reconcile the landed four predecessors, then implement status/message dispatch before normalization and
   the running Cancel branch with the current-message armed-id guard. Keep input/journals/replies untouched, skip flow
   code/input clone/extra result decode, and never write state on terminal no-ops. Tests use start_paused/TestActors
   and counters for never-started, armed, sleeping, missing-timer and permanently mismatched runs; repeated Cancel and

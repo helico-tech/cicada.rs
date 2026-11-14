@@ -17,7 +17,7 @@ use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -802,7 +802,15 @@ impl ActorRef for Producer {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type")]
 enum ProducerMsg {
-    Go { key: String, script: Script },
+    Go {
+        key: String,
+        script: Script,
+    },
+    /// Sends the run `key` a `Cancel`, after creating it with `create` when given.
+    Cancel {
+        key: String,
+        create: Option<Script>,
+    },
 }
 
 struct ProducerActor;
@@ -812,9 +820,18 @@ impl Actor for ProducerActor {
     type State = NoState;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: ProducerMsg) -> HandlerResult {
-        let ProducerMsg::Go { key, script } = message;
-        turn.create(&run(&key), &FlowState::new(script))?;
-        turn.send(&run(&key), FlowMsg::Continue)?;
+        match message {
+            ProducerMsg::Go { key, script } => {
+                turn.create(&run(&key), &FlowState::new(script))?;
+                turn.send(&run(&key), FlowMsg::Continue)?;
+            }
+            ProducerMsg::Cancel { key, create } => {
+                if let Some(script) = create {
+                    turn.create(&run(&key), &FlowState::new(script))?;
+                }
+                turn.send(&run(&key), FlowMsg::Cancel)?;
+            }
+        }
         Ok(())
     }
 }
@@ -1885,35 +1902,32 @@ async fn observer_headers_go_on_a_send() {
     assert_eq!(sent[0].headers, [("work".to_owned(), "w".to_owned())].into());
 }
 
-/// Scenario: Reserved message and phase.
+/// Scenarios: Reserved message and phase; Reserved cleanup phase; and Terminal commands. Every message to a cancelling
+/// run fails for good without effects; a done or cancelled run takes `Continue`, `Reply` (a too-deep one too) and
+/// `Cancel` without writing, sending or running flow code.
 #[tokio::test(start_paused = true)]
-async fn cancel_and_cancelling_are_refused_and_terminal_runs_ignore_continue_and_reply() {
+async fn a_cancelling_run_refuses_every_message_and_terminal_runs_ignore_continue_reply_and_cancel() {
     let probe = Probe::default();
     let test = node(&probe).await;
-    test.create(&run("cancel"), &FlowState::new(script(steps(&["a"])))).await;
-    let sent = test.send(&run("cancel"), FlowMsg::Cancel).await;
-    test.run_until_idle().await;
-    let record = outcome(&test, &sent.id).await.unwrap();
-    assert_eq!((record.status, record.envelope.failures), (OutcomeStatus::Failed, 0));
-    assert!(record.error.unwrap().contains("refuses FlowMsg::Cancel for good"));
-    assert_eq!(test.version(&run("cancel")).await, 0, "no effects");
-    assert!(test.pending(&run("cancel")).await.is_empty());
-
-    let reply = || FlowMsg::Reply { request: MessageId::new("m1").unwrap(), value: Value::Null };
-    for (key, message) in [("cancelling", FlowMsg::Continue), ("cancelling-reply", reply())] {
+    let reply = |value: Value| FlowMsg::Reply { request: MessageId::new("m1").unwrap(), value };
+    let messages = || [("continue", FlowMsg::Continue), ("reply", reply(Value::Null)), ("cancel", FlowMsg::Cancel)];
+    for (name, message) in messages() {
+        let key = format!("cancelling-{name}");
         let cancelling = FlowState { status: FlowStatus::Cancelling, ..FlowState::new(script(steps(&["a"]))) };
-        test.create(&run(key), &cancelling).await;
-        let sent = test.send(&run(key), message).await;
+        test.create(&run(&key), &cancelling).await;
+        let sent = test.send(&run(&key), message).await;
         test.run_until_idle().await;
         let record = outcome(&test, &sent.id).await.unwrap();
-        assert_eq!(record.status, OutcomeStatus::Failed, "{key}");
+        assert_eq!((record.status, record.envelope.failures), (OutcomeStatus::Failed, 0), "{key}");
         assert!(record.error.unwrap().contains("refuses the cleanup of a cancelling run for good"), "{key}");
-        assert_eq!(test.version(&run(key)).await, 0, "{key}");
+        assert_eq!(test.version(&run(&key)).await, 0, "{key}: no effects");
+        assert!(test.pending(&run(&key)).await.is_empty(), "{key}");
     }
 
     for status in [FlowStatus::Done, FlowStatus::Cancelled] {
-        for message in [FlowMsg::Continue, reply()] {
-            let key = format!("{status:?}-{message:?}");
+        let deep = ("deep-reply", reply(nested(63)));
+        for (name, message) in messages().into_iter().chain([deep]) {
+            let key = format!("{status:?}-{name}");
             let terminal = FlowState { status, ..restored(script(steps(&["a"])), vec![saved("a", json!("r-a"))]) };
             test.create(&run(&key), &terminal).await;
             let sent = test.send(&run(&key), message).await;
@@ -1922,9 +1936,11 @@ async fn cancel_and_cancelling_are_refused_and_terminal_runs_ignore_continue_and
             let kept = test.state_json(&run(&key)).await.unwrap();
             assert_eq!(kept, serde_json::to_value(&terminal).unwrap(), "{key}: the state stays");
             assert_eq!(test.version(&run(&key)).await, 0, "{key}");
+            assert!(test.pending(&run(&key)).await.is_empty(), "{key}: no continuation");
         }
     }
     assert!(probe.keys().is_empty(), "no flow code ran");
+    assert!(test.failures().await.iter().all(|f| f.envelope.to.key().starts_with("cancelling-")));
 }
 
 /// Scenario: Replay misuse, through the runner: a saved request does not replay as a send, and a saved join, first wait
@@ -3846,4 +3862,146 @@ async fn single_waits_saved_by_0_18_2_replay_through_joins_of_one_request() {
         shapes.push(entry);
     }
     assert_eq!(shapes[0], shapes[1], "the same entry");
+}
+
+// Cancellation (flow-cancellation).
+
+/// The saved progress of `key` as JSON: its state without the status and the armed continuation.
+async fn progress(test: &TestActors, key: &str) -> Value {
+    let mut state = test.state_json(&run(key)).await.unwrap();
+    let fields = state.as_object_mut().unwrap();
+    fields.remove("status");
+    fields.remove("armed");
+    state
+}
+
+/// Asserts that `key` is cancelled with no armed continuation and nothing pending, and still holds `saved`.
+async fn assert_cancelled(test: &TestActors, key: &str, saved: &Value) {
+    let held = state(test, key).await;
+    assert_eq!((held.status, held.armed), (FlowStatus::Cancelled, None), "{key}");
+    assert_eq!(&progress(test, key).await, saved, "{key}: the input, the journals and the replies stay");
+    assert!(test.pending(&run(key)).await.is_empty(), "{key}: nothing pending");
+}
+
+/// Scenario: Never started or stalled. A run that was never started, a parked join with a partial reply, a run whose
+/// sleep timer was cancelled and a run whose replay failed for good each become cancelled in one commit of the
+/// `Cancel` turn, without flow code, keeping their saved progress; later replies and time change nothing.
+#[tokio::test(start_paused = true)]
+async fn cancel_ends_a_new_parked_timerless_or_broken_run_without_flow_code() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    responders(&test, &["r1", "r2"]).await;
+    test.create(&run("new"), &FlowState::new(script(steps(&["a"])))).await;
+    start(&test, "parked", script(vec![later("a", "r1"), later("b", "r2"), all_op("both", &["a", "b"], None)])).await;
+    start(&test, "timerless", script(vec![sleep("nap", MINUTE), op(|id| Op::Step { id }, "b")])).await;
+    start_with(&test, "broken", restored(script(steps(&["a", "b"])), vec![saved("b", json!("r-b"))])).await;
+    test.run_until_idle().await;
+    answer(&test, "r1", json!("one"), None).await;
+    test.run_until_idle().await;
+    assert_eq!(state(&test, "parked").await.replies.len(), 1, "a partial reply is kept");
+    drop(test.system().cancel(&armed(&test, "timerless").await.id).await.unwrap());
+    refused(&test, "broken", "calls step `a` where its journal holds step `b`").await;
+    for key in ["parked", "timerless", "broken"] {
+        assert_eq!(state(&test, key).await.status, FlowStatus::Running, "{key}: a core control does not cancel a flow");
+    }
+
+    for key in ["new", "parked", "timerless", "broken"] {
+        let (before, version) = (progress(&test, key).await, test.version(&run(key)).await);
+        let sent = test.send(&run(key), FlowMsg::Cancel).await;
+        assert_eq!(test.run_until_idle().await, 1, "{key}: one turn");
+        assert_eq!(outcome(&test, &sent.id).await.unwrap().status, OutcomeStatus::Done, "{key}");
+        assert_eq!(test.version(&run(key)).await, version + 1, "{key}: one commit");
+        assert_cancelled(&test, key, &before).await;
+    }
+    let before = progress(&test, "parked").await;
+    answer(&test, "r2", json!("two"), None).await;
+    test.advance_time_by(MINUTE * 2).await;
+    assert_cancelled(&test, "parked", &before).await;
+    assert!(probe.keys().is_empty() && probe.got().is_empty(), "no flow code ran");
+}
+
+/// How often a [`Counted`] input was cloned.
+static CLONES: AtomicUsize = AtomicUsize::new(0);
+/// How often [`CountedFlow::run`] was called.
+static RUNS: AtomicUsize = AtomicUsize::new(0);
+
+/// An input that counts its clones.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct Counted(u32);
+
+impl Clone for Counted {
+    fn clone(&self) -> Self {
+        CLONES.fetch_add(1, Ordering::SeqCst);
+        Counted(self.0)
+    }
+}
+
+/// `test.counted`: one sleep of a minute, counting its executions.
+struct CountedFlow;
+
+impl Flow for CountedFlow {
+    const TYPE: &'static str = "test.counted";
+    type Input = Counted;
+
+    async fn run(&self, step: &mut Step, _input: Counted) -> HandlerResult {
+        RUNS.fetch_add(1, Ordering::SeqCst);
+        step.sleep("nap", MINUTE).await
+    }
+}
+
+/// Scenario: Never started or stalled, of the input: a `Cancel` neither calls `Flow::run` nor clones the input.
+#[tokio::test(start_paused = true)]
+async fn cancel_neither_runs_the_flow_nor_clones_its_input() {
+    let test = TestActors::builder().with(|node| node.host(FlowActor::new(CountedFlow))).build().await.unwrap();
+    let counted = FlowRun::<CountedFlow>::named("c");
+    test.create(&counted, &FlowState::new(Counted(1))).await;
+    test.send(&counted, FlowMsg::Continue).await;
+    test.run_until_idle().await;
+    let (clones, runs) = (CLONES.load(Ordering::SeqCst), RUNS.load(Ordering::SeqCst));
+    assert_eq!(runs, 1, "the sleep's execution");
+    test.send(&counted, FlowMsg::Cancel).await;
+    assert_eq!(test.run_until_idle().await, 1);
+    let held: FlowState<Counted> = test.state(&counted).await;
+    assert_eq!((held.status, held.armed), (FlowStatus::Cancelled, None));
+    assert_eq!((CLONES.load(Ordering::SeqCst), RUNS.load(Ordering::SeqCst)), (clones, runs), "no clone, no run");
+}
+
+/// Scenario: Armed message and current id. Another armed message still pending ends cancelled, and no handler runs
+/// for it; an armed id that is no longer pending, or that names the `Cancel` itself in supplied progress, is not
+/// cancelled, and the `Cancel` completes normally.
+#[tokio::test(start_paused = true)]
+async fn cancel_cancels_another_armed_continuation_and_never_its_own_message() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    start(&test, "sleeping", script(vec![sleep("nap", MINUTE), op(|id| Op::Step { id }, "b")])).await;
+    test.run_until_idle().await;
+    let timer = armed(&test, "sleeping").await;
+    let before = progress(&test, "sleeping").await;
+    test.send(&run("sleeping"), FlowMsg::Cancel).await;
+    test.run_until_idle().await;
+    assert_eq!(outcome(&test, &timer.id).await.unwrap().status, OutcomeStatus::Cancelled, "the armed timer");
+    assert_cancelled(&test, "sleeping", &before).await;
+    assert_eq!(test.advance_time_by(MINUTE * 2).await, 0, "no handler runs for the cancelled timer");
+
+    let (done, own) = (MessageId::random(), MessageId::random());
+    for (key, id) in [("finished", &done), ("own", &own)] {
+        let held =
+            FlowState { armed: Some(id.clone()), ..restored(script(steps(&["a"])), vec![saved("a", json!("r-a"))]) };
+        test.create(&run(key), &held).await;
+    }
+    let paused = addr(&run("finished"));
+    test.system().pause_mailbox(&paused).await.unwrap();
+    test.send_with(&run("finished"), FlowMsg::Continue, SendOptions { id: Some(done.clone()), ..SendOptions::new() })
+        .await;
+    drop(test.system().cancel(&done).await.unwrap());
+    test.system().resume_mailbox(&paused).await.unwrap();
+    assert_eq!(outcome(&test, &done).await.unwrap().status, OutcomeStatus::Cancelled, "no longer pending");
+    for (key, id) in [("finished", None), ("own", Some(own))] {
+        let before = progress(&test, key).await;
+        let sent = test.send_with(&run(key), FlowMsg::Cancel, SendOptions { id, ..SendOptions::new() }).await;
+        test.run_until_idle().await;
+        assert_eq!(outcome(&test, &sent.id).await.unwrap().status, OutcomeStatus::Done, "{key}: completes normally");
+        assert_cancelled(&test, key, &before).await;
+    }
+    assert!(probe.keys().is_empty());
 }
