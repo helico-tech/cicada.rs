@@ -22,7 +22,7 @@
   replies blocked by cleanup closure, never-awaited main requests, closed main winners/losers, request reuse, early
   first acceptance order, partial all joins, cleanup-owned deadlines, zero timeouts and both equal-time Cancel/main
   reply or timeout orders. Use start_paused/TestActors; run targeted phase/join/timeout tests and prior main regressions.
-- [ ] 4. Add recovery/observation and the worked resource-owning example with deterministic tests. Cover handler
+- [x] 4. Add recovery/observation and the worked resource-owning example with deterministic tests. Cover handler
   retry exhaustion, public Continue recovery, purged and parked cleanup, pause, known unapplied and unknown-ack commits
   at phase entry and final status, no main replay, and no synthetic watch notifications. Distinguish handler policy
   from lease/claim-limit recovery. Prove delete runs no hook while preserving ordinary core child-removal behavior.

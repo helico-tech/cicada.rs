@@ -11,8 +11,12 @@
 //! continuations, typed decoding and its recovery, rejected request commits and replies to a deleted run; and
 //! cancellation: new, parked, stalled and broken runs, armed and own ids, interrupted sleeps, waits and joins, races
 //! in sequence order, queued continues, held handlers, retries, pauses, purges, deletes, rejected, lost and unanswered
-//! commits, observers, hints and watches, other senders, operator cancels and a refusal by an older host. A probe
-//! counts every closure invocation and notes what each wait returned.
+//! commits, observers, hints and watches, other senders, operator cancels and a refusal by an older host; and
+//! finalization: the two-turn entry, cleanup keys and journals, done and earlier-cancelled runs, stale, retried and
+//! redriven continuations, repeated cancels, addresses, completion discipline, lookups and their decoding, cleanup
+//! waits over unclosed main requests, joins, early replies, refused requests, deadlines, exhausted, paused, purged and
+//! parked cleanups, rejected, lost and unanswered cleanup commits, notifications and deletes. A probe counts every
+//! closure invocation and notes what each wait and lookup returned.
 
 mod common;
 
@@ -5398,4 +5402,184 @@ async fn timed_cleanup_waits_count_from_their_own_claim_and_keep_the_rules_of_de
         };
         assert_eq!(waited(&probe), [("stop".to_owned(), expected)], "{case}");
     }
+}
+
+/// Scenario: Exhausted or lost cleanup continuation, of exhausted retries. A cleanup step that fails at every attempt
+/// of the flow's policy ends its continuation failed, and the witness is told as for any actor; the run stays
+/// cancelling with its saved cleanup entry. A public `Continue` replays the cleanup, without the main code, on to
+/// cancelled, and success notifies nobody.
+#[tokio::test(start_paused = true)]
+async fn exhausted_cleanup_retries_stay_cancelling_until_a_public_continue() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    probe.plan("c", &[Act::Fail, Act::Fail, Act::Fail]);
+    start(&test, "k", finalized(vec![op(|id| Op::Step { id }, "a"), sleep("nap", MINUTE)], steps(&["b", "c"]))).await;
+    test.run_until_idle().await;
+    test.send(&run("k"), FlowMsg::Cancel).await;
+    test.advance_time_by(BACKOFF * 3).await;
+    let stalled = state(&test, "k").await;
+    let last = outcome(&test, stalled.armed.as_ref().unwrap()).await.unwrap();
+    assert_eq!((last.status, last.envelope.failures), (OutcomeStatus::Failed, 2), "three attempts");
+    assert_eq!((stalled.status, cleanup_journal(&test, "k").await), (FlowStatus::Cancelling, vec!["b".to_owned()]));
+    let told_now = told(&test).await;
+    assert_eq!(told_now.len(), 1, "an ordinary failure notification");
+    assert!(test.pending(&run("k")).await.is_empty());
+
+    test.send(&run("k"), FlowMsg::Continue).await;
+    test.run_until_idle().await;
+    assert_eq!(state(&test, "k").await.status, FlowStatus::Cancelled);
+    assert_eq!(probe.ids(), ["a", "b", "c", "c", "c", "c"], "the main step never ran again");
+    assert_eq!(told(&test).await.len(), 1, "no notification for the success");
+}
+
+/// Scenario: Exhausted or lost cleanup continuation, of a lost one; and pause. A paused run holds its cleanup until it
+/// is resumed. A purge of its paused mailbox discards the cleanup's continuation: the run stays cancelling, and a
+/// public `Continue` recovers it.
+#[tokio::test(start_paused = true)]
+async fn a_paused_cleanup_waits_for_resume_and_a_purged_one_for_a_public_continue() {
+    for purge in [false, true] {
+        let probe = Probe::default();
+        let test = node(&probe).await;
+        start(&test, "k", finalized(vec![sleep("nap", MINUTE)], steps(&["c"]))).await;
+        test.run_until_idle().await;
+        test.send(&run("k"), FlowMsg::Cancel).await;
+        assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1, "purge: {purge}: the cancel");
+        assert!(test.system().pause_mailbox(&addr(&run("k"))).await.unwrap());
+        assert_eq!(test.advance_time_by(MINUTE * 2).await, 0, "purge: {purge}: paused");
+        assert!(probe.ids().is_empty(), "purge: {purge}");
+        if purge {
+            assert_eq!(test.system().purge_mailbox(&addr(&run("k"))).await.unwrap(), Some(1));
+        }
+        assert!(test.system().resume_mailbox(&addr(&run("k"))).await.unwrap());
+        test.run_until_idle().await;
+        if purge {
+            assert_eq!(state(&test, "k").await.status, FlowStatus::Cancelling, "the cleanup's continuation is gone");
+            assert!(probe.ids().is_empty());
+            test.send(&run("k"), FlowMsg::Continue).await;
+            test.run_until_idle().await;
+        }
+        assert_eq!(state(&test, "k").await.status, FlowStatus::Cancelled, "purge: {purge}");
+        assert_eq!(probe.ids(), ["c"], "purge: {purge}");
+    }
+}
+
+/// Scenario: Exhausted or lost cleanup continuation, of a parked cleanup. A cleanup parked on a wait without a deadline
+/// sends nothing however long it waits; a public `Continue` replays it and parks it again, saving no entry; the reply
+/// then closes the wait and the cleanup ends.
+#[tokio::test(start_paused = true)]
+async fn a_parked_cleanup_wait_parks_again_on_a_poke_and_never_polls() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    responders(&test, &["s1"]).await;
+    start(&test, "k", finalized(vec![sleep("nap", MINUTE)], vec![later("stop", "s1"), wait_op("stopped", "stop")]))
+        .await;
+    test.run_until_idle().await;
+    test.send(&run("k"), FlowMsg::Cancel).await;
+    test.run_until_idle().await;
+    let cleanup = state(&test, "k").await.cleanup;
+    assert_eq!(test.advance_time_by(SLOW * 24).await, 0, "no polling");
+    test.send(&run("k"), FlowMsg::Continue).await;
+    assert_eq!(test.run_until_idle().await, 2, "the poke and its execution");
+    let parked_again = state(&test, "k").await;
+    assert_eq!((parked_again.status, parked_again.armed), (FlowStatus::Cancelling, None));
+    assert_eq!(parked_again.cleanup, cleanup, "nothing saved");
+    answer(&test, "s1", json!("gone"), None).await;
+    test.run_until_idle().await;
+    assert_eq!(state(&test, "k").await.status, FlowStatus::Cancelled);
+}
+
+/// Scenario: Commit uncertainty, at the cleanup's commits. A commit that saves a cleanup step and is rejected applies
+/// nothing: the step's effect happened, its result is not saved, and the continuation fails without its policy
+/// retrying it; a public `Continue` runs the step again with the same key. The commit that marks the run cancelled,
+/// rejected, leaves it cancelling for a public `Continue`; lost on its way, it is claimed again after the lease and
+/// commits; applied with its answer lost, a reread shows the run cancelled. No main code runs again.
+#[tokio::test(start_paused = true)]
+async fn rejected_lost_or_unanswered_cleanup_commits_follow_ordinary_recovery() {
+    for (at, fault) in [
+        ("cancelling", Fault::Reject),
+        ("cancelled", Fault::Reject),
+        ("cancelled", Fault::Drop),
+        ("cancelled", Fault::LoseAnswer),
+    ] {
+        let case = format!("{at} {fault:?}");
+        let probe = Probe::default();
+        let (test, worker, faults) = faulty(&probe).await;
+        start(&test, "k", finalized(vec![sleep("nap", MINUTE)], steps(&["c"]))).await;
+        drive(&test, &worker).await;
+        test.send(&run("k"), FlowMsg::Cancel).await;
+        assert_eq!(worker.run_due_turns(10).await.unwrap(), 1, "{case}: the cancel");
+        if at == "cancelled" {
+            assert_eq!(worker.run_due_turns(10).await.unwrap(), 1, "{case}: the cleanup's step");
+        }
+        let before = unchanged(&test, "k").await;
+        let armed_now = state(&test, "k").await.armed.unwrap();
+        faults.lock().unwrap().push_back((at, fault));
+        assert_eq!(worker.run_due_turns(10).await.unwrap(), 1, "{case}: the faulty commit");
+        assert!(faults.lock().unwrap().is_empty(), "{case}: met");
+        match fault {
+            Fault::Reject => {
+                assert_eq!(unchanged(&test, "k").await, before, "{case}: nothing applied");
+                let record = outcome(&test, &armed_now).await.unwrap();
+                assert_eq!((record.status, record.envelope.failures), (OutcomeStatus::Failed, 0), "{case}: no retry");
+                assert_eq!(state(&test, "k").await.status, FlowStatus::Cancelling, "{case}");
+                test.send(&run("k"), FlowMsg::Continue).await;
+            }
+            Fault::Drop => {
+                assert_eq!(unchanged(&test, "k").await, before, "{case}: nothing applied yet");
+                assert!(outcome(&test, &armed_now).await.is_none(), "{case}: still leased");
+                tokio::time::sleep(LEASE + SECOND).await;
+            }
+            Fault::LoseAnswer => {
+                assert_eq!(state(&test, "k").await.status, FlowStatus::Cancelled, "{case}: a reread shows it applied");
+            }
+        }
+        drive(&test, &worker).await;
+        let held = state(&test, "k").await;
+        assert_eq!((held.status, held.armed.clone()), (FlowStatus::Cancelled, None), "{case}");
+        if fault == Fault::Drop {
+            let record = outcome(&test, &armed_now).await.unwrap();
+            assert_eq!((record.status, record.envelope.attempt, record.envelope.failures), (OutcomeStatus::Done, 2, 0));
+        }
+        let expected: &[&str] = if at == "cancelling" { &["c", "c"] } else { &["c"] };
+        assert_eq!(probe.ids(), expected, "{case}: a rejected step's effect repeats with its key, nothing else does");
+        assert!(probe.keys().iter().all(|k| k == "test.flow/k/cancel/c"), "{case}");
+    }
+}
+
+/// Scenario: Notification and deletion, of a notification. A cleanup whose last helper sends a notice commits that send
+/// in one turn, still cancelling, and marks the run cancelled in the next.
+#[tokio::test(start_paused = true)]
+async fn a_cleanup_notification_commits_in_a_turn_before_the_one_that_marks_the_run_cancelled() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    test.create(&worker("w1"), &WorkerState::default()).await;
+    start(&test, "k", finalized(vec![sleep("nap", MINUTE)], vec![send_op("notify", "w1", WorkerMsg::Work)])).await;
+    test.run_until_idle().await;
+    test.send(&run("k"), FlowMsg::Cancel).await;
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1, "the cancel");
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1, "the cleanup's send");
+    assert_eq!(state(&test, "k").await.status, FlowStatus::Cancelling, "sent, not yet cancelled");
+    assert_eq!(test.pending(&worker("w1")).await.len(), 1, "the notice is committed");
+    test.run_until_idle().await;
+    assert_eq!(state(&test, "k").await.status, FlowStatus::Cancelled);
+    assert_eq!(worker_state(&test, "w1").await.n, 1);
+}
+
+/// Scenario: Notification and deletion, of a delete. A cancelling run deleted before its cleanup ran runs no cleanup;
+/// the core removes its child as for any deleted parent, and the cleanup's continuation goes with the mailbox.
+#[tokio::test(start_paused = true)]
+async fn deleting_a_cancelling_run_runs_no_cleanup_and_removes_its_children() {
+    let probe = Probe::default();
+    let test = node(&probe).await;
+    let ops = vec![create_op("kid", "w1", CreateKind::Child, initial(0), WorkerMsg::Work), sleep("nap", MINUTE)];
+    start(&test, "k", finalized(ops, steps(&["undo"]))).await;
+    test.run_until_idle().await;
+    assert!(test.exists(&worker("w1")).await);
+    test.send(&run("k"), FlowMsg::Cancel).await;
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1, "the cancel");
+    assert_eq!(state(&test, "k").await.status, FlowStatus::Cancelling);
+    test.system().delete_actor(&addr(&run("k"))).await.unwrap();
+    assert_eq!(test.advance_time_by(MINUTE * 2).await, 0, "nothing runs");
+    assert!(!test.exists(&run("k")).await && !test.exists(&worker("w1")).await, "the run and its child are gone");
+    assert!(probe.ids().is_empty(), "no cleanup");
 }

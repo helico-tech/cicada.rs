@@ -19,6 +19,7 @@
 //! | [`remote_worker`] | Example 15: the cleanup singleton of example 1, unchanged, in a worker without database access that leases its turns over HTTP. |
 //! | [`dead_letters_upgrade`] | Example 16: the upgrade of dead letters to 0.17.0; export, convert, reset and restore around the new contract. |
 //! | [`flow_approval`] | Example 17: a purchase flow that requests a person's approval and waits for the reply for at most a week, with no handler open, then expires; a sign-off that joins the approvals of several teams, with partial results at the deadline; and the first of several quotes. |
+//! | [`flow_resources`] | Example 18: a job that owns a sandbox; cancelled, its cleanup stops the sandbox, waits for the removal and releases the capacity by the reservation's key. |
 //! | [`sync`] | The architecture's example: a paged import, one turn per page, rescheduled hourly. |
 //!
 //! Every example has the same shape: a public ref struct per actor type (its one field is the key), a
@@ -35,6 +36,7 @@ pub mod fanout;
 pub mod flow_approval;
 pub mod flow_events;
 pub mod flow_onboarding;
+pub mod flow_resources;
 pub mod rate_limit;
 pub mod registry;
 pub mod remote_worker;
