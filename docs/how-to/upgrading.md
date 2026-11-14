@@ -338,3 +338,14 @@ A one-request all join is the matching single wait: `wait` and `wait_all` replay
 `wait_timeout` and `wait_all_timeout`. 0.18.2 runs both pairs; 0.18.1 runs only the untimed pair. Keep each running
 join's list, order, all/first mode and deadline presence stable; drain old runs or change joins only for new ones.
 See [join rules](../guide/actors.md#joins-waiting-for-several-replies) for results, limits and cleanup.
+
+## Enable flow cancellation in 0.18.4
+
+No store schema or flow contract hash changes. Upgrade **every host and worker of the flow type** before sending
+`FlowMsg::Cancel`: 0.18.3 refuses it permanently despite equal hashes, leaving the run running. After upgrading,
+send a new Cancel, retry the failed message or redrive it from dead letters: Cancel accepts any sender. Always read
+the run's status to confirm the outcome; a failed send or lost commit answer does not prove cancellation.
+
+0.18.4 runs no cleanup. Requests, children and external resources keep running; a future cleanup release will not
+clean up runs cancelled now. Release resources in your application, or wait for that release before cancelling runs
+that need cleanup. See [cancelling a run](../guide/actors.md#cancelling-a-run) for control boundaries and recovery.

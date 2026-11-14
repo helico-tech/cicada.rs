@@ -303,11 +303,11 @@ external effects remain at least once. Never reuse a run key for a different job
 | Timeouts | External call: timeout/select inside its step closure, never around `step.run`. Reply: `step.wait_timeout` |
 | Replay compatibility | Keep entry order, ids, kinds and result types stable for in-progress runs |
 | Ids and size | Unique ids shared by steps, sleeps, sends, requests and waits; 1–100 chars of `A-Za-z0-9._~-:`, at most 1000 entries |
-| Recovery | Public Continue rearms a run whose armed message was cancelled/purged/exhausted |
-| Completion | Done and cancelled runs ignore Continue/Reply and retain results; 0.18.3 cannot produce cancelled runs |
+| Recovery | Public Continue rearms a run whose armed message was cancelled/purged/exhausted; never restarts a cancelled run |
+| Completion | Done and cancelled runs ignore Continue, Reply and Cancel; progress stays until deletion |
 | Send delivery | One enqueue per committed entry; the target's execution is at least once, with no retry policy |
 | Waiting | Single waits or joins of up to 100 requests, for all replies or the first; optional saved deadlines, stable committed outcomes |
-| Available in 0.18.3 | Steps, sleeps, sends, requests, single waits and joins; cancellation remains refused |
+| Available in 0.18.4 | Steps, sleeps, sends, requests, waits, joins and cancellation; cancellation runs no cleanup |
 
 Only the armed Continue executes the flow; a public poke first replaces/arms it. Default retry is 7 attempts with
 waits doubling from 1 s. A replay mismatch is permanently refused. A journal supplied at creation is trusted progress.
@@ -446,7 +446,8 @@ as that target. This checks actor addresses, not human identity; control who can
 Keep each running wait's helper stable: switching between `wait` and `wait_timeout` permanently fails replay.
 Upgrade every host and worker before enabling [requests](../how-to/upgrading.md#enable-flow-replies-in-0181) or
 [deadlines](../how-to/upgrading.md#enable-flow-wait-deadlines-in-0182), and again before
-[joins](../how-to/upgrading.md#enable-flow-joins-in-0183); equal contract hashes do not prove support.
+[joins](../how-to/upgrading.md#enable-flow-joins-in-0183) or sending
+[Cancel](../how-to/upgrading.md#enable-flow-cancellation-in-0184); equal contract hashes do not prove support.
 
 ### Joins: waiting for several replies
 
@@ -521,6 +522,70 @@ a write. Cleanup needs new requests, since no later wait can reuse any of the cl
 
 A one-request all join replays the matching single wait; a first join stays distinct even with one request.
 See [0.18.3 rollout](../how-to/upgrading.md#enable-flow-joins-in-0183) before enabling joins.
+
+### Cancelling a run
+
+Send `FlowMsg::Cancel` to end a running flow and keep its progress. Sending only queues it; **read the run's status**
+to confirm cancellation. This test cancels the sleeping flow from the [FlowMsg example](../../crates/cicada-actors/src/flow.rs):
+
+<!-- doctest
+# use std::time::Duration;
+# use cicada::prelude::*;
+# use cicada_actors::{Flow, FlowActor, FlowMsg, FlowRun, FlowState, FlowStatus, Step};
+# use cicada_test::TestActors;
+# struct Nightly;
+# impl Flow for Nightly {
+#     const TYPE: &'static str = "nightly";
+#     type Input = String;
+#     async fn run(&self, step: &mut Step, _input: String) -> HandlerResult {
+#         step.sleep("wait", Duration::from_secs(3600)).await?;
+#         step.run("report", |_key| async { Ok(()) }).await
+#     }
+# }
+# #[tokio::main(flavor = "current_thread", start_paused = true)]
+# async fn main() {
+# let test = TestActors::builder().with(|node| node.host(FlowActor::new(Nightly))).build().await.unwrap();
+# let run = FlowRun::<Nightly>::named("n1");
+# test.create(&run, &FlowState::new("n1".to_owned())).await;
+# test.send(&run, FlowMsg::Continue).await;
+# test.run_until_idle().await;
+@@4
+# assert_eq!(state.journal.len(), 1, "the saved sleep stays");
+# assert!(test.pending(&run).await.is_empty(), "the timer is cancelled");
+# }
+-->
+```rust
+test.send(&run, FlowMsg::Cancel).await; // queued; not cancelled yet
+test.run_until_idle().await;
+let state: FlowState<String> = test.state(&run).await;
+assert_eq!((state.status, state.armed), (FlowStatus::Cancelled, None));
+```
+
+The Cancel turn runs no flow code. Its one commit cancels the armed Continue, sets status
+`cancelled` and clears `armed`, whether the run is sleeping, waiting, in retry backoff, never started or unable to replay. Input, journals, replies and any open wait stay
+saved. A known rejected commit changes nothing and is not retried by the sender's policy. A lost commit answer is
+uncertain: reread the status or resend Cancel, which a cancelled run ignores.
+
+**Cancellation waits its turn and runs no cleanup.** Mailbox order `(deliverAt, seq)` applies; an execution already
+running may still commit effects before Cancel is handled. Earlier effects and reply/timeout decisions stay saved.
+Requests, children and external resources keep running, and later replies are ignored. Release resources in your
+application; a future cleanup release will not clean up runs cancelled by 0.18.4.
+
+A cancelled run is terminal and readable until deletion; use a new key for a new job. A done run ignores Cancel.
+Any sender allowed to message the run can cancel it. Success is an ordinary done turn, with no watcher notification;
+the cancelled Continue has no turn. Change hints are best effort: reread status, even when using hints to refresh it.
+
+| Control | Effect on a flow |
+| --- | --- |
+| `FlowMsg::Cancel` | Ends the run when its turn commits; keeps progress, runs no cleanup |
+| Cancel a pending Continue / cancel the running turn | Stalls the run, still `running`; the running turn stops at a heartbeat only if cancellation wins before it ends |
+| Pause | Holds pending messages, including Cancel, until resume |
+| Purge | Discards pending messages, including a queued Cancel; does not end the run |
+| Delete | Removes the run, descendants and mailbox; a queued Cancel never runs |
+| `FlowMsg::Continue` | Recovers a stalled running run; does nothing to done or cancelled runs |
+
+A delayed Cancel is an ordinary scheduled message, not a hard deadline; the run may finish before it is handled.
+[Upgrade all hosts and workers](../how-to/upgrading.md#enable-flow-cancellation-in-0184) before using it.
 
 ## Event
 
