@@ -297,16 +297,19 @@ async fn a_waiting_close_takes_over_from_a_cancelled_one_and_both_wait_for_the_w
 
 /// Starts a close that stops for good right after it took `connection` (0: the writer, then the readers in pop order)
 /// for its own close, and cancels it there.
-async fn close_cancelled_after_taking(store: &Arc<SqliteStore>, connection: usize) {
+/// The close runs in the caller's future, without a task of its own, and is dropped there.
+async fn close_cancelled_after_taking(store: &SqliteStore, connection: usize) {
     let reached = Arc::new(Notify::new());
     *store.close_hooks.taken.lock().unwrap() = Some((connection, reached.clone()));
-    let task = {
-        let store = store.clone();
-        tokio::spawn(async move { store.close().await })
+    let mut close = std::pin::pin!(store.close());
+    let stopped = async {
+        tokio::select! {
+            biased;
+            () = reached.notified() => {}
+            () = &mut close => panic!("the close stops after taking connection {connection}"),
+        }
     };
-    reached.notified().await;
-    task.abort();
-    assert!(task.await.unwrap_err().is_cancelled());
+    tokio::time::timeout(Duration::from_secs(10), stopped).await.expect("the close took the connection in time");
 }
 
 /// Cancelled after the writer, or after one or two readers, were taken for their own close: the connection it held drops
