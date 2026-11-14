@@ -303,11 +303,11 @@ external effects remain at least once. Never reuse a run key for a different job
 | Timeouts | External call: timeout/select inside its step closure, never around `step.run`. Reply: `step.wait_timeout` |
 | Replay compatibility | Keep entry order, ids, kinds and result types stable for in-progress runs |
 | Ids and size | Unique ids shared by steps, sleeps, sends, requests and waits; 1–100 chars of `A-Za-z0-9._~-:`, at most 1000 entries |
-| Recovery | Public Continue rearms a run whose armed message was cancelled/purged/exhausted; never restarts a cancelled run |
-| Completion | Done and cancelled runs ignore Continue, Reply and Cancel; progress stays until deletion |
+| Recovery | Public Continue rearms a running or cancelling run in its active phase; never restarts a cancelled run |
+| Completion | Done/cancelled runs ignore all flow messages; cancelling runs ignore Cancel. Progress stays until deletion |
 | Send delivery | One enqueue per committed entry; the target's execution is at least once, with no retry policy |
 | Waiting | Single waits or joins of up to 100 requests, for all replies or the first; optional saved deadlines, stable committed outcomes |
-| Available in 0.18.4 | Steps, sleeps, sends, requests, waits, joins and cancellation; cancellation runs no cleanup |
+| Available in 0.18.5 | Steps, sleeps, sends, requests, waits, joins, cancellation and its cleanup |
 
 Only the armed Continue executes the flow; a public poke first replaces/arms it. Default retry is 7 attempts with
 waits doubling from 1 s. A replay mismatch is permanently refused. A journal supplied at creation is trusted progress.
@@ -561,15 +561,15 @@ let state: FlowState<String> = test.state(&run).await;
 assert_eq!((state.status, state.armed), (FlowStatus::Cancelled, None));
 ```
 
-The Cancel turn runs no flow code. Its one commit cancels the armed Continue, sets status
-`cancelled` and clears `armed`, whether the run is sleeping, waiting, in retry backoff, never started or unable to replay. Input, journals, replies and any open wait stay
-saved. A known rejected commit changes nothing and is not retried by the sender's policy. A lost commit answer is
-uncertain: reread the status or resend Cancel, which a cancelled run ignores.
+The Cancel turn runs no flow code. Its one commit cancels the armed Continue, sets status `cancelling` and arms a
+cleanup Continue due now, with the flow's retry policy and Cancel's correlation id. Main progress stays saved.
+Later turns run the cleanup; only its success commits `cancelled`. With the default empty cleanup, that takes one
+more turn. A known rejected commit changes nothing and is not retried by the sender's policy. After a lost commit
+answer, reread status or resend Cancel; cancelling and cancelled runs ignore it.
 
-**Cancellation waits its turn and runs no cleanup.** Mailbox order `(deliverAt, seq)` applies; an execution already
-running may still commit effects before Cancel is handled. Earlier effects and reply/timeout decisions stay saved.
-Requests, children and external resources keep running, and later replies are ignored. Release resources in your
-application; a future cleanup release will not clean up runs cancelled by 0.18.4.
+**Cancellation waits its turn.** Mailbox order `(deliverAt, seq)` applies; an execution already running may still
+commit effects first. Earlier effects and reply/timeout decisions stay saved, but main code never resumes after
+Cancel commits. Cancel itself stops no target or child: release resources in `Flow::on_cancel` below.
 
 A cancelled run is terminal and readable until deletion; use a new key for a new job. A done run ignores Cancel.
 Any sender allowed to message the run can cancel it. Success is an ordinary done turn, with no watcher notification;
@@ -577,15 +577,87 @@ the cancelled Continue has no turn. Change hints are best effort: reread status,
 
 | Control | Effect on a flow |
 | --- | --- |
-| `FlowMsg::Cancel` | Ends the run when its turn commits; keeps progress, runs no cleanup |
-| Cancel a pending Continue / cancel the running turn | Stalls the run, still `running`; the running turn stops at a heartbeat only if cancellation wins before it ends |
+| `FlowMsg::Cancel` | Commits `cancelling` and starts cleanup; keeps main progress |
+| Cancel a pending Continue / cancel the running turn | Stalls the active phase without changing status; the running turn stops at a heartbeat only if cancellation wins before it ends |
 | Pause | Holds pending messages, including Cancel, until resume |
 | Purge | Discards pending messages, including a queued Cancel; does not end the run |
 | Delete | Removes the run, descendants and mailbox; a queued Cancel never runs |
-| `FlowMsg::Continue` | Recovers a stalled running run; does nothing to done or cancelled runs |
+| `FlowMsg::Continue` | Recovers the active main/cleanup phase; does nothing to done or cancelled runs |
 
 A delayed Cancel is an ordinary scheduled message, not a hard deadline; the run may finish before it is handled.
-[Upgrade all hosts and workers](../how-to/upgrading.md#enable-flow-cancellation-in-0184) before using it.
+[Upgrade all hosts and workers](../how-to/upgrading.md#enable-flow-cleanup-in-0185) before relying on cleanup.
+
+### Cleaning up after a cancel
+
+Implement `Flow::on_cancel(&self, cleanup: &mut Cleanup, input)` to release resources after cancellation.
+It defaults to success without effects and never runs after normal completion. Each cleanup execution receives a
+clone of the saved input and replays its own journal. `Cleanup` dereferences to `Step`: the same helpers and replay
+rules apply, one new entry per turn, with a separate 1000-entry limit and ids. Step keys are
+`<run address>/cancel/<id>`; request routes still name the run itself. Only `Ok` after replaying every cleanup entry,
+with no new entry, commits `cancelled` in a separate turn.
+
+[flow_resources.rs](../../examples/src/flow_resources.rs) stops its sandbox, waits for confirmed removal, releases
+capacity by the reservation's key, then reports. This is the body of its `on_cancel`:
+
+<!-- doctest
+# use cicada::HandlerResult;
+# use cicada_actors::{Cleanup, MainReply};
+# use cicada_examples::flow_resources::{Capacity, Finished, JobInput, Notices, NoticesMsg, Sandbox, SandboxMsg};
+# async fn clean<C: Capacity>(cleanup: &mut Cleanup, capacity: &C, input: JobInput) -> HandlerResult {
+@@10
+# }
+-->
+```rust
+let reservation = cleanup.main_key("reserve")?;
+if let Some(start) = cleanup.main_request::<Finished>("start")? {
+    if !matches!(cleanup.main_reply(&start)?, MainReply::Replied(_)) {
+        let stop = |reply| SandboxMsg::Stop { reply };
+        let stop = cleanup.request("stop", &Sandbox(input.job.clone()), stop).await?;
+        cleanup.wait("stopped", &stop).await?;
+    }
+}
+cleanup.run("release", |_key| async move { Ok(capacity.release(&reservation).await?) }).await?;
+cleanup.send("report", &Notices(input.owner), NoticesMsg::Cancelled { job: input.job }).await
+```
+
+The main journal freezes when Cancel commits. Lookups consume no id, may repeat and keep the same answer throughout
+cleanup:
+
+| Lookup | Returns |
+| --- | --- |
+| `main_key(id)` | The main step's `<run address>/<id>` key, even if its result was never saved |
+| `main_result::<T>(id)` | Saved main step result; `None` only if the id is absent |
+| `main_request::<T>(id)` | Main request handle; `None` only if its send never committed |
+| `main_reply(&request)` | `MainReply::Open` if no closed main wait names it; otherwise `Replied(value)` for a kept reply, or `Closed` without one |
+| `main_journal()` | Raw main entries, without typed lookup protection or replies |
+
+**An unsaved step may already have acted.** Release by `main_key`, with an
+owner that is idempotent by key and records a released key before confirming. Already accepted creates still in
+flight, and later creates, must then create nothing. Fencing only later messages cannot prevent a delayed create.
+The worked example tests this contract for both capacity and container ownership.
+
+`main_reply` reflects closed **main** waits, including an early first-wait loser's kept value. A reply arriving during
+cleanup leaves an unclosed main request `Open`; wait on it in cleanup to use it. Cleanup waits can join their own
+requests with main requests that no closed main wait names, including an interrupted main wait's requests. Each can
+appear in only one cleanup wait. Closed main requests need new cleanup requests; replies while cancelling close only
+cleanup waits and never rewrite the main journal.
+
+Invalid ids, wrong entry kinds, non-main request handles and decode failures permanently fail typed lookups, even if
+caught; a swallowed lookup error cannot finish cleanup. Fix the code and send public Continue. Raw `main_journal`
+decoding is ordinary replayed code without this protection; `main_key` checks only id syntax.
+
+| Situation | Recovery or limit |
+| --- | --- |
+| Cleanup fails, exhausts attempts or loses its Continue | Saved cleanup stays `cancelling`; fix the cause and send public Continue. Another Cancel does nothing |
+| Cleanup parks on a wait | Await its reply or saved deadline; Continue alone cannot supply a reply |
+| Timed cleanup wait | Deadline starts at its own creating turn's claim, independently of the interrupted main wait |
+| Cleanup commit rejected | Saves nothing; effects may already have happened. Public Continue repeats uncommitted work with the same key |
+| Run deleted | No cleanup runs; core deletion removes descendants |
+
+A cleanup's last send commits **before** the turn that records `cancelled`. An application notice can therefore
+arrive earlier; reread status to confirm completion. No synthetic `Stopped` or `Failed` notification announces it.
+[Deploy the same cleanup code everywhere](../how-to/upgrading.md#enable-flow-cleanup-in-0185) before cancelling runs
+that need it; equal contract hashes do not prove equal code.
 
 ## Event
 

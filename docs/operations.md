@@ -105,7 +105,8 @@ Stats scans rows under the prefix: avoid frequent unfiltered polling on large st
 | Flow run parked for long | Untimed open wait as last journal entry, `armed: null`; target mailbox/state | Have targets send missing replies through their saved routes, or delete the run; Continue only parks it again |
 | Flow join has only some replies | Open wait names several requests; `replies` holds a subset | Find the missing targets; a timed join keeps partial results when its timeout decision commits. Replies to closed joins are ignored |
 | Flow wait past deadline | Paused run or cancelled/purged/failed deadline Continue | Resume / send public Continue to decide timeout; a reply handled first can still win |
-| Flow Cancel failed | Older-host refusal or a known rejected commit | Run stays running: upgrade all hosts/workers if needed, then resend, retry or redrive Cancel. For a lost commit answer, reread status or resend |
+| Flow Cancel/cleanup message failed | Older-host refusal or known rejected commit | Reread status. Upgrade all hosts/workers; resend Cancel to a running run, Continue to resume cleanup. A refused cleanup reply needs its target to resend |
+| Flow stuck in cancelling | Failed/purged/exhausted cleanup Continue, or an open cleanup wait | Fix the cause and send public Continue to replay cleanup. Another Cancel does nothing; a parked cleanup needs its reply |
 | Supervisor gave up | Child entry, state, restart limit | Correct the entry/deployment; send Start |
 | HTTP worker stops | `stopped()` error; auth, route versions, response format | Fix fatal source/protocol problem before restarting |
 
@@ -122,8 +123,8 @@ Watch their mailbox too: notifications can queue up. A notification that fails d
 | Delete | Remove actor and descendants; purge all their pending/running messages |
 | Operator retry | Create a new message/id; may repeat external work |
 
-For a flow, [FlowMsg::Cancel](guide/actors.md#cancelling-a-run) ends the run and keeps progress. Cancelling its pending
-Continue or running turn only stalls it.
+For a flow, [FlowMsg::Cancel](guide/actors.md#cancelling-a-run) starts cleanup and keeps main progress. Cancelling its pending
+Continue or running turn only stalls it; deleting a run runs no cleanup.
 
 Inspect direct children before deleting a tree. Independent actors created with `create` remain.
 A deleted handler may continue briefly and perform external calls, but cannot commit, even after recreation.

@@ -346,6 +346,19 @@ No store schema or flow contract hash changes. Upgrade **every host and worker o
 send a new Cancel, retry the failed message or redrive it from dead letters: Cancel accepts any sender. Always read
 the run's status to confirm the outcome; a failed send or lost commit answer does not prove cancellation.
 
-0.18.4 runs no cleanup. Requests, children and external resources keep running; a future cleanup release will not
-clean up runs cancelled now. Release resources in your application, or wait for that release before cancelling runs
-that need cleanup. See [cancelling a run](../guide/actors.md#cancelling-a-run) for control boundaries and recovery.
+0.18.4 runs no cleanup: requests, children and external resources keep running. 0.18.5 does not clean up runs already
+cancelled by 0.18.4. See [cancelling a run](../guide/actors.md#cancelling-a-run) for control boundaries and recovery.
+
+## Enable flow cleanup in 0.18.5
+
+No store schema or flow contract hash changes. Cancel now commits `cancelling`; later turns run `Flow::on_cancel`
+and only its success commits `cancelled`. Wait for that status to confirm completion.
+
+Upgrade **every host and worker of the flow type**, all with the same `on_cancel` code, before cancelling runs that
+need cleanup. A 0.18.4 node, or a binary with the default empty hook, marks them cancelled without your cleanup despite
+equal hashes. Those runs are never cleaned up later. Drain cancelling runs before changing cleanup code, or use a
+new flow type name.
+
+0.18.4 also permanently refuses every message to cancelling runs, including cleanup replies. After upgrading,
+public Continue resumes cleanup but cannot recover a refused reply: its target must reply again, or the application
+needs a timeout or another recovery path. See [cleanup rules](../guide/actors.md#cleaning-up-after-a-cancel).
