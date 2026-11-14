@@ -272,3 +272,37 @@ is a `400`. `ActorClient` leaves absent optional fields out of request bodies (n
 works against an older node as long as it does not use a newer feature. A release whose views lose a field that old
 clients require, as 0.6.0 does, needs its clients upgraded together with the nodes; the changelog says so.
 
+## Upgrade flows to 0.18.0
+
+**Every flow contract changes; the store schema and other types' contracts, including the event, do not**
+([ADR 0044](../adr/0044-flow-requests-waits-and-cancellation.md)). A 0.18.0 host refuses a flow registration from
+0.17 with `ContractConflict`; a 0.17 worker leasing the new type is refused with `ContractMismatch`.
+Choose one deployment:
+
+1. **New type names.** Keep pinned 0.17 binaries hosting the old flow names until their runs finish. Host new code
+   under new names, such as `flows.onboarding-v2`, on 0.18.0 binaries sharing the store. Every co-hosted type must
+   still match its registration. Renaming inside an upgraded binary alone does not keep the old runs working.
+   [The onboarding upgrade test](../../examples/tests/flow_onboarding.rs) demonstrates the two registrations.
+2. **Drain and reset.** Stop starting runs; let existing runs finish and archive what you need. Stop all hosts and
+   workers of the type, delete its runs, delete its registration, then start 0.18.0 hosts. Deleted journals are gone.
+
+The wire now reserves Reply/Cancel messages, cancelling/cancelled statuses, send/wait entries, kept replies and a
+cleanup journal. Only steps, sleeps and sends execute in 0.18.0. Exhaustive matches on `FlowMsg`, `FlowStatus` or
+`JournalEntry` need the new variants; `FlowState` literals need `replies` and `cleanup`, or `..FlowState::new(input)`.
+
+Saved 0.17 progress decodes with empty new lists; that **does not make registrations compatible** or provide a
+migration utility. Restoring exported progress at the same address is a host-specific procedure for the **same job**:
+
+1. Quiesce all producers and workers. Verify the backup, typed decoding and core state limits before deleting anything.
+2. Clear an armed id whose message no longer exists. Preserve journal entries and saved results.
+3. Restore pause flags, watches and child topology deliberately; deleting a run also removes its children.
+4. Restore the run and send a public Continue to each running run when ready to resume.
+
+A restored run has a new instance identity and mailbox: pending messages are lost, and an uncommitted external step
+may repeat with its old key. Do not reuse its address for a different job.
+
+Later reply-wait, timeout, join, cancellation and cleanup features are intended to keep the reserved contract.
+Equal hashes therefore cannot prove feature support: upgrade **every host and worker of a flow type** before enabling
+new flow code or newly supported messages, or use a new versioned type name. A 0.18.0 host permanently refuses Reply,
+Cancel, cancelling runs and replay of saved requests/waits.
+

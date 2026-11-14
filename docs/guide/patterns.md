@@ -67,6 +67,7 @@ This is a message convention, not a synchronous ask API. The responder knows the
 ## Durable flows
 
 [flow_onboarding.rs](../../examples/src/flow_onboarding.rs) saves one new step result or sleep per turn.
+Flows can also [send actor work](actors.md#sending-to-actors) atomically with a new journal entry.
 Every execution starts at the top; saved entries replay without repeating their closures.
 
 ```mermaid
@@ -77,10 +78,13 @@ flowchart TD
     commit --> replay
     next -->|new sleep| sleep["Commit deadline + delayed Continue"]
     sleep -->|deadline reached| replay
+    next -->|new send| send["Commit optional create + message<br/>+ entry + Continue"]
+    send --> replay
     next -->|none| done["Keep completed run + results"]
 ```
 
 The closure can repeat if its turn never commits; the external service must deduplicate by the step key.
+The send branch enqueues once per committed entry; it does not wait for the target to succeed.
 See [flow rules](actors.md#flows) before changing entry ids, order or result types.
 
 For ready-made composition, see [supervision](actors.md#supervisor), [message processing](actors.md#message-processing),

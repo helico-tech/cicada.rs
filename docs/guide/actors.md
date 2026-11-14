@@ -269,7 +269,7 @@ step.sleep("cool-off", Duration::from_secs(60)).await?;
 [The flow replay diagram](patterns.md#durable-flows) shows the commit boundaries.
 
 The code runs from the top on each execution. Saved results replay without rerunning their closures; only one new
-step runs per turn. **Code outside steps must be deterministic and free of external effects.**
+step, sleep or send runs per turn. **Code outside steps must be deterministic and free of external effects.**
 Put service calls, clocks and randomness inside steps.
 
 Each closure receives `<run address>/<step id>` as an idempotency key. It can run again after an uncommitted turn;
@@ -281,14 +281,17 @@ external effects remain at least once. Never reuse a run key for a different job
 | Business decisions | Save a successful value such as `Result<T, String>` and branch on it |
 | Timeouts | Put timeout/select inside the step closure, never around `step.run` |
 | Replay compatibility | Keep entry order, ids, kinds and result types stable for in-progress runs |
-| Ids and size | Unique ids, 1–100 chars of `A-Za-z0-9._~-:`; at most 1000 entries |
+| Ids and size | Unique ids shared by steps, sleeps and sends; 1–100 chars of `A-Za-z0-9._~-:`, at most 1000 entries |
 | Recovery | Public Continue rearms a run whose armed message was cancelled/purged/exhausted |
-| Completion | Done runs ignore Continue and retain results until explicitly deleted |
+| Completion | Done and cancelled runs ignore Continue and retain results; 0.18.0 cannot produce cancelled runs |
+| Send delivery | One enqueue per committed entry; the target's execution is at least once, with no retry policy |
+| Available in 0.18.0 | Steps, sleeps and sends; Reply, Cancel and replay of saved requests/waits are permanently refused |
 
 Only the armed Continue executes the flow; a public poke first replaces/arms it. Default retry is 7 attempts with
 waits doubling from 1 s. A replay mismatch is permanently refused. A journal supplied at creation is trusted progress.
 Input schema changes affect the contract; step-code changes can break replay **without changing the contract**.
-Drain old runs or use a new flow type. See [the flow source](../../crates/cicada-actors/src/flow.rs) for the journal API.
+Drain old runs or use a new flow type. The [0.18.0 upgrade](../how-to/upgrading.md#upgrade-flows-to-0180) changes every
+flow contract. See [the flow source](../../crates/cicada-actors/src/flow.rs) for the journal API.
 
 ### Durable sleep
 
@@ -299,6 +302,48 @@ late wakes proceed immediately. Zero sleep still creates a commit boundary.
 A lost timer is recovered with public Continue; deletion removes the run and timer. Deploy sleep-capable code to every
 host before starting sleeping runs. Sleep ids share the step namespace/1000-entry limit; durations are bounded by
 `MAX_DELAY` and year 9999. Timer continuations start linked traces with [OpenTelemetry](core.md#opentelemetry).
+
+### Sending to actors
+
+`step.send(id, to, message)` commits an optional target create, one message, its journal entry and the next Continue
+together. Use `&actor` for an existing target, `Target::create(&actor, &state)` for an independent actor, or
+`Target::child(&actor, &state)` for a child removed when the run is deleted. Existing actors keep their state.
+
+This sends a report using the types from [sync.rs](../../examples/src/sync.rs):
+
+<!-- doctest
+# use cicada::HandlerResult;
+# use cicada_actors::{Step, Target};
+# use cicada_examples::sync::{Reports, ReportsMsg, ReportsState};
+# async fn report(step: &mut Step) -> HandlerResult {
+@@6
+# Ok(()) }
+-->
+```rust
+let reports = Reports { tenant: "acme".into() };
+step.send(
+    "report",
+    Target::create(&reports, &ReportsState::default()),
+    ReportsMsg::SyncFinished { imported: 25 },
+).await?;
+```
+
+The entry saves the destination, generated message id and create kind, not the payload or initial state. Replay
+matches only entry id and kind; it converts/serializes none of the proposed arguments, even if the target changed.
+Argument construction still runs, so keep it deterministic and free of effects.
+
+Enqueueing is not target success. The message is due now, uses the executing Continue's correlation id and has **no
+retry policy**. Target failure leaves flow progress intact; design business-failure reporting and recovery explicitly.
+
+| Problem | Outcome |
+| --- | --- |
+| Self-target, conversion/encoding error, or a caught conversion panic | Permanently refused |
+| Unregistered type, unsupported message, or initial state that is null, contains NUL or exceeds depth limits—even for an existing target | Permanently refused by raw-operation checks |
+| Registry read fails | Cause `node`; retried by the flow's policy |
+| Missing target, or child create collides with an actor having another parent or none | Commit rejected, cause `commit`; fix the target and send a public Continue |
+
+A failed turn commits no create, message or entry. After a rejected commit, public Continue attempts the send afresh
+with a new message id. [Flow tests](../../crates/cicada-actors/tests/flow.rs) cover atomicity, replay and recovery.
 
 ## Event
 
