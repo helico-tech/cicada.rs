@@ -463,3 +463,74 @@ async fn a_close_future_that_is_never_polled_leaves_the_store_open() {
     assert_eq!(until(&mut changes, &addr("after")).await, vec![]);
     db.cleanup().await;
 }
+
+fn runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap()
+}
+
+/// One close stops right after it set the closed flag; another overtakes it there. The overtaking close does not return
+/// because the flag is set: it runs the whole prefix (hub, listener stop, pool admission) and the cleanup itself.
+#[test]
+fn a_close_overtaking_another_after_its_flag_runs_the_whole_stop_and_cleanup() {
+    let runtime = runtime();
+    let Some(db) = runtime.block_on(TestDb::new("co")) else { return };
+    let store = runtime.block_on(open(&db));
+    let mut changes = runtime.block_on(subscribe(&store, ""));
+    let (reached, go) = store.close_after_flag.arm();
+    std::thread::scope(|s| {
+        let go = go; // dropped if the test panics, so the paused close goes on
+        let first = s.spawn(|| runtime.block_on(store.close()));
+        reached.recv_timeout(Duration::from_secs(10)).expect("the first close set the flag");
+        assert!(!store.pool().is_closed() && !store.listener_stopped(), "the first close stopped before its prefix");
+        runtime.block_on(async {
+            timeout(Duration::from_secs(10), store.close()).await.expect("the overtaking close finishes");
+            assert!(store.pool().is_closed());
+            assert!(store.listener_stopped());
+            assert_eq!(store.close_progress(), Some((false, true)));
+            assert_eq!(store.pool().size(), 0);
+            assert_eq!(next(&mut changes).await, None);
+            assert_eq!(next(&mut ActorChanges::new(store.changes(), "")).await, None);
+            assert!(matches!(store.create(&addr("x"), json!({})).await, Err(StoreError::Unavailable(_))));
+        });
+        go.send(()).unwrap();
+        first.join().unwrap();
+    });
+    runtime.block_on(db.cleanup());
+}
+
+/// After a close cancelled while a borrowed connection kept it waiting, the store's last handle is dropped, or first
+/// its runtime is shut down: the cancelled close spawned no task, and dropping the store frees it with its pool and
+/// listener (driver cleanup of the connections is not awaited).
+#[test]
+fn a_cancelled_close_leaves_its_resources_to_the_final_drop_or_the_runtime_teardown_without_a_task() {
+    let main = runtime();
+    let Some(db) = main.block_on(TestDb::new("cd")) else { return };
+    for teardown in [false, true] {
+        let runtime = runtime();
+        let store = runtime.block_on(async {
+            // Not through `db.open`, which keeps a handle for its cleanup.
+            let store = Arc::new(PostgresStore::connect(&db.url, db.config()).await.expect("store opens"));
+            let mut changes = subscribe(&store, "").await;
+            let borrowed = store.pool().acquire().await.unwrap();
+            let tasks = tokio::runtime::Handle::current().metrics().num_alive_tasks();
+            {
+                let mut first = std::pin::pin!(store.close());
+                pending_until_pool_closed(&store, &mut first).await;
+            }
+            let after = tokio::runtime::Handle::current().metrics().num_alive_tasks();
+            assert!(after <= tasks, "the cancelled close spawns no task: {tasks} before, {after} after");
+            assert_eq!(store.close_progress().map(|(_, done)| done), Some(false), "cleanup is unfinished");
+            assert_eq!(next(&mut changes).await, None);
+            drop(borrowed); // inside the runtime: sqlx closes it in a task of its own
+            store
+        });
+        if teardown {
+            drop(runtime);
+        }
+        assert_eq!(Arc::strong_count(&store), 1, "nothing but the test holds the store");
+        let weak = Arc::downgrade(&store);
+        drop(store);
+        assert!(weak.upgrade().is_none(), "the final drop frees the store, its pool and its listener");
+    }
+    main.block_on(db.cleanup());
+}

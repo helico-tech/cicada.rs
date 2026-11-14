@@ -157,6 +157,9 @@ pub struct PostgresStore {
     /// the tests.
     #[cfg(test)]
     pub(crate) rerun_next_commit: std::sync::Mutex<Option<futures::future::BoxFuture<'static, ()>>>,
+    /// Close stops here right after it set the closed flag, before the rest of its prefix, for the tests of close.
+    #[cfg(test)]
+    pub(crate) close_after_flag: support::PausePoint,
 }
 
 /// The cleanup progress of [`Backend::close`], kept across cancelled callers.
@@ -226,6 +229,8 @@ impl PostgresStore {
             hub,
             #[cfg(test)]
             rerun_next_commit: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            close_after_flag: support::PausePoint::default(),
         })
     }
 
@@ -245,6 +250,12 @@ impl PostgresStore {
     #[cfg(test)]
     pub(crate) fn replace_listener_task(&self, task: tokio::task::JoinHandle<()>) {
         self.listener.replace_task(task);
+    }
+
+    /// Whether the listener was stopped for good, for the tests of close.
+    #[cfg(test)]
+    pub(crate) fn listener_stopped(&self) -> bool {
+        self.listener.is_stopped()
     }
 
     /// Whether close keeps an unjoined listener task and whether it finished, or `None` while a close holds the
@@ -2468,6 +2479,8 @@ impl Backend for PostgresStore {
     /// unjoined task, to the next one; nothing runs on its behalf in the meantime.
     async fn close(&self) {
         self.closed.store(true, Ordering::SeqCst);
+        #[cfg(test)]
+        self.close_after_flag.hit();
         self.hub.close();
         self.listener.request_stop();
         // sqlx 0.9's `Pool::close` marks the pool closed when it is called, before its future is polled: no new

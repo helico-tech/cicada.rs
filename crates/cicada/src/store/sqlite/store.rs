@@ -100,6 +100,24 @@ pub struct SqliteStore {
     /// A fault the next write transaction takes, for the tests of commit endings.
     #[cfg(test)]
     pub(crate) commit_fault: Mutex<Option<CommitFault>>,
+    /// The stopping points of the tests of close.
+    #[cfg(test)]
+    pub(crate) close_hooks: CloseHooks,
+}
+
+/// Where the tests of close stop a close or a returning reader.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct CloseHooks {
+    /// Close stops for good right after it took this connection for its own close (0: the writer, then the readers in
+    /// the order it pops them), after notifying.
+    pub(crate) taken: Mutex<Option<(usize, Arc<tokio::sync::Notify>)>>,
+    /// Close stops right after it set the closed flag, before the rest of its prefix.
+    pub(crate) after_flag: support::PausePoint,
+    /// A returning reader stops before it takes the readers' lock.
+    pub(crate) return_before_lock: support::PausePoint,
+    /// A returning reader stops under the readers' lock, after it read the closed flag.
+    pub(crate) return_under_lock: support::PausePoint,
 }
 
 impl std::fmt::Debug for SqliteStore {
@@ -173,8 +191,13 @@ impl Drop for Reader<'_> {
     /// lock, which close sets it before draining under: a return cannot refill a pool that close has drained.
     fn drop(&mut self) {
         let Some(conn) = self.conn.take() else { return };
+        #[cfg(test)]
+        self.store.close_hooks.return_before_lock.hit();
         let mut readers = self.store.readers.lock().unwrap_or_else(|e| e.into_inner());
-        if self.store.closed.load(Ordering::SeqCst) {
+        let closed = self.store.closed.load(Ordering::SeqCst);
+        #[cfg(test)]
+        self.store.close_hooks.return_under_lock.hit();
+        if closed {
             drop(readers);
             drop(conn);
         } else {
@@ -377,7 +400,22 @@ impl SqliteStore {
             hub: Arc::new(ChangeHub::new(SourceState::Up)),
             #[cfg(test)]
             commit_fault: Mutex::new(None),
+            #[cfg(test)]
+            close_hooks: CloseHooks::default(),
         })
+    }
+
+    /// Stops for good when the tests of close asked to stop after `connection` was taken.
+    #[cfg(test)]
+    async fn taken_for_close(&self, connection: usize) {
+        let armed = {
+            let mut taken = self.close_hooks.taken.lock().unwrap_or_else(|e| e.into_inner());
+            if taken.as_ref().is_some_and(|(at, _)| *at == connection) { taken.take() } else { None }
+        };
+        if let Some((_, reached)) = armed {
+            reached.notify_one();
+            std::future::pending::<()>().await;
+        }
     }
 
     fn check_open(&self) -> StoreResult<()> {
@@ -2078,6 +2116,8 @@ impl Backend for SqliteStore {
     /// on return (see [`Reader`]).
     async fn close(&self) {
         self.closed.store(true, Ordering::SeqCst);
+        #[cfg(test)]
+        self.close_hooks.after_flag.hit();
         self.hub.close();
         self.reader_permits.close();
         let mut cleaned_up = self.cleaned_up.lock().await;
@@ -2086,11 +2126,20 @@ impl Backend for SqliteStore {
         }
         let writer = self.writer.lock().await.take();
         if let Some(writer) = writer {
+            #[cfg(test)]
+            self.taken_for_close(0).await;
             writer.close().await;
         }
+        #[cfg(test)]
+        let mut taken = 0;
         loop {
             let reader = self.readers.lock().unwrap_or_else(|e| e.into_inner()).pop();
             let Some(reader) = reader else { break };
+            #[cfg(test)]
+            {
+                taken += 1;
+                self.taken_for_close(taken).await;
+            }
             reader.close().await;
         }
         *cleaned_up = true;

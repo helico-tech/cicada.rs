@@ -681,3 +681,31 @@ mod tests {
         assert!(decode_mailbox_cursor(&PageCursor("x".into())).is_err());
     }
 }
+
+// ---- test hooks ----
+
+/// A point where a synchronous step of a store stops once, for the tests of close: [`Self::arm`] makes the next
+/// [`Self::hit`] report on the returned receiver and block until the returned sender sends (or is dropped).
+#[cfg(all(test, any(feature = "sqlite", feature = "postgres")))]
+#[derive(Default)]
+pub(crate) struct PausePoint(std::sync::Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>);
+
+#[cfg(all(test, any(feature = "sqlite", feature = "postgres")))]
+impl PausePoint {
+    /// Arms the point; returns where the hit reports and what lets it go on.
+    pub(crate) fn arm(&self) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        let (reached, reports) = std::sync::mpsc::channel();
+        let (go, waits) = std::sync::mpsc::channel();
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some((reached, waits));
+        (reports, go)
+    }
+
+    /// Stops here when armed, blocking the thread; once only.
+    pub(crate) fn hit(&self) {
+        let armed = self.0.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some((reached, waits)) = armed {
+            let _ = reached.send(());
+            let _ = waits.recv();
+        }
+    }
+}

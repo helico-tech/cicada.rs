@@ -295,20 +295,147 @@ async fn a_waiting_close_takes_over_from_a_cancelled_one_and_both_wait_for_the_w
     assert_eq!(idle_readers(&store), 0);
 }
 
+/// Starts a close that stops for good right after it took `connection` (0: the writer, then the readers in pop order)
+/// for its own close, and cancels it there.
+async fn close_cancelled_after_taking(store: &Arc<SqliteStore>, connection: usize) {
+    let reached = Arc::new(Notify::new());
+    *store.close_hooks.taken.lock().unwrap() = Some((connection, reached.clone()));
+    let task = {
+        let store = store.clone();
+        tokio::spawn(async move { store.close().await })
+    };
+    reached.notified().await;
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+}
+
+/// Cancelled after the writer, or after one or two readers, were taken for their own close: the connection it held drops
+/// into the driver's cleanup, every untouched reader stays in the pool, and a later close closes them.
 #[tokio::test]
 async fn a_close_cancelled_while_it_closes_a_connection_leaves_the_untouched_ones_to_a_later_close() {
-    let db = TempDb::new();
-    let store = open(&db).await;
-    {
-        let mut first = std::pin::pin!(store.close());
-        // The writer and readers close on the driver's threads: the first poll ends inside one of those closes.
-        assert!(futures::poll!(first.as_mut()).is_pending());
+    for (taken, left) in [(0, super::READERS), (1, super::READERS - 1), (2, super::READERS - 2)] {
+        let db = TempDb::new();
+        let store = open(&db).await;
+        close_cancelled_after_taking(&store, taken).await;
+        assert!(writer_taken(&store), "after {taken}");
+        assert_eq!(idle_readers(&store), left, "after {taken}: the readers close did not take stay in the pool");
+        tokio::time::timeout(Duration::from_secs(10), store.close()).await.expect("the later close finishes");
+        assert_eq!(idle_readers(&store), 0);
     }
-    // The connection whose close was cancelled is the driver's to clean up; the writer was taken first.
-    assert!(writer_taken(&store));
-    assert!(idle_readers(&store) <= super::READERS);
-    tokio::time::timeout(Duration::from_secs(10), store.close()).await.expect("the later close finishes");
-    assert_eq!(idle_readers(&store), 0);
+}
+
+/// Fails the test after 10 s of waiting for `condition`, which another thread makes true; yields between checks.
+fn wait_for(what: &str, condition: impl Fn() -> bool) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !condition() {
+        assert!(std::time::Instant::now() < deadline, "timed out waiting for {what}");
+        std::thread::yield_now();
+    }
+}
+
+fn runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap()
+}
+
+/// One close stops right after it set the closed flag; another overtakes it there. The overtaking close does not return
+/// because the flag is set: it runs the whole prefix (hub, reader permits) and the cleanup itself.
+#[test]
+fn a_close_overtaking_another_after_its_flag_runs_the_whole_stop_and_cleanup() {
+    let runtime = runtime();
+    let db = TempDb::new();
+    let store = runtime.block_on(open(&db));
+    let mut changes = runtime.block_on(subscribe(&*store));
+    let (reached, go) = store.close_hooks.after_flag.arm();
+    std::thread::scope(|s| {
+        let go = go; // dropped if the test panics, so a paused thread goes on
+        let first = s.spawn(|| runtime.block_on(store.close()));
+        reached.recv_timeout(Duration::from_secs(10)).expect("the first close set the flag");
+        assert!(store.closed.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(!store.hub.is_closed(), "the first close stopped before the rest of its prefix");
+        runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(10), store.close()).await.expect("the overtaking close finishes");
+            assert!(store.hub.is_closed());
+            assert!(store.reader_permits.is_closed());
+            assert!(writer_taken(&store));
+            assert_eq!(idle_readers(&store), 0);
+            assert_closed(&store, &mut changes).await;
+        });
+        go.send(()).unwrap();
+        first.join().unwrap();
+    });
+}
+
+/// A reader stops on its way back before it takes the readers' lock, and close runs to its end meanwhile: the reader
+/// then reads the flag under the lock and drops its connection. (With the flag read before the lock, as before this
+/// change, the same order put the connection back into the drained pool.)
+#[test]
+fn a_reader_returning_after_close_drained_the_pool_drops_its_connection() {
+    let runtime = runtime();
+    let db = TempDb::new();
+    let store = runtime.block_on(open(&db));
+    let read = runtime.block_on(store.read()).unwrap();
+    let (reached, go) = store.close_hooks.return_before_lock.arm();
+    std::thread::scope(|s| {
+        let go = go; // dropped if the test panics, so a paused thread goes on
+        let returning = s.spawn(|| drop(read));
+        reached.recv_timeout(Duration::from_secs(10)).expect("the reader is on its way back");
+        let close = runtime.block_on(async { tokio::time::timeout(Duration::from_secs(10), store.close()).await });
+        close.expect("close does not wait");
+        assert_eq!(idle_readers(&store), 0);
+        go.send(()).unwrap();
+        returning.join().unwrap();
+    });
+    assert_eq!(idle_readers(&store), 0, "the returned connection is dropped, not pooled");
+}
+
+/// A reader read the open flag under the readers' lock and stops there, about to put its connection back; close sets
+/// the flag meanwhile and must then wait for the lock, so its drain comes after the return and takes that connection.
+#[test]
+fn a_reader_returning_under_the_lock_before_the_drain_is_drained_with_the_pool() {
+    let runtime = runtime();
+    let db = TempDb::new();
+    let store = runtime.block_on(open(&db));
+    let read = runtime.block_on(store.read()).unwrap();
+    let (reached, go) = store.close_hooks.return_under_lock.arm();
+    std::thread::scope(|s| {
+        let go = go; // dropped if the test panics, so a paused thread goes on
+        let returning = s.spawn(|| drop(read));
+        reached.recv_timeout(Duration::from_secs(10)).expect("the reader read the flag under the lock");
+        let close = s.spawn(|| runtime.block_on(store.close()));
+        wait_for("close to set the flag", || store.closed.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(!close.is_finished(), "the drain waits for the readers' lock");
+        go.send(()).unwrap();
+        returning.join().unwrap();
+        close.join().unwrap();
+    });
+    assert_eq!(idle_readers(&store), 0, "the drain took the returned connection");
+}
+
+/// After a close cancelled while it held the writer for its own close, the store's last handle is dropped, or first its
+/// runtime is shut down: the untouched readers are still the store's, no task was spawned for them, and dropping the
+/// store frees it (driver cleanup of the connections is not awaited).
+#[test]
+fn a_cancelled_close_leaves_its_resources_to_the_final_drop_or_the_runtime_teardown_without_a_task() {
+    for teardown in [false, true] {
+        let runtime = runtime();
+        let db = TempDb::new();
+        let store = runtime.block_on(open(&db));
+        let mut changes = runtime.block_on(subscribe(&*store));
+        let tasks = runtime.metrics().num_alive_tasks();
+        runtime.block_on(close_cancelled_after_taking(&store, 0));
+        assert_eq!(runtime.metrics().num_alive_tasks(), tasks, "the cancelled close leaves no task behind");
+        assert_eq!(idle_readers(&store), super::READERS, "the untouched readers are retained");
+        runtime.block_on(async { assert_eq!(next(&mut changes).await, None) });
+        if teardown {
+            drop(runtime);
+        } else {
+            assert_eq!(runtime.metrics().num_alive_tasks(), tasks);
+        }
+        assert_eq!(Arc::strong_count(&store), 1, "nothing but the test holds the store");
+        let weak = Arc::downgrade(&store);
+        drop(store);
+        assert!(weak.upgrade().is_none(), "the final drop frees the store and its connections");
+    }
 }
 
 #[tokio::test]
@@ -333,26 +460,4 @@ async fn a_reader_held_across_close_returns_to_no_pool() {
     assert_eq!(idle_readers(&store), 0);
     drop(read);
     assert_eq!(idle_readers(&store), 0, "the returned connection is dropped");
-}
-
-/// A reader returns on another thread while close drains the pool: whichever takes the readers' lock first, the pool
-/// ends empty, because the return checks the closed flag under that lock.
-#[test]
-fn a_reader_returning_while_close_drains_never_refills_the_pool() {
-    let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
-    for _ in 0..20 {
-        let db = TempDb::new();
-        let store = runtime.block_on(open(&db));
-        let read = runtime.block_on(store.read()).unwrap();
-        let start = std::sync::Barrier::new(2);
-        std::thread::scope(|s| {
-            s.spawn(|| {
-                start.wait();
-                drop(read);
-            });
-            start.wait();
-            runtime.block_on(store.close());
-        });
-        assert_eq!(idle_readers(&store), 0);
-    }
 }

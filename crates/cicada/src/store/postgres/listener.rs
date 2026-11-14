@@ -90,6 +90,12 @@ impl NotificationListener {
         task
     }
 
+    /// Whether the listener was stopped for good, for the tests of close.
+    #[cfg(test)]
+    pub(crate) fn is_stopped(&self) -> bool {
+        self.task.lock().unwrap_or_else(|e| e.into_inner()).1
+    }
+
     /// Puts `task` in place of the listener's task, for the tests of close.
     #[cfg(test)]
     pub(crate) fn replace_task(&self, task: JoinHandle<()>) {
