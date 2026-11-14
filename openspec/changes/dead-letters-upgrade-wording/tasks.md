@@ -5,7 +5,7 @@
   qualifies the Proofs section's broad schema/serde wording. Do not edit the archived spec delta or other archives.
   Verify that the two file diffs contain added lines only, the original claims remain verbatim, and no added note
   changes checkbox/task counts. Keep the task note indented inside task 3 with no new checkbox.
-- [ ] 2. Narrow only the schema-agreement sentence in the rustdoc of `check` in
+- [x] 2. Narrow only the schema-agreement sentence in the rustdoc of `check` in
   `examples/src/dead_letters_upgrade.rs`: neither it nor `create_actor` evaluates JSON Schema, and the cited test
   proves agreement only for the tested payload fields, not the whole state. Keep the four existing checks described;
   change no function body, signature, test logic or fixture. Run `cargo test -p cicada-examples --test dead_letters_upgrade`,

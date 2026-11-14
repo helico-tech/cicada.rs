@@ -182,8 +182,9 @@ pub fn convert(export: &mut Export) -> Result<(), UpgradeError> {
 /// anything.
 ///
 /// The core's own checks of a value are not public, so this is a copy of the checks `ActorSystem::create_actor` makes on
-/// a node that hosts the type. `create_actor` does not check the JSON Schema of the contract; the decoder agrees with it
-/// on the fields of a letter (`crates/cicada-actors/tests/dead_letters.rs`).
+/// a node that hosts the type. `create_actor` does not check the JSON Schema of the contract, and neither does this. A
+/// test shows that the schema and the decoder agree on the payload fields of a letter
+/// (`crates/cicada-actors/tests/dead_letters.rs`); it does not show that they agree on the rest of the state.
 pub fn check(export: &Export) -> Result<(), UpgradeError> {
     let mut seen = BTreeSet::new();
     for saved in &export.actors {
