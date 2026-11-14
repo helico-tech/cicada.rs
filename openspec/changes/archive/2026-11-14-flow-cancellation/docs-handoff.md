@@ -88,8 +88,9 @@ the guide's doctest comment form needs them):
 > The `Cancel` turn runs no flow code. In one commit it cancels the armed `Continue` (a sleep's timer, a deadline, a
 > retry waiting for its backoff, or the next execution), sets the status to `cancelled` and clears `armed`. The input,
 > the journal, the replies and an open wait stay exactly as saved, so you can still read what the run did. A run that
-> was never started, waits for a reply, lost its timer or cannot replay is cancelled the same way. If the commit fails,
-> nothing of it is saved and the run keeps running.
+> was never started, waits for a reply, lost its timer or cannot replay is cancelled the same way. If the commit is
+> rejected, nothing of it is saved and the run keeps running. If the commit's answer is lost, the sender cannot tell
+> whether it applied: read the run's status, or send `Cancel` again, which a cancelled run ignores.
 >
 > **Cancel does not interrupt and does not clean up.** It is handled in mailbox order `(deliverAt, seq)`, after the
 > turn before it. An execution that is running when you send `Cancel` may still commit its step, and the `Cancel` then

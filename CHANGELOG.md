@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.18.4 — unreleased
+## 0.18.4 — 2026-11-14
 
 A host can cancel a running flow: `FlowMsg::Cancel` ends the run in one turn of its own, keeping its progress (ADR
 0044). The flow wire and every contract hash stay those of 0.18.0; no store schema and no guarantee changes. A node of
