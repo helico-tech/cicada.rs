@@ -20,7 +20,7 @@
 
 ## Finishing checks
 
-- [ ] 4. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
+- [x] 4. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
   `openspec validate usage-error-password-redaction --strict`. Confirm both real error paths pass through the helper,
   repeated redaction is stable, and no unrelated configuration/output behavior changed. Follow the build loop's
   ordinary code-review and release gates.
