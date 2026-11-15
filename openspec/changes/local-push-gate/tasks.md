@@ -23,7 +23,7 @@
   bare remotes: missing/pass records, HEAD:main, force/deletion, unknown tracking, tag objects, multiple refs in both
   orders, and a server update hook rejecting only main. Prove the last candidate cannot leave a tag outside main.
   Test foreign-hook refusal and coexistence with docs hooks. Install only in temporary repos during building.
-- [ ] 4. Implement pinned resumable release and exact-commit release-check preflight/full modes. Hold the common
+- [x] 4. Implement pinned resumable release and exact-commit release-check preflight/full modes. Hold the common
   lock without recursive acquisition; persist C/O, push explicit objects without force, accept main already containing
   C, and revalidate ancestry/remote state. Generate exact notes, verify skill SOURCE/hash before tag push, then inspect,
   create/resume and publish only a matching draft in origin's GitHub repository. Never clobber conflicting drafts or
