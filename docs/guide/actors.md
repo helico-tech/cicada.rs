@@ -12,6 +12,7 @@ They use ordinary actor guarantees, watches and control effects from the [core](
 | Space deliveries at a shared rate | `RateLimiterActor` / `cicada.rate-limiter` | [rate_limit](../../examples/src/rate_limit.rs) |
 | Keep the latest value of a burst | `DebouncerActor` / `cicada.debouncer` | [debounce](../../examples/src/debounce.rs) |
 | Collect items into one delivery | `BatcherActor` / `cicada.batcher` | [batching](../../examples/src/batching.rs) |
+| Notice that something stopped happening | `HeartbeatWatchActor` / `cicada.heartbeat-watch` | [heartbeat](../../examples/src/heartbeat.rs) |
 | Run a durable multi-step job | `FlowActor<F>` / host-chosen name | [flow_onboarding](../../examples/src/flow_onboarding.rs) |
 | Start flows from a publication | `EventActor` / `cicada.event` | [flow_events](../../examples/src/flow_events.rs) |
 
@@ -259,6 +260,63 @@ If the final Add cannot send, **that new item is not kept**; recover its failed 
 A cancelled/purged/failed timer can leave items stranded. Send Flush to recover; an Add before the old deadline does
 not rearm it. A retried old Flush can send a newer batch early. Count limits do not bound bytes; keep items small.
 Delete/recreate to change settings. [Example](../../examples/src/batching.rs).
+
+## Heartbeat watch
+
+Create one `HeartbeatWatch::named(...)` per watched thing, using
+`HeartbeatWatchState::new(silence, &target, alarm)`. Silence must be positive and at most `MAX_DELAY`;
+set `state.retry` for the alarm's target retry policy. Host `HeartbeatWatchActor` alongside the target type.
+Settings are fixed: delete/recreate to change them; repeating create changes nothing.
+
+| Message | Effect |
+| --- | --- |
+| `HeartbeatWatchMsg::Beat` | Set `lastBeatAt` to this turn's store claim time, replace the timer and become `alive` atomically |
+| `HeartbeatWatchMsg::Expire` | Only the armed self-sent timer counts: enqueue the alarm and become `silent` atomically; an early timer rearms at the unchanged deadline |
+| `HeartbeatWatchMsg::Rearm` | Replace an `alive` round's timer at its original deadline, keeping `lastBeatAt`; no effect in `waiting` or `silent` |
+
+A newly created watch is `waiting`, with no timer. Send a synthetic Beat with creation to notice a thing that never
+starts; this reports `alive` before any external activity. **One silence, one alarm:** expiry clears `armed`, keeps
+`lastBeatAt` and arms nothing more. The next Beat starts another round without a recovery notification.
+
+```mermaid
+sequenceDiagram
+    participant C as Caller
+    participant I as Import
+    participant W as Heartbeat watch
+    participant O as On-call
+    C->>I: ImportMsg::Start
+    Note over I: Commit watch create<br/>+ first Beat
+    I->>W: HeartbeatWatchMsg::Beat
+    Note over W: Commit alive<br/>+ delayed Expire
+    W->>W: HeartbeatWatchMsg::Expire (when due)
+    W->>O: OnCallMsg::ImportSilent { partner }
+    Note over W: Alarm enqueue + silent<br/>commit together
+    C->>I: ImportMsg::FileImported { file }
+    I->>W: HeartbeatWatchMsg::Beat
+    Note over W: New round<br/>no recovery notice
+```
+
+[Example 19](../../examples/src/heartbeat.rs) allows 25 hours for a nightly import. The diagram assumes no Beat is
+handled before the due Expire. Silence measures handled Beats, not external event or send time: mailbox order
+`(deliverAt, seq)` decides a Beat/Expire race. Pauses, outages and slow commits can delay the alarm. It means one
+committed enqueue per round; target handling/retries are independent and may repeat external effects.
+
+**Recover a lost timer with Rearm.** Purge, pending cancellation or terminal timer failure can leave `alive` with a
+stale `armed`: it proves neither a pending timer nor external health. Fix the cause, then send Rearm; an overdue
+deadline becomes due immediately. It also replaces a retrying timer. Operator retry/redrive creates a new id and is
+ignored, as are forged or superseded Expires. Ordinary policy retries keep the armed id. A Beat resets the deadline
+and claims new activity; Rearm preserves the round. Purge/pending cancel sends no failure notice.
+
+An unregistered target type or unsupported message permanently refuses expiry; a missing target rejects its commit.
+A failed store read uses the timer's seven-attempt retry policy (1–32 s waits). Known rejected turns save no alarm or
+state effects; uncertain acknowledgements follow ordinary core recovery. Target payload decoding can fail later,
+after the watch is already silent. Active actions refuse a self-target; ignored messages remain no-ops.
+
+Alarms have a fresh id, the watch as sender, the configured retry policy and no correlation id; normal observer
+headers still apply. Alarm payloads may be at most 62 levels deep in a new watch state. Typed decoding checks round
+consistency and deadline bounds; raw HTTP schema validation alone does not. See the
+[wire contract](../reference/contracts/cicada.heartbeat-watch.json) and
+[implementation](../../crates/cicada-actors/src/heartbeat_watch.rs) for exact fields and checks.
 
 ## Flows
 
