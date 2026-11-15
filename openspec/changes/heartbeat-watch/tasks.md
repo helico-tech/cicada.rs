@@ -6,14 +6,14 @@
   all invalid status/field combinations, zero/MAX_DELAY bounds, timestamp addition/MAX_INSTANT, constructor encoding
   failures and a compile-fail message-family example. Run module unit tests and actor-crate doctests. No core API,
   store behavior, configuration update message or new create hook.
-- [ ] 2. Implement Beat, Rearm, eligible/ignored Expire and shared arm/cancel logic, with the current-id cancellation
+- [x] 2. Implement Beat, Rearm, eligible/ignored Expire and shared arm/cancel logic, with the current-id cancellation
   guard, self-target rejection after no-op dispatch, absolute deadline guard and atomic alarm/silent transition.
   Add virtual-time TestActors coverage for waiting/start, create-plus-Beat, repeated create, ongoing beats, one alarm,
   recovery Beat without notification, early deliver-now, fractional silence, MAX_INSTANT overflow, both equal-delivery
   orders, paused/late beats and node restart. Prove no-op state/version stability for forged/stale timers and inactive
   Rearm. Test purge/cancel and pre-/post-deadline Rearm, Rearm replacing a retrying Expire followed by stale delivery,
   repeated Rearm after expiry, and operator retry/dead-letter copies remaining ineligible. Run targeted heartbeat tests.
-- [ ] 3. Add failure/metadata/depth and contract proofs: self/absent/unregistered/wrong-message targets, deferred
+- [x] 3. Add failure/metadata/depth and contract proofs: self/absent/unregistered/wrong-message targets, deferred
   payload decoding, configured target retry, shared timer retry, fresh alarm id/from/no correlation, observer headers,
   depth62 accepted/depth63 refused, lost-claim recovery, and known failure atomicity. Extend the existing real-time
   SQLite registry-fault harness for retryable Store errors; do not add a core fault hook or equate unknown acknowledgements
