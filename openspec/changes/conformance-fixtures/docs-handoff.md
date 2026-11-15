@@ -96,5 +96,13 @@ None. Every doctest, link, guarantee row and skill route passes without prose ed
 
 ## Status
 
-Proposed text only; no docs-owned file is edited and no owner fix is integrated. The checks are listed in the review
-request.
+Proposed text only; no docs-owned file is edited and no owner fix is integrated, and none of the prose above is
+written yet. Checks on 8591bc0: `python3 scripts/gate.py run` and `run --e2e` passed (full and e2e evidence for tree
+7792f876ad41: script tests, fmt, clippy with `-D warnings`, `cargo test --workspace` with PostgreSQL, feature builds,
+the app alone, dependency trees and the Docker E2E suite). Run directly as well: `cargo test --workspace` with
+PostgreSQL (2957 passed, 0 failed); `cargo test -p cicada-examples --test skill --test docs` and `--doc` (pass);
+`openspec validate conformance-fixtures --strict` (valid). Contract snapshots (`cicada-test`, the actors'
+`wire_formats`) pass without update variables. Drift detection: changing `1e+16` to `1e+17` in `canonical.json` and
+one digit of the `minimal` hash in `contracts.json` failed `exponent-at-16: canonical text` and `"minimal": contract
+hash`; changing `"factor":2.0` to `2` in `leases.json` failed the valid and accepted lease tests; all were restored
+before committing. The packaging tests use temporary repositories and a fake `gh`; no live GitHub release was made.

@@ -44,7 +44,7 @@
   route; record `Blocking: none` unless verification finds a real blocker. Verify:
   `cargo test -p cicada-examples --test skill --test docs` and `cargo test -p cicada-examples --doc`.
 
-- [ ] 6. Finishing. Run `openspec validate conformance-fixtures --strict`. Commit the final tree, then run
+- [x] 6. Finishing. Run `openspec validate conformance-fixtures --strict`. Commit the final tree, then run
   `python3 scripts/gate.py run --e2e` and report `python3 scripts/gate.py status`. The full policy includes
   `cargo fmt --all --check`, `cargo clippy --workspace --all-targets` and `cargo test --workspace` with PostgreSQL,
   plus feature, documentation, script and Docker E2E checks. Confirm contract snapshots pass without regeneration
