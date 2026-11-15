@@ -21,6 +21,7 @@ from pathlib import Path
 _helpers = Path(__file__).resolve().with_name("release_archive.py")  # by path: `python3 -I` keeps this folder off sys.path
 _spec = importlib.util.spec_from_file_location("release_archive", _helpers)
 release_archive = importlib.util.module_from_spec(_spec)
+sys.dont_write_bytecode = True  # never write into the checkout, whatever the interpreter flags
 _spec.loader.exec_module(release_archive)
 PackageError = release_archive.PackageError
 build = release_archive.build

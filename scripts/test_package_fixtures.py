@@ -86,6 +86,19 @@ class Packaging(unittest.TestCase):
         self.assertEqual(self.archive("v0.18.12", "two"), first)
         self.assertEqual(self.archive("v0.18.12", "two"), first)
 
+    def test_neither_packager_writes_bytecode_next_to_itself_without_b(self):
+        # `-I` ignores PYTHONDONTWRITEBYTECODE; loading the shared helpers must still leave the checkout clean.
+        copies = self.dir / "copies"
+        copies.mkdir()
+        for name in ("package-fixtures.py", "package-skill.py", "release_archive.py"):
+            shutil.copy(SCRIPTS / name, copies / name)
+        self.git("tag", "v0.18.12")
+        for packager in ("package-fixtures.py", "package-skill.py"):
+            subprocess.run([sys.executable, "-I", str(copies / packager), "v0.18.12", str(self.dir / "out")],
+                           cwd=self.repo, capture_output=True, timeout=60)
+        self.assertEqual(sorted(p.name for p in copies.iterdir()),
+                         ["package-fixtures.py", "package-skill.py", "release_archive.py"])
+
     def assert_refused(self, tag: str, words: str):
         done = self.package(tag)
         self.assertEqual(done.returncode, 1, done.stdout)
