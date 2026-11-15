@@ -111,6 +111,17 @@ None. No doctest, link, guarantee row or skill route depends on new prose: `carg
 
 ## Status
 
-Proposed text only; none of this prose is written. Checks run on this branch are listed in the build report and the
-finishing task. Installation after landing: the build loop runs `python3 scripts/gate.py install-hook` once in the main
-checkout, with the owner's yes, then releases 0.18.9 with `python3 scripts/gate.py release v0.18.9`.
+Proposed text only; none of this prose is written.
+
+Checks run by the builder: `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -- -D warnings` in
+the worktree; `cargo test -p cicada-examples --test docs --test skill` (19 passed); `openspec validate local-push-gate
+--strict` (valid). The gate itself ran in a temporary clone of this branch, never in the shared repository (so no
+evidence of it exists in the real common directory): `gate.py run --e2e` passed full and E2E on `58290e4` (60 Python
+tests, 3055 Rust tests including PostgreSQL, every feature-alone build and dependency-tree check, 28 E2E tests in
+Docker), and then on this Markdown-only head it ran fresh docs checks over that full pass and reused its E2E pass.
+A bad `CICADA_PG_URL` fails the PostgreSQL tests (checked by hand with `cargo test -p cicada --test store`).
+
+Installation after landing: the build loop runs `python3 scripts/gate.py install-hook` once in the main checkout, with
+the owner's yes, then releases 0.18.9 with `python3 scripts/gate.py release v0.18.9`. The gate needs
+`.claude/worktrees/` ignored (it is, in `.git/info/exclude`) and no Cargo config or toolchain file above the checkout
+or in `~/.cargo` (none today).

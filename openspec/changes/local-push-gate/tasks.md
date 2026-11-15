@@ -43,7 +43,7 @@
 
 ## Finishing checks
 
-- [ ] 6. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
+- [x] 6. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
   `cargo test --workspace` with PostgreSQL and `openspec validate local-push-gate --strict`, using the new full gate
   on committed source so those checks and all preserved CI checks produce valid evidence. Run the actual unfiltered
   Docker E2E gate; skipped PG/E2E is not completion. Recheck evidence for the final committed tree after task/review
