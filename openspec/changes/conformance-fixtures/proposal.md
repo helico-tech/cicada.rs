@@ -22,8 +22,8 @@ crate.
 
 ## What Changes
 
-- **Fixtures in each release**, a language-neutral archive next to the skill archive (ADR 0041), generated from the
-  Rust sources and checked by a test so they cannot drift:
+- **Fixtures in each release**, a language-neutral archive next to the skill archive (ADR 0041), with fixed expected
+  data checked against the Rust sources. Packaging reads those checked files from the release tag:
   - canonical-JSON and contract-hash vectors, including Unicode key ordering, float and exponent literals, and
     description stripping;
   - request and response JSON samples for `/leases`, `/leases/renew`, `/leases/release` and `/leases/complete`, with
@@ -32,7 +32,8 @@ crate.
 - **The canonical number format becomes a written rule** in the contract spec and an ADR (or an addition to the ADR
   that defines contract hashes), proven by the vectors above. Limiting schema numbers to integers is not proposed: it
   could change the hash of existing contracts. The design decides whether the format stays tied to serde_json and zmij
-  or is produced by Cicada's own code, so that a dependency update cannot change it.
+  or is produced by Cicada's own code. The settled design keeps the current formatter and pins its tested output;
+  it does not promise compatibility for arbitrary consumer dependency versions or merged features.
 - **A Rust test pins the number vectors and the hashes of the fixture contracts**, so a dependency update that changes
   the format fails before release instead of changing hashes silently.
 - The release driver (`scripts/gate.py release`, ADR 0046) packages and verifies the fixture archive as it does the
@@ -49,5 +50,5 @@ After `lease-limit-docs`. Before `node-details`.
 
 ## Impact
 
-A generator and test for the fixtures, the release driver's packaging, the contract spec and an ADR, the changelog
+Fixed fixtures and their tests, the release driver's packaging, the contract spec and an ADR, the changelog
 and a docs handoff for the ports' guide. No behaviour, wire format, contract hash, store schema or guarantee changes.

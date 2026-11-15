@@ -51,6 +51,7 @@ accepted ADR is not rewritten: a later one supersedes it. A change that makes a 
 | [0044](0044-flow-requests-waits-and-cancellation.md) | Flow sends, correlated reply waits and cancellation share one reserved wire shape, with phase journals and staged behavior: sends since 0.18.0, requests and single reply waits since 0.18.1, their deadlines since 0.18.2, joins of all or the first reply since 0.18.3, cancellation of a running run without cleanup since 0.18.4, and its cleanup, `Flow::on_cancel` over a journal of its own, since 0.18.5. |
 | [0045](0045-docs-handoff-between-loops.md) | Builders hand off prose, integrate exact docs-owner fixes for blocking checks, and keep main green through normal review and release gates, since 0.18.6. |
 | [0046](0046-local-checks-and-releases.md) | Local tree-bound check evidence gates main and version tags; pinned local publication replaces automatic Actions, and remote version tags stay immutable. |
+| [0047](0047-canonical-json-and-conformance-fixtures.md) | Fixed canonical/hash and remote-worker fixtures ship as a second verified release archive, with the current formatter and explicit tested dependency limits. |
 
 ## Design questions
 
