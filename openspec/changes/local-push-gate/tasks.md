@@ -16,7 +16,7 @@
   supported macOS/Linux platforms where available; record limits rather than bypassing unsupported flock. Recovery
   instructions must retain unusable evidence and require identified processes to be gone before marker removal.
   Run targeted Python tests; no destructive operation may touch the main/docs/release-local worktrees.
-- [ ] 3. Implement read-only pre-push validation and non-clobbering installation respecting core.hooksPath. Parse
+- [x] 3. Implement read-only pre-push validation and non-clobbering installation respecting core.hooksPath. Parse
   all ref updates, require main tip evidence/fast-forward, reject main deletion/unknown old objects, and require new
   version-tag checks/E2E on previously accepted named-remote main. Never qualify a tag from a proposed main update.
   Reject every existing remote version-tag mutation; preserve unrelated hooks and refs. Test real pushes to local
