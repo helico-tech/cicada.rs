@@ -11,10 +11,10 @@ use cicada::store::{Message, MessageStatus, OutcomeStatus, SqliteOptions};
 use cicada::{ActorAddress, FailureCause, SendResult, Store, WatchTarget};
 use cicada_actors::{
     Batcher, BatcherActor, BatcherMsg, BatcherState, Child, Debouncer, DebouncerActor, DebouncerMsg, DebouncerState,
-    Event, EventActor, EventMsg, EventState, Flow, FlowActor, FlowRun, FlowState, FlowStatus, RateLimiter,
-    RateLimiterActor, RateLimiterMsg, RateLimiterState, ReplyTo, Schedule, Scheduler, SchedulerActor, SchedulerMsg,
-    SchedulerState, Step, Supervisor, SupervisorActor, SupervisorMsg, SupervisorState, Target, Topic, TopicActor,
-    TopicMsg, TopicState,
+    Event, EventActor, EventMsg, EventState, Flow, FlowActor, FlowRun, FlowState, FlowStatus, HeartbeatStatus,
+    HeartbeatWatch, HeartbeatWatchActor, HeartbeatWatchMsg, HeartbeatWatchState, RateLimiter, RateLimiterActor,
+    RateLimiterMsg, RateLimiterState, ReplyTo, Schedule, Scheduler, SchedulerActor, SchedulerMsg, SchedulerState, Step,
+    Supervisor, SupervisorActor, SupervisorMsg, SupervisorState, Target, Topic, TopicActor, TopicMsg, TopicState,
 };
 use common::*;
 use sqlx::SqlitePool;
@@ -40,6 +40,7 @@ impl Sqlite {
             .host(DebouncerActor)
             .host(BatcherActor)
             .host(EventActor)
+            .host(HeartbeatWatchActor)
             .host(FlowActor::new(Mail))
             .host(FlowActor::new(Ship))
             .host(FlowActor::new(Order))
@@ -304,6 +305,82 @@ async fn a_flush_of_a_batcher_whose_read_of_the_store_fails_is_tried_again_and_f
     assert_eq!(db.outcome(&timer).await.0, OutcomeStatus::Done);
     let held: BatcherState = db.state(&addr(&bat)).await;
     assert!(held.items.is_empty() && held.first_at.is_none() && held.armed.is_none(), "cleared: {held:?}");
+    db.close().await;
+}
+
+/// A heartbeat watch, an hour of silence for `worker/a`, whose round started an hour ago and whose timer was lost; a
+/// `Rearm` arms it again, due now. Returns the watch and that timer.
+async fn overdue_watch(db: &Sqlite) -> (HeartbeatWatch, Message) {
+    let watch = HeartbeatWatch::named("import");
+    let mut state = HeartbeatWatchState::new(HOUR, &worker("a"), WorkerMsg::Note { text: "silent".into() }).unwrap();
+    state.status = HeartbeatStatus::Alive;
+    state.last_beat_at = Some(db.system.now().await.unwrap() - HOUR);
+    state.armed = Some(MessageId::new("lost").unwrap());
+    db.system.create(&watch, &state).await.unwrap();
+    db.system.create(&worker("a"), &WorkerState::default()).await.unwrap();
+    db.system.send(&watch, HeartbeatWatchMsg::Rearm).await.unwrap();
+    assert_eq!(db.system.run_due_turns(1).await.unwrap(), 1, "the rearm");
+    let timer = db.pending(&addr(&watch)).await.pop().expect("the armed timer");
+    (watch, timer)
+}
+
+/// Scenario: Target checks and retry policies, a registry read that fails. The overdue timer of a heartbeat watch
+/// fails its read of the registry with a store error, which commits nothing; its own retry sends the alarm once.
+#[tokio::test]
+async fn a_timer_of_a_heartbeat_watch_whose_read_of_the_store_fails_is_tried_again_and_alarms_once() {
+    let dir = TempDir::new().unwrap();
+    let db = Sqlite::open(dir.path()).await;
+    let (watch, timer) = overdue_watch(&db).await;
+    let before: HeartbeatWatchState = db.state(&addr(&watch)).await;
+
+    db.registry(false).await;
+    assert_eq!(db.system.run_due_turns(1).await.unwrap(), 1, "the first attempt of the timer");
+    db.registry(true).await;
+    let retried = db.pending(&addr(&watch)).await;
+    assert_eq!((retried.len(), retried[0].id.clone(), retried[0].failures), (1, timer.id.clone(), 1));
+    assert!(retried[0].last_error.as_deref().unwrap().contains("actor_types"), "{:?}", retried[0].last_error);
+    assert_eq!(db.state::<HeartbeatWatchState>(&addr(&watch)).await, before, "nothing committed");
+    assert!(db.pending(&addr(&worker("a"))).await.is_empty(), "nothing was sent");
+
+    tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+    db.run_until_idle().await;
+    assert_eq!(db.state::<WorkerState>(&addr(&worker("a"))).await.log, ["silent"], "once, from a later attempt");
+    assert_eq!(db.outcome(&timer).await.0, OutcomeStatus::Done);
+    let held: HeartbeatWatchState = db.state(&addr(&watch)).await;
+    assert_eq!((held.status, held.armed, held.last_beat_at), (HeartbeatStatus::Silent, None, before.last_beat_at));
+    db.close().await;
+}
+
+/// Scenario: Recovering a failed timer. A `Rearm` cancels the timer that waits for its retry and arms its own; an
+/// operator's retry of the cancelled timer is a copy under a new id and changes nothing.
+#[tokio::test]
+async fn a_rearm_cancels_a_timer_that_waits_for_its_retry_and_a_retry_of_the_old_one_is_ignored() {
+    let dir = TempDir::new().unwrap();
+    let db = Sqlite::open(dir.path()).await;
+    let (watch, timer) = overdue_watch(&db).await;
+    db.registry(false).await;
+    assert_eq!(db.system.run_due_turns(1).await.unwrap(), 1, "the first attempt of the timer");
+    db.registry(true).await;
+
+    db.system.send(&watch, HeartbeatWatchMsg::Rearm).await.unwrap();
+    assert_eq!(db.system.run_due_turns(1).await.unwrap(), 1, "the rearm, before the retry is due");
+    assert_eq!(db.outcome(&timer).await.0, OutcomeStatus::Cancelled, "the retry is cancelled");
+    let pending = db.pending(&addr(&watch)).await;
+    let held: HeartbeatWatchState = db.state(&addr(&watch)).await;
+    assert_eq!(pending.len(), 1, "only the replacement timer");
+    assert_eq!(held.armed, Some(pending[0].id.clone()));
+
+    let cicada::runtime::RetryResult::Accepted(copy) = db.system.retry_message(&timer.id).await.unwrap() else {
+        panic!("not retried")
+    };
+    assert_eq!(db.system.run_due_turns(1).await.unwrap(), 1, "the replacement, which is ahead of the copy");
+    let version = db.system.get_actor(&addr(&watch)).await.unwrap().unwrap().version;
+    db.run_until_idle().await;
+    assert_eq!(db.outcome(&copy).await.0, OutcomeStatus::Done);
+    assert_eq!(db.system.get_actor(&addr(&watch)).await.unwrap().unwrap().version, version, "the copy is ignored");
+    assert_eq!(db.state::<WorkerState>(&addr(&worker("a"))).await.log, ["silent"], "one alarm");
+    let held: HeartbeatWatchState = db.state(&addr(&watch)).await;
+    assert_eq!((held.status, held.armed), (HeartbeatStatus::Silent, None));
     db.close().await;
 }
 

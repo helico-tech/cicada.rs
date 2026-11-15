@@ -1,4 +1,4 @@
-//! The wire formats of the eight ready-made actors (ADR 0028): their contracts against the references in
+//! The wire formats of the nine ready-made actors (ADR 0028): their contracts against the references in
 //! `docs/reference/contracts`, the JSON their messages and states are written as, and sample checks for what the
 //! helpers and the actors write: both the registered schemas and the decoders take it (ADR 0026). And the wire format
 //! of a flow (ADR 0031, ADR 0044): a test flow's contract, whose type name its host chooses, pinned in `tests/contracts`,
@@ -15,10 +15,10 @@ use cicada::{Failed, FailureCause, StopCause, Stopped, WatchTarget};
 use cicada_actors::{
     Batcher, BatcherActor, BatcherMsg, BatcherState, Child, DeadLetters, DeadLettersActor, DeadLettersMsg,
     DeadLettersState, Debouncer, DebouncerActor, DebouncerMsg, DebouncerState, Event, EventActor, EventMsg, EventState,
-    Flow, FlowActor, FlowMsg, FlowRun, FlowState, FlowStatus, JournalEntry, RateLimiter, RateLimiterActor,
-    RateLimiterMsg, RateLimiterState, ReplyTo, Schedule, Scheduler, SchedulerActor, SchedulerMsg, SchedulerState,
-    StoredMessage, Supervisor, SupervisorActor, SupervisorMsg, SupervisorState, Topic, TopicActor, TopicMsg,
-    TopicState,
+    Flow, FlowActor, FlowMsg, FlowRun, FlowState, FlowStatus, HeartbeatStatus, HeartbeatWatch, HeartbeatWatchActor,
+    HeartbeatWatchMsg, HeartbeatWatchState, JournalEntry, RateLimiter, RateLimiterActor, RateLimiterMsg,
+    RateLimiterState, ReplyTo, Schedule, Scheduler, SchedulerActor, SchedulerMsg, SchedulerState, StoredMessage,
+    Supervisor, SupervisorActor, SupervisorMsg, SupervisorState, Topic, TopicActor, TopicMsg, TopicState,
 };
 use cicada_axum::{assert_message_sample, assert_state_sample};
 use cicada_test::{TestActors, UPDATE_CONTRACTS_ENV, describe_changes};
@@ -89,7 +89,7 @@ fn check_references(dir: &Path, contracts: &[Contract], update: bool) -> Result<
     }
 }
 
-fn the_eight_contracts() -> [Contract; 8] {
+fn the_nine_contracts() -> [Contract; 9] {
     [
         contract_of::<SupervisorActor>().unwrap(),
         contract_of::<DeadLettersActor>().unwrap(),
@@ -99,12 +99,13 @@ fn the_eight_contracts() -> [Contract; 8] {
         contract_of::<DebouncerActor>().unwrap(),
         contract_of::<BatcherActor>().unwrap(),
         contract_of::<EventActor>().unwrap(),
+        contract_of::<HeartbeatWatchActor>().unwrap(),
     ]
 }
 
 #[test]
-fn the_contracts_of_the_eight_types_match_their_references() {
-    let contracts = the_eight_contracts();
+fn the_contracts_of_the_nine_types_match_their_references() {
+    let contracts = the_nine_contracts();
     let names: Vec<&str> = contracts.iter().map(|c| c.type_name().as_str()).collect();
     assert_eq!(
         names,
@@ -116,7 +117,8 @@ fn the_contracts_of_the_eight_types_match_their_references() {
             "cicada.rate-limiter",
             "cicada.debouncer",
             "cicada.batcher",
-            "cicada.event"
+            "cicada.event",
+            "cicada.heartbeat-watch"
         ]
     );
     let update = std::env::var(UPDATE_CONTRACTS_ENV).is_ok_and(|v| v == "true");
@@ -387,6 +389,66 @@ fn the_messages_are_written_in_camel_case_and_pass_their_samples() {
     ] {
         assert!(cicada::message::decode::<EventMsg>(message_type, &invalid).is_err(), "{message_type} {invalid}");
     }
+
+    let heartbeat = [
+        (HeartbeatWatchMsg::Beat, json!({"type": "Beat"})),
+        (HeartbeatWatchMsg::Rearm, json!({"type": "Rearm"})),
+        (HeartbeatWatchMsg::Expire, json!({"type": "Expire"})),
+    ];
+    for (message, written) in heartbeat {
+        assert_eq!(json_of(&message), written);
+        assert_message_sample::<HeartbeatWatchMsg>(&written);
+    }
+    assert!(cicada::message::decode::<HeartbeatWatchMsg>("Start", &json!({})).is_err(), "no Start message");
+}
+
+#[test]
+fn a_heartbeat_watch_state_is_written_in_camel_case_passes_its_samples_and_refuses_invalid_states() {
+    let mut state = HeartbeatWatchState::new(
+        std::time::Duration::from_secs(90_000),
+        &worker("a"),
+        WorkerMsg::Note { text: "n".into() },
+    )
+    .unwrap();
+    let settings =
+        json!({"silence": "PT25H", "target": "worker/a", "alarm": {"type": "Note", "payload": {"text": "n"}}});
+    let with = |extra: Value| {
+        let mut json = settings.clone();
+        json.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        json
+    };
+    let written = json_of(&state);
+    assert_eq!(written, with(json!({"retry": null, "status": "waiting", "lastBeatAt": null, "armed": null})));
+    assert_state_sample::<HeartbeatWatchState>(&written);
+    assert_state_sample::<HeartbeatWatchState>(&settings);
+    state.retry = Some(RetryPolicy::new(2, Backoff::fixed(std::time::Duration::from_secs(10)).unwrap()).unwrap());
+    state.status = HeartbeatStatus::Alive;
+    state.last_beat_at = Some("2026-11-13T02:00:00Z".parse().unwrap());
+    state.armed = Some(MessageId::new("e1").unwrap());
+    let fixed = json!({"maxAttempts": 2, "backoff": {"kind": "fixed", "delay": "PT10S"}});
+    let at = "2026-11-13T02:00:00Z";
+    assert_eq!(json_of(&state), with(json!({"retry": fixed, "status": "alive", "lastBeatAt": at, "armed": "e1"})));
+    assert_state_sample::<HeartbeatWatchState>(&json_of(&state));
+    assert_state_sample::<HeartbeatWatchState>(&with(json!({"status": "silent", "lastBeatAt": at})));
+    for invalid in [
+        with(json!({"silence": "PT0S"})),
+        with(json!({"silence": "P365001D"})),
+        with(json!({"silence": 90000})),
+        with(json!({"target": "not an address"})),
+        with(json!({"alarm": {"type": "Note"}})),
+        with(json!({"status": "asleep"})),
+        with(json!({"lastBeatAt": at})),
+        with(json!({"armed": "e1"})),
+        with(json!({"status": "alive", "lastBeatAt": at})),
+        with(json!({"status": "silent", "lastBeatAt": at, "armed": "e1"})),
+        with(json!({"status": "silent"})),
+        with(json!({"status": "silent", "lastBeatAt": "soon"})),
+        with(json!({"status": "silent", "lastBeatAt": "9999-12-31T23:00:00Z"})),
+        with(json!({"retry": {"maxAttempts": 0, "backoff": fixed["backoff"]}})),
+        json!({"silence": "PT25H", "target": "worker/a"}),
+    ] {
+        assert!(serde_json::from_value::<HeartbeatWatchState>(invalid.clone()).is_err(), "{invalid}");
+    }
 }
 
 #[test]
@@ -590,6 +652,7 @@ async fn the_states_the_actors_write_pass_their_samples() {
                 .host(DebouncerActor)
                 .host(BatcherActor)
                 .host(EventActor)
+                .host(HeartbeatWatchActor)
                 .host(WorkerActor)
         })
         .build()
@@ -702,6 +765,24 @@ async fn the_states_the_actors_write_pass_their_samples() {
     let written = test.state_json(&event).await.unwrap();
     assert_eq!(written, json!({"flows": ["shop.fulfil"]}));
     assert_state_sample::<EventState>(&written);
+
+    let watch = HeartbeatWatch::named("import");
+    let mut state = HeartbeatWatchState::new(second, &worker("a"), WorkerMsg::Note { text: "silent".into() }).unwrap();
+    state.retry = Some(RetryPolicy::new(2, Backoff::fixed(second).unwrap()).unwrap());
+    test.create(&watch, &state).await;
+    test.send(&watch, HeartbeatWatchMsg::Beat).await;
+    test.run_until_idle().await;
+    let written = test.state_json(&watch).await.unwrap();
+    assert_eq!(written["status"], "alive", "{written}");
+    for key in ["lastBeatAt", "armed"] {
+        assert!(written[key].is_string(), "{key} in {written}");
+    }
+    assert_state_sample::<HeartbeatWatchState>(&written);
+    test.advance_time_by(second).await;
+    let written = test.state_json(&watch).await.unwrap();
+    assert_eq!((written["status"].clone(), written["armed"].clone()), (json!("silent"), Value::Null), "{written}");
+    assert!(written["lastBeatAt"].is_string(), "{written}");
+    assert_state_sample::<HeartbeatWatchState>(&written);
 }
 
 /// The input of the test flow.
