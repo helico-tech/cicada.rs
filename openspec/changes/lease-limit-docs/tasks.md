@@ -16,7 +16,7 @@
   `cargo test -p cicada-axum --test openapi` without the variable. Inspect the generated diff: only descriptions
   and normal version metadata change. No handwritten documentation edits.
 
-- [ ] 3. Finishing checks. Run `openspec validate lease-limit-docs --strict`. Commit the final tree, then run
+- [x] 3. Finishing checks. Run `openspec validate lease-limit-docs --strict`. Commit the final tree, then run
   `python3 scripts/gate.py run --e2e` and report `python3 scripts/gate.py status`. The full gate includes
   `cargo fmt --all --check`, `cargo clippy --workspace --all-targets` and `cargo test --workspace` with PostgreSQL,
   plus the feature, docs, skill and Docker E2E checks. Record the red/green regression evidence and any blocked
