@@ -33,7 +33,7 @@
   Verify: `cargo test -p cicada-app --features tui,sqlite` and the CLI reference check with CICADA_UPDATE_CLI=true,
   then without it. Preserve other fields' rendering and existing command defaults.
 
-- [ ] 5. ADR, breaking release and handoff. Reconcile ADR 0048/index with the final implementation. Apply 0.19.0
+- [x] 5. ADR, breaking release and handoff. Reconcile ADR 0048/index with the final implementation. Apply 0.19.0
   (or the next breaking minor if main advanced) through the normal Cargo/lock/skill/OpenAPI version steps and add
   the changelog. Write docs-handoff.md with operations' metadata/stable-id limits, App setting and HTTP exclusions,
   architecture's schema/node changes, upgrading's public-field break and old-binary reopen/rollback restriction,

@@ -19,10 +19,10 @@ and labels are useful for display and must not silently become an identity or au
   API address, free-form label map or remote-worker row is added.
 - NodeConfig has an optional label, default None. A present value is nonblank after trimming, NUL-free and at most
   200 Unicode scalar values. Valid text is kept verbatim. Existing configuration validation reports bad labels.
-- At start, after initialization and before background tasks spawn, capture the OS hostname with whoami 2 and the
-  core version. Failed or non-UTF-8 lookup, blank, NUL or more than 200 characters becomes no hostname, with one
-  debug diagnostic. Do not truncate, use a shell/environment fallback or add a hostname override. Failure does not
-  prevent start. Captured details are fixed for that system's life.
+- At start, after initialization and before background tasks spawn, capture the OS hostname with whoami 2 (only its
+  `std` feature) and the core version. Failed or non-UTF-8 lookup, blank, NUL or more than 200 characters becomes no
+  hostname, with one debug diagnostic. Do not truncate, use a shell/environment fallback or add a hostname override.
+  Failure does not prevent start. Captured details are fixed for that system's life.
 - Every heartbeat carries the captured details through a private NodeDetails argument and replaces the row's three
   metadata fields, including absent values. Store time, started_at preservation, ten-second heartbeat, health,
   expiry and clean-stop rules stay as before. Start still schedules rather than awaits the first heartbeat write.

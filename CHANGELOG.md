@@ -7,6 +7,49 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.19.0 — unreleased
+
+Node details (ADR 0048): each node row says which machine wrote it, with which Cicada version, under which label.
+A breaking Rust API release, as public structs gain fields; the HTTP fields are optional. The store schema goes to
+version 7 with an additive migration: running 0.18 nodes keep working, but cannot restart once a 0.19 node has
+migrated the store. No guarantee, actor contract or contract hash changes.
+
+### Added
+
+- `NodeConfig::label: Option<String>`, default `None`: a free text shown with the node, such as the application and
+  its version. A present label is not blank, has no NUL and at most 200 characters (`limits::MAX_ID_LENGTH`), and is
+  kept as given, outer spaces included; a bad one is a `StartProblem` at `initialize` and `start`.
+- A started node captures its OS host name once (through `whoami` 2), the version of the `cicada` crate and its label,
+  and writes them with every heartbeat of its row, replacing all three, absent ones included. A host name the lookup
+  cannot give, or one that is blank, holds NUL or is longer than 200 characters, is left out with a debug diagnostic
+  that does not show it; the node still starts. `initialize`, `run_due_turns` and a worker over HTTP add no row.
+- `NodeInfo` and `NodeView` gain `hostname`, `cicada_version` and `label`; `GET /nodes` and `GET /nodes/{node}` serve
+  them as `hostname`, `cicadaVersion` and `label`, left out when absent. A client of this version reads an older
+  server's nodes with the fields as `None` (an explicit `null` too); older clients ignore them.
+- `cicada-app`: `--node-label` and `CICADA_NODE_LABEL` for `serve` and a worker on the store, with the precedence flag,
+  variable, host `NodeConfig`, none. The variable is read as given: empty is unset, blank is a usage error (exit code
+  2), as is a bad flag; a bad label of the host fails the start (exit code 1). A worker over HTTP refuses the flag, as
+  it has no node row, and reads neither the variable nor the host's label.
+- Node tables show `HOSTNAME` after `ID`; `-o wide` adds `VERSION` and `LABEL` after `HOSTED`, and the TUI's nodes
+  screen does the same. Missing values show `-`. In table and TUI cells, newline, carriage return and tab show as `\n`,
+  `\r` and `\t` and other control characters as `\u{hex}`; JSON and YAML keep the text.
+
+### Changed (breaking)
+
+- `NodeConfig`, `NodeInfo` and `NodeView` have new public fields: a struct literal without `..NodeConfig::default()`
+  (or the like), or an exhaustive destructuring, no longer compiles.
+- Store schema version 7 adds the nullable columns `hostname`, `cicada_version` and `label` to `nodes` on SQLite and
+  PostgreSQL. 0.18 nodes that are already running keep reading and writing their rows (their inserts have no details,
+  their updates leave another writer's details in place); a 0.18 binary refuses to open the migrated store, so an old
+  node cannot restart or roll back. Replace the old nodes during the rollout.
+
+### Upgrading
+
+- The details are display only. They do not make an id unique or authenticated: nodes that share an id share a row,
+  the last writer's details win and a 0.18 writer can leave stale ones. Choose a stable id per node with
+  `CICADA_NODE_ID` where an id should survive a restart, and keep it unique among live nodes. The host name can
+  identify a machine or container; the API's existing access control covers it.
+
 ## 0.18.12 — 2026-11-15
 
 Conformance fixtures for other implementations. Existing APIs, wire formats, contract hashes, store schema and
