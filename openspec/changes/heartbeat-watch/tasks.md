@@ -21,7 +21,7 @@
   exports/rustdoc table, and regenerate the new reference with CICADA_UPDATE_CONTRACTS=true. Verify all existing
   contract hashes remain unchanged, targeted fault/contract tests pass, and any renamed test has no protected docs
   reference (otherwise name it as blocking in the handoff).
-- [ ] 4. Add the compiled `examples/src/heartbeat.rs` worked example and its examples/src/lib.rs module: a 25-hour
+- [x] 4. Add the compiled `examples/src/heartbeat.rs` worked example and its examples/src/lib.rs module: a 25-hour
   import watch with a synthetic initial Beat, ongoing Beats, one silence alarm and later recovery. Test on paused
   time using TestActors. Add its source-file route to skills/cicada/SKILL.md using the existing ready-made-actors route;
   do not link a future guide anchor. Run the example tests, examples doctests, docs test and skill test.
