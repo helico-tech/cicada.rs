@@ -19,7 +19,7 @@
 
 ## Finishing checks
 
-- [ ] 3. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
+- [x] 3. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
   `openspec validate pg-close-test-flake --strict`. PostgreSQL must be running with CICADA_PG_URL set; a skipped
   regression test does not verify this fix. Run a second full workspace pass with PostgreSQL for the load-sensitive
   regression, recording both results and any unavailable checks. Inspect the final diff to confirm all temporary
@@ -44,3 +44,7 @@
 - Task 2. Version 0.18.8 in `Cargo.toml`, `Cargo.lock`, the skill's metadata and `docs/openapi.json`; changelog entry
   under `## 0.18.8 — unreleased`; `docs-handoff.md` with no user prose and Blocking: none. `--test docs` 11 passed,
   `--test skill` 8 passed; `scripts/status.py` shows this change first, before `local-push-gate`, problems: none.
+- Task 3. `cargo fmt --all --check` clean; `cargo clippy --workspace --all-targets -- -D warnings` clean; `openspec
+  validate pg-close-test-flake --strict` valid; `cargo test --workspace` with `CICADA_PG_URL` set, twice: 2905 passed,
+  0 failed each time, the PostgreSQL test ran in both. `git diff main` touches no production code; both teardown legs
+  remain.

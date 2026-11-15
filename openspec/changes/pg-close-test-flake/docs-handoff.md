@@ -28,4 +28,10 @@ None. Every doctest, link, guarantee row and skill route passes without prose ed
 
 ## Status
 
-Filled in by the finishing checks below.
+Checks run on the code branch, PostgreSQL on port 55432 with `CICADA_PG_URL` set: two temporary mutations of close (a
+`tokio::spawn` after the flag, a `Drop` guard spawning through `Handle::try_current()`) each failed the test, then
+were reverted; the PostgreSQL test 20 times in a row (20 passed); both twins together (2 passed); `--test docs` (11
+passed) and `--test skill` (8 passed); `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D
+warnings` (clean); `openspec validate pg-close-test-flake --strict` (valid); `cargo test --workspace` twice (2905
+passed, 0 failed each time). The final diff touches no production code. Repeated passes support the structural fix;
+they do not promise the test can never flake. Nothing is written in docs-owned files, and no owner fix is integrated.
