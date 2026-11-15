@@ -7,7 +7,8 @@
     gate.py recover                        clear an abandoned run once its processes are gone
     gate.py install-hook                   install the pre-push gate (the owner, once per repository)
     gate.py pre-push REMOTE URL            the hook: refuse main and version-tag updates without evidence
-    gate.py release vX.Y.Z [REV]           publish a checked release (only on the owner's yes, in the build loop)
+    gate.py release vX.Y.Z [REV]           publish a checked release with its skill and fixture archives (only on the
+                                           owner's yes, in the build loop; ADRs 0041 and 0047)
 
 The policy is scripts/gate-policy.json, read from the checked commit's Git objects, and must be run by that commit's
 own gate.py. Records live in Git's common directory under cicada-gate/, so every worktree shares them. This is local
@@ -1097,14 +1098,30 @@ class Release:
         self.save(tag_object=obj)
         return obj
 
-    def package(self, path: Path, commit: str, obj: str) -> Path:
-        name = f"cicada-skill-{self.tag}.tar.gz"
+    def archives(self) -> list[tuple[str, str, str, dict[str, str | None]]]:
+        """Each release archive: what it is, its packager, its file name, and its members, each with the path at the
+        tag whose bytes it holds (None for a folder, and for SOURCE.json, which is checked on its own)."""
+        fixtures = ("canonical.json", "contracts.json", "leases.json", "status.json")
+        return [
+            ("skill", "scripts/package-skill.py", f"cicada-skill-{self.tag}.tar.gz", {
+                "cicada": None, "cicada/scripts": None, "cicada/SOURCE.json": None,
+                "cicada/SKILL.md": "skills/cicada/SKILL.md",
+                "cicada/scripts/cicada_source.py": "skills/cicada/scripts/cicada_source.py"}),
+            ("fixtures", "scripts/package-fixtures.py", f"cicada-fixtures-{self.tag}.tar.gz", {
+                "cicada-fixtures": None, "cicada-fixtures/SOURCE.json": None,
+                **{f"cicada-fixtures/{name}": f"fixtures/{name}" for name in fixtures}}),
+        ]
+
+    def build_archive(self, path: Path, commit: str, obj: str, what: str, script: str, name: str,
+                      members: dict[str, str | None]) -> bytes:
+        """The archive its packager writes in the owned worktree, checked against the tag: exactly these members,
+        each of its type, the files with the bytes of their blobs at the commit, and SOURCE.json naming the tag."""
         work = Path(tempfile.mkdtemp(prefix="package.", dir=self.repo.state))
         try:
-            done = supervised(self.sess, ["python3", "-I", "-B", "scripts/package-skill.py", self.tag, str(work)],
+            done = supervised(self.sess, ["python3", "-I", "-B", script, self.tag, str(work)],
                               path, controlled_env(), capture=True)
             if done.returncode:
-                raise GateError(f"packaging the skill failed: {done.stderr.decode(errors='replace').strip()}")
+                raise GateError(f"packaging the {what} failed: {done.stderr.decode(errors='replace').strip()}")
             if self.local_tag() != obj:
                 raise GateError(f"the local tag {self.tag} changed while packaging")
             data = (work / name).read_bytes()
@@ -1112,28 +1129,40 @@ class Release:
             for item in work.iterdir():
                 item.unlink()
             work.rmdir()
+        source_name = next(m for m in members if m.endswith("/SOURCE.json"))
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
-            members = {m.name: m for m in archive.getmembers()}
-
-            def read(member: str) -> bytes:
-                if member not in members or not members[member].isfile():
-                    raise GateError(f"the skill archive has no {member}")
-                return archive.extractfile(members[member]).read()
-
-            source = json.loads(read("cicada/SOURCE.json"))
+            found = archive.getmembers()
+            names = [m.name for m in found]
+            if sorted(names) != sorted(members) or len(set(names)) != len(names):
+                raise GateError(f"the {what} archive holds {names}, not {sorted(members)}")
+            for member in found:
+                folder = members[member.name] is None and member.name != source_name
+                if (member.isdir(), member.isfile()) != (folder, not folder):
+                    raise GateError(f"{member.name} in the {what} archive has the wrong type")
+            read = lambda member: archive.extractfile(member).read()
+            source = json.loads(read(source_name))
             if (source.get("tag"), source.get("commit"), source.get("version")) != (self.tag, commit, self.tag[1:]):
-                raise GateError(f"the skill archive names {source}, not {self.tag} at {commit}")
-            for inside, repo_path in (("cicada/SKILL.md", "skills/cicada/SKILL.md"),
-                                      ("cicada/scripts/cicada_source.py", "skills/cicada/scripts/cicada_source.py")):
-                if read(inside) != self.repo.show(self.repo.blob(commit, repo_path) or "missing"):
+                raise GateError(f"the {what} archive names {source}, not {self.tag} at {commit}")
+            for inside, repo_path in members.items():
+                if repo_path and read(inside) != self.repo.show(self.repo.blob(commit, repo_path) or "missing"):
                     raise GateError(f"{inside} in the archive differs from {repo_path} at {commit}")
-        digest = sha256(data)
-        if self.state.get("asset_sha256") not in (None, digest):
-            raise GateError(f"the skill archive now hashes to {digest}, not {self.state['asset_sha256']}")
-        target = self.dir / name
-        atomic_write(target, data)
-        self.save(asset_sha256=digest)
-        return target
+        return data
+
+    def package(self, path: Path, commit: str, obj: str) -> list[Path]:
+        """Both archives, checked; their digests are saved together once both are, and must match on a retry."""
+        built = {name: self.build_archive(path, commit, obj, what, script, name, members)
+                 for what, script, name, members in self.archives()}
+        digests = {name: sha256(data) for name, data in built.items()}
+        saved = self.state.get("assets")
+        if saved is not None and saved != digests:
+            raise GateError(f"the release archives now hash to {digests}, not the saved {saved}; nothing is replaced")
+        targets = []
+        for name, data in built.items():
+            atomic_write(self.dir / name, data)
+            targets.append(self.dir / name)
+        if saved is None:
+            self.save(assets=digests)
+        return targets
 
     def push_tag(self, obj: str) -> None:
         remote = self.remote(f"refs/tags/{self.tag}")
@@ -1174,21 +1203,23 @@ class Release:
         done = self.gh("api", f"repos/{slug}/releases/assets/{asset['id']}", "-H", "Accept: application/octet-stream")
         return sha256(done.stdout) == digest
 
-    def verify_draft(self, slug: str, found: dict, notes: str, asset: Path) -> bool:
-        """True when the draft matches with its asset, False when only the asset is missing; GateError otherwise."""
+    def verify_draft(self, slug: str, found: dict, notes: str) -> list[str]:
+        """The names of the saved assets the draft still lacks, when everything it holds matches; GateError when it
+        differs in tag, title or notes, or holds an asset of another name, one twice or one with other bytes."""
         normal = lambda text: (text or "").replace("\r\n", "\n").strip("\n")
         if found.get("tag_name") != self.tag or found.get("name") != self.tag or normal(found.get("body")) != normal(notes):
             raise GateError(f"draft release {found.get('id')} differs from {self.tag}'s tag, title or notes; left as is")
+        expected: dict = self.state["assets"]
         assets = found.get("assets") or []
-        if any(a.get("name") != asset.name for a in assets) or len(assets) > 1:
-            raise GateError(f"draft release {found.get('id')} holds other assets; left as is")
-        if not assets:
-            return False
-        if not self.asset_matches(slug, assets[0], self.state["asset_sha256"]):
-            raise GateError(f"draft release {found.get('id')} holds another {asset.name}; left as is")
-        return True
+        names = [a.get("name") for a in assets]
+        if any(name not in expected for name in names) or len(set(names)) != len(names):
+            raise GateError(f"draft release {found.get('id')} holds other or repeated assets {names}; left as is")
+        for asset in assets:
+            if not self.asset_matches(slug, asset, expected[asset["name"]]):
+                raise GateError(f"draft release {found.get('id')} holds another {asset['name']}; left as is")
+        return [name for name in expected if name not in names]
 
-    def publish_github(self, obj: str, notes_file: Path, notes: str, asset: Path) -> None:
+    def publish_github(self, obj: str, notes_file: Path, notes: str, assets: list[Path]) -> None:
         slug = github_repo(self.repo)
         found = self.one_release(slug)
         if found and not found.get("draft"):
@@ -1198,18 +1229,23 @@ class Release:
                 return
             raise GateError(f"a published GitHub release {found.get('id')} matches {self.tag} for another tag")
         if found is None:
-            created = self.gh("release", "create", self.tag, str(asset), "--draft", "--verify-tag", "--title",
+            created = self.gh("release", "create", self.tag, *map(str, assets), "--draft", "--verify-tag", "--title",
                               self.tag, "--notes-file", str(notes_file), "--repo", slug, check=False)
             found = self.one_release(slug)  # also after a failure: the draft may exist anyway
             if found is None:
                 raise GateError(f"creating the draft failed: {created.stderr.decode().strip()}")
             if found.get("draft") is not True:
                 raise GateError(f"release {found.get('id')} is not a draft after creation; inspect it by hand")
-        if not self.verify_draft(slug, found, notes, asset):
+        for asset in assets:
+            if asset.name not in self.verify_draft(slug, found, notes):
+                continue
             self.gh("release", "upload", self.tag, str(asset), "--repo", slug, check=False)
-            found = self.one_release(slug)
-            if found is None or found.get("draft") is not True or not self.verify_draft(slug, found, notes, asset):
-                raise GateError("the draft has no matching skill archive after the upload")
+            found = self.one_release(slug)  # read again, also after a failure: the upload may have happened anyway
+            if found is None or found.get("draft") is not True:
+                raise GateError(f"the draft of {self.tag} is gone or no longer a draft after an upload; inspect it")
+        missing = self.verify_draft(slug, found, notes)
+        if missing:
+            raise GateError(f"the draft has no matching {', '.join(missing)} after the upload")
         self.save(stage="draft-verified")
         if self.remote(f"refs/tags/{self.tag}") != obj:
             raise GateError(f"origin's tag {self.tag} changed before publication")
@@ -1224,6 +1260,10 @@ class Release:
 
     def run(self, rev: str | None) -> None:
         commit = self.pin(rev)
+        if "asset_sha256" in self.state:
+            raise GateError(f"{self.state_path} saves one skill digest, as the release driver before the fixture "
+                            f"archive did; resume {self.tag} with the scripts/gate.py of its pinned commit {commit}, "
+                            "which wrote it. This driver does not convert that state")
         self.say(f"pinned to {commit}")
         ensure_runner(self.repo, commit)
         self.check_local_tag(commit)
@@ -1250,10 +1290,10 @@ class Release:
         remote = self.remote(f"refs/tags/{self.tag}")
         if remote is not None and remote != obj:
             raise GateError(f"origin has tag {self.tag} as {remote}, not {obj}; it is never replaced")
-        asset = self.package(path, commit, obj)
+        assets = self.package(path, commit, obj)
         self.push_tag(obj)
         self.save(stage="tag-pushed")
-        self.publish_github(obj, notes_file, notes, asset)
+        self.publish_github(obj, notes_file, notes, assets)
 
 
 # --- Command line -------------------------------------------------------------------------------------------------

@@ -6,9 +6,12 @@ Cicada tag, publishes anything or moves a tag.
 
 from __future__ import annotations
 
+import gzip
+import hashlib
 import importlib.util
 import io
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -157,6 +160,37 @@ class Packaging(unittest.TestCase):
     def test_a_missing_or_malformed_tag_is_refused(self):
         self.assert_refused("v0.17.2", "there is no tag v0.17.2")
         self.assert_refused("main", "is not a version tag")
+
+    def test_the_archive_bytes_are_those_of_the_skill_packager_before_the_shared_helpers(self):
+        # A fully fixed repository: contents, names and dates, so its commit and archive never vary.
+        fixed = self.dir / "fixed"
+        (fixed / "skills" / "cicada" / "scripts").mkdir(parents=True)
+        env = {"GIT_AUTHOR_DATE": "2026-01-01T00:00:00Z", "GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z",
+               "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "PATH": os.environ["PATH"]}
+        run = lambda *args: subprocess.run([*GIT, *args], cwd=fixed, env=env, check=True, capture_output=True,
+                                           text=True).stdout.strip()
+        run("init", "-q")
+        (fixed / "Cargo.toml").write_text(
+            f'[workspace]\nmembers = []\n\n[workspace.package]\nversion = "1.2.3"\nrepository = "{REPOSITORY}"\n')
+        (fixed / "skills/cicada/SKILL.md").write_text("---\nname: cicada\nmetadata:\n  cicada-version: 1.2.3\n---\n")
+        (fixed / "skills/cicada/scripts/cicada_source.py").write_text("print('resolver')\n")
+        run("add", "-A")
+        run("commit", "-q", "-m", "fixed")
+        run("tag", "v1.2.3")
+        self.assertEqual(run("rev-parse", "HEAD"), "a90e84e1d7e95cacb0e562a791811303e09f694a")
+        done = subprocess.run([sys.executable, "-I", "-B", str(SCRIPT), "v1.2.3", str(self.dir / "out")], cwd=fixed,
+                              capture_output=True, text=True, timeout=60)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        data = (self.dir / "out" / "cicada-skill-v1.2.3.tar.gz").read_bytes()
+        tar = gzip.decompress(data)
+        # The tar stream the packager wrote before it shared its helpers with the fixture packager.
+        self.assertEqual(hashlib.sha256(tar).hexdigest(), "a7aefd791a9020aeed575c387c396f8578ce44da892501a6fe32df9a7c27e7f6")
+        # The same gzip framing: no name, time 0, level 9; compressing the stream again gives the same bytes.
+        self.assertEqual(data[:10], bytes.fromhex("1f8b0800000000000" + "2ff"))
+        again = io.BytesIO()
+        with gzip.GzipFile(filename="", mode="wb", fileobj=again, mtime=0, compresslevel=9) as zipped:
+            zipped.write(tar)
+        self.assertEqual(again.getvalue(), data)
 
     def test_an_unsafe_or_unexpected_member_is_refused(self):
         module = load_module()

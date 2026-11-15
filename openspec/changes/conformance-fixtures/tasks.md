@@ -25,7 +25,7 @@
   across all four files. Verify: `cargo test -p cicada-client --lib turns`, `cargo test -p cicada-client --test
   turn_source`, `cargo test -p cicada-axum --test openapi`, and `cargo test -p cicada --test fixtures`.
 
-- [ ] 4. Package and publish the second asset. Add `scripts/package-fixtures.py`, sharing deterministic archive
+- [x] 4. Package and publish the second asset. Add `scripts/package-fixtures.py`, sharing deterministic archive
   helpers with `package-skill.py` through an explicitly loaded helper module. Preserve the skill CLI and bytes.
   Read only exact tag blobs; validate version, fixture formats, regular modes and exact membership, and verify
   read-back. Extend `gate.py` to verify both archives before tag push, atomically retain the complete digest map,

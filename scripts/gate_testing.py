@@ -225,8 +225,13 @@ elif args[:2] == ["release", "create"]:
     if remote.returncode:
         sys.exit("tag does not exist remotely (--verify-tag)")
     state["next_id"] = state.get("next_id", 100) + 1
+    files = []
+    for arg in args[3:]:
+        if arg.startswith("--"):
+            break
+        files.append(arg)
     releases.append({"id": state["next_id"], "tag_name": tag, "name": opt("--title"), "draft": True,
-                     "body": open(opt("--notes-file")).read(), "assets": [asset(args[3])]})
+                     "body": open(opt("--notes-file")).read(), "assets": [asset(f) for f in files]})
     save()
     fail("create-after")
 elif args[:2] == ["release", "upload"]:
@@ -238,6 +243,7 @@ elif args[:2] == ["release", "upload"]:
         sys.exit("asset exists (no --clobber)")
     target["assets"].append(asset(args[3]))
     save()
+    fail("upload-after")
 elif args[:3] == ["api", "-X", "PATCH"]:
     fail("publish")
     rid = int(args[3].rsplit("/", 1)[1])
