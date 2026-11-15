@@ -10,7 +10,9 @@ use std::time::Duration;
 
 use cicada::observer::{ObservedTurn, Sends, TurnObserver, TurnStart};
 use cicada::prelude::*;
-use cicada::runtime::{NodeConfig, RetryResult};
+use cicada::runtime::{
+    CompleteTurnResult, LeaseTurnsResult, NodeConfig, RetryResult, StateReport, TurnEffects, TurnReport, TurnSend,
+};
 use cicada::store::{Message, OutcomeStatus};
 use cicada::time::{self, MAX_INSTANT, Timestamp};
 use cicada::{Failed, FailureCause, OpError, WatchTarget};
@@ -187,6 +189,47 @@ fn alive(settings: &HeartbeatWatchState, at: Timestamp, armed: &str) -> Heartbea
     state.last_beat_at = Some(at);
     state.armed = Some(MessageId::new(armed).unwrap());
     state
+}
+
+// A heartbeat watch has fixed settings and validated round state.
+
+/// `PUT /actors/{address}` with `state` through `api`; the status code.
+async fn put_state(api: &axum::Router, address: &str, state: &Value) -> u16 {
+    use tower::ServiceExt;
+    let request = axum::http::Request::put(format!("/actors/{address}"))
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(json!({ "state": state }).to_string()))
+        .unwrap();
+    api.clone().oneshot(request).await.unwrap().status().as_u16()
+}
+
+/// Scenario: Schema and decoder boundaries. A node that does not host the watch checks a create only against the
+/// published schema: it takes an alive state without `armed`, which has the right shape, and refuses a wrong shape.
+/// The hosting node's turn cannot decode that state and fails with the cause `state`, with no effects.
+#[tokio::test(start_paused = true)]
+async fn a_shape_valid_but_inconsistent_state_accepted_by_a_node_without_the_watch_fails_its_turn_with_cause_state() {
+    let test = node().await;
+    let api = cicada_axum::actor_api(ActorSystem::builder(test.store().clone()).build());
+    let mut state = serde_json::to_value(settings(10)).unwrap();
+    state["status"] = json!("alive");
+    state["lastBeatAt"] = json!(time::format_instant(test.now()));
+    assert!(serde_json::from_value::<HeartbeatWatchState>(state.clone()).is_err(), "the decoder refuses it");
+    let mut shape = state.clone();
+    shape["status"] = json!("asleep");
+    assert_eq!(put_state(&api, "cicada.heartbeat-watch/shape", &shape).await, 422, "the schema checks the shape");
+    assert!(!test.exists(&HeartbeatWatch::named("shape")).await);
+
+    assert_eq!(put_state(&api, "cicada.heartbeat-watch/import", &state).await, 201, "the schema takes it");
+    let version = test.version(&hb()).await;
+    for message in [HeartbeatWatchMsg::Beat, HeartbeatWatchMsg::Rearm, HeartbeatWatchMsg::Expire] {
+        let m = send(&test, message.clone()).await;
+        assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Failed), "{message:?}");
+    }
+    let causes: Vec<_> = failed(&test).await.into_iter().map(|f| f.cause).collect();
+    assert_eq!(causes, [FailureCause::State; 3]);
+    assert_eq!((test.state_json(&hb()).await, test.version(&hb()).await), (Some(state), version), "no state change");
+    assert!(test.pending(&hb()).await.is_empty(), "no timer armed");
+    assert!(test.pending(&worker("a")).await.is_empty(), "no alarm");
 }
 
 // Starting.
@@ -616,6 +659,46 @@ async fn a_watch_whose_target_is_itself_refuses_beat_and_rearm_and_keeps_its_no_
     let refused: Vec<_> = told(&test).await.into_iter().map(|f| (f.message_type, f.cause)).collect();
     assert_eq!(refused, [("Beat".to_owned(), FailureCause::Refused), ("Rearm".to_owned(), FailureCause::Refused)]);
     assert!(told(&test).await.iter().all(|f| f.error.contains("to itself")));
+}
+
+/// Scenario: Self target and no-op priority, an eligible timer. A leased turn of the watch, completed by an executor,
+/// leaves an alive state whose target is the watch itself and sends the `Expire` that `armed` names, with the watch as
+/// its sender. The real actor refuses that timer for good: state, version and mailboxes stay as they were.
+#[tokio::test(start_paused = true)]
+async fn an_eligible_timer_of_a_watch_whose_target_is_itself_is_refused_with_no_effects() {
+    let test = node().await;
+    test.create(&hb(), &settings(10)).await;
+    let poke = test.send(&hb(), HeartbeatWatchMsg::Rearm).await;
+    let hash = cicada::actor::contract_of::<HeartbeatWatchActor>().unwrap().hash().to_owned();
+    let types = std::collections::BTreeMap::from([(cicada::TypeName::parse(HeartbeatWatch::TYPE).unwrap(), hash)]);
+    let owner = cicada::store::NodeId::new("executor").unwrap();
+    let LeaseTurnsResult::Leased(mut leases) = test.system().lease_turns(&owner, &types, 1).await.unwrap() else {
+        panic!("not leased")
+    };
+    let lease = leases.pop().expect("the lease of the watch");
+    assert_eq!(lease.message.id, poke.id);
+
+    let timer = MessageId::new("own-timer").unwrap();
+    let own = HeartbeatWatchState::new(secs(10), &hb(), HeartbeatWatchMsg::Beat).unwrap();
+    let supplied = alive(&own, time::sub(test.now(), secs(20)), timer.as_str());
+    let mut send = TurnSend::new(addr(&hb()), "Expire", json!({}));
+    send.id = timer.clone();
+    let effects = TurnEffects { sends: vec![send], ..TurnEffects::default() };
+    let report = TurnReport::Returned { state: StateReport::Set(serde_json::to_value(&supplied).unwrap()), effects };
+    let completed = test.system().complete_turn(&lease.actor, lease.epoch, &poke.id, report).await.unwrap();
+    assert!(matches!(completed, CompleteTurnResult::Completed(_)), "{completed:?}");
+    let pending = armed(&test).await;
+    assert_eq!((pending.id.clone(), pending.from.clone()), (timer.clone(), Some(addr(&hb()))), "an eligible timer");
+    let version = test.version(&hb()).await;
+
+    test.run_until_idle().await;
+    let refused = failed(&test).await;
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert_eq!((refused[0].message_id.clone(), refused[0].cause), (timer, FailureCause::Refused));
+    assert!(refused[0].error.contains("to itself"), "{}", refused[0].error);
+    assert_eq!((held(&test).await, test.version(&hb()).await), (supplied, version), "nothing committed");
+    assert!(test.pending(&hb()).await.is_empty(), "no timer armed again, nothing sent to itself");
+    assert!(test.pending(&worker("a")).await.is_empty());
 }
 
 /// Scenario: Target checks and retry policies: an unregistered type or a message the target does not take refuses the

@@ -16,7 +16,8 @@ of each message states the behaviour below.
   their hashes are unchanged.
 - Worked example: `examples/src/heartbeat.rs` (Example 19), tested in `examples/tests/heartbeat.rs`; routed in
   `skills/cicada/SKILL.md` under Ready-made actors.
-- Tests: `crates/cicada-actors/tests/heartbeat_watch.rs` (25, virtual time), two in
+- Tests: `crates/cicada-actors/tests/heartbeat_watch.rs` (27, virtual time; one creates through the HTTP door of a
+  node without the watch, one completes a leased turn), two in
   `crates/cicada-actors/tests/store_failure.rs` (real-time SQLite registry fault), state and message samples in
   `crates/cicada-actors/tests/wire_formats.rs`, decoder unit tests in `crates/cicada-actors/src/heartbeat_watch.rs`.
 - `wire_formats.rs` renamed `the_contracts_of_the_eight_types_match_their_references` to
@@ -118,3 +119,7 @@ branch, rebased on `baa4568` (the docs commit on `main`), PostgreSQL on port 554
 `cargo test --workspace` (2944 passed, 0 failed); `python3 scripts/gate.py checks --scope full` (exit 0, 3093 test
 results passed, 0 failed, PostgreSQL included) and `--scope e2e` (exit 0, the Docker suite passed). Those gate
 commands record no evidence; `gate.py run --e2e` was not run, as the build caller asked.
+
+Review round 1 added two scenario tests (schema and decoder boundaries; an eligible self-target timer); no behaviour
+or user-visible text changed. After it: `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -- -D
+warnings` (clean), `cargo test -p cicada-actors` with PostgreSQL (516 passed, 0 failed).
