@@ -165,6 +165,8 @@ def group_gone(pgid: int, timeout=10.0) -> bool:
             os.killpg(pgid, 0)
         except ProcessLookupError:
             return True
+        except PermissionError:
+            pass  # macOS answers EPERM while the group holds only a zombie nobody has reaped yet
         time.sleep(0.05)
     return False
 

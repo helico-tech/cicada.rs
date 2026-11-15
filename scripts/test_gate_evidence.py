@@ -383,7 +383,7 @@ class LockTests(unittest.TestCase):
     def test_a_killed_parent_leaves_its_child_holding_the_lock_and_an_abandoned_marker(self):
         sandbox, flag = self.slow_sandbox()
         parent = sandbox.spawn_gate("run")
-        child = sandbox.wait_for_child()["child"]
+        child = sandbox.wait_for_child(argv_contains="import os, sys, time")["child"]
         parent.kill()
         parent.wait()
         self.assertTrue(gate.group_alive(child["pgid"]))
@@ -407,7 +407,7 @@ class LockTests(unittest.TestCase):
     def test_term_stops_the_command_group_and_records_no_pass(self):
         sandbox, flag = self.slow_sandbox()
         parent = sandbox.spawn_gate("run")
-        child = sandbox.wait_for_child()["child"]
+        child = sandbox.wait_for_child(argv_contains="import os, sys, time")["child"]
         parent.send_signal(signal.SIGTERM)
         parent.wait(timeout=30)
         self.assertEqual(parent.returncode, 130, sandbox.spawned_log())
@@ -420,7 +420,7 @@ class LockTests(unittest.TestCase):
     def test_recover_stops_an_identified_group_that_released_the_lock(self):
         sandbox, flag = self.slow_sandbox("orphan")
         parent = sandbox.spawn_gate("run")
-        child = sandbox.wait_for_child()["child"]
+        child = sandbox.wait_for_child(argv_contains="import os, sys, time")["child"]
         time.sleep(0.3)
         parent.kill()
         parent.wait()
@@ -433,7 +433,7 @@ class LockTests(unittest.TestCase):
     def test_recover_refuses_while_a_process_works_in_the_owned_worktree(self):
         sandbox, flag = self.slow_sandbox()
         parent = sandbox.spawn_gate("run")
-        child = sandbox.wait_for_child()["child"]
+        child = sandbox.wait_for_child(argv_contains="import os, sys, time")["child"]
         parent.kill()
         parent.wait()
         os.killpg(child["pgid"], signal.SIGKILL)
