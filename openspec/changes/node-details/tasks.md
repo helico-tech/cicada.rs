@@ -41,7 +41,7 @@
   No handwritten prose edits, no new guide route or G/S row. Verify examples doctests, docs and skill tests; report
   any unexpected protected-prose failure as blocked rather than editing it.
 
-- [ ] 6. Finishing. Run `openspec validate node-details --strict`. Commit the final tree and run
+- [x] 6. Finishing. Run `openspec validate node-details --strict`. Commit the final tree and run
   `python3 scripts/gate.py run --e2e`, then report `python3 scripts/gate.py status`. Its full policy includes
   `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` with PostgreSQL,
   independent feature builds, script/docs/skill tests and Docker E2E. Record tested hostname platforms and migration
