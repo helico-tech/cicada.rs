@@ -1,6 +1,6 @@
 ## Implementation
 
-- [ ] 1. Add the heartbeat module's public ref, unit actor, messages, status, state and InvalidHeartbeat error, with
+- [x] 1. Add the heartbeat module's public ref, unit actor, messages, status, state and InvalidHeartbeat error, with
   dense rustdoc, typed constructor and RawState conversion. Implement defaults and cross-field/duration/deadline
   validation exactly as designed, retaining unknown-field tolerance and ordinary core depth checks. Test minimal JSON,
   all invalid status/field combinations, zero/MAX_DELAY bounds, timestamp addition/MAX_INSTANT, constructor encoding

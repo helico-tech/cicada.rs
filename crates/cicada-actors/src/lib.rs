@@ -10,6 +10,7 @@
 //! | [`RateLimiterActor`] | `cicada.rate-limiter` | Sends each submitted message to its target at the next free slot of a rate |
 //! | [`DebouncerActor`] | `cicada.debouncer` | Keeps the latest submission of a burst and sends it once the burst is quiet |
 //! | [`BatcherActor`] | `cicada.batcher` | Collects items and sends them to its target as one batch on count or time |
+//! | [`HeartbeatWatchActor`] | `cicada.heartbeat-watch` | Sends a stored alarm once when no `Beat` came within the allowed silence |
 //! | [`EventActor`] | `cicada.event` | Creates and starts one run of each subscribed flow for each publication, in one commit |
 //! | [`FlowActor`] | chosen by the [`Flow`] | Runs a multi-step job written as async code, one step or durable sleep per turn, replaying saved results |
 //! | [`StoredMessage`] | | A message an actor keeps to send later: a type name and a JSON payload, built from a typed ref |
@@ -24,6 +25,7 @@ pub mod debouncer;
 mod error;
 pub mod event;
 pub mod flow;
+pub mod heartbeat_watch;
 pub mod rate_limiter;
 mod schedule;
 pub mod scheduler;
@@ -41,6 +43,9 @@ pub use event::{Event, EventActor, EventMsg, EventState};
 pub use flow::{
     Cleanup, CreateKind, Flow, FlowActor, FlowMsg, FlowReply, FlowRun, FlowState, FlowStatus, JournalEntry, MainReply,
     ReplyTo, Request, Step, Target, WaitMode, WaitOutcome, Waited,
+};
+pub use heartbeat_watch::{
+    HeartbeatStatus, HeartbeatWatch, HeartbeatWatchActor, HeartbeatWatchMsg, HeartbeatWatchState, InvalidHeartbeat,
 };
 pub use rate_limiter::{InvalidRate, RateLimiter, RateLimiterActor, RateLimiterMsg, RateLimiterState};
 pub use schedule::{Schedule, ScheduleError};
