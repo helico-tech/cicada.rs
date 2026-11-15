@@ -25,7 +25,7 @@
   import watch with a synthetic initial Beat, ongoing Beats, one silence alarm and later recovery. Test on paused
   time using TestActors. Add its source-file route to skills/cicada/SKILL.md using the existing ready-made-actors route;
   do not link a future guide anchor. Run the example tests, examples doctests, docs test and skill test.
-- [ ] 5. Write docs-handoff.md for the actors guide, architecture row, operational recovery caveats and installation
+- [x] 5. Write docs-handoff.md for the actors guide, architecture row, operational recovery caveats and installation
   version: waiting/synthetic alive, claim-time/mailbox meaning, one committed enqueue rather than exactly-once target
   effects, no recovery notice, stale armed state after timer loss, Rearm versus Beat/retry/redrive, target checks,
   duration/depth bounds and observer headers. Supply the compiled example and proposed heading, asking docs to add

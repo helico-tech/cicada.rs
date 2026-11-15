@@ -7,6 +7,23 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.18.10 — unreleased
+
+A new ready-made actor. Existing APIs, wire formats, contract hashes, store schema and guarantees are those of 0.18.9.
+
+### Added
+
+- The heartbeat watch, `cicada.heartbeat-watch` (`HeartbeatWatchActor`, `HeartbeatWatch`, `HeartbeatWatchMsg`,
+  `HeartbeatWatchState`, `HeartbeatStatus`, `InvalidHeartbeat`): it sends a stored alarm to a fixed target once when no
+  `Beat` was handled within the allowed silence. A create leaves it `waiting`; each `Beat` sets `lastBeatAt` to its
+  store time, replaces the armed `Expire` at `lastBeatAt` plus the silence, and makes it `alive`; the due `Expire`
+  sends the alarm (watch as sender, new id, the stored retry policy, no correlation id) and makes it `silent` in one
+  commit, arming nothing more. The next `Beat` starts a new round without a recovery message. `Rearm` arms a lost or
+  failed timer again at the unchanged deadline. Only the armed timer sent by the watch counts: an early one re-arms at
+  the deadline, any other `Expire` changes nothing. Its contract is `docs/reference/contracts/cicada.heartbeat-watch.json`.
+- Example 19, `examples/src/heartbeat.rs`: a nightly import watched with 25 hours of allowed silence, a first `Beat`
+  with the create, one alert for a missed night and a silent recovery.
+
 ## 0.18.9 — 2026-11-15
 
 A tooling release: local check evidence and a local release driver replace the automatic GitHub Actions (ADR 0046).
