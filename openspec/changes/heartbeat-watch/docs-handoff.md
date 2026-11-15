@@ -111,6 +111,10 @@ None. Every doctest, link, guarantee row and skill route passes without prose ed
 ## Status
 
 Proposed text only; nothing is written in docs-owned files and no owner fix is integrated. Checks run on the code
-branch are listed in the build report and the review request; this file records the docs checks:
+branch, rebased on `baa4568` (the docs commit on `main`), PostgreSQL on port 55432 with `CICADA_PG_URL` set:
 `cargo test -p cicada-examples --doc` (29 passed), `--test docs` (11 passed), `--test skill` (8 passed),
-`cargo test -p cicada-examples --test heartbeat` (3 passed).
+`cargo test -p cicada-examples --test heartbeat` (3 passed); `cargo fmt --all --check` and
+`cargo clippy --workspace --all-targets -- -D warnings` (clean); `openspec validate heartbeat-watch --strict` (valid);
+`cargo test --workspace` (2944 passed, 0 failed); `python3 scripts/gate.py checks --scope full` (exit 0, 3093 test
+results passed, 0 failed, PostgreSQL included) and `--scope e2e` (exit 0, the Docker suite passed). Those gate
+commands record no evidence; `gate.py run --e2e` was not run, as the build caller asked.

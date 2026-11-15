@@ -36,7 +36,7 @@
 
 ## Finishing checks
 
-- [ ] 6. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
+- [x] 6. Run `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` and
   `openspec validate heartbeat-watch --strict`, with PostgreSQL where configured and skipped checks recorded.
   Follow the landed local-push-gate for exact committed-tree evidence and its full required coverage; release E2E
   and publication stay under that workflow and the owner's ordinary Land approval. Confirm only the new actor
