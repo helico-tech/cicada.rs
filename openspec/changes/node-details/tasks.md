@@ -18,7 +18,7 @@
   Verify: `cargo test -p cicada --features sqlite,testing tests::conformance`, SQLite upgrade tests, and the
   PostgreSQL conformance/upgrade tests with CICADA_PG_URL set. Record live migration evidence; an unset URL is a skip.
 
-- [ ] 3. HTTP and clients. Add optional hostname/cicadaVersion/label wire fields with defaults and omission when
+- [x] 3. HTTP and clients. Add optional hostname/cicadaVersion/label wire fields with defaults and omission when
   absent, map both node endpoints, and regenerate OpenAPI. Test fields on GET /nodes and GET /nodes/{node}, old
   responses with fields absent, null values, and unchanged flattened detail. Verify targeted node tests in
   cicada-axum and cicada-client, then `CICADA_UPDATE_OPENAPI=true cargo test -p cicada-axum --test openapi` and the

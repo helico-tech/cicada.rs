@@ -143,6 +143,9 @@ impl From<&NodeInfo> for NodeView {
             last_seen: n.last_seen,
             status: n.status,
             running_turns: n.running_turns.len(),
+            hostname: n.hostname.clone(),
+            cicada_version: n.cicada_version.clone(),
+            label: n.label.clone(),
         }
     }
 }

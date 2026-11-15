@@ -7,6 +7,7 @@ use std::time::Duration;
 use axum::Router;
 use axum::http::StatusCode;
 use cicada::api::problem_types as pt;
+use cicada::runtime::NodeConfig;
 use cicada_axum::{actor_api, actor_api_read};
 use common::*;
 use serde_json::json;
@@ -63,6 +64,34 @@ async fn nodes_lists_this_node_alive_and_a_detail_lists_its_running_turns() {
 
     assert_problem(&get(&app, "/nodes/nope").await, 404, pt::NO_SUCH_NODE);
     gates::open(&gate);
+}
+
+/// Scenario: New and old HTTP shapes.
+#[tokio::test(start_paused = true)]
+async fn both_node_routes_carry_the_details_and_leave_out_absent_ones() {
+    let config = NodeConfig { label: Some(" billing 🦀 ".into()), ..polling(Duration::from_millis(50)) };
+    let system = node_with(memory_store(), |b| b.config(config).host(CounterActor)).await;
+    let app = actor_api(system.clone());
+    let node_id = system.node_id().to_string();
+    let listed = eventually_json(&app, "/nodes", |v| !v["items"].as_array().unwrap().is_empty()).await;
+    let detail = get_json(&app, &format!("/nodes/{node_id}")).await;
+    for view in [&listed["items"][0], &detail] {
+        assert_eq!(view["label"], " billing 🦀 ");
+        assert_eq!(view["cicadaVersion"], cicada_version());
+        // The OS's host name, or none when its lookup gives none.
+        assert!(view["hostname"].is_string() || view.get("hostname").is_none(), "{view}");
+    }
+    assert_eq!(detail["turns"], json!([]), "the flattened detail keeps its turns");
+
+    // A node without a label: the field is left out, not null.
+    let (_, unlabelled) = system_and_app().await;
+    let listed = eventually_json(&unlabelled, "/nodes", |v| !v["items"].as_array().unwrap().is_empty()).await;
+    assert!(listed["items"][0].get("label").is_none(), "{listed}");
+}
+
+/// The version of the `cicada` crate, which the node reports.
+fn cicada_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
 }
 
 async fn eventually_json(app: &Router, uri: &str, ok: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {

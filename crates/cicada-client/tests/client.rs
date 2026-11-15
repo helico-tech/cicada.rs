@@ -716,6 +716,38 @@ fn zero_send_attempts_are_refused() {
     let _ = ActorClient::new("http://localhost").send_attempts(0);
 }
 
+/// Scenario: New and old HTTP shapes, on the client: a node of a newer server has its details, one of an older server
+/// none, and an explicit null reads as none.
+#[tokio::test]
+async fn node_details_are_read_when_present_and_none_when_absent_or_null() {
+    use axum::routing::get;
+    let node = |details: serde_json::Value| {
+        let mut view = json!({"id": "n1", "hosted": ["acme"], "startedAt": "2026-11-15T10:00:00Z",
+            "lastSeen": "2026-11-15T10:00:10Z", "status": "alive", "runningTurns": 0});
+        view.as_object_mut().unwrap().extend(details.as_object().unwrap().clone());
+        view
+    };
+    let new = node(json!({"hostname": "web-1", "cicadaVersion": "0.19.0", "label": " billing "}));
+    let (old, null) = (node(json!({})), node(json!({"hostname": null, "cicadaVersion": null, "label": null})));
+    let details = |v: &cicada::api::NodeView| (v.hostname.clone(), v.cicada_version.clone(), v.label.clone());
+    let none = (None, None, None);
+    for (served, expected) in [
+        (new, (Some("web-1".to_owned()), Some("0.19.0".to_owned()), Some(" billing ".to_owned()))),
+        (old, none.clone()),
+        (null, none),
+    ] {
+        let (list, mut detail) = (json!({"items": [served.clone()]}), served);
+        detail["turns"] = json!([]);
+        let app = Router::new()
+            .route("/nodes", get(move || async move { axum::Json(list) }))
+            .route("/nodes/n1", get(move || async move { axum::Json(detail) }));
+        let actors = ActorClient::new(serve(app).await);
+        assert_eq!(details(&actors.nodes().await.unwrap()[0]), expected);
+        let one = actors.node(&NodeId::new("n1").unwrap()).await.unwrap().unwrap();
+        assert_eq!((details(&one.node), one.turns.len()), (expected, 0));
+    }
+}
+
 #[tokio::test]
 async fn nodes_turns_mailbox_actions_retry_and_bulk() {
     let (actors, _, system) = client_test(|r| r).await;

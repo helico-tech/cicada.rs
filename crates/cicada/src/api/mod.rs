@@ -393,6 +393,16 @@ pub struct NodeView {
     pub status: NodeHealth,
     /// The number of its turns running now.
     pub running_turns: usize,
+    /// The OS host name the node reported, absent when its lookup gave none or an older node wrote the row. It may
+    /// identify a machine or container; it is not authenticated and not an identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hostname: Option<String>,
+    /// The version of the `cicada` crate the node was built with, not that of its application.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cicada_version: Option<String>,
+    /// The label the node was configured with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 /// Response of `GET /nodes`.

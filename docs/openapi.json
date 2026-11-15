@@ -3217,6 +3217,27 @@
             "type": "integer",
             "format": "uint",
             "minimum": 0
+          },
+          "hostname": {
+            "description": "The OS host name the node reported, absent when its lookup gave none or an older node wrote the row. It may\nidentify a machine or container; it is not authenticated and not an identity.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cicadaVersion": {
+            "description": "The version of the `cicada` crate the node was built with, not that of its application.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "description": "The label the node was configured with.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -3299,6 +3320,27 @@
             "type": "integer",
             "format": "uint",
             "minimum": 0
+          },
+          "hostname": {
+            "description": "The OS host name the node reported, absent when its lookup gave none or an older node wrote the row. It may\nidentify a machine or container; it is not authenticated and not an identity.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cicadaVersion": {
+            "description": "The version of the `cicada` crate the node was built with, not that of its application.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "description": "The label the node was configured with.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "turns": {
             "description": "Its turns running now.",
