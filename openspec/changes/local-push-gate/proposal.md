@@ -5,7 +5,8 @@
 Every push to `main` runs GitHub's CI (about 11 minutes), docs-only and proposal-only pushes included. Every tag runs
 the release workflow, which repeats that CI and adds the Docker end-to-end suite (about 25 machine-minutes). The repo is
 private, so these are paid minutes: on 2026-11-14 alone there were 15 CI runs and 7 releases, about 330 minutes. When
-billing stopped the runs, landing stopped too: v0.17.4 has a tag but no GitHub Release, and 0.18.0 cannot be tagged.
+billing stopped the runs, the prescribed wait-for-CI release path stopped working. That incident is the historical
+trigger; it is not a claim about the current publication or verification state of those versions.
 
 Nothing is published to a registry (ADR 0016): consumers pin the git tag. The GitHub Release only carries the notes
 and the skill archive (ADR 0041). Builders already run the full suite with PostgreSQL before review. The remote runs
@@ -18,12 +19,16 @@ mostly repeat work that was already done, so the owner asks to replace them with
   `cargo test --workspace` with PostgreSQL. It records the result: the commit and tree, the commands, pass or fail,
   the toolchain and the time. The record is kept in Git's common directory, so every worktree and session shares it.
   The hook refuses a push to `main` with no passing record.
+- Preserve the full existing CI coverage, including feature-isolation builds, dependency-tree checks and Python
+  ownership tests. Run against an owned checkout of the exact commit, with evidence shared between worktrees.
 - **What evidence covers.** The design decides how a commit that changes only docs, `openspec/` or release text
   (README pins, changelog date) is treated. Options: no checks, the docs tests only, or a record keyed to the code
-  paths, so that a release commit on a tested tree needs no new run.
+  paths, so that a release commit on a tested tree needs no new run. The design uses a conservative text-path
+  classifier and fresh docs checks over a directly tested full base, never an unchecked docs exemption.
 - **Releases stay tags** (ADR 0016). `scripts/release-check.sh` and the end-to-end suite in Docker run locally. The
   GitHub Release, with its notes and the skill archive, is created locally with `gh release create`; that is an API
-  call, not an Actions run.
+  call, not an Actions run. Pin the commit and tag object, check all evidence before pushing a new version tag,
+  and resume a matching draft without overwriting someone else's release.
 - **GitHub workflows:** no CI on push or pull request, and no release workflow on a tag. Keep a manual
   (`workflow_dispatch`) run if the design finds one useful.
 - A new ADR supersedes ADR 0016's rule that the release workflow creates the GitHub Release after CI and the end-to-end
@@ -42,5 +47,5 @@ After `pg-close-test-flake`. Before `heartbeat-watch`.
 ## Impact
 
 `.github/workflows/`, a new script and hook under `scripts/`, `scripts/release-check.sh`, `.claude/skills/build-loop/`,
-AGENTS.md, a new ADR, and handoffs for the release how-to. No library code, API, wire format, schema or guarantee
+handoffs for AGENTS.md and the release how-to, and a new ADR. No library code, API, wire format, schema or guarantee
 changes.
