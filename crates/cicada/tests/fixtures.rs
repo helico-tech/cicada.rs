@@ -500,3 +500,54 @@ fn every_invalid_lease_input_fails_at_its_declared_stage() {
     }
     assert_eq!(stages.len(), 2, "both stages have cases");
 }
+
+// ---- the set of files ----
+
+/// conformance-fixtures, Requirement: Fixed fixtures are checked against the implementation (membership, format,
+/// unique names and references across the four files).
+#[test]
+fn the_fixtures_are_four_format_1_files_with_unique_names_and_resolving_references() {
+    let mut found = BTreeSet::new();
+    for entry in std::fs::read_dir(dir()).unwrap() {
+        let entry = entry.unwrap();
+        assert!(entry.file_type().unwrap().is_file(), "{:?} is a regular file", entry.path());
+        found.insert(entry.file_name().into_string().unwrap());
+    }
+    let expected: BTreeSet<String> =
+        ["canonical.json", "contracts.json", "leases.json", "status.json"].map(String::from).into();
+    assert_eq!(found, expected, "fixtures/ holds exactly the four files");
+
+    let canonical = fixture("canonical.json");
+    cases(&canonical, "valid");
+    cases(&canonical, "invalid");
+    cases(&fixture("contracts.json"), "cases");
+    let leases = fixture("leases.json");
+    let status = fixture("status.json");
+    let success = status["success"].as_object().unwrap();
+    for list in ["valid", "accepted", "invalid"] {
+        for case in cases(&leases, list) {
+            let (operation, direction) = route(case);
+            assert!(success.contains_key(operation), "{}: status.json has no {operation}", case["name"]);
+            if list == "valid" && direction == "response" {
+                assert_eq!(case["status"], success[operation]["status"], "{}: its success status", case["name"]);
+            }
+        }
+    }
+    let valid = names(cases(&leases, "valid"));
+    for case in cases(&leases, "accepted") {
+        assert!(valid.contains(text(case, "expected")), "{}: expected names a valid case", case["name"]);
+    }
+    for operation in OPERATIONS {
+        assert!(
+            cases(&leases, "valid").iter().any(|c| c["operation"] == operation && c["direction"] == "request"),
+            "a {operation} request"
+        );
+        assert!(
+            cases(&leases, "valid").iter().any(|c| c["operation"] == operation && c["direction"] == "response"),
+            "a {operation} response"
+        );
+    }
+    for row in cases(&status, "registration") {
+        assert!(["invalidContract", "conflict", "invalid", "unavailable", "fatal"].contains(&text(row, "result")));
+    }
+}

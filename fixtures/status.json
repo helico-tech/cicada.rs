@@ -1,0 +1,41 @@
+{
+  "format": 1,
+  "about": "How a worker over HTTP classifies the answers of the operations it calls (ADR 0040). success: the one HTTP status at which each operation succeeds; its body must then decode as that operation's response (none for release), and a body that does not is fatal (malformedSuccess). Any other answer is classified by its HTTP status alone, never by the status a problem body claims: unexpected.invalid, unexpected.unavailable, and unexpected.default for every other status, 1xx to 5xx alike. registration lists the only exceptions, for register: the HTTP status and problem type of the answer, the one follow-up request it makes (null for none) and what the call then returns; a follow-up answer that matches no row is classified like any unexpected answer. Transport failures, unreadable bodies and the turn timeout are unavailable; they have no HTTP status and are not listed here. Requests are never retried by the worker.",
+  "success": {
+    "register": {"method": "PUT", "path": "/types/{name}", "operationId": "registerType", "status": 200},
+    "list-types": {"method": "GET", "path": "/types", "operationId": "listTypes", "status": 200},
+    "lease": {"method": "POST", "path": "/leases", "operationId": "leaseTurns", "status": 200},
+    "renew": {"method": "POST", "path": "/leases/renew", "operationId": "renewTurn", "status": 200},
+    "release": {"method": "POST", "path": "/leases/release", "operationId": "releaseTurn", "status": 204},
+    "complete": {"method": "POST", "path": "/leases/complete", "operationId": "completeTurn", "status": 200}
+  },
+  "malformedSuccess": "fatal",
+  "unexpected": {
+    "invalid": [400, 413, 422],
+    "unavailable": [408, 429, 502, 503, 504],
+    "default": "fatal"
+  },
+  "registration": [
+    {
+      "name": "invalid-contract",
+      "status": 422,
+      "problemType": "urn:cicada:problem:invalid-contract",
+      "followUp": null,
+      "result": "invalidContract"
+    },
+    {
+      "name": "contract-conflict",
+      "status": 409,
+      "problemType": "urn:cicada:problem:contract-conflict",
+      "followUp": {"method": "GET", "path": "/types/{name}", "operationId": "getType", "status": 200, "problemType": null},
+      "result": "conflict"
+    },
+    {
+      "name": "contract-conflict-registration-vanished",
+      "status": 409,
+      "problemType": "urn:cicada:problem:contract-conflict",
+      "followUp": {"method": "GET", "path": "/types/{name}", "operationId": "getType", "status": 404, "problemType": "urn:cicada:problem:no-such-type"},
+      "result": "unavailable"
+    }
+  ]
+}

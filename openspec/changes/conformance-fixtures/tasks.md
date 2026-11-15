@@ -17,7 +17,7 @@
   serializer output is an example rather than a field-order rule for ports. Verify: `cargo test -p cicada --test
   fixtures`, plus existing wire conversion tests in `cargo test -p cicada --lib api`.
 
-- [ ] 3. Status data and completeness checks. Add `fixtures/status.json`; test the actual private `unexpected()`
+- [x] 3. Status data and completeness checks. Add `fixtures/status.json`; test the actual private `unexpected()`
   in `crates/cicada-client/src/turns.rs` for statuses 100–599 without sockets, including misleading problem status.
   Adapt the scripted tests in `crates/cicada-client/tests/turn_source.rs` to consume success and registration rows,
   including malformed success and a vanished conflicting registration. In `crates/cicada-axum/tests/openapi.rs`,

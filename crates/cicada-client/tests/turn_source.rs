@@ -6,7 +6,7 @@
 
 mod common;
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -169,13 +169,75 @@ async fn every_status_class_maps_by_the_actual_http_status_after_one_request() {
             assert_eq!(server.requests().len(), calls, "one request per call");
         }
     }
-    // A release succeeds with 204 only, and the others with 200 only.
-    server.then(Script::Reply(200, String::new()));
-    assert_eq!(kind(&client.release_turn(&actor(), 1).await.unwrap_err()), "fatal");
-    server.then(Script::Reply(204, String::new()));
-    client.release_turn(&actor(), 1).await.unwrap();
-    server.then(Script::Reply(204, String::new()));
-    assert_eq!(kind(&client.renew_turn(&actor(), 1).await.unwrap_err()), "fatal");
+}
+
+/// A fixture file of `fixtures/` (ADR 0047).
+fn fixture(name: &str) -> Value {
+    let path = format!("{}/../../fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
+    let value: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(value["format"], 1, "{path}");
+    value
+}
+
+/// One call of the operation that `fixtures/status.json` names `operation`.
+async fn call(client: &ActorClient, operation: &str) -> Result<(), SourceError> {
+    let contract = contract_of::<AccountActor>().unwrap();
+    let message = MessageId::new("m").unwrap();
+    match operation {
+        "register" => client.register_contract(&contract).await.map(|_| ()),
+        "list-types" => client.list_types().await.map(|_| ()),
+        "lease" => client.lease_turns(&owner(), &types(), 1).await.map(|_| ()),
+        "renew" => client.renew_turn(&actor(), 1).await.map(|_| ()),
+        "release" => client.release_turn(&actor(), 1).await,
+        "complete" => client.complete_turn(&actor(), 1, &message, TurnReport::Cancelled).await.map(|_| ()),
+        other => panic!("no operation {other}"),
+    }
+}
+
+/// The served view of the account type, as `GET` and `PUT /types/account` answer it.
+fn account_view() -> String {
+    let contract = contract_of::<AccountActor>().unwrap();
+    json!({"name": "account", "hash": contract.hash(), "state": contract.state_schema(),
+        "messages": contract.message_schemas()})
+    .to_string()
+}
+
+/// conformance-fixtures, Scenario: Status classification (each operation succeeds at its status of
+/// `fixtures/status.json` only, with every valid response body of `fixtures/leases.json`; a malformed body at that
+/// status is fatal).
+#[tokio::test]
+async fn each_operation_succeeds_only_at_its_fixture_status_and_a_malformed_success_is_fatal() {
+    let (status, leases) = (fixture("status.json"), fixture("leases.json"));
+    let success = status["success"].as_object().unwrap();
+    let malformed = status["malformedSuccess"].as_str().unwrap();
+    let (server, client) = scripted().await;
+    let code = |operation: &str| success[operation]["status"].as_u64().unwrap() as u16;
+    for case in leases["valid"].as_array().unwrap().iter().filter(|c| c["direction"] == "response") {
+        let operation = case["operation"].as_str().unwrap();
+        assert_eq!(case["status"], code(operation), "{}", case["name"]);
+        server.then(Script::Reply(code(operation), case["body"].as_str().unwrap_or_default().to_owned()));
+        call(&client, operation).await.unwrap_or_else(|e| panic!("{}: {e}", case["name"]));
+    }
+    server.then(Script::Reply(code("register"), account_view()));
+    call(&client, "register").await.unwrap();
+    server.then(Script::Reply(code("list-types"), json!({"items": []}).to_string()));
+    call(&client, "list-types").await.unwrap();
+    for (operation, row) in success {
+        // The success status of every other operation is no success of this one.
+        let others: BTreeSet<u16> = success.values().map(|r| r["status"].as_u64().unwrap() as u16).collect();
+        for other in others.into_iter().filter(|s| *s != code(operation)) {
+            server.then(Script::Reply(other, String::new()));
+            let error = call(&client, operation).await.expect_err("not its success status");
+            assert_eq!(kind(&error), status["unexpected"]["default"], "{operation} answered {other}: {error}");
+        }
+        if row["status"] != 204 {
+            for body in ["{}", "not json", ""] {
+                server.then(Script::Reply(code(operation), body.to_owned()));
+                let error = call(&client, operation).await.expect_err("a malformed success");
+                assert_eq!(kind(&error), malformed, "{operation} answered {body:?}: {error}");
+            }
+        }
+    }
 }
 
 /// Scenarios: Strict execution response and tolerant envelope; Exact numbers and addresses.
@@ -334,30 +396,77 @@ async fn a_shorter_timeout_of_the_http_client_still_applies() {
     assert_eq!(server.requests().len(), 1);
 }
 
-/// Scenario: Registration and type lookup (a conflict whose registration vanished; recognised alternatives only).
+/// Scenario: Registration and type lookup (a conflict whose registration vanished; recognised alternatives only), and
+/// conformance-fixtures, Scenario: Status classification (the registration rows of `fixtures/status.json`).
 #[tokio::test]
-async fn a_conflict_reads_the_registration_once_and_a_vanished_one_is_unavailable() {
+async fn registration_follows_the_exception_rows_of_the_fixture_and_nothing_else() {
+    let status = fixture("status.json");
     let (server, client) = scripted().await;
     let contract = contract_of::<AccountActor>().unwrap();
-    server.then(Script::Reply(409, problem(409, cicada::api::problem_types::CONTRACT_CONFLICT, 409)));
-    server.then(Script::Reply(404, problem(404, cicada::api::problem_types::NO_SUCH_TYPE, 404)));
-    let error = client.register_contract(&contract).await.unwrap_err();
-    assert_eq!(kind(&error), "unavailable", "{error}");
-    let paths: Vec<String> = server.requests().into_iter().map(|(p, _)| p).collect();
-    assert_eq!(paths, ["PUT /types/account", "GET /types/account"], "one GET, no second PUT");
-
-    server.then(Script::Reply(422, problem(422, cicada::api::problem_types::INVALID_CONTRACT, 422)));
-    assert!(
-        matches!(client.register_contract(&contract).await.unwrap(), RegisterContractResult::InvalidContract(d) if d == "d")
-    );
-    // A 409 or 422 of another kind is no alternative of the core.
-    server.then(Script::Reply(409, problem(409, cicada::api::problem_types::TYPE_IN_USE, 409)));
-    assert_eq!(kind(&client.register_contract(&contract).await.unwrap_err()), "fatal");
-    server.then(Script::Reply(422, problem(422, cicada::api::problem_types::INVALID_STATE, 422)));
-    assert_eq!(kind(&client.register_contract(&contract).await.unwrap_err()), "invalid");
-    server.then(Script::Reply(503, problem(503, cicada::api::problem_types::STORE_UNAVAILABLE, 503)));
-    assert_eq!(kind(&client.register_contract(&contract).await.unwrap_err()), "unavailable");
-    assert_eq!(server.requests().len(), 6, "never retried");
+    let rows = status["registration"].as_array().unwrap();
+    let names: Vec<&str> = rows.iter().map(|r| r["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["invalid-contract", "contract-conflict", "contract-conflict-registration-vanished"]);
+    for row in rows {
+        let name = &row["name"];
+        let code = row["status"].as_u64().unwrap() as u16;
+        server.then(Script::Reply(code, problem(code, row["problemType"].as_str().unwrap(), code)));
+        let mut expected_paths = vec!["PUT /types/account"];
+        let follow_up = &row["followUp"];
+        if !follow_up.is_null() {
+            assert_eq!((&follow_up["method"], &follow_up["path"]), (&json!("GET"), &json!("/types/{name}")));
+            let code = follow_up["status"].as_u64().unwrap() as u16;
+            let body = match follow_up["problemType"].as_str() {
+                Some(problem_type) => problem(code, problem_type, code),
+                None => account_view(),
+            };
+            server.then(Script::Reply(code, body));
+            expected_paths.push("GET /types/account");
+        }
+        let before = server.requests().len();
+        let result = client.register_contract(&contract).await;
+        let found = match &result {
+            Ok(RegisterContractResult::InvalidContract(detail)) => {
+                assert_eq!(detail, "d", "{name}: the problem's detail");
+                "invalidContract"
+            }
+            Ok(RegisterContractResult::Conflict { existing, requested_hash }) => {
+                assert_eq!(existing.definition.contract_hash, contract.hash(), "{name}");
+                assert_eq!(requested_hash, contract.hash(), "{name}");
+                "conflict"
+            }
+            Ok(RegisterContractResult::Registered(_)) => "registered",
+            Err(e) => kind(e),
+        };
+        assert_eq!(found, row["result"], "{name}: {result:?}");
+        let paths: Vec<String> = server.requests()[before..].iter().map(|(p, _)| p.clone()).collect();
+        assert_eq!(paths, expected_paths, "{name}: one follow-up at most, no second PUT");
+    }
+    // Another problem type at a row's status, and an unlisted answer to the follow-up, take the general class.
+    let class = |code: u16| {
+        let listed = |c: &str| status["unexpected"][c].as_array().unwrap().contains(&json!(code));
+        if listed("invalid") {
+            "invalid"
+        } else if listed("unavailable") {
+            "unavailable"
+        } else {
+            status["unexpected"]["default"].as_str().unwrap()
+        }
+    };
+    for (code, problem_type) in [
+        (409, cicada::api::problem_types::TYPE_IN_USE),
+        (422, cicada::api::problem_types::INVALID_STATE),
+        (503, cicada::api::problem_types::STORE_UNAVAILABLE),
+    ] {
+        server.then(Script::Reply(code, problem(code, problem_type, code)));
+        assert_eq!(kind(&client.register_contract(&contract).await.unwrap_err()), class(code), "{code}");
+    }
+    for (code, problem_type) in [(404, cicada::api::problem_types::NOT_FOUND), (503, "about:blank")] {
+        server.then(Script::Reply(409, problem(409, cicada::api::problem_types::CONTRACT_CONFLICT, 409)));
+        server.then(Script::Reply(code, problem(code, problem_type, code)));
+        let error = client.register_contract(&contract).await.unwrap_err();
+        assert_eq!(kind(&error), class(code), "follow-up {code}: {error}");
+    }
+    assert_eq!(server.requests().len(), 2 + 1 + 2 + 3 + 4, "never retried");
 }
 
 /// Scenario: Registration and type lookup (against a real server: a stale cached hash, served definitions).

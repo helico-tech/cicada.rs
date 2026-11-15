@@ -50,6 +50,29 @@ fn the_lease_request_documents_the_limits_the_core_checks() {
     }
 }
 
+/// conformance-fixtures, Scenario: Status classification (the success rows of `fixtures/status.json`, and the follow-up
+/// of a registration, are the documented success responses of their routes).
+#[test]
+fn the_success_statuses_of_the_fixtures_are_the_documented_ones() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/status.json");
+    let status: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    assert_eq!(status["format"], 1);
+    let document = openapi_document();
+    let follow_ups = status["registration"].as_array().unwrap().iter().map(|r| &r["followUp"]);
+    let success = status["success"].as_object().unwrap().values();
+    let mut checked = 0;
+    for row in success.chain(follow_ups.filter(|f| f["status"] == 200)) {
+        let (method, route) = (row["method"].as_str().unwrap().to_lowercase(), row["path"].as_str().unwrap());
+        let operation = &document["paths"][route][&method];
+        assert_eq!(operation["operationId"], row["operationId"], "{method} {route}");
+        let documented: Vec<&String> = operation["responses"].as_object().unwrap().keys().collect();
+        let code = row["status"].to_string();
+        assert_eq!(documented, ["default", code.as_str()], "{method} {route} succeeds with {code} only");
+        checked += 1;
+    }
+    assert_eq!(checked, 7, "six operations and the follow-up of a conflict");
+}
+
 #[test]
 fn every_operation_has_an_id_and_answers_errors_as_problems() {
     let document = openapi_document();

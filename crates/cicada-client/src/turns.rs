@@ -224,3 +224,55 @@ impl TurnSource for ActorClient {
             .map_err(|e| SourceError::Fatal(format!("{WHAT}: {e}")))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{Value, json};
+
+    use super::*;
+
+    fn kind(e: &SourceError) -> &'static str {
+        match e {
+            SourceError::Invalid(_) => "invalid",
+            SourceError::Unavailable(_) => "unavailable",
+            SourceError::Fatal(_) => "fatal",
+        }
+    }
+
+    /// conformance-fixtures, Scenario: Status classification (`fixtures/status.json` against the classifier itself).
+    #[test]
+    fn every_unexpected_status_is_classified_as_the_fixture_says_whatever_the_body_claims() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/status.json");
+        let data: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(data["format"], 1);
+        let statuses = |class: &str| -> Vec<u16> {
+            data["unexpected"][class].as_array().unwrap().iter().map(|s| s.as_u64().unwrap() as u16).collect()
+        };
+        let (invalid, unavailable) = (statuses("invalid"), statuses("unavailable"));
+        assert_eq!(invalid, [400, 413, 422]);
+        assert_eq!(unavailable, [408, 429, 502, 503, 504]);
+        let default = data["unexpected"]["default"].as_str().unwrap();
+        assert_eq!(default, "fatal");
+        for status in 100..=599u16 {
+            let expected = if invalid.contains(&status) {
+                "invalid"
+            } else if unavailable.contains(&status) {
+                "unavailable"
+            } else {
+                default
+            };
+            // A problem that claims a status of another class, one that claims none, and a body that is no problem.
+            let claimed = if unavailable.contains(&status) { 400 } else { 503 };
+            for text in [
+                json!({"type": problem_types::NOT_FOUND, "title": "T", "status": claimed, "detail": "d"}).to_string(),
+                json!({"type": problem_types::INTERNAL_ERROR, "title": "T"}).to_string(),
+                "not a problem".to_owned(),
+                String::new(),
+            ] {
+                let answer = Answer { status: StatusCode::from_u16(status).unwrap(), text };
+                let error = unexpected("Calling", &answer);
+                assert_eq!(kind(&error), expected, "HTTP {status} with {}: {error}", answer.text);
+            }
+        }
+    }
+}
