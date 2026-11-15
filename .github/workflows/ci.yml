@@ -1,13 +1,10 @@
-# Build, lint and test on every push to main and every pull request. The E2E suite (cicada-e2e, CICADA_E2E=1) is not
-# run here.
+# The full check policy on Linux, started by hand only (ADR 0046). Pushes, pull requests and tags start no workflow:
+# the local gate (scripts/gate.py) records evidence and publishes releases. This run records no evidence and publishes
+# nothing; it adds Linux coverage when a maintainer wants it. The E2E suite is not run here.
 name: CI
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-  # The release workflow runs the same checks on a version tag.
-  workflow_call:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -16,7 +13,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     services:
-      # The PostgreSQL store's tests and conformance suite run when CICADA_PG_URL is set.
+      # The PostgreSQL store's tests and conformance suite need it: the gate sets CICADA_PG_URL from CICADA_GATE_PG_URL.
       postgres:
         image: postgres:17.5-alpine
         env:
@@ -28,76 +25,12 @@ jobs:
         ports:
           - 55432:5432
     env:
-      CICADA_PG_URL: postgres://cicada:cicada@localhost:55432/cicada
-      CARGO_TERM_COLOR: always
-      # File and line in backtraces, no full debug info: the test binaries of the workspace outgrew the runner's disk,
-      # and the linker died with a bus error (release 0.13.0).
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CICADA_GATE_PG_URL: postgres://cicada:cicada@localhost:55432/cicada
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
-      # The service container allows 100 connections; the PostgreSQL tests of cicada hold at most 4 databases at once.
-      - run: python3 -m unittest discover -s scripts -p 'test_docs_maintenance.py'
-      - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
-      # `cargo test --workspace` turns every feature of cicada on, so each feature is also built alone: no feature,
-      # only SQLite, only PostgreSQL, only the test support.
-      - name: Build cicada with each feature alone
-        shell: bash
-        env:
-          RUSTFLAGS: -D warnings
-        run: |
-          set -euo pipefail
-          cargo check -p cicada
-          cargo check -p cicada --features sqlite
-          cargo check -p cicada --features postgres
-          cargo check -p cicada --features testing
-      # The same for cicada-app, whose features the workspace turns on too: no feature, each store alone, the terminal
-      # UI alone.
-      - name: Build cicada-app with each feature alone
-        shell: bash
-        env:
-          RUSTFLAGS: -D warnings
-        run: |
-          set -euo pipefail
-          cargo check -p cicada-app
-          cargo check -p cicada-app --features sqlite
-          cargo check -p cicada-app --features postgres
-          cargo check -p cicada-app --features tui
-      # The crate alone is built without the terminal UI: its tests include that such a binary does not know `tui`.
-      - run: cargo test -p cicada-app
-      - name: cicada-app without tui builds no terminal library
-        shell: bash
-        run: |
-          set -euo pipefail
-          trees="${RUNNER_TEMP:-/tmp}"
-          cargo tree -p cicada-app -e normal > "$trees/app.txt"
-          cargo tree -p cicada-app -e normal --features tui > "$trees/app-tui.txt"
-          grep -q 'ratatui v' "$trees/app-tui.txt" || { echo "tui does not build ratatui"; exit 1; }
-          if grep -qE 'ratatui|crossterm' "$trees/app.txt"; then echo "cicada-app without tui builds ratatui or crossterm"; exit 1; fi
-      # The trees go to files first, so a `cargo tree` that fails fails the step; the first two greps check that the
-      # trees hold what each feature must build. SQLite builds no TLS library. The whole workspace, on every target and
-      # with its dev-dependencies, builds rustls with one crypto provider: with both ring and aws-lc-rs, every caller
-      # that leaves the choice to rustls panics.
-      - name: Each store feature builds only its own driver
-        shell: bash
-        run: |
-          set -euo pipefail
-          trees="${RUNNER_TEMP:-/tmp}"
-          cargo tree -p cicada -e normal > "$trees/none.txt"
-          cargo tree -p cicada -e normal --features sqlite > "$trees/sqlite.txt"
-          cargo tree -p cicada -e normal --features postgres > "$trees/postgres.txt"
-          cargo tree --workspace --target all -f '{p} [{f}]' --prefix none > "$trees/workspace.txt"
-          grep -q sqlx-sqlite "$trees/sqlite.txt" || { echo "sqlite does not build the SQLite driver"; exit 1; }
-          grep -q sqlx-postgres "$trees/postgres.txt" || { echo "postgres does not build the PostgreSQL driver"; exit 1; }
-          if grep -q sqlx "$trees/none.txt"; then echo "no feature builds sqlx"; exit 1; fi
-          if grep -q sqlx-postgres "$trees/sqlite.txt"; then echo "sqlite builds the PostgreSQL driver"; exit 1; fi
-          if grep -qE 'sqlx-sqlite|libsqlite3-sys' "$trees/postgres.txt"; then echo "postgres builds the SQLite driver"; exit 1; fi
-          if grep -qE 'rustls|native-tls' "$trees/sqlite.txt"; then echo "sqlite builds a TLS library"; exit 1; fi
-          if awk '/^rustls v/ && /[[,]ring[],]/ && /[[,]aws_lc_rs[],]/ { two = 1 } END { exit !two }' "$trees/workspace.txt"; then
-            echo "the workspace builds rustls with two crypto providers, ring and aws-lc-rs"; exit 1
-          fi
+      # The same commands as the local full gate, from scripts/gate-policy.json and scripts/ci/.
+      - run: python3 scripts/gate.py checks --scope full

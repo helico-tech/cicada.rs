@@ -1,13 +1,13 @@
 ## Implementation
 
-- [ ] 1. Implement the versioned check policy and shared `scripts/ci` commands, preserving every current CI category:
+- [x] 1. Implement the versioned check policy and shared `scripts/ci` commands, preserving every current CI category:
   Python tests, fmt, clippy with warnings denied, PostgreSQL workspace tests, core/app isolated-feature builds with
   warnings denied, app-alone tests and all terminal/driver/TLS/crypto dependency checks. Add full/docs/e2e dispatch,
   exact argv lists and controlled environment, stripping update/filter/compiler-wrapper overrides. Docs runs Python
   and examples doctest/docs/skill tests; E2E is unfiltered. Test policy/schema and environment handling with injected
   command runners, command parity against the old workflow, and a bad PG URL failing rather than silently skipping.
   Preserve existing shell error propagation. Run the targeted Python tests; do not invoke real publication tools.
-- [ ] 2. Implement run/status and tree-bound records: owned registered detached worktree with admin marker, cache
+- [x] 2. Implement run/status and tree-bound records: owned registered detached worktree with admin marker, cache
   boundary, external-config refusal, before/after source checks, inheritable flock/process groups, abandoned marker,
   atomic running/pass/fail records, redacted metadata and exact policy/runner validation. Implement conservative
   cumulative-diff classification and direct-base selection with no chains, per-kind failure blocking and E2E reuse.
