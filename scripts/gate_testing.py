@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 from pathlib import Path
 import shutil
 import subprocess
@@ -136,11 +137,16 @@ class Sandbox:
         path = self.state / "in-progress.json"
         return json.loads(path.read_text()) if path.exists() else None
 
-    def wait_for_child(self, timeout=20.0) -> dict:
+    def wait_for_child(self, timeout=30.0, argv_contains: str | None = None) -> dict:
+        """The marker once it records a running command (whose argv holds argv_contains, if given)."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            value = self.marker()
-            if value and value.get("child") and value["child"].get("start"):
+            try:
+                value = self.marker()
+            except ValueError:
+                value = None  # caught mid-write
+            child = (value or {}).get("child")
+            if child and child.get("start") and (argv_contains is None or argv_contains in " ".join(child["argv"])):
                 return value
             time.sleep(0.05)
         raise AssertionError("the gate never started its command")
@@ -176,6 +182,9 @@ def save():
     json.dump(state, open(path, "w"), indent=2)
 
 def fail(name):
+    if name == state.get("sleep"):
+        import time
+        time.sleep(60)
     if name in state.get("fail", []):
         state["fail"].remove(name)
         save()
@@ -265,3 +274,13 @@ def install_fake_gh(sandbox: Sandbox, origin: Path, repo: str = "acme/cicada") -
 def copy_script(sandbox: Sandbox, name: str, mode: int = 0o755) -> None:
     shutil.copyfile(SCRIPTS / name, sandbox.root / "scripts" / name)
     (sandbox.root / "scripts" / name).chmod(mode)
+
+
+def install_blocking_rustc(sandbox: Sandbox, flag: Path) -> None:
+    """A rustc first on PATH whose `-V` blocks while flag exists, and otherwise answers like rustc."""
+    bin_dir = sandbox.dir / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    rustc = bin_dir / "rustc"
+    rustc.write_text(f"#!/bin/sh\nwhile [ -e {shlex.quote(str(flag))} ]; do sleep 0.1; done\necho 'rustc fake'\n")
+    rustc.chmod(0o755)
+    sandbox.env["PATH"] = f"{bin_dir}{os.pathsep}{sandbox.env['PATH']}"

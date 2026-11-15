@@ -90,7 +90,11 @@ GitHub step fails; publication is not atomic across Git and GitHub.
   group and records no pass, and leaves the in-progress marker. `python3 scripts/gate.py recover` clears it only after
   checking that the gate process and its recorded command group are gone (it stops an identified group) and that no
   process works in the owned worktree; otherwise it refuses. Interrupted or failed records stay unusable until a new
-  run passes. Docker containers are outside this: the E2E harness removes its own stack.
+  run passes. A forced run makes the old record unusable before anything that can fail, so a refusal or an
+  interruption never leaves the old pass standing. The release runs its remote git calls, `release-check.sh`, the
+  skill packaging and `gh` the same way: a killed release leaves the lock held while such a command still runs, so
+  `recover` and a second release refuse until it ends. Docker containers are outside this: the E2E harness removes
+  its own stack.
 - *Manual Linux CI.* Actions → CI → Run workflow runs `python3 scripts/gate.py checks --scope full` with PostgreSQL. It
   records no evidence and publishes nothing; a local macOS pass is not Linux coverage.
 - *Limits.* This is local workflow control: `--no-verify`, another clone, an old hook or a forged record bypasses it;
@@ -114,11 +118,12 @@ None. No doctest, link, guarantee row or skill route depends on new prose: `carg
 Proposed text only; none of this prose is written.
 
 Checks run by the builder: `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -- -D warnings` in
-the worktree; `cargo test -p cicada-examples --test docs --test skill` (19 passed); `openspec validate local-push-gate
---strict` (valid). The gate itself ran in a temporary clone of this branch, never in the shared repository (so no
-evidence of it exists in the real common directory): `gate.py run --e2e` passed full and E2E on `58290e4` (60 Python
-tests, 3055 Rust tests including PostgreSQL, every feature-alone build and dependency-tree check, 28 E2E tests in
-Docker), and then on this Markdown-only head it ran fresh docs checks over that full pass and reused its E2E pass.
+the worktree; `cargo test -p cicada-examples --doc --test docs --test skill` (47 passed); `openspec validate
+local-push-gate --strict` (valid); the 64 Python tests of `scripts/`. The gate itself ran in a temporary clone of this
+branch, never in the shared repository (so no evidence of it exists in the real common directory): `gate.py run
+--e2e` passed full and E2E on `58290e4` (60 Python tests, 3055 Rust tests including PostgreSQL, every feature-alone
+build and dependency-tree check, 28 E2E tests in Docker). Review round 1 changed `scripts/gate.py` and its tests
+afterwards, so that evidence does not cover the current head; nothing outside `scripts/` and Markdown changed since.
 A bad `CICADA_PG_URL` fails the PostgreSQL tests (checked by hand with `cargo test -p cicada --test store`).
 
 Installation after landing: the build loop runs `python3 scripts/gate.py install-hook` once in the main checkout, with

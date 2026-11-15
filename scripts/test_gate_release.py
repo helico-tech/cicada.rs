@@ -3,14 +3,16 @@ still names a GitHub repository) and a fake gh. No real push, tag or GitHub Rele
 
 import io
 import json
+import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import tarfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from gate_testing import Sandbox, copy_script, flag_command, install_fake_gh, policy  # noqa: E402
+from gate_testing import Sandbox, copy_script, flag_command, group_gone, install_fake_gh, policy  # noqa: E402
 
 GITHUB = "https://github.com/acme/cicada.git"
 FILES = {
@@ -218,6 +220,41 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertIn("already contains", done.stderr)
         self.assertEqual(self.remote("refs/tags/v1.0.0^{commit}"), self.c)
+
+    def test_a_killed_release_keeps_its_publisher_locked_until_recovery(self):
+        self.set_gh(sleep="create")
+        parent = self.s.spawn_gate("release", "v1.0.0")
+        child = self.s.wait_for_child(timeout=120, argv_contains="release create")["child"]
+        parent.kill()
+        parent.wait()
+        os.killpg(child["pgid"], 0)  # gh outlives the gate
+        self.assertIn("busy", self.s.gate("recover").stderr, "the running gh keeps the lock")
+        self.assertIn("busy", self.release().stderr, "no second publisher overlaps it")
+        self.assertIsNotNone(self.s.marker())
+        os.killpg(child["pgid"], signal.SIGKILL)
+        self.assertTrue(group_gone(child["pgid"]))
+        self.assertIn("abandoned", self.release().stderr)
+        self.assertEqual(self.s.gate("recover").returncode, 0)
+        self.set_gh(sleep=None)
+        done = self.release()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assert_published()
+
+    def test_term_during_publication_stops_gh_and_blocks_until_recovery(self):
+        self.set_gh(sleep="publish")
+        parent = self.s.spawn_gate("release", "v1.0.0")
+        child = self.s.wait_for_child(timeout=120, argv_contains="PATCH")["child"]
+        parent.send_signal(signal.SIGTERM)
+        parent.wait(timeout=90)
+        self.assertEqual(parent.returncode, 130, self.s.spawned_log())
+        self.assertTrue(group_gone(child["pgid"]))
+        self.assertTrue(self.gh()["releases"][0]["draft"], "nothing was published")
+        self.assertIn("abandoned", self.release().stderr)
+        self.assertEqual(self.s.gate("recover").returncode, 0)
+        self.set_gh(sleep=None)
+        done = self.release()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assert_published()
 
     def test_failing_checks_publish_nothing(self):
         fail = self.s.dir / "fail"

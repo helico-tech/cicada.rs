@@ -13,7 +13,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gate  # noqa: E402
-from gate_testing import Sandbox, flag_command, group_gone, policy  # noqa: E402
+from gate_testing import Sandbox, flag_command, group_gone, install_blocking_rustc, policy  # noqa: E402
 
 
 def auth(sandbox, rev="HEAD"):
@@ -306,6 +306,58 @@ class DocsReuseTests(unittest.TestCase):
             {"name": "other", "argv": ["python3", "-c", "pass"]}]))})
         repo = gate.Repo(sandbox.root)
         self.assertIsNone(gate.docs_base(repo, repo.commit("HEAD"), *gate.identity(repo, "HEAD"))[0])
+
+
+class EarlyFailureTests(unittest.TestCase):
+    """A forced rerun invalidates the old pass before anything that can fail, for every kind."""
+
+    def passed(self, kind):
+        sandbox = Sandbox(self)
+        if kind == "docs":
+            self.assertEqual(sandbox.gate("run").returncode, 0)
+            sandbox.commit("Docs", {"docs/guide.md": "words\n"})
+        self.assertEqual(sandbox.gate("run", *(["--e2e"] if kind == "e2e" else [])).returncode, 0)
+        self.assertEqual(sandbox.record(kind)["status"], "pass")
+        return sandbox, ["run", "--force", *(["--e2e"] if kind == "e2e" else [])]
+
+    def unusable(self, sandbox, kind):
+        self.assertNotEqual(sandbox.record(kind)["status"], "pass")
+        checks, e2e = auth(sandbox)
+        self.assertFalse(e2e.ok if kind == "e2e" else checks.ok)
+
+    def test_a_refusal_while_preparing_fails_the_forced_record(self):
+        for kind in ("full", "docs", "e2e"):
+            with self.subTest(kind):
+                sandbox, args = self.passed(kind)
+                (sandbox.cargo_home / "config.toml").write_text("")
+                done = sandbox.gate(*args)
+                self.assertEqual(done.returncode, 1)
+                self.assertIn("from outside the commit", done.stderr)
+                self.unusable(sandbox, kind)
+                if kind != "e2e":
+                    self.assertEqual(sandbox.record(kind)["status"], "failed")
+                self.assertIsNone(sandbox.marker())
+        sandbox, args = self.passed("full")
+        self.assertEqual(sandbox.gate(*args, env={"CICADA_GATE_PG_URL": ""}).returncode, 1)
+        self.assertEqual(sandbox.record("full")["status"], "failed")
+
+    def test_term_while_reading_tool_versions_leaves_the_record_unusable(self):
+        for kind in ("full", "docs", "e2e"):
+            with self.subTest(kind):
+                sandbox, args = self.passed(kind)
+                flag = sandbox.dir / "block-rustc"
+                install_blocking_rustc(sandbox, flag)
+                flag.write_text("")
+                parent = sandbox.spawn_gate(*args)
+                child = sandbox.wait_for_child(argv_contains="rustc")["child"]
+                parent.send_signal(signal.SIGTERM)
+                parent.wait(timeout=30)
+                self.assertEqual(parent.returncode, 130, sandbox.spawned_log())
+                self.assertTrue(group_gone(child["pgid"]))
+                self.assertEqual(sandbox.record(kind)["status"], "running")
+                self.unusable(sandbox, kind)
+                flag.unlink()
+                self.assertEqual(sandbox.gate("recover").returncode, 0)
 
 
 class LockTests(unittest.TestCase):

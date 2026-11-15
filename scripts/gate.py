@@ -564,28 +564,52 @@ def session(repo: Repo, what: str):
         marker.clear()
 
 
+def supervised(sess: Session, argv: list[str], cwd: Path, env: dict, capture: bool = False,
+               ) -> subprocess.CompletedProcess:
+    """Run one command in a process group of its own that holds the inherited lock and is recorded in the marker,
+    so that a killed gate leaves the lock held and `recover` can identify it. Interruption stops and reaps the group.
+    Captured output goes through files, so a straggler holding a pipe cannot block the gate."""
+    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+        try:
+            proc = subprocess.Popen(argv, cwd=cwd, env=env, pass_fds=(sess.lock,), start_new_session=True,
+                                    stdin=subprocess.DEVNULL, stdout=stdout if capture else None,
+                                    stderr=stderr if capture else None)
+        except OSError as error:
+            return subprocess.CompletedProcess(argv, 127, b"", f"cannot start {argv[0]}: {error}".encode())
+        sess.marker.child(proc.pid, argv)
+        try:
+            code = proc.wait()
+        except Interrupted:
+            stop_group(proc.pid, proc)
+            raise
+        if group_alive(proc.pid):
+            time.sleep(0.5)  # members that exit with their leader
+        if group_alive(proc.pid):
+            if not stop_group(proc.pid):
+                raise Uncertain(f"{argv[0]} left processes in group {proc.pid} that do not stop")
+            print(f"gate: {shlex.join(argv)} left processes behind; they were stopped and the command fails",
+                  file=sys.stderr)
+            code = code or 1
+        sess.marker.child(None)
+        stdout.seek(0)
+        stderr.seek(0)
+        return subprocess.CompletedProcess(argv, code, stdout.read(), stderr.read())
+
+
 def execute(sess: Session, argv: list[str], cwd: Path, env: dict) -> int:
-    """Run one command in a process group of its own that holds the inherited lock."""
-    try:
-        proc = subprocess.Popen(argv, cwd=cwd, env=env, pass_fds=(sess.lock,), start_new_session=True)
-    except OSError as error:
-        print(f"gate: cannot start {argv[0]}: {error}", file=sys.stderr)
-        return 127
-    sess.marker.child(proc.pid, argv)
-    try:
-        code = proc.wait()
-    except Interrupted:
-        stop_group(proc.pid, proc)
-        raise
-    if group_alive(proc.pid):
-        time.sleep(0.5)  # members that exit with their leader
-    if group_alive(proc.pid):
-        if not stop_group(proc.pid):
-            raise Uncertain(f"{argv[0]} left processes in group {proc.pid} that do not stop")
-        print(f"gate: {shlex.join(argv)} left processes behind; they were stopped and the command fails", file=sys.stderr)
-        code = code or 1
-    sess.marker.child(None)
-    return code
+    """A check command with its output on the terminal."""
+    done = supervised(sess, argv, cwd, env)
+    if done.returncode == 127 and done.stderr:
+        print(f"gate: {done.stderr.decode()}", file=sys.stderr)
+    return done.returncode
+
+
+def supervised_git(sess: Session, args: list[str], cwd: Path, check: bool = True) -> subprocess.CompletedProcess:
+    """A git command of the release that talks to the remote, in the caller's environment for its authentication."""
+    done = supervised(sess, ["git", *args], cwd, ordinary_env(), capture=True)
+    if check and done.returncode:
+        raise GateError(f"git {' '.join(args)}: {done.stderr.decode(errors='replace').strip()}")
+    return done
 
 
 def install_signals() -> None:
@@ -686,13 +710,10 @@ def refuse_external_config(path: Path, env: dict) -> None:
             raise GateError(f"{home / name} would change the checks from outside the commit; move it away")
 
 
-def tool_versions(path: Path, env: dict, kind: str) -> dict:
+def tool_versions(sess: Session, path: Path, env: dict, kind: str) -> dict:
     def version(*argv):
-        try:
-            done = subprocess.run(argv, cwd=path, env=env, capture_output=True, text=True, timeout=60)
-        except (OSError, subprocess.TimeoutExpired):
-            return None
-        return done.stdout.strip() if done.returncode == 0 else None
+        done = supervised(sess, list(argv), path, env, capture=True)
+        return done.stdout.decode(errors="replace").strip() if done.returncode == 0 else None
 
     tools = {"rustc": version("rustc", "-V"), "cargo": version("cargo", "-V"), "git": version("git", "--version"),
              "python": platform.python_version(), "platform": platform.platform()}
@@ -711,64 +732,81 @@ def ensure_runner(repo: Repo, commit: str) -> str:
     return blob
 
 
-def execute_kind(sess: Session, commit: str, kind: str, base: str | None) -> None:
-    repo = sess.repo
+def invalidate(repo: Repo, commit: str, kind: str, base: str | None = None) -> dict:
+    """Replace the tree's record of this kind with unusable running evidence, before anything that can fail."""
     policy_blob, policy, runner = identity(repo, commit)
-    tree = repo.tree(commit)
-    url = pg_url()
-    path = prepare_owned(sess, commit)
-    env = command_env(policy, url)
-    refuse_external_config(path, env)
     record = {
-        "schema": SCHEMA, "kind": kind, "status": "running", "commit": commit, "tree": tree,
+        "schema": SCHEMA, "kind": kind, "status": "running", "commit": commit, "tree": repo.tree(commit),
         "policy_blob": policy_blob, "runner_blob": runner, "pg_url_variable": policy["pg_url_variable"],
-        "pg": pg_metadata(url), "env": policy.get("env", {}), "started_at": now(), "commands": [],
-        "tools": tool_versions(path, env, kind),
+        "env": policy.get("env", {}), "started_at": now(), "commands": [],
     }
     if base:
         record["base"] = {"commit": base, "tree": repo.tree(base)}
-    target = record_path(repo, kind, tree)
-    write_json(target, record)  # a rerun invalidates the old record before anything runs
-    if kind == "full":
-        pg_diagnostic(url)
-    print(f"gate: {kind} checks of {commit[:12]} in {path}", file=sys.stderr)
-    for command in expected_commands(policy, kind):
-        entry = dict(command, started_at=now())
-        print(f"gate: $ {shlex.join(command['argv'])}", file=sys.stderr)
-        code = execute(sess, command["argv"], path, {**env, **command["env"]})
-        entry.update(exit_code=code, finished_at=now())
-        record["commands"].append(entry)
-        if code:
-            record.update(status="failed", finished_at=now())
-            write_json(target, record)
-            raise GateError(f"{kind}: {command['name']} failed with exit code {code}")
-        write_json(target, record)
+    write_json(record_path(repo, kind, record["tree"]), record)
+    return record
+
+
+def execute_kind(sess: Session, commit: str, kind: str, base: str | None) -> None:
+    """Run one kind's commands and record the result. A normal failure, including a refusal while preparing, records
+    failed; an interruption leaves the record running. Either way the old pass is gone."""
+    repo = sess.repo
+    _, policy, _ = identity(repo, commit)
+    record = invalidate(repo, commit, kind, base)
+    target = record_path(repo, kind, record["tree"])
     try:
-        verify_source(path, commit, tree)
+        url = pg_url()
+        record["pg"] = pg_metadata(url)
+        path = prepare_owned(sess, commit)
+        env = command_env(policy, url)
+        refuse_external_config(path, env)
+        record["tools"] = tool_versions(sess, path, env, kind)
+        write_json(target, record)
+        if kind == "full":
+            pg_diagnostic(url)
+        print(f"gate: {kind} checks of {commit[:12]} in {path}", file=sys.stderr)
+        for command in expected_commands(policy, kind):
+            entry = dict(command, started_at=now())
+            print(f"gate: $ {shlex.join(command['argv'])}", file=sys.stderr)
+            code = execute(sess, command["argv"], path, {**env, **command["env"]})
+            entry.update(exit_code=code, finished_at=now())
+            record["commands"].append(entry)
+            write_json(target, record)
+            if code:
+                raise GateError(f"{kind}: {command['name']} failed with exit code {code}")
+        try:
+            verify_source(path, commit, record["tree"])
+        except GateError as error:
+            record["source_changed"] = str(error)
+            raise
     except GateError as error:
-        record.update(status="failed", finished_at=now(), source_changed=str(error))
+        record.update(status="failed", finished_at=now(), error=str(error))
         write_json(target, record)
         raise
     record.update(status="pass", finished_at=now())
     write_json(target, record)
-    print(f"gate: {kind} passed for tree {tree}", file=sys.stderr)
+    print(f"gate: {kind} passed for tree {record['tree']}", file=sys.stderr)
+
+
+def plan_checks(repo: Repo, commit: str) -> tuple[str, str | None]:
+    """The kind of checks a run of commit needs: docs over an eligible base unless a full record exists."""
+    policy_blob, policy, runner = identity(repo, commit)
+    if check_record(repo, "full", commit, policy_blob, policy, runner).status != "missing":
+        return "full", None
+    base, why = docs_base(repo, commit, policy_blob, policy, runner)
+    if not base:
+        print(f"gate: full checks needed: {why}", file=sys.stderr)
+    return ("docs", base) if base else ("full", None)
 
 
 def ensure_checks(sess: Session, commit: str, force: bool) -> None:
     repo = sess.repo
-    policy_blob, policy, runner = identity(repo, commit)
     if not force:
         auth = checks_auth(repo, commit)
         if auth.ok:
             print(f"gate: checks of {commit[:12]}: {auth.how}", file=sys.stderr)
             return
-    full = check_record(repo, "full", commit, policy_blob, policy, runner)
-    base = None
-    if full.status == "missing":
-        base, why = docs_base(repo, commit, policy_blob, policy, runner)
-        if not base:
-            print(f"gate: full checks needed: {why}", file=sys.stderr)
-    execute_kind(sess, commit, "docs" if base else "full", base)
+    kind, base = plan_checks(repo, commit)
+    execute_kind(sess, commit, kind, base)
 
 
 def ensure_e2e(sess: Session, commit: str, force: bool) -> None:
@@ -1013,13 +1051,16 @@ class Release:
 
     def release_check(self, path: Path, before_push: bool, env: dict) -> str:
         argv = ["bash", "scripts/release-check.sh", *(["--before-push"] if before_push else []), self.tag]
-        done = subprocess.run(argv, cwd=path, env=env, capture_output=True, text=True)
+        done = supervised(self.sess, argv, path, env, capture=True)
         if done.returncode:
-            raise GateError(f"release-check failed: {done.stderr.strip()}")
-        return done.stdout
+            raise GateError(f"release-check failed: {done.stderr.decode(errors='replace').strip()}")
+        return done.stdout.decode()
+
+    def git_remote(self, *args, check=True) -> subprocess.CompletedProcess:
+        return supervised_git(self.sess, list(args), self.repo.cwd, check=check)
 
     def remote(self, ref: str) -> str | None:
-        listed = self.repo.out("ls-remote", "origin", ref, env=ordinary_env())
+        listed = self.git_remote("ls-remote", "origin", ref).stdout.decode().strip()
         found = [line.split("\t") for line in listed.splitlines()]
         exact = [oid for oid, name in found if name == ref]
         return exact[0] if exact else None
@@ -1028,16 +1069,15 @@ class Release:
         for attempt in (1, 2):
             remote = self.remote("refs/heads/main")
             if remote:
-                self.repo.git("fetch", "--quiet", "origin", "main", env=ordinary_env())
+                self.git_remote("fetch", "--quiet", "origin", "main")
                 if self.repo.is_ancestor(commit, remote):
                     self.say(f"origin main {remote[:12]} already contains {commit[:12]}")
                     return
                 if not self.repo.is_ancestor(remote, commit):
                     raise GateError(f"origin main {remote[:12]} diverged from {commit[:12]}; nothing is pushed")
-            pushed = self.repo.git("push", "--quiet", "origin", f"{commit}:refs/heads/main", check=False,
-                                   env=ordinary_env())
+            pushed = self.git_remote("push", "--quiet", "origin", f"{commit}:refs/heads/main", check=False)
             if pushed.returncode == 0:
-                self.repo.git("fetch", "--quiet", "origin", "main", env=ordinary_env())
+                self.git_remote("fetch", "--quiet", "origin", "main")
                 after = self.remote("refs/heads/main")
                 if not after or not self.repo.is_ancestor(commit, after):
                     raise GateError(f"origin main is {after} after the push, without {commit[:12]}")
@@ -1061,10 +1101,10 @@ class Release:
         name = f"cicada-skill-{self.tag}.tar.gz"
         work = Path(tempfile.mkdtemp(prefix="package.", dir=self.repo.state))
         try:
-            done = subprocess.run(["python3", "-I", "-B", "scripts/package-skill.py", self.tag, str(work)], cwd=path,
-                                  env=controlled_env(), capture_output=True, text=True)
+            done = supervised(self.sess, ["python3", "-I", "-B", "scripts/package-skill.py", self.tag, str(work)],
+                              path, controlled_env(), capture=True)
             if done.returncode:
-                raise GateError(f"packaging the skill failed: {done.stderr.strip()}")
+                raise GateError(f"packaging the skill failed: {done.stderr.decode(errors='replace').strip()}")
             if self.local_tag() != obj:
                 raise GateError(f"the local tag {self.tag} changed while packaging")
             data = (work / name).read_bytes()
@@ -1103,7 +1143,7 @@ class Release:
             raise GateError(f"origin has tag {self.tag} as {remote}, not {obj}; it is never replaced")
         if self.local_tag() != obj:
             raise GateError(f"the local tag {self.tag} changed before its push")
-        self.repo.git("push", "--quiet", "origin", f"{obj}:refs/tags/{self.tag}", env=ordinary_env())
+        self.git_remote("push", "--quiet", "origin", f"{obj}:refs/tags/{self.tag}")
         if self.remote(f"refs/tags/{self.tag}") != obj:
             raise GateError(f"origin's tag {self.tag} is not {obj} after the push")
         self.say(f"pushed tag object {obj[:12]}")
@@ -1111,7 +1151,7 @@ class Release:
     # GitHub, through gh with an explicit --repo.
 
     def gh(self, *args, check=True) -> subprocess.CompletedProcess:
-        done = subprocess.run(["gh", *args], capture_output=True, env=ordinary_env())
+        done = supervised(self.sess, ["gh", *args], self.repo.cwd, ordinary_env(), capture=True)
         if check and done.returncode:
             raise GateError(f"gh {args[0]} {args[1] if len(args) > 1 else ''}: {done.stderr.decode().strip()}")
         return done
@@ -1261,6 +1301,10 @@ def main(argv: list[str]) -> int:
             commit = repo.commit(args.rev)
             ensure_runner(repo, commit)
             with session(repo, "run") as sess:
+                if args.force:  # every record this run replaces is unusable from the start
+                    invalidate(repo, commit, *plan_checks(repo, commit))
+                    if args.e2e:
+                        invalidate(repo, commit, "e2e")
                 ensure_checks(sess, commit, args.force)
                 if args.e2e:
                     ensure_e2e(sess, commit, args.force)
