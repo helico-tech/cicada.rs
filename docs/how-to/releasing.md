@@ -21,10 +21,11 @@ A release is a tag `vX.Y.Z` on `main` (ADR 0016). All crates share the version i
 
    The command pins HEAD (or an explicit final `REV` argument), verifies versions and dated notes, obtains local
    checks and Docker E2E evidence, then pushes that commit to `origin/main` without force. It verifies main ancestry,
-   creates or accepts a matching tag, packages and verifies the skill, and pushes the exact tag object. Finally it
-   creates or resumes a matching draft GitHub Release in origin's repository, verifies its notes and skill asset,
+   creates or accepts a matching tag, packages and verifies the skill and fixtures, and pushes the exact tag object.
+   Finally it creates or resumes a matching draft GitHub Release in origin's repository, verifies its notes and both assets,
    and publishes it. A conflicting main, tag or draft stops publication.
-4. Confirm the published Release has `cicada-skill-vX.Y.Z.tar.gz`. The docs session then updates installation pins.
+4. Confirm the published Release has `cicada-skill-vX.Y.Z.tar.gz` and `cicada-fixtures-vX.Y.Z.tar.gz`.
+   The docs session then updates installation pins. The fixture archive starts at 0.18.12; older releases are not backfilled.
 
 Prerequisites: Python 3.11+, the Rust toolchain with fmt/clippy, local PostgreSQL, Docker for E2E, `jq`, and `gh`
 signed in with release rights. `CICADA_GATE_PG_URL` defaults to the compose database on port 55432. Only the
@@ -38,8 +39,14 @@ When the next implementation change lands, add `## X.Y.Z — unreleased` to the 
 
 Run the same `release vX.Y.Z` command again. State in `<git common dir>/cicada-gate/release/vX.Y.Z.json` pins its
 commit; a retry refuses another commit or raw tag object, including a lightweight/annotated substitution at the same
-commit. It rechecks remote state and resumes only a matching draft, with the expected title, notes and single skill
-asset hash. A published Release is reported as already published and left untouched.
+commit. Its `assets` map pins both filenames and digests; a retry with a different map is refused. It rechecks remote
+state and resumes only a draft with matching title, notes and asset hashes. The draft can hold any subset of the two
+assets: only missing assets are uploaded, uncertain uploads are re-read, and both must verify before publication.
+Duplicate, extra or conflicting assets stop the command without overwrite. A published Release is reported as
+already published and left untouched.
+
+A state file with the earlier single `asset_sha256` field is refused. Resume that interrupted release using
+`scripts/gate.py` from its pinned commit; do not convert its state to the new format.
 
 A failure before the initial tag push leaves no new remote tag. Main and tag pushes survive later failures;
 publication is not atomic across Git and GitHub. **Never delete or move a remote version tag**, even without a
@@ -49,6 +56,8 @@ must change, the owner must inspect actual remote state before manually removing
 `scripts/release-check.sh [--before-push] vX.Y.Z` checks the checked-out commit and requires an existing local tag to
 point there. `--before-push` omits the fetch/main-ancestry check. It is a preflight, not check or E2E evidence.
 After tagging, `python3 scripts/package-skill.py vX.Y.Z dist` reproduces the archive from tagged Git objects.
+`python3 scripts/package-fixtures.py vX.Y.Z dist` reproduces the fixture archive the same way, with the four fixed
+files and `SOURCE.json` identifying the repository, tag, commit and version under `cicada-fixtures/`.
 
 ## Local checks and the pre-push gate
 

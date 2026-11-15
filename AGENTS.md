@@ -19,6 +19,7 @@ cargo test --workspace                 # unit, runtime, SQLite, HTTP, doctest an
 cargo test -p cicada-examples --doc    # only the Rust blocks of README.md, the guides and docs/operations.md
 cargo test -p cicada-examples --test docs   # the table of guarantees and the links between the Markdown files
 cargo test -p cicada-examples --test skill  # the consumer skill: version, routes, resolver and packaging (python3 3.11+)
+cargo test -p cicada --test fixtures   # fixed portable expectations in fixtures/; no update variable (ADR 0047)
 cargo clippy --workspace --all-targets
 cargo fmt --all                        # rustfmt.toml: 120 columns; the gate checks it
 cargo check -p cicada [--features sqlite|postgres|testing]   # the gate builds the core with each feature alone
@@ -51,11 +52,12 @@ docs. See [local checks](docs/how-to/releasing.md#local-checks-and-the-pre-push-
 | `crates/cicada-otel` | The telemetry observer |
 | `crates/cicada-actors` | The ready-made actors (layer 3): `supervisor`, `dead_letters`, `topic`, `scheduler`, `rate_limiter`, `debouncer`, `batcher`, `heartbeat_watch`, `event`; `flow`, durable flows under a host's type name (a test flow's contract in `tests/contracts`); `StoredMessage` and `Schedule`; their contracts are checked against `docs/reference/contracts` in `tests/wire_formats.rs` |
 | `examples/`, `sample-service/` | Worked examples, the doctests of the README and the guides (`src/lib.rs`, `build.rs`) and the checks of the docs (`tests/docs.rs`); a runnable node |
+| `fixtures/` | Portable test data for other implementations (ADR 0047): canonical JSON, contract hashes, lease bodies and status classification; fixed, reviewed and checked by `crates/cicada/tests/fixtures.rs` |
 | `e2e/` | End-to-end and fault tests against sample nodes in Docker |
 | `docs/` | `architecture.md`; `guarantees.md`, the tests behind each guarantee; `guide/`, one guide per layer; `operations.md`; `reference/`, the generated help of the command line (`cli.md`) and the contracts of the ready-made actors (`contracts/`); `openapi.json`; `adr/` and its index `adr/README.md` |
 | `openspec/` | Specs, changes in progress and finished changes |
 | `skills/cicada/` | The consumer skill (ADR 0041): `SKILL.md`, which routes a consumer's agent into the resolved source, and its read-only resolver `scripts/cicada_source.py`; checked by `examples/tests/skill.rs` with the Python tests in `examples/tests/skill/` |
-| `scripts/` | `gate.py`, local check evidence, pre-push and release (ADR 0046); `gate-policy.json` and `ci/`, its checks; `release-check.sh`; `package-skill.py`, the skill's release archive; `status.py`, the order and state of the changes; `review.py`, the review requests between the loops |
+| `scripts/` | `gate.py`, local check evidence, pre-push and release (ADR 0046); `gate-policy.json` and `ci/`, its checks; `release-check.sh`; `package-skill.py` and `package-fixtures.py`, the release archives, with shared helpers in `release_archive.py`; `status.py`, the order and state of the changes; `review.py`, the review requests between the loops |
 | `.claude/skills/` | The three loops (ADR 0030): `design-loop`, `build-loop` with the builder's brief and docs handoff template, `review-loop` with the briefs of a design and a code review |
 
 ## Rules

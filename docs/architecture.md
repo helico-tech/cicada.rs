@@ -465,6 +465,23 @@ rules. Schemas are not compiled: the door's fallback for an unusable schema appl
 behind the host's authentication. A node's resolver reuses a parsed contract only when both its hash and its stored
 JSON match, so descriptions that another system replaced after a removal are read fresh.
 
+Contract hashes are `sha256:` followed by the lowercase hexadecimal SHA-256 digest of canonical UTF-8 JSON, after
+removing only schema `description` keywords, recursively under keywords that hold subschemas (ADR 0017). Names and
+data called `description` remain. [Canonical JSON](adr/0047-canonical-json-and-conformance-fixtures.md) sorts object keys by
+UTF-8 bytes without Unicode normalization, keeps array order and writes no insignificant whitespace. Strings escape
+quote and backslash, use `\b`, `\f`, `\n`, `\r`, `\t` and lowercase `\u00xx` for other controls below U+0020;
+all other characters, including slash, U+007F and U+2028, remain raw UTF-8.
+
+Represented i64/u64 numbers print as decimal integers. Finite binary64 numbers use shortest round-tripping digits,
+choosing nearest digits and ties to even: decimal exponents -5 through 15 use fixed notation with `.0` for whole
+floats; others use lowercase `e`, an explicit exponent sign and no leading exponent zeroes. Negative float zero
+stays `-0.0`. Parsing decides the representation: `0` stays `0`, `-0` becomes `-0.0`, `1e2` becomes `100.0`, integers
+outside i64/u64 can become floats, underflow can become zero, and nonfinite overflow is refused.
+
+The fixed [fixtures](../fixtures/canonical.json) record serde_json 1.0.151 with `preserve_order` and `float_roundtrip`,
+without `arbitrary_precision`, and zmij 1.0.23. Other resolved dependencies or merged features are not certified by
+these finite examples. An intentional canonical-format change requires a new ADR and a hash-compatibility plan.
+
 Remote turns (ADR 0040) are four POST routes of the full router: `/leases` (`{owner, types: {name: hash}, limit}`),
 `/leases/renew` and `/leases/release` (`{actor, epoch}`) and `/leases/complete` (`{actor, epoch, messageId,
 report}`), over the core operations of [Leases outside the node](#leases-outside-the-node) on any system of the store,

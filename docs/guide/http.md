@@ -176,6 +176,32 @@ Workers need type reads as well as writes. No sticky session is required, but ev
 protocol (0.16.16 or newer). Size proxy/server body limits for a whole completion report, not one outgoing message:
 repeated 413 responses can exhaust the [claim limit](core.md#claim-limit).
 
+For a worker implementation in another language, test against the portable fixtures shipped from 0.18.12 onward.
+Download the archive matching your server version; for 0.18.12:
+
+```sh
+gh release download v0.18.12 --repo helico-tech/cicada.rs --pattern 'cicada-fixtures-*.tar.gz'
+tar -xzf cicada-fixtures-v0.18.12.tar.gz
+```
+
+`cicada-fixtures/SOURCE.json` identifies the repository, tag, commit and version. The four files declare `format: 1`:
+
+| File | Check |
+| --- | --- |
+| [canonical.json](../../fixtures/canonical.json) | Canonical text and hashes, including parser refusals and the tested dependency baseline |
+| [contracts.json](../../fixtures/contracts.json) | Contract hashes after removing schema descriptions |
+| [leases.json](../../fixtures/leases.json) | Bodies for the four lease operations: valid, accepted-and-normalized, and refused at decode or conversion |
+| [status.json](../../fixtures/status.json) | Success statuses, error classification and type-registration exceptions |
+
+JSON inputs and bodies are strings inside the files. Parse those strings with a parser that distinguishes integers
+from floats. Match canonical text and hashes byte for byte using the [canonical rules](../architecture.md#http-contract).
+Compare lease bodies by meaning: Rust's member order and numeric spelling are examples. Successful decoding does
+not establish that a server admits a lease or applies a report's effects.
+
+The registration exceptions include `422 invalid-contract` and `409 contract-conflict` with one `GET /types/{name}`;
+a `404 no-such-type` on that follow-up is Unavailable. Case names are stable; format 1 can gain cases, while changed
+field meanings need a new format. Finite fixtures do not prove compatibility for every number or dependency graph.
+
 ### List actors with their state
 
 `ActorClient::list_actors_with_state` / `GET /actors/states` returns full actor snapshots in one store read per page.
