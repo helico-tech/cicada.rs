@@ -35,7 +35,7 @@ recreate it, as with the debouncer.
 
 ## Order
 
-After `local-push-gate`. No following change.
+After `local-push-gate`. Before `node-details`.
 
 ## Impact
 
