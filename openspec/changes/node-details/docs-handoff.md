@@ -92,4 +92,9 @@ is needed.
 Proposed text only; no owner fixes were needed or integrated. The host name lookup ran in tests on macOS (Darwin) and runs in
 the Linux E2E containers, where no test asserts its value; other platforms are untested, and a failed lookup never
 stops a start.
-Check results are in the build report.
+Checks run on the code branch, PostgreSQL on port 55432 with `CICADA_PG_URL` set: `cargo test --workspace` (2979 passed,
+0 failed), including the PostgreSQL conformance and the schema-6 upgrade test on PostgreSQL; `cargo fmt --all --check`
+and `cargo clippy --workspace --all-targets -- -D warnings` (clean); `cargo test -p cicada-examples --doc` (29 passed),
+`--test docs` (11 passed) and `--test skill` (8 passed); `openspec validate node-details --strict` (valid). The
+generated `docs/openapi.json` and `docs/reference/cli.md` are regenerated and committed; actor contract snapshots are
+unchanged.
