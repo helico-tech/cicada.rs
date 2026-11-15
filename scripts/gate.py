@@ -1188,8 +1188,10 @@ class Release:
         ensure_runner(self.repo, commit)
         self.check_local_tag(commit)
         path = prepare_owned(self.sess, commit)
-        policy_blob, policy, _ = identity(self.repo, commit)
-        notes = self.release_check(path, True, command_env(policy, pg_url()))
+        _, policy, _ = identity(self.repo, commit)
+        env = command_env(policy, pg_url())
+        refuse_external_config(path, env)
+        notes = self.release_check(path, True, env)
         if self.state.get("notes_sha256") not in (None, sha256(notes.encode())):
             raise GateError("the release notes differ from the first attempt's")
         notes_file = self.dir / "notes.md"
