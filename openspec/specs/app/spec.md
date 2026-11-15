@@ -212,11 +212,10 @@ try after 60 seconds, and then fail.
 
 ### Requirement: The settings of the node come from flags, variables and the host
 
-The flags `--node-id`, `--concurrency`, `--lease-ttl`, `--heartbeat-interval`, `--poll-interval`,
-`--shutdown-grace-period`, `--max-turn` and `--max-lost-claims`, each with a variable `CICADA_…` of the same name,
-SHALL set the fields of `NodeConfig` for serve and direct-store workers. A flag SHALL win over its variable, the
-variable over the `NodeConfig` the host gave to `App`, and that over the default of the library. HTTP workers SHALL
-map only applicable settings to WorkerConfig and refuse explicit server-owned settings as specified below.
+Node flags and their CICADA variables SHALL set NodeConfig for serve and direct-store workers: node-id,
+node-label, concurrency, lease-ttl, heartbeat-interval, poll-interval, shutdown-grace-period, max-turn and
+max-lost-claims. Precedence SHALL be flag, nonempty variable, host config, then library default. HTTP workers SHALL
+map only applicable settings and refuse explicit settings they cannot honor as specified below.
 
 #### Scenario: A variable over the host's value
 
@@ -237,6 +236,14 @@ map only applicable settings to WorkerConfig and refuse explicit server-owned se
 
 - **WHEN** a direct-store command reads `CICADA_LEASE_TTL` as `soon`
 - **THEN** the command fails with exit code 2, and the error names `CICADA_LEASE_TTL`
+
+#### Scenario: Label precedence
+
+- **WHEN** a label is supplied by flag, variable and host config
+- **THEN** --node-label wins, else CICADA_NODE_LABEL, else the host's label, else None
+- **AND** an empty environment value is unset, while whitespace-only is invalid
+- **AND** valid leading/trailing spaces are preserved from the variable as from the flag or host configuration
+- **AND** invalid explicit values are usage errors (exit 2); invalid host config follows start validation (exit 1)
 
 ### Requirement: The host can change the HTTP side
 
@@ -584,3 +591,18 @@ truncated by whitespace, slash, question mark, hash, double quote or backtick. A
 - **WHEN** a candidate authority has no at-sign
 - **THEN** it is left unchanged because the scanner cannot distinguish a port from incomplete credentials
 - **AND** the documented guarantee does not claim to hide such truncated input
+
+### Requirement: HTTP workers refuse explicit node labels
+
+An App worker over HTTP SHALL refuse --node-label because it has no node row. It SHALL ignore CICADA_NODE_LABEL and
+the host's NodeConfig.label without validating them. This SHALL NOT change WorkerConfig or remote lease identity.
+
+#### Scenario: Label flag in HTTP mode
+
+- **WHEN** worker --server or --context selects HTTP execution with --node-label
+- **THEN** it fails with exit 2 and a diagnostic explaining that a worker over HTTP has no node row
+
+#### Scenario: Unused label cannot break HTTP execution
+
+- **WHEN** HTTP execution has a malformed CICADA_NODE_LABEL or an invalid host label but no --node-label flag
+- **THEN** it does not read or validate either label, and applicable worker settings still apply normally

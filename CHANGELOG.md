@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.19.0 — unreleased
+## 0.19.0 — 2026-11-15
 
 Node details (ADR 0048): each node row says which machine wrote it, with which Cicada version, under which label.
 A breaking Rust API release, as public structs gain fields; the HTTP fields are optional. The store schema goes to
