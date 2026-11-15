@@ -13,7 +13,7 @@ use crate::retry::RetryPolicy;
 use crate::store::support::{self, Notice, Removal, check_limit};
 use crate::store::{
     ActorRecord, Backend, CancelResult, Claim, Clock, CommitRequest, CommitResult, CreateResult, DeleteResult,
-    DeliverNowResult, EnqueueResult, Message, MessageId, MessageStatus, NodeId, NodeRecord, OutcomeRecord,
+    DeliverNowResult, EnqueueResult, Message, MessageId, MessageStatus, NodeDetails, NodeId, NodeRecord, OutcomeRecord,
     OutcomeStatus, OutgoingMessage, Page, PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn,
     SetWatchResult, StateChange, StoreError, StoreResult, StoreStats, SystemClock, TurnOutcome, TypeDef,
 };
@@ -1993,20 +1993,25 @@ impl Backend for SqliteStore {
         tx.end(result).await
     }
 
-    async fn heartbeat_node(&self, id: &NodeId, hosted: &BTreeSet<TypeName>) -> StoreResult<()> {
+    async fn heartbeat_node(&self, id: &NodeId, hosted: &BTreeSet<TypeName>, details: &NodeDetails) -> StoreResult<()> {
         let mut tx = self.write().await?;
         let now = micros(tx.now);
         let result = async {
             execute(
                 tx.conn(),
                 sqlx::query(
-                    "INSERT INTO nodes (id, hosted, started_at, last_seen) VALUES (?, ?, ?, ?)
-                     ON CONFLICT (id) DO UPDATE SET hosted = excluded.hosted, last_seen = excluded.last_seen",
+                    "INSERT INTO nodes (id, hosted, started_at, last_seen, hostname, cicada_version, label)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)
+                     ON CONFLICT (id) DO UPDATE SET hosted = excluded.hosted, last_seen = excluded.last_seen,
+                       hostname = excluded.hostname, cicada_version = excluded.cicada_version, label = excluded.label",
                 )
                 .bind(id.as_str())
                 .bind(json(&support::hosted_to_json(hosted)))
                 .bind(now)
-                .bind(now),
+                .bind(now)
+                .bind(details.hostname.as_deref())
+                .bind(details.cicada_version.as_deref())
+                .bind(details.label.as_deref()),
             )
             .await?;
             let oldest = micros(time::sub(tx.now, support::NODE_ROW_KEPT));
@@ -2020,7 +2025,9 @@ impl Backend for SqliteStore {
         let mut tx = self.read().await?;
         let result = fetch_all(
             tx.conn(),
-            sqlx::query("SELECT id, hosted, started_at, last_seen FROM nodes ORDER BY id"),
+            sqlx::query(
+                "SELECT id, hosted, started_at, last_seen, hostname, cicada_version, label FROM nodes ORDER BY id",
+            ),
             rows::node_record,
         )
         .await;

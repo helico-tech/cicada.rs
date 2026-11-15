@@ -13,7 +13,7 @@ use crate::prelude::*;
 use crate::runtime::{ActorSystemBuilder, NodeConfig, SendResult};
 use crate::store::{
     Backend, CancelResult, Claim, CommitRequest, CommitResult, CreateResult, DeleteResult, DeliverNowResult,
-    EnqueueResult, Message, MessageId, MessageStatus, NodeId, NodeRecord, OutcomeRecord, OutcomeStatus,
+    EnqueueResult, Message, MessageId, MessageStatus, NodeDetails, NodeId, NodeRecord, OutcomeRecord, OutcomeStatus,
     OutgoingMessage, Page, PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn, SetWatchResult,
     Store, StoreResult, StoreStats, TurnOutcome, TypeDef,
 };
@@ -719,8 +719,8 @@ impl<F: Faults> Backend for Faulty<F> {
         self.inner.purge(address).await
     }
 
-    async fn heartbeat_node(&self, id: &NodeId, hosted: &BTreeSet<TypeName>) -> StoreResult<()> {
-        self.inner.heartbeat_node(id, hosted).await
+    async fn heartbeat_node(&self, id: &NodeId, hosted: &BTreeSet<TypeName>, details: &NodeDetails) -> StoreResult<()> {
+        self.inner.heartbeat_node(id, hosted, details).await
     }
 
     async fn list_nodes(&self) -> StoreResult<Vec<NodeRecord>> {

@@ -441,6 +441,32 @@ async fn invalid_configuration_fails_start() {
     assert_eq!(e.problems.len(), 2, "{:?}", e.problems);
 }
 
+/// Scenario: Invalid labels.
+#[tokio::test]
+async fn a_blank_a_nul_or_a_too_long_label_fails_start() {
+    for (label, problem) in [
+        (String::new(), "label must not be blank"),
+        (" \t\n".to_owned(), "label must not be blank"),
+        ("a\0b".to_owned(), "label must not contain NUL"),
+        ("é".repeat(201), "label must be at most 200 characters long"),
+    ] {
+        let config = NodeConfig { label: Some(label.clone()), ..NodeConfig::default() };
+        let system = ActorSystem::builder(store()).config(config).build();
+        assert_eq!(single(&system.initialize().await.unwrap_err()), problem, "{label:?}");
+        assert_eq!(single(&system.start().await.unwrap_err()), problem, "{label:?}");
+        assert_eq!(system.state(), NodeState::New);
+    }
+}
+
+/// Scenario: Valid Unicode and absence.
+#[tokio::test]
+async fn no_label_or_one_of_200_characters_with_outer_spaces_is_valid() {
+    for label in [None, Some("é".repeat(200)), Some(format!(" {} ", "東".repeat(198)))] {
+        let config = NodeConfig { label, ..NodeConfig::default() };
+        ActorSystem::builder(store()).config(config).build().initialize().await.unwrap();
+    }
+}
+
 #[tokio::test]
 async fn the_heartbeat_must_leave_room_for_a_retry_within_the_lease() {
     let e = ActorSystem::builder(store())

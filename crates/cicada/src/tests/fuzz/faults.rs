@@ -20,7 +20,7 @@ use crate::address::{ActorAddress, TypeName};
 use crate::retry::RetryPolicy;
 use crate::store::{
     ActorRecord, Backend, CancelResult, Claim, CommitRequest, CommitResult, ControlEffect, CreateResult, DeleteResult,
-    DeliverNowResult, EnqueueResult, Message, MessageId, MessageStatus, NodeId, NodeRecord, OutcomeRecord,
+    DeliverNowResult, EnqueueResult, Message, MessageId, MessageStatus, NodeDetails, NodeId, NodeRecord, OutcomeRecord,
     OutcomeStatus, OutgoingMessage, Page, PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn,
     SetWatchResult, StateChange, StoreError, StoreResult, StoreStats, TurnOutcome, TypeDef,
 };
@@ -806,8 +806,8 @@ impl Backend for FaultStore {
         self.gate(Method::SweepExpired, || self.inner.sweep_expired()).await
     }
 
-    async fn heartbeat_node(&self, id: &NodeId, hosted: &BTreeSet<TypeName>) -> StoreResult<()> {
-        self.gate(Method::HeartbeatNode, || self.inner.heartbeat_node(id, hosted)).await
+    async fn heartbeat_node(&self, id: &NodeId, hosted: &BTreeSet<TypeName>, details: &NodeDetails) -> StoreResult<()> {
+        self.gate(Method::HeartbeatNode, || self.inner.heartbeat_node(id, hosted, details)).await
     }
 
     async fn list_nodes(&self) -> StoreResult<Vec<NodeRecord>> {
@@ -939,7 +939,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn with_no_rules_the_node_rows_give_the_inner_answer() {
         let (memory, store, _) = layer(Vec::new()).await;
-        store.heartbeat_node(&node(), &types()).await.unwrap();
+        store.heartbeat_node(&node(), &types(), &Default::default()).await.unwrap();
         assert_eq!(store.list_nodes().await.unwrap(), memory.list_nodes().await.unwrap());
         assert_eq!(store.list_nodes().await.unwrap().len(), 1);
         store.remove_node(&node()).await.unwrap();

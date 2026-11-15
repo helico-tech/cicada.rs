@@ -32,9 +32,9 @@ use crate::observer::{Observers, TurnObserver};
 use crate::schema::SchemaCheck;
 use crate::store::{
     ActorRecord, Backend, CancelResult, Claim, CommitResult, CreateResult, DeleteResult, DeliverNowResult,
-    EnqueueResult, Message, MessageId, MessageStatus, NodeId, OutcomeRecord, OutcomeStatus, OutgoingMessage, Page,
-    PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn, SetWatchResult, Store, StoreError,
-    StoreStats, TurnOutcome,
+    EnqueueResult, Message, MessageId, MessageStatus, NodeDetails, NodeId, OutcomeRecord, OutcomeStatus,
+    OutgoingMessage, Page, PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn, SetWatchResult,
+    Store, StoreError, StoreStats, TurnOutcome,
 };
 use crate::time::{self, MAX_INSTANT, Timestamp};
 use crate::turn::SendOptions;
@@ -49,6 +49,29 @@ const NODE_ALIVE_FOR: Duration = Duration::from_secs(30);
 const NODE_SUSPECT_FOR: Duration = Duration::from_secs(120);
 /// Most running turns read per page when the node view counts them.
 const PAGE_OF_TURNS: usize = 1000;
+
+/// The host name a lookup gave, when it is usable for the node table (ADR 0048): else why not, without the value. Not
+/// truncated or trimmed: a value that does not fit is dropped.
+fn usable_hostname<E>(lookup: Result<String, E>) -> Result<String, &'static str> {
+    let name = lookup.map_err(|_| "the lookup failed or gave no UTF-8 text")?;
+    if name.trim().is_empty() {
+        Err("it is blank")
+    } else if name.contains('\0') {
+        Err("it contains NUL")
+    } else if name.chars().count() > limits::MAX_ID_LENGTH {
+        Err("it is longer than 200 characters")
+    } else {
+        Ok(name)
+    }
+}
+
+/// The details of this node's row: the OS host name, looked up once, the core crate's version and `label`.
+fn node_details(label: Option<String>) -> NodeDetails {
+    let hostname = usable_hostname(whoami::hostname())
+        .inspect_err(|why| tracing::debug!("The node table gets no host name: {why}"))
+        .ok();
+    NodeDetails { hostname, cicada_version: Some(env!("CARGO_PKG_VERSION").to_owned()), label }
+}
 
 /// The most messages one bulk call acts on, and the most ids it takes.
 pub const BULK_LIMIT: usize = 1000;
@@ -202,6 +225,10 @@ pub struct NodeConfig {
     /// gives its claims back loses none. `None` turns the limit off; `Some(0)` is a start problem. Default `Some(5)`.
     /// Every node of a system should have the same; each applies its own.
     pub max_lost_claims: Option<u32>,
+    /// A free text shown with this node in the node table (ADR 0048), such as the application and its version; display
+    /// only, not an identity. When present it is not blank, has no NUL and at most
+    /// [`MAX_ID_LENGTH`](super::limits::MAX_ID_LENGTH) characters, and is kept as given. Default `None`.
+    pub label: Option<String>,
 }
 
 impl Default for NodeConfig {
@@ -217,6 +244,7 @@ impl Default for NodeConfig {
             shutdown_cancel_timeout: Duration::from_secs(5),
             sweep_interval: Duration::from_secs(3600),
             max_lost_claims: Some(5),
+            label: None,
         }
     }
 }
@@ -258,6 +286,15 @@ impl NodeConfig {
         }
         if self.max_lost_claims == Some(0) {
             problems.push("max_lost_claims must be at least 1, or None for no limit".to_owned());
+        }
+        if let Some(label) = &self.label {
+            if label.trim().is_empty() {
+                problems.push("label must not be blank".to_owned());
+            } else if label.contains('\0') {
+                problems.push("label must not contain NUL".to_owned());
+            } else if label.chars().count() > limits::MAX_ID_LENGTH {
+                problems.push(format!("label must be at most {} characters long", limits::MAX_ID_LENGTH));
+            }
         }
         problems
     }
@@ -497,6 +534,7 @@ impl ActorSystem {
             });
         }
         let init = self.initialized().await?.clone();
+        let details = node_details(self.inner.config.label.clone());
         self.inner.stopping.store(false, Ordering::SeqCst);
         if !init.types.is_empty() {
             let this = self.clone();
@@ -522,7 +560,7 @@ impl ActorSystem {
             let stop = lifecycle.node_stop.clone();
             async move {
                 loop {
-                    if let Err(e) = store.heartbeat_node(&node, &hosted).await {
+                    if let Err(e) = store.heartbeat_node(&node, &hosted, &details).await {
                         tracing::warn!("The heartbeat of node {node} failed; retrying after {NODE_HEARTBEAT:?}: {e}");
                     }
                     tokio::select! {
@@ -1609,6 +1647,9 @@ impl ActorSystem {
                     hosted: r.hosted,
                     started_at: r.started_at,
                     last_seen: r.last_seen,
+                    hostname: r.hostname,
+                    cicada_version: r.cicada_version,
+                    label: r.label,
                     status,
                     running_turns,
                 }
@@ -1816,4 +1857,33 @@ impl Drop for RunningGuard {
 fn _assert_send_sync() {
     fn check<T: Send + Sync>() {}
     check::<ActorSystem>();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Scenario: Lookup cannot provide a usable hostname.
+    #[test]
+    fn a_hostname_lookup_that_gives_no_usable_name_gives_none_and_a_usable_one_is_kept_as_given() {
+        assert_eq!(usable_hostname::<()>(Err(())), Err("the lookup failed or gave no UTF-8 text"));
+        assert_eq!(usable_hostname::<()>(Ok(String::new())), Err("it is blank"));
+        assert_eq!(usable_hostname::<()>(Ok(" \t ".into())), Err("it is blank"));
+        assert_eq!(usable_hostname::<()>(Ok("a\0b".into())), Err("it contains NUL"));
+        assert_eq!(usable_hostname::<()>(Ok("é".repeat(201))), Err("it is longer than 200 characters"));
+        assert_eq!(usable_hostname::<()>(Ok("é".repeat(200))), Ok("é".repeat(200)), "characters, not bytes");
+        assert_eq!(usable_hostname::<()>(Ok(" web-1 ".into())), Ok(" web-1 ".into()), "not trimmed");
+        // A reason never holds the value it rejects.
+        for rejected in ["secret\0name".to_owned(), format!("secret{}", "x".repeat(200))] {
+            assert!(!usable_hostname::<()>(Ok(rejected)).unwrap_err().contains("secret"));
+        }
+    }
+
+    #[test]
+    fn the_details_carry_the_core_version_and_the_label() {
+        let details = node_details(Some(" app 1.2 ".into()));
+        assert_eq!(details.cicada_version.as_deref(), Some(env!("CARGO_PKG_VERSION")));
+        assert_eq!(details.label.as_deref(), Some(" app 1.2 "));
+        assert!(details.hostname.as_ref().is_none_or(|h| usable_hostname::<()>(Ok(h.clone())).is_ok()));
+    }
 }

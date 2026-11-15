@@ -135,6 +135,13 @@ pub struct NodeInfo {
     pub started_at: Timestamp,
     /// Store time of its latest heartbeat.
     pub last_seen: Timestamp,
+    /// The OS host name its latest heartbeat reported (ADR 0048); `None` when the lookup gave no usable name or an older
+    /// node wrote the row. It may identify a machine or container; it is not an authenticated fact or an identity.
+    pub hostname: Option<String>,
+    /// The version of the `cicada` crate the node was built with, not that of its application.
+    pub cicada_version: Option<String>,
+    /// [`NodeConfig::label`](super::NodeConfig::label) of the node.
+    pub label: Option<String>,
     /// Alive, suspect or dead, from the age of [`Self::last_seen`] at store now.
     pub status: NodeHealth,
     /// Its turns running now.

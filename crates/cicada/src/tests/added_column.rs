@@ -147,7 +147,7 @@ pub async fn operations(store: &dyn Backend, round: &str) {
     assert!(store.set_paused(&actor, false).await.unwrap());
     assert_eq!(store.purge(&actor).await.unwrap(), Some(2), "the retry and the message made due");
     assert_eq!(store.stats(prefix).await.unwrap().actors, 4);
-    store.heartbeat_node(&node, &types).await.unwrap();
+    store.heartbeat_node(&node, &types, &Default::default()).await.unwrap();
     assert!(store.list_nodes().await.unwrap().iter().any(|n| n.id == node));
     store.remove_node(&node).await.unwrap();
     assert!(store.request_cancel(&actor).await.is_ok());

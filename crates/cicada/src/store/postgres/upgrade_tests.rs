@@ -1,4 +1,4 @@
-//! The upgrades from schema versions 1 to 5: a schema built with the migrations of that version, rows written
+//! The upgrades from schema versions 1 to 6: a schema built with the migrations of that version, rows written
 //! with SQL as a node of that version left them, then opened by this version. And rows that only a hand can write: two
 //! actors that name each other as parent, a watch whose watcher is gone. Skipped when `CICADA_PG_URL` is unset.
 
@@ -412,6 +412,67 @@ async fn a_database_of_schema_version_5_is_opened_and_no_message_has_a_lost_clai
         assert_eq!((pending[0].attempt, pending[0].lost_claims), (7, 0));
         let outcome = expect_finished(store.status(&MessageId::new("m0").unwrap()).await.unwrap());
         assert_eq!((outcome.envelope.attempt, outcome.envelope.lost_claims), (3, 0), "the outcome reads as none");
+        store.close().await;
+    })
+    .await;
+}
+
+/// The node statements of a node of schema version 6, as it prepared them: the read and the heartbeat, with their
+/// column lists.
+const V6_LIST_NODES: &str = "SELECT id, hosted, started_at, last_seen FROM nodes ORDER BY id";
+const V6_HEARTBEAT: &str = "INSERT INTO nodes (id, hosted, started_at, last_seen) VALUES ($1, $2, $3, $3)
+                 ON CONFLICT (id) DO UPDATE SET hosted = excluded.hosted, last_seen = excluded.last_seen";
+
+/// Runs the node statements of version 6 on `c`: a heartbeat of `id`, then the read; the ids it read.
+async fn v6_node_statements(c: &mut PgConnection, id: &str) -> Vec<String> {
+    sqlx::query(V6_HEARTBEAT).bind(id).bind(json!(["notes"])).bind(chrono::Utc::now()).execute(&mut *c).await.unwrap();
+    let rows = sqlx::query(V6_LIST_NODES).fetch_all(&mut *c).await.unwrap();
+    rows.iter().map(|r| sqlx::Row::get::<String, _>(r, "id")).collect()
+}
+
+/// Scenarios: Upgrade an existing node table; A running old connection survives the additive migration.
+#[tokio::test]
+async fn a_database_of_schema_version_6_keeps_its_nodes_and_its_running_old_nodes() {
+    Old::run(6, async |db| {
+        db.exec(
+            r#"INSERT INTO {s}.nodes (id, hosted, started_at, last_seen) VALUES ('kept', '["notes"]', now(), now())"#,
+        )
+        .await
+        .unwrap();
+        // A node of version 6 that keeps running: its connection has prepared its node statements.
+        let mut old = Old::connect(&db.url).await;
+        sqlx::raw_sql(AssertSqlSafe(format!("SET search_path TO {}", quote(&db.name))))
+            .execute(&mut old)
+            .await
+            .unwrap();
+        assert_eq!(v6_node_statements(&mut old, "old").await, ["kept", "old"]);
+
+        let store = db.open().await;
+        assert_eq!(db.version().await, schema::VERSION);
+        let rows = store.list_nodes().await.unwrap();
+        assert_eq!(rows.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(), ["kept", "old"]);
+        assert!(rows.iter().all(|n| (&n.hostname, &n.cicada_version, &n.label) == (&None, &None, &None)), "{rows:?}");
+        let details = crate::store::NodeDetails {
+            hostname: Some("new-host".into()),
+            cicada_version: Some("0.19.0".into()),
+            label: Some("new".into()),
+        };
+        store.heartbeat_node(&NodeId::new("old").unwrap(), &Default::default(), &details).await.unwrap();
+
+        // The old connection's prepared statements still run: an update leaves the details of the new writer, an
+        // insert has none.
+        assert_eq!(v6_node_statements(&mut old, "old").await, ["kept", "old"]);
+        assert_eq!(v6_node_statements(&mut old, "older").await, ["kept", "old", "older"]);
+        old.close().await.unwrap();
+        let rows = store.list_nodes().await.unwrap();
+        let by_id = |id: &str| rows.iter().find(|n| n.id.as_str() == id).unwrap().clone();
+        assert_eq!(by_id("old").hostname.as_deref(), Some("new-host"), "an old update keeps the details");
+        assert_eq!(by_id("old").label.as_deref(), Some("new"));
+        assert_eq!((by_id("older").hostname, by_id("older").label), (None, None), "an old insert has none");
+        // A new heartbeat replaces them, clearing the absent ones.
+        store.heartbeat_node(&NodeId::new("old").unwrap(), &Default::default(), &Default::default()).await.unwrap();
+        let old_row = store.list_nodes().await.unwrap().into_iter().find(|n| n.id.as_str() == "old").unwrap();
+        assert_eq!((old_row.hostname, old_row.cicada_version, old_row.label), (None, None, None));
         store.close().await;
     })
     .await;

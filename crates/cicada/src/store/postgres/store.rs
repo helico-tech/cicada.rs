@@ -15,7 +15,7 @@ use crate::retry::RetryPolicy;
 use crate::store::support::{self, Notice, Removal, check_limit};
 use crate::store::{
     ActorCreate, ActorRecord, Backend, CancelResult, Claim, CommitRequest, CommitResult, CreateResult, DeleteResult,
-    DeliverNowResult, EnqueueResult, Message, MessageId, MessageStatus, NodeId, NodeRecord, OutcomeRecord,
+    DeliverNowResult, EnqueueResult, Message, MessageId, MessageStatus, NodeDetails, NodeId, NodeRecord, OutcomeRecord,
     OutcomeStatus, OutgoingMessage, Page, PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn,
     SetWatchResult, StateChange, StoreError, StoreResult, StoreStats, TurnOutcome, TypeDef,
 };
@@ -696,6 +696,9 @@ fn node_record(row: &PgRow) -> Result<NodeRecord, TxError> {
         hosted: support::hosted_from_json(&row.try_get::<Value, _>("hosted")?)?,
         started_at: row.try_get("started_at")?,
         last_seen: row.try_get("last_seen")?,
+        hostname: row.try_get("hostname")?,
+        cicada_version: row.try_get("cicada_version")?,
+        label: row.try_get("label")?,
     })
 }
 
@@ -1985,16 +1988,21 @@ impl Backend for PostgresStore {
 
     // ---- nodes and running turns ----
 
-    async fn heartbeat_node(&self, id: &NodeId, hosted: &BTreeSet<TypeName>) -> StoreResult<()> {
+    async fn heartbeat_node(&self, id: &NodeId, hosted: &BTreeSet<TypeName>, details: &NodeDetails) -> StoreResult<()> {
         transaction!(self, false, |tx| -> () {
             let now = tx.now().await?;
             sqlx::query(
-                "INSERT INTO nodes (id, hosted, started_at, last_seen) VALUES ($1, $2, $3, $3)
-                 ON CONFLICT (id) DO UPDATE SET hosted = excluded.hosted, last_seen = excluded.last_seen",
+                "INSERT INTO nodes (id, hosted, started_at, last_seen, hostname, cicada_version, label)
+                 VALUES ($1, $2, $3, $3, $4, $5, $6)
+                 ON CONFLICT (id) DO UPDATE SET hosted = excluded.hosted, last_seen = excluded.last_seen,
+                   hostname = excluded.hostname, cicada_version = excluded.cicada_version, label = excluded.label",
             )
             .bind(id.as_str())
             .bind(support::hosted_to_json(hosted))
             .bind(now)
+            .bind(details.hostname.as_deref())
+            .bind(details.cicada_version.as_deref())
+            .bind(details.label.as_deref())
             .execute(&mut *tx.c)
             .await?;
             sqlx::query("DELETE FROM nodes WHERE last_seen < $1")
@@ -2007,9 +2015,11 @@ impl Backend for PostgresStore {
 
     async fn list_nodes(&self) -> StoreResult<Vec<NodeRecord>> {
         transaction!(self, true, |tx| -> Vec<NodeRecord> {
-            let rows = sqlx::query("SELECT id, hosted, started_at, last_seen FROM nodes ORDER BY id")
-                .fetch_all(&mut *tx.c)
-                .await?;
+            let rows = sqlx::query(
+                "SELECT id, hosted, started_at, last_seen, hostname, cicada_version, label FROM nodes ORDER BY id",
+            )
+            .fetch_all(&mut *tx.c)
+            .await?;
             commit(rows.iter().map(node_record).collect::<Result<Vec<_>, _>>()?)
         })
     }

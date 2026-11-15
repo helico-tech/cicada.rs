@@ -218,6 +218,7 @@ macro_rules! for_each_case {
             registry_removing_a_type_racing_a_commit_that_creates_an_instance_of_it_leaves_no_orphan,
             nodes_a_heartbeat_upserts_the_row_with_store_time_and_nodes_are_listed_by_id,
             nodes_any_heartbeat_removes_rows_last_seen_more_than_a_day_ago,
+            nodes_a_heartbeat_replaces_the_details_unicode_included_and_absent_ones_clear_them,
             turns_running_turns_are_valid_leases_by_node_and_prefix_in_address_order_across_pages,
             turns_a_cancel_request_is_recorded_only_under_a_valid_lease_and_reported_only_for_its_epoch,
             turns_a_request_made_for_an_earlier_epoch_has_no_effect_on_a_later_turn,

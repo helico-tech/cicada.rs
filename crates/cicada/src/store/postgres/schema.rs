@@ -1,4 +1,4 @@
-//! The PostgreSQL schema and its versioned migrations; the schema is at version 6.
+//! The PostgreSQL schema and its versioned migrations; the schema is at version 7.
 //!
 //! The tables of the architecture (`actor_types`, `actors`, `messages`, `outcomes`, `nodes`) plus two sequences for the
 //! store-wide `seq` and epoch counters. JSON values are `jsonb`, instants `timestamptz` (microsecond precision, the
@@ -21,7 +21,9 @@
 //! 5 that keeps running counts no lost claim, and its statements that read with `*` fail on the changed table, as a
 //! prepared statement must not change its result type (ADR 0025). A node of the previous version that opens the
 //! migrated database refuses it. From version 6 on the store names the columns it reads, so a later migration that
-//! only adds a column with a default can be additive again.
+//! only adds a column with a default can be additive again. Migration 7 is: it adds the nullable details of a node
+//! (ADR 0048), a node of version 6 that keeps running writes its row without them and leaves another writer's details
+//! in place, and it cannot open the migrated database, so it cannot restart.
 //!
 //! A statement of a migration that violates a constraint (SQLSTATE class `23`, such as two old addresses that become one
 //! in migration 3) fails with [`StoreError::Invalid`], which names the version it could not reach and holds
@@ -163,6 +165,13 @@ const MIGRATIONS: &[&[&str]] = &[
     // existing message has none, and an outcome keeps the count in its envelope, where an older envelope without it
     // reads as 0. Not additive (see the module docs).
     &["ALTER TABLE {s}.messages ADD COLUMN lost_claims integer NOT NULL DEFAULT 0"],
+    // 7: node details (ADR 0048). The host name, core version and label a node's heartbeat writes; existing rows and
+    // the rows of a node of version 6 have none. Additive (see the module docs).
+    &[
+        "ALTER TABLE {s}.nodes ADD COLUMN hostname text",
+        "ALTER TABLE {s}.nodes ADD COLUMN cicada_version text",
+        "ALTER TABLE {s}.nodes ADD COLUMN label text",
+    ],
 ];
 
 /// The schema version this code writes.
@@ -298,7 +307,7 @@ mod tests {
     }
 
     #[test]
-    fn the_schema_is_at_version_6() {
-        assert_eq!(VERSION, 6);
+    fn the_schema_is_at_version_7() {
+        assert_eq!(VERSION, 7);
     }
 }

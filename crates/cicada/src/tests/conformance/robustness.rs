@@ -596,7 +596,7 @@ pub async fn closed_after_close_every_operation_fails_as_unavailable<B: FixtureF
             store.caused_by(&m.id, None, 10),
             store.stats(""),
             store.sweep_expired(),
-            store.heartbeat_node(&node, &types),
+            store.heartbeat_node(&node, &types, &Default::default()),
             store.list_nodes(),
             store.remove_node(&node),
             store.running_turns(None, "", None, 10),

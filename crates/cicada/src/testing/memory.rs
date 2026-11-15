@@ -10,7 +10,7 @@ use crate::change::{ChangeCollector, ChangeHub, SourceState};
 use crate::store::support::{self, Notice, Removal, check_limit};
 use crate::store::{
     ActorRecord, Backend, CancelResult, Claim, Clock, CommitRequest, CommitResult, CreateResult, DeleteResult,
-    DeliverNowResult, EnqueueResult, Message, MessageId, MessageStatus, NodeId, NodeRecord, OutcomeRecord,
+    DeliverNowResult, EnqueueResult, Message, MessageId, MessageStatus, NodeDetails, NodeId, NodeRecord, OutcomeRecord,
     OutcomeStatus, OutgoingMessage, Page, PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn,
     SetWatchResult, StateChange, StoreError, StoreResult, StoreStats, SystemClock, TurnOutcome, TypeDef,
 };
@@ -1090,21 +1090,20 @@ impl Backend for InMemoryStore {
         })
     }
 
-    async fn heartbeat_node(&self, id: &NodeId, hosted: &BTreeSet<TypeName>) -> StoreResult<()> {
+    async fn heartbeat_node(&self, id: &NodeId, hosted: &BTreeSet<TypeName>, details: &NodeDetails) -> StoreResult<()> {
         self.locked(|s, now| {
-            let hosted: Vec<TypeName> = hosted.iter().cloned().collect();
-            match s.nodes.get_mut(id.as_str()) {
-                Some(row) => {
-                    row.hosted = hosted;
-                    row.last_seen = now;
-                }
-                None => {
-                    s.nodes.insert(
-                        id.as_str().to_owned(),
-                        NodeRecord { id: id.clone(), hosted, started_at: now, last_seen: now },
-                    );
-                }
-            }
+            let started_at = s.nodes.get(id.as_str()).map_or(now, |row| row.started_at);
+            let NodeDetails { hostname, cicada_version, label } = details.clone();
+            let row = NodeRecord {
+                id: id.clone(),
+                hosted: hosted.iter().cloned().collect(),
+                started_at,
+                last_seen: now,
+                hostname,
+                cicada_version,
+                label,
+            };
+            s.nodes.insert(id.as_str().to_owned(), row);
             let oldest = time::sub(now, support::NODE_ROW_KEPT);
             s.nodes.retain(|_, r| r.last_seen >= oldest);
             Ok(())

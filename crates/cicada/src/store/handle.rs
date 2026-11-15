@@ -19,7 +19,7 @@ use super::PostgresOptions;
 use super::SqliteOptions;
 use super::{
     ActorRecord, Backend, CancelResult, Claim, CommitRequest, CommitResult, CreateResult, DeleteResult,
-    DeliverNowResult, EnqueueResult, Message, MessageId, MessageStatus, NodeId, NodeRecord, OutcomeRecord,
+    DeliverNowResult, EnqueueResult, Message, MessageId, MessageStatus, NodeDetails, NodeId, NodeRecord, OutcomeRecord,
     OutcomeStatus, OutgoingMessage, Page, PageCursor, RegisterResult, RemoveTypeResult, RenewResult, RunningTurn,
     SetWatchResult, StoreResult, StoreStats, TypeDef,
 };
@@ -335,8 +335,8 @@ impl Backend for Store {
         self.backend.sweep_expired().await
     }
 
-    async fn heartbeat_node(&self, id: &NodeId, hosted: &BTreeSet<TypeName>) -> StoreResult<()> {
-        self.backend.heartbeat_node(id, hosted).await
+    async fn heartbeat_node(&self, id: &NodeId, hosted: &BTreeSet<TypeName>, details: &NodeDetails) -> StoreResult<()> {
+        self.backend.heartbeat_node(id, hosted, details).await
     }
 
     async fn list_nodes(&self) -> StoreResult<Vec<NodeRecord>> {

@@ -27,7 +27,7 @@ pub use model::{
     ActorCreate, ActorRecord, Control, ControlEffect, Delivery, IdError, Message, MessageId, MessageStatus, NodeId,
     OutcomeRecord, OutcomeStatus, Page, PageCursor, RunningTurn, StoreStats, TurnOutcome, TypeDef,
 };
-pub(crate) use model::{Claim, CommitRequest, NodeRecord, OutgoingMessage, StateChange};
+pub(crate) use model::{Claim, CommitRequest, NodeDetails, NodeRecord, OutgoingMessage, StateChange};
 #[cfg(feature = "postgres")]
 pub use postgres::PostgresOptions;
 pub use results::{CancelResult, DeleteResult, DeliverNowResult, RemoveTypeResult};
@@ -303,9 +303,10 @@ pub(crate) trait Backend: Send + Sync + 'static {
 
     // ---- nodes and running turns (display only; leases stay the only authority) ----
 
-    /// Upserts the row of node `id` with its `hosted` types, stamped with store time (`started_at` only on the first
-    /// write), and removes the rows of every node last seen more than a day ago.
-    async fn heartbeat_node(&self, id: &NodeId, hosted: &BTreeSet<TypeName>) -> StoreResult<()>;
+    /// Upserts the row of node `id` with its `hosted` types and its `details`, stamped with store time (`started_at`
+    /// only on the first write), and removes the rows of every node last seen more than a day ago. The details replace
+    /// all three fields of the row, absent ones included.
+    async fn heartbeat_node(&self, id: &NodeId, hosted: &BTreeSet<TypeName>, details: &NodeDetails) -> StoreResult<()>;
 
     /// Every node row, ordered by id.
     async fn list_nodes(&self) -> StoreResult<Vec<NodeRecord>>;

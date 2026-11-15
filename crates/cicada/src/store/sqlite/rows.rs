@@ -80,6 +80,9 @@ pub(crate) fn node_record(row: &SqliteRow) -> StoreResult<NodeRecord> {
         hosted: support::hosted_from_json(&parse_json(&col::<String>(row, "hosted")?, "hosted types")?)?,
         started_at: instant(col(row, "started_at")?),
         last_seen: instant(col(row, "last_seen")?),
+        hostname: col(row, "hostname")?,
+        cicada_version: col(row, "cicada_version")?,
+        label: col(row, "label")?,
     })
 }
 

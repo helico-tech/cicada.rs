@@ -2,7 +2,7 @@
 //! counters and the store clock's high-water mark. All instants are INTEGER microseconds since the epoch; JSON values
 //! are TEXT.
 //!
-//! The schema is versioned with `PRAGMA user_version` and is at version 6: opening a store applies every missing
+//! The schema is versioned with `PRAGMA user_version` and is at version 7: opening a store applies every missing
 //! migration in one transaction and refuses a database written by a newer version. A database without a version is set
 //! up only when it has no tables; one with tables belongs to another program and is refused (ADR 0017). Migrations are
 //! additive so that nodes of the previous version keep working during a rolling deploy, with five exceptions, after
@@ -16,7 +16,9 @@
 //! running counts no lost claim, so its claims escape the claim limit (ADR 0025). A node of the previous version that
 //! opens the migrated database refuses it. From version 6 on the store names the columns it reads: a statement that
 //! reads with `*` and that sqlx has prepared crashes its worker once a column was added, so a later migration that only
-//! adds a column with a default can now be additive again.
+//! adds a column with a default can now be additive again. Migration 7 is: it adds the nullable details of a node
+//! (ADR 0048), a node of version 6 that keeps running writes its row without them and leaves another writer's details
+//! in place, and it cannot open the migrated database, so it cannot restart.
 //!
 //! A statement of a migration that violates a constraint (`SQLITE_CONSTRAINT`, such as two old addresses that become
 //! one in migration 3) fails the open with [`StoreError::Invalid`], which names the version it could not reach and
@@ -181,6 +183,13 @@ SELECT address, type, state, version, epoch, lease_owner, lease_until, lease_mes
     // existing message has none, and an outcome keeps the count in its envelope, where an older envelope without it
     // reads as 0. Not additive (see the module docs).
     &["ALTER TABLE messages ADD COLUMN lost_claims INTEGER NOT NULL DEFAULT 0"],
+    // 7: node details (ADR 0048). The host name, core version and label a node's heartbeat writes; existing rows and
+    // the rows of a node of version 6 have none. Additive (see the module docs).
+    &[
+        "ALTER TABLE nodes ADD COLUMN hostname TEXT",
+        "ALTER TABLE nodes ADD COLUMN cicada_version TEXT",
+        "ALTER TABLE nodes ADD COLUMN label TEXT",
+    ],
 ];
 
 /// The schema version this code writes.

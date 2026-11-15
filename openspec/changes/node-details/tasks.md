@@ -1,6 +1,6 @@
 # Tasks
 
-- [ ] 1. Core details and validation. Add NodeConfig.label (default None), its validation and optional fields to
+- [x] 1. Core details and validation. Add NodeConfig.label (default None), its validation and optional fields to
   NodeInfo/NodeView's core mapping inputs and private NodeRecord. Capture normalized whoami hostname once after
   initialization and before background work, plus core crate version and label; add the direct dependency and
   private NodeDetails argument to heartbeat_node. Update all backend/fault/fuzz signatures and constructors with
@@ -10,7 +10,7 @@
   Verify: targeted `cargo test -p cicada --lib tests::runtime::startup` and runtime operator tests, plus hostname
   normalization unit tests. No test relies on a hardcoded hostname or mutates the environment.
 
-- [ ] 2. Stores and additive migration. Append migration 7 in SQLite and PostgreSQL; update explicit node projections,
+- [x] 2. Stores and additive migration. Append migration 7 in SQLite and PostgreSQL; update explicit node projections,
   inserts and upserts, memory behavior and schema rustdoc. Preserve timestamps and replace details including None.
   Add conformance cases for Unicode round-trip and overwrite/clearing on all three backends. Add schema-6 upgrade
   cases for old rows, a pre-migration connection's prepared read/heartbeat after migration, old four-column

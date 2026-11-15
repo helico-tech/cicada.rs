@@ -273,7 +273,7 @@ pub async fn changes_mailbox_lease_watch_registry_node_and_sweep_work_and_a_turn
         let target = WatchTarget::parse("conformance/m").unwrap();
         store.watch(&target, &w).await.unwrap();
         store.unwatch(&target, &w).await.unwrap();
-        store.heartbeat_node(&NODE_A, &type_set(&[&TYPE])).await.unwrap();
+        store.heartbeat_node(&NODE_A, &type_set(&[&TYPE]), &Default::default()).await.unwrap();
         store.remove_node(&NODE_A).await.unwrap();
         store.sweep_expired().await.unwrap();
         assert_eq!(until_marker(t, &mut changes).await, vec![]);

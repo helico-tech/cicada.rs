@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 use crate::store::{
     ActorCreate, CommitRequest, CommitResult, CreateResult, DeliverNowResult, Delivery, MessageId, MessageStatus,
-    OutcomeStatus, OutgoingMessage, RemoveTypeResult, RenewResult, TurnOutcome,
+    NodeDetails, OutcomeStatus, OutgoingMessage, RemoveTypeResult, RenewResult, TurnOutcome,
 };
 use serde_json::json;
 
@@ -124,8 +124,8 @@ pub async fn nodes_a_heartbeat_upserts_the_row_with_store_time_and_nodes_are_lis
         let a = node("node-a");
         let b = node("node-b");
         let hosted = type_set(&[&TYPE, &OTHER]);
-        store.heartbeat_node(&b, &hosted).await.unwrap();
-        store.heartbeat_node(&a, &BTreeSet::new()).await.unwrap();
+        store.heartbeat_node(&b, &hosted, &Default::default()).await.unwrap();
+        store.heartbeat_node(&a, &BTreeSet::new(), &Default::default()).await.unwrap();
         let first = store.list_nodes().await.unwrap();
         assert_eq!(first.iter().map(|n| n.id.clone()).collect::<Vec<_>>(), [a.clone(), b.clone()]);
         let mut names = first[1].hosted.clone();
@@ -140,7 +140,7 @@ pub async fn nodes_a_heartbeat_upserts_the_row_with_store_time_and_nodes_are_lis
         );
         assert!(first[0].hosted.is_empty(), "a send-only node hosts nothing");
         t.advance_ticks(1).await;
-        store.heartbeat_node(&a, &type_set(&[&TYPE])).await.unwrap();
+        store.heartbeat_node(&a, &type_set(&[&TYPE]), &Default::default()).await.unwrap();
         let second = store.list_nodes().await.unwrap();
         assert_eq!(second[0].started_at, first[0].started_at, "started_at stays");
         assert!(second[0].last_seen > first[0].last_seen);
@@ -161,13 +161,50 @@ pub async fn nodes_any_heartbeat_removes_rows_last_seen_more_than_a_day_ago<B: F
         let store = t.store();
         let old = node("old");
         let live = node("live");
-        store.heartbeat_node(&old, &BTreeSet::new()).await.unwrap();
+        store.heartbeat_node(&old, &BTreeSet::new(), &Default::default()).await.unwrap();
         t.advance(std::time::Duration::from_secs(24 * 3600)).await;
-        store.heartbeat_node(&live, &BTreeSet::new()).await.unwrap();
+        store.heartbeat_node(&live, &BTreeSet::new(), &Default::default()).await.unwrap();
         assert_eq!(store.list_nodes().await.unwrap().len(), 2, "exactly a day old stays");
         t.advance(std::time::Duration::from_micros(1)).await;
-        store.heartbeat_node(&live, &BTreeSet::new()).await.unwrap();
+        store.heartbeat_node(&live, &BTreeSet::new(), &Default::default()).await.unwrap();
         assert_eq!(store.list_nodes().await.unwrap().iter().map(|n| n.id.clone()).collect::<Vec<_>>(), [live]);
+    })
+    .await
+}
+
+/// nodes - a heartbeat replaces the details, Unicode included, and absent ones clear them
+pub async fn nodes_a_heartbeat_replaces_the_details_unicode_included_and_absent_ones_clear_them<B: FixtureFactory>(
+    backend: &B,
+) {
+    store_test(backend, async |t| {
+        let store = t.store();
+        let a = node("node-a");
+        let details = |hostname: Option<&str>, version: Option<&str>, label: Option<&str>| NodeDetails {
+            hostname: hostname.map(str::to_owned),
+            cicada_version: version.map(str::to_owned),
+            label: label.map(str::to_owned),
+        };
+        let row = async || store.list_nodes().await.unwrap().remove(0);
+        let first = details(Some("hôst-äß-東京"), Some("0.19.0"), Some("  billing 🦀 v2  "));
+        store.heartbeat_node(&a, &BTreeSet::new(), &first).await.unwrap();
+        let written = row().await;
+        assert_eq!(
+            (written.hostname.as_deref(), written.cicada_version.as_deref(), written.label.as_deref()),
+            (Some("hôst-äß-東京"), Some("0.19.0"), Some("  billing 🦀 v2  ")),
+            "kept as given"
+        );
+        t.advance_ticks(1).await;
+        store.heartbeat_node(&a, &BTreeSet::new(), &details(Some("other"), Some("0.19.1"), None)).await.unwrap();
+        let replaced = row().await;
+        assert_eq!(replaced.started_at, written.started_at, "started_at stays");
+        assert_eq!(
+            (replaced.hostname.as_deref(), replaced.cicada_version.as_deref(), replaced.label),
+            (Some("other"), Some("0.19.1"), None),
+            "an absent label clears the stored one"
+        );
+        store.heartbeat_node(&a, &BTreeSet::new(), &NodeDetails::default()).await.unwrap();
+        let cleared = row().await;
+        assert_eq!((cleared.hostname, cleared.cicada_version, cleared.label), (None, None, None));
     })
     .await
 }

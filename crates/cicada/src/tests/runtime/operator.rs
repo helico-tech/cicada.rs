@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::common::*;
-use crate::runtime::{BulkSelection, NodeHealth, RetryResult};
+use crate::runtime::{BulkSelection, NodeConfig, NodeHealth, RetryResult};
 use crate::store::{
     Backend, CommitRequest, CommitResult, DeliverNowResult, MessageStatus, OutcomeStatus, Store, StoreResult,
 };
@@ -60,7 +60,10 @@ async fn a_started_node_is_listed_alive_goes_suspect_and_dead_and_its_row_goes_o
     // Heartbeats stop: the status follows the age of the last one.
     system.stop().await;
     assert!(system.nodes().await.unwrap().is_empty(), "stop removes the row");
-    memory.heartbeat_node(&crate::store::NodeId::new("gone").unwrap(), &Default::default()).await.unwrap();
+    memory
+        .heartbeat_node(&crate::store::NodeId::new("gone").unwrap(), &Default::default(), &Default::default())
+        .await
+        .unwrap();
     sleep(Duration::from_secs(29)).await;
     assert_eq!(system.nodes().await.unwrap()[0].status, NodeHealth::Alive);
     sleep(Duration::from_secs(1)).await;
@@ -82,6 +85,47 @@ async fn a_node_heartbeats_every_10_seconds_also_when_it_hosts_nothing() {
     assert_eq!(later.status, NodeHealth::Alive);
     assert_eq!(crate::time::between(first.last_seen, later.last_seen), Duration::from_secs(20));
     assert_eq!(later.started_at, first.started_at);
+    system.stop().await;
+}
+
+/// Scenarios: Captured details on a heartbeat; Row-producing and row-free execution.
+#[tokio::test(start_paused = true)]
+async fn a_started_node_reports_its_version_and_label_and_an_initialized_one_has_no_row() {
+    let memory = virtual_store();
+    let config = NodeConfig { label: Some("  billing 🦀 2.4  ".into()), ..node_config("labelled") };
+    let system = ActorSystem::builder(memory.clone()).config(config).host(CounterActor).build();
+    system.initialize().await.unwrap();
+    assert_eq!(system.run_due_turns(10).await.unwrap(), 0);
+    assert!(system.nodes().await.unwrap().is_empty(), "initialize and run_due_turns add no row");
+
+    system.start().await.unwrap();
+    settle().await;
+    let row = system.nodes().await.unwrap().remove(0);
+    assert_eq!(row.label.as_deref(), Some("  billing 🦀 2.4  "), "kept as given");
+    assert_eq!(row.cicada_version.as_deref(), Some(env!("CARGO_PKG_VERSION")));
+    // The host name is the OS's, or absent when its lookup gives none: never a value of the test's choosing.
+    assert!(row.hostname.as_ref().is_none_or(|h| !h.trim().is_empty() && !h.contains('\0')));
+    assert_eq!((row.status, row.started_at), (NodeHealth::Alive, row.last_seen));
+
+    // Every heartbeat writes the same details; the lifecycle is unchanged.
+    sleep(Duration::from_secs(25)).await;
+    let later = system.nodes().await.unwrap().remove(0);
+    assert_eq!(crate::time::between(row.last_seen, later.last_seen), Duration::from_secs(20));
+    assert_eq!(later.started_at, row.started_at);
+    assert_eq!((later.hostname, later.cicada_version, later.label), (row.hostname, row.cicada_version, row.label));
+    system.stop().await;
+    assert!(system.nodes().await.unwrap().is_empty(), "stop removes the row");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_send_only_node_without_a_label_has_its_version_and_no_label() {
+    let memory = virtual_store();
+    let system = ActorSystem::builder(memory.clone()).config(node_config("sender")).build();
+    system.start().await.unwrap();
+    settle().await;
+    let row = system.nodes().await.unwrap().remove(0);
+    assert!(row.hosted.is_empty());
+    assert_eq!((row.cicada_version.as_deref(), row.label), (Some(env!("CARGO_PKG_VERSION")), None));
     system.stop().await;
 }
 

@@ -516,6 +516,24 @@ pub struct NodeRecord {
     pub started_at: Timestamp,
     /// Store time of its latest heartbeat.
     pub last_seen: Timestamp,
+    /// The host name its latest new-code heartbeat captured; `None` when absent or written by an older node.
+    pub hostname: Option<String>,
+    /// The version of the core crate of its latest new-code heartbeat.
+    pub cicada_version: Option<String>,
+    /// The label of its configuration.
+    pub label: Option<String>,
+}
+
+/// What a node tells about itself at each heartbeat (ADR 0048): captured once at start, display only. Every heartbeat
+/// replaces all three fields of the row, absent ones included. Trusted internal input: the runtime bounds it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NodeDetails {
+    /// The OS host name, when its lookup gave a usable one.
+    pub hostname: Option<String>,
+    /// The version of the core crate.
+    pub cicada_version: Option<String>,
+    /// [`NodeConfig::label`](crate::runtime::NodeConfig::label).
+    pub label: Option<String>,
 }
 
 /// A turn in progress, as a snapshot: an instance with a lease that is valid at store now.
