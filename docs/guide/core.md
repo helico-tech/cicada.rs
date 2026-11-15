@@ -278,6 +278,7 @@ Pass a `NodeConfig` to `.config(..)`, or use the [App flags](app.md#run-it-as-a-
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `node_id` | random | Lease owner, shown in `/messages/{id}` while running and by `/health`. |
+| `label` | `None` | Free text shown in the [node table](../operations.md#node-table); display only. Not blank, no NUL, at most 200 Unicode scalar values; kept as given. An invalid label fails initialization/start. |
 | `lease_ttl` | 30 s | A turn's lease; a dead node's turn is re-claimed after it expires. |
 | `heartbeat_interval` | `lease_ttl / 3` | Lease renewal; must be in `(0, lease_ttl / 2]`. |
 | `poll_interval` | 500 ms | Longest sleep of the dispatch loop (wake-ups usually come sooner: own sends, PostgreSQL `NOTIFY`). |

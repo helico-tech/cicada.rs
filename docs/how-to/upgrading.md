@@ -3,7 +3,7 @@
 Use this procedure when changing the library version or an actor contract. Read the entries for every version you cross.
 
 
-Stores write schema version 6 and apply any missing migrations in place when they open a database. Migrations are
+Stores write schema version 7 and apply any missing migrations in place when they open a database. Migrations are
 additive, so nodes of the previous version keep working during a rolling deploy, unless a release says otherwise: a
 migration that is not additive breaks the nodes of the previous version, so every old node is stopped before the first
 new one starts. The changelog says so for each such release. From 0.11.0 on both stores name the columns they read, so
@@ -255,6 +255,14 @@ restore(&manage, &saved).await?;
 Clients that read the state of the dead letters with `DeadLetter` upgrade with the nodes: `payload` is a
 `LetterPayload`, read with `value()`. A raw letter deeper than 61 levels in a state that is not converted still fails
 every turn that writes the state; nothing repairs it by itself.
+
+**Version 0.19.0 adds node details and schema 7** ([ADR 0048](../adr/0048-node-details.md)). `NodeConfig` gains `label`;
+`NodeInfo` and `NodeView` gain `hostname`, `cicada_version` and `label`. Update struct literals and exhaustive
+destructuring for the new public fields; `NodeConfig { ..NodeConfig::default() }` construction keeps working.
+Migration 7 adds three nullable columns to `nodes`. Running 0.18 nodes keep working during migration, but once a
+0.19 node opens the store, 0.18 binaries cannot restart or roll back against it. Start the new nodes, then replace
+the old ones; old writers can leave stale display details. The HTTP fields are optional: new clients read missing
+or null details as `None`, and old clients ignore added fields. Actor contracts and execution guarantees are unchanged.
 
 **Switching a type to `create_child`.** An actor created with `turn.create` stays independent: a later `create_child`
 of it by its creator does not adopt it, but fails the creator's message (the commit is rejected, and a handler cannot

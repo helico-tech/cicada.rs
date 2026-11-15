@@ -97,8 +97,8 @@ store of the tests (feature `testing`). A host opens one as the public type `Sto
 | S9 One clock | Due-ness and lease expiry use the store clock only. |
 | S10 Retention | Outcomes are kept for a configured period, which is also the dedup window. A message's retention policy can hide its outcome earlier or keep it longer; a minimal record stays for the whole dedup window. |
 
-The SQL schema (tables `actor_types`, `actors`, `messages`, `outcomes`, `watches`, plus sequences) is versioned and
-migrated when a store opens a database; it is at version 6. `actors.state` is required in both stores, so a store
+The SQL schema (tables `actor_types`, `actors`, `messages`, `outcomes`, `watches`, `nodes`, plus sequences) is versioned and
+migrated when a store opens a database; it is at version 7. `actors.state` is required in both stores, so a store
 refuses an instance without a state. Migration 2 gave every instance without a state the state `{}` and removed the
 registrations without a state schema (types that were stateless before ADR 0018). Migration 3 removed every
 registration, because key fields left every contract, and rewrote `%3A` to `:` in `actors.address`,
@@ -113,6 +113,10 @@ version 3 that keeps running deletes a parent without its children; one of versi
 version 5 counts no lost claim, and on PostgreSQL its statements that read with `*` fail on the changed table). From
 version 6 on both stores name the columns they read, so a later migration that only adds a column with a default can be
 additive again.
+Migration 7 adds nullable `nodes.hostname`, `nodes.cicada_version` and `nodes.label`
+([ADR 0048](adr/0048-node-details.md)); existing rows have none. It is additive: running schema-6 nodes keep working,
+but a schema-6 binary refuses to open the migrated database, so it cannot restart or roll back. See the
+[node table](operations.md#node-table) for these display-only details and the limits of shared node ids.
 The SQLite store sets up only a new or empty database: one without a schema version that already holds tables belongs to
 another program, and opening it fails and leaves it as it was (ADR 0017).
 

@@ -46,6 +46,8 @@ commands by checking `cicada_app::node_command` before building dependencies.
 
 Flags override non-blank environment variables. For node settings, variables override the host’s `NodeConfig`, then
 library defaults. Durations accept `250ms`, `5s`, `7d`, or ISO-8601 (`PT5S`).
+`CICADA_NODE_LABEL` is read as given: empty is unset, whitespace-only is an error, and outer spaces are kept.
+An invalid label from a flag or variable is a usage error; an invalid label in the host's `NodeConfig` fails startup.
 
 | Flag | Variable | Default | Meaning |
 | --- | --- | --- | --- |
@@ -59,6 +61,7 @@ library defaults. Durations accept `250ms`, `5s`, `7d`, or ISO-8601 (`PT5S`).
 | Flag | Variable | `NodeConfig` field |
 | --- | --- | --- |
 | `--node-id` | `CICADA_NODE_ID` | `node_id` |
+| `--node-label` | `CICADA_NODE_LABEL` | `label` |
 | `--concurrency` | `CICADA_CONCURRENCY` | `concurrency` |
 | `--lease-ttl` | `CICADA_LEASE_TTL` | `lease_ttl` |
 | `--heartbeat-interval` | `CICADA_HEARTBEAT_INTERVAL` | `heartbeat_interval` |
@@ -97,6 +100,7 @@ For HTTP mode, resolve server/context/token as for [operator commands](#command-
 
 The server owns TTL, heartbeat, claim limit, retention and store configuration: their flags are rejected and their
 variables ignored. Worker id, concurrency, poll interval, maximum turn and grace period still apply.
+An HTTP worker has no node row: `--node-label` is refused, while `CICADA_NODE_LABEL` and the host's label are ignored.
 `on_start` is refused before any request; bootstrap through serve or a local-store worker instead.
 
 The HTTP client disables redirects and retries of its own. Requests have a 30 s total timeout, with a 10 s turn-call

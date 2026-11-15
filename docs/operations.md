@@ -147,7 +147,23 @@ Use the structured `Failed.cause` when available, rather than matching an error-
 
 Nodes heartbeat every 10 s. Display status is alive below 30 s, suspect below 2 min, dead afterward.
 A clean stop removes its row; rows over a day old are cleaned by node heartbeats.
-The table is diagnostic: leases, not node status, determine ownership. Workers have no node rows.
+The table is diagnostic: leases, not node status, determine ownership. Started systems, including send-only nodes
+and App workers on the store, have rows. Initialize-only systems and workers over HTTP do not.
+
+`cicada get nodes` shows `HOSTNAME`; `-o wide` adds `HOSTED`, `VERSION` and `LABEL`, as does the TUI's wide nodes view.
+The host name is looked up once at start; an unavailable, non-UTF-8, blank, NUL-containing or over-200-character name
+is omitted without preventing startup. `VERSION` is the compiled `cicada` crate's version. Set a label such as your
+application and its version with `NodeConfig::label`, `--node-label` or `CICADA_NODE_LABEL`
+([settings](guide/app.md#settings)). JSON/YAML use `hostname`, `cicadaVersion` and `label`, omitted when absent;
+tables show `-`. Table/TUI metadata cells escape newline, carriage return and tab as `\n`, `\r` and `\t`, and other
+control characters as `\u{hex}`; JSON/YAML keep the text.
+
+Details stay fixed while a node runs and each heartbeat replaces all three, including absent values. A dead row
+keeps its last details until expiry. Container host names may change on restart. Ids remain random by default:
+set `CICADA_NODE_ID` where an id should survive restarts, for example from a StatefulSet pod name, and keep it unique
+among live nodes. Nodes sharing an id share one row: the last writer's details win, and either clean stop removes it.
+A running 0.18 node can leave stale details during a [rollout](how-to/upgrading.md). Host names and labels are not
+unique or authenticated identities; host names may identify machines, and the API's access control covers them.
 
 ### External leases
 
