@@ -7,6 +7,36 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.18.9 — unreleased
+
+A tooling release: local check evidence and a local release driver replace the automatic GitHub Actions (ADR 0046).
+The library, its API, wire formats, contract hashes, store schema and guarantees are those of 0.18.8.
+
+### Added
+
+- `scripts/gate.py`, the local gate. `run [REV] [--e2e]` checks a commit's exact tree in an owned worktree
+  (`.claude/worktrees/gate`) with the full policy of `scripts/gate-policy.json`: the Python tests, fmt, clippy with
+  warnings denied, the workspace tests with PostgreSQL, each feature of cicada and cicada-app alone, the app-alone
+  tests and the dependency-tree checks of `scripts/ci/`, and with `--e2e` the unfiltered Docker suite. It records the
+  result in Git's common directory, shared by every worktree. A commit that changes only allowed Markdown since a
+  full pass gets fresh docs checks instead. `status` explains the evidence of a commit; `recover` clears an
+  interrupted run once its processes are gone.
+- A pre-push hook (`install-hook`) that refuses a push of `main` without passing checks for its tip, a non-fast-forward
+  or deleted `main`, a new version tag without checks, E2E and a place on the remote's accepted `main`, and any change
+  to an existing remote version tag.
+- `release vX.Y.Z [REV]`, the local release: it pins one commit, checks the version and dated notes, obtains the
+  evidence, pushes `main` without force, tags, packages the skill, pushes that tag object and publishes a verified
+  draft GitHub Release. A retry resumes the same commit and tag object; a published Release is never changed.
+
+### Changed
+
+- `.github/workflows/ci.yml` runs only when started by hand (`python3 scripts/gate.py checks --scope full`, no evidence,
+  no Release). `.github/workflows/release.yml` is gone: pushes, pull requests and tags start no workflow.
+- `scripts/release-check.sh` checks the checked-out commit, refuses a local tag that points elsewhere, and gains
+  `--before-push`, which leaves out the fetch and the `origin/main` ancestry check.
+- A remote version tag is never deleted, also when its checks failed before a Release existed (ADR 0046 supersedes
+  that part of ADR 0016): a correction is a new version.
+
 ## 0.18.8 — 2026-11-15
 
 A test-only release: a flaky PostgreSQL test is fixed. The library, its API, wire formats, contract hashes, store

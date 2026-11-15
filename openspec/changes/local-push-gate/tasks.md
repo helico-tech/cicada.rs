@@ -31,7 +31,7 @@
   HEAD/main races, changed C, raw annotated/lightweight mismatches, package failure before tag push, failures after
   each public step, uncertain API results, matching/mismatched drafts, missing/extra assets and published no-op.
   Verify all side effects remain bound to C and all waits/errors keep truthful recovery state. No real gh writes.
-- [ ] 5. Integrate manual-only CI using the shared policy, delete automatic release.yml, and update build briefs
+- [x] 5. Integrate manual-only CI using the shared policy, delete automatic release.yml, and update build briefs
   for committed-tree evidence, classified release/archive edits, ordinary owner approval and first-use rollout.
   Reconcile ADR 0046/index and mark only ADR 0016's remote-publication and failed-tag-deletion clauses superseded.
   Write the docs handoff for AGENTS.md, release and maintenance guides: commands, coverage, supported environment,

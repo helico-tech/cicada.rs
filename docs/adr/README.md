@@ -20,7 +20,7 @@ accepted ADR is not rewritten: a later one supersedes it. A change that makes a 
 | [0013](0013-type-and-key-addresses.md) | Actors are addressed by type name and key (`sync/acme`) instead of URIs. |
 | [0014](0014-management-reads-and-type-removal.md) | Management reads over HTTP (outcomes, stats, caused-by) and removing a type's registration. |
 | [0015](0015-operator-actions.md) | Operator actions: node table, cancelling a running turn, pausing and purging a mailbox, retrying a message, bulk actions; the store refuses creates of an unregistered type. |
-| [0016](0016-releases-are-tags.md) | A release is a tag on `main` with one version for the workspace; a release passes all checks first and never moves. |
+| [0016](0016-releases-are-tags.md) | A release is a tag on `main` with one version for the workspace; a release passes all checks first and never moves. Its release workflow and failed-tag deletion are superseded by 0046. |
 | [0017](0017-contracts-ignore-descriptions-and-stores-refuse-foreign-databases.md) | A contract hash leaves out the schemas' descriptions (the published contract keeps them); the SQLite store refuses a database that holds other tables. |
 | [0018](0018-a-smaller-core-layers-and-watches.md) | A smaller core (every actor has state, one-name keys, one turn observer in place of three hooks, no public store trait), layers above it (`cicada-app`, `cicada-actors`), JSON Schema checks at the HTTP door, watches and control effects. |
 | [0019](0019-child-actors.md) | Child actors: an actor may have a parent, the actor whose turn created it, and removing the parent removes what it owns. |

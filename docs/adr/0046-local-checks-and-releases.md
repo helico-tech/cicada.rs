@@ -4,7 +4,7 @@ Date: 2026-11-15
 
 ## Status
 
-Accepted for local-push-gate. Supersedes ADR 0016's automatic release-workflow rule and its permission to delete a
+Accepted (local-push-gate, 0.18.9). Supersedes ADR 0016's automatic release-workflow rule and its permission to delete a
 failed unpublished remote version tag. The versioning, single workspace version and consumer pinning rules remain.
 
 ## Context

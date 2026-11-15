@@ -107,11 +107,18 @@ Only on the owner's yes. A no goes back to the builder, or to the design loop.
 3. Move the change's reviews into its folder, so that they are archived with it:
    `mkdir -p openspec/changes/<change>/reviews && mv .reviews/<change>.* openspec/changes/<change>/reviews/`.
 4. `openspec archive <change> -y`. A new spec in `openspec/specs/` gets one or two real sentences under `## Purpose`.
-5. Release as in `docs/how-to/releasing.md`, steps 1 to 5: the README tag lines, the changelog date, one commit
-   `Release X.Y.Z: …`, push `main`, wait for CI (`gh run watch`), `scripts/release-check.sh vX.Y.Z`, tag, push the
-   tag. The design loop shares this checkout and may have files open, so stage by path, never `git add -A` or
-   `git commit -a`: `git add -A -- README.md CHANGELOG.md openspec/changes/<change> openspec/changes/archive
-   openspec/specs`. If CI or the check fails: no tag; tell the owner.
+5. Release as in `docs/how-to/releasing.md`: the README tag lines and the changelog date in one commit
+   `Release X.Y.Z: …` on `main`. The design loop shares this checkout and may have files open, so stage by path, never
+   `git add -A` or `git commit -a`: `git add -A -- README.md CHANGELOG.md openspec/changes/<change>
+   openspec/changes/archive openspec/specs`. Then, in the main checkout, `python3 scripts/gate.py release vX.Y.Z`
+   (ADR 0046). It pins that commit, checks the version and dated notes, reuses or runs the gate evidence (the archive
+   and release edits are classified again: Markdown alone gets fresh docs checks over the builder's full pass, anything
+   else full checks) and the E2E suite, pushes `main` without force, tags, packages the skill, pushes the tag and
+   publishes a verified draft Release. If it fails before the tag push, no tag exists: tell the owner. If it fails
+   later, run it again: it resumes the same commit and tag object; never delete or move a pushed version tag.
+   The pre-push hook must be installed once per repository, with the owner's yes:
+   `python3 scripts/gate.py install-hook` in the main checkout; it refuses to replace another pre-push hook.
+   An abandoned gate run (`python3 scripts/gate.py status` says so) goes to the owner before `recover`.
 6. Clean up: `git worktree remove` the builder's worktree, `git branch -d feat/<change>`, delete the leftover
    `worktree-agent-…` branches, `git worktree prune`.
 7. Tell the owner in two lines, with the path of the archived handoff

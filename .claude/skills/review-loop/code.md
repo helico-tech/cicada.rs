@@ -32,8 +32,8 @@ checkout of your own.
    (`git diff <commit> <head> -- <paths>` is empty) and holds no code.
 7. **The builder's example and concepts** are true to the code.
 
-Do not run the test suite: the builder ran the finishing checks (its report says which), and CI runs them before the
-tag. To prove a finding you may run one targeted test in a checkout of your own:
+Do not run the test suite: the builder ran the finishing checks and recorded gate evidence for its head (its report
+says which), and `scripts/gate.py` requires that evidence again before main or a tag is pushed (ADR 0046). To prove a finding you may run one targeted test in a checkout of your own:
 `git worktree add --detach .claude/worktrees/review-<change> <head>`, and `git worktree remove` it when you are done.
 
 ## What blocks
