@@ -1,13 +1,13 @@
 # Tasks
 
-- [ ] 1. Add `the_lease_request_documents_the_limits_the_core_checks` in
+- [x] 1. Add `the_lease_request_documents_the_limits_the_core_checks` in
   `crates/cicada-axum/tests/openapi.rs`. Assert the generated `LeaseTurnsRequest` descriptions against
   `MAX_LEASE_TYPES`, `MAX_LEASE_BATCH` and `limits::MAX_ID_LENGTH`, with number boundaries and useful diagnostics.
   Verify: run `cargo test -p cicada-axum --test openapi` before correcting the text and record the expected failure
   on the current lease descriptions. Keep the existing tests that pin and enforce the runtime limits unchanged.
   Commit this regression test with the correction in task 2 so the commit passes its tests.
 
-- [ ] 2. Correct the two rustdoc descriptions in `crates/cicada/src/api/leases.rs` to 1–100, naming the respective
+- [x] 2. Correct the two rustdoc descriptions in `crates/cicada/src/api/leases.rs` to 1–100, naming the respective
   constants in plain code spans, and regenerate `docs/openapi.json`. Leave validation and schema keywords unchanged.
   Use the build loop's next patch version: update Cargo.toml/Cargo.lock, the consumer skill version and CHANGELOG
   through the normal version procedure. Write `docs-handoff.md` with the version and no blocking prose work: the

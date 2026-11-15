@@ -162,11 +162,11 @@ record! {
 pub struct LeaseTurnsRequest via LeaseTurnsRequestWire = "LeaseTurnsRequest" {
     /// The worker that will hold the leases, recorded as their owner: at most 200 characters, no NUL.
     pub owner: NodeId,
-    /// Each selected type name with the contract hash the worker was built with; 1 to 64 types. A type that is not
-    /// registered with exactly that hash answers `contractMismatch` and nothing is leased.
+    /// Each selected type name with the contract hash the worker was built with; 1 to 100 types (`MAX_LEASE_TYPES`).
+    /// A type that is not registered with exactly that hash answers `contractMismatch` and nothing is leased.
     #[schemars(with = "BTreeMap<String, String>")]
     pub types: BTreeMap<TypeName, String>,
-    /// The most turns to lease, 1 to 256.
+    /// The most turns to lease, 1 to 100 (`MAX_LEASE_BATCH`).
     pub limit: usize,
 }
 }

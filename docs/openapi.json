@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Cicada actor API",
-    "version": "0.18.10"
+    "version": "0.18.11"
   },
   "paths": {
     "/actors": {
@@ -3593,14 +3593,14 @@
             "minLength": 1
           },
           "types": {
-            "description": "Each selected type name with the contract hash the worker was built with; 1 to 64 types. A type that is not\nregistered with exactly that hash answers `contractMismatch` and nothing is leased.",
+            "description": "Each selected type name with the contract hash the worker was built with; 1 to 100 types (`MAX_LEASE_TYPES`).\nA type that is not registered with exactly that hash answers `contractMismatch` and nothing is leased.",
             "type": "object",
             "additionalProperties": {
               "type": "string"
             }
           },
           "limit": {
-            "description": "The most turns to lease, 1 to 256.",
+            "description": "The most turns to lease, 1 to 100 (`MAX_LEASE_BATCH`).",
             "type": "integer",
             "format": "uint",
             "minimum": 0

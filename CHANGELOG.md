@@ -7,6 +7,18 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.18.11 — unreleased
+
+A documentation correction. Existing APIs, limits, wire formats, contract hashes, store schema and guarantees are those
+of 0.18.10.
+
+### Fixed
+
+- The descriptions of `LeaseTurnsRequest`, in rustdoc and in `docs/openapi.json`, state the limits the core checks:
+  1 to 100 types (`MAX_LEASE_TYPES`) and 1 to 100 turns (`MAX_LEASE_BATCH`), not 1 to 64 types and 1 to 256 turns.
+  The test `the_lease_request_documents_the_limits_the_core_checks` compares the generated descriptions with these
+  constants and `MAX_ID_LENGTH`.
+
 ## 0.18.10 — 2026-11-15
 
 A new ready-made actor. Existing APIs, wire formats, contract hashes, store schema and guarantees are those of 0.18.9.

@@ -30,6 +30,26 @@ fn the_committed_document_is_current() {
     assert!(on_disk == current, "docs/openapi.json is out of date; run the tests with CICADA_UPDATE_OPENAPI=true");
 }
 
+/// remote-turn-http, Scenarios: Documented limits match the checks; A limit changes without its documentation.
+#[test]
+fn the_lease_request_documents_the_limits_the_core_checks() {
+    use cicada::runtime::{MAX_LEASE_BATCH, MAX_LEASE_TYPES, limits::MAX_ID_LENGTH};
+    let document = openapi_document();
+    let properties = &document["components"]["schemas"]["LeaseTurnsRequest"]["properties"];
+    // Each phrase ends with the word or punctuation after its number, so an expected 100 cannot match 1000.
+    for (property, phrase) in [
+        ("owner", format!(" at most {MAX_ID_LENGTH} characters,")),
+        ("types", format!(" 1 to {MAX_LEASE_TYPES} types (`MAX_LEASE_TYPES`).")),
+        ("limit", format!(" 1 to {MAX_LEASE_BATCH} (`MAX_LEASE_BATCH`).")),
+    ] {
+        let description = properties[property]["description"].as_str().unwrap_or_default();
+        assert!(
+            description.contains(&phrase),
+            "LeaseTurnsRequest.{property} should contain {phrase:?}, its description is {description:?}"
+        );
+    }
+}
+
 #[test]
 fn every_operation_has_an_id_and_answers_errors_as_problems() {
     let document = openapi_document();
