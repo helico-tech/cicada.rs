@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.18.9 — unreleased
+## 0.18.9 — 2026-11-15
 
 A tooling release: local check evidence and a local release driver replace the automatic GitHub Actions (ADR 0046).
 The library, its API, wire formats, contract hashes, store schema and guarantees are those of 0.18.8.
