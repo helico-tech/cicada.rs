@@ -13,17 +13,18 @@ watch has no longest wait, keeps the alarm in its settings, and raises it once p
 ## What Changes
 
 - **A heartbeat watch actor** (`cicada.heartbeat-watch`), one instance per watched thing. Its state holds the
-  allowed silence, a target with a stored alarm message, the armed timer and a status: `alive` or `silent`.
+  allowed silence, a target with a stored alarm message, the armed timer and a status: `waiting`, `alive` or `silent`.
 - **A public `Beat` message** is the sign of life. It replaces the armed timer with one that is due after the
   allowed silence, in one commit, and sets the status to `alive`.
 - **When the timer is due** with no `Beat` since, the actor sends the alarm to the target once and sets the status to
   `silent`. It arms nothing more: one silence is one alarm, until the next `Beat` starts a new round.
-- **Starting.** The watch counts from its first `Beat`. The design decides whether a public `Start` is also needed,
-  for a thing that may never send its first sign of life.
-- **Recovery.** The design decides whether the first `Beat` after a silence sends a second stored message ("it is
-  back"), or whether the status in the state is enough for the first version.
+- **Starting.** A create leaves it `waiting`. The first handled `Beat` starts the count; the host may send a synthetic
+  `Beat` with the create to detect a thing that never sends its first sign of life. No separate `Start` message.
+- **Recovery.** A `Beat` after silence starts another round without a recovery notification; status and `lastBeatAt`
+  expose the change. Public `Rearm` recovers a lost or failed timer at the original deadline without inventing activity.
 - As with the other actors, the timer message must be self-sent and armed, and the due time is a lower bound: a
-  paused or slow watch raises its alarm late, never early.
+  paused or slow watch can raise its alarm late. An early `Expire`, including one made due by `deliver-now`, re-arms
+  at the deadline. Silence is measured from handled Beat claim time, not external event time.
 
 ## Out of scope
 
