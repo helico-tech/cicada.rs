@@ -43,8 +43,14 @@ this session’s hooks/owner record when the owner retires it. Pause the recurri
    The user authorized these documentation merges. Stop on conflict or unresolved behavior; never overwrite a builder’s work.
    Documentation-only upkeep needs no library version bump, release changelog entry, OpenAPI version change or tag.
    Runtime changes belong to their builder and retain the normal [release procedure](../how-to/releasing.md).
-7. Fast-forward docs to the integrated main, then `acknowledge <exact-reviewed-main-sha>`. Advance only after review,
-   verification and integration. If there are no source changes, acknowledge the inspected main without a no-op docs commit.
+7. Before pushing, run `python3 scripts/gate.py run <exact-integrated-main-sha>` and inspect its evidence with
+   `python3 scripts/gate.py status <exact-integrated-main-sha>`. The [local gate](../how-to/releasing.md#local-checks-and-the-pre-push-gate)
+   runs fresh docs checks over an eligible direct full pass; otherwise it requires full checks. This applies to
+   docs-only updates too, without a version bump or tag. A busy gate belongs to another session: leave its checkout,
+   records and marker alone and retry after it finishes. A failure keeps this checkpoint intact.
+8. Push main normally. Fast-forward docs to the integrated main, then `acknowledge <exact-reviewed-main-sha>`.
+   Advance only after review, verification and integration. If there are no source changes, acknowledge the inspected
+   main without a no-op docs commit.
 
 Keep the checkpoint on failure so the next run sees the unfinished work. Inspect self-authored docs merges without
 rewriting them again. Ignore proposals as shipped behavior: an ADR or OpenSpec task alone is not implementation.

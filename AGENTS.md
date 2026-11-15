@@ -11,15 +11,18 @@ For behavior changes, read [docs/architecture.md](docs/architecture.md) first, t
 ## Build and test
 
 ```sh
+python3 scripts/gate.py run --e2e      # committed HEAD: record checks and Docker E2E evidence (PostgreSQL required)
+python3 scripts/gate.py status         # evidence for HEAD and what a push needs
+python3 -m unittest discover -s scripts -p 'test_*.py'   # script tests, including the gate
 cargo build --workspace
 cargo test --workspace                 # unit, runtime, SQLite, HTTP, doctest and docs tests; every feature of cicada and cicada-app on
 cargo test -p cicada-examples --doc    # only the Rust blocks of README.md, the guides and docs/operations.md
 cargo test -p cicada-examples --test docs   # the table of guarantees and the links between the Markdown files
 cargo test -p cicada-examples --test skill  # the consumer skill: version, routes, resolver and packaging (python3 3.11+)
 cargo clippy --workspace --all-targets
-cargo fmt --all                        # rustfmt.toml: 120 columns; CI checks it
-cargo check -p cicada [--features sqlite|postgres|testing]   # the core with no feature or one alone; CI builds each
-cargo check -p cicada-app [--features sqlite|postgres|tui]   # the app layer the same way; CI builds each
+cargo fmt --all                        # rustfmt.toml: 120 columns; the gate checks it
+cargo check -p cicada [--features sqlite|postgres|testing]   # the gate builds the core with each feature alone
+cargo check -p cicada-app [--features sqlite|postgres|tui]   # the gate builds the app layer the same way
 cargo test -p cicada-app               # the crate alone: without the terminal UI, and without the check of docs/reference/cli.md
 CICADA_UPDATE_CLI=true cargo test --workspace         # rewrites docs/reference/cli.md (or -p cicada-app --features tui)
 CICADA_UPDATE_CONTRACTS=true cargo test --workspace   # rewrites contract snapshots that differ, and docs/reference/contracts
@@ -31,6 +34,10 @@ CICADA_E2E=1 cargo test -p cicada-e2e -- --nocapture   # E2E and fault tests in 
 
 PostgreSQL for tests: `docker compose up -d postgres` (port 55432). Tests that need it are skipped when
 `CICADA_PG_URL` is unset.
+
+Full gate checks require PostgreSQL: `CICADA_GATE_PG_URL` defaults to the compose URL above. The gate checks the exact committed
+tree in its owned worktree. Once installed, the pre-push hook requires evidence for every pushed main tip, including
+docs. See [local checks](docs/how-to/releasing.md#local-checks-and-the-pre-push-gate); automatic Actions are disabled.
 
 ## Map
 
@@ -48,7 +55,7 @@ PostgreSQL for tests: `docker compose up -d postgres` (port 55432). Tests that n
 | `docs/` | `architecture.md`; `guarantees.md`, the tests behind each guarantee; `guide/`, one guide per layer; `operations.md`; `reference/`, the generated help of the command line (`cli.md`) and the contracts of the ready-made actors (`contracts/`); `openapi.json`; `adr/` and its index `adr/README.md` |
 | `openspec/` | Specs, changes in progress and finished changes |
 | `skills/cicada/` | The consumer skill (ADR 0041): `SKILL.md`, which routes a consumer's agent into the resolved source, and its read-only resolver `scripts/cicada_source.py`; checked by `examples/tests/skill.rs` with the Python tests in `examples/tests/skill/` |
-| `scripts/` | `release-check.sh`; `package-skill.py`, the skill's release archive; `status.py`, the order and state of the changes; `review.py`, the review requests between the loops |
+| `scripts/` | `gate.py`, local check evidence, pre-push and release (ADR 0046); `gate-policy.json` and `ci/`, its checks; `release-check.sh`; `package-skill.py`, the skill's release archive; `status.py`, the order and state of the changes; `review.py`, the review requests between the loops |
 | `.claude/skills/` | The three loops (ADR 0030): `design-loop`, `build-loop` with the builder's brief and docs handoff template, `review-loop` with the briefs of a design and a code review |
 
 ## Rules
@@ -69,9 +76,9 @@ PostgreSQL for tests: `docker compose up -d postgres` (port 55432). Tests that n
 - Store backends must pass the conformance suite (`crates/cicada/src/tests/conformance`). The backend trait is
   private to `cicada` (ADR 0018): a test that calls it lives in `crates/cicada/src/tests`, one that needs only the
   public API in a `tests/` folder.
-- Releases are tags on `main`; [the release procedure](docs/how-to/releasing.md) has the steps. Tag a release when
-  its change is implemented, every check in Releasing has passed, and the work is committed on `main`; never move or
-  delete a tag that has a GitHub Release.
+- Releases are tags on `main`, published by the build loop with `python3 scripts/gate.py release vX.Y.Z` on the
+  owner's yes; [the release procedure](docs/how-to/releasing.md) has the steps. The change must be implemented,
+  checked and committed on `main`. Never move or delete a remote version tag, whether a GitHub Release exists or not.
 - Public items have doc comments (`missing_docs` is an error). Keep comments as dense as the surrounding code.
 - The Rust blocks of `README.md`, of the guides in `docs/guide/` and of `docs/operations.md` are doctests of
   `cicada-examples` (`ReadmeDoctests`, `CoreGuideDoctests`, `HttpGuideDoctests`, `AppGuideDoctests`,

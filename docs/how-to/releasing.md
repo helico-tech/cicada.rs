@@ -13,17 +13,110 @@ A release is a tag `vX.Y.Z` on `main` (ADR 0016). All crates share the version i
    in the docs handoff rather than editing that guide from the builder worktree. Keep `metadata.cicada-version` in
    `skills/cicada/SKILL.md` equal to the workspace version; the skill test and release checker enforce it.
 2. In `CHANGELOG.md`, replace `unreleased` in the heading of that version with today's date, as `YYYY-MM-DD`.
-3. Commit and push to `main`, and wait for CI.
-4. Run `scripts/release-check.sh vX.Y.Z`. It prints the release notes, or says what is wrong.
-5. `git tag -a vX.Y.Z -m vX.Y.Z` and `git push origin vX.Y.Z`.
+3. Commit the release on `main`. On the owner's approval in the build loop, run:
 
-The push starts `.github/workflows/release.yml`: the same check, CI, then the end-to-end suite, and only then a GitHub
-Release with the changelog section as its notes and `cicada-skill-vX.Y.Z.tar.gz` attached. The workflow packages
-the skill from the tagged Git objects in the verify job and again before publication; missing files or mismatched
-versions stop the release. After tagging, `python3 scripts/package-skill.py vX.Y.Z dist` reproduces the archive locally. If a check fails, no release exists yet: delete the tag
-(`git push origin :refs/tags/vX.Y.Z` and `git tag -d vX.Y.Z`), fix the cause on `main` and tag again. A tag with a
-GitHub Release is never moved or deleted; a correction is a new version.
+   ```sh
+   python3 scripts/gate.py release vX.Y.Z
+   ```
 
-When the next change lands, add a section `## X.Y.Z — unreleased` to the changelog and set that version in `Cargo.toml`
-and in the skill metadata.
+   The command pins HEAD (or an explicit final `REV` argument), verifies versions and dated notes, obtains local
+   checks and Docker E2E evidence, then pushes that commit to `origin/main` without force. It verifies main ancestry,
+   creates or accepts a matching tag, packages and verifies the skill, and pushes the exact tag object. Finally it
+   creates or resumes a matching draft GitHub Release in origin's repository, verifies its notes and skill asset,
+   and publishes it. A conflicting main, tag or draft stops publication.
+4. Confirm the published Release has `cicada-skill-vX.Y.Z.tar.gz`. The docs session then updates installation pins.
 
+Prerequisites: Python 3.11+, the Rust toolchain with fmt/clippy, local PostgreSQL, Docker for E2E, `jq`, and `gh`
+signed in with release rights. `CICADA_GATE_PG_URL` defaults to the compose database on port 55432. Only the
+owner-approved build loop installs the shared hook or publishes; builder tests use temporary repositories and fake
+publication tools. Automatic push, PR and tag Actions are disabled (ADR 0046).
+
+When the next implementation change lands, add `## X.Y.Z — unreleased` to the changelog and set that version in
+`Cargo.toml` and the skill metadata.
+
+## Resume a release
+
+Run the same `release vX.Y.Z` command again. State in `<git common dir>/cicada-gate/release/vX.Y.Z.json` pins its
+commit; a retry refuses another commit or raw tag object, including a lightweight/annotated substitution at the same
+commit. It rechecks remote state and resumes only a matching draft, with the expected title, notes and single skill
+asset hash. A published Release is reported as already published and left untouched.
+
+A failure before the initial tag push leaves no new remote tag. Main and tag pushes survive later failures;
+publication is not atomic across Git and GitHub. **Never delete or move a remote version tag**, even without a
+published Release or when checks fail. A correction uses a new version. If nothing was pushed and the pinned commit
+must change, the owner must inspect actual remote state before manually removing the release state file.
+
+`scripts/release-check.sh [--before-push] vX.Y.Z` checks the checked-out commit and requires an existing local tag to
+point there. `--before-push` omits the fetch/main-ancestry check. It is a preflight, not check or E2E evidence.
+After tagging, `python3 scripts/package-skill.py vX.Y.Z dist` reproduces the archive from tagged Git objects.
+
+## Local checks and the pre-push gate
+
+Check a committed tree before pushing main:
+
+```sh
+python3 scripts/gate.py run             # HEAD, or supply REV
+python3 scripts/gate.py status          # inspect evidence for HEAD, or REV
+python3 scripts/gate.py run --e2e       # also the unfiltered Docker suite
+```
+
+`run` uses the commit's [policy](../../scripts/gate-policy.json) and matching `gate.py`. Full checks cover all
+Python script tests, fmt, clippy with warnings denied, workspace tests with PostgreSQL, isolated core/app features
+with warnings denied, app-alone tests, and driver/TLS/crypto-provider/terminal dependency checks.
+
+For an identical tree, passing evidence can be reused. Otherwise the nearest eligible direct full pass within
+100 first-parent ancestors can support fresh docs checks: Python tests plus examples doctests, links/guarantees and
+skill tests. Only regular non-executable Markdown changes qualify:
+
+| Eligible paths | Full checks required |
+| --- | --- |
+| README.md, CHANGELOG.md, AGENTS.md | Crate READMEs and unknown paths |
+| Markdown under docs/, skills/cicada/, .claude/skills/, openspec/ | docs/reference/, non-Markdown files, symlinks and mode changes |
+
+The cumulative diff is checked, including both sides of renames. A changed policy/runner or missing eligible full
+base needs full checks; derived docs records never form a chain. E2E can reuse that same eligible full base's direct
+E2E pass. `--force` reruns checks and any requested E2E; failure or interruption makes the previous record unusable.
+
+Records under `<git common dir>/cicada-gate/records/<kind>-<tree>.json` name commit/tree, policy/runner, commands and
+results, timestamps, tool versions and PostgreSQL host/port/database without credentials. They do not expire:
+evidence describes the recorded environment, not every toolchain. Use `--force` to refresh it.
+
+### Hook and environment
+
+The build loop installs `python3 scripts/gate.py install-hook` once with the owner's approval. It respects
+`core.hooksPath`, preserves docs hooks and refuses a foreign pre-push hook with chaining instructions. The hook
+requires checks for the pushed main tip and refuses deletion/non-fast-forward updates. New version tags need checks,
+E2E and ancestry of the named remote's previously accepted main: fetch first and push main before the tag. Existing
+remote version tags cannot change or disappear. Other refs pass.
+
+Checks use the owned, ignored `.claude/worktrees/gate`, detached at the commit and cleaned except its real `target/`
+cache. An existing unowned path is refused; caller worktrees stay untouched. The gate preserves normal path/home,
+user/shell/temp/locale, Cargo/rustup/toolchain, Docker and SSH-agent settings, while stripping update flags, filters,
+compiler flags/wrappers and target-directory overrides. External ancestor or Cargo-home Cargo configuration and
+ancestor toolchain files are refused. A check that changes its source checkout fails.
+
+### Interrupted or busy runs
+
+All sessions share one lock and owned checkout. A busy gate refuses another run; wait for its owner to finish.
+After interruption, inspect `status`, then run:
+
+```sh
+python3 scripts/gate.py recover
+```
+
+Recovery takes the lock, verifies that the recorded gate process ended, stops an identified remaining command group,
+and checks for processes working in the checkout (`lsof` required). Uncertain process identity or remaining users
+block recovery. It clears only the marker; interrupted/failed evidence stays unusable until a new run passes.
+Never manually clean the shared checkout or remove its marker to bypass this check.
+
+Release subprocesses also hold the inherited lock, including remote Git, preflight, packaging and GitHub commands.
+A killed parent cannot free the checkout while a child retains the lock. Docker containers are outside that lock;
+the E2E harness removes its own stack.
+
+### Manual Linux coverage
+
+Actions → CI → Run workflow runs `python3 scripts/gate.py checks --scope full` with PostgreSQL. It creates no local
+evidence and publishes nothing. A local macOS pass does not establish Linux coverage.
+
+The gate is local workflow control. Another clone, old hook, forged record or `--no-verify` can bypass it; it provides
+no server enforcement, signature or hermetic-build guarantee.

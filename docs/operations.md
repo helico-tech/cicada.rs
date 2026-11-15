@@ -87,7 +87,8 @@ Upgrade nodes before clients unless the release requires coordinated replacement
 
 ## Releasing
 
-Follow [Release Cicada](how-to/releasing.md). A release is an immutable tag on main after the required checks pass.
+Follow [Release Cicada](how-to/releasing.md). The local gate checks a pinned commit and publishes its immutable tag
+and GitHub Release. Pushes and tags start no automatic Actions; Linux CI is available manually.
 
 ## On call
 
