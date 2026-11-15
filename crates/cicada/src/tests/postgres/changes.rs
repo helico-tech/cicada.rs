@@ -501,28 +501,42 @@ fn a_close_overtaking_another_after_its_flag_runs_the_whole_stop_and_cleanup() {
 /// After a close cancelled while a borrowed connection kept it waiting, the store's last handle is dropped, or first
 /// its runtime is shut down: the cancelled close spawned no task, and dropping the store frees it with its pool and
 /// listener (driver cleanup of the connections is not awaited).
+///
+/// The close is polled and dropped on a fresh current-thread runtime whose root never yields, so a task spawned there
+/// by the poll or the drop is still alive at the count; sqlx's own tasks, the aborted listener's cleanup included, run
+/// on the store's runtime and cannot raise it. The count does not see a spawn through a handle captured earlier,
+/// blocking work, a thread, or work in the listener's abort path: the store holds no runtime handle, close spawns
+/// nothing, and the listener's `Run` has no `Drop`.
 #[test]
 fn a_cancelled_close_leaves_its_resources_to_the_final_drop_or_the_runtime_teardown_without_a_task() {
     let main = runtime();
     let Some(db) = main.block_on(TestDb::new("cd")) else { return };
     for teardown in [false, true] {
         let runtime = runtime();
-        let store = runtime.block_on(async {
+        let (store, mut changes, borrowed) = runtime.block_on(async {
             // Not through `db.open`, which keeps a handle for its cleanup.
             let store = Arc::new(PostgresStore::connect(&db.url, db.config()).await.expect("store opens"));
-            let mut changes = subscribe(&store, "").await;
+            let changes = subscribe(&store, "").await;
             let borrowed = store.pool().acquire().await.unwrap();
-            let tasks = tokio::runtime::Handle::current().metrics().num_alive_tasks();
+            (store, changes, borrowed)
+        });
+        let measuring = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        measuring.block_on(async {
             {
+                // The prefix runs before the first await; the borrowed connection keeps the pool's close waiting.
                 let mut first = std::pin::pin!(store.close());
-                pending_until_pool_closed(&store, &mut first).await;
+                assert!(futures::poll!(first.as_mut()).is_pending(), "a borrowed connection keeps close waiting");
+                assert!(store.pool().is_closed());
             }
-            let after = tokio::runtime::Handle::current().metrics().num_alive_tasks();
-            assert!(after <= tasks, "the cancelled close spawns no task: {tasks} before, {after} after");
-            assert_eq!(store.close_progress().map(|(_, done)| done), Some(false), "cleanup is unfinished");
+            let tasks = tokio::runtime::Handle::current().metrics().num_alive_tasks();
+            assert_eq!(tasks, 0, "polling and dropping the cancelled close spawns no task");
+        });
+        drop(measuring);
+        assert_eq!(store.close_progress().map(|(_, done)| done), Some(false), "cleanup is unfinished");
+        assert!(store.listener_stopped(), "no later start brings the listener back");
+        runtime.block_on(async {
             assert_eq!(next(&mut changes).await, None);
             drop(borrowed); // inside the runtime: sqlx closes it in a task of its own
-            store
         });
         if teardown {
             drop(runtime);
