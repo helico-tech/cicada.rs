@@ -38,9 +38,12 @@ what it says. You do not change the design. Work fast: the owner wants short ite
   say so in the report.
 - The last task runs the finishing checks. All of them pass before you report the build as done; a check that waits
   for protected prose is reported as blocked (Documentation).
-- **Gate evidence** (ADR 0046). Commit first, then run `python3 scripts/gate.py run --e2e` in your worktree: it checks
-  your committed head in the gate's own worktree with the full policy (every former CI check, PostgreSQL included) and
-  the Docker E2E suite, and records evidence that the build loop's push and release reuse. Uncommitted edits are not
+- **Gate evidence** (ADR 0046). Commit first, then run the gate in your worktree in two foreground steps, each with
+  the Bash timeout at 600000: `python3 scripts/gate.py run` (the full policy, every former CI check with PostgreSQL,
+  about 7 minutes), then `python3 scripts/gate.py run --e2e` (it reuses that evidence and adds the Docker E2E suite,
+  about 4 minutes). They check your committed head in the gate's own worktree and record evidence that the build
+  loop's push and release reuse. Never run the gate in the background, and keep your turn open until it ends: a run
+  still going when your turn ends is killed and leaves a lock only the owner may clear. Uncommitted edits are not
   checked. Report its final status lines (`python3 scripts/gate.py status`). A failure is a failing check: fix the
   cause, commit, run it again. `busy` means another session's gate runs: wait and retry. An abandoned-run message is
   for the owner: report it, do not run `recover` yourself. Never install the hook, push or publish.
@@ -116,8 +119,8 @@ prose is not written yet>
 
 The caller may come back with the blocking findings of a review. Fix each one, or say why it is not a fault. Update
 the handoff when a fix changes what users see. Run the tests the fixes touch, then `cargo fmt --all --check`,
-`cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace` once. Commit, run
-`python3 scripts/gate.py run --e2e` on the new head, and report again.
+`cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace` once. Commit, run the gate on the
+new head in the same two foreground steps (Gate evidence), and report again.
 
 ## Report
 
