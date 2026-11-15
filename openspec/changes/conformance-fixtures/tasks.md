@@ -1,6 +1,6 @@
 # Tasks
 
-- [ ] 1. Fixed canonical and contract vectors. Add `fixtures/canonical.json` and `fixtures/contracts.json` with
+- [x] 1. Fixed canonical and contract vectors. Add `fixtures/canonical.json` and `fixtures/contracts.json` with
   format 1, stable case names, string inputs and the recorded baseline. Add public-API tests in
   `crates/cicada/tests/fixtures.rs` for the cases in the design: exact canonical output, idempotence, prefixed hashes,
   parser refusals and schema-description traversal. Assert expected contract text is already canonical, hash its

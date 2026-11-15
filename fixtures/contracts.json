@@ -1,0 +1,60 @@
+{
+  "format": 1,
+  "about": "Contract hashes (ADRs 0017 and 0047). Each input is a contract's JSON text: type, state and messages. The hash removes the keyword description from the state and message schemas and every subschema under a keyword that holds schemas, never from data (const, enum, default, examples), names (keys of properties, message names) or unknown keywords; keys other than type, state and messages are not part of a contract. canonical is the canonical text of what is hashed, and hash is sha256: and the lowercase hex SHA-256 of its UTF-8 bytes.",
+  "cases": [
+    {
+      "name": "minimal",
+      "input": "{\"type\":\"counter\",\"state\":{\"type\":\"object\"},\"messages\":{}}",
+      "canonical": "{\"messages\":{},\"state\":{\"type\":\"object\"},\"type\":\"counter\"}",
+      "hash": "sha256:40655a29974777f42d225e37266ce2633bf79437c330fa96e0e5aaf25732479f"
+    },
+    {
+      "name": "descriptions-removed",
+      "input": "{\"type\":\"counter\",\"state\":{\"type\":\"object\",\"description\":\"State.\",\"properties\":{\"description\":{\"type\":\"string\",\"description\":\"A property named description stays.\"},\"n\":{\"type\":\"number\",\"description\":\"N.\"}},\"required\":[\"description\"]},\"messages\":{\"Add\":{\"type\":\"object\",\"description\":\"Adds.\",\"properties\":{\"n\":{\"type\":\"integer\",\"description\":\"Amount.\",\"minimum\":1}}}}}",
+      "canonical": "{\"messages\":{\"Add\":{\"properties\":{\"n\":{\"minimum\":1,\"type\":\"integer\"}},\"type\":\"object\"}},\"state\":{\"properties\":{\"description\":{\"type\":\"string\"},\"n\":{\"type\":\"number\"}},\"required\":[\"description\"],\"type\":\"object\"},\"type\":\"counter\"}",
+      "hash": "sha256:dc110d02d21233659db0c651c9a61396bf7a867ff36b3fccef2ee1a3e79f980d"
+    },
+    {
+      "name": "descriptions-absent",
+      "input": "{\"type\":\"counter\",\"state\":{\"type\":\"object\",\"properties\":{\"description\":{\"type\":\"string\"},\"n\":{\"type\":\"number\"}},\"required\":[\"description\"]},\"messages\":{\"Add\":{\"type\":\"object\",\"properties\":{\"n\":{\"type\":\"integer\",\"minimum\":1}}}}}",
+      "canonical": "{\"messages\":{\"Add\":{\"properties\":{\"n\":{\"minimum\":1,\"type\":\"integer\"}},\"type\":\"object\"}},\"state\":{\"properties\":{\"description\":{\"type\":\"string\"},\"n\":{\"type\":\"number\"}},\"required\":[\"description\"],\"type\":\"object\"},\"type\":\"counter\"}",
+      "hash": "sha256:dc110d02d21233659db0c651c9a61396bf7a867ff36b3fccef2ee1a3e79f980d"
+    },
+    {
+      "name": "descriptions-at-every-traversed-keyword",
+      "input": "{\"type\":\"walk\",\"state\":{\"description\":\"root\",\"properties\":{\"p\":{\"description\":\"properties\"}},\"patternProperties\":{\"^x\":{\"description\":\"patternProperties\"}},\"$defs\":{\"d\":{\"description\":\"$defs\"}},\"definitions\":{\"d\":{\"description\":\"definitions\"}},\"dependentSchemas\":{\"p\":{\"description\":\"dependentSchemas\"}},\"items\":{\"description\":\"items\"},\"prefixItems\":[{\"description\":\"prefixItems\"}],\"anyOf\":[{\"description\":\"anyOf\"}],\"oneOf\":[{\"description\":\"oneOf\"}],\"allOf\":[{\"description\":\"allOf\",\"allOf\":[{\"description\":\"nested\"}]}],\"additionalProperties\":{\"description\":\"additionalProperties\"},\"additionalItems\":{\"description\":\"additionalItems\"},\"unevaluatedProperties\":{\"description\":\"unevaluatedProperties\"},\"unevaluatedItems\":{\"description\":\"unevaluatedItems\"},\"not\":{\"description\":\"not\"},\"if\":{\"description\":\"if\"},\"then\":{\"description\":\"then\"},\"else\":{\"description\":\"else\"},\"contains\":{\"description\":\"contains\"},\"propertyNames\":{\"description\":\"propertyNames\"}},\"messages\":{\"Go\":{\"description\":\"message\",\"items\":[{\"description\":\"items as an array\"}]}}}",
+      "canonical": "{\"messages\":{\"Go\":{\"items\":[{}]}},\"state\":{\"$defs\":{\"d\":{}},\"additionalItems\":{},\"additionalProperties\":{},\"allOf\":[{\"allOf\":[{}]}],\"anyOf\":[{}],\"contains\":{},\"definitions\":{\"d\":{}},\"dependentSchemas\":{\"p\":{}},\"else\":{},\"if\":{},\"items\":{},\"not\":{},\"oneOf\":[{}],\"patternProperties\":{\"^x\":{}},\"prefixItems\":[{}],\"properties\":{\"p\":{}},\"propertyNames\":{},\"then\":{},\"unevaluatedItems\":{},\"unevaluatedProperties\":{}},\"type\":\"walk\"}",
+      "hash": "sha256:6fcf91ca81195133957d4a474209cf30df3b53a12f500d9fb22f7cb90b05b4bb"
+    },
+    {
+      "name": "descriptions-at-every-traversed-keyword-absent",
+      "input": "{\"type\":\"walk\",\"state\":{\"properties\":{\"p\":{}},\"patternProperties\":{\"^x\":{}},\"$defs\":{\"d\":{}},\"definitions\":{\"d\":{}},\"dependentSchemas\":{\"p\":{}},\"items\":{},\"prefixItems\":[{}],\"anyOf\":[{}],\"oneOf\":[{}],\"allOf\":[{\"allOf\":[{}]}],\"additionalProperties\":{},\"additionalItems\":{},\"unevaluatedProperties\":{},\"unevaluatedItems\":{},\"not\":{},\"if\":{},\"then\":{},\"else\":{},\"contains\":{},\"propertyNames\":{}},\"messages\":{\"Go\":{\"items\":[{}]}}}",
+      "canonical": "{\"messages\":{\"Go\":{\"items\":[{}]}},\"state\":{\"$defs\":{\"d\":{}},\"additionalItems\":{},\"additionalProperties\":{},\"allOf\":[{\"allOf\":[{}]}],\"anyOf\":[{}],\"contains\":{},\"definitions\":{\"d\":{}},\"dependentSchemas\":{\"p\":{}},\"else\":{},\"if\":{},\"items\":{},\"not\":{},\"oneOf\":[{}],\"patternProperties\":{\"^x\":{}},\"prefixItems\":[{}],\"properties\":{\"p\":{}},\"propertyNames\":{},\"then\":{},\"unevaluatedItems\":{},\"unevaluatedProperties\":{}},\"type\":\"walk\"}",
+      "hash": "sha256:6fcf91ca81195133957d4a474209cf30df3b53a12f500d9fb22f7cb90b05b4bb"
+    },
+    {
+      "name": "description-in-data-kept",
+      "input": "{\"type\":\"data\",\"state\":{\"const\":{\"description\":\"const data\"},\"enum\":[{\"description\":\"enum data\"}],\"default\":{\"description\":\"default data\"},\"examples\":[{\"description\":\"examples data\"}],\"x-note\":{\"description\":\"an unknown keyword is not walked\"},\"properties\":{\"a\":{\"type\":\"boolean\",\"description\":\"dropped\"}}},\"messages\":{\"description\":{\"type\":\"object\",\"description\":\"a message named description stays\"}}}",
+      "canonical": "{\"messages\":{\"description\":{\"type\":\"object\"}},\"state\":{\"const\":{\"description\":\"const data\"},\"default\":{\"description\":\"default data\"},\"enum\":[{\"description\":\"enum data\"}],\"examples\":[{\"description\":\"examples data\"}],\"properties\":{\"a\":{\"type\":\"boolean\"}},\"x-note\":{\"description\":\"an unknown keyword is not walked\"}},\"type\":\"data\"}",
+      "hash": "sha256:b5c2bf6f7d282863a4cf8b7e986435b1ab1349a150c122f3e2c3ac129856a2f4"
+    },
+    {
+      "name": "boolean-schemas",
+      "input": "{\"type\":\"flags\",\"state\":true,\"messages\":{\"Never\":false,\"Any\":{\"not\":false,\"items\":true}}}",
+      "canonical": "{\"messages\":{\"Any\":{\"items\":true,\"not\":false},\"Never\":false},\"state\":true,\"type\":\"flags\"}",
+      "hash": "sha256:721bed4e378ee115cff8ca9a22ac6fd343e626aa9cea7e1544a3041633320035"
+    },
+    {
+      "name": "float-and-unicode-in-schema",
+      "input": "{\"type\":\"limits\",\"state\":{\"type\":\"number\",\"minimum\":-0,\"maximum\":1e16,\"multipleOf\":0.000001,\"enum\":[1.0,1,1e2]},\"messages\":{\"\\u00e9\":{\"const\":\"\\ud83d\\ude00\"},\"e\\u0301\":{\"const\":\"\\u2028\"}}}",
+      "canonical": "{\"messages\":{\"e\u0301\":{\"const\":\"\u2028\"},\"\u00e9\":{\"const\":\"\ud83d\ude00\"}},\"state\":{\"enum\":[1.0,1,100.0],\"maximum\":1e+16,\"minimum\":-0.0,\"multipleOf\":1e-6,\"type\":\"number\"},\"type\":\"limits\"}",
+      "hash": "sha256:f2cee42d11752ebd66291e7248aab2c7ad3e971e0a90881a2bde36adbbd771b8"
+    },
+    {
+      "name": "unknown-top-level-keys-ignored",
+      "input": "{\"type\":\"counter\",\"key\":\"legacy\",\"description\":\"top level, not a schema\",\"state\":{\"type\":\"object\"},\"messages\":{}}",
+      "canonical": "{\"messages\":{},\"state\":{\"type\":\"object\"},\"type\":\"counter\"}",
+      "hash": "sha256:40655a29974777f42d225e37266ce2633bf79437c330fa96e0e5aaf25732479f"
+    }
+  ]
+}
