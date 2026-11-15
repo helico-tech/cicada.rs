@@ -120,10 +120,11 @@ Proposed text only; none of this prose is written.
 Checks run by the builder: `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -- -D warnings` in
 the worktree; `cargo test -p cicada-examples --doc --test docs --test skill` (47 passed); `openspec validate
 local-push-gate --strict` (valid); the 64 Python tests of `scripts/`. The gate itself ran in a temporary clone of this
-branch, never in the shared repository (so no evidence of it exists in the real common directory): `gate.py run
---e2e` passed full and E2E on `58290e4` (60 Python tests, 3055 Rust tests including PostgreSQL, every feature-alone
-build and dependency-tree check, 28 E2E tests in Docker). Review round 1 changed `scripts/gate.py` and its tests
-afterwards, so that evidence does not cover the current head; nothing outside `scripts/` and Markdown changed since.
+branch, never in the shared repository (so no evidence of it exists in the real common directory). After review
+round 1, `gate.py run --e2e` passed full and E2E on `38046e6` (64 Python tests, 3055 Rust tests including PostgreSQL,
+every feature-alone build and dependency-tree check, 28 E2E tests in Docker); on this Markdown-only head it ran fresh
+docs checks over that full pass and reused its E2E pass. An earlier gate run of round 1's first fix caught a race in
+the lock tests, fixed in `38046e6`.
 A bad `CICADA_PG_URL` fails the PostgreSQL tests (checked by hand with `cargo test -p cicada --test store`).
 
 Installation after landing: the build loop runs `python3 scripts/gate.py install-hook` once in the main checkout, with
