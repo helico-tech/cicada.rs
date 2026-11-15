@@ -7,6 +7,19 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.18.8 — unreleased
+
+A test-only release: a flaky PostgreSQL test is fixed. The library, its API, wire formats, contract hashes, store
+schema and guarantees are those of 0.18.7.
+
+### Fixed
+
+- `a_cancelled_close_leaves_its_resources_to_the_final_drop_or_the_runtime_teardown_without_a_task`
+  (`crates/cicada/src/tests/postgres/changes.rs`) no longer fails at random under load. It counted every task on the
+  store's runtime, so sqlx's own connection cleanup could raise the count. It now polls and drops the cancelled close
+  on a fresh current-thread runtime that runs nothing else, and asserts that no task is alive there; the store's
+  setup, the ended change stream and both teardown legs stay on the store's runtime. The SQLite twin is unchanged.
+
 ## 0.18.7 — 2026-11-14
 
 A correction-only release: the record of the dead-letter upgrade of 0.17.0 now says what its check does. The library,

@@ -11,7 +11,7 @@
   each must fail this targeted test. Revert both mutations and record failures, restored-source pass and exact commands
   in the progress log. Run both targeted PostgreSQL and SQLite tests, checking they executed rather than skipped;
   repeat the PostgreSQL test 20 times. No production hooks, counters, dependencies or lifecycle behavior changes.
-- [ ] 2. Write `docs-handoff.md`: no new user behavior, no protected prose/guarantee/link/route changes, unchanged test
+- [x] 2. Write `docs-handoff.md`: no new user behavior, no protected prose/guarantee/link/route changes, unchanged test
   names and Blocking: none; report evidence and limitations accurately, and include release version for docs-owned
   installation pins. Add a test-fix changelog entry and normal patch version at build time, including skill metadata
   and required generated version updates. Verify the docs and skill tests and `python3 scripts/status.py`. Preserve
@@ -41,3 +41,6 @@
   the test passes again.
 - Targeted runs: `... --lib a_cancelled_close_leaves` ran both twins, 2 passed; the PostgreSQL test alone 20 times in a
   row, 20 passed, 0 failed.
+- Task 2. Version 0.18.8 in `Cargo.toml`, `Cargo.lock`, the skill's metadata and `docs/openapi.json`; changelog entry
+  under `## 0.18.8 — unreleased`; `docs-handoff.md` with no user prose and Blocking: none. `--test docs` 11 passed,
+  `--test skill` 8 passed; `scripts/status.py` shows this change first, before `local-push-gate`, problems: none.
