@@ -305,6 +305,8 @@ by a later caller. No background shutdown task or fixed completion deadline SHAL
 
 - **WHEN** all close callers are cancelled while Store handles still exist and retained cleanup is unfinished
 - **THEN** the store remains closed but unfinished cleanup need not progress until another close or final resource drop
+- **AND** polling or dropping the cancelled close schedules no Cicada background shutdown task; driver-owned
+  connection cleanup on the store runtime is permitted and is not attributed to Cicada shutdown
 - **AND** the documentation states that cancellation does not itself schedule a shutdown task
 
 ### Requirement: SQL shutdown retains the backend cleanup boundaries
