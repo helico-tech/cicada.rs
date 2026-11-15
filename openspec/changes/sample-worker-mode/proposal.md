@@ -23,7 +23,7 @@ Allowing `on_start` hooks in HTTP mode (ADR 0042 stays). The ports' own E2E suit
 
 ## Order
 
-After `conformance-fixtures`. No following change.
+After `node-down-alert`. No following change.
 
 ## Impact
 

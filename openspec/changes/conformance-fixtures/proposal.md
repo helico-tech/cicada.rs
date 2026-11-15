@@ -45,7 +45,7 @@ The lease limit docs (`lease-limit-docs`). A stock Rust HTTP worker (`sample-wor
 
 ## Order
 
-After `node-down-alert`. Before `sample-worker-mode`.
+After `lease-limit-docs`. Before `node-details`.
 
 ## Impact
 

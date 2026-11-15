@@ -23,7 +23,7 @@ Changing the limits themselves. Conformance fixtures for the ports (`conformance
 
 ## Order
 
-After `heartbeat-watch`. Before `node-details`.
+After `heartbeat-watch`. Before `conformance-fixtures`.
 
 ## Impact
 
