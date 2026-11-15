@@ -27,6 +27,10 @@ None. Every doctest, link, guarantee row and skill route passes without prose ed
 
 Red: `cargo test -p cicada-axum --test openapi` before the correction failed the new test on `types` ("1 to 64
 types"). Green: after the correction and `CICADA_UPDATE_OPENAPI=true`, the same run without the variable passed (10
-passed). The generated diff of `docs/openapi.json` holds the two descriptions and the version only. The finishing
-checks are the full local gate (`python3 scripts/gate.py run --e2e`); the build report gives its result. Nothing is
+passed). The generated diff of `docs/openapi.json` holds the two descriptions and the version only. Run directly on
+c915092 with PostgreSQL on port 55432: `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -- -D
+warnings` (clean); `cargo test --workspace` (2947 passed, 0 failed); `cargo test -p cicada-app` (149 passed); the
+script tests (64 passed); `scripts/ci/feature-builds.sh` and `scripts/ci/dependency-trees.sh` (pass); the Docker E2E
+suite (1 passed); `openspec validate lease-limit-docs --strict` (valid). The recorded `gate.py run --e2e` was killed
+by SIGTERM and left an abandoned run for the owner to recover, so no gate evidence is recorded yet. Nothing is
 written in docs-owned files, and no owner fix is integrated.
