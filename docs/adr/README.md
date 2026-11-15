@@ -52,6 +52,7 @@ accepted ADR is not rewritten: a later one supersedes it. A change that makes a 
 | [0045](0045-docs-handoff-between-loops.md) | Builders hand off prose, integrate exact docs-owner fixes for blocking checks, and keep main green through normal review and release gates, since 0.18.6. |
 | [0046](0046-local-checks-and-releases.md) | Local tree-bound check evidence gates main and version tags; pinned local publication replaces automatic Actions, and remote version tags stay immutable. |
 | [0047](0047-canonical-json-and-conformance-fixtures.md) | Fixed canonical/hash and remote-worker fixtures ship as a second verified release archive, with the current formatter and explicit tested dependency limits. |
+| [0048](0048-node-details.md) | Optional hostname, Cicada version and label describe node rows; migration 7 is additive for running old nodes, and metadata does not establish identity. |
 
 ## Design questions
 
