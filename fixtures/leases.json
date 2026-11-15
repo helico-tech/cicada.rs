@@ -1,0 +1,878 @@
+{
+  "format": 1,
+  "about": "Bodies of the remote turn operations (ADR 0040): lease is POST /leases, renew POST /leases/renew, release POST /leases/release and complete POST /leases/complete. Every body is JSON text in a string. valid: a request (status null) or a response with its HTTP status (200; 204 without a body for release) exactly as the Rust implementation writes it; decoding it and writing it again gives the same bytes. Rust's member order and number spelling are examples, not a rule: another implementation may write other JSON with the same meaning. accepted: an input that decodes to the same meaning as the valid case it names (expected), such as response fields this version does not know, omitted or null optional request fields and other spellings of instants, durations and addresses. invalid: an input refused at stage decode (the typed decoder) or conversion (the check after it, of fields that contradict each other). Decoding does not decide whether a server admits a lease or a report's effects.",
+  "valid": [
+    {
+      "name": "lease-request",
+      "operation": "lease",
+      "direction": "request",
+      "status": null,
+      "body": "{\"owner\":\"worker-1\",\"types\":{\"billing.invoices\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"counter\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\"},\"limit\":100}"
+    },
+    {
+      "name": "renew-request-epoch-max",
+      "operation": "renew",
+      "direction": "request",
+      "status": null,
+      "body": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807}"
+    },
+    {
+      "name": "renew-request-epoch-min",
+      "operation": "renew",
+      "direction": "request",
+      "status": null,
+      "body": "{\"actor\":\"counter/b\",\"epoch\":-9223372036854775808}"
+    },
+    {
+      "name": "release-request",
+      "operation": "release",
+      "direction": "request",
+      "status": null,
+      "body": "{\"actor\":\"counter/b\",\"epoch\":0}"
+    },
+    {
+      "name": "complete-request-returned-full",
+      "operation": "complete",
+      "direction": "request",
+      "status": null,
+      "body": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"set\",\"value\":{\"count\":8}},\"effects\":{\"sends\":[{\"id\":\"s1\",\"to\":\"other/x\",\"type\":\"Ping\",\"payload\":{\"k\":\"v\"},\"delay\":\"PT0.000000002S\",\"correlationId\":\"c\",\"headers\":{\"h\":\"1\"},\"retry\":{\"maxAttempts\":2,\"backoff\":{\"kind\":\"fixed\",\"delay\":\"PT1S\"}},\"retention\":{\"done\":{\"kind\":\"remove\"},\"failed\":{\"kind\":\"for\",\"age\":\"PT720H\"}}},{\"id\":\"s2\",\"to\":\"other/y\",\"type\":\"Ping\",\"payload\":{},\"deliverAt\":\"2027-01-01T00:00:00Z\",\"headers\":{}},{\"id\":\"s3\",\"to\":\"other/z\",\"type\":\"Ping\",\"payload\":null,\"headers\":{}}],\"creates\":[{\"address\":\"child/c\",\"state\":{},\"child\":true},{\"address\":\"free/f\",\"state\":[1],\"child\":false}],\"cancels\":[\"p1\",\"p2\"],\"watches\":[{\"target\":\"billing.invoices/acme\",\"set\":true},{\"target\":\"billing\",\"set\":true},{\"target\":\"*\",\"set\":false}],\"controls\":[{\"effect\":\"delete\",\"actor\":\"a/one\"},{\"effect\":\"pause\",\"actor\":\"a/two\"},{\"effect\":\"resume\",\"actor\":\"a/three\"},{\"effect\":\"purge\",\"actor\":\"a/four\"}]}}}"
+    },
+    {
+      "name": "complete-request-returned-unchanged",
+      "operation": "complete",
+      "direction": "request",
+      "status": null,
+      "body": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":7,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"unchanged\"},\"effects\":{\"sends\":[],\"creates\":[],\"cancels\":[],\"watches\":[],\"controls\":[]}}}"
+    },
+    {
+      "name": "complete-request-returned-minimal-send",
+      "operation": "complete",
+      "direction": "request",
+      "status": null,
+      "body": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":7,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"unchanged\"},\"effects\":{\"sends\":[{\"id\":\"s\",\"to\":\"c/d\",\"type\":\"T\",\"payload\":{},\"headers\":{}}],\"creates\":[],\"cancels\":[],\"watches\":[],\"controls\":[]}}}"
+    },
+    {
+      "name": "complete-request-returned-stop",
+      "operation": "complete",
+      "direction": "request",
+      "status": null,
+      "body": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":7,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"stop\"},\"effects\":{\"sends\":[],\"creates\":[],\"cancels\":[],\"watches\":[],\"controls\":[]}}}"
+    },
+    {
+      "name": "complete-request-returned-set-null",
+      "operation": "complete",
+      "direction": "request",
+      "status": null,
+      "body": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":7,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"set\",\"value\":null},\"effects\":{\"sends\":[],\"creates\":[],\"cancels\":[],\"watches\":[],\"controls\":[]}}}"
+    },
+    {
+      "name": "complete-request-failed-handler-retryable",
+      "operation": "complete",
+      "direction": "request",
+      "status": null,
+      "body": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":7,\"messageId\":\"m1\",\"report\":{\"kind\":\"failed\",\"cause\":\"handler\",\"retryable\":true,\"reason\":\"boom\"}}"
+    },
+    {
+      "name": "complete-request-failed-timeout",
+      "operation": "complete",
+      "direction": "request",
+      "status": null,
+      "body": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":7,\"messageId\":\"m1\",\"report\":{\"kind\":\"failed\",\"cause\":\"timeout\",\"retryable\":true,\"reason\":\"slow\"}}"
+    },
+    {
+      "name": "complete-request-failed-refused",
+      "operation": "complete",
+      "direction": "request",
+      "status": null,
+      "body": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":7,\"messageId\":\"m1\",\"report\":{\"kind\":\"failed\",\"cause\":\"refused\",\"retryable\":false,\"reason\":\"no\"}}"
+    },
+    {
+      "name": "complete-request-cancelled",
+      "operation": "complete",
+      "direction": "request",
+      "status": null,
+      "body": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":-9223372036854775808,\"messageId\":\"m1\",\"report\":{\"kind\":\"cancelled\"}}"
+    },
+    {
+      "name": "lease-response-leased",
+      "operation": "lease",
+      "direction": "response",
+      "status": 200,
+      "body": "{\"result\":\"leased\",\"leases\":[{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"message\":{\"id\":\"m1\",\"to\":\"counter/a%20b%2Fc\",\"from\":\"sender/x\",\"type\":\"Add\",\"payload\":{\"n\":1,\"exact\":18446744073709551615,\"f\":0.5,\"nested\":{\"a\":[1,2]}},\"deliverAt\":\"2026-01-01T00:00:00.000001Z\",\"correlationId\":\"corr\",\"headers\":{\"trace\":\"t1\"},\"seq\":9223372036854775807,\"attempt\":4294967295,\"failures\":2,\"lostClaims\":1,\"lastError\":\"boom\",\"retry\":{\"maxAttempts\":4,\"backoff\":{\"kind\":\"exponential\",\"initial\":\"PT1S\",\"factor\":2.0,\"max\":\"PT1M\"}},\"causedBy\":\"m0\",\"retention\":{\"done\":{\"kind\":\"last\",\"count\":5},\"failed\":{\"kind\":\"remove\"}},\"notification\":true},\"state\":{\"count\":7},\"version\":1,\"claimedAt\":\"2026-01-01T00:00:01Z\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT0.000000002S\"},{\"actor\":\"counter/b\",\"epoch\":-9223372036854775808,\"message\":{\"id\":\"m2\",\"to\":\"counter/b\",\"from\":null,\"type\":\"Add\",\"payload\":null,\"deliverAt\":\"2026-01-01T00:00:00Z\",\"correlationId\":null,\"headers\":{},\"seq\":-9223372036854775808,\"attempt\":0,\"failures\":0,\"lostClaims\":0,\"lastError\":null,\"retry\":null,\"causedBy\":null,\"retention\":null,\"notification\":false},\"state\":{\"count\":7},\"version\":9223372036854775807,\"claimedAt\":\"2026-01-01T00:00:01Z\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT0.000000002S\"}]}"
+    },
+    {
+      "name": "lease-response-leased-empty",
+      "operation": "lease",
+      "direction": "response",
+      "status": 200,
+      "body": "{\"result\":\"leased\",\"leases\":[]}"
+    },
+    {
+      "name": "lease-response-contract-mismatch",
+      "operation": "lease",
+      "direction": "response",
+      "status": 200,
+      "body": "{\"result\":\"contractMismatch\",\"type\":\"counter\",\"registered\":\"sha256:aa\",\"requested\":\"sha256:bb\"}"
+    },
+    {
+      "name": "lease-response-contract-mismatch-unregistered",
+      "operation": "lease",
+      "direction": "response",
+      "status": 200,
+      "body": "{\"result\":\"contractMismatch\",\"type\":\"counter\",\"registered\":null,\"requested\":\"sha256:bb\"}"
+    },
+    {
+      "name": "renew-response-renewed-cancel-requested",
+      "operation": "renew",
+      "direction": "response",
+      "status": 200,
+      "body": "{\"result\":\"renewed\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT1.500000002S\",\"cancelRequested\":true}"
+    },
+    {
+      "name": "renew-response-renewed",
+      "operation": "renew",
+      "direction": "response",
+      "status": 200,
+      "body": "{\"result\":\"renewed\",\"leaseUntil\":\"2026-01-01T00:00:00.123456Z\",\"ttl\":\"PT0.000000002S\",\"cancelRequested\":false}"
+    },
+    {
+      "name": "renew-response-lease-lost",
+      "operation": "renew",
+      "direction": "response",
+      "status": 200,
+      "body": "{\"result\":\"leaseLost\"}"
+    },
+    {
+      "name": "release-response",
+      "operation": "release",
+      "direction": "response",
+      "status": 204,
+      "body": null
+    },
+    {
+      "name": "complete-response-completed-done",
+      "operation": "complete",
+      "direction": "response",
+      "status": 200,
+      "body": "{\"result\":\"completed\",\"outcome\":{\"kind\":\"done\"},\"cause\":null,\"version\":-9223372036854775808,\"sent\":[{\"id\":\"m1\",\"to\":\"counter/a%20b%2Fc\",\"from\":\"sender/x\",\"type\":\"Add\",\"payload\":{\"n\":1,\"exact\":18446744073709551615,\"f\":0.5,\"nested\":{\"a\":[1,2]}},\"deliverAt\":\"2026-01-01T00:00:00.000001Z\",\"correlationId\":\"corr\",\"headers\":{\"trace\":\"t1\"},\"seq\":9223372036854775807,\"attempt\":4294967295,\"failures\":2,\"lostClaims\":1,\"lastError\":\"boom\",\"retry\":{\"maxAttempts\":4,\"backoff\":{\"kind\":\"exponential\",\"initial\":\"PT1S\",\"factor\":2.0,\"max\":\"PT1M\"}},\"causedBy\":\"m0\",\"retention\":{\"done\":{\"kind\":\"last\",\"count\":5},\"failed\":{\"kind\":\"remove\"}},\"notification\":true},{\"id\":\"m2\",\"to\":\"counter/b\",\"from\":null,\"type\":\"Add\",\"payload\":null,\"deliverAt\":\"2026-01-01T00:00:00Z\",\"correlationId\":null,\"headers\":{},\"seq\":-9223372036854775808,\"attempt\":0,\"failures\":0,\"lostClaims\":0,\"lastError\":null,\"retry\":null,\"causedBy\":null,\"retention\":null,\"notification\":false}],\"cancelled\":[\"p1\"]}"
+    },
+    {
+      "name": "complete-response-completed-cancelled",
+      "operation": "complete",
+      "direction": "response",
+      "status": 200,
+      "body": "{\"result\":\"completed\",\"outcome\":{\"kind\":\"cancelled\"},\"cause\":null,\"version\":9223372036854775807,\"sent\":[],\"cancelled\":[]}"
+    },
+    {
+      "name": "complete-response-completed-failed-commit",
+      "operation": "complete",
+      "direction": "response",
+      "status": 200,
+      "body": "{\"result\":\"completed\",\"outcome\":{\"kind\":\"failed\",\"error\":\"No such target\"},\"cause\":\"commit\",\"version\":1,\"sent\":[],\"cancelled\":[]}"
+    },
+    {
+      "name": "complete-response-completed-failed-node",
+      "operation": "complete",
+      "direction": "response",
+      "status": 200,
+      "body": "{\"result\":\"completed\",\"outcome\":{\"kind\":\"failed\",\"error\":\"e\"},\"cause\":\"node\",\"version\":1,\"sent\":[],\"cancelled\":[]}"
+    },
+    {
+      "name": "complete-response-completed-failed-message",
+      "operation": "complete",
+      "direction": "response",
+      "status": 200,
+      "body": "{\"result\":\"completed\",\"outcome\":{\"kind\":\"failed\",\"error\":\"e\"},\"cause\":\"message\",\"version\":1,\"sent\":[],\"cancelled\":[]}"
+    },
+    {
+      "name": "complete-response-completed-failed-state",
+      "operation": "complete",
+      "direction": "response",
+      "status": 200,
+      "body": "{\"result\":\"completed\",\"outcome\":{\"kind\":\"failed\",\"error\":\"e\"},\"cause\":\"state\",\"version\":1,\"sent\":[],\"cancelled\":[]}"
+    },
+    {
+      "name": "complete-response-completed-failed-claim-limit",
+      "operation": "complete",
+      "direction": "response",
+      "status": 200,
+      "body": "{\"result\":\"completed\",\"outcome\":{\"kind\":\"failed\",\"error\":\"e\"},\"cause\":\"claim-limit\",\"version\":1,\"sent\":[],\"cancelled\":[]}"
+    },
+    {
+      "name": "complete-response-completed-rescheduled-now",
+      "operation": "complete",
+      "direction": "response",
+      "status": 200,
+      "body": "{\"result\":\"completed\",\"outcome\":{\"kind\":\"rescheduled\",\"error\":\"e\"},\"cause\":null,\"version\":1,\"sent\":[],\"cancelled\":[]}"
+    },
+    {
+      "name": "complete-response-completed-rescheduled-at",
+      "operation": "complete",
+      "direction": "response",
+      "status": 200,
+      "body": "{\"result\":\"completed\",\"outcome\":{\"kind\":\"rescheduled\",\"error\":\"e\",\"deliverAt\":\"2026-01-01T00:00:05Z\"},\"cause\":null,\"version\":1,\"sent\":[],\"cancelled\":[]}"
+    },
+    {
+      "name": "complete-response-completed-rescheduled-after",
+      "operation": "complete",
+      "direction": "response",
+      "status": 200,
+      "body": "{\"result\":\"completed\",\"outcome\":{\"kind\":\"rescheduled\",\"error\":\"e\",\"delay\":\"PT0.000000002S\"},\"cause\":null,\"version\":1,\"sent\":[],\"cancelled\":[]}"
+    },
+    {
+      "name": "complete-response-rejected",
+      "operation": "complete",
+      "direction": "response",
+      "status": 200,
+      "body": "{\"result\":\"rejected\",\"failure\":{\"cause\":\"commit\",\"retryable\":false,\"reason\":\"No such target\"}}"
+    },
+    {
+      "name": "complete-response-lease-lost",
+      "operation": "complete",
+      "direction": "response",
+      "status": 200,
+      "body": "{\"result\":\"leaseLost\"}"
+    }
+  ],
+  "accepted": [
+    {
+      "name": "lease-response-unknown-fields-ignored",
+      "operation": "lease",
+      "direction": "response",
+      "input": "{\"result\":\"leased\",\"leases\":[{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"message\":{\"id\":\"m1\",\"to\":\"counter/a%20b%2Fc\",\"from\":\"sender/x\",\"type\":\"Add\",\"payload\":{\"n\":1,\"exact\":18446744073709551615,\"f\":0.5,\"nested\":{\"a\":[1,2]}},\"deliverAt\":\"2026-01-01T00:00:00.000001Z\",\"correlationId\":\"corr\",\"headers\":{\"trace\":\"t1\"},\"seq\":9223372036854775807,\"attempt\":4294967295,\"failures\":2,\"lostClaims\":1,\"lastError\":\"boom\",\"retry\":{\"maxAttempts\":4,\"backoff\":{\"kind\":\"exponential\",\"initial\":\"PT1S\",\"factor\":2.0,\"max\":\"PT1M\"}},\"causedBy\":\"m0\",\"retention\":{\"done\":{\"kind\":\"last\",\"count\":5},\"failed\":{\"kind\":\"remove\"}},\"notification\":true,\"extra\":[1]},\"state\":{\"count\":7},\"version\":1,\"claimedAt\":\"2026-01-01T00:00:01Z\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT0.000000002S\",\"extra\":{\"nested\":true}},{\"actor\":\"counter/b\",\"epoch\":-9223372036854775808,\"message\":{\"id\":\"m2\",\"to\":\"counter/b\",\"from\":null,\"type\":\"Add\",\"payload\":null,\"deliverAt\":\"2026-01-01T00:00:00Z\",\"correlationId\":null,\"headers\":{},\"seq\":-9223372036854775808,\"attempt\":0,\"failures\":0,\"lostClaims\":0,\"lastError\":null,\"retry\":null,\"causedBy\":null,\"retention\":null,\"notification\":false},\"state\":{\"count\":7},\"version\":9223372036854775807,\"claimedAt\":\"2026-01-01T00:00:01Z\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT0.000000002S\"}],\"extra\":1}",
+      "expected": "lease-response-leased"
+    },
+    {
+      "name": "renew-response-unknown-fields-ignored",
+      "operation": "renew",
+      "direction": "response",
+      "input": "{\"result\":\"leaseLost\",\"extra\":{\"x\":1}}",
+      "expected": "renew-response-lease-lost"
+    },
+    {
+      "name": "complete-response-unknown-fields-ignored",
+      "operation": "complete",
+      "direction": "response",
+      "input": "{\"result\":\"rejected\",\"extra\":1,\"failure\":{\"cause\":\"commit\",\"retryable\":false,\"reason\":\"No such target\",\"extra\":2}}",
+      "expected": "complete-response-rejected"
+    },
+    {
+      "name": "complete-response-rescheduled-null-delivery",
+      "operation": "complete",
+      "direction": "response",
+      "input": "{\"result\":\"completed\",\"outcome\":{\"kind\":\"rescheduled\",\"error\":\"e\",\"deliverAt\":null,\"delay\":null},\"cause\":null,\"version\":1,\"sent\":[],\"cancelled\":[]}",
+      "expected": "complete-response-completed-rescheduled-now"
+    },
+    {
+      "name": "renew-response-instant-and-duration-spelling",
+      "operation": "renew",
+      "direction": "response",
+      "input": "{\"result\":\"renewed\",\"leaseUntil\":\"2026-01-01T00:00:31.5Z\",\"ttl\":\"PT1.5000000029S\",\"cancelRequested\":true}",
+      "expected": "renew-response-renewed-cancel-requested"
+    },
+    {
+      "name": "renew-response-duration-with-units",
+      "operation": "renew",
+      "direction": "response",
+      "input": "{\"cancelRequested\":false,\"ttl\":\"PT0H0M0.000000002S\",\"leaseUntil\":\"2026-01-01T00:00:00.123456Z\",\"result\":\"renewed\"}",
+      "expected": "renew-response-renewed"
+    },
+    {
+      "name": "complete-request-effects-omitted",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":7,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"unchanged\"},\"effects\":{}}}",
+      "expected": "complete-request-returned-unchanged"
+    },
+    {
+      "name": "complete-request-send-defaults-omitted",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":7,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"unchanged\"},\"effects\":{\"sends\":[{\"id\":\"s\",\"to\":\"c/d\",\"type\":\"T\",\"payload\":{}}]}}}",
+      "expected": "complete-request-returned-minimal-send"
+    },
+    {
+      "name": "complete-request-send-optional-nulls",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":7,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"unchanged\"},\"effects\":{\"sends\":[{\"id\":\"s\",\"to\":\"c/d\",\"type\":\"T\",\"payload\":{},\"deliverAt\":null,\"delay\":null,\"correlationId\":null,\"retry\":null,\"retention\":null}]}}}",
+      "expected": "complete-request-returned-minimal-send"
+    },
+    {
+      "name": "renew-request-whitespace-order-and-address-escape",
+      "operation": "renew",
+      "direction": "request",
+      "input": " { \"epoch\" : 9223372036854775807 ,\n \"actor\" : \"counter/a%20b%2fc\" } ",
+      "expected": "renew-request-epoch-max"
+    },
+    {
+      "name": "complete-request-duration-in-days",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"set\",\"value\":{\"count\":8}},\"effects\":{\"sends\":[{\"id\":\"s1\",\"to\":\"other/x\",\"type\":\"Ping\",\"payload\":{\"k\":\"v\"},\"delay\":\"PT0.000000002S\",\"correlationId\":\"c\",\"headers\":{\"h\":\"1\"},\"retry\":{\"maxAttempts\":2,\"backoff\":{\"kind\":\"fixed\",\"delay\":\"PT1S\"}},\"retention\":{\"done\":{\"kind\":\"remove\"},\"failed\":{\"kind\":\"for\",\"age\":\"P30D\"}}},{\"id\":\"s2\",\"to\":\"other/y\",\"type\":\"Ping\",\"payload\":{},\"deliverAt\":\"2027-01-01T00:00:00Z\",\"headers\":{}},{\"id\":\"s3\",\"to\":\"other/z\",\"type\":\"Ping\",\"payload\":null,\"headers\":{}}],\"creates\":[{\"address\":\"child/c\",\"state\":{},\"child\":true},{\"address\":\"free/f\",\"state\":[1],\"child\":false}],\"cancels\":[\"p1\",\"p2\"],\"watches\":[{\"target\":\"billing.invoices/acme\",\"set\":true},{\"target\":\"billing\",\"set\":true},{\"target\":\"*\",\"set\":false}],\"controls\":[{\"effect\":\"delete\",\"actor\":\"a/one\"},{\"effect\":\"pause\",\"actor\":\"a/two\"},{\"effect\":\"resume\",\"actor\":\"a/three\"},{\"effect\":\"purge\",\"actor\":\"a/four\"}]}}}",
+      "expected": "complete-request-returned-full"
+    },
+    {
+      "name": "lease-response-duration-in-seconds",
+      "operation": "lease",
+      "direction": "response",
+      "input": "{\"result\":\"leased\",\"leases\":[{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"message\":{\"id\":\"m1\",\"to\":\"counter/a%20b%2Fc\",\"from\":\"sender/x\",\"type\":\"Add\",\"payload\":{\"n\":1,\"exact\":18446744073709551615,\"f\":0.5,\"nested\":{\"a\":[1,2]}},\"deliverAt\":\"2026-01-01T00:00:00.000001Z\",\"correlationId\":\"corr\",\"headers\":{\"trace\":\"t1\"},\"seq\":9223372036854775807,\"attempt\":4294967295,\"failures\":2,\"lostClaims\":1,\"lastError\":\"boom\",\"retry\":{\"maxAttempts\":4,\"backoff\":{\"kind\":\"exponential\",\"initial\":\"PT1S\",\"factor\":2.0,\"max\":\"PT60S\"}},\"causedBy\":\"m0\",\"retention\":{\"done\":{\"kind\":\"last\",\"count\":5},\"failed\":{\"kind\":\"remove\"}},\"notification\":true},\"state\":{\"count\":7},\"version\":1,\"claimedAt\":\"2026-01-01T00:00:01Z\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT0.000000002S\"},{\"actor\":\"counter/b\",\"epoch\":-9223372036854775808,\"message\":{\"id\":\"m2\",\"to\":\"counter/b\",\"from\":null,\"type\":\"Add\",\"payload\":null,\"deliverAt\":\"2026-01-01T00:00:00Z\",\"correlationId\":null,\"headers\":{},\"seq\":-9223372036854775808,\"attempt\":0,\"failures\":0,\"lostClaims\":0,\"lastError\":null,\"retry\":null,\"causedBy\":null,\"retention\":null,\"notification\":false},\"state\":{\"count\":7},\"version\":9223372036854775807,\"claimedAt\":\"2026-01-01T00:00:01Z\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT0.000000002S\"}]}",
+      "expected": "lease-response-leased"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "lease-request-unknown-field",
+      "operation": "lease",
+      "direction": "request",
+      "input": "{\"owner\":\"worker-1\",\"types\":{\"billing.invoices\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"counter\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\"},\"limit\":100,\"extra\":1}",
+      "stage": "decode"
+    },
+    {
+      "name": "renew-request-unknown-field",
+      "operation": "renew",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"extra\":1}",
+      "stage": "decode"
+    },
+    {
+      "name": "release-request-unknown-field",
+      "operation": "release",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/b\",\"epoch\":0,\"extra\":1}",
+      "stage": "decode"
+    },
+    {
+      "name": "complete-request-unknown-field",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"set\",\"value\":{\"count\":8}},\"effects\":{\"sends\":[{\"id\":\"s1\",\"to\":\"other/x\",\"type\":\"Ping\",\"payload\":{\"k\":\"v\"},\"delay\":\"PT0.000000002S\",\"correlationId\":\"c\",\"headers\":{\"h\":\"1\"},\"retry\":{\"maxAttempts\":2,\"backoff\":{\"kind\":\"fixed\",\"delay\":\"PT1S\"}},\"retention\":{\"done\":{\"kind\":\"remove\"},\"failed\":{\"kind\":\"for\",\"age\":\"PT720H\"}}},{\"id\":\"s2\",\"to\":\"other/y\",\"type\":\"Ping\",\"payload\":{},\"deliverAt\":\"2027-01-01T00:00:00Z\",\"headers\":{}},{\"id\":\"s3\",\"to\":\"other/z\",\"type\":\"Ping\",\"payload\":null,\"headers\":{}}],\"creates\":[{\"address\":\"child/c\",\"state\":{},\"child\":true},{\"address\":\"free/f\",\"state\":[1],\"child\":false}],\"cancels\":[\"p1\",\"p2\"],\"watches\":[{\"target\":\"billing.invoices/acme\",\"set\":true},{\"target\":\"billing\",\"set\":true},{\"target\":\"*\",\"set\":false}],\"controls\":[{\"effect\":\"delete\",\"actor\":\"a/one\"},{\"effect\":\"pause\",\"actor\":\"a/two\"},{\"effect\":\"resume\",\"actor\":\"a/three\"},{\"effect\":\"purge\",\"actor\":\"a/four\"}]}},\"extra\":1}",
+      "stage": "decode"
+    },
+    {
+      "name": "complete-request-unknown-report-field",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"set\",\"value\":{\"count\":8}},\"effects\":{\"sends\":[{\"id\":\"s1\",\"to\":\"other/x\",\"type\":\"Ping\",\"payload\":{\"k\":\"v\"},\"delay\":\"PT0.000000002S\",\"correlationId\":\"c\",\"headers\":{\"h\":\"1\"},\"retry\":{\"maxAttempts\":2,\"backoff\":{\"kind\":\"fixed\",\"delay\":\"PT1S\"}},\"retention\":{\"done\":{\"kind\":\"remove\"},\"failed\":{\"kind\":\"for\",\"age\":\"PT720H\"}}},{\"id\":\"s2\",\"to\":\"other/y\",\"type\":\"Ping\",\"payload\":{},\"deliverAt\":\"2027-01-01T00:00:00Z\",\"headers\":{}},{\"id\":\"s3\",\"to\":\"other/z\",\"type\":\"Ping\",\"payload\":null,\"headers\":{}}],\"creates\":[{\"address\":\"child/c\",\"state\":{},\"child\":true},{\"address\":\"free/f\",\"state\":[1],\"child\":false}],\"cancels\":[\"p1\",\"p2\"],\"watches\":[{\"target\":\"billing.invoices/acme\",\"set\":true},{\"target\":\"billing\",\"set\":true},{\"target\":\"*\",\"set\":false}],\"controls\":[{\"effect\":\"delete\",\"actor\":\"a/one\"},{\"effect\":\"pause\",\"actor\":\"a/two\"},{\"effect\":\"resume\",\"actor\":\"a/three\"},{\"effect\":\"purge\",\"actor\":\"a/four\"}]},\"extra\":1}}",
+      "stage": "decode"
+    },
+    {
+      "name": "complete-request-unknown-state-field",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"set\",\"value\":{\"count\":8},\"extra\":1},\"effects\":{\"sends\":[{\"id\":\"s1\",\"to\":\"other/x\",\"type\":\"Ping\",\"payload\":{\"k\":\"v\"},\"delay\":\"PT0.000000002S\",\"correlationId\":\"c\",\"headers\":{\"h\":\"1\"},\"retry\":{\"maxAttempts\":2,\"backoff\":{\"kind\":\"fixed\",\"delay\":\"PT1S\"}},\"retention\":{\"done\":{\"kind\":\"remove\"},\"failed\":{\"kind\":\"for\",\"age\":\"PT720H\"}}},{\"id\":\"s2\",\"to\":\"other/y\",\"type\":\"Ping\",\"payload\":{},\"deliverAt\":\"2027-01-01T00:00:00Z\",\"headers\":{}},{\"id\":\"s3\",\"to\":\"other/z\",\"type\":\"Ping\",\"payload\":null,\"headers\":{}}],\"creates\":[{\"address\":\"child/c\",\"state\":{},\"child\":true},{\"address\":\"free/f\",\"state\":[1],\"child\":false}],\"cancels\":[\"p1\",\"p2\"],\"watches\":[{\"target\":\"billing.invoices/acme\",\"set\":true},{\"target\":\"billing\",\"set\":true},{\"target\":\"*\",\"set\":false}],\"controls\":[{\"effect\":\"delete\",\"actor\":\"a/one\"},{\"effect\":\"pause\",\"actor\":\"a/two\"},{\"effect\":\"resume\",\"actor\":\"a/three\"},{\"effect\":\"purge\",\"actor\":\"a/four\"}]}}}",
+      "stage": "decode"
+    },
+    {
+      "name": "complete-request-unknown-effects-field",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"set\",\"value\":{\"count\":8}},\"effects\":{\"sends\":[{\"id\":\"s1\",\"to\":\"other/x\",\"type\":\"Ping\",\"payload\":{\"k\":\"v\"},\"delay\":\"PT0.000000002S\",\"correlationId\":\"c\",\"headers\":{\"h\":\"1\"},\"retry\":{\"maxAttempts\":2,\"backoff\":{\"kind\":\"fixed\",\"delay\":\"PT1S\"}},\"retention\":{\"done\":{\"kind\":\"remove\"},\"failed\":{\"kind\":\"for\",\"age\":\"PT720H\"}}},{\"id\":\"s2\",\"to\":\"other/y\",\"type\":\"Ping\",\"payload\":{},\"deliverAt\":\"2027-01-01T00:00:00Z\",\"headers\":{}},{\"id\":\"s3\",\"to\":\"other/z\",\"type\":\"Ping\",\"payload\":null,\"headers\":{}}],\"creates\":[{\"address\":\"child/c\",\"state\":{},\"child\":true},{\"address\":\"free/f\",\"state\":[1],\"child\":false}],\"cancels\":[\"p1\",\"p2\"],\"watches\":[{\"target\":\"billing.invoices/acme\",\"set\":true},{\"target\":\"billing\",\"set\":true},{\"target\":\"*\",\"set\":false}],\"controls\":[{\"effect\":\"delete\",\"actor\":\"a/one\"},{\"effect\":\"pause\",\"actor\":\"a/two\"},{\"effect\":\"resume\",\"actor\":\"a/three\"},{\"effect\":\"purge\",\"actor\":\"a/four\"}],\"extra\":1}}}",
+      "stage": "decode"
+    },
+    {
+      "name": "complete-request-unknown-send-field",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"set\",\"value\":{\"count\":8}},\"effects\":{\"sends\":[{\"id\":\"s1\",\"to\":\"other/x\",\"type\":\"Ping\",\"payload\":{\"k\":\"v\"},\"delay\":\"PT0.000000002S\",\"correlationId\":\"c\",\"headers\":{\"h\":\"1\"},\"retry\":{\"maxAttempts\":2,\"backoff\":{\"kind\":\"fixed\",\"delay\":\"PT1S\"}},\"retention\":{\"done\":{\"kind\":\"remove\"},\"failed\":{\"kind\":\"for\",\"age\":\"PT720H\"}},\"extra\":1},{\"id\":\"s2\",\"to\":\"other/y\",\"type\":\"Ping\",\"payload\":{},\"deliverAt\":\"2027-01-01T00:00:00Z\",\"headers\":{}},{\"id\":\"s3\",\"to\":\"other/z\",\"type\":\"Ping\",\"payload\":null,\"headers\":{}}],\"creates\":[{\"address\":\"child/c\",\"state\":{},\"child\":true},{\"address\":\"free/f\",\"state\":[1],\"child\":false}],\"cancels\":[\"p1\",\"p2\"],\"watches\":[{\"target\":\"billing.invoices/acme\",\"set\":true},{\"target\":\"billing\",\"set\":true},{\"target\":\"*\",\"set\":false}],\"controls\":[{\"effect\":\"delete\",\"actor\":\"a/one\"},{\"effect\":\"pause\",\"actor\":\"a/two\"},{\"effect\":\"resume\",\"actor\":\"a/three\"},{\"effect\":\"purge\",\"actor\":\"a/four\"}]}}}",
+      "stage": "decode"
+    },
+    {
+      "name": "complete-request-unknown-retry-field",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"set\",\"value\":{\"count\":8}},\"effects\":{\"sends\":[{\"id\":\"s1\",\"to\":\"other/x\",\"type\":\"Ping\",\"payload\":{\"k\":\"v\"},\"delay\":\"PT0.000000002S\",\"correlationId\":\"c\",\"headers\":{\"h\":\"1\"},\"retry\":{\"maxAttempts\":2,\"backoff\":{\"kind\":\"fixed\",\"delay\":\"PT1S\"},\"jitter\":true},\"retention\":{\"done\":{\"kind\":\"remove\"},\"failed\":{\"kind\":\"for\",\"age\":\"PT720H\"}}},{\"id\":\"s2\",\"to\":\"other/y\",\"type\":\"Ping\",\"payload\":{},\"deliverAt\":\"2027-01-01T00:00:00Z\",\"headers\":{}},{\"id\":\"s3\",\"to\":\"other/z\",\"type\":\"Ping\",\"payload\":null,\"headers\":{}}],\"creates\":[{\"address\":\"child/c\",\"state\":{},\"child\":true},{\"address\":\"free/f\",\"state\":[1],\"child\":false}],\"cancels\":[\"p1\",\"p2\"],\"watches\":[{\"target\":\"billing.invoices/acme\",\"set\":true},{\"target\":\"billing\",\"set\":true},{\"target\":\"*\",\"set\":false}],\"controls\":[{\"effect\":\"delete\",\"actor\":\"a/one\"},{\"effect\":\"pause\",\"actor\":\"a/two\"},{\"effect\":\"resume\",\"actor\":\"a/three\"},{\"effect\":\"purge\",\"actor\":\"a/four\"}]}}}",
+      "stage": "decode"
+    },
+    {
+      "name": "complete-request-unknown-backoff-field",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"set\",\"value\":{\"count\":8}},\"effects\":{\"sends\":[{\"id\":\"s1\",\"to\":\"other/x\",\"type\":\"Ping\",\"payload\":{\"k\":\"v\"},\"delay\":\"PT0.000000002S\",\"correlationId\":\"c\",\"headers\":{\"h\":\"1\"},\"retry\":{\"maxAttempts\":2,\"backoff\":{\"kind\":\"fixed\",\"delay\":\"PT1S\",\"extra\":1}},\"retention\":{\"done\":{\"kind\":\"remove\"},\"failed\":{\"kind\":\"for\",\"age\":\"PT720H\"}}},{\"id\":\"s2\",\"to\":\"other/y\",\"type\":\"Ping\",\"payload\":{},\"deliverAt\":\"2027-01-01T00:00:00Z\",\"headers\":{}},{\"id\":\"s3\",\"to\":\"other/z\",\"type\":\"Ping\",\"payload\":null,\"headers\":{}}],\"creates\":[{\"address\":\"child/c\",\"state\":{},\"child\":true},{\"address\":\"free/f\",\"state\":[1],\"child\":false}],\"cancels\":[\"p1\",\"p2\"],\"watches\":[{\"target\":\"billing.invoices/acme\",\"set\":true},{\"target\":\"billing\",\"set\":true},{\"target\":\"*\",\"set\":false}],\"controls\":[{\"effect\":\"delete\",\"actor\":\"a/one\"},{\"effect\":\"pause\",\"actor\":\"a/two\"},{\"effect\":\"resume\",\"actor\":\"a/three\"},{\"effect\":\"purge\",\"actor\":\"a/four\"}]}}}",
+      "stage": "decode"
+    },
+    {
+      "name": "complete-request-unknown-retention-field",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"set\",\"value\":{\"count\":8}},\"effects\":{\"sends\":[{\"id\":\"s1\",\"to\":\"other/x\",\"type\":\"Ping\",\"payload\":{\"k\":\"v\"},\"delay\":\"PT0.000000002S\",\"correlationId\":\"c\",\"headers\":{\"h\":\"1\"},\"retry\":{\"maxAttempts\":2,\"backoff\":{\"kind\":\"fixed\",\"delay\":\"PT1S\"}},\"retention\":{\"done\":{\"kind\":\"remove\"},\"failed\":{\"kind\":\"for\",\"age\":\"PT720H\"},\"kept\":{\"kind\":\"remove\"}}},{\"id\":\"s2\",\"to\":\"other/y\",\"type\":\"Ping\",\"payload\":{},\"deliverAt\":\"2027-01-01T00:00:00Z\",\"headers\":{}},{\"id\":\"s3\",\"to\":\"other/z\",\"type\":\"Ping\",\"payload\":null,\"headers\":{}}],\"creates\":[{\"address\":\"child/c\",\"state\":{},\"child\":true},{\"address\":\"free/f\",\"state\":[1],\"child\":false}],\"cancels\":[\"p1\",\"p2\"],\"watches\":[{\"target\":\"billing.invoices/acme\",\"set\":true},{\"target\":\"billing\",\"set\":true},{\"target\":\"*\",\"set\":false}],\"controls\":[{\"effect\":\"delete\",\"actor\":\"a/one\"},{\"effect\":\"pause\",\"actor\":\"a/two\"},{\"effect\":\"resume\",\"actor\":\"a/three\"},{\"effect\":\"purge\",\"actor\":\"a/four\"}]}}}",
+      "stage": "decode"
+    },
+    {
+      "name": "complete-request-unknown-create-field",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"set\",\"value\":{\"count\":8}},\"effects\":{\"sends\":[{\"id\":\"s1\",\"to\":\"other/x\",\"type\":\"Ping\",\"payload\":{\"k\":\"v\"},\"delay\":\"PT0.000000002S\",\"correlationId\":\"c\",\"headers\":{\"h\":\"1\"},\"retry\":{\"maxAttempts\":2,\"backoff\":{\"kind\":\"fixed\",\"delay\":\"PT1S\"}},\"retention\":{\"done\":{\"kind\":\"remove\"},\"failed\":{\"kind\":\"for\",\"age\":\"PT720H\"}}},{\"id\":\"s2\",\"to\":\"other/y\",\"type\":\"Ping\",\"payload\":{},\"deliverAt\":\"2027-01-01T00:00:00Z\",\"headers\":{}},{\"id\":\"s3\",\"to\":\"other/z\",\"type\":\"Ping\",\"payload\":null,\"headers\":{}}],\"creates\":[{\"address\":\"child/c\",\"state\":{},\"child\":true,\"extra\":1},{\"address\":\"free/f\",\"state\":[1],\"child\":false}],\"cancels\":[\"p1\",\"p2\"],\"watches\":[{\"target\":\"billing.invoices/acme\",\"set\":true},{\"target\":\"billing\",\"set\":true},{\"target\":\"*\",\"set\":false}],\"controls\":[{\"effect\":\"delete\",\"actor\":\"a/one\"},{\"effect\":\"pause\",\"actor\":\"a/two\"},{\"effect\":\"resume\",\"actor\":\"a/three\"},{\"effect\":\"purge\",\"actor\":\"a/four\"}]}}}",
+      "stage": "decode"
+    },
+    {
+      "name": "complete-request-unknown-watch-field",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"set\",\"value\":{\"count\":8}},\"effects\":{\"sends\":[{\"id\":\"s1\",\"to\":\"other/x\",\"type\":\"Ping\",\"payload\":{\"k\":\"v\"},\"delay\":\"PT0.000000002S\",\"correlationId\":\"c\",\"headers\":{\"h\":\"1\"},\"retry\":{\"maxAttempts\":2,\"backoff\":{\"kind\":\"fixed\",\"delay\":\"PT1S\"}},\"retention\":{\"done\":{\"kind\":\"remove\"},\"failed\":{\"kind\":\"for\",\"age\":\"PT720H\"}}},{\"id\":\"s2\",\"to\":\"other/y\",\"type\":\"Ping\",\"payload\":{},\"deliverAt\":\"2027-01-01T00:00:00Z\",\"headers\":{}},{\"id\":\"s3\",\"to\":\"other/z\",\"type\":\"Ping\",\"payload\":null,\"headers\":{}}],\"creates\":[{\"address\":\"child/c\",\"state\":{},\"child\":true},{\"address\":\"free/f\",\"state\":[1],\"child\":false}],\"cancels\":[\"p1\",\"p2\"],\"watches\":[{\"target\":\"billing.invoices/acme\",\"set\":true,\"extra\":1},{\"target\":\"billing\",\"set\":true},{\"target\":\"*\",\"set\":false}],\"controls\":[{\"effect\":\"delete\",\"actor\":\"a/one\"},{\"effect\":\"pause\",\"actor\":\"a/two\"},{\"effect\":\"resume\",\"actor\":\"a/three\"},{\"effect\":\"purge\",\"actor\":\"a/four\"}]}}}",
+      "stage": "decode"
+    },
+    {
+      "name": "complete-request-unknown-control-field",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"set\",\"value\":{\"count\":8}},\"effects\":{\"sends\":[{\"id\":\"s1\",\"to\":\"other/x\",\"type\":\"Ping\",\"payload\":{\"k\":\"v\"},\"delay\":\"PT0.000000002S\",\"correlationId\":\"c\",\"headers\":{\"h\":\"1\"},\"retry\":{\"maxAttempts\":2,\"backoff\":{\"kind\":\"fixed\",\"delay\":\"PT1S\"}},\"retention\":{\"done\":{\"kind\":\"remove\"},\"failed\":{\"kind\":\"for\",\"age\":\"PT720H\"}}},{\"id\":\"s2\",\"to\":\"other/y\",\"type\":\"Ping\",\"payload\":{},\"deliverAt\":\"2027-01-01T00:00:00Z\",\"headers\":{}},{\"id\":\"s3\",\"to\":\"other/z\",\"type\":\"Ping\",\"payload\":null,\"headers\":{}}],\"creates\":[{\"address\":\"child/c\",\"state\":{},\"child\":true},{\"address\":\"free/f\",\"state\":[1],\"child\":false}],\"cancels\":[\"p1\",\"p2\"],\"watches\":[{\"target\":\"billing.invoices/acme\",\"set\":true},{\"target\":\"billing\",\"set\":true},{\"target\":\"*\",\"set\":false}],\"controls\":[{\"effect\":\"delete\",\"actor\":\"a/one\",\"extra\":1},{\"effect\":\"pause\",\"actor\":\"a/two\"},{\"effect\":\"resume\",\"actor\":\"a/three\"},{\"effect\":\"purge\",\"actor\":\"a/four\"}]}}}",
+      "stage": "decode"
+    },
+    {
+      "name": "complete-request-cancelled-with-field",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":7,\"messageId\":\"m1\",\"report\":{\"kind\":\"cancelled\",\"extra\":1}}",
+      "stage": "decode"
+    },
+    {
+      "name": "renew-request-missing-epoch",
+      "operation": "renew",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/b\"}",
+      "stage": "decode"
+    },
+    {
+      "name": "lease-request-missing-limit",
+      "operation": "lease",
+      "direction": "request",
+      "input": "{\"owner\":\"worker-1\",\"types\":{\"billing.invoices\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"counter\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\"}}",
+      "stage": "decode"
+    },
+    {
+      "name": "complete-request-missing-message-id",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"set\",\"value\":{\"count\":8}},\"effects\":{\"sends\":[{\"id\":\"s1\",\"to\":\"other/x\",\"type\":\"Ping\",\"payload\":{\"k\":\"v\"},\"delay\":\"PT0.000000002S\",\"correlationId\":\"c\",\"headers\":{\"h\":\"1\"},\"retry\":{\"maxAttempts\":2,\"backoff\":{\"kind\":\"fixed\",\"delay\":\"PT1S\"}},\"retention\":{\"done\":{\"kind\":\"remove\"},\"failed\":{\"kind\":\"for\",\"age\":\"PT720H\"}}},{\"id\":\"s2\",\"to\":\"other/y\",\"type\":\"Ping\",\"payload\":{},\"deliverAt\":\"2027-01-01T00:00:00Z\",\"headers\":{}},{\"id\":\"s3\",\"to\":\"other/z\",\"type\":\"Ping\",\"payload\":null,\"headers\":{}}],\"creates\":[{\"address\":\"child/c\",\"state\":{},\"child\":true},{\"address\":\"free/f\",\"state\":[1],\"child\":false}],\"cancels\":[\"p1\",\"p2\"],\"watches\":[{\"target\":\"billing.invoices/acme\",\"set\":true},{\"target\":\"billing\",\"set\":true},{\"target\":\"*\",\"set\":false}],\"controls\":[{\"effect\":\"delete\",\"actor\":\"a/one\"},{\"effect\":\"pause\",\"actor\":\"a/two\"},{\"effect\":\"resume\",\"actor\":\"a/three\"},{\"effect\":\"purge\",\"actor\":\"a/four\"}]}}}",
+      "stage": "decode"
+    },
+    {
+      "name": "complete-request-missing-effects",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":7,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"unchanged\"}}}",
+      "stage": "decode"
+    },
+    {
+      "name": "complete-request-set-without-value",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":7,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"set\"},\"effects\":{}}}",
+      "stage": "decode"
+    },
+    {
+      "name": "complete-request-send-missing-payload",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"set\",\"value\":{\"count\":8}},\"effects\":{\"sends\":[{\"id\":\"s1\",\"to\":\"other/x\",\"type\":\"Ping\",\"delay\":\"PT0.000000002S\",\"correlationId\":\"c\",\"headers\":{\"h\":\"1\"},\"retry\":{\"maxAttempts\":2,\"backoff\":{\"kind\":\"fixed\",\"delay\":\"PT1S\"}},\"retention\":{\"done\":{\"kind\":\"remove\"},\"failed\":{\"kind\":\"for\",\"age\":\"PT720H\"}}},{\"id\":\"s2\",\"to\":\"other/y\",\"type\":\"Ping\",\"payload\":{},\"deliverAt\":\"2027-01-01T00:00:00Z\",\"headers\":{}},{\"id\":\"s3\",\"to\":\"other/z\",\"type\":\"Ping\",\"payload\":null,\"headers\":{}}],\"creates\":[{\"address\":\"child/c\",\"state\":{},\"child\":true},{\"address\":\"free/f\",\"state\":[1],\"child\":false}],\"cancels\":[\"p1\",\"p2\"],\"watches\":[{\"target\":\"billing.invoices/acme\",\"set\":true},{\"target\":\"billing\",\"set\":true},{\"target\":\"*\",\"set\":false}],\"controls\":[{\"effect\":\"delete\",\"actor\":\"a/one\"},{\"effect\":\"pause\",\"actor\":\"a/two\"},{\"effect\":\"resume\",\"actor\":\"a/three\"},{\"effect\":\"purge\",\"actor\":\"a/four\"}]}}}",
+      "stage": "decode"
+    },
+    {
+      "name": "complete-request-send-null-headers",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"set\",\"value\":{\"count\":8}},\"effects\":{\"sends\":[{\"id\":\"s1\",\"to\":\"other/x\",\"type\":\"Ping\",\"payload\":{\"k\":\"v\"},\"delay\":\"PT0.000000002S\",\"correlationId\":\"c\",\"headers\":null,\"retry\":{\"maxAttempts\":2,\"backoff\":{\"kind\":\"fixed\",\"delay\":\"PT1S\"}},\"retention\":{\"done\":{\"kind\":\"remove\"},\"failed\":{\"kind\":\"for\",\"age\":\"PT720H\"}}},{\"id\":\"s2\",\"to\":\"other/y\",\"type\":\"Ping\",\"payload\":{},\"deliverAt\":\"2027-01-01T00:00:00Z\",\"headers\":{}},{\"id\":\"s3\",\"to\":\"other/z\",\"type\":\"Ping\",\"payload\":null,\"headers\":{}}],\"creates\":[{\"address\":\"child/c\",\"state\":{},\"child\":true},{\"address\":\"free/f\",\"state\":[1],\"child\":false}],\"cancels\":[\"p1\",\"p2\"],\"watches\":[{\"target\":\"billing.invoices/acme\",\"set\":true},{\"target\":\"billing\",\"set\":true},{\"target\":\"*\",\"set\":false}],\"controls\":[{\"effect\":\"delete\",\"actor\":\"a/one\"},{\"effect\":\"pause\",\"actor\":\"a/two\"},{\"effect\":\"resume\",\"actor\":\"a/three\"},{\"effect\":\"purge\",\"actor\":\"a/four\"}]}}}",
+      "stage": "decode"
+    },
+    {
+      "name": "complete-request-null-effect-array",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"set\",\"value\":{\"count\":8}},\"effects\":{\"sends\":[{\"id\":\"s1\",\"to\":\"other/x\",\"type\":\"Ping\",\"payload\":{\"k\":\"v\"},\"delay\":\"PT0.000000002S\",\"correlationId\":\"c\",\"headers\":{\"h\":\"1\"},\"retry\":{\"maxAttempts\":2,\"backoff\":{\"kind\":\"fixed\",\"delay\":\"PT1S\"}},\"retention\":{\"done\":{\"kind\":\"remove\"},\"failed\":{\"kind\":\"for\",\"age\":\"PT720H\"}}},{\"id\":\"s2\",\"to\":\"other/y\",\"type\":\"Ping\",\"payload\":{},\"deliverAt\":\"2027-01-01T00:00:00Z\",\"headers\":{}},{\"id\":\"s3\",\"to\":\"other/z\",\"type\":\"Ping\",\"payload\":null,\"headers\":{}}],\"creates\":[{\"address\":\"child/c\",\"state\":{},\"child\":true},{\"address\":\"free/f\",\"state\":[1],\"child\":false}],\"cancels\":null,\"watches\":[{\"target\":\"billing.invoices/acme\",\"set\":true},{\"target\":\"billing\",\"set\":true},{\"target\":\"*\",\"set\":false}],\"controls\":[{\"effect\":\"delete\",\"actor\":\"a/one\"},{\"effect\":\"pause\",\"actor\":\"a/two\"},{\"effect\":\"resume\",\"actor\":\"a/three\"},{\"effect\":\"purge\",\"actor\":\"a/four\"}]}}}",
+      "stage": "decode"
+    },
+    {
+      "name": "lease-response-missing-nullable-field",
+      "operation": "lease",
+      "direction": "response",
+      "input": "{\"result\":\"leased\",\"leases\":[{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"message\":{\"id\":\"m1\",\"to\":\"counter/a%20b%2Fc\",\"from\":\"sender/x\",\"type\":\"Add\",\"payload\":{\"n\":1,\"exact\":18446744073709551615,\"f\":0.5,\"nested\":{\"a\":[1,2]}},\"deliverAt\":\"2026-01-01T00:00:00.000001Z\",\"correlationId\":\"corr\",\"headers\":{\"trace\":\"t1\"},\"seq\":9223372036854775807,\"attempt\":4294967295,\"failures\":2,\"lostClaims\":1,\"lastError\":\"boom\",\"causedBy\":\"m0\",\"retention\":{\"done\":{\"kind\":\"last\",\"count\":5},\"failed\":{\"kind\":\"remove\"}},\"notification\":true},\"state\":{\"count\":7},\"version\":1,\"claimedAt\":\"2026-01-01T00:00:01Z\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT0.000000002S\"},{\"actor\":\"counter/b\",\"epoch\":-9223372036854775808,\"message\":{\"id\":\"m2\",\"to\":\"counter/b\",\"from\":null,\"type\":\"Add\",\"payload\":null,\"deliverAt\":\"2026-01-01T00:00:00Z\",\"correlationId\":null,\"headers\":{},\"seq\":-9223372036854775808,\"attempt\":0,\"failures\":0,\"lostClaims\":0,\"lastError\":null,\"retry\":null,\"causedBy\":null,\"retention\":null,\"notification\":false},\"state\":{\"count\":7},\"version\":9223372036854775807,\"claimedAt\":\"2026-01-01T00:00:01Z\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT0.000000002S\"}]}",
+      "stage": "decode"
+    },
+    {
+      "name": "lease-response-missing-zero-counter",
+      "operation": "lease",
+      "direction": "response",
+      "input": "{\"result\":\"leased\",\"leases\":[{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"message\":{\"id\":\"m1\",\"to\":\"counter/a%20b%2Fc\",\"from\":\"sender/x\",\"type\":\"Add\",\"payload\":{\"n\":1,\"exact\":18446744073709551615,\"f\":0.5,\"nested\":{\"a\":[1,2]}},\"deliverAt\":\"2026-01-01T00:00:00.000001Z\",\"correlationId\":\"corr\",\"headers\":{\"trace\":\"t1\"},\"seq\":9223372036854775807,\"attempt\":4294967295,\"failures\":2,\"lostClaims\":1,\"lastError\":\"boom\",\"retry\":{\"maxAttempts\":4,\"backoff\":{\"kind\":\"exponential\",\"initial\":\"PT1S\",\"factor\":2.0,\"max\":\"PT1M\"}},\"causedBy\":\"m0\",\"retention\":{\"done\":{\"kind\":\"last\",\"count\":5},\"failed\":{\"kind\":\"remove\"}},\"notification\":true},\"state\":{\"count\":7},\"version\":1,\"claimedAt\":\"2026-01-01T00:00:01Z\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT0.000000002S\"},{\"actor\":\"counter/b\",\"epoch\":-9223372036854775808,\"message\":{\"id\":\"m2\",\"to\":\"counter/b\",\"from\":null,\"type\":\"Add\",\"payload\":null,\"deliverAt\":\"2026-01-01T00:00:00Z\",\"correlationId\":null,\"headers\":{},\"seq\":-9223372036854775808,\"attempt\":0,\"failures\":0,\"lastError\":null,\"retry\":null,\"causedBy\":null,\"retention\":null,\"notification\":false},\"state\":{\"count\":7},\"version\":9223372036854775807,\"claimedAt\":\"2026-01-01T00:00:01Z\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT0.000000002S\"}]}",
+      "stage": "decode"
+    },
+    {
+      "name": "lease-response-missing-registered",
+      "operation": "lease",
+      "direction": "response",
+      "input": "{\"result\":\"contractMismatch\",\"type\":\"counter\",\"requested\":\"sha256:bb\"}",
+      "stage": "decode"
+    },
+    {
+      "name": "lease-response-null-required-field",
+      "operation": "lease",
+      "direction": "response",
+      "input": "{\"result\":\"leased\",\"leases\":[{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"message\":{\"id\":\"m1\",\"to\":\"counter/a%20b%2Fc\",\"from\":\"sender/x\",\"type\":\"Add\",\"payload\":{\"n\":1,\"exact\":18446744073709551615,\"f\":0.5,\"nested\":{\"a\":[1,2]}},\"deliverAt\":\"2026-01-01T00:00:00.000001Z\",\"correlationId\":\"corr\",\"headers\":{\"trace\":\"t1\"},\"seq\":null,\"attempt\":4294967295,\"failures\":2,\"lostClaims\":1,\"lastError\":\"boom\",\"retry\":{\"maxAttempts\":4,\"backoff\":{\"kind\":\"exponential\",\"initial\":\"PT1S\",\"factor\":2.0,\"max\":\"PT1M\"}},\"causedBy\":\"m0\",\"retention\":{\"done\":{\"kind\":\"last\",\"count\":5},\"failed\":{\"kind\":\"remove\"}},\"notification\":true},\"state\":{\"count\":7},\"version\":1,\"claimedAt\":\"2026-01-01T00:00:01Z\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT0.000000002S\"},{\"actor\":\"counter/b\",\"epoch\":-9223372036854775808,\"message\":{\"id\":\"m2\",\"to\":\"counter/b\",\"from\":null,\"type\":\"Add\",\"payload\":null,\"deliverAt\":\"2026-01-01T00:00:00Z\",\"correlationId\":null,\"headers\":{},\"seq\":-9223372036854775808,\"attempt\":0,\"failures\":0,\"lostClaims\":0,\"lastError\":null,\"retry\":null,\"causedBy\":null,\"retention\":null,\"notification\":false},\"state\":{\"count\":7},\"version\":9223372036854775807,\"claimedAt\":\"2026-01-01T00:00:01Z\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT0.000000002S\"}]}",
+      "stage": "decode"
+    },
+    {
+      "name": "lease-response-missing-leases",
+      "operation": "lease",
+      "direction": "response",
+      "input": "{\"result\":\"leased\"}",
+      "stage": "decode"
+    },
+    {
+      "name": "complete-response-missing-cause",
+      "operation": "complete",
+      "direction": "response",
+      "input": "{\"result\":\"completed\",\"outcome\":{\"kind\":\"done\"},\"version\":1,\"sent\":[],\"cancelled\":[]}",
+      "stage": "decode"
+    },
+    {
+      "name": "complete-request-unknown-report-kind",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":7,\"messageId\":\"m1\",\"report\":{\"kind\":\"skipped\"}}",
+      "stage": "decode"
+    },
+    {
+      "name": "complete-request-unknown-state-kind",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":7,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"merge\"},\"effects\":{}}}",
+      "stage": "decode"
+    },
+    {
+      "name": "complete-request-unknown-cause",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":7,\"messageId\":\"m1\",\"report\":{\"kind\":\"failed\",\"cause\":\"gremlins\",\"retryable\":false,\"reason\":\"r\"}}",
+      "stage": "decode"
+    },
+    {
+      "name": "complete-request-unknown-control-effect",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"set\",\"value\":{\"count\":8}},\"effects\":{\"sends\":[{\"id\":\"s1\",\"to\":\"other/x\",\"type\":\"Ping\",\"payload\":{\"k\":\"v\"},\"delay\":\"PT0.000000002S\",\"correlationId\":\"c\",\"headers\":{\"h\":\"1\"},\"retry\":{\"maxAttempts\":2,\"backoff\":{\"kind\":\"fixed\",\"delay\":\"PT1S\"}},\"retention\":{\"done\":{\"kind\":\"remove\"},\"failed\":{\"kind\":\"for\",\"age\":\"PT720H\"}}},{\"id\":\"s2\",\"to\":\"other/y\",\"type\":\"Ping\",\"payload\":{},\"deliverAt\":\"2027-01-01T00:00:00Z\",\"headers\":{}},{\"id\":\"s3\",\"to\":\"other/z\",\"type\":\"Ping\",\"payload\":null,\"headers\":{}}],\"creates\":[{\"address\":\"child/c\",\"state\":{},\"child\":true},{\"address\":\"free/f\",\"state\":[1],\"child\":false}],\"cancels\":[\"p1\",\"p2\"],\"watches\":[{\"target\":\"billing.invoices/acme\",\"set\":true},{\"target\":\"billing\",\"set\":true},{\"target\":\"*\",\"set\":false}],\"controls\":[{\"effect\":\"freeze\",\"actor\":\"a/one\"},{\"effect\":\"pause\",\"actor\":\"a/two\"},{\"effect\":\"resume\",\"actor\":\"a/three\"},{\"effect\":\"purge\",\"actor\":\"a/four\"}]}}}",
+      "stage": "decode"
+    },
+    {
+      "name": "lease-response-unknown-result",
+      "operation": "lease",
+      "direction": "response",
+      "input": "{\"result\":\"queued\",\"leases\":[]}",
+      "stage": "decode"
+    },
+    {
+      "name": "renew-response-unknown-result",
+      "operation": "renew",
+      "direction": "response",
+      "input": "{\"result\":\"extended\"}",
+      "stage": "decode"
+    },
+    {
+      "name": "complete-response-unknown-result",
+      "operation": "complete",
+      "direction": "response",
+      "input": "{\"result\":\"maybe\"}",
+      "stage": "decode"
+    },
+    {
+      "name": "complete-response-unknown-outcome",
+      "operation": "complete",
+      "direction": "response",
+      "input": "{\"result\":\"completed\",\"outcome\":{\"kind\":\"skipped\"},\"cause\":null,\"version\":1,\"sent\":[],\"cancelled\":[]}",
+      "stage": "decode"
+    },
+    {
+      "name": "complete-response-unknown-cause",
+      "operation": "complete",
+      "direction": "response",
+      "input": "{\"result\":\"completed\",\"outcome\":{\"kind\":\"failed\",\"error\":\"e\"},\"cause\":\"gremlins\",\"version\":1,\"sent\":[],\"cancelled\":[]}",
+      "stage": "decode"
+    },
+    {
+      "name": "complete-response-rejected-unknown-cause",
+      "operation": "complete",
+      "direction": "response",
+      "input": "{\"result\":\"rejected\",\"failure\":{\"cause\":\"gremlins\",\"retryable\":false,\"reason\":\"r\"}}",
+      "stage": "decode"
+    },
+    {
+      "name": "renew-request-epoch-float",
+      "operation": "renew",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/b\",\"epoch\":1.0}",
+      "stage": "decode"
+    },
+    {
+      "name": "renew-request-epoch-exponent",
+      "operation": "renew",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/b\",\"epoch\":1e3}",
+      "stage": "decode"
+    },
+    {
+      "name": "renew-request-epoch-above-i64",
+      "operation": "renew",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/b\",\"epoch\":9223372036854775808}",
+      "stage": "decode"
+    },
+    {
+      "name": "renew-request-epoch-below-i64",
+      "operation": "renew",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/b\",\"epoch\":-9223372036854775809}",
+      "stage": "decode"
+    },
+    {
+      "name": "renew-request-epoch-string",
+      "operation": "renew",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/b\",\"epoch\":\"1\"}",
+      "stage": "decode"
+    },
+    {
+      "name": "lease-request-limit-fraction",
+      "operation": "lease",
+      "direction": "request",
+      "input": "{\"owner\":\"worker-1\",\"types\":{\"billing.invoices\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"counter\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\"},\"limit\":0.5}",
+      "stage": "decode"
+    },
+    {
+      "name": "lease-request-limit-negative",
+      "operation": "lease",
+      "direction": "request",
+      "input": "{\"owner\":\"worker-1\",\"types\":{\"billing.invoices\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"counter\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\"},\"limit\":-1}",
+      "stage": "decode"
+    },
+    {
+      "name": "lease-response-seq-float",
+      "operation": "lease",
+      "direction": "response",
+      "input": "{\"result\":\"leased\",\"leases\":[{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"message\":{\"id\":\"m1\",\"to\":\"counter/a%20b%2Fc\",\"from\":\"sender/x\",\"type\":\"Add\",\"payload\":{\"n\":1,\"exact\":18446744073709551615,\"f\":0.5,\"nested\":{\"a\":[1,2]}},\"deliverAt\":\"2026-01-01T00:00:00.000001Z\",\"correlationId\":\"corr\",\"headers\":{\"trace\":\"t1\"},\"seq\":1.0,\"attempt\":4294967295,\"failures\":2,\"lostClaims\":1,\"lastError\":\"boom\",\"retry\":{\"maxAttempts\":4,\"backoff\":{\"kind\":\"exponential\",\"initial\":\"PT1S\",\"factor\":2.0,\"max\":\"PT1M\"}},\"causedBy\":\"m0\",\"retention\":{\"done\":{\"kind\":\"last\",\"count\":5},\"failed\":{\"kind\":\"remove\"}},\"notification\":true},\"state\":{\"count\":7},\"version\":1,\"claimedAt\":\"2026-01-01T00:00:01Z\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT0.000000002S\"},{\"actor\":\"counter/b\",\"epoch\":-9223372036854775808,\"message\":{\"id\":\"m2\",\"to\":\"counter/b\",\"from\":null,\"type\":\"Add\",\"payload\":null,\"deliverAt\":\"2026-01-01T00:00:00Z\",\"correlationId\":null,\"headers\":{},\"seq\":-9223372036854775808,\"attempt\":0,\"failures\":0,\"lostClaims\":0,\"lastError\":null,\"retry\":null,\"causedBy\":null,\"retention\":null,\"notification\":false},\"state\":{\"count\":7},\"version\":9223372036854775807,\"claimedAt\":\"2026-01-01T00:00:01Z\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT0.000000002S\"}]}",
+      "stage": "decode"
+    },
+    {
+      "name": "lease-response-seq-above-i64",
+      "operation": "lease",
+      "direction": "response",
+      "input": "{\"result\":\"leased\",\"leases\":[{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"message\":{\"id\":\"m1\",\"to\":\"counter/a%20b%2Fc\",\"from\":\"sender/x\",\"type\":\"Add\",\"payload\":{\"n\":1,\"exact\":18446744073709551615,\"f\":0.5,\"nested\":{\"a\":[1,2]}},\"deliverAt\":\"2026-01-01T00:00:00.000001Z\",\"correlationId\":\"corr\",\"headers\":{\"trace\":\"t1\"},\"seq\":9223372036854775808,\"attempt\":4294967295,\"failures\":2,\"lostClaims\":1,\"lastError\":\"boom\",\"retry\":{\"maxAttempts\":4,\"backoff\":{\"kind\":\"exponential\",\"initial\":\"PT1S\",\"factor\":2.0,\"max\":\"PT1M\"}},\"causedBy\":\"m0\",\"retention\":{\"done\":{\"kind\":\"last\",\"count\":5},\"failed\":{\"kind\":\"remove\"}},\"notification\":true},\"state\":{\"count\":7},\"version\":1,\"claimedAt\":\"2026-01-01T00:00:01Z\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT0.000000002S\"},{\"actor\":\"counter/b\",\"epoch\":-9223372036854775808,\"message\":{\"id\":\"m2\",\"to\":\"counter/b\",\"from\":null,\"type\":\"Add\",\"payload\":null,\"deliverAt\":\"2026-01-01T00:00:00Z\",\"correlationId\":null,\"headers\":{},\"seq\":-9223372036854775808,\"attempt\":0,\"failures\":0,\"lostClaims\":0,\"lastError\":null,\"retry\":null,\"causedBy\":null,\"retention\":null,\"notification\":false},\"state\":{\"count\":7},\"version\":9223372036854775807,\"claimedAt\":\"2026-01-01T00:00:01Z\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT0.000000002S\"}]}",
+      "stage": "decode"
+    },
+    {
+      "name": "lease-response-attempt-negative",
+      "operation": "lease",
+      "direction": "response",
+      "input": "{\"result\":\"leased\",\"leases\":[{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"message\":{\"id\":\"m1\",\"to\":\"counter/a%20b%2Fc\",\"from\":\"sender/x\",\"type\":\"Add\",\"payload\":{\"n\":1,\"exact\":18446744073709551615,\"f\":0.5,\"nested\":{\"a\":[1,2]}},\"deliverAt\":\"2026-01-01T00:00:00.000001Z\",\"correlationId\":\"corr\",\"headers\":{\"trace\":\"t1\"},\"seq\":9223372036854775807,\"attempt\":-1,\"failures\":2,\"lostClaims\":1,\"lastError\":\"boom\",\"retry\":{\"maxAttempts\":4,\"backoff\":{\"kind\":\"exponential\",\"initial\":\"PT1S\",\"factor\":2.0,\"max\":\"PT1M\"}},\"causedBy\":\"m0\",\"retention\":{\"done\":{\"kind\":\"last\",\"count\":5},\"failed\":{\"kind\":\"remove\"}},\"notification\":true},\"state\":{\"count\":7},\"version\":1,\"claimedAt\":\"2026-01-01T00:00:01Z\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT0.000000002S\"},{\"actor\":\"counter/b\",\"epoch\":-9223372036854775808,\"message\":{\"id\":\"m2\",\"to\":\"counter/b\",\"from\":null,\"type\":\"Add\",\"payload\":null,\"deliverAt\":\"2026-01-01T00:00:00Z\",\"correlationId\":null,\"headers\":{},\"seq\":-9223372036854775808,\"attempt\":0,\"failures\":0,\"lostClaims\":0,\"lastError\":null,\"retry\":null,\"causedBy\":null,\"retention\":null,\"notification\":false},\"state\":{\"count\":7},\"version\":9223372036854775807,\"claimedAt\":\"2026-01-01T00:00:01Z\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT0.000000002S\"}]}",
+      "stage": "decode"
+    },
+    {
+      "name": "lease-response-attempt-above-u32",
+      "operation": "lease",
+      "direction": "response",
+      "input": "{\"result\":\"leased\",\"leases\":[{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"message\":{\"id\":\"m1\",\"to\":\"counter/a%20b%2Fc\",\"from\":\"sender/x\",\"type\":\"Add\",\"payload\":{\"n\":1,\"exact\":18446744073709551615,\"f\":0.5,\"nested\":{\"a\":[1,2]}},\"deliverAt\":\"2026-01-01T00:00:00.000001Z\",\"correlationId\":\"corr\",\"headers\":{\"trace\":\"t1\"},\"seq\":9223372036854775807,\"attempt\":4294967296,\"failures\":2,\"lostClaims\":1,\"lastError\":\"boom\",\"retry\":{\"maxAttempts\":4,\"backoff\":{\"kind\":\"exponential\",\"initial\":\"PT1S\",\"factor\":2.0,\"max\":\"PT1M\"}},\"causedBy\":\"m0\",\"retention\":{\"done\":{\"kind\":\"last\",\"count\":5},\"failed\":{\"kind\":\"remove\"}},\"notification\":true},\"state\":{\"count\":7},\"version\":1,\"claimedAt\":\"2026-01-01T00:00:01Z\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT0.000000002S\"},{\"actor\":\"counter/b\",\"epoch\":-9223372036854775808,\"message\":{\"id\":\"m2\",\"to\":\"counter/b\",\"from\":null,\"type\":\"Add\",\"payload\":null,\"deliverAt\":\"2026-01-01T00:00:00Z\",\"correlationId\":null,\"headers\":{},\"seq\":-9223372036854775808,\"attempt\":0,\"failures\":0,\"lostClaims\":0,\"lastError\":null,\"retry\":null,\"causedBy\":null,\"retention\":null,\"notification\":false},\"state\":{\"count\":7},\"version\":9223372036854775807,\"claimedAt\":\"2026-01-01T00:00:01Z\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT0.000000002S\"}]}",
+      "stage": "decode"
+    },
+    {
+      "name": "lease-response-failures-fraction",
+      "operation": "lease",
+      "direction": "response",
+      "input": "{\"result\":\"leased\",\"leases\":[{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"message\":{\"id\":\"m1\",\"to\":\"counter/a%20b%2Fc\",\"from\":\"sender/x\",\"type\":\"Add\",\"payload\":{\"n\":1,\"exact\":18446744073709551615,\"f\":0.5,\"nested\":{\"a\":[1,2]}},\"deliverAt\":\"2026-01-01T00:00:00.000001Z\",\"correlationId\":\"corr\",\"headers\":{\"trace\":\"t1\"},\"seq\":9223372036854775807,\"attempt\":4294967295,\"failures\":1.5,\"lostClaims\":1,\"lastError\":\"boom\",\"retry\":{\"maxAttempts\":4,\"backoff\":{\"kind\":\"exponential\",\"initial\":\"PT1S\",\"factor\":2.0,\"max\":\"PT1M\"}},\"causedBy\":\"m0\",\"retention\":{\"done\":{\"kind\":\"last\",\"count\":5},\"failed\":{\"kind\":\"remove\"}},\"notification\":true},\"state\":{\"count\":7},\"version\":1,\"claimedAt\":\"2026-01-01T00:00:01Z\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT0.000000002S\"},{\"actor\":\"counter/b\",\"epoch\":-9223372036854775808,\"message\":{\"id\":\"m2\",\"to\":\"counter/b\",\"from\":null,\"type\":\"Add\",\"payload\":null,\"deliverAt\":\"2026-01-01T00:00:00Z\",\"correlationId\":null,\"headers\":{},\"seq\":-9223372036854775808,\"attempt\":0,\"failures\":0,\"lostClaims\":0,\"lastError\":null,\"retry\":null,\"causedBy\":null,\"retention\":null,\"notification\":false},\"state\":{\"count\":7},\"version\":9223372036854775807,\"claimedAt\":\"2026-01-01T00:00:01Z\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT0.000000002S\"}]}",
+      "stage": "decode"
+    },
+    {
+      "name": "lease-response-version-float",
+      "operation": "lease",
+      "direction": "response",
+      "input": "{\"result\":\"leased\",\"leases\":[{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"message\":{\"id\":\"m1\",\"to\":\"counter/a%20b%2Fc\",\"from\":\"sender/x\",\"type\":\"Add\",\"payload\":{\"n\":1,\"exact\":18446744073709551615,\"f\":0.5,\"nested\":{\"a\":[1,2]}},\"deliverAt\":\"2026-01-01T00:00:00.000001Z\",\"correlationId\":\"corr\",\"headers\":{\"trace\":\"t1\"},\"seq\":9223372036854775807,\"attempt\":4294967295,\"failures\":2,\"lostClaims\":1,\"lastError\":\"boom\",\"retry\":{\"maxAttempts\":4,\"backoff\":{\"kind\":\"exponential\",\"initial\":\"PT1S\",\"factor\":2.0,\"max\":\"PT1M\"}},\"causedBy\":\"m0\",\"retention\":{\"done\":{\"kind\":\"last\",\"count\":5},\"failed\":{\"kind\":\"remove\"}},\"notification\":true},\"state\":{\"count\":7},\"version\":1.0,\"claimedAt\":\"2026-01-01T00:00:01Z\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT0.000000002S\"},{\"actor\":\"counter/b\",\"epoch\":-9223372036854775808,\"message\":{\"id\":\"m2\",\"to\":\"counter/b\",\"from\":null,\"type\":\"Add\",\"payload\":null,\"deliverAt\":\"2026-01-01T00:00:00Z\",\"correlationId\":null,\"headers\":{},\"seq\":-9223372036854775808,\"attempt\":0,\"failures\":0,\"lostClaims\":0,\"lastError\":null,\"retry\":null,\"causedBy\":null,\"retention\":null,\"notification\":false},\"state\":{\"count\":7},\"version\":9223372036854775807,\"claimedAt\":\"2026-01-01T00:00:01Z\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT0.000000002S\"}]}",
+      "stage": "decode"
+    },
+    {
+      "name": "renew-request-positional",
+      "operation": "renew",
+      "direction": "request",
+      "input": "[\"counter/b\",1]",
+      "stage": "decode"
+    },
+    {
+      "name": "lease-request-positional",
+      "operation": "lease",
+      "direction": "request",
+      "input": "[\"w\",{\"counter\":\"h\"},1]",
+      "stage": "decode"
+    },
+    {
+      "name": "complete-request-positional-report",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":7,\"messageId\":\"m1\",\"report\":[\"cancelled\"]}",
+      "stage": "decode"
+    },
+    {
+      "name": "complete-request-positional-control",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"set\",\"value\":{\"count\":8}},\"effects\":{\"sends\":[{\"id\":\"s1\",\"to\":\"other/x\",\"type\":\"Ping\",\"payload\":{\"k\":\"v\"},\"delay\":\"PT0.000000002S\",\"correlationId\":\"c\",\"headers\":{\"h\":\"1\"},\"retry\":{\"maxAttempts\":2,\"backoff\":{\"kind\":\"fixed\",\"delay\":\"PT1S\"}},\"retention\":{\"done\":{\"kind\":\"remove\"},\"failed\":{\"kind\":\"for\",\"age\":\"PT720H\"}}},{\"id\":\"s2\",\"to\":\"other/y\",\"type\":\"Ping\",\"payload\":{},\"deliverAt\":\"2027-01-01T00:00:00Z\",\"headers\":{}},{\"id\":\"s3\",\"to\":\"other/z\",\"type\":\"Ping\",\"payload\":null,\"headers\":{}}],\"creates\":[{\"address\":\"child/c\",\"state\":{},\"child\":true},{\"address\":\"free/f\",\"state\":[1],\"child\":false}],\"cancels\":[\"p1\",\"p2\"],\"watches\":[{\"target\":\"billing.invoices/acme\",\"set\":true},{\"target\":\"billing\",\"set\":true},{\"target\":\"*\",\"set\":false}],\"controls\":[[\"delete\",\"a/one\"],{\"effect\":\"pause\",\"actor\":\"a/two\"},{\"effect\":\"resume\",\"actor\":\"a/three\"},{\"effect\":\"purge\",\"actor\":\"a/four\"}]}}}",
+      "stage": "decode"
+    },
+    {
+      "name": "complete-request-positional-retry",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"set\",\"value\":{\"count\":8}},\"effects\":{\"sends\":[{\"id\":\"s1\",\"to\":\"other/x\",\"type\":\"Ping\",\"payload\":{\"k\":\"v\"},\"delay\":\"PT0.000000002S\",\"correlationId\":\"c\",\"headers\":{\"h\":\"1\"},\"retry\":[2,{\"kind\":\"fixed\",\"delay\":\"PT1S\"}],\"retention\":{\"done\":{\"kind\":\"remove\"},\"failed\":{\"kind\":\"for\",\"age\":\"PT720H\"}}},{\"id\":\"s2\",\"to\":\"other/y\",\"type\":\"Ping\",\"payload\":{},\"deliverAt\":\"2027-01-01T00:00:00Z\",\"headers\":{}},{\"id\":\"s3\",\"to\":\"other/z\",\"type\":\"Ping\",\"payload\":null,\"headers\":{}}],\"creates\":[{\"address\":\"child/c\",\"state\":{},\"child\":true},{\"address\":\"free/f\",\"state\":[1],\"child\":false}],\"cancels\":[\"p1\",\"p2\"],\"watches\":[{\"target\":\"billing.invoices/acme\",\"set\":true},{\"target\":\"billing\",\"set\":true},{\"target\":\"*\",\"set\":false}],\"controls\":[{\"effect\":\"delete\",\"actor\":\"a/one\"},{\"effect\":\"pause\",\"actor\":\"a/two\"},{\"effect\":\"resume\",\"actor\":\"a/three\"},{\"effect\":\"purge\",\"actor\":\"a/four\"}]}}}",
+      "stage": "decode"
+    },
+    {
+      "name": "complete-request-positional-backoff",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"set\",\"value\":{\"count\":8}},\"effects\":{\"sends\":[{\"id\":\"s1\",\"to\":\"other/x\",\"type\":\"Ping\",\"payload\":{\"k\":\"v\"},\"delay\":\"PT0.000000002S\",\"correlationId\":\"c\",\"headers\":{\"h\":\"1\"},\"retry\":{\"maxAttempts\":2,\"backoff\":[\"fixed\",\"PT1S\"]},\"retention\":{\"done\":{\"kind\":\"remove\"},\"failed\":{\"kind\":\"for\",\"age\":\"PT720H\"}}},{\"id\":\"s2\",\"to\":\"other/y\",\"type\":\"Ping\",\"payload\":{},\"deliverAt\":\"2027-01-01T00:00:00Z\",\"headers\":{}},{\"id\":\"s3\",\"to\":\"other/z\",\"type\":\"Ping\",\"payload\":null,\"headers\":{}}],\"creates\":[{\"address\":\"child/c\",\"state\":{},\"child\":true},{\"address\":\"free/f\",\"state\":[1],\"child\":false}],\"cancels\":[\"p1\",\"p2\"],\"watches\":[{\"target\":\"billing.invoices/acme\",\"set\":true},{\"target\":\"billing\",\"set\":true},{\"target\":\"*\",\"set\":false}],\"controls\":[{\"effect\":\"delete\",\"actor\":\"a/one\"},{\"effect\":\"pause\",\"actor\":\"a/two\"},{\"effect\":\"resume\",\"actor\":\"a/three\"},{\"effect\":\"purge\",\"actor\":\"a/four\"}]}}}",
+      "stage": "decode"
+    },
+    {
+      "name": "lease-response-positional-message",
+      "operation": "lease",
+      "direction": "response",
+      "input": "{\"result\":\"leased\",\"leases\":[{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"message\":[\"m1\",\"counter/a%20b%2Fc\",\"sender/x\",\"Add\",{\"n\":1,\"exact\":18446744073709551615,\"f\":0.5,\"nested\":{\"a\":[1,2]}},\"2026-01-01T00:00:00.000001Z\",\"corr\",{\"trace\":\"t1\"},9223372036854775807,4294967295,2,1,\"boom\",{\"maxAttempts\":4,\"backoff\":{\"kind\":\"exponential\",\"initial\":\"PT1S\",\"factor\":2.0,\"max\":\"PT1M\"}},\"m0\",{\"done\":{\"kind\":\"last\",\"count\":5},\"failed\":{\"kind\":\"remove\"}},true],\"state\":{\"count\":7},\"version\":1,\"claimedAt\":\"2026-01-01T00:00:01Z\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT0.000000002S\"},{\"actor\":\"counter/b\",\"epoch\":-9223372036854775808,\"message\":{\"id\":\"m2\",\"to\":\"counter/b\",\"from\":null,\"type\":\"Add\",\"payload\":null,\"deliverAt\":\"2026-01-01T00:00:00Z\",\"correlationId\":null,\"headers\":{},\"seq\":-9223372036854775808,\"attempt\":0,\"failures\":0,\"lostClaims\":0,\"lastError\":null,\"retry\":null,\"causedBy\":null,\"retention\":null,\"notification\":false},\"state\":{\"count\":7},\"version\":9223372036854775807,\"claimedAt\":\"2026-01-01T00:00:01Z\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT0.000000002S\"}]}",
+      "stage": "decode"
+    },
+    {
+      "name": "lease-response-positional",
+      "operation": "lease",
+      "direction": "response",
+      "input": "[\"leased\",[]]",
+      "stage": "decode"
+    },
+    {
+      "name": "complete-response-positional-failure",
+      "operation": "complete",
+      "direction": "response",
+      "input": "{\"result\":\"rejected\",\"failure\":[\"commit\",false,\"r\"]}",
+      "stage": "decode"
+    },
+    {
+      "name": "lease-response-unknown-backoff",
+      "operation": "lease",
+      "direction": "response",
+      "input": "{\"result\":\"leased\",\"leases\":[{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"message\":{\"id\":\"m1\",\"to\":\"counter/a%20b%2Fc\",\"from\":\"sender/x\",\"type\":\"Add\",\"payload\":{\"n\":1,\"exact\":18446744073709551615,\"f\":0.5,\"nested\":{\"a\":[1,2]}},\"deliverAt\":\"2026-01-01T00:00:00.000001Z\",\"correlationId\":\"corr\",\"headers\":{\"trace\":\"t1\"},\"seq\":9223372036854775807,\"attempt\":4294967295,\"failures\":2,\"lostClaims\":1,\"lastError\":\"boom\",\"retry\":{\"maxAttempts\":2,\"backoff\":{\"kind\":\"fibonacci\",\"delay\":\"PT1S\"}},\"causedBy\":\"m0\",\"retention\":{\"done\":{\"kind\":\"last\",\"count\":5},\"failed\":{\"kind\":\"remove\"}},\"notification\":true},\"state\":{\"count\":7},\"version\":1,\"claimedAt\":\"2026-01-01T00:00:01Z\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT0.000000002S\"},{\"actor\":\"counter/b\",\"epoch\":-9223372036854775808,\"message\":{\"id\":\"m2\",\"to\":\"counter/b\",\"from\":null,\"type\":\"Add\",\"payload\":null,\"deliverAt\":\"2026-01-01T00:00:00Z\",\"correlationId\":null,\"headers\":{},\"seq\":-9223372036854775808,\"attempt\":0,\"failures\":0,\"lostClaims\":0,\"lastError\":null,\"retry\":null,\"causedBy\":null,\"retention\":null,\"notification\":false},\"state\":{\"count\":7},\"version\":9223372036854775807,\"claimedAt\":\"2026-01-01T00:00:01Z\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT0.000000002S\"}]}",
+      "stage": "decode"
+    },
+    {
+      "name": "lease-response-zero-attempts",
+      "operation": "lease",
+      "direction": "response",
+      "input": "{\"result\":\"leased\",\"leases\":[{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"message\":{\"id\":\"m1\",\"to\":\"counter/a%20b%2Fc\",\"from\":\"sender/x\",\"type\":\"Add\",\"payload\":{\"n\":1,\"exact\":18446744073709551615,\"f\":0.5,\"nested\":{\"a\":[1,2]}},\"deliverAt\":\"2026-01-01T00:00:00.000001Z\",\"correlationId\":\"corr\",\"headers\":{\"trace\":\"t1\"},\"seq\":9223372036854775807,\"attempt\":4294967295,\"failures\":2,\"lostClaims\":1,\"lastError\":\"boom\",\"retry\":{\"maxAttempts\":0,\"backoff\":{\"kind\":\"fixed\",\"delay\":\"PT1S\"}},\"causedBy\":\"m0\",\"retention\":{\"done\":{\"kind\":\"last\",\"count\":5},\"failed\":{\"kind\":\"remove\"}},\"notification\":true},\"state\":{\"count\":7},\"version\":1,\"claimedAt\":\"2026-01-01T00:00:01Z\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT0.000000002S\"},{\"actor\":\"counter/b\",\"epoch\":-9223372036854775808,\"message\":{\"id\":\"m2\",\"to\":\"counter/b\",\"from\":null,\"type\":\"Add\",\"payload\":null,\"deliverAt\":\"2026-01-01T00:00:00Z\",\"correlationId\":null,\"headers\":{},\"seq\":-9223372036854775808,\"attempt\":0,\"failures\":0,\"lostClaims\":0,\"lastError\":null,\"retry\":null,\"causedBy\":null,\"retention\":null,\"notification\":false},\"state\":{\"count\":7},\"version\":9223372036854775807,\"claimedAt\":\"2026-01-01T00:00:01Z\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT0.000000002S\"}]}",
+      "stage": "decode"
+    },
+    {
+      "name": "lease-response-unknown-keep",
+      "operation": "lease",
+      "direction": "response",
+      "input": "{\"result\":\"leased\",\"leases\":[{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"message\":{\"id\":\"m1\",\"to\":\"counter/a%20b%2Fc\",\"from\":\"sender/x\",\"type\":\"Add\",\"payload\":{\"n\":1,\"exact\":18446744073709551615,\"f\":0.5,\"nested\":{\"a\":[1,2]}},\"deliverAt\":\"2026-01-01T00:00:00.000001Z\",\"correlationId\":\"corr\",\"headers\":{\"trace\":\"t1\"},\"seq\":9223372036854775807,\"attempt\":4294967295,\"failures\":2,\"lostClaims\":1,\"lastError\":\"boom\",\"retry\":{\"maxAttempts\":4,\"backoff\":{\"kind\":\"exponential\",\"initial\":\"PT1S\",\"factor\":2.0,\"max\":\"PT1M\"}},\"causedBy\":\"m0\",\"retention\":{\"done\":{\"kind\":\"forever\"}},\"notification\":true},\"state\":{\"count\":7},\"version\":1,\"claimedAt\":\"2026-01-01T00:00:01Z\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT0.000000002S\"},{\"actor\":\"counter/b\",\"epoch\":-9223372036854775808,\"message\":{\"id\":\"m2\",\"to\":\"counter/b\",\"from\":null,\"type\":\"Add\",\"payload\":null,\"deliverAt\":\"2026-01-01T00:00:00Z\",\"correlationId\":null,\"headers\":{},\"seq\":-9223372036854775808,\"attempt\":0,\"failures\":0,\"lostClaims\":0,\"lastError\":null,\"retry\":null,\"causedBy\":null,\"retention\":null,\"notification\":false},\"state\":{\"count\":7},\"version\":9223372036854775807,\"claimedAt\":\"2026-01-01T00:00:01Z\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT0.000000002S\"}]}",
+      "stage": "decode"
+    },
+    {
+      "name": "lease-response-keep-last-zero",
+      "operation": "lease",
+      "direction": "response",
+      "input": "{\"result\":\"leased\",\"leases\":[{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"message\":{\"id\":\"m1\",\"to\":\"counter/a%20b%2Fc\",\"from\":\"sender/x\",\"type\":\"Add\",\"payload\":{\"n\":1,\"exact\":18446744073709551615,\"f\":0.5,\"nested\":{\"a\":[1,2]}},\"deliverAt\":\"2026-01-01T00:00:00.000001Z\",\"correlationId\":\"corr\",\"headers\":{\"trace\":\"t1\"},\"seq\":9223372036854775807,\"attempt\":4294967295,\"failures\":2,\"lostClaims\":1,\"lastError\":\"boom\",\"retry\":{\"maxAttempts\":4,\"backoff\":{\"kind\":\"exponential\",\"initial\":\"PT1S\",\"factor\":2.0,\"max\":\"PT1M\"}},\"causedBy\":\"m0\",\"retention\":{\"done\":{\"kind\":\"last\",\"count\":0}},\"notification\":true},\"state\":{\"count\":7},\"version\":1,\"claimedAt\":\"2026-01-01T00:00:01Z\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT0.000000002S\"},{\"actor\":\"counter/b\",\"epoch\":-9223372036854775808,\"message\":{\"id\":\"m2\",\"to\":\"counter/b\",\"from\":null,\"type\":\"Add\",\"payload\":null,\"deliverAt\":\"2026-01-01T00:00:00Z\",\"correlationId\":null,\"headers\":{},\"seq\":-9223372036854775808,\"attempt\":0,\"failures\":0,\"lostClaims\":0,\"lastError\":null,\"retry\":null,\"causedBy\":null,\"retention\":null,\"notification\":false},\"state\":{\"count\":7},\"version\":9223372036854775807,\"claimedAt\":\"2026-01-01T00:00:01Z\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT0.000000002S\"}]}",
+      "stage": "decode"
+    },
+    {
+      "name": "complete-request-zero-delay-backoff",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"set\",\"value\":{\"count\":8}},\"effects\":{\"sends\":[{\"id\":\"s1\",\"to\":\"other/x\",\"type\":\"Ping\",\"payload\":{\"k\":\"v\"},\"delay\":\"PT0.000000002S\",\"correlationId\":\"c\",\"headers\":{\"h\":\"1\"},\"retry\":{\"maxAttempts\":2,\"backoff\":{\"kind\":\"fixed\",\"delay\":\"PT0S\"}},\"retention\":{\"done\":{\"kind\":\"remove\"},\"failed\":{\"kind\":\"for\",\"age\":\"PT720H\"}}},{\"id\":\"s2\",\"to\":\"other/y\",\"type\":\"Ping\",\"payload\":{},\"deliverAt\":\"2027-01-01T00:00:00Z\",\"headers\":{}},{\"id\":\"s3\",\"to\":\"other/z\",\"type\":\"Ping\",\"payload\":null,\"headers\":{}}],\"creates\":[{\"address\":\"child/c\",\"state\":{},\"child\":true},{\"address\":\"free/f\",\"state\":[1],\"child\":false}],\"cancels\":[\"p1\",\"p2\"],\"watches\":[{\"target\":\"billing.invoices/acme\",\"set\":true},{\"target\":\"billing\",\"set\":true},{\"target\":\"*\",\"set\":false}],\"controls\":[{\"effect\":\"delete\",\"actor\":\"a/one\"},{\"effect\":\"pause\",\"actor\":\"a/two\"},{\"effect\":\"resume\",\"actor\":\"a/three\"},{\"effect\":\"purge\",\"actor\":\"a/four\"}]}}}",
+      "stage": "decode"
+    },
+    {
+      "name": "renew-response-negative-ttl",
+      "operation": "renew",
+      "direction": "response",
+      "input": "{\"result\":\"renewed\",\"leaseUntil\":\"2026-01-01T00:00:00Z\",\"ttl\":\"-PT1S\",\"cancelRequested\":false}",
+      "stage": "decode"
+    },
+    {
+      "name": "renew-response-ttl-out-of-range",
+      "operation": "renew",
+      "direction": "response",
+      "input": "{\"result\":\"renewed\",\"leaseUntil\":\"2026-01-01T00:00:00Z\",\"ttl\":\"PT99999999999999999999S\",\"cancelRequested\":false}",
+      "stage": "decode"
+    },
+    {
+      "name": "renew-response-ttl-seconds-number",
+      "operation": "renew",
+      "direction": "response",
+      "input": "{\"result\":\"renewed\",\"leaseUntil\":\"2026-01-01T00:00:00Z\",\"ttl\":30,\"cancelRequested\":false}",
+      "stage": "decode"
+    },
+    {
+      "name": "renew-response-bad-instant",
+      "operation": "renew",
+      "direction": "response",
+      "input": "{\"result\":\"renewed\",\"leaseUntil\":\"yesterday\",\"ttl\":\"PT1S\",\"cancelRequested\":false}",
+      "stage": "decode"
+    },
+    {
+      "name": "renew-request-address-without-key",
+      "operation": "renew",
+      "direction": "request",
+      "input": "{\"actor\":\"counter\",\"epoch\":1}",
+      "stage": "decode"
+    },
+    {
+      "name": "renew-request-address-uppercase-type",
+      "operation": "renew",
+      "direction": "request",
+      "input": "{\"actor\":\"Counter/a\",\"epoch\":1}",
+      "stage": "decode"
+    },
+    {
+      "name": "renew-request-address-bad-escape",
+      "operation": "renew",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/%zz\",\"epoch\":1}",
+      "stage": "decode"
+    },
+    {
+      "name": "lease-request-bad-type-name",
+      "operation": "lease",
+      "direction": "request",
+      "input": "{\"owner\":\"w\",\"types\":{\"Bad Name\":\"h\"},\"limit\":1}",
+      "stage": "decode"
+    },
+    {
+      "name": "lease-request-blank-owner",
+      "operation": "lease",
+      "direction": "request",
+      "input": "{\"owner\":\" \",\"types\":{\"counter\":\"h\"},\"limit\":1}",
+      "stage": "decode"
+    },
+    {
+      "name": "complete-request-send-both-delivery-times",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":7,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"unchanged\"},\"effects\":{\"sends\":[{\"id\":\"s\",\"to\":\"c/d\",\"type\":\"T\",\"payload\":{},\"headers\":{},\"deliverAt\":\"2026-01-01T00:00:00Z\",\"delay\":\"PT1S\"}],\"creates\":[],\"cancels\":[],\"watches\":[],\"controls\":[]}}}",
+      "stage": "conversion"
+    },
+    {
+      "name": "complete-response-rescheduled-both-delivery-times",
+      "operation": "complete",
+      "direction": "response",
+      "input": "{\"result\":\"completed\",\"outcome\":{\"kind\":\"rescheduled\",\"error\":\"e\",\"deliverAt\":\"2026-01-01T00:00:00Z\",\"delay\":\"PT1S\"},\"cause\":null,\"version\":1,\"sent\":[],\"cancelled\":[]}",
+      "stage": "conversion"
+    },
+    {
+      "name": "complete-response-done-with-cause",
+      "operation": "complete",
+      "direction": "response",
+      "input": "{\"result\":\"completed\",\"outcome\":{\"kind\":\"done\"},\"cause\":\"handler\",\"version\":1,\"sent\":[],\"cancelled\":[]}",
+      "stage": "conversion"
+    },
+    {
+      "name": "complete-response-failed-without-cause",
+      "operation": "complete",
+      "direction": "response",
+      "input": "{\"result\":\"completed\",\"outcome\":{\"kind\":\"failed\",\"error\":\"e\"},\"cause\":null,\"version\":1,\"sent\":[],\"cancelled\":[]}",
+      "stage": "conversion"
+    }
+  ]
+}

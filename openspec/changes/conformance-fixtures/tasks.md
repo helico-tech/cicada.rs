@@ -10,7 +10,7 @@
   snapshot tests (`cargo test -p cicada-test`, `cargo test -p cicada-actors --test wire_formats`) without update
   variables. Temporarily mutate one expected digit and one hash, record the failures, and restore before commit.
 
-- [ ] 2. Lease examples. Add `fixtures/leases.json` and extend `fixtures.rs` with valid, accepted/normalized and
+- [x] 2. Lease examples. Add `fixtures/leases.json` and extend `fixtures.rs` with valid, accepted/normalized and
   invalid decode/conversion cases as designed. Include every result/report/state/outcome/control variant using
   exhaustive matches and required-case assertions, effects/policies, exact i64 extremes, nullable fields and
   duration/delivery boundaries. Use fixed byte output, not numeric `Value` equality; document in the data that
