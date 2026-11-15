@@ -1,5 +1,6 @@
 //! The settings of `serve` and `worker`: the store, the address, the types and the node. Each comes from its flag, else
 //! its variable `CICADA_…` (a blank one counts as unset), else for the node the host's `NodeConfig`, else the default.
+//! `CICADA_NODE_LABEL` alone is read as given: an empty one counts as unset and a blank one is an error.
 //! [`resolve`] is a function of the flags, the variables and the host's values, so it is tested without a process.
 //! A worker first picks its mode ([`worker_mode`]): on the store it resolves as above, over HTTP ([`resolve_http`]) it
 //! takes only the settings a [`WorkerConfig`] has and refuses those the server owns (ADR 0042).
@@ -75,6 +76,10 @@ pub(crate) struct NodeArgs {
     /// The id of the node [env: CICADA_NODE_ID] [default: random]
     #[arg(long, value_name = "ID", value_parser = node_id, help_heading = "Node")]
     pub node_id: Option<NodeId>,
+    /// A text shown with the node in the node table, such as the application and its version; kept as given, display
+    /// only, not on a worker over HTTP [env: CICADA_NODE_LABEL] [default: none]
+    #[arg(long, value_name = "TEXT", value_parser = node_label, help_heading = "Node")]
+    pub node_label: Option<String>,
     /// The most turns that run at once [env: CICADA_CONCURRENCY] [default: 16]
     #[arg(long, value_name = "N", value_parser = number::<usize>, help_heading = "Node")]
     pub concurrency: Option<usize>,
@@ -290,6 +295,14 @@ pub(crate) fn resolve(
     if let Some(LostClaims(limit)) = setting(args.max_lost_claims, env, "CICADA_MAX_LOST_CLAIMS", lost_claims)? {
         node.max_lost_claims = limit;
     }
+    // Read raw, not with `variable`: an empty value is unset, a blank one is an error and outer spaces are kept.
+    match (&args.node_label, env.get("CICADA_NODE_LABEL").filter(|value| !value.is_empty())) {
+        (Some(label), _) => node.label = Some(label.clone()),
+        (None, Some(value)) => {
+            node.label = Some(node_label(value).map_err(|e| format!("CICADA_NODE_LABEL: invalid value: {e}"))?);
+        }
+        (None, None) => {}
+    }
 
     let default_listen = DEFAULT_LISTEN.parse().expect("a socket address");
     Ok(Settings {
@@ -387,6 +400,9 @@ pub(crate) fn resolve_http(
             "a worker over HTTP does not take {}: the server owns the store and the leases",
             refused.join(", ")
         ));
+    }
+    if args.node_label.is_some() {
+        return Err("a worker over HTTP does not take --node-label: it has no row in the node table".to_owned());
     }
     let types = match (&args.types, variable(env, "CICADA_TYPES")) {
         (Some(value), _) => pick_types(Kind::Worker, value, hosted).map_err(|e| format!("--types: {e}"))?,
@@ -503,6 +519,19 @@ fn number<T: std::str::FromStr>(text: &str) -> Result<T, String> {
 
 fn node_id(text: &str) -> Result<NodeId, String> {
     NodeId::new(text.trim()).map_err(|e| e.to_string())
+}
+
+/// A label as `NodeConfig` takes it, kept as given: not blank, no NUL, at most 200 characters.
+fn node_label(text: &str) -> Result<String, String> {
+    if text.trim().is_empty() {
+        Err("a label must not be blank".to_owned())
+    } else if text.contains('\0') {
+        Err("a label must not contain NUL".to_owned())
+    } else if text.chars().count() > cicada::runtime::limits::MAX_ID_LENGTH {
+        Err(format!("a label must be at most {} characters long", cicada::runtime::limits::MAX_ID_LENGTH))
+    } else {
+        Ok(text.to_owned())
+    }
 }
 
 fn lost_claims(text: &str) -> Result<LostClaims, String> {
@@ -833,6 +862,41 @@ mod tests {
         assert!(error.unwrap_err().contains("a worker must host a type"));
     }
 
+    /// Scenario: Label precedence.
+    #[test]
+    fn the_label_comes_from_the_flag_the_raw_variable_the_host_or_nothing() {
+        let host = NodeConfig { label: Some("host".into()), ..NodeConfig::default() };
+        let store = ("CICADA_STORE", "a.db");
+        let label =
+            |flags: &[&str], e: &Env, host: Option<&NodeConfig>| read(Kind::Serve, flags, e, host, &HOSTED).node.label;
+        let with_env = env(&[store, ("CICADA_NODE_LABEL", "  from env 🦀 ")]);
+        assert_eq!(label(&["--node-label", " flag "], &with_env, Some(&host)).as_deref(), Some(" flag "));
+        assert_eq!(label(&[], &with_env, Some(&host)).as_deref(), Some("  from env 🦀 "), "outer spaces kept");
+        assert_eq!(label(&[], &env(&[store]), Some(&host)).as_deref(), Some("host"));
+        assert_eq!(label(&[], &env(&[store, ("CICADA_NODE_LABEL", "")]), Some(&host)).as_deref(), Some("host"));
+        assert_eq!(label(&[], &env(&[store]), None), None);
+        let worker = read(Kind::Worker, &["--node-label", "w"], &env(&[store]), None, &HOSTED).node.label;
+        assert_eq!(worker.as_deref(), Some("w"), "a worker on the store takes it too");
+        assert_eq!(label(&["--node-label", &"é".repeat(200)], &env(&[store]), None), Some("é".repeat(200)));
+    }
+
+    /// Scenario: Label precedence (values that cannot be used).
+    #[test]
+    fn a_blank_a_nul_or_a_too_long_label_is_a_usage_error_and_the_host_s_is_left_to_start() {
+        let store = ("CICADA_STORE", "a.db");
+        for bad in [" \t ", "a\0b", &"x".repeat(201)] {
+            let flag = try_read(Kind::Serve, &["--node-label", bad], &env(&[store]), None, &HOSTED).unwrap_err();
+            assert!(flag.contains("--node-label"), "{flag}");
+            let variable = try_read(Kind::Serve, &[], &env(&[store, ("CICADA_NODE_LABEL", bad)]), None, &HOSTED);
+            let variable = variable.unwrap_err();
+            assert!(variable.starts_with("CICADA_NODE_LABEL: invalid value: a label must"), "{variable}");
+        }
+        assert!(try_read(Kind::Serve, &["--node-label", ""], &env(&[store]), None, &HOSTED).is_err());
+        let host = NodeConfig { label: Some(" ".into()), ..NodeConfig::default() };
+        let settings = read(Kind::Serve, &[], &env(&[store]), Some(&host), &HOSTED);
+        assert_eq!(settings.node.label.as_deref(), Some(" "), "the start of the node refuses it");
+    }
+
     // ---- a worker over HTTP ----
 
     fn worker_args(flags: &[&str]) -> WorkerArgs {
@@ -959,6 +1023,17 @@ mod tests {
             (defaults.shutdown_grace_period, defaults.shutdown_cancel_timeout),
             (library.shutdown_grace_period, library.shutdown_cancel_timeout)
         );
+    }
+
+    /// Scenarios: Label flag in HTTP mode; Unused label cannot break HTTP execution.
+    #[test]
+    fn a_worker_over_http_refuses_the_label_flag_and_never_reads_the_variable_or_the_host_s_label() {
+        let error = http(&["--node-label", "x"], &Env::new(), None).unwrap_err();
+        assert_eq!(error, "a worker over HTTP does not take --node-label: it has no row in the node table");
+        let host = NodeConfig { label: Some(String::new()), concurrency: 3, ..NodeConfig::default() };
+        let e = env(&[("CICADA_NODE_LABEL", " \t "), ("CICADA_CONCURRENCY", "7")]);
+        assert_eq!(http(&[], &e, Some(&host)).unwrap().worker.concurrency, 7);
+        assert_eq!(http(&[], &env(&[("CICADA_NODE_LABEL", "a\0b")]), Some(&host)).unwrap().worker.concurrency, 3);
     }
 
     /// Scenario: Applicable settings (the types), and a value that cannot be read.

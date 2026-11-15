@@ -403,8 +403,14 @@ async fn nodes_types_and_health() {
     let nodes = json(&s, &["get", "nodes"]).await;
     let node = nodes[0]["id"].as_str().unwrap().to_owned();
     assert_eq!(nodes[0]["status"], "alive");
+    assert_eq!(nodes[0]["cicadaVersion"], env!("CARGO_PKG_VERSION"));
+    assert!(nodes[0].get("label").is_none(), "no label is left out: {nodes}");
+    let listed = cicada(&s, &["get", "nodes"]).await;
+    let header: Vec<&str> = listed.lines().next().unwrap().split_whitespace().collect();
+    assert_eq!(header[..3], ["ID", "HOSTNAME", "STATUS"], "{listed}");
     let table = cicada(&s, &["get", "node", &node, "-o", "wide"]).await;
     assert!(table.contains("HOSTED") && table.contains("account"), "{table}");
+    assert!(table.contains("HOSTNAME") && table.contains("VERSION") && table.contains("LABEL"), "{table}");
     assert!(cicada(&s, &["describe", "node", &node]).await.contains("turns: []"));
     assert!(rows(&cicada(&s, &["get", "turns"]).await).is_empty());
     assert!(cicada_fails(&s, &["get", "turn", "account/acme:1"]).await.contains("not found"));

@@ -628,6 +628,56 @@ mod tests {
         assert!(cells("d1").iter().all(|c| c.fg != Color::Red), "a done row is not red");
     }
 
+    /// Scenario: TUI node view: a node with details and one from an older server, wide details, the filter and the way
+    /// into a node.
+    #[test]
+    fn the_nodes_screen_shows_host_names_wide_details_and_opens_a_node() {
+        let now = chrono::Utc::now();
+        let node = |id: &str, hostname: Option<&str>, label: Option<&str>| cicada::api::NodeView {
+            id: cicada::store::NodeId::new(id).unwrap(),
+            hosted: vec!["account".into()],
+            started_at: now,
+            last_seen: now,
+            status: cicada::runtime::NodeHealth::Alive,
+            running_turns: 0,
+            hostname: hostname.map(str::to_owned),
+            cicada_version: hostname.map(|_| "0.19.0".to_owned()),
+            label: label.map(str::to_owned),
+        };
+        let views = [node("n1", Some("web-1.östra"), Some("billing\nv2")), node("n2", None, None)];
+        let mut app = loaded(ScreenData::Grid(Rows::default()));
+        for c in ":nodes".chars() {
+            app.on_key(KeyEvent::from(KeyCode::Char(c)));
+        }
+        let effects = app.on_key(KeyEvent::from(KeyCode::Enter));
+        let seq = effects.iter().find_map(|e| if let Effect::Fetch { seq, .. } = e { Some(*seq) } else { None });
+        let rows = fetch::rows(&views, false, |n| Item::Node(n.id.clone()));
+        app.on_result(Fetched::Screen { seq: seq.unwrap(), data: ScreenData::Grid(rows) });
+
+        let text = screen(&mut app, 180, 24);
+        for part in ["nodes(all)[2]", "HOSTNAME", "web-1.östra"] {
+            assert!(text.contains(part), "{part} missing:\n{text}");
+        }
+        let old_row = text.lines().find(|l| l.contains("│n2 ")).expect("the row of n2");
+        assert_eq!(old_row.split_whitespace().nth(1), Some("-"), "no host name from an older server: {old_row}");
+        assert!(!text.contains("VERSION"), "the version is a wide column:\n{text}");
+        app.on_key(KeyEvent::from(KeyCode::Char('w')));
+        let text = screen(&mut app, 180, 24);
+        for part in ["HOSTED", "VERSION", "LABEL", "0.19.0", "billing\\nv2"] {
+            assert!(text.contains(part), "{part} missing:\n{text}");
+        }
+
+        for c in "/östra".chars() {
+            app.on_key(KeyEvent::from(KeyCode::Char(c)));
+        }
+        assert_eq!(app.screen().grid().unwrap().shown().len(), 1, "the filter searches the host name");
+        app.on_key(KeyEvent::from(KeyCode::Enter));
+        let effects = app.on_key(KeyEvent::from(KeyCode::Enter));
+        let opened =
+            effects.iter().find_map(|e| if let Effect::Fetch { target, .. } = e { Some(target) } else { None });
+        assert_eq!(opened, Some(&Target::Node(cicada::store::NodeId::new("n1").unwrap())));
+    }
+
     #[test]
     fn filter_prompt_confirm_and_help_draw() {
         let mut app = loaded(ScreenData::Grid(outcome_rows()));

@@ -120,6 +120,23 @@ fn brief(text: Option<&str>, wide: bool) -> String {
     }
 }
 
+/// `text` for one cell of a table: each control character escaped (`\n`, `\r`, `\t`, else `\u{hex}`), so that a value
+/// cannot break the row; `-` for none.
+fn escaped(text: Option<&str>) -> String {
+    let Some(text) = text else { return "-".into() };
+    let mut cell = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '\n' => cell.push_str("\\n"),
+            '\r' => cell.push_str("\\r"),
+            '\t' => cell.push_str("\\t"),
+            c if c.is_control() => cell.push_str(&format!("\\u{{{:x}}}", u32::from(c))),
+            c => cell.push(c),
+        }
+    }
+    cell
+}
+
 fn dash(text: Option<impl ToString>) -> String {
     text.map(|t| t.to_string()).unwrap_or_else(|| "-".into())
 }
@@ -266,18 +283,23 @@ impl Columns for RunningTurnView {
 
 impl Columns for NodeView {
     fn headers(wide: bool) -> Vec<&'static str> {
-        wide_cols(vec!["ID", "STATUS", "TURNS", "LAST-SEEN", "AGE"], &["HOSTED"], wide)
+        wide_cols(vec!["ID", "HOSTNAME", "STATUS", "TURNS", "LAST-SEEN", "AGE"], &["HOSTED", "VERSION", "LABEL"], wide)
     }
     fn cells(&self, wide: bool, now: Timestamp) -> Vec<String> {
         let mut cells = vec![
             self.id.to_string(),
+            escaped(self.hostname.as_deref()),
             wire(&self.status),
             self.running_turns.to_string(),
             when(self.last_seen, wide, now),
             when(self.started_at, wide, now),
         ];
         if wide {
-            cells.push(self.hosted.join(","));
+            cells.extend([
+                self.hosted.join(","),
+                escaped(self.cicada_version.as_deref()),
+                escaped(self.label.as_deref()),
+            ]);
         }
         cells
     }
@@ -374,6 +396,58 @@ mod tests {
         let independent = ActorView { parent: None, ..actor.clone() };
         assert_eq!(independent.cells(true, now())[4], "-");
         assert_eq!(address.cells(false, now()), ["account/acme:7", "account", "acme:7"]);
+    }
+
+    /// A node of a newer server with details, and the same node as an older server serves it.
+    pub(crate) fn nodes(now: Timestamp) -> (NodeView, NodeView) {
+        let node = NodeView {
+            id: cicada::store::NodeId::new("n1").unwrap(),
+            hosted: vec!["account".into(), "ledger".into()],
+            started_at: now - Duration::hours(2),
+            last_seen: now - Duration::seconds(4),
+            status: cicada::runtime::NodeHealth::Alive,
+            running_turns: 3,
+            hostname: Some("web-1.östra".into()),
+            cicada_version: Some("0.19.0".into()),
+            label: Some(" billing\n2.4\t\r\u{7}\u{9b} 🦀".into()),
+        };
+        let old = NodeView { hostname: None, cicada_version: None, label: None, ..node.clone() };
+        (node, old)
+    }
+
+    /// Scenarios: Node list and detail output; Control characters in display metadata.
+    #[test]
+    fn a_node_shows_its_host_name_and_wide_its_version_and_label_escaped() {
+        let (node, old) = nodes(now());
+        assert_eq!(NodeView::headers(false), ["ID", "HOSTNAME", "STATUS", "TURNS", "LAST-SEEN", "AGE"]);
+        assert_eq!(node.cells(false, now()), ["n1", "web-1.östra", "alive", "3", "4s", "2h"]);
+        assert_eq!(old.cells(false, now()), ["n1", "-", "alive", "3", "4s", "2h"]);
+        let wide = NodeView::headers(true);
+        assert_eq!(wide[..6], NodeView::headers(false)[..], "the wide columns start with the narrow ones");
+        assert_eq!(wide[6..], ["HOSTED", "VERSION", "LABEL"]);
+        let cells = node.cells(true, now());
+        assert_eq!(cells[6..], ["account,ledger", "0.19.0", " billing\\n2.4\\t\\r\\u{7}\\u{9b} 🦀"]);
+        assert_eq!(old.cells(true, now())[6..], ["account,ledger", "-", "-"]);
+        let detail = NodeDetailView { node: node.clone(), turns: vec![] };
+        assert_eq!(NodeDetailView::headers(true), wide);
+        assert_eq!(detail.cells(true, now()), cells);
+
+        // A table row stays one line; JSON keeps the text and leaves out what is absent.
+        let mut out = Vec::new();
+        list(&mut out, Format::Wide, &[node.clone(), old.clone()]).unwrap();
+        assert_eq!(String::from_utf8(out).unwrap().lines().count(), 3);
+        let json = serde_json::to_value(&node).unwrap();
+        assert_eq!(json["label"], " billing\n2.4\t\r\u{7}\u{9b} 🦀");
+        assert_eq!((json["hostname"].as_str(), json["cicadaVersion"].as_str()), (Some("web-1.östra"), Some("0.19.0")));
+        let json = serde_json::to_value(&old).unwrap();
+        assert!(["hostname", "cicadaVersion", "label"].iter().all(|f| json.get(f).is_none()), "{json}");
+    }
+
+    #[test]
+    fn a_cell_escapes_control_characters_and_keeps_printable_unicode() {
+        assert_eq!(escaped(None), "-");
+        assert_eq!(escaped(Some("a\nb\rc\td\u{0}e\u{1b}f\u{7f}g")), "a\\nb\\rc\\td\\u{0}e\\u{1b}f\\u{7f}g");
+        assert_eq!(escaped(Some("Zürich 東京 🦀 \\n")), "Zürich 東京 🦀 \\n", "a backslash is not a control character");
     }
 
     #[test]

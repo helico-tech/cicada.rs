@@ -18,6 +18,7 @@ use cicada::actor::contract_of;
 use cicada::api::MessageState;
 use cicada::observer::{ObservedTurn, TurnEnd, TurnObserver, TurnStart};
 use cicada::prelude::*;
+use cicada::runtime::NodeConfig;
 use cicada::{HandlerResult, Store, Turn};
 use cicada_app::{App, AppError, Env};
 use cicada_client::ActorClient;
@@ -222,8 +223,10 @@ async fn an_http_worker_runs_the_selected_actors_without_opening_the_store_of_th
     for store in ["postgres://cicada:secret@127.0.0.1:1/cicada".to_owned(), unused.display().to_string()] {
         let server = Server::start().await;
         let observed = Arc::new(Observed::default());
-        let app = App::new().host(CounterActor).host(RegistryActor).observe(observed.clone());
+        let blank_label = NodeConfig { label: Some(" ".into()), ..NodeConfig::default() };
+        let app = App::new().host(CounterActor).host(RegistryActor).observe(observed.clone()).node_config(blank_label);
         let mut env = http_env();
+        env.insert("CICADA_NODE_LABEL".into(), "a\0b".into());
         env.insert("CICADA_STORE".into(), store.clone());
         env.insert("CICADA_LEASE_TTL".into(), "soon".into());
         env.insert("CICADA_RETENTION".into(), "forever".into());
@@ -460,6 +463,7 @@ async fn usage_errors_send_no_request_and_a_bad_applicable_setting_fails_the_sta
     for (env, args, says) in [
         (http_env(), vec!["myapp", "--server", base, "worker", "--store", store], "not both"),
         (http_env(), vec!["myapp", "worker", "--server", base, "--lease-ttl", "5s"], "does not take --lease-ttl"),
+        (http_env(), vec!["myapp", "worker", "--server", base, "--node-label", "x"], "has no row in the node table"),
         (bad_concurrency, vec!["myapp", "worker", "--server", base], "CICADA_CONCURRENCY"),
         (http_env(), vec!["myapp", "worker", "--token", "t"], "needs a store or a server"),
     ] {

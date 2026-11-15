@@ -15,7 +15,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use cicada::api::MessageState;
 use cicada::observer::{ObservedTurn, TurnEnd, TurnObserver, TurnStart};
-use cicada::runtime::NodeState;
+use cicada::runtime::{NodeConfig, NodeState};
 use cicada::store::{MessageStatus, OutcomeStatus, SqliteOptions};
 use cicada::{ActorSystem, Store};
 use cicada_app::{App, AppError, Env, node_command};
@@ -132,6 +132,20 @@ async fn a_node_that_cannot_start_fails_with_the_problem_and_nothing_listens() {
     assert_eq!(error.exit_code(), 1);
     assert!(error.to_string().contains("the node cannot start") && error.to_string().contains("contract"), "{error}");
     assert!(!answers(port).await, "nothing listens");
+}
+
+/// Scenario: Label precedence: an invalid label of the host fails the start (exit code 1), an invalid flag is a usage
+/// error (exit code 2).
+#[tokio::test]
+async fn an_invalid_label_of_the_host_fails_the_start_and_one_of_the_flag_the_command_line() {
+    let db = TempDb::new();
+    let blank = NodeConfig { label: Some(" ".into()), ..NodeConfig::default() };
+    let error = run(counter_app().node_config(blank), &db.env(), &["myapp", "worker"]).await.unwrap_err();
+    assert_eq!(error.exit_code(), 1, "{error}");
+    assert!(error.to_string().contains("label must not be blank"), "{error}");
+    let error = run(counter_app(), &db.env(), &["myapp", "worker", "--node-label", " "]).await.unwrap_err();
+    assert_eq!(error.exit_code(), 2, "{error}");
+    assert!(error.to_string().contains("--node-label"), "{error}");
 }
 
 /// Scenario: A stop while the store is waited for.

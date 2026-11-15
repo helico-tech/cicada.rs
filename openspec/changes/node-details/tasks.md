@@ -24,7 +24,7 @@
   cicada-axum and cicada-client, then `CICADA_UPDATE_OPENAPI=true cargo test -p cicada-axum --test openapi` and the
   same OpenAPI check without the variable. No endpoint or client method is added.
 
-- [ ] 4. App setting and displays. Add --node-label/CICADA_NODE_LABEL using raw variable text and the specified
+- [x] 4. App setting and displays. Add --node-label/CICADA_NODE_LABEL using raw variable text and the specified
   precedence; reject invalid explicit labels with usage errors. Refuse the flag for HTTP workers, while ignoring
   their variable/host label. Test flag/env/host precedence, empty versus whitespace-only variables, preserved outer
   spaces, invalid values and malformed unused HTTP-mode labels. Add HOSTNAME and wide VERSION/LABEL through shared

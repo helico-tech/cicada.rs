@@ -2033,6 +2033,8 @@ Node:
           The types to host: all, or type names with commas; serve also takes none [env: CICADA_TYPES] [default: all]
       --node-id <ID>
           The id of the node [env: CICADA_NODE_ID] [default: random]
+      --node-label <TEXT>
+          A text shown with the node in the node table, such as the application and its version; kept as given, display only, not on a worker over HTTP [env: CICADA_NODE_LABEL] [default: none]
       --concurrency <N>
           The most turns that run at once [env: CICADA_CONCURRENCY] [default: 16]
       --lease-ttl <DURATION>
@@ -2071,6 +2073,8 @@ Node:
           The types to host: all, or type names with commas; serve also takes none [env: CICADA_TYPES] [default: all]
       --node-id <ID>
           The id of the node [env: CICADA_NODE_ID] [default: random]
+      --node-label <TEXT>
+          A text shown with the node in the node table, such as the application and its version; kept as given, display only, not on a worker over HTTP [env: CICADA_NODE_LABEL] [default: none]
       --concurrency <N>
           The most turns that run at once [env: CICADA_CONCURRENCY] [default: 16]
       --lease-ttl <DURATION>

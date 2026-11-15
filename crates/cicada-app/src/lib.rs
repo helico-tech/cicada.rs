@@ -140,7 +140,8 @@ impl App {
     }
 
     /// The host's `NodeConfig`. A flag of `serve` or `worker`, and its variable `CICADA_…`, override a field of it. A
-    /// worker over HTTP takes only its id, concurrency, poll interval, longest turn, grace period and cancel timeout.
+    /// worker over HTTP takes only its id, concurrency, poll interval, longest turn, grace period and cancel timeout:
+    /// it has no row in the node table, so its label is not read.
     pub fn node_config(mut self, config: NodeConfig) -> Self {
         self.node_config = Some(config);
         self
