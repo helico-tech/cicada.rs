@@ -7,6 +7,37 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.18.12 — unreleased
+
+Conformance fixtures for other implementations. Existing APIs, wire formats, contract hashes, store schema and
+guarantees are those of 0.18.11.
+
+### Added
+
+- Fixed, language-neutral test data in `fixtures/` (ADR 0047), format 1, with JSON inputs and bodies as strings:
+  `canonical.json` (canonical JSON text and its `sha256:` hash, including key order by UTF-8 bytes, escapes, integer
+  and float spelling, subnormals, underflow, notation thresholds and refused inputs), `contracts.json` (contract
+  hashes with schema descriptions stripped at every traversed keyword and kept in data and names), `leases.json`
+  (the four lease operations' bodies: Rust's exact output, normalized inputs, and refusals at decode or conversion)
+  and `status.json` (success statuses, the status classification of ADR 0040 and the registration exceptions).
+- `crates/cicada/tests/fixtures.rs` checks them against the implementation through public APIs, with no variable that
+  rewrites them; the client's status classifier, its scripted operations and the OpenAPI document read
+  `status.json` too. A dependency update that changes a covered canonical output or hash now fails these tests.
+- Each release from this one on carries `cicada-fixtures-vX.Y.Z.tar.gz` (the four files and `SOURCE.json`) beside
+  the skill archive. `scripts/package-fixtures.py vX.Y.Z DIR` packages it from the tag's Git objects. Earlier
+  releases gain no fixture archive.
+
+### Changed
+
+- The canonical number format is a written rule (ADR 0047): shortest round-tripping digits, fixed notation for decimal
+  exponents -5 to 15 with `.0` on whole floats, a signed exponent otherwise, `-0.0` kept. It is the output of
+  serde_json 1.0.151 (`preserve_order`, `float_roundtrip`) with zmij 1.0.23, which the fixtures record; other
+  dependency versions or merged features are not certified by them.
+- `scripts/gate.py release` packages and verifies both archives before the tag push, saves their name-to-digest map
+  and refuses a retry whose archives differ, resumes a draft holding any matching subset by uploading only the
+  missing assets, and refuses the single-digest state of an earlier driver (resume that release with its own pinned
+  runner). The skill archive's command, contents and bytes are unchanged.
+
 ## 0.18.11 — 2026-11-15
 
 A documentation correction. Existing APIs, limits, wire formats, contract hashes, store schema and guarantees are those

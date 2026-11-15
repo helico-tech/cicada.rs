@@ -37,7 +37,7 @@
   Verify: `python3 -m unittest discover -s scripts -p 'test_*.py'` and
   `cargo test -p cicada-examples --test skill`. Use temporary repositories and fake GitHub; never publish from tests.
 
-- [ ] 5. Version and handoff. Apply the build loop's next patch version in Cargo.toml/Cargo.lock, the consumer
+- [x] 5. Version and handoff. Apply the build loop's next patch version in Cargo.toml/Cargo.lock, the consumer
   skill metadata and generated OpenAPI version. Add the changelog and `docs-handoff.md` for architecture's canonical
   rule, HTTP port guidance, the release procedure's two archives, AGENTS map and dependency pins. State the tested
   dependency/feature limits and absence of historical backfill. No handwritten documentation edits or new guide
