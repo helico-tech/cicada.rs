@@ -7,6 +7,65 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.20.0 — unreleased
+
+Pinned actors (ADR 0052): an actor may be pinned at creation to one claim owner, a node's `node_id` or a worker's
+`worker_id`, and only that owner runs its turns. A breaking release: public structs gain fields, and store schema 8 is
+not safe with running 0.19 nodes on the store, which must be stopped before the first 0.20 node opens it. The HTTP
+fields are optional and old request and fixture bytes are unchanged. Guarantee S8 is qualified: progress needs an
+eligible executor that keeps polling the type. No actor contract or contract hash changes.
+
+### Added
+
+- `CreateOptions { pinned_to: Option<NodeId> }` (`cicada::CreateOptions`, also in the prelude), default unpinned, with
+  `CreateOptions::new().pinned_to(id)`. A pin is at most 200 characters with no NUL, like a claim owner; it need not
+  name a node row, a started node or a known worker.
+- Options variants that keep the existing calls unpinned: `ActorSystem::create_with`, `create_actor_with` and
+  `create_actor_checked_with` (options before the check); `Turn::create_with`, `create_child_with`, `create_raw_with`
+  and `create_child_raw_with`; `ActorClient::create_with` and `create_actor_with`. A pin beyond its bounds is
+  `OpError::Invalid` before anything else, `TurnError::Invalid` at the turn's call, and `400` over HTTP.
+- `Turn::node_id()`: the claim owner running the turn, a node's `NodeConfig::node_id` or a worker's
+  `WorkerConfig::worker_id`, never the id of the server a worker leases through. Pin a child to the executor with
+  `CreateOptions::new().pinned_to(turn.node_id().clone())`; children never inherit a pin.
+- Claims and next-due reads of every store (memory, SQLite, PostgreSQL) admit an actor only when it is unpinned or
+  pinned to the claim owner, before the claim's limit and before any change to it: a pinned actor whose owner is
+  away keeps its messages pending with no new attempt, lost claim, failure or reassignment, and does not wake other
+  nodes' dispatch loops. `ActorSystem::lease_turns` filters by the requesting worker's id, not the server's; the
+  worker needs no node row.
+- `pinnedTo` on the HTTP create body (`PUT /actors/{type}/{key}`) and on a returned create of `POST /leases/complete`
+  (`ActorCreateView`), optional, absent or null for none and left out when none; `pinnedTo` on actor views (`GET
+  /actors/{type}/{key}`, the state listing), `null` when unpinned. `ActorSnapshot` and `ActorRecord` gain `pinned_to`.
+  A create answers only `address` and `created`: read the actor to see the pin it has.
+- `cicada create actor --pinned-to ID`; `PINNED-TO` in the wide actor table after `PARENT`, `pinnedTo` in `describe
+  actor` and JSON, and a `Pinned to` fact on the TUI's actor screen. The mailbox listing shows what a pinned actor's
+  messages wait for.
+- Portable fixtures: a valid pinned returned create, a `pinnedTo: null` input, and pins refused at decode (blank, not
+  a string) and at conversion (too long, NUL), with the coverage label `TurnEffectsView.creates(pinned)`. Every older
+  case keeps its bytes.
+
+### Changed (breaking)
+
+- `ActorCreate`, `ActorRecord`, `ActorSnapshot`, `CreateActorRequest`, `ActorCreateView` and `ActorView` have a new
+  public field: a struct literal or an exhaustive destructuring of them no longer compiles; add `pinned_to: None`.
+- An existing actor keeps its pin on a repeated create, whatever the new create asks; delete it to choose another.
+  Creates of one address in one turn or one commit must agree on their pin as on being a child (`None` against
+  `Some` included): `TurnError::Invalid` at the call, `StoreError::Invalid` for a commit.
+- Store schema version 8 adds the nullable column `actors.pinned_to` and the partial index `actors_pinned_due` on
+  SQLite and PostgreSQL; every existing actor is unpinned. Not additive in effect: a running 0.19 node keeps claiming
+  pinned actors whatever their pin, and a 0.19 binary refuses the migrated store.
+
+### Upgrading
+
+- Stop every 0.19 node and worker that opens the store directly before the first 0.20 node migrates it; do not mix
+  old and new direct-store nodes. Upgrade every HTTP server before a client or worker sends `pinnedTo`: a 0.19 server
+  refuses the field as unknown. A 0.19 worker over HTTP keeps working against an upgraded server, which enforces the
+  pins on its leases, but cannot create pinned actors.
+- A pin names a routing identity, not an authenticated machine. Give each node or worker that owns pinned actors a
+  stable id that is unique among live executors (`--node-id`, `CICADA_NODE_ID`, `WorkerConfig::worker_id`): a random
+  id after a restart leaves the old pins waiting, and two executors with one id may run the same actor on different
+  machines, one at a time. A pinned actor whose owner never comes back waits forever: find it with `get actor` or the
+  state listing, look at its `mailbox`, and delete it, then create it again with another pin if it should run.
+
 ## 0.19.4 — 2026-11-16
 
 A review mode for the `actor-design` skill: it checks an existing actor design or implementation and saves a report

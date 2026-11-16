@@ -23,7 +23,7 @@
   Verify CLI parse/error, command/output, local/HTTP parity and relevant TUI tests. Regenerate CLI reference with its
   existing update variable. Do not add list filters, node-detail actor fanout or ready-made actor creation options.
 
-- [ ] 5. ADR, handoff and release. Reconcile ADR 0052/index and docs-handoff.md for architecture/S8, migration/drain
+- [x] 5. ADR, handoff and release. Reconcile ADR 0052/index and docs-handoff.md for architecture/S8, migration/drain
   procedure, stable unique ids, create/child/worker APIs, pending-work diagnosis, wire fields and Rust struct-literal
   changes. Request S8 proving-test rows and exact owner fixes to any affected guide/README snippets; integrate before
   landing. Include normal patch release pins/changelog and verify docs/doctest/skill checks. The process example and
