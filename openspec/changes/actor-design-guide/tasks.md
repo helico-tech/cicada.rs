@@ -8,7 +8,7 @@
   sequence boundaries, unchanged state on rejection, duplicate/backwards/wrong-stream/future acks, capacity recovery
   and reply rollback. Verify `cargo test -p cicada-examples --test websocket_session` with the relevant actor cases.
 
-- [ ] 2. Host bridge and runnable websocket demo. Add the public-API state-following bridge, axum ws adapter and
+- [x] 2. Host bridge and runnable websocket demo. Add the public-API state-following bridge, axum ws adapter and
   `examples/examples/websocket_session.rs`, with example-only dependencies. Subscribe before reading; reread exact
   sessions on hints, resync and a one-second timer. Bound I/O, buffers and task lifetimes as designed; read acks
   concurrently with writes and join connection work on error/shutdown. Demo uses loopback, precreated fresh stream
@@ -16,7 +16,7 @@
   gap recovery and local connection generation. Verify `cargo check -p cicada-examples --examples`, protocol/JSON
   unit cases and one TestActors/paused-time real websocket handshake/exchange in the example tests; no real sleeps.
 
-- [ ] 3. Recovery tests. Exercise the same bridge loop through a bounded deterministic transport: disconnect before
+- [x] 3. Recovery tests. Exercise the same bridge loop through a bounded deterministic transport: disconnect before
   ack, unknown/lost ack submission, reconnect through a second ActorSystem sharing the store, overlapping sockets,
   resync/missed hints and periodic reconciliation, stalled writes/store operations, session deletion, errors/feed
   end and shutdown. Check retained output and stopped/joined connection work, not just returned status. Use virtual

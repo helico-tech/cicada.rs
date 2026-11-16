@@ -30,6 +30,9 @@
 //!   It advances the acknowledgement and drops those frames in one turn; a repeated, older, larger than assigned,
 //!   non-positive or other stream's ack changes nothing. A socket write is never evidence of processing.
 
+pub mod adapter;
+pub mod bridge;
+
 use std::collections::VecDeque;
 
 use cicada::prelude::*;
