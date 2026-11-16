@@ -33,12 +33,15 @@ it does not copy the knowledge or treat this research as a consumer manual (ADR 
   release driver's archive verification. Cover old or missing guides without silently using the latest source.
   Provide installation/update guidance through a docs handoff and record the second skill in an ADR extending 0041.
 
-To decide in the design:
+Decided under the owner's delegation (2026-11-16; Opus 5.5 reviews):
 
-- How to resolve the guide: use the sibling cicada resolver or carry a copy, including missing-sibling behavior.
-- The design document's default path, sections, update/resume behavior and preserving the user's existing work.
-- Packaging both skills: member layout, provenance, version checks and upgrade compatibility with existing archives.
-- The scope of each skill's description and the checks/evaluation cases that prove the step-by-step interaction.
+- Use the sibling cicada resolver, report missing/mismatched installation and preserve manual/source fallbacks.
+- Save at docs/design/actors.md by default, respecting user/repository paths; preserve existing text and resumable
+  progress. Use explicit confirmation by default and honor a consumer's own scoped decision delegation.
+- Add actor-design/ beside the existing cicada/ archive root, with matching provenance and a tag-owned format
+  marker. Preserve legacy bytes and release recovery; check both skill versions and all provenance files.
+- Keep design and coding triggers distinct. Structural checks cover versions, routes, template and packaging;
+  staged behavioral evaluations cover the interview, diagrams, resumption and source/installation limitations.
 
 ## Out of scope
 
