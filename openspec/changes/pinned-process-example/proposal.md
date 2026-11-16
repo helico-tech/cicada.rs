@@ -21,6 +21,8 @@ abrupt host death. Never promise generic exactly-once process spawn or PID-only 
 
 ## Out of scope
 
+Extending supervisor/flow/event protocols to create pins; the example creates its pinned actor directly.
+
 Changing the pin API/claim rule. A production process manager, container orchestrator, automatic actor migration,
 websocket connections or fencing arbitrary external programs. Node-down notifications remain the next change.
 
