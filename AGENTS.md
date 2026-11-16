@@ -5,6 +5,7 @@ Durable actors on a shared SQL store, in Rust. [docs/README.md](docs/README.md) 
 For behavior changes, read [docs/architecture.md](docs/architecture.md) first, then the relevant
 [ADRs](docs/adr/README.md). User tasks belong in the layer guides: [core](docs/guide/core.md),
 [HTTP](docs/guide/http.md), [app](docs/guide/app.md) and [actors](docs/guide/actors.md).
+Use [Design with actors](docs/guide/design.md) to choose actors, ownership and protocols.
 [Operations](docs/operations.md) covers running nodes; [upgrading](docs/how-to/upgrading.md) and
 [releasing](docs/how-to/releasing.md) have their own procedures.
 
@@ -20,6 +21,7 @@ cargo test -p cicada-examples --doc    # only the Rust blocks of README.md, the 
 cargo test -p cicada-examples --test docs   # the table of guarantees and the links between the Markdown files
 cargo test -p cicada-examples --test skill  # the consumer skill: version, routes, resolver and packaging (python3 3.11+)
 cargo test -p cicada --test fixtures   # fixed portable expectations in fixtures/; no update variable (ADR 0047)
+node --test examples/tests/websocket_session_client.test.mjs   # the example browser client (Node 26+)
 cargo clippy --workspace --all-targets
 cargo fmt --all                        # rustfmt.toml: 120 columns; the gate checks it
 cargo check -p cicada [--features sqlite|postgres|testing]   # the gate builds the core with each feature alone
@@ -39,6 +41,7 @@ PostgreSQL for tests: `docker compose up -d postgres` (port 55432). Tests that n
 Full gate checks require PostgreSQL: `CICADA_GATE_PG_URL` defaults to the compose URL above. The gate checks the exact committed
 tree in its owned worktree. Once installed, the pre-push hook requires evidence for every pushed main tip, including
 docs. See [local checks](docs/how-to/releasing.md#local-checks-and-the-pre-push-gate); automatic Actions are disabled.
+Full checks also require Node 26 or later as `node` on PATH for `client-tests`; no npm packages are needed.
 
 ## Map
 
@@ -54,7 +57,7 @@ docs. See [local checks](docs/how-to/releasing.md#local-checks-and-the-pre-push-
 | `examples/`, `sample-service/` | Worked examples, the doctests of the README and the guides (`src/lib.rs`, `build.rs`) and the checks of the docs (`tests/docs.rs`); a runnable node |
 | `fixtures/` | Portable test data for other implementations (ADR 0047): canonical JSON, contract hashes, lease bodies and status classification; fixed, reviewed and checked by `crates/cicada/tests/fixtures.rs` |
 | `e2e/` | End-to-end and fault tests against sample nodes in Docker |
-| `docs/` | `architecture.md`; `guarantees.md`, the tests behind each guarantee; `guide/`, one guide per layer; `operations.md`; `reference/`, the generated help of the command line (`cli.md`) and the contracts of the ready-made actors (`contracts/`); `openapi.json`; `adr/` and its index `adr/README.md` |
+| `docs/` | `architecture.md`; `guarantees.md`, the tests behind each guarantee; `guide/`, the layer and actor-design guides; `operations.md`; `reference/`, the generated help of the command line (`cli.md`) and the contracts of the ready-made actors (`contracts/`); `openapi.json`; `adr/` and its index `adr/README.md` |
 | `openspec/` | Specs, changes in progress and finished changes |
 | `skills/cicada/` | The consumer skill (ADR 0041): `SKILL.md`, which routes a consumer's agent into the resolved source, and its read-only resolver `scripts/cicada_source.py`; checked by `examples/tests/skill.rs` with the Python tests in `examples/tests/skill/` |
 | `scripts/` | `gate.py`, local check evidence, pre-push and release (ADR 0046); `gate-policy.json` and `ci/`, its checks; `release-check.sh`; `package-skill.py` and `package-fixtures.py`, the release archives, with shared helpers in `release_archive.py`; `status.py`, the order and state of the changes; `review.py`, the review requests between the loops |
@@ -84,7 +87,7 @@ docs. See [local checks](docs/how-to/releasing.md#local-checks-and-the-pre-push-
 - Public items have doc comments (`missing_docs` is an error). Keep comments as dense as the surrounding code.
 - The Rust blocks of `README.md`, of the guides in `docs/guide/` and of `docs/operations.md` are doctests of
   `cicada-examples` (`ReadmeDoctests`, `CoreGuideDoctests`, `HttpGuideDoctests`, `AppGuideDoctests`,
-  `ActorsGuideDoctests` and `OperationsDoctests` in `examples/src/lib.rs`): a public API change keeps them compiling
+  `ActorsGuideDoctests`, `DesignGuideDoctests` and `OperationsDoctests` in `examples/src/lib.rs`): a public API change keeps them compiling
   through fixes prepared by the docs session (ADR 0045). Use `no_run` for blocks that start a server or need a database.
   A worked example names its file in `examples/`. User-facing behaviour goes in its layer guide, written by the docs
   session from the change's handoff.
