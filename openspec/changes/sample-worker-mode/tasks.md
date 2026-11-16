@@ -17,7 +17,7 @@
   Use the bounded socket harness; keep actor timing/retry assertions on virtual time. Run targeted sample tests
   and existing App HTTP-worker checks; no changes to App resolution, contracts or worker presence.
 
-- [ ] 4. Container delivery. Ship both binaries in the existing Dockerfile, preserving default server entrypoint.
+- [x] 4. Container delivery. Ship both binaries in the existing Dockerfile, preserving default server entrypoint.
   Add the isolated authenticated server/executor E2E class with health check disabled, no supplied database volume,
   inaccessible ambient store, CICADA_TOKEN and worker identity/counter assertions. Verify SIGTERM exit 0, existing
   server bootstrap, and failure cleanup including anonymous volumes/network. Run the targeted class through the

@@ -10,11 +10,11 @@ WORKDIR /src
 
 COPY . .
 # The registry and the target folder are build caches, so a source change rebuilds only what changed.
-# The binary is copied out of the cached target folder, which is not part of the image.
+# The binaries are copied out of the cached target folder, which is not part of the image.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release --locked -p cicada-sample-service \
- && cp target/release/cicada-sample-service /usr/local/bin/cicada-sample-service
+    cargo build --release --locked -p cicada-sample-service --bins \
+ && cp target/release/cicada-sample-service target/release/cicada-sample-executor /usr/local/bin/
 
 # ---- runtime: Debian slim ----
 FROM debian:bookworm-slim
@@ -27,7 +27,13 @@ RUN apt-get update \
  && useradd --uid 10001 --user-group --no-create-home cicada \
  && mkdir -p /data && chown cicada:cicada /data
 
-COPY --from=build /usr/local/bin/cicada-sample-service /usr/local/bin/cicada-sample-service
+# cicada-sample-executor is the sample without bootstrap (no singletons, no dead-letter watch), which also runs as an
+# HTTP worker. Override the entry point and turn the HTTP health check off, as the worker serves nothing:
+#   docker run --entrypoint /usr/local/bin/cicada-sample-executor --no-healthcheck -e CICADA_TOKEN=<token> \
+#     cicada-rs-sample worker --server http://<server>:8080 --types e2e.counter
+# An explicit --server wins over the CICADA_STORE below; API_TOKEN protects a served API, CICADA_TOKEN is the token the
+# worker sends.
+COPY --from=build /usr/local/bin/cicada-sample-service /usr/local/bin/cicada-sample-executor /usr/local/bin/
 USER cicada
 WORKDIR /data
 

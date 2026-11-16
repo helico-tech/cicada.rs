@@ -196,6 +196,8 @@ pub struct SingleNode {
     port: u16,
     env: Vec<(String, String)>,
     volume: Option<&'static str>,
+    network: Option<&'static str>,
+    args: Vec<String>,
     /// The node, reachable on the host.
     pub node: Node,
 }
@@ -211,7 +213,15 @@ impl SingleNode {
         token: Option<&str>,
     ) -> Self {
         let env = env.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect();
-        Self { name, port, env, volume, node: Node::new(name, port, true, token) }
+        Self { name, port, env, volume, network: None, args: Vec::new(), node: Node::new(name, port, true, token) }
+    }
+
+    /// This node on the docker network `network`, where other containers reach it by its name, with `args` after the
+    /// image's `serve` entry point.
+    pub fn on_network(mut self, network: &'static str, args: &[&str]) -> Self {
+        self.network = Some(network);
+        self.args = args.iter().map(|a| (*a).to_owned()).collect();
+        self
     }
 
     /// Removes an old container of this name and starts a new one.
@@ -222,10 +232,14 @@ impl SingleNode {
         if let Some(volume) = self.volume {
             args.extend(["-v".to_owned(), format!("{volume}:/data")]);
         }
+        if let Some(network) = self.network {
+            args.extend(["--network".to_owned(), network.to_owned()]);
+        }
         for (key, value) in &self.env {
             args.extend(["-e".to_owned(), format!("{key}={value}")]);
         }
         args.push(IMAGE.to_owned());
+        args.extend(self.args.iter().cloned());
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         docker(&args, Duration::from_secs(120), true).await.map(drop)
     }
