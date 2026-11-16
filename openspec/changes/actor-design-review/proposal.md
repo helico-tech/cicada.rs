@@ -20,12 +20,16 @@ interactive design skill, so it can use their knowledge, artifact forms and reso
   Keep the existing archive/plugin distribution and resolved-source discipline. Hand off mode-selection guidance
   to the docs session.
 
-To decide in the design:
+Decided under the owner's delegation (2026-11-16; Opus 5.5 reviews):
 
-- Whether review writes into the design-mode document or a separate report, and how it preserves an existing design.
-- The review's stages, user checkpoints and finding format, including priority and evidence locations.
-- How review distinguishes an intentional tradeoff from a defect when requirements or source evidence are missing.
-- Representative cases that demonstrate useful findings without prescribing one universal actor decomposition.
+- Save a separate docs/design/actors-review.md report by default, preserving the original design and user content.
+- Scope, reconstruct, check and report; an explicit review request authorizes those phases without design-mode
+  checkpoints. Ask focused questions when missing intent changes a conclusion and keep independent checks moving.
+- Ground findings in evidence and counterexample traces; separate unknowns, documented tradeoffs and supported
+  violations. Explain impact and the smallest useful correction without requiring one universal decomposition.
+- Track source snapshots, stale observations and stable finding ids across resumed reviews. Acceptance is not a fix.
+- Extend existing staged cases with test-only inputs, keeping the report skeleton inside SKILL.md so archive
+  membership, provenance and the installed sibling resolver remain unchanged.
 
 ## Out of scope
 
