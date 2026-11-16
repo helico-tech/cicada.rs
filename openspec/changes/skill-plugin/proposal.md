@@ -30,16 +30,17 @@ It authenticates with the consumer's own Git credentials (SSH key, or `gh auth s
 - **The install how-to** gets the plugin way first and keeps the archive way for other agents (docs handoff).
 - **An ADR extending ADR 0041**: a second way to ship the consumer skills, and what each way promises.
 
+Decided:
+
+- **Between releases (owner, 2026-11-16): the marketplace follows `main`.** A version bump makes Claude Code take
+  `main` as it is at that moment, which can hold documentation-only commits to `skills/` made after the tag. That is
+  accepted: the skill routes to the consumer's resolved Cicada source anyway. No pin to a tag, no release branch.
+- **The repository root is the plugin (owner, 2026-11-16).** The cache holds a copy of the whole repository (about
+  10 MB). A `commands/`, `agents/`, `hooks/` or `bin/` folder added at the top later would load as part of the
+  plugin; the design says how the checks catch that.
+
 To decide in the design:
 
-- **What a consumer gets between releases.** The marketplace follows `main`. A version bump makes Claude Code take
-  `main` as it is at that moment, which can hold documentation-only commits to `skills/` made after the tag. The
-  options: accept it (the skill routes to the consumer's resolved Cicada source anyway), tell consumers to add the
-  marketplace at a tag (`helico-tech/cicada.rs#v0.19.0`, which needs a re-add per release), or keep the marketplace
-  on a branch that the release moves.
-- **The repository root as the plugin.** The cache then holds a copy of the whole repository (about 10 MB) and loads
-  any `commands/`, `agents/`, `hooks/` or `bin/` folder added at the top later. A small `plugins/cicada/` folder with
-  a link to `skills/` avoids both, at the cost of a symlink.
 - **How SKILL.md names its own folder.** It now says `<this skill's folder>`, which any agent understands.
   `${CLAUDE_SKILL_DIR}` is exact in Claude Code but means nothing to other agents that read the archive.
 - **A check**: `claude plugin validate` in the gate, or a test of the two JSON files only.
