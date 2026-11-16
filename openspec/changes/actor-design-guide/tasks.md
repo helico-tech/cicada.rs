@@ -1,6 +1,6 @@
 # Tasks
 
-- [ ] 1. Session actor and producer protocol. Add `examples/src/websocket_session.rs` with the session ref/state,
+- [x] 1. Session actor and producer protocol. Add `examples/src/websocket_session.rs` with the session ref/state,
   messages and handler, plus a small producer with one pending request/result. Implement the design's frame/byte
   limits, exact sequence range, Accepted/Rejected replies, cumulative acks and unique stream-life key convention.
   Separate public submission errors for NUL from actor-level oversized-body refusal; preserve normal rollback if

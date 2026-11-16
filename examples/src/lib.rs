@@ -21,6 +21,7 @@
 //! | [`flow_approval`] | Example 17: a purchase flow that requests a person's approval and waits for the reply for at most a week, with no handler open, then expires; a sign-off that joins the approvals of several teams, with partial results at the deadline; and the first of several quotes. |
 //! | [`flow_resources`] | Example 18: a job that owns a sandbox; cancelled, its cleanup stops the sandbox, waits for the removal and releases the capacity by the reservation's key. |
 //! | [`heartbeat`] | Example 19: a nightly import that did not run; each file beats a heartbeat watch, which alerts once after 25 quiet hours. |
+//! | [`websocket_session`] | Example 20: a websocket session; a host follows the session's durable frames, writes them to its socket and forwards the client's acknowledgements, so any host can serve a reconnect. |
 //! | [`sync`] | The architecture's example: a paged import, one turn per page, rescheduled hourly. |
 //!
 //! Every example has the same shape: a public ref struct per actor type (its one field is the key), a
@@ -49,6 +50,7 @@ pub mod steps;
 pub mod supervision;
 pub mod sync;
 pub mod timer;
+pub mod websocket_session;
 
 /// The Rust code blocks of the README, compiled (and, unless `no_run`, run) by `cargo test -p cicada-examples --doc`.
 #[cfg(doctest)]
