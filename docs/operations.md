@@ -55,6 +55,14 @@ Keep liveness independent of the database, so an outage does not restart every n
 Embedded hosts stop the node inside axum’s shutdown future, then close the store or explicitly bound streams.
 See [HTTP lifecycle](guide/http.md#run-it-in-an-axum-service).
 
+For a host that owns child processes, close admission and stop and reap those children while the node, pump
+and store still run. Deliver their last observations, then stop the node, stop and join the pump, and close the
+store. The [pinned-process demo](../examples/examples/pinned_process.rs) uses `run_host` to follow that order even
+when its work returns an error. Its resource cleanup has a five-second budget; it names unconfirmed exits and
+undelivered observations and exits with a failure if cleanup is incomplete. Budget additional time for the node's
+stop and store close. Kill-on-drop is best effort: abrupt host death may leave an orphan. The demo's inert child
+exits when stdin closes; arbitrary programs need their own cleanup policy.
+
 `Store::close` has no deadline: PostgreSQL waits for borrowed connections; SQLite waits for its writer, but not reads.
 A host may time it out and call it again: the store stays closed and the next call resumes cleanup. Cancellation
 leaves no background cleanup task, so call close again or drop the last store handle. The
@@ -105,6 +113,7 @@ Stats scans rows under the prefix: avoid frequent unfiltered polling on large st
 | --- | --- | --- |
 | Every node unready, HTTP 503 | Store connectivity/pool | Restore the store; nodes retry automatically |
 | Mailbox grows | Hosted types, paused flag, pin, turn duration, concurrency | Resume or add eligible capacity; [check the pinned owner](#pinned-actors-that-wait) |
+| Process run shows `NeedsReconciliation` | Old host process, restart or another live host sharing the node id | [Check and clean up the outside process](#process-runs-needing-reconciliation), then explicitly replace the run if needed |
 | Every message fails as state | Stored shape versus decoder | Restore compatibility/defaults or migrate data |
 | `claim limit: N lost claims` | Node crashes, pauses, blocked handlers, uncertain commits | Fix cause, then retry selected messages |
 | Failed send at commit | Target exists, child-parent/control conflicts | Repair the target/configuration before retrying |
@@ -139,6 +148,20 @@ claims, failures or automatic reassignment. Start the owner with its original id
 To change a pin, first plan for the actor's state and pending work: delete and recreate is a new life, and deletion
 purges its mailbox and removes descendants. A repeated create cannot move it. Pause, purge, cancel and delete can
 still be issued through any node; their [destructive effects](#destructive-controls) are unchanged.
+
+### Process runs needing reconciliation
+
+Run exactly one [process host](../examples/src/pinned_process.rs) per stable node id. On restart, its fresh epoch
+marks old nonterminal runs `NeedsReconciliation`; a second live host with the same id can mark them too. The new
+host neither adopts a stored PID nor stops or restarts those runs. Check whether the old process still exists and
+verify or clean it up outside Cicada. Only then delete the actor with the ordinary delete; if work is still needed,
+explicitly create a replacement under a new, never-used key. No command or late observation clears the uncertain
+status, and nothing replaces the run automatically.
+
+For a run still owned by its original host, send `RunMsg::Stop` and see a terminal observed status before deleting
+it. Deleting the actor does not stop its child and proves no cleanup; the live host still owns the child and keeps
+its slot for the host's whole life, even after exit. [The design guide](guide/design.md#work-with-outside-systems)
+explains the host-lifetime limit.
 
 ### Destructive controls
 

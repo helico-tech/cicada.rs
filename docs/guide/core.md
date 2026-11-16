@@ -475,6 +475,7 @@ Each implementation has tests in [examples/tests](../../examples/tests/). Open t
 | Fan-out with children | [fanout.rs](../../examples/src/fanout.rs) |
 | Instance registry | [registry.rs](../../examples/src/registry.rs) |
 | Websocket session: a host follows durable output | [websocket_session.rs](../../examples/src/websocket_session.rs) |
+| Process run pinned to its node: host-held child, slots, reconciliation | [pinned_process.rs](../../examples/src/pinned_process.rs), [demo host](../../examples/examples/pinned_process.rs) |
 | Restart and redrive | [supervision.rs](../../examples/src/supervision.rs) |
 | Shared rate | [rate_limit.rs](../../examples/src/rate_limit.rs) |
 | Latest edit wins | [debounce.rs](../../examples/src/debounce.rs) |

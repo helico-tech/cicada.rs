@@ -226,6 +226,38 @@ machine-local resource, or host its type only there. A pin routes turns; it stor
 machine and fences no outside effect after a lost lease. Two executors using the same id can run it on different
 machines, one lease at a time.
 
+[Example 21](../../examples/src/pinned_process.rs) uses the first form for a local child process. One never-reused
+`Run` key names one run. `create_run` pins it to the host's stable node id; before touching a process, `RunActor`
+checks `turn.node_id()` and the stored host epoch against its `ProcessHost`. The actor keeps desired and observed
+state; the host keeps handles in at most 32 slots, including terminal tombstones, for its whole life. A slot is
+reserved before spawning and starts its child at most once. A replay after a lost commit finds that slot; a
+`Stop` before or during spawn stays sticky. A five-second wait ending in `Starting` means the outcome is unknown.
+
+The host's pump sends the latest observation as `RunMsg::Observed`, retrying an uncertain send with the same id for
+that run and revision. Only a newer revision from the run's epoch can change an unfinished observed status; it
+never changes desired intent. A natural exit, failed spawn or stop before start is terminal: another `Start` does
+not restart it. Terminal slots still use capacity; a full host refuses new slots without evicting evidence.
+
+Each host-process start has a fresh epoch, separate from its stable node id. Startup `reconcile` sends `Refresh`
+to the node's runs; old nonterminal runs become `NeedsReconciliation`. Neither later commands nor late observations
+clear that status. Nothing adopts, signals or respawns their processes. Repeat safety lasts only for one host
+process: an abrupt death may leave an orphan, and its successor cannot know whether a spawn happened. A saved PID
+is diagnostic, never a handle or proof of ownership. [Operations](../operations.md#process-runs-needing-reconciliation)
+covers cleanup and replacement.
+
+Try the [demo host](../../examples/examples/pinned_process.rs), which runs only its own inert child mode, without
+a shell or arbitrary commands:
+
+```sh
+cargo run -p cicada-examples --example pinned_process -- --db runs.db --node host-a --new-run first-run
+```
+
+It prints the run's changes until Ctrl-C, then reports cleanup. Use a new key for each run and exactly one live
+host per node id. The [virtual-time tests](../../examples/tests/pinned_process.rs) use a fake backend for lost commits,
+stop/spawn races, stale observations, delivery, deletion, restart and shutdown; the
+[OS check](../../examples/tests/pinned_process_os.rs) covers real spawn, exit, stop and reap on Linux/macOS. It does
+not establish cleanup after abrupt host death or exactly-once OS effects.
+
 The second form works with hosts on several nodes sharing the store; the [websocket session](#a-websocket-session)
 demonstrates it. Pinning that session fits badly when a connection can arrive at any host. For observation alone, a
 local task can send readings or `Beat` messages to an actor that runs anywhere.
@@ -245,6 +277,7 @@ coordinate several independently committed decisions. Each extra conversation ad
 | Timer | A deadline or later attempt | Recognizing an obsolete timeout | [Timer](../../examples/src/timer.rs) |
 | Supervision | A child should return to its configured first state | Restart discards its previous state | [Supervision](../../examples/src/supervision.rs) |
 | Outside service | A handler calls another system | Stable effect key and reconciliation | [Import](../../examples/src/sync.rs), [steps](../../examples/src/steps.rs) |
+| Turn uses a host-held handle | A resource exists on one machine | Placement, bounded handle slots and restart reconciliation | [Pinned process](../../examples/src/pinned_process.rs) |
 | Host follows state | A live handle can be held by any host | Periodic reads and reconnect logic | [Websocket session](../../examples/src/websocket_session.rs) |
 | Ready-made actor | A limiter, debouncer, batcher, scheduler or topic fits | Its particular contract and bounds | [Actors](actors.md) |
 
@@ -425,3 +458,7 @@ node --test examples/tests/websocket_session_client.test.mjs
 
 Use Node 26 or later; no npm packages are needed. These checks establish the example's application convention,
 not new Cicada delivery guarantees.
+
+The session needs no pin: a reconnect can build a new socket on any host sharing the store, following durable
+output. The [pinned process](../../examples/src/pinned_process.rs) instead keeps its child on one machine and routes
+turns to that host's handle. Choose by whether a new host can rebuild the resource from durable state.
