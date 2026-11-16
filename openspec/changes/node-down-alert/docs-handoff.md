@@ -126,17 +126,18 @@ fence turns. Node-down alerts change neither row retention nor make the table a 
 
 ## Blocking
 
-1. `cargo test -p cicada-examples --test skill`, `every_route_resolves_to_a_file_and_heading_of_this_source`:
-   `skills/cicada/SKILL.md:101: the route docs/guide/actors.md#node-down-alerts names an anchor that no heading has`.
-   File and block: `docs/guide/actors.md`, a new section `## Node-down alerts`. Proposed replacement: item 1 above.
-2. Same test file, `the_design_skill_routes_resolve_and_cover_the_design_guide`:
-   `skills/actor-design/SKILL.md:11` (its route table), the same missing anchor. Fixed by the same heading.
+Resolved. Both skill-route tests failed on the missing anchor `docs/guide/actors.md#node-down-alerts`
+(`every_route_resolves_to_a_file_and_heading_of_this_source`, `skills/cicada/SKILL.md:101`, and
+`the_design_skill_routes_resolve_and_cover_the_design_guide`, `skills/actor-design/SKILL.md`). The owner prepared
+`docs/guide/actors.md` in docs commit `7052813523e69d9c294c7b1ca3005f7c3600c4bb` (the roster row and the section
+`## Node-down alerts`, item 1); it is taken whole, byte for byte, into the commit that adds the skill routes.
 
 ## Status
 
-Checks run on this branch: `cargo test --workspace --no-fail-fast` with PostgreSQL (3108 passed, 2 failed: the two
-skill-route tests under Blocking), among them `cargo test -p cicada-actors` (node_down unit 7, integration 12, wire
-formats 22), `cargo test -p cicada-examples --test node_down` (4), `--test docs` (11) and `--doc` (33);
-`cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all --check` clean;
-`openspec validate node-down-alert --strict` valid. All prose above is proposed text; the owner has prepared nothing
-yet; no protected file was edited.
+Integrated: item 1, `docs/guide/actors.md` from `7052813523e69d9c294c7b1ca3005f7c3600c4bb`. Still proposed, not yet
+written: items 2 (operations), 3 (architecture and node-table wording), 4 and 5 (core guide); none of them blocks a
+check. After integration: `cargo test -p cicada-examples --doc` (34 passed), `--test docs` (11), `--test skill` (18),
+`--test node_down` (4), all passing. Before it: `cargo test --workspace --no-fail-fast` with PostgreSQL (3108 passed,
+2 failed: the two skill-route tests now resolved), `cargo test -p cicada-actors` (node_down unit 7, integration 12,
+wire formats 22), `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all --check` clean,
+`openspec validate node-down-alert --strict` valid.
