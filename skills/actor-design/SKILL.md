@@ -2,7 +2,7 @@
 name: actor-design
 description: Design a system with Cicada actors together with the user, one step at a time, before code is written. Use it when the user wants to work out which actors exist, what each owns and decides, their keys and lifecycles, the messages and replies between them, timeouts, failures and outside effects, or whether actors fit the problem at all. It interviews the user through concrete stories, writes each step's result with Mermaid diagrams into a design document in the repository (docs/design/actors.md by default), waits for confirmation before it moves on, and resumes from that document. It routes to the design guide of the Cicada source the project resolves. For writing, testing or running the code, use the cicada skill.
 metadata:
-  cicada-version: 0.19.2
+  cicada-version: 0.19.3
 ---
 
 # Actor design
@@ -51,6 +51,8 @@ sibling's manual path where you can read it, otherwise read `Cargo.lock` and the
 `version` and `source` of each Cicada crate, and the source only where it verifiably is (a `path` dependency's folder,
 a checkout Cargo reports). Never install the sibling, change dependencies, or fall back to Cicada's latest `main`, a
 newer release or a proposal. Generic exploration of the problem can go on; record the limitation in the document.
+While no source can be read, steps 1 and 2 can proceed; before step 3, tell the user which Cicada facts are unverified
+and let them choose to resolve the source first or continue with those facts recorded as open questions.
 
 ## Source routes
 
@@ -88,7 +90,9 @@ later session can resume it.
 - **Source and scope** records the resolved source (version, Cargo source, revision, the target and features examined),
   the skill versions, and what could not be verified. Never copy credentials, tokens or private URLs with secrets.
 - **Progress** records the current step, each step's status (`not started`, `draft`, `confirmed`, `delegated`,
-  `needs review`) and the next question.
+  `needs review`) and the next questions.
+- Create the document when the user has agreed to start a design and you write the first result; save every result
+  as soon as it is drafted.
 - If there is no writable repository, or the user does not want files written, show the same document in the chat and
   say that it was not saved. Never commit the document yourself.
 
@@ -107,23 +111,26 @@ says.
 - **Do not invent requirements.** A guess is written as a hypothesis or an open question and labelled so. An actor is
   added only for a rule that needs an owner over time.
 - **Step 1 asks whether actors fit.** A function, a table with a transaction or a read model may be simpler. Ending
-  with a design that uses no actors, or only a few, is a valid result; say why.
+  with a design that uses no actors, or only a few, is a valid result; say why. When the user confirms that no actors
+  are needed, the design ends there (section 6).
 - **End each step with its written result and an updated drawing**, saved as `draft`, and show them to the user.
 - **Wait for confirmation.** Move to the next step only after the user confirms this step's result, then mark it
   `confirmed`. Silence, a change of subject or a new question is not confirmation. Corrections are applied and shown
-  again.
+  again. Confirming a result accepts what it states; its labelled hypotheses and open questions stay open until the
+  user settles them, so say which remain.
 - **Delegation.** If the user explicitly lets you decide (all steps, some steps, or some kinds of choice), decide
   within that scope only, mark those results `delegated`, and write each choice with its reason and what stays
-  uncertain under Decisions. Never write `confirmed` for a delegated or drafted result. Delegation covers design
-  choices only, not implementation, commits or deployment.
+  uncertain under Decisions. Steps outside the scope keep the default: draft, show, wait. When the scope is unclear,
+  ask. Never write `confirmed` for a delegated or drafted result. Delegation covers design choices only, not
+  implementation, commits or deployment.
 - **Go back when needed.** The user may return to an earlier step at any time (section 5).
 
 ## 4. Drawings
 
 Draw in Mermaid inside the document. A drawing shows what the steps so far have established, and no more.
 
-- **Steps 1 and 2:** a context or timeline drawing of the domain: people, systems, facts and unknowns. It does not
-  assert actor boundaries yet.
+- **Steps 1 and 2:** a context drawing (step 1) and a timeline (step 2) of the domain: people, systems, facts and
+  unknowns. They do not assert actor boundaries yet.
 - **From step 3 on:** an actor map once owners emerge: actors, the messages between them (named as in the user's
   words), watches and parent/child relations as distinct kinds of line, outside systems, and the host where one holds
   a live handle.
@@ -138,13 +145,15 @@ Draw in Mermaid inside the document. A drawing shows what the steps so far have 
 - **Resume.** Read the document first. Run the resolver again and compare the source with Source and scope; say when
   it changed. Continue at the recorded step and next question; do not restart the interview, and do not mark a draft
   confirmed because it was saved.
-- **Revise.** When a requirement changes an earlier result, update that step and mark the later steps it affects
-  `needs review`, keeping their text and the decisions it does not affect. Review those steps with the user in order.
+- **Revise.** When a requirement changes an earlier result, update that step and set it back to `draft` until the
+  user confirms it again. Mark the later steps it affects `needs review`, keeping their text and the decisions it does
+  not affect. Review those steps with the user in order.
 - Update only the sections that changed.
 
 ## 6. Finish
 
-The design is finished when step 9 is confirmed (or delegated). End with: the design and where it is saved, the
+The design is finished when step 9 is confirmed (or delegated), or when the user confirms in step 1 that no actors are
+needed; then record that under Decisions and leave the later steps `not started`. End with: the design and where it is saved, the
 source it rests on and what was not verified, the open assumptions, and the next actions, such as building it with the
 `cicada` skill. Do not start that work unless the user asks.
 

@@ -7,6 +7,32 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.19.3 — unreleased
+
+A second consumer skill, `actor-design` (ADR 0051), that works out an actor design with the user step by step and
+saves it with Mermaid diagrams, shipped beside `cicada` in the plugin and the release archive. Library APIs, wire
+formats, contract hashes, store schema and guarantees are those of 0.19.2.
+
+### Added
+
+- `skills/actor-design/SKILL.md` and `assets/design-template.md`: a method for designing a consumer system with
+  actors. It follows the nine steps of the resolved source's design guide, asks at most three questions at a time from
+  concrete stories, shows each step's written result and drawing and waits for the user's confirmation before the
+  next step, unless the user explicitly delegates choices, which it records with their reasons. It saves the design
+  in `docs/design/actors.md` of the consumer's repository by default (a path the user or the repository names wins),
+  never overwrites another design, and resumes from the saved Progress. It uses the sibling skill's resolver and
+  routes to the design guide of the resolved source, falling back to an older source's core design section; it never
+  implements, commits or deploys. In the plugin it is `/cicada:actor-design`.
+- The release archive `cicada-skill-vX.Y.Z.tar.gz` holds both skill folders, `cicada/` and `actor-design/`, each with
+  the same `SOURCE.json` (format 2). A tag's `scripts/skill-archive-format` selects the format; a tag without it and
+  without `skills/actor-design` still packages the single-skill layout, byte for byte as before.
+
+### Changed
+
+- The `cicada` skill names `actor-design` for design work and keeps building, testing and operating.
+- `scripts/release-check.sh` requires format 2 and the version of `skills/actor-design/SKILL.md`; `gate.py release`
+  takes the archive layout from the pinned commit and checks every `SOURCE.json` and every packaged file against it.
+
 ## 0.19.2 — 2026-11-16
 
 A guide to designing with actors (ADR 0050), `docs/guide/design.md`, and its worked example: a websocket session whose

@@ -15,7 +15,7 @@
 
 Current step: 1. The promise
 
-Next question: <the next question to ask the user>
+Next questions: <the next questions to ask the user, at most three>
 
 | Step | Status |
 | --- | --- |
@@ -38,6 +38,12 @@ Status is one of: not started, draft, confirmed, delegated, needs review.
 <A short contract: success, refusal, cancellation, unknown. What must never happen. Which effects cannot be undone.
 Whether a design without actors would do, and why or why not.>
 
+```mermaid
+flowchart LR
+    U[Person] -->|asks for| S{{The system}}
+    S -.->|unknown yet| Q{{Open question}}
+```
+
 ## 2. Who and what
 
 <A timeline of the domain: the facts, what causes each, who acts independently, and which facts are authoritative,
@@ -45,8 +51,8 @@ derived or suspected.>
 
 ```mermaid
 flowchart LR
-    U[User] -->|starts| X[Something happens]
-    X -.->|unknown yet| Q{{Open question}}
+    F1[First fact] --> F2[Next fact]
+    F2 -.->|goes wrong| F3{{Unknown outcome}}
 ```
 
 ## 3. Who owns each rule
