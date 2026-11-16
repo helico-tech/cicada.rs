@@ -671,7 +671,7 @@ fn outcome(row: &PgRow) -> Result<OutcomeRecord, TxError> {
 /// The columns of an actor snapshot, which [`actor_record`] decodes.
 macro_rules! actor_columns {
     () => {
-        "address, type, state, version, created_at, paused, parent"
+        "address, type, state, version, created_at, paused, parent, pinned_to"
     };
 }
 
@@ -683,6 +683,7 @@ fn actor_record(row: &PgRow) -> Result<ActorRecord, TxError> {
         created_at: row.try_get("created_at")?,
         paused: row.try_get("paused")?,
         parent: row.try_get::<Option<String>, _>("parent")?.map(address).transpose()?,
+        pinned_to: row.try_get::<Option<String>, _>("pinned_to")?.map(node_id).transpose()?,
     })
 }
 
@@ -778,7 +779,12 @@ async fn lock_actor(tx: &mut Tx, addr: &str) -> Result<Option<String>, TxError> 
         .await?)
 }
 
-async fn create_in(tx: &mut Tx, address: &ActorAddress, state: &Value) -> Result<CreateResult, TxError> {
+async fn create_in(
+    tx: &mut Tx,
+    address: &ActorAddress,
+    state: &Value,
+    pinned_to: Option<&NodeId>,
+) -> Result<CreateResult, TxError> {
     // Holds the type's registration in place until this transaction ends, so that `remove_type` either sees the new
     // instance or runs before this create (then the registration is gone and this create is refused).
     let registered: Option<i32> = sqlx::query_scalar("SELECT 1 FROM actor_types WHERE name = $1 FOR SHARE")
@@ -791,11 +797,13 @@ async fn create_in(tx: &mut Tx, address: &ActorAddress, state: &Value) -> Result
     loop {
         let now = tx.now().await?;
         let inserted = sqlx::query(
-            "INSERT INTO actors (address, type, state, created_at) VALUES ($1, $2, $3, $4) ON CONFLICT (address) DO NOTHING",
+            "INSERT INTO actors (address, type, state, pinned_to, created_at) VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (address) DO NOTHING",
         )
         .bind(address.as_str())
         .bind(address.type_name().as_str())
         .bind(state)
+        .bind(pinned_to.map(NodeId::as_str))
         .bind(now)
         .execute(&mut *tx.c)
         .await?;
@@ -821,13 +829,14 @@ async fn create_and_lock(
 ) -> Result<(String, Option<String>, bool), TxError> {
     loop {
         let inserted = sqlx::query(
-            "INSERT INTO actors (address, type, state, parent, created_at) VALUES ($1, $2, $3, $4, clock_timestamp()) \
-             ON CONFLICT (address) DO NOTHING",
+            "INSERT INTO actors (address, type, state, parent, pinned_to, created_at) \
+             VALUES ($1, $2, $3, $4, $5, clock_timestamp()) ON CONFLICT (address) DO NOTHING",
         )
         .bind(create.address.as_str())
         .bind(create.address.type_name().as_str())
         .bind(&create.state)
         .bind(parent)
+        .bind(create.pinned_to.as_ref().map(NodeId::as_str))
         .execute(&mut *tx.c)
         .await?
         .rows_affected()
@@ -1318,8 +1327,16 @@ impl Backend for PostgresStore {
         })
     }
 
-    async fn create(&self, address: &ActorAddress, state: Value) -> StoreResult<CreateResult> {
-        transaction!(self, false, |tx| -> CreateResult { commit(create_in(tx, address, &state).await?) })
+    async fn create(
+        &self,
+        address: &ActorAddress,
+        state: Value,
+        pinned_to: Option<&NodeId>,
+    ) -> StoreResult<CreateResult> {
+        if let Some(pin) = pinned_to {
+            support::check_pin(pin)?;
+        }
+        transaction!(self, false, |tx| -> CreateResult { commit(create_in(tx, address, &state, pinned_to).await?) })
     }
 
     async fn get(&self, address: &ActorAddress) -> StoreResult<Option<ActorRecord>> {
@@ -1490,6 +1507,7 @@ impl Backend for PostgresStore {
                 "SELECT address, type, state, version, CASE WHEN lease_owner IS NOT NULL THEN lease_message END AS lost
                  FROM actors
                  WHERE next_due_at <= $1 AND NOT paused AND type = ANY ($2)
+                   AND (pinned_to IS NULL OR pinned_to = $4)
                    AND (lease_owner IS NULL OR lease_until <= $1)
                  ORDER BY next_due_at
                  LIMIT $3
@@ -1498,6 +1516,7 @@ impl Backend for PostgresStore {
             .bind(now)
             .bind(&names)
             .bind(limit as i64)
+            .bind(node.as_str())
             .fetch_all(&mut *tx.c)
             .await?;
             let lease_until = time::truncate(time::add(now, ttl).map_err(|e| invalid(e.0))?);
@@ -1601,7 +1620,7 @@ impl Backend for PostgresStore {
         })
     }
 
-    async fn next_due_at(&self, types: &BTreeSet<TypeName>) -> StoreResult<Option<Timestamp>> {
+    async fn next_due_at(&self, types: &BTreeSet<TypeName>, owner: &NodeId) -> StoreResult<Option<Timestamp>> {
         if types.is_empty() {
             return Ok(None);
         }
@@ -1611,10 +1630,12 @@ impl Backend for PostgresStore {
             let at: Option<Timestamp> = sqlx::query_scalar(
                 "SELECT min(CASE WHEN lease_owner IS NOT NULL AND lease_until > $1 THEN greatest(next_due_at, lease_until)
                                  ELSE next_due_at END)
-                 FROM actors WHERE next_due_at IS NOT NULL AND NOT paused AND type = ANY ($2)",
+                 FROM actors WHERE next_due_at IS NOT NULL AND NOT paused AND type = ANY ($2)
+                   AND (pinned_to IS NULL OR pinned_to = $3)",
             )
             .bind(now)
             .bind(&names)
+            .bind(owner.as_str())
             .fetch_one(&mut *tx.c)
             .await?;
             commit(at)
@@ -2361,13 +2382,14 @@ impl Backend for PostgresStore {
                 sqlx::query(
                     "UPDATE actors SET state = $2, version = 0, epoch = 0, lease_owner = NULL, lease_until = NULL,
                          lease_message = NULL, cancel_epoch = NULL, paused = false, next_due_at = NULL, parent = $3,
-                         created_at = $4
+                         created_at = $4, pinned_to = $5
                      WHERE address = $1",
                 )
                 .bind(at)
                 .bind(&create.state)
                 .bind(create.child.then_some(r.address.as_str()))
                 .bind(now)
+                .bind(create.pinned_to.as_ref().map(NodeId::as_str))
                 .execute(&mut *tx.c)
                 .await?;
             }

@@ -492,6 +492,9 @@ pub struct ActorRecord {
     /// The actor whose turn created this one as a child, or `None` for an independent actor. It never changes, and
     /// removing the parent removes this actor too.
     pub parent: Option<ActorAddress>,
+    /// The only claim owner (node or worker id) that may run this actor's turns, or `None` when any owner of a host of
+    /// its type may (ADR 0052). Chosen at creation, it never changes for this life of the actor.
+    pub pinned_to: Option<NodeId>,
 }
 
 /// What [`ActorSystem::stats`](crate::ActorSystem::stats) counts under an address prefix.
@@ -571,6 +574,9 @@ pub struct ActorCreate {
     pub state: Value,
     /// True for a child of the committing instance (`Turn::create_child`), false for an independent instance.
     pub child: bool,
+    /// The claim owner the new instance is pinned to, or `None` for none ([`CreateOptions`](crate::CreateOptions)).
+    /// An instance that exists already keeps its own.
+    pub pinned_to: Option<NodeId>,
 }
 
 /// What a control effect does to its target (ADR 0024): what the same call from outside a turn does.

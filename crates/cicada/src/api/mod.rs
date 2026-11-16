@@ -49,6 +49,12 @@ pub struct CreateActorRequest {
     /// Initial state; never null. A type that keeps no data takes `{}`. It must match the state schema of the type
     /// (`GET /types/{name}`), or the create is refused with `422 invalid-state`.
     pub state: Value,
+    /// Optional claim owner (node or worker id) the new instance is pinned to (ADR 0052): only that owner may run its
+    /// turns. At most 200 characters, no NUL; absent or null for none, and left out when none. An instance that exists
+    /// already keeps its own pin: read it with `GET /actors/{type}/{key}`.
+    #[schemars(length(max = 200))]
+    #[serde(rename = "pinnedTo", default, skip_serializing_if = "Option::is_none")]
+    pub pinned_to: Option<NodeId>,
 }
 
 /// Response of `PUT /actors/{type}/{key}`: `201` when [`Self::created`], `200` when the instance already existed (unchanged).
@@ -84,6 +90,11 @@ pub struct ActorView {
     /// parent removes this actor too.
     #[serde(default)]
     pub parent: Option<ActorAddress>,
+    /// The only claim owner (node or worker id) that may run its turns (ADR 0052); null when any may. Its messages wait
+    /// while no executor with that id polls its type.
+    #[schemars(length(max = 200))]
+    #[serde(default)]
+    pub pinned_to: Option<NodeId>,
 }
 
 /// One page of a listing (`GET /actors`, `GET /actors/{type}/{key}/children`, `GET /actors/{type}/{key}/mailbox`,

@@ -38,11 +38,11 @@ fn control(effect: ControlEffect, actor: &ActorAddress) -> Control {
 }
 
 fn child(address: &ActorAddress) -> ActorCreate {
-    ActorCreate { address: address.clone(), state: json!({}), child: true }
+    ActorCreate { address: address.clone(), state: json!({}), child: true, pinned_to: None }
 }
 
 fn independent(address: &ActorAddress, state: serde_json::Value) -> ActorCreate {
-    ActorCreate { address: address.clone(), state, child: false }
+    ActorCreate { address: address.clone(), state, child: false, pinned_to: None }
 }
 
 fn to(address: &ActorAddress) -> OutgoingMessage {
@@ -85,7 +85,7 @@ async fn turn_of<F: StoreFixture>(t: &Env<F>, actor: &ActorAddress) -> crate::st
 
 /// Creates `address` from outside and takes its hint.
 async fn create_seen<F: StoreFixture>(t: &Env<F>, changes: &mut ActorChanges, address: &ActorAddress) {
-    assert_eq!(t.store().create(address, json!({})).await.unwrap(), CreateResult::Created);
+    assert_eq!(t.store().create(address, json!({}), None).await.unwrap(), CreateResult::Created);
     assert_eq!(next(changes).await, Some(changed(address)));
 }
 
@@ -98,10 +98,10 @@ pub async fn changes_creates_pauses_resumes_and_deletes_from_outside_are_reporte
         let mut changes = subscribe(t).await;
         let store = t.store();
         let a = at("a");
-        assert_eq!(store.create(&a, json!({"n": 1})).await.unwrap(), CreateResult::Created);
+        assert_eq!(store.create(&a, json!({"n": 1}), None).await.unwrap(), CreateResult::Created);
         assert_eq!(next(&mut changes).await, Some(changed(&a)));
         assert_eq!(store.get(&a).await.unwrap().expect("committed before the hint").state, json!({"n": 1}));
-        assert!(matches!(store.create(&a, json!({"n": 2})).await.unwrap(), CreateResult::Exists(_)));
+        assert!(matches!(store.create(&a, json!({"n": 2}), None).await.unwrap(), CreateResult::Exists(_)));
         assert!(store.set_paused(&a, true).await.unwrap());
         assert_eq!(next(&mut changes).await, Some(changed(&a)));
         assert!(store.get(&a).await.unwrap().unwrap().paused);
@@ -141,7 +141,7 @@ pub async fn changes_a_turn_reports_its_new_state_even_an_equal_one_its_creates_
         let store = t.store();
         let a = at("t");
         let free = other("free");
-        assert_eq!(store.create(&a, json!({"n": 1})).await.unwrap(), CreateResult::Created);
+        assert_eq!(store.create(&a, json!({"n": 1}), None).await.unwrap(), CreateResult::Created);
         assert_eq!(next(&mut changes).await, Some(changed(&a)));
 
         // The same state, a child, an independent actor and a send to the child: three addresses, once each.

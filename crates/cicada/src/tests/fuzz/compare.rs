@@ -156,8 +156,8 @@ pub struct Commit {
     pub end: End,
     /// What happens to the state.
     pub state: StateOp,
-    /// Instances to create, as `(address, state, child)`.
-    pub creates: Vec<(usize, usize, bool)>,
+    /// Instances to create, as `(address, state, child, pin)`; the pin into [`NODES`].
+    pub creates: Vec<(usize, usize, bool, Option<usize>)>,
     /// Messages to send.
     pub sends: Vec<Send>,
     /// Messages to cancel, counted back from the latest message sent.
@@ -166,8 +166,9 @@ pub struct Commit {
     pub watches: Vec<(usize, bool)>,
     /// Control effects, as `(effect, address)`; the address into [`ADDRESSES`].
     pub controls: Vec<(ControlEffect, usize)>,
-    /// A restart, as `(address, state, child)`: a delete of the address and a create of it, as a supervisor writes it.
-    pub restart: Option<(usize, usize, bool)>,
+    /// A restart, as `(address, state, child, pin)`: a delete of the address and a create of it, as a supervisor writes
+    /// it.
+    pub restart: Option<(usize, usize, bool, Option<usize>)>,
 }
 
 /// One operation of a list. Indexes pick from the small pools above, so a shrunk list stays valid.
@@ -188,6 +189,7 @@ pub enum Op {
     Create {
         to: usize,
         state: usize,
+        pin: Option<usize>,
     },
     Get {
         to: usize,
@@ -234,6 +236,7 @@ pub enum Op {
     },
     NextDueAt {
         types: Vec<usize>,
+        node: usize,
     },
     Pending {
         to: usize,
@@ -469,9 +472,15 @@ fn send() -> BoxedStrategy<Send> {
         .boxed()
 }
 
-/// A create of a commit, as `(address, state, child)`: as often a child create as an independent one.
-fn create() -> impl Strategy<Value = (usize, usize, bool)> {
-    (address(), states(), any::<bool>())
+/// A create of a commit, as `(address, state, child, pin)`: as often a child create as an independent one, and
+/// sometimes pinned to a node of [`NODES`] (ADR 0052).
+fn create() -> impl Strategy<Value = (usize, usize, bool, Option<usize>)> {
+    (address(), states(), any::<bool>(), pin())
+}
+
+/// A pin into [`NODES`], or none, mostly.
+fn pin() -> impl Strategy<Value = Option<usize>> {
+    prop::option::weighted(0.15, 0..NODES.len())
 }
 
 /// A control effect of a commit, as `(effect, address)`; deletes as often as the other three together.
@@ -546,7 +555,7 @@ pub fn op() -> BoxedStrategy<Op> {
         1 => (0..TYPES.len(), 0u8..2).prop_map(|(ty, variant)| Op::Register { ty, variant }),
         1 => (0..TYPES.len()).prop_map(|ty| Op::RemoveType { ty }),
         1 => Just(Op::ListTypes),
-        3 => (address(), states()).prop_map(|(to, state)| Op::Create { to, state }),
+        3 => (address(), states(), pin()).prop_map(|(to, state, pin)| Op::Create { to, state, pin }),
         2 => address().prop_map(|to| Op::Get { to }),
         2 => (prefix(), limit()).prop_map(|(prefix, limit)| Op::List { prefix, limit }),
         2 => (address(), limit()).prop_map(|(to, limit)| Op::Children { to, limit }),
@@ -561,7 +570,7 @@ pub fn op() -> BoxedStrategy<Op> {
         3 => (recent(), epoch_delta(), ttl())
             .prop_map(|(claim, epoch_delta, ttl)| Op::Renew { claim, epoch_delta, ttl }),
         2 => (recent(), epoch_delta()).prop_map(|(claim, epoch_delta)| Op::Release { claim, epoch_delta }),
-        1 => type_set().prop_map(|types| Op::NextDueAt { types }),
+        1 => (type_set(), 0..NODES.len()).prop_map(|(types, node)| Op::NextDueAt { types, node }),
         2 => (address(), limit()).prop_map(|(to, limit)| Op::Pending { to, limit }),
         2 => (prefix(), limit()).prop_map(|(prefix, limit)| Op::ListPending { prefix, limit }),
         2 => recent().prop_map(|id| Op::DeliverNow { id }),
@@ -880,6 +889,7 @@ impl Side {
             "createdAt": instant(r.created_at),
             "paused": r.paused,
             "parent": r.parent.as_ref().map(|p| p.as_str().to_owned()),
+            "pinnedTo": r.pinned_to.as_ref().map(|p| p.as_str().to_owned()),
         })
     }
 
@@ -1013,11 +1023,14 @@ impl Side {
             Op::ListTypes => answer(store.list_types().await, |types| {
                 Value::from(types.iter().map(Self::type_def).collect::<Vec<_>>())
             }),
-            Op::Create { to, state } => answer(store.create(&address_at(*to), STATES[*state]()).await, |r| match r {
-                CreateResult::Created => json!("created"),
-                CreateResult::Exists(record) => json!({"exists": Self::record(&record)}),
-                CreateResult::NoSuchType => json!("no-such-type"),
-            }),
+            Op::Create { to, state, pin } => {
+                let pin = pin.map(node_at);
+                answer(store.create(&address_at(*to), STATES[*state](), pin.as_ref()).await, |r| match r {
+                    CreateResult::Created => json!("created"),
+                    CreateResult::Exists(record) => json!({"exists": Self::record(&record)}),
+                    CreateResult::NoSuchType => json!("no-such-type"),
+                })
+            }
             Op::Get { to } => answer(store.get(&address_at(*to)).await, |r| match r {
                 Some(record) => Self::record(&record),
                 None => Value::Null,
@@ -1100,7 +1113,9 @@ impl Side {
                     released
                 }
             },
-            Op::NextDueAt { types } => answer(store.next_due_at(&types_of(types)).await, opt_instant),
+            Op::NextDueAt { types, node } => {
+                answer(store.next_due_at(&types_of(types), &node_at(*node)).await, opt_instant)
+            }
             Op::Pending { to, limit } => {
                 let store_ref = store;
                 let target = address_at(*to);
@@ -1215,7 +1230,7 @@ impl Side {
         let restart = commit.restart.iter();
         let mut controls: Vec<Control> = restart
             .clone()
-            .map(|(to, _, _)| Control { effect: ControlEffect::Delete, actor: address_at(*to) })
+            .map(|(to, _, _, _)| Control { effect: ControlEffect::Delete, actor: address_at(*to) })
             .collect();
         controls.extend(commit.controls.iter().map(|(effect, to)| Control { effect: *effect, actor: address_at(*to) }));
         let request = CommitRequest {
@@ -1234,10 +1249,11 @@ impl Side {
                 .creates
                 .iter()
                 .chain(restart)
-                .map(|(to, state, child)| ActorCreate {
+                .map(|(to, state, child, pin)| ActorCreate {
                     address: address_at(*to),
                     state: STATES[*state](),
                     child: *child,
+                    pinned_to: pin.map(node_at),
                 })
                 .collect(),
             sends,
@@ -1277,7 +1293,7 @@ impl Side {
             ("pending", Op::ListPending { prefix: 0, limit: 2 }),
             ("outcomes", Op::Outcomes { status: None, prefix: 0, since_back: None, limit: 2 }),
             ("stats", Op::Stats { prefix: 0 }),
-            ("nextDue", Op::NextDueAt { types: vec![0, 1, 2] }),
+            ("nextDue", Op::NextDueAt { types: vec![0, 1, 2], node: 0 }),
             ("running", Op::RunningTurns { node: None, prefix: 0, limit: 2 }),
             ("watches", Op::Watches { watcher: None, target: None, limit: 2 }),
         ];
@@ -1391,7 +1407,7 @@ impl Pair {
                     wrong_message: None,
                     end: End::Done,
                     state: StateOp::Unchanged,
-                    creates: vec![(child, 0, true)],
+                    creates: vec![(child, 0, true, Some(0))],
                     sends: Vec::new(),
                     cancels: Vec::new(),
                     watches: Vec::new(),
@@ -1403,11 +1419,11 @@ impl Pair {
         let setup = [
             Op::Register { ty: 0, variant: 0 },
             Op::Register { ty: 1, variant: 0 },
-            Op::Create { to: 0, state: 1 },
-            Op::Create { to: 1, state: 0 },
-            Op::Create { to: 2, state: 1 },
-            Op::Create { to: 3, state: 1 },
-            Op::Create { to: 4, state: 2 },
+            Op::Create { to: 0, state: 1, pin: None },
+            Op::Create { to: 1, state: 0, pin: None },
+            Op::Create { to: 2, state: 1, pin: None },
+            Op::Create { to: 3, state: 1, pin: None },
+            Op::Create { to: 4, state: 2, pin: None },
         ]
         .into_iter()
         .chain(child_create(4, 6, IDS - 2))

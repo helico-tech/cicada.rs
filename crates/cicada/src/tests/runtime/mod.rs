@@ -16,6 +16,7 @@ mod observer;
 mod operations;
 mod operator;
 mod overrun;
+mod placement;
 mod remote_claim_limit;
 mod remote_completion;
 mod remote_lease;

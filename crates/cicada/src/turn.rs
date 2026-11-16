@@ -20,7 +20,9 @@ use crate::runtime::effects::EffectBuffer;
 use crate::runtime::executor::HostedTypes;
 use crate::runtime::limits;
 use crate::runtime::resolver::TypeResolver;
-use crate::store::{ActorCreate, Control, ControlEffect, Delivery, Message, MessageId, OutgoingMessage, StoreError};
+use crate::store::{
+    ActorCreate, Control, ControlEffect, Delivery, Message, MessageId, NodeId, OutgoingMessage, StoreError,
+};
 use crate::time::{self, Timestamp};
 use crate::watch::{FailureCause, IntoWatchTarget, WatchChange};
 
@@ -258,6 +260,42 @@ impl SendOptions {
     }
 }
 
+/// Options of a create (ADR 0052): where the new actor may run.
+///
+/// ```
+/// use cicada::CreateOptions;
+/// use cicada::store::NodeId;
+///
+/// let options = CreateOptions::new().pinned_to(NodeId::new("host-a").unwrap());
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CreateOptions {
+    /// The only claim owner, a node's [`NodeConfig::node_id`](crate::runtime::NodeConfig::node_id) or a worker's
+    /// [`WorkerConfig::worker_id`](crate::runtime::WorkerConfig::worker_id), that may run the new actor's turns; any
+    /// owner when `None`, the default. At most 200 characters and no NUL. The id need not belong to a running or known
+    /// node: the actor's messages wait until an owner with that id polls its type. It is not inherited by children, and
+    /// an actor that exists already keeps its own.
+    pub pinned_to: Option<NodeId>,
+}
+
+impl CreateOptions {
+    /// Default options: not pinned.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Pins the new actor to the claim owner `owner`.
+    pub fn pinned_to(mut self, owner: NodeId) -> Self {
+        self.pinned_to = Some(owner);
+        self
+    }
+
+    /// Checks the bounds of the pin, naming the problem.
+    pub(crate) fn check(&self) -> Result<(), String> {
+        self.pinned_to.as_ref().map_or(Ok(()), limits::check_pin)
+    }
+}
+
 /// Checks a delivery's bounds when a send is called.
 pub(crate) fn check_delivery(delivery: &Delivery) -> Result<(), TurnError> {
     match *delivery {
@@ -280,6 +318,8 @@ pub(crate) struct TurnInfo {
     pub(crate) claim_sent: Instant,
     /// The types the node hosts: a create by address checks its address and state against them.
     pub(crate) hosted: HostedTypes,
+    /// The claim owner that runs the turn: the node's id, or the worker's.
+    pub(crate) node_id: NodeId,
 }
 
 impl TurnInfo {
@@ -368,6 +408,13 @@ impl<A: Actor> Turn<A> {
         self.info.current_time()
     }
 
+    /// The claim owner running this turn: the [`NodeConfig::node_id`](crate::runtime::NodeConfig::node_id) of a node,
+    /// or the [`WorkerConfig::worker_id`](crate::runtime::WorkerConfig::worker_id) of a worker, never the id of the
+    /// server a worker leases through. Pass it to [`CreateOptions::pinned_to`] to pin a new actor to this executor.
+    pub fn node_id(&self) -> &NodeId {
+        &self.info.node_id
+    }
+
     /// Buffers `msg` for `to`, due now. The compiler checks that `to` accepts `msg`; the recipient must exist at
     /// commit, or the whole turn fails. Returns the new message's id.
     pub fn send<R: ActorRef>(&mut self, to: &R, msg: impl Into<R::Message>) -> Result<MessageId, TurnError> {
@@ -435,7 +482,19 @@ impl<A: Actor> Turn<A> {
     /// [`TurnError::Invalid`]; a type that keeps no data is created with [`crate::NoState`]. Fails with
     /// [`TurnError::Invalid`] too when this turn creates `r` with [`Self::create_child`] already.
     pub fn create<R: ActorRef, S: Serialize + ?Sized>(&mut self, r: &R, initial_state: &S) -> Result<(), TurnError> {
-        self.buffer_create(r, initial_state, false)
+        self.create_with(r, initial_state, CreateOptions::default())
+    }
+
+    /// [`Self::create`] with `options`, such as a pin. A pin beyond its bounds fails with [`TurnError::Invalid`]
+    /// before anything is buffered, and so does a create of `r` that this turn buffered already with another pin (or
+    /// none): the creates of one address in one turn must agree.
+    pub fn create_with<R: ActorRef, S: Serialize + ?Sized>(
+        &mut self,
+        r: &R,
+        initial_state: &S,
+        options: CreateOptions,
+    ) -> Result<(), TurnError> {
+        self.buffer_create(r, initial_state, false, options)
     }
 
     /// Buffers an idempotent create of `r` with `initial_state`, as a child of this instance: its parent is this
@@ -452,7 +511,18 @@ impl<A: Actor> Turn<A> {
         r: &R,
         initial_state: &S,
     ) -> Result<(), TurnError> {
-        self.buffer_create(r, initial_state, true)
+        self.create_child_with(r, initial_state, CreateOptions::default())
+    }
+
+    /// [`Self::create_child`] with `options`, checked as [`Self::create_with`] checks them. A child is not pinned
+    /// because its parent is: pin it to this turn's executor with `CreateOptions::new().pinned_to(turn.node_id().clone())`.
+    pub fn create_child_with<R: ActorRef, S: Serialize + ?Sized>(
+        &mut self,
+        r: &R,
+        initial_state: &S,
+        options: CreateOptions,
+    ) -> Result<(), TurnError> {
+        self.buffer_create(r, initial_state, true, options)
     }
 
     /// Buffers an idempotent create of the actor at `address` with the state `initial_state`, given as JSON, as an
@@ -467,16 +537,43 @@ impl<A: Actor> Turn<A> {
     /// node that does not host the type cannot check either: an actor created with an address or a state its type
     /// cannot read fails every message with the cause `state`.
     pub async fn create_raw(&mut self, address: &ActorAddress, initial_state: Value) -> Result<(), TurnError> {
-        self.buffer_create_raw(address, initial_state, false).await
+        self.create_raw_with(address, initial_state, CreateOptions::default()).await
+    }
+
+    /// [`Self::create_raw`] with `options`, checked as [`Self::create_with`] checks them.
+    pub async fn create_raw_with(
+        &mut self,
+        address: &ActorAddress,
+        initial_state: Value,
+        options: CreateOptions,
+    ) -> Result<(), TurnError> {
+        self.buffer_create_raw(address, initial_state, false, options).await
     }
 
     /// [`Self::create_raw`] as a child of this instance: [`Self::create_child`] for an address and a state given as
     /// JSON. An actor that exists with another parent, or with none, rejects the commit.
     pub async fn create_child_raw(&mut self, address: &ActorAddress, initial_state: Value) -> Result<(), TurnError> {
-        self.buffer_create_raw(address, initial_state, true).await
+        self.create_child_raw_with(address, initial_state, CreateOptions::default()).await
     }
 
-    async fn buffer_create_raw(&mut self, address: &ActorAddress, state: Value, child: bool) -> Result<(), TurnError> {
+    /// [`Self::create_child_raw`] with `options`, checked as [`Self::create_with`] checks them.
+    pub async fn create_child_raw_with(
+        &mut self,
+        address: &ActorAddress,
+        initial_state: Value,
+        options: CreateOptions,
+    ) -> Result<(), TurnError> {
+        self.buffer_create_raw(address, initial_state, true, options).await
+    }
+
+    async fn buffer_create_raw(
+        &mut self,
+        address: &ActorAddress,
+        state: Value,
+        child: bool,
+        options: CreateOptions,
+    ) -> Result<(), TurnError> {
+        options.check().map_err(TurnError::Invalid)?;
         message::check_not_null("initial state", &state).map_err(TurnError::Invalid)?;
         limits::check_json("initial state", Some(&state)).map_err(TurnError::Invalid)?;
         if self.resolver.resolve(address).await?.is_none() {
@@ -495,7 +592,7 @@ impl<A: Actor> Turn<A> {
                 )));
             }
         }
-        self.push_create(address.clone(), state, child)
+        self.push_create(address.clone(), state, child, options.pinned_to)
     }
 
     fn buffer_create<R: ActorRef, S: Serialize + ?Sized>(
@@ -503,24 +600,38 @@ impl<A: Actor> Turn<A> {
         r: &R,
         initial_state: &S,
         child: bool,
+        options: CreateOptions,
     ) -> Result<(), TurnError> {
+        options.check().map_err(TurnError::Invalid)?;
         let state = serde_json::to_value(initial_state)
             .map_err(|e| TurnError::Invalid(format!("The initial state cannot be encoded: {e}")))?;
         message::check_not_null("initial state", &state).map_err(TurnError::Invalid)?;
         limits::check_json("initial state", Some(&state)).map_err(TurnError::Invalid)?;
         let address = r.address().map_err(|e| TurnError::Invalid(e.to_string()))?;
-        self.push_create(address, state, child)
+        self.push_create(address, state, child, options.pinned_to)
     }
 
-    /// Buffers a create whose state was checked; fails when this turn creates `address` the other way already.
-    fn push_create(&mut self, address: ActorAddress, state: Value, child: bool) -> Result<(), TurnError> {
+    /// Buffers a create whose state and pin were checked; fails when this turn creates `address` the other way, or
+    /// with another pin, already.
+    fn push_create(
+        &mut self,
+        address: ActorAddress,
+        state: Value,
+        child: bool,
+        pinned_to: Option<NodeId>,
+    ) -> Result<(), TurnError> {
         if self.effects.creates.iter().any(|c| c.address == address && c.child != child) {
             let (first, second) = if child { ("create", "create_child") } else { ("create_child", "create") };
             return Err(TurnError::Invalid(format!(
                 "{address} is created with {first} in this turn already; {second} of it would disagree"
             )));
         }
-        self.effects.creates.push(ActorCreate { address, state, child });
+        if self.effects.creates.iter().any(|c| c.address == address && c.pinned_to != pinned_to) {
+            return Err(TurnError::Invalid(format!(
+                "{address} is created with another pin in this turn already; the creates of one actor must agree"
+            )));
+        }
+        self.effects.creates.push(ActorCreate { address, state, child, pinned_to });
         Ok(())
     }
 

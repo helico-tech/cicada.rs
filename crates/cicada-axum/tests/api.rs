@@ -157,8 +157,11 @@ async fn get_returns_address_type_state_and_version_and_no_params() {
     assert_eq!(body["version"], 0);
     instant(&body["createdAt"]);
     let keys: Vec<&str> = body.as_object().unwrap().keys().map(String::as_str).collect();
-    assert_eq!(keys, ["address", "type", "state", "version", "createdAt", "paused", "parent"]);
+    assert_eq!(keys, ["address", "type", "state", "version", "createdAt", "paused", "parent", "pinnedTo"]);
     assert_eq!(body["parent"], Value::Null, "an actor created over HTTP is independent");
+    assert_eq!(body["pinnedTo"], Value::Null, "and unpinned unless it asks");
+    put(&app, "/actors/counter/pinned", r#"{"state": {}, "pinnedTo": "host-a"}"#).await;
+    assert_eq!(get_json(&app, "/actors/counter/pinned").await["pinnedTo"], "host-a");
 
     put(&app, "/actors/ping/p", r#"{"state": {}}"#).await;
     assert_eq!(get_json(&app, "/actors/ping/p").await["state"], json!({}));
@@ -305,7 +308,7 @@ async fn states_are_listed_with_the_view_of_each_actor_in_the_pages_of_the_addre
     assert_eq!(addresses, ["counter/a", "counter/b1", "counter/b2", "counter/b3", "counter/c"]);
     for row in rows {
         let keys: Vec<&str> = row.as_object().unwrap().keys().map(String::as_str).collect();
-        assert_eq!(keys, ["address", "type", "state", "version", "createdAt", "paused", "parent"]);
+        assert_eq!(keys, ["address", "type", "state", "version", "createdAt", "paused", "parent", "pinnedTo"]);
         assert_eq!(row, &get_json(&app, &format!("/actors/{}", row["address"].as_str().unwrap())).await);
     }
     assert_eq!((&rows[0]["type"], &rows[0]["parent"]), (&json!("counter"), &Value::Null));

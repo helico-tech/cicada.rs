@@ -61,6 +61,7 @@ mod env;
 mod fixture;
 mod lost_claims;
 mod operator;
+mod placement;
 mod reschedule;
 mod retention;
 mod robustness;
@@ -79,6 +80,7 @@ pub mod cases {
     pub use super::control::*;
     pub use super::lost_claims::*;
     pub use super::operator::*;
+    pub use super::placement::*;
     pub use super::reschedule::*;
     pub use super::retention::*;
     pub use super::robustness::*;
@@ -288,6 +290,12 @@ macro_rules! for_each_case {
             lost_claims_a_commit_after_the_lease_ran_out_succeeds_and_counts_nothing,
             lost_claims_the_message_of_a_lost_claim_is_cancelled_or_purged_and_the_next_one_has_none,
             lost_claims_the_message_in_an_outcome_keeps_its_count,
+            // placement.rs
+            placement_a_create_records_its_pin_and_a_repeat_keeps_the_first_one,
+            placement_foreign_pins_never_take_the_place_of_an_eligible_actor,
+            placement_pause_and_expired_leases_apply_to_the_owner_as_to_anyone,
+            placement_commit_creates_carry_their_pins_and_disagreeing_pins_are_invalid,
+            placement_a_new_life_may_choose_another_pin,
             // changes.rs
             changes_creates_pauses_resumes_and_deletes_from_outside_are_reported_after_they_commit,
             changes_a_turn_reports_its_new_state_even_an_equal_one_its_creates_controls_and_restarts_once_each,
@@ -354,6 +362,7 @@ fn every_case_is_generated() {
         include_str!("lost_claims.rs"),
         include_str!("s1_to_s10.rs"),
         include_str!("operator.rs"),
+        include_str!("placement.rs"),
         include_str!("reschedule.rs"),
         include_str!("retention.rs"),
         include_str!("robustness.rs"),

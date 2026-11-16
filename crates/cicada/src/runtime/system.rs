@@ -37,7 +37,7 @@ use crate::store::{
     Store, StoreError, StoreStats, TurnOutcome,
 };
 use crate::time::{self, MAX_INSTANT, Timestamp};
-use crate::turn::SendOptions;
+use crate::turn::{CreateOptions, SendOptions};
 use crate::watch::{self, FailureCause, Watch, WatchTarget};
 
 const MIN_SLEEP: Duration = Duration::from_millis(1);
@@ -107,6 +107,7 @@ fn snapshot(record: ActorRecord) -> ActorSnapshot {
         created_at: record.created_at,
         paused: record.paused,
         parent: record.parent,
+        pinned_to: record.pinned_to,
     }
 }
 
@@ -519,6 +520,7 @@ impl ActorSystem {
             max_lost_claims: inner.config.max_lost_claims,
             renew_while_stopping: None,
             wake: inner.wake.clone(),
+            owner: inner.config.node_id.clone(),
         });
         Ok(Arc::new(Initialized { executor, types: names }))
     }
@@ -776,7 +778,7 @@ impl ActorSystem {
     async fn sleep_time(&self, init: &Initialized) -> Duration {
         let poll = self.inner.config.poll_interval;
         let store = &self.inner.store;
-        match store.next_due_at(&init.types).await {
+        match store.next_due_at(&init.types, &self.inner.config.node_id).await {
             Ok(None) => poll,
             Ok(Some(next)) => match store.now().await {
                 Ok(now) => time::between(now, next).clamp(MIN_SLEEP, poll),
@@ -900,7 +902,8 @@ impl ActorSystem {
     /// access: the report is the finished effect buffer of a handler the executor ran, and no handler runs here.
     ///
     /// In order, before the store: a [`TurnFailure`] that is retryable with a cause other than `handler`, `node` or
-    /// `timeout`, or has the cause `claim-limit`, is [`OpError::Invalid`]. A returned report whose send breaks the send
+    /// `timeout`, or has the cause `claim-limit`, is [`OpError::Invalid`], and so is a create whose pin is beyond its
+    /// bounds (ADR 0052). A returned report whose send breaks the send
     /// limits or delivery bounds, or whose create has a `null`, NUL-containing or too deep state, fails the message
     /// instead, without effects and without retry: cause `commit`, `Commit refused: …`. So does a new own state that
     /// cannot be stored, with cause `handler` and `State cannot be stored: …`. These derived failures are committed in
@@ -926,6 +929,7 @@ impl ActorSystem {
         if let TurnReport::Failed(failure) = &report {
             completion::check_failure(failure).map_err(OpError::Invalid)?;
         }
+        completion::check_pins(&report).map_err(OpError::Invalid)?;
         let report = match completion::check_effect_limits(&report) {
             Ok(()) => report,
             Err(e) => TurnReport::Failed(TurnFailure {
@@ -1075,7 +1079,19 @@ impl ActorSystem {
     /// nested deeper than [`MAX_DEPTH`](super::limits::MAX_DEPTH) is [`OpError::Invalid`]. The state is not checked
     /// against its schema; [`Self::create_actor_checked`] is this call with that check.
     pub async fn create_actor(&self, address: &ActorAddress, state: Value) -> Result<CreateActorResult, OpError> {
-        self.create_actor_checked(address, state, &|_, _| true).await
+        self.create_actor_checked_with(address, state, CreateOptions::default(), &|_, _| true).await
+    }
+
+    /// [`Self::create_actor`] with `options`, such as a pin (ADR 0052). A pin beyond its bounds is
+    /// [`OpError::Invalid`], before anything else. An instance that exists already is left untouched, its pin included:
+    /// [`CreateActorResult::Exists`] holds its snapshot, with the pin it has.
+    pub async fn create_actor_with(
+        &self,
+        address: &ActorAddress,
+        state: Value,
+        options: CreateOptions,
+    ) -> Result<CreateActorResult, OpError> {
+        self.create_actor_checked_with(address, state, options, &|_, _| true).await
     }
 
     /// [`Self::create_actor`] with `check`, which gets the state schema of the registered contract and `state`. It runs
@@ -1090,6 +1106,18 @@ impl ActorSystem {
         state: Value,
         check: SchemaCheck<'_>,
     ) -> Result<CreateActorResult, OpError> {
+        self.create_actor_checked_with(address, state, CreateOptions::default(), check).await
+    }
+
+    /// [`Self::create_actor_checked`] with `options`, checked first as [`Self::create_actor_with`] checks them.
+    pub async fn create_actor_checked_with(
+        &self,
+        address: &ActorAddress,
+        state: Value,
+        options: CreateOptions,
+        check: SchemaCheck<'_>,
+    ) -> Result<CreateActorResult, OpError> {
+        options.check().map_err(OpError::Invalid)?;
         let init = self.initialized().await?.clone();
         let Some(resolved) = self.inner.resolver.resolve(address).await? else {
             return Ok(CreateActorResult::NoSuchType);
@@ -1110,7 +1138,7 @@ impl ActorSystem {
         if let Some(Err(e)) = hosted.map(|h| h.actor.check_state(&state)) {
             return Ok(CreateActorResult::InvalidState(refusal(format!("State cannot be decoded: {e}"))));
         }
-        Ok(match self.inner.store.create(address, state).await? {
+        Ok(match self.inner.store.create(address, state, options.pinned_to.as_ref()).await? {
             CreateResult::Created => CreateActorResult::Created,
             CreateResult::Exists(existing) => CreateActorResult::Exists(existing),
             // The type was removed between the lookup and the insert; the store refused atomically.
@@ -1703,15 +1731,15 @@ impl ActorSystem {
         Ok(self.inner.store.now().await?)
     }
 
-    /// The earliest store time at which an instance of a type this node hosts may become claimable: the delivery time
-    /// of the head of its mailbox, or the end of its lease when that is later. `None` when no message is pending.
-    /// Paused instances do not count.
+    /// The earliest store time at which an instance of a type this node hosts may become claimable by this node: the
+    /// delivery time of the head of its mailbox, or the end of its lease when that is later. `None` when no message is
+    /// pending. Paused instances, and instances pinned to another owner than [`NodeConfig::node_id`], do not count.
     pub async fn next_due_at(&self) -> Result<Option<Timestamp>, OpError> {
         let types = self.hosted_types();
         if types.is_empty() {
             return Ok(None);
         }
-        Ok(self.inner.store.next_due_at(&types).await?)
+        Ok(self.inner.store.next_due_at(&types, &self.inner.config.node_id).await?)
     }
 
     /// True when the node is running (or usable) and the store is reachable (`GET /health`).
@@ -1727,10 +1755,21 @@ impl ActorSystem {
         r: &R,
         initial_state: &S,
     ) -> Result<CreateActorResult, OpError> {
+        self.create_with(r, initial_state, CreateOptions::default()).await
+    }
+
+    /// Creates `r` with `initial_state` and `options`; see [`Self::create_actor_with`].
+    pub async fn create_with<R: ActorRef, S: serde::Serialize + ?Sized>(
+        &self,
+        r: &R,
+        initial_state: &S,
+        options: CreateOptions,
+    ) -> Result<CreateActorResult, OpError> {
+        options.check().map_err(OpError::Invalid)?;
         let address = r.address().map_err(|e| OpError::Invalid(e.to_string()))?;
         let state = serde_json::to_value(initial_state)
             .map_err(|e| OpError::Invalid(format!("The initial state cannot be encoded: {e}")))?;
-        self.create_actor(&address, state).await
+        self.create_actor_with(&address, state, options).await
     }
 
     /// Sends `msg` to `to`, due now; the compiler checks that `to` accepts it. See [`Self::send_message`].

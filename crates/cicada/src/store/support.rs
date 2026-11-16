@@ -9,7 +9,7 @@ use serde_json::Value;
 use serde_json::{Map, json};
 
 use super::model::{
-    ActorCreate, Control, ControlEffect, Delivery, Message, MessageId, OutcomeStatus, OutgoingMessage, Page,
+    ActorCreate, Control, ControlEffect, Delivery, Message, MessageId, NodeId, OutcomeStatus, OutgoingMessage, Page,
     PageCursor, TypeDef,
 };
 use super::results::RegisterResult;
@@ -40,19 +40,42 @@ pub fn register_again(existing: TypeDef, def: &TypeDef) -> RegisterResult {
 
 // ---- creates ----
 
-/// Checks that the creates of one commit agree, per address, on being a child: [`StoreError::Invalid`] otherwise. A
-/// commit runs it first, before it reads the store, so the answer does not depend on the lease.
+/// Checks that the creates of one commit agree, per address, on being a child and on their pin, and that each pin is
+/// within its bounds: [`StoreError::Invalid`] otherwise. A commit runs it first, before it reads the store, so the
+/// answer does not depend on the lease.
 pub fn check_creates(creates: &[ActorCreate]) -> StoreResult<()> {
-    let mut child_of = HashMap::new();
+    let mut first = HashMap::new();
     for create in creates {
-        if *child_of.entry(&create.address).or_insert(create.child) != create.child {
+        if let Some(pin) = &create.pinned_to {
+            check_pin(pin)?;
+        }
+        let (child, pin) = *first.entry(&create.address).or_insert((create.child, &create.pinned_to));
+        if child != create.child {
             return Err(StoreError::Invalid(format!(
                 "The creates of {} in one commit disagree on being a child",
                 create.address
             )));
         }
+        if pin != &create.pinned_to {
+            return Err(StoreError::Invalid(format!(
+                "The creates of {} in one commit disagree on their pin",
+                create.address
+            )));
+        }
     }
     Ok(())
+}
+
+/// Checks the bounds of a pin (ADR 0052): [`StoreError::Invalid`] for more than 200 characters or a NUL.
+pub fn check_pin(pin: &NodeId) -> StoreResult<()> {
+    crate::runtime::limits::check_pin(pin).map_err(StoreError::Invalid)
+}
+
+/// True when an instance pinned to `pinned_to` may be claimed by `owner`: it is not pinned, or pinned to `owner`. The
+/// SQL stores say the same in their queries.
+#[cfg(feature = "testing")]
+pub fn eligible(pinned_to: Option<&NodeId>, owner: &NodeId) -> bool {
+    pinned_to.is_none_or(|pin| pin == owner)
 }
 
 /// The reason a commit of `parent` is rejected: its child create of `address` meets an instance that exists with
@@ -600,6 +623,7 @@ mod tests {
             address: ActorAddress::parse(&format!("a/{key}")).unwrap(),
             state: json!({}),
             child,
+            pinned_to: None,
         };
         assert!(check_creates(&[]).is_ok());
         assert!(check_creates(&[create("x", true), create("x", true), create("y", false)]).is_ok());

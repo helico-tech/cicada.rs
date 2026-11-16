@@ -210,8 +210,8 @@ async fn a_returned_report_commits_its_state_and_every_effect_together_and_retur
     let effects = TurnEffects {
         watches: vec![WatchChange { target: WatchTarget::from(address("c2")), set: true }],
         creates: vec![
-            ActorCreate { address: address("c5"), state: json!({"total": 10}), child: false },
-            ActorCreate { address: address("c6"), state: json!({"total": 0}), child: true },
+            ActorCreate { address: address("c5"), state: json!({"total": 10}), child: false, pinned_to: None },
+            ActorCreate { address: address("c6"), state: json!({"total": 0}), child: true, pinned_to: None },
         ],
         sends: vec![to_c2.clone(), to_new.clone()],
         cancels: vec![later.id.clone()],
@@ -468,7 +468,8 @@ async fn a_commit_the_store_turns_down_is_rejected_and_a_turned_down_failure_is_
     let ok = || returned(StateReport::Set(json!({"total": 9})), sends(vec![]));
     let with = |effects: TurnEffects| returned(StateReport::Unchanged, effects);
     let control = |effect, id: &str| Control { effect, actor: address(id) };
-    let create = |id: &str, child| ActorCreate { address: address(id), state: json!({"total": 0}), child };
+    let create =
+        |id: &str, child| ActorCreate { address: address(id), state: json!({"total": 0}), child, pinned_to: None };
 
     // A wrong message id: refused, and so is the failure that follows with the same id.
     let next = rejected(server.complete_turn(&held.actor, held.epoch, &wrong, ok()).await.unwrap());
@@ -522,7 +523,12 @@ async fn a_report_that_deletes_an_ancestor_is_rejected() {
     setup(&server, &["parent"]).await;
     let held = leased(&server, "parent").await;
     let effects = TurnEffects {
-        creates: vec![ActorCreate { address: address("child"), state: json!({"total": 0}), child: true }],
+        creates: vec![ActorCreate {
+            address: address("child"),
+            state: json!({"total": 0}),
+            child: true,
+            pinned_to: None,
+        }],
         ..TurnEffects::default()
     };
     completed(complete(&server, &held, returned(StateReport::Unchanged, effects)).await);
@@ -554,7 +560,7 @@ async fn effects_beyond_the_storage_limits_fail_the_message_with_cause_commit_an
     let mut header = add("c2", 1);
     header.headers.insert("h".into(), "v".repeat(4_001));
     let create = |state: Value| TurnEffects {
-        creates: vec![ActorCreate { address: address("c9"), state, child: false }],
+        creates: vec![ActorCreate { address: address("c9"), state, child: false, pinned_to: None }],
         sends: vec![add("c2", 1)],
         ..TurnEffects::default()
     };
@@ -608,7 +614,12 @@ async fn the_types_a_server_hosts_do_not_change_what_it_completes() {
     setup(&plain, &["c1", "c2"]).await;
     // A state no counter can decode: a worker's checks would refuse it, the server's do not.
     let undecodable = |id: &str| TurnEffects {
-        creates: vec![ActorCreate { address: address(id), state: json!({"total": "many"}), child: false }],
+        creates: vec![ActorCreate {
+            address: address(id),
+            state: json!({"total": "many"}),
+            child: false,
+            pinned_to: None,
+        }],
         ..TurnEffects::default()
     };
     for (system, actor, created) in [(&plain, "c1", "x1"), (&hosting, "c2", "x2")] {
@@ -720,4 +731,39 @@ async fn reports_complete_on_postgres() {
     use sqlx::Connection;
     let mut c = sqlx::PgConnection::connect(&url).await.unwrap();
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!("DROP SCHEMA \"{schema}\" CASCADE"))).execute(&mut c).await.unwrap();
+}
+
+/// Scenarios: Reject inconsistent buffered creates; Wire and client compatibility (ADR 0052). A returned create applies
+/// its pin; a pin beyond its bounds is invalid before the store, with the lease still held; creates of one address
+/// that disagree on their pin are refused by the store and replaced by a failure, which applies no pin.
+#[tokio::test(start_paused = true)]
+async fn a_returned_create_applies_its_pin_and_bad_or_disagreeing_pins_are_refused() {
+    let store = store();
+    let server = server(&store);
+    setup(&server, &["c1"]).await;
+    let pinned = |id: &str, pin: &str| ActorCreate {
+        address: address(id),
+        state: json!({"total": 0}),
+        child: false,
+        pinned_to: Some(NodeId::new(pin).unwrap()),
+    };
+    let with =
+        |creates: Vec<ActorCreate>| returned(StateReport::Unchanged, TurnEffects { creates, ..TurnEffects::default() });
+
+    let held = leased(&server, "c1").await;
+    for bad in ["x".repeat(201), "a\0b".to_owned()] {
+        let refused = server.complete_turn(&held.actor, held.epoch, &held.message.id, with(vec![pinned("c9", &bad)]));
+        assert!(matches!(refused.await, Err(OpError::Invalid(_))), "a pin beyond its bounds");
+    }
+    still_held(&server, &held).await;
+    let unpinned = ActorCreate { pinned_to: None, ..pinned("c8", "host-a") };
+    let next = rejected(complete(&server, &held, with(vec![pinned("c8", "host-a"), unpinned])).await);
+    assert_eq!(next.cause, FailureCause::Commit);
+    assert!(server.get_actor(&address("c8")).await.unwrap().is_none(), "nothing is created");
+    completed(complete(&server, &held, TurnReport::Failed(next)).await);
+
+    let held = leased(&server, "c1").await;
+    completed(complete(&server, &held, with(vec![pinned("c7", "host-a")])).await);
+    let snapshot = server.get_actor(&address("c7")).await.unwrap().unwrap();
+    assert_eq!(snapshot.pinned_to, Some(NodeId::new("host-a").unwrap()));
 }

@@ -77,7 +77,7 @@ async fn the_list_with_two_instances_due_at_one_instant_agrees() {
         Op::Enqueue(send(0, 0, Due::Now)),
         Op::Commit(Commit {
             end: End::Rescheduled(Due::AtAhead(NS)),
-            creates: vec![(0, 0, false)],
+            creates: vec![(0, 0, false, None)],
             sends: vec![send(0, 1, Due::After(NS))],
             ..commit(0, 0)
         }),
@@ -121,7 +121,7 @@ async fn tied_pair() -> Pair {
         // `alpha/1` goes back to its mailbox, and a re-created `alpha/0` gets a message: both are due 1 ns ahead.
         Op::Commit(Commit {
             end: End::Rescheduled(Due::AtAhead(NS)),
-            creates: vec![(0, 0, false)],
+            creates: vec![(0, 0, false, None)],
             sends: vec![send(0, 1, Due::After(NS))],
             ..commit(0, 0)
         }),
@@ -243,7 +243,7 @@ async fn a_restart_with_the_other_control_effects_agrees() {
     agreed(&mut pair, Op::Enqueue(send(1, 2, Due::Now))).await;
     agreed(&mut pair, Op::ClaimDue { types: vec![0], node: 0, ttl: Duration::from_secs(30), limit: ALL_DUE }).await;
     let restart = Commit {
-        restart: Some((6, 1, false)),
+        restart: Some((6, 1, false, Some(0))),
         controls: vec![(ControlEffect::Pause, 6), (ControlEffect::Purge, 3)],
         sends: vec![send(6, 3, Due::Now)],
         ..commit(0, 0)
@@ -274,7 +274,7 @@ async fn a_changed_answer_from_one_backend_is_a_difference() {
     let get = Op::Get { to: 5 };
     pair.step(0, &get).await.expect("both have no ghost/0 yet");
     pair.second.apply(&Op::Register { ty: 2, variant: 0 }, crate::testing::default_start()).await;
-    pair.second.apply(&Op::Create { to: 5, state: 1 }, crate::testing::default_start()).await;
+    pair.second.apply(&Op::Create { to: 5, state: 1, pin: Some(1) }, crate::testing::default_start()).await;
     let difference = pair.step(1, &get).await.expect_err("only the second has it");
     assert!(difference.place.contains("operation 1"), "{difference}");
     assert_eq!(difference.first, serde_json::Value::Null);
@@ -346,6 +346,7 @@ async fn generated_lists_reach_deep_states() {
         ("finished messages", "\"finished\":{", 100),
         ("cancel requests", "cancel-requested", 5),
         ("refused requests", "\"error\":\"invalid\"", 300),
+        ("pinned actors read", "\"pinnedTo\":\"n", 50),
     ];
     // Trees: listings of children that found some, and children removed together with their parent. Control effects:
     // commits that apply some, and lists that restart an actor that was there.
@@ -414,8 +415,8 @@ async fn generated_lists_reach_deep_states() {
 /// The addresses `commit` both deletes and creates.
 fn restarts(commit: &Commit) -> impl Iterator<Item = usize> + '_ {
     let deleted = commit.controls.iter().filter(|(effect, _)| *effect == ControlEffect::Delete).map(|(_, to)| *to);
-    let deleted = deleted.chain(commit.restart.map(|(to, _, _)| to));
-    deleted.filter(|to| commit.creates.iter().chain(&commit.restart).any(|(created, _, _)| created == to))
+    let deleted = deleted.chain(commit.restart.map(|(to, _, _, _)| to));
+    deleted.filter(|to| commit.creates.iter().chain(&commit.restart).any(|(created, _, _, _)| created == to))
 }
 
 /// The sum of the lost claims of every pending message: only a claim that replaces a lost one makes it grow.

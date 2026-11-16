@@ -103,7 +103,7 @@ impl Clock for SystemClock {
 /// | S5 Fencing | `commit` and `renew` succeed only with the current epoch; `renew` never shortens a held lease. |
 /// | S6 Order | `claim_due` returns, per instance, only the pending message with the smallest `(deliver_at, seq)`, when due. |
 /// | S7 No loss, no duplicate | A message leaves pending only by commit, cancel or delete; ids are unique. |
-/// | S8 Liveness | An instance that is not paused, with a due head message and no valid lease, is eventually returned by `claim_due`. |
+/// | S8 Liveness | An instance that is not paused, with a due head message and no valid lease, is eventually returned by `claim_due` to a claimer that keeps polling its type and is eligible for it: any owner when it is not pinned, else the owner it is pinned to (ADR 0052). |
 /// | S9 One clock | Due-ness and lease expiry use the store clock only. |
 /// | S10 Retention | Outcomes are kept for the retention period, which is also the dedup window. |
 ///
@@ -141,10 +141,17 @@ pub(crate) trait Backend: Send + Sync + 'static {
 
     // ---- state store ----
 
-    /// Creates the instance with initial `state`, version 0, no lease, no parent and an empty mailbox. Idempotent: an
-    /// existing instance is left untouched. The type is the address's own and must be registered, checked atomically
-    /// with the create: otherwise [`CreateResult::NoSuchType`] and nothing is created.
-    async fn create(&self, address: &ActorAddress, state: Value) -> StoreResult<CreateResult>;
+    /// Creates the instance with initial `state`, version 0, no lease, no parent, pinned to `pinned_to` (ADR 0052) and
+    /// with an empty mailbox. Idempotent: an existing instance is left untouched, its pin included. The type is the
+    /// address's own and must be registered, checked atomically with the create: otherwise [`CreateResult::NoSuchType`]
+    /// and nothing is created. A pin beyond the bounds of a claim owner is [`StoreError::Invalid`], before the store is
+    /// read ([`support::check_pin`]).
+    async fn create(
+        &self,
+        address: &ActorAddress,
+        state: Value,
+        pinned_to: Option<&NodeId>,
+    ) -> StoreResult<CreateResult>;
 
     /// Snapshot of the instance, or `None` when it is absent.
     async fn get(&self, address: &ActorAddress) -> StoreResult<Option<ActorRecord>>;
@@ -208,7 +215,9 @@ pub(crate) trait Backend: Send + Sync + 'static {
 
     /// Claims up to `limit` instances of `types` that have a due head message and no valid lease, for `node`. Per
     /// claimed instance, atomically: a new, greater epoch; the lease set to `store now + ttl`; the head message's
-    /// `attempt` increased by 1. Paused instances are not claimed.
+    /// `attempt` increased by 1. Paused instances are not claimed, nor are instances pinned to another owner than `node`
+    /// (ADR 0052): they are left out before the limit, so they never take the place of an eligible instance, and a
+    /// claim changes nothing of theirs.
     ///
     /// A claim of an instance that still holds a lease that ran out, which no commit, release, cancel or purge cleared,
     /// replaces a lost claim (ADR 0025): it adds 1 to the [`Message::lost_claims`] of the message of that lease, when
@@ -233,10 +242,10 @@ pub(crate) trait Backend: Send + Sync + 'static {
     /// is not lost: the lease is cleared, so the next claim counts nothing. A no-op unless `epoch` is current and held.
     async fn release(&self, address: &ActorAddress, epoch: i64) -> StoreResult<()>;
 
-    /// The earliest store time at which an instance of `types` may become claimable: the minimum of their head's
-    /// `deliver_at`, or of their lease expiry when that is later. `None` when nothing is pending. Paused instances do
-    /// not count.
-    async fn next_due_at(&self, types: &BTreeSet<TypeName>) -> StoreResult<Option<Timestamp>>;
+    /// The earliest store time at which an instance of `types` may become claimable by `owner`: the minimum of their
+    /// head's `deliver_at`, or of their lease expiry when that is later. `None` when nothing is pending. Paused
+    /// instances and instances pinned to another owner do not count.
+    async fn next_due_at(&self, types: &BTreeSet<TypeName>, owner: &NodeId) -> StoreResult<Option<Timestamp>>;
 
     /// The pending messages of `address` in delivery order `(deliver_at, seq)`, including one being handled. Paging is
     /// a keyset, not a snapshot.
@@ -363,7 +372,8 @@ pub(crate) trait Backend: Send + Sync + 'static {
     /// that is not registered, a child create names an instance that exists after the deletes with another parent or
     /// none, a delete names an ancestor of this instance, a send targets an instance that is absent after the deletes
     /// and the creates, or a send id is already in use (the lease is then still held).
-    /// [`StoreError::Invalid`] when creates of one address disagree on being a child, the commit deletes this instance,
+    /// [`StoreError::Invalid`] when creates of one address disagree on being a child or on their pin, a pin is beyond
+    /// its bounds, the commit deletes this instance,
     /// or it both pauses and resumes one instance (checked first, before the store is read, see
     /// [`support::check_creates`] and [`support::check_controls`]), the message is not the one claimed under the epoch,
     /// the cancels contain the turn's own message, or the data cannot be stored; nothing is applied then either.

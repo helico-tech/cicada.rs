@@ -11,3 +11,8 @@ mod retry_policy;
 pub(crate) mod runtime;
 pub(crate) mod sqlite;
 mod store_support;
+
+/// A claim owner for store calls about unpinned actors, which every owner may claim (ADR 0052).
+pub(crate) fn owner() -> crate::store::NodeId {
+    crate::store::NodeId::new("owner").expect("a valid node id")
+}

@@ -1,4 +1,4 @@
-//! The upgrades from schema versions 1 to 6: a database built with the migrations of that version, rows written with
+//! The upgrades from schema versions 1 to 7: a database built with the migrations of that version, rows written with
 //! SQL as a node of that version left them, then opened by this version. And rows that only a hand can write: two
 //! actors that name each other as parent, a watch whose watcher is gone.
 
@@ -394,6 +394,7 @@ async fn the_indexes_of_sqlite_survive() {
         [
             "actors_due: CREATE INDEX actors_due ON actors (type, next_due_at) WHERE next_due_at IS NOT NULL AND paused = 0",
             "actors_parent: CREATE INDEX actors_parent ON actors (parent, address) WHERE parent IS NOT NULL",
+            "actors_pinned_due: CREATE INDEX actors_pinned_due ON actors (pinned_to, type, next_due_at) WHERE next_due_at IS NOT NULL AND paused = 0",
             "actors_running: CREATE INDEX actors_running ON actors (address) WHERE lease_owner IS NOT NULL",
         ]
     );
@@ -591,6 +592,48 @@ async fn a_database_of_schema_version_6_keeps_its_nodes_and_its_running_old_node
     store.close().await;
 }
 
+/// Scenario: Upgrade an existing store (ADR 0052): state, parent, epoch and mailbox survive, and every actor is
+/// unpinned, so every owner claims it.
+#[tokio::test]
+async fn a_database_of_schema_version_7_is_opened_and_its_actors_are_unpinned() {
+    let db = Db::at_version(7).await;
+    db.exec(REGISTER, &["notes", &contract_of::<NotesActor>().unwrap().to_json().to_string(), "sha256:notes"])
+        .await
+        .unwrap();
+    db.exec(
+        "INSERT INTO actors (address, type, state, version, epoch, parent, next_due_at, created_at)
+            VALUES ('notes/p', 'notes', '{}', 0, 0, NULL, NULL, 0),
+                   ('notes/a', 'notes', '{\"texts\":[\"kept\"]}', 3, 9, 'notes/p', 0, 0)",
+        &[],
+    )
+    .await
+    .unwrap();
+    db.exec(
+        "INSERT INTO messages (id, actor_address, seq, type, payload, headers, deliver_at, attempt)
+            VALUES ('m1', 'notes/a', 1, 'Note', '{\"text\":\"x\"}', '{}', 0, 2)",
+        &[],
+    )
+    .await
+    .unwrap();
+    db.exec("UPDATE sequences SET value = 1 WHERE name = 'seq'", &[]).await.unwrap();
+    db.exec("UPDATE sequences SET value = 9 WHERE name = 'epoch'", &[]).await.unwrap();
+
+    let store = db.open().await;
+    assert_eq!(Db::texts(&db.file, "PRAGMA user_version").await, [schema::VERSION.to_string()]);
+    let record = store.get(&address("notes/a")).await.unwrap().expect("kept");
+    assert_eq!(record.state, json!({"texts": ["kept"]}));
+    assert_eq!((record.version, record.parent, record.pinned_to), (3, Some(address("notes/p")), None));
+    let pending = store.pending(&address("notes/a"), None, 10).await.unwrap().items;
+    assert_eq!(pending.iter().map(|m| (m.id.as_str(), m.attempt)).collect::<Vec<_>>(), [("m1", 2)]);
+    let types = std::collections::BTreeSet::from([crate::address::TypeName::parse("notes").unwrap()]);
+    let anyone = crate::store::NodeId::new("anyone").unwrap();
+    assert!(store.next_due_at(&types, &anyone).await.unwrap().is_some(), "due for any owner");
+    let claims = store.claim_due(&types, &anyone, std::time::Duration::from_secs(30), 10).await.unwrap();
+    assert_eq!(claims.len(), 1, "an unpinned actor is claimed by any owner");
+    assert!(claims[0].epoch > 9, "epochs keep growing");
+    store.close().await;
+}
+
 fn expect_finished(status: Option<MessageStatus>) -> crate::store::OutcomeRecord {
     match status {
         Some(MessageStatus::Finished(outcome)) => outcome,
@@ -608,7 +651,7 @@ async fn a_watcher_whose_row_was_removed_by_hand_is_skipped_and_its_watch_remove
     let store = db.open().await;
     let (x, w) = (address("notes/x"), address("notes/w"));
     for a in [&x, &w] {
-        store.create(a, json!({})).await.unwrap();
+        store.create(a, json!({}), None).await.unwrap();
     }
     assert_eq!(store.watch(&WatchTarget::Actor(x.clone()), &w).await.unwrap(), SetWatchResult::Created);
     db.exec("DELETE FROM actors WHERE address = 'notes/w'", &[]).await.unwrap();

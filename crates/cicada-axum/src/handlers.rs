@@ -21,7 +21,7 @@ use cicada::api::{
 use cicada::contract::Contract;
 use cicada::runtime::{BulkResult, RegisterContractResult, RetryResult, TurnReport, WatchResult};
 use cicada::store::{CancelResult, DeleteResult, DeliverNowResult, MessageId, NodeId, RemoveTypeResult};
-use cicada::{ActorAddress, CreateActorResult, SendOptions, SendResult};
+use cicada::{ActorAddress, CreateActorResult, CreateOptions, SendOptions, SendResult};
 use futures::FutureExt;
 use serde_json::Value;
 
@@ -121,7 +121,8 @@ pub(crate) async fn put_actor(State(api): Shared, req: Request) -> Response {
         let response = |created| CreateActorResponse { address: address.clone(), created };
         let what = format!("the state of {}", address.type_name());
         let check = |schema: &Value, state: &Value| schema_check::check(schema, state, &what);
-        match api.system.create_actor_checked(&address, body.state, &check).await? {
+        let options = CreateOptions { pinned_to: body.pinned_to };
+        match api.system.create_actor_checked_with(&address, body.state, options, &check).await? {
             CreateActorResult::Created => Ok(json(StatusCode::CREATED, &response(true))),
             CreateActorResult::Exists(_) => Ok(json(StatusCode::OK, &response(false))),
             CreateActorResult::NoSuchType => Err(no_such_type(&address).into()),

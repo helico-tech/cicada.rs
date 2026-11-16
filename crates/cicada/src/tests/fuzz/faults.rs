@@ -662,8 +662,13 @@ impl Backend for FaultStore {
         self.gate(Method::RemoveType, || self.inner.remove_type(name)).await
     }
 
-    async fn create(&self, address: &ActorAddress, state: Value) -> StoreResult<CreateResult> {
-        self.gate(Method::Create, || self.inner.create(address, state)).await
+    async fn create(
+        &self,
+        address: &ActorAddress,
+        state: Value,
+        pinned_to: Option<&NodeId>,
+    ) -> StoreResult<CreateResult> {
+        self.gate(Method::Create, || self.inner.create(address, state, pinned_to)).await
     }
 
     async fn get(&self, address: &ActorAddress) -> StoreResult<Option<ActorRecord>> {
@@ -736,8 +741,8 @@ impl Backend for FaultStore {
         self.gate(Method::Release, || self.do_release(address, epoch)).await
     }
 
-    async fn next_due_at(&self, types: &BTreeSet<TypeName>) -> StoreResult<Option<Timestamp>> {
-        self.gate(Method::NextDueAt, || self.inner.next_due_at(types)).await
+    async fn next_due_at(&self, types: &BTreeSet<TypeName>, owner: &NodeId) -> StoreResult<Option<Timestamp>> {
+        self.gate(Method::NextDueAt, || self.inner.next_due_at(types, owner)).await
     }
 
     async fn pending(
@@ -895,7 +900,7 @@ mod tests {
     async fn layer(rules: Vec<Rule>) -> (Arc<InMemoryStore>, Arc<FaultStore>, Log) {
         let memory = Arc::new(InMemoryStore::new(Arc::new(TokioClock::new(default_start())), Duration::from_secs(600)));
         memory.register(type_def()).await.unwrap();
-        memory.create(&address(), serde_json::json!({})).await.unwrap();
+        memory.create(&address(), serde_json::json!({}), None).await.unwrap();
         memory.enqueue(outgoing("m1")).await.unwrap();
         let log = Log::default();
         let store = FaultStore::new(memory.clone(), "n1", rules, log.clone());

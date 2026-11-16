@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 
-use crate::store::MessageId;
+use crate::store::{MessageId, NodeId};
 
 /// Longest message id.
 pub const MAX_ID_LENGTH: usize = 200;
@@ -141,6 +141,12 @@ fn walk(value: &Value, depth: usize, max: usize, nul: bool) -> Result<(), Proble
         Value::String(s) if nul && s.contains('\0') => Err(Problem::Nul),
         _ => Ok(()),
     }
+}
+
+/// Checks the bounds of a pin ([`CreateOptions::pinned_to`](crate::CreateOptions::pinned_to)): at most
+/// [`MAX_ID_LENGTH`] characters and no NUL, as a claim owner. A [`NodeId`] is never blank.
+pub(crate) fn check_pin(pin: &NodeId) -> Result<(), String> {
+    field("pinnedTo", pin.as_str(), MAX_ID_LENGTH)
 }
 
 fn field(what: &str, value: &str, max: usize) -> Result<(), String> {

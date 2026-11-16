@@ -232,6 +232,13 @@
       "direction": "response",
       "status": 200,
       "body": "{\"result\":\"leaseLost\"}"
+    },
+    {
+      "name": "complete-request-returned-pinned-create",
+      "operation": "complete",
+      "direction": "request",
+      "status": null,
+      "body": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":7,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"unchanged\"},\"effects\":{\"sends\":[],\"creates\":[{\"address\":\"vm/host-a\",\"state\":{},\"child\":true,\"pinnedTo\":\"host-a\"},{\"address\":\"free/f\",\"state\":{},\"child\":false}],\"cancels\":[],\"watches\":[],\"controls\":[]}}}"
     }
   ],
   "accepted": [
@@ -318,6 +325,13 @@
       "direction": "response",
       "input": "{\"result\":\"leased\",\"leases\":[{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":9223372036854775807,\"message\":{\"id\":\"m1\",\"to\":\"counter/a%20b%2Fc\",\"from\":\"sender/x\",\"type\":\"Add\",\"payload\":{\"n\":1,\"exact\":18446744073709551615,\"f\":0.5,\"nested\":{\"a\":[1,2]}},\"deliverAt\":\"2026-01-01T00:00:00.000001Z\",\"correlationId\":\"corr\",\"headers\":{\"trace\":\"t1\"},\"seq\":9223372036854775807,\"attempt\":4294967295,\"failures\":2,\"lostClaims\":1,\"lastError\":\"boom\",\"retry\":{\"maxAttempts\":4,\"backoff\":{\"kind\":\"exponential\",\"initial\":\"PT1S\",\"factor\":2.0,\"max\":\"PT60S\"}},\"causedBy\":\"m0\",\"retention\":{\"done\":{\"kind\":\"last\",\"count\":5},\"failed\":{\"kind\":\"remove\"}},\"notification\":true},\"state\":{\"count\":7},\"version\":1,\"claimedAt\":\"2026-01-01T00:00:01Z\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT0.000000002S\"},{\"actor\":\"counter/b\",\"epoch\":-9223372036854775808,\"message\":{\"id\":\"m2\",\"to\":\"counter/b\",\"from\":null,\"type\":\"Add\",\"payload\":null,\"deliverAt\":\"2026-01-01T00:00:00Z\",\"correlationId\":null,\"headers\":{},\"seq\":-9223372036854775808,\"attempt\":0,\"failures\":0,\"lostClaims\":0,\"lastError\":null,\"retry\":null,\"causedBy\":null,\"retention\":null,\"notification\":false},\"state\":{\"count\":7},\"version\":9223372036854775807,\"claimedAt\":\"2026-01-01T00:00:01Z\",\"leaseUntil\":\"2026-01-01T00:00:31.500Z\",\"ttl\":\"PT0.000000002S\"}]}",
       "expected": "lease-response-leased"
+    },
+    {
+      "name": "complete-request-create-pin-null",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":7,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"unchanged\"},\"effects\":{\"sends\":[],\"creates\":[{\"address\":\"vm/host-a\",\"state\":{},\"child\":true,\"pinnedTo\":\"host-a\"},{\"address\":\"free/f\",\"state\":{},\"child\":false,\"pinnedTo\":null}],\"cancels\":[],\"watches\":[],\"controls\":[]}}}",
+      "expected": "complete-request-returned-pinned-create"
     }
   ],
   "invalid": [
@@ -873,6 +887,34 @@
       "direction": "response",
       "input": "{\"result\":\"completed\",\"outcome\":{\"kind\":\"failed\",\"error\":\"e\"},\"cause\":null,\"version\":1,\"sent\":[],\"cancelled\":[]}",
       "stage": "conversion"
+    },
+    {
+      "name": "complete-request-create-pin-too-long",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":7,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"unchanged\"},\"effects\":{\"sends\":[],\"creates\":[{\"address\":\"vm/host-a\",\"state\":{},\"child\":true,\"pinnedTo\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}],\"cancels\":[],\"watches\":[],\"controls\":[]}}}",
+      "stage": "conversion"
+    },
+    {
+      "name": "complete-request-create-pin-with-nul",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":7,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"unchanged\"},\"effects\":{\"sends\":[],\"creates\":[{\"address\":\"vm/host-a\",\"state\":{},\"child\":true,\"pinnedTo\":\"a\\u0000b\"}],\"cancels\":[],\"watches\":[],\"controls\":[]}}}",
+      "stage": "conversion"
+    },
+    {
+      "name": "complete-request-create-pin-blank",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":7,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"unchanged\"},\"effects\":{\"sends\":[],\"creates\":[{\"address\":\"vm/host-a\",\"state\":{},\"child\":true,\"pinnedTo\":\" \"}],\"cancels\":[],\"watches\":[],\"controls\":[]}}}",
+      "stage": "decode"
+    },
+    {
+      "name": "complete-request-create-pin-not-a-string",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":7,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"unchanged\"},\"effects\":{\"sends\":[],\"creates\":[{\"address\":\"vm/host-a\",\"state\":{},\"child\":true,\"pinnedTo\":7}],\"cancels\":[],\"watches\":[],\"controls\":[]}}}",
+      "stage": "decode"
     }
   ]
 }

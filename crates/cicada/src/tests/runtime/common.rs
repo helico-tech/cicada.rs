@@ -571,8 +571,13 @@ impl<F: Faults> Backend for Faulty<F> {
         self.faults.list_types(&self.inner).await
     }
 
-    async fn create(&self, address: &ActorAddress, state: Value) -> StoreResult<CreateResult> {
-        self.inner.create(address, state).await
+    async fn create(
+        &self,
+        address: &ActorAddress,
+        state: Value,
+        pinned_to: Option<&NodeId>,
+    ) -> StoreResult<CreateResult> {
+        self.inner.create(address, state, pinned_to).await
     }
 
     async fn get(&self, address: &ActorAddress) -> StoreResult<Option<crate::store::ActorRecord>> {
@@ -645,8 +650,8 @@ impl<F: Faults> Backend for Faulty<F> {
         self.faults.release(&self.inner, address, epoch).await
     }
 
-    async fn next_due_at(&self, types: &BTreeSet<TypeName>) -> StoreResult<Option<Timestamp>> {
-        self.inner.next_due_at(types).await
+    async fn next_due_at(&self, types: &BTreeSet<TypeName>, owner: &NodeId) -> StoreResult<Option<Timestamp>> {
+        self.inner.next_due_at(types, owner).await
     }
 
     async fn pending(

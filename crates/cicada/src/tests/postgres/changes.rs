@@ -85,7 +85,12 @@ async fn spawn_children(store: &PostgresStore, parent: &ActorAddress, count: usi
         let mut commit = CommitRequest::new(parent.clone(), claim.epoch, claim.message.id, TurnOutcome::Done);
         commit.creates = chunk
             .iter()
-            .map(|i| ActorCreate { address: addr(&format!("{}-{i:03}", parent.key())), state: json!({}), child: true })
+            .map(|i| ActorCreate {
+                address: addr(&format!("{}-{i:03}", parent.key())),
+                state: json!({}),
+                child: true,
+                pinned_to: None,
+            })
             .collect();
         assert!(matches!(store.commit(commit).await.unwrap(), CommitResult::Committed { .. }));
     }
@@ -98,8 +103,8 @@ async fn a_commit_on_one_store_reaches_the_feeds_of_every_store_on_the_schema_an
     let reader = open(&db).await;
     let mut theirs = subscribe(&reader, "pgc/").await;
     let mut own = subscribe(&writer, "").await;
-    writer.create(&addr("a"), json!({})).await.unwrap();
-    writer.create(&addr("a"), json!({})).await.unwrap(); // exists: nothing
+    writer.create(&addr("a"), json!({}), None).await.unwrap();
+    writer.create(&addr("a"), json!({}), None).await.unwrap(); // exists: nothing
     writer.set_paused(&addr("a"), true).await.unwrap();
     // A commit that is rejected rolls back: neither its creates nor its wake-ups are sent.
     let node = NodeId::new("n").unwrap();
@@ -107,7 +112,7 @@ async fn a_commit_on_one_store_reaches_the_feeds_of_every_store_on_the_schema_an
     writer.set_paused(&addr("a"), false).await.unwrap();
     let claim = writer.claim_due(&BTreeSet::from([kind()]), &node, Duration::from_secs(60), 1).await.unwrap().remove(0);
     let mut commit = CommitRequest::new(addr("a"), claim.epoch, claim.message.id.clone(), TurnOutcome::Done);
-    commit.creates = vec![ActorCreate { address: addr("never"), state: json!({}), child: false }];
+    commit.creates = vec![ActorCreate { address: addr("never"), state: json!({}), child: false, pinned_to: None }];
     commit.sends = vec![OutgoingMessage::new(addr("absent"), "T", json!({}))];
     commit.state = StateChange::NewState(json!({"n": 1}));
     assert!(matches!(writer.commit(commit).await.unwrap(), CommitResult::Rejected(_)));
@@ -115,7 +120,7 @@ async fn a_commit_on_one_store_reaches_the_feeds_of_every_store_on_the_schema_an
     commit.state = StateChange::NewState(json!({"n": 1}));
     assert!(matches!(writer.commit(commit).await.unwrap(), CommitResult::Committed { .. }));
     writer.delete(&addr("a"), &MessageId::random()).await.unwrap();
-    writer.create(&addr("marker"), json!({})).await.unwrap();
+    writer.create(&addr("marker"), json!({}), None).await.unwrap();
     let expected = hints(&["a", "a", "a", "a", "a"]); // create, pause, resume, new state, delete
     assert_eq!(until(&mut theirs, &addr("marker")).await, expected);
     assert_eq!(until(&mut own, &addr("marker")).await, expected);
@@ -139,7 +144,7 @@ async fn feed_payloads_are_validated_as_a_whole_and_other_payloads_are_wake_ups(
     notify(&db, "pgc").await; // a wake-up of the type: not the feed's
     notify(&db, "").await;
     notify(&db, "!cicada-listener-probe").await;
-    store.create(&addr("marker"), json!({})).await.unwrap();
+    store.create(&addr("marker"), json!({}), None).await.unwrap();
     assert_eq!(until(&mut changes, &addr("marker")).await, vec![]);
     assert_eq!(timeout(Duration::from_secs(10), wake_ups.next()).await.unwrap(), Some(()), "the type's wake-up");
     // The create's `@` payload woke nobody: the next wake-up is this enqueue's.
@@ -156,10 +161,10 @@ async fn a_hundred_removed_actors_are_named_and_a_hundred_and_one_are_one_resync
     let other = open(&db).await;
     let mut changes = subscribe(&other, "").await;
     for (root, children) in [("p", 99), ("q", 100)] {
-        store.create(&addr(root), json!({})).await.unwrap();
+        store.create(&addr(root), json!({}), None).await.unwrap();
         spawn_children(&store, &addr(root), children).await;
     }
-    store.create(&addr("marker-1"), json!({})).await.unwrap();
+    store.create(&addr("marker-1"), json!({}), None).await.unwrap();
     assert_eq!(until(&mut changes, &addr("marker-1")).await.len(), 2 + 99 + 100, "each create");
     store.delete(&addr("p"), &MessageId::random()).await.unwrap(); // 100 actors
     store.delete(&addr("q"), &MessageId::random()).await.unwrap(); // 101 actors
@@ -168,7 +173,7 @@ async fn a_hundred_removed_actors_are_named_and_a_hundred_and_one_are_one_resync
     }
     assert_eq!(next(&mut changes).await, Some(ActorChange::Resync));
     // Hints after a resync are read against a fresh receiver: write the marker now.
-    store.create(&addr("marker-2"), json!({})).await.unwrap();
+    store.create(&addr("marker-2"), json!({}), None).await.unwrap();
     assert_eq!(until(&mut changes, &addr("marker-2")).await, vec![]);
     db.cleanup().await;
 }
@@ -178,9 +183,9 @@ async fn a_re_run_transaction_starts_with_an_empty_collection() {
     let db = test_db!("c");
     let store = open(&db).await;
     let mut changes = subscribe(&store, "").await;
-    store.create(&addr("p"), json!({})).await.unwrap();
+    store.create(&addr("p"), json!({}), None).await.unwrap();
     spawn_children(&store, &addr("p"), 3).await;
-    store.create(&addr("marker-1"), json!({})).await.unwrap();
+    store.create(&addr("marker-1"), json!({}), None).await.unwrap();
     until(&mut changes, &addr("marker-1")).await;
     // The first attempt removes the whole tree, `p-001` included, and rolls back. Before the re-run, `p-001` leaves
     // the tree, so the attempt that commits never touches it: a collection that survived the re-run would report it.
@@ -195,7 +200,7 @@ async fn a_re_run_transaction_starts_with_an_empty_collection() {
     store.delete(&addr("p"), &MessageId::random()).await.unwrap();
     assert!(store.rerun_next_commit.lock().unwrap().is_none(), "the fault ran");
     assert!(store.get(&addr("p-001")).await.unwrap().is_some(), "the re-run left it");
-    store.create(&addr("marker-2"), json!({})).await.unwrap();
+    store.create(&addr("marker-2"), json!({}), None).await.unwrap();
     assert_eq!(until(&mut changes, &addr("marker-2")).await, hints(&["p", "p-000", "p-002"]));
     db.cleanup().await;
 }
@@ -224,16 +229,16 @@ async fn a_commit_that_fails_with_54000_is_unavailable_and_a_statement_that_does
     let mut changes = subscribe(&store, "").await;
     raise_on_insert(&db, "full_queue", "at-commit", "54000", true).await;
     raise_on_insert(&db, "too_long", "at-statement", "54000", false).await;
-    match store.create(&addr("at-commit"), json!({})).await {
+    match store.create(&addr("at-commit"), json!({}), None).await {
         Err(e @ StoreError::Unavailable(_)) => assert!(format!("{e:?}").contains("injected 54000"), "{e:?}"),
         other => panic!("expected unavailable, got {other:?}"),
     }
-    match store.create(&addr("at-statement"), json!({})).await {
+    match store.create(&addr("at-statement"), json!({}), None).await {
         Err(StoreError::Invalid(message)) => assert!(message.contains("injected 54000"), "{message}"),
         other => panic!("expected invalid, got {other:?}"),
     }
     assert_eq!(store.get(&addr("at-commit")).await.unwrap(), None);
-    store.create(&addr("marker"), json!({})).await.unwrap();
+    store.create(&addr("marker"), json!({}), None).await.unwrap();
     assert_eq!(until(&mut changes, &addr("marker")).await, vec![], "no partial effect, no hint");
     db.cleanup().await;
 }
@@ -257,7 +262,7 @@ async fn a_cancelled_caller_s_commit_that_lands_is_reported() {
     .await;
     let task = {
         let store = store.clone();
-        tokio::spawn(async move { store.create(&addr("slow"), json!({})).await })
+        tokio::spawn(async move { store.create(&addr("slow"), json!({}), None).await })
     };
     tokio::time::sleep(Duration::from_millis(400)).await; // inside the slow COMMIT
     task.abort();
@@ -287,7 +292,7 @@ async fn a_lost_listener_connection_resyncs_once_listen_succeeded_again_and_hint
     assert_eq!(killed, vec![true], "one listener backend terminated");
     assert_eq!(next(&mut changes).await, Some(ActorChange::Resync), "after the reconnect");
     assert!(store.is_listening());
-    store.create(&addr("after"), json!({})).await.unwrap();
+    store.create(&addr("after"), json!({}), None).await.unwrap();
     assert_eq!(next(&mut changes).await, Some(ActorChange::changed(addr("after"))));
     db.cleanup().await;
 }
@@ -304,7 +309,7 @@ async fn a_flood_of_wake_ups_makes_a_slow_reader_resync_and_hints_go_on() {
         .execute(&mut c)
         .await
         .unwrap();
-    store.create(&addr("marker"), json!({})).await.unwrap();
+    store.create(&addr("marker"), json!({}), None).await.unwrap();
     // The listener fed all of it to the hub once the marker's batch is there.
     timeout(Duration::from_secs(20), async {
         loop {
@@ -318,7 +323,7 @@ async fn a_flood_of_wake_ups_makes_a_slow_reader_resync_and_hints_go_on() {
     .await
     .expect("the marker's batch");
     assert_eq!(next(&mut changes).await, Some(ActorChange::Resync), "lagged");
-    store.create(&addr("after"), json!({})).await.unwrap();
+    store.create(&addr("after"), json!({}), None).await.unwrap();
     assert_eq!(until(&mut changes, &addr("after")).await, vec![]);
     db.cleanup().await;
 }
@@ -354,7 +359,7 @@ async fn closing_the_store_ends_its_streams_and_a_later_subscription_and_never_r
     assert_eq!(listener.len(), 1, "one listener backend");
     let listener = listener[0];
     assert_ne!(listener, probe, "the probe has its own connection");
-    store.create(&addr("queued"), json!({})).await.unwrap();
+    store.create(&addr("queued"), json!({}), None).await.unwrap();
     store.close().await;
     assert_eq!(next(&mut changes).await, None);
     let mut later = ActorChanges::new(store.changes(), "");
@@ -372,7 +377,7 @@ async fn closing_the_store_ends_its_streams_and_a_later_subscription_and_never_r
         left == 0
     })
     .await;
-    assert!(matches!(store.create(&addr("x"), json!({})).await, Err(StoreError::Unavailable(_))));
+    assert!(matches!(store.create(&addr("x"), json!({}), None).await, Err(StoreError::Unavailable(_))));
     db.cleanup().await;
 }
 
@@ -407,7 +412,7 @@ async fn a_close_cancelled_while_a_connection_is_borrowed_is_finished_by_a_later
     assert!(pool.is_closed(), "the cancelled close leaves the pool closed to acquisition");
     assert_eq!(next(&mut changes).await, None);
     assert_eq!(next(&mut ActorChanges::new(store.changes(), "")).await, None);
-    assert!(matches!(store.create(&addr("x"), json!({})).await, Err(StoreError::Unavailable(_))));
+    assert!(matches!(store.create(&addr("x"), json!({}), None).await, Err(StoreError::Unavailable(_))));
     assert!(matches!(store.get(&addr("x")).await, Err(StoreError::Unavailable(_))));
     assert!(pool.size() > 0, "the borrowed connection is still counted");
     // Two later callers: the one that holds the gate is cancelled and the other one takes over.
@@ -459,7 +464,7 @@ async fn a_close_future_that_is_never_polled_leaves_the_store_open() {
     drop(store.close());
     assert!(!store.pool().is_closed());
     let mut changes = subscribe(&store, "").await;
-    store.create(&addr("after"), json!({})).await.unwrap();
+    store.create(&addr("after"), json!({}), None).await.unwrap();
     assert_eq!(until(&mut changes, &addr("after")).await, vec![]);
     db.cleanup().await;
 }
@@ -490,7 +495,7 @@ fn a_close_overtaking_another_after_its_flag_runs_the_whole_stop_and_cleanup() {
             assert_eq!(store.pool().size(), 0);
             assert_eq!(next(&mut changes).await, None);
             assert_eq!(next(&mut ActorChanges::new(store.changes(), "")).await, None);
-            assert!(matches!(store.create(&addr("x"), json!({})).await, Err(StoreError::Unavailable(_))));
+            assert!(matches!(store.create(&addr("x"), json!({}), None).await, Err(StoreError::Unavailable(_))));
         });
         go.send(()).unwrap();
         first.join().unwrap();

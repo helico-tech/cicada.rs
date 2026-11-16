@@ -27,6 +27,7 @@ pub enum RemoveTypeResult {
 }
 
 /// Result of creating an instance in the store.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum CreateResult {
     /// The instance did not exist and was created.

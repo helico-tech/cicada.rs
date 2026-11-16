@@ -30,7 +30,7 @@ pub async fn registry_a_create_of_an_unregistered_type_is_refused_and_creates_no
     store_test(backend, async |t| {
         let store = t.store();
         let a = address("nosuch/x");
-        assert_eq!(store.create(&a, json!({})).await.unwrap(), CreateResult::NoSuchType);
+        assert_eq!(store.create(&a, json!({}), None).await.unwrap(), CreateResult::NoSuchType);
         assert_eq!(store.get(&a).await.unwrap(), None);
         assert!(t.claim_types(&[&type_name("nosuch")]).await.is_empty());
     })
@@ -52,7 +52,7 @@ pub async fn registry_a_commit_creating_an_unregistered_type_is_rejected_applies
         let result = t
             .commit(CommitRequest {
                 state: crate::store::StateChange::NewState(json!({"n": 2})),
-                creates: vec![ActorCreate { address: ghost.clone(), state: json!({}), child: false }],
+                creates: vec![ActorCreate { address: ghost.clone(), state: json!({}), child: false, pinned_to: None }],
                 ..done(&c)
             })
             .await;
@@ -89,7 +89,12 @@ pub async fn registry_removing_a_type_racing_a_commit_that_creates_an_instance_o
                     async move {
                         if i == 0 {
                             peer.commit(CommitRequest {
-                                creates: vec![ActorCreate { address: child, state: json!({}), child: false }],
+                                creates: vec![ActorCreate {
+                                    address: child,
+                                    state: json!({}),
+                                    child: false,
+                                    pinned_to: None,
+                                }],
                                 ..done(&c)
                             })
                             .await
@@ -347,7 +352,11 @@ pub async fn pause_a_paused_actor_is_not_claimed_and_keeps_queueing_until_resume
         let m = t.send(&a).await;
         assert!(t.claim().await.is_empty(), "paused: not claimed");
         assert_eq!(t.pending(&a).await.len(), 1, "messages still queue up");
-        assert_eq!(store.next_due_at(&typeset()).await.unwrap(), None, "no due time for a paused actor");
+        assert_eq!(
+            store.next_due_at(&typeset(), &crate::tests::owner()).await.unwrap(),
+            None,
+            "no due time for a paused actor"
+        );
         assert!(store.set_paused(&a, false).await.unwrap());
         assert!(!store.get(&a).await.unwrap().expect("exists").paused);
         assert_eq!(t.claim_one().await.message.id, m.id, "resume makes it claimable");
@@ -404,7 +413,10 @@ pub async fn purge_gives_purged_to_pending_messages_keeps_the_running_one_and_th
         t.commit_ok(done(&c)).await;
         assert_eq!(status_of(&*store, &running.id).await, Some(OutcomeStatus::Done), "the running one finishes");
         assert_eq!(store.purge(&a).await.unwrap(), Some(0));
-        assert!(store.next_due_at(&typeset()).await.unwrap().is_none(), "nothing is due any more");
+        assert!(
+            store.next_due_at(&typeset(), &crate::tests::owner()).await.unwrap().is_none(),
+            "nothing is due any more"
+        );
     })
     .await
 }

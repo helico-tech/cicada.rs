@@ -557,7 +557,7 @@ async fn load_failures_and_undecodable_messages_are_not_retried() {
     bad.retry = Some(exponential4());
     let bad = enqueue(test.store(), bad).await;
     // Undecodable state.
-    test.store().create(&addr(&chore("broken")), json!({"log": 1})).await.unwrap();
+    test.store().create(&addr(&chore("broken")), json!({"log": 1}), None).await.unwrap();
     let to_broken = test
         .send_with(&chore("broken"), ChoreMsg::Attempt(fail_until(0)), SendOptions::new().retry(exponential4()))
         .await;

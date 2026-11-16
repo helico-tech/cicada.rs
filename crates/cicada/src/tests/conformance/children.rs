@@ -19,12 +19,12 @@ fn at(key: &str) -> ActorAddress {
 
 /// A child create of `address` with `state`.
 fn child(address: &ActorAddress, state: Value) -> ActorCreate {
-    ActorCreate { address: address.clone(), state, child: true }
+    ActorCreate { address: address.clone(), state, child: true, pinned_to: None }
 }
 
 /// An independent create of `address` with `state`.
 fn independent(address: &ActorAddress, state: Value) -> ActorCreate {
-    ActorCreate { address: address.clone(), state, child: false }
+    ActorCreate { address: address.clone(), state, child: false, pinned_to: None }
 }
 
 /// Runs a turn of `parent` that creates the instances of `keys` as its children, and returns their addresses.

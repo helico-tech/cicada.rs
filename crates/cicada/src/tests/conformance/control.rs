@@ -52,11 +52,11 @@ fn delete(actor: &ActorAddress) -> Control {
 }
 
 fn independent(address: &ActorAddress, state: Value) -> ActorCreate {
-    ActorCreate { address: address.clone(), state, child: false }
+    ActorCreate { address: address.clone(), state, child: false, pinned_to: None }
 }
 
 fn child(address: &ActorAddress, state: Value) -> ActorCreate {
-    ActorCreate { address: address.clone(), state, child: true }
+    ActorCreate { address: address.clone(), state, child: true, pinned_to: None }
 }
 
 fn to(address: &ActorAddress) -> OutgoingMessage {
@@ -634,7 +634,7 @@ pub async fn control_a_restart_of_an_actor_that_is_not_there_racing_a_create_end
                         if i == 0 {
                             Err(peer.commit(restart).await)
                         } else {
-                            Ok(peer.create(&x, json!({"outside": true})).await)
+                            Ok(peer.create(&x, json!({"outside": true}), None).await)
                         }
                     }
                 })

@@ -72,7 +72,7 @@ async fn connections_stay_on_the_stores_schema_across_read_only_and_rolled_back_
     let setup = db.open().await;
     let a = addr("pg/a");
     setup.register(crate::tests::conformance::type_def(a.type_name(), "test")).await.unwrap();
-    setup.create(&a, json!({})).await.unwrap();
+    setup.create(&a, json!({}), None).await.unwrap();
     let EnqueueResult::Enqueued(m) = setup.enqueue(OutgoingMessage::new(a.clone(), "T", json!(1))).await.unwrap()
     else {
         panic!("enqueued")
@@ -202,9 +202,9 @@ async fn wake_ups_follow_enqueues_sends_and_releases_of_the_requested_types_on_a
     let a = addr("pg/a");
     let b = addr("pg-other/b");
     writer.register(crate::tests::conformance::type_def(a.type_name(), "test")).await.unwrap();
-    writer.create(&a, json!({})).await.unwrap();
+    writer.create(&a, json!({}), None).await.unwrap();
     writer.register(crate::tests::conformance::type_def(b.type_name(), "test")).await.unwrap();
-    writer.create(&b, json!({})).await.unwrap();
+    writer.create(&b, json!({}), None).await.unwrap();
     assert!(none_within(&mut received, short).await, "creates do not notify");
 
     // An enqueue on another node.
@@ -278,7 +278,7 @@ async fn the_wake_up_listener_reconnects_after_losing_its_connection() {
 
     let a = addr("pg/a");
     writer.register(crate::tests::conformance::type_def(a.type_name(), "test")).await.unwrap();
-    writer.create(&a, json!({})).await.unwrap();
+    writer.create(&a, json!({}), None).await.unwrap();
     writer.enqueue(OutgoingMessage::new(a, "T", json!(1))).await.unwrap();
     assert!(some_within(&mut received, Duration::from_secs(2)).await, "notifications arrive after reconnecting");
     collector.abort();
@@ -292,7 +292,7 @@ async fn a_hidden_record_is_minimal_without_payload_headers_correlation_id_or_er
     let store = db.open().await;
     let a = addr("pg/a");
     store.register(crate::tests::conformance::type_def(a.type_name(), "test")).await.unwrap();
-    store.create(&a, json!({})).await.unwrap();
+    store.create(&a, json!({}), None).await.unwrap();
     let node = NodeId::new("n").unwrap();
     // The first record is removed as soon as it fails; the second is hidden a moment later and stripped by the sweep.
     let hide_later = Retention { done: None, failed: Some(Keep::For { age: Duration::from_millis(1) }) };
@@ -357,9 +357,9 @@ async fn a_resume_by_a_commit_wakes_the_nodes_of_the_type_and_a_pause_does_not()
     let a = addr("pg/a");
     let b = addr("pg-other/b");
     writer.register(crate::tests::conformance::type_def(a.type_name(), "test")).await.unwrap();
-    writer.create(&a, json!({})).await.unwrap();
+    writer.create(&a, json!({}), None).await.unwrap();
     writer.register(crate::tests::conformance::type_def(b.type_name(), "test")).await.unwrap();
-    writer.create(&b, json!({})).await.unwrap();
+    writer.create(&b, json!({}), None).await.unwrap();
     assert!(writer.set_paused(&a, true).await.unwrap());
     assert!(matches!(
         writer.enqueue(OutgoingMessage::new(a.clone(), "T", json!(1))).await,

@@ -1,4 +1,4 @@
-//! The PostgreSQL schema and its versioned migrations; the schema is at version 7.
+//! The PostgreSQL schema and its versioned migrations; the schema is at version 8.
 //!
 //! The tables of the architecture (`actor_types`, `actors`, `messages`, `outcomes`, `nodes`) plus two sequences for the
 //! store-wide `seq` and epoch counters. JSON values are `jsonb`, instants `timestamptz` (microsecond precision, the
@@ -23,7 +23,9 @@
 //! migrated database refuses it. From version 6 on the store names the columns it reads, so a later migration that
 //! only adds a column with a default can be additive again. Migration 7 is: it adds the nullable details of a node
 //! (ADR 0048), a node of version 6 that keeps running writes its row without them and leaves another writer's details
-//! in place, and it cannot open the migrated database, so it cannot restart.
+//! in place, and it cannot open the migrated database, so it cannot restart. Migration 8 adds the pin of an actor
+//! (ADR 0052) and is not safe with old nodes: a node of version 7 that keeps running claims pinned actors whatever their
+//! pin, so every old node is stopped before the migration.
 //!
 //! A statement of a migration that violates a constraint (SQLSTATE class `23`, such as two old addresses that become one
 //! in migration 3) fails with [`StoreError::Invalid`], which names the version it could not reach and holds
@@ -172,6 +174,13 @@ const MIGRATIONS: &[&[&str]] = &[
         "ALTER TABLE {s}.nodes ADD COLUMN cicada_version text",
         "ALTER TABLE {s}.nodes ADD COLUMN label text",
     ],
+    // 8: placement (ADR 0052). `actors.pinned_to` is the only claim owner that may claim the instance, null for any;
+    // every existing actor is unpinned. `actors_pinned_due` serves the claim scan and `next_due_at` of one owner next to
+    // `actors_due`. Not additive: a node of version 7 that keeps running ignores pins (see the module docs).
+    &[
+        r#"ALTER TABLE {s}.actors ADD COLUMN pinned_to text COLLATE "C""#,
+        "CREATE INDEX actors_pinned_due ON {s}.actors (pinned_to, type, next_due_at) WHERE next_due_at IS NOT NULL AND NOT paused",
+    ],
 ];
 
 /// The schema version this code writes.
@@ -307,7 +316,7 @@ mod tests {
     }
 
     #[test]
-    fn the_schema_is_at_version_7() {
-        assert_eq!(VERSION, 7);
+    fn the_schema_is_at_version_8() {
+        assert_eq!(VERSION, 8);
     }
 }

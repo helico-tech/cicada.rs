@@ -42,7 +42,7 @@ pub use runtime::{
     WorkerBuilder, WorkerConfig, WorkerError,
 };
 pub use store::Store;
-pub use turn::{HandlerError, HandlerResult, SendOptions, Turn};
+pub use turn::{CreateOptions, HandlerError, HandlerResult, SendOptions, Turn};
 pub use watch::{Failed, FailureCause, StopCause, Stopped, WatchTarget};
 
 /// Everything needed to define actor types.
@@ -56,5 +56,5 @@ pub mod prelude {
     pub use crate::retry::{Backoff, RetryPolicy};
     pub use crate::runtime::ActorSystem;
     pub use crate::store::MessageId;
-    pub use crate::turn::{HandlerError, HandlerResult, SendOptions, Turn};
+    pub use crate::turn::{CreateOptions, HandlerError, HandlerResult, SendOptions, Turn};
 }

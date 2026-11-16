@@ -1001,6 +1001,9 @@ Options:
       --state <STATE>
           Initial state as JSON; `'{}'` for a type that keeps no data
 
+      --pinned-to <ID>
+          Pin the actor to the node or worker with this id: only it runs the actor's turns, and its messages wait while no executor with that id polls the type. An existing actor keeps its own pin
+
   -h, --help
           Print help (see a summary with '-h')
 

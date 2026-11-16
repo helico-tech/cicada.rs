@@ -18,7 +18,7 @@ use cicada::contract::Contract;
 use cicada::prelude::*;
 use cicada::store::{Delivery, MessageId, NodeId, OutcomeStatus, RemoveTypeResult};
 use cicada::time::parse_instant;
-use cicada::{ActorAddress, WatchTarget};
+use cicada::{ActorAddress, ActorSystem, CreateOptions, WatchTarget};
 use cicada_axum::actor_api;
 use cicada_client::{ActorClient, CancelOutcome, ClientError};
 use common::*;
@@ -858,4 +858,88 @@ fn the_client_only_calls_documented_routes() {
     for (method, path) in used {
         assert!(document["paths"][path][method].is_object(), "{method} {path}");
     }
+}
+
+fn pin(id: &str) -> CreateOptions {
+    CreateOptions::new().pinned_to(NodeId::new(id).unwrap())
+}
+
+/// Scenarios: Wire and client compatibility; Operator diagnosis (ADR 0052). A pin travels as `pinnedTo`, the create
+/// answers only address and created, so a caller reads the pin back; an existing actor keeps its own; the state listing
+/// carries it; a pin beyond its bounds and an unknown field are `400`.
+#[tokio::test]
+async fn a_pinned_create_is_read_back_and_bad_pins_are_bad_requests() {
+    let (actors, base, _) = client_test(|r| r).await;
+    let created = actors.create_with(&acme(), &AccountState::default(), pin("host-a")).await.unwrap();
+    assert!(created.created);
+    assert_eq!(actors.get(&acme()).await.unwrap().unwrap().pinned_to, Some(NodeId::new("host-a").unwrap()));
+    let address = acme().address().unwrap();
+    let again = actors.create_actor_with(&address, json!({}), pin("host-b")).await.unwrap();
+    assert!(!again.created, "exists");
+    assert_eq!(actors.get(&acme()).await.unwrap().unwrap().pinned_to, Some(NodeId::new("host-a").unwrap()));
+    actors.create(&account("acme", 8), &AccountState::default()).await.unwrap();
+    let states = actors.list_actors_with_state("account/", None, None).await.unwrap().items;
+    let pins: Vec<Option<&str>> = states.iter().map(|v| v.pinned_to.as_ref().map(NodeId::as_str)).collect();
+    assert_eq!(pins, [Some("host-a"), None]);
+
+    let other = account("acme", 9);
+    for bad in [pin(&"x".repeat(201)), pin("a\0b")] {
+        let e = actors.create_with(&other, &AccountState::default(), bad).await.unwrap_err();
+        assert_eq!(e.status(), Some(400), "{e:?}");
+    }
+    let url = format!("{base}/actors/account/acme:9");
+    let http = reqwest::Client::new();
+    for body in [r#"{"state":{},"pinnedTo":""}"#, r#"{"state":{},"pinned":"host-a"}"#, r#"{"state":{},"pinnedTo":7}"#] {
+        let response = http.put(&url).header("content-type", "application/json").body(body).send().await.unwrap();
+        assert_eq!(response.status(), 400, "{body}");
+    }
+    assert!(actors.get(&other).await.unwrap().is_none(), "nothing was created");
+    let response =
+        http.put(&url).header("content-type", "application/json").body(r#"{"state":{},"pinnedTo":null}"#).send();
+    assert_eq!(response.await.unwrap().status(), 201, "null is no pin");
+    assert_eq!(actors.get(&other).await.unwrap().unwrap().pinned_to, None);
+}
+
+/// Scenario: Local and remote placement share semantics. A worker leasing as `worker-b` through server `server-a` runs
+/// what is pinned to it and what is unpinned, never what is pinned to the server, and needs no node row.
+#[tokio::test]
+async fn a_worker_over_http_claims_under_its_own_id_not_the_servers() {
+    let store = cicada::Store::memory();
+    let config = cicada::runtime::NodeConfig {
+        node_id: NodeId::new("server-a").unwrap(),
+        poll_interval: Duration::from_millis(50),
+        ..Default::default()
+    };
+    let server = ActorSystem::builder(store).config(config).build();
+    server.start().await.unwrap();
+    let base = serve(actor_api(server.clone())).await;
+    let actors = ActorClient::new(&base);
+    let worker_config = cicada::runtime::WorkerConfig {
+        worker_id: NodeId::new("worker-b").unwrap(),
+        poll_interval: Duration::from_millis(20),
+        ..Default::default()
+    };
+    let worker =
+        cicada::runtime::Worker::builder(ActorClient::new(&base)).host(AccountActor).config(worker_config).build();
+    worker.start().await.expect("the worker starts over HTTP");
+    let (mine, servers, free) = (account("p", 1), account("p", 2), account("p", 3));
+    actors.create_with(&mine, &AccountState::default(), pin("worker-b")).await.unwrap();
+    actors.create_with(&servers, &AccountState::default(), pin("server-a")).await.unwrap();
+    actors.create(&free, &AccountState::default()).await.unwrap();
+    let mut held = None;
+    for r in [&mine, &servers, &free] {
+        let receipt = actors.send(r, AccountMsg::Deposit { amount: 5 }).await.unwrap();
+        if r == &servers {
+            held = Some(receipt.id);
+        }
+    }
+    eventually(async || balance(&actors, &mine).await == Some(5) && balance(&actors, &free).await == Some(5)).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(balance(&actors, &servers).await, Some(0), "pinned to the server, which hosts nothing");
+    let status = actors.status(&held.unwrap()).await.unwrap().unwrap();
+    assert_eq!(status.status, MessageState::Pending);
+    let nodes = actors.nodes().await.unwrap();
+    assert!(nodes.iter().all(|n| n.id.as_str() != "worker-b"), "no node row for the worker: {nodes:?}");
+    worker.stop().await;
+    server.stop().await;
 }

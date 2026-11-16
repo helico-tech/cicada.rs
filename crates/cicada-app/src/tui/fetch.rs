@@ -233,11 +233,16 @@ pub fn actor_screen(
         Some(parent) => fact("Parent", parent.to_string()),
         None => Fact { label: "Parent", value: "none".to_owned(), tone: Tone::Dim },
     };
+    let pin_fact = match &view.pinned_to {
+        Some(pin) => fact("Pinned to", pin.to_string()),
+        None => Fact { label: "Pinned to", value: "none".to_owned(), tone: Tone::Dim },
+    };
     let overview = Overview {
         subject: Item::Actor(view.address.clone()),
         facts: vec![
             fact("Type", &view.type_name),
             parent_fact,
+            pin_fact,
             fact("Version", view.version.to_string()),
             fact("Created", when(view.created_at)),
             Fact { label: "Mailbox", value: format!("{mailbox_state}, {pending} pending"), tone },

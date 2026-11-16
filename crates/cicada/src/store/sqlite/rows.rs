@@ -67,6 +67,7 @@ pub(crate) fn actor_record(row: &SqliteRow) -> StoreResult<ActorRecord> {
         created_at: instant(col(row, "created_at")?),
         paused: col::<i64>(row, "paused")? != 0,
         parent: col::<Option<String>>(row, "parent")?.map(|p| address(&p)).transpose()?,
+        pinned_to: col::<Option<String>>(row, "pinned_to")?.map(node_id).transpose()?,
     })
 }
 

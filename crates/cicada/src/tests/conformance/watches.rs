@@ -392,7 +392,7 @@ pub async fn watches_a_stop_and_a_delete_write_one_stopped_per_watcher_of_each_r
         t.send(&p).await;
         let c = t.claim_one().await;
         let kid = at("c");
-        let child = ActorCreate { address: kid.clone(), state: json!({}), child: true };
+        let child = ActorCreate { address: kid.clone(), state: json!({}), child: true, pinned_to: None };
         t.commit_ok(CommitRequest { creates: vec![child], ..done(&c) }).await;
         watch(&*store, p.as_str(), &w).await;
         watch(&*store, kid.as_str(), &w).await;
@@ -417,7 +417,7 @@ pub async fn watches_a_stop_and_a_delete_write_one_stopped_per_watcher_of_each_r
         t.send(&q).await;
         let c = t.claim_one().await;
         let d = at("d");
-        let child = ActorCreate { address: d.clone(), state: json!({}), child: true };
+        let child = ActorCreate { address: d.clone(), state: json!({}), child: true, pinned_to: None };
         t.commit_ok(CommitRequest { creates: vec![child], ..done(&c) }).await;
         watch(&*store, q.as_str(), &w).await;
         watch(&*store, d.as_str(), &w).await;
@@ -447,7 +447,7 @@ pub async fn watches_a_watcher_removed_in_the_same_transaction_gets_nothing_and_
             t.send(&p).await;
             let c = t.claim_one().await;
             let kid = at(&format!("p{round}-kid"));
-            let child = ActorCreate { address: kid.clone(), state: json!({}), child: true };
+            let child = ActorCreate { address: kid.clone(), state: json!({}), child: true, pinned_to: None };
             let changes = vec![set(kid.as_str()), set(other.as_str()), set(p.as_str())];
             t.commit_ok(CommitRequest { creates: vec![child], watches: changes, ..done(&c) }).await;
             assert_eq!(watches(&*store, Some(&p), None, 100).await.len(), 3);
@@ -538,7 +538,7 @@ pub async fn watches_the_notifications_of_one_event_are_numbered_in_order_one_pe
         t.send(&p).await;
         let c = t.claim_one().await;
         let kid = at("c");
-        let child = ActorCreate { address: kid.clone(), state: json!({}), child: true };
+        let child = ActorCreate { address: kid.clone(), state: json!({}), child: true, pinned_to: None };
         t.commit_ok(CommitRequest { creates: vec![child], ..done(&c) }).await;
         let (b, a) = (watcher(t, "b").await, watcher(t, "a").await);
         watch(&*store, kid.as_str(), &a).await;

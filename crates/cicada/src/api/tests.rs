@@ -194,13 +194,35 @@ fn problems_and_create_requests() {
         serde_json::to_string(&p).unwrap(),
         r#"{"type":"urn:cicada:problem:bad-request","title":"Bad request","status":400,"detail":null,"instance":"/actors"}"#
     );
-    assert_eq!(serde_json::to_string(&CreateActorRequest { state: json!({}) }).unwrap(), r#"{"state":{}}"#);
+    assert_eq!(
+        serde_json::to_string(&CreateActorRequest { state: json!({}), pinned_to: None }).unwrap(),
+        r#"{"state":{}}"#
+    );
     assert!(serde_json::from_str::<CreateActorRequest>(r#"{"stat": 1}"#).is_err());
     assert!(
         serde_json::from_str::<CreateActorRequest>("{}").unwrap_err().to_string().contains("missing field `state`")
     );
     // Null decodes, so that the node can refuse it as an invalid state (422) rather than a malformed body.
     assert_eq!(serde_json::from_str::<CreateActorRequest>(r#"{"state": null}"#).unwrap().state, Value::Null);
+    // A pin (ADR 0052): written when set, absent or null for none, never blank.
+    let pinned = CreateActorRequest { state: json!({}), pinned_to: Some(NodeId::new("host-a").unwrap()) };
+    assert_eq!(serde_json::to_string(&pinned).unwrap(), r#"{"state":{},"pinnedTo":"host-a"}"#);
+    let read = |text: &str| serde_json::from_str::<CreateActorRequest>(text).map(|r| r.pinned_to);
+    assert_eq!(read(r#"{"state":{},"pinnedTo":"host-a"}"#).unwrap(), pinned.pinned_to);
+    assert_eq!(read(r#"{"state":{},"pinnedTo":null}"#).unwrap(), None);
+    assert!(read(r#"{"state":{},"pinnedTo":" "}"#).is_err());
+}
+
+/// An actor view writes its pin, `null` for none, and reads a view of an older server without one as none.
+#[test]
+fn an_actor_view_writes_its_pin_and_reads_an_older_view_without_one() {
+    let older = json!({"address": "a/b", "type": "a", "state": {}, "version": 0,
+        "createdAt": "2026-01-01T00:00:00Z", "paused": false, "parent": null});
+    let view: ActorView = serde_json::from_value(older).unwrap();
+    assert_eq!(view.pinned_to, None);
+    assert_eq!(serde_json::to_value(&view).unwrap()["pinnedTo"], Value::Null, "written as null");
+    let pinned = ActorView { pinned_to: Some(NodeId::new("host-a").unwrap()), ..view };
+    assert_eq!(serde_json::to_value(&pinned).unwrap()["pinnedTo"], "host-a");
 }
 
 /// type-registry, Scenarios: A registration request, A malformed request and Client-supplied identity fields.

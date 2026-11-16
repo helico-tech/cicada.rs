@@ -129,8 +129,8 @@ fn full_report() -> TurnReport {
                 WatchChange { target: WatchTarget::parse("*").unwrap(), set: false },
             ],
             creates: vec![
-                ActorCreate { address: addr("child/c"), state: json!({}), child: true },
-                ActorCreate { address: addr("free/f"), state: json!([1]), child: false },
+                ActorCreate { address: addr("child/c"), state: json!({}), child: true, pinned_to: None },
+                ActorCreate { address: addr("free/f"), state: json!([1]), child: false, pinned_to: None },
             ],
             sends: vec![send, at_send, now_send],
             cancels: vec![id("p1"), id("p2")],
@@ -442,7 +442,7 @@ fn the_schema_requires_exactly_the_fields_the_decoder_requires() {
             state: StateReport::Set(Value::Null),
             effects: TurnEffects {
                 sends: vec![send],
-                creates: vec![ActorCreate { address: addr("c/d"), state: json!({}), child: false }],
+                creates: vec![ActorCreate { address: addr("c/d"), state: json!({}), child: false, pinned_to: None }],
                 cancels: vec![id("p")],
                 watches: vec![WatchChange { target: WatchTarget::parse("*").unwrap(), set: true }],
                 controls: vec![Control { effect: ControlEffect::Pause, actor: addr("e/f") }],
@@ -687,6 +687,47 @@ fn contradictory_deliveries_and_causes_fail_conversion() {
         completed(json!({"kind": "rescheduled", "error": "e", "deliverAt": null, "delay": null}), Value::Null);
     let CompleteTurnResult::Completed(c) = CompleteTurnResult::try_from(null_delivery).unwrap() else { panic!() };
     assert_eq!(c.outcome, TurnOutcome::Rescheduled { delivery: Delivery::Now, error: "e".into() });
+}
+
+/// Scenario: Wire and client compatibility (ADR 0052). A returned create carries its pin as `pinnedTo`, an unpinned one
+/// leaves it out, absent and null read as none, and a pin beyond the bounds of a claim owner fails conversion.
+#[test]
+fn a_returned_create_carries_its_pin_and_a_bad_pin_fails_conversion() {
+    let pin = NodeId::new("host-a").unwrap();
+    let pinned = ActorCreate { address: addr("c/d"), state: json!({}), child: true, pinned_to: Some(pin.clone()) };
+    let unpinned = ActorCreate { pinned_to: None, ..pinned.clone() };
+    let view =
+        TurnEffectsView::from(TurnEffects { creates: vec![pinned.clone(), unpinned.clone()], ..Default::default() });
+    assert_eq!(
+        serde_json::to_value(&view).unwrap()["creates"],
+        json!([{"address": "c/d", "state": {}, "child": true, "pinnedTo": "host-a"},
+            {"address": "c/d", "state": {}, "child": true}])
+    );
+    assert_eq!(TurnEffects::try_from(wire(&view)).unwrap().creates, [pinned, unpinned]);
+    for absent in [
+        json!({"address": "c/d", "state": {}, "child": false}),
+        json!({"address": "c/d", "state": {}, "child": false, "pinnedTo": null}),
+    ] {
+        assert_eq!(decode::<ActorCreateView>(absent).unwrap().pinned_to, None);
+    }
+    assert!(decode::<ActorCreateView>(json!({"address": "c/d", "state": {}, "child": false, "pinnedTo": ""})).is_err());
+    for bad in ["x".repeat(201), "a\0b".to_owned()] {
+        let view = ActorCreateView {
+            address: addr("c/d"),
+            state: json!({}),
+            child: false,
+            pinned_to: Some(NodeId::new(bad).unwrap()),
+        };
+        let effects = TurnEffectsView { creates: vec![view], ..Default::default() };
+        assert!(TurnEffects::try_from(effects).unwrap_err().to_string().contains("pinnedTo"));
+    }
+    let longest = ActorCreateView {
+        address: addr("c/d"),
+        state: json!({}),
+        child: false,
+        pinned_to: Some(NodeId::new("é".repeat(200)).unwrap()),
+    };
+    assert!(ActorCreate::try_from(longest).is_ok(), "200 characters, not bytes");
 }
 
 // ---- numbers, durations, addresses ----

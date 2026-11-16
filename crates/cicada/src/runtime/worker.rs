@@ -408,6 +408,7 @@ impl Worker {
             max_lost_claims: None,
             renew_while_stopping: Some(inner.config.shutdown_cancel_timeout),
             wake: inner.wake.clone(),
+            owner: inner.config.worker_id.clone(),
         });
         Ok(Arc::new(Initialized { executor, types: hashes }))
     }

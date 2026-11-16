@@ -278,6 +278,10 @@ pub enum Create {
         /// Initial state as JSON; `'{}'` for a type that keeps no data.
         #[arg(long, value_parser = json)]
         state: serde_json::Value,
+        /// Pin the actor to the node or worker with this id: only it runs the actor's turns, and its messages wait
+        /// while no executor with that id polls the type. An existing actor keeps its own pin.
+        #[arg(long, value_name = "ID", value_parser = pin)]
+        pinned_to: Option<NodeId>,
     },
     /// Set a watch: the watcher is told when a message to the target fails, and when a watched actor goes away. The
     /// watcher must exist and declare the messages Failed and Stopped; setting a watch again changes nothing.
@@ -412,6 +416,17 @@ fn message_id(text: &str) -> Result<MessageId, String> {
 
 fn node_id(text: &str) -> Result<NodeId, String> {
     NodeId::new(text).map_err(|e| e.to_string())
+}
+
+/// A pin: a node id of at most 200 characters, without NUL.
+fn pin(text: &str) -> Result<NodeId, String> {
+    if text.chars().count() > 200 {
+        return Err("a pin is at most 200 characters long".to_owned());
+    }
+    if text.contains('\0') {
+        return Err("a pin must not contain a NUL character".to_owned());
+    }
+    node_id(text)
 }
 
 fn type_name(text: &str) -> Result<TypeName, String> {

@@ -154,7 +154,7 @@ macro_rules! outcome_columns {
 /// The columns of an actor snapshot, which [`rows::actor_record`] decodes.
 macro_rules! actor_columns {
     () => {
-        "address, type, state, version, created_at, paused, parent"
+        "address, type, state, version, created_at, paused, parent, pinned_to"
     };
 }
 
@@ -520,6 +520,7 @@ impl SqliteStore {
         address: &ActorAddress,
         state: &Value,
         parent: Option<&ActorAddress>,
+        pinned_to: Option<&NodeId>,
         now: Timestamp,
     ) -> StoreResult<CreateResult> {
         if !Self::type_registered(c, address.type_name()).await? {
@@ -528,13 +529,14 @@ impl SqliteStore {
         let inserted = execute(
             c,
             sqlx::query(
-                "INSERT INTO actors (address, type, state, parent, created_at) VALUES (?, ?, ?, ?, ?)
+                "INSERT INTO actors (address, type, state, parent, pinned_to, created_at) VALUES (?, ?, ?, ?, ?, ?)
                  ON CONFLICT (address) DO NOTHING",
             )
             .bind(address.as_str())
             .bind(address.type_name().as_str())
             .bind(json(state))
             .bind(parent.map(ActorAddress::as_str))
+            .bind(pinned_to.map(NodeId::as_str))
             .bind(micros(now)),
         )
         .await?;
@@ -948,6 +950,7 @@ impl SqliteStore {
             "SELECT address, type, state, version, CASE WHEN lease_owner IS NULL THEN NULL ELSE lease_message END AS lost
              FROM actors
              WHERE type IN {} AND next_due_at <= ? AND paused = 0
+               AND (pinned_to IS NULL OR pinned_to = ?)
                AND (lease_owner IS NULL OR lease_until <= ?)
              ORDER BY next_due_at LIMIT ?",
             placeholders(types.len())
@@ -956,7 +959,8 @@ impl SqliteStore {
         for t in types {
             query = query.bind(t.as_str());
         }
-        let candidates = fetch_all(c, query.bind(n).bind(n).bind(limit as i64), |row| {
+        let query = query.bind(n).bind(node.as_str()).bind(n).bind(limit as i64);
+        let candidates = fetch_all(c, query, |row| {
             Ok((
                 col::<String>(row, "address")?,
                 col::<String>(row, "state")?,
@@ -1271,7 +1275,8 @@ impl SqliteStore {
         let deleted: Vec<ActorAddress> = deleted.into_iter().collect();
         self.remove_all(c, changes, &deleted, now).await?;
         for create in &creates {
-            Self::create_in(c, changes, &create.address, &create.state, create.child.then_some(&address), now).await?;
+            let parent = create.child.then_some(&address);
+            Self::create_in(c, changes, &create.address, &create.state, parent, create.pinned_to.as_ref(), now).await?;
         }
         for target in support::purges(&controls) {
             self.purge_in(c, target, (*target == address).then_some(&message_id), now).await?;
@@ -1423,11 +1428,19 @@ impl Backend for SqliteStore {
         tx.end(result).await
     }
 
-    async fn create(&self, address: &ActorAddress, state: Value) -> StoreResult<CreateResult> {
+    async fn create(
+        &self,
+        address: &ActorAddress,
+        state: Value,
+        pinned_to: Option<&NodeId>,
+    ) -> StoreResult<CreateResult> {
+        if let Some(pin) = pinned_to {
+            support::check_pin(pin)?;
+        }
         let mut tx = self.write().await?;
         let now = tx.now;
         let (c, changes) = tx.parts();
-        let result = Self::create_in(c, changes, address, &state, None, now).await;
+        let result = Self::create_in(c, changes, address, &state, None, pinned_to, now).await;
         tx.end(result).await
     }
 
@@ -1656,14 +1669,15 @@ impl Backend for SqliteStore {
         tx.end(result).await
     }
 
-    async fn next_due_at(&self, types: &BTreeSet<TypeName>) -> StoreResult<Option<Timestamp>> {
+    async fn next_due_at(&self, types: &BTreeSet<TypeName>, owner: &NodeId) -> StoreResult<Option<Timestamp>> {
         if types.is_empty() {
             return Ok(None);
         }
         let sql = format!(
             "SELECT min(CASE WHEN lease_owner IS NOT NULL AND lease_until > ? THEN max(next_due_at, lease_until)
                             ELSE next_due_at END) AS due
-             FROM actors WHERE type IN {} AND next_due_at IS NOT NULL AND paused = 0",
+             FROM actors WHERE type IN {} AND next_due_at IS NOT NULL AND paused = 0
+               AND (pinned_to IS NULL OR pinned_to = ?)",
             placeholders(types.len())
         );
         let mut tx = self.read().await?;
@@ -1671,6 +1685,7 @@ impl Backend for SqliteStore {
         for t in types {
             query = query.bind(t.as_str());
         }
+        let query = query.bind(owner.as_str());
         let result = fetch_optional(tx.conn(), query)
             .await
             .and_then(|row| row.map(|row| col::<Option<i64>>(&row, "due")).transpose())

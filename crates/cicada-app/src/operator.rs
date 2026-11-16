@@ -4,10 +4,10 @@ use std::io::Write;
 use std::time::Duration;
 
 use anyhow::{Context as _, bail};
-use cicada::SendOptions;
 use cicada::api::{BulkRequest, PageView};
 use cicada::store::RemoveTypeResult;
 use cicada::time::format_instant;
+use cicada::{CreateOptions, SendOptions};
 use cicada_client::{ActorClient, CancelOutcome};
 use serde_json::json;
 
@@ -52,8 +52,8 @@ pub(crate) async fn run(cli: Cli, name: &str, env: &Env, out: &mut (dyn Write + 
         Command::Describe(describe) => {
             describe_command(&client, describe, cli.output.unwrap_or(Format::Yaml), out).await
         }
-        Command::Create(Create::Actor { actor, state }) => {
-            let created = client.create_actor(&actor, state).await?;
+        Command::Create(Create::Actor { actor, state, pinned_to }) => {
+            let created = client.create_actor_with(&actor, state, CreateOptions { pinned_to }).await?;
             let verb = if created.created { "created" } else { "exists, left untouched" };
             done(out, format, &format!("actor {} {verb}", created.address), json!(created))
         }

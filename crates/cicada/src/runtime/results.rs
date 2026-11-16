@@ -110,6 +110,8 @@ pub struct ActorSnapshot {
     pub paused: bool,
     /// The actor whose turn created this one as a child (`Turn::create_child`); `None` for an independent actor.
     pub parent: Option<ActorAddress>,
+    /// The only claim owner that may run its turns ([`CreateOptions`](crate::CreateOptions)); `None` for any.
+    pub pinned_to: Option<NodeId>,
 }
 
 /// How long ago a node last reported itself, in the store's clock; display only.

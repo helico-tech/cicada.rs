@@ -33,6 +33,8 @@ struct ActorRow {
     paused: bool,
     /// The instance whose commit created this one as a child.
     parent: Option<ActorAddress>,
+    /// The only claim owner that may claim it (ADR 0052).
+    pinned_to: Option<NodeId>,
     /// Pending messages ordered by `(deliver_at, seq)`.
     mailbox: BTreeSet<(Timestamp, i64, MessageId)>,
 }
@@ -56,6 +58,7 @@ impl ActorRow {
             created_at: self.created_at,
             paused: self.paused,
             parent: self.parent.clone(),
+            pinned_to: self.pinned_to.clone(),
         }
     }
 
@@ -426,6 +429,7 @@ impl InMemoryStore {
         address: &ActorAddress,
         state: Value,
         parent: Option<&ActorAddress>,
+        pinned_to: Option<&NodeId>,
         now: Timestamp,
     ) -> CreateResult {
         if !s.types.contains_key(address.type_name().as_str()) {
@@ -448,6 +452,7 @@ impl InMemoryStore {
                 cancel_epoch: None,
                 paused: false,
                 parent: parent.cloned(),
+                pinned_to: pinned_to.cloned(),
                 mailbox: BTreeSet::new(),
             },
         );
@@ -493,8 +498,16 @@ impl Backend for InMemoryStore {
         })
     }
 
-    async fn create(&self, address: &ActorAddress, state: Value) -> StoreResult<CreateResult> {
-        self.locked(|s, now| Ok(Self::create_locked(s, address, state, None, now)))
+    async fn create(
+        &self,
+        address: &ActorAddress,
+        state: Value,
+        pinned_to: Option<&NodeId>,
+    ) -> StoreResult<CreateResult> {
+        if let Some(pin) = pinned_to {
+            support::check_pin(pin)?;
+        }
+        self.locked(|s, now| Ok(Self::create_locked(s, address, state, None, pinned_to, now)))
     }
 
     async fn get(&self, address: &ActorAddress) -> StoreResult<Option<ActorRecord>> {
@@ -623,7 +636,12 @@ impl Backend for InMemoryStore {
             let mut due: Vec<(Timestamp, String)> = s
                 .actors
                 .values()
-                .filter(|r| types.contains(r.address.type_name()) && !r.paused && !r.has_valid_lease(now))
+                .filter(|r| {
+                    types.contains(r.address.type_name())
+                        && !r.paused
+                        && support::eligible(r.pinned_to.as_ref(), node)
+                        && !r.has_valid_lease(now)
+                })
                 .filter_map(|r| r.head().filter(|h| h.0 <= now).map(|h| (h.0, r.address.as_str().to_owned())))
                 .collect();
             due.sort();
@@ -690,11 +708,13 @@ impl Backend for InMemoryStore {
         })
     }
 
-    async fn next_due_at(&self, types: &BTreeSet<TypeName>) -> StoreResult<Option<Timestamp>> {
+    async fn next_due_at(&self, types: &BTreeSet<TypeName>, owner: &NodeId) -> StoreResult<Option<Timestamp>> {
         self.locked(|s, now| {
             Ok(s.actors
                 .values()
-                .filter(|r| types.contains(r.address.type_name()) && !r.paused)
+                .filter(|r| {
+                    types.contains(r.address.type_name()) && !r.paused && support::eligible(r.pinned_to.as_ref(), owner)
+                })
                 .filter_map(|r| {
                     let head = r.head()?.0;
                     Some(if r.has_valid_lease(now) { head.max(r.lease_until.expect("valid lease")) } else { head })
@@ -1046,7 +1066,7 @@ impl Backend for InMemoryStore {
             self.remove_all(s, &deleted, now);
             for c in &commit.creates {
                 let parent = c.child.then_some(&commit.address);
-                Self::create_locked(s, &c.address, c.state.clone(), parent, now);
+                Self::create_locked(s, &c.address, c.state.clone(), parent, c.pinned_to.as_ref(), now);
             }
             for target in support::purges(&commit.controls) {
                 let own = (*target == commit.address).then_some(&commit.message_id);

@@ -330,6 +330,11 @@ pub struct ActorCreateView via ActorCreateViewWire = "ActorCreateView" {
     pub state: Value,
     /// True for a child of the leased actor, false for an independent actor.
     pub child: bool,
+    /// Optional claim owner the new actor is pinned to (ADR 0052): at most 200 characters, no NUL. Absent or null for
+    /// none, and left out when none.
+    #[schemars(length(max = 200))]
+    #[serde(rename = "pinnedTo", default, skip_serializing_if = "Option::is_none")]
+    pub pinned_to: Option<NodeId>,
 }
 }
 
@@ -877,6 +882,18 @@ impl TryFrom<TurnSendView> for TurnSend {
     }
 }
 
+impl TryFrom<ActorCreateView> for ActorCreate {
+    type Error = RequestError;
+
+    /// Fails when the pin is beyond its bounds: more than 200 characters, or a NUL.
+    fn try_from(c: ActorCreateView) -> Result<Self, RequestError> {
+        if let Some(pin) = &c.pinned_to {
+            crate::runtime::limits::check_pin(pin).map_err(RequestError)?;
+        }
+        Ok(Self { address: c.address, state: c.state, child: c.child, pinned_to: c.pinned_to })
+    }
+}
+
 impl From<TurnEffects> for TurnEffectsView {
     fn from(e: TurnEffects) -> Self {
         Self {
@@ -884,7 +901,7 @@ impl From<TurnEffects> for TurnEffectsView {
             creates: e
                 .creates
                 .into_iter()
-                .map(|c| ActorCreateView { address: c.address, state: c.state, child: c.child })
+                .map(|c| ActorCreateView { address: c.address, state: c.state, child: c.child, pinned_to: c.pinned_to })
                 .collect(),
             cancels: e.cancels,
             watches: e.watches.into_iter().map(|w| WatchChangeView { target: w.target, set: w.set }).collect(),
@@ -896,15 +913,11 @@ impl From<TurnEffects> for TurnEffectsView {
 impl TryFrom<TurnEffectsView> for TurnEffects {
     type Error = RequestError;
 
-    /// Fails when a send has both delivery times.
+    /// Fails when a send has both delivery times, or a create's pin is beyond its bounds.
     fn try_from(e: TurnEffectsView) -> Result<Self, RequestError> {
         Ok(Self {
             watches: e.watches.into_iter().map(|w| WatchChange { target: w.target, set: w.set }).collect(),
-            creates: e
-                .creates
-                .into_iter()
-                .map(|c| ActorCreate { address: c.address, state: c.state, child: c.child })
-                .collect(),
+            creates: e.creates.into_iter().map(ActorCreate::try_from).collect::<Result<_, _>>()?,
             sends: e.sends.into_iter().map(TurnSend::try_from).collect::<Result<_, _>>()?,
             cancels: e.cancels,
             controls: e.controls.into_iter().map(|c| Control { effect: c.effect.into(), actor: c.actor }).collect(),

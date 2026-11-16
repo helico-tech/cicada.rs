@@ -51,7 +51,7 @@ use cicada::api::{
 use cicada::contract::Contract;
 use cicada::store::{MessageId, NodeId, OutcomeStatus, RemoveTypeResult};
 use cicada::time::{Timestamp, format_instant};
-use cicada::{ActorAddress, ActorRef, SendOptions, WatchTarget, message};
+use cicada::{ActorAddress, ActorRef, CreateOptions, SendOptions, WatchTarget, message};
 use reqwest::{Method, StatusCode, Url};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -223,7 +223,19 @@ impl ActorClient {
     /// state is refused (it is `null`, does not match the registered state schema, or the node hosts the type and
     /// cannot decode it); the problem's detail says why.
     pub async fn create_actor(&self, address: &ActorAddress, state: Value) -> ClientResult<CreateActorResponse> {
-        let body = encode(&CreateActorRequest { state })?;
+        self.create_actor_with(address, state, CreateOptions::default()).await
+    }
+
+    /// [`Self::create_actor`] with `options`, such as a pin (ADR 0052), sent as `pinnedTo`. A pin beyond its bounds is
+    /// a `400`. An instance that exists already keeps its own pin and the response does not show it: read it with
+    /// [`Self::get_actor`].
+    pub async fn create_actor_with(
+        &self,
+        address: &ActorAddress,
+        state: Value,
+        options: CreateOptions,
+    ) -> ClientResult<CreateActorResponse> {
+        let body = encode(&CreateActorRequest { state, pinned_to: options.pinned_to })?;
         let answer = self.call(Method::PUT, self.url(&http_path(address)?, &[])?, Some(body)).await?;
         match answer.status {
             StatusCode::CREATED | StatusCode::OK => answer.decode(),
@@ -237,9 +249,19 @@ impl ActorClient {
         r: &R,
         state: &S,
     ) -> ClientResult<CreateActorResponse> {
+        self.create_with(r, state, CreateOptions::default()).await
+    }
+
+    /// Creates `r` with `state` and `options`; see [`Self::create_actor_with`].
+    pub async fn create_with<R: ActorRef, S: Serialize + ?Sized>(
+        &self,
+        r: &R,
+        state: &S,
+        options: CreateOptions,
+    ) -> ClientResult<CreateActorResponse> {
         let state = serde_json::to_value(state)
             .map_err(|e| ClientError::Invalid(format!("The initial state cannot be encoded: {e}")))?;
-        self.create_actor(&address_of(r)?, state).await
+        self.create_actor_with(&address_of(r)?, state, options).await
     }
 
     /// Snapshot of the instance at `address` (`GET /actors/{path}`), or `None` when it does not exist.

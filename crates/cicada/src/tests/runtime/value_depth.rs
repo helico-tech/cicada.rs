@@ -160,7 +160,7 @@ async fn a_deep_state_from_before_is_read_as_before_and_cannot_be_written_back()
     let test = test().await;
     let store: &dyn Backend = test.store();
     let old = deep("old").address().unwrap();
-    assert_eq!(store.create(&old, nested(100)).await.unwrap(), CreateResult::Created);
+    assert_eq!(store.create(&old, nested(100), None).await.unwrap(), CreateResult::Created);
 
     let looked = test.send(&deep("old"), DeepMsg::Look).await;
     test.run_until_idle().await;
@@ -183,7 +183,7 @@ async fn a_deep_state_from_before_is_listed_with_state_as_it_was_stored() {
     let test = test().await;
     let store: &dyn Backend = test.store();
     let old = deep("old").address().unwrap();
-    assert_eq!(store.create(&old, nested(100)).await.unwrap(), CreateResult::Created);
+    assert_eq!(store.create(&old, nested(100), None).await.unwrap(), CreateResult::Created);
     let page = test.system().list_actors_with_state("deep/", None, 10).await.unwrap();
     let rows: Vec<(String, Value)> = page.items.into_iter().map(|s| (s.address.to_string(), s.state)).collect();
     assert_eq!(rows, vec![("deep/a".to_owned(), json!({})), ("deep/old".to_owned(), nested(100))]);

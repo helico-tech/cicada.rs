@@ -118,6 +118,7 @@ impl From<ActorSnapshot> for ActorView {
             created_at: s.created_at,
             paused: s.paused,
             parent: s.parent,
+            pinned_to: s.pinned_to,
         }
     }
 }

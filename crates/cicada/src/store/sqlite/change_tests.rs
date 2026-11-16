@@ -54,7 +54,7 @@ async fn until(changes: &mut ActorChanges, marker: &ActorAddress) -> Vec<ActorCh
 }
 
 async fn create(store: &dyn Backend, id: &str) {
-    assert_eq!(store.create(&instance(id), json!({})).await.unwrap(), CreateResult::Created);
+    assert_eq!(store.create(&instance(id), json!({}), None).await.unwrap(), CreateResult::Created);
 }
 
 /// Starts a create of `id` that stops at `fault`, and returns it once it got there.
@@ -64,7 +64,7 @@ async fn stopped_create(store: &Arc<SqliteStore>, id: &str, fault: impl FnOnce(A
     let task = {
         let store = store.clone();
         let address = instance(id);
-        tokio::spawn(async move { store.create(&address, json!({})).await })
+        tokio::spawn(async move { store.create(&address, json!({}), None).await })
     };
     reached.notified().await;
     task.abort();
@@ -131,7 +131,7 @@ async fn a_failed_commit_rolls_back_and_resyncs_and_a_known_rollback_publishes_n
     let store = open(&db).await;
     let mut changes = subscribe(&*store).await;
     *store.commit_fault.lock().unwrap() = Some(CommitFault::Fail);
-    let failed = store.create(&instance("a"), json!({})).await;
+    let failed = store.create(&instance("a"), json!({}), None).await;
     assert!(matches!(failed, Err(StoreError::Unavailable(_))), "{failed:?}");
     assert_eq!(next(&mut changes).await, Some(ActorChange::Resync));
     assert_eq!(store.get(&instance("a")).await.unwrap(), None);
@@ -167,7 +167,7 @@ fn a_runtime_shut_down_during_settlement_frees_the_writer_and_a_fresh_subscripti
             let reached = Arc::new(Notify::new());
             *store.commit_fault.lock().unwrap() = Some(fault(reached.clone()));
             let store = store.clone();
-            tokio::spawn(async move { store.create(&instance(key), json!({})).await });
+            tokio::spawn(async move { store.create(&instance(key), json!({}), None).await });
             reached.notified().await;
         });
         drop(doomed); // drops the stopped create, and with it the settle task it asks for
@@ -228,7 +228,7 @@ async fn held_writer(store: &Arc<SqliteStore>) -> tokio::task::JoinHandle<Result
     *store.commit_fault.lock().unwrap() = Some(CommitFault::BeforeCommit(reached.clone()));
     let task = {
         let store = store.clone();
-        tokio::spawn(async move { store.create(&instance("held"), json!({})).await })
+        tokio::spawn(async move { store.create(&instance("held"), json!({}), None).await })
     };
     reached.notified().await;
     task
@@ -254,7 +254,7 @@ async fn assert_closed(store: &SqliteStore, changes: &mut ActorChanges) {
     assert_eq!(next(changes).await, None);
     assert_eq!(next(&mut ActorChanges::new(store.changes(), "")).await, None);
     assert!(store.get(&instance("a")).await.unwrap_err().is_unavailable());
-    assert!(store.create(&instance("b"), json!({})).await.unwrap_err().is_unavailable());
+    assert!(store.create(&instance("b"), json!({}), None).await.unwrap_err().is_unavailable());
 }
 
 #[tokio::test]

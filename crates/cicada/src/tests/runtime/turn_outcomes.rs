@@ -61,7 +61,7 @@ async fn handler_fails_failed_with_error_no_effects_mailbox_continues() {
 async fn state_that_cannot_be_decoded_at_load_failed_state_untouched() {
     let test = harness().await;
     let bad = json!({"total": "not a number"});
-    test.store().create(&a().address(), bad.clone()).await.unwrap();
+    test.store().create(&a().address(), bad.clone(), None).await.unwrap();
     let m = test.send(&a(), CounterMsg::Add { n: 1 }).await;
     test.run_until_idle().await;
     let record = test.outcome(&m).await.unwrap();

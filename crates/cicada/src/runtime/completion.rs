@@ -329,6 +329,14 @@ pub(crate) fn check_failure(failure: &TurnFailure) -> Result<(), String> {
     })
 }
 
+/// Checks the bounds of the pin of each create of a returned report (ADR 0052), naming the first problem.
+pub(crate) fn check_pins(report: &TurnReport) -> Result<(), String> {
+    let TurnReport::Returned { effects, .. } = report else {
+        return Ok(());
+    };
+    effects.creates.iter().filter_map(|c| c.pinned_to.as_ref()).try_for_each(limits::check_pin)
+}
+
 /// Checks the storage limits of a returned report's effects, as a turn checks them when they are called: each send's
 /// delivery and envelope, and each create's state for `null`, NUL characters and depth. The first problem.
 pub(crate) fn check_effect_limits(report: &TurnReport) -> Result<(), String> {

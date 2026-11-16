@@ -66,7 +66,7 @@ pub async fn time_the_latest_supported_delivery_time_is_stored_exactly_and_never
         let m = t.send_at(&a, Delivery::At(max)).await;
         assert_eq!(m.deliver_at, max);
         assert_eq!(t.pending(&a).await, vec![m.clone()]);
-        assert_eq!(store.next_due_at(&type_set(&[&TYPE])).await.unwrap(), Some(max));
+        assert_eq!(store.next_due_at(&type_set(&[&TYPE]), &crate::tests::owner()).await.unwrap(), Some(max));
         let status = store.status(&m.id).await.unwrap();
         assert_eq!(expect_matches!(status, Some(MessageStatus::Pending(p)) => p).deliver_at, max);
         assert_eq!(t.claim().await, vec![]);
@@ -141,7 +141,7 @@ pub async fn s4_a_lease_is_valid_strictly_before_lease_until_and_expired_at_it<B
         assert_eq!(t.claim_node(&NODE_B).await, vec![], "valid one microsecond before leaseUntil");
         assert_matches!(store.status(&m.id).await.unwrap(), Some(MessageStatus::Running { .. }));
         assert_eq!(store.cancel(&m.id).await.unwrap(), CancelResult::Running);
-        assert_eq!(store.next_due_at(&type_set(&[&TYPE])).await.unwrap(), Some(c.lease_until));
+        assert_eq!(store.next_due_at(&type_set(&[&TYPE]), &crate::tests::owner()).await.unwrap(), Some(c.lease_until));
         t.advance(Duration::from_micros(1)).await;
         assert_eq!(store.now().await.unwrap(), c.lease_until);
         assert_matches!(store.status(&m.id).await.unwrap(), Some(MessageStatus::Pending(_)), "expired at leaseUntil");
@@ -309,7 +309,12 @@ pub async fn commit_repeating_a_commit_that_already_applied_changes_nothing<B: F
         let c = t.claim_one().await;
         let request = CommitRequest {
             state: StateChange::NewState(json!({"n": 1})),
-            creates: vec![ActorCreate { address: child.clone(), state: json!({"c": 1}), child: false }],
+            creates: vec![ActorCreate {
+                address: child.clone(),
+                state: json!({"c": 1}),
+                child: false,
+                pinned_to: None,
+            }],
             sends: vec![
                 OutgoingMessage::new(b.clone(), "T", json!(1)),
                 OutgoingMessage::new(child.clone(), "T", json!(2)),
@@ -524,14 +529,19 @@ pub async fn s3_a_commit_that_creates_and_sends_to_a_child_is_serialised_with_co
                 async move {
                     if i == 0 {
                         peer.commit(CommitRequest {
-                            creates: vec![ActorCreate { address: child.clone(), state: json!({}), child: false }],
+                            creates: vec![ActorCreate {
+                                address: child.clone(),
+                                state: json!({}),
+                                child: false,
+                                pinned_to: None,
+                            }],
                             sends: vec![OutgoingMessage::new(child, "FromCommit", json!(0))],
                             ..done(&c)
                         })
                         .await
                         .unwrap();
                     } else {
-                        peer.create(&child, json!({})).await.unwrap();
+                        peer.create(&child, json!({}), None).await.unwrap();
                         for k in 0..3 {
                             peer.enqueue(OutgoingMessage::new(child.clone(), "External", json!(k))).await.unwrap();
                         }
@@ -576,7 +586,7 @@ pub async fn closed_after_close_every_operation_fails_as_unavailable<B: FixtureF
             store.register(type_def(&OTHER, "closed")),
             store.list_types(),
             store.remove_type(&OTHER),
-            store.create(&address("conformance/closed"), json!({})),
+            store.create(&address("conformance/closed"), json!({}), None),
             store.get(&a),
             store.list("", None, 10),
             store.children(&a, None, 10),
@@ -584,7 +594,7 @@ pub async fn closed_after_close_every_operation_fails_as_unavailable<B: FixtureF
             store.enqueue(OutgoingMessage::new(a.clone(), "Msg", json!(0))),
             store.claim_due(&types, &node, t.ttl(), 10),
             store.renew(&a, c.epoch, t.ttl()),
-            store.next_due_at(&types),
+            store.next_due_at(&types, &crate::tests::owner()),
             store.pending(&a, None, 10),
             store.list_pending("", None, 10),
             store.deliver_now(&m.id),

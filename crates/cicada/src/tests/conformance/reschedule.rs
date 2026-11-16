@@ -132,7 +132,10 @@ pub async fn reschedule_the_message_queues_again_behind_due_messages_and_is_not_
         let last = t.send_at(&a, Delivery::After(t.ticks(3))).await;
         assert_eq!(ids(&t.all_pending(&a, 3).await), vec![later.id.clone(), m.id.clone(), last.id.clone()]);
         assert_eq!(pending_message(&*store, &m.id).await.deliver_at, plus(now, t.ticks(3)));
-        assert_eq!(store.next_due_at(&type_set(&[&TYPE])).await.unwrap(), Some(plus(now, t.ticks(2))));
+        assert_eq!(
+            store.next_due_at(&type_set(&[&TYPE]), &crate::tests::owner()).await.unwrap(),
+            Some(plus(now, t.ticks(2)))
+        );
         t.advance_ticks(2).await;
         let c = t.claim_one().await;
         assert_eq!(c.message.id, later.id);
@@ -241,7 +244,7 @@ pub async fn reschedule_is_atomic_with_the_commits_sends_and_creates_and_a_rejec
 
         let committed = t
             .commit_ok(CommitRequest {
-                creates: vec![ActorCreate { address: child.clone(), state: json!({}), child: false }],
+                creates: vec![ActorCreate { address: child.clone(), state: json!({}), child: false, pinned_to: None }],
                 sends: vec![
                     OutgoingMessage::new(other.clone(), "T", json!(1)),
                     OutgoingMessage::new(child.clone(), "T", json!(2)),
@@ -273,7 +276,7 @@ pub async fn reschedule_a_rescheduled_message_can_be_cancelled<B: FixtureFactory
         assert_eq!(cancelled.envelope.last_error.as_deref(), Some("e1"));
         assert_eq!(outcome_record(&*store, &m.id).await.map(|o| o.status), Some(OutcomeStatus::Cancelled));
         assert_eq!(t.pending(&a).await, vec![]);
-        assert_eq!(store.next_due_at(&type_set(&[&TYPE])).await.unwrap(), None);
+        assert_eq!(store.next_due_at(&type_set(&[&TYPE]), &crate::tests::owner()).await.unwrap(), None);
         assert_matches!(store.cancel(&m.id).await.unwrap(), CancelResult::AlreadyFinished(_));
     })
     .await

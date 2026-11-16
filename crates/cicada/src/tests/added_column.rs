@@ -58,7 +58,7 @@ pub async fn operations(store: &dyn Backend, round: &str) {
     assert!(store.list_types().await.unwrap().iter().any(|t| t.name == spare));
     assert_eq!(store.remove_type(&spare).await.unwrap(), RemoveTypeResult::Removed);
     for address in [&actor, &other, &watcher] {
-        assert_eq!(store.create(address, json!({"n": 0})).await.unwrap(), CreateResult::Created);
+        assert_eq!(store.create(address, json!({"n": 0}), None).await.unwrap(), CreateResult::Created);
     }
     assert_eq!(store.get(&actor).await.unwrap().expect("created").state, json!({"n": 0}));
     assert_eq!(pages(|c| async move { store.list(prefix, c.as_ref(), 1).await.unwrap() }).await.len(), 3);
@@ -81,7 +81,7 @@ pub async fn operations(store: &dyn Backend, round: &str) {
     let all = pages(|c| async move { store.list_pending(prefix, c.as_ref(), 1).await.unwrap() }).await;
     assert_eq!(all.len(), 7);
     assert!(matches!(store.status(&first.id).await.unwrap(), Some(MessageStatus::Pending(_))));
-    assert!(store.next_due_at(&types).await.unwrap().is_some());
+    assert!(store.next_due_at(&types, &crate::tests::owner()).await.unwrap().is_some());
 
     // A turn that commits state, a send, a child, a cancel and a purge of another actor.
     let claims = store.claim_due(&types, &node, ttl, 10).await.unwrap();
@@ -97,7 +97,7 @@ pub async fn operations(store: &dyn Backend, round: &str) {
     let other_claim = claims.iter().find(|c| c.actor == other).expect("the other is claimed");
     let mut commit = CommitRequest::new(actor.clone(), claim.epoch, first.id.clone(), TurnOutcome::Done);
     commit.state = StateChange::NewState(json!({"n": 1}));
-    commit.creates = vec![ActorCreate { address: child.clone(), state: json!({}), child: true }];
+    commit.creates = vec![ActorCreate { address: child.clone(), state: json!({}), child: true, pinned_to: None }];
     let caused_by_first = |message: OutgoingMessage| OutgoingMessage { caused_by: Some(first.id.clone()), ..message };
     commit.sends = vec![caused_by_first(send(&watcher, 8)), caused_by_first(send(&child, 9))];
     commit.cancels = vec![cancelled_in_commit.id.clone()];

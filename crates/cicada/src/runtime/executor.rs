@@ -76,7 +76,9 @@ use super::source::{SourceError, TurnSource};
 use crate::actor::{HostedActor, RunEnd, RunResult, panic_message};
 use crate::address::{ActorAddress, TypeName};
 use crate::observer::{Observed, Observers};
-use crate::store::{Backend, Claim, CommitRequest, CommitResult, Message, RenewResult, Store, StoreError, TurnOutcome};
+use crate::store::{
+    Backend, Claim, CommitRequest, CommitResult, Message, NodeId, RenewResult, Store, StoreError, TurnOutcome,
+};
 use crate::turn::{HandlerFailure, TurnInfo};
 use crate::watch::FailureCause;
 
@@ -372,6 +374,9 @@ pub(crate) struct TurnExecutor {
     /// Wakes the node's dispatch loop: after a commit that sent messages, wrote notifications or had control effects,
     /// or one that may have applied unacknowledged.
     pub wake: Arc<Notify>,
+    /// The claim owner of its turns, which [`Turn::node_id`](crate::Turn::node_id) answers: the node's id, or the
+    /// worker's.
+    pub owner: NodeId,
 }
 
 impl TurnExecutor {
@@ -420,6 +425,7 @@ impl TurnExecutor {
             send_headers: observed.headers().clone(),
             claim_sent: timing.sent,
             hosted: self.hosted.clone(),
+            node_id: self.owner.clone(),
         });
         let guard = Arc::new(LeaseGuard::new(deadline, timing.ttl, self.holder.is_source()));
         let phase = Arc::new(HandlerPhase::new());

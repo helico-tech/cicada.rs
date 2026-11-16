@@ -301,7 +301,7 @@ async fn an_error_from_decoding_the_ref_fails_the_message_instead_of_crash_loopi
     }
 
     // Created where nothing checks the ref (a node that does not host the type).
-    memory.create(&cursed, json!({})).await.unwrap();
+    memory.create(&cursed, json!({}), None).await.unwrap();
     let m = enqueue(&memory, OutgoingMessage::new(cursed, "Bump", json!({}))).await;
     assert_eq!(system.run_due_turns(1).await.unwrap(), 1);
     let outcome = outcome_of(&memory, &m.id).await.unwrap();

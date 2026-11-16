@@ -206,6 +206,7 @@ const VARIANTS: &[&str] = &[
     "TurnSendView(delay)",
     "TurnEffectsView.creates(child)",
     "TurnEffectsView.creates(independent)",
+    "TurnEffectsView.creates(pinned)",
     "TurnEffectsView.cancels",
     "FailureCause::Handler",
     "FailureCause::Node",
@@ -361,6 +362,9 @@ impl Seen {
                     } else {
                         "TurnEffectsView.creates(independent)"
                     });
+                    if create.pinned_to.is_some() {
+                        self.add("TurnEffectsView.creates(pinned)");
+                    }
                 }
                 if !effects.cancels.is_empty() {
                     self.add("TurnEffectsView.cancels");

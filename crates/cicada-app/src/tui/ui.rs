@@ -765,6 +765,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             paused: false,
             parent: parent.map(|p| ActorAddress::parse(p).unwrap()),
+            pinned_to: None,
         }
     }
 
@@ -802,6 +803,18 @@ mod tests {
         assert!(opens_actor(&app.on_key(key(KeyCode::Char('P'))), "batches/b1"));
         assert_eq!(app.stack.iter().map(|s| s.target.crumb()).collect::<Vec<_>>(), ["batch-items/b1:0", "batches/b1"]);
         assert!(opens_actor(&app.on_key(key(KeyCode::Esc)), "batch-items/b1:0"), "esc goes back");
+    }
+
+    /// Scenario: Operator diagnosis (ADR 0052): the screen of an actor names the node it is pinned to, or none.
+    #[test]
+    fn the_screen_of_an_actor_names_its_pin() {
+        let pinned = ActorView { pinned_to: Some(cicada::store::NodeId::new("host-a").unwrap()), ..view("vm/a", None) };
+        let mut app = actor_screen_of(&pinned, &[]);
+        let text = screen(&mut app, 140, 30);
+        assert!(text.lines().any(|l| l.contains("Pinned to") && l.contains("host-a")), "{text}");
+        let mut app = actor_screen_of(&view("vm/b", None), &[]);
+        let text = screen(&mut app, 140, 30);
+        assert!(text.lines().any(|l| l.contains("Pinned to") && l.contains("none")), "{text}");
     }
 
     /// Scenario: Down to a child.

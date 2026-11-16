@@ -180,7 +180,7 @@ pub async fn registry_nodes_removing_one_type_concurrently_remove_it_once_and_a_
                     let (name, target) = (name.clone(), target.clone());
                     async move {
                         if i == 0 {
-                            peer.create(&target, json!({})).await.unwrap();
+                            peer.create(&target, json!({}), None).await.unwrap();
                             None
                         } else {
                             Some(peer.remove_type(&name).await.unwrap())
@@ -263,7 +263,7 @@ pub async fn instances_create_is_idempotent_and_leaves_the_existing_instance_unt
         t.commit_ok(CommitRequest { state: StateChange::NewState(json!({"n": 2})), ..done(&c) }).await;
         t.send(&a).await;
         let existing = expect_matches!(
-            store.create(&a, json!({"n": 99})).await.unwrap(),
+            store.create(&a, json!({"n": 99}), None).await.unwrap(),
             CreateResult::Exists(existing) => existing
         );
         assert_eq!(existing.state, json!({"n": 2}));
@@ -345,7 +345,12 @@ pub async fn instances_list_records_pages_like_list_with_the_snapshot_get_return
         let c = t.claim_one().await;
         t.commit_ok(CommitRequest {
             state: StateChange::NewState(json!({"n": 1})),
-            creates: vec![ActorCreate { address: address("conformance/one-child"), state: json!({}), child: true }],
+            creates: vec![ActorCreate {
+                address: address("conformance/one-child"),
+                state: json!({}),
+                child: true,
+                pinned_to: None,
+            }],
             ..done(&c)
         })
         .await;
@@ -510,7 +515,12 @@ pub async fn s2_commit_applies_state_creates_sends_and_outcome_together<B: Fixtu
         let committed = t
             .commit_ok(CommitRequest {
                 state: StateChange::NewState(json!({"n": 1})),
-                creates: vec![ActorCreate { address: child.clone(), state: json!({"child": 1}), child: false }],
+                creates: vec![ActorCreate {
+                    address: child.clone(),
+                    state: json!({"child": 1}),
+                    child: false,
+                    pinned_to: None,
+                }],
                 sends: vec![
                     OutgoingMessage {
                         from: Some(a.clone()),
@@ -568,7 +578,7 @@ pub async fn s2_a_send_to_an_absent_instance_rejects_the_whole_commit_and_keeps_
         let result = t
             .commit(CommitRequest {
                 state: StateChange::NewState(json!({"n": 1})),
-                creates: vec![ActorCreate { address: child.clone(), state: json!({}), child: false }],
+                creates: vec![ActorCreate { address: child.clone(), state: json!({}), child: false, pinned_to: None }],
                 sends: vec![
                     OutgoingMessage::new(child.clone(), "T", json!(1)),
                     OutgoingMessage::new(absent, "T", json!(2)),
@@ -609,8 +619,8 @@ pub async fn s2_creates_are_applied_before_sends_in_one_commit<B: FixtureFactory
         let committed = t
             .commit_ok(CommitRequest {
                 creates: vec![
-                    ActorCreate { address: child.clone(), state: json!({"k": 1}), child: false },
-                    ActorCreate { address: existing.clone(), state: json!({"keep": 2}), child: false },
+                    ActorCreate { address: child.clone(), state: json!({"k": 1}), child: false, pinned_to: None },
+                    ActorCreate { address: existing.clone(), state: json!({"keep": 2}), child: false, pinned_to: None },
                 ],
                 sends: vec![OutgoingMessage::new(child.clone(), "Start", json!(0))],
                 ..done(&c)
@@ -693,7 +703,7 @@ pub async fn s2_delete_removes_the_instance_and_purges_its_whole_mailbox<B: Fixt
         assert_eq!(t.commit(done(&claim)).await, CommitResult::LeaseLost);
         assert_eq!(store.renew(&a, claim.epoch, t.ttl()).await.unwrap(), RenewResult::LeaseLost);
         assert_eq!(t.pending(&keep).await, vec![kept], "other mailboxes are untouched");
-        assert_eq!(store.next_due_at(&type_set(&[&TYPE])).await.unwrap(), None);
+        assert_eq!(store.next_due_at(&type_set(&[&TYPE]), &crate::tests::owner()).await.unwrap(), None);
     })
     .await
 }
@@ -728,7 +738,7 @@ pub async fn s2_stop_removes_the_instance_and_purges_the_rest_of_its_mailbox<B: 
         assert_eq!(t.pending(&other).await, vec![committed.sent[1].clone()]);
         assert!(t.claim().await.is_empty());
         // Re-create starts from scratch.
-        assert_eq!(store.create(&a, json!({})).await.unwrap(), CreateResult::Created);
+        assert_eq!(store.create(&a, json!({}), None).await.unwrap(), CreateResult::Created);
         assert_eq!(version_of(&*store, &a).await, 0);
         assert!(t.pending(&a).await.is_empty());
     })
@@ -846,6 +856,7 @@ pub async fn s3_a_page_of_records_sees_each_commit_whole_with_its_state_version_
                                     address: address(&format!("conformance/main-c{round:02}")),
                                     state: json!({"round": round}),
                                     child: true,
+                                    pinned_to: None,
                                 }],
                                 ..done(&c)
                             };
@@ -884,7 +895,7 @@ pub async fn s3_concurrent_creates_of_one_instance_create_it_once<B: FixtureFact
         let results = t
             .concurrently(10, |i, peer| {
                 let a = a.clone();
-                async move { peer.create(&a, json!({"by": i})).await.unwrap() }
+                async move { peer.create(&a, json!({"by": i}), None).await.unwrap() }
             })
             .await;
         assert_eq!(results.iter().filter(|r| **r == CreateResult::Created).count(), 1);
@@ -1031,7 +1042,7 @@ pub async fn s4_epochs_stay_monotonic_across_delete_and_re_create<B: FixtureFact
         t.send(&a).await;
         let old = t.claim_one().await;
         assert_matches!(store.delete(&a, &MessageId::random()).await.unwrap(), DeleteResult::Deleted { .. });
-        assert_eq!(store.create(&a, json!({})).await.unwrap(), CreateResult::Created);
+        assert_eq!(store.create(&a, json!({}), None).await.unwrap(), CreateResult::Created);
         t.send(&a).await;
         let fresh = t.claim_one().await;
         assert!(fresh.epoch > old.epoch);
@@ -1040,7 +1051,7 @@ pub async fn s4_epochs_stay_monotonic_across_delete_and_re_create<B: FixtureFact
         t.commit_ok(done(&fresh)).await;
         // Delete and re-create again, now without an outstanding lease.
         store.delete(&a, &MessageId::random()).await.unwrap();
-        store.create(&a, json!({})).await.unwrap();
+        store.create(&a, json!({}), None).await.unwrap();
         t.send(&a).await;
         assert!(t.claim_one().await.epoch > fresh.epoch);
     })
@@ -1065,7 +1076,7 @@ pub async fn s5_a_stale_epoch_cannot_commit_after_a_re_claim<B: FixtureFactory>(
         let result = t
             .commit(CommitRequest {
                 state: StateChange::NewState(json!({"n": 666})),
-                creates: vec![ActorCreate { address: ghost.clone(), state: json!({}), child: false }],
+                creates: vec![ActorCreate { address: ghost.clone(), state: json!({}), child: false, pinned_to: None }],
                 sends: vec![OutgoingMessage::new(target.clone(), "T", json!(1))],
                 ..done(&stale)
             })
@@ -1275,7 +1286,10 @@ pub async fn s6_a_message_is_never_claimed_before_its_deliver_at<B: FixtureFacto
         let a = t.new_actor(&TYPE, json!({})).await;
         let m = t.send_at(&a, Delivery::After(t.ticks(10))).await;
         assert!(t.claim().await.is_empty());
-        assert_eq!(t.store().next_due_at(&type_set(&[&TYPE])).await.unwrap(), Some(m.deliver_at));
+        assert_eq!(
+            t.store().next_due_at(&type_set(&[&TYPE]), &crate::tests::owner()).await.unwrap(),
+            Some(m.deliver_at)
+        );
         t.advance_ticks(5).await;
         assert!(t.claim().await.is_empty());
         t.advance_ticks(5).await;
@@ -1350,12 +1364,12 @@ pub async fn s6_due_ness_follows_the_new_head_after_commit_cancel_and_enqueue<B:
         let future = t.send_at(&a, Delivery::After(t.ticks(10))).await;
         t.commit_ok(done(&t.claim_one().await)).await;
         assert!(t.claim().await.is_empty(), "the remaining message is not due");
-        assert_eq!(store.next_due_at(&types).await.unwrap(), Some(future.deliver_at));
+        assert_eq!(store.next_due_at(&types, &crate::tests::owner()).await.unwrap(), Some(future.deliver_at));
         let now1 = t.send(&a).await;
-        assert_eq!(store.next_due_at(&types).await.unwrap(), Some(now1.deliver_at));
+        assert_eq!(store.next_due_at(&types, &crate::tests::owner()).await.unwrap(), Some(now1.deliver_at));
         assert_matches!(store.cancel(&now1.id).await.unwrap(), CancelResult::Cancelled(_));
         assert!(t.claim().await.is_empty(), "cancelling the due head leaves only a future message");
-        assert_eq!(store.next_due_at(&types).await.unwrap(), Some(future.deliver_at));
+        assert_eq!(store.next_due_at(&types, &crate::tests::owner()).await.unwrap(), Some(future.deliver_at));
         t.advance_ticks(10).await;
         assert_eq!(t.claim_one().await.message.id, future.id);
         assert_eq!(outcome_status(&*store, &head.id).await, Some(OutcomeStatus::Done));
@@ -1515,7 +1529,7 @@ pub async fn s7_a_send_to_an_absent_instance_is_refused_and_does_not_consume_the
         let id = MessageId::random();
         assert_eq!(store.enqueue(with_id(&a, &id)).await.unwrap(), EnqueueResult::NoSuchInstance);
         assert_eq!(store.status(&id).await.unwrap(), None);
-        store.create(&a, json!({})).await.unwrap();
+        store.create(&a, json!({}), None).await.unwrap();
         assert_matches!(store.enqueue(with_id(&a, &id)).await.unwrap(), EnqueueResult::Enqueued(_));
     })
     .await
@@ -1735,23 +1749,29 @@ pub async fn s8_next_due_at_reports_when_an_instance_becomes_claimable<B: Fixtur
     store_test(backend, async |t| {
         let store = t.store();
         let types = type_set(&[&TYPE]);
-        assert_eq!(store.next_due_at(&types).await.unwrap(), None);
+        assert_eq!(store.next_due_at(&types, &crate::tests::owner()).await.unwrap(), None);
         let a = t.new_actor(&TYPE, json!({})).await;
         let b = t.new_actor(&OTHER, json!({})).await;
         let later = t.send_at(&a, Delivery::After(t.ticks(20))).await;
         t.send_at(&b, Delivery::After(t.ticks(2))).await;
-        assert_eq!(store.next_due_at(&types).await.unwrap(), Some(later.deliver_at));
+        assert_eq!(store.next_due_at(&types, &crate::tests::owner()).await.unwrap(), Some(later.deliver_at));
         let sooner = t.send_at(&a, Delivery::After(t.ticks(5))).await;
-        assert_eq!(store.next_due_at(&types).await.unwrap(), Some(sooner.deliver_at));
-        assert!(store.next_due_at(&type_set(&[&OTHER])).await.unwrap().expect("a due time") < sooner.deliver_at);
-        assert_eq!(store.next_due_at(&BTreeSet::new()).await.unwrap(), None);
+        assert_eq!(store.next_due_at(&types, &crate::tests::owner()).await.unwrap(), Some(sooner.deliver_at));
+        assert!(
+            store.next_due_at(&type_set(&[&OTHER]), &crate::tests::owner()).await.unwrap().expect("a due time")
+                < sooner.deliver_at
+        );
+        assert_eq!(store.next_due_at(&BTreeSet::new(), &crate::tests::owner()).await.unwrap(), None);
         let c = t.new_actor(&TYPE, json!({})).await;
         t.send(&c).await;
         let claim = t.claim_one().await;
         // A leased instance becomes claimable again no earlier than its lease expiry.
-        assert_eq!(store.next_due_at(&types).await.unwrap(), Some(claim.lease_until.min(sooner.deliver_at)));
+        assert_eq!(
+            store.next_due_at(&types, &crate::tests::owner()).await.unwrap(),
+            Some(claim.lease_until.min(sooner.deliver_at))
+        );
         t.commit_ok(done(&claim)).await;
-        assert_eq!(store.next_due_at(&types).await.unwrap(), Some(sooner.deliver_at));
+        assert_eq!(store.next_due_at(&types, &crate::tests::owner()).await.unwrap(), Some(sooner.deliver_at));
     })
     .await
 }

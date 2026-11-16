@@ -283,7 +283,7 @@ async fn a_message_that_cannot_be_decoded_is_the_cause_message() {
 #[tokio::test(start_paused = true)]
 async fn a_state_that_cannot_be_decoded_is_the_cause_state() {
     let test = test().await;
-    test.store().create(&addr(&subject("x")), json!({"n": "seven"})).await.unwrap();
+    test.store().create(&addr(&subject("x")), json!({"n": "seven"}), None).await.unwrap();
     let m = test.send(&subject("x"), SubjectMsg::Work { n: 1 }).await;
     assert_eq!(told(&test, &m).await.0, FailureCause::State);
 }
@@ -293,7 +293,7 @@ async fn a_state_that_cannot_be_decoded_is_the_cause_state() {
 async fn an_address_the_type_cannot_read_is_the_cause_state() {
     let test = test().await;
     let bad = ActorAddress::parse("subject/bad1").unwrap();
-    test.store().create(&bad, json!({})).await.unwrap();
+    test.store().create(&bad, json!({}), None).await.unwrap();
     let m = enqueue(test.store(), OutgoingMessage::new(bad, "Work", json!({"n": 1}))).await;
     let (cause, error) = told(&test, &m).await;
     assert_eq!(cause, FailureCause::State, "{error}");
@@ -328,7 +328,7 @@ async fn a_new_state_that_cannot_be_encoded_is_the_cause_handler() {
 #[tokio::test(start_paused = true)]
 async fn a_panic_outside_the_handler_is_the_cause_node() {
     let test = test().await;
-    test.store().create(&addr(&subject("x")), json!({"explosive": true})).await.unwrap();
+    test.store().create(&addr(&subject("x")), json!({"explosive": true}), None).await.unwrap();
     let m = test.send(&subject("x"), SubjectMsg::Work { n: 1 }).await;
     let (cause, error) = told(&test, &m).await;
     assert_eq!(cause, FailureCause::Node);

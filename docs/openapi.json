@@ -2010,6 +2010,16 @@
             ],
             "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
             "default": null
+          },
+          "pinnedTo": {
+            "description": "The only claim owner (node or worker id) that may run its turns (ADR 0052); null when any may. Its messages wait\nwhile no executor with that id polls its type.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 200,
+            "default": null
           }
         },
         "required": [
@@ -2831,6 +2841,15 @@
         "properties": {
           "state": {
             "description": "Initial state; never null. A type that keeps no data takes `{}`. It must match the state schema of the type\n(`GET /types/{name}`), or the create is refused with `422 invalid-state`."
+          },
+          "pinnedTo": {
+            "description": "Optional claim owner (node or worker id) the new instance is pinned to (ADR 0052): only that owner may run its\nturns. At most 200 characters, no NUL; absent or null for none, and left out when none. An instance that exists\nalready keeps its own pin: read it with `GET /actors/{type}/{key}`.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 200
           }
         },
         "additionalProperties": false,
@@ -4363,6 +4382,15 @@
           "child": {
             "description": "True for a child of the leased actor, false for an independent actor.",
             "type": "boolean"
+          },
+          "pinnedTo": {
+            "description": "Optional claim owner the new actor is pinned to (ADR 0052): at most 200 characters, no NUL. Absent or null for\nnone, and left out when none.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 200
           }
         },
         "additionalProperties": false,

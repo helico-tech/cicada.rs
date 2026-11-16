@@ -191,8 +191,13 @@ impl Backend for Store {
         self.backend.remove_type(name).await
     }
 
-    async fn create(&self, address: &ActorAddress, state: Value) -> StoreResult<CreateResult> {
-        self.backend.create(address, state).await
+    async fn create(
+        &self,
+        address: &ActorAddress,
+        state: Value,
+        pinned_to: Option<&NodeId>,
+    ) -> StoreResult<CreateResult> {
+        self.backend.create(address, state, pinned_to).await
     }
 
     async fn get(&self, address: &ActorAddress) -> StoreResult<Option<ActorRecord>> {
@@ -265,8 +270,8 @@ impl Backend for Store {
         self.backend.release(address, epoch).await
     }
 
-    async fn next_due_at(&self, types: &BTreeSet<TypeName>) -> StoreResult<Option<Timestamp>> {
-        self.backend.next_due_at(types).await
+    async fn next_due_at(&self, types: &BTreeSet<TypeName>, owner: &NodeId) -> StoreResult<Option<Timestamp>> {
+        self.backend.next_due_at(types, owner).await
     }
 
     async fn pending(

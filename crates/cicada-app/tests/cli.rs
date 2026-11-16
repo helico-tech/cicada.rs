@@ -484,6 +484,37 @@ async fn the_children_of_an_actor_are_listed_one_row_each_and_a_child_shows_its_
     assert!(cicada_fails(&s, &["get", "actor", "account/b1:0"]).await.contains("not found"), "the children went too");
 }
 
+/// Scenario: Operator diagnosis (ADR 0052): a pin given at create shows in the view, the wide table and describe; an
+/// existing actor keeps its pin; a pinned actor's messages wait in its mailbox while no node with that id runs; a pin
+/// beyond its bounds is a usage error.
+#[tokio::test]
+async fn an_actor_created_with_a_pin_shows_it_and_its_messages_wait_in_its_mailbox() {
+    let s = server().await;
+    let created = cicada(&s, &["create", "actor", "account/vm1", "--state", "{}", "--pinned-to", "host-a"]).await;
+    assert_eq!(created, "actor account/vm1 created\n");
+    let again = cicada(&s, &["create", "actor", "account/vm1", "--state", "{}", "--pinned-to", "host-b"]).await;
+    assert!(again.contains("left untouched"), "{again}");
+    assert_eq!(json(&s, &["get", "actor", "account/vm1"]).await["pinnedTo"], "host-a", "the first pin stays");
+    assert!(cicada(&s, &["describe", "actor", "account/vm1"]).await.contains("pinnedTo: host-a"));
+    let wide = cicada(&s, &["get", "actor", "account/vm1", "-o", "wide"]).await;
+    assert!(wide.contains("PINNED-TO") && wide.contains("host-a"), "{wide}");
+    cicada(&s, &["create", "actor", "account/free", "--state", "{}"]).await;
+    assert_eq!(json(&s, &["get", "actor", "account/free"]).await["pinnedTo"], Value::Null);
+
+    let payload = r#"{"name":"x"}"#;
+    let id = sent_id(&cicada(&s, &["send", "account/vm1", "--type", "Open", "--payload", payload, "-o", "json"]).await);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(json(&s, &["get", "message", &id]).await["status"], "pending", "no node with id host-a runs");
+    let mailbox = cicada(&s, &["get", "mailbox", "account/vm1"]).await;
+    assert!(mailbox.contains(&id), "{mailbox}");
+
+    let long = "x".repeat(201);
+    for bad in ["", long.as_str(), "a\0b"] {
+        let error = usage_error(&["create", "actor", "account/vm2", "--state", "{}", "--pinned-to", bad]).await;
+        assert!(error.contains("--pinned-to"), "{error}");
+    }
+}
+
 /// Scenario: The command line (watches).
 #[tokio::test]
 async fn watches_are_set_listed_and_removed_on_the_command_line() {

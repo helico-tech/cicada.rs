@@ -345,7 +345,7 @@ async fn a_message_that_cannot_be_decoded_is_told_its_start_and_its_end_failed()
 async fn state_that_cannot_be_decoded_is_told_its_start_and_its_end_failed() {
     let events = Events::default();
     let test = recorded(&events).await;
-    test.store().create(&addr(&p("p")), json!({"log": "not a list"})).await.unwrap();
+    test.store().create(&addr(&p("p")), json!({"log": "not a list"}), None).await.unwrap();
     let m = test.send(&p("p"), do_it()).await;
     test.run_until_idle().await;
     assert_eq!(test.outcome(&m).await.unwrap().status, OutcomeStatus::Failed);
