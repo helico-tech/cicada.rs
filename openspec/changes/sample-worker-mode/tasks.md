@@ -1,6 +1,6 @@
 # Tasks
 
-- [ ] 1. Actual executor identity. Make SlowActor, CounterActor, RecorderActor and EffectLog record Turn::node_id
+- [x] 1. Actual executor identity. Make SlowActor, CounterActor, RecorderActor and EffectLog record Turn::node_id
   from pinned-actors. Remove captured identity fields and sample host node_config/startup identity checks. Preserve
   public constructor signatures, document ignored legacy identity arguments, and use private construction without
   manufacturing ids. Verify paused TestActors tests with conflicting legacy/runtime ids, existing state/message

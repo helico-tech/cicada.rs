@@ -8,8 +8,10 @@
 //! - [`Flaky`]: fails a given number of times; senders attach a retry policy ([`flaky_retry`]: 3 attempts, 1 s apart)
 //!   or none, for `/outcomes` and retry checks.
 //!
-//! The node id is a field of each actor value, which does not change the contract: contracts come from the types
-//! only, so every node registers the same hash.
+//! The id they record is [`Turn::node_id`], the claim owner that ran the turn: a node's id on the store, or a worker's
+//! id over HTTP, never the server's. The constructors still take the node id they took before 0.20.3, so existing
+//! callers compile, but ignore it. Contracts come from the types only, so every node and worker registers the same
+//! hash.
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -31,7 +33,7 @@ pub struct EffectLog {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Effect {
-    /// The node that ran the turn.
+    /// The claim owner that ran the turn ([`Turn::node_id`]).
     pub node: String,
     /// The actor's URI.
     pub actor: String,
@@ -62,9 +64,9 @@ impl EffectLog {
         effects.iter().filter(|e| actor.is_none_or(|a| e.actor == a)).cloned().collect()
     }
 
-    fn record_turn<A: Actor>(&self, node: &str, turn: &Turn<A>, label: Option<String>) {
+    fn record_turn<A: Actor>(&self, turn: &Turn<A>, label: Option<String>) {
         self.record(Effect {
-            node: node.to_owned(),
+            node: turn.node_id().as_str().to_owned(),
             actor: turn.self_address().to_string(),
             message_id: turn.message().id.as_str().to_owned(),
             attempt: turn.message().attempt,
@@ -137,14 +139,17 @@ pub struct SlowState {
 
 /// The slow type.
 pub struct SlowActor {
-    node: String,
     effects: EffectLog,
 }
 
 impl SlowActor {
-    /// The slow type on node `node`, recording effects in `effects`.
-    pub fn new(node: impl Into<String>, effects: EffectLog) -> Self {
-        Self { node: node.into(), effects }
+    /// The slow type, recording effects in `effects`. `_node` is ignored: runs record [`Turn::node_id`].
+    pub fn new(_node: impl Into<String>, effects: EffectLog) -> Self {
+        Self::recording(effects)
+    }
+
+    pub(crate) fn recording(effects: EffectLog) -> Self {
+        Self { effects }
     }
 }
 
@@ -155,13 +160,13 @@ impl Actor for SlowActor {
     async fn handle(&self, turn: &mut Turn<Self>, message: SlowMsg) -> HandlerResult {
         match message {
             SlowMsg::Sleep { millis, label } => {
-                self.effects.record_turn(&self.node, turn, label.clone());
+                self.effects.record_turn(turn, label.clone());
                 sleep_millis(millis).await;
                 let run = SlowRun {
                     message_id: turn.message().id.as_str().to_owned(),
                     label,
                     attempt: turn.message().attempt,
-                    node: self.node.clone(),
+                    node: turn.node_id().as_str().to_owned(),
                     claimed_at: turn.now(),
                     finished_at: Utc::now(),
                 };
@@ -239,15 +244,18 @@ pub const MAX_ENTRIES: usize = 5_000;
 
 /// The counter type.
 pub struct CounterActor {
-    node: String,
     /// Instances with a turn running on this node.
     running: Arc<Mutex<HashSet<String>>>,
 }
 
 impl CounterActor {
-    /// The counter type on node `node`.
-    pub fn new(node: impl Into<String>) -> Self {
-        Self { node: node.into(), running: Arc::default() }
+    /// The counter type. `_node` is ignored: steps record [`Turn::node_id`].
+    pub fn new(_node: impl Into<String>) -> Self {
+        Self::fresh()
+    }
+
+    pub(crate) fn fresh() -> Self {
+        Self { running: Arc::default() }
     }
 }
 
@@ -286,6 +294,7 @@ impl Actor for CounterActor {
                 sleep_millis(hold_millis).await;
                 let now = turn.now();
                 let attempt = turn.message().attempt;
+                let node = turn.node_id().as_str().to_owned();
                 let state = turn.state_mut();
                 let overlapping_anywhere = state.entries.last().is_some_and(|previous| now < previous.finished_at);
                 state.count += 1;
@@ -296,13 +305,7 @@ impl Actor for CounterActor {
                 if overlapping_here || overlapping_anywhere {
                     state.overlaps += 1;
                 }
-                state.entries.push(StepEntry {
-                    seq,
-                    node: self.node.clone(),
-                    attempt,
-                    claimed_at: now,
-                    finished_at: Utc::now(),
-                });
+                state.entries.push(StepEntry { seq, node, attempt, claimed_at: now, finished_at: Utc::now() });
                 let excess = state.entries.len().saturating_sub(MAX_ENTRIES);
                 state.entries.drain(..excess);
             }
@@ -364,14 +367,17 @@ pub struct RecorderState {
 
 /// The recorder type.
 pub struct RecorderActor {
-    node: String,
     effects: EffectLog,
 }
 
 impl RecorderActor {
-    /// The recorder type on node `node`, recording effects in `effects`.
-    pub fn new(node: impl Into<String>, effects: EffectLog) -> Self {
-        Self { node: node.into(), effects }
+    /// The recorder type, recording effects in `effects`. `_node` is ignored: records name [`Turn::node_id`].
+    pub fn new(_node: impl Into<String>, effects: EffectLog) -> Self {
+        Self::recording(effects)
+    }
+
+    pub(crate) fn recording(effects: EffectLog) -> Self {
+        Self { effects }
     }
 }
 
@@ -382,13 +388,13 @@ impl Actor for RecorderActor {
     async fn handle(&self, turn: &mut Turn<Self>, message: RecorderMsg) -> HandlerResult {
         match message {
             RecorderMsg::Record { label, sleep_millis: millis } => {
-                self.effects.record_turn(&self.node, turn, Some(label.clone()));
+                self.effects.record_turn(turn, Some(label.clone()));
                 sleep_millis(millis).await;
                 let record = Recorded {
                     label,
                     message_id: turn.message().id.as_str().to_owned(),
                     attempt: turn.message().attempt,
-                    node: self.node.clone(),
+                    node: turn.node_id().as_str().to_owned(),
                 };
                 turn.state_mut().records.push(record);
             }

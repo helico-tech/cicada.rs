@@ -93,13 +93,18 @@ pub struct Catalog {
 }
 
 impl Catalog {
-    /// The catalog of node `node_id`, with the default fakes; the E2E types record their effects in `effects`.
-    pub fn new(node_id: &str, effects: EffectLog) -> Self {
-        Self::with_fakes(node_id, effects, Fakes::default())
+    /// The catalog with the default fakes; the E2E types record their effects in `effects`. `_node_id` is ignored:
+    /// the E2E types record the claim owner of each turn ([`cicada::Turn::node_id`]).
+    pub fn new(_node_id: &str, effects: EffectLog) -> Self {
+        Self::build(effects, Fakes::default())
     }
 
-    /// The catalog with the given fakes.
-    pub fn with_fakes(node_id: &str, effects: EffectLog, fakes: Fakes) -> Self {
+    /// The catalog with the given fakes. `_node_id` is ignored, as in [`Catalog::new`].
+    pub fn with_fakes(_node_id: &str, effects: EffectLog, fakes: Fakes) -> Self {
+        Self::build(effects, fakes)
+    }
+
+    pub(crate) fn build(effects: EffectLog, fakes: Fakes) -> Self {
         let types = vec![
             CatalogType::of(CleanupActor { files: fakes.temp_files }),
             CatalogType::of(CheckoutActor),
@@ -125,9 +130,9 @@ impl Catalog {
             CatalogType::of(EventActor),
             CatalogType::of(SyncActor { api: fakes.sync_api }),
             CatalogType::of(ReportsActor),
-            CatalogType::of(SlowActor::new(node_id, effects.clone())),
-            CatalogType::of(CounterActor::new(node_id)),
-            CatalogType::of(RecorderActor::new(node_id, effects)),
+            CatalogType::of(SlowActor::recording(effects.clone())),
+            CatalogType::of(CounterActor::fresh()),
+            CatalogType::of(RecorderActor::recording(effects)),
             CatalogType::of(FlakyActor),
         ];
         let singletons = vec![

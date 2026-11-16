@@ -374,16 +374,32 @@ async fn on_shutdown_the_node_stops_and_the_port_is_closed() {
     assert!(reqwest::get(format!("{base}/ready")).await.is_err(), "the port is closed");
 }
 
-/// A `--node-id` flag that differs from `CICADA_NODE_ID` fails the start: the actors would record the wrong id.
+/// sample-execution, Scenario: A flag overrides the environment locally. `--node-id` wins over `CICADA_NODE_ID`
+/// (`test-node`), and the records and effects of the E2E actors name the id the node runs as.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_node_id_flag_other_than_the_variable_fails_the_start() {
+async fn a_node_id_flag_overrides_the_variable_in_records_and_effects() {
     let db = temp_db();
-    let line = args(&["cicada-sample-service", "serve", "--listen", "127.0.0.1:0", "--node-id", "other"]);
-    let env = env(&db.path);
-    let Sample { app, .. } = Sample::new(&line, &env).unwrap();
-    let error = app.run_with(line, env, Out::default(), std::future::pending()).await.unwrap_err();
-    assert_eq!(error.exit_code(), 1);
-    assert!(error.to_string().contains("CICADA_NODE_ID"), "{error}");
+    with_node(env(&db.path), &["--node-id", "flagged"], async |node| {
+        let api = &node.api;
+        let info: serde_json::Value = node.get("/").await.json().await.unwrap();
+        assert_eq!(info["node"], "flagged");
+        let counter = Counter { id: "c".into() };
+        let recorder = Recorder { id: "r".into() };
+        api.create(&counter, &CounterState::default()).await.unwrap();
+        api.send(&counter, CounterMsg::Step { seq: 1, hold_millis: 0 }).await.unwrap();
+        api.create(&recorder, &RecorderState::default()).await.unwrap();
+        api.send(&recorder, RecorderMsg::Record { label: "e".into(), sleep_millis: 0 }).await.unwrap();
+        eventually("both ran", || async {
+            let counted = api.state::<_, CounterState>(&counter).await.unwrap().is_some_and(|s| s.count == 1);
+            counted && api.state::<_, RecorderState>(&recorder).await.unwrap().is_some_and(|s| s.records.len() == 1)
+        })
+        .await;
+        assert_eq!(api.state::<_, CounterState>(&counter).await.unwrap().unwrap().entries[0].node, "flagged");
+        assert_eq!(api.state::<_, RecorderState>(&recorder).await.unwrap().unwrap().records[0].node, "flagged");
+        let effects = node.get("/e2e/effects?actor=e2e.recorder/r").await.text().await.unwrap();
+        assert!(effects.contains(r#""node":"flagged""#), "{effects}");
+    })
+    .await;
 }
 
 /// app, Scenario: A host with an async main. The binary's `main` is async and calls `run_async`: it serves, and stops
