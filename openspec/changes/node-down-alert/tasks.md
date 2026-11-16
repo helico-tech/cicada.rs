@@ -12,7 +12,7 @@
   preserved history on source failure, no recovery notifications and missing Topic rollback/repair. Verify targeted
   cicada-actors tests, including competing systems and lost-commit replay with one committed publication.
 
-- [ ] 3. Contract and checked example. Extend wire_formats.rs with monitor state/message references and NodeDown
+- [x] 3. Contract and checked example. Extend wire_formats.rs with monitor state/message references and NodeDown
   receiver samples; generate docs/reference/contracts/cicada.node-down.json with the normal update variable. Add
   examples/src/node_down.rs and tests: explicit Topic/subscriptions, bounded sink with NodeDown/Failed/Stopped,
   monitor failure watch, lastProblem inspection and repair/Rearm. Verify wire, example and contract tests and ensure

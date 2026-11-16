@@ -1,4 +1,4 @@
-//! The wire formats of the nine ready-made actors (ADR 0028): their contracts against the references in
+//! The wire formats of the ten ready-made actors (ADR 0028): their contracts against the references in
 //! `docs/reference/contracts`, the JSON their messages and states are written as, and sample checks for what the
 //! helpers and the actors write: both the registered schemas and the decoders take it (ADR 0026). And the wire format
 //! of a flow (ADR 0031, ADR 0044): a test flow's contract, whose type name its host chooses, pinned in `tests/contracts`,
@@ -16,9 +16,11 @@ use cicada_actors::{
     Batcher, BatcherActor, BatcherMsg, BatcherState, Child, DeadLetters, DeadLettersActor, DeadLettersMsg,
     DeadLettersState, Debouncer, DebouncerActor, DebouncerMsg, DebouncerState, Event, EventActor, EventMsg, EventState,
     Flow, FlowActor, FlowMsg, FlowRun, FlowState, FlowStatus, HeartbeatStatus, HeartbeatWatch, HeartbeatWatchActor,
-    HeartbeatWatchMsg, HeartbeatWatchState, JournalEntry, RateLimiter, RateLimiterActor, RateLimiterMsg,
-    RateLimiterState, ReplyTo, Schedule, Scheduler, SchedulerActor, SchedulerMsg, SchedulerState, StoredMessage,
-    Supervisor, SupervisorActor, SupervisorMsg, SupervisorState, Topic, TopicActor, TopicMsg, TopicState,
+    HeartbeatWatchMsg, HeartbeatWatchState, JournalEntry, NodeDown, NodeDownMonitor, NodeDownMonitorActor,
+    NodeDownMonitorMsg, NodeDownMonitorState, NodeReadError, NodeSnapshot, NodeSnapshotSource, RateLimiter,
+    RateLimiterActor, RateLimiterMsg, RateLimiterState, ReplyTo, Schedule, Scheduler, SchedulerActor, SchedulerMsg,
+    SchedulerState, StoredMessage, Supervisor, SupervisorActor, SupervisorMsg, SupervisorState, Topic, TopicActor,
+    TopicMsg, TopicState,
 };
 use cicada_axum::{assert_message_sample, assert_state_sample};
 use cicada_test::{TestActors, UPDATE_CONTRACTS_ENV, describe_changes};
@@ -89,7 +91,7 @@ fn check_references(dir: &Path, contracts: &[Contract], update: bool) -> Result<
     }
 }
 
-fn the_nine_contracts() -> [Contract; 9] {
+fn the_ten_contracts() -> [Contract; 10] {
     [
         contract_of::<SupervisorActor>().unwrap(),
         contract_of::<DeadLettersActor>().unwrap(),
@@ -100,12 +102,13 @@ fn the_nine_contracts() -> [Contract; 9] {
         contract_of::<BatcherActor>().unwrap(),
         contract_of::<EventActor>().unwrap(),
         contract_of::<HeartbeatWatchActor>().unwrap(),
+        contract_of::<NodeDownMonitorActor>().unwrap(),
     ]
 }
 
 #[test]
-fn the_contracts_of_the_nine_types_match_their_references() {
-    let contracts = the_nine_contracts();
+fn the_contracts_of_the_ten_types_match_their_references() {
+    let contracts = the_ten_contracts();
     let names: Vec<&str> = contracts.iter().map(|c| c.type_name().as_str()).collect();
     assert_eq!(
         names,
@@ -118,7 +121,8 @@ fn the_contracts_of_the_nine_types_match_their_references() {
             "cicada.debouncer",
             "cicada.batcher",
             "cicada.event",
-            "cicada.heartbeat-watch"
+            "cicada.heartbeat-watch",
+            "cicada.node-down"
         ]
     );
     let update = std::env::var(UPDATE_CONTRACTS_ENV).is_ok_and(|v| v == "true");
@@ -400,6 +404,79 @@ fn the_messages_are_written_in_camel_case_and_pass_their_samples() {
         assert_message_sample::<HeartbeatWatchMsg>(&written);
     }
     assert!(cicada::message::decode::<HeartbeatWatchMsg>("Start", &json!({})).is_err(), "no Start message");
+
+    for (message, written) in
+        [(NodeDownMonitorMsg::Rearm, json!({"type": "Rearm"})), (NodeDownMonitorMsg::Poll, json!({"type": "Poll"}))]
+    {
+        assert_eq!(json_of(&message), written);
+        assert_message_sample::<NodeDownMonitorMsg>(&written);
+    }
+    assert!(cicada::message::decode::<NodeDownMonitorMsg>("Start", &json!({})).is_err(), "no Start message");
+}
+
+/// A family of a subscriber of the node-down topic: it declares `NodeDown` with the payload of the crate.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type")]
+enum OnCallMsg {
+    /// A node row was seen dead.
+    NodeDown(NodeDown),
+}
+
+#[test]
+fn a_node_down_is_written_in_camel_case_without_absent_details_and_passes_a_receivers_samples() {
+    let all = json!({
+        "type": "NodeDown", "node": "web-1", "startedAt": "2026-11-16T08:00:00Z", "lastSeen": "2026-11-16T09:00:00.500Z",
+        "detectedAt": "2026-11-16T09:02:00.500Z", "hostname": "web-1.internal", "cicadaVersion": "0.20.2", "label": "shop"
+    });
+    let OnCallMsg::NodeDown(down) = serde_json::from_value::<OnCallMsg>(all.clone()).unwrap();
+    assert_eq!(json_of(OnCallMsg::NodeDown(down.clone())), all);
+    assert_message_sample::<OnCallMsg>(&all);
+    let mut bare = down;
+    (bare.hostname, bare.cicada_version, bare.label) = (None, None, None);
+    let written = json_of(OnCallMsg::NodeDown(bare));
+    assert_eq!(
+        written.as_object().unwrap().keys().collect::<Vec<_>>(),
+        ["type", "node", "startedAt", "lastSeen", "detectedAt"]
+    );
+    assert_message_sample::<OnCallMsg>(&written);
+    let mut blank = all.clone();
+    blank["node"] = json!("");
+    assert!(serde_json::from_value::<OnCallMsg>(blank).is_err(), "a node id is never blank");
+    let mut late = all;
+    late["detectedAt"] = json!("soon");
+    assert!(serde_json::from_value::<OnCallMsg>(late).is_err());
+}
+
+#[test]
+fn a_node_down_monitor_state_is_written_in_camel_case_passes_its_samples_and_refuses_invalid_states() {
+    let topic = json!({"topic": {"name": "nodes"}});
+    let with = |extra: Value| {
+        let mut json = topic.clone();
+        json.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        json
+    };
+    let written = json_of(NodeDownMonitorState::new(Topic::named("nodes")).unwrap());
+    let empty = json!({"alerted": {}, "armed": null, "nextPollAt": null, "lastCheckedAt": null, "lastProblem": null});
+    assert_eq!(written, with(empty));
+    assert_state_sample::<NodeDownMonitorState>(&written);
+    assert_state_sample::<NodeDownMonitorState>(&topic);
+    let at = "2026-11-16T09:00:00Z";
+    let mark = json!({"startedAt": at, "lastSeen": at});
+    let full = with(json!({"alerted": {"web-1": mark}, "armed": "p1", "nextPollAt": at, "lastCheckedAt": at,
+                            "lastProblem": "timeout"}));
+    assert_state_sample::<NodeDownMonitorState>(&full);
+    for invalid in [
+        json!({}),
+        json!({"topic": "cicada.topic/nodes"}),
+        with(json!({"armed": "p1"})),
+        with(json!({"nextPollAt": at})),
+        with(json!({"alerted": {"web-1": {"startedAt": "2026-11-16T10:00:00Z", "lastSeen": at}}})),
+        with(json!({"alerted": {"web-1": {"startedAt": at}}})),
+        with(json!({"lastProblem": "down"})),
+        with(json!({"lastCheckedAt": "soon"})),
+    ] {
+        assert!(serde_json::from_value::<NodeDownMonitorState>(invalid.clone()).is_err(), "{invalid}");
+    }
 }
 
 #[test]
@@ -653,6 +730,7 @@ async fn the_states_the_actors_write_pass_their_samples() {
                 .host(BatcherActor)
                 .host(EventActor)
                 .host(HeartbeatWatchActor)
+                .host(NodeDownMonitorActor::new(FixedSample::default()))
                 .host(WorkerActor)
         })
         .build()
@@ -783,6 +861,51 @@ async fn the_states_the_actors_write_pass_their_samples() {
     assert_eq!((written["status"].clone(), written["armed"].clone()), (json!("silent"), Value::Null), "{written}");
     assert!(written["lastBeatAt"].is_string(), "{written}");
     assert_state_sample::<HeartbeatWatchState>(&written);
+
+    // A monitor that alerts a dead row, then reads nothing: the second check keeps `alerted` and adds `lastProblem`.
+    let nodes = Topic::named("nodes");
+    test.create(&nodes, &TopicState::default()).await;
+    test.create(&NodeDownMonitor, &NodeDownMonitorState::new(nodes).unwrap()).await;
+    test.send(&NodeDownMonitor, NodeDownMonitorMsg::Rearm).await;
+    test.run_until_idle().await;
+    let written = test.state_json(&NodeDownMonitor).await.unwrap();
+    assert_eq!(written["alerted"]["web-1"]["lastSeen"], "2025-12-31T23:50:00Z", "{written}");
+    for key in ["armed", "nextPollAt", "lastCheckedAt"] {
+        assert!(written[key].is_string(), "{key} in {written}");
+    }
+    assert_state_sample::<NodeDownMonitorState>(&written);
+    test.advance_time_by(10 * second).await;
+    let written = test.state_json(&NodeDownMonitor).await.unwrap();
+    assert_eq!(written["lastProblem"], "unavailable", "{written}");
+    assert!(written["alerted"]["web-1"].is_object(), "{written}");
+    assert_state_sample::<NodeDownMonitorState>(&written);
+}
+
+/// A source that gives one sample with a dead row `web-1`, then fails.
+#[derive(Default)]
+struct FixedSample(std::sync::Mutex<usize>);
+
+impl NodeSnapshotSource for FixedSample {
+    async fn snapshot(&self) -> Result<NodeSnapshot, NodeReadError> {
+        let mut reads = self.0.lock().unwrap();
+        *reads += 1;
+        if *reads > 1 {
+            return Err(NodeReadError("down".into()));
+        }
+        let at = |text: &str| text.parse().unwrap();
+        let row = cicada::runtime::NodeInfo {
+            id: cicada::store::NodeId::new("web-1").unwrap(),
+            hosted: Vec::new(),
+            started_at: at("2025-12-31T23:00:00Z"),
+            last_seen: at("2025-12-31T23:50:00Z"),
+            hostname: None,
+            cicada_version: None,
+            label: Some("shop".into()),
+            status: cicada::runtime::NodeHealth::Dead,
+            running_turns: Vec::new(),
+        };
+        Ok(NodeSnapshot { as_of: at("2026-01-01T00:00:00Z"), nodes: vec![row] })
+    }
 }
 
 /// The input of the test flow.
