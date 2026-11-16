@@ -28,7 +28,7 @@
   plugin, OpenAPI pins and changelog. Keep archive format and member set intact. Verify docs/doctests/skill checks
   after integration and version changes, and report behavioral evidence without claiming unperformed checks.
 
-- [ ] 5. Finishing. Run `openspec validate actor-design-review --strict`. Commit the implementation and run
+- [x] 5. Finishing. Run `openspec validate actor-design-review --strict`. Commit the implementation and run
   `python3 scripts/gate.py run --e2e`, then report `python3 scripts/gate.py status`. Its full checks include
   `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` with PostgreSQL,
   feature builds, script/docs/skill checks and Docker E2E. The predecessor's spec must be archived before applying
