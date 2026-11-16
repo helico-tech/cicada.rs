@@ -1,5 +1,5 @@
 {
-  "about": "Staged conversations an agent with skills/actor-design (and its sibling skills/cicada) should handle in a consumer project. Each case gives the setup and the user's turns in order; a reviewer plays the user, runs a representative subset in temporary projects and judges the decisions, the saved document and its diagrams against `expect` and `avoid`, not the wording. CI checks only that the cases are here, well formed and cover the designed situations (examples/tests/skill.rs); it runs no model.",
+  "about": "Staged conversations an agent with skills/actor-design (and its sibling skills/cicada) should handle in a consumer project. Each case gives the setup and the user's turns in order; a reviewer plays the user, runs a representative subset in temporary projects and judges the decisions, the saved document or report and its diagrams against `expect` and `avoid`, not the wording. Cases without a mode are design mode; cases with mode review exercise review mode and name their test-only inputs under review-fixtures/ in `fixtures` (paths relative to that folder; they are never packaged). CI checks only that the cases are here, well formed, cover the designed situations and name fixtures that exist (examples/tests/skill.rs); it runs no model.",
   "cases": [
     {
       "id": "fresh-design",
@@ -248,6 +248,323 @@
       ],
       "avoid": [
         "Replacing either installed folder without showing local changes."
+      ]
+    },
+    {
+      "id": "review-mode-selection",
+      "mode": "review",
+      "fixtures": [
+        "sound-alternative/src/cart.rs",
+        "sound-alternative/src/stock.rs",
+        "sound-alternative/docs/design/actors.md"
+      ],
+      "setup": "A consumer repository holding the sound-alternative fixture (its docs/design/actors.md and src/) with Cicada resolved; no review report exists.",
+      "turns": [
+        "Can you look at our actors?",
+        "Review them, please."
+      ],
+      "expect": [
+        "Asks one question in the first turn (design something new, or review what exists?) while it already reads the supplied files.",
+        "After the second turn, runs the four review phases without asking for confirmation after each, showing the reconstructed map before any finding.",
+        "Writes nothing before the mode is chosen."
+      ],
+      "avoid": [
+        "Starting the nine-step design interview or asking for stories of a new system.",
+        "Waiting for a yes after each review phase."
+      ]
+    },
+    {
+      "id": "review-combined-request",
+      "mode": "review",
+      "fixtures": [
+        "sound-alternative/src/cart.rs",
+        "sound-alternative/src/stock.rs",
+        "sound-alternative/docs/design/actors.md"
+      ],
+      "setup": "The sound-alternative fixture in a consumer repository with Cicada resolved.",
+      "turns": [
+        "Review our cart design, then help me design how refunds should work."
+      ],
+      "expect": [
+        "Reviews the existing cart and stock first and saves docs/design/actors-review.md.",
+        "Then starts design mode for refunds only, with step 1 questions, in its own design document; it does not overwrite the existing docs/design/actors.md (it asks for a name, as design mode does)."
+      ],
+      "avoid": [
+        "Writing refund design into the review report or the review into the design document.",
+        "Designing refunds before the review is done."
+      ]
+    },
+    {
+      "id": "review-sound-alternative",
+      "mode": "review",
+      "fixtures": [
+        "sound-alternative/src/cart.rs",
+        "sound-alternative/src/stock.rs",
+        "sound-alternative/docs/design/actors.md"
+      ],
+      "setup": "The sound-alternative fixture: one cart actor that also owns checkout, by a documented decision, and stock per SKU with request/reply and request ids.",
+      "turns": [
+        "Please review our cart and stock actors against the design."
+      ],
+      "expect": [
+        "Draws the actor map (carts, stock, Reserve/Reserved/Refused/Release, the expiry timer) and a sequence per story with late-reply and expiry branches before judging.",
+        "Records cart plus checkout in one actor as an accepted tradeoff with its documented reason.",
+        "Gives all seven areas a verdict with evidence; any finding names a violated requirement with a concrete trace, or the report has no findings."
+      ],
+      "avoid": [
+        "A finding that checkout should be its own actor without a violated requirement.",
+        "Inventing findings to fill the report, or claiming the whole service is correct."
+      ]
+    },
+    {
+      "id": "review-duplicate-effect",
+      "mode": "review",
+      "fixtures": [
+        "duplicate-effect/src/payment.rs",
+        "duplicate-effect/src/gateway.rs",
+        "duplicate-effect/src/order.rs"
+      ],
+      "setup": "The duplicate-effect fixture in a consumer repository with Cicada resolved; no tests exist.",
+      "turns": [
+        "Review the payment actor: can a customer be charged twice?"
+      ],
+      "expect": [
+        "A high finding with a trace: the provider charges, the response is lost or the turn fails, the sender's retry reruns the same message, the card is charged again; it cites src/payment.rs, src/gateway.rs and src/order.rs with lines.",
+        "Correction: name the charge across attempts (the message id as the provider's idempotency key) and a check such as a TestActors test with a failing gateway double.",
+        "Notices that a send to an absent monthly ledger rejects the commit after the charge (not retried), leaving the charge unrecorded, as a separate finding or open question.",
+        "Checks and limits say that no tests were run."
+      ],
+      "avoid": [
+        "Claiming that Cicada or G4 makes the provider call happen once.",
+        "Running cargo build or tests, or changing the code."
+      ]
+    },
+    {
+      "id": "review-stale-reply",
+      "mode": "review",
+      "fixtures": [
+        "stale-reply/src/rooms.rs",
+        "stale-reply/src/moderator.rs"
+      ],
+      "setup": "The stale-reply fixture: rooms keyed by name are deleted on close and can be reopened under the same name, also as private; the moderator answers by room name with no correlation.",
+      "turns": [
+        "Review the room and moderator actors."
+      ],
+      "expect": [
+        "A finding with a trace: lobby asks to approve bob, lobby is closed and reopened as private, the moderator's Approved for bob reaches the new life and adds him; priority high for the isolation loss.",
+        "Correction: a fresh key per room life, or a request id the room keeps and checks; and a check that replays the trace.",
+        "Notes that a reply to a deleted, not yet reopened room rejects the moderator's commit."
+      ],
+      "avoid": [
+        "Claiming that delete retracts messages sent after it or that Cicada correlates replies by itself."
+      ]
+    },
+    {
+      "id": "review-wait-cycle",
+      "mode": "review",
+      "fixtures": [
+        "wait-cycle/src/transfer.rs",
+        "wait-cycle/src/account.rs"
+      ],
+      "setup": "The wait-cycle fixture: a transfer waits for Held, while the account answers Held only after the transfer's Confirm.",
+      "turns": [
+        "Our transfers sometimes never finish. Review these actors."
+      ],
+      "expect": [
+        "A sequence diagram and a high finding: the transfer waits for Held, the account waits for Confirm, neither has a deadline, the money is taken from the balance and the transfer never finishes.",
+        "Correction: break the logical cycle (answer Held when the hold is placed) and give each wait a deadline and a timeout owner.",
+        "Notes that an insufficient balance gets no reply at all."
+      ],
+      "avoid": [
+        "Calling it a lock or a blocking-call deadlock of turns.",
+        "Assuming a timeout exists that the code does not have."
+      ]
+    },
+    {
+      "id": "review-unknown-guarantees",
+      "mode": "review",
+      "fixtures": [
+        "unknown-guarantees/src/notify.rs",
+        "unknown-guarantees/src/postbird.rs"
+      ],
+      "setup": "The unknown-guarantees fixture: the notifier passes the message id as Postbird's client_reference; the vendor's documentation is not available.",
+      "turns": [
+        "Review the shipping-email actor.",
+        "I don't know what Postbird does with the reference; decide whatever you need."
+      ],
+      "expect": [
+        "Records an open question (does Postbird deduplicate by client_reference, and for how long?) with the conditional risk of a second email when a turn fails after the call.",
+        "Asks at most three focused questions and keeps checking the rest.",
+        "After the delegation, may make a labelled choice for its recommendation, but keeps Postbird's behaviour unknown."
+      ],
+      "avoid": [
+        "Asserting duplicate emails as a fact, or declaring the email safe.",
+        "Inventing Postbird's guarantees after the delegation."
+      ]
+    },
+    {
+      "id": "review-docs-code-conflict",
+      "mode": "review",
+      "fixtures": [
+        "docs-code-conflict/docs/design/actors.md",
+        "docs-code-conflict/src/show.rs"
+      ],
+      "setup": "The docs-code-conflict fixture: the design says a 10-minute timer releases a held seat; the code has no timer and relies on Release from the web client.",
+      "turns": [
+        "Review the seat reservation actor against our design."
+      ],
+      "expect": [
+        "Shows both: the documented rule (docs/design/actors.md, Rules) and the observed code (src/show.rs, no timer; Release from the client), tagged documented and observed.",
+        "Asks which is intended, and reports the risk that a seat stays held for ever when the client leaves without Release, conditional on the documented rule.",
+        "Notes that paying for a seat no longer held is ignored without a reply, while the design says refused."
+      ],
+      "avoid": [
+        "Silently treating either the document or the code as the truth.",
+        "Editing the design document or the code."
+      ]
+    },
+    {
+      "id": "review-old-source",
+      "mode": "review",
+      "fixtures": [
+        "duplicate-effect/src/payment.rs",
+        "duplicate-effect/src/gateway.rs",
+        "duplicate-effect/src/order.rs"
+      ],
+      "setup": "Offline. The project locks an older Cicada release without docs/guide/design.md; the skills are newer.",
+      "turns": [
+        "Review our payment actor."
+      ],
+      "expect": [
+        "Records the project's Cicada version separately from the skills' and says the design guide is not available at that version.",
+        "Uses that source's docs/guide/core.md design section, examples and code for Cicada claims, and marks what it could not verify."
+      ],
+      "avoid": [
+        "Citing a newer design guide, latest main or a proposal as the project's behaviour.",
+        "Fetching or updating dependencies."
+      ]
+    },
+    {
+      "id": "review-mixed-source",
+      "mode": "review",
+      "fixtures": [
+        "stale-reply/src/rooms.rs",
+        "stale-reply/src/moderator.rs"
+      ],
+      "setup": "The resolver reports status mixed: a fork and a release of Cicada in two packages of the workspace.",
+      "turns": [
+        "Review the room actors."
+      ],
+      "expect": [
+        "Shows the groups and asks which package and configuration the review is for.",
+        "Reconstructs from the consumer's code meanwhile and keeps judgments that rest on Cicada semantics unknown until the source is chosen."
+      ],
+      "avoid": [
+        "Picking one source silently."
+      ]
+    },
+    {
+      "id": "review-partial-scope",
+      "mode": "review",
+      "fixtures": [
+        "partial-scope/src/checkout.rs",
+        "partial-scope/src/shipping.rs",
+        "partial-scope/src/inventory.rs"
+      ],
+      "setup": "The partial-scope fixture: checkout, shipping and inventory actors; the user wants only one story reviewed.",
+      "turns": [
+        "Review only the checkout's payment timeout story, not shipping or inventory."
+      ],
+      "expect": [
+        "Records the scope (checkout payment timeout) and the exclusions (shipping, inventory) in Scope and sources.",
+        "Draws the story with its timeout and late-payment branches; shipping appears only as a partner at the boundary.",
+        "Raises what the scope cannot settle as open questions, such as who creates the shipping actor and who refunds a payment confirmed after expiry."
+      ],
+      "avoid": [
+        "Findings about shipping or inventory internals, or a claim about the whole codebase."
+      ]
+    },
+    {
+      "id": "review-non-actor-scope",
+      "mode": "review",
+      "fixtures": [
+        "non-actor-scope/src/settings.rs"
+      ],
+      "setup": "The non-actor-scope fixture: the settings editor is one HTTP handler with one transaction; actors elsewhere read the rows.",
+      "turns": [
+        "Review the actor design of our settings editor."
+      ],
+      "expect": [
+        "Draws the real context (handler, settings table, readers) and says the scope holds no actors.",
+        "Marks the areas that do not apply as not applicable, with the reason."
+      ],
+      "avoid": [
+        "Inventing actors, messages or watches to fill the map.",
+        "Recommending actors without a requirement that needs an owner over time."
+      ]
+    },
+    {
+      "id": "review-report-collision",
+      "mode": "review",
+      "fixtures": [
+        "report-collision/docs/design/actors-review.md",
+        "stale-reply/src/rooms.rs",
+        "stale-reply/src/moderator.rs"
+      ],
+      "setup": "docs/design/actors-review.md holds the billing team's hand-written review notes; the user asks for a review of the room actors.",
+      "turns": [
+        "Review the room actors and save the report."
+      ],
+      "expect": [
+        "Inspects the destination, sees another system's notes, and asks for another path or clarification.",
+        "Leaves the billing notes unchanged."
+      ],
+      "avoid": [
+        "Overwriting, reformatting or appending to the billing notes."
+      ]
+    },
+    {
+      "id": "review-changed-source-resume",
+      "mode": "review",
+      "fixtures": [
+        "resume/docs/design/actors-review.md",
+        "resume/before/src/payment.rs",
+        "resume/before/src/gateway.rs",
+        "resume/before/src/order.rs",
+        "resume/after/src/payment.rs",
+        "resume/after/src/gateway.rs",
+        "resume/after/src/order.rs"
+      ],
+      "setup": "A git repository whose first commit holds resume/before/src and the saved report resume/docs/design/actors-review.md (written at that commit); a second commit replaces src with resume/after/src.",
+      "turns": [
+        "Pick up the payments review again; we changed the code."
+      ],
+      "expect": [
+        "Reads the report, sees the revision changed, records the new evidence snapshot, and treats the findings on src/payment.rs as stale until rechecked.",
+        "Marks R-001 resolved with the new evidence (the message id passed as the idempotency key) and keeps its earlier trace under History.",
+        "Keeps R-002 open with the user's note, R-003 withdrawn, and adds the new duplicate receipt email as R-004.",
+        "Updates only the changed sections and says that no tests ran."
+      ],
+      "avoid": [
+        "Reusing R-003 or renumbering findings.",
+        "Dropping the user's note on R-002 or resolving it without evidence.",
+        "Restarting the review from scratch or overwriting the report wholesale."
+      ]
+    },
+    {
+      "id": "review-no-repository",
+      "mode": "review",
+      "fixtures": [],
+      "setup": "A chat without a writable repository; the user pastes a short design excerpt of a rate limiter actor.",
+      "turns": [
+        "Here is our design (pasted below). Review it, but don't create files."
+      ],
+      "expect": [
+        "Presents the report in the chat with the same sections and says it was not saved.",
+        "Cites the pasted text by its section and short quotes, not by invented paths."
+      ],
+      "avoid": [
+        "Writing docs/design/actors-review.md anyway."
       ]
     }
   ]

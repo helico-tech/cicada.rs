@@ -1,8 +1,9 @@
 //! Checks of the consumer skills `skills/cicada` (ADR 0041) and `skills/actor-design` (ADR 0051): their frontmatter
 //! and versions, that every route resolves to a file and heading of this source, that the routes of `cicada` cover
-//! every guide, reference and worked example and those of `actor-design` the design guide, that the design template
-//! follows the guide's nine steps, that consumers are not routed to proposals or the change loops, the evaluation
-//! cases, and the Python tests of the resolver and the packaging (`examples/tests/skill/test_*.py`), and the shape of
+//! every guide, reference and worked example and those of `actor-design` the design guide and the areas of a review,
+//! that the design template follows the guide's nine steps, that the review report's sections are defined in the
+//! skill, that consumers are not routed to proposals or the change loops, the evaluation cases and the fixtures the
+//! review cases name, and the Python tests of the resolver and the packaging (`examples/tests/skill/test_*.py`), and the shape of
 //! the Claude Code plugin that carries the consumer skills (ADR 0049). They check structure; whether a skill leads to
 //! good decisions is judged by evaluations in review, and the plugin's manifests by `claude plugin validate` in review.
 
@@ -917,6 +918,41 @@ const DESIGN_EVALUATIONS: [&str; 16] = [
     "archive-layout",
 ];
 
+/// The ids of the staged review cases of `actor-design` that the review design names, in their order.
+const REVIEW_EVALUATIONS: [&str; 15] = [
+    "review-mode-selection",
+    "review-combined-request",
+    "review-sound-alternative",
+    "review-duplicate-effect",
+    "review-stale-reply",
+    "review-wait-cycle",
+    "review-unknown-guarantees",
+    "review-docs-code-conflict",
+    "review-old-source",
+    "review-mixed-source",
+    "review-partial-scope",
+    "review-non-actor-scope",
+    "review-report-collision",
+    "review-changed-source-resume",
+    "review-no-repository",
+];
+
+/// The folder of the test-only inputs of the review cases, from the repository root.
+const REVIEW_FIXTURES: &str = "examples/tests/skill/review-fixtures";
+
+/// What is wrong with the fixture `path` a review case names, against the fixture folder `fixtures`: a path that is not
+/// plain and relative (absolute, empty, with `.`, `..`, a backslash or an empty part) or that names no regular file.
+fn fixture_problem(path: &str, fixtures: &Path) -> Option<String> {
+    let plain = !path.is_empty()
+        && !path.contains('\\')
+        && path.split('/').all(|part| !part.is_empty() && part != "." && part != "..");
+    if !plain {
+        return Some(format!("the fixture {path:?} is not a plain relative path"));
+    }
+    let regular = fs::symlink_metadata(fixtures.join(path)).is_ok_and(|m| m.file_type().is_file());
+    (!regular).then(|| format!("the fixture {path} is not a file in {REVIEW_FIXTURES}"))
+}
+
 #[test]
 fn the_design_evaluation_cases_are_complete() {
     let text = read(&root().join("examples/tests/skill/actor-design-evals.json"));
@@ -935,10 +971,141 @@ fn the_design_evaluation_cases_are_complete() {
     let texts = |value: &serde_json::Value| {
         value.as_array().is_some_and(|a| !a.is_empty() && a.iter().all(|s| s.as_str().is_some_and(|s| !s.is_empty())))
     };
+    let fixtures = root().join(REVIEW_FIXTURES);
+    let mut reviews = Vec::new();
     for case in cases {
-        assert!(case["setup"].as_str().is_some_and(|s| !s.is_empty()), "{}: no setup", case["id"]);
+        let id = &case["id"];
+        assert!(case["setup"].as_str().is_some_and(|s| !s.is_empty()), "{id}: no setup");
         for field in ["turns", "expect", "avoid"] {
-            assert!(texts(&case[field]), "{}: {field} is not a list of texts", case["id"]);
+            assert!(texts(&case[field]), "{id}: {field} is not a list of texts");
+        }
+        match case.get("mode").map(|m| m.as_str()) {
+            None => assert!(case.get("fixtures").is_none(), "{id}: only a review case names fixtures"),
+            Some(Some("review")) => {
+                reviews.push(id.as_str().unwrap_or_default());
+                let named = case["fixtures"].as_array().unwrap_or_else(|| panic!("{id}: no list of fixtures"));
+                for path in named {
+                    let path = path.as_str().unwrap_or_else(|| panic!("{id}: a fixture is not a text"));
+                    if let Some(problem) = fixture_problem(path, &fixtures) {
+                        panic!("{id}: {problem}");
+                    }
+                }
+            }
+            Some(other) => panic!("{id}: the mode {other:?} is not review; a design case has none"),
         }
     }
+    assert_eq!(reviews, REVIEW_EVALUATIONS, "the review cases, in order");
+}
+
+/// The sections of a review report, in order, as the skeleton in the skill's section on the report defines them.
+const REPORT_SECTIONS: [&str; 9] = [
+    "Scope and sources",
+    "Progress",
+    "Reconstructed system",
+    "Coverage",
+    "Findings",
+    "Accepted tradeoffs",
+    "Open questions",
+    "Checks and limits",
+    "Next actions",
+];
+
+/// The heading of the skill's section that defines the review report.
+const REPORT_HEADING: &str = "## 8. The review report";
+
+/// The `##` headings of the first fenced Markdown block after the line `heading` in `text`: the report's skeleton.
+fn skeleton_sections<'a>(text: &'a str, heading: &str) -> Vec<&'a str> {
+    let mut lines = text.lines().skip_while(|l| *l != heading).skip_while(|l| *l != "```markdown").skip(1);
+    lines.by_ref().take_while(|l| *l != "```").filter_map(|l| l.strip_prefix("## ")).collect()
+}
+
+/// The seven areas a review checks, each with the route its row of Source routes must hold, in the table's order.
+/// State and bounds read Choose actors and identities, as the guide has no section of their own.
+const REVIEW_AREAS: [(&str, &str); 7] = [
+    ("Ownership", "docs/guide/design.md#choose-actors-and-identities"),
+    ("Identities and lifecycle", "docs/guide/design.md#choose-actors-and-identities"),
+    ("State and bounds", "docs/guide/design.md#choose-actors-and-identities"),
+    ("Protocols", "docs/guide/design.md#design-protocols"),
+    ("Coordination and time", "docs/guide/design.md#coordinate-work-and-time"),
+    ("Recovery", "docs/guide/design.md#recover-from-failure"),
+    ("Outside effects", "docs/guide/design.md#work-with-outside-systems"),
+];
+
+/// What the review method of `skill` misses: the report skeleton's sections in order, the default report path, the
+/// finding ids and the verdicts, the four phases in order, and a row of Source routes per review area with its route.
+fn review_problems(skill: &str) -> Vec<String> {
+    let mut problems = Vec::new();
+    let sections = skeleton_sections(skill, REPORT_HEADING);
+    if sections != REPORT_SECTIONS {
+        problems.push(format!("the report skeleton has {sections:?}, not {REPORT_SECTIONS:?}"));
+    }
+    for want in ["`docs/design/actors-review.md`", "R-001", "`supported`", "`finding`", "`unknown`", "`not applicable`"]
+    {
+        if !skill.contains(want) {
+            problems.push(format!("SKILL.md does not name {want}"));
+        }
+    }
+    let flat = skill.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut from = 0;
+    for phase in ["1. Scope and evidence", "2. Reconstruct", "3. Check", "4. Report"] {
+        match flat[from..].find(phase) {
+            Some(at) => from += at + phase.len(),
+            None => problems.push(format!("SKILL.md does not name the review phase {phase} in order")),
+        }
+    }
+    let routes_section = section(skill, SOURCE_ROUTES);
+    for (area, route) in REVIEW_AREAS {
+        let prefix = format!("| {area} |");
+        match routes_section.lines().find(|l| l.starts_with(&prefix)) {
+            None => problems.push(format!("the Source routes section has no row for the review area {area}")),
+            Some(row) if !row.contains(&format!("`{route}`")) => {
+                problems.push(format!("the review area {area} is not routed to {route}"))
+            }
+            Some(_) => {}
+        }
+    }
+    problems
+}
+
+#[test]
+fn the_review_method_defines_its_phases_areas_and_report() {
+    let problems = review_problems(&design_skill());
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// Scenario: Review evaluation coverage, with unsafe fixture paths and a broken review method.
+#[test]
+fn an_unsafe_fixture_or_a_missing_review_part_is_named() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixtures = dir.path();
+    fs::create_dir_all(fixtures.join("case/src")).unwrap();
+    fs::write(fixtures.join("case/src/a.rs"), "// a\n").unwrap();
+    assert_eq!(fixture_problem("case/src/a.rs", fixtures), None);
+    for bad in
+        ["", "/etc/passwd", "../skill.rs", "case/../case/src/a.rs", "case//src/a.rs", "./case/src/a.rs", "case\\a"]
+    {
+        let want = format!("the fixture {bad:?} is not a plain relative path");
+        assert_eq!(fixture_problem(bad, fixtures), Some(want), "{bad}");
+    }
+    for missing in ["case/src", "case/src/b.rs"] {
+        let want = format!("the fixture {missing} is not a file in {REVIEW_FIXTURES}");
+        assert_eq!(fixture_problem(missing, fixtures), Some(want));
+    }
+
+    let skill = "Phases: 1. Scope and evidence, 3. Check, 2. Reconstruct, 4. Report.\n\n## Source routes\n\n\
+                 | Ownership | `docs/guide/design.md#choose-actors-and-identities` |\n\
+                 | State and bounds | `docs/guide/core.md#design-an-actor` |\n\n\
+                 ## 8. The review report\n\nSave `docs/design/actors-review.md`; ids R-001; `supported`, `finding`, \
+                 `unknown`, `not applicable`.\n\n```markdown\n# Review\n\n## Scope and sources\n\n## Findings\n```\n";
+    let mut want = vec![
+        format!("the report skeleton has [\"Scope and sources\", \"Findings\"], not {REPORT_SECTIONS:?}"),
+        "SKILL.md does not name the review phase 3. Check in order".to_owned(),
+        "the Source routes section has no row for the review area Identities and lifecycle".to_owned(),
+        "the review area State and bounds is not routed to docs/guide/design.md#choose-actors-and-identities"
+            .to_owned(),
+    ];
+    for area in ["Protocols", "Coordination and time", "Recovery", "Outside effects"] {
+        want.push(format!("the Source routes section has no row for the review area {area}"));
+    }
+    assert_eq!(review_problems(skill), want);
 }
