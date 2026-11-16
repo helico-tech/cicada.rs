@@ -541,13 +541,14 @@
       ],
       "expect": [
         "Reads the report, sees the revision changed, records the new evidence snapshot, and treats the findings on src/payment.rs as stale until rechecked.",
-        "Marks R-001 resolved with the new evidence (the message id passed as the idempotency key) and keeps its earlier trace under History.",
+        "Keeps R-001 open: records the observed change (the message id passed as the key, cited) under History with the earlier trace, and asks under Open questions for evidence that the provider deduplicates by that key and for how long.",
         "Keeps R-002 open with the user's note, R-003 withdrawn, and adds the new duplicate receipt email as R-004.",
         "Updates only the changed sections and says that no tests ran."
       ],
       "avoid": [
         "Reusing R-003 or renumbering findings.",
         "Dropping the user's note on R-002 or resolving it without evidence.",
+        "Marking R-001 resolved on a code comment about the provider.",
         "Restarting the review from scratch or overwriting the report wholesale."
       ]
     },

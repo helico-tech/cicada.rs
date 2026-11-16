@@ -360,7 +360,9 @@ Earlier snapshots: <the snapshots of earlier runs, newest first>
   done goes back to Check for what is stale. Record in Progress what was stale and what you checked again. Keep the ids, earlier traces, the user's notes and
   dispositions.
 - **Dispositions.** `resolved` needs new evidence that the cause is gone; cite it and keep the earlier trace under
-  History. `accepted` (the user takes the risk) and `deferred` are not resolved. A new run does not erase earlier
+  History. A change whose effect rests on an outside system's unverified behaviour (a comment says the provider
+  deduplicates) does not resolve a finding: record the change under History, keep the finding open, and ask for the
+  missing evidence under Open questions. `accepted` (the user takes the risk) and `deferred` are not resolved. A new run does not erase earlier
   limits or imply that tests ran.
 - Update only the sections that changed.
 

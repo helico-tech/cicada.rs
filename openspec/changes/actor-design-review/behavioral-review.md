@@ -27,7 +27,7 @@ against `expect` and `avoid`.
 | review-wait-cycle | R-001 high: Hold and Confirm wait for each other with no deadline, the amount already deducted. R-002 high: an insufficient balance gets no reply. R-003 medium: holds are never settled or released. No lock or blocking-call framing. |
 | review-unknown-guarantees | No findings asserted. Postbird's handling of `client_reference` is open question Q1 with the conditional risk of a second email. After the user's "decide whatever you need", it recorded the answer, kept Postbird's behaviour unknown ("a delegation cannot supply a fact about Postbird"), and made two labelled delegated decisions with reasons and what stays uncertain. |
 | review-docs-code-conflict | R-001 medium: holds never expire because the design's 10-minute timer is missing from the code, with the documented rule and the observed code side by side; Q1 asks whether the timer is still the rule; the silently ignored `Pay` against "refused" is raised. The design document was left unchanged. |
-| review-changed-source-resume | Read the saved report, recorded the new snapshot and the earlier one, and, with no diff readable, marked the whole review stale and rechecked every claim. R-001 resolved with new evidence (`payment.rs:46-47`, the key) and its earlier trace kept under History; R-002 still open, line moved, Dana's note kept; R-003 still withdrawn; the new receipt email became R-004 (high). Only the changed sections were edited; "Ran: nothing, in either run". |
+| review-changed-source-resume | Read the saved report, recorded the new snapshot and the earlier one, and, with no diff readable, marked the whole review stale and rechecked every claim. Round 1 marked R-001 resolved on the key (`payment.rs:46-47`) although only comments state the provider's deduplication; review round 1 rejected that (see Round 2). R-002 still open, line moved, Dana's note kept; R-003 still withdrawn; the new receipt email became R-004 (high). Only the changed sections were edited; "Ran: nothing, in either run". |
 | review-report-collision | Saw the billing team's notes ("please keep"), changed nothing, created no file, asked for another path with a suggested name, and showed the room review in chat marked as not saved. |
 | review-partial-scope | Scope and exclusions recorded; shipping opened only for the type it receives and listed as such; no findings in scope, stated as not covering shipping or inventory; who creates `shipping/<order>` and who refunds a late payment are open questions. It noticed a keyless courier call in excluded code and did not report it. |
 | review-non-actor-scope | Drew the real context (admin, `save`, the settings table, readers marked `?`), said the scope holds no actors, and marked the areas not applicable with reasons; no actors invented. |
@@ -40,7 +40,7 @@ so the second is not independent.
 
 The sound-alternative fixture was meant to have no defect, but checkout never settled its reservations, so a SKU's
 capped reservation map filled for good. The agent's finding was right; the fixture's cart now sends `Confirm` for each
-line at checkout and stock forgets the entry while keeping the count taken. The corrected fixture was not re-run.
+line at checkout and stock forgets the entry while keeping the count taken. It was re-run in Round 2.
 
 ## Skill clarified after the runs
 
@@ -66,14 +66,35 @@ The agents named points where the skill left a judgement call. These were clarif
    through links.
 
 Judgement calls left as they are: where the line runs between a supported risk and an open question when a
-precondition depends on a sender outside the scope (the agents chose questions); how literally to apply "irreversible duplicate outside effect" to a duplicate
-receipt email (the agent graded by impact); whether "resolved" may rest on an unverified comment about an outside
-system (the agent resolved it and opened a question for the provider's key window); and the Ownership verdict of a
-scope without actors (the agent chose supported).
+precondition depends on a sender outside the scope (the agents chose questions); how literally to apply
+"irreversible duplicate outside effect" to a duplicate receipt email (graded high in both resume runs); and the
+Ownership verdict of a scope without actors (the agent chose supported). Settled in review round 1: `resolved` may not
+rest on an unverified comment about an outside system (Round 2).
+
+## Round 2 (review round 1: resolution needs evidence)
+
+The code review found that the resume case expected R-001 resolved, while `resume/after/src/gateway.rs` holds only a
+trait and comments about the provider; the skill says such a comment is documented intent, not the provider's
+behaviour, and `resolved` needs evidence that the cause is gone. The case now expects R-001 to stay open, with the
+observed change under History and an open question for the provider's deduplication, and avoids resolving it on a
+comment. Dispositions in section 8 now say so in one sentence: a change whose effect rests on an outside system's
+unverified behaviour records the change, keeps the finding open and asks for the evidence.
+
+Two fresh subagents ran against the final skill (all clarifications above plus that sentence; version 0.19.4, the
+resolver report assumed as before at 0.19.4; git refused again, revisions simulated with `REVISION`):
+
+| Case | Result |
+| --- | --- |
+| review-changed-source-resume | R-001 stays `open` and high; History records the key at `payment.rs:46-47` and that its effect rests on comments only (`gateway.rs:1, 6-7`); Q1 asks what shows that the client sends `Idempotency-Key` and the provider returns the first receipt for 24 hours; Correction and Check now ask for that evidence. Earlier trace kept. R-002 open with Dana's note and its moved line; R-003 still withdrawn; the receipt email is new R-004 (high). Earlier snapshot kept in Progress, with what was stale and checked again. It also corrected the old report's unproven "skills match" to "not comparable". Ran nothing. |
+| review-sound-alternative (corrected fixture) | No findings; cart plus checkout recorded as an accepted tradeoff (a second documented decision, stock relying on the cart's timer, also listed); a ten-row design-against-code table all agreeing; four open questions, among them forged replies if outside callers can send `CartMsg` (conditional high) and who creates and deletes carts and stock. |
+
+Points the agents still raised, left as judgement calls: whether a one-turn review must save after every phase;
+whether the old Correction text of a partly addressed finding is replaced or kept; `supported` against `unknown` for
+an area that holds under an open question; whether a plain documented decision belongs under Accepted tradeoffs.
 
 ## Not verified
 
 - Live plugin discovery as `/cicada:actor-design` and the resolver run from an installed sibling in a real consumer
   project; covered structurally by the existing packaging tests.
-- Behaviour after the clarifications above: the runs used the skill before them.
+- Behaviour after the clarifications above, except for the two Round 2 cases.
 - The four cases not run, other models and harnesses.

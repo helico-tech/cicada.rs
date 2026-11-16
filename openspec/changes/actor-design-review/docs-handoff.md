@@ -31,8 +31,9 @@ member or plugin manifest change (beyond the release versions).
   Progress, Reconstructed system, Coverage, Findings, Accepted tradeoffs, Open questions, Checks and limits, Next
   actions. A report of the same system and scope is resumed (a changed revision is fine); another system's file is a
   collision and the agent asks. On resume, findings that rest on changed evidence become stale until rechecked; ids
-  are never renumbered or reused; `resolved` needs new evidence, `accepted` and `deferred` are not resolved; the
-  user's notes stay. Without a writable repository the report is shown in chat and marked unsaved.
+  are never renumbered or reused; `resolved` needs new evidence (a fix that rests on an outside system's unverified
+  behaviour keeps the finding open with a question), `accepted` and `deferred` are not resolved; the user's notes
+  stay. Without a writable repository the report is shown in chat and marked unsaved.
 - **Entry points.** The `cicada` skill's description and introduction name both modes of `actor-design`.
 - **Tests and evidence.** `examples/tests/skill.rs`: `the_design_evaluation_cases_are_complete` (now also review cases,
   their `mode` and safe, existing fixture paths), `the_review_method_defines_its_phases_areas_and_report`,
@@ -83,4 +84,5 @@ None. No doctest, link, guarantee row or skill route needs protected prose.
 - `cargo test -p cicada-examples --test skill`: 18 passed, 0 failed (includes the Python resolver and packaging
   tests, which ship the updated `SKILL.md` within the unchanged member set); `--test docs`: 11 passed;
   `openspec validate actor-design-review --strict`: valid.
-- Behavioral evidence (11 of the 15 review cases run by fresh agents) and its limits: `behavioral-review.md`.
+- Behavioral evidence (11 of the 15 review cases run by fresh agents; the resume and sound cases again against the
+  final skill) and its limits: `behavioral-review.md`.
