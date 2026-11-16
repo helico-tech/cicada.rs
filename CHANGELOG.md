@@ -7,6 +7,34 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.20.1 — unreleased
+
+Example 21, a pinned process run (ADR 0053): a worked actor and host that start, observe and stop a local child
+process on the node the actor is pinned to. An application example only: library APIs, wire formats, contract hashes,
+store schema and guarantees are those of 0.20.0.
+
+### Added
+
+- `cicada_examples::pinned_process`: a `Run` actor per never-reused key keeps the desired intent (`Idle`, `Run`,
+  `Stop`) and the observed status; a `ProcessHost`, built before the `ActorSystem` and given to `RunActor`, keeps the
+  child handles. `create_run` creates a run pinned to the host's stable node id and checks the stored pin. The host
+  has a fresh epoch per process start; a turn on another node id or epoch acts on no process and marks a run that was
+  not terminal `NeedsReconciliation`, which is absorbing. At most 32 host slots, each reserved before spawning, start
+  their child at most once and are kept, with terminal tombstones, for the host's life: a turn replayed after a lost
+  commit finds the slot instead of spawning again, and `Stop` before `Start` reserves a terminal slot. A `pump` sends
+  the latest observation of each slot as an ordinary message with a stable id per run and revision, retried every
+  second with a five-second bound. `reconcile` refreshes the node's runs at startup; `ProcessHost::shutdown` closes
+  admission, stops and reaps every child and waits for delivery within a bound, and reports what it could not
+  confirm. No PID adoption, automatic restart, process groups or exactly-once spawn; an abrupt host death may leave an
+  orphan.
+- `OsBackend` and `child_main`: the real adapter runs only the example executable's inert child mode, with no shell,
+  and waits for every exit after a kill. The demo host `examples/examples/pinned_process.rs` takes a SQLite file, a
+  node id and an explicit `--new-run KEY`, and exits with a failure when its cleanup is not confirmed.
+- Tests: `examples/tests/pinned_process.rs` on virtual time with a fake backend (repeats, races, capacity, stale
+  observations, a lost commit replayed through a `TurnSource` wrapper, a lost `Stop` commit, uncertain sends,
+  deletion, a new host epoch and shutdown) and `examples/tests/pinned_process_os.rs`, real children on Linux and
+  macOS only. Both consumer skills route to the example.
+
 ## 0.20.0 — 2026-11-16
 
 Pinned actors (ADR 0052): an actor may be pinned at creation to one claim owner, a node's `node_id` or a worker's

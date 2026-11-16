@@ -19,13 +19,13 @@
   Verify real normal exit, repeated start and stop/reap, plus `cargo check -p cicada-examples --examples`. Record OS
   coverage and limits; no shell commands, PID adoption, arbitrary process manager or guaranteed abrupt-crash cleanup.
 
-- [ ] 4. Example routes and docs integration. Export the module and update both consumer skills' source/example
+- [x] 4. Example routes and docs integration. Export the module and update both consumer skills' source/example
   route coverage after their predecessors land. Write docs-handoff.md for design-guide outside-system/websocket
   comparison, core Examples and operations lifecycle/cleanup/reconciliation guidance under existing headings. Ask
   for exact owner-prepared prose where docs/doctest/skill checks require it and integrate before landing. Verify
   `cargo test -p cicada-examples --doc`, `--test docs` and `--test skill`; claim no new core G/S guarantee.
 
-- [ ] 5. ADR and release evidence. Reconcile ADR 0053/index and finish handoff with precise protocol, proving tests,
+- [x] 5. ADR and release evidence. Reconcile ADR 0053/index and finish handoff with precise protocol, proving tests,
   platform evidence and host-lifetime limits. Apply the normal next patch version/pins/changelog. Re-run affected
   example/OS and docs/skill checks after final integration. State explicitly that uncertain runs need outside
   verification and may then be deleted; automatic replacement and ready-made supervisor pin options remain absent.
