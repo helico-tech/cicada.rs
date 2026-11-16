@@ -34,7 +34,7 @@
   through workspace/lock, both skills, plugin, OpenAPI pins and changelog using normal release steps. Verify docs,
   doctests, skill and relevant release tests after integration; do not edit protected prose independently.
 
-- [ ] 6. Finishing. Run `openspec validate actor-design-skill --strict`. Commit the implementation and run
+- [x] 6. Finishing. Run `openspec validate actor-design-skill --strict`. Commit the implementation and run
   `python3 scripts/gate.py run --e2e`, then report `python3 scripts/gate.py status`. Its full checks include
   `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` with PostgreSQL,
   feature builds, script/docs/skill checks and Docker E2E. Record behavioral/manual checks and limits. The builder
