@@ -29,7 +29,7 @@
   builders do not edit handwritten docs. Check docs, doctests and both skills' routes. Prepare normal patch release
   pins and release handoff. HeartbeatWatch hosting/snapshots belong to sample-heartbeat-watch, not this task.
 
-- [ ] 6. Finishing. Run `openspec validate sample-worker-mode --strict`. Commit implementation and run
+- [x] 6. Finishing. Run `openspec validate sample-worker-mode --strict`. Commit implementation and run
   `python3 scripts/gate.py run --e2e`, then report `python3 scripts/gate.py status`. Its full checks include
   `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` with PostgreSQL,
   feature builds, script/docs/skill checks and Docker E2E. Record actual verification and remaining limits. The
