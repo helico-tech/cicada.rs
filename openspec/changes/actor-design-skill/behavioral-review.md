@@ -36,7 +36,18 @@ all were fixed in the skill and template before the version commit:
 
 ## Round 2 (after the fixes)
 
-<filled in below once the second run finishes>
+A second fresh subagent ran two cases against the fixed skill (commit 939f3e0, version 0.19.3).
+
+| Case | Result |
+| --- | --- |
+| not-an-actor, ending | Step 1 confirmed as "no actors" on the user's yes; steps 2 to 9 stayed `not started`; the decision was recorded; unanswered hypotheses stayed open. |
+| delegation scope | Read "cards and protocols" as steps 5 and 6 only and asked whether step 4 was included; a new courier-return requirement sent earlier steps back to `draft` and was put to the user as questions, since customers would notice it. Nothing was marked `delegated` before the user's earlier steps were settled. |
+
+Points it still found open, left for review rather than changed (each is a judgement the skill leaves to the agent):
+whether an unconfirmed step hit by a revision is `draft` or `needs review`; which questions come first under the
+limit of three; and whether a delegated step may start while an earlier step is still a draft (the agent said no).
+It also noticed the skill's version (0.19.3) differed from the assumed resolver report (0.19.2) and reported the
+mismatch, as the skill asks; that was an artifact of the test setup.
 
 ## Not verified
 
