@@ -38,7 +38,8 @@ publishes one `NodeDown` through an existing `Topic` for each node row it sees s
 - Receivers declare `NodeDown(cicada_actors::NodeDown)` in their family (`#[serde(tag = "type")]`).
 - Contract: `docs/reference/contracts/cicada.node-down.json` (generated). The topic's contract is unchanged.
 - Tests: `crates/cicada-actors/src/node_down.rs` (state and sample checks), `crates/cicada-actors/tests/node_down.rs`
-  (12 cases on virtual time with a scripted source, among them
+  (12 cases on paused time: 11 with a scripted source, and one against real node rows of the in-memory store with a
+  hand-moved `VirtualClock`, where a node crashes by dropping its own runtime, which leaves its row; among them
   `a_row_silent_for_120_seconds_is_dead_and_one_a_microsecond_less_is_not`,
   `a_failed_slow_invalid_or_oversized_read_keeps_history_records_its_category_and_polls_on`,
   `a_missing_topic_rolls_the_check_back_and_repair_with_rearm_delivers_once`,
@@ -137,7 +138,8 @@ Resolved. Both skill-route tests failed on the missing anchor `docs/guide/actors
 Integrated: item 1, `docs/guide/actors.md` from `7052813523e69d9c294c7b1ca3005f7c3600c4bb`. Still proposed, not yet
 written: items 2 (operations), 3 (architecture and node-table wording), 4 and 5 (core guide); none of them blocks a
 check. After integration: `cargo test -p cicada-examples --doc` (34 passed), `--test docs` (11), `--test skill` (18),
-`--test node_down` (4), all passing. Before it: `cargo test --workspace --no-fail-fast` with PostgreSQL (3108 passed,
+`--test node_down` (4), all passing; `cargo test -p cicada-actors --test node_down` 12 passed on each of 8 runs,
+the real-row case 40 of 40. Before it: `cargo test --workspace --no-fail-fast` with PostgreSQL (3108 passed,
 2 failed: the two skill-route tests now resolved), `cargo test -p cicada-actors` (node_down unit 7, integration 12,
 wire formats 22), `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all --check` clean,
 `openspec validate node-down-alert --strict` valid.

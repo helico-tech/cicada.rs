@@ -506,20 +506,34 @@ async fn a_poll_whose_claim_was_abandoned_is_replayed_and_publishes_once() {
 
 // The source of an ActorSystem.
 
+/// Starts `config`'s node on `store` in a runtime of its own until its row is written, then drops that runtime: a
+/// crash, which leaves the row and stops its heartbeat, without a clean stop.
+fn crash(store: &Store, config: NodeConfig) {
+    let store = store.clone();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let node = ActorSystem::builder(store).config(config).build();
+            node.start().await.unwrap();
+            while node.nodes().await.unwrap().is_empty() {
+                tokio::task::yield_now().await; // the first heartbeat runs in a task of its own
+            }
+        });
+    })
+    .join()
+    .unwrap();
+}
+
 /// Scenario: Construct without a circular dependency. An unstarted system on the store reads the real node rows
-/// without a row of its own; the monitor it feeds sees a stopped heartbeat as a death after two minutes and a clean
-/// stop as an absence. Real time for the heartbeat, which does not fire again within the test; store time is a
-/// `VirtualClock`, moved by hand.
-#[tokio::test]
+/// without a row of its own; the monitor it feeds sees a crashed node's row as dead after two minutes, the same node
+/// heartbeating again as alive, and its clean stop as an absence, without a message for either. Store time is a
+/// `VirtualClock`, moved by hand, so a heartbeat writes the time the test set, whenever it runs.
+#[tokio::test(start_paused = true)]
 async fn an_unstarted_system_reads_the_real_node_rows_without_a_row_of_its_own() {
     let clock = Arc::new(VirtualClock::new(ts(START)));
     let store = Store::memory_with(clock.clone(), time::DEFAULT_RETENTION);
     let config = NodeConfig { node_id: id("web-1"), label: Some("shop".into()), ..NodeConfig::default() };
-    let web = ActorSystem::builder(store.clone()).config(config).build();
-    web.start().await.unwrap();
-    while web.nodes().await.unwrap().is_empty() {
-        tokio::time::sleep(Duration::from_millis(1)).await; // the first heartbeat runs in a task of its own
-    }
+    crash(&store, config.clone());
 
     let reader = ActorSystem::builder(store.clone()).build();
     let host = ActorSystem::builder(store.clone())
@@ -543,6 +557,10 @@ async fn an_unstarted_system_reads_the_real_node_rows_without_a_row_of_its_own()
         let state = host.get_actor(&addr(&Sink)).await.unwrap().unwrap().state;
         serde_json::from_value::<SinkState>(state).unwrap().downs
     };
+    let monitor = |host: ActorSystem| async move {
+        let state = host.get_actor(&addr(&NodeDownMonitor)).await.unwrap().unwrap().state;
+        serde_json::from_value::<NodeDownMonitorState>(state).unwrap()
+    };
     assert!(sink(host.clone()).await.is_empty(), "alive");
 
     clock.advance_by(secs(120));
@@ -556,12 +574,20 @@ async fn an_unstarted_system_reads_the_real_node_rows_without_a_row_of_its_own()
         (Some("shop"), Some(env!("CARGO_PKG_VERSION")))
     );
 
-    web.stop().await;
-    clock.advance_by(secs(11)); // the next poll counts from the end of the last, in real time
+    let web = ActorSystem::builder(store.clone()).config(config).build();
+    web.start().await.unwrap();
+    while reader.nodes().await.unwrap()[0].last_seen != at(secs(120)) {
+        tokio::task::yield_now().await;
+    }
+    clock.advance_by(secs(10));
     run().await;
-    let state = host.get_actor(&addr(&NodeDownMonitor)).await.unwrap().unwrap().state;
-    let state: NodeDownMonitorState = serde_json::from_value(state).unwrap();
-    assert!(state.alerted.is_empty(), "a clean stop is an absence");
-    assert_eq!(sink(host.clone()).await.len(), 1, "and tells nobody");
+    assert!(monitor(host.clone()).await.alerted.is_empty(), "heartbeating again: alive");
+
+    web.stop().await;
+    clock.advance_by(secs(10));
+    run().await;
+    let state = monitor(host.clone()).await;
+    assert_eq!((state.alerted.len(), state.last_checked_at), (0, Some(at(secs(140)))), "a clean stop is an absence");
+    assert_eq!(sink(host.clone()).await.len(), 1, "and neither tells anybody");
     assert!(reader.nodes().await.unwrap().is_empty(), "the reader and the host never wrote a row");
 }
