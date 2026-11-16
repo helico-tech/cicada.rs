@@ -1,9 +1,10 @@
-//! Checks of the consumer skill `skills/cicada` (ADR 0041): its frontmatter and version, that every route resolves to a
-//! file and heading of this source, that the routes cover every guide, reference and worked example, that consumers
-//! are not routed to proposals or the change loops, the evaluation cases, and the Python tests of the resolver and the
-//! packaging (`examples/tests/skill/test_*.py`), and the shape of the Claude Code plugin that carries the consumer
-//! skills (ADR 0049). They check structure; whether the skill leads to good decisions is judged by evaluations in
-//! review, and the plugin's manifests by `claude plugin validate` in review.
+//! Checks of the consumer skills `skills/cicada` (ADR 0041) and `skills/actor-design` (ADR 0051): their frontmatter
+//! and versions, that every route resolves to a file and heading of this source, that the routes of `cicada` cover
+//! every guide, reference and worked example and those of `actor-design` the design guide, that the design template
+//! follows the guide's nine steps, that consumers are not routed to proposals or the change loops, the evaluation
+//! cases, and the Python tests of the resolver and the packaging (`examples/tests/skill/test_*.py`), and the shape of
+//! the Claude Code plugin that carries the consumer skills (ADR 0049). They check structure; whether a skill leads to
+//! good decisions is judged by evaluations in review, and the plugin's manifests by `claude plugin validate` in review.
 
 #[allow(dead_code)] // the checks of the skill use only the anchors
 mod markdown;
@@ -24,6 +25,14 @@ fn read(path: &Path) -> String {
 
 fn skill() -> String {
     read(&root().join("skills/cicada/SKILL.md"))
+}
+
+fn design_skill() -> String {
+    read(&root().join("skills/actor-design/SKILL.md"))
+}
+
+fn design_template() -> String {
+    read(&root().join("skills/actor-design/assets/design-template.md"))
 }
 
 /// The heading of the one section that may route to the contributor's instructions.
@@ -412,15 +421,24 @@ fn contributor_routes(text: &str) -> Vec<String> {
 
 #[test]
 fn the_frontmatter_names_the_skill_and_the_workspace_version() {
-    let (top, metadata) = frontmatter(&skill());
-    let keys: Vec<&str> = top.iter().map(|(k, _)| k.as_str()).collect();
-    assert_eq!(keys, ["name", "description", "metadata"], "only these keys, no harness metadata");
-    assert_eq!(top[0].1, "cicada");
-    let description = &top[1].1;
-    assert!(description.len() > 100 && description.len() <= 1024, "a description of at most 1024 characters");
-    assert_eq!(metadata.len(), 1, "metadata holds the version only: {metadata:?}");
-    assert_eq!(metadata[0].0, "cicada-version");
-    assert_eq!(metadata[0].1, workspace_version(&root()), "metadata.cicada-version is the workspace version");
+    for (name, text) in [("cicada", skill()), ("actor-design", design_skill())] {
+        let (top, metadata) = frontmatter(&text);
+        let keys: Vec<&str> = top.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, ["name", "description", "metadata"], "{name}: only these keys, no harness metadata");
+        assert_eq!(top[0].1, name);
+        let description = &top[1].1;
+        assert!(
+            description.len() > 100 && description.len() <= 1024,
+            "{name}: a description of at most 1024 characters"
+        );
+        assert_eq!(metadata.len(), 1, "{name}: metadata holds the version only: {metadata:?}");
+        assert_eq!(metadata[0].0, "cicada-version");
+        assert_eq!(
+            metadata[0].1,
+            workspace_version(&root()),
+            "{name}: metadata.cicada-version is the workspace version"
+        );
+    }
 }
 
 #[test]
@@ -718,4 +736,207 @@ fn the_resolver_reports_self_in_this_repository() {
     let report: serde_json::Value = serde_json::from_slice(&out.stdout).expect("a JSON report");
     assert_eq!(report["status"], "self", "{report:#}");
     assert_eq!(report["skill_version"], workspace_version(&root).as_str());
+}
+
+/// The heading of the section of `actor-design` whose code spans are routes into the resolved source. Paths elsewhere
+/// in that skill, such as the saved document `docs/design/actors.md` or its template, are not routes.
+const SOURCE_ROUTES: &str = "## Source routes";
+
+/// The text of the `##` section headed `heading`, up to the next `##` heading; empty when there is none.
+fn section<'a>(text: &'a str, heading: &str) -> &'a str {
+    let Some(start) = text.lines().position(|l| l == heading) else { return "" };
+    let offset: usize = text.lines().take(start + 1).map(|l| l.len() + 1).sum();
+    let rest = text.get(offset..).unwrap_or_default();
+    let end = rest.find("\n## ").map_or(rest.len(), |i| i + 1);
+    &rest[..end]
+}
+
+/// The routes `actor-design` must name: every section of the design guide, and the short rules of one actor type that
+/// an older source without the guide falls back to.
+const REQUIRED_DESIGN_ROUTES: [&str; 10] = [
+    "docs/guide/design.md#from-problem-to-design",
+    "docs/guide/design.md#choose-actors-and-identities",
+    "docs/guide/design.md#design-protocols",
+    "docs/guide/design.md#coordinate-work-and-time",
+    "docs/guide/design.md#recover-from-failure",
+    "docs/guide/design.md#work-with-outside-systems",
+    "docs/guide/design.md#choose-a-pattern",
+    "docs/guide/design.md#recognize-design-mistakes",
+    "docs/guide/design.md#a-websocket-session",
+    "docs/guide/core.md#design-an-actor",
+];
+
+/// The first cells of the table rows of `text` that start with a step number, such as `1. The promise`, in order.
+fn numbered_cells(text: &str) -> Vec<&str> {
+    text.lines().filter_map(|line| line.strip_prefix("| ")?.split(" |").next()).filter(|cell| numbered(cell)).collect()
+}
+
+/// Whether `text` starts with a step number and a period, as `3. Who owns each rule`.
+fn numbered(text: &str) -> bool {
+    text.split_once(". ").is_some_and(|(n, _)| n.parse::<u32>().is_ok())
+}
+
+/// The nine steps of the guide's table under From problem to design, in order.
+fn guide_steps(guide: &str) -> Vec<String> {
+    numbered_cells(section(guide, "## From problem to design")).into_iter().map(str::to_owned).collect()
+}
+
+/// The sections the saved design document has besides one per step.
+const TEMPLATE_SECTIONS: [&str; 4] = ["Source and scope", "Progress", "Decisions", "Open questions"];
+
+/// What is wrong with a design template against the guide's `steps`: a missing section, step headings that are not
+/// exactly the steps in order, or a Progress table that does not list them in order.
+fn template_problems(template: &str, steps: &[String]) -> Vec<String> {
+    let mut problems = Vec::new();
+    let headings: Vec<&str> = template.lines().filter_map(|l| l.strip_prefix("## ")).collect();
+    for want in TEMPLATE_SECTIONS {
+        if !headings.contains(&want) {
+            problems.push(format!("the template has no section {want}"));
+        }
+    }
+    let sections: Vec<&str> = headings.iter().copied().filter(|h| numbered(h)).collect();
+    if sections != steps {
+        problems.push(format!("the template's step sections are {sections:?}, not the guide's {steps:?}"));
+    }
+    let progress = numbered_cells(section(template, "## Progress"));
+    if progress != steps {
+        problems.push(format!("the template's Progress lists {progress:?}, not the guide's {steps:?}"));
+    }
+    problems
+}
+
+/// What the method of `actor-design` misses of the guide's `steps`: each named in order, whitespace aside.
+fn method_problems(skill: &str, steps: &[String]) -> Vec<String> {
+    let flat = skill.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut from = 0;
+    let mut problems = Vec::new();
+    for step in steps {
+        match flat[from..].find(step.as_str()) {
+            Some(at) => from += at + step.len(),
+            None => problems.push(format!("SKILL.md does not name the step {step} in the guide's order")),
+        }
+    }
+    problems
+}
+
+#[test]
+fn the_design_skill_routes_resolve_and_cover_the_design_guide() {
+    let text = design_skill();
+    let routes_section = section(&text, SOURCE_ROUTES);
+    assert!(routes(routes_section).len() >= REQUIRED_DESIGN_ROUTES.len(), "the Source routes section is found");
+    let problems = check_routes(routes_section, &root());
+    assert!(problems.is_empty(), "Routes that do not resolve:\n  {}", problems.join("\n  "));
+    let required: Vec<String> = REQUIRED_DESIGN_ROUTES.map(str::to_owned).into();
+    let problems = missing_coverage(routes_section, &required);
+    assert!(problems.is_empty(), "actor-design misses:\n  {}", problems.join("\n  "));
+}
+
+#[test]
+fn the_design_skill_names_no_contributor_material() {
+    for (name, text) in [("SKILL.md", design_skill()), ("design-template.md", design_template())] {
+        assert!(!text.contains(SELF_SECTION), "{name} has no section for working on Cicada itself");
+        let problems = contributor_routes(&text);
+        assert!(problems.is_empty(), "{name}:\n{}", problems.join("\n"));
+    }
+}
+
+#[test]
+fn the_design_template_and_method_follow_the_guides_nine_steps() {
+    let steps = guide_steps(&read(&root().join("docs/guide/design.md")));
+    assert_eq!(steps.len(), 9, "the guide's table has nine steps: {steps:?}");
+    let problems = template_problems(&design_template(), &steps);
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+    let problems = method_problems(&design_skill(), &steps);
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+#[test]
+fn the_two_skills_point_to_each_other_by_name() {
+    assert!(skill().contains("`actor-design`"), "cicada names actor-design for design work");
+    assert!(design_skill().contains("`cicada`"), "actor-design names cicada for building and running");
+}
+
+/// Scenario: Route and template checks.
+#[test]
+fn a_missing_design_route_step_or_section_is_named() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join("docs/guide")).unwrap();
+    fs::write(root.join("docs/guide/design.md"), "# Design\n\n## From problem to design\n").unwrap();
+    let text = "Save to `docs/design/actors.md`.\n\n## Source routes\n\n`docs/guide/design.md#from-problem-to-design`, \
+                `docs/guide/design.md#gone`\n\n## Later\n\n`docs/elsewhere.md`\n";
+    let routes_section = section(text, SOURCE_ROUTES);
+    assert_eq!(
+        check_routes(routes_section, root),
+        ["SKILL.md:2: the route docs/guide/design.md#gone names an anchor that no heading has"],
+        "only the Source routes section holds routes; the saved document's path is not one"
+    );
+    assert_eq!(
+        missing_coverage(routes_section, &["docs/guide/core.md#design-an-actor".to_owned()]),
+        ["SKILL.md routes nothing to docs/guide/core.md#design-an-actor"]
+    );
+    let guide = "## From problem to design\n\n| Step | Ask |\n| --- | --- |\n| 1. One | a |\n| 2. Two | b |\n\n## Next\n\n\
+                 | 3. Three | c |\n";
+    let steps = guide_steps(guide);
+    assert_eq!(steps, ["1. One", "2. Two"]);
+    let template = "## Source and scope\n\n## Progress\n\n| 2. Two | draft |\n| 1. One | draft |\n\n## 1. One\n\n\
+                    ## Decisions\n";
+    assert_eq!(
+        template_problems(template, &steps),
+        [
+            "the template has no section Open questions",
+            "the template's step sections are [\"1. One\"], not the guide's [\"1. One\", \"2. Two\"]",
+            "the template's Progress lists [\"2. Two\", \"1. One\"], not the guide's [\"1. One\", \"2. Two\"]",
+        ]
+    );
+    assert_eq!(
+        method_problems("Steps: 2. Two, then 1. One.", &steps),
+        ["SKILL.md does not name the step 2. Two in the guide's order"]
+    );
+    let text = "Read `docs/maintaining/maintenance.md`.\n";
+    assert_eq!(contributor_routes(text), ["SKILL.md:1: a consumer is routed to docs/maintaining/maintenance.md"]);
+}
+
+/// The ids of the staged cases of `actor-design` that the design names.
+const DESIGN_EVALUATIONS: [&str; 14] = [
+    "fresh-design",
+    "not-an-actor",
+    "timeout-story",
+    "confirmation-required",
+    "delegated-decisions",
+    "resume-changed-requirement",
+    "existing-file-protection",
+    "no-repository",
+    "old-source",
+    "mixed-source",
+    "missing-sibling",
+    "mismatched-sibling",
+    "plugin-layout",
+    "archive-layout",
+];
+
+#[test]
+fn the_design_evaluation_cases_are_complete() {
+    let text = read(&root().join("examples/tests/skill/actor-design-evals.json"));
+    let evals: serde_json::Value = serde_json::from_str(&text).expect("actor-design-evals.json is JSON");
+    assert!(evals["about"].as_str().is_some_and(|s| !s.is_empty()), "the file says how the cases are used");
+    let cases = evals["cases"].as_array().expect("a list of cases");
+    let ids: Vec<&str> = cases.iter().filter_map(|c| c["id"].as_str()).collect();
+    assert_eq!(ids.len(), cases.len(), "every case has an id");
+    let mut unique = ids.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique.len(), ids.len(), "ids are unique: {ids:?}");
+    for id in DESIGN_EVALUATIONS {
+        assert!(ids.contains(&id), "actor-design-evals.json has no case {id}");
+    }
+    let texts = |value: &serde_json::Value| {
+        value.as_array().is_some_and(|a| !a.is_empty() && a.iter().all(|s| s.as_str().is_some_and(|s| !s.is_empty())))
+    };
+    for case in cases {
+        assert!(case["setup"].as_str().is_some_and(|s| !s.is_empty()), "{}: no setup", case["id"]);
+        for field in ["turns", "expect", "avoid"] {
+            assert!(texts(&case[field]), "{}: {field} is not a list of texts", case["id"]);
+        }
+    }
 }

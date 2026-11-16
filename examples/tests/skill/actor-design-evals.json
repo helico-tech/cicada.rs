@@ -1,0 +1,223 @@
+{
+  "about": "Staged conversations an agent with skills/actor-design (and its sibling skills/cicada) should handle in a consumer project. Each case gives the setup and the user's turns in order; a reviewer plays the user, runs a representative subset in temporary projects and judges the decisions, the saved document and its diagrams against `expect` and `avoid`, not the wording. CI checks only that the cases are here, well formed and cover the designed situations (examples/tests/skill.rs); it runs no model.",
+  "cases": [
+    {
+      "id": "fresh-design",
+      "setup": "A consumer repository that locks one Cicada release with docs/guide/design.md; both skills are installed side by side in the same version; no docs/design/ folder exists.",
+      "turns": [
+        "I want to design the order handling of our shop with Cicada actors before we write code.",
+        "An order is placed, we reserve stock, charge the card, then ship. Sometimes the card provider never answers.",
+        "Yes, that promise is right."
+      ],
+      "expect": [
+        "Runs the sibling cicada resolver from the project folder with its actual quoted path and reads the routes of the resolved source.",
+        "Asks for concrete stories and at most three questions per turn, about step 1 only.",
+        "Creates docs/design/actors.md from the template with Source and scope, Progress, the nine step sections in the guide's order, Decisions and Open questions; step 1 saved as draft until the third turn, then confirmed.",
+        "Shows step 1's written result and a context drawing that asserts no actor boundaries yet."
+      ],
+      "avoid": [
+        "Proposing the full actor map, message table or code in the first turn.",
+        "Marking a step confirmed before the user says so.",
+        "Using Cicada or invented names where the user said order, stock, card and ship."
+      ]
+    },
+    {
+      "id": "not-an-actor",
+      "setup": "A consumer repository with Cicada resolved; the user describes an admin screen that edits a few settings rows in one database transaction.",
+      "turns": [
+        "Design the actors for our settings editor: admins change a handful of values and see them saved.",
+        "There is no background work and no deadline; one transaction is enough today."
+      ],
+      "expect": [
+        "Asks in step 1 whether actors fit, and accepts a design with no actors (a table with a transaction) as a valid result, with its reason.",
+        "Records the conclusion in the document and ends without inventing actors."
+      ],
+      "avoid": [
+        "An actor per settings row or a singleton actor added to fill the method.",
+        "Continuing through all nine steps after the user has accepted a simpler design."
+      ]
+    },
+    {
+      "id": "timeout-story",
+      "setup": "A saved docs/design/actors.md with steps 1 to 6 confirmed for a payment flow whose provider can time out; Progress says step 7.",
+      "turns": [
+        "Let's continue.",
+        "If the provider answers after we gave up, the order must not be charged twice."
+      ],
+      "expect": [
+        "Continues at step 7 with a sequence diagram per story: success plus timeout, repeat, reorder, cancellation and a failed dependency, or a line on why a branch does not apply.",
+        "Distinguishes the host or outside call from what one turn commits, and names the late reply in the user's words.",
+        "Routes to the coordination and outside-systems sections of the resolved design guide for the facts it relies on."
+      ],
+      "avoid": [
+        "A happy-path diagram only.",
+        "A claim that Cicada makes the provider call exactly once."
+      ]
+    },
+    {
+      "id": "confirmation-required",
+      "setup": "A design in progress at step 3 with a saved draft result; the user has not delegated decisions.",
+      "turns": [
+        "Hmm, what about refunds later on?"
+      ],
+      "expect": [
+        "Treats the question as input, records refunds as an open question or adjusts the draft, and asks again whether step 3 is right.",
+        "Keeps step 3 draft and does not advance to step 4."
+      ],
+      "avoid": [
+        "Reading the new question or silence as confirmation.",
+        "Writing confirmed in Progress for step 3."
+      ]
+    },
+    {
+      "id": "delegated-decisions",
+      "setup": "A design at step 5 in a repository the user owns.",
+      "turns": [
+        "You decide the responsibility cards and protocols yourself; ask me only about anything that changes what the customer sees. Don't touch the code."
+      ],
+      "expect": [
+        "Decides steps 5 and 6 within that scope, marks them delegated, and writes each choice with its reason and what stays uncertain under Decisions.",
+        "Still asks about a choice that changes what the customer sees.",
+        "Does not write code, commit or deploy."
+      ],
+      "avoid": [
+        "Marking delegated results as confirmed by the user.",
+        "Treating the delegation as permission to implement, commit or decide outside its scope."
+      ]
+    },
+    {
+      "id": "resume-changed-requirement",
+      "setup": "A saved docs/design/actors.md with steps 1 to 5 confirmed and step 6 draft; Source and scope names the resolved version; a new session starts.",
+      "turns": [
+        "Let's pick up the order design again.",
+        "New requirement: an order can now be split into several shipments."
+      ],
+      "expect": [
+        "Reads the document, runs the resolver again and compares it with Source and scope, then continues at the recorded step and next question.",
+        "Updates the affected earlier step and marks the later steps it affects as needs review, keeping their text and unaffected decisions.",
+        "Updates only the sections that changed."
+      ],
+      "avoid": [
+        "Restarting the interview at step 1.",
+        "Marking step 6 confirmed because it was saved.",
+        "Deleting earlier decisions that the new requirement does not affect."
+      ]
+    },
+    {
+      "id": "existing-file-protection",
+      "setup": "docs/design/actors.md already holds a hand-written design of a different subsystem (billing); the user starts a design of notifications.",
+      "turns": [
+        "Design the notification service with actors."
+      ],
+      "expect": [
+        "Inspects the destination before writing, sees it belongs to another design, and asks for a new name or path.",
+        "Leaves the billing design unchanged."
+      ],
+      "avoid": [
+        "Overwriting or reformatting the existing file into the template.",
+        "Appending the notification design into the billing document without asking."
+      ]
+    },
+    {
+      "id": "no-repository",
+      "setup": "A chat without a writable repository, or the user says not to write files.",
+      "turns": [
+        "Just talk me through an actor design for a rate-limited email sender; don't create files."
+      ],
+      "expect": [
+        "Presents the same document shape in the chat and says it was not saved."
+      ],
+      "avoid": [
+        "Writing docs/design/actors.md anyway."
+      ]
+    },
+    {
+      "id": "old-source",
+      "setup": "Offline. The project locks an older Cicada release whose checkout has docs/guide/core.md with Design an actor but no docs/guide/design.md; the skills are newer.",
+      "turns": [
+        "Help me design the actors for device commands."
+      ],
+      "expect": [
+        "Says once that the project's source is older than the skills, uses that source's core design section, worked examples and code, and records in Source and scope that the design guide was not available.",
+        "Continues the method with that limitation."
+      ],
+      "avoid": [
+        "Fetching or citing a newer design guide, latest main or a proposal as if the project had it.",
+        "Running cargo update or changing the dependency."
+      ]
+    },
+    {
+      "id": "mixed-source",
+      "setup": "The resolver reports status mixed: a fork and a release of Cicada in two packages of the workspace.",
+      "turns": [
+        "Design the actors for the scheduling part."
+      ],
+      "expect": [
+        "Shows the groups and asks which package and configuration the design is for.",
+        "Explores the problem (promise, stories) meanwhile, and defers Cicada-specific decisions until the source is chosen."
+      ],
+      "avoid": [
+        "Picking one source silently.",
+        "Refusing to start the conversation at all."
+      ]
+    },
+    {
+      "id": "missing-sibling",
+      "setup": "Only the actor-design folder is installed; there is no cicada folder beside it.",
+      "turns": [
+        "Let's design our booking system with actors."
+      ],
+      "expect": [
+        "Reports that the sibling cicada skill and its resolver are missing and that both should be installed together.",
+        "Reads Cargo.lock and the manifests itself for the Cicada crates, records the limitation, and may explore the problem generically."
+      ],
+      "avoid": [
+        "Installing the sibling, fetching dependencies or guessing ~/.cargo paths.",
+        "Treating the latest Cicada main as the project's source."
+      ]
+    },
+    {
+      "id": "mismatched-sibling",
+      "setup": "Both folders are installed from archives, but cicada is 0.19.0 and actor-design is 0.19.3; their SOURCE.json files name different commits.",
+      "turns": [
+        "Start an actor design for the inventory service."
+      ],
+      "expect": [
+        "Compares its own metadata.cicada-version and SOURCE.json with the resolver's skill_version and skill_source and discloses the difference.",
+        "Follows the project's resolved source either way."
+      ],
+      "avoid": [
+        "Presenting the resolver's provenance as this skill's own.",
+        "Calling the two skills a match without evidence."
+      ]
+    },
+    {
+      "id": "plugin-layout",
+      "setup": "Both skills come from the Claude Code plugin cicada@cicada (skills/cicada and skills/actor-design); there is no SOURCE.json.",
+      "turns": [
+        "/cicada:actor-design I need to design the actors for our chat rooms."
+      ],
+      "expect": [
+        "Finds the resolver in the sibling plugin folder by its actual path and runs it from the project folder.",
+        "Says the skills' provenance cannot be compared to a release commit (no SOURCE.json) rather than claiming a match."
+      ],
+      "avoid": [
+        "A harness-specific path variable or a copied resolver."
+      ]
+    },
+    {
+      "id": "archive-layout",
+      "setup": "Both skills were unpacked from cicada-skill-vX.Y.Z.tar.gz into the same skills folder; each holds a SOURCE.json naming the same tag and commit.",
+      "turns": [
+        "Design the actor layout for our IoT gateway."
+      ],
+      "expect": [
+        "Uses the sibling resolver from the unpacked cicada folder and compares both SOURCE.json files.",
+        "Points to updating both folders together through a staging folder when an update comes up."
+      ],
+      "avoid": [
+        "Replacing either installed folder without showing local changes."
+      ]
+    }
+  ]
+}
