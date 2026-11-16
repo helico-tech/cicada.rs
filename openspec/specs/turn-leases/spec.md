@@ -9,13 +9,14 @@ through any server on the same store, and a renewal never shortens a lease it st
 ### Requirement: A host leases turns through the public core API
 
 ActorSystem::lease_turns SHALL accept a worker NodeId, a map of TypeNames to contract hashes, and a batch limit.
-It SHALL return runnable TurnLeases or a ContractMismatch, without requiring a hosted implementation. A TurnLease
+It SHALL return runnable TurnLeases or a ContractMismatch, without requiring a hosted implementation. Claims SHALL
+include only actors unpinned or pinned to the supplied worker id, not the serving node id, before batch limits. A TurnLease
 SHALL contain actor, epoch, full claimed message, state, version, claim time, lease expiry and granted TTL.
 
 #### Scenario: A server without handlers
 
 - **WHEN** a caller leases a registered type on an unstarted ActorSystem with no hosted types
-- **THEN** a due actor's head message and state are returned with the incremented attempt and current lease epoch
+- **THEN** an eligible due actor's head message and state are returned with the incremented attempt and current lease epoch
 - **AND** no handler runs, no local hosted type or node row is added, and the server's running_turns count is unchanged
 
 #### Scenario: All lease fields
@@ -46,6 +47,7 @@ SHALL contain actor, epoch, full claimed message, state, version, claim time, le
 
 - **WHEN** a local node and external lease callers compete for the same actor
 - **THEN** ordinary store lease exclusivity permits only one current lease, and paused actors are not leased
+- **AND** only unpinned actors or those pinned to the claimant are eligible
 - **AND** each selected actor contributes only its due mailbox head in existing delivery order
 
 #### Scenario: Worker visibility

@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.20.0 — unreleased
+## 0.20.0 — 2026-11-16
 
 Pinned actors (ADR 0052): an actor may be pinned at creation to one claim owner, a node's `node_id` or a worker's
 `worker_id`, and only that owner runs its turns. A breaking release: public structs gain fields, and store schema 8 is
