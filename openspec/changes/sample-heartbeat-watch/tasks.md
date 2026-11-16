@@ -1,6 +1,6 @@
 # Tasks
 
-- [ ] 1. Catalog and contracts. Add HeartbeatWatchActor to the shared sample catalog, without a singleton, Beat or
+- [x] 1. Catalog and contracts. Add HeartbeatWatchActor to the shared sample catalog, without a singleton, Beat or
   startup hook. Regenerate the sample contract snapshot and text digest with the normal update variable. Review the
   new snapshot's parsed JSON against docs/reference/contracts/cicada.heartbeat-watch.json and verify that reference
   and every previous sample entry are unchanged. Run the sample contract_snapshots test and existing wire checks.
