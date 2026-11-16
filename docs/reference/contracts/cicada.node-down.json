@@ -1,0 +1,137 @@
+{
+  "messages": {
+    "Poll": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The timer: sent by the monitor to itself, with a retry policy. Before `nextPollAt` it arms itself again at that\ntime; at or after it, it reads the node table, publishes what is new and arms the next `Poll`.",
+      "properties": {},
+      "title": "Poll",
+      "type": "object"
+    },
+    "Rearm": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Starts the monitor, or arms its timer again after it was purged, cancelled or failed for good: cancels the\narmed `Poll` and arms one at `nextPollAt`, due at once when that has passed or was never set. Keeps `alerted`, so\nit never repeats an alert by itself.",
+      "properties": {},
+      "title": "Rearm",
+      "type": "object"
+    }
+  },
+  "state": {
+    "$defs": {
+      "NodeDownWatermark": {
+        "description": "The row timestamps of a node that was alerted: the same pair seen dead again alerts no more.",
+        "properties": {
+          "lastSeen": {
+            "description": "Store time of the row's latest heartbeat.",
+            "format": "date-time",
+            "type": "string"
+          },
+          "startedAt": {
+            "description": "Store time of the row's first heartbeat.",
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "startedAt",
+          "lastSeen"
+        ],
+        "type": "object"
+      },
+      "NodeReadProblem": {
+        "description": "Why the last check read no usable sample of the node table. Only the category is kept, never an error text.",
+        "oneOf": [
+          {
+            "const": "unavailable",
+            "description": "The source failed: the store could not be read.",
+            "type": "string"
+          },
+          {
+            "const": "timeout",
+            "description": "The read took longer than five seconds.",
+            "type": "string"
+          },
+          {
+            "const": "invalid",
+            "description": "The sample was refused: a node id twice, an id or detail out of bounds, times out of order or past\n`9999-12-31`, a sample time before the last one, or a `lastSeen` before the alerted one of the same row.",
+            "type": "string"
+          },
+          {
+            "const": "tooManyNodes",
+            "description": "The sample held more than 1000 node rows.",
+            "type": "string"
+          }
+        ]
+      },
+      "RawTopic": {
+        "description": "A topic in the state, as its ref: `cicada.topic/<name>`.",
+        "properties": {
+          "name": {
+            "description": "The name of the topic.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "The state of a [`NodeDownMonitor`]: its topic, fixed at its create, the nodes it alerted, its timer and the result\nof its last check. Build it with `NodeDownMonitorState::new`; a decoded state is checked the same way.\n\nOn the wire: `{\"topic\":{\"name\":\"ops\"}}`, with `alerted`, `armed`, `nextPollAt`, `lastCheckedAt` and `lastProblem`.",
+    "properties": {
+      "alerted": {
+        "additionalProperties": {
+          "$ref": "#/$defs/NodeDownWatermark"
+        },
+        "default": {},
+        "description": "The dead node rows alerted and still dead at the last successful check, by node id: the `startedAt` and\n`lastSeen` of each; at most 1000, absent: none.",
+        "type": "object"
+      },
+      "armed": {
+        "description": "The id of the armed `Poll`: present exactly when `nextPollAt` is.",
+        "minLength": 1,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "lastCheckedAt": {
+        "description": "The sample time of the last successful check; absent or null before the first.",
+        "format": "date-time",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "lastProblem": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/NodeReadProblem"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "`unavailable`, `timeout`, `invalid` or `tooManyNodes`: why the last check failed; absent or null after a\nsuccessful one."
+      },
+      "nextPollAt": {
+        "description": "When the armed `Poll` is due: present exactly when `armed` is.",
+        "format": "date-time",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "topic": {
+        "$ref": "#/$defs/RawTopic",
+        "description": "The topic each `NodeDown` is published to: `cicada.topic/<name>`."
+      }
+    },
+    "required": [
+      "topic"
+    ],
+    "title": "NodeDownMonitorState",
+    "type": "object"
+  },
+  "type": "cicada.node-down"
+}

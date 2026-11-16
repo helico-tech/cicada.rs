@@ -2,7 +2,7 @@
 name: actor-design
 description: Design a system with Cicada actors together with the user, one step at a time, before code is written, or review an existing actor design or implementation. Design: when the user wants to work out which actors exist, what each owns and decides, their keys and lifecycles, messages and replies, timeouts, failures and outside effects, or whether actors fit at all; it interviews the user through concrete stories, saves each confirmed step with Mermaid diagrams in docs/design/actors.md by default, and resumes from it. Review: when the user asks to review or critique an existing design or codebase; it reconstructs and draws the actors, messages and watches from evidence, checks them against the design guide and reports grounded findings with failure traces in docs/design/actors-review.md by default. It routes to the design guide of the Cicada source the project resolves. For writing, testing or running the code, use the cicada skill.
 metadata:
-  cicada-version: 0.20.1
+  cicada-version: 0.20.2
 ---
 
 # Actor design
@@ -84,7 +84,7 @@ route of the current design step or review area when it needs it.
 | Owners, keys, creation and children | `docs/guide/design.md#choose-actors-and-identities`, `docs/guide/core.md#design-an-actor`, `docs/guide/core.md#child-actors`, `docs/guide/core.md#watches` |
 | Messages, replies, acknowledgements, state tables | `docs/guide/design.md#design-protocols` |
 | Coordination, sagas, flows, deadlines | `docs/guide/design.md#coordinate-work-and-time`, `docs/guide/actors.md#flows`, `docs/guide/core.md#timers` |
-| Failure and recovery | `docs/guide/design.md#recover-from-failure`, `docs/guide/core.md#retry`, `docs/guide/core.md#control-effects` |
+| Failure and recovery | `docs/guide/design.md#recover-from-failure`, `docs/guide/core.md#retry`, `docs/guide/core.md#control-effects`, `docs/guide/actors.md#node-down-alerts`, `docs/reference/contracts/cicada.node-down.json`, `examples/src/node_down.rs` |
 | Outside effects, live handles held by a host | `docs/guide/design.md#work-with-outside-systems`, `docs/guide/design.md#a-websocket-session`, `examples/src/pinned_process.rs` |
 | Choosing a pattern | `docs/guide/design.md#choose-a-pattern`, `docs/guide/actors.md` |
 | Checking and simplifying | `docs/guide/design.md#recognize-design-mistakes` |
