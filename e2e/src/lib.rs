@@ -28,6 +28,11 @@ use crate::docker::{compose, docker_blocking};
 pub const SINGLE_CONTAINERS: [&str; 2] = ["cicada-rs-e2e-sqlite", "cicada-rs-e2e-auth"];
 /// The named volume of the SQLite node.
 pub const SQLITE_VOLUME: &str = "cicada-rs-e2e-sqlite-data";
+/// The containers of the executor class, a send-only server and `cicada-sample-executor`; the teardown removes them
+/// with their anonymous volumes.
+pub const EXECUTOR_CONTAINERS: [&str; 2] = ["cicada-rs-e2e-exec-server", "cicada-rs-e2e-executor"];
+/// The docker network of the executor class; the teardown removes it.
+pub const EXECUTOR_NETWORK: &str = "cicada-rs-e2e-executor";
 
 /// A bound for every test (and every hook), so a hung fault scenario cannot stall the run.
 pub const TEST_TIMEOUT: Duration = Duration::from_secs(240);
@@ -188,7 +193,8 @@ impl Drop for Stack {
 
 static TORN_DOWN: AtomicBool = AtomicBool::new(false);
 
-/// Removes the compose stack (containers, network, volumes) and the single containers and their volume. With
+/// Removes the compose stack (containers, network, volumes), the single containers and their volume, and the
+/// executor class's containers and network. With
 /// `final_run`, saves the compose logs first and does it only once.
 fn teardown(final_run: bool) {
     if final_run {
@@ -201,10 +207,11 @@ fn teardown(final_run: bool) {
     if !down.ok() {
         eprintln!("E2E: compose down failed (exit {}): {}", down.code, down.text);
     }
-    for container in SINGLE_CONTAINERS {
+    for container in SINGLE_CONTAINERS.into_iter().chain(EXECUTOR_CONTAINERS) {
         docker_blocking(&["rm", "-f", "-v", container]);
     }
     docker_blocking(&["volume", "rm", "-f", SQLITE_VOLUME]);
+    docker_blocking(&["network", "rm", "-f", EXECUTOR_NETWORK]);
 }
 
 /// `target/e2e-logs` (under `CARGO_TARGET_DIR` when set).

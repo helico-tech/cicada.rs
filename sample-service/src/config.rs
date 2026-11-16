@@ -81,8 +81,10 @@ impl fmt::Debug for SampleConfig {
     }
 }
 
-/// The node id the sample's actors record: `CICADA_NODE_ID`, which `cicada-app` reads too, else a random one. A value
-/// that is no node id gives a random one here and an error of `cicada-app` that names the variable.
+/// `CICADA_NODE_ID`, which `cicada-app` reads too, else a random one. A value that is no node id gives a random one
+/// here and an error of `cicada-app` that names the variable. Kept for callers; the sample itself no longer uses it:
+/// `App` picks the node id (`--node-id`, else `CICADA_NODE_ID`), and the sample's actors record the claim owner of
+/// each turn.
 pub fn node_id(env: &Env) -> NodeId {
     value(env, "CICADA_NODE_ID").and_then(|v| NodeId::new(v).ok()).unwrap_or_else(NodeId::random)
 }

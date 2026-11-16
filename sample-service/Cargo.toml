@@ -6,6 +6,8 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+# `cargo run -p cicada-sample-service` runs the node; `--bin cicada-sample-executor` the sample without bootstrap.
+default-run = "cicada-sample-service"
 
 [dependencies]
 anyhow.workspace = true

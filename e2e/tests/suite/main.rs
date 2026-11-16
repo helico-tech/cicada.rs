@@ -7,6 +7,7 @@ mod cluster_restart;
 mod node_fault;
 mod ordering;
 mod outcomes_under_fault;
+mod sample_executor;
 mod sqlite_node;
 mod store_outage;
 
@@ -36,5 +37,6 @@ fn e2e() {
         store_outage::class(),         // @Order(6)
         cluster_restart::class(),      // @Order(7)
         sqlite_node::class(),          // @Order(8)
+        sample_executor::class(),      // @Order(9)
     ]);
 }
