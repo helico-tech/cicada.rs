@@ -21,4 +21,7 @@ One customer has one cart. Stock is shared by every customer.
   a saga for "lines changed during checkout" that we do not want.
 - Reserve is a request/reply: `Reserve { request }` gets `Reserved { request }` or `Refused { request }`. The cart
   keeps the request id of each pending line and ignores replies whose request it does not hold.
-- The cart arms one expiry timer per reservation and sends `Release { request }` when it fires.
+- The cart arms one expiry timer per reservation and sends `Release { request }` when it fires. Checkout sends
+  `Confirm { request }` for each line in the commit that marks the cart checked out; stock then forgets the entry
+  and keeps the count taken. A checked-out cart is final; how the customer's next cart starts (the host deletes the
+  finished one) is out of scope here.

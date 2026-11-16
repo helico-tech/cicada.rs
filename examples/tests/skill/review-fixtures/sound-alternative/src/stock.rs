@@ -22,6 +22,8 @@ impl ActorRef for Stock {
 pub enum StockMsg {
     Reserve { request: String, customer: String, count: u32 },
     Release { request: String },
+    /// Settles a reservation at checkout: the count stays taken, the entry goes.
+    Confirm { request: String },
     Restock { count: u32 },
 }
 
@@ -61,6 +63,9 @@ impl Actor for StockActor {
                 if let Some(count) = turn.state_mut().reserved.remove(&request) {
                     turn.state_mut().available += count;
                 }
+            }
+            StockMsg::Confirm { request } => {
+                turn.state_mut().reserved.remove(&request);
             }
             StockMsg::Restock { count } => turn.state_mut().available += count,
         }

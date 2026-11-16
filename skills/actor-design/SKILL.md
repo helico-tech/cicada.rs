@@ -99,7 +99,7 @@ A review checks seven areas (section 7). Each reads:
 | State and bounds | `docs/guide/design.md#choose-actors-and-identities`, `docs/guide/core.md#design-an-actor`, `docs/guide/core.md#how-deep-a-value-can-be` |
 | Protocols | `docs/guide/design.md#design-protocols`, `docs/guide/core.md#message-persistence` |
 | Coordination and time | `docs/guide/design.md#coordinate-work-and-time`, `docs/guide/actors.md#flows`, `docs/guide/core.md#timers` |
-| Recovery | `docs/guide/design.md#recover-from-failure`, `docs/guide/core.md#retry`, `docs/guide/core.md#claim-limit` |
+| Recovery | `docs/guide/design.md#recover-from-failure`, `docs/guide/core.md#retry`, `docs/guide/core.md#claim-limit`, `docs/architecture.md#turn-semantics` |
 | Outside effects | `docs/guide/design.md#work-with-outside-systems`, `docs/guide/design.md#a-websocket-session` |
 
 The guide and code of the resolved source win over this skill and over your memory. An older source may have no
@@ -205,10 +205,13 @@ ends (section 8).
   document such as `docs/design/actors.md`, and a saved review report.
 - **Scope.** Record the actors, stories and configuration (package, target, features) the review covers, and what it
   excludes. When the user names none, propose a scope from the evidence and say what you chose. Representative
-  stories are not the whole codebase: never claim more coverage than you read.
+  stories are not the whole codebase: never claim more coverage than you read. A file opened only for a type or
+  message at the boundary is listed as opened, not reviewed; a risk you notice outside the scope is one line in
+  Checks and limits, not a finding.
 - **Three identities, kept apart.** The consumer's code: the paths read, the revision and any uncommitted or
   unversioned changes, from read-only commands such as `git rev-parse HEAD` and `git status --short`; pasted material
-  has no revision, so name it as pasted. The Cicada dependency: the resolver report (section 1). The installed skills:
+  has no revision, so name it as pasted. When git is unavailable, record the revision as unknown and local changes
+  as not checked. The Cicada dependency: the resolver report (section 1). The installed skills:
   their versions and provenance. A newer skill does not make the project's Cicada newer.
 - **Read only.** Reading files, read-only git commands and the bundled resolver (`cargo metadata --locked --offline`)
   are allowed. A review alone does not run the consumer's builds, tests, scripts or migrations, fetch or update
@@ -236,19 +239,22 @@ Tag every claim with where it comes from:
 | Tag | Means |
 | --- | --- |
 | observed | Read in code or tests. Cite the file, the symbol and the line. |
-| documented | Stated in a design or document. Cite the file and heading; for pasted text, its section and a short quote. |
+| documented | Stated in a design, a document or a code comment. Cite the file and heading or line; for pasted text, its section and a short quote. A comment about an outside system documents intent, not that system's behaviour. |
 | inferred | Your reasoning from observed or documented facts; say from which. |
 | unknown | Not in the evidence. It becomes an open question when it matters. |
 
 Say which tests you read and which ran; reading a test is not running it. Where a document and the code disagree,
-show both with their evidence; do not pick one silently. A missing document does not prove that a behaviour is
+show both with their evidence; do not pick one silently. When the review is against a design document, a short
+table of its statements beside the code shows where they agree. A missing document does not prove that a behaviour is
 missing, and a proposal or Cicada's latest `main` proves nothing about what the consumer runs.
 
 ### Check
 
 Check seven areas against the resolved guide (their routes are under Source routes): ownership, identities and
 lifecycle, state and bounds, protocols, coordination and time, recovery, outside effects. Give each one verdict with
-its evidence or reason: `supported`, `finding` (with the ids), `unknown` or `not applicable`. The yardstick is the
+its evidence or reason: `supported`, `finding` (with the ids), `unknown` or `not applicable`; an area with a finding
+and unknown parts is a finding that names the unknown. A focused question (can a customer be charged twice?) picks
+the stories and leads the summary; the seven areas still get their verdicts. The yardstick is the
 consumer's requirements and Cicada's actual guarantees, not one preferred decomposition. Do not import another actor
 framework's semantics, and treat proposed or future Cicada features as unavailable.
 
@@ -259,11 +265,14 @@ framework's semantics, and treat proposed or future Cicada features as unavailab
 - **Priority is impact, not confidence.** `high`: credible loss of data or isolation, an irreversible duplicate outside
   effect, or accepted work stuck without recovery. `medium`: wrong but recoverable behaviour, or unbounded resource
   growth. `low`: a bounded maintainability issue or protocol ambiguity. Explain the impact in the reviewed scope.
+  A finding carried over from an earlier run keeps its priority unless the evidence changed; record a new grade and
+  its reason under History.
 - **Open questions.** When a requirement or evidence is missing, write the question and its conditional risk ("if a
   reply can arrive after cancel, then ..."), not a defect. Ask at most three focused questions per turn, only where
-  the answer changes a conclusion, and keep checking what does not depend on them. An unanswered question stays
-  unknown; silence is not approval. A delegation lets you make the choices it names; it never lets you invent facts
-  about existing code.
+  the answer changes a conclusion, and keep checking what does not depend on them; the report's Open questions may
+  hold more. An unanswered question stays unknown; silence is not approval. A delegation lets you make the choices it
+  names, written under the question they settle with their reason and what stays uncertain; it never lets you invent
+  facts about existing code.
 - **Accepted tradeoffs.** A documented tradeoff that meets the requirements is recorded as accepted, not turned into a
   finding because another decomposition is possible. A claimed tradeoff that breaks a stated invariant is still a
   finding, with its evidence.
@@ -283,7 +292,8 @@ building belongs to the `cicada` skill.
   document or the code.
 - **Look before you write.** Resume an existing report only when its Scope and sources and Progress name the same
   system and review scope; a changed revision is fine. A report of another system or scope, unrelated content, or an
-  identity you cannot tell is a collision: ask for another path or for clarification, and change nothing.
+  identity you cannot tell is a collision: ask for another path or for clarification, and change nothing. You may
+  show the review in the chat meanwhile, marked as not saved.
 - If there is no writable repository, or the user does not want files written, show the same report in the chat and
   say that it was not saved. Never commit the report yourself.
 - **Shape.** A new report has these sections, in this order. An existing report keeps its shape and the user's
@@ -304,6 +314,7 @@ building belongs to the `cicada` skill.
 Phase: <Scope and evidence, Reconstruct, Check, Report or done>
 Pending questions: <at most three>
 Evidence snapshot: <consumer revision and local changes, Cicada source, date>
+Earlier snapshots: <the snapshots of earlier runs, newest first>
 
 ## Reconstructed system
 
@@ -344,8 +355,9 @@ Evidence snapshot: <consumer revision and local changes, Cicada source, date>
   reused.
 - **Resume.** Read the report first. Then check again the consumer's revision and local changes, the resolver report
   and the scope, and record the new evidence snapshot. Observations and findings that rest on changed evidence become
-  `stale` until you check them again; if you cannot tell what a change affects, mark the whole review stale in
-  Progress. Continue at the recorded phase and pending questions. Keep the ids, earlier traces, the user's notes and
+  `stale` until you check them again; if you cannot tell what a change affects (no diff can be read, for example),
+  mark the whole review stale in Progress. Continue at the recorded phase and pending questions; a review recorded as
+  done goes back to Check for what is stale. Record in Progress what was stale and what you checked again. Keep the ids, earlier traces, the user's notes and
   dispositions.
 - **Dispositions.** `resolved` needs new evidence that the cause is gone; cite it and keep the earlier trace under
   History. `accepted` (the user takes the risk) and `deferred` are not resolved. A new run does not erase earlier

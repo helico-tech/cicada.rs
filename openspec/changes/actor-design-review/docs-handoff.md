@@ -80,4 +80,7 @@ None. No doctest, link, guarantee row or skill route needs protected prose.
 ## Status
 
 - Sections 1 to 3 are proposed text; nothing protected was edited.
-- Checks run: see the change's report and `behavioral-review.md`.
+- `cargo test -p cicada-examples --test skill`: 18 passed, 0 failed (includes the Python resolver and packaging
+  tests, which ship the updated `SKILL.md` within the unchanged member set); `--test docs`: 11 passed;
+  `openspec validate actor-design-review --strict`: valid.
+- Behavioral evidence (11 of the 15 review cases run by fresh agents) and its limits: `behavioral-review.md`.

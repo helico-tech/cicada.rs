@@ -88,6 +88,9 @@ impl Actor for CartActor {
             CartMsg::Checkout => {
                 let all_reserved = turn.state().lines.values().all(|l| l.status == LineStatus::Reserved);
                 if all_reserved && !turn.state().lines.is_empty() {
+                    for (request, line) in turn.state().lines.clone() {
+                        turn.send(&Stock { sku: line.sku }, StockMsg::Confirm { request })?;
+                    }
                     turn.state_mut().checked_out = true;
                 }
             }
