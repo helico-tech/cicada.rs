@@ -356,8 +356,17 @@ fn required_paths(root: &Path) -> Vec<String> {
 
 /// The sections that decisions of a consumer depend on: actor design, external effects, timers, flows, testing, HTTP
 /// and its authentication, workers, telemetry, deploys, contract changes and upgrades, and adding a release.
-const REQUIRED_ROUTES: [&str; 16] = [
+const REQUIRED_ROUTES: [&str; 25] = [
     "README.md#using-a-release-in-another-project",
+    "docs/guide/design.md#from-problem-to-design",
+    "docs/guide/design.md#choose-actors-and-identities",
+    "docs/guide/design.md#design-protocols",
+    "docs/guide/design.md#coordinate-work-and-time",
+    "docs/guide/design.md#recover-from-failure",
+    "docs/guide/design.md#work-with-outside-systems",
+    "docs/guide/design.md#choose-a-pattern",
+    "docs/guide/design.md#recognize-design-mistakes",
+    "docs/guide/design.md#a-websocket-session",
     "docs/guide/core.md#design-an-actor",
     "docs/guide/core.md#retry",
     "docs/guide/core.md#timers",

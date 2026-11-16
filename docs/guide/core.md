@@ -78,6 +78,8 @@ Use defaults for new fields and keep [state samples](#state-samples) from earlie
 
 ### Design an actor
 
+For choosing several actors and their protocols, read [Design with actors](design.md); this section covers one type.
+
 Choose the key for the work that must run serially: one account, import or document. Different keys can run in parallel.
 Keep dependencies on the actor struct and durable progress in state. A handler processes one bounded piece of work;
 send the next piece to yourself when it must survive a crash.
@@ -426,6 +428,7 @@ Each implementation has tests in [examples/tests](../../examples/tests/). Open t
 | Durable steps | [steps.rs](../../examples/src/steps.rs) |
 | Fan-out with children | [fanout.rs](../../examples/src/fanout.rs) |
 | Instance registry | [registry.rs](../../examples/src/registry.rs) |
+| Websocket session: a host follows durable output | [websocket_session.rs](../../examples/src/websocket_session.rs) |
 | Restart and redrive | [supervision.rs](../../examples/src/supervision.rs) |
 | Shared rate | [rate_limit.rs](../../examples/src/rate_limit.rs) |
 | Latest edit wins | [debounce.rs](../../examples/src/debounce.rs) |

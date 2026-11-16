@@ -344,27 +344,20 @@ reply and the completion commit together, and a rejected commit keeps no frame. 
 
 ## Blocking
 
-Integrated in the last commit of the branch, `Wire the design guide's doctests and routes`, which fails until the
-owner's prepared files are taken in (ADR 0045). Every other commit builds and passes.
+Resolved by the owner's prepared docs, folded into `Wire the design guide's doctests and routes`, the commit that
+needed them (ADR 0045); no commit of the branch has the break. Owner commit `147f05ae2d1395f5c360b5c8bf3e6b3bb76f609b`
+on `docs`, taken as whole files without a merge: `README.md`, `docs/README.md`, `docs/agents.md`,
+`docs/guide/core.md`, `docs/guide/design.md` (new) and `docs/guarantees.md`. They held:
 
-1. **`cargo build -p cicada-examples` (and so every test of the crate, `--doc` included).** `examples/build.rs` reads
-   `docs/guide/design.md` for `DesignGuideDoctests` and panics: the file does not exist. Replacement: the guide of
-   section 1. Any Rust block in it needs to compile against `cicada_examples::websocket_session`; the proposed block
-   above does.
-2. **`cargo test -p cicada-examples --test skill`**, `every_route_resolves_to_a_file_and_heading_of_this_source` and
-   `the_routes_cover_every_guide_reference_and_example`: `skills/cicada/SKILL.md` routes to
-   `docs/guide/design.md` and its nine anchors (`#from-problem-to-design`, `#choose-actors-and-identities`,
-   `#design-protocols`, `#coordinate-work-and-time`, `#recover-from-failure`, `#work-with-outside-systems`,
-   `#choose-a-pattern`, `#recognize-design-mistakes`, `#a-websocket-session`), and `REQUIRED_ROUTES` requires them.
-   Replacement: the guide with exactly these headings.
-3. **`cargo test -p cicada-examples --test docs`** passes today; it must still pass with the guide and the
-   navigation of section 2. The G2 row of section 3 is not blocking (the tests exist), but belongs with the guide.
+1. `docs/guide/design.md` for `DesignGuideDoctests` (`examples/build.rs`), with the nine headings the skill routes
+   to and `REQUIRED_ROUTES` requires, and one `no_run` Rust block.
+2. The navigation of section 2 and the G2 tests of section 3.
 
 ## Status
 
-Checked on this branch before the blocking commit: `cargo test -p cicada-examples --test websocket_session` (26
-passed), `--test skill`, `--test docs`, `cargo clippy -p cicada-examples --all-targets -- -D warnings`,
-`cargo check -p cicada-examples --examples`, `bash scripts/ci/dependency-trees.sh`, and a manual run of the demo
-(an HTTP 101 upgrade, then `Hello` and the frames over `curl`). The gate result is in the build report. Everything in
-sections 1 to 3 is proposed text: no guide, navigation or guarantee prose is written yet. No browser execution was
-checked.
+Checked on the combined result: `cargo test -p cicada-examples --doc` (30 passed), `--test docs` (11 passed),
+`--test skill` (10 passed), `--test websocket_session` (26 passed); before it `cargo clippy -p cicada-examples
+--all-targets -- -D warnings`, `cargo check -p cicada-examples --examples`, `bash scripts/ci/dependency-trees.sh`
+and a manual run of the demo (an HTTP 101 upgrade, then `Hello` and the frames over `curl`). The gate result is in
+the build report. The guide, navigation and G2 prose are the owner's; nothing is left to write for this change. No
+browser execution was checked.
