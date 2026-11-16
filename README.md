@@ -33,6 +33,7 @@ Inspect actors and their mailboxes with the [terminal UI](docs/guide/app.md#comm
 ## Documentation
 
 [Start here](docs/README.md) for the reading paths. Each guide starts with the task it helps you complete.
+Use [Design with actors](docs/guide/design.md) to choose actors, ownership and protocols before writing handlers.
 
 ## Layers
 

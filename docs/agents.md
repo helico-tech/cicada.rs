@@ -18,6 +18,7 @@ If the dependency tree lacks these docs, use that version’s Rust source/rustdo
 | Task | Start here | Implementation evidence |
 | --- | --- | --- |
 | Define or test an actor | [Core](guide/core.md#define-an-actor-type) | [Actor](../crates/cicada/src/actor.rs), [examples](guide/core.md#examples) |
+| Design actors and protocols | [Design with actors](guide/design.md) | [Websocket session](../examples/src/websocket_session.rs) |
 | Design keys/state/turns | [Actor design](guide/core.md#design-an-actor) | [Turn](../crates/cicada/src/turn.rs) |
 | Integrate an HTTP service/client | [HTTP](guide/http.md) | [OpenAPI](openapi.json), [client](../crates/cicada-client/src/lib.rs) |
 | Run App or a remote worker | [App](guide/app.md) | [CLI reference](reference/cli.md), [remote worker example](../examples/src/remote_worker.rs) |
