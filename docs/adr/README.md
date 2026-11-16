@@ -56,6 +56,7 @@ accepted ADR is not rewritten: a later one supersedes it. A change that makes a 
 | [0049](0049-consumer-skills-as-a-plugin.md) | Consumer skills also ship as one Claude Code plugin following main, with workspace version checks and the portable release archive retained. |
 | [0050](0050-actor-design-guide.md) | Actor design knowledge gets its own guide and a checked websocket session example with bounded replay and explicit client acknowledgements. |
 | [0051](0051-interactive-actor-design-skill.md) | An interactive actor-design skill uses the sibling resolver, saves visual design progress and ships beside cicada in a backward-compatible versioned archive. |
+| [0052](0052-actor-placement-by-claim-owner.md) | Immutable actor placement filters claims by node or worker identity, qualifies liveness and requires an upgrade of all claimers. |
 
 ## Design questions
 

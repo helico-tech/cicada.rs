@@ -17,8 +17,8 @@ the machine.
 - **A pin at create.** Creating an actor may name a node id. Only the node with that id may claim the actor's turns.
   An actor with no pin behaves as today.
 - **Messages wait for the node.** While the pinned node is down, or does not host the type, the actor's messages stay
-  pending. Nothing fails because of the pin. The pin shows in the actor's snapshot and the mailbox listing, so an
-  operator can see why messages wait.
+  pending. Nothing fails because of the pin. The pin shows in actor snapshots/state listings; the existing mailbox listing shows the
+  backlog, so an operator can diagnose why messages wait.
 - **The claim respects the pin**, in both stores, checked by a new case in the conformance suite.
 - Sends to a pinned actor work from any node, as today.
 - **Keep the placement primitive small.** The child-process example moves to `pinned-process-example`, immediately
@@ -37,6 +37,8 @@ Decisions made under the owner's delegation (2026-11-16; Opus 5.5 reviews):
 - Drain all old direct-store runtimes before migration/activation: old claim code cannot enforce pins.
 
 ## Out of scope
+
+Pin options in the ready-made supervisor, flow and event creation protocols.
 
 The child-process example and its recovery adapter (`pinned-process-example`). Moving a pin (delete and create again). Pinning by label or selector. Failing messages after a timeout when the
 pinned node stays down: a watcher can use `node-down-alert` instead. Pinning a whole type to a node.
