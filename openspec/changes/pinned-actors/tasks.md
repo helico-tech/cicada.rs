@@ -29,7 +29,7 @@
   landing. Include normal patch release pins/changelog and verify docs/doctest/skill checks. The process example and
   alarms remain successors; no new production process management belongs here.
 
-- [ ] 6. Finishing. Run `openspec validate pinned-actors --strict`. Commit the implementation and run
+- [x] 6. Finishing. Run `openspec validate pinned-actors --strict`. Commit the implementation and run
   `python3 scripts/gate.py run --e2e`, then report `python3 scripts/gate.py status`. The gate includes
   `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` with PostgreSQL,
   feature builds, script/docs/skill/fixture checks and Docker E2E. Record compatibility checks and limits. The builder
