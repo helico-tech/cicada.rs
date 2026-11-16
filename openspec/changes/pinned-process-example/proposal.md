@@ -15,9 +15,11 @@ change so each can be reviewed and built in a small change.
 - Check start/stop, natural exit, repeated attempts and restart behavior with deterministic tests and a small real
   process smoke test where supported. Hand user guidance and skill/example routes to the docs workflow.
 
-To decide in the design: process identity and repeat detection; host restart/reconciliation policy; how the watcher
-sends into ActorSystem; resource limits and cleanup; what the runnable adapter can actually guarantee after an
-abrupt host death. Never promise generic exactly-once process spawn or PID-only adoption.
+Decided under the owner's delegation (2026-11-16; Opus 5.5 reviews): one actor per never-reused run, 32 retained
+host slots with one spawn each, a fresh host epoch separate from stable node identity, and explicit reconciliation
+rather than PID adoption or automatic restart after host death. The inert child mode of the example executable
+keeps the OS adapter inspectable. Virtual-time actor/protocol tests and separate bounded OS tests establish distinct
+claims. No production process manager or generic exactly-once spawn guarantee.
 
 ## Out of scope
 
@@ -32,5 +34,5 @@ After `pinned-actors`. Before `node-down-alert`.
 
 ## Impact
 
-Examples, example-only dependencies if necessary, tests, skill routes, ADR if the example needs a recorded contract,
+Examples, example-only dependencies if necessary, tests, skill routes, ADR 0053 recording the bounded example contract,
 changelog and docs-handoff.md. No new core API or store schema. The docs session owns handwritten user guidance.

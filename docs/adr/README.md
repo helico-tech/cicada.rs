@@ -57,6 +57,7 @@ accepted ADR is not rewritten: a later one supersedes it. A change that makes a 
 | [0050](0050-actor-design-guide.md) | Actor design knowledge gets its own guide and a checked websocket session example with bounded replay and explicit client acknowledgements. |
 | [0051](0051-interactive-actor-design-skill.md) | An interactive actor-design skill uses the sibling resolver, saves visual design progress and ships beside cicada in a backward-compatible versioned archive. |
 | [0052](0052-actor-placement-by-claim-owner.md) | Immutable actor placement filters claims by node or worker identity, qualifies liveness and requires an upgrade of all claimers. |
+| [0053](0053-a-bounded-pinned-process-example.md) | One pinned actor per process run, retained host handles/tombstones and explicit reconciliation after host restart. |
 
 ## Design questions
 
