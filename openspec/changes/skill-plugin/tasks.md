@@ -1,6 +1,6 @@
 # Tasks
 
-- [ ] 1. Root marketplace and plugin. Add the two `.claude-plugin/` manifests with the exact fields and shapes in
+- [x] 1. Root marketplace and plugin. Add the two `.claude-plugin/` manifests with the exact fields and shapes in
   design decisions 1 and 2, the current workspace version, one `./` source and default skills/ discovery. Keep the
   archive layout and contributor loops unchanged. Verify with `claude --version`, then `claude plugin validate` on
   each explicit manifest and the repository root; record outputs and warnings for code review. This is review

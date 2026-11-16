@@ -1,0 +1,13 @@
+{
+  "name": "cicada",
+  "owner": {
+    "name": "helico-tech"
+  },
+  "description": "The consumer skills of Cicada for Rust, durable actors on a shared SQL store.",
+  "plugins": [
+    {
+      "name": "cicada",
+      "source": "./"
+    }
+  ]
+}

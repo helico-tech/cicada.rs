@@ -1,0 +1,9 @@
+{
+  "name": "cicada",
+  "version": "0.19.0",
+  "description": "Skills for projects that use Cicada for Rust: find the Cicada source a project resolves and route to that version's guides, examples and code.",
+  "author": {
+    "name": "helico-tech"
+  },
+  "repository": "https://github.com/helico-tech/cicada.rs"
+}
