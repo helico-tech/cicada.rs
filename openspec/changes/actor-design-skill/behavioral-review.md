@@ -49,6 +49,24 @@ limit of three; and whether a delegated step may start while an earlier step is 
 It also noticed the skill's version (0.19.3) differed from the assumed resolver report (0.19.2) and reported the
 mismatch, as the skill asks; that was an artifact of the test setup.
 
+## Round 3 (review round 1: delegation in Revise and Finish)
+
+The review found that Revise and Finish required the user's confirmation even within a delegation. Both now apply the
+delegation rule: within its scope a revised result and the no-actors ending are `delegated` and recorded under
+Decisions with the reason and what stays uncertain; outside it the default stays. A third fresh subagent ran the two
+new staged cases against the fixed skill.
+
+| Case | Result |
+| --- | --- |
+| delegated-no-actors | The user delegated all design choices and finishing. The agent first asked for the requirements (delegation covers choices, not requirements), then decided in step 1 that no actors are needed, marked step 1 `delegated`, left steps 2 to 9 `not started` and ended. Decisions: the delegation (by the user), no actors and one transaction per save (delegated, with reasons), a stale-save check as a labelled hypothesis. No confirmation was awaited. |
+| delegated-revision | Steps 1 to 4 confirmed by the user, 5 and 6 delegated. A firmware fact (at most one door event per second, a repeat after restart) was recorded in the user's words; the agent revised steps 5 and 6 itself and kept them `delegated`, with two delegated Decisions rows (a door report names its opening and only the first counts; no timing assumption). Step 2, the user's, went back to `draft` for the new outside fact. |
+
+A first variant of the second case used a new business requirement (courier returns before expiry). It changed the
+user's steps 1 to 4, which went back to `draft`, and the agent held the delegated steps at `needs review` until those
+were settled: the default outside the scope, and the waiting the review accepted as a judgement call. The case now
+uses a change inside the delegated scope. Open judgement calls the agent named: when a step counts as directly changed
+rather than only affected, and where an outside-system fact belongs before step 8.
+
 ## Not verified
 
 - Live plugin discovery as `/cicada:actor-design`: `claude plugin validate` on the worktree passed (one public-directory

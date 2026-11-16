@@ -898,12 +898,14 @@ fn a_missing_design_route_step_or_section_is_named() {
 }
 
 /// The ids of the staged cases of `actor-design` that the design names.
-const DESIGN_EVALUATIONS: [&str; 14] = [
+const DESIGN_EVALUATIONS: [&str; 16] = [
     "fresh-design",
     "not-an-actor",
     "timeout-story",
     "confirmation-required",
     "delegated-decisions",
+    "delegated-no-actors",
+    "delegated-revision",
     "resume-changed-requirement",
     "existing-file-protection",
     "no-repository",

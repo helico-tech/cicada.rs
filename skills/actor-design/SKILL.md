@@ -112,7 +112,7 @@ says.
   added only for a rule that needs an owner over time.
 - **Step 1 asks whether actors fit.** A function, a table with a transaction or a read model may be simpler. Ending
   with a design that uses no actors, or only a few, is a valid result; say why. When the user confirms that no actors
-  are needed, the design ends there (section 6).
+  are needed, or decides it within a delegation that covers step 1, the design ends there (section 6).
 - **End each step with its written result and an updated drawing**, saved as `draft`, and show them to the user.
 - **Wait for confirmation.** Move to the next step only after the user confirms this step's result, then mark it
   `confirmed`. Silence, a change of subject or a new question is not confirmation. Corrections are applied and shown
@@ -146,14 +146,18 @@ Draw in Mermaid inside the document. A drawing shows what the steps so far have 
   it changed. Continue at the recorded step and next question; do not restart the interview, and do not mark a draft
   confirmed because it was saved.
 - **Revise.** When a requirement changes an earlier result, update that step and set it back to `draft` until the
-  user confirms it again. Mark the later steps it affects `needs review`, keeping their text and the decisions it does
-  not affect. Review those steps with the user in order.
+  user confirms it again; within a delegated scope, decide the revised result yourself, mark it `delegated` and record
+  the change under Decisions with its reason and what stays uncertain. Mark the later steps it affects `needs review`,
+  keeping their text and the decisions it does not affect. Review those steps in order: with the user, or yourself
+  where the delegation covers them.
 - Update only the sections that changed.
 
 ## 6. Finish
 
-The design is finished when step 9 is confirmed (or delegated), or when the user confirms in step 1 that no actors are
-needed; then record that under Decisions and leave the later steps `not started`. End with: the design and where it is saved, the
+The design is finished when step 9 is confirmed (or delegated), or when step 1 concludes that no actors are needed:
+confirmed by the user, or decided by you within a delegation that covers step 1 and marked `delegated`. Record that
+under Decisions, with the reason and what stays uncertain, and leave the later steps `not started`. Outside a
+delegation, the no-actors ending waits for the user's confirmation. End with: the design and where it is saved, the
 source it rests on and what was not verified, the open assumptions, and the next actions, such as building it with the
 `cicada` skill. Do not start that work unless the user asks.
 

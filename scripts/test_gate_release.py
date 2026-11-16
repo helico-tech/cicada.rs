@@ -534,6 +534,28 @@ class ReleaseTests(unittest.TestCase):
         self.assert_published()
         self.assertEqual(self.state()["assets"], state["assets"])
 
+    def test_a_format_two_resume_after_a_driver_update_runs_the_pinned_driver(self):
+        state = self.interrupted_after_packaging()
+        tag = self.remote("refs/tags/v1.0.0")
+        # The caller updates the release driver and the packager after the format-2 digests were saved.
+        updated = {path: (self.s.root / path).read_text() + "# a later driver\n"
+                   for path in ("scripts/gate.py", "scripts/package-skill.py")}
+        self.s.commit("Update the release driver", updated)
+        refused = self.release()
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn(f"run the gate of {self.c[:12]} itself", refused.stderr)
+        self.assertEqual(self.state(), state, "nothing saved changes, the digests least of all")
+        self.assertEqual(self.writes(), [])
+        self.assertEqual(self.gh()["releases"], [], "no release, not even a draft")
+        self.assertEqual(self.remote("refs/tags/v1.0.0"), tag)
+        # Resume with the pinned driver; the caller's later packager stays in the working tree and is never used.
+        self.s.git("checkout", "-q", self.c, "--", "scripts/gate.py")
+        done = self.release()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assert_published()
+        self.assertEqual(self.state()["assets"], state["assets"], "the archives match the digests saved before")
+        self.assertEqual((self.s.root / "scripts/package-skill.py").read_text(), updated["scripts/package-skill.py"])
+
     def test_a_rejected_main_push_is_refreshed_once(self):
         flag = self.s.dir / "reject-once"
         flag.write_text("")

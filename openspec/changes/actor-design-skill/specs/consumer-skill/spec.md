@@ -143,8 +143,10 @@ file. Legacy recovery, immutable tags, existing release digests and fixture-arch
 
 #### Scenario: Resume format 2 after a driver update
 
-- **WHEN** a format-2 release has saved archive digests before the release driver is updated
-- **THEN** resumption verifies both source manifests and tagged members against the pinned commit and saved digests
+- **WHEN** a format-2 release has saved archive digests and the caller's release driver is then updated
+- **THEN** the updated driver is refused before publishing anything, leaving the saved digests unchanged
+- **AND** resumption runs the pinned commit's driver, which verifies both source manifests and tagged members against
+  the pinned commit and saved digests
 - **AND** a mismatch fails instead of rewriting digests or substituting current working-tree content
 
 ### Requirement: Structural checks and behavioral review cover the design method

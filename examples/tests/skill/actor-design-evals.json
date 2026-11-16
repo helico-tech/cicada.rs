@@ -86,6 +86,37 @@
       ]
     },
     {
+      "id": "delegated-no-actors",
+      "setup": "A consumer repository with Cicada resolved and no saved design; the user's settings editor needs only one database transaction.",
+      "turns": [
+        "Design the settings editor with actors if they help. You make all the design choices and finish it; I'll read the result. Don't write code.",
+        "Admins change a handful of values and see them saved; there is no background work and no deadline."
+      ],
+      "expect": [
+        "Decides in step 1, within the delegation, that no actors are needed, marks step 1 delegated and ends the design there with later steps not started.",
+        "Records the decision under Decisions with its reason, decided by delegation, and what stays uncertain."
+      ],
+      "avoid": [
+        "Waiting for the user's confirmation that the delegation already covers.",
+        "Writing confirmed for the delegated result, or inventing actors to continue the method."
+      ]
+    },
+    {
+      "id": "delegated-revision",
+      "setup": "A saved design whose steps 1 to 4 are confirmed by the user and steps 5 and 6 are delegated (the user said: decide the responsibility cards and protocols yourself, ask only about what customers see).",
+      "turns": [
+        "The locker firmware turns out to send at most one door event per second and may repeat the last one after a restart; adjust the design for that."
+      ],
+      "expect": [
+        "Revises the affected delegated steps (protocols, and responsibility cards if needed) itself, keeps them delegated, and records the change under Decisions with its reason and what stays uncertain.",
+        "Asks the user about any change to a step outside the delegation, which goes back to draft until confirmed, or says that none is needed."
+      ],
+      "avoid": [
+        "Dropping the delegated status of an in-scope revision and waiting for confirmation.",
+        "Deciding a change to the user's confirmed steps outside the delegated scope."
+      ]
+    },
+    {
       "id": "resume-changed-requirement",
       "setup": "A saved docs/design/actors.md with steps 1 to 5 confirmed and step 6 draft; Source and scope names the resolved version; a new session starts.",
       "turns": [

@@ -12,7 +12,8 @@ schema or guarantee changes.
   turn from the user's concrete stories, names things in the user's words, shows each step's written result and a
   Mermaid drawing, and moves on only after the user confirms. Step 1 asks whether actors fit; a design without actors
   is a valid end. An explicit delegation by the user is honoured within its scope and recorded under Decisions with
-  reasons (status `delegated`, never `confirmed`). It never implements, commits or deploys.
+  reasons (status `delegated`, never `confirmed`), also for revisions and the no-actors ending inside that scope.
+  It never implements, commits or deploys.
 - **Saved design.** Default `docs/design/actors.md` in the consumer's repository; a path the user names or the
   repository's own rules win. A new document starts from `skills/actor-design/assets/design-template.md`: Source and
   scope, Progress (current step, each step's status, next questions), the nine steps, Decisions, Open questions. It
@@ -39,10 +40,10 @@ schema or guarantee changes.
   `the_design_skill_routes_resolve_and_cover_the_design_guide`, `the_design_template_and_method_follow_the_guides_nine_steps`,
   `the_design_skill_names_no_contributor_material`, `the_two_skills_point_to_each_other_by_name`,
   `a_missing_design_route_step_or_section_is_named`, `the_design_evaluation_cases_are_complete`);
-  `examples/tests/skill/actor-design-evals.json` (14 staged cases); `examples/tests/skill/test_package_skill.py`
+  `examples/tests/skill/actor-design-evals.json` (16 staged cases); `examples/tests/skill/test_package_skill.py`
   (format 2, legacy bytes, marker, versions, links, unsafe members); `scripts/test_gate_release.py` (format-2 release,
   release-check cases, legacy release and resume, driver checks of both `SOURCE.json` files and files, resume against
-  saved digests).
+  saved digests, an updated driver refused and the pinned driver resuming).
 
 ## 1. Install both skills
 
@@ -103,7 +104,8 @@ None. No doctest, link, guarantee row or skill route needs protected prose.
 
 - `cargo test -p cicada-examples --test skill`: 16 passed, 0 failed (includes the Python resolver and packaging tests).
 - `python3 -m unittest` of `examples/tests/skill/test_package_skill.py`: 16 passed; `scripts/test_package_fixtures.py`:
-  10 passed; `scripts/test_gate_release.py`: 27 passed after one test fix.
+  10 passed; all script tests (`scripts/test_*.py`): 89 passed, including the format-2 resume after a driver update
+  (`test_a_format_two_resume_after_a_driver_update_runs_the_pinned_driver`).
 - Sections 1 to 4 are proposed text; nothing protected was edited. The contributor brief
   `.claude/skills/build-loop/builder.md` still names only `skills/cicada/SKILL.md` for the version; the build loop's
   owner may add `skills/actor-design/SKILL.md` there (the skill test fails on a stale version either way).
