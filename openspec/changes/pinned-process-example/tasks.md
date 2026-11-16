@@ -12,7 +12,7 @@
   stalled operations, deletion, old-epoch zero OS actions, late original-host exit after NeedsReconciliation and
   operator deletion after simulated external verification. Verify examples/tests/pinned_process.rs on virtual time.
 
-- [ ] 3. Real adapter and demo. Add examples/examples/pinned_process.rs using only its fixed inert child mode,
+- [x] 3. Real adapter and demo. Add examples/examples/pinned_process.rs using only its fixed inert child mode,
   host-supplied executable path, bounded control, explicit stable node id/SQLite path and explicit new-run creation.
   Own/reap handles in per-slot tasks; implement the defined cleanup/flush/system-stop/pump/store shutdown order and
   report uncertainty. Add tests/pinned_process_os.rs with bounded subprocess helpers and handshakes on Linux/macOS.
