@@ -3,7 +3,7 @@
 ## Why
 
 The sample catalog does not host HeartbeatWatchActor, added in 0.18.10. The owner requested that addition at low
-priority (decision 34). Opus 5.5 identified it as independent of the HTTP executor in sample-worker-mode; splitting
+priority. Opus 5.5 identified it as independent of the HTTP executor in sample-worker-mode; splitting
 it keeps both changes small. The owner delegated design and scope choices for this batch.
 
 ## What Changes
