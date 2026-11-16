@@ -5,7 +5,7 @@
   new snapshot's parsed JSON against docs/reference/contracts/cicada.heartbeat-watch.json and verify that reference
   and every previous sample entry are unchanged. Run the sample contract_snapshots test and existing wire checks.
 
-- [ ] 2. Focused catalog and transport checks. Cover all, exact-name and none selection for both sample definitions,
+- [x] 2. Focused catalog and transport checks. Cover all, exact-name and none selection for both sample definitions,
   and no automatic heartbeat-watch instance. Extend the predecessor's in-process App/HTTP harness with an explicit
   Counter target and one-hour watch: state plus pending-message reads show waiting/no timer before Beat, then alive
   with a matching armed Expire after commit. Exercise direct-store sample hosting and HTTP executor; do not wait for
