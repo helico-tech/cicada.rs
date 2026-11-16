@@ -34,8 +34,11 @@ pub mod adapter;
 pub mod bridge;
 
 use std::collections::VecDeque;
+use std::time::Duration;
 
+use cicada::SendResult;
 use cicada::prelude::*;
+use cicada::store::OutcomeStatus;
 use serde::{Deserialize, Serialize};
 
 /// The most frames a session keeps that the client has not acknowledged.
@@ -280,4 +283,49 @@ impl Actor for ProducerActor {
         }
         Ok(())
     }
+}
+
+/// Emits `body` through `producer` from outside an actor and waits for the session's answer to that Emit, reading
+/// every `poll` for at most `limit`. Used by the demo, one call at a time per producer.
+///
+/// It first waits for the Emit's own outcome, a durable record, so a slow turn is not mistaken for an answer: after a
+/// `done` Emit the producer holds that request as pending until its answer, the only one that can clear it. A refused
+/// send, an Emit that ended otherwise (a request was already pending), and the limit are errors.
+pub async fn emit_and_wait(
+    system: &ActorSystem,
+    producer: &Producer,
+    body: impl Into<String>,
+    poll: Duration,
+    limit: Duration,
+) -> Result<Answer, String> {
+    let id = MessageId::random();
+    let emit = ProducerMsg::Emit { body: body.into() };
+    match system.send_with(producer, emit, SendOptions::new().id(id.clone())).await.map_err(|e| e.to_string())? {
+        SendResult::Accepted(_) => {}
+        refused => return Err(format!("The emit was refused: {refused:?}")),
+    }
+    let wait = async {
+        loop {
+            tokio::time::sleep(poll).await;
+            match system.outcome(&id).await.map_err(|e| e.to_string())? {
+                None => continue,
+                Some(outcome) if outcome.status == OutcomeStatus::Done => break,
+                Some(outcome) => {
+                    return Err(format!("The emit ended {:?}: {}", outcome.status, outcome.error.unwrap_or_default()));
+                }
+            }
+        }
+        let address = producer.address().map_err(|e| e.to_string())?;
+        loop {
+            let Some(snapshot) = system.get_actor(&address).await.map_err(|e| e.to_string())? else {
+                return Err("The producer is gone".into());
+            };
+            let state: ProducerState = serde_json::from_value(snapshot.state).map_err(|e| e.to_string())?;
+            if state.pending.is_none() {
+                return state.last.ok_or_else(|| "The producer recorded no answer".to_owned());
+            }
+            tokio::time::sleep(poll).await;
+        }
+    };
+    tokio::time::timeout(limit, wait).await.map_err(|_| format!("No answer within {limit:?}"))?
 }

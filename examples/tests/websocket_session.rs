@@ -12,8 +12,8 @@ use cicada_examples::websocket_session::bridge::{
     ClientMessage, Closed, IO_TIMEOUT, Inbound, POLL_INTERVAL, ServerMessage, SessionStore, serve,
 };
 use cicada_examples::websocket_session::{
-    Answer, Frame, MAX_BODY_BYTES, MAX_FRAMES, MAX_SEQ, Producer, ProducerActor, ProducerMsg, ProducerState, Refusal,
-    Session, SessionActor, SessionMsg, SessionState, adapter,
+    Answer, Frame, MAX_BODY_BYTES, MAX_FRAMES, MAX_SEQ, Pending, Producer, ProducerActor, ProducerMsg, ProducerState,
+    Refusal, Session, SessionActor, SessionMsg, SessionState, adapter, emit_and_wait,
 };
 use cicada_test::TestActors;
 use futures::channel::mpsc;
@@ -732,4 +732,62 @@ async fn the_axum_route_serves_the_session_over_a_websocket() {
     }
     shutdown.cancel();
     server.await.unwrap().unwrap();
+}
+
+// ---- The demo's emit, from outside an actor ----
+
+const POLL: Duration = Duration::from_millis(200);
+
+/// Starts [`emit_and_wait`] in its own task; the test runs the turns.
+fn emit_in_background(test: &TestActors, body: &str) -> JoinHandle<Result<Answer, String>> {
+    let (system, body) = (test.system().clone(), body.to_owned());
+    tokio::spawn(async move { emit_and_wait(&system, &producer(), body, POLL, Duration::from_secs(30)).await })
+}
+
+/// Waits, without moving time, until the background task's Emit is in the producer's mailbox.
+async fn emitted(test: &TestActors) {
+    while test.pending(&producer()).await.is_empty() {
+        tokio::task::yield_now().await;
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_demo_emit_waits_for_the_answer_to_its_own_emit_when_turns_run_late() {
+    let test = with_session(SessionState::default()).await;
+    assert_eq!(emit(&test, "one").await, accepted(1));
+
+    // Nothing pending and an earlier answer in state: neither is the answer to this Emit.
+    let waiting = emit_in_background(&test, "two");
+    tokio::time::sleep(POLL * 5).await;
+    assert!(!waiting.is_finished(), "the Emit has not run");
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1, "the producer's Emit");
+    tokio::time::sleep(POLL * 5).await;
+    assert!(!waiting.is_finished(), "the session has not answered");
+    test.run_until_idle().await;
+    assert_eq!(waiting.await.unwrap(), Ok(accepted(2)));
+
+    // A request that finishes between two reads is still seen.
+    let fast = emit_in_background(&test, "three");
+    emitted(&test).await;
+    test.run_until_idle().await;
+    assert_eq!(fast.await.unwrap(), Ok(accepted(3)));
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_demo_emit_reports_a_refused_or_failed_emit_and_the_limit() {
+    let test = harness().await;
+    let refused = emit_and_wait(test.system(), &producer(), "x", POLL, Duration::from_secs(30)).await;
+    assert!(refused.unwrap_err().starts_with("The emit was refused: NoSuchInstance"));
+
+    test.create(&session(), &SessionState::default()).await;
+    let busy = Pending { request: MessageId::random(), body: "earlier".into() };
+    test.create(&producer(), &ProducerState { pending: Some(busy), ..ProducerState::new(session()) }).await;
+    let failed = emit_in_background(&test, "x");
+    emitted(&test).await;
+    test.run_until_idle().await;
+    let failed = failed.await.unwrap().unwrap_err();
+    assert!(failed.starts_with("The emit ended Failed") && failed.contains("A request is pending"), "{failed}");
+
+    let unanswered = emit_and_wait(test.system(), &producer(), "x", POLL, Duration::from_secs(2)).await;
+    assert_eq!(unanswered, Err("No answer within 2s".into()));
 }

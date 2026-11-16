@@ -30,7 +30,8 @@ of 0.19.1.
   invalid input, the client's close and shutdown end both halves. `websocket_session::adapter` puts it behind the
   axum route `GET /sessions/{stream}/socket` with 4 KiB inbound and 16 KiB write limits; the route authenticates
   nobody. `cargo run -p cicada-examples --example websocket_session` serves it on loopback with a minimal browser
-  client that keeps a per-stream cursor, acknowledges replays again and reconnects on a gap.
+  client that keeps a per-stream cursor, acknowledges replays again and reconnects on a gap. Its producer emits
+  through `websocket_session::emit_and_wait`, which waits for the outcome of its own Emit before it reads the answer.
 - The examples crate turns on axum's `ws` feature and tests with `tokio-tungstenite` 0.29.
 
 ## 0.19.1 — 2026-11-16

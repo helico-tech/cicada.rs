@@ -10,7 +10,9 @@ No library API, guarantee, wire format, contract hash or schema changes. New for
   `examples/examples/websocket_session.rs` and `.html`, tests in `examples/tests/websocket_session.rs`). Public items:
   `Session` (`ws.sessions`), `SessionMsg::{Enqueue, Ack}`, `SessionState { assigned, acked, frames }`, `Frame`,
   `Refusal::{InvalidBody, BufferFull, SequenceExhausted}`, `SessionActor`; `Producer` (`ws.producers`),
-  `ProducerMsg::{Emit, Accepted, Rejected}`, `ProducerState`, `Pending`, `Answer`, `ProducerActor`; the constants
+  `ProducerMsg::{Emit, Accepted, Rejected}`, `ProducerState`, `Pending`, `Answer`, `ProducerActor`;
+  `emit_and_wait`, the demo's emit from outside an actor, which waits for the Emit's own outcome and then for the
+  answer it caused, and returns a refused send, a failed Emit or the time limit as an error; the constants
   `MAX_FRAMES` (100), `MAX_BODY_BYTES` (1024) and `MAX_SEQ` (9007199254740991); `bridge::{serve, SessionStore,
   ServerMessage, ClientMessage, Inbound, Closed, POLL_INTERVAL, IO_TIMEOUT}`; `adapter::{router, MAX_INBOUND_BYTES,
   MAX_WRITE_BUFFER_BYTES}`.
@@ -34,6 +36,8 @@ Tests that prove the example (all on paused virtual time with `TestActors`, no r
 | A missing reply actor rejects the commit; no frame | `a_missing_reply_actor_rejects_the_commit_and_keeps_no_frame` |
 | An uncertain send repeats its id; one frame | `an_uncertain_send_repeats_its_id_and_appends_once` |
 | NUL: `OpError::Invalid` and `TurnError::Invalid`, nothing queued, no reply | `nul_is_refused_at_submission_before_the_session_can_answer` |
+| The demo's emit waits for its own Emit when turns run late, and sees a fast answer | `the_demo_emit_waits_for_the_answer_to_its_own_emit_when_turns_run_late` |
+| The demo's emit reports a refused send, a failed Emit and its limit | `the_demo_emit_reports_a_refused_or_failed_emit_and_the_limit` |
 | Socket JSON | `the_socket_messages_are_tagged_json` |
 | Hello, retained frames, then new output by hint | `a_socket_gets_hello_then_the_retained_frames_then_new_output` |
 | Disconnect before ack replays from the durable ack | `a_disconnect_before_the_ack_replays_from_the_durable_ack` |
@@ -356,8 +360,10 @@ on `docs`, taken as whole files without a merge: `README.md`, `docs/README.md`, 
 ## Status
 
 Checked on the combined result: `cargo test -p cicada-examples --doc` (30 passed), `--test docs` (11 passed),
-`--test skill` (10 passed), `--test websocket_session` (26 passed); before it `cargo clippy -p cicada-examples
+`--test skill` (10 passed), `--test websocket_session` (28 passed, after review fix 1: the demo's emit); before it `cargo clippy -p cicada-examples
 --all-targets -- -D warnings`, `cargo check -p cicada-examples --examples`, `bash scripts/ci/dependency-trees.sh`
 and a manual run of the demo (an HTTP 101 upgrade, then `Hello` and the frames over `curl`). The gate result is in
-the build report. The guide, navigation and G2 prose are the owner's; nothing is left to write for this change. No
+the build report. The guide, navigation and G2 prose are the owner's; nothing is left to write for this change. Review fix 1
+(`emit_and_wait`) changes no prose: the guide's demo text ("keeps one request in flight and records the last
+answer", `cargo run`, the printed URL) stays true. No
 browser execution was checked.

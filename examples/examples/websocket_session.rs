@@ -12,7 +12,7 @@ use axum::routing::get;
 use cicada::store::{MessageId, SqliteOptions};
 use cicada::{ActorSystem, Store};
 use cicada_examples::websocket_session::{
-    Producer, ProducerActor, ProducerMsg, ProducerState, Session, SessionActor, SessionState, adapter,
+    Producer, ProducerActor, ProducerState, Session, SessionActor, SessionState, adapter, emit_and_wait,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -61,17 +61,11 @@ async fn main() -> anyhow::Result<()> {
 /// Emits `count` frames, one at a time: the producer takes the next only after the session answered the last.
 async fn emit(system: &ActorSystem, producer: &Producer, count: u32) -> anyhow::Result<()> {
     for n in 1..=count {
-        system.send(producer, ProducerMsg::Emit { body: format!("frame {n}") }).await?;
-        loop {
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            let address = cicada::ActorRef::address(producer)?;
-            let Some(snapshot) = system.get_actor(&address).await? else { anyhow::bail!("the producer is gone") };
-            let state: ProducerState = serde_json::from_value(snapshot.state)?;
-            if state.pending.is_none() {
-                println!("frame {n}: {:?}", state.last);
-                break;
-            }
-        }
+        let poll = Duration::from_millis(200);
+        let answer = emit_and_wait(system, producer, format!("frame {n}"), poll, Duration::from_secs(30))
+            .await
+            .map_err(anyhow::Error::msg)?;
+        println!("frame {n}: {answer:?}");
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
     Ok(())
