@@ -11,7 +11,8 @@ A release is a tag `vX.Y.Z` on `main` (ADR 0016). All crates share the version i
    carries the version: regenerate it (a test says how when it is stale) and update the README's `tag = "vX.Y.Z"`
    lines. The docs session refreshes the dependency examples in [installation](install.md); include the new version
    in the docs handoff rather than editing that guide from the builder worktree. Keep `metadata.cicada-version` in
-   `skills/cicada/SKILL.md` equal to the workspace version; the skill test and release checker enforce it.
+   `skills/cicada/SKILL.md` and `version` in `.claude-plugin/plugin.json` equal to the workspace version;
+   the skill test and release checker enforce both.
 2. In `CHANGELOG.md`, replace `unreleased` in the heading of that version with today's date, as `YYYY-MM-DD`.
 3. Commit the release on `main`. On the owner's approval in the build loop, run:
 
@@ -33,7 +34,19 @@ owner-approved build loop installs the shared hook or publishes; builder tests u
 publication tools. Automatic push, PR and tag Actions are disabled (ADR 0046).
 
 When the next implementation change lands, add `## X.Y.Z — unreleased` to the changelog and set that version in
-`Cargo.toml` and the skill metadata.
+`Cargo.toml`, the skill metadata and `.claude-plugin/plugin.json`.
+
+Code review also records the Claude CLI version, commands and warnings from these checks of the manifests and layout:
+
+```sh
+claude plugin validate .claude-plugin/marketplace.json
+claude plugin validate .claude-plugin/plugin.json
+claude plugin validate .
+```
+
+The gate does not require the Claude CLI. Public-directory findings about a missing LICENSE or icon do not block
+this private marketplace. Validation does not prove Git access, installation or skill loading
+(see [ADR 0049](../adr/0049-consumer-skills-as-a-plugin.md)).
 
 ## Resume a release
 
