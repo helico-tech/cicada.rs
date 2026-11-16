@@ -1,0 +1,59 @@
+# Proposal
+
+## Why
+
+A consumer installs the consumer skill by hand: download the release archive with `gh`, unpack it, copy the folder
+into `.claude/skills/`, and repeat that to update (`docs/how-to/install.md`). The owner wants a second, easier way
+for Claude Code users (2026-11-16), next to the archive, which stays for every agent. A second skill,
+`actor-design`, is coming, so the easier way should carry every consumer skill at once.
+
+Claude Code can install skills as a plugin from a marketplace that a Git repository hosts. A consumer with read access
+to this private repository then runs:
+
+```sh
+claude plugin marketplace add helico-tech/cicada.rs
+claude plugin install cicada@cicada
+```
+
+It authenticates with the consumer's own Git credentials (SSH key, or `gh auth setup-git`), and updates through
+`/plugin`. Checked against the Claude Code plugin docs on 2026-11-16.
+
+## What Changes
+
+- **This repository is a plugin marketplace.** `.claude-plugin/marketplace.json` lists one plugin, `cicada`, whose
+  source is the repository root, and `.claude-plugin/plugin.json` gives its name and version. Claude Code finds the
+  top-level `skills/` folder by itself, so every consumer skill is in the plugin with no copy. The skills are named
+  `/cicada:cicada` and, later, `/cicada:actor-design`.
+- **The plugin's version is the workspace version.** Claude Code updates a plugin only when its version changes, so
+  consumers get the skills of a release, not every commit on `main`. The skill test and the release check fail when
+  `plugin.json` differs from the workspace version, as they do for `metadata.cicada-version`.
+- **The install how-to** gets the plugin way first and keeps the archive way for other agents (docs handoff).
+- **An ADR extending ADR 0041**: a second way to ship the consumer skills, and what each way promises.
+
+To decide in the design:
+
+- **What a consumer gets between releases.** The marketplace follows `main`. A version bump makes Claude Code take
+  `main` as it is at that moment, which can hold documentation-only commits to `skills/` made after the tag. The
+  options: accept it (the skill routes to the consumer's resolved Cicada source anyway), tell consumers to add the
+  marketplace at a tag (`helico-tech/cicada.rs#v0.19.0`, which needs a re-add per release), or keep the marketplace
+  on a branch that the release moves.
+- **The repository root as the plugin.** The cache then holds a copy of the whole repository (about 10 MB) and loads
+  any `commands/`, `agents/`, `hooks/` or `bin/` folder added at the top later. A small `plugins/cicada/` folder with
+  a link to `skills/` avoids both, at the cost of a symlink.
+- **How SKILL.md names its own folder.** It now says `<this skill's folder>`, which any agent understands.
+  `${CLAUDE_SKILL_DIR}` is exact in Claude Code but means nothing to other agents that read the archive.
+- **A check**: `claude plugin validate` in the gate, or a test of the two JSON files only.
+
+## Out of scope
+
+A public marketplace or a listing elsewhere. Other agents' plugin systems. Changing what the skills say.
+
+## Order
+
+After `sample-worker-mode`. Before `actor-design-skill`.
+
+## Impact
+
+`.claude-plugin/` (two JSON files), `examples/tests/skill.rs`, `scripts/release-check.sh` or `scripts/gate.py` for
+the version check, the release procedure, an ADR, and a docs handoff for `docs/how-to/install.md`. No crate,
+guarantee, wire format or schema changes.

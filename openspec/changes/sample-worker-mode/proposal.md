@@ -23,7 +23,7 @@ Allowing `on_start` hooks in HTTP mode (ADR 0042 stays). The ports' own E2E suit
 
 ## Order
 
-After `node-down-alert`. Before `actor-design-skill`.
+After `node-down-alert`. Before `skill-plugin`.
 
 ## Impact
 
