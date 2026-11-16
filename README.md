@@ -3,8 +3,8 @@
 Durable actors backed by PostgreSQL or SQLite. Each actor has a stored state and a mailbox. Cicada handles one
 message at a time and commits its state, outgoing messages and outcome in one transaction.
 
-If a node dies, another node can run the turn again. **External calls can happen more than once**: use the message
-id as their idempotency key. Nodes coordinate through the shared store; actors occupy memory only during a turn.
+If a node dies, an [eligible executor](docs/guide/core.md#pin-an-actor-to-an-executor) can run the turn again.
+**External calls can happen more than once**: use the message id as their idempotency key. Nodes coordinate through the shared store; actors occupy memory only during a turn.
 
 ## Quick start
 

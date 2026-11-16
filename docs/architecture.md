@@ -28,7 +28,7 @@ state plus a mailbox; it occupies memory only while one message is being handled
 | --- | --- | --- |
 | Topology | Embedded peer nodes, one shared store | No coordinator and no cluster protocol. |
 | Runtime | tokio; the HTTP API is an axum `Router` | Services that host actors are tokio services. axum supplies HTTP; the host supplies authentication. |
-| Long work | Lease + heartbeat | A handler may run for minutes. A turn whose node dies is re-run elsewhere, until its message reaches the claim limit. |
+| Long work | Lease + heartbeat | A handler may run for minutes. A turn whose node dies can run again on an eligible executor, until its message reaches the claim limit. |
 | Retries | Per message, at dispatch | The sender attaches a retry policy; a failed run puts the same message back until the policy is exhausted. |
 | Validation | serde at the turn; the registered JSON Schema at the HTTP door | JSON Schemas are generated (schemars) and published. A send and a create over HTTP must match them on every node; a hosting node also decodes with serde, and serde stays the only judge at the turn (ADR 0026). |
 | Messaging | One-way send only | A reply is an ordinary send to the sender's address. |
@@ -44,6 +44,8 @@ state plus a mailbox; it occupies memory only while one message is being handled
 | Contract | The published description of a type: type name, message type names, and the JSON Schemas generated from its types, the state's always among them. It holds nothing of the ref (ADR 0021). Its hash leaves out the schemas' `description`s (doc comments), so a reworded comment keeps the hash (ADR 0017). |
 | Actor instance | One name of a type, explicitly created with its initial state. Owns one state value, never absent and never JSON `null`, and one mailbox (ADR 0018). One life of an address, from its create to its removal: deleted and created again, the address holds a new instance (ADR 0024). |
 | Parent | The actor whose turn created an actor as a child (`turn.create_child`). Stored with the child and fixed for life; none for an independent actor (`turn.create`, or a create from outside a turn). Removing an actor, by a delete or by its own stop, removes its children, theirs, and so on: its descendants (ADR 0019). The address stays `type/key`. |
+| Claim owner | The node id or worker id a claim is made for. It is a routing identity, not an authenticated machine. |
+| Pin | An optional claim owner fixed for one life of an actor, chosen at creation and separate from its address and parent (ADR 0052). Only that owner may claim its turns; children do not inherit it. |
 | Ref | An actor's address: a type name and a key, `type/key`. A typed ref in code (`ActorRef`); its address text (`sync/acme`) on the wire, in state and in messages. The key is one name (ADR 0021): serde writes the ref as one string (a struct with one string field, or a type written as a string itself), or the ref is a unit struct or a struct that declares no field to serde, a singleton with the key `_`; a ref that writes a unit and reads a string has no address. A name is any non-empty text; in the key it keeps `A-Z a-z 0-9 . _ ~ -` and `:` and percent-encodes the rest, so a `:` separates nothing. |
 | Watch | A stored pair of a target and a watcher (ADR 0018, ADR 0023). The target is one actor (`type/key`), the types under a prefix that ends at a dot (`billing` matches `billing` and `billing.invoices`, not `billings`), or every type (`*`); it need not exist, and the watch survives its delete and re-create. A turn sets and removes the watches of its own actor (`turn.watch`, `turn.unwatch`); `ActorSystem`, HTTP and the command line do so from outside. |
 | Watcher | The actor a watch tells. Its message family declares `Failed(cicada::Failed)` and `Stopped(cicada::Stopped)`, or a watch of it is refused. Removing a watcher removes its watches; the watches on it as a target stay. |
@@ -54,7 +56,7 @@ state plus a mailbox; it occupies memory only while one message is being handled
 | Turn | One handling of one message: claim, load, run handler, commit. |
 | Effects | What a handler produces: new state, sends, creates (independent or child, by a typed ref or by an address), cancels, watches, stop, and control effects: pause, resume, purge and delete of another actor, and pause, resume and purge of its own (ADR 0024). Buffered until commit. |
 | Commit | The single atomic write that applies a turn's effects, completes its message and writes the notifications of its event. It applies them in a fixed order: watches, outcome, cancels, deletes, creates, purges, pauses and resumes, sends, state, release of the lease, notifications. |
-| Lease | A node's exclusive, time-limited right to run a turn for one instance. |
+| Lease | A claim owner's exclusive, time-limited right to run a turn for one instance. |
 | Epoch | Per-instance counter, increased on every claim. The fencing token for commits. |
 | Lost claim | A claim that another claim replaced although its turn neither committed nor gave the lease back: its node died, its lease ran out, or its commit did not get through. The claim that replaces it adds 1 to the `lostClaims` of its message, which never goes back (ADR 0025). |
 | Claim limit | The most lost claims a node lets a message have (`NodeConfig::max_lost_claims`, 5 by default): a message with that many ends `failed` when the node claims it, without running (ADR 0025). |
@@ -93,12 +95,16 @@ store of the tests (feature `testing`). A host opens one as the public type `Sto
 | S5 Fencing | `commit` and `renew` succeed only with the current epoch. `renew` never shortens a held lease: it keeps the later of its expiry and store now plus the TTL, atomically (ADR 0037). |
 | S6 Order | `claim_due` returns, per instance, only the pending message with the smallest `(deliverAt, seq)`, and only when it is due. |
 | S7 No loss, no duplicate | A message leaves pending only by commit, cancel, purge or delete; a commit can end the pending messages of another actor, by a purge or a delete (ADR 0024). Message ids are unique across pending messages and retained outcomes. |
-| S8 Liveness | An instance that is not paused, with a due head message and no valid lease, is eventually returned by `claim_due`. A paused instance is not claimed until it is resumed (ADR 0015). |
+| S8 Liveness | An instance that is not paused, with a due head message and no valid lease, is eventually returned by `claim_due` to an eligible claimer that keeps polling its type: any owner when unpinned, else its pinned owner (ADR 0052). A paused instance is not claimed until resumed (ADR 0015). |
 | S9 One clock | Due-ness and lease expiry use the store clock only. |
 | S10 Retention | Outcomes are kept for a configured period, which is also the dedup window. A message's retention policy can hide its outcome earlier or keep it longer; a minimal record stays for the whole dedup window. |
 
+Claims admit only actors that are unpinned or pinned to the requesting owner, before the batch limit or any
+mutation of the actor, its lease or message counters. `next_due_at` uses the same owner filter. A foreign pin does
+not consume a slot or cause a busy dispatch loop; node rows and heartbeats do not affect eligibility.
+
 The SQL schema (tables `actor_types`, `actors`, `messages`, `outcomes`, `watches`, `nodes`, plus sequences) is versioned and
-migrated when a store opens a database; it is at version 7. `actors.state` is required in both stores, so a store
+migrated when a store opens a database; it is at version 8. `actors.state` is required in both stores, so a store
 refuses an instance without a state. Migration 2 gave every instance without a state the state `{}` and removed the
 registrations without a state schema (types that were stateless before ADR 0018). Migration 3 removed every
 registration, because key fields left every contract, and rewrote `%3A` to `:` in `actors.address`,
@@ -117,14 +123,19 @@ Migration 7 adds nullable `nodes.hostname`, `nodes.cicada_version` and `nodes.la
 ([ADR 0048](adr/0048-node-details.md)); existing rows have none. It is additive: running schema-6 nodes keep working,
 but a schema-6 binary refuses to open the migrated database, so it cannot restart or roll back. See the
 [node table](operations.md#node-table) for these display-only details and the limits of shared node ids.
+Migration 8 adds nullable `actors.pinned_to` and the partial index `actors_pinned_due` on
+`(pinned_to, type, next_due_at)` for unpaused actors with a due time, beside `actors_due` (ADR 0052). Existing actors
+are unpinned. It is not safe with old direct-store nodes: an already-running schema-7 node ignores pins, and a
+schema-7 binary refuses the migrated store. Stop every old direct-store node and worker before migration; see
+[upgrading to 0.20.0](how-to/upgrading.md#upgrade-to-0200).
 The SQLite store sets up only a new or empty database: one without a schema version that already holds tables belongs to
 another program, and opening it fails and leaves it as it was (ADR 0017).
 
 ## Turn semantics
 
-1. **Claim.** A node atomically takes the lease of an instance that has a due head message and no valid lease. Epoch
-   and `attempt` each increase by 1. When the instance still holds a lease that ran out and that nothing cleared, the
-   claim counts it lost: the message of that lease, still pending, gets `lostClaims` + 1. A message with as many lost
+1. **Claim.** An eligible owner atomically takes the lease of an unpaused instance with a due head message and no
+   valid lease. Epoch and `attempt` each increase by 1. When the instance still holds a lease that ran out and that
+   nothing cleared, the claim counts it lost: the message of that lease, still pending, gets `lostClaims` + 1. A message with as many lost
    claims as the node's claim limit is not loaded or run: the node commits it `failed` (see the table). Then the node
    tells its observers that the turn starts.
 2. **Load.** State, the own ref and the message are decoded. If the message cannot be decoded (a type name the family
@@ -137,7 +148,10 @@ another program, and opening it fails and leaves it as it was (ADR 0017).
 A create in a turn is independent (`turn.create`) or makes a child of the actor that runs the turn
 (`turn.create_child`). Either is idempotent and leaves an existing actor untouched, but a child create never takes
 over an actor: one that exists with another parent, or with none, rejects the commit. Creates of one address in one
-turn must agree on being a child; the second call fails (`TurnError::Invalid`). `turn.create_raw` and
+turn must agree on being a child and on the pin (`None` against `Some` included); a conflicting second call fails
+(`TurnError::Invalid`) without buffering that create. An existing actor keeps its pin; delete and create starts a
+new life that may choose another. The `create_with` and `create_child_with` variants take `CreateOptions`; children
+are unpinned unless explicitly pinned. `turn.create_raw` and
 `turn.create_child_raw` are the same creates for an address and a state given as JSON, for a turn that does not know the
 type when it is compiled (ADR 0028). At the call the type of the address must be registered (`TurnError::Invalid`
 otherwise; `TurnError::Store` when the registry cannot be read), and a node that hosts the type refuses an address or a
@@ -247,8 +261,9 @@ executor was built with, and claims 1–100 turns for `owner`, an id of at most 
 the registry compares every hash first, and the first type in name order that is absent or registered with another
 hash refuses the request with nothing claimed; the check is not atomic with the claim, so old executors stop before a
 contract is replaced. The claim uses the serving system's `lease_ttl` and claim limit and records `owner` as lease
-owner: the turn shows in the running turns under that id, with no node row and no count in the local concurrency. A
-`TurnLease` is the claim (actor, epoch, message, state, version, store times) plus the TTL the store was asked for.
+owner: the turn shows in the running turns under that id, with no node row and no count in the local concurrency.
+The requested `owner` also filters pins, never the serving system's node id; it needs no node row.
+A `TurnLease` is the claim (actor, epoch, message, state, version, store times) plus the TTL the store was asked for.
 
 - **Admission.** A message at the serving system's claim limit is never handed out: one fenced commit fails it, as a
   local node does, without a handler or the retry policy, concurrently for the batch. The notifications of its watchers
@@ -289,8 +304,9 @@ or an event id: the serving system derives them, with the policy the local execu
   the epoch is held nothing else changes them, and the epoch fences the commit. A failed read returns the store's error
   with nothing committed. Every send gets the actor as sender and the message as cause and keeps the executor's id;
   each call draws a new event id. Reasons get NUL replaced; a reschedule's error is cut to 1,000 characters.
-- **Validation.** The serving system checks storage limits, not types: a send beyond the send limits or delivery
-  bounds, or a create whose state is `null`, has a NUL or is too deep, commits the message `failed` without effects,
+- **Validation.** A returned create with an out-of-bounds pin is `OpError::Invalid` before the store, leaving the
+  lease held; it is not converted to a terminal failure. Otherwise the serving system checks storage limits, not types:
+  a send beyond the send limits or delivery bounds, or a create whose state is `null`, has a NUL or is too deep, commits the message `failed` without effects,
   cause `commit`, `Commit refused: …`; a new own state that cannot be stored does the same with cause `handler`,
   `State cannot be stored: …`. These derived failures commit in the same call. It compiles no schema, decodes no state
   and ignores the types it hosts: registry lookups, type and state checks, watch permission, observer headers and the
@@ -319,6 +335,9 @@ object-safe async trait over the core results of `register_contract`, `types` (a
 `ActorSystem` and `Arc<T>` implement it. A source is trusted to keep the core's fencing, unique claims, non-shortening
 renewal and explicit rejection, and not to retry a mutation behind the caller's back.
 
+- **Placement.** Leases are filtered by `WorkerConfig::worker_id`, never the server's node id. `Turn::node_id()`
+  returns that worker id, or `NodeConfig::node_id` on a node. Unpinned actors remain eligible for any owner polling
+  their type; a pin whose owner never polls leaves work pending, without new attempts or automatic reassignment.
 - **One executor.** The worker uses the node's `TurnExecutor` with a private holder: `Store` (a node: its TTL,
   heartbeat and claim limit, its own commit and fallback path) or `Source`. The work task ends in a `TurnReport`, the
   same for both: a node derives the decision it commits, a worker completes it. Handlers, `Turn` buffering, raw sends
@@ -436,6 +455,12 @@ does not enforce a schema that the validator cannot compile; JSON that code send
 view of a value written from 0.16.0 on is deeper than 69 levels (a page of outcomes that holds a `Failed`), so a JSON
 parser that allows 128 reads every one. JSON text is parsed with exact float rounding (serde_json's `float_roundtrip`,
 ADR 0043): a finite float read back has its bits, except that PostgreSQL stores a negative zero as a zero.
+
+An HTTP create accepts optional `pinnedTo`, absent or null for unpinned, and omits it when unpinned on serialization.
+The same field on a returned create of `/leases/complete` has the same rules. Pins are non-blank `NodeId`s, at most
+200 characters with no NUL; invalid pins are `400`. The create response remains only `address` and `created`:
+read an existing actor to see the pin it kept. Actor views always write `pinnedTo` (`null` when unpinned); new readers
+accept an older server's missing field as `None`.
 
 Actors are listed by address (`GET /actors`, `ActorSystem::list_actors`) or with their state (`GET /actors/states`,
 `ActorSystem::list_actors_with_state`, ADR 0033). The second has the prefix, order, cursors and limits of the first,
@@ -593,6 +618,11 @@ carries no state, version or kind of change, because a version starts again at 0
   of a newer schema is refused with `StoreError::Invalid`.
 
 ## Known limitations
+
+A pin has no failover or liveness detection: if its owner never returns and polls the type, work waits forever.
+Moving it requires deleting the actor and creating a new life. Duplicate executor ids do not ensure exclusive
+machine placement; a pin neither authenticates a machine nor fences outside effects after a lost lease. The
+ready-made supervisor, flow and event protocols cannot request pins for the actors they create (ADR 0052).
 
 The claim limit cannot tell the message that kills a node from the messages that ran beside it, and a node killed hard
 as a matter of routine (a deploy that sends SIGKILL) loses the claims of its turns too; external side effects are

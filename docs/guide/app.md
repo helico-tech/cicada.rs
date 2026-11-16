@@ -139,6 +139,17 @@ Use [generated CLI help](../reference/cli.md) for flags and command details.
 | Control | `pause ADDR`, `purge ADDR`, `cancel turn ADDR`, `delete actor ADDR` |
 | Diagnose | `get outcomes --status failed`, `get turns`, `get nodes`, `stats`, `health` |
 
+Choose a pin when creating a new instance, for example:
+
+```sh
+cicada create actor reports/host-a --state '{}' --pinned-to host-a
+cicada get actor reports/host-a -o wide
+```
+
+The wide table shows `PINNED-TO` after `PARENT`; `describe actor` and JSON show `pinnedTo`, and the TUI actor screen
+shows `Pinned to`. An existing actor keeps its pin. A blank, over-200-character or NUL pin is a usage error (exit 2).
+There is no pin filter: use the state listing and mailbox to [diagnose waiting pinned work](../operations.md#pinned-actors-that-wait).
+
 A delete includes descendants. Retry creates a new message; purge/cancel/delete have distinct effects:
 read [the incident guide](../operations.md#on-call) first. Listings show one page; `--all` traverses every page.
 Missing items and API failures exit 1. Usage errors exit 2.

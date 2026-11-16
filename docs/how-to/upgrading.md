@@ -3,7 +3,7 @@
 Use this procedure when changing the library version or an actor contract. Read the entries for every version you cross.
 
 
-Stores write schema version 7 and apply any missing migrations in place when they open a database. Migrations are
+Stores write schema version 8 and apply any missing migrations in place when they open a database. Migrations are
 additive, so nodes of the previous version keep working during a rolling deploy, unless a release says otherwise: a
 migration that is not additive breaks the nodes of the previous version, so every old node is stopped before the first
 new one starts. The changelog says so for each such release. From 0.11.0 on both stores name the columns they read, so
@@ -280,6 +280,24 @@ migrated database.
 is a `400`. `ActorClient` leaves absent optional fields out of request bodies (no `"retry": null`), so a new client
 works against an older node as long as it does not use a newer feature. A release whose views lose a field that old
 clients require, as 0.6.0 does, needs its clients upgraded together with the nodes; the changelog says so.
+
+## Upgrade to 0.20.0
+
+**Version 0.20.0 requires stopping old direct-store runtimes.** Migration 8 adds nullable `actors.pinned_to` and the
+partial index `actors_pinned_due`; existing actors are unpinned. Before the first 0.20 node opens the store, stop
+every older node and worker that opens it directly, including 0.19 runtimes. An already-running old claimer ignores
+pins, and an old binary refuses the migrated database. Do not mix old and new direct-store runtimes or roll back
+against schema 8
+([ADR 0052](../adr/0052-actor-placement-by-claim-owner.md)).
+
+Upgrade all HTTP servers before a client or worker sends `pinnedTo`: 0.19 servers reject unknown request fields.
+A 0.19 worker over HTTP still works against a 0.20 server, which filters leases by the worker's id, but cannot create
+pinned actors. Assign [stable, unique executor ids](../operations.md#deploying) before creating pinned work.
+
+Rust's `ActorCreate`, `ActorRecord`, `ActorSnapshot`, `CreateActorRequest`, `ActorCreateView` and `ActorView` gain
+`pinned_to`. Add `pinned_to: None` to struct literals that should remain unpinned; bind or ignore the new field in
+exhaustive patterns. Existing create methods remain unpinned; the [options variants](../guide/core.md#pin-an-actor-to-an-executor)
+choose placement. No actor contract hash changes.
 
 ## Upgrade flows to 0.18.0
 

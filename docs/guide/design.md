@@ -68,6 +68,10 @@ Name who creates every actor. Sending does not create it: a turn's send to an ab
 Creation and the first send can commit together. [Parent/child ownership](core.md#child-actors) controls cleanup;
 [watches](core.md#watches) control who hears failures and removal. Draw these as separate relations.
 
+Keep address, parent and placement separate. A [pin](core.md#pin-an-actor-to-an-executor) fixes one claim-owner id
+for this actor's life; it does not change its address or pass to its children. Choose a stable executor id for a
+machine-local resource, and design what happens when that owner never returns: work waits, with no automatic failover.
+
 Keep bounded history, child actors or references rather than every past fact in one state. See
 [fan-out](../../examples/src/fanout.rs) and the [registry](../../examples/src/registry.rs). A
 [singleton](../../examples/src/singleton.rs) serializes all its work; reserve it for genuinely global, infrequent decisions.
@@ -217,10 +221,14 @@ held by dependencies on the actor struct belongs to that host process. Choose ho
 | Turn uses a host-held handle | The actor struct holds a handle table keyed by actor identity; state records desired and observed facts | Empty table after host restart, an outside action without a commit, stale events from an old incarnation |
 | Host follows durable state | A task holding the handle subscribes before reading, reconciles state on hints and a timer, acts, and reports back by message | Missed hints, disconnects, repeat actions and acknowledgement loss |
 
-The first form works today when only one node hosts the type: any hosting node may execute its next turn.
-Do not assume actor placement or a pin API. The second form works with hosts on several nodes sharing the store;
-the [websocket session](#a-websocket-session) demonstrates it. For observation alone, a local task can simply send
-readings or `Beat` messages to an actor that runs anywhere.
+For the first form, [pin the actor](core.md#pin-an-actor-to-an-executor) to the executor that can reach the
+machine-local resource, or host its type only there. A pin routes turns; it stores no live handle, authenticates no
+machine and fences no outside effect after a lost lease. Two executors using the same id can run it on different
+machines, one lease at a time.
+
+The second form works with hosts on several nodes sharing the store; the [websocket session](#a-websocket-session)
+demonstrates it. Pinning that session fits badly when a connection can arrive at any host. For observation alone, a
+local task can send readings or `Beat` messages to an actor that runs anywhere.
 
 ## Choose a pattern
 

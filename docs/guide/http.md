@@ -67,6 +67,25 @@ Use `ActorClient::with_client` with a configured `reqwest::Client` for authentic
 Expected alternatives are values: missing actors are `None`, duplicate sends set `receipt.duplicate`.
 Other HTTP problems return `ClientError::Api`.
 
+To choose placement at creation, use the same options as the core:
+
+```rust,no_run
+use cicada::CreateOptions;
+use cicada::store::NodeId;
+use cicada_client::ActorClient;
+use cicada_examples::sync::{Reports, ReportsState};
+
+async fn create_on_host(client: &ActorClient, reports: &Reports) -> anyhow::Result<()> {
+    let options = CreateOptions::new().pinned_to(NodeId::new("host-a")?);
+    client.create_with(reports, &ReportsState::default(), options).await?;
+    Ok(())
+}
+```
+
+`create_actor_with` is the raw-address form. An existing actor keeps its pin; the create response has only `address`
+and `created`, so read the actor to see its actual placement. [Core placement](core.md#pin-an-actor-to-an-executor)
+explains stable ids, waiting work and moving an actor.
+
 Sends retry I/O failures and 503 responses with the **same id** (3 attempts by default). This is distinct from
 [handler retry](core.md#retry). Lease operations have their own rules below.
 
@@ -95,7 +114,8 @@ Use `{type}/{key}` from the canonical address, preserving its percent-encoded ke
 | Execute remote turns | `POST /leases`, `/leases/renew`, `/leases/release`, `/leases/complete` |
 | Readiness | `GET /health` |
 
-A create body is `{"state":{}}` (state is required). A send body is `{"type":"Run","payload":{}}`.
+A create body is `{"state":{}}` (state is required). Add `"pinnedTo":"host-a"` to pin a new actor;
+absent or null means unpinned. A send body is `{"type":"Run","payload":{}}`.
 Sends can also carry `id`, `delay` **or** `deliverAt`, `correlationId`, `headers`, `retry` and `retention`.
 Creating an existing actor leaves it untouched (200); a new create is 201. New sends return 202; duplicates return 200.
 Sending never creates an actor.
@@ -116,6 +136,7 @@ Errors are RFC 9457 `application/problem+json`, with `type: urn:cicada:problem:<
 | 401/403 | Host authentication/authorization response |
 
 Ids and message type names are at most 200 characters; messages have at most 64 headers.
+`pinnedTo` must be a non-blank string of at most 200 characters with no NUL, or null; invalid pins are `400`.
 Payload/state depth is at most 64; registered schemas at most 120. HTTP views can be up to 69 levels deep, so configure
 client JSON parsers for at least 128. Older stored data can exceed this.
 
@@ -157,6 +178,14 @@ tokio::signal::ctrl_c().await?;
 worker.stop().await;
 ```
 
+Set a stable, unique `WorkerConfig::worker_id` for pinned work. Leases use that id, never the server's: a worker
+runs actors pinned to it and unpinned actors of its types. `Turn::node_id()` returns the worker's id. Returned creates
+in a `/leases/complete` report accept optional `pinnedTo` with the same bounds and absent/null rules as HTTP creates.
+
+Upgrade all servers before sending `pinnedTo`; 0.19 servers reject it as an unknown field. A 0.19 worker over HTTP
+can still use a 0.20 server, which enforces pins, but cannot create pinned actors. This does not permit mixing old
+and new [direct-store runtimes](../how-to/upgrading.md#upgrade-to-0200).
+
 When constructing your own HTTP client, disable redirects and transport retry layers. Each lease call must issue
 one request; the worker controls completion retries with the same report. `turn_timeout` bounds all four calls through
 the response body (10 s default), subject to any shorter client timeout.
@@ -177,11 +206,11 @@ protocol (0.16.16 or newer). Size proxy/server body limits for a whole completio
 repeated 413 responses can exhaust the [claim limit](core.md#claim-limit).
 
 For a worker implementation in another language, test against the portable fixtures shipped from 0.18.12 onward.
-Download the archive matching your server version; for 0.18.12:
+Download the archive matching your server version; for 0.20.0:
 
 ```sh
-gh release download v0.18.12 --repo helico-tech/cicada.rs --pattern 'cicada-fixtures-*.tar.gz'
-tar -xzf cicada-fixtures-v0.18.12.tar.gz
+gh release download v0.20.0 --repo helico-tech/cicada.rs --pattern 'cicada-fixtures-*.tar.gz'
+tar -xzf cicada-fixtures-v0.20.0.tar.gz
 ```
 
 `cicada-fixtures/SOURCE.json` identifies the repository, tag, commit and version. The four files declare `format: 1`:
@@ -206,7 +235,9 @@ field meanings need a new format. Finite fixtures do not prove compatibility for
 
 `ActorClient::list_actors_with_state` / `GET /actors/states` returns full actor snapshots in one store read per page.
 Use this for dashboards instead of listing addresses then fetching each actor. Keep pages small for large states;
-one unreadable row fails the page. See [core paging semantics](core.md#list-actors-with-their-state).
+one unreadable row fails the page. Each row, like `GET /actors/{type}/{key}`, includes `pinnedTo` (`null` when
+unpinned). New clients read an older server's missing field as `None`.
+See [core paging semantics](core.md#list-actors-with-their-state).
 
 ### Follow changes over HTTP
 

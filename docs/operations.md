@@ -40,6 +40,10 @@ The first command assumes the host has installed authentication. App defaults to
 `serve --types none` serves without running turns. A worker serves no HTTP and has no readiness endpoint.
 See [App](guide/app.md) for mode selection and startup errors.
 
+Executors that own pinned actors need stable ids, unique among live nodes and workers: set `--node-id` or
+`CICADA_NODE_ID` in App, `NodeConfig::node_id` in an embedded node, or `WorkerConfig::worker_id` in a worker. A random
+id after a restart leaves existing pins waiting. Labels and host names do not select placement.
+
 ### Shutdown and probes
 
 Serve handles SIGTERM/SIGINT in this order: stop claims, drain/cancel turns, drain HTTP (up to 5 s), close store.
@@ -84,6 +88,8 @@ Store opening applies missing migrations; it refuses a newer schema. Only additi
 old nodes to continue. Start new nodes first for an additive migration, then stop old ones; do not restart/roll back
 old nodes against the migrated schema. A non-additive migration requires stopping all old nodes first.
 Upgrade nodes before clients unless the release requires coordinated replacement.
+Version 0.20.0's schema 8 requires draining every old direct-store node and worker before migration; old claimers
+ignore pins. Follow the [0.20.0 procedure](how-to/upgrading.md#upgrade-to-0200).
 
 ## Releasing
 
@@ -98,7 +104,7 @@ Stats scans rows under the prefix: avoid frequent unfiltered polling on large st
 | Symptom | Check | Action |
 | --- | --- | --- |
 | Every node unready, HTTP 503 | Store connectivity/pool | Restore the store; nodes retry automatically |
-| Mailbox grows | Hosted types, paused flag, turn duration, concurrency | Resume or add capacity for the affected type |
+| Mailbox grows | Hosted types, paused flag, pin, turn duration, concurrency | Resume or add eligible capacity; [check the pinned owner](#pinned-actors-that-wait) |
 | Every message fails as state | Stored shape versus decoder | Restore compatibility/defaults or migrate data |
 | `claim limit: N lost claims` | Node crashes, pauses, blocked handlers, uncertain commits | Fix cause, then retry selected messages |
 | Failed send at commit | Target exists, child-parent/control conflicts | Repair the target/configuration before retrying |
@@ -114,6 +120,25 @@ Stats scans rows under the prefix: avoid frequent unfiltered polling on large st
 
 For failures beyond outcome retention, host [dead letters](guide/actors.md#dead-letters) and explicitly set a watch.
 Watch their mailbox too: notifications can queue up. A notification that fails does not notify another watcher.
+
+### Pinned actors that wait
+
+Read the actor's `PINNED-TO` / `pinnedTo` and inspect its mailbox:
+
+```sh
+actor=reports/host-a
+cicada get actor "$actor" -o wide
+cicada get mailbox "$actor"
+cicada get nodes
+```
+
+The chosen owner must poll that type. A node row can help find it, but a live heartbeat proves neither eligibility
+nor polling; workers over HTTP have no node row. Other owners leave the work pending without new attempts, lost
+claims, failures or automatic reassignment. Start the owner with its original id and the needed type.
+
+To change a pin, first plan for the actor's state and pending work: delete and recreate is a new life, and deletion
+purges its mailbox and removes descendants. A repeated create cannot move it. Pause, purge, cancel and delete can
+still be issued through any node; their [destructive effects](#destructive-controls) are unchanged.
 
 ### Destructive controls
 
@@ -147,8 +172,8 @@ Use the structured `Failed.cause` when available, rather than matching an error-
 
 Nodes heartbeat every 10 s. Display status is alive below 30 s, suspect below 2 min, dead afterward.
 A clean stop removes its row; rows over a day old are cleaned by node heartbeats.
-The table is diagnostic: leases, not node status, determine ownership. Started systems, including send-only nodes
-and App workers on the store, have rows. Initialize-only systems and workers over HTTP do not.
+The table is diagnostic: pins select eligible owners and leases fence turns; node status gates neither. Started
+systems, including send-only nodes and App workers on the store, have rows. Initialize-only systems and workers over HTTP do not.
 
 `cicada get nodes` shows `HOSTNAME`; `-o wide` adds `HOSTED`, `VERSION` and `LABEL`, as does the TUI's wide nodes view.
 The host name is looked up once at start; an unavailable, non-UTF-8, blank, NUL-containing or over-200-character name
@@ -168,7 +193,8 @@ unique or authenticated identities; host names may identify machines, and the AP
 ### External leases
 
 Remote turns appear under the executor’s id in running turns, outside local concurrency. The server’s TTL/claim limit
-apply; stopping a server does not release them. Workers own their lifecycle and never close their source.
+apply; stopping a server does not release them. Pins are matched against the requesting executor's id, never the
+server's. Workers own their lifecycle and never close their source.
 
 | Failure | Consequence |
 | --- | --- |

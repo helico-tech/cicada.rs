@@ -14,6 +14,7 @@ The guides assume you know Rust, serde and async functions.
 | Task | Read |
 | --- | --- |
 | Design a system of actors: boundaries, protocols, recovery | [Design with actors](guide/design.md) |
+| Run an actor on one executor | [Pin an actor](guide/core.md#pin-an-actor-to-an-executor) |
 | Serve a live socket from durable state | [Websocket session](guide/design.md#a-websocket-session) |
 | Send, retry or schedule a message | [Core](guide/core.md#retry) |
 | Understand message paths in the examples | [Visual patterns](guide/patterns.md) |

@@ -113,10 +113,11 @@ one matches the job.
 | Change state | `state_mut()`, `set_state(..)` |
 | Send | `send`, `send_with`, `send_self`, `send_self_with` |
 | Send to a runtime address | `send_to` or `send_raw` (async registry lookup) |
-| Create | `create`, `create_child`; `create_raw` variants for runtime addresses |
+| Create | `create`, `create_child`; `_with` variants take `CreateOptions`; `create_raw` variants take runtime addresses |
 | End this actor | `stop()` |
 | Refuse this message permanently | `return Err(turn.fail("reason"))` |
 | Read envelope data | `message()` — id, sender, counters, headers, correlation and cause |
+| Read the executor id | `node_id()` — node id locally, worker id on a worker |
 | Read time | `now()` is fixed at claim; `current_time()` adds elapsed turn time |
 
 A `delay` counts from commit; `at` is absolute. Use `delay` for a wait after long work, rather than adding to `now()`.
@@ -143,7 +144,8 @@ whole tree and purges those mailboxes atomically. An existing actor with another
 the commit fails. `create` makes an independent actor.
 
 Pause, resume and purge affect only one actor. `list_children` returns direct children, paged by address.
-See the [fan-out example](../../examples/src/fanout.rs).
+See the [fan-out example](../../examples/src/fanout.rs). Children do not inherit a parent's pin; use
+`create_child_with` with explicit [placement options](#pin-an-actor-to-an-executor).
 
 ## Watches
 
@@ -202,6 +204,49 @@ async fn main() -> anyhow::Result<()> {
 `start()` checks hosted types and registers contracts; a different registered hash is `StartProblem::ContractConflict`.
 `Store` clones share one backend; `ActorSystem` clones share one node. The caller owns the store.
 For shutdown deadlines and a cancelled `close()`, see [shutdown guidance](../operations.md#shutdown-and-probes).
+
+### Pin an actor to an executor
+
+Use a pin when a turn must act on a resource only one machine can reach. Give that executor a stable, unique
+`NodeConfig::node_id` or `WorkerConfig::worker_id`, and create the actor with `CreateOptions`. Existing `create`
+calls stay unpinned. To observe a machine, a local task sending readings needs no pin.
+
+On a system that knows the [reports actor](../../examples/src/sync.rs), this creates work for `host-b`:
+
+```rust,no_run
+use cicada::{ActorSystem, CreateOptions, Turn};
+use cicada::prelude::HandlerResult;
+use cicada::store::NodeId;
+use cicada_examples::sync::{Reports, ReportsActor, ReportsMsg, ReportsState};
+
+async fn create_reports(system: &ActorSystem) -> anyhow::Result<()> {
+    let reports = Reports { tenant: "acme".into() };
+    let options = CreateOptions::new().pinned_to(NodeId::new("host-b")?);
+    system.create_with(&reports, &ReportsState::default(), options).await?;
+    system.send(&reports, ReportsMsg::SyncFinished { imported: 5 }).await?;
+    Ok(())
+}
+
+// Called by a reports handler: explicitly keep its child on this executor.
+fn create_child_here(turn: &mut Turn<ReportsActor>, child: &Reports) -> HandlerResult {
+    let options = CreateOptions::new().pinned_to(turn.node_id().clone());
+    turn.create_child_with(child, &ReportsState::default(), options)?;
+    Ok(())
+}
+```
+
+Only an executor whose id is `host-b` and which polls this type can claim the first actor. Others skip it before
+claiming or changing its counters; it waits indefinitely if that owner never returns. `Turn::node_id()` is the
+executing worker's id on a worker, including over HTTP, and never the server's id. Duplicate ids can run the actor on
+different machines, one lease at a time; a pin is not authentication or a fence for outside effects.
+
+A pin is non-blank, at most 200 characters and NUL-free. Invalid options return `OpError::Invalid` from the system
+or `TurnError::Invalid` at a turn call. Repeated creates leave an existing actor's state, parent and pin untouched;
+`Exists` holds its snapshot. Creates of one address in one turn must agree on pin and child status. A child never
+inherits a pin. To move an actor, [delete and recreate](#control-effects) it as a new life; deletion removes its
+mailbox and descendants. The raw variants are `create_actor_with` / `create_actor_checked_with` outside a turn and
+`create_raw_with` / `create_child_raw_with` inside. Ready-made supervisor, flow and event create protocols have no
+placement option for the actors they create.
 
 ### List actors with their state
 
@@ -271,7 +316,8 @@ owns type checks and buffering. Read [the protocol](../architecture.md#leases-ou
 Call `start()` to register and poll, `stop()` to drain, and observe `stopped()` for fatal errors.
 
 Workers have no node row, retention sweep or claim limit of their own. The source grants TTLs and applies its claim
-limit. Concurrency includes in-flight lease requests. A worker never closes or stops its source.
+limit. Concurrency includes in-flight lease requests. A worker never closes or stops its source. Its `worker_id`
+selects the pins it may claim; use a stable id for pinned work, independent of the server's node id.
 
 ### Configuration
 
@@ -279,9 +325,9 @@ Pass a `NodeConfig` to `.config(..)`, or use the [App flags](app.md#run-it-as-a-
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `node_id` | random | Lease owner, shown in `/messages/{id}` while running and by `/health`. |
+| `node_id` | random | Claim owner, shown in running messages and `/health`; choose a stable, unique id for [pinned work](#pin-an-actor-to-an-executor). |
 | `label` | `None` | Free text shown in the [node table](../operations.md#node-table); display only. Not blank, no NUL, at most 200 Unicode scalar values; kept as given. An invalid label fails initialization/start. |
-| `lease_ttl` | 30 s | A turn's lease; a dead node's turn is re-claimed after it expires. |
+| `lease_ttl` | 30 s | A turn's lease; after expiry an eligible owner can claim it again. |
 | `heartbeat_interval` | `lease_ttl / 3` | Lease renewal; must be in `(0, lease_ttl / 2]`. |
 | `poll_interval` | 500 ms | Longest sleep of the dispatch loop (wake-ups usually come sooner: own sends, PostgreSQL `NOTIFY`). |
 | `default_max_turn` | 15 min | Turn timeout (`failed("timeout")`) unless the type sets `MAX_TURN`. |
