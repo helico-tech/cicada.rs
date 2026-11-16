@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import signal
 import subprocess
 import sys
@@ -23,6 +24,7 @@ FILES = {
     "c/src/lib.rs": "",
     "skills/cicada/SKILL.md": "---\nname: cicada\nmetadata:\n  cicada-version: 0.9.0\n---\n# Skill\n",
     "skills/cicada/scripts/cicada_source.py": "print('resolver')\n",
+    ".claude-plugin/plugin.json": '{"name": "cicada", "version": "0.9.0"}\n',
     "CHANGELOG.md": "# Changelog\n\n## 0.9.0 — 2026-11-01\n\n- Old.\n",
     **{f"fixtures/{name}": f'{{"format": 1, "name": "{name}"}}\n'
        for name in ("canonical.json", "contracts.json", "leases.json", "status.json")},
@@ -32,6 +34,7 @@ FIXTURES = "cicada-fixtures-v1.0.0.tar.gz"
 RELEASE = {
     "Cargo.toml": FILES["Cargo.toml"].replace("0.9.0", "1.0.0"),
     "skills/cicada/SKILL.md": FILES["skills/cicada/SKILL.md"].replace("0.9.0", "1.0.0"),
+    ".claude-plugin/plugin.json": FILES[".claude-plugin/plugin.json"].replace("0.9.0", "1.0.0"),
     "CHANGELOG.md": "# Changelog\n\n## 1.0.0 — 2026-11-15\n\n- First.\n\n## 0.9.0 — 2026-11-01\n\n- Old.\n",
 }
 NOTES = "\n- First.\n\n"
@@ -383,6 +386,32 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn("not on main", check("v1.0.0").stderr, "the full mode fetches origin/main")
         self.s.git("tag", "v1.0.0", "HEAD~1")
         self.assertIn("not at the checked-out", check("--before-push", "v1.0.0").stderr)
+
+    def test_a_missing_malformed_or_stale_plugin_version_publishes_nothing(self):
+        plugin = ".claude-plugin/plugin.json"
+        cases = {
+            "missing": (None, f"{plugin} is missing"),
+            "malformed": ('{"version": ', "must be a JSON object with a string version"),
+            "not an object": ('["1.0.0"]', "must be a JSON object with a string version"),
+            "absent version": ('{"name": "cicada"}', "must be a JSON object with a string version"),
+            "number version": ('{"version": 1.0}', "must be a JSON object with a string version"),
+            "other version": ('{"version": "0.9.0"}', f"{plugin} says version 0.9.0"),
+        }
+        for name, (text, problem) in cases.items():
+            with self.subTest(name):
+                shutil.rmtree(self.s.state / "release", ignore_errors=True)  # each case is a first attempt
+                if text is None:
+                    self.s.git("rm", "-q", plugin)
+                    self.c = self.s.commit(f"Release 1.0.0, plugin {name}")
+                else:
+                    self.c = self.s.commit(f"Release 1.0.0, plugin {name}", {plugin: text})
+                done = self.release(self.c)
+                self.assertEqual(done.returncode, 1)
+                self.assertIn("release-check failed", done.stderr)
+                self.assertIn(problem, done.stderr)
+                self.assertNotEqual(self.remote("refs/heads/main"), self.c)
+                self.assertIsNone(self.remote("refs/tags/v1.0.0"))
+                self.assertEqual(self.writes(), [])
 
     def test_a_rejected_main_push_is_refreshed_once(self):
         flag = self.s.dir / "reject-once"

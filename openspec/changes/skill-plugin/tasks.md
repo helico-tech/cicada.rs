@@ -6,7 +6,7 @@
   each explicit manifest and the repository root; record outputs and warnings for code review. This is review
   evidence, not a gate dependency or proof of private Git authentication, installation or interactive loading.
 
-- [ ] 2. Structural tests and release preflight. Extend `examples/tests/skill.rs` to check the manifest fields,
+- [x] 2. Structural tests and release preflight. Extend `examples/tests/skill.rs` to check the manifest fields,
   types, names, source, versions and consumer-only component boundary in design decision 5. Use temporary fixtures
   for malformed/missing manifests, bad fields/types, extra entries, non-root sources, name/version mismatches,
   component overrides, every forbidden root path and symlinks; accept a second ordinary skill. Require real skill

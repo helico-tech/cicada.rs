@@ -1,8 +1,9 @@
 //! Checks of the consumer skill `skills/cicada` (ADR 0041): its frontmatter and version, that every route resolves to a
 //! file and heading of this source, that the routes cover every guide, reference and worked example, that consumers
 //! are not routed to proposals or the change loops, the evaluation cases, and the Python tests of the resolver and the
-//! packaging (`examples/tests/skill/test_*.py`). They check structure; whether the skill leads to good decisions is
-//! judged by evaluations in review.
+//! packaging (`examples/tests/skill/test_*.py`), and the shape of the Claude Code plugin that carries the consumer
+//! skills (ADR 0049). They check structure; whether the skill leads to good decisions is judged by evaluations in
+//! review, and the plugin's manifests by `claude plugin validate` in review.
 
 #[allow(dead_code)] // the checks of the skill use only the anchors
 mod markdown;
@@ -85,6 +86,204 @@ fn workspace_version(root: &Path) -> String {
     let section = manifest.split("[workspace.package]").nth(1).expect("[workspace.package]");
     let line = section.lines().find(|l| l.starts_with("version")).expect("a version");
     line.split('"').nth(1).expect("a quoted version").to_owned()
+}
+
+/// The manifests of the Claude Code plugin whose source is the repository root (ADR 0049).
+const MARKETPLACE: &str = ".claude-plugin/marketplace.json";
+const PLUGIN: &str = ".claude-plugin/plugin.json";
+
+/// Who owns the marketplace and writes the plugin, and where its source is.
+const OWNER: &str = "helico-tech";
+const REPOSITORY: &str = "https://github.com/helico-tech/cicada.rs";
+
+/// The default component paths of a plugin other than `skills/`: the root is the plugin, so any of them there would
+/// load with the consumer skills.
+const FORBIDDEN_COMPONENTS: [&str; 10] = [
+    "commands",
+    "agents",
+    "hooks",
+    "bin",
+    "output-styles",
+    "workflows",
+    "themes",
+    "monitors",
+    ".mcp.json",
+    ".lsp.json",
+];
+
+/// What a path is, without following a symbolic link at its last component.
+#[derive(Debug, PartialEq)]
+enum Kind {
+    Missing,
+    Link,
+    Dir,
+    File,
+    Other,
+}
+
+fn kind(path: &Path) -> Kind {
+    match fs::symlink_metadata(path) {
+        Err(_) => Kind::Missing,
+        Ok(m) if m.file_type().is_symlink() => Kind::Link,
+        Ok(m) if m.is_dir() => Kind::Dir,
+        Ok(m) if m.is_file() => Kind::File,
+        Ok(_) => Kind::Other,
+    }
+}
+
+type Object = serde_json::Map<String, serde_json::Value>;
+
+/// The JSON object of the manifest at `path`, or nothing with the problem added.
+fn manifest(root: &Path, path: &str, problems: &mut Vec<String>) -> Option<Object> {
+    match kind(&root.join(path)) {
+        Kind::File => {}
+        Kind::Missing => {
+            problems.push(format!("{path} is missing"));
+            return None;
+        }
+        other => {
+            problems.push(format!("{path} is not a regular file but {other:?}"));
+            return None;
+        }
+    }
+    match serde_json::from_str(&read(&root.join(path))) {
+        Ok(serde_json::Value::Object(object)) => Some(object),
+        Ok(_) => {
+            problems.push(format!("{path} is not a JSON object"));
+            None
+        }
+        Err(e) => {
+            problems.push(format!("{path} is not JSON: {e}"));
+            None
+        }
+    }
+}
+
+/// Adds a problem for each field of `object` (at `at`) that is not one of `keys`, and each of `keys` it lacks.
+fn exact_keys(path: &str, at: &str, object: &Object, keys: &[&str], problems: &mut Vec<String>) {
+    for key in object.keys().filter(|k| !keys.contains(&k.as_str())) {
+        problems.push(format!("{path}: the field {at}{key} is not allowed"));
+    }
+    for key in keys.iter().filter(|k| !object.contains_key(**k)) {
+        problems.push(format!("{path}: the field {at}{key} is missing"));
+    }
+}
+
+/// Adds a problem when the field `at` of `object` is present and not `want`.
+fn expect(
+    path: &str,
+    at: &str,
+    value: Option<&serde_json::Value>,
+    want: serde_json::Value,
+    problems: &mut Vec<String>,
+) {
+    if let Some(value) = value.filter(|v| **v != want) {
+        problems.push(format!("{path}: the field {at} must be {want}, is {value}"));
+    }
+}
+
+/// Adds a problem when the field `at` is present and not a nonempty string.
+fn text_field(path: &str, at: &str, value: Option<&serde_json::Value>, problems: &mut Vec<String>) {
+    if value.is_some_and(|v| v.as_str().is_none_or(|s| s.trim().is_empty())) {
+        problems.push(format!("{path}: the field {at} must be a nonempty string"));
+    }
+}
+
+/// What is wrong with the plugin at `root`: its two manifests against the shape of ADR 0049 and the workspace version,
+/// a skill folder that is not a real folder with a regular `SKILL.md`, a symbolic link, or another plugin component.
+fn plugin_problems(root: &Path) -> Vec<String> {
+    use serde_json::json;
+    let mut problems = Vec::new();
+    if kind(&root.join(".claude-plugin")) == Kind::Link {
+        problems.push(".claude-plugin is a symbolic link".to_owned());
+    }
+    if let Some(m) = manifest(root, MARKETPLACE, &mut problems) {
+        let p = MARKETPLACE;
+        exact_keys(p, "", &m, &["name", "owner", "description", "plugins"], &mut problems);
+        expect(p, "name", m.get("name"), json!("cicada"), &mut problems);
+        expect(p, "owner", m.get("owner"), json!({ "name": OWNER }), &mut problems);
+        text_field(p, "description", m.get("description"), &mut problems);
+        match m.get("plugins").map(|v| v.as_array()) {
+            None => {}
+            Some(Some(plugins)) if plugins.len() == 1 => match plugins[0].as_object() {
+                Some(entry) => {
+                    exact_keys(p, "plugins[0].", entry, &["name", "source"], &mut problems);
+                    expect(p, "plugins[0].name", entry.get("name"), json!("cicada"), &mut problems);
+                    expect(p, "plugins[0].source", entry.get("source"), json!("./"), &mut problems);
+                }
+                None => problems.push(format!("{p}: the field plugins[0] must be an object")),
+            },
+            Some(_) => problems.push(format!("{p}: the field plugins must be a list of exactly one plugin")),
+        }
+    }
+    if let Some(m) = manifest(root, PLUGIN, &mut problems) {
+        let p = PLUGIN;
+        exact_keys(p, "", &m, &["name", "version", "description", "author", "repository"], &mut problems);
+        expect(p, "name", m.get("name"), json!("cicada"), &mut problems);
+        match m.get("version").map(|v| v.as_str()) {
+            None => {}
+            Some(None) => problems.push(format!("{p}: the field version must be a string")),
+            Some(Some(version)) => {
+                let workspace = workspace_version(root);
+                if version != workspace {
+                    problems
+                        .push(format!("{p}: the field version is {version}, but the workspace version is {workspace}"));
+                }
+            }
+        }
+        text_field(p, "description", m.get("description"), &mut problems);
+        expect(p, "author", m.get("author"), json!({ "name": OWNER }), &mut problems);
+        expect(p, "repository", m.get("repository"), json!(REPOSITORY), &mut problems);
+    }
+    problems.extend(skills_problems(root));
+    for component in FORBIDDEN_COMPONENTS {
+        if kind(&root.join(component)) != Kind::Missing {
+            problems.push(format!("{component} at the root would load as a component of the plugin"));
+        }
+    }
+    problems
+}
+
+/// What is wrong with `skills/` at `root`: each entry is a real folder with a regular `SKILL.md`, the tree holds no
+/// symbolic link, and the skill `cicada` is there.
+fn skills_problems(root: &Path) -> Vec<String> {
+    let mut problems = Vec::new();
+    let skills = root.join("skills");
+    if kind(&skills) != Kind::Dir {
+        return vec![format!("skills is not a real folder but {:?}", kind(&skills))];
+    }
+    let mut names: Vec<String> = fs::read_dir(&skills)
+        .expect("skills/")
+        .map(|e| e.expect("an entry").file_name().to_string_lossy().into_owned())
+        .filter(|name| name != ".DS_Store") // ignored by git, so never in the plugin
+        .collect();
+    names.sort();
+    for name in &names {
+        match kind(&skills.join(name)) {
+            Kind::Dir => match kind(&skills.join(name).join("SKILL.md")) {
+                Kind::File | Kind::Link => {} // a link is named below
+                other => problems.push(format!("skills/{name}/SKILL.md is not a regular file but {other:?}")),
+            },
+            Kind::Link => {} // named below
+            other => problems.push(format!("skills/{name} is not a skill folder but {other:?}")),
+        }
+    }
+    let mut folders = vec![skills];
+    while let Some(folder) = folders.pop() {
+        for entry in fs::read_dir(&folder).expect("a folder of skills/") {
+            let path = entry.expect("an entry").path();
+            match kind(&path) {
+                Kind::Link => problems
+                    .push(format!("{} is a symbolic link", path.strip_prefix(root).expect("under the root").display())),
+                Kind::Dir => folders.push(path),
+                _ => {}
+            }
+        }
+    }
+    if !names.iter().any(|n| n == "cicada") {
+        problems.push("skills/cicada is missing".to_owned());
+    }
+    problems
 }
 
 /// The code spans of `text` outside fenced code blocks, with their line.
@@ -213,6 +412,186 @@ fn the_frontmatter_names_the_skill_and_the_workspace_version() {
     assert_eq!(metadata.len(), 1, "metadata holds the version only: {metadata:?}");
     assert_eq!(metadata[0].0, "cicada-version");
     assert_eq!(metadata[0].1, workspace_version(&root()), "metadata.cicada-version is the workspace version");
+}
+
+#[test]
+fn the_plugin_carries_the_consumer_skills_and_nothing_else() {
+    let problems = plugin_problems(&root());
+    assert!(problems.is_empty(), "The plugin:\n  {}", problems.join("\n  "));
+}
+
+/// A good plugin of workspace version 1.2.3 in a temporary folder.
+fn plugin_fixture() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::write(root.join("Cargo.toml"), "[workspace.package]\nversion = \"1.2.3\"\n").unwrap();
+    fs::create_dir_all(root.join(".claude-plugin")).unwrap();
+    edit_json(root, MARKETPLACE, |m| {
+        *m = serde_json::json!({ "name": "cicada", "owner": { "name": OWNER }, "description": "Skills.",
+                                 "plugins": [{ "name": "cicada", "source": "./" }] })
+    });
+    edit_json(root, PLUGIN, |m| {
+        *m = serde_json::json!({ "name": "cicada", "version": "1.2.3", "description": "Skills.",
+                                 "author": { "name": OWNER }, "repository": REPOSITORY })
+    });
+    fs::create_dir_all(root.join("skills/cicada/scripts")).unwrap();
+    fs::write(root.join("skills/cicada/SKILL.md"), "---\nname: cicada\n---\n").unwrap();
+    fs::write(root.join("skills/cicada/scripts/cicada_source.py"), "\n").unwrap();
+    dir
+}
+
+/// Rewrites the JSON file at `path` under `root` (`null` when it does not exist) through `change`.
+fn edit_json(root: &Path, path: &str, change: impl FnOnce(&mut serde_json::Value)) {
+    let file = root.join(path);
+    let mut value = fs::read_to_string(&file).map_or(serde_json::Value::Null, |t| serde_json::from_str(&t).unwrap());
+    change(&mut value);
+    fs::write(file, serde_json::to_string_pretty(&value).unwrap()).unwrap();
+}
+
+#[cfg(unix)]
+fn link(target: &str, at: &Path) {
+    std::os::unix::fs::symlink(target, at).unwrap();
+}
+
+/// A change to a good plugin, with the problem it must cause.
+#[cfg(unix)]
+type Case = (&'static str, Box<dyn Fn(&Path)>, &'static str);
+
+/// Scenario: An unintended component or alternate source; and a stale or invalid manifest.
+#[cfg(unix)]
+#[test]
+fn a_changed_manifest_another_component_or_a_link_is_named() {
+    let ok = plugin_fixture();
+    assert_eq!(plugin_problems(ok.path()), Vec::<String>::new(), "the fixture is a good plugin");
+    fs::create_dir_all(ok.path().join("skills/actor-design")).unwrap();
+    fs::write(ok.path().join("skills/actor-design/SKILL.md"), "---\nname: actor-design\n---\n").unwrap();
+    fs::write(ok.path().join("skills/.DS_Store"), "").unwrap();
+    assert_eq!(plugin_problems(ok.path()), Vec::<String>::new(), "a second ordinary skill is accepted");
+
+    let json = |path: &'static str, change: fn(&mut serde_json::Value)| -> Box<dyn Fn(&Path)> {
+        Box::new(move |root| edit_json(root, path, change))
+    };
+    let write = |path: &'static str, text: &'static str| -> Box<dyn Fn(&Path)> {
+        Box::new(move |root| fs::write(root.join(path), text).unwrap())
+    };
+    let remove =
+        |path: &'static str| -> Box<dyn Fn(&Path)> { Box::new(move |root| fs::remove_file(root.join(path)).unwrap()) };
+    let cases: Vec<Case> = vec![
+        ("no marketplace", remove(MARKETPLACE), "marketplace.json is missing"),
+        ("no plugin", remove(PLUGIN), "plugin.json is missing"),
+        ("bad marketplace JSON", write(MARKETPLACE, "{"), "marketplace.json is not JSON"),
+        ("bad plugin JSON", write(PLUGIN, "{\"name\": "), "plugin.json is not JSON"),
+        ("plugin list", write(PLUGIN, "[]"), "plugin.json is not a JSON object"),
+        ("no version", json(PLUGIN, |m| _ = m.as_object_mut().unwrap().remove("version")), "field version is missing"),
+        ("number version", json(PLUGIN, |m| m["version"] = 1.into()), "field version must be a string"),
+        (
+            "stale version",
+            json(PLUGIN, |m| m["version"] = "1.2.2".into()),
+            "version is 1.2.2, but the workspace version is 1.2.3",
+        ),
+        ("plugin name", json(PLUGIN, |m| m["name"] = "other".into()), "plugin.json: the field name must be"),
+        ("blank description", json(PLUGIN, |m| m["description"] = " ".into()), "description must be a nonempty"),
+        ("author text", json(PLUGIN, |m| m["author"] = OWNER.into()), "the field author must be"),
+        ("repository", json(PLUGIN, |m| m["repository"] = "https://example.com".into()), "field repository must be"),
+        ("skills path", json(PLUGIN, |m| m["skills"] = "./more".into()), "the field skills is not allowed"),
+        ("inline hooks", json(PLUGIN, |m| m["hooks"] = serde_json::json!({})), "the field hooks is not allowed"),
+        ("marketplace name", json(MARKETPLACE, |m| m["name"] = "x".into()), "marketplace.json: the field name must"),
+        ("owner", json(MARKETPLACE, |m| m["owner"]["email"] = "a@b".into()), "the field owner must be"),
+        ("version pin", json(MARKETPLACE, |m| m["version"] = "1.2.3".into()), "field version is not allowed"),
+        (
+            "second plugin",
+            json(MARKETPLACE, |m| m["plugins"].as_array_mut().unwrap().push(serde_json::json!({ "name": "b" }))),
+            "plugins must be a list of exactly one plugin",
+        ),
+        ("entry name", json(MARKETPLACE, |m| m["plugins"][0]["name"] = "x".into()), "plugins[0].name must be"),
+        ("sub folder", json(MARKETPLACE, |m| m["plugins"][0]["source"] = "./plugin".into()), "plugins[0].source"),
+        (
+            "remote source",
+            json(MARKETPLACE, |m| {
+                m["plugins"][0]["source"] = serde_json::json!({ "source": "github", "repo": "a/b", "ref": "v1.2.3" })
+            }),
+            "plugins[0].source must be",
+        ),
+        (
+            "entry commands",
+            json(MARKETPLACE, |m| m["plugins"][0]["commands"] = serde_json::json!(["./x"])),
+            "plugins[0].commands is not allowed",
+        ),
+        ("entry version", json(MARKETPLACE, |m| m["plugins"][0]["version"] = "1".into()), "[0].version is not allowed"),
+        ("skills file", write("skills/README.md", "x"), "skills/README.md is not a skill folder"),
+        (
+            "no SKILL.md",
+            Box::new(|root| fs::create_dir(root.join("skills/empty")).unwrap()),
+            "skills/empty/SKILL.md is not a regular file but Missing",
+        ),
+        (
+            "no cicada",
+            Box::new(|root| fs::remove_dir_all(root.join("skills/cicada")).unwrap()),
+            "skills/cicada is missing",
+        ),
+        (
+            "linked skill",
+            Box::new(|root| link("cicada", &root.join("skills/other"))),
+            "skills/other is a symbolic link",
+        ),
+        (
+            "linked file",
+            Box::new(|root| link("../../../Cargo.toml", &root.join("skills/cicada/scripts/x"))),
+            "skills/cicada/scripts/x is a symbolic link",
+        ),
+        (
+            "linked SKILL.md",
+            Box::new(|root| {
+                fs::rename(root.join("skills/cicada/SKILL.md"), root.join("skill.md")).unwrap();
+                link("../../skill.md", &root.join("skills/cicada/SKILL.md"));
+            }),
+            "skills/cicada/SKILL.md is a symbolic link",
+        ),
+        (
+            "linked manifest",
+            Box::new(|root| {
+                fs::rename(root.join(PLUGIN), root.join("plugin.json")).unwrap();
+                link("../plugin.json", &root.join(PLUGIN));
+            }),
+            "plugin.json is not a regular file but Link",
+        ),
+        (
+            "linked manifest folder",
+            Box::new(|root| {
+                fs::rename(root.join(".claude-plugin"), root.join("manifests")).unwrap();
+                link("manifests", &root.join(".claude-plugin"));
+            }),
+            ".claude-plugin is a symbolic link",
+        ),
+        (
+            "linked skills folder",
+            Box::new(|root| {
+                fs::rename(root.join("skills"), root.join("real")).unwrap();
+                link("real", &root.join("skills"));
+            }),
+            "skills is not a real folder but Link",
+        ),
+    ];
+    for (name, change, want) in cases {
+        let dir = plugin_fixture();
+        change(dir.path());
+        let problems = plugin_problems(dir.path());
+        assert!(problems.iter().any(|p| p.contains(want)), "{name}: expected {want:?} in {problems:#?}");
+    }
+    for component in FORBIDDEN_COMPONENTS {
+        for linked in [false, true] {
+            let dir = plugin_fixture();
+            let at = dir.path().join(component);
+            match (linked, component.ends_with(".json")) {
+                (true, _) => link("nowhere", &at),
+                (false, true) => fs::write(&at, "{}").unwrap(),
+                (false, false) => fs::create_dir(&at).unwrap(),
+            }
+            let problems = plugin_problems(dir.path());
+            let want = format!("{component} at the root would load as a component of the plugin");
+            assert!(problems.contains(&want), "{component}, linked {linked}: {problems:#?}");
+        }
+    }
 }
 
 #[test]
