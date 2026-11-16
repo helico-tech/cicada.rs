@@ -15,6 +15,7 @@ import tomllib
 from pathlib import Path, PurePosixPath
 
 Members = dict[str, tuple[bytes | None, int]]  # name in the archive -> its bytes (None for a folder) and mode
+REGULAR = ("100644", "100755")  # Git's modes of a regular file
 
 
 class PackageError(Exception):
@@ -52,6 +53,24 @@ class Tag:
         except PackageError:
             raise PackageError(f"{path} is missing at {self.tag} ({self.commit})") from None
 
+    def entry(self, path: str) -> tuple[str, str, str] | None:
+        """The mode, kind and object of a path at the tag's commit, or None when there is none."""
+        line = git("ls-tree", "-z", self.commit, "--", path).decode().rstrip("\0")
+        if not line:
+            return None
+        mode, kind, oid = line.split("\t", 1)[0].split(" ")
+        return mode, kind, oid
+
+    def regular(self, path: str) -> bytes:
+        """The bytes of a regular file at the tag's commit: not a folder, a symbolic link or a submodule."""
+        found = self.entry(path)
+        if found is None:
+            raise PackageError(f"{path} is missing at {self.tag} ({self.commit})")
+        mode, kind, oid = found
+        if kind != "blob" or mode not in REGULAR:
+            raise PackageError(f"{path} at {self.tag} is not a regular file (mode {mode})")
+        return git("cat-file", "blob", oid)
+
     def source(self) -> bytes:
         """SOURCE.json: the repository, tag, commit and version of the archive."""
         value = {"repository": self.repository, "tag": self.tag, "commit": self.commit, "version": self.version}
@@ -77,18 +96,21 @@ def build(members: Members) -> bytes:
     return out.getvalue()
 
 
-def safe(name: str, root: str) -> bool:
+def safe(name: str, roots: str | tuple[str, ...]) -> bool:
+    """Whether a member's name is relative, without `..`, and under one of the archive's root folders."""
     path = PurePosixPath(name)
-    return bool(name) and not path.is_absolute() and ".." not in path.parts and path.parts[0] == root
+    roots = (roots,) if isinstance(roots, str) else roots
+    return bool(name) and not path.is_absolute() and ".." not in path.parts and path.parts[0] in roots
 
 
-def validate(archive: bytes, members: Members, root: str) -> None:
-    """Reads the archive back: exactly the expected members, each safe, a file or a folder, with its bytes."""
+def validate(archive: bytes, members: Members, roots: str | tuple[str, ...]) -> None:
+    """Reads the archive back: exactly the expected members, each safe under one of the roots, a file or a folder,
+    with its bytes."""
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
         found = tar.getmembers()
         names = [m.name for m in found]
         for name in names:
-            if not safe(name, root):
+            if not safe(name, roots):
                 raise PackageError(f"the archive holds an unsafe path {name}")
         if names != list(members):
             raise PackageError(f"the archive holds {names}, not {list(members)}")
