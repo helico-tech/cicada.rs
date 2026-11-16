@@ -30,7 +30,7 @@
   example/OS and docs/skill checks after final integration. State explicitly that uncertain runs need outside
   verification and may then be deleted; automatic replacement and ready-made supervisor pin options remain absent.
 
-- [ ] 6. Finishing. Run `openspec validate pinned-process-example --strict`. Commit implementation and run
+- [x] 6. Finishing. Run `openspec validate pinned-process-example --strict`. Commit implementation and run
   `python3 scripts/gate.py run --e2e`, then report `python3 scripts/gate.py status`. Its checks include
   `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` with PostgreSQL,
   feature builds, script/docs/skill checks and Docker E2E. Record unverified platforms/behaviors. The builder does
