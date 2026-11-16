@@ -8,22 +8,24 @@ node comes back. Hosts need to hear about it, the way watches tell a watcher tha
 
 ## What Changes
 
-- **A notification when a node goes down.** When a node's row turns dead, one message is sent to each configured
-  target, once per death. It names the node, its details from `node-details`, and its last heartbeat.
-- **Optionally a second message when it comes back**, so that a watcher can clear the alarm.
-- Exactly one alive node sends the notification: the store decides which, so that two nodes that both see the dead
-  row do not both send it.
+- Add the optional singleton NodeDownMonitor in cicada-actors. It reads the existing node view through an injected
+  source and treats 120 seconds without a heartbeat as dead, matching the existing node status threshold.
+- Publish NodeDown events through an explicitly configured Topic. Existing Topic subscriptions and delivery handle
+  recipients; one monitor turn commits the publication, dedup watermark and next poll together, using normal leases.
+- Include the node id, row timestamps, detection sample time and optional hostname/version/label. No recovery event
+  in the first version. A newer heartbeat or recreated row permits another observed silence alert.
+- Retain the existing clean-stop removal and daily node-row pruning. This is sampled observability, not a complete
+  death history: absent/pruned rows and all-cluster outages cannot be reported retrospectively with certainty.
+- Provide virtual-time behavior/contract tests, a checked example and consumer guidance through the docs handoff.
 
-To decide in the design:
+Decided under the owner's delegation (2026-11-16; Opus 5.5 reviews):
 
-- Where targets are configured: in `NodeConfig` (the same on every node), in a stored registration (like a watch,
-  set over the API), or a ready-made actor in `cicada-actors` that hosts subscribe to.
-- Whether "comes back" is part of the first version.
-- What counts as down: the existing "dead" threshold, or a setting.
-- What happens when the whole cluster restarts at once and many rows are old: one alarm per row, or none for rows of
-  nodes that stopped cleanly (a clean stop already removes its row).
-- How it relates to `heartbeat-watch`: a node could beat a heartbeat watch itself, which needs no core change but
-  needs one watch per node.
+- Use a ready-made actor and Topic rather than new core store election, notification tables or NodeConfig recipients.
+- Fixed ten-second durable polling, five-second reads and 1000-row persisted-work cap; errors retain watermarks and
+  rearm with a bounded diagnostic. Missing Topic follows normal rollback/failure and operator repair/Rearm.
+- Observe retained dead rows immediately after startup; do not turn missing rows into death claims. No recovery alert.
+- Keep heartbeat-watch for explicit Beats from workloads/devices. NodeDownMonitor is for the native node table and
+  never grants authority to claim/migrate actors or fence their outside effects.
 
 ## Out of scope
 
@@ -36,6 +38,7 @@ After `pinned-process-example`. Before `sample-worker-mode`.
 
 ## Impact
 
-Depends on the design: a store operation and a new message contract in `crates/cicada` with a conformance case, or a
-new actor in `cicada-actors` with its contract in `docs/reference/contracts/`. A new notification is a new wire
-format, so it needs an ADR. Handoffs for `docs/operations.md` and the guide of the layer it lands in.
+crates/cicada-actors node_down module, public source/actor/message/state types, generated contract reference,
+wire/behavior tests and examples/src/node_down.rs. ADR 0054 and handoffs for the actors guide, core node-view linkage,
+operations, architecture observability language and both skills' routes. No store operation/migration, heartbeat
+protocol, core watch kind or automatic sample-service activation. Existing node-row and Topic semantics stay intact.
