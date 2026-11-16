@@ -9,11 +9,18 @@ The sample service (`sample-service`) in Docker, driven over HTTP only:
 - `tests/suite/` — the automated suite (fault tests and E2E) against that stack,
   plus single SQLite nodes started with `docker run` (9090, and 9091 with `API_TOKEN`). One module per test
   class; `src/` is the harness (docker CLI, nodes, polling, ordering checks, the suite runner).
+- `SampleExecutorTest` runs ninth, after the SQLite class: an authenticated send-only server (`--types none`,
+  `API_TOKEN`, host port 9095) and `cicada-sample-executor worker --server` from the same image, on their own network
+  `cicada-rs-e2e-executor`. The executor has no HTTP health check or database mount; it gets an unreachable
+  `CICADA_STORE`, its client token in `CICADA_TOKEN` and `--node-id exec-worker` overriding its environment id.
+  The class checks selected-type registration, no sample singleton or watch, a counter recording `exec-worker`,
+  and exit code 0 after SIGTERM. Teardown removes both containers, their anonymous volumes and the network, also
+  after a failure.
 
 ## Run the suite
 
 Needs a running Docker (OrbStack, Docker Desktop, …) with the `docker compose` plugin, and free ports 9081–9084, 9090,
-9091 and 25432.
+9091, 9095 and 25432. Port 9092 is avoided because Kafka commonly uses it.
 
 ```sh
 CICADA_E2E=1 cargo test -p cicada-e2e -- --nocapture
@@ -24,13 +31,13 @@ Without `CICADA_E2E=1` the suite's one test returns at once, so `cargo test --wo
 The test builds the image (`docker build -f sample-service/Dockerfile -t cicada-rs-sample:e2e .`), removes leftovers of
 an aborted run, starts the compose stack once, runs the classes in a fixed order (API, examples, ordering under
 load, kill / pause / stop a node mid-turn, outcomes while a node is killed, PostgreSQL stopped and started again, full
-cluster restart, SQLite node), and always removes every container and volume afterwards: at the end of the run, while
-unwinding from a panic, and on Ctrl-C. Every test is bounded by 4 minutes. A run takes about 3 minutes (170–180 s; plus the
+cluster restart, SQLite node, sample HTTP executor), and always removes every container and volume afterwards:
+at the end of the run, while unwinding from a panic, and on Ctrl-C. Every test is bounded by 4 minutes. A run takes about 3 minutes (170–180 s; plus the
 first image build, which compiles the workspace in Docker). `--nocapture` shows progress (`E2E: PASS …` per test); without it
 the output appears only when the suite fails.
 
 Container logs of every run are saved to `target/e2e-logs/` before teardown (`compose-<time>.log`,
-`sqlite-<time>.log`).
+`sqlite-<time>.log`, `executor-<time>.log`).
 
 Useful variations:
 
@@ -81,5 +88,7 @@ After an aborted run, or when done driving by hand:
 ```sh
 docker compose -p cicada-rs-e2e -f e2e/docker-compose.yml down -v --remove-orphans
 docker rm -f -v cicada-rs-e2e-sqlite cicada-rs-e2e-auth
+docker rm -f -v cicada-rs-e2e-exec-server cicada-rs-e2e-executor
+docker network rm -f cicada-rs-e2e-executor
 docker volume rm -f cicada-rs-e2e-sqlite-data
 ```

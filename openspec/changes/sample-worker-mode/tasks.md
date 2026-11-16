@@ -23,7 +23,7 @@
   server bootstrap, and failure cleanup including anonymous volumes/network. Run the targeted class through the
   suite's normal Docker harness and register it for the committed full gate.
 
-- [ ] 5. Handoff and release preparation. Write docs-handoff.md naming the App sample block, operations deployment
+- [x] 5. Handoff and release preparation. Write docs-handoff.md naming the App sample block, operations deployment
   guidance and e2e/README.md; include bootstrap duties, constructor compatibility, tokens, entrypoint/health check,
   store precedence and the now-valid --node-id override. Verify the docs session's prose has landed before landing;
   builders do not edit handwritten docs. Check docs, doctests and both skills' routes. Prepare normal patch release

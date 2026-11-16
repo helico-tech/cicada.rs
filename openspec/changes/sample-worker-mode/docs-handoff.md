@@ -99,11 +99,15 @@ new heading.
 
 ## Blocking
 
-None. No doctest, link, guarantee row or skill route fails: the changed prose is advisory (the stale sentence about a
-differing `--node-id` in `docs/guide/app.md` is now wrong but checked by no test). Landing waits for the docs session's
-prose of 1–3, as the design asks.
+None. No doctest, link, guarantee row or skill route failed without the prose. The owner's prose for 1-3 is
+integrated from the docs commit 202790559aa7b5a2185dcc169afbf9d7758ff8be (branch `docs`, parent 523580b), whole files
+taken unchanged: `docs/guide/app.md`, `docs/operations.md`, `e2e/README.md`.
 
 ## Status
 
-Proposed text only; none of 1–3 is written yet. Checks run on this branch are listed in the build report and the gate
+Integrated: the owner's text for 1 (`docs/guide/app.md`, `Sample service`), 2 (`docs/operations.md`, `Deploying`)
+and 3 (`e2e/README.md`), byte-equal to 2027905 and checked against the code: the executor and its lack of bootstrap,
+`--node-id` winning over `CICADA_NODE_ID`, the ignored legacy constructor ids, the image entry point and health
+check, the token roles and store precedence, and `SampleExecutorTest` on host port 9095. 4 needs no change: no new
+heading was added. No prose is left to write. The checks on the integrated head are in the build report and the gate
 evidence.

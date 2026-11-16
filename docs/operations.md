@@ -40,6 +40,26 @@ The first command assumes the host has installed authentication. App defaults to
 `serve --types none` serves without running turns. A worker serves no HTTP and has no readiness endpoint.
 See [App](guide/app.md) for mode selection and startup errors.
 
+The [sample image](../sample-service/Dockerfile) contains both sample binaries. With it built and the target API
+reachable, override the entrypoint to run its executor as an HTTP worker. Disable the image's health check, which
+asks a server's `/ready`; this worker serves no HTTP:
+
+```sh
+docker run --entrypoint /usr/local/bin/cicada-sample-executor --no-healthcheck \
+  -e CICADA_TOKEN="$TOKEN" cicada-rs-sample \
+  worker --server http://actors:8080 --types e2e.counter --node-id worker-1
+```
+
+In Compose, set `entrypoint: ["/usr/local/bin/cicada-sample-executor"]`, supply `worker --server ...` in `command`,
+and use `healthcheck: { disable: true }`. Pass the client token through `CICADA_TOKEN`; `API_TOKEN` protects a served
+sample API. The executor creates no singletons or watches; [bootstrap the workload separately](guide/app.md#sample-service).
+
+Pass an explicit `--server`: it overrides the image's `CICADA_STORE`, while `CICADA_SERVER` alone loses to that
+store default. Supplying both `--store` and `--server` is a usage error. SIGTERM drains the worker and exits 0;
+allow its configured grace period and cancellation time. Its id is trusted metadata, not proof of one physical
+process. The image's `VOLUME /data` still creates an anonymous volume even without a database mount; the HTTP worker
+never writes to it. Remove that volume with `docker rm -v` when removing the container.
+
 Executors that own pinned actors need stable ids, unique among live nodes and workers: set `--node-id` or
 `CICADA_NODE_ID` in App, `NodeConfig::node_id` in an embedded node, or `WorkerConfig::worker_id` in a worker. A random
 id after a restart leaves existing pins waiting. Labels and host names do not select placement.
