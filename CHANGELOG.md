@@ -33,6 +33,10 @@ of 0.19.1.
   client that keeps a per-stream cursor, acknowledges replays again and reconnects on a gap. Its producer emits
   through `websocket_session::emit_and_wait`, which waits for the outcome of its own Emit before it reads the answer.
 - The examples crate turns on axum's `ws` feature and tests with `tokio-tungstenite` 0.29.
+- The demo's browser client is tested as it ships, in Node against fake sockets, storage and timers
+  (`examples/tests/websocket_session_client.test.mjs`, Node's built-in test runner, no packages): replays, gaps,
+  old sockets, a lost cursor and other streams. The gate's full checks run it as `client-tests`, which needs
+  Node 26 or later as `node` on PATH and fails when it is missing or older. No real browser runs.
 
 ## 0.19.1 — 2026-11-16
 

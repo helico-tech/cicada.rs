@@ -18,6 +18,9 @@ No library API, guarantee, wire format, contract hash or schema changes. New for
   MAX_WRITE_BUFFER_BYTES}`.
 - `SessionStore` is implemented for `ActorSystem` with public operations only: `get_actor`, `send` and `changes`.
 - The examples crate turns on axum's `ws` feature; its tests use `tokio-tungstenite` 0.29.
+- The browser client's script is tested unchanged with Node's built-in test runner
+  (`examples/tests/websocket_session_client.test.mjs`, no packages), run by the new gate check `client-tests`
+  (`scripts/ci/client-tests.sh`), which needs Node 26 or later as `node` on PATH and fails when it is missing or older.
 - `skills/cicada/SKILL.md` gets a row for live handles held by a host, and the routes to the nine guide headings.
 - `examples/build.rs` and `examples/src/lib.rs` compile the Rust blocks of `docs/guide/design.md` as
   `DesignGuideDoctests`. This needs the file: see Blocking.
@@ -321,8 +324,13 @@ reconnect on a gap, and otherwise apply, store the cursor, then ack. Run it with
   memory store); PostgreSQL covers upgraded nodes on one schema. The one-second read covers everything else.
 - The route authenticates nobody; inbound messages and frames are limited to 4 KiB, writes to 16 KiB buffered and
   flushed per message; binary or malformed input closes the socket (close code 1003).
-- No browser run was checked: the HTML client is exercised by reading only. The Rust adapter is checked by a real
-  websocket handshake in the tests.
+- No real browser ran. The client's script, unchanged, runs in Node against fake `WebSocket`, `localStorage`, timers,
+  `location` and page: duplicates are acknowledged again and not applied; only the next contiguous frame is applied
+  and the cursor is kept per stream; a gap closes and reconnects without skipping; an old socket's callbacks are
+  ignored; a `Hello` ahead of a lost cursor stops with the recovery message and no ack; a cursor at or above `acked`
+  is acknowledged again on `Hello`; another stream's messages are ignored. The Rust adapter is checked by a real
+  websocket handshake. The guide's sentence "the HTML client has been inspected, not checked in a browser" stays
+  true; it may now add that the script is tested in Node (optional).
 
 ## 2. Navigation
 
@@ -346,6 +354,16 @@ reconnect on a gap, and otherwise apply, store the cursor, then ack. Run it with
 and `examples/tests/websocket_session.rs::a_missing_reply_actor_rejects_the_commit_and_keeps_no_frame`: the frame, the
 reply and the completion commit together, and a rejected commit keeps no frame. No new G or S guarantee.
 
+## 4. Node 26 for the gate
+
+**Where.** `docs/how-to/releasing.md`, `Prerequisites`; `AGENTS.md`, `Build and test`.
+**Text.** The gate's full checks need Node 26 or later as `node` on PATH (no npm packages): the check
+`client-tests` runs `node --test examples/tests/websocket_session_client.test.mjs`, and fails when `node` is missing
+or older. For AGENTS.md's list, the line
+`node --test examples/tests/websocket_session_client.test.mjs   # the example browser client (Node 26+)`.
+**Caveats.** Not blocking: no check reads these files for it. With nvm, the shell that runs the gate (and the
+pre-push hook) must have Node 26 first on PATH; the gate passes PATH through unchanged.
+
 ## Blocking
 
 Resolved by the owner's prepared docs, folded into `Wire the design guide's doctests and routes`, the commit that
@@ -360,10 +378,11 @@ on `docs`, taken as whole files without a merge: `README.md`, `docs/README.md`, 
 ## Status
 
 Checked on the combined result: `cargo test -p cicada-examples --doc` (30 passed), `--test docs` (11 passed),
-`--test skill` (10 passed), `--test websocket_session` (28 passed, after review fix 1: the demo's emit); before it `cargo clippy -p cicada-examples
+`--test skill` (10 passed), `--test websocket_session` (28 passed, after review fix 1: the demo's emit), the Node
+client test (9 passed, review fix 2) and the script tests; before it `cargo clippy -p cicada-examples
 --all-targets -- -D warnings`, `cargo check -p cicada-examples --examples`, `bash scripts/ci/dependency-trees.sh`
 and a manual run of the demo (an HTTP 101 upgrade, then `Hello` and the frames over `curl`). The gate result is in
 the build report. The guide, navigation and G2 prose are the owner's; nothing is left to write for this change. Review fix 1
 (`emit_and_wait`) changes no prose: the guide's demo text ("keeps one request in flight and records the last
-answer", `cargo run`, the printed URL) stays true. No
-browser execution was checked.
+answer", `cargo run`, the printed URL) stays true. Review fix 2 leaves the client script unchanged. No real
+browser ran.

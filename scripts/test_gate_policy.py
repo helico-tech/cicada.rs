@@ -115,6 +115,30 @@ class PolicyTests(unittest.TestCase):
                                           capture_output=True, text=True)
                     self.assertNotEqual(done.returncode, 0)
 
+    def test_client_tests_need_node_26_and_never_skip(self):
+        full = [c["argv"] for c in REAL_POLICY["kinds"]["full"]]
+        self.assertIn(["bash", "scripts/ci/client-tests.sh"], full)
+        script = ROOT / "scripts/ci/client-tests.sh"
+        self.assertIn("set -euo pipefail", script.read_text())
+        self.assertIn("node --test examples/tests/websocket_session_client.test.mjs", script.read_text())
+        with tempfile.TemporaryDirectory() as temp:
+            bash = subprocess.run(["sh", "-c", "command -v bash"], capture_output=True, text=True).stdout.strip()
+            bin_dir = Path(temp) / "bin"
+            bin_dir.mkdir()
+            for tool in ("bash", "env"):
+                found = subprocess.run(["sh", "-c", f"command -v {tool}"], capture_output=True, text=True)
+                (bin_dir / tool).symlink_to(found.stdout.strip())
+            env = {"PATH": str(bin_dir), "TMPDIR": temp}
+            missing = subprocess.run([bash, str(script)], cwd=ROOT, env=env, capture_output=True, text=True)
+            self.assertNotEqual(missing.returncode, 0)
+            self.assertIn("node not found on PATH; install Node 26 or later", missing.stderr)
+            node = bin_dir / "node"
+            node.write_text('#!/bin/sh\ncase "$1" in -p) echo 24;; --version) echo v24.22.1;; *) exit 0;; esac\n')
+            node.chmod(0o755)
+            old = subprocess.run([bash, str(script)], cwd=ROOT, env=env, capture_output=True, text=True)
+            self.assertNotEqual(old.returncode, 0, "an old node fails, it does not pass by running nothing")
+            self.assertIn("node v24.22.1 is older than 26", old.stderr)
+
 
 class EnvironmentTests(unittest.TestCase):
     AMBIENT = {
