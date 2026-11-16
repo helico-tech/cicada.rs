@@ -29,8 +29,8 @@ what it says. You do not change the design. Work fast: the owner wants short ite
 - Commit after each task or group of tasks. Write the message like the ones in `git log`: one sentence that says what
   the commit does. Every commit builds.
 - **Version.** The caller gives `X.Y.Z`. Set it in `[workspace.package]` of `Cargo.toml`, run `cargo check` (it
-  updates `Cargo.lock`), set `metadata.cicada-version` in `skills/cicada/SKILL.md` and `version` in
-  `.claude-plugin/plugin.json`, regenerate `docs/openapi.json` (`CICADA_UPDATE_OPENAPI=true`), and put the entries of this change under `## X.Y.Z — unreleased` in `CHANGELOG.md`.
+  updates `Cargo.lock`), set `metadata.cicada-version` in every `skills/*/SKILL.md` (now `cicada` and `actor-design`) and `version`
+  in `.claude-plugin/plugin.json`, regenerate `docs/openapi.json` (`CICADA_UPDATE_OPENAPI=true`), and put the entries of this change under `## X.Y.Z — unreleased` in `CHANGELOG.md`.
   Leave the `tag = "v…"` lines of the README alone: they change at the release.
 - **PostgreSQL.** Its tests need the database on port 55432
   (`CICADA_PG_URL=postgres://cicada:cicada@localhost:55432/cicada`). If nothing answers there, run

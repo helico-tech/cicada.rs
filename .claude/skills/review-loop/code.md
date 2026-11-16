@@ -24,7 +24,7 @@ checkout of your own.
 4. **Scope.** Behaviour that the design does not describe.
 5. **The rules of `AGENTS.md`.** A schema change is an appended migration, public items have doc comments,
    `CHANGELOG.md` says what changed, generated references are regenerated, and the version in `Cargo.toml`, the
-   skill's `cicada-version` and `.claude-plugin/plugin.json` is the one the note names.
+   `cicada-version` of every skill in `skills/` and `.claude-plugin/plugin.json` is the one the note names.
 6. **Docs.** The builder edits no protected docs (`README.md` beyond its release tag lines, `AGENTS.md`, `docs/` except
    ADRs and generated references). `docs-handoff.md` is there and true to the code at `head`: what users must learn,
    where it goes, caveats, Blocking, and a status that calls no prose written that is not. A protected file in the
