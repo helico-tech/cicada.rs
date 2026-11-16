@@ -33,7 +33,7 @@
   skill tests with `cargo test -p cicada-examples --doc`, `cargo test -p cicada-examples --test docs` and
   `cargo test -p cicada-examples --test skill`. Repeat vendor validation on the final versioned tree for code review.
 
-- [ ] 5. Finishing. Run `openspec validate skill-plugin --strict`. Commit the final implementation tree and run
+- [x] 5. Finishing. Run `openspec validate skill-plugin --strict`. Commit the final implementation tree and run
   `python3 scripts/gate.py run --e2e`, then report `python3 scripts/gate.py status`. The full gate must include
   `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` with PostgreSQL,
   independent feature builds, script/docs/skill tests and Docker E2E. Record CLI validation evidence and its limits
