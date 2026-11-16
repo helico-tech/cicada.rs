@@ -9,8 +9,8 @@ For an app binary backed by SQLite:
 
 ```toml
 [dependencies]
-cicada = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.19.3" }
-cicada-app = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.19.3", features = ["sqlite"] }
+cicada = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.19.4" }
+cicada-app = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.19.4", features = ["sqlite"] }
 serde = { version = "1", features = ["derive"] }
 schemars = "1"
 ```
@@ -59,11 +59,20 @@ Two consumer skills use your project's resolved Cicada source:
 | Skill | Use it to |
 | --- | --- |
 | `cicada` | Build, test, operate and upgrade using that version's guides, examples and code |
-| `actor-design` | Work out an actor design with you before writing code, following [Design with actors](../guide/design.md) |
+| `actor-design` | Design a new actor system with you, or review an existing design or implementation against [Design with actors](../guide/design.md) |
 
-`actor-design` saves each step as Markdown with diagrams in your project's `docs/design/actors.md` by default;
-your chosen path or repository rules take precedence. It waits for confirmation before advancing, unless you
-explicitly delegate decisions, and can resume from the saved progress. It does not implement or commit the design.
+**Design mode** saves each step as Markdown with diagrams in `docs/design/actors.md` in your project. It waits
+for confirmation before advancing, unless you explicitly delegate decisions, and resumes from the saved progress.
+
+**Review mode** starts with a request such as “review our order actors”; name the actors or stories you want checked.
+It reconstructs the system from evidence, checks it against the resolved guide and saves findings with failure traces
+in `docs/design/actors-review.md`, separate from the design. One review request covers all four phases (scope and
+evidence, reconstruct, check, report) without confirmation after each. An unclear request gets one question about
+the mode.
+
+Both paths are defaults; your chosen path or repository rules take precedence. A review runs no project builds,
+tests or scripts and writes only its report. Its conclusions cover the evidence read, not the whole system, and are
+not a proof of correctness. Neither mode implements fixes or commits its output.
 
 Source discovery needs Python 3.11+, Cargo, rustc and Git. It is locked and offline; it does not fetch, upgrade
 dependencies or write a lockfile. Missing sources and multiple source groups are reported explicitly.
@@ -88,8 +97,8 @@ For a **first install** into a project without either skill folder:
 
 ```sh
 staging=$(mktemp -d)
-gh release download v0.19.3 --repo helico-tech/cicada.rs --pattern 'cicada-skill-*.tar.gz' --dir "$staging"
-tar -xzf "$staging/cicada-skill-v0.19.3.tar.gz" -C "$staging"
+gh release download v0.19.4 --repo helico-tech/cicada.rs --pattern 'cicada-skill-*.tar.gz' --dir "$staging"
+tar -xzf "$staging/cicada-skill-v0.19.4.tar.gz" -C "$staging"
 # Inspect both skills, the helper and the design template before copying them.
 mkdir -p .claude/skills
 cp -R "$staging/cicada" "$staging/actor-design" .claude/skills/
@@ -135,6 +144,8 @@ To switch from an archive to the plugin, compare both installed folders with the
 local changes you need elsewhere. Then remove the archive copies so only one installation is active. Keeping the
 archive is also fine; switching installations and enabling automatic updates are your choices.
 
-Updating the skills does not change your Cicada dependency or saved design documents. The project's resolved source
-still wins with either installation. Projects on releases before 0.17.2 can use a newer router against their own older
-source; those older releases have no skill archive.
+Updating the skills does not change your Cicada dependency, saved designs or review reports. A later review of the
+same system and scope resumes its report, keeping finding ids and your notes; findings that depend on changed code
+or Cicada source become stale until checked again. The project's resolved source still wins with either installation.
+Projects on releases before 0.17.2 can use newer skills against their own older source; those releases have no skill
+archive.

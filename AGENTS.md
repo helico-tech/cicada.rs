@@ -19,7 +19,7 @@ cargo build --workspace
 cargo test --workspace                 # unit, runtime, SQLite, HTTP, doctest and docs tests; every feature of cicada and cicada-app on
 cargo test -p cicada-examples --doc    # only the Rust blocks of README.md, the guides and docs/operations.md
 cargo test -p cicada-examples --test docs   # the table of guarantees and the links between the Markdown files
-cargo test -p cicada-examples --test skill  # consumer skills: versions, routes, design template, resolver and packaging (python3 3.11+)
+cargo test -p cicada-examples --test skill  # consumer skills: versions, routes, design/review structure, resolver and packaging (python3 3.11+)
 cargo test -p cicada --test fixtures   # fixed portable expectations in fixtures/; no update variable (ADR 0047)
 node --test examples/tests/websocket_session_client.test.mjs   # the example browser client (Node 26+)
 cargo clippy --workspace --all-targets
@@ -60,7 +60,7 @@ Full checks also require Node 26 or later as `node` on PATH for `client-tests`; 
 | `docs/` | `architecture.md`; `guarantees.md`, the tests behind each guarantee; `guide/`, the layer and actor-design guides; `operations.md`; `reference/`, the generated help of the command line (`cli.md`) and the contracts of the ready-made actors (`contracts/`); `openapi.json`; `adr/` and its index `adr/README.md` |
 | `openspec/` | Specs, changes in progress and finished changes |
 | `skills/cicada/` | The consumer implementation skill (ADR 0041): `SKILL.md`, which routes a consumer's agent into the resolved source, and its read-only resolver `scripts/cicada_source.py`; checked by `examples/tests/skill.rs` with the Python tests in `examples/tests/skill/` |
-| `skills/actor-design/` | The consumer design skill (ADR 0051): a step-by-step interview using the resolved design guide, with `assets/design-template.md` for saved designs; uses the sibling `cicada` resolver and is checked by the skill tests |
+| `skills/actor-design/` | The consumer design/review skill (ADR 0051): a step-by-step design interview and a review of existing systems using the resolved guide; `assets/design-template.md` for saved designs and a review-report skeleton in `SKILL.md`; uses the sibling `cicada` resolver and is checked by the skill tests |
 | `scripts/` | `gate.py`, local check evidence, pre-push and release (ADR 0046); `gate-policy.json` and `ci/`, its checks; `release-check.sh`; `package-skill.py` and `package-fixtures.py`, the release archives, with shared helpers in `release_archive.py`; `status.py`, the order and state of the changes; `review.py`, the review requests between the loops |
 | `.claude/skills/` | The three loops (ADR 0030): `design-loop`, `build-loop` with the builder's brief and docs handoff template, `review-loop` with the briefs of a design and a code review |
 
@@ -102,10 +102,10 @@ Full checks also require Node 26 or later as `node` on PATH for `client-tests`; 
   Markdown file outside `target` and `openspec/changes/archive`.
 - A new ADR gets its row in [docs/adr/README.md](docs/adr/README.md).
 - The consumer skills route; the guides own the knowledge. `skills/cicada/SKILL.md` covers implementation;
-  `skills/actor-design/SKILL.md` holds the design interview method and uses the sibling's resolver. Both skills'
-  `metadata.cicada-version` equals the workspace version. Their routes, design template and method are checked by
-  `examples/tests/skill.rs`; new or renamed headings, guides and examples keep them resolving. Missing consumer
-  advice goes into its guide through the docs handoff.
+  `skills/actor-design/SKILL.md` holds design and review methods and uses the sibling's resolver. Both skills'
+  `metadata.cicada-version` equals the workspace version. Their routes, design template, methods and report structure
+  are checked by `examples/tests/skill.rs`; new or renamed headings, guides and examples keep them resolving. Missing
+  consumer advice goes into its guide through the docs handoff.
 
 ## Specs and changes: OpenSpec
 
