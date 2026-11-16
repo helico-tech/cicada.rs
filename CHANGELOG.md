@@ -7,6 +7,30 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.20.3 — unreleased
+
+A stock Rust HTTP worker of the sample, for interop tests of other worker ports. Only the sample service changes: the
+libraries, actor contracts, wire formats, the store schema and the guarantees are those of 0.20.2.
+
+### Added
+
+- `cicada-sample-executor`, a second binary of `cicada-sample-service` and of its image (`Sample::executor`): the
+  sample's types, routes, `API_TOKEN` and variables with App's whole command line, but no `on_start` hook, so
+  `cicada-sample-executor worker --server <url> --types <names>` runs the sample's types over HTTP (ADR 0042). It
+  creates no singletons and no dead-letter watch in any mode: a node of `cicada-sample-service`, or an API caller,
+  supplies those a workload needs. The client token is `CICADA_TOKEN` (or `--token`); `API_TOKEN` only protects a
+  served API. An explicit `--server` wins over the image's `CICADA_STORE`. In the image, override the entry point
+  with `/usr/local/bin/cicada-sample-executor` and turn the HTTP health check off (`--no-healthcheck`); the default
+  entry point stays `cicada-sample-service serve`. `cargo run -p cicada-sample-service` still runs the node
+  (`default-run`). Covered in `sample-service/tests/sample_service.rs` and the E2E class `SampleExecutorTest`.
+
+### Changed
+
+- The sample's E2E actors (`e2e.slow`, `e2e.counter`, `e2e.recorder`) and its `EffectLog` record `Turn::node_id`,
+  the claim owner that ran the turn: a node's id, or a worker's id over HTTP. Their constructors and
+  `Catalog::new`/`with_fakes` keep their node-id argument but ignore it. `--node-id` now works for the sample and wins
+  over `CICADA_NODE_ID`; before, a differing flag failed the start. The sample no longer sets `node_config`.
+
 ## 0.20.2 — 2026-11-16
 
 Node-down alerts (ADR 0054): an optional ready-made monitor that reads the node table and publishes one `NodeDown`
