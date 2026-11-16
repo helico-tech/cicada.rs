@@ -76,7 +76,7 @@ publishes one `NodeDown` through an existing `Topic` for each node row it sees s
 - Two health signals: watch the monitor for `Failed`/`Stopped` (a poll that failed for good, such as a missing topic:
   repair and send `Rearm`); read `lastProblem` for caught read failures (`unavailable`, `timeout`, `invalid`,
   `tooManyNodes`), which never fail a turn.
-- Links: the [wire contract](../reference/contracts/cicada.node-down.json) and the implementation
+- Links: the wire contract `../reference/contracts/cicada.node-down.json` and the implementation
   `crates/cicada-actors/src/node_down.rs`. Compare with `Heartbeat watch`: that one counts explicit Beats from your own
   jobs or devices; this one reads the native node table.
 **Caveats.** An observation, not proof of a machine failure; never use it to move pins, claim or fence work. A
@@ -134,7 +134,9 @@ fence turns. Node-down alerts change neither row retention nor make the table a 
 
 ## Status
 
-Checks run on this branch: `cargo test -p cicada-actors` (node_down unit 7, integration 12, wire formats 22, all
-passed), `cargo test -p cicada-examples --test node_down` (4 passed), `--test docs` (11 passed), `--doc` (33 passed),
-`--test skill` (16 passed, 2 failed: the blocking route above). All prose above is proposed text; the owner has
-prepared nothing yet; no protected file was edited.
+Checks run on this branch: `cargo test --workspace --no-fail-fast` with PostgreSQL (3108 passed, 2 failed: the two
+skill-route tests under Blocking), among them `cargo test -p cicada-actors` (node_down unit 7, integration 12, wire
+formats 22), `cargo test -p cicada-examples --test node_down` (4), `--test docs` (11) and `--doc` (33);
+`cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --all --check` clean;
+`openspec validate node-down-alert --strict` valid. All prose above is proposed text; the owner has prepared nothing
+yet; no protected file was edited.
