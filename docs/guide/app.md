@@ -202,11 +202,32 @@ The [sample service](../../sample-service/) hosts the worked examples and E2E ac
 cargo run -p cicada-sample-service -- serve --store actors.db
 ```
 
-It creates required singletons and the dead-letters watch for hosted types. `GET /` and `/ready` are public.
-Set `API_TOKEN` to require a bearer token on the API. Set `OTEL_EXPORTER_OTLP_ENDPOINT` for telemetry; the protocol
-must be unset or `http/protobuf`. Use `CICADA_NODE_ID` consistently; a differing `--node-id` fails startup.
+The default binary, `cicada-sample-service`, creates required singletons and the dead-letters watch for hosted
+types. `GET /` and `/ready` are public. Set `API_TOKEN` to require a bearer token on the API.
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` for telemetry; the protocol must be unset or `http/protobuf`.
 The image defaults to `0.0.0.0:8080`, `/data/actors.db`, and a 3 s shutdown grace period.
 Legacy unprefixed variables are rejected; see the [0.13.0 upgrade](../how-to/upgrading.md).
+
+Use the second binary, `cicada-sample-executor`, to run sample types through an existing API:
+
+```sh
+cargo run -p cicada-sample-service --bin cicada-sample-executor -- worker --server http://localhost:8080 --types e2e.counter
+```
+
+It has the same catalog, routes, API-token protection and full App command line, but no bootstrap in any mode:
+it creates no sample singletons or wildcard dead-letter watch. A store-connected sample node hosting the needed
+types, or an API caller, creates what the workload needs; registering contracts creates no actor. The original
+binary still refuses `worker --server` because it has an `App::on_start` hook.
+
+An HTTP worker sends `CICADA_TOKEN` (or `--token`); `API_TOKEN` protects a served API and is never the client token.
+It has no listener, so its in-memory `EffectLog` cannot be read through `/e2e/effects`; inspect the actors' durable
+state on the server. This path opens no store, although the sample package still builds both SQL features.
+See [image deployment](../operations.md#deploying) for the entrypoint and health-check settings.
+
+The E2E actors record `Turn::node_id()`: the node or worker that ran each turn, never the HTTP server's id for a
+remote turn. App resolves `--node-id`, then `CICADA_NODE_ID`, then a random id. A differing flag now starts and wins
+over the variable. The legacy node-id arguments of `SlowActor::new`, `CounterActor::new`, `RecorderActor::new`,
+`Catalog::new` and `Catalog::with_fakes` remain accepted but are ignored.
 
 ## Running it
 
