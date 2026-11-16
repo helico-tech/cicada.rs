@@ -96,15 +96,15 @@ be retried on unknown delivery outcomes without assuming transport acceptance pr
 ### Requirement: The example tests application limits without strengthening core guarantees
 
 The runnable adapter SHALL execute only its own inert child mode without a shell, arbitrary command or descendants.
-Trusted host construction SHALL supply the child path, never user command input. OS tests SHALL run on Linux/macOS;
-other platforms SHALL retain protocol tests without a claim of OS verification.
 Actor/protocol tests SHALL use TestActors and virtual time. A separate bounded subprocess smoke test SHALL cover real
 spawn/normal-exit/stop/reap behavior. Documentation SHALL distinguish host-lifetime repeat safety from crash recovery.
 
 #### Scenario: Check race and restart behavior
 
 - **WHEN** the example is checked
-- **THEN** tests cover lost commit replay through public TurnSource, capacity, sticky stop/spawn races, stale events,
+- **THEN** host construction supplies the child path, never user input; OS tests run on Linux/macOS while other
+  platforms retain protocol tests without OS verification claims
+- **AND** tests cover lost commit replay through public TurnSource, capacity, sticky stop/spawn races, stale events,
   send uncertainty, deletion after external verification, late original-host exit after NeedsReconciliation, stalled
   operations and shutdown, plus a new-epoch zero-action assertion
 - **AND** tests/pinned_process_os.rs runs the same OS adapter in a bounded subprocess helper using fixed child
