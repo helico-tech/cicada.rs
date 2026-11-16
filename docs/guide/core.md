@@ -326,7 +326,7 @@ Pass a `NodeConfig` to `.config(..)`, or use the [App flags](app.md#run-it-as-a-
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `node_id` | random | Claim owner, shown in running messages and `/health`; choose a stable, unique id for [pinned work](#pin-an-actor-to-an-executor). |
-| `label` | `None` | Free text shown in the [node table](../operations.md#node-table); display only. Not blank, no NUL, at most 200 Unicode scalar values; kept as given. An invalid label fails initialization/start. |
+| `label` | `None` | Free text shown in the [node table](../operations.md#node-table) and [node-down alerts](actors.md#node-down-alerts). Not blank, no NUL, at most 200 Unicode scalar values; kept as given. An invalid label fails initialization/start. |
 | `lease_ttl` | 30 s | A turn's lease; after expiry an eligible owner can claim it again. |
 | `heartbeat_interval` | `lease_ttl / 3` | Lease renewal; must be in `(0, lease_ttl / 2]`. |
 | `poll_interval` | 500 ms | Longest sleep of the dispatch loop (wake-ups usually come sooner: own sends, PostgreSQL `NOTIFY`). |
@@ -338,6 +338,9 @@ Pass a `NodeConfig` to `.config(..)`, or use the [App flags](app.md#run-it-as-a-
 | `max_lost_claims` | `Some(5)` | The [claim limit](#claim-limit): a message with this many lost claims ends `failed` without running; `None` turns it off, `Some(0)` fails the start. Set one value on every node. |
 Store retention defaults to 7 days and is also the deduplication window. SQLite has a 5 s busy timeout; PostgreSQL
 has a pool of 20 and a 30 s transaction timeout. See [sizing and tuning](../operations.md).
+
+To be told when a node row goes dead, host the optional [node-down monitor](actors.md#node-down-alerts).
+It observes heartbeats; it neither moves pins nor changes who may claim work.
 
 ## Retry
 
@@ -476,6 +479,7 @@ Each implementation has tests in [examples/tests](../../examples/tests/). Open t
 | Instance registry | [registry.rs](../../examples/src/registry.rs) |
 | Websocket session: a host follows durable output | [websocket_session.rs](../../examples/src/websocket_session.rs) |
 | Process run pinned to its node: host-held child, slots, reconciliation | [pinned_process.rs](../../examples/src/pinned_process.rs), [demo host](../../examples/examples/pinned_process.rs) |
+| Alert on-call when a node stops heartbeating | [node_down.rs](../../examples/src/node_down.rs) |
 | Restart and redrive | [supervision.rs](../../examples/src/supervision.rs) |
 | Shared rate | [rate_limit.rs](../../examples/src/rate_limit.rs) |
 | Latest edit wins | [debounce.rs](../../examples/src/debounce.rs) |
