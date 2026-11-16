@@ -7,6 +7,37 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.19.2 — 2026-11-16
+
+A guide to designing with actors (ADR 0050), `docs/guide/design.md`, and its worked example: a websocket session whose
+durable output any host can serve. Library APIs, wire formats, contract hashes, store schema and guarantees are those
+of 0.19.1.
+
+### Added
+
+- `docs/guide/design.md` explains actor design from problem to design: actors and identities, protocols,
+  coordination and time, recovery, outside systems, a pattern chooser and design mistakes, each as a principle and
+  then its Cicada form. The consumer skill routes to its sections.
+- Example 20, `examples/src/websocket_session.rs`: a session actor keeps at most 100 unacknowledged frames of at most
+  1024 UTF-8 bytes, numbered 1 to 2^53 − 1, and a client's cumulative acknowledgement. `Enqueue` appends a frame and
+  replies `Accepted` with the request's message id in one commit, or replies `Rejected` (`InvalidBody`, `BufferFull`,
+  `SequenceExhausted`) and changes nothing; a reply actor that is gone rejects the commit. A NUL character is refused
+  by Cicada at the send, before the session. Only a valid, larger `Ack` of the stream trims frames.
+- `websocket_session::bridge` serves one socket from the session's state with public `ActorSystem` reads, sends and
+  the change feed: it subscribes before reading, reads again on a hint of its exact address, on `Resync` and every
+  second, writes `Hello` and the frames above the acknowledgement, and forwards the client's `Ack`. Socket writes and
+  store operations have a five-second bound; a missing session, a store error or uncertain send, the end of the feed,
+  invalid input, the client's close and shutdown end both halves. `websocket_session::adapter` puts it behind the
+  axum route `GET /sessions/{stream}/socket` with 4 KiB inbound and 16 KiB write limits; the route authenticates
+  nobody. `cargo run -p cicada-examples --example websocket_session` serves it on loopback with a minimal browser
+  client that keeps a per-stream cursor, acknowledges replays again and reconnects on a gap. Its producer emits
+  through `websocket_session::emit_and_wait`, which waits for the outcome of its own Emit before it reads the answer.
+- The examples crate turns on axum's `ws` feature and tests with `tokio-tungstenite` 0.29.
+- The demo's browser client is tested as it ships, in Node against fake sockets, storage and timers
+  (`examples/tests/websocket_session_client.test.mjs`, Node's built-in test runner, no packages): replays, gaps,
+  old sockets, a lost cursor and other streams. The gate's full checks run it as `client-tests`, which needs
+  Node 26 or later as `node` on PATH and fails when it is missing or older. No real browser runs.
+
 ## 0.19.1 — 2026-11-16
 
 The consumer skills as a Claude Code plugin (ADR 0049), beside the release archive. Existing APIs, wire formats,

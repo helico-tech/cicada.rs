@@ -2,7 +2,7 @@
 name: cicada
 description: Build, test and operate Rust projects that use Cicada, the durable actor library on a SQL store (crates cicada, cicada-test, cicada-axum, cicada-client, cicada-app, cicada-actors, cicada-otel). Use it when a project depends on these crates, or the user asks to add Cicada, design actor types or messages, write durable flows, call external services from actors, test with TestActors, serve the HTTP API, run workers, or deploy and upgrade nodes. It finds the exact Cicada source the project resolves and routes to that version's guides, examples and code.
 metadata:
-  cicada-version: 0.19.1
+  cicada-version: 0.19.2
 ---
 
 # Cicada
@@ -87,7 +87,8 @@ These hold in current Cicada; check the details for the version in hand.
 | Choose layers, crates and features; add Cicada | `README.md#layers`, `README.md#quick-start`, `README.md#using-a-release-in-another-project`, `docs/how-to/install.md#choose-the-crates`, `docs/how-to/install.md#authenticate-cargo`, `CHANGELOG.md` |
 | Understand example message paths visually | `docs/guide/patterns.md` |
 | Behaviour and guarantees | `docs/architecture.md#guarantees`, `docs/architecture.md#turn-semantics`, `docs/architecture.md#known-limitations`, `docs/guarantees.md` |
-| Actor design: boundaries, keys, state, messages | `docs/guide/core.md#define-an-actor-type`, `docs/guide/core.md#design-an-actor`, `docs/guide/core.md#how-deep-a-value-can-be`, `examples/src/sync.rs`, `examples/src/fanout.rs`, `examples/src/registry.rs`, `examples/src/singleton.rs` |
+| Actor design: boundaries, keys, state, messages | `docs/guide/design.md#from-problem-to-design`, `docs/guide/design.md#choose-actors-and-identities`, `docs/guide/design.md#design-protocols`, `docs/guide/design.md#coordinate-work-and-time`, `docs/guide/design.md#recover-from-failure`, `docs/guide/design.md#choose-a-pattern`, `docs/guide/design.md#recognize-design-mistakes`, `docs/guide/core.md#define-an-actor-type`, `docs/guide/core.md#design-an-actor`, `docs/guide/core.md#how-deep-a-value-can-be`, `examples/src/sync.rs`, `examples/src/fanout.rs`, `examples/src/registry.rs`, `examples/src/singleton.rs` |
+| A socket, process or device handle held by a host beside durable actor state | `docs/guide/design.md#work-with-outside-systems`, `docs/guide/design.md#a-websocket-session`, `docs/guide/core.md#follow-changes`, `examples/src/websocket_session.rs`, `examples/src/websocket_session/` |
 | Children, watches, control effects | `docs/guide/core.md#child-actors`, `docs/guide/core.md#watches`, `docs/guide/core.md#control-effects`, `examples/src/supervision.rs` |
 | External calls, idempotency, retry, sagas | `docs/guide/core.md#retry`, `docs/guide/core.md#claim-limit`, `docs/guide/core.md#message-persistence`, `examples/src/saga/`, `examples/src/steps.rs` |
 | Timers, schedules, request and reply | `docs/guide/core.md#timers`, `examples/src/timer.rs`, `examples/src/cron.rs`, `examples/src/reply/` |

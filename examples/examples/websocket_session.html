@@ -1,0 +1,62 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Cicada websocket session</title>
+<pre id="log"></pre>
+<script>
+// A minimal client of example 20. It applies each frame once, in order, and acknowledges what it applied.
+const stream = new URLSearchParams(location.search).get("stream");
+const cursorKey = `cicada-session-cursor:${stream}`;
+// The highest sequence applied without a gap, kept across reloads for this one stream.
+let cursor = Number(localStorage.getItem(cursorKey) ?? "0");
+// Callbacks of an older socket are ignored: only the newest connection may apply frames.
+let generation = 0;
+
+function log(line) {
+  document.getElementById("log").textContent += line + "\n";
+}
+
+function connect() {
+  const mine = ++generation;
+  const url = `ws://${location.host}/sessions/${encodeURIComponent(stream)}/socket`;
+  const socket = new WebSocket(url);
+  const ack = () => {
+    if (cursor > 0) socket.send(JSON.stringify({ type: "Ack", stream, through: cursor }));
+  };
+  const reconnect = () => {
+    generation++;
+    socket.close();
+    setTimeout(connect, 1000);
+  };
+  socket.onmessage = (event) => {
+    if (mine !== generation) return;
+    const message = JSON.parse(event.data);
+    if (message.stream !== stream) return;
+    if (message.type === "Hello") {
+      if (message.acked > cursor) {
+        // Frames up to `acked` were acknowledged and are gone; they cannot be replayed.
+        generation++;
+        socket.close();
+        log(`cursor ${cursor} is behind the acknowledged ${message.acked}: recover, or start a new session`);
+        return;
+      }
+      ack(); // What was applied but not acknowledged.
+    } else if (message.type === "Frame") {
+      if (message.seq <= cursor) {
+        ack(); // A replay: applied already, acknowledge it again.
+      } else if (message.seq !== cursor + 1) {
+        reconnect(); // A gap: never skip ahead.
+      } else {
+        log(`${message.seq}: ${message.body}`);
+        cursor = message.seq;
+        localStorage.setItem(cursorKey, String(cursor));
+        ack();
+      }
+    }
+  };
+  socket.onclose = () => {
+    if (mine === generation) setTimeout(connect, 1000);
+  };
+}
+
+connect();
+</script>

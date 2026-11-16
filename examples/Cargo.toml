@@ -17,6 +17,11 @@ serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true
 thiserror.workspace = true
+# Example 20 serves a websocket session: axum's ws feature is turned on only here.
+axum = { workspace = true, features = ["ws"] }
+futures.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
 
 [dev-dependencies]
 # The code blocks of the README, the guides and the operations guide run as doctests of this crate (src/lib.rs).
@@ -24,16 +29,15 @@ anyhow.workspace = true
 # The README, the guides and the operations guide open both stores.
 cicada = { workspace = true, features = ["sqlite", "postgres"] }
 async-trait.workspace = true
-axum.workspace = true
 cicada-app = { workspace = true, features = ["sqlite", "postgres"] }
 cicada-axum.workspace = true
 cicada-otel.workspace = true
 cicada-test.workspace = true
-# The core guide follows a stream of change hints.
-futures.workspace = true
 # tests/docs.rs writes small trees of Markdown files.
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+# Example 20's test connects a websocket client to its axum route.
+tokio-tungstenite.workspace = true
 tracing-subscriber.workspace = true
 
 [lints]
