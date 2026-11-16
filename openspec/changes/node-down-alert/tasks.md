@@ -1,12 +1,12 @@
 # Tasks
 
-- [ ] 1. Monitor contract and source. Add node_down.rs exports for singleton ref, messages, validated state,
+- [x] 1. Monitor contract and source. Add node_down.rs exports for singleton ref, messages, validated state,
   NodeDown payload, NodeSnapshotSource and generic actor. Implement the ActorSystem reader without start/heartbeat,
   five-second timeout and full-snapshot validation/1000-row cap with bounded lastProblem. Add the minimal Tokio time
   dependency. Verify state/schema/decoder boundaries and fake-source valid/error/timeout/regression/cap cases using
   paused time; check an actual unstarted reader returns rows without registering itself.
 
-- [ ] 2. Durable polling and deduplication. Implement guarded Poll, Rearm, ten-second scheduling, dead-watermark
+- [x] 2. Durable polling and deduplication. Implement guarded Poll, Rearm, ten-second scheduling, dead-watermark
   transitions and atomic Topic publishes with normal retry/failure rules. Add virtual-time tests for the exact
   threshold, first dead sample, repeated/flapping/new-row episodes, absence/pruning, early/stale/copied polls,
   preserved history on source failure, no recovery notifications and missing Topic rollback/repair. Verify targeted
