@@ -51,7 +51,7 @@ A public marketplace or a listing elsewhere. Other agents' plugin systems. Chang
 
 ## Order
 
-After `sample-worker-mode`. Before `actor-design-skill`.
+After `node-details`. Before `actor-design-skill`.
 
 ## Impact
 

@@ -40,8 +40,10 @@ knowledge. The rule of ADR 0041 stays: a skill routes, the guides own the knowle
   with a lifecycle. The drawings live in a design document in the consumer's repository, so they render on GitHub
   and in editors. Review mode first draws the existing system from its code, then checks it.
 - **Live handles get a worked answer in the guide.** A process, a device or a socket cannot live in an actor. The
-  guide teaches the two ways of `research/cicada-fit.md`: the turn uses a handle that the host keeps (the worked
-  example of `pinned-actors`), and the machine follows the actor's state (for a websocket, no pin).
+  guide teaches the two ways of `research/cicada-fit.md`: the turn uses a handle that the host keeps, and the
+  machine follows the actor's state (for a websocket, no pin). This change comes before `pinned-actors` (owner,
+  2026-11-16), so the guide shows the second way with a worked example, and says the first works today on one node.
+  `pinned-actors` later adds the many-node form and its example to the guide.
 
 To decide in the design:
 
@@ -66,7 +68,7 @@ How Cicada executes actors. Changes to Cicada's behaviour. The one design-level 
 
 ## Order
 
-After `skill-plugin`. No following change.
+After `skill-plugin`. Before `pinned-actors`.
 
 ## Impact
 
