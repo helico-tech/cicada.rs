@@ -6,12 +6,12 @@
   manufacturing ids. Verify paused TestActors tests with conflicting legacy/runtime ids, existing state/message
   samples and unchanged contract snapshots/texts. Replace the node-id flag refusal check with correct precedence.
 
-- [ ] 2. Separate executable App. Add Sample::executor and cicada-sample-executor, sharing catalog, routes/auth and
+- [x] 2. Separate executable App. Add Sample::executor and cicada-sample-executor, sharing catalog, routes/auth and
   main/telemetry setup while omitting on_start hooks. Retain Sample::new bootstrap and set package default-run to
   cicada-sample-service. Keep App's full command/lifecycle policy. Verify sample construction, help/version/default
   binary, old-variable rejection, both definitions' catalog parity and original bootstrap tests.
 
-- [ ] 3. HTTP acceptance. Extend sample-service tests with a send-only server and executor: explicit server plus
+- [x] 3. HTTP acceptance. Extend sample-service tests with a send-only server and executor: explicit server plus
   CICADA_TOKEN, unusable ambient store, selected contracts, no bootstrap, and a counter run under the flag-selected
   worker id. Check missing/wrong credentials, explicit store conflict, original hook rejection and graceful stop.
   Use the bounded socket harness; keep actor timing/retry assertions on virtual time. Run targeted sample tests

@@ -1,7 +1,10 @@
 //! The sample node on `cicada-app`: every type of the [`Catalog`], picked with `--types`, its routes and its bearer
 //! token through `App::http`, and its singletons and the watch of its dead letters through `App::on_start`.
+//! [`Sample::executor`] is the same `App` without that `on_start` work, so that `worker --server` can run it; both
+//! binaries start through [`run_process`].
 
 use std::ffi::OsString;
+use std::process::ExitCode;
 use std::sync::Arc;
 
 use axum::Router;
@@ -19,6 +22,7 @@ use crate::catalog::{Catalog, Singleton};
 use crate::config::{ConfigError, SampleConfig, refuse_old_variables};
 use crate::e2e::EffectLog;
 use crate::fakes::Fakes;
+use crate::telemetry::Telemetry;
 
 /// What `GET /` answers: which node this is and what it hosts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,6 +40,9 @@ pub struct Sample {
     pub app: App,
 }
 
+/// The two definitions of the sample, `Sample::new` and `Sample::executor`.
+pub type Definition = fn(&[OsString], &Env) -> Result<Sample, ConfigError>;
+
 impl Sample {
     /// The sample node for the arguments `args` of the process and its variables `env`. For a node command
     /// (`serve`, `worker`) a variable the sample read before 0.13.0 is refused ([`refuse_old_variables`]).
@@ -43,23 +50,74 @@ impl Sample {
     /// Its actors record the claim owner of each turn, so `App` alone picks the node id: `--node-id`, else
     /// `CICADA_NODE_ID`, else a random one.
     pub fn new(args: &[OsString], env: &Env) -> Result<Self, ConfigError> {
-        if node_command(args) {
-            refuse_old_variables(env)?;
-        }
-        let config = SampleConfig::from_vars(env)?;
-        let effects = EffectLog::new();
-        let catalog = Catalog::build(effects.clone(), Fakes::default());
-        let mut app = App::new().version(concat!("cicada-sample-service ", env!("CARGO_PKG_VERSION")));
-        for t in catalog.types() {
-            app = t.add_to(app);
-        }
-        let token = config.api_token.clone();
+        let (app, catalog) = define(args, env, concat!("cicada-sample-service ", env!("CARGO_PKG_VERSION")))?;
         let singletons = catalog.singletons().to_vec();
-        let app = app
-            .http(move |api, system| routes(api, system, effects, token))
-            .on_start(move |system| async move { start(system, singletons).await });
+        Ok(Self { app: app.on_start(move |system| async move { start(system, singletons).await }) })
+    }
+
+    /// The sample without bootstrap, the binary `cicada-sample-executor`: the types, routes, token and variables of
+    /// [`Sample::new`], but no `on_start` work, so that `worker --server` can run it (`App` refuses `on_start` over
+    /// HTTP). It creates no singletons and installs no watch in any mode: a node of [`Sample::new`] or an API caller
+    /// supplies those a workload needs.
+    pub fn executor(args: &[OsString], env: &Env) -> Result<Self, ConfigError> {
+        let (app, _) = define(args, env, concat!("cicada-sample-executor ", env!("CARGO_PKG_VERSION")))?;
         Ok(Self { app })
     }
+}
+
+/// What both definitions share: the old variables refused for a node command, every type of the catalog, and the
+/// routes with the API token.
+fn define(args: &[OsString], env: &Env, version: &'static str) -> Result<(App, Catalog), ConfigError> {
+    if node_command(args) {
+        refuse_old_variables(env)?;
+    }
+    let config = SampleConfig::from_vars(env)?;
+    let effects = EffectLog::new();
+    let catalog = Catalog::build(effects.clone(), Fakes::default());
+    let mut app = App::new().version(version);
+    for t in catalog.types() {
+        app = t.add_to(app);
+    }
+    let token = config.api_token;
+    Ok((app.http(move |api, system| routes(api, system, effects, token)), catalog))
+}
+
+/// The `main` of both binaries: builds the sample with `definition` from the process's arguments and variables, adds
+/// OTLP telemetry for a node command when `OTEL_EXPORTER_OTLP_ENDPOINT` is set, and runs it with `App::run_async`,
+/// which handles logging, signals, the graceful stop and the exit code. Telemetry is flushed after the run. An
+/// invalid sample variable exits with code 2.
+pub async fn run_process(definition: Definition) -> ExitCode {
+    let args: Vec<OsString> = std::env::args_os().collect();
+    let env: Env =
+        std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))).collect();
+    let Sample { app } = match definition(&args, &env) {
+        Ok(sample) => sample,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let wants_telemetry = SampleConfig::from_vars(&env).is_ok_and(|c| c.telemetry);
+    let telemetry = if node_command(&args) && wants_telemetry {
+        match Telemetry::from_env() {
+            Ok(telemetry) => Some(telemetry),
+            Err(e) => {
+                eprintln!("error: OpenTelemetry: {e:#}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        None
+    };
+    let app = match &telemetry {
+        Some(t) => app.observe(t.observer()),
+        None => app,
+    };
+    let code = app.run_async().await;
+    if let Some(t) = telemetry {
+        t.shutdown().await;
+    }
+    code
 }
 
 /// The work after the start: the singletons of the hosted types, and the watch on every type of

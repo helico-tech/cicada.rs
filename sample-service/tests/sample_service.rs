@@ -16,6 +16,7 @@ use cicada_app::{AppError, Env};
 use cicada_client::ActorClient;
 use cicada_examples::registry::DeviceRegistry;
 use cicada_examples::saga::{Inventory, InventoryMsg, InventoryState, Order, OrderMsg, OrderState, OrderStatus};
+use cicada_sample_service::app::Definition;
 use cicada_sample_service::e2e::{
     Counter, CounterMsg, CounterState, EffectLog, Flaky, FlakyMsg, FlakyState, Recorder, RecorderMsg, RecorderState,
     Slow, SlowMsg, SlowState, flaky_retry,
@@ -75,10 +76,15 @@ struct Node {
 impl Node {
     /// `serve --listen 127.0.0.1:0 <flags>` with `env`.
     async fn start(env: &Env, flags: &[&str]) -> Self {
+        Self::start_as(Sample::new, env, flags).await
+    }
+
+    /// `serve --listen 127.0.0.1:0 <flags>` with `env`, of the sample's `definition`.
+    async fn start_as(definition: Definition, env: &Env, flags: &[&str]) -> Self {
         let mut line = vec!["cicada-sample-service", "serve", "--listen", "127.0.0.1:0"];
         line.extend(flags);
         let line = args(&line);
-        let Sample { app } = Sample::new(&line, env).expect("the sample's variables");
+        let Sample { app } = definition(&line, env).expect("the sample's variables");
         let out = Out::default();
         let (stop, stopped) = oneshot::channel::<()>();
         let task = tokio::spawn(app.run_with(line, env.clone(), out.clone(), async move {
@@ -175,6 +181,8 @@ fn an_old_variable_stops_the_start_and_names_the_new_one() {
     assert!(error.contains("DATABASE_URL (use CICADA_STORE)") && error.contains("HOSTED_TYPES (use CICADA_TYPES)"));
     assert!(!error.contains("secret"), "{error}");
     assert!(Sample::new(&args(&["sample", "worker"]), &vars(&[("PORT", "8080")])).is_err());
+    assert!(Sample::executor(&args(&["sample", "worker"]), &vars(&[("PORT", "8080")])).is_err(), "the executor too");
+    assert!(Sample::executor(&args(&["sample", "get", "actors"]), &vars(&[("PORT", "8080")])).is_ok());
     assert!(Sample::new(&args(&["sample", "get", "actors"]), &vars(&[("PORT", "8080")])).is_ok(), "not a node");
     assert!(refuse_old_variables(&vars(&[("PORT", " ")])).is_ok(), "a blank variable is unset");
 }
@@ -438,6 +446,238 @@ fn the_binary_serves_and_stops_on_sigterm_with_exit_code_0() {
     let mut stderr = String::new();
     std::io::Read::read_to_string(&mut child.stderr.take().unwrap(), &mut stderr).unwrap();
     assert_eq!(status.code(), Some(0), "{stderr}");
+}
+
+// ---- the executor: the sample without bootstrap ----
+
+/// A `worker` of a sample definition, running in the background until [`Worker::stop`].
+struct Worker {
+    out: Out,
+    stop: Option<oneshot::Sender<()>>,
+    task: JoinHandle<Result<(), AppError>>,
+}
+
+impl Worker {
+    /// `worker <flags>` of `definition` with `env`.
+    fn spawn(definition: Definition, env: &Env, flags: &[&str]) -> Self {
+        let line = worker_line(flags);
+        let Sample { app } = definition(&line, env).expect("the sample's variables");
+        let out = Out::default();
+        let (stop, stopped) = oneshot::channel::<()>();
+        let task = tokio::spawn(app.run_with(line, env.clone(), out.clone(), async move {
+            let _ = stopped.await;
+        }));
+        Self { out, stop: Some(stop), task }
+    }
+
+    /// Stops the worker, as SIGTERM does; how it ended.
+    async fn stop(mut self) -> Result<(), AppError> {
+        let _ = self.stop.take().unwrap().send(());
+        self.task.await.unwrap()
+    }
+}
+
+fn worker_line(flags: &[&str]) -> Vec<OsString> {
+    let mut line = vec!["cicada-sample-executor", "worker"];
+    line.extend(flags);
+    args(&line)
+}
+
+/// Runs `worker <flags>` of `definition` with `env` until it ends by itself; its error.
+async fn worker_fails(definition: Definition, env: &Env, flags: &[&str]) -> AppError {
+    let line = worker_line(flags);
+    let Sample { app } = definition(&line, env).expect("the sample's variables");
+    let run = app.run_with(line, env.clone(), Out::default(), std::future::pending());
+    tokio::time::timeout(Duration::from_secs(20), run).await.expect("the worker ends").expect_err("a failure")
+}
+
+impl Node {
+    /// The names of the registered types, sorted.
+    async fn type_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.api.types().await.unwrap().into_iter().map(|t| t.name.to_string()).collect();
+        names.sort();
+        names
+    }
+
+    /// `GET <path>` with the bearer `token`.
+    async fn get_as(&self, path: &str, token: &str) -> reqwest::Response {
+        self.http.get(format!("{}{path}", self.base)).bearer_auth(token).send().await.unwrap()
+    }
+
+    /// Asserts that no singleton of the sample and no watch exists (with the bearer `token`, if any).
+    async fn assert_no_bootstrap(&self, token: Option<&str>) {
+        let api = &self.api;
+        assert!(api.get(&DeviceRegistry).await.unwrap().is_none(), "no singleton");
+        assert!(api.get(&DeadLetters::default()).await.unwrap().is_none(), "no dead letters");
+        let watches = match token {
+            Some(token) => self.get_as("/watches", token).await,
+            None => self.get("/watches").await,
+        };
+        let watches: serde_json::Value = watches.json().await.unwrap();
+        assert_eq!(watches["items"], serde_json::json!([]), "no watch");
+    }
+
+    /// Creates the counter `id`, sends it one step and waits until it ran; the node its entry names.
+    async fn count_once(&self, id: &str) -> String {
+        let api = &self.api;
+        let counter = Counter { id: id.into() };
+        api.create(&counter, &CounterState::default()).await.unwrap();
+        api.send(&counter, CounterMsg::Step { seq: 1, hold_millis: 0 }).await.unwrap();
+        eventually("the step ran", || async {
+            api.state::<_, CounterState>(&counter).await.unwrap().is_some_and(|s| s.count == 1)
+        })
+        .await;
+        api.state::<_, CounterState>(&counter).await.unwrap().unwrap().entries[0].node.clone()
+    }
+}
+
+fn catalog_names() -> Vec<String> {
+    let mut names: Vec<String> =
+        Catalog::new("x", EffectLog::new()).types().iter().map(|t| t.type_name().to_owned()).collect();
+    names.sort();
+    names
+}
+
+/// sample-execution, Scenario: The executor keeps the App command surface: its `serve` has the catalog, the routes
+/// and the API token of the sample, and creates no singleton and no watch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_executor_serves_the_catalog_and_routes_without_bootstrap() {
+    let db = temp_db();
+    let mut env = env(&db.path);
+    env.insert("API_TOKEN".into(), "s3cret".into());
+    let node = Node::start_as(Sample::executor, &env, &[]).await;
+    assert_eq!(node.type_names().await, catalog_names(), "the same catalog as the sample");
+    node.assert_no_bootstrap(Some("s3cret")).await;
+    assert_eq!(node.get("/health").await.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(node.get("/e2e/effects").await.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(node.get_as("/e2e/effects", "s3cret").await.status(), StatusCode::OK);
+    let info: serde_json::Value = node.get("/").await.json().await.unwrap();
+    assert_eq!(info["node"], "test-node");
+    assert_eq!(node.get("/ready").await.status(), StatusCode::OK);
+    node.stop().await;
+}
+
+/// sample-execution, Scenario: The executor keeps the App command surface: a `worker` on the store registers the
+/// catalog without bootstrap, and its records name the `--node-id` it runs as.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_executor_works_on_the_store_without_bootstrap() {
+    let db = temp_db();
+    let server = Node::start(&env(&db.path), &["--types", "none"]).await;
+    let worker = Worker::spawn(Sample::executor, &env(&db.path), &["--node-id", "worker-1"]);
+    eventually("the worker registered the catalog", || async { server.type_names().await == catalog_names() }).await;
+    server.assert_no_bootstrap(None).await;
+    assert_eq!(server.count_once("store").await, "worker-1");
+    worker.stop().await.expect("exit code 0");
+    server.stop().await;
+}
+
+/// The environment of an HTTP worker of the executor: an ambient store it must not open, a node id the flag overrides,
+/// the server's `API_TOKEN` (not a client token) and no config file.
+fn executor_env(ambient: &std::path::Path) -> Env {
+    vars(&[
+        ("CICADA_STORE", &ambient.display().to_string()),
+        ("CICADA_NODE_ID", "worker-env"),
+        ("CICADA_POLL_INTERVAL", "50ms"),
+        ("CICADA_CONFIG", "/nonexistent/cicada/config.toml"),
+        ("API_TOKEN", "s3cret"),
+    ])
+}
+
+/// sample-execution, Scenario: HTTP execution without a database. Scenario: Bootstrap belongs to a host or caller.
+/// Scenario: Remote worker identity is distinct from the server.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_executor_runs_the_sample_over_http_without_a_database_or_bootstrap() {
+    let db = temp_db();
+    let mut server_env = env(&db.path);
+    server_env.insert("API_TOKEN".into(), "s3cret".into());
+    let server = Node::start(&server_env, &["--types", "none"]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let ambient = dir.path().join("never.db");
+    let mut env = executor_env(&ambient);
+    env.insert("CICADA_TOKEN".into(), "s3cret".into());
+    let flags = ["--server", &server.base, "--types", "e2e.counter,e2e.recorder", "--node-id", "worker-flag"];
+    let worker = Worker::spawn(Sample::executor, &env, &flags);
+    eventually("the worker registered its types", || async { server.type_names().await.len() == 2 }).await;
+    assert_eq!(server.type_names().await, ["e2e.counter", "e2e.recorder"], "only the selected types");
+    server.assert_no_bootstrap(Some("s3cret")).await;
+
+    assert_eq!(server.count_once("http").await, "worker-flag", "the worker's id, not the environment's");
+    let api = &server.api;
+    let recorder = Recorder { id: "http".into() };
+    api.create(&recorder, &RecorderState::default()).await.unwrap();
+    api.send(&recorder, RecorderMsg::Record { label: "remote".into(), sleep_millis: 0 }).await.unwrap();
+    eventually("recorded", || async {
+        api.state::<_, RecorderState>(&recorder).await.unwrap().is_some_and(|s| s.records.len() == 1)
+    })
+    .await;
+    assert_eq!(api.state::<_, RecorderState>(&recorder).await.unwrap().unwrap().records[0].node, "worker-flag");
+    let info: serde_json::Value = server.get("/").await.json().await.unwrap();
+    assert_eq!(info["node"], "test-node", "the server keeps its own id");
+    let effects = server.get_as("/e2e/effects", "s3cret").await.text().await.unwrap();
+    assert_eq!(effects, "[]", "the effect happened in the worker, whose log has no route");
+
+    assert!(!worker.out.text().contains("Listening on"), "the worker serves nothing: {}", worker.out.text());
+    worker.stop().await.expect("exit code 0");
+    assert!(!ambient.exists(), "the ambient store was not opened");
+    server.stop().await;
+}
+
+/// sample-execution, Scenario: Existing command and error policy.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_executor_keeps_the_token_target_and_type_rules_and_the_sample_refuses_http() {
+    let db = temp_db();
+    let mut server_env = env(&db.path);
+    server_env.insert("API_TOKEN".into(), "s3cret".into());
+    let server = Node::start(&server_env, &["--types", "none"]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let ambient = dir.path().join("never.db");
+    let base = server.base.as_str();
+    let store = db.path.to_str().unwrap();
+    let with_token = |token: &str| {
+        let mut env = executor_env(&ambient);
+        env.insert("CICADA_TOKEN".into(), token.into());
+        env
+    };
+    for (env, flags, code, says) in [
+        (executor_env(&ambient), vec!["--server", base], 1, "401"),
+        (with_token("wrong"), vec!["--server", base], 1, "401"),
+        (with_token("s3cret"), vec!["--server", base, "--store", store], 2, "not both"),
+        (with_token("s3cret"), vec!["--server", base, "--types", "nope"], 2, "does not host nope"),
+    ] {
+        let error = worker_fails(Sample::executor, &env, &flags).await;
+        assert_eq!(error.exit_code(), code, "{flags:?}: {error}");
+        assert!(error.to_string().contains(says), "{flags:?}: {error}");
+        assert!(!error.to_string().contains("wrong"), "the token is not printed: {error}");
+    }
+    let error = worker_fails(Sample::new, &with_token("s3cret"), &["--server", base]).await;
+    assert_eq!(error.exit_code(), 2, "{error}");
+    assert!(error.to_string().contains("App::on_start"), "the original sample has hooks: {error}");
+    assert!(server.type_names().await.is_empty(), "nothing registered");
+    assert!(!ambient.exists(), "the ambient store was not opened");
+    server.stop().await;
+}
+
+/// sample-execution, Scenario: The executor keeps the App command surface: the binary has the help and the version
+/// of `cicada-app` under its own name, and `cargo run` without `--bin` still runs the sample node.
+#[test]
+fn the_executor_binary_has_the_app_help_and_version_and_the_node_stays_the_default() {
+    use std::process::Command;
+
+    let run = |flag: &str| {
+        let output = Command::new(env!("CARGO_BIN_EXE_cicada-sample-executor"))
+            .arg(flag)
+            .env_clear()
+            .output()
+            .expect("the binary runs");
+        assert!(output.status.success(), "{flag}: {output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+    assert_eq!(run("--version").trim(), format!("cicada-sample-executor {}", env!("CARGO_PKG_VERSION")));
+    let help = run("--help");
+    assert!(help.contains("Usage: cicada-sample-executor"), "{help}");
+    assert!(help.contains("serve") && help.contains("worker") && help.contains("get"), "{help}");
+    let manifest = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml")).unwrap();
+    assert!(manifest.lines().any(|l| l.trim() == r#"default-run = "cicada-sample-service""#), "{manifest}");
 }
 
 /// The node on PostgreSQL (`CICADA_STORE`), in a schema of its own. Skipped without `CICADA_PG_URL`.
