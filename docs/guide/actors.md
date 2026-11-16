@@ -13,6 +13,7 @@ They use ordinary actor guarantees, watches and control effects from the [core](
 | Keep the latest value of a burst | `DebouncerActor` / `cicada.debouncer` | [debounce](../../examples/src/debounce.rs) |
 | Collect items into one delivery | `BatcherActor` / `cicada.batcher` | [batching](../../examples/src/batching.rs) |
 | Notice that something stopped happening | `HeartbeatWatchActor` / `cicada.heartbeat-watch` | [heartbeat](../../examples/src/heartbeat.rs) |
+| Tell people a node stopped heartbeating | `NodeDownMonitorActor` / `cicada.node-down` | [node_down](../../examples/src/node_down.rs) |
 | Run a durable multi-step job | `FlowActor<F>` / host-chosen name | [flow_onboarding](../../examples/src/flow_onboarding.rs) |
 | Start flows from a publication | `EventActor` / `cicada.event` | [flow_events](../../examples/src/flow_events.rs) |
 
@@ -317,6 +318,81 @@ headers still apply. Alarm payloads may be at most 62 levels deep in a new watch
 consistency and deadline bounds; raw HTTP schema validation alone does not. See the
 [wire contract](../reference/contracts/cicada.heartbeat-watch.json) and
 [implementation](../../crates/cicada-actors/src/heartbeat_watch.rs) for exact fields and checks.
+
+## Node-down alerts
+
+Use one unpinned `NodeDownMonitor` (`cicada.node-down/_`) per store to publish observed node silence through a
+[Topic](#topic). Unlike [Heartbeat watch](#heartbeat-watch), which counts explicit Beats from your jobs or devices,
+this monitor reads Cicada's native node table. Nothing creates or starts it automatically.
+
+1. Build a reader `ActorSystem` on the same store; never start it, so it writes no node row or heartbeat.
+2. Host `NodeDownMonitorActor::new(reader)`, `TopicActor` and the receiver types. Every monitor host must read that
+   same store.
+3. Create the topic with `TopicState::default()` and subscribe the receivers with `TopicMsg::Subscribe`.
+4. Create `NodeDownMonitor` unpinned with `NodeDownMonitorState::new(topic)?`, then send `NodeDownMonitorMsg::Rearm`.
+
+[Example 22](../../examples/src/node_down.rs) supplies `start` for steps 3–4, including a pager that watches the
+monitor. This host uses that setup; the example pager records at most 100 lines rather than contacting people:
+
+<!-- doctest
+# async fn example(store: cicada::Store) -> Result<(), Box<dyn std::error::Error>> {
+@@12
+# Ok(()) }
+-->
+```rust,no_run
+use cicada::ActorSystem;
+use cicada_actors::{NodeDownMonitorActor, TopicActor};
+use cicada_examples::node_down::{PagerActor, start};
+
+let reader = ActorSystem::builder(store.clone()).build(); // never start this reader
+let system = ActorSystem::builder(store)
+    .host(NodeDownMonitorActor::new(reader))
+    .host(TopicActor)
+    .host(PagerActor)
+    .build();
+system.start().await?;
+start(&system).await?;
+```
+
+| Message | Effect |
+| --- | --- |
+| `NodeDownMonitorMsg::Rearm` | Start or replace the timer at the saved `nextPollAt`, due now on first start or when overdue; keep `alerted` |
+| `NodeDownMonitorMsg::Poll` | Only the armed self-sent timer counts: read, publish new episodes and arm the next poll; an early timer rearms at the same time without reading |
+
+Each due poll bounds its read to five seconds; the next is due ten seconds after the check ends. Pauses, outages
+and queueing can delay it. A node row is dead when sample time minus `lastSeen` is **at least 120 seconds**. A row
+already dead at the first check alerts too. Enqueues of `TopicMsg::Publish`, watermarks in `alerted`,
+`lastCheckedAt` and the next timer commit together, so competing hosts or a replay do not duplicate a kept observation.
+
+For each still-dead node id, `alerted` keeps its `(startedAt, lastSeen)` watermark. The same pair alerts no more
+while kept; a newer heartbeat or a different `startedAt` alerts again once dead, even without an alive sample in
+between. A successful check forgets absent and alive rows silently, with no recovery message. Deleting and recreating
+the monitor resets this history.
+
+Receivers declare `NodeDown(cicada_actors::NodeDown)` in a `#[serde(tag = "type")]` message family. The wire payload
+contains `node`, `startedAt`, `lastSeen`, `detectedAt` and optional `hostname`, `cicadaVersion`, `label`.
+`detectedAt` is the sample time, not the time of death. Topic chooses subscribers when it handles `Publish` and
+checks membership again at `Deliver`. Successful publication proves neither receiver handling nor that anyone was paged.
+
+Check both parts of the monitor's health:
+
+- **Watch for `Failed` and `Stopped`.** A missing topic rejects a poll's whole commit (cause `commit`), keeping no
+  alert or state changes and losing the timer. Recreate the topic and subscriptions, then send `Rearm`. Purge or
+  cancellation can also lose the timer without notifying a watcher. Retry/redrive copies, forged polls and superseded
+  timers do nothing; use `Rearm`, which preserves history. Recreate a deleted monitor before rearming it.
+- **Read `lastProblem` and `lastCheckedAt`.** Failed reads record `unavailable`, `timeout`, `invalid` or `tooManyNodes`
+  and keep polling; these turns succeed, so watches say nothing. One invalid row, backwards sample time or more
+  than 1000 rows rejects the whole sample: no alerts, with `alerted` and `lastCheckedAt` unchanged. A good sample
+  clears `lastProblem`. The example's `read_problem` exposes it; `repair` restores the topic/subscription and rearms.
+
+These are sampled observations, not proof of machine failure. Clean-stop removal and pruning can hide a row before
+it is read; a heartbeat can race an alert; shared node ids share a row; HTTP workers have no row. A cluster with no
+working store and polling monitor cannot alert. Never use an alert to move pins, claim work or fence outside effects.
+The 1000-row cap bounds retained state, not the full node-table read; slow reads can suppress alerts indefinitely.
+
+See the [wire contract](../reference/contracts/cicada.node-down.json),
+[implementation](../../crates/cicada-actors/src/node_down.rs) and
+[tests](../../crates/cicada-actors/tests/node_down.rs) for exact checks and recovery cases.
 
 ## Flows
 
