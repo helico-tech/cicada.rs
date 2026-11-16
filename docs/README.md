@@ -44,7 +44,8 @@ Generate the Rust API reference locally with `cargo doc --workspace --no-deps`.
 
 ## Work with an agent
 
-[Install the consumer skill](how-to/install.md#install-the-coding-agent-skill), or use the [agent reading map](agents.md)
-to locate the documentation of your resolved dependency.
+[Install the consumer skills](how-to/install.md#install-the-coding-agent-skill), or use the [agent reading map](agents.md)
+to locate the documentation of your resolved dependency. The `actor-design` skill works through a design with you
+step by step and saves the result as Markdown with diagrams.
 Contributors follow [AGENTS.md](../AGENTS.md). The documentation owner follows the
 [writing standard](maintaining/writing.md) and [maintenance procedure](maintaining/maintenance.md).

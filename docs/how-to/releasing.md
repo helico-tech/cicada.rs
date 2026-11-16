@@ -11,8 +11,9 @@ A release is a tag `vX.Y.Z` on `main` (ADR 0016). All crates share the version i
    carries the version: regenerate it (a test says how when it is stale) and update the README's `tag = "vX.Y.Z"`
    lines. The docs session refreshes the dependency examples in [installation](install.md); include the new version
    in the docs handoff rather than editing that guide from the builder worktree. Keep `metadata.cicada-version` in
-   `skills/cicada/SKILL.md` and `version` in `.claude-plugin/plugin.json` equal to the workspace version;
-   the skill test and release checker enforce both.
+   both `skills/cicada/SKILL.md` and `skills/actor-design/SKILL.md`, and `version` in `.claude-plugin/plugin.json`,
+   equal to the workspace version. The skill test and release checker enforce all three. The release checker also
+   requires `scripts/skill-archive-format` to contain `2` followed by a newline.
 2. In `CHANGELOG.md`, replace `unreleased` in the heading of that version with today's date, as `YYYY-MM-DD`.
 3. Commit the release on `main`. On the owner's approval in the build loop, run:
 
@@ -26,6 +27,8 @@ A release is a tag `vX.Y.Z` on `main` (ADR 0016). All crates share the version i
    Finally it creates or resumes a matching draft GitHub Release in origin's repository, verifies its notes and both assets,
    and publishes it. A conflicting main, tag or draft stops publication.
 4. Confirm the published Release has `cicada-skill-vX.Y.Z.tar.gz` and `cicada-fixtures-vX.Y.Z.tar.gz`.
+   The skill archive contains the sibling folders `cicada/` and `actor-design/`, each with an identical `SOURCE.json`;
+   the release driver checks provenance and every packaged file against the pinned commit.
    The docs session then updates installation pins. The fixture archive starts at 0.18.12; older releases are not backfilled.
 
 Prerequisites: Python 3.11+, the Rust toolchain with fmt/clippy, local PostgreSQL, Docker for E2E, Node 26 or later
@@ -37,7 +40,7 @@ owner-approved build loop installs the shared hook or publishes; builder tests u
 publication tools. Automatic push, PR and tag Actions are disabled (ADR 0046).
 
 When the next implementation change lands, add `## X.Y.Z — unreleased` to the changelog and set that version in
-`Cargo.toml`, the skill metadata and `.claude-plugin/plugin.json`.
+`Cargo.toml`, both skills' metadata and `.claude-plugin/plugin.json`.
 
 Code review also records the Claude CLI version, commands and warnings from these checks of the manifests and layout:
 
@@ -51,6 +54,10 @@ The gate does not require the Claude CLI. Public-directory findings about a miss
 this private marketplace. Validation does not prove Git access, installation or skill loading
 (see [ADR 0049](../adr/0049-consumer-skills-as-a-plugin.md)).
 
+The tag's `scripts/skill-archive-format` selects the archive layout. A tag with neither that file nor
+`skills/actor-design` keeps the earlier single-skill layout and bytes. Changing the format requires a new ADR and
+packager support; never rewrite old tags, their archives or saved release digests.
+
 ## Resume a release
 
 Run the same `release vX.Y.Z` command again. State in `<git common dir>/cicada-gate/release/vX.Y.Z.json` pins its
@@ -60,6 +67,9 @@ state and resumes only a draft with matching title, notes and asset hashes. The 
 assets: only missing assets are uploaded, uncertain uploads are re-read, and both must verify before publication.
 Duplicate, extra or conflicting assets stop the command without overwrite. A published Release is reported as
 already published and left untouched.
+
+If an updated driver produces different archive digests, it refuses the retry. Resume with `scripts/gate.py`
+from the pinned commit, whose packager and archive layout reproduce the saved digests; do not replace the digest map.
 
 A state file with the earlier single `asset_sha256` field is refused. Resume that interrupted release using
 `scripts/gate.py` from its pinned commit; do not convert its state to the new format.

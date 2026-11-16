@@ -9,8 +9,8 @@ For an app binary backed by SQLite:
 
 ```toml
 [dependencies]
-cicada = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.19.2" }
-cicada-app = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.19.2", features = ["sqlite"] }
+cicada = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.19.3" }
+cicada-app = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.19.3", features = ["sqlite"] }
 serde = { version = "1", features = ["derive"] }
 schemars = "1"
 ```
@@ -54,9 +54,19 @@ Next: [build your first actor](../guide/core.md#define-an-actor-type).
 
 ## Install the coding-agent skill
 
-The consumer skill finds your project's resolved Cicada source and routes the agent to that version's guides,
-examples and code. It needs Python 3.11+, Cargo, rustc and Git. Discovery is locked and offline; it does not fetch,
-upgrade dependencies or write a lockfile. Missing sources and multiple source groups are reported explicitly.
+Two consumer skills use your project's resolved Cicada source:
+
+| Skill | Use it to |
+| --- | --- |
+| `cicada` | Build, test, operate and upgrade using that version's guides, examples and code |
+| `actor-design` | Work out an actor design with you before writing code, following [Design with actors](../guide/design.md) |
+
+`actor-design` saves each step as Markdown with diagrams in your project's `docs/design/actors.md` by default;
+your chosen path or repository rules take precedence. It waits for confirmation before advancing, unless you
+explicitly delegate decisions, and can resume from the saved progress. It does not implement or commit the design.
+
+Source discovery needs Python 3.11+, Cargo, rustc and Git. It is locked and offline; it does not fetch, upgrade
+dependencies or write a lockfile. Missing sources and multiple source groups are reported explicitly.
 
 **Claude Code plugin.** With Git read access to this private repository through your own credentials (an SSH key or
 `gh auth setup-git` for HTTPS), run:
@@ -66,25 +76,31 @@ claude plugin marketplace add helico-tech/cicada.rs
 claude plugin install cicada@cicada
 ```
 
-Start a new Claude Code session and look for `/cicada:cicada`. The shell command installs at user scope;
-[Claude Code's plugin guide](https://code.claude.com/docs/en/discover-plugins) covers other scopes and Git access failures.
+Start a new Claude Code session and look for `/cicada:cicada` and `/cicada:actor-design`. The shell command installs
+at user scope; [Claude Code's plugin guide](https://code.claude.com/docs/en/discover-plugins) covers other scopes and
+Git access failures.
 The plugin follows `main`: its version matches the workspace, but its files can include documentation committed
 after that release tag. It has no `SOURCE.json`, so the helper reports `revision_match: unknown`.
 
 **Release archive.** For other agents, or the exact skill files of a release tag, use the archive attached to a
-published GitHub Release, starting with 0.17.2. For a **first install** into a project without `.claude/skills/cicada`:
+published GitHub Release. Archives start at 0.17.2; from 0.19.3 they contain both `cicada/` and `actor-design/`.
+For a **first install** into a project without either skill folder:
 
 ```sh
 staging=$(mktemp -d)
-gh release download v0.19.2 --repo helico-tech/cicada.rs --pattern 'cicada-skill-*.tar.gz' --dir "$staging"
-tar -xzf "$staging/cicada-skill-v0.19.2.tar.gz" -C "$staging"
-# Inspect the skill and helper before copying them into your agent's project skill folder.
+gh release download v0.19.3 --repo helico-tech/cicada.rs --pattern 'cicada-skill-*.tar.gz' --dir "$staging"
+tar -xzf "$staging/cicada-skill-v0.19.3.tar.gz" -C "$staging"
+# Inspect both skills, the helper and the design template before copying them.
 mkdir -p .claude/skills
-cp -R "$staging/cicada" .claude/skills/
+cp -R "$staging/cicada" "$staging/actor-design" .claude/skills/
 ```
 
-The directory shown is for Claude Code; use your agent's project skill directory. From the consumer project, the
-installed helper can report the matching sources (use the actual installed skill folder, quoted for the shell):
+The directory shown is for Claude Code; use your agent's project skill directory. Keep both folders side by side
+at the same version: `actor-design` runs the resolver in its sibling `cicada`. Installing `cicada` alone remains valid;
+archives before 0.19.3 contain only that folder. Each archived skill's `SOURCE.json` identifies the same release commit.
+
+From the consumer project, the installed helper can report the matching sources
+(use the actual installed skill folder, quoted for the shell):
 
 ```sh
 python3 ".claude/skills/cicada/scripts/cicada_source.py"
@@ -96,27 +112,29 @@ Without Python/toolchain, inspect Cargo.lock and verifiable local source manuall
 
 ### Update the installed skill
 
-**Plugin:** update through Claude Code's `/plugin`. Updates fetch a new copy when the plugin version changes with a
-Cicada release; documentation-only commits keep that version. Edits in the plugin cache do not survive updates.
+**Plugin:** update both skills through Claude Code's `/plugin`. Updates fetch a new copy when the plugin version changes
+with a Cicada release; documentation-only commits keep that version. Edits in the plugin cache do not survive updates.
 
 **Archive:** download and unpack the new archive into a fresh staging directory as above. Nothing updates an archive
 installation automatically. Compare before replacing it:
 
 ```sh
 diff -r "$staging/cicada" .claude/skills/cicada
+diff -r "$staging/actor-design" .claude/skills/actor-design
 ```
 
-After reviewing the diff and preserving local changes you need, replace the folder whole so stale files do not remain:
+When updating from an archive before 0.19.3, the missing installed `actor-design` folder is expected. After reviewing
+the differences and preserving local changes you need, replace both folders whole so stale files do not remain:
 
 ```sh
-rm -rf .claude/skills/cicada
-cp -R "$staging/cicada" .claude/skills/
+rm -rf .claude/skills/cicada .claude/skills/actor-design
+cp -R "$staging/cicada" "$staging/actor-design" .claude/skills/
 ```
 
-To switch from an archive to the plugin, compare `.claude/skills/cicada` with the plugin's skill folder and save local
-changes you need elsewhere. Then remove the archive copy so only one is active. Keeping the archive is also fine;
-switching installations and enabling automatic updates are your choices.
+To switch from an archive to the plugin, compare both installed folders with the plugin's skill folders and save
+local changes you need elsewhere. Then remove the archive copies so only one installation is active. Keeping the
+archive is also fine; switching installations and enabling automatic updates are your choices.
 
-Updating the skill and updating your Cicada dependency are separate actions; the project's resolved source still
-wins with either installation. Projects on releases before 0.17.2 can use a newer router against their own older
+Updating the skills does not change your Cicada dependency or saved design documents. The project's resolved source
+still wins with either installation. Projects on releases before 0.17.2 can use a newer router against their own older
 source; those older releases have no skill archive.
