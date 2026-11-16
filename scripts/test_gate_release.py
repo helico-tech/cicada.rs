@@ -24,6 +24,9 @@ FILES = {
     "c/src/lib.rs": "",
     "skills/cicada/SKILL.md": "---\nname: cicada\nmetadata:\n  cicada-version: 0.9.0\n---\n# Skill\n",
     "skills/cicada/scripts/cicada_source.py": "print('resolver')\n",
+    "skills/actor-design/SKILL.md": "---\nname: actor-design\nmetadata:\n  cicada-version: 0.9.0\n---\n# Design\n",
+    "skills/actor-design/assets/design-template.md": "# Template\n",
+    "scripts/skill-archive-format": "2\n",
     ".claude-plugin/plugin.json": '{"name": "cicada", "version": "0.9.0"}\n',
     "CHANGELOG.md": "# Changelog\n\n## 0.9.0 — 2026-11-01\n\n- Old.\n",
     **{f"fixtures/{name}": f'{{"format": 1, "name": "{name}"}}\n'
@@ -34,10 +37,22 @@ FIXTURES = "cicada-fixtures-v1.0.0.tar.gz"
 RELEASE = {
     "Cargo.toml": FILES["Cargo.toml"].replace("0.9.0", "1.0.0"),
     "skills/cicada/SKILL.md": FILES["skills/cicada/SKILL.md"].replace("0.9.0", "1.0.0"),
+    "skills/actor-design/SKILL.md": FILES["skills/actor-design/SKILL.md"].replace("0.9.0", "1.0.0"),
     ".claude-plugin/plugin.json": FILES[".claude-plugin/plugin.json"].replace("0.9.0", "1.0.0"),
     "CHANGELOG.md": "# Changelog\n\n## 1.0.0 — 2026-11-15\n\n- First.\n\n## 0.9.0 — 2026-11-01\n\n- Old.\n",
 }
 NOTES = "\n- First.\n\n"
+SKILL_NAMES = ["cicada", "cicada/SKILL.md", "cicada/SOURCE.json", "cicada/scripts", "cicada/scripts/cicada_source.py"]
+DESIGN_NAMES = ["actor-design", "actor-design/SKILL.md", "actor-design/SOURCE.json", "actor-design/assets",
+                "actor-design/assets/design-template.md"]
+
+
+def legacy_release_check() -> str:
+    """scripts/release-check.sh as before format 2 of the skill archive: without its format block."""
+    lines = (Path(__file__).resolve().parent / "release-check.sh").read_text().split("\n")
+    start = lines.index("# Format 2 of the skill archive: the format file and the second skill, in the same version.")
+    end = lines.index("", start)
+    return "\n".join(lines[:start] + lines[end + 1:])
 
 
 class ReleaseTests(unittest.TestCase):
@@ -81,17 +96,20 @@ class ReleaseTests(unittest.TestCase):
         return [c for c in self.gh()["calls"] if c[:2] in (["release", "create"], ["release", "upload"])
                 or c[:3] == ["api", "-X", "PATCH"]]
 
-    def assert_published(self):
+    def assert_published(self, skill_names=DESIGN_NAMES + SKILL_NAMES):
         (found,) = self.gh()["releases"]
         self.assertFalse(found["draft"])
         self.assertEqual((found["tag_name"], found["name"], found["body"]), ("v1.0.0", "v1.0.0", NOTES))
         self.assertEqual(sorted(a["name"] for a in found["assets"]), [FIXTURES, SKILL])
         for asset in found["assets"]:
-            root = "cicada" if asset["name"] == SKILL else "cicada-fixtures"
             data = Path(asset["file"]).read_bytes()
             with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
-                source = json.loads(archive.extractfile(f"{root}/SOURCE.json").read())
-            self.assertEqual((source["commit"], source["tag"]), (self.c, "v1.0.0"))
+                names = archive.getnames()
+                if asset["name"] == SKILL:
+                    self.assertEqual(names, skill_names)
+                for name in (n for n in names if n.endswith("/SOURCE.json")):
+                    source = json.loads(archive.extractfile(name).read())
+                    self.assertEqual((source["commit"], source["tag"]), (self.c, "v1.0.0"), name)
             self.assertEqual(self.state()["assets"][asset["name"]], hashlib.sha256(data).hexdigest())
         self.assertNotIn("asset_sha256", self.state())
         self.assertEqual(self.remote("refs/heads/main"), self.c)
@@ -412,6 +430,109 @@ class ReleaseTests(unittest.TestCase):
                 self.assertNotEqual(self.remote("refs/heads/main"), self.c)
                 self.assertIsNone(self.remote("refs/tags/v1.0.0"))
                 self.assertEqual(self.writes(), [])
+
+    def test_release_check_requires_format_two_and_both_skill_versions(self):
+        design = "skills/actor-design/SKILL.md"
+        stale = RELEASE[design].replace("1.0.0", "0.9.0")
+        cases = {
+            "no format file": ({"scripts/skill-archive-format": None}, "skill-archive-format is missing or does not"),
+            "format 3": ({"scripts/skill-archive-format": "3\n"}, "does not hold 2 and a newline"),
+            "no newline": ({"scripts/skill-archive-format": "2"}, "does not hold 2 and a newline"),
+            "stale design skill": ({design: stale}, f"{design} says cicada-version 0.9.0"),
+            "no design skill": ({design: None}, f"{design} says cicada-version nothing"),
+        }
+        for name, (files, problem) in cases.items():
+            with self.subTest(name):
+                shutil.rmtree(self.s.state / "release", ignore_errors=True)  # each case is a first attempt
+                self.s.git("checkout", "-q", self.c, "--", ".")
+                for path, text in files.items():
+                    if text is None:
+                        self.s.git("rm", "-q", "-f", path)
+                    else:
+                        self.s.write(path, text)
+                commit = self.s.commit(f"Release 1.0.0, {name}")
+                done = self.release(commit)
+                self.assertEqual(done.returncode, 1)
+                self.assertIn("release-check failed", done.stderr)
+                self.assertIn(problem, done.stderr)
+                self.assertNotEqual(self.remote("refs/heads/main"), commit)
+                self.assertIsNone(self.remote("refs/tags/v1.0.0"))
+                self.assertEqual(self.writes(), [])
+
+    def test_a_legacy_commit_releases_and_resumes_the_single_skill_layout(self):
+        for path in ("scripts/skill-archive-format", "skills/actor-design/SKILL.md",
+                     "skills/actor-design/assets/design-template.md"):
+            self.s.git("rm", "-q", path)
+        self.c = self.s.commit("Release 1.0.0 as before format 2", {"scripts/release-check.sh": legacy_release_check()})
+        state = self.interrupted_after_packaging()
+        self.s.write("scripts/skill-archive-format", "2\n")  # the caller's working tree is never read
+        self.s.write("skills/actor-design/SKILL.md", RELEASE["skills/actor-design/SKILL.md"])
+        done = self.release()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assert_published(SKILL_NAMES)
+        self.assertEqual(self.state()["assets"], state["assets"], "the saved legacy digests are kept")
+
+    def test_a_design_tree_without_the_format_file_is_refused_by_the_driver(self):
+        self.s.git("rm", "-q", "scripts/skill-archive-format")
+        self.c = self.s.commit("Release 1.0.0 without the format file",
+                               {"scripts/release-check.sh": legacy_release_check()})
+        done = self.release()
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("has skills/actor-design but no scripts/skill-archive-format", done.stderr)
+        self.assertIsNone(self.remote("refs/tags/v1.0.0"))
+        self.assertNotIn("assets", self.state())
+        self.assertEqual(self.writes(), [])
+
+    def test_the_driver_checks_every_source_manifest_and_tagged_file(self):
+        packager = (Path(__file__).resolve().parent / "package-skill.py").read_text()
+        source = "        members[name] = (found.source(), 0o644)\n"
+        files = "        members[name] = (files[path], mode)\n"
+        design = "        if name.startswith('actor-design'):\n"
+        cases = {
+            "other design source": (source, design + "            members[name] = (found.source()"
+                                    ".replace(b'v1.0.0', b'v0.9.0'), 0o644)\n",
+                                    "actor-design/SOURCE.json in the skill archive names"),
+            "empty cicada source": (source, "        if name.startswith('cicada/'):\n"
+                                    "            members[name] = (b'{}', 0o644)\n",
+                                    "cicada/SOURCE.json in the skill archive names {}"),
+            "source as a folder": (source, design + "            members[name] = (None, 0o755)\n",
+                                   "actor-design/SOURCE.json in the skill archive has the wrong type"),
+            "other template": (files, "        if name.endswith('design-template.md'):\n"
+                               "            members[name] = (b'other', mode)\n",
+                               "actor-design/assets/design-template.md in the archive differs"),
+        }
+        for name, (after, extra, problem) in cases.items():
+            with self.subTest(name):
+                self.assertIn(after, packager)
+                shutil.rmtree(self.s.state / "release", ignore_errors=True)  # each case is a first attempt
+                self.s.git("checkout", "-q", self.c, "--", ".")
+                commit = self.s.commit(f"Release 1.0.0, {name}",
+                                       {"scripts/package-skill.py": packager.replace(after, after + extra)})
+                done = self.release(commit)
+                self.assertEqual(done.returncode, 1)
+                self.assertIn(problem, done.stderr)
+                self.assertIsNone(self.remote("refs/tags/v1.0.0"))
+                self.assertEqual(self.writes(), [])
+                self.assertNotIn("assets", self.state())
+                self.s.git("tag", "-d", "v1.0.0")  # the local tag of the refused attempt, never pushed
+
+    def test_a_format_two_retry_verifies_both_sources_against_the_pinned_commit(self):
+        state = self.interrupted_after_packaging()
+        # The caller's checkout moves on to a commit whose skills differ; the retry reads only the pinned commit.
+        self.s.commit("Later skill edits", {"skills/actor-design/SKILL.md": "---\nname: actor-design\n---\nLater\n",
+                                            "skills/actor-design/assets/design-template.md": "# Later\n"})
+        changed = {**state["assets"], SKILL: "0" * 64}
+        self.write_state({**state, "assets": changed})
+        refused = self.release()
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn("not the saved", refused.stderr)
+        self.assertEqual(self.state()["assets"], changed, "the saved digests are never replaced")
+        self.assertEqual(self.writes(), [])
+        self.write_state(state)
+        done = self.release()
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assert_published()
+        self.assertEqual(self.state()["assets"], state["assets"])
 
     def test_a_rejected_main_push_is_refreshed_once(self):
         flag = self.s.dir / "reject-once"

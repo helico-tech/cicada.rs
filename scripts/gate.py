@@ -34,6 +34,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import tomllib
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -43,6 +44,8 @@ from urllib.parse import urlsplit
 SCHEMA = 1
 POLICY_PATH = "scripts/gate-policy.json"
 RUNNER_PATH = "scripts/gate.py"
+SKILL_FORMAT_FILE = "scripts/skill-archive-format"  # the layout marker of the skill archive (ADR 0051)
+REGULAR_MODES = ("100644", "100755")  # Git's modes of a regular file
 STATE_DIR = "cicada-gate"
 OWNED = ".claude/worktrees/gate"
 OWNER_FILE = "cicada-gate-owner"
@@ -1098,24 +1101,49 @@ class Release:
         self.save(tag_object=obj)
         return obj
 
-    def archives(self) -> list[tuple[str, str, str, dict[str, str | None]]]:
+    def skill_members(self, commit: str) -> dict[str, str | None]:
+        """The members of the skill archive in the layout the pinned commit selects (ADR 0051): format 2 with both
+        skills when its scripts/skill-archive-format holds `2` and a newline, the single-skill layout when it has
+        neither that file nor skills/actor-design. Never read from the working tree."""
+        members: dict[str, str | None] = {
+            "cicada": None, "cicada/scripts": None, "cicada/SOURCE.json": None,
+            "cicada/SKILL.md": "skills/cicada/SKILL.md",
+            "cicada/scripts/cicada_source.py": "skills/cicada/scripts/cicada_source.py"}
+        marker = self.repo.entry(commit, SKILL_FORMAT_FILE)
+        if marker is None:
+            if self.repo.entry(commit, "skills/actor-design") is not None:
+                raise GateError(f"{commit[:12]} has skills/actor-design but no {SKILL_FORMAT_FILE}")
+            return members
+        if marker[1] != "blob" or marker[0] not in REGULAR_MODES or self.repo.show(marker[2]) != b"2\n":
+            raise GateError(f"{SKILL_FORMAT_FILE} at {commit[:12]} is not a regular file holding 2 and a newline")
+        return {**members, "actor-design": None, "actor-design/assets": None, "actor-design/SOURCE.json": None,
+                "actor-design/SKILL.md": "skills/actor-design/SKILL.md",
+                "actor-design/assets/design-template.md": "skills/actor-design/assets/design-template.md"}
+
+    def archives(self, commit: str) -> list[tuple[str, str, str, dict[str, str | None]]]:
         """Each release archive: what it is, its packager, its file name, and its members, each with the path at the
-        tag whose bytes it holds (None for a folder, and for SOURCE.json, which is checked on its own)."""
+        tag whose bytes it holds (None for a folder, and for each SOURCE.json, which is checked on its own)."""
         fixtures = ("canonical.json", "contracts.json", "leases.json", "status.json")
         return [
-            ("skill", "scripts/package-skill.py", f"cicada-skill-{self.tag}.tar.gz", {
-                "cicada": None, "cicada/scripts": None, "cicada/SOURCE.json": None,
-                "cicada/SKILL.md": "skills/cicada/SKILL.md",
-                "cicada/scripts/cicada_source.py": "skills/cicada/scripts/cicada_source.py"}),
+            ("skill", "scripts/package-skill.py", f"cicada-skill-{self.tag}.tar.gz", self.skill_members(commit)),
             ("fixtures", "scripts/package-fixtures.py", f"cicada-fixtures-{self.tag}.tar.gz", {
                 "cicada-fixtures": None, "cicada-fixtures/SOURCE.json": None,
                 **{f"cicada-fixtures/{name}": f"fixtures/{name}" for name in fixtures}}),
         ]
 
+    def source_identity(self, commit: str) -> dict[str, str]:
+        """What every SOURCE.json of the release must name: the repository of the commit's workspace, the tag, the
+        commit and the version."""
+        blob = self.repo.blob(commit, "Cargo.toml")
+        workspace = tomllib.loads(self.repo.show(blob).decode()).get("workspace", {}) if blob else {}
+        repository = workspace.get("package", {}).get("repository")
+        return {"repository": repository, "tag": self.tag, "commit": commit, "version": self.tag[1:]}
+
     def build_archive(self, path: Path, commit: str, obj: str, what: str, script: str, name: str,
                       members: dict[str, str | None]) -> bytes:
         """The archive its packager writes in the owned worktree, checked against the tag: exactly these members,
-        each of its type, the files with the bytes of their blobs at the commit, and SOURCE.json naming the tag."""
+        each of its type, the files with the bytes of their regular blobs at the commit, and every SOURCE.json
+        naming the repository, tag, commit and version."""
         work = Path(tempfile.mkdtemp(prefix="package.", dir=self.repo.state))
         try:
             done = supervised(self.sess, ["python3", "-I", "-B", script, self.tag, str(work)],
@@ -1129,29 +1157,39 @@ class Release:
             for item in work.iterdir():
                 item.unlink()
             work.rmdir()
-        source_name = next(m for m in members if m.endswith("/SOURCE.json"))
+        sources = [m for m in members if m.endswith("/SOURCE.json")]
+        identity = self.source_identity(commit)
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
             found = archive.getmembers()
             names = [m.name for m in found]
             if sorted(names) != sorted(members) or len(set(names)) != len(names):
                 raise GateError(f"the {what} archive holds {names}, not {sorted(members)}")
             for member in found:
-                folder = members[member.name] is None and member.name != source_name
+                folder = members[member.name] is None and member.name not in sources
                 if (member.isdir(), member.isfile()) != (folder, not folder):
                     raise GateError(f"{member.name} in the {what} archive has the wrong type")
             read = lambda member: archive.extractfile(member).read()
-            source = json.loads(read(source_name))
-            if (source.get("tag"), source.get("commit"), source.get("version")) != (self.tag, commit, self.tag[1:]):
-                raise GateError(f"the {what} archive names {source}, not {self.tag} at {commit}")
+            for source_name in sources:
+                try:
+                    source = json.loads(read(source_name))
+                except ValueError:
+                    source = None
+                if source != identity:
+                    raise GateError(f"{source_name} in the {what} archive names {source}, not {identity}")
             for inside, repo_path in members.items():
-                if repo_path and read(inside) != self.repo.show(self.repo.blob(commit, repo_path) or "missing"):
+                if not repo_path:
+                    continue
+                entry = self.repo.entry(commit, repo_path)
+                if entry is None or entry[1] != "blob" or entry[0] not in REGULAR_MODES:
+                    raise GateError(f"{repo_path} at {commit} is not a regular file")
+                if read(inside) != self.repo.show(entry[2]):
                     raise GateError(f"{inside} in the archive differs from {repo_path} at {commit}")
         return data
 
     def package(self, path: Path, commit: str, obj: str) -> list[Path]:
         """Both archives, checked; their digests are saved together once both are, and must match on a retry."""
         built = {name: self.build_archive(path, commit, obj, what, script, name, members)
-                 for what, script, name, members in self.archives()}
+                 for what, script, name, members in self.archives(commit)}
         digests = {name: sha256(data) for name, data in built.items()}
         saved = self.state.get("assets")
         if saved is not None and saved != digests:

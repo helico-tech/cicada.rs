@@ -5,8 +5,10 @@
 #
 # Run it on the commit to release: the checked-out commit is the one checked, and a local tag of that name must point
 # at it. It fails, naming the problem, when the tag is malformed or points elsewhere, the workspace version or the
-# version of the consumer skill (skills/cicada/SKILL.md) differs, the plugin manifest (.claude-plugin/plugin.json) is
-# missing, is not JSON or has no string version equal to it, the changelog has no dated section for the version,
+# version of a consumer skill (skills/cicada/SKILL.md, skills/actor-design/SKILL.md) differs, the skill archive's
+# format file (scripts/skill-archive-format) does not hold format 2 (ADR 0051), the plugin manifest
+# (.claude-plugin/plugin.json) is missing, is not JSON or has no string version equal to it, the changelog has no
+# dated section for the version,
 # or, without --before-push, the commit is not on origin/main after a fetch. scripts/gate.py release runs it with
 # --before-push before main is pushed and without it afterwards.
 # CHANGELOG_FILE reads another changelog than CHANGELOG.md.
@@ -33,6 +35,14 @@ versions=$(cargo metadata --no-deps --format-version 1 | jq -r '[.packages[].ver
 
 skill=$(sed -n 's/^  cicada-version: *//p' skills/cicada/SKILL.md | head -n 1)
 [ "$skill" = "$version" ] || fail "the tag is $tag, but skills/cicada/SKILL.md says cicada-version ${skill:-nothing}"
+
+# Format 2 of the skill archive: the format file and the second skill, in the same version.
+format_file=scripts/skill-archive-format
+{ [ -f "$format_file" ] && [ ! -L "$format_file" ] && printf '2\n' | cmp -s - "$format_file"; } ||
+    fail "the tag is $tag, but $format_file is missing or does not hold 2 and a newline"
+design=$(sed -n 's/^  cicada-version: *//p' skills/actor-design/SKILL.md 2>/dev/null | head -n 1 || true)
+[ "$design" = "$version" ] ||
+    fail "the tag is $tag, but skills/actor-design/SKILL.md says cicada-version ${design:-nothing}"
 
 plugin=.claude-plugin/plugin.json
 [ -f "$plugin" ] || fail "the tag is $tag, but $plugin is missing"
