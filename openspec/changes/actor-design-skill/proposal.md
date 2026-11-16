@@ -2,77 +2,56 @@
 
 ## Why
 
-The guides say how Cicada's API works. They say little about the step before it: how to cut a problem into actors.
-Which actors exist, what each one owns, which messages they exchange, how they agree without a shared transaction,
-how they fail, and how they meet outside services and processes. A consumer who works with an AI agent gets code
-that compiles and a design that may be wrong: one actor that does everything, a rule split over two actors, an
-outside call that is not safe to repeat.
+A guide supplies knowledge, but a consumer's agent also needs a method for turning the user's problem into an
+actor design. The owner approved the split on 2026-11-16: actor-design-guide supplies the knowledge first, this
+change adds the interactive design skill, and actor-design-review later adds review of existing systems.
 
-The owner wants a skill, `actor-design`, that helps a consumer think a problem through in the actor-idiomatic way,
-and that reviews an existing design against those idioms. It is about designing systems with actors, not about how
-actors are executed: that is Cicada's job.
+The research is retained here:
 
-The research is done and sits in this folder (2026-11-15):
+- [research/actor-design.md](research/actor-design.md): the design idioms and nine-step method, with sources.
+- [research/cicada-fit.md](research/cicada-fit.md): the idioms checked against Cicada 0.18.11.
+- `research/raw/`: the independent research runs and source checks.
 
-- [research/actor-design.md](research/actor-design.md): the design idioms, with sources. Two independent runs
-  (Claude deep research, Codex), merged. It is Cicada-agnostic.
-- [research/cicada-fit.md](research/cicada-fit.md): each idiom checked against Cicada 0.18.11.
-- `research/raw/`: what each run returned, with the quotes from the sources.
+The guide change consumes that research. This skill routes to the guide in the consumer's resolved Cicada source;
+it does not copy the knowledge or treat this research as a consumer manual (ADR 0041).
 
 ## What Changes
 
-The owner decided the shape on 2026-11-15: a skill that holds the method and routes to a guide that holds the
-knowledge. The rule of ADR 0041 stays: a skill routes, the guides own the knowledge.
-
-- **A design guide** in `docs/guide/` holds the knowledge: the questions to ask in order, a pattern chooser, the
-  anti-patterns with their symptoms and fixes, and how each idiom is written in Cicada.
-- **A second consumer skill, `actor-design`**, holds the method and routes to that guide. It has a design mode, the
-  nine steps from a problem to a design, and a review mode, the checklist run against an existing design or
-  codebase.
-- **It works with the user step by step (owner, 2026-11-16).** The skill draws the requirements out of the user and
-  does not guess them. It takes the nine steps one at a time, asks a few questions per turn, and works from concrete
-  stories ("walk me through an order whose payment times out"). The user's words name the actors and the messages.
-  Each step ends with its written result and an updated drawing, which the user confirms before the next step. What
-  the skill had to assume is written down as an open question, and the user can go back to an earlier step.
-- **It is visual (owner, 2026-11-16).** Every design shows the messages passing between actors, in Mermaid, as the
-  guides already do (`docs/guide/patterns.md`): a map of the actors (who sends what to whom, who watches whom), a
-  sequence diagram per story with its failure branches (step 7 asks for those), and a state diagram for an actor
-  with a lifecycle. The drawings live in a design document in the consumer's repository, so they render on GitHub
-  and in editors. Review mode first draws the existing system from its code, then checks it.
-- **Live handles get a worked answer in the guide.** A process, a device or a socket cannot live in an actor. The
-  guide teaches the two ways of `research/cicada-fit.md`: the turn uses a handle that the host keeps, and the
-  machine follows the actor's state (for a websocket, no pin). This change comes before `pinned-actors` (owner,
-  2026-11-16), so the guide shows the second way with a worked example, and says the first works today on one node.
-  `pinned-actors` later adds the many-node form and its example to the guide.
+- **A second consumer skill, actor-design**, holds the design method and routes to the design guide. The owner chose
+  a method in the skill and knowledge in the guide on 2026-11-15; this change keeps that boundary.
+- **Work with the user one step at a time** (owner, 2026-11-16). Draw requirements out of the user through concrete
+  stories, such as an order whose payment times out. Follow the research's nine steps, a few questions per turn.
+  The user's vocabulary names actors and messages. End each step with its written result and an updated drawing,
+  confirmed by the user before advancing. Record assumptions as open questions and allow return to earlier steps.
+- **Keep a visual design document** (owner, 2026-11-16). Save the results and Mermaid diagrams in the consumer's
+  repository: an actor/message/watch map, sequence diagrams per story with failure branches, and state diagrams for
+  actors with a lifecycle. It renders in editors and on GitHub and supports resuming the design across sessions.
+- **Ship both consumer skills together** (owner, 2026-11-16). Extend the release archive to carry cicada and
+  actor-design, with checked provenance. The root plugin already discovers every skill under skills/. Keep the
+  existing skill available for building and operating consumers; the new one focuses on their design.
+- **Check the workflow and distribution.** Extend skill route/version/evaluation and archive checks, along with the
+  release driver's archive verification. Cover old or missing guides without silently using the latest source.
+  Provide installation/update guidance through a docs handoff and record the second skill in an ADR extending 0041.
 
 To decide in the design:
 
-- **Generic or Cicada-specific.** The research is generic. The guide can teach the generic idiom and then its
-  Cicada form, or only the Cicada form.
-- **How the skill finds the guide** of the Cicada source that the project resolves: its own copy of the resolver
-  of `skills/cicada`, or a dependency on that skill.
-- **How it ships and how it is checked**: both ways the owner chose (2026-11-16). It goes in the release archive with
-  `skills/cicada` (`scripts/package-skill.py` packs both folders), and in the Claude Code plugin of `skill-plugin`,
-  which carries every folder under `skills/`. The design also says what `examples/tests/skill.rs` checks for it. With
-  both skills in one archive, `actor-design` can call the resolver of `skills/cicada` and keep no copy of its own.
-- **The design document**: where it goes in the consumer's repository, its sections (the nine results, the
-  drawings, the open questions), and whether review mode writes the same document for an existing system.
-- **How to split it.** Probably three changes: the guide, the skill's design mode, the review mode.
-- **What the guide says about the smaller findings** of `research/cicada-fit.md`, such as a handler's write to the
-  application's own tables.
+- How to resolve the guide: use the sibling cicada resolver or carry a copy, including missing-sibling behavior.
+- The design document's default path, sections, update/resume behavior and preserving the user's existing work.
+- Packaging both skills: member layout, provenance, version checks and upgrade compatibility with existing archives.
+- The scope of each skill's description and the checks/evaluation cases that prove the step-by-step interaction.
 
 ## Out of scope
 
-How Cicada executes actors. Changes to Cicada's behaviour. The one design-level gap the check found belongs to
-`pinned-actors`; the smaller findings are guidance, not code.
+Writing the design guide or its live-handle example (actor-design-guide). Reviewing an existing system
+(actor-design-review). Changes to Cicada execution, APIs, guarantees or wire formats. Actor pinning.
 
 ## Order
 
-After `skill-plugin`. Before `pinned-actors`.
+After `actor-design-guide`. Before `actor-design-review`.
 
 ## Impact
 
-Handwritten documentation and a consumer skill, both owned by the docs session: a docs handoff carries the text.
-`skills/`, `scripts/package-skill.py` and `examples/tests/skill.rs` for the second skill. A short ADR that extends
-ADR 0041: a second skill, and design advice in a guide of its own, not in the core guide. No change to a crate, a
-guarantee or a wire format.
+`skills/actor-design/`, consumer skill routes/version checks and evaluations, `scripts/package-skill.py`, shared
+archive helpers as needed, and the release driver's archive verification/tests. An ADR and docs handoff for
+installation and discovery. The docs session owns handwritten guidance; source, skill files and tests remain with
+this change. No library API, guarantee, wire format or schema changes.
