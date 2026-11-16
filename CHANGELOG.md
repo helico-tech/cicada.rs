@@ -7,6 +7,37 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.20.2 — unreleased
+
+Node-down alerts (ADR 0054): an optional ready-made monitor that reads the node table and publishes one `NodeDown`
+through a topic for each node row it sees silent for two minutes. Additive: existing actor contracts, the node table,
+the store schema, the heartbeat and the guarantees are those of 0.20.1.
+
+### Added
+
+- `cicada_actors::node_down`: the singleton `NodeDownMonitor` (`cicada.node-down/_`) with `NodeDownMonitorActor<S>`,
+  which reads a `NodeSnapshotSource`. `ActorSystem` is one: `nodes()`, then `now()` as the sample time; a system built
+  on the same store and never started reads without a row or heartbeat of its own. Hosts create the topic and the
+  monitor (`NodeDownMonitorState::new(topic)`) explicitly, unpinned, and send `Rearm`; nothing starts it by itself.
+- Every ten seconds a guarded self `Poll` reads the source within five seconds. A row whose `lastSeen` is 120 seconds
+  or more before the sample time is dead, the node view's threshold. Each dead row whose `startedAt` and `lastSeen`
+  are not yet in `alerted` publishes one `NodeDown { node, startedAt, lastSeen, detectedAt, hostname?, cicadaVersion?,
+  label? }` as a `TopicMsg::Publish`, in the same commit as its watermark and the next poll, so a row dead at the first
+  sample alerts too, a newer heartbeat or a new row alerts again, and competing hosts or a replayed turn publish an
+  observed pair once. Absent and alive rows leave `alerted` without any recovery message. Subscribers declare
+  `NodeDown(cicada_actors::NodeDown)`.
+- A failed, slow, invalid or oversized read (more than 1000 rows) publishes nothing, keeps `alerted`, records only
+  `lastProblem` (`unavailable`, `timeout`, `invalid`, `tooManyNodes`) and polls on: the turn succeeds, so a watch is
+  not told. One bad row refuses the whole sample. A topic that is gone fails the poll for good (`commit`) with nothing
+  kept; repair the topic and send `Rearm`, which keeps `alerted`.
+- Its contract is `docs/reference/contracts/cicada.node-down.json`. Example 22, `examples/src/node_down.rs`: a bounded
+  pager subscribed to the topic, watching the monitor for `Failed` and `Stopped`, with `lastProblem` read separately
+  and a repair. Both consumer skills route to the example and the contract.
+- Limits: a sampled observation, not proof of a machine failure. Rows removed by a clean stop or the daily pruning
+  before a read leave no trace, a heartbeat can race an alert, workers have no row, flapping nodes alert on each
+  episode without a rate limit, and the node read includes every running turn. Never use an alert to move, claim or
+  fence work.
+
 ## 0.20.1 — 2026-11-16
 
 Example 21, a pinned process run (ADR 0053): a worked actor and host that start, observe and stop a local child

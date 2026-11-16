@@ -24,7 +24,7 @@
   observability wording. Name any G2 proving tests for the docs owner. Integrate exact owner-prepared blocking prose
   before landing; verify docs/doctests/skill checks without route skips or new claim authority.
 
-- [ ] 5. ADR and release. Reconcile ADR 0054/index and handoff with final tests and limitations. Apply the normal
+- [x] 5. ADR and release. Reconcile ADR 0054/index and handoff with final tests and limitations. Apply the normal
   next patch release pins/changelog, regenerating versioned references where required. Re-run affected actor/wire/
   example/docs/skill checks after integration. No new backend operation/migration, HTTP source adapter, heartbeat
   registration, recovery alert or automatic sample-service monitor activation belongs to this change.
