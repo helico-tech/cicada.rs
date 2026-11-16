@@ -7,6 +7,31 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.19.4 — unreleased
+
+A review mode for the `actor-design` skill: it checks an existing actor design or implementation and saves a report
+of grounded findings. Library APIs, wire formats, contract hashes, store schema, guarantees and the skill archive's
+layout are those of 0.19.3.
+
+### Added
+
+- Review mode in `skills/actor-design/SKILL.md`, chosen when the user explicitly asks to review an existing design
+  or codebase; a new system still gets the nine-step interview, an unclear request one question, and a combined
+  request the review first. A review runs four phases (scope and evidence, reconstruct, check, report) without
+  waiting for confirmation after each. It keeps the consumer's code revision, the resolved Cicada source and the
+  skill versions apart, reads only (it runs no consumer builds, tests or scripts), draws the actors, messages, watches
+  and selected stories from evidence before judging, and tags each claim as observed, documented, inferred or
+  unknown. It checks seven areas against the resolved design guide and reports findings with an id (R-001 and on),
+  a priority by impact, evidence, a counterexample trace, the smallest useful correction and a check; missing
+  requirements become open questions and documented tradeoffs that meet them stay accepted. The report goes to
+  `docs/design/actors-review.md` by default, beside and never into the design document; it resumes a report of the
+  same system and scope, marks findings stale when the evidence changes, keeps ids, history and the user's notes, and
+  resolves a finding only with new evidence. It never fixes code.
+
+### Changed
+
+- The `cicada` skill's description and introduction name both modes of `actor-design`.
+
 ## 0.19.3 — 2026-11-16
 
 A second consumer skill, `actor-design` (ADR 0051), that works out an actor design with the user step by step and
