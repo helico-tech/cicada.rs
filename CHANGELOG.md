@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.20.2 — unreleased
+## 0.20.2 — 2026-11-16
 
 Node-down alerts (ADR 0054): an optional ready-made monitor that reads the node table and publishes one `NodeDown`
 through a topic for each node row it sees silent for two minutes. Additive: existing actor contracts, the node table,

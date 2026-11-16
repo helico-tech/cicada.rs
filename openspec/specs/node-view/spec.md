@@ -10,8 +10,8 @@ and whether each is alive, suspect or dead. The table is for display only: lease
 
 Every started node, send-only nodes included, SHALL write a row in the node table with its id, hosted types and captured optional details,
 stamped with store time, at once and every 10 s. A clean stop SHALL remove the node's row. Any node's heartbeat SHALL
-remove rows last seen more than a day ago. The table SHALL be for display only: no decision about who runs a turn may
-use it.
+remove rows last seen more than a day ago. The table SHALL be for observability, including sampled alerts: no decision about who runs a turn may
+use it. Node-down alerts SHALL NOT change row retention or establish a complete death history.
 
 #### Scenario: A send-only node has a row
 
