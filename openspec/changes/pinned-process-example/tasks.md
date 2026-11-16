@@ -1,12 +1,12 @@
 # Tasks
 
-- [ ] 1. Run actor and bounded host protocol. Add examples/src/pinned_process.rs with desired/observed state,
+- [x] 1. Run actor and bounded host protocol. Add examples/src/pinned_process.rs with desired/observed state,
   node/host-epoch checks, Start/Stop/Refresh/Observed, 32 retained slots, monotone revisions and absorbing terminal/
   NeedsReconciliation states. Reserve before spawn, retain sticky stop through lost commits, expose bounded refusal
   and never recycle tombstones. Define a deterministic fake process adapter. Verify focused paused-time TestActors
   cases for start/repeat, stop-before-start, races, natural exit, capacity, wrong ids/epochs and stale observations.
 
-- [ ] 2. Runtime and delivery recovery tests. Add the bounded observation pump after system construction and
+- [x] 2. Runtime and delivery recovery tests. Add the bounded observation pump after system construction and
   startup paging/Refresh for the node's existing runs. Use a public TurnSource wrapper to withhold completion and
   force a lost-commit replay against the same host table; assert one spawn. Test lost Stop commit, send uncertainty,
   stalled operations, deletion, old-epoch zero OS actions, late original-host exit after NeedsReconciliation and

@@ -85,7 +85,7 @@ route of the current design step or review area when it needs it.
 | Messages, replies, acknowledgements, state tables | `docs/guide/design.md#design-protocols` |
 | Coordination, sagas, flows, deadlines | `docs/guide/design.md#coordinate-work-and-time`, `docs/guide/actors.md#flows`, `docs/guide/core.md#timers` |
 | Failure and recovery | `docs/guide/design.md#recover-from-failure`, `docs/guide/core.md#retry`, `docs/guide/core.md#control-effects` |
-| Outside effects, live handles held by a host | `docs/guide/design.md#work-with-outside-systems`, `docs/guide/design.md#a-websocket-session` |
+| Outside effects, live handles held by a host | `docs/guide/design.md#work-with-outside-systems`, `docs/guide/design.md#a-websocket-session`, `examples/src/pinned_process.rs` |
 | Choosing a pattern | `docs/guide/design.md#choose-a-pattern`, `docs/guide/actors.md` |
 | Checking and simplifying | `docs/guide/design.md#recognize-design-mistakes` |
 | What a turn guarantees | `docs/architecture.md#guarantees`, `docs/architecture.md#known-limitations` |
@@ -100,7 +100,7 @@ A review checks seven areas (section 7). Each reads:
 | Protocols | `docs/guide/design.md#design-protocols`, `docs/guide/core.md#message-persistence` |
 | Coordination and time | `docs/guide/design.md#coordinate-work-and-time`, `docs/guide/actors.md#flows`, `docs/guide/core.md#timers` |
 | Recovery | `docs/guide/design.md#recover-from-failure`, `docs/guide/core.md#retry`, `docs/guide/core.md#claim-limit`, `docs/architecture.md#turn-semantics` |
-| Outside effects | `docs/guide/design.md#work-with-outside-systems`, `docs/guide/design.md#a-websocket-session` |
+| Outside effects | `docs/guide/design.md#work-with-outside-systems`, `docs/guide/design.md#a-websocket-session`, `examples/src/pinned_process.rs` |
 
 The guide and code of the resolved source win over this skill and over your memory. An older source may have no
 `docs/guide/design.md`: then use its `docs/guide/core.md#design-an-actor`, its worked examples under `examples/` and

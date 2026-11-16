@@ -22,6 +22,7 @@
 //! | [`flow_resources`] | Example 18: a job that owns a sandbox; cancelled, its cleanup stops the sandbox, waits for the removal and releases the capacity by the reservation's key. |
 //! | [`heartbeat`] | Example 19: a nightly import that did not run; each file beats a heartbeat watch, which alerts once after 25 quiet hours. |
 //! | [`websocket_session`] | Example 20: a websocket session; a host follows the session's durable frames, writes them to its socket and forwards the client's acknowledgements, so any host can serve a reconnect. |
+//! | [`pinned_process`] | Example 21: a process run pinned to its node; the actor keeps intent and what was seen, the host keeps the child, its slot keeps a replay from spawning twice, and a new host epoch marks old runs for reconciliation. |
 //! | [`sync`] | The architecture's example: a paged import, one turn per page, rescheduled hourly. |
 //!
 //! Every example has the same shape: a public ref struct per actor type (its one field is the key), a
@@ -40,6 +41,7 @@ pub mod flow_events;
 pub mod flow_onboarding;
 pub mod flow_resources;
 pub mod heartbeat;
+pub mod pinned_process;
 pub mod rate_limit;
 pub mod registry;
 pub mod remote_worker;
