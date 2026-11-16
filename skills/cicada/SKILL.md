@@ -1,6 +1,6 @@
 ---
 name: cicada
-description: Build, test and operate Rust projects that use Cicada, the durable actor library on a SQL store (crates cicada, cicada-test, cicada-axum, cicada-client, cicada-app, cicada-actors, cicada-otel). Use it when a project depends on these crates, or the user asks to add Cicada, define actor types and messages, write durable flows, call external services from actors, test with TestActors, serve the HTTP API, run workers, or deploy and upgrade nodes. It finds the exact Cicada source the project resolves and routes to that version's guides, examples and code. To work out an actor design with the user step by step before coding, use the actor-design skill.
+description: Build, test and operate Rust projects that use Cicada, the durable actor library on a SQL store (crates cicada, cicada-test, cicada-axum, cicada-client, cicada-app, cicada-actors, cicada-otel). Use it when a project depends on these crates, or the user asks to add Cicada, define actor types and messages, write durable flows, call external services from actors, test with TestActors, serve the HTTP API, run workers, or deploy and upgrade nodes. It finds the exact Cicada source the project resolves and routes to that version's guides, examples and code. To work out an actor design with the user step by step before coding, or to review an existing actor design or implementation, use the actor-design skill.
 metadata:
   cicada-version: 0.19.3
 ---
@@ -10,9 +10,10 @@ metadata:
 This skill routes; it does not teach Cicada from memory. The guides, examples and code of the Cicada source that the
 project actually resolves are the authority for that project. They may be older or newer than this skill, or a fork.
 
-To work out a design with the user first (which actors exist, what each owns, the messages between them), use the
-sibling skill `actor-design`: it interviews the user step by step and saves the design. This skill builds, tests and
-operates.
+The sibling skill `actor-design` has two modes. Design works out a design with the user first (which actors exist,
+what each owns, the messages between them): it interviews the user step by step and saves the design. Review checks an
+existing actor design or implementation: it reconstructs the system from evidence and reports grounded findings,
+without changing the code. This skill builds, tests and operates.
 
 ## 1. Find the project's Cicada source
 

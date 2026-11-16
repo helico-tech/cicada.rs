@@ -1,19 +1,32 @@
 ---
 name: actor-design
-description: Design a system with Cicada actors together with the user, one step at a time, before code is written. Use it when the user wants to work out which actors exist, what each owns and decides, their keys and lifecycles, the messages and replies between them, timeouts, failures and outside effects, or whether actors fit the problem at all. It interviews the user through concrete stories, writes each step's result with Mermaid diagrams into a design document in the repository (docs/design/actors.md by default), waits for confirmation before it moves on, and resumes from that document. It routes to the design guide of the Cicada source the project resolves. For writing, testing or running the code, use the cicada skill.
+description: Design a system with Cicada actors together with the user, one step at a time, before code is written, or review an existing actor design or implementation. Design: when the user wants to work out which actors exist, what each owns and decides, their keys and lifecycles, messages and replies, timeouts, failures and outside effects, or whether actors fit at all; it interviews the user through concrete stories, saves each confirmed step with Mermaid diagrams in docs/design/actors.md by default, and resumes from it. Review: when the user asks to review or critique an existing design or codebase; it reconstructs and draws the actors, messages and watches from evidence, checks them against the design guide and reports grounded findings with failure traces in docs/design/actors-review.md by default. It routes to the design guide of the Cicada source the project resolves. For writing, testing or running the code, use the cicada skill.
 metadata:
   cicada-version: 0.19.3
 ---
 
 # Actor design
 
-This skill holds a method: how to turn the user's problem into an actor design with them. The knowledge (what an
-actor owns, what a turn commits, which patterns exist) lives in the design guide of the Cicada source the project
-resolves. Read it there; do not teach Cicada from memory or from this file.
+This skill holds two methods: how to turn the user's problem into an actor design with them, and how to review an
+actor design or implementation that already exists. The knowledge (what an actor owns, what a turn commits, which
+patterns exist) lives in the design guide of the Cicada source the project resolves. Read it there; do not teach
+Cicada from memory or from this file.
 
-It designs; it does not build. Writing handlers, tests and manifests, running nodes and upgrading belong to the
-`cicada` skill. Reviewing an existing system against a design is not part of this skill. Do not implement, commit or
-deploy anything unless the user asks for that separately.
+It designs and reviews; it does not build. Writing handlers, tests and manifests, running nodes and upgrading belong to
+the `cicada` skill. Do not implement, fix, commit or deploy anything unless the user asks for that separately.
+
+## Choose the mode
+
+- **Design** a new system, or a new part of one: the nine-step interview of sections 2 to 6.
+- **Review** when the user explicitly asks to review, critique or check an existing design document or codebase: the
+  four phases of section 7 and the report of section 8. Do not take a review request through the design steps or
+  their confirmations.
+- **Unclear**, such as "look at our actors": ask one question (design something new, or review what exists?) while
+  you already read the evidence the user supplied. Reading is all either mode does before the answer.
+- **Both**, such as "review what we have, then design refunds": review the existing system first, then do only the
+  design work the user asked for, in design mode and in its own document.
+- Neither mode authorizes code fixes, dependency changes, commits or publication. A review's corrections are
+  proposals.
 
 ## 1. Find the project's Cicada source
 
@@ -54,10 +67,16 @@ newer release or a proposal. Generic exploration of the problem can go on; recor
 While no source can be read, steps 1 and 2 can proceed; before step 3, tell the user which Cicada facts are unverified
 and let them choose to resolve the source first or continue with those facts recorded as open questions.
 
+**In a review** the statuses mean the same, with three differences. With `mixed`, ask which package and configuration
+the review is for; reconstructing from the consumer's code and documents can go on, judgments that rest on Cicada's
+semantics wait. With `none`, check the other selections, then review what is there without Cicada claims; the scope may
+hold no actors at all. While no source can be read, reconstruct and check what does not depend on Cicada, and record
+every judgment that does as unknown. With `self`, say that this skill reviews consumer systems.
+
 ## Source routes
 
 Every route below is a path from the root of the resolved Cicada source, never from this skill's folder. Read the
-route of the current step when the step needs it.
+route of the current design step or review area when it needs it.
 
 | Need | Read in the source |
 | --- | --- |
@@ -71,9 +90,21 @@ route of the current step when the step needs it.
 | Checking and simplifying | `docs/guide/design.md#recognize-design-mistakes` |
 | What a turn guarantees | `docs/architecture.md#guarantees`, `docs/architecture.md#known-limitations` |
 
+A review checks seven areas (section 7). Each reads:
+
+| Review area | Read in the source |
+| --- | --- |
+| Ownership | `docs/guide/design.md#choose-actors-and-identities`, `docs/guide/design.md#recognize-design-mistakes` |
+| Identities and lifecycle | `docs/guide/design.md#choose-actors-and-identities`, `docs/guide/core.md#child-actors`, `docs/guide/core.md#watches`, `docs/guide/core.md#control-effects` |
+| State and bounds | `docs/guide/design.md#choose-actors-and-identities`, `docs/guide/core.md#design-an-actor`, `docs/guide/core.md#how-deep-a-value-can-be` |
+| Protocols | `docs/guide/design.md#design-protocols`, `docs/guide/core.md#message-persistence` |
+| Coordination and time | `docs/guide/design.md#coordinate-work-and-time`, `docs/guide/actors.md#flows`, `docs/guide/core.md#timers` |
+| Recovery | `docs/guide/design.md#recover-from-failure`, `docs/guide/core.md#retry`, `docs/guide/core.md#claim-limit` |
+| Outside effects | `docs/guide/design.md#work-with-outside-systems`, `docs/guide/design.md#a-websocket-session` |
+
 The guide and code of the resolved source win over this skill and over your memory. An older source may have no
 `docs/guide/design.md`: then use its `docs/guide/core.md#design-an-actor`, its worked examples under `examples/` and
-its public code, and record in the document that the design guide was not available at that version. If a heading is
+its public code, and record in the document or report that the design guide was not available at that version. If a heading is
 missing, search that source's `docs/` for it. Never fetch a newer guide or treat a proposal as shipped.
 
 ## 2. The design document
@@ -161,7 +192,167 @@ delegation, the no-actors ending waits for the user's confirmation. End with: th
 source it rests on and what was not verified, the open assumptions, and the next actions, such as building it with the
 `cicada` skill. Do not start that work unless the user asks.
 
-## 7. Install and update
+## 7. Review an existing system
+
+A review has four phases, in order: 1. Scope and evidence, 2. Reconstruct, 3. Check, 4. Report. An explicit review
+request authorizes all four; do not wait for confirmation after each, as design mode does. Show the reconstructed
+system before any finding, invite corrections, and go on when the evidence suffices. Save the report as each phase
+ends (section 8).
+
+### Scope and evidence
+
+- **Read first** the consumer's own instructions (AGENTS.md, CLAUDE.md, CONTRIBUTING.md or similar), any design
+  document such as `docs/design/actors.md`, and a saved review report.
+- **Scope.** Record the actors, stories and configuration (package, target, features) the review covers, and what it
+  excludes. When the user names none, propose a scope from the evidence and say what you chose. Representative
+  stories are not the whole codebase: never claim more coverage than you read.
+- **Three identities, kept apart.** The consumer's code: the paths read, the revision and any uncommitted or
+  unversioned changes, from read-only commands such as `git rev-parse HEAD` and `git status --short`; pasted material
+  has no revision, so name it as pasted. The Cicada dependency: the resolver report (section 1). The installed skills:
+  their versions and provenance. A newer skill does not make the project's Cicada newer.
+- **Read only.** Reading files, read-only git commands and the bundled resolver (`cargo metadata --locked --offline`)
+  are allowed. A review alone does not run the consumer's builds, tests, scripts or migrations, fetch or update
+  dependencies, or write anything but its report. If the user separately asks you to run a test, it has its normal
+  effects; report exactly what ran and what it showed.
+- Never copy credentials, tokens or private URLs with secrets into the report.
+
+### Reconstruct
+
+Draw what the evidence shows before you judge it, in Mermaid as in section 4:
+
+- **An actor map**: actor types and their keys, the messages between them, watches and parent/child relations as
+  distinct kinds of line, outside systems, and host code that sends messages or holds live handles. Keep host calls
+  and outside I/O apart from messages that a turn commits.
+- **A sequence diagram per selected story**: the success path and its failure branches (timeout, repeat, reorder,
+  cancellation, a failed dependency), marking what one turn commits together and what happens outside a turn.
+- **A state diagram** for each actor whose states or lives matter to the scope.
+- **Mark inferred and unknown edges** (a dashed line or a `?` in the label) and explain the marks in a legend under
+  the drawing. A partial map is fine when the evidence is partial; say what is missing.
+- For a tiny scope, or one without actors, draw its real context (functions, tables, outside systems). Never invent
+  actors or watches to fill a drawing.
+
+Tag every claim with where it comes from:
+
+| Tag | Means |
+| --- | --- |
+| observed | Read in code or tests. Cite the file, the symbol and the line. |
+| documented | Stated in a design or document. Cite the file and heading; for pasted text, its section and a short quote. |
+| inferred | Your reasoning from observed or documented facts; say from which. |
+| unknown | Not in the evidence. It becomes an open question when it matters. |
+
+Say which tests you read and which ran; reading a test is not running it. Where a document and the code disagree,
+show both with their evidence; do not pick one silently. A missing document does not prove that a behaviour is
+missing, and a proposal or Cicada's latest `main` proves nothing about what the consumer runs.
+
+### Check
+
+Check seven areas against the resolved guide (their routes are under Source routes): ownership, identities and
+lifecycle, state and bounds, protocols, coordination and time, recovery, outside effects. Give each one verdict with
+its evidence or reason: `supported`, `finding` (with the ids), `unknown` or `not applicable`. The yardstick is the
+consumer's requirements and Cicada's actual guarantees, not one preferred decomposition. Do not import another actor
+framework's semantics, and treat proposed or future Cicada features as unavailable.
+
+- **A finding** names a requirement the system violates, or a failure risk the evidence supports, with its
+  preconditions and a short counterexample trace: the initial state, the messages and failures in the order that
+  breaks it, and the bad outcome. It has an id, a priority, evidence, the consequence, the smallest useful correction
+  and a test or trace that would check it (section 8). One cause is one finding, however many places show it.
+- **Priority is impact, not confidence.** `high`: credible loss of data or isolation, an irreversible duplicate outside
+  effect, or accepted work stuck without recovery. `medium`: wrong but recoverable behaviour, or unbounded resource
+  growth. `low`: a bounded maintainability issue or protocol ambiguity. Explain the impact in the reviewed scope.
+- **Open questions.** When a requirement or evidence is missing, write the question and its conditional risk ("if a
+  reply can arrive after cancel, then ..."), not a defect. Ask at most three focused questions per turn, only where
+  the answer changes a conclusion, and keep checking what does not depend on them. An unanswered question stays
+  unknown; silence is not approval. A delegation lets you make the choices it names; it never lets you invent facts
+  about existing code.
+- **Accepted tradeoffs.** A documented tradeoff that meets the requirements is recorded as accepted, not turned into a
+  finding because another decomposition is possible. A claimed tradeoff that breaks a stated invariant is still a
+  finding, with its evidence.
+- **No findings** is a valid result. Never fill a quota, and never present a clean scope as proof that the whole
+  system is correct.
+
+### Report
+
+Complete the report (section 8) and end with a short summary: where it is saved, the findings by priority, the open
+questions, what was not checked, and the next actions. Do not implement a correction unless the user asks separately;
+building belongs to the `cicada` skill.
+
+## 8. The review report
+
+- **Where.** `docs/design/actors-review.md` from the repository root, unless the user names a path or the
+  repository's own rules put such documents elsewhere. It is its own file: never write the review into the design
+  document or the code.
+- **Look before you write.** Resume an existing report only when its Scope and sources and Progress name the same
+  system and review scope; a changed revision is fine. A report of another system or scope, unrelated content, or an
+  identity you cannot tell is a collision: ask for another path or for clarification, and change nothing.
+- If there is no writable repository, or the user does not want files written, show the same report in the chat and
+  say that it was not saved. Never commit the report yourself.
+- **Shape.** A new report has these sections, in this order. An existing report keeps its shape and the user's
+  content; add what is missing.
+
+```markdown
+# Actor review: <system and scope>
+
+## Scope and sources
+
+- **Requested scope:** <actors, stories, configuration>; **excluded:** <what is not reviewed>
+- **Consumer code:** <paths read, revision, local changes; or "pasted on <date>">
+- **Cicada source:** <version, Cargo source and revision as the resolver reports them>
+- **Skills:** actor-design <version>, cicada <version>; <match, difference, or not comparable>
+
+## Progress
+
+Phase: <Scope and evidence, Reconstruct, Check, Report or done>
+Pending questions: <at most three>
+Evidence snapshot: <consumer revision and local changes, Cicada source, date>
+
+## Reconstructed system
+
+<Actor map, sequences per story, state diagrams, each with a legend for inferred and unknown edges.>
+
+## Coverage
+
+| Area | Verdict | Evidence or reason |
+| --- | --- | --- |
+| Ownership | <supported, finding R-001, unknown, not applicable> | <evidence> |
+
+## Findings
+
+### R-001 <short title>
+
+- **Priority:** <high, medium, low>, because <impact>. **Status:** <open, stale, accepted, deferred, resolved,
+  withdrawn, merged into R-00n>
+- **Evidence:** <tagged claims with locations>
+- **Trace:** <initial state; the messages and failures in order; the bad outcome>
+- **Consequence:** <what goes wrong for whom>
+- **Correction:** <the smallest useful change>
+- **Check:** <a test or trace that would show it fixed>
+- **History:** <earlier traces, snapshots and dispositions>
+
+## Accepted tradeoffs
+
+## Open questions
+
+## Checks and limits
+
+<What was read, what ran (nothing, by default), tests read but not run, Cicada facts not verified, what is out of scope.>
+
+## Next actions
+```
+
+- **Ids.** Findings are numbered R-001, R-002 and on. Never renumber. The same cause at the same location keeps its
+  id; a new finding takes the next unused number. A withdrawn or merged id stays listed with that status and is never
+  reused.
+- **Resume.** Read the report first. Then check again the consumer's revision and local changes, the resolver report
+  and the scope, and record the new evidence snapshot. Observations and findings that rest on changed evidence become
+  `stale` until you check them again; if you cannot tell what a change affects, mark the whole review stale in
+  Progress. Continue at the recorded phase and pending questions. Keep the ids, earlier traces, the user's notes and
+  dispositions.
+- **Dispositions.** `resolved` needs new evidence that the cause is gone; cite it and keep the earlier trace under
+  History. `accepted` (the user takes the risk) and `deferred` are not resolved. A new run does not erase earlier
+  limits or imply that tests ran.
+- Update only the sections that changed.
+
+## 9. Install and update
 
 This skill ships with its sibling `cicada`, in the same version: in the Claude Code plugin `cicada@cicada` (used as
 `/cicada:actor-design`), and in the release archive `cicada-skill-vX.Y.Z.tar.gz`, which holds the folders `cicada`
