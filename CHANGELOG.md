@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.19.4 — unreleased
+## 0.19.4 — 2026-11-16
 
 A review mode for the `actor-design` skill: it checks an existing actor design or implementation and saves a report
 of grounded findings. Library APIs, wire formats, contract hashes, store schema, guarantees and the skill archive's
