@@ -16,7 +16,7 @@
   Verify `cargo test -p cicada-examples --test skill` (including existing resolver/archive tests) and
   `python3 -m unittest discover -s scripts -p 'test_gate_release.py'`. Do not change the gate policy or packager.
 
-- [ ] 3. Portable skill installation guidance. Keep the helper's portable folder placeholder and explain replacing
+- [x] 3. Portable skill installation guidance. Keep the helper's portable folder placeholder and explain replacing
   it with the actual shell-quoted installed path while running from the consumer project. Update SKILL.md section 7
   with plugin-managed updates, the staged archive alternative, comparison/preservation of edits before switching,
   duplicate-copy removal after comparison, and plugin-cache customization limits. Preserve resolved-source authority,

@@ -21,6 +21,10 @@ python3 <this skill's folder>/scripts/cicada_source.py --manifest-path crates/ap
     --target x86_64-unknown-linux-gnu --no-default-features --features postgres
 ```
 
+Replace `<this skill's folder>` with the actual path of the folder that holds this SKILL.md, wherever it is installed
+(a Claude Code plugin's copy or an unpacked release archive), quoted for the shell, such as
+`python3 "/path/to/cicada/scripts/cicada_source.py"`. The current folder stays the project's.
+
 It prints one JSON report. Act on `status`:
 
 | `status` | What to do |
@@ -117,10 +121,20 @@ and which you did not.
 
 ## 7. Update this skill
 
-A release of Cicada attaches `cicada-skill-vX.Y.Z.tar.gz`. To update, unpack it into a staging folder, compare it with
-the installed copy, and replace the copy only after the user has seen local changes. Nothing updates it on its own, and
-updating it never changes the project's Cicada dependency. Releases before the skill existed have no archive: use a
-newer skill with the project's own older source, and say so.
+This skill is installed in one of two ways. Updating either never changes the project's Cicada dependency.
+
+- **Claude Code plugin** (`cicada@cicada`, used as `/cicada:cicada`). Claude Code manages it: update it through
+  `/plugin`. The plugin follows Cicada's `main` and is fetched again when its version changes, so it can hold
+  documentation changed after the release tag; it has no `SOURCE.json`, so `revision_match` stays `unknown`. Edits to
+  the plugin's copy do not survive an update.
+- **Release archive.** A release of Cicada attaches `cicada-skill-vX.Y.Z.tar.gz`. To update, unpack it into a staging
+  folder, compare it with the installed copy, and replace the copy only after the user has seen local changes. Nothing
+  updates it on its own.
+
+A user may keep an archive installation. To switch to the plugin, first compare the installed copy with the plugin's
+and keep the user's local changes; only then remove the old copy, so that one copy is active. Never switch, uninstall
+or turn on automatic updates without the user. Releases before the skill existed have no archive: use a newer skill
+with the project's own older source, and say so.
 
 ## Working on Cicada itself
 
