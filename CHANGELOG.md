@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.19.3 — unreleased
+## 0.19.3 — 2026-11-16
 
 A second consumer skill, `actor-design` (ADR 0051), that works out an actor design with the user step by step and
 saves it with Mermaid diagrams, shipped beside `cicada` in the plugin and the release archive. Library APIs, wire
