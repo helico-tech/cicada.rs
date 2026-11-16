@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.20.1 — unreleased
+## 0.20.1 — 2026-11-16
 
 Example 21, a pinned process run (ADR 0053): a worked actor and host that start, observe and stop a local child
 process on the node the actor is pinned to. An application example only: library APIs, wire formats, contract hashes,
