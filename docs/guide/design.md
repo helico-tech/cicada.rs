@@ -364,7 +364,7 @@ socket.onmessage = (event) => {
     if (message.acked > cursor) {
       generation++;
       socket.close();
-      log(`cursor ${cursor} is behind acknowledged ${message.acked}: recover, or start a new session`);
+      log(`cursor ${cursor} is behind the acknowledged ${message.acked}: recover, or start a new session`);
       return;
     }
     ack();
@@ -388,7 +388,8 @@ cargo run -p cicada-examples --example websocket_session
 ```
 
 Open its printed browser URL: lines appear in order. Reload to reconnect. The Rust adapter has a real websocket
-handshake test; the HTML client has been inspected, not checked in a browser.
+handshake test. The HTML client's unchanged script has nine tests in Node with fake sockets, storage and timers;
+it has not been checked in a real browser.
 
 Keep the application limits explicit:
 
@@ -405,6 +406,14 @@ Keep the application limits explicit:
 - Hints are best effort: memory/SQLite cover one `Store` and its clones; PostgreSQL covers upgraded nodes on one
   schema. The second-system test shares a memory store. The periodic read covers changes outside hint coverage.
 
-The [26 example tests](../../examples/tests/websocket_session.rs) cover acceptance/refusal, atomic rollback, uncertain
-sends, acknowledgement validation, reconnects, missed hints, timeouts, shutdown and the websocket route. These are
-checks of this example's application convention, not new Cicada delivery guarantees.
+The [example tests](../../examples/tests/websocket_session.rs) cover acceptance/refusal, atomic rollback, uncertain
+sends, acknowledgement validation, reconnects, missed hints, timeouts, shutdown, the websocket route and the demo's
+emit/answer matching. The [client-script tests](../../examples/tests/websocket_session_client.test.mjs) check contiguous
+application, duplicate acknowledgements, gap reconnects, old callbacks and lost cursors:
+
+```sh
+node --test examples/tests/websocket_session_client.test.mjs
+```
+
+Use Node 26 or later; no npm packages are needed. These checks establish the example's application convention,
+not new Cicada delivery guarantees.

@@ -28,8 +28,11 @@ A release is a tag `vX.Y.Z` on `main` (ADR 0016). All crates share the version i
 4. Confirm the published Release has `cicada-skill-vX.Y.Z.tar.gz` and `cicada-fixtures-vX.Y.Z.tar.gz`.
    The docs session then updates installation pins. The fixture archive starts at 0.18.12; older releases are not backfilled.
 
-Prerequisites: Python 3.11+, the Rust toolchain with fmt/clippy, local PostgreSQL, Docker for E2E, `jq`, and `gh`
-signed in with release rights. `CICADA_GATE_PG_URL` defaults to the compose database on port 55432. Only the
+Prerequisites: Python 3.11+, the Rust toolchain with fmt/clippy, local PostgreSQL, Docker for E2E, Node 26 or later
+as `node` on PATH, `jq`, and `gh` signed in with release rights. The full gate's `client-tests` check runs the example
+client's JavaScript tests with Node's built-in test runner; no npm packages are needed. Missing or older Node fails
+the check. With nvm, select Node 26+ in the shell running the gate and pre-push hook; the gate preserves PATH.
+`CICADA_GATE_PG_URL` defaults to the compose database on port 55432. Only the
 owner-approved build loop installs the shared hook or publishes; builder tests use temporary repositories and fake
 publication tools. Automatic push, PR and tag Actions are disabled (ADR 0046).
 
@@ -84,7 +87,8 @@ python3 scripts/gate.py run --e2e       # also the unfiltered Docker suite
 
 `run` uses the commit's [policy](../../scripts/gate-policy.json) and matching `gate.py`. Full checks cover all
 Python script tests, fmt, clippy with warnings denied, workspace tests with PostgreSQL, isolated core/app features
-with warnings denied, app-alone tests, and driver/TLS/crypto-provider/terminal dependency checks.
+with warnings denied, app-alone tests, driver/TLS/crypto-provider/terminal dependency checks, and the example client's
+JavaScript tests.
 
 For an identical tree, passing evidence can be reused. Otherwise the nearest eligible direct full pass within
 100 first-parent ancestors can support fresh docs checks: Python tests plus examples doctests, links/guarantees and
