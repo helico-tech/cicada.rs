@@ -11,10 +11,11 @@
 //! executable in its inert child mode: it waits until stopped, or with `--exit-code N` exits at once with `N`. The
 //! host prints each change of its runs until Ctrl-C.
 //!
-//! Ctrl-C closes the host to new runs, stops and reaps every child and flushes the last observations, within
-//! [`IO_TIMEOUT`], while the node and the store still run; then it stops the node, the pump and the store, in that
-//! order. When it cannot confirm every exit or delivery it says so and exits with a failure. Run one host per node
-//! id; a host killed abruptly may leave a child behind, which its successor reports for reconciliation.
+//! Ctrl-C, or an error after the node started, goes through `run_host`: it closes the host to new runs, stops and
+//! reaps every child and flushes the last observations within `IO_TIMEOUT`, while the node and the store still run;
+//! then it stops the node, the pump and the store, in that order. An error is still returned after that. When it
+//! cannot confirm every exit or delivery it says so and exits with a failure. Run one host per node id; a host
+//! killed abruptly may leave a child behind, which its successor reports for reconciliation.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -27,9 +28,8 @@ use cicada::runtime::NodeConfig;
 use cicada::store::{NodeId, SqliteOptions};
 use cicada::{ActorRef, ActorSystem, Store};
 use cicada_examples::pinned_process::{
-    IO_TIMEOUT, OsBackend, ProcessHost, Run, RunActor, RunMsg, RunState, child_main, create_run, pump, reconcile,
+    OsBackend, ProcessHost, Run, RunActor, RunMsg, RunState, child_main, create_run, reconcile, run_host,
 };
-use tokio_util::sync::CancellationToken;
 
 /// The hidden first argument of the child mode; never taken from a message.
 const CHILD_MODE: &str = "--inert-child";
@@ -82,19 +82,35 @@ async fn serve(options: Options) -> anyhow::Result<ExitCode> {
         .config(NodeConfig { node_id: node.clone(), ..NodeConfig::default() })
         .host(RunActor::new(host.clone()))
         .build();
-    system.start().await?;
-    let stop_pump = CancellationToken::new();
-    let pump_task = tokio::spawn(pump(host.clone(), system.clone(), stop_pump.clone()));
+    if let Err(e) = system.start().await {
+        store.close().await;
+        return Err(e.into());
+    }
     println!("store: {}; node: {node}; host epoch: {}", options.db.display(), host.epoch());
+    // Every way out of `watch`, an error included, goes through the host's cleanup and the ordered stop.
+    let (result, report) = run_host(&store, &system, &host, watch(&system, &host, &node, options.new_run)).await;
+    if report.is_clean() {
+        println!("every child exited and its last observation was delivered");
+    } else {
+        eprintln!("cleanup not confirmed: no exit seen for {:?}", report.unconfirmed);
+        eprintln!("last observation not delivered for {:?}", report.unflushed);
+        if let Some(pump) = &report.pump {
+            eprintln!("the pump failed: {pump}");
+        }
+    }
+    result?;
+    Ok(if report.is_clean() { ExitCode::SUCCESS } else { ExitCode::FAILURE })
+}
 
-    let refreshed = reconcile(&system, &node).await?;
+/// Refreshes this node's runs, creates and starts `new_run`, and prints each change until Ctrl-C.
+async fn watch(system: &ActorSystem, host: &ProcessHost, node: &NodeId, new_run: Option<String>) -> anyhow::Result<()> {
+    let refreshed = reconcile(system, node).await?;
     println!("refreshing {refreshed} existing run(s) of this node");
-    if let Some(key) = &options.new_run {
-        let run = create_run(&system, &host, key).await.map_err(anyhow::Error::msg)?;
+    if let Some(key) = &new_run {
+        let run = create_run(system, host, key).await.map_err(anyhow::Error::msg)?;
         system.send(&run, RunMsg::Start).await?;
         println!("created and started run {key}");
     }
-
     let (mut shown, mut failures) = (BTreeMap::new(), 0);
     println!("watching; Ctrl-C stops");
     loop {
@@ -102,28 +118,15 @@ async fn serve(options: Options) -> anyhow::Result<ExitCode> {
             result = tokio::signal::ctrl_c() => { result?; break }
             () = tokio::time::sleep(Duration::from_secs(1)) => {}
         }
-        show_changes(&system, &node, &mut shown).await?;
+        show_changes(system, node, &mut shown).await?;
         let delivery = host.delivery();
         if delivery.failures > failures {
             failures = delivery.failures;
             eprintln!("observation send failed ({failures} so far): {}", delivery.last_failure.unwrap_or_default());
         }
     }
-
     println!("stopping children");
-    let report = host.shutdown(IO_TIMEOUT).await;
-    system.stop().await;
-    stop_pump.cancel();
-    pump_task.await?;
-    store.close().await;
-    if report.is_clean() {
-        println!("every child exited and its last observation was delivered");
-        Ok(ExitCode::SUCCESS)
-    } else {
-        eprintln!("cleanup not confirmed: no exit seen for {:?}", report.unconfirmed);
-        eprintln!("last observation not delivered for {:?}", report.unflushed);
-        Ok(ExitCode::FAILURE)
-    }
+    Ok(())
 }
 
 /// Prints each run of `node` whose state differs from the last one printed.

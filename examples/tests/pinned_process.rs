@@ -18,7 +18,7 @@ use cicada::store::{NodeId, OutcomeStatus, TypeDef};
 use cicada::{SourceError, TurnSource, TypeName, Worker};
 use cicada_examples::pinned_process::{
     ChildProcess, Delivered, Desired, IO_TIMEOUT, MAX_SLOTS, ObservationSink, Observed, ProcessBackend, ProcessHost,
-    Refusal, Run, RunActor, RunMsg, RunState, create_run, observation_id, pump, reconcile,
+    Refusal, Run, RunActor, RunMsg, RunState, create_run, observation_id, pump, reconcile, run_host,
 };
 use cicada_test::TestActors;
 use futures::future::BoxFuture;
@@ -690,4 +690,46 @@ async fn shutdown_reports_an_exit_it_cannot_confirm_and_an_observation_it_cannot
     assert_eq!(report.unflushed, ["stuck"], "its Stopping never reached the actor");
     assert_eq!(fake.kills(), 1);
     assert_eq!(host.snapshot(&run("stuck")).unwrap().status, Observed::Stopping, "never claimed Stopped");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_start_on_an_old_epoch_marks_a_stopping_run_for_reconciliation_before_any_refusal() {
+    let fake = Fake::new();
+    let host = ProcessHost::new(node(), fake.clone());
+    let test = harness(&host).await;
+    let pin = CreateOptions::new().pinned_to(node());
+    // A stop the old host never confirmed before it died.
+    let stopping =
+        RunState { desired: Desired::Stop, observed: Observed::Stopping, revision: 3, ..RunState::new("an-old-epoch") };
+    test.system().create_with(&run("stopping"), &stopping, pin.clone()).await.unwrap();
+    let running =
+        RunState { desired: Desired::Run, observed: running(42), revision: 2, ..RunState::new("an-old-epoch") };
+    test.system().create_with(&run("running"), &running, pin).await.unwrap();
+
+    let after = command(&test, "stopping", RunMsg::Start).await;
+    assert_eq!((after.desired, after.observed, after.refusal), (Desired::Stop, Observed::NeedsReconciliation, None));
+    assert_eq!(command(&test, "running", RunMsg::Start).await.observed, Observed::NeedsReconciliation);
+    assert_eq!(command(&test, "stopping", RunMsg::Start).await.refusal, Some(Refusal::Stopped), "then refused");
+    assert_eq!((fake.spawns(), fake.kills(), host.slots()), (0, 0, 0), "no process action");
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_error_while_a_child_runs_still_cleans_up_in_order_and_is_returned() {
+    let fake = Fake::new();
+    let host = ProcessHost::new(node(), fake.clone());
+    let test = harness(&host).await;
+    let body = async {
+        create_run(test.system(), &host, "r1").await?;
+        command(&test, "r1", RunMsg::Start).await;
+        assert_eq!(host.snapshot(&run("r1")).unwrap().status, running(1000), "a live child");
+        // As when listing the runs fails while a child runs.
+        Err::<(), String>("listing the runs failed".into())
+    };
+    let (result, report) = run_host(test.store(), test.system(), &host, body).await;
+    assert_eq!(result, Err("listing the runs failed".into()), "the original error is kept");
+    assert!(report.is_clean(), "{report:?}");
+    assert_eq!(fake.kills(), 1);
+    assert_eq!(host.snapshot(&run("r1")).unwrap().status, Observed::Exited { code: None }, "reaped");
+    assert_eq!(host.delivery().failures, 0, "flushed before the system and the store stopped");
+    assert_eq!(host.start(&run("r2")).await, Err(Refusal::HostClosed));
 }

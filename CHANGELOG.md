@@ -25,11 +25,13 @@ store schema and guarantees are those of 0.20.0.
   the latest observation of each slot as an ordinary message with a stable id per run and revision, retried every
   second with a five-second bound. `reconcile` refreshes the node's runs at startup; `ProcessHost::shutdown` closes
   admission, stops and reaps every child and waits for delivery within a bound, and reports what it could not
-  confirm. No PID adoption, automatic restart, process groups or exactly-once spawn; an abrupt host death may leave an
+  confirm; `run_host` runs a host's work with the pump attached and then always shuts down in order (host cleanup,
+  system, pump, store), an error included, which it still returns. No PID adoption, automatic restart, process groups or exactly-once spawn; an abrupt host death may leave an
   orphan.
 - `OsBackend` and `child_main`: the real adapter runs only the example executable's inert child mode, with no shell,
   and waits for every exit after a kill. The demo host `examples/examples/pinned_process.rs` takes a SQLite file, a
-  node id and an explicit `--new-run KEY`, and exits with a failure when its cleanup is not confirmed.
+  node id and an explicit `--new-run KEY`, cleans up through `run_host` also when an error ends it, and exits with a
+  failure when its cleanup is not confirmed.
 - Tests: `examples/tests/pinned_process.rs` on virtual time with a fake backend (repeats, races, capacity, stale
   observations, a lost commit replayed through a `TurnSource` wrapper, a lost `Stop` commit, uncertain sends,
   deletion, a new host epoch and shutdown) and `examples/tests/pinned_process_os.rs`, real children on Linux and

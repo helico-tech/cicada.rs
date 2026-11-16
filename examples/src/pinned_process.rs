@@ -44,7 +44,7 @@ use std::time::Duration;
 
 use cicada::prelude::*;
 use cicada::store::NodeId;
-use cicada::{CreateActorResult, OpError, SendResult};
+use cicada::{CreateActorResult, OpError, SendResult, Store};
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
@@ -309,12 +309,14 @@ pub struct CleanupReport {
     pub unconfirmed: Vec<String>,
     /// The run keys whose latest observation was not delivered in time.
     pub unflushed: Vec<String>,
+    /// Why the pump's task did not end cleanly, when [`run_host`] joined it.
+    pub pump: Option<String>,
 }
 
 impl CleanupReport {
     /// True when every child was confirmed exited and every observation delivered.
     pub fn is_clean(&self) -> bool {
-        self.unconfirmed.is_empty() && self.unflushed.is_empty()
+        self.unconfirmed.is_empty() && self.unflushed.is_empty() && self.pump.is_none()
     }
 }
 
@@ -513,7 +515,11 @@ impl ProcessHost {
         let keys = |keep: fn(&Slot) -> bool| -> Vec<String> {
             table.slots.iter().filter(|(_, s)| keep(s)).map(|(k, _)| k.clone()).collect()
         };
-        CleanupReport { unconfirmed: keys(|s| !s.status.is_terminal()), unflushed: keys(|s| s.revision > s.delivered) }
+        CleanupReport {
+            unconfirmed: keys(|s| !s.status.is_terminal()),
+            unflushed: keys(|s| s.revision > s.delivered),
+            pump: None,
+        }
     }
 }
 
@@ -549,25 +555,29 @@ impl Actor for RunActor {
                 return Ok(());
             }
             RunMsg::Stop => state.desired = Desired::Stop,
-            RunMsg::Start if state.desired == Desired::Stop => {
-                state.refusal = Some(Refusal::Stopped);
-                return Ok(());
-            }
-            RunMsg::Start if state.observed.is_final() => {
-                state.refusal = Some(Refusal::Ended);
-                return Ok(());
-            }
-            RunMsg::Start => state.desired = Desired::Run,
-            RunMsg::Refresh => {}
+            RunMsg::Start | RunMsg::Refresh => {}
         }
+        // A confirmed end stays terminal, and a run needing reconciliation stays so, whatever handles it.
         if state.observed.is_final() {
+            if message == RunMsg::Start {
+                state.refusal = Some(if state.desired == Desired::Stop { Refusal::Stopped } else { Refusal::Ended });
+            }
             return Ok(());
         }
-        // Another node, or another host process: what happened to the process is unknown here. No OS action.
+        // Another node, or another host process: what happened to the process is unknown here. No OS action. This
+        // comes before any refusal, so that no command leaves an old run looking settled.
         let mismatch = state.host_epoch != self.host.epoch();
         if mismatch || turn.node_id() != self.host.node_id() {
             turn.state_mut().observed = Observed::NeedsReconciliation;
             return Ok(());
+        }
+        let state = turn.state_mut();
+        if message == RunMsg::Start {
+            if state.desired == Desired::Stop {
+                state.refusal = Some(Refusal::Stopped);
+                return Ok(());
+            }
+            state.desired = Desired::Run;
         }
         let run = turn.self_ref().clone();
         let result = match message {
@@ -688,6 +698,29 @@ pub async fn pump(host: Arc<ProcessHost>, sink: impl ObservationSink, shutdown: 
             () = shutdown.cancelled() => return,
         }
     }
+}
+
+/// Runs `body` on a started `system` with the [`pump`] attached, then shuts down in order however `body` ended:
+/// [`ProcessHost::shutdown`] within [`IO_TIMEOUT`] while the system, pump and store still run, then the system's
+/// bounded stop, then the pump's stop and join, and the store's close last. Returns `body`'s result, an error
+/// included, with what the cleanup could not confirm.
+pub async fn run_host<T, E>(
+    store: &Store,
+    system: &ActorSystem,
+    host: &Arc<ProcessHost>,
+    body: impl Future<Output = Result<T, E>>,
+) -> (Result<T, E>, CleanupReport) {
+    let stop_pump = CancellationToken::new();
+    let pump_task = tokio::spawn(pump(host.clone(), system.clone(), stop_pump.clone()));
+    let result = body.await;
+    let mut report = host.shutdown(IO_TIMEOUT).await;
+    system.stop().await;
+    stop_pump.cancel();
+    if let Err(e) = pump_task.await {
+        report.pump = Some(e.to_string());
+    }
+    store.close().await;
+    (result, report)
 }
 
 /// Spawns the example executable's inert child mode: `program` with `args`, fixed when the host is built, with
