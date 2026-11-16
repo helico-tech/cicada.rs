@@ -7,6 +7,33 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.19.1 — unreleased
+
+The consumer skills as a Claude Code plugin (ADR 0049), beside the release archive. Existing APIs, wire formats,
+contract hashes, store schema and guarantees are those of 0.19.0.
+
+### Added
+
+- This repository is a Claude Code plugin marketplace: `.claude-plugin/marketplace.json` lists one plugin, `cicada`,
+  whose source is the repository root, and `.claude-plugin/plugin.json` gives its name and the workspace version. Its
+  skills are those of `skills/`, found by Claude Code, so far `/cicada:cicada`. A consumer with Git read access runs
+  `claude plugin marketplace add helico-tech/cicada.rs` and `claude plugin install cicada@cicada`, and updates it
+  through `/plugin`. The plugin follows `main`: Claude Code fetches it again when the version changes, so it can hold
+  documentation changed after the release tag, and it has no `SOURCE.json` (the resolver reports `revision_match`
+  `unknown`). The release archive `cicada-skill-vX.Y.Z.tar.gz` is unchanged and stays the tag-exact way.
+- `examples/tests/skill.rs` checks the exact fields of both manifests, the plugin's version against the workspace,
+  that each folder of `skills/` is a real folder with a regular `SKILL.md`, that the manifests and `skills/` hold no
+  symbolic link, and that no other plugin component (`commands/`, `agents/`, `hooks/`, `bin/`, `output-styles/`,
+  `workflows/`, `themes/`, `monitors/`, `.mcp.json`, `.lsp.json`) is at the root. `scripts/release-check.sh` refuses
+  a release whose `plugin.json` is missing, is not JSON or has no string version equal to the tag's, before anything
+  is pushed.
+
+### Changed
+
+- The skill `cicada` says to replace `<this skill's folder>` with the actual installed path, quoted for the shell, and
+  explains updates of a plugin through `/plugin` apart from the staged comparison of an archive, with how to switch
+  from an archive without losing local edits or keeping two copies.
+
 ## 0.19.0 — 2026-11-15
 
 Node details (ADR 0048): each node row says which machine wrote it, with which Cicada version, under which label.

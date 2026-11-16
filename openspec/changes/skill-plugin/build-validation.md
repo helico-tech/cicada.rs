@@ -19,6 +19,8 @@ Code 2.1.275 or later; the docs handoff mentions it as a caveat, not as the docu
 ## Runs
 
 - Task 1, workspace version 0.19.0 in plugin.json: the results above.
+- Task 4, the final versioned tree (0.19.1 in Cargo.toml, SKILL.md and plugin.json): the same three exit statuses,
+  verdicts, problems, warnings and advice as above.
 
 ## Limits
 

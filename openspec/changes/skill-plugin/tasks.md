@@ -23,7 +23,7 @@
   missing SOURCE.json behavior and all existing routes. Verify `cargo test -p cicada-examples --test skill`; review
   both an archive and plugin installation example without installing a plugin or changing account settings.
 
-- [ ] 4. Release metadata, ADR and docs handoff. Keep ADR 0049/index aligned with the implementation. Apply the next
+- [x] 4. Release metadata, ADR and docs handoff. Keep ADR 0049/index aligned with the implementation. Apply the next
   patch release through the normal workspace/lock/skill/plugin/OpenAPI version steps and changelog. Write
   `docs-handoff.md` for the installation guide's existing install/update sections and the release guide's version
   preparation/reset and review-validation instructions, with the exact topics and preserved anchors in the design.
