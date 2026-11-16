@@ -39,15 +39,16 @@ Decided:
   10 MB). A `commands/`, `agents/`, `hooks/` or `bin/` folder added at the top later would load as part of the
   plugin; the design says how the checks catch that.
 
-To decide in the design:
-
-- **How SKILL.md names its own folder.** It now says `<this skill's folder>`, which any agent understands.
-  `${CLAUDE_SKILL_DIR}` is exact in Claude Code but means nothing to other agents that read the archive.
-- **A check**: `claude plugin validate` in the gate, or a test of the two JSON files only.
+- **Portable helper path (A1, owner, 2026-11-16).** Keep `<this skill's folder>` and tell the agent to replace it
+  with the actual, quoted path. No Claude-only substitution or second command form.
+- **Repository checks (B1, owner, 2026-11-16).** Test the manifests, versions and plugin component boundary in the
+  existing gate; do not require Claude Code there. Run real Claude manifest validation during design review and
+  against the built plugin during code review, recording the CLI version and result.
 
 ## Out of scope
 
-A public marketplace or a listing elsewhere. Other agents' plugin systems. Changing what the skills say.
+A public marketplace or a listing elsewhere. Other agents' plugin systems. Changing the skills' actor guidance or
+source-discovery behavior; only helper-path and installation/update wording changes.
 
 ## Order
 
