@@ -30,12 +30,15 @@ that ships the guide; it is research input, not a replacement for docs/architect
   give the expanded knowledge its own guide while the skills keep the method and routes. The docs session writes
   the prose from the builder's handoff. The builder owns the worked example, tests, doctest wiring and skill routes.
 
-To decide in the design:
+Decided in the design:
 
-- Generic idiom followed by its Cicada form, or only Cicada-specific guidance; the guide's path and compact outline.
-- The story for the host-following-state example and the concrete success, recovery and stale-observation cases.
-- Which smaller findings need explicit guidance here and which existing sections can simply be linked.
-- The exact doc blocks, navigation links and skill routes; add the guide's Rust blocks to the examples doctests.
+- `docs/guide/design.md` uses a generic idiom followed by its Cicada form (E1, owner, 2026-11-16).
+- The websocket session example (F2, owner, 2026-11-16): bounded outgoing frames, acknowledgements and reconnects;
+  refuse new output with BufferFull when full (G1), and one logical client per session, with separate keys for
+  independent tabs/devices (H1), both chosen by the owner on 2026-11-16. The design specifies cumulative acks,
+  bounded replay, client cursor handling and the failure tests; these are example conventions, not new core guarantees.
+- The design names the smaller findings, navigation, skill routes and guide doctest wiring. The new guide and its
+  links require docs-owner preparation before landing; the handoff names G2's row for the acceptance/rollback tests.
 
 ## Out of scope
 

@@ -54,6 +54,7 @@ accepted ADR is not rewritten: a later one supersedes it. A change that makes a 
 | [0047](0047-canonical-json-and-conformance-fixtures.md) | Fixed canonical/hash and remote-worker fixtures ship as a second verified release archive, with the current formatter and explicit tested dependency limits. |
 | [0048](0048-node-details.md) | Optional hostname, Cicada version and label describe node rows; migration 7 is additive for running old nodes, and metadata does not establish identity. |
 | [0049](0049-consumer-skills-as-a-plugin.md) | Consumer skills also ship as one Claude Code plugin following main, with workspace version checks and the portable release archive retained. |
+| [0050](0050-actor-design-guide.md) | Actor design knowledge gets its own guide and a checked websocket session example with bounded replay and explicit client acknowledgements. |
 
 ## Design questions
 
