@@ -122,7 +122,10 @@ additive again.
 Migration 7 adds nullable `nodes.hostname`, `nodes.cicada_version` and `nodes.label`
 ([ADR 0048](adr/0048-node-details.md)); existing rows have none. It is additive: running schema-6 nodes keep working,
 but a schema-6 binary refuses to open the migrated database, so it cannot restart or roll back. See the
-[node table](operations.md#node-table) for these display-only details and the limits of shared node ids.
+[node table](operations.md#node-table) for these observability details and the limits of shared node ids. The table
+feeds displays and optional [node-down alerts](guide/actors.md#node-down-alerts)
+([ADR 0054](adr/0054-node-down-alerts-through-a-monitor-actor.md)); pins select eligible owners and leases fence
+turns, independently of node status. Alerts neither change row retention nor turn the table into a death history.
 Migration 8 adds nullable `actors.pinned_to` and the partial index `actors_pinned_due` on
 `(pinned_to, type, next_due_at)` for unpaused actors with a due time, beside `actors_due` (ADR 0052). Existing actors
 are unpinned. It is not safe with old direct-store nodes: an already-running schema-7 node ignores pins, and a

@@ -119,6 +119,7 @@ Stats scans rows under the prefix: avoid frequent unfiltered polling on large st
 | Failed send at commit | Target exists, child-parent/control conflicts | Repair the target/configuration before retrying |
 | Timer chain stopped | Cancelled/purged/exhausted timer | Scheduler: Start; debounce/batcher: Flush; flow: Continue to recover, or `FlowMsg::Cancel` to end the run |
 | Heartbeat watch stays alive without an alarm | `armed` timer missing/failed, target type/instance and outcomes | Fix the cause; send `HeartbeatWatchMsg::Rearm` at the original deadline. Retry/redrive copies are ignored; Beat claims new activity. See [heartbeat recovery](guide/actors.md#heartbeat-watch) |
+| No node-down alerts | Monitor exists, pending `Poll`, `lastProblem`, `lastCheckedAt`, topic/subscribers and monitor failures | Fix the cause; recreate a missing topic and subscriptions, then send `NodeDownMonitorMsg::Rearm`. See [node-down alerts](#node-down-alerts) |
 | Flow run parked for long | Untimed open wait as last journal entry, `armed: null`; target mailbox/state | Have targets send missing replies through their saved routes, or delete the run; Continue only parks it again |
 | Flow join has only some replies | Open wait names several requests; `replies` holds a subset | Find the missing targets; a timed join keeps partial results when its timeout decision commits. Replies to closed joins are ignored |
 | Flow wait past deadline | Paused run or cancelled/purged/failed deadline Continue | Resume / send public Continue to decide timeout; a reply handled first can still win |
@@ -195,8 +196,9 @@ Use the structured `Failed.cause` when available, rather than matching an error-
 
 Nodes heartbeat every 10 s. Display status is alive below 30 s, suspect below 2 min, dead afterward.
 A clean stop removes its row; rows over a day old are cleaned by node heartbeats.
-The table is diagnostic: pins select eligible owners and leases fence turns; node status gates neither. Started
-systems, including send-only nodes and App workers on the store, have rows. Initialize-only systems and workers over HTTP do not.
+The table feeds displays and sampled [node-down alerts](#node-down-alerts): pins select eligible owners and leases
+fence turns; node status gates neither. Started systems, including send-only nodes and App workers on the store,
+have rows. Initialize-only systems and workers over HTTP do not.
 
 `cicada get nodes` shows `HOSTNAME`; `-o wide` adds `HOSTED`, `VERSION` and `LABEL`, as does the TUI's wide nodes view.
 The host name is looked up once at start; an unavailable, non-UTF-8, blank, NUL-containing or over-200-character name
@@ -212,6 +214,29 @@ set `CICADA_NODE_ID` where an id should survive restarts, for example from a Sta
 among live nodes. Nodes sharing an id share one row: the last writer's details win, and either clean stop removes it.
 A running 0.18 node can leave stale details during a [rollout](how-to/upgrading.md). Host names and labels are not
 unique or authenticated identities; host names may identify machines, and the API's access control covers them.
+
+### Node-down alerts
+
+Host the optional monitor once per store, unpinned, with every host reading that same store.
+[The setup](guide/actors.md#node-down-alerts) creates its topic, subscriptions and monitor, then sends `Rearm`.
+Watch the monitor for terminal failures or deletion, and inspect `lastProblem` and `lastCheckedAt` separately:
+caught read failures succeed as turns, so watches say nothing. A missing topic fails the poll and loses its timer;
+repair the topic and subscriptions, then send `Rearm` to recover without clearing alert history.
+
+Each due poll calls `ActorSystem::nodes()`, reading every node row and every running turn, within five seconds;
+the next poll is due ten seconds after the check ends. The 1000-row cap bounds monitor state, not that read.
+Busy-store reads can time out repeatedly and suppress alerts indefinitely (`lastProblem: timeout`). One invalid
+row, a backwards sample time or more than 1000 rows rejects the entire sample: no alerts, unchanged history and
+`lastCheckedAt`, with polling continuing. A good sample clears `lastProblem`.
+
+A new monitor alerts for every retained dead row; a resumed monitor alerts for newly observed episodes while
+keeping its watermarks. Either can produce a burst after downtime. Each new heartbeat followed by two minutes
+of silence can alert again; there is no rate limit. Apply one in the receiver if needed.
+
+Sampling creates no death history. Clean-stop removal or pruning before a read leaves no trace; a heartbeat can
+race an alert, making its `lastSeen` stale on arrival. Shared node ids share one row, and HTTP workers have none.
+An all-cluster outage has no observer until a store and polling monitor are back. Alerts prove neither physical
+failure nor that someone was paged; never use them to move pins, claim work or fence outside effects.
 
 ### External leases
 
