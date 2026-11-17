@@ -1,6 +1,6 @@
 # Tasks
 
-- [ ] 1. Correct the rustdoc and prepare delivery. Replace only the stale ActorSystem::nodes sentence with design.md's
+- [x] 1. Correct the rustdoc and prepare delivery. Replace only the stale ActorSystem::nodes sentence with design.md's
   node-down-alert observability wording and authority boundary; keep the result description and runtime code intact.
   Inspect the diff and run `cargo doc -p cicada --no-deps`; add no wording or runtime tests. Write docs-handoff.md
   recording no guide change and the archive-time node-view Purpose correction. Prepare the normal next patch

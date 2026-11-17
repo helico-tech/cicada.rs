@@ -1650,7 +1650,8 @@ impl ActorSystem {
     }
 
     /// Every node in the node table (`GET /nodes`), by id, with its status from store time and its running turns.
-    /// Display only: leases, not this table, decide who runs what.
+    /// For observability, including node-down alerts. The node table grants no authority to claim, move or fence
+    /// actors; leases decide who runs what.
     pub async fn nodes(&self) -> Result<Vec<NodeInfo>, OpError> {
         let records = self.inner.store.list_nodes().await?;
         let now = self.inner.store.now().await?;

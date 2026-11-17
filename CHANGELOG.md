@@ -7,6 +7,17 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.20.5 — unreleased
+
+A documentation correction. Only a doc comment changes: the libraries' behaviour, public signatures, actor contracts,
+wire formats, the store schema and the guarantees are those of 0.20.4.
+
+### Changed
+
+- The rustdoc of `ActorSystem::nodes` no longer says the node view is for display only. It is for observability,
+  including node-down alerts (`NodeDownMonitor` reads it through `NodeSnapshotSource`). The node table grants no
+  authority to claim, move or fence actors; leases decide who runs what.
+
 ## 0.20.4 — 2026-11-17
 
 The sample also hosts the ready-made heartbeat watch. Only the sample service changes: the libraries, actor contracts,
