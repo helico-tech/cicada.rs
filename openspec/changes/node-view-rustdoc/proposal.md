@@ -10,7 +10,7 @@ separate change. No later open proposal owns this area.
 
 ## What Changes
 
-- Correct only the ActorSystem::nodes doc comment to describe observability, including heartbeat-silence alerts.
+- Correct only the ActorSystem::nodes doc comment to describe observability, including node-down alerts.
 - Preserve the authority boundary: the node table grants no authority to claim, move or fence actors; leases
   decide who runs what.
 - Keep the existing description of the returned node status and running turns.
@@ -26,6 +26,8 @@ After `sample-heartbeat-watch` (archived, released as v0.20.4). No following cha
 
 ## Impact
 
-Only the public doc comment on ActorSystem::nodes in crates/cicada/src/runtime/system.rs. The producing change
-owns this source comment; the docs session does not edit it. This proposal does not make the change ready to build:
-design/review and tasks remain for the loops, and the build loop starts once tasks.md is committed.
+The runtime source change is only the public doc comment on ActorSystem::nodes in crates/cicada/src/runtime/system.rs.
+The producing change owns this comment; the docs session does not edit it. Follow the normal patch-release path
+(next patch currently 0.20.5), including changelog and version metadata, with publication approved in the build loop.
+At archive time, align the stale node-view spec Purpose's "display only" wording with its existing observability
+requirement; this is an editorial correction, not a behavior change. The build loop starts once tasks.md is committed.
