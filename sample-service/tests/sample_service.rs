@@ -11,7 +11,9 @@ use std::time::{Duration, Instant};
 use cicada::ActorRef;
 use cicada::api::MessageState;
 use cicada::prelude::*;
-use cicada_actors::{DeadLetters, DeadLettersState};
+use cicada_actors::{
+    DeadLetters, DeadLettersState, HeartbeatStatus, HeartbeatWatch, HeartbeatWatchMsg, HeartbeatWatchState,
+};
 use cicada_app::{AppError, Env};
 use cicada_client::ActorClient;
 use cicada_examples::registry::DeviceRegistry;
@@ -619,6 +621,94 @@ async fn the_executor_runs_the_sample_over_http_without_a_database_or_bootstrap(
     assert!(!worker.out.text().contains("Listening on"), "the worker serves nothing: {}", worker.out.text());
     worker.stop().await.expect("exit code 0");
     assert!(!ambient.exists(), "the ambient store was not opened");
+    server.stop().await;
+}
+
+// ---- the heartbeat watch: hosted, but started only by a caller ----
+
+impl Node {
+    /// Creates the counter `key` as the alarm target and the heartbeat watch `key` with a one-hour silence, checks
+    /// that it waits with no timer, sends it `Beat` and checks that it is alive with the armed `Expire` pending. It
+    /// does not wait for the deadline.
+    async fn beat_once(&self, key: &str) {
+        let api = &self.api;
+        let target = Counter { id: key.into() };
+        api.create(&target, &CounterState::default()).await.unwrap();
+        let watch = HeartbeatWatch::named(key);
+        let alarm = CounterMsg::Step { seq: 1, hold_millis: 0 };
+        let settings = HeartbeatWatchState::new(Duration::from_secs(3600), &target, alarm).unwrap();
+        api.create(&watch, &settings).await.unwrap();
+        let state = || async { api.state::<_, HeartbeatWatchState>(&watch).await.unwrap().unwrap() };
+        let waiting = state().await;
+        assert_eq!((waiting.status, waiting.last_beat_at, waiting.armed), (HeartbeatStatus::Waiting, None, None));
+        let address = watch.address().unwrap();
+        let pending = || async { api.mailbox(&address, None, None).await.unwrap().unwrap().items };
+        assert!(pending().await.is_empty(), "no timer before the first Beat");
+
+        api.send(&watch, HeartbeatWatchMsg::Beat).await.unwrap();
+        eventually("the Beat ran", || async { state().await.status == HeartbeatStatus::Alive }).await;
+        let alive = state().await;
+        assert!(alive.last_beat_at.is_some(), "{alive:?}");
+        let armed = alive.armed.expect("an armed timer");
+        let pending = pending().await;
+        assert_eq!(pending.len(), 1, "{pending:?}");
+        assert_eq!((&pending[0].message.id, pending[0].message.message_type.as_str()), (&armed, "Expire"));
+        assert_eq!(pending[0].state, MessageState::Pending);
+        assert_eq!(api.state::<_, CounterState>(&target).await.unwrap().unwrap().count, 0, "no alarm yet");
+    }
+}
+
+/// sample-execution, Scenario: Both execution definitions select the same type. Scenario: Hosting alone does not
+/// start a watch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn both_definitions_host_the_heartbeat_watch_by_all_and_by_name_not_by_none_and_start_no_watch() {
+    let name = HeartbeatWatch::TYPE;
+    let prefix = format!("{name}/");
+    for (definition, bootstrap) in [(Sample::new as Definition, true), (Sample::executor as Definition, false)] {
+        for (flags, hosted) in [(vec![], true), (vec!["--types", name], true), (vec!["--types", "none"], false)] {
+            let db = temp_db();
+            let node = Node::start_as(definition, &env(&db.path), &flags).await;
+            let names = node.type_names().await;
+            assert_eq!(names.iter().any(|n| n == name), hosted, "{flags:?}: {names:?}");
+            if flags.len() == 2 && hosted {
+                assert_eq!(names, [name], "only the selected type");
+            }
+            let api = &node.api;
+            assert!(api.list_actors(&prefix, None, None).await.unwrap().items.is_empty(), "no watch at start");
+            assert!(api.list_pending(&prefix, None, None).await.unwrap().items.is_empty(), "no Beat or timer");
+            if bootstrap && flags.is_empty() {
+                assert!(api.get(&DeadLetters::default()).await.unwrap().is_some(), "the sample's bootstrap stays");
+            } else if !bootstrap {
+                node.assert_no_bootstrap(None).await;
+            }
+            node.stop().await;
+        }
+    }
+}
+
+/// sample-execution, Scenario: A caller explicitly starts a round, on the original sample's direct-store hosting.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_caller_starts_a_heartbeat_round_on_the_sample() {
+    let db = temp_db();
+    with_node(env(&db.path), &[], async |node| node.beat_once("direct").await).await;
+}
+
+/// sample-execution, Scenario: A caller explicitly starts a round, through an HTTP worker of the executor behind a
+/// send-only server.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_caller_starts_a_heartbeat_round_through_the_executor_over_http() {
+    let db = temp_db();
+    let mut server_env = env(&db.path);
+    server_env.insert("API_TOKEN".into(), "s3cret".into());
+    let server = Node::start(&server_env, &["--types", "none"]).await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut env = executor_env(&dir.path().join("never.db"));
+    env.insert("CICADA_TOKEN".into(), "s3cret".into());
+    let types = format!("e2e.counter,{}", HeartbeatWatch::TYPE);
+    let worker = Worker::spawn(Sample::executor, &env, &["--server", &server.base, "--types", &types]);
+    eventually("the worker registered its types", || async { server.type_names().await.len() == 2 }).await;
+    server.beat_once("http").await;
+    worker.stop().await.expect("exit code 0");
     server.stop().await;
 }
 

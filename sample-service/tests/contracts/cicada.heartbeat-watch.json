@@ -1,0 +1,206 @@
+{
+  "messages": {
+    "Beat": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "A sign of life: sets `lastBeatAt` to the store time of this turn and the status to `alive`, and replaces the\narmed timer with an `Expire` due after the allowed silence, in one commit. It starts a round in `waiting` and\nin `silent`. A host may send one with the create, to detect a thing that never beats.",
+      "properties": {},
+      "title": "Beat",
+      "type": "object"
+    },
+    "Expire": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The timer: sent by the watch to itself, with a retry policy. Before the deadline it arms itself again at the\ndeadline; at or after it, it sends the alarm and sets the status to `silent`.",
+      "properties": {},
+      "title": "Expire",
+      "type": "object"
+    },
+    "Rearm": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Arms the timer of the `alive` round again at its unchanged deadline, due at once when that has passed, and\nkeeps `lastBeatAt`: the recovery of a timer that was purged, cancelled or failed for good. In `waiting` and\n`silent` it does nothing.",
+      "properties": {},
+      "title": "Rearm",
+      "type": "object"
+    }
+  },
+  "state": {
+    "$defs": {
+      "Backoff": {
+        "oneOf": [
+          {
+            "properties": {
+              "factor": {
+                "default": 2.0,
+                "minimum": 1,
+                "type": "number"
+              },
+              "initial": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ]
+              },
+              "kind": {
+                "const": "exponential",
+                "type": "string"
+              },
+              "max": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "initial",
+              "max"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "delay": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ]
+              },
+              "kind": {
+                "const": "fixed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "delay"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "HeartbeatStatus": {
+        "description": "Where a heartbeat watch is in its round.",
+        "oneOf": [
+          {
+            "const": "waiting",
+            "description": "Created, with no `Beat` handled yet: no timer and no `lastBeatAt`.",
+            "type": "string"
+          },
+          {
+            "const": "alive",
+            "description": "A `Beat` was handled and its silence round runs: `lastBeatAt` and `armed` are set.",
+            "type": "string"
+          },
+          {
+            "const": "silent",
+            "description": "The round's silence passed and its alarm was sent: `lastBeatAt` stays, `armed` is cleared.",
+            "type": "string"
+          }
+        ]
+      },
+      "RetryPolicy": {
+        "properties": {
+          "backoff": {
+            "$ref": "#/$defs/Backoff"
+          },
+          "maxAttempts": {
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "maxAttempts",
+          "backoff"
+        ],
+        "type": "object"
+      },
+      "StoredMessage": {
+        "description": "A message an actor keeps to send later (ADR 0028): its type name and its JSON payload, as a store holds a message.\nThe actor that keeps it knows where it goes, so it holds no address. Build one with `StoredMessage::for_ref`.",
+        "properties": {
+          "payload": {
+            "description": "The payload: the fields of the variant, without the type tag."
+          },
+          "type": {
+            "description": "The type name: the variant of the family.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "payload"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "The state of a [`HeartbeatWatch`]: its allowed silence, target, alarm and retry policy, fixed at its create, and its\nround. Build it with `HeartbeatWatchState::new`; a decoded state is checked the same way.\n\nOn the wire: `{\"silence\":\"P1D\",\"target\":\"ops/_\",\"alarm\":{\"type\":…,\"payload\":…}}`, with `retry`, `status`,\n`lastBeatAt` and `armed`.",
+    "properties": {
+      "alarm": {
+        "$ref": "#/$defs/StoredMessage",
+        "description": "The alarm."
+      },
+      "armed": {
+        "description": "The id of the armed `Expire`: present exactly while `alive`.",
+        "minLength": 1,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "lastBeatAt": {
+        "description": "The store time of the last handled `Beat`: absent or null while `waiting`, present otherwise.",
+        "format": "date-time",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "retry": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/RetryPolicy"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The retry policy of the alarm at the target; absent or null: one attempt."
+      },
+      "silence": {
+        "description": "How long the watched thing may be silent before the alarm, as an ISO-8601 duration; positive and at most\n`MAX_DELAY`.",
+        "type": "string"
+      },
+      "status": {
+        "$ref": "#/$defs/HeartbeatStatus",
+        "default": "waiting",
+        "description": "`waiting`, `alive` or `silent`; absent: `waiting`."
+      },
+      "target": {
+        "description": "Where the alarm goes.",
+        "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+        "type": "string"
+      }
+    },
+    "required": [
+      "silence",
+      "target",
+      "alarm"
+    ],
+    "title": "HeartbeatWatchState",
+    "type": "object"
+  },
+  "type": "cicada.heartbeat-watch"
+}

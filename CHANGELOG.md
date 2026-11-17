@@ -7,6 +7,21 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.20.4 — 2026-11-17
+
+The sample also hosts the ready-made heartbeat watch. Only the sample service changes: the libraries, actor contracts,
+wire formats, the store schema and the guarantees are those of 0.20.3.
+
+### Added
+
+- The shared sample catalog hosts `HeartbeatWatchActor` as `cicada.heartbeat-watch`, so both `cicada-sample-service`
+  and `cicada-sample-executor` (and the image) register it under `--types all` or its exact name; `none` leaves it
+  out. Neither creates a watch, sends a `Beat` or arms a timer at start: a caller creates
+  `cicada.heartbeat-watch/<name>` with its silence, target and alarm, makes sure the target exists, and sends `Beat`
+  to begin a round. Its contract is the ready-made one, pinned in `sample-service/tests/contracts` and
+  `tests/contract-texts.json`. The sample still does not host `NodeDownMonitor`, and an HTTP worker gains no node
+  heartbeat. Covered in `sample-service/tests/sample_service.rs`.
+
 ## 0.20.3 — 2026-11-16
 
 A stock Rust HTTP worker of the sample, for interop tests of other worker ports. Only the sample service changes: the
