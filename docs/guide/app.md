@@ -219,6 +219,11 @@ it creates no sample singletons or wildcard dead-letter watch. A store-connected
 types, or an API caller, creates what the workload needs; registering contracts creates no actor. The original
 binary still refuses `worker --server` because it has an `App::on_start` hook.
 
+Both binaries also host the ready-made heartbeat watch, `cicada.heartbeat-watch`, selected by `--types` like any
+other type. Hosting it creates no watch and sends no `Beat`: create `cicada.heartbeat-watch/<name>` with its
+silence, target and alarm, make sure the target exists, and send `Beat` to start a round. See
+[Heartbeat watch](actors.md#heartbeat-watch) for how it monitors handled Beats.
+
 An HTTP worker sends `CICADA_TOKEN` (or `--token`); `API_TOKEN` protects a served API and is never the client token.
 It has no listener, so its in-memory `EffectLog` cannot be read through `/e2e/effects`; inspect the actors' durable
 state on the server. This path opens no store, although the sample package still builds both SQL features.

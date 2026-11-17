@@ -12,7 +12,7 @@
   a real deadline. Run targeted sample tests and the existing virtual-time heartbeat_watch tests for waiting until
   first Beat and one alarm after silence. Add no duplicate actor algorithm tests or new Docker class.
 
-- [ ] 3. Handoff and release preparation. Write docs-handoff.md as an addition to sample-worker-mode's already-landed
+- [x] 3. Handoff and release preparation. Write docs-handoff.md as an addition to sample-worker-mode's already-landed
   App Sample service block: availability, explicit create/Beat and the existing Heartbeat watch guide link. Verify
   the docs session's prose has landed before landing; builders do not edit handwritten docs. Check docs/doctests and
   both skills' existing routes. Prepare the normal patch release pins and release handoff, recording that the image
