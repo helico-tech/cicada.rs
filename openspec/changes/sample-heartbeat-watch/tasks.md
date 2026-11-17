@@ -18,7 +18,7 @@
   both skills' existing routes. Prepare the normal patch release pins and release handoff, recording that the image
   inherits the shared catalog and that no NodeDownMonitor wiring or native worker heartbeat was added.
 
-- [ ] 4. Finishing. Run `openspec validate sample-heartbeat-watch --strict`. Commit implementation and run
+- [x] 4. Finishing. Run `openspec validate sample-heartbeat-watch --strict`. Commit implementation and run
   `python3 scripts/gate.py run --e2e`, then report `python3 scripts/gate.py status`. Its full checks include
   `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` with PostgreSQL,
   feature builds, script/docs/skill checks and existing Docker E2E. Record actual verification and limits. The builder
