@@ -7,7 +7,7 @@
   (currently 0.20.5), changelog and standard release pins/generated version metadata; no wire/contract semantics
   change. Verify affected docs/skill/version checks. The build loop corrects the spec Purpose when archiving.
 
-- [ ] 2. Finishing. Run `openspec validate node-view-rustdoc --strict`. Commit implementation and run
+- [x] 2. Finishing. Run `openspec validate node-view-rustdoc --strict`. Commit implementation and run
   `python3 scripts/gate.py run --e2e`, then report `python3 scripts/gate.py status`. Full checks include
   `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace` with PostgreSQL,
   feature builds, script/docs/skill checks, Node 26+ client-tests and Docker E2E. Record actual checks and limits.

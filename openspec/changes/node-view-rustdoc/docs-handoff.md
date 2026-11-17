@@ -30,4 +30,6 @@ behavioural requirement. This is a spec editorial correction, not a guide change
 ## Status
 
 - Proposed text: none for the docs session; no handwritten prose is required.
-- Ran: `cargo doc -p cicada --no-deps` (clean); the remaining checks and the gate are listed in the build report.
+- Ran: `cargo doc -p cicada --no-deps` (clean), `cargo test -p cicada-examples --test docs` (11 passed) and
+  `--test skill` (18 passed), `openspec validate node-view-rustdoc --strict` (valid), and the gate on 43bbd3c: full
+  pass and E2E pass (31 passed, 0 failed).
