@@ -54,4 +54,10 @@ None.
 - Ran: `cargo test -p cicada-sample-service` (all pass, including the three new tests and both contract tests),
   `cargo test -p cicada-actors --test wire_formats` (22 passed) and the two named virtual-time tests of
   `--test heartbeat_watch` (2 passed); the docs, doctest and skill checks and the gate are listed in the build report.
-- The paragraph above is proposed text; the owner has not prepared prose yet. Task 3 stays open until it lands.
+- Integrated: the owner prepared the App paragraph in commit 28519faffa82ef22d8f07fb022c3074df9c04b1e on the
+  `docs` branch, changing only `docs/guide/app.md`. It was taken whole with
+  `git checkout 28519faffa82ef22d8f07fb022c3074df9c04b1e -- docs/guide/app.md` in a8beaa8, which ticked task 3.
+- Verified: the docs session checked that exact file on d87ee2b (34 doctests, 11 docs/links/guarantees tests, 18
+  skill tests, the 3 targeted sample heartbeat tests). `gate.py run --e2e` passed full checks and Docker E2E on
+  d87ee2b, and its docs run passed on the Markdown-only commits on top. `openspec validate sample-heartbeat-watch
+  --strict` passes.
