@@ -53,7 +53,7 @@ behaviour, schema, wire format, public API or guarantees. Pass/fail thresholds a
 
 ## Order
 
-After `node-view-rustdoc` (in build), before `pool-size-check`.
+After `dependency-advisories`, before `pool-size-check`.
 
 ## Impact
 
