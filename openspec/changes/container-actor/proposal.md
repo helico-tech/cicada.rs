@@ -16,6 +16,9 @@ cicada-code-factory solved this with its container actor (`src/actors/container.
 - A step's deadline and a count of errors in a row live in the actor; too many errors count as a failure.
 - A lost poll comes back when the goal is asked again or when a periodic check arrives.
 
+Issue #2 (higher-level actors) lists the same contract as "external resource reconciliation": start with one
+adapter and check the shared contract against a second. Factory and brood are the two.
+
 This is the hard part of running containers from actors. Every consumer gets the same details wrong in the same ways.
 `container-runtime` gives the trait; this change gives the actor on top of it.
 
@@ -52,7 +55,7 @@ Streaming output to an actor. Moving factory and brood onto the actor. Runtimes 
 
 ## Order
 
-After `container-runtime`, before `postgres-load-test`.
+After `container-runtime`, before `capacity-permits`.
 
 ## Impact
 

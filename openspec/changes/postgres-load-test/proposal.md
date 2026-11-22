@@ -53,7 +53,7 @@ behaviour, schema, wire format, public API or guarantees. Pass/fail thresholds a
 
 ## Order
 
-After `container-actor`, before `pool-size-check`.
+After `job-graph`, before `pool-size-check`.
 
 ## Impact
 
