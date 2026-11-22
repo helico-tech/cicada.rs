@@ -39,7 +39,7 @@ behaviour, public API, wire format, schema or guarantees.
 
 ## Order
 
-After `node-view-rustdoc` (released as 0.20.5), before `postgres-load-test`. It goes first because it fixes known
+After `lighter-loops`, before `container-runtime`. It comes right after the process change because it fixes known
 advisories in a public repository.
 
 ## Impact
