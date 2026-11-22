@@ -1,0 +1,15 @@
+# Build and test on Brood. Jobs share no files and Brood keeps no cache, so building and testing are one job: a
+# separate test job would compile the workspace again from scratch. PostgreSQL tests are skipped (no CICADA_PG_URL).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+jobs:
+  test:
+    # The workspace's rust-version; Debian bookworm ships the python3 3.11 that the skill tests need.
+    image: rust:1.94
+    timeout: 1h
+    script:
+      - cargo build --workspace --locked
+      - cargo test --workspace --locked
