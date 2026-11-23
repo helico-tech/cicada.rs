@@ -4,7 +4,8 @@ Date: 2026-11-13
 
 ## Status
 
-Accepted. Supersedes [ADR 0020](0020-the-change-loop.md).
+Accepted. Supersedes [ADR 0020](0020-the-change-loop.md). Partly superseded by [ADR 0055](0055-one-change-loop-a-fast-lane-and-batched-releases.md):
+the three sessions, every landed change a release, and the full loop for every change.
 
 ## Context
 
