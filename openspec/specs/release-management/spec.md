@@ -45,7 +45,9 @@ that section.
 A GitHub Release SHALL only be published after valid local checks and E2E evidence for its pinned commit, matching
 workspace/skill versions, a dated changelog section and verified skill packaging. Full checks SHALL preserve the
 existing CI coverage: Python tests, formatting, warning-free lints, workspace tests with PostgreSQL, isolated-feature
-builds with warnings denied, app-alone tests and dependency-tree checks. Docker E2E SHALL run without a test filter.
+builds with warnings denied, app-alone tests and dependency-tree checks. Full checks SHALL also check
+`Cargo.lock` against the RustSec advisory database with `cargo deny check advisories`; `deny.toml` SHALL name each
+accepted advisory with its reason. Docker E2E SHALL run without a test filter.
 Documentation-only reuse SHALL follow the explicit evidence rules below, not skip validation. Automatic push, pull
 request and tag Actions SHALL be removed; optional manual Linux CI SHALL run the same full policy without publishing.
 
@@ -66,6 +68,12 @@ request and tag Actions SHALL be removed; optional manual Linux CI SHALL run the
 - **WHEN** a maintainer explicitly starts the manual workflow
 - **THEN** it runs the common full check policy with PostgreSQL and creates neither local evidence nor a Release
 - **AND** ordinary main, pull-request and version-tag updates start no automatic workflow
+
+#### Scenario: A dependency has an advisory
+
+- **WHEN** a crate in `Cargo.lock` has a RustSec advisory that `deny.toml` does not accept
+- **THEN** the full checks fail and give no evidence for the commit
+- **AND** the advisory database is fetched for each run, so a run without it fails instead of passing
 
 ### Requirement: A released version never changes
 
