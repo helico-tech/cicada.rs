@@ -8,7 +8,7 @@
     gate.py install-hook                   install the pre-push gate (the owner, once per repository)
     gate.py pre-push REMOTE URL            the hook: refuse main and version-tag updates without evidence
     gate.py release vX.Y.Z [REV]           publish a checked release with its skill and fixture archives (only on the
-                                           owner's yes, in the build loop; ADRs 0041 and 0047)
+                                           owner's yes, in the change loop; ADRs 0041 and 0047)
 
 The policy is scripts/gate-policy.json, read from the checked commit's Git objects, and must be run by that commit's
 own gate.py. Records live in Git's common directory under cicada-gate/, so every worktree shares them. This is local

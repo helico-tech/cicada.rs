@@ -5,17 +5,46 @@ version bump or tag (owner decision, 2026-11-14). Implementation changes use the
 
 A release is a tag `vX.Y.Z` on `main` (ADR 0016). All crates share the version in `[workspace.package]`.
 
-1. On `main`, set the version in `Cargo.toml` and run `cargo check`, which updates `Cargo.lock`. A breaking change raises
-   the minor number while the version is 0.x, anything else the patch number;
-   [installation](install.md#upgrade) says what counts as breaking. `docs/openapi.json`
-   carries the version: regenerate it (a test says how when it is stale) and update the README's `tag = "vX.Y.Z"`
-   lines. The docs session refreshes the dependency examples in [installation](install.md); include the new version
-   in the docs handoff rather than editing that guide from the builder worktree. Keep `metadata.cicada-version` in
-   both `skills/cicada/SKILL.md` and `skills/actor-design/SKILL.md`, and `version` in `.claude-plugin/plugin.json`,
-   equal to the workspace version. The skill test and release checker enforce all three. The release checker also
-   requires `scripts/skill-archive-format` to contain `2` followed by a newline.
-2. In `CHANGELOG.md`, replace `unreleased` in the heading of that version with today's date, as `YYYY-MM-DD`.
-3. Commit the release on `main`. On the owner's approval in the build loop, run:
+Prerequisites: Python 3.11+, the Rust toolchain with fmt/clippy, local PostgreSQL, Docker for E2E, Node 26 or later
+as `node` on PATH, `jq`, and `gh` signed in with release rights. The full gate's `client-tests` check runs the example
+client's JavaScript tests with Node's built-in test runner; no npm packages are needed. Missing or older Node fails
+the check. With nvm, select Node 26+ in the shell running the gate and pre-push hook; the gate preserves PATH.
+`CICADA_GATE_PG_URL` defaults to the compose database on port 55432. Only the
+owner-approved change loop installs the shared hook or publishes; builder tests use temporary repositories and fake
+publication tools. Automatic push, PR and tag Actions are disabled (ADR 0046).
+
+## Land a change
+
+Landing merges, archives and pushes a change to `main`; it does not release it
+([ADR 0055](../adr/0055-one-change-loop-a-fast-lane-and-batched-releases.md)). The change loop commits the archive
+at landing, runs `python3 scripts/gate.py run` on the new tip with the full checks, then pushes main normally.
+Builders run E2E only when their tasks ask for it: changes to `sample-service/`, `e2e/`, the `serve` or `worker`
+commands of `cicada-app`, or the HTTP crates (`cicada-axum`, `cicada-client`). Every release requires E2E evidence.
+
+Landed implementation changes collect under one `## X.Y.Z — unreleased` heading in `CHANGELOG.md`:
+
+- The first change after a release sets the next patch version, or the next minor for a breaking change while the
+  version is 0.x; [installation](install.md#upgrade) says what counts as breaking. Later changes add entries under
+  that heading. A breaking change raises an unreleased patch version to the next minor, renames the heading and
+  rewrites the summary for the whole batch.
+- When setting the batch version, the builder updates `Cargo.toml`, runs `cargo check` for `Cargo.lock`, regenerates
+  `docs/openapi.json`, and keeps `metadata.cicada-version` in both `skills/cicada/SKILL.md` and
+  `skills/actor-design/SKILL.md`, and `version` in `.claude-plugin/plugin.json`, equal to the workspace version.
+  README tag lines and installation pins wait for the release.
+- A process or documentation change that touches no crate gets `Version: none` and leaves versions and the changelog
+  alone. Documentation-only maintenance retains the exemption above.
+
+## Release a batch
+
+Run `python3 scripts/status.py`. Its `release:` line says `release now` when an unreleased batch holds a change
+outside the fast lane and no change is ready or in build, or when a landed proposal has `Release: now` in its
+`## Lane` section. The owner can also request a release. A batch of fast-lane changes alone waits for a behaviour
+change or the owner's request.
+
+1. Fetch origin and confirm `main` equals `origin/main`. The batch's versions are already set. In `CHANGELOG.md`,
+   replace `unreleased` in that version's heading with today's date, as `YYYY-MM-DD`, and update the README's
+   `tag = "vX.Y.Z"` lines. Commit these two files on `main`; the changes were archived at landing.
+2. On the owner's approval in the change loop, run:
 
    ```sh
    python3 scripts/gate.py release vX.Y.Z
@@ -26,21 +55,17 @@ A release is a tag `vX.Y.Z` on `main` (ADR 0016). All crates share the version i
    creates or accepts a matching tag, packages and verifies the skill and fixtures, and pushes the exact tag object.
    Finally it creates or resumes a matching draft GitHub Release in origin's repository, verifies its notes and both assets,
    and publishes it. A conflicting main, tag or draft stops publication.
-4. Confirm the published Release has `cicada-skill-vX.Y.Z.tar.gz` and `cicada-fixtures-vX.Y.Z.tar.gz`.
+3. Confirm the published Release has `cicada-skill-vX.Y.Z.tar.gz` and `cicada-fixtures-vX.Y.Z.tar.gz`.
    The skill archive contains the sibling folders `cicada/` and `actor-design/`, each with an identical `SOURCE.json`;
    the release driver checks provenance and every packaged file against the pinned commit.
-   The docs session then updates installation pins. The fixture archive starts at 0.18.12; older releases are not backfilled.
+   The docs session then updates installation pins from the published release's version, which may differ from earlier
+   handoffs in the batch. The fixture archive starts at 0.18.12; older releases are not backfilled.
 
-Prerequisites: Python 3.11+, the Rust toolchain with fmt/clippy, local PostgreSQL, Docker for E2E, Node 26 or later
-as `node` on PATH, `jq`, and `gh` signed in with release rights. The full gate's `client-tests` check runs the example
-client's JavaScript tests with Node's built-in test runner; no npm packages are needed. Missing or older Node fails
-the check. With nvm, select Node 26+ in the shell running the gate and pre-push hook; the gate preserves PATH.
-`CICADA_GATE_PG_URL` defaults to the compose database on port 55432. Only the
-owner-approved build loop installs the shared hook or publishes; builder tests use temporary repositories and fake
-publication tools. Automatic push, PR and tag Actions are disabled (ADR 0046).
+An E2E failure at release stops further landing. Find the cause in the batch's commits; put a fix first in the line
+as its own change with `Release: now`, or revert the change that broke it. Nothing else lands until the release passes.
 
-When the next implementation change lands, add `## X.Y.Z — unreleased` to the changelog and set that version in
-`Cargo.toml`, both skills' metadata and `.claude-plugin/plugin.json`.
+The skill test and release checker enforce matching versions; the release checker also requires
+`scripts/skill-archive-format` to contain `2` followed by a newline.
 
 Code review also records the Claude CLI version, commands and warnings from these checks of the manifests and layout:
 
@@ -119,7 +144,7 @@ evidence describes the recorded environment, not every toolchain. Use `--force` 
 
 ### Hook and environment
 
-The build loop installs `python3 scripts/gate.py install-hook` once with the owner's approval. It respects
+The change loop installs `python3 scripts/gate.py install-hook` once with the owner's approval. It respects
 `core.hooksPath`, preserves docs hooks and refuses a foreign pre-push hook with chaining instructions. The hook
 requires checks for the pushed main tip and refuses deletion/non-fast-forward updates. New version tags need checks,
 E2E and ancestry of the named remote's previously accepted main: fetch first and push main before the tag. Existing

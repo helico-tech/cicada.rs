@@ -28,25 +28,32 @@ what it says. You do not change the design. Work fast: the owner wants short ite
   `cargo clippy -p <crate> --all-targets`. Run the whole workspace once, in the last task.
 - Commit after each task or group of tasks. Write the message like the ones in `git log`: one sentence that says what
   the commit does. Every commit builds.
-- **Version.** The caller gives `X.Y.Z`. Set it in `[workspace.package]` of `Cargo.toml`, run `cargo check` (it
-  updates `Cargo.lock`), set `metadata.cicada-version` in every `skills/*/SKILL.md` (now `cicada` and `actor-design`) and `version`
-  in `.claude-plugin/plugin.json`, regenerate `docs/openapi.json` (`CICADA_UPDATE_OPENAPI=true`), and put the entries of this change under `## X.Y.Z — unreleased` in `CHANGELOG.md`.
-  Leave the `tag = "v…"` lines of the README alone: they change at the release.
+- **Version.** The caller gives `X.Y.Z`, or `none` for a change that touches no crate: then leave every version place
+  and `CHANGELOG.md` alone. Landed changes collect under one version until a release (ADR 0055). When the top heading
+  of `CHANGELOG.md` is already `## X.Y.Z — unreleased`, the version places hold it: add this change's entries under
+  that heading. Otherwise set `X.Y.Z` in `[workspace.package]` of `Cargo.toml`, run `cargo check` (it updates
+  `Cargo.lock`), set `metadata.cicada-version` in every `skills/*/SKILL.md` (now `cicada` and `actor-design`) and
+  `version` in `.claude-plugin/plugin.json`, regenerate `docs/openapi.json` (`CICADA_UPDATE_OPENAPI=true`), and put
+  the entries of this change under `## X.Y.Z — unreleased` in `CHANGELOG.md`. A **BREAKING** change while the
+  unreleased version is a patch: the caller gives the next minor; set it in every place above, rename the unreleased
+  heading to it, and rewrite the section's summary for the whole batch. Leave the `tag = "v…"` lines of the README
+  alone: they change at the release.
 - **PostgreSQL.** Its tests need the database on port 55432
   (`CICADA_PG_URL=postgres://cicada:cicada@localhost:55432/cicada`). If nothing answers there, run
   `docker compose -f <main checkout>/docker-compose.yml up -d postgres`. If Docker is not running, go on without it and
   say so in the report.
 - The last task runs the finishing checks. All of them pass before you report the build as done; a check that waits
   for protected prose is reported as blocked (Documentation).
-- **Gate evidence** (ADR 0046). Commit first, then run the gate in your worktree in two foreground steps, each with
-  the Bash timeout at 600000: `python3 scripts/gate.py run` (the full policy, every former CI check with PostgreSQL,
-  about 7 minutes), then `python3 scripts/gate.py run --e2e` (it reuses that evidence and adds the Docker E2E suite,
-  about 4 minutes). They check your committed head in the gate's own worktree and record evidence that the build
-  loop's push and release reuse. Never run the gate in the background, and keep your turn open until it ends: a run
-  still going when your turn ends is killed and leaves a lock only the owner may clear. Uncommitted edits are not
-  checked. Report its final status lines (`python3 scripts/gate.py status`). A failure is a failing check: fix the
-  cause, commit, run it again. `busy` means another session's gate runs: wait and retry. An abandoned-run message is
-  for the owner: report it, do not run `recover` yourself. Never install the hook, push or publish.
+- **Gate evidence** (ADR 0046). Commit first, then run `python3 scripts/gate.py run` in your worktree, in the
+  foreground with the Bash timeout at 600000 (the full policy, every former CI check with PostgreSQL, about 7
+  minutes). Only when the tasks ask for E2E, follow it with `python3 scripts/gate.py run --e2e` the same way (it reuses
+  that evidence and adds the Docker E2E suite, about 4 minutes); otherwise E2E runs at the release (ADR 0055). The gate
+  checks your committed head in its own worktree and records evidence that the change loop's push and release reuse.
+  Never run the gate in the background, and keep your turn open until it ends: a run still going when your turn ends
+  is killed and leaves a lock only the owner may clear. Uncommitted edits are not checked. Report its final status
+  lines (`python3 scripts/gate.py status`). A failure is a failing check: fix the cause, commit, run it again. `busy`
+  means another session's gate runs: wait and retry. An abandoned-run message is for the owner: report it, do not run
+  `recover` yourself. Never install the hook, push or publish.
 
 ## Documentation
 
@@ -82,7 +89,7 @@ The handoff, in this shape (the archived flow changes hold real examples):
 ```markdown
 # Docs handoff for <change>
 
-Version: X.Y.Z. Refresh the dependency pins of `docs/how-to/install.md` once it is published.
+Version: X.Y.Z (or `none`). Refresh the dependency pins of `docs/how-to/install.md` once it is published.
 
 ## What changed
 
@@ -120,7 +127,7 @@ prose is not written yet>
 The caller may come back with the blocking findings of a review. Fix each one, or say why it is not a fault. Update
 the handoff when a fix changes what users see. Run the tests the fixes touch, then `cargo fmt --all --check`,
 `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace` once. Commit, run the gate on the
-new head in the same two foreground steps (Gate evidence), and report again.
+new head as in Gate evidence, and report again.
 
 ## Report
 

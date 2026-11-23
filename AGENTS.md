@@ -12,7 +12,8 @@ Use [Design with actors](docs/guide/design.md) to choose actors, ownership and p
 ## Build and test
 
 ```sh
-python3 scripts/gate.py run --e2e      # committed HEAD: record checks and Docker E2E evidence (PostgreSQL required)
+python3 scripts/gate.py run            # committed HEAD: record checks (PostgreSQL required)
+python3 scripts/gate.py run --e2e      # add Docker E2E when the tasks require it; also checked at release
 python3 scripts/gate.py status         # evidence for HEAD and what a push needs
 python3 -m unittest discover -s scripts -p 'test_*.py'   # script tests, including the gate
 cargo build --workspace
@@ -61,8 +62,8 @@ Full checks also require Node 26 or later as `node` on PATH for `client-tests`; 
 | `openspec/` | Specs, changes in progress and finished changes |
 | `skills/cicada/` | The consumer implementation skill (ADR 0041): `SKILL.md`, which routes a consumer's agent into the resolved source, and its read-only resolver `scripts/cicada_source.py`; checked by `examples/tests/skill.rs` with the Python tests in `examples/tests/skill/` |
 | `skills/actor-design/` | The consumer design/review skill (ADR 0051): a step-by-step design interview and a review of existing systems using the resolved guide; `assets/design-template.md` for saved designs and a review-report skeleton in `SKILL.md`; uses the sibling `cicada` resolver and is checked by the skill tests |
-| `scripts/` | `gate.py`, local check evidence, pre-push and release (ADR 0046); `gate-policy.json` and `ci/`, its checks; `release-check.sh`; `package-skill.py` and `package-fixtures.py`, the release archives, with shared helpers in `release_archive.py`; `status.py`, the order and state of the changes; `review.py`, the review requests between the loops |
-| `.claude/skills/` | The three loops (ADR 0030): `design-loop`, `build-loop` with the builder's brief and docs handoff template, `review-loop` with the briefs of a design and a code review |
+| `scripts/` | `gate.py`, local check evidence, pre-push and release (ADR 0046); `gate-policy.json` and `ci/`, its checks; `release-check.sh`; `package-skill.py` and `package-fixtures.py`, the release archives, with shared helpers in `release_archive.py`; `status.py`, the order and state of the changes; `review.py`, the change loop's review requests |
+| `.claude/skills/` | The change loop (ADR 0055): `change-loop` with the builder's brief and docs handoff template, and `review-loop` with the briefs of a design and a code review, for reviews in another harness |
 
 ## Rules
 
@@ -73,7 +74,7 @@ Full checks also require Node 26 or later as `node` on PATH for `client-tests`; 
   when installed. This does not provide filesystem or remote access isolation. The owner exempts documentation-only
   maintenance from library releases: merge checked docs without a version bump or tag. Builders write user guidance
   into `openspec/changes/<change>/docs-handoff.md` (template in
-  [.claude/skills/build-loop/builder.md](.claude/skills/build-loop/builder.md)). A doctest, link, guarantee row or skill
+  [.claude/skills/change-loop/builder.md](.claude/skills/change-loop/builder.md)). A doctest, link, guarantee row or skill
   route needing new prose blocks landing until this session prepares the fix ([ADR 0045](docs/adr/0045-docs-handoff-between-loops.md)).
 - [docs/architecture.md](docs/architecture.md) is the reference for behaviour. This repo has no contract with the
   Kotlin implementation (ADR 0008). A change to a guarantee or a wire format needs an ADR; a schema change is an
@@ -82,7 +83,7 @@ Full checks also require Node 26 or later as `node` on PATH for `client-tests`; 
 - Store backends must pass the conformance suite (`crates/cicada/src/tests/conformance`). The backend trait is
   private to `cicada` (ADR 0018): a test that calls it lives in `crates/cicada/src/tests`, one that needs only the
   public API in a `tests/` folder.
-- Releases are tags on `main`, published by the build loop with `python3 scripts/gate.py release vX.Y.Z` on the
+- Releases are tags on `main`, published by the change loop with `python3 scripts/gate.py release vX.Y.Z` on the
   owner's yes; [the release procedure](docs/how-to/releasing.md) has the steps. The change must be implemented,
   checked and committed on `main`. Never move or delete a remote version tag, whether a GitHub Release exists or not.
 - Public items have doc comments (`missing_docs` is an error). Keep comments as dense as the surrounding code.
@@ -110,22 +111,28 @@ Full checks also require Node 26 or later as `node` on PATH for `client-tests`; 
 ## Specs and changes: OpenSpec
 
 Specs, changes, designs and tasks live in `openspec/` ([OpenSpec](https://github.com/Fission-AI/OpenSpec), ADR 0010).
-Work on them goes through three loops (ADR 0030).
+Work on them goes through one change loop (ADR 0055).
 
 - `openspec/specs/`: what the system does, one folder per capability. It grows as changes are archived;
   `docs/architecture.md` stays the reference for behaviour.
 - `openspec/changes/<name>/`: a change: `proposal.md`, `design.md`, `tasks.md` and spec deltas. A change with only a
   `proposal.md` is not started. `tasks.md` is written last: a change that has one is agreed and ready to build.
+  Fast-lane changes omit the design and spec deltas, as below.
 - Every proposal has an `Order` section that names the change before it, so the open changes form one line.
   `python3 scripts/status.py` prints the line and the state of each change.
 - `openspec/changes/archive/`: finished changes, and the old epics and issues (`2026-11-09-work-tracker-history/`).
-- Flow: three sessions. `/design-loop` describes the next change with the owner, has it reviewed and commits it as
-  ready. `/build-loop` has a subagent build the first ready change in a worktree under `.claude/worktrees/`, has it
-  reviewed, and lands and releases it on the owner's yes. `/review-loop` reviews; any agent harness can run it by
-  reading `.claude/skills/review-loop/SKILL.md`. They hand over through files: `scripts/review.py` keeps review
-  requests in `.reviews/`; each built change hands user prose to the docs session in `docs-handoff.md` (ADR 0045).
-  A change is small (one behaviour, at most 5 tasks) and built through these loops unless the owner says otherwise.
-  Every landed implementation change is a release; documentation-only maintenance is exempt.
-  The rules for the artifacts are in `openspec/config.yaml`.
+- Flow: one session, `/change-loop`, describes the next change with the owner, has a builder subagent build it in a
+  worktree under `.claude/worktrees/` and a fresh reviewer subagent review it, lands it on `main` and releases the
+  batch when it is time. Reviews go through `scripts/review.py`, which keeps requests in `.reviews/`; another harness
+  can take one with `/review-loop` (`.claude/skills/review-loop/SKILL.md`). Each built change hands user prose to the
+  docs session in `docs-handoff.md` (ADR 0045). A change is small (one behaviour, at most 5 tasks) and built through
+  the change loop unless the owner says otherwise. The rules for the artifacts are in `openspec/config.yaml`.
+- The fast lane is for rustdoc and comments, tests only, and internal refactors. Its proposal has `Lane: fast` in a
+  `## Lane` section, and `.openspec.yaml` has `skip_specs: true`. It has no design, spec deltas or design review;
+  code review stays. Changes to the public API, wire formats, schema, guarantees, command line, actor contracts or
+  docs ownership rules never use this lane.
+- A landed implementation change waits under the `unreleased` heading of `CHANGELOG.md`; the change loop releases
+  a batch when `python3 scripts/status.py` says `release now` in its `release:` line, or when the owner asks.
+  See [releasing](docs/how-to/releasing.md) for the conditions. Documentation-only maintenance is exempt.
 - Out-of-scope findings become a change with only a `proposal.md` and an `Order` section.
 - Use the CLI (`openspec list`, `openspec show`, `openspec validate`) to read and check them.
