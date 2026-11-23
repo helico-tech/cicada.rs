@@ -14,7 +14,8 @@
       {"name": "feature-builds", "argv": ["bash", "scripts/ci/feature-builds.sh"]},
       {"name": "app-alone-tests", "argv": ["cargo", "test", "-p", "cicada-app"]},
       {"name": "dependency-trees", "argv": ["bash", "scripts/ci/dependency-trees.sh"]},
-      {"name": "client-tests", "argv": ["bash", "scripts/ci/client-tests.sh"]}
+      {"name": "client-tests", "argv": ["bash", "scripts/ci/client-tests.sh"]},
+      {"name": "advisories", "argv": ["cargo", "deny", "check", "advisories"]}
     ],
     "docs": [
       {"name": "python-tests", "argv": ["python3", "-B", "-m", "unittest", "discover", "-s", "scripts", "-p", "test_*.py"]},

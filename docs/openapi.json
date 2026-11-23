@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Cicada actor API",
-    "version": "0.20.5"
+    "version": "0.20.6"
   },
   "paths": {
     "/actors": {
@@ -3681,16 +3681,16 @@
             "description": "The leased turns, at most the limit; empty when nothing was due (no long poll).",
             "type": "object",
             "properties": {
+              "result": {
+                "type": "string",
+                "const": "leased"
+              },
               "leases": {
                 "description": "The leases.",
                 "type": "array",
                 "items": {
                   "$ref": "#/components/schemas/TurnLeaseView"
                 }
-              },
-              "result": {
-                "type": "string",
-                "const": "leased"
               }
             },
             "required": [
@@ -3702,6 +3702,10 @@
             "description": "A selected type is not registered with the requested hash; nothing was leased.",
             "type": "object",
             "properties": {
+              "result": {
+                "type": "string",
+                "const": "contractMismatch"
+              },
               "type": {
                 "description": "The first such type in name order.",
                 "type": "string"
@@ -3720,10 +3724,6 @@
               "requested": {
                 "description": "The hash the worker asked for.",
                 "type": "string"
-              },
-              "result": {
-                "type": "string",
-                "const": "contractMismatch"
               }
             },
             "required": [
@@ -3968,6 +3968,10 @@
             "description": "The lease is extended.",
             "type": "object",
             "properties": {
+              "result": {
+                "type": "string",
+                "const": "renewed"
+              },
               "leaseUntil": {
                 "description": "Store time at which the lease now expires: never earlier than before.",
                 "type": "string",
@@ -3980,10 +3984,6 @@
               "cancelRequested": {
                 "description": "An operator asked to cancel this turn; the lease is extended all the same.",
                 "type": "boolean"
-              },
-              "result": {
-                "type": "string",
-                "const": "renewed"
               }
             },
             "required": [
@@ -4072,6 +4072,10 @@
             "description": "The handler returned: its state and its effects, applied together or not at all.",
             "type": "object",
             "properties": {
+              "kind": {
+                "type": "string",
+                "const": "returned"
+              },
               "state": {
                 "description": "What happens to the actor's own state.",
                 "allOf": [
@@ -4087,10 +4091,6 @@
                     "$ref": "#/components/schemas/TurnEffectsView"
                   }
                 ]
-              },
-              "kind": {
-                "type": "string",
-                "const": "returned"
               }
             },
             "additionalProperties": false,
@@ -4104,6 +4104,10 @@
             "description": "The handler failed, or the turn failed around it; no effects. Only `handler`, `node` and `timeout` may be\nretryable, and `claim-limit` cannot be reported.",
             "type": "object",
             "properties": {
+              "kind": {
+                "type": "string",
+                "const": "failed"
+              },
               "cause": {
                 "description": "Why the message fails.",
                 "oneOf": [
@@ -4156,10 +4160,6 @@
               "reason": {
                 "description": "The reason it is recorded with.",
                 "type": "string"
-              },
-              "kind": {
-                "type": "string",
-                "const": "failed"
               }
             },
             "additionalProperties": false,
@@ -4207,12 +4207,12 @@
             "description": "The new state, written with the version increased by 1; required, also when it is `null` (which fails the\nmessage as a state that cannot be stored).",
             "type": "object",
             "properties": {
-              "value": {
-                "description": "The new state."
-              },
               "kind": {
                 "type": "string",
                 "const": "set"
+              },
+              "value": {
+                "description": "The new state."
               }
             },
             "additionalProperties": false,
@@ -4475,6 +4475,10 @@
             "description": "The commit applied ([`TurnCompletion`]).",
             "type": "object",
             "properties": {
+              "result": {
+                "type": "string",
+                "const": "completed"
+              },
               "outcome": {
                 "description": "How the message ended, or that it was rescheduled.",
                 "allOf": [
@@ -4555,10 +4559,6 @@
                   "type": "string",
                   "minLength": 1
                 }
-              },
-              "result": {
-                "type": "string",
-                "const": "completed"
               }
             },
             "required": [
@@ -4574,6 +4574,10 @@
             "description": "Nothing was applied and no failure was committed: report `failed` with this failure next, and from then on only\nthat report.",
             "type": "object",
             "properties": {
+              "result": {
+                "type": "string",
+                "const": "rejected"
+              },
               "failure": {
                 "description": "The failure to report.",
                 "allOf": [
@@ -4581,10 +4585,6 @@
                     "$ref": "#/components/schemas/TurnFailureView"
                   }
                 ]
-              },
-              "result": {
-                "type": "string",
-                "const": "rejected"
               }
             },
             "required": [
@@ -4640,13 +4640,13 @@
             "description": "Outcome `failed`.",
             "type": "object",
             "properties": {
-              "error": {
-                "description": "The recorded error.",
-                "type": "string"
-              },
               "kind": {
                 "type": "string",
                 "const": "failed"
+              },
+              "error": {
+                "description": "The recorded error.",
+                "type": "string"
               }
             },
             "required": [
@@ -4658,6 +4658,10 @@
             "description": "Put back into the mailbox by its retry policy, without an outcome. The retry is due at `deliverAt`, after\n`delay`, or now when neither is given; never both.",
             "type": "object",
             "properties": {
+              "kind": {
+                "type": "string",
+                "const": "rescheduled"
+              },
               "error": {
                 "description": "The failure, recorded as `lastError`.",
                 "type": "string"
@@ -4676,10 +4680,6 @@
                   "string",
                   "null"
                 ]
-              },
-              "kind": {
-                "type": "string",
-                "const": "rescheduled"
               }
             },
             "required": [

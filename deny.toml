@@ -1,0 +1,8 @@
+# cargo-deny 0.20.2: only the advisory check of the gate's full kind (`cargo deny check advisories`). Each run fetches
+# the RustSec database. Every accepted advisory is named here with its reason.
+[advisories]
+ignore = [
+    # chrono is unmaintained, with no fixed version. It is in the public API (timestamps in the store and the wire
+    # model) and a dependency of sqlx, and no maintained successor is settled; replacing it is a change of its own.
+    { id = "RUSTSEC-2026-0543", reason = "chrono: in the public API and used by sqlx; replacement is its own change" },
+]

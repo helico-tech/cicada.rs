@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from unittest import mock
 
@@ -139,6 +140,16 @@ class PolicyTests(unittest.TestCase):
             self.assertNotEqual(old.returncode, 0, "an old node fails, it does not pass by running nothing")
             self.assertIn("node v24.22.1 is older than 26", old.stderr)
 
+    def test_advisories_are_checked_and_each_accepted_one_has_a_reason(self):
+        full = [c["argv"] for c in REAL_POLICY["kinds"]["full"]]
+        self.assertIn(["cargo", "deny", "check", "advisories"], full)
+        self.assertNotIn("--disable-fetch", full_text(), "a stale database must not pass")
+        deny = tomllib.loads((ROOT / "deny.toml").read_text())
+        self.assertEqual(list(deny), ["advisories"])
+        ignored = deny["advisories"]["ignore"]
+        self.assertEqual([entry["id"] for entry in ignored], ["RUSTSEC-2026-0543"])
+        self.assertTrue(all(entry["reason"].strip() for entry in ignored))
+
 
 class EnvironmentTests(unittest.TestCase):
     AMBIENT = {
@@ -203,6 +214,8 @@ class WorkflowTests(unittest.TestCase):
         for trigger in ("push:", "pull_request:", "workflow_call:", "tags:"):
             self.assertNotIn(trigger, text)
         self.assertIn("python3 scripts/gate.py checks --scope full", text)
+        install = "cargo install cargo-deny --locked --version 0.20.2"
+        self.assertLess(text.index(install), text.index("python3 scripts/gate.py checks --scope full"))
         self.assertIn("CICADA_GATE_PG_URL: postgres://cicada:cicada@localhost:55432/cicada", text)
         self.assertNotIn("contents: write", text)
 

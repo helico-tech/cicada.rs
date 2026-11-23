@@ -10,7 +10,7 @@ publish.workspace = true
 [features]
 # None is on by default: a host names the store it uses and builds only that driver. PostgreSQL comes with TLS:
 # rustls on aws-lc-rs, the crypto provider of the HTTP client, trusting the built-in list of public CAs.
-sqlite = ["dep:sqlx", "sqlx/sqlite"]
+sqlite = ["dep:sqlx", "sqlx/sqlite", "dep:libsqlite3-sys"]
 postgres = ["dep:sqlx", "sqlx/postgres", "sqlx/tls-rustls-aws-lc-rs"]
 # The in-memory store, the test clocks and `TestActors`; turned on by `cicada-test`.
 testing = []
@@ -24,6 +24,8 @@ schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+# Not used directly: its floor keeps the SQLite of sqlx at a version without RUSTSEC-2026-0459 (one per build).
+libsqlite3-sys = { workspace = true, optional = true }
 sqlx = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio.workspace = true

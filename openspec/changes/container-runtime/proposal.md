@@ -51,7 +51,7 @@ in its own repo. Any change to the existing crates.
 
 ## Order
 
-After `dependency-advisories`, before `container-actor`.
+After `listening-line-race`, before `container-actor`.
 
 ## Impact
 

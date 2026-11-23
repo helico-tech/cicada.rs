@@ -14,7 +14,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.20.5"
+version = "0.20.6"
 edition = "2024"
 rust-version = "1.94"
 license = "MIT OR Apache-2.0"
@@ -42,18 +42,19 @@ futures = "0.3.34"
 http = "1"
 http-body = "1.1.0"
 jsonschema = { version = "0.61.1", default-features = false }
+libsqlite3-sys = { version = ">=0.39", default-features = false }
 opentelemetry = "0.33.0"
 opentelemetry_sdk = "0.33.0"
 peak_alloc = "0.3.0"
 proptest = "1.12.0"
 ratatui = "0.30.2"
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls"] }
-schemars = { version = "1.2.2", features = ["preserve_order", "chrono04"] }
+schemars = { version = "1.2.3", features = ["preserve_order", "chrono04"] }
 serde = { version = "1", features = ["derive"] }
 serde_norway = "0.9.42"
 serde_json = { version = "1.0.151", features = ["preserve_order", "float_roundtrip"] }
 sha2 = "0.11.0"
-sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "json", "chrono"] }
+sqlx = { version = "0.9.1", default-features = false, features = ["runtime-tokio", "json", "chrono"] }
 tempfile = "3"
 thiserror = "2.0.21"
 toml = "1.2.1"
