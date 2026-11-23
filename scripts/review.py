@@ -12,7 +12,8 @@ with the kind `design` or `code`. Its state is which of its files exist:
     <id>.result.md   the report: done
 
     review.py request design|code <change> [--head REF] [--note-file FILE]   ask for a review; prints its id
-    review.py take [ID] [--wait] [--timeout SECONDS] [--by NAME]             take request ID, or the oldest open one; prints it
+    review.py take [ID] [--wait] [--timeout SECONDS] [--by NAME]             take request ID, or the oldest open
+                                                                             one; prints it
     review.py done <id> <file>                                               hand in the report of a taken review
     review.py wait <id> [--timeout SECONDS]                                  wait for the report; prints it
     review.py list                                                           every review and its state
