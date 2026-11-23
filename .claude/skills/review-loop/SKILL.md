@@ -1,14 +1,15 @@
 ---
 name: review-loop
-description: Start the review loop of this repository (ADR 0030) - wait for review requests from the design loop and the build loop, review each one, and hand in a short report. Written for any agent harness, not only Claude Code.
+description: Start the review loop of this repository (ADR 0055) - take review requests of the change loop in another agent harness, review each one, and hand in a short report. The change loop starts its own reviewer subagents; this loop is for any other harness.
 disable-model-invocation: true
 ---
 
 # The review loop
 
-The design loop and the build loop ask for reviews by writing request files; you take them, review, and hand in a
-short report (ADR 0030). This file is for any agent harness that can read files and run a shell with `git` and
-`python3`. Work from the main checkout of the repository.
+The change loop asks for reviews by writing request files (ADR 0055). It starts its own reviewer subagent for each
+request, which takes it by id (`python3 scripts/review.py take <id>`). This loop is for another agent harness, when the
+owner wants a request reviewed there: you take requests, review, and hand in a short report. It works in any harness
+that can read files and run a shell with `git` and `python3`. Work from the main checkout of the repository.
 
 ## Loop
 
@@ -20,7 +21,8 @@ short report (ADR 0030). This file is for any agent harness that can read files 
 
    It waits until a request is open, claims it so that no other reviewer takes it, and prints it. Without `--timeout`
    it waits as long as it takes. If your harness stops long shell commands, add `--timeout <seconds>` below that limit
-   and run it again when it ends with status 1.
+   and run it again when it ends with status 1. When the owner gives you an id, take exactly that one:
+   `python3 scripts/review.py take <id> --by "<your harness and model>"`.
 2. **Review** it by the brief the request names: `design.md` or `code.md` in this folder. Each brief ends with how to
    hand in the report (`python3 scripts/review.py done <id> <file>`).
 3. Go to 1.

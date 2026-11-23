@@ -1,7 +1,7 @@
 # Brief: review a described change
 
-The design loop asks you to review one OpenSpec change before its tasks are written. Nobody has built it yet. The
-owner and the main session think the design is thought through; find what they missed. You get no summary of their
+The change loop asks you to review one OpenSpec change before its tasks are written. Nobody has built it yet. The
+owner and the change loop think the design is thought through; find what they missed. You get no summary of their
 reasoning, on purpose: judge what is written. The request (`.reviews/<id>.md`) names the change. It lives in
 `openspec/changes/<change>/` of the main checkout, and may not be committed yet.
 

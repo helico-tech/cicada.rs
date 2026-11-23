@@ -1,6 +1,6 @@
 # Brief: review a built change
 
-The build loop asks you to review one OpenSpec change that a builder has built on a branch. The request
+The change loop asks you to review one OpenSpec change that a builder has built on a branch. The request
 (`.reviews/<id>.md`) names the change and the commits: `base`, `head`, and from round 2 on `previous`, the head of the
 round before. Its note holds the version and the builder's report. Read with git from the main checkout; you need no
 checkout of your own.
@@ -9,7 +9,9 @@ checkout of your own.
 
 - `AGENTS.md`.
 - The change at `head`: `git ls-tree -r --name-only <head> openspec/changes/<change>` lists its files, and
-  `git show <head>:<path>` prints one (proposal, design, specs, tasks, docs handoff).
+  `git show <head>:<path>` prints one (proposal, design, specs, tasks, docs handoff). A fast-lane change (`Lane: fast`
+  in the `## Lane` section of its proposal) has no design and no specs: its proposal and tasks are the intent you
+  check the diff against.
 - `git log --oneline <base>..<head>` and `git diff <base>..<head>`.
 - Round 2 and later: only `git diff <previous>..<head>`, and the blocking findings of the round before in
   `.reviews/<change>.code.<round before>.result.md`. Check that each is fixed and that the fixes break nothing.
@@ -21,7 +23,7 @@ checkout of your own.
    the loops themselves (briefs, config, the handoff) is proven by the builder's walkthrough and the existing checks,
    not by a test that repeats the prose.
 3. **Bugs.** Wrong behaviour, an error path that is not handled, a race.
-4. **Scope.** Behaviour that the design does not describe.
+4. **Scope.** Behaviour that the design (for a fast-lane change: the proposal) does not describe.
 5. **The rules of `AGENTS.md`.** A schema change is an appended migration, public items have doc comments,
    `CHANGELOG.md` says what changed, generated references are regenerated, and the version in `Cargo.toml`, the
    `cicada-version` of every skill in `skills/` and `.claude-plugin/plugin.json` is the one the note names.
