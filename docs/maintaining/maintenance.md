@@ -2,7 +2,7 @@
 
 The owner requested one docs session, a persistent `docs` worktree, automatic updates, and merging into main when
 ready. The owner explicitly exempted documentation-only updates from library releases on 2026-11-14.
-This is a documentation workflow alongside the normal design/build/review loops.
+This is a documentation workflow alongside the change loop (ADR 0055).
 
 ## Ownership
 
@@ -28,12 +28,15 @@ this session’s hooks/owner record when the owner retires it. Pause the recurri
 2. Fetch `origin/main` when reachable; inspect local main as well. A failed fetch is a limitation, not evidence of no changes.
    Check the latest published release too: main can hold a new version before its tag and skill archive exist.
    Keep installation commands on published releases; revisit these pins after publication even if main has no new commits.
+   Take the version from the release, not a handoff: a breaking change can raise the batch version after earlier handoffs.
 3. Run `python3 scripts/docs-maintenance.py scan`. Read the diff, tests, changelog and archived `docs-handoff.md`
-   for commits since `reviewed_main`. The build loop reports its path under `openspec/changes/archive/<date>-<change>/`.
-   Reconcile the handoff with source; its requested prose is not evidence that the prose exists.
+   for commits since `reviewed_main`. The change loop reports its path under
+   `openspec/changes/archive/<date>-<change>/` when the change lands. Reconcile the handoff with source; its requested
+   prose is not evidence that the prose exists.
    A non-linear ref needs manual reconciliation; never reset or force-update a branch.
 4. Merge the reviewed main commits into docs before editing. Cover user-visible behavior in the relevant layer, link
-   complete examples, and preserve architecture guarantees, accepted ADRs and generated references.
+   complete examples, and preserve architecture guarantees, accepted ADRs and generated references. A landed change
+   may be documented on main before its release; installation pins wait for publication.
 5. For feature-dependent fixes awaiting landing, follow the blocked-build procedure below; never merge those into
    main through this routine. Check other prose against [the writing standard](writing.md). Run docs links/guarantees,
    all documentation doctests, and any targeted example/maintenance tests affected. Review the diff; stage only owned files and commit.
