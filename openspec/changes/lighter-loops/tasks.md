@@ -38,6 +38,6 @@ no crate, so it lands without a version bump or release (design, decision 6). AD
   "Docs it breaks". The moved `builder.md` link in `AGENTS.md` is Blocking: report `Docs: blocked` with that path, and
   integrate the docs session's prepared `AGENTS.md` when the build loop sends it. Verify: after integration,
   `cargo test -p cicada-examples --test docs` passes.
-- [ ] 6. **Finishing checks.** `python3 -m unittest discover -s scripts -p 'test_*.py'`, `cargo test -p
+- [x] 6. **Finishing checks.** `python3 -m unittest discover -s scripts -p 'test_*.py'`, `cargo test -p
   cicada-examples --test docs`, `cargo test -p cicada-examples --test skill`, `openspec validate lighter-loops
   --strict`, then commit and run `python3 scripts/gate.py run` (the full policy; no E2E, as no crate changes).
