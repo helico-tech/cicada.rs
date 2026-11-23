@@ -7,6 +7,34 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.20.6 — unreleased
+
+A security update of the dependencies. The libraries' behaviour, public signatures, actor contracts, wire formats, the
+store schema and the guarantees are those of 0.20.5.
+
+### Security
+
+- `Cargo.lock` is updated with `cargo update`, which fixes every RustSec advisory it had: `rustls` (RUSTSEC-2026-0346,
+  0347, 0348, 0349), `rustls-webpki` (RUSTSEC-2026-0382), `webpki-root-certs` (RUSTSEC-2026-0383), `libsqlite3-sys`
+  through `sqlx` (RUSTSEC-2026-0459, the C SQLite CVE-2026-119375), `tokio` (RUSTSEC-2026-0386), `ctutils`
+  (RUSTSEC-2026-0385) and `url` through `reqwest` (RUSTSEC-2026-0592). This covers the repository's tests, the sample
+  service, the E2E images and the `cicada` binary; a project that uses Cicada resolves its own versions, so run
+  `cargo update` there too.
+- With the `sqlite` feature, `cicada` now needs `sqlx` 0.9.1 and `libsqlite3-sys` 0.39 (a new optional dependency,
+  not used directly), so a consumer cannot resolve the SQLite with the CVE. A project whose other crates hold
+  `libsqlite3-sys` below 0.39 now gets a resolution error. The `postgres` feature does not build it.
+- `chrono` is unmaintained (RUSTSEC-2026-0543) and has no fixed version. It stays for now: it is in the public API and
+  a dependency of `sqlx`. `deny.toml` accepts that one advisory with its reason.
+
+### Changed
+
+- The full gate checks `Cargo.lock` against the RustSec advisory database with `cargo deny check advisories` (check
+  `advisories`). Full gate runs now need `cargo-deny` 0.20.2 (`cargo install cargo-deny --locked --version 0.20.2`)
+  and network access, as the database is fetched each run; without either the check fails. The manual Linux
+  workflow installs it.
+- `docs/openapi.json` lists the `result` tag first in tagged response bodies, as `schemars` 1.2.3 orders it. The
+  schemas are otherwise the same.
+
 ## 0.20.5 — 2026-11-17
 
 A documentation correction. Only a doc comment changes: the libraries' behaviour, public signatures, actor contracts,
