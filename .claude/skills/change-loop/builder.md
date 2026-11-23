@@ -89,7 +89,8 @@ The handoff, in this shape (the archived flow changes hold real examples):
 ```markdown
 # Docs handoff for <change>
 
-Version: X.Y.Z (or `none`). Refresh the dependency pins of `docs/how-to/install.md` once it is published.
+Version: X.Y.Z, or none for a change that is not released. Refresh the dependency pins of `docs/how-to/install.md`
+once it is published.
 
 ## What changed
 
