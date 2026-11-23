@@ -189,7 +189,7 @@ class ClassifierTests(unittest.TestCase):
         self.sandbox = Sandbox(self, files={
             "docs/guide.md": "g\n", "docs/reference/cli.md": "c\n", "crates/x/README.md": "r\n",
             "openspec/config.yaml": "a: 1\n", "openspec/changes/x/proposal.md": "p\n", "src/lib.rs": "\n",
-            "skills/cicada/SKILL.md": "s\n", ".claude/skills/build-loop/SKILL.md": "b\n", "CHANGELOG.md": "c\n",
+            "skills/cicada/SKILL.md": "s\n", ".claude/skills/change-loop/SKILL.md": "b\n", "CHANGELOG.md": "c\n",
         })
         self.repo = gate.Repo(self.sandbox.root)
         self.base = self.sandbox.git("rev-parse", "HEAD")
@@ -203,7 +203,7 @@ class ClassifierTests(unittest.TestCase):
 
     def test_allowed_markdown_qualifies(self):
         for path in ("README.md", "CHANGELOG.md", "AGENTS.md", "docs/guide.md", "docs/new/deep.md",
-                     "skills/cicada/SKILL.md", ".claude/skills/build-loop/SKILL.md", "openspec/changes/x/proposal.md",
+                     "skills/cicada/SKILL.md", ".claude/skills/change-loop/SKILL.md", "openspec/changes/x/proposal.md",
                      "openspec/specs/y/spec.md"):
             with self.subTest(path):
                 self.assertEqual(self.refused({path: "changed\n"}), [])

@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
-"""Prints the open OpenSpec changes in their order, the state of each, and what the design and build loops do next
-(ADR 0030).
+"""Prints the open OpenSpec changes in their order, the state of each, and what the change loop does next (ADR 0055).
 
 The order comes from the `## Order` section of each proposal ("After `x`", "before `y`"). The state comes from the
 files of the change: only a proposal, described (design or spec), ready (a `tasks.md`), in build (some tasks ticked),
-built (all ticked). While a change is being built, its `tasks.md` is read from its worktree. The design loop describes
-the first change without a `tasks.md`, unless two ready changes already wait for the build loop.
+built (all ticked). While a change is being built, its `tasks.md` is read from its worktree. The change loop builds the
+first change when it is ready, and describes the first change without a `tasks.md`, unless two ready changes already
+wait to be built.
+
+The `release:` line names the version of an `unreleased` top heading of `CHANGELOG.md` and the changes archived since
+the last version tag, with the lane of each from the `## Lane` section of its proposal (`Lane: fast`, `Release: now`);
+a change whose docs handoff says `Version: none` landed without a release and is left out.
+It says to release at once when a landed change says `Release: now`; otherwise when no change is ready or in build and
+a landed change is outside the fast lane.
 
     status.py          print the order and what to do
     status.py --wait   wait until the first change in the order is ready, then print
@@ -21,6 +27,9 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 WAITING = 2
 CHANGES = ROOT / "openspec" / "changes"
 TASK = re.compile(r"^\s*- \[( |x|X)\]", re.M)
+ARCHIVE = CHANGES / "archive"
+UNRELEASED = re.compile(r"^## (\S+) — unreleased\s*$")
+BUSY = ("ready", "in build", "built")
 
 
 def worktrees():
@@ -35,6 +44,70 @@ def worktrees():
         elif line.startswith("branch refs/heads/") and path is not None:
             found[line[len("branch refs/heads/") :]] = path
     return found
+
+
+def git(*args):
+    """The output of a git command in the repository, or None when it fails."""
+    run = subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True, text=True)
+    return run.stdout.strip() if run.returncode == 0 else None
+
+
+def unreleased():
+    """The version of the top heading of CHANGELOG.md when it says `unreleased`, else None."""
+    changelog = ROOT / "CHANGELOG.md"
+    lines = changelog.read_text().splitlines() if changelog.exists() else []
+    top = next((line for line in lines if line.startswith("## ")), None)
+    match = UNRELEASED.match(top) if top else None
+    return match.group(1) if match else None
+
+
+def lane_of(proposal):
+    """(fast lane, release now) from the `## Lane` section of a proposal; without one it is in the normal lane."""
+    match = re.search(r"^## Lane\n(.*?)(?=\n## |\Z)", proposal, re.S | re.M)
+    text = match.group(1) if match else ""
+    return "Lane: fast" in text, "Release: now" in text
+
+
+def unversioned(folder):
+    """True when an archived change landed without a release: its docs handoff has a line `Version: none`."""
+    handoff = folder / "docs-handoff.md"
+    return handoff.exists() and any(line.startswith("Version: none") for line in handoff.read_text().splitlines())
+
+
+def landed():
+    """The changes archived since the last version tag, by name, as {name: (fast lane, release now)}. A change that
+    landed without a release (`Version: none`) is not part of the batch."""
+    tag = git("describe", "--tags", "--abbrev=0", "--match", "v*")
+    listed = git("ls-tree", "--name-only", f"{tag}:openspec/changes/archive") if tag else None
+    released = set(listed.splitlines()) if listed else set()
+    folders = sorted(d for d in ARCHIVE.iterdir() if d.is_dir()) if ARCHIVE.is_dir() else []
+    return {
+        re.sub(r"^\d{4}-\d{2}-\d{2}-", "", d.name): lane_of((d / "proposal.md").read_text())
+        for d in folders
+        if d.name not in released and (d / "proposal.md").exists() and not unversioned(d)
+    }
+
+
+def release_line(changes, queue):
+    """What the `release:` line says, from the changelog, the landed changes and the open ones."""
+    version = unreleased()
+    if version is None:
+        return "nothing unreleased"
+    batch = landed()
+    count = f"{len(batch)} change{'' if len(batch) == 1 else 's'} landed"
+    now = [name for name, (_, release_now) in batch.items() if release_now]
+    busy = [name for name in queue if changes[name]["state"] in BUSY]
+    if now:
+        advice = f"release now: {' and '.join(now)} says Release: now"
+    elif not batch:
+        advice = "wait: no change landed"
+    elif all(fast for fast, _ in batch.values()):
+        advice = "wait: no landed change outside the fast lane"
+    elif busy:
+        advice = f"wait: {busy[0]} is {changes[busy[0]]['state']}"
+    else:
+        advice = "release now: no change is ready or in build"
+    return f"{version} unreleased, {count}; {advice}"
 
 
 def order_of(proposal):
@@ -146,9 +219,10 @@ def main():
         if first_open is None:
             print("describe: nothing; every open change is ready")
         elif len(waiting) >= WAITING:
-            print(f"describe: nothing; {' and '.join(waiting)} wait for the build loop")
+            print(f"describe: nothing; {' and '.join(waiting)} wait to be built")
         else:
             print(f"describe: {first_open} ({changes[first_open]['state']})")
+    print(f"release:  {release_line(changes, queue)}")
     print("problems: " + ("none" if not problems else ""))
     for problem in problems:
         print(f"  - {problem}")

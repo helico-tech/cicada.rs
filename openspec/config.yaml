@@ -7,10 +7,13 @@ context: |
   Read docs/architecture.md first and follow it: it is the reference for behaviour (guarantees G1-G6, store
   requirements S1-S10, the HTTP contract), and it wins over openspec/specs/ if they differ. Decisions are in docs/adr/.
   Priorities, in order: simplicity, ease of use, correctness. Throughput is not a goal.
-  Changes go through three loops (ADR 0030, .claude/skills/design-loop, build-loop and review-loop). A change with
-  only a proposal.md is an idea or a finding that is not started. Its design and specs are written together with the
-  owner in the design loop. Its tasks.md is written last, after a review, and means: ready to build. A change is
-  small, so that it is built and reviewed quickly.
+  Changes go through one change loop (ADR 0055, .claude/skills/change-loop), with builder and reviewer subagents;
+  .claude/skills/review-loop lets another harness review. A change with only a proposal.md is an idea or a finding
+  that is not started. Its design and specs are written together with the owner in the change loop. Its tasks.md is
+  written last, after the design review in the normal lane, and means: ready to build. A change is small, so that it
+  is built and reviewed quickly. A fast-lane change has proposal.md, tasks.md, docs-handoff.md and .openspec.yaml with
+  skip_specs: true; no design.md, no spec deltas and no design review. Landed changes collect under the unreleased
+  version of CHANGELOG.md and are released together.
 
 rules:
   proposal:
@@ -18,6 +21,8 @@ rules:
     - Keep a change small - one behaviour, at most 5 tasks plus the finishing checks; split a bigger one into a line of changes
     - Always state what is out of scope
     - Add an Order section that names the change before it and the change after it
+    - "Optional Lane section (`## Lane`): the line `Lane: fast` puts the change in the fast lane, and `Release: now` releases it as soon as it lands (a security fix, a bug a consumer hits); without the section the change is in the normal lane"
+    - "The fast lane is a closed list: rustdoc and comments, tests only, internal refactors. Never a change to the public API, a wire format, the schema, a guarantee, the command line, an actor contract or the docs ownership rules"
   design:
     - Keep it short, about 80 lines - the decisions, each with its reason and the options not taken in one line
     - A change to a guarantee or a wire format needs a new ADR in docs/adr/ and its docs/architecture.md text in the docs handoff
@@ -25,6 +30,7 @@ rules:
     - A schema change is an appended migration
   tasks:
     - At most 5 tasks plus the finishing checks
+    - "The last task runs `python3 scripts/gate.py run`; a change that touches sample-service/, e2e/, the serve or worker commands of cicada-app, or the HTTP crates (cicada-axum, cicada-client) runs `python3 scripts/gate.py run --e2e` as well; for any other change E2E runs at the release"
     - Every task states how it is verified, with the tests it touches; the builder runs those while building and the whole workspace only in the last task
     - Test runtime behaviour on virtual time with `#[tokio::test(start_paused = true)]` and `TestActors`
     - A store backend change must pass the conformance suite (`crates/cicada/src/tests/conformance`)

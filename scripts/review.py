@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Review requests between the loops of this repository (ADR 0030), as files that any agent harness can read and write.
+"""Review requests of the change loop (ADR 0055, from ADR 0030), as files that any agent harness can read and write.
+
+The change loop asks for a review and starts a reviewer subagent that takes it by its id; another harness can take
+open requests through the review loop.
 
 The files live in `.reviews/` in the main checkout, which git ignores. A review is named `<change>.<kind>.<round>`,
 with the kind `design` or `code`. Its state is which of its files exist:
@@ -9,12 +12,14 @@ with the kind `design` or `code`. Its state is which of its files exist:
     <id>.result.md   the report: done
 
     review.py request design|code <change> [--head REF] [--note-file FILE]   ask for a review; prints its id
-    review.py take [--wait] [--timeout SECONDS] [--by NAME]                  take the oldest open request; prints it
+    review.py take [ID] [--wait] [--timeout SECONDS] [--by NAME]             take request ID, or the oldest open
+                                                                             one; prints it
     review.py done <id> <file>                                               hand in the report of a taken review
     review.py wait <id> [--timeout SECONDS]                                  wait for the report; prints it
     review.py list                                                           every review and its state
 
 `take` and `wait` end with status 1 when nothing came within the timeout; without one they wait as long as it takes.
+`take ID` claims exactly that request and fails when it is missing, taken or done; it does not wait.
 """
 
 import argparse
@@ -105,22 +110,34 @@ def until(found, timeout):
         time.sleep(POLL)
 
 
-def take(args):
-    def claim():
-        for review, path in requests():
-            if state(review) != "open":
-                continue
-            try:
-                handle = os.open(DIR / f"{review}.taken", os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            except FileExistsError:
-                continue
-            with os.fdopen(handle, "w") as taken:
-                taken.write(f"by: {args.by}\ntaken: {now()}\n")
-            return review, path
-        return None
+def claim(review, by):
+    """Marks an open request as taken; False when another reviewer has it, or it is done."""
+    if state(review) != "open":
+        return False
+    try:
+        handle = os.open(DIR / f"{review}.taken", os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return False
+    with os.fdopen(handle, "w") as taken:
+        taken.write(f"by: {by}\ntaken: {now()}\n")
+    return True
 
+
+def take(args):
     DIR.mkdir(exist_ok=True)
-    got = until(claim, args.timeout) if args.wait else claim()
+    if args.id is not None:
+        path = DIR / f"{args.id}.md"
+        if not NAME.match(args.id) or not path.exists():
+            sys.exit(f"review: no request {args.id}")
+        if not claim(args.id, args.by):
+            sys.exit(f"review: {args.id} is {state(args.id)}, not open")
+        got = args.id, path
+    else:
+
+        def oldest():
+            return next(((review, path) for review, path in requests() if claim(review, args.by)), None)
+
+        got = until(oldest, args.timeout) if args.wait else oldest()
     if got is None:
         print("review: no open request")
         return 1
@@ -174,6 +191,7 @@ def main():
     p.add_argument("--note-file")
     p.set_defaults(run=request)
     p = commands.add_parser("take")
+    p.add_argument("id", nargs="?")
     p.add_argument("--wait", action="store_true")
     p.add_argument("--timeout", type=float)
     p.add_argument("--by", default="unknown")
