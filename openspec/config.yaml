@@ -10,10 +10,10 @@ context: |
   Changes go through one change loop (ADR 0055, .claude/skills/change-loop), with builder and reviewer subagents;
   .claude/skills/review-loop lets another harness review. A change with only a proposal.md is an idea or a finding
   that is not started. Its design and specs are written together with the owner in the change loop. Its tasks.md is
-  written last, after a review, and means: ready to build. A change is small, so that it is built and reviewed
-  quickly. A fast-lane change has proposal.md, tasks.md, docs-handoff.md and .openspec.yaml with skip_specs: true;
-  no design.md, no spec deltas and no design review. Landed changes collect under the unreleased version of
-  CHANGELOG.md and are released together.
+  written last, after the design review in the normal lane, and means: ready to build. A change is small, so that it
+  is built and reviewed quickly. A fast-lane change has proposal.md, tasks.md, docs-handoff.md and .openspec.yaml with
+  skip_specs: true; no design.md, no spec deltas and no design review. Landed changes collect under the unreleased
+  version of CHANGELOG.md and are released together.
 
 rules:
   proposal:

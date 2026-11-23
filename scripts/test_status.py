@@ -33,10 +33,11 @@ class ReleaseLineTest(unittest.TestCase):
     def changelog(self, sections):
         (self.root / "CHANGELOG.md").write_text("# Changelog\n\nReleases.\n\n" + sections)
 
-    def archive(self, name, lane):
+    def archive(self, name, lane, version="0.1.1"):
         folder = self.root / "openspec" / "changes" / "archive" / name
         folder.mkdir(parents=True)
         (folder / "proposal.md").write_text(f"# Proposal\n\n## Why\n\nBecause.\n{lane}\n## Order\n\nAfter `x`.\n")
+        (folder / "docs-handoff.md").write_text(f"# Docs handoff for {name}\n\nVersion: {version}. Details.\n")
 
     def ready(self, name):
         folder = self.root / "openspec" / "changes" / name
@@ -44,8 +45,8 @@ class ReleaseLineTest(unittest.TestCase):
         (folder / "proposal.md").write_text("# Proposal\n\n## Order\n\nAfter `first`.\n")
         (folder / "tasks.md").write_text("- [ ] 1. A task.\n")
 
-    def land(self, name, lane=""):
-        self.archive(name, lane)
+    def land(self, name, lane="", version="0.1.1"):
+        self.archive(name, lane, version)
         self.git("add", "-A")
         self.git("commit", "-q", "-m", f"Archive {name}")
 
@@ -83,6 +84,19 @@ class ReleaseLineTest(unittest.TestCase):
         self.assertEqual(
             self.release_line(),
             "release:  0.1.1 unreleased, 2 changes landed; release now: no change is ready or in build",
+        )
+
+    def test_an_unreleased_heading_without_a_landed_change_waits(self):
+        self.changelog(UNRELEASED + RELEASED)
+        self.assertEqual(self.release_line(), "release:  0.1.1 unreleased, 0 changes landed; wait: no change landed")
+
+    def test_a_change_without_a_version_is_not_part_of_the_batch(self):
+        self.changelog(UNRELEASED + RELEASED)
+        self.land("2026-11-02-process", version="none")
+        self.land("2026-11-03-rustdoc", "\n## Lane\n\nLane: fast\n")
+        self.assertEqual(
+            self.release_line(),
+            "release:  0.1.1 unreleased, 1 change landed; wait: no landed change outside the fast lane",
         )
 
     def test_release_now_releases_at_once(self):

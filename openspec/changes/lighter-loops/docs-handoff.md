@@ -19,7 +19,9 @@ Users of the library see nothing new. The way this repository is worked on chang
   heading of `CHANGELOG.md`. A batch is released when no change is ready or in build and it holds a change outside the
   fast lane, at once when a landed proposal says `Release: now`, or when the owner asks. E2E runs at the release.
 - `python3 scripts/review.py take <id>` claims exactly one request (proven by `scripts/test_review.py`).
-  `python3 scripts/status.py` prints a `release:` line (proven by `scripts/test_status.py`).
+  `python3 scripts/status.py` prints a `release:` line (proven by `scripts/test_status.py`). A landed change whose
+  handoff says `Version: none` is not part of the batch; with an `unreleased` heading and no landed change the line
+  says `wait: no change landed`.
 - `/review-loop` stays, for another harness.
 
 ## 1. AGENTS.md: the builder's brief link

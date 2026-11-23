@@ -8,7 +8,8 @@ first change when it is ready, and describes the first change without a `tasks.m
 wait to be built.
 
 The `release:` line names the version of an `unreleased` top heading of `CHANGELOG.md` and the changes archived since
-the last version tag, with the lane of each from the `## Lane` section of its proposal (`Lane: fast`, `Release: now`).
+the last version tag, with the lane of each from the `## Lane` section of its proposal (`Lane: fast`, `Release: now`);
+a change whose docs handoff says `Version: none` landed without a release and is left out.
 It says to release at once when a landed change says `Release: now`; otherwise when no change is ready or in build and
 a landed change is outside the fast lane.
 
@@ -67,8 +68,15 @@ def lane_of(proposal):
     return "Lane: fast" in text, "Release: now" in text
 
 
+def unversioned(folder):
+    """True when an archived change landed without a release: its docs handoff has a line `Version: none`."""
+    handoff = folder / "docs-handoff.md"
+    return handoff.exists() and any(line.startswith("Version: none") for line in handoff.read_text().splitlines())
+
+
 def landed():
-    """The changes archived since the last version tag, by name, as {name: (fast lane, release now)}."""
+    """The changes archived since the last version tag, by name, as {name: (fast lane, release now)}. A change that
+    landed without a release (`Version: none`) is not part of the batch."""
     tag = git("describe", "--tags", "--abbrev=0", "--match", "v*")
     listed = git("ls-tree", "--name-only", f"{tag}:openspec/changes/archive") if tag else None
     released = set(listed.splitlines()) if listed else set()
@@ -76,7 +84,7 @@ def landed():
     return {
         re.sub(r"^\d{4}-\d{2}-\d{2}-", "", d.name): lane_of((d / "proposal.md").read_text())
         for d in folders
-        if d.name not in released and (d / "proposal.md").exists()
+        if d.name not in released and (d / "proposal.md").exists() and not unversioned(d)
     }
 
 
@@ -91,6 +99,8 @@ def release_line(changes, queue):
     busy = [name for name in queue if changes[name]["state"] in BUSY]
     if now:
         advice = f"release now: {' and '.join(now)} says Release: now"
+    elif not batch:
+        advice = "wait: no change landed"
     elif all(fast for fast, _ in batch.values()):
         advice = "wait: no landed change outside the fast lane"
     elif busy:
