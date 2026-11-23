@@ -9,10 +9,10 @@ For an app binary backed by SQLite:
 
 ```toml
 [dependencies]
-cicada = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.20.5" }
-cicada-app = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.20.5", features = ["sqlite"] }
+cicada = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.20.6" }
+cicada-app = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.20.6", features = ["sqlite"] }
 serde = { version = "1", features = ["derive"] }
-schemars = "1"
+schemars = "1.2.3"
 ```
 
 | Need | Dependency or feature |
@@ -27,6 +27,12 @@ schemars = "1"
 
 No store or terminal feature is enabled by default. An HTTP worker needs no store feature.
 In a workspace, place shared entries under `[workspace.dependencies]` and inherit them from each package.
+
+## Dependencies and lockfiles
+
+From 0.20.6, Cicada's dependency floors are `schemars` 1.2.3 and, with `sqlite`, `sqlx` 0.9.1 and `libsqlite3-sys` 0.39.
+A dependency that holds `libsqlite3-sys` below 0.39 causes a resolution error. Its upper bound comes from `sqlx`.
+Run `cargo update` in your project too: Cicada's lockfile does not choose your project's dependency versions.
 
 ## Authenticate Cargo
 
@@ -97,8 +103,8 @@ For a **first install** into a project without either skill folder:
 
 ```sh
 staging=$(mktemp -d)
-gh release download v0.20.5 --repo helico-tech/cicada.rs --pattern 'cicada-skill-*.tar.gz' --dir "$staging"
-tar -xzf "$staging/cicada-skill-v0.20.5.tar.gz" -C "$staging"
+gh release download v0.20.6 --repo helico-tech/cicada.rs --pattern 'cicada-skill-*.tar.gz' --dir "$staging"
+tar -xzf "$staging/cicada-skill-v0.20.6.tar.gz" -C "$staging"
 # Inspect both skills, the helper and the design template before copying them.
 mkdir -p .claude/skills
 cp -R "$staging/cicada" "$staging/actor-design" .claude/skills/
