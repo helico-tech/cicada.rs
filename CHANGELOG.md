@@ -20,6 +20,8 @@ store schema and the guarantees are those of 0.20.5.
   (RUSTSEC-2026-0385) and `url` through `reqwest` (RUSTSEC-2026-0592). This covers the repository's tests, the sample
   service, the E2E images and the `cicada` binary; a project that uses Cicada resolves its own versions, so run
   `cargo update` there too.
+  The lockfile holds `schemars` at 1.2.2: 1.2.3 orders the keys of a contract's text differently, so `GET /types`
+  would no longer serve the same text byte for byte (the contract hashes stay the same).
 - With the `sqlite` feature, `cicada` now needs `sqlx` 0.9.1 and `libsqlite3-sys` 0.39 (a new optional dependency,
   not used directly), so a consumer cannot resolve the SQLite with the CVE. A project whose other crates hold
   `libsqlite3-sys` below 0.39 now gets a resolution error. The `postgres` feature does not build it.
@@ -32,8 +34,6 @@ store schema and the guarantees are those of 0.20.5.
   `advisories`). Full gate runs now need `cargo-deny` 0.20.2 (`cargo install cargo-deny --locked --version 0.20.2`)
   and network access, as the database is fetched each run; without either the check fails. The manual Linux
   workflow installs it.
-- `docs/openapi.json` lists the `result` tag first in tagged response bodies, as `schemars` 1.2.3 orders it. The
-  schemas are otherwise the same.
 
 ## 0.20.5 — 2026-11-17
 

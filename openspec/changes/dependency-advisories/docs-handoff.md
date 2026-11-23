@@ -17,8 +17,10 @@ No library behaviour, public item, wire format, schema or guarantee changes. Wha
   gate gives no evidence. `.github/workflows/ci.yml` installs it with `cargo install cargo-deny --locked --version
   0.20.2`. Proven by `scripts/test_gate_policy.py`
   (`test_advisories_are_checked_and_each_accepted_one_has_a_reason`, `test_only_a_manual_ci_workflow_remains`).
-- `docs/openapi.json` (generated, committed with the change) lists the `result` tag first in tagged bodies, from
-  `schemars` 1.2.3. No schema changes otherwise.
+- The lockfile holds `schemars` at 1.2.2 (`cargo update -p schemars --precise 1.2.2`): 1.2.3 orders the keys of a
+  contract's text differently, which fails `contracts_are_the_texts_recorded` (`sample-service`), the byte-for-byte
+  text that `GET /types` serves. The contract hashes do not change. A consumer that runs `cargo update` gets 1.2.3 and
+  so different texts from `GET /types` than this repository records.
 
 ## 1. The gate's prerequisites
 
@@ -45,6 +47,8 @@ command block, and to the paragraph after it: full gate checks also need `cargo-
 that holds `libsqlite3-sys` lower gets a resolution error. Run `cargo update` in your project as well: Cicada's
 lockfile does not choose your versions.
 **Caveats.** The requirement is written `"0.39"`, so it also keeps `libsqlite3-sys` below 0.40 in a consumer's build.
+Do not tell consumers to expect byte-identical `GET /types` texts after their own `cargo update`: `schemars` 1.2.3
+reorders keys (the hashes stay the same).
 
 ## Blocking
 
