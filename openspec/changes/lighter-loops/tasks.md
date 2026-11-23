@@ -34,7 +34,7 @@ no crate, so it lands without a version bump or release (design, decision 6). AD
   change has `proposal.md`, `tasks.md`, `docs-handoff.md` and `.openspec.yaml` with `skip_specs: true`; the task rules
   add the E2E rule of decision 8. Verify: `openspec validate lighter-loops --strict` and `openspec validate
   dependency-advisories` give the same result as before the edit.
-- [ ] 5. **Docs handoff.** Write `docs-handoff.md` by the template in `builder.md`, with the items of the design's
+- [x] 5. **Docs handoff.** Write `docs-handoff.md` by the template in `builder.md`, with the items of the design's
   "Docs it breaks". The moved `builder.md` link in `AGENTS.md` is Blocking: report `Docs: blocked` with that path, and
   integrate the docs session's prepared `AGENTS.md` when the build loop sends it. Verify: after integration,
   `cargo test -p cicada-examples --test docs` passes.

@@ -81,12 +81,13 @@ after earlier handoffs of the batch were written.
 ## Blocking
 
 1. `cargo test -p cicada-examples --test docs`, `the_links_between_the_docs_resolve`: `AGENTS.md:76: the link
-   .claude/skills/build-loop/builder.md points to a file that does not exist`. File `AGENTS.md`, the
-   `Documentation ownership.` item of `Rules`. Proposed replacement: item 1 above. Items 2 and 3 touch the same file
-   and are best prepared with it.
+   .claude/skills/build-loop/builder.md points to a file that does not exist`. Integrated: the docs session's commit
+   `6e86dc0` (branch `docs`), paths `AGENTS.md`, `docs/how-to/releasing.md` and `docs/maintaining/maintenance.md`,
+   taken with `git checkout 6e86dc0 -- <paths>` and folded into the commit that moves the builder's brief. Each path
+   equals `6e86dc0`.
 
 ## Status
 
-- Proposed text: items 1 to 5. No prose is written; nothing is integrated.
-- Ran: `cargo test -p cicada-examples --test docs` (10 passed, 1 failed: the Blocking link); the other results are in
-  the builder's report.
+- Owner fixes integrated: items 1 to 5 are covered by `6e86dc0` (`AGENTS.md`, `docs/how-to/releasing.md`,
+  `docs/maintaining/maintenance.md`). No prose is left to write for this change.
+- The checks after integration are in the builder's report.
