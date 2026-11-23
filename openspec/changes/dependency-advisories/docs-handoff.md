@@ -6,7 +6,7 @@ Version: 0.20.6. Refresh the dependency pins of `docs/how-to/install.md` once it
 
 No library behaviour, public item, wire format, schema or guarantee changes. What users and maintainers see:
 
-- `Cargo.lock` is updated (`cargo update`); every RustSec advisory it had is fixed except `chrono`
+- `Cargo.lock` is updated (`cargo update`); every RustSec advisory with a fixed version is fixed; `chrono` has none
   (RUSTSEC-2026-0543, unmaintained, no fixed version), which `deny.toml` accepts with its reason.
 - With the `sqlite` feature, `cicada` needs `sqlx` 0.9.1 (the workspace floor) and `libsqlite3-sys` 0.39 or later
   (`>=0.39`, with no ceiling of Cicada's: `sqlx-sqlite` sets it, `<0.41` today), a new optional dependency of
@@ -18,11 +18,11 @@ No library behaviour, public item, wire format, schema or guarantee changes. Wha
   gate gives no evidence. `.github/workflows/ci.yml` installs it with `cargo install cargo-deny --locked --version
   0.20.2`. Proven by `scripts/test_gate_policy.py`
   (`test_advisories_are_checked_and_each_accepted_one_has_a_reason`, `test_only_a_manual_ci_workflow_remains`).
-- The workspace floor of `schemars` is 1.2.3, which orders the keys of a contract's text differently. The contract
-  texts that `GET /types` serves change key order only (17 of the sample catalog's 29 parse to the same JSON as
-  before), so the recorded text hashes in `sample-service/tests/contract-texts.json` are rewritten; `docs/openapi.json`
-  changes key order only. The contract hashes, `docs/reference/contracts/` (written with sorted keys) and `fixtures/`
-  do not change; `cicada_test::assert_contracts_match` compares hashes and still passes.
+- The workspace floor of `schemars` is 1.2.3, which orders the keys of a contract's text differently. The contract texts
+  that `GET /types` serves change key order only (17 of the sample catalog's 29 texts change key order; all 29 parse to
+  the same JSON as before), so the recorded text hashes in `sample-service/tests/contract-texts.json` are rewritten;
+  `docs/openapi.json` changes key order only. The contract hashes, `docs/reference/contracts/` (written with sorted
+  keys) and `fixtures/` do not change; `cicada_test::assert_contracts_match` compares hashes and still passes.
 
 ## 1. The gate's prerequisites
 

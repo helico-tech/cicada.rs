@@ -14,11 +14,11 @@ store schema and the guarantees are those of 0.20.5.
 
 ### Security
 
-- `Cargo.lock` is updated with `cargo update`, which fixes every RustSec advisory it had: `rustls` (RUSTSEC-2026-0346,
-  0347, 0348, 0349), `rustls-webpki` (RUSTSEC-2026-0382), `webpki-root-certs` (RUSTSEC-2026-0383), `libsqlite3-sys`
-  through `sqlx` (RUSTSEC-2026-0459, the C SQLite CVE-2026-119375), `tokio` (RUSTSEC-2026-0386), `ctutils`
-  (RUSTSEC-2026-0385) and `url` through `reqwest` (RUSTSEC-2026-0592). This covers the repository's tests, the sample
-  service, the E2E images and the `cicada` binary; a project that uses Cicada resolves its own versions, so run
+- `Cargo.lock` is updated with `cargo update`, which fixes every RustSec advisory with a fixed version: `rustls`
+  (RUSTSEC-2026-0346, 0347, 0348, 0349), `rustls-webpki` (RUSTSEC-2026-0382), `webpki-root-certs` (RUSTSEC-2026-0383),
+  `libsqlite3-sys` through `sqlx` (RUSTSEC-2026-0459, the C SQLite CVE-2026-119375), `tokio` (RUSTSEC-2026-0386),
+  `ctutils` (RUSTSEC-2026-0385) and `url` through `reqwest` (RUSTSEC-2026-0592). This covers the repository's tests, the
+  sample service, the E2E images and the `cicada` binary; a project that uses Cicada resolves its own versions, so run
   `cargo update` there too.
 - With the `sqlite` feature, `cicada` now needs `sqlx` 0.9.1 and `libsqlite3-sys` 0.39 or later (a new optional
   dependency, `>=0.39`, not used directly), so a consumer cannot resolve the SQLite with the CVE. The upper bound is
