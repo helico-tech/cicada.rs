@@ -11,14 +11,16 @@ among them `sqlx` 0.9.0 → 0.9.1 (`libsqlite3-sys` 0.37.0 → 0.40.0), `rustls`
    tests should build with those too, and one update also catches fixes that have no advisory yet. The full gate
    checks the result. If one update breaks a check, the builder holds that crate back with
    `cargo update -p <crate> --precise <version>`, at or above the version that fixes its advisory, and names it in
-   its report. Not `cargo update -p` for each advised
-   crate only: a smaller diff, but the repo keeps testing older versions than consumers get.
+   its report. `schemars` 1.2.3 changes only the key order of contract texts, not their hashes: the owner chose to take
+   it, raise the workspace floor to 1.2.3 so every build serves the recorded texts, and rewrite this repository's text
+   snapshots (2026-11-23). Not `cargo update -p` for each advised crate only: a smaller diff, but the repo keeps testing older versions than consumers get.
 2. **Force the fixed SQLite for consumers with the `sqlite` feature.** `libsqlite3-sys` is a `links` crate (one
    version per build). `sqlx` 0.9.0 holds it below 0.38; `sqlx-sqlite` 0.9.1 allows `>=0.30.1, <0.41.0`, so a floor
    on `sqlx` alone lets a consumer keep 0.37.0 from an old lockfile, or get it when another crate holds it back
    (review `dependency-advisories.design.1`). So: the `sqlx` floor goes to `"0.9.1"`, and `crates/cicada` gets an
-   optional direct dependency `libsqlite3-sys = { version = "0.39", default-features = false }`, turned on by the
-   `sqlite` feature. A consumer whose other crates need an older `libsqlite3-sys` now gets a resolution error instead
+   optional direct dependency `libsqlite3-sys = { version = ">=0.39", default-features = false }`, turned on by the
+   `sqlite` feature. It sets a floor and no ceiling: `sqlx-sqlite` sets that (`<0.41` today), so Cicada never blocks
+   a version `sqlx` allows (a caret `"0.39"` would hold it below 0.40). A consumer whose other crates need an older `libsqlite3-sys` now gets a resolution error instead
    of the CVE. The `dependency-trees` check keeps it out of the `postgres` tree. Not the `sqlx` floor alone with a
    note to consumers: the proposal's point is that the lockfile does not protect them. Not raising `tokio` and the
    others: a plain `cargo update` in the consumer's project reaches their fixes, and nothing in Cicada needs them.

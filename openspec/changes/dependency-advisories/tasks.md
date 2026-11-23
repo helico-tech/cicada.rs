@@ -3,7 +3,7 @@
 Patch release 0.20.6, `Release: now` (design, decision 8). No public API, wire format, schema or guarantee changes.
 
 - [x] 1. **The lockfile and the floors.** Run `cargo update` and commit `Cargo.lock`. Workspace `Cargo.toml`:
-  `sqlx = "0.9.1"`. `crates/cicada/Cargo.toml`: an optional `libsqlite3-sys = { version = "0.39", default-features =
+  `sqlx = "0.9.1"`. `crates/cicada/Cargo.toml`: an optional `libsqlite3-sys = { version = ">=0.39", default-features =
   false }` (workspace dependency if the workspace keeps its versions there), added to the `sqlite` feature
   (decision 2). If an update breaks a check, hold that crate back with `cargo update -p <crate> --precise <version>`
   at or above its fixed version, and name it in the report. Verify: `cargo tree -p cicada -e normal --features
@@ -20,5 +20,5 @@ Patch release 0.20.6, `Release: now` (design, decision 8). No public API, wire f
   (`builder.md`), with a `## 0.20.6 — unreleased` changelog section: the advisories fixed, the new floors, and that
   full gate checks now need `cargo-deny` 0.20.2. Write `docs-handoff.md` from the design's "Docs it breaks"; nothing
   blocks. Verify: `cargo test -p cicada-examples --test skill` (the skills' versions), `--test docs`.
-- [ ] 4. **Finishing checks.** `openspec validate dependency-advisories --strict`, commit, then `python3 scripts/gate.py
+- [x] 4. **Finishing checks.** `openspec validate dependency-advisories --strict`, commit, then `python3 scripts/gate.py
   run` (the full policy, now with `advisories`; no E2E: the release right after runs it).
