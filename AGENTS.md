@@ -25,6 +25,7 @@ cargo test -p cicada --test fixtures   # fixed portable expectations in fixtures
 node --test examples/tests/websocket_session_client.test.mjs   # the example browser client (Node 26+)
 cargo clippy --workspace --all-targets
 cargo fmt --all                        # rustfmt.toml: 120 columns; the gate checks it
+cargo deny check advisories           # RustSec advisories in Cargo.lock; deny.toml lists accepted ones
 cargo check -p cicada [--features sqlite|postgres|testing]   # the gate builds the core with each feature alone
 cargo check -p cicada-app [--features sqlite|postgres|tui]   # the gate builds the app layer the same way
 cargo test -p cicada-app               # the crate alone: without the terminal UI, and without the check of docs/reference/cli.md
@@ -43,6 +44,7 @@ Full gate checks require PostgreSQL: `CICADA_GATE_PG_URL` defaults to the compos
 tree in its owned worktree. Once installed, the pre-push hook requires evidence for every pushed main tip, including
 docs. See [local checks](docs/how-to/releasing.md#local-checks-and-the-pre-push-gate); automatic Actions are disabled.
 Full checks also require Node 26 or later as `node` on PATH for `client-tests`; no npm packages are needed.
+The `advisories` check needs `cargo-deny` 0.20.2 and network access; see the release guide for installation.
 
 ## Map
 

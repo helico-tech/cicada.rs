@@ -122,8 +122,24 @@ python3 scripts/gate.py run --e2e       # also the unfiltered Docker suite
 
 `run` uses the commit's [policy](../../scripts/gate-policy.json) and matching `gate.py`. Full checks cover all
 Python script tests, fmt, clippy with warnings denied, workspace tests with PostgreSQL, isolated core/app features
-with warnings denied, app-alone tests, driver/TLS/crypto-provider/terminal dependency checks, and the example client's
-JavaScript tests.
+with warnings denied, app-alone tests, driver/TLS/crypto-provider/terminal dependency checks, the example client's
+JavaScript tests, and RustSec advisories in `Cargo.lock`.
+
+The full gate's `advisories` check runs `cargo deny check advisories` with the root [deny.toml](../../deny.toml).
+Install the version its configuration expects:
+
+```sh
+cargo install cargo-deny --locked --version 0.20.2
+```
+
+The check fetches the RustSec advisory database each full run, so it needs network access; a missing tool or failed
+fetch fails the check and produces no passing evidence. The gate passes no proxy environment variables, so this
+check cannot run through an HTTPS proxy. Handle a new advisory as its own change: update the lockfile (`Release: now`
+for a vulnerability), or accept the advisory in `deny.toml` with a reason. The current exception is the unmaintained
+`chrono`, which has no fixed version and is used by the public API and `sqlx`.
+
+A documentation-only push can reuse an eligible full pass. A batch release can reuse the full pass from landing:
+an advisory published afterward is caught by the next full run, not necessarily by the release.
 
 For an identical tree, passing evidence can be reused. Otherwise the nearest eligible direct full pass within
 100 first-parent ancestors can support fresh docs checks: Python tests plus examples doctests, links/guarantees and

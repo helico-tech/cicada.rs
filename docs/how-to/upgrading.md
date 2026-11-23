@@ -281,6 +281,14 @@ is a `400`. `ActorClient` leaves absent optional fields out of request bodies (n
 works against an older node as long as it does not use a newer feature. A release whose views lose a field that old
 clients require, as 0.6.0 does, needs its clients upgraded together with the nodes; the changelog says so.
 
+## Update dependencies for 0.20.6
+
+Run `cargo update` in your project and resolve any dependencies that conflict with the
+[new floors](install.md#dependencies-and-lockfiles). The `schemars` 1.2.3 floor changes key order in contract texts
+served by `GET /types` and in `docs/openapi.json`. Parsed contract JSON and actor contract hashes stay the same.
+Tests that compare raw contract text may need new expectations; `cicada_test::assert_contracts_match` still compares
+contract hashes. The store schema and guarantees are unchanged.
+
 ## Upgrade to 0.20.0
 
 **Version 0.20.0 requires stopping old direct-store runtimes.** Migration 8 adds nullable `actors.pinned_to` and the
