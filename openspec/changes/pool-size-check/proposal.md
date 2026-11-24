@@ -36,7 +36,7 @@ in advance. SQLite.
 
 ## Order
 
-After `job-graph-retry`, before `container-consistency`.
+After `container-limits-and-kinds`. No following change.
 
 ## Impact
 

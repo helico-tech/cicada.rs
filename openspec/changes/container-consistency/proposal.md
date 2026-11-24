@@ -26,7 +26,7 @@ New methods or fields. Moving consumers onto the crate.
 
 ## Order
 
-After `pool-size-check`. No following change.
+After `job-graph-retry`, before `container-logs`.
 
 ## Impact
 
