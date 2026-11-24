@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.20.8 — unreleased
+## 0.20.8 — 2026-11-24
 
 A ready-made permit pool in `cicada-actors`, which caps how many jobs hold a permit at once, and a ready-made job
 graph, which runs a graph of jobs given as data. Additive: the existing actor contracts, wire formats, the store schema
