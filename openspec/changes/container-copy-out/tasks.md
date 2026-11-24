@@ -24,7 +24,7 @@ which must have landed first. Follow `design.md`; the specs are `specs/container
   scenarios of the runtime spec (folder, one file too big, too many files, exactly at the limit, zero limits, what is
   not there, a file the program wrote, a tmpfs after the end) and a scripted failure;
   `cargo test -p cicada-containers --all-features`.
-- [ ] 3. **The Docker backend.** `DockerRuntime::copy_out` in `src/docker/mod.rs`, the archive reader apart so it can
+- [x] 3. **The Docker backend.** `DockerRuntime::copy_out` in `src/docker/mod.rs`, the archive reader apart so it can
   be tested on an in-memory tar (decision 6): check the path and limits first; find the container (`Conflict`);
   `download_from_container` through `StreamReader` and `SyncIoBridge` into `tar` in `spawn_blocking`; the first
   bollard error kept in a side slot and mapped back with `kind_of`; a 404 then a second inspect (empty result, or

@@ -1,5 +1,6 @@
 //! [`DockerRuntime`]: the [`ContainerRuntime`] over the Docker Engine API (feature `docker`).
 
+mod archive;
 mod map;
 
 use std::collections::HashMap;
@@ -10,20 +11,21 @@ use async_trait::async_trait;
 use bollard::errors::Error as DockerError;
 use bollard::models::{ContainerInspectResponse, NetworkCreateRequest, VolumeCreateRequest};
 use bollard::query_parameters::{
-    CreateContainerOptionsBuilder, CreateImageOptionsBuilder, InspectContainerOptions, InspectNetworkOptions,
-    ListContainersOptionsBuilder, ListNetworksOptionsBuilder, ListVolumesOptionsBuilder, LogsOptionsBuilder,
-    RemoveContainerOptionsBuilder, RemoveVolumeOptions, StartContainerOptions, StopContainerOptionsBuilder,
-    UploadToContainerOptionsBuilder,
+    CreateContainerOptionsBuilder, CreateImageOptionsBuilder, DownloadFromContainerOptionsBuilder,
+    InspectContainerOptions, InspectNetworkOptions, ListContainersOptionsBuilder, ListNetworksOptionsBuilder,
+    ListVolumesOptionsBuilder, LogsOptionsBuilder, RemoveContainerOptionsBuilder, RemoveVolumeOptions,
+    StartContainerOptions, StopContainerOptionsBuilder, UploadToContainerOptionsBuilder,
 };
 use bollard::{ClientVersion, Docker};
 use futures::StreamExt;
 use tokio::sync::OnceCell;
 
 use self::map::{fail, kind_of, message_of, status_code};
+use crate::copy::Collector;
 use crate::logs::{Pager, check_max_lines};
 use crate::{
-    ContainerError, ContainerRuntime, ContainerSpec, ContainerStatus, ContainerSummary, CopyFile, ErrorKind, Label,
-    LogCursor, LogPage, NetworkSpec, Resource, Skipped, Swept, VolumeSpec,
+    ContainerError, ContainerRuntime, ContainerSpec, ContainerStatus, ContainerSummary, CopyFile, CopyLimits, CopyOut,
+    ErrorKind, Label, LogCursor, LogPage, NetworkSpec, Resource, Skipped, Swept, VolumeSpec,
 };
 
 /// The oldest Docker Engine API the backend speaks: Docker 25, which joins several networks in one create.
@@ -50,6 +52,8 @@ const STOP_SLACK: Duration = Duration::from_secs(60);
 ///   writes at or below a tmpfs, which Docker mounts only at start, over the file, and never onto a mount target.
 /// - [`logs_since`](ContainerRuntime::logs_since) reads Docker's log with timestamps from the cursor's second and
 ///   stops once the page is full; a container whose log driver cannot be read (`none`) fails with `Other`.
+/// - [`copy_out`](ContainerRuntime::copy_out) reads Docker's archive of the path as a stream, on a blocking thread of
+///   the host's Tokio runtime, and holds only the kept files. An error during the stream fails the whole call.
 /// - Secret environment goes to Docker only in the body of the create call, and an error message never holds a secret
 ///   value. The backend logs nothing; bollard logs request bodies at `debug` under the target `bollard`, so keep that
 ///   target at `info` or above.
@@ -298,6 +302,22 @@ impl ContainerRuntime for DockerRuntime {
             }
         }
         Ok(pager.finish()) // dropping the stream ends the read
+    }
+
+    async fn copy_out(&self, name: &str, path: &str, limits: CopyLimits) -> Result<CopyOut, ContainerError> {
+        let collector = Collector::new(name, path, limits)?;
+        let docker = self.docker().await?;
+        let found = self.find(docker, name).await?.ok_or_else(|| conflict("copy out of", name))?;
+        let options = DownloadFromContainerOptionsBuilder::new().path(collector.root()).build();
+        let stream = docker.download_from_container(&found.id, Some(options));
+        match archive::settle(name, archive::read_archive(Box::pin(stream), collector).await)? {
+            Some(out) => Ok(out),
+            // Docker's 404: a missing path, unless the container was removed during the call.
+            None => match self.find(docker, name).await? {
+                Some(_) => Ok(CopyOut::default()),
+                None => Err(conflict("copy out of", name)),
+            },
+        }
     }
 
     async fn stop(&self, name: &str, grace: Duration) -> Result<(), ContainerError> {
