@@ -36,6 +36,9 @@ mod docker;
 mod error;
 #[cfg(any(test, feature = "testing"))]
 mod fake;
+// The pager of every runtime; without one of them, nothing calls it yet.
+#[cfg_attr(not(any(test, feature = "testing", feature = "docker")), allow(dead_code))]
+mod logs;
 // The rule of `copy_in` for every runtime; without one of them, nothing calls it yet.
 #[cfg_attr(not(any(test, feature = "testing", feature = "docker")), allow(dead_code))]
 mod paths;
@@ -51,6 +54,7 @@ pub use docker::DockerRuntime;
 pub use error::{ContainerError, ErrorKind};
 #[cfg(any(test, feature = "testing"))]
 pub use fake::{Call, FakeRuntime, Method};
+pub use logs::{LOG_PAGE_MAX, LogCursor, LogLine, LogPage, LogStream};
 pub use runtime::{ContainerRuntime, ContainerStatus, ContainerSummary, Resource, Skipped, Swept};
 pub use spec::{
     ContainerSpec, CopyFile, Label, Mount, MountKind, NetworkAttachment, NetworkSpec, Networking, Tmpfs, VolumeSpec,

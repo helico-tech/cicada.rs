@@ -6,7 +6,7 @@ Version). Builds on `container-consistency`, which must have landed first. Follo
 `specs/container-runtime/spec.md` and `specs/container-docker/spec.md`. Run the crate's tests with every feature:
 `cargo test -p cicada-containers --all-features`.
 
-- [ ] 1. **Types, cursor and pager.** In `crates/cicada-containers/src/`: `LogPage`, `LogLine`, `LogStream`
+- [x] 1. **Types, cursor and pager.** In `crates/cicada-containers/src/`: `LogPage`, `LogLine`, `LogStream`
   (`non_exhaustive`, with constructors), `LogCursor` with its private form `S:n`, `Display`, `FromStr` (`InvalidSpec`
   for a bad string) and serde and `JsonSchema` as a string (decision 2), `LOG_PAGE_MAX` (1000), and the private pager
   of decision 6: it drops lines stamped before `S`, skips `n`, takes up to `max_lines`, and gives `next` with the
