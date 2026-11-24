@@ -25,7 +25,7 @@ tested on virtual time (`#[tokio::test(start_paused = true)]` with `TestActors`)
   `CICADA_UPDATE_CONTRACTS=true cargo test -p cicada-actors --test wire_formats` writes
   `docs/reference/contracts/cicada.permits.json`, which is committed. Verify:
   `cargo test -p cicada-actors --test wire_formats`.
-- [ ] 5. **Changelog and docs handoff.** The `0.20.7 — unreleased` changelog section names the permit pool and ADR
+- [x] 5. **Changelog and docs handoff.** The `0.20.7 — unreleased` changelog section names the permit pool and ADR
   0058. `docs-handoff.md` from "Docs it breaks" in the design; nothing blocks. No edit to `README.md`, `AGENTS.md` or
   the handwritten docs. Verify: `cargo test -p cicada-examples --test docs`, `cargo test -p cicada-examples --test skill`.
 - [ ] 6. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,

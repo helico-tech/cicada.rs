@@ -7,6 +7,31 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.20.8 — unreleased
+
+A ready-made permit pool in `cicada-actors`, which caps how many jobs hold a permit at once. Additive: the existing
+actor contracts, wire formats, the store schema and the guarantees are those of 0.20.7.
+
+### Added
+
+- `cicada-actors`: the permit pool (ADR 0058), `PermitsActor` under the fixed type name `cicada.permits`, one actor per
+  pool (`Permits::named(pool)`), with no settings. `PermitsState::new(capacity, max_waiting)`, each 0 through 1,000,
+  is given at the create; a capacity of 0 pauses the pool. `Acquire { request, to, messageType }` (helper
+  `PermitsMsg::acquire(request, &holder, "Permit")`) asks one permit for a request ID and is answered in its own
+  commit with a `PermitNotice` (`{"pool", "request", "kind", "grant"}`): `granted` with a grant number that only goes
+  up, `queued` in FIFO order, or `refused` when the queue is full, which records nothing; so a gone target records
+  nothing either. A repeated `Acquire` answers the same grant, or `queued` with its place kept, to the first target.
+  `Release { request, grant }` frees a permit only for its current grant number; `Cancel` only leaves the queue;
+  `Resize { capacity }` grants to the queue on a growth and revokes nothing on a shrink; `Audit` sends every request in
+  the books a `check` and frees nothing. A grant made by a release, cancel, resize or freed permit, and each `check`, is
+  sent by the pool's own `Notify` in a turn of its own, so a holder that is gone fails only its own notice; the pool
+  watches itself, and a grant notice that failed before it ever reached its holder frees that permit and grants the
+  next request. Bad input (a capacity above 1,000, a request ID or message type out of bounds, a target or type the send
+  refuses) is refused for good with the state unchanged. Its contract is checked against
+  `docs/reference/contracts/cicada.permits.json`. Covered by `crates/cicada-actors/tests/permits.rs`, the unit tests in
+  `src/permits.rs` and `tests/wire_formats.rs`.
+- ADR 0058: a ready-made permit pool.
+
 ## 0.20.7 — 2026-11-24
 
 A new optional crate, `cicada-containers`, for applications that run containers, with a Docker backend and a
