@@ -29,31 +29,41 @@ pub struct Inputs { pub dirs: Vec<CopyDir>, pub files: Vec<CopyFile> }   // non_
    call, so its calls are unchanged. Not taken: calling `copy_in` and reading its `Conflict` as "already started"
    (`Conflict` also means a missing container); a new phase between create and start (a state change for a step
    that repeats safely anyway).
-3. **Failures.** An `Err` from `inputs` ends the container `failed` with its text before `create`, so nothing is
-   made, as a bad spec does. So does a file whose path is also one of the folders: Docker's `copy_in` would replace
-   the folder that was just made, so the actor refuses the inputs before anything is made. `InvalidSpec` from
-   `make_dirs` or `copy_in` ends it `failed` with the reason, and so does `Conflict` from `make_dirs` for a file
-   where a folder was asked, once the container is known to be `Created`: both are the job's mistake, and a retry
-   gives the same answer. The created container stays until `Remove`, like one whose start was refused. Any other
-   error counts in the state and backs off. `container-limits-and-kinds` gives these ends the kind `notStarted`.
-4. **Secrets stay on the container's own file system.** The shared path rule refuses a tmpfs path, so a secret file
+3. **Inputs checked before anything is made.** An `Err` from `inputs` ends the container `failed` with its text
+   before `create`, as a bad spec does. So does a file at or above a folder: at a folder's own path or at one of its
+   parents (dirs `/a/b`, file `/a`), as Docker's `copy_in` would replace the folder just made, and what is in it.
+   Paths are compared after the shared path rule's parsing, so `/out/.` and `/out` are one; a path that parsing
+   refuses ends it `failed` here too, with the reason the runtime would give (design review 2, blocking 1). Not
+   taken: leaving the clash to the runtime (Docker replaces the folder silently).
+4. **Failures from the runtime.** `InvalidSpec` from `make_dirs` or `copy_in` ends the container `failed` with the
+   reason: the job's mistake, and a retry gives the same answer. `Conflict` from either has two meanings, a file
+   where a folder was asked or a container that is no longer `Created`, and the first `inspect` can be out of date;
+   so the actor inspects again: still `Created` means the job's mistake and ends it `failed`; anything else counts
+   as a runtime error and backs off (design review 2, blocking 2). `Other` from a runtime without `make_dirs` (the
+   trait's default) ends it `failed` at once when the job has folders: the call is unsupported, so a retry cannot
+   help, and backing off `max_errors` times would take minutes. Any other error counts in the state and backs off.
+   The created container stays until `Remove`, like one whose start was refused. `container-limits-and-kinds` gives
+   these ends the kind `notStarted`. As with `spec`, an `Err` from `inputs` on a replayed step whose container
+   already runs ends it `failed` and leaves it running until `Remove`; the rustdoc of `inputs` says so.
+5. **Secrets stay on the container's own file system.** The shared path rule refuses a tmpfs path, so a secret file
    cannot be lost before start. The rustdoc of `inputs` says to put secret files on the container's own file system,
    not on a volume: `remove` deletes the container's layer, but a named volume outlives it.
 
 ## Spec deltas
 
-`container-actor`: *Inputs are copied in before start* is added. The actor's state and wire format do not change
-(inputs are never stored), so no contract snapshot or ADR changes.
+`container-actor`: *Inputs are copied in before start* and *Refused inputs end the container* are added. The actor's
+state and wire format do not change (inputs are never stored), so no contract snapshot or ADR changes.
 
 ## Tests
 
 Actor tests on virtual time with `TestActors` and the fake (`#[tokio::test(start_paused = true)]`): the calls in
-order with inputs (create, inspect, make_dirs, copy_in, start) and unchanged without; an `Err` from `inputs` ends
-`failed` with no create; a file at a folder's path ends `failed` with no create; a replayed step on a running
-container skips the copy; `InvalidSpec` from `copy_in` and `Conflict` from `make_dirs` end `failed`; `Missing`
-after `create` and `DaemonUnavailable` from `make_dirs` back off, and the next poll copies and starts; the stored
-state holds no input contents. No E2E: the actor runs on the fake, and Docker's `make_dirs` and `copy_in` have their
-own E2E cases.
+order with inputs (create, inspect, make_dirs, copy_in, start) and unchanged without; an `Err` from `inputs`, a file
+at a folder's path, a file at a folder's parent and `/out/.` with `/out` end `failed` with no create; a replayed step
+on a running container skips the copy; `InvalidSpec` from `copy_in` ends `failed`; `Conflict` from `make_dirs` with
+the container still `Created` ends `failed`, and with it gone backs off; `Other` from `make_dirs` ends `failed` at
+once; `Missing` after `create` and `DaemonUnavailable` from `make_dirs` back off, and the next poll copies and
+starts; the stored state holds no input contents. No E2E: the actor runs on the fake, and Docker's `make_dirs` and
+`copy_in` have their own E2E cases.
 
 ## Docs it breaks
 
