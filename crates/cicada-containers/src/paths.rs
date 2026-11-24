@@ -1,12 +1,12 @@
-//! The path rule of `copy_in`, shared by every runtime so they cannot drift: which paths are files, and which mount
-//! of a created container a file lands on.
+//! The path rule of `copy_in` and `copy_out`, shared by every runtime so they cannot drift: which paths are files,
+//! and which mount of a container a file lies on.
 
 use crate::{ContainerError, ErrorKind};
 
 /// The parts of an absolute `path` without empty and `.` parts; `InvalidSpec` for a relative path, a `..` part or no
-/// part at all.
-pub(crate) fn path_parts<'a>(name: &str, path: &'a str) -> Result<Vec<&'a str>, ContainerError> {
-    let invalid = |why: &str| ContainerError::new(ErrorKind::InvalidSpec, format!("copy into {name}: {why} {path}"));
+/// part at all, with a message that starts with `action` and `name`, such as `copy into job-1`.
+pub(crate) fn path_parts<'a>(action: &str, name: &str, path: &'a str) -> Result<Vec<&'a str>, ContainerError> {
+    let invalid = |why: &str| ContainerError::new(ErrorKind::InvalidSpec, format!("{action} {name}: {why} {path}"));
     if !path.starts_with('/') {
         return Err(invalid("relative path"));
     }
@@ -60,14 +60,11 @@ pub(crate) fn place<'p, 'm>(
     mounts: &'m [MountTarget],
 ) -> Result<(Vec<&'p str>, Option<&'m MountTarget>), ContainerError> {
     let invalid = |why: &str| ContainerError::new(ErrorKind::InvalidSpec, format!("copy into {name}: {path} {why}"));
-    let parts = path_parts(name, path)?;
+    let parts = path_parts("copy into", name, path)?;
     if mounts.iter().any(|m| m.parts == parts) {
         return Err(invalid("is the target of a mount"));
     }
-    let mount = mounts
-        .iter()
-        .filter(|m| m.parts.len() < parts.len() && parts.iter().zip(&m.parts).all(|(a, b)| a == b))
-        .max_by_key(|m| m.parts.len());
+    let mount = deepest_mount(&parts, mounts);
     match mount.map(|m| m.mounted) {
         Some(Mounted::Tmpfs) => return Err(invalid("is on a tmpfs, mounted only at start")),
         Some(Mounted::Mount { writable: false }) => return Err(invalid("is on a read-only mount")),
@@ -75,6 +72,14 @@ pub(crate) fn place<'p, 'm>(
         _ => {}
     }
     Ok((parts, mount))
+}
+
+/// The deepest mount strictly above the file of `parts`; `None` for the root.
+pub(crate) fn deepest_mount<'m>(parts: &[&str], mounts: &'m [MountTarget]) -> Option<&'m MountTarget> {
+    mounts
+        .iter()
+        .filter(|m| m.parts.len() < parts.len() && parts.iter().zip(&m.parts).all(|(a, b)| a == b))
+        .max_by_key(|m| m.parts.len())
 }
 
 #[cfg(test)]
@@ -90,9 +95,9 @@ mod tests {
 
     #[test]
     fn paths_must_be_absolute_without_parent_parts() {
-        assert_eq!(path_parts("c", "/work//./a").unwrap(), ["work", "a"]);
+        assert_eq!(path_parts("copy into", "c", "/work//./a").unwrap(), ["work", "a"]);
         for bad in ["work/a", "/work/../etc/passwd", "/", "/./", "//", ""] {
-            assert_eq!(path_parts("c", bad).unwrap_err().kind, ErrorKind::InvalidSpec, "{bad:?}");
+            assert_eq!(path_parts("copy out of", "c", bad).unwrap_err().kind, ErrorKind::InvalidSpec, "{bad:?}");
         }
     }
 

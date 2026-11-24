@@ -4,7 +4,10 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
-use crate::{ContainerError, ContainerSpec, CopyFile, ErrorKind, Label, LogCursor, LogPage, NetworkSpec, VolumeSpec};
+use crate::{
+    ContainerError, ContainerSpec, CopyFile, CopyLimits, CopyOut, ErrorKind, Label, LogCursor, LogPage, NetworkSpec,
+    VolumeSpec,
+};
 
 /// A container runtime: Docker, or the fake in tests. Use it as `Arc<dyn ContainerRuntime>` to pick one at run time.
 ///
@@ -69,6 +72,47 @@ pub trait ContainerRuntime: Send + Sync + 'static {
         Err(ContainerError::new(
             ErrorKind::Other,
             format!("logs of {name}: logs_since is not supported by this runtime"),
+        ))
+    }
+
+    /// The regular files at or below `path` of the container `name`, created, running or ended (until
+    /// [`remove`](Self::remove)): every file below a folder, or the one file `path` names. Each kept file is whole,
+    /// with its absolute path, contents and permission bits, so it can go to [`copy_in`](Self::copy_in) of another
+    /// container. For a host that collects a run's artifacts after it ended, or reads a small progress file while it
+    /// runs; call it outside actor turns, as the files are too big for actor state.
+    ///
+    /// **Limits.** A file goes into [`files`](CopyOut::files) when its size fits what is left of
+    /// [`max_bytes`](CopyLimits::max_bytes); else it is in [`skipped`](CopyOut::skipped) with its size, and the copy
+    /// goes on, so one huge file costs only itself. A file is whole or skipped, never cut. Once `files` and `skipped`
+    /// together hold [`max_files`](CopyLimits::max_files) entries, the next entry that would go into either stops the
+    /// copy, and one last skipped entry for `path` says the rest was not read; with exactly `max_files` entries there
+    /// is no such entry. So memory is at most `max_bytes`, plus `max_files + 1` paths, whatever the folder holds.
+    ///
+    /// **Links.** Only regular files are copied, and no link is followed: a symbolic link, inside the folder or out
+    /// of it, a hard link, a device, a pipe and a socket are skipped with a reason, and so is an entry whose name is
+    /// not under `path`. A folder is not listed: the paths of its files show it.
+    ///
+    /// Fails with `InvalidSpec`, before any call, for a `path` that is relative, has a `..` part or names no file once
+    /// empty and `.` parts are dropped (`/`), and for a zero limit. Files come back under the cleaned path. Fails with
+    /// `Conflict` for a missing container, also one removed during the call. A missing `path` gives an empty result.
+    ///
+    /// **What the container shows.** Files written to a tmpfs are gone once the container ended (Docker then shows
+    /// the image's files under that path, if any): artifacts belong on the container's own file system or on a
+    /// volume. A file being written while it is read can come back half written: a program that updates a progress
+    /// file should write it to a temporary name in the same folder and rename it into place.
+    ///
+    /// Further limits: dropping the returned future does not stop the read, which goes on to the end of what the
+    /// runtime sends and then drops it. A file that grows, shrinks or vanishes while Docker builds its archive can
+    /// come back short, or be missing, without an error. The order of the entries, and so which files fit the limits
+    /// first, may differ between Docker engine versions.
+    ///
+    /// The default fails with `Other`, so a runtime written before this method compiles unchanged; the fake and
+    /// the Docker backend implement it.
+    async fn copy_out(&self, name: &str, path: &str, limits: CopyLimits) -> Result<CopyOut, ContainerError> {
+        let _ = (path, limits);
+        Err(ContainerError::new(
+            ErrorKind::Other,
+            format!("copy out of {name}: copy_out is not supported by this runtime"),
         ))
     }
 

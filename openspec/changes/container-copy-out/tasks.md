@@ -7,7 +7,7 @@ which must have landed first. Follow `design.md`; the specs are `specs/container
 `specs/container-docker/spec.md`. Run the crate's tests with every feature:
 `cargo test -p cicada-containers --all-features`.
 
-- [ ] 1. **Types and the collector.** In `crates/cicada-containers/src/`: `CopyLimits` (with `new`), `CopyOut` and
+- [x] 1. **Types and the collector.** In `crates/cicada-containers/src/`: `CopyLimits` (with `new`), `CopyOut` and
   `SkippedFile`, all `non_exhaustive` (decisions 1-2), exported from `lib.rs`; the private collector of decision 7:
   entries in order (path, kind, size, a way to read the contents), the byte budget with skip and go on, the file
   count stop only when another countable entry follows, regular files only, links and other kinds and names outside
@@ -15,7 +15,7 @@ which must have landed first. Follow `design.md`; the specs are `specs/container
   container-consistency review). Verify: unit tests
   of the collector (budget skip, the stop with its last entry, exactly at the limit without it, links, a device, a
   name outside the folder, a file never cut); `cargo test -p cicada-containers --all-features`.
-- [ ] 2. **The trait and the fake.** `ContainerRuntime::copy_out` with a default that fails with `Other` (decision 9);
+- [x] 2. **The trait and the fake.** `ContainerRuntime::copy_out` with a default that fails with `Other` (decision 9);
   its rustdoc names the limits and the memory bound, the link rule, `InvalidSpec` for a bad path or a zero limit,
   `Conflict` and the empty result, the tmpfs rule, the rename advice and the Limits section of the design. The
   fake (decision 8): `put_file`, `copy_out` through the shared path parsing and the collector, the walk order part

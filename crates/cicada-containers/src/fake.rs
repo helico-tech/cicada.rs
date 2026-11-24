@@ -1,16 +1,19 @@
 //! [`FakeRuntime`]: an in-memory [`ContainerRuntime`] for tests (feature `testing`).
 
 use std::collections::BTreeMap;
+use std::convert::Infallible;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use async_trait::async_trait;
 
+use crate::copy::{Collector, EntryKind};
 use crate::logs::{check_max_lines, page};
-use crate::paths::{MountTarget, Mounted, place};
+use crate::paths::{MountTarget, Mounted, deepest_mount, path_parts, place};
 use crate::{
-    ContainerError, ContainerRuntime, ContainerSpec, ContainerStatus, ContainerSummary, CopyFile, ErrorKind, Label,
-    LogCursor, LogLine, LogPage, LogStream, MountKind, NetworkSpec, Networking, Resource, Skipped, Swept, VolumeSpec,
+    ContainerError, ContainerRuntime, ContainerSpec, ContainerStatus, ContainerSummary, CopyFile, CopyLimits, CopyOut,
+    ErrorKind, Label, LogCursor, LogLine, LogPage, LogStream, MountKind, NetworkSpec, Networking, Resource, Skipped,
+    Swept, VolumeSpec,
 };
 
 /// The exit code of a container the fake stops, as Docker reports one ended by SIGTERM.
@@ -20,8 +23,9 @@ const STOPPED_CODE: i64 = 143;
 ///
 /// It keeps containers, networks and volumes by name with their labels and states, and answers at once: it uses no
 /// timer, so it runs under paused time. A test scripts it: [`exit_with`](Self::exit_with) ends a running container,
-/// [`set_logs`](Self::set_logs) and [`push_log`](Self::push_log) give it output, [`fail_next`](Self::fail_next) and [`fail_always`](Self::fail_always)
-/// make calls of a method fail without effect, and [`calls`](Self::calls) lists every call in order. A started
+/// [`set_logs`](Self::set_logs) and [`push_log`](Self::push_log) give it output, [`put_file`](Self::put_file) gives
+/// it a file to copy out, [`fail_next`](Self::fail_next) and [`fail_always`](Self::fail_always) make calls of a
+/// method fail without effect, and [`calls`](Self::calls) lists every call in order. A started
 /// container runs until a test ends it or [`stop`](ContainerRuntime::stop) does (exit code 143).
 #[derive(Clone, Debug, Default)]
 pub struct FakeRuntime {
@@ -44,6 +48,7 @@ struct FakeContainer {
     status: ContainerStatus,
     /// Its log lines in log order, which `logs` and `logs_since` both read.
     logs: Vec<LogLine>,
+    /// Its files by cleaned path, from `copy_in` and `put_file`.
     files: BTreeMap<String, CopyFile>,
 }
 
@@ -63,6 +68,8 @@ pub enum Method {
     Logs,
     /// [`ContainerRuntime::logs_since`].
     LogsSince,
+    /// [`ContainerRuntime::copy_out`].
+    CopyOut,
     /// [`ContainerRuntime::stop`].
     Stop,
     /// [`ContainerRuntime::remove`].
@@ -110,6 +117,15 @@ pub enum Call {
         /// The page size asked for.
         max_lines: u32,
     },
+    /// [`ContainerRuntime::copy_out`].
+    CopyOut {
+        /// The container.
+        name: String,
+        /// The path asked for, as given.
+        path: String,
+        /// The limits.
+        limits: CopyLimits,
+    },
     /// [`ContainerRuntime::stop`].
     Stop {
         /// The container.
@@ -138,6 +154,7 @@ impl Call {
             Self::Inspect(_) => Method::Inspect,
             Self::Logs { .. } => Method::Logs,
             Self::LogsSince { .. } => Method::LogsSince,
+            Self::CopyOut { .. } => Method::CopyOut,
             Self::Stop { .. } => Method::Stop,
             Self::Remove(_) => Method::Remove,
             Self::List(_) => Method::List,
@@ -193,6 +210,21 @@ impl FakeRuntime {
         self.change(name, "push_log", |container| container.logs.push(line));
     }
 
+    /// Adds `file` to the container `name`, in any state, as if its program wrote it there, in place of a file at the
+    /// same path; `/out/./a` and `/out/a` are one file. [`copy_out`](ContainerRuntime::copy_out) reads it, unless it
+    /// lies on a tmpfs and the container has ended.
+    ///
+    /// # Panics
+    ///
+    /// When there is no container `name`, or the path is relative, has a `..` part or names no file.
+    pub fn put_file(&self, name: &str, file: CopyFile) {
+        let parts = path_parts("put_file into", name, &file.path).unwrap_or_else(|error| panic!("{error}"));
+        let file = CopyFile { path: format!("/{}", parts.join("/")), ..file };
+        self.change(name, "put_file", |container| {
+            container.files.insert(file.path.clone(), file);
+        });
+    }
+
     /// Makes the next call of `method` fail with `kind` and without effect. Several queue up, one per call.
     pub fn fail_next(&self, method: Method, kind: ErrorKind) {
         self.lock().fail_next.push((method, kind));
@@ -245,6 +277,15 @@ fn conflict(message: String) -> ContainerError {
     ContainerError::new(ErrorKind::Conflict, message)
 }
 
+/// The volumes, bind mounts and tmpfs mounts of `spec`.
+fn mount_targets(spec: &ContainerSpec) -> Vec<MountTarget> {
+    spec.mounts
+        .iter()
+        .map(|m| MountTarget::new(&m.target, Mounted::Mount { writable: !m.read_only }))
+        .chain(spec.tmpfs.iter().map(|t| MountTarget::new(&t.target, Mounted::Tmpfs)))
+        .collect()
+}
+
 fn has(labels: &BTreeMap<String, String>, label: &Label) -> bool {
     labels.get(&label.key) == Some(&label.value)
 }
@@ -269,12 +310,7 @@ impl ContainerRuntime for FakeRuntime {
             return Err(conflict(format!("container {name} is {:?}, not created", container.status)));
         }
         let spec = &container.spec;
-        let mounts: Vec<MountTarget> = spec
-            .mounts
-            .iter()
-            .map(|m| MountTarget::new(&m.target, Mounted::Mount { writable: !m.read_only }))
-            .chain(spec.tmpfs.iter().map(|t| MountTarget::new(&t.target, Mounted::Tmpfs)))
-            .collect();
+        let mounts = mount_targets(spec);
         let mut placed = Vec::with_capacity(files.len());
         for file in files {
             let (parts, _) = place(name, &file.path, spec.read_only_root, &mounts)?;
@@ -319,6 +355,38 @@ impl ContainerRuntime for FakeRuntime {
         let container = state.containers.get(name).ok_or_else(|| conflict(format!("no container {name}")))?;
         // Every line: the pager drops those before the cursor's second, as it does for Docker.
         Ok(page(container.logs.iter().cloned(), cursor, max_lines))
+    }
+
+    async fn copy_out(&self, name: &str, path: &str, limits: CopyLimits) -> Result<CopyOut, ContainerError> {
+        let state = self.enter(Call::CopyOut { name: name.into(), path: path.into(), limits })?;
+        let mut collector = Collector::new(name, path, limits)?;
+        let container = state.containers.get(name).ok_or_else(|| conflict(format!("no container {name}")))?;
+        let ended = matches!(container.status, ContainerStatus::Exited { .. } | ContainerStatus::Failed { .. });
+        let mounts = mount_targets(&container.spec);
+        let root = collector.root().to_owned();
+        let root: Vec<&str> = root.split('/').skip(1).collect();
+        let on_tmpfs = |parts: &[&str]| deepest_mount(parts, &mounts).is_some_and(|m| m.mounted == Mounted::Tmpfs);
+        let mut entries: Vec<(Vec<&str>, &CopyFile)> = container
+            .files
+            .values()
+            .map(|file| (file.path.split('/').skip(1).collect::<Vec<_>>(), file))
+            .filter(|(parts, _)| parts.starts_with(&root) && !(ended && on_tmpfs(parts)))
+            .collect();
+        // Docker's archive walks a folder part by part: `/out/a/c` before `/out/a-b`.
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        for (parts, file) in entries {
+            // Named as in Docker's archive: relative to the folder that holds `path`.
+            let entry = parts[root.len() - 1..].join("/");
+            let size = file.contents.len() as u64;
+            let Ok(go_on) = collector.offer(&entry, EntryKind::File, size, file.mode, |buf| {
+                buf.copy_from_slice(&file.contents);
+                Ok::<_, Infallible>(())
+            });
+            if !go_on {
+                break;
+            }
+        }
+        Ok(collector.finish())
     }
 
     async fn stop(&self, name: &str, grace: Duration) -> Result<(), ContainerError> {
@@ -709,8 +777,8 @@ mod tests {
     }
 
     #[test]
-    fn a_runtime_without_logs_since_compiles_and_fails_with_other() {
-        /// A host's runtime written before `logs_since`.
+    fn a_runtime_without_logs_since_or_copy_out_compiles_and_fails_with_other() {
+        /// A host's runtime written before `logs_since` and `copy_out`.
         struct Older;
 
         #[async_trait]
@@ -754,6 +822,124 @@ mod tests {
         let error = now(runtime.logs_since("job-1", None, 10)).unwrap_err();
         assert_eq!(error.kind, ErrorKind::Other, "{error}");
         assert!(error.message.contains("not supported"), "{error}");
+        let error = now(runtime.copy_out("job-1", "/out", CopyLimits::new(10, 100))).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Other, "{error}");
+        assert!(error.message.contains("not supported"), "{error}");
+    }
+
+    const ROOMY: CopyLimits = CopyLimits { max_files: 100, max_bytes: 1 << 20 };
+
+    fn with_mode(path: &str, contents: &str, mode: u32) -> CopyFile {
+        CopyFile { mode, ..CopyFile::new(path, contents) }
+    }
+
+    fn skipped(out: &CopyOut) -> Vec<(&str, &str)> {
+        out.skipped.iter().map(|s| (s.path.as_str(), s.reason.as_str())).collect()
+    }
+
+    #[test]
+    fn copy_out_returns_what_copy_in_wrote_and_what_the_program_wrote() {
+        let fake = FakeRuntime::new();
+        now(fake.create(&ContainerSpec::new("job-1", "alpine:3"))).unwrap();
+        now(fake.copy_in("job-1", &[CopyFile::new("/in/config.json", "{}")])).unwrap();
+        let out = now(fake.copy_out("job-1", "/in", ROOMY)).unwrap();
+        assert_eq!(out, CopyOut::new(vec![CopyFile::new("/in/config.json", "{}")], Vec::new()), "from a created one");
+
+        now(fake.start("job-1")).unwrap();
+        fake.put_file("job-1", with_mode("/out/./sub/b", "bee", 0o755));
+        fake.put_file("job-1", CopyFile::new("/out/a", "ay"));
+        fake.exit_with("job-1", ContainerStatus::Exited { code: 0 });
+        let out = now(fake.copy_out("job-1", "/out/", ROOMY)).unwrap();
+        assert_eq!(out.files, [CopyFile::new("/out/a", "ay"), with_mode("/out/sub/b", "bee", 0o755)]);
+        assert!(out.skipped.is_empty());
+        let one = now(fake.copy_out("job-1", "/out/sub/b", ROOMY)).unwrap();
+        assert_eq!(one.files, [with_mode("/out/sub/b", "bee", 0o755)], "one file by its path");
+    }
+
+    #[test]
+    fn copy_out_walks_a_folder_part_by_part() {
+        let fake = FakeRuntime::new();
+        started(&fake, "job-1");
+        for path in ["/out/a-b", "/out/a/c", "/out/b", "/out/a/b/d", "/outer/x", "/ou"] {
+            fake.put_file("job-1", CopyFile::new(path, "x"));
+        }
+        let out = now(fake.copy_out("job-1", "/out", ROOMY)).unwrap();
+        let paths: Vec<&str> = out.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, ["/out/a/b/d", "/out/a/c", "/out/a-b", "/out/b"]);
+    }
+
+    #[test]
+    fn copy_out_skips_a_file_over_the_bytes_left_and_stops_at_the_file_limit() {
+        let fake = FakeRuntime::new();
+        started(&fake, "job-1");
+        for (path, size) in [("/out/a", 10), ("/out/b", 5000), ("/out/c", 20)] {
+            fake.put_file("job-1", CopyFile::new(path, vec![b'x'; size]));
+        }
+        let out = now(fake.copy_out("job-1", "/out", CopyLimits::new(10, 100))).unwrap();
+        assert_eq!(out.files.iter().map(|f| f.contents.len()).collect::<Vec<_>>(), [10, 20]);
+        assert_eq!(skipped(&out), [("/out/b", "5000 bytes, more than the 90 left")]);
+
+        let out = now(fake.copy_out("job-1", "/out", CopyLimits::new(2, 100))).unwrap();
+        assert_eq!(out.files.len(), 1);
+        assert_eq!(
+            skipped(&out),
+            [("/out/b", "5000 bytes, more than the 90 left"), ("/out", "more than 2 files; the rest was not read")]
+        );
+        let out = now(fake.copy_out("job-1", "/out", CopyLimits::new(3, 100))).unwrap();
+        assert_eq!((out.files.len(), out.skipped.len()), (2, 1), "exactly at the limit: no last entry");
+    }
+
+    #[test]
+    fn copy_out_of_what_is_not_there() {
+        let fake = FakeRuntime::new();
+        started(&fake, "job-1");
+        fake.put_file("job-1", CopyFile::new("/out/a", "x"));
+        assert_eq!(now(fake.copy_out("job-1", "/missing", ROOMY)).unwrap(), CopyOut::default());
+        assert_eq!(now(fake.copy_out("job-1", "/out/a/b", ROOMY)).unwrap(), CopyOut::default(), "below a file");
+        assert_eq!(kind(now(fake.copy_out("gone", "/out", ROOMY))), ErrorKind::Conflict);
+        for bad in ["out", "/", "/out/../etc"] {
+            assert_eq!(kind(now(fake.copy_out("job-1", bad, ROOMY))), ErrorKind::InvalidSpec, "{bad}");
+        }
+        for zero in [CopyLimits::new(0, 100), CopyLimits::new(10, 0)] {
+            assert_eq!(kind(now(fake.copy_out("job-1", "/out", zero))), ErrorKind::InvalidSpec, "{zero:?}");
+            assert_eq!(kind(now(fake.copy_out("gone", "/out", zero))), ErrorKind::InvalidSpec, "before the lookup");
+        }
+    }
+
+    #[test]
+    fn a_tmpfs_is_empty_once_the_container_ended() {
+        let fake = FakeRuntime::new();
+        let mut spec = ContainerSpec::new("job-1", "alpine:3");
+        spec.tmpfs.push(Tmpfs::new("/scratch"));
+        spec.mounts.push(Mount::new(MountKind::Volume, "keep", "/scratch/keep"));
+        now(fake.create(&spec)).unwrap();
+        now(fake.start("job-1")).unwrap();
+        fake.put_file("job-1", CopyFile::new("/scratch/a", "x"));
+        fake.put_file("job-1", CopyFile::new("/scratch/keep/b", "y"));
+        let running = now(fake.copy_out("job-1", "/scratch", ROOMY)).unwrap();
+        assert_eq!(running.files.len(), 2, "while it runs");
+        fake.exit_with("job-1", ContainerStatus::Exited { code: 0 });
+        let ended = now(fake.copy_out("job-1", "/scratch", ROOMY)).unwrap();
+        assert_eq!(ended.files, [CopyFile::new("/scratch/keep/b", "y")], "a volume below the tmpfs stays");
+        assert_eq!(now(fake.copy_out("job-1", "/scratch/a", ROOMY)).unwrap(), CopyOut::default());
+    }
+
+    #[test]
+    fn a_scripted_failure_of_copy_out_is_recorded() {
+        let fake = FakeRuntime::new();
+        started(&fake, "job-1");
+        fake.put_file("job-1", CopyFile::new("/out/a", "x"));
+        fake.fail_next(Method::CopyOut, ErrorKind::DaemonUnavailable);
+        assert_eq!(kind(now(fake.copy_out("job-1", "/out", ROOMY))), ErrorKind::DaemonUnavailable);
+        assert_eq!(now(fake.copy_out("job-1", "/out", ROOMY)).unwrap().files.len(), 1);
+        let call = Call::CopyOut { name: "job-1".into(), path: "/out".into(), limits: ROOMY };
+        assert_eq!(fake.calls().iter().filter(|c| **c == call).count(), 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "put_file: no container")]
+    fn put_file_panics_for_a_missing_container() {
+        FakeRuntime::new().put_file("gone", CopyFile::new("/out/a", "x"));
     }
 
     #[test]
