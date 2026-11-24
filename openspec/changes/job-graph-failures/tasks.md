@@ -23,7 +23,7 @@ is tested on virtual time (`#[tokio::test(start_paused = true)]` with `TestActor
   notifications ignored, a slot freed by a gone worker starting the next job, and a client's result that ends a job
   before its failed `Dispatch` is reported. Update `job-graph`'s test of a failed job, whose dependents now skip.
   Verify: `cargo test -p cicada-actors --test job_graph`.
-- [ ] 4. **Wire format.** A sample state with skipped jobs and an ended run in
+- [x] 4. **Wire format.** A sample state with skipped jobs and an ended run in
   `crates/cicada-actors/tests/wire_formats.rs`, taken by the schema and the decoder; `CICADA_UPDATE_CONTRACTS=true cargo
   test -p cicada-actors --test wire_formats` only if a doc comment changed the reference, whose hash must stay. Verify:
   `cargo test -p cicada-actors --test wire_formats`.

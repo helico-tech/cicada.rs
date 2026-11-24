@@ -728,9 +728,39 @@ fn a_job_graph_state_is_written_in_camel_case_passes_its_samples_and_refuses_inv
     ] {
         assert!(serde_json::from_value::<JobGraphState>(invalid.clone()).is_err(), "{invalid}");
     }
+    let ended = json!({"maxInFlight": 2, "reportTo": "ci/run-7", "reportType": "GraphEnded", "status": "failed",
+        "endedAt": "2026-01-01T00:00:09Z", "jobs": [
+            {"name": "build", "needs": [], "to": "ci/run-7", "messageType": "Build", "input": {},
+             "status": "failed", "output": null, "attempts": [{"attempt": 1,
+             "dispatchedAt": "2026-01-01T00:00:00Z", "endedAt": "2026-01-01T00:00:05Z", "outcome": "failed",
+             "reason": "the worker went away (deleted)"}]},
+            {"name": "test", "needs": ["build"], "to": "ci/run-7", "messageType": "Build", "input": {},
+             "status": "skipped", "output": null, "attempts": []},
+            {"name": "deploy", "needs": ["test"], "to": "ci/run-7", "messageType": "Build", "input": {},
+             "status": "skipped", "output": null, "attempts": []},
+            {"name": "lint", "needs": [], "to": "ci/run-7", "messageType": "Build", "input": {},
+             "status": "succeeded", "output": null, "attempts": [{"attempt": 1,
+             "dispatchedAt": "2026-01-01T00:00:00Z", "endedAt": "2026-01-01T00:00:09Z", "outcome": "succeeded",
+             "reason": null}]}]});
+    assert_state_sample::<JobGraphState>(&ended);
+    assert_eq!(json_of(serde_json::from_value::<JobGraphState>(ended.clone()).unwrap()), ended);
+    let with = |edit: &dyn Fn(&mut Value)| {
+        let mut json = ended.clone();
+        edit(&mut json);
+        json
+    };
+    for invalid in [
+        with(&|j| j["status"] = json!("succeeded")),
+        with(&|j| j["status"] = json!("cancelled")),
+        with(&|j| j["jobs"][2]["status"] = json!("waiting")),
+        with(&|j| j["jobs"][1]["attempts"] = j["jobs"][0]["attempts"].clone()),
+        with(&|j| j["jobs"][3]["status"] = json!("skipped")),
+    ] {
+        assert!(serde_json::from_value::<JobGraphState>(invalid.clone()).is_err(), "{invalid}");
+    }
 }
 
-/// The states a run writes: mid-run with a job dispatched and one not yet, and ended.
+/// The states a run writes: mid-run with a job dispatched and one not yet, ended, and ended with a skipped job.
 #[tokio::test(start_paused = true)]
 async fn the_states_a_run_writes_pass_their_sample() {
     let test = TestActors::builder().with(|node| node.host(JobGraphActor).host(CiActor)).build().await.unwrap();
@@ -766,6 +796,27 @@ async fn the_states_a_run_writes_pass_their_sample() {
     }
     let written = test.state_json(&run).await.unwrap();
     assert_eq!(written["status"], "succeeded", "{written}");
+    assert_state_sample::<JobGraphState>(&written);
+
+    let jobs = vec![
+        GraphJob::new("build", &ci, "Build", json!({})).unwrap(),
+        GraphJob::new("test", &ci, "Build", json!({})).unwrap().with_needs(["build"]),
+    ];
+    let failing = JobGraph::named("run-8");
+    test.create(&failing, &JobGraphState::new(jobs, 2, &ci, "GraphEnded").unwrap()).await;
+    test.send(&failing, JobGraphMsg::Start).await;
+    test.run_until_idle().await;
+    let result = JobGraphMsg::Result {
+        job: "build".into(),
+        attempt: 1,
+        outcome: JobOutcome::Failed,
+        output: None,
+        reason: None,
+    };
+    test.send(&failing, result).await;
+    test.run_until_idle().await;
+    let written = test.state_json(&failing).await.unwrap();
+    assert_eq!((&written["status"], &written["jobs"][1]["status"]), (&json!("failed"), &json!("skipped")), "{written}");
     assert_state_sample::<JobGraphState>(&written);
 }
 
