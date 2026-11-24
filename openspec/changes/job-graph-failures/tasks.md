@@ -17,7 +17,7 @@ is tested on virtual time (`#[tokio::test(start_paused = true)]` with `TestActor
   each ending their jobs `failed` (decision 3). From the job-graph review: a `Result` taken before its `Dispatch` ran
   leaves the attempt's `dispatchedAt` empty; say so in the doc comment of `JobAttempt`. Verify: `cargo test -p cicada-actors`; `cargo clippy -p cicada-actors
   --all-targets`.
-- [ ] 3. **Virtual-time tests.** In `crates/cicada-actors/tests/job_graph.rs`, one test or more for every scenario of
+- [x] 3. **Virtual-time tests.** In `crates/cicada-actors/tests/job_graph.rs`, one test or more for every scenario of
   the spec delta: transitive skips, a job message that fails at the worker, a deleted worker with two jobs, another
   failed message of a shared worker ignored, a worker that reports and stops in one turn (normal order), client
   notifications ignored, a slot freed by a gone worker starting the next job, and a client's result that ends a job

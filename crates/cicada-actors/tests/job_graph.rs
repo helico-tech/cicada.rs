@@ -1,6 +1,6 @@
-//! The job graph, on virtual time with `TestActors` (ADR 0059): ready jobs in graph order up to the in-flight limit,
-//! each job message in a turn of its own, a failed dispatch that fails only its attempt, the attempt fence on results,
-//! a failed job that blocks its dependents, and the end report.
+//! The job graph, on virtual time with `TestActors` (ADR 0059, ADR 0060): ready jobs in graph order up to the in-flight
+//! limit, each job message in a turn of its own, a failed dispatch that fails only its attempt, the attempt fence on
+//! results, a failed job that skips its dependents, the watch on each target, and the end report.
 
 mod common;
 
@@ -16,7 +16,8 @@ use common::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-/// `builder/{id}`: keeps every job message it is sent, and relays a result to a run when told.
+/// `builder/{id}`: keeps every job message it is sent, fails its handler on one whose input has `"fail": true`, and
+/// relays a result to a run when told.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Builder {
     id: String,
@@ -40,6 +41,11 @@ enum BuilderMsg {
         run: String,
         result: JobGraphMsg,
     },
+    /// Sends `result` to the run `run` and stops, in one turn.
+    ReportAndStop {
+        run: String,
+        result: JobGraphMsg,
+    },
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
@@ -56,9 +62,16 @@ impl Actor for BuilderActor {
 
     async fn handle(&self, turn: &mut Turn<Self>, message: BuilderMsg) -> HandlerResult {
         match message {
+            BuilderMsg::Build(start) if start.input["fail"] == json!(true) => {
+                return Err(HandlerError::msg("the build broke"));
+            }
             BuilderMsg::Build(start) => turn.state_mut().log.push(start),
             BuilderMsg::Relay { run, result } => {
                 turn.send(&JobGraph::named(run), result)?;
+            }
+            BuilderMsg::ReportAndStop { run, result } => {
+                turn.send(&JobGraph::named(run), result)?;
+                turn.stop();
             }
         }
         Ok(())
@@ -596,4 +609,172 @@ async fn a_job_message_carries_the_correlation_id_of_the_start() {
     let of_builder = test.system().watches(None, Some(&WatchTarget::from(addr(&builder("a")))), None, 10).await;
     let watchers: Vec<String> = of_builder.unwrap().items.iter().map(|w| w.watcher.to_string()).collect();
     assert_eq!(watchers, ["cicada.job-graph/run-7"], "the turn that sent the job message watches its target");
+}
+
+/// The watchers of `builder/{id}`.
+async fn watchers_of(test: &TestActors, id: &str) -> Vec<String> {
+    let target = WatchTarget::from(addr(&builder(id)));
+    let watches = test.system().watches(None, Some(&target), None, 10).await.unwrap().items;
+    watches.iter().map(|w| w.watcher.to_string()).collect()
+}
+
+/// The reason of the last attempt of the job at `i`.
+async fn reason_of(test: &TestActors, i: usize) -> String {
+    state(test).await.jobs[i].attempts.last().and_then(|a| a.reason.clone()).expect("a reason")
+}
+
+/// Scenario: The job message fails at the worker.
+#[tokio::test(start_paused = true)]
+async fn a_job_message_that_fails_at_the_worker_fails_its_job_and_skips_its_dependents() {
+    let test = node().await;
+    let mut a = job("a", &[]);
+    a.input = json!({"fail": true});
+    start(&test, vec![a, job("b", &["a"]), job("c", &[])], 2).await;
+    assert_eq!(statuses(&test).await, named(&[("a", Running), ("b", Waiting), ("c", Running)]));
+    test.advance_time_by(std::time::Duration::from_secs(600)).await;
+    assert_eq!(statuses(&test).await, named(&[("a", Failed), ("b", Skipped), ("c", Running)]));
+    let reason = reason_of(&test, 0).await;
+    assert!(reason.starts_with("the job message failed at the worker (handler): "), "{reason}");
+    assert!(reason.contains("the build broke"), "{reason}");
+    assert_eq!(watchers_of(&test, "a").await, ["cicada.job-graph/run-7"], "c still runs on builder/a");
+    succeed(&test, "c").await;
+    assert_eq!(run_status(&test).await, JobGraphStatus::Failed);
+    assert!(watchers_of(&test, "a").await.is_empty(), "unwatched once no running job has it");
+}
+
+/// Scenario: The worker is deleted.
+#[tokio::test(start_paused = true)]
+async fn a_deleted_worker_fails_every_job_dispatched_to_it() {
+    let test = node().await;
+    start(&test, vec![job("a", &[]), job("b", &[]), job("c", &["a"])], 2).await;
+    assert_eq!(started(&test, "a").await, ["a", "b"]);
+    test.system().delete_actor(&addr(&builder("a"))).await.unwrap();
+    test.run_until_idle().await;
+    assert_eq!(statuses(&test).await, named(&[("a", Failed), ("b", Failed), ("c", Skipped)]));
+    for i in [0, 1] {
+        assert_eq!(reason_of(&test, i).await, "the worker went away (deleted)");
+    }
+    assert_eq!(run_status(&test).await, JobGraphStatus::Failed);
+    assert_eq!(reports(&test, "main").await.len(), 1);
+}
+
+/// Scenario: A slot freed by a gone worker: `b` starts in the commit that fails `a`.
+#[tokio::test(start_paused = true)]
+async fn a_slot_freed_by_a_gone_worker_starts_the_next_job() {
+    let test = node().await;
+    start(&test, vec![job_to("a", "builder/b"), job("b", &[])], 1).await;
+    assert_eq!(statuses(&test).await, named(&[("a", Running), ("b", Waiting)]));
+    test.system().delete_actor(&addr(&builder("b"))).await.unwrap();
+    let pending: Vec<String> = test.pending(&run()).await.into_iter().map(|m| m.message_type).collect();
+    assert_eq!(pending, ["Stopped"]);
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1);
+    assert_eq!(statuses(&test).await, named(&[("a", Failed), ("b", Running)]));
+    test.run_until_idle().await;
+    assert_eq!(started(&test, "a").await, ["b"]);
+}
+
+/// Scenario: Another message of the worker fails.
+#[tokio::test(start_paused = true)]
+async fn another_failed_message_of_a_shared_worker_changes_no_job() {
+    let test = node().await;
+    start(&test, vec![job("a", &[])], 2).await;
+    let version = test.version(&run()).await;
+    let start = start_of(&test, "a").await;
+    let result = JobGraphMsg::succeeded(&start, ()).unwrap();
+    let orphan = test.send(&builder("a"), BuilderMsg::Relay { run: "ghost".into(), result }).await;
+    let fails = JobStart { input: json!({"fail": true}), ..start };
+    let other = test.send(&builder("a"), BuilderMsg::Build(fails)).await;
+    test.advance_time_by(std::time::Duration::from_secs(600)).await;
+    assert_eq!(status(&test, &orphan).await, Some(OutcomeStatus::Failed));
+    assert_eq!(status(&test, &other).await, Some(OutcomeStatus::Failed), "a copy of a's job message, from a client");
+    assert_eq!(statuses(&test).await, named(&[("a", Running)]));
+    assert_eq!(test.version(&run()).await, version);
+    succeed(&test, "a").await;
+    assert_eq!(run_status(&test).await, JobGraphStatus::Succeeded);
+}
+
+/// Scenario: A worker that reports and stops, in the normal order: the result first, then the `Stopped`.
+#[tokio::test(start_paused = true)]
+async fn a_worker_that_reports_and_stops_in_one_turn_has_its_result_taken() {
+    let test = node().await;
+    start(&test, vec![job_to("a", "builder/b")], 2).await;
+    let start = starts(&test, "b").await.pop().expect("a job message");
+    let result = JobGraphMsg::succeeded(&start, json!("done")).unwrap();
+    test.send(&builder("b"), BuilderMsg::ReportAndStop { run: "run-7".into(), result }).await;
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1, "the worker's turn");
+    let pending: Vec<String> = test.pending(&run()).await.into_iter().map(|m| m.message_type).collect();
+    assert_eq!(pending, ["Result", "Stopped"]);
+    test.run_until_idle().await;
+    let state = state(&test).await;
+    assert_eq!((state.jobs[0].status, state.jobs[0].output.clone()), (Succeeded, Some(json!("done"))));
+    assert_eq!(state.status, JobGraphStatus::Succeeded);
+}
+
+/// Scenario: A notification a client sent: a `Failed` that names a running job's message, and a `Stopped` about its
+/// target.
+#[tokio::test(start_paused = true)]
+async fn notifications_a_client_sent_change_no_job() {
+    let test = node().await;
+    start(&test, vec![job("a", &[])], 2).await;
+    let start = start_of(&test, "a").await;
+    let failed = cicada::Failed {
+        actor: addr(&builder("a")),
+        message_id: MessageId::new("m-planted").unwrap(),
+        message_type: "Build".into(),
+        payload: serde_json::to_value(&start).unwrap(),
+        correlation_id: None,
+        from: Some(addr(&run())),
+        error: "made up".into(),
+        attempts: 7,
+        cause: FailureCause::Handler,
+    };
+    let stopped = cicada::Stopped { actor: addr(&builder("a")), cause: cicada::StopCause::Deleted, by: None };
+    let version = test.version(&run()).await;
+    for message in [JobGraphMsg::Failed(failed), JobGraphMsg::Stopped(stopped)] {
+        let m = test.send(&run(), message).await;
+        test.run_until_idle().await;
+        assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done));
+    }
+    assert_eq!(statuses(&test).await, named(&[("a", Running)]));
+    assert_eq!(test.version(&run()).await, version);
+}
+
+/// Scenario: A failed dispatch of a job that is no longer running: a client's result ends the job before the `Failed`
+/// of its `Dispatch` is handled, and that `Failed` changes nothing.
+#[tokio::test(start_paused = true)]
+async fn a_failed_dispatch_of_a_job_that_got_its_result_first_changes_nothing() {
+    let test = node().await;
+    create(&test, vec![job_to("a", "builder/ghost")], 2).await;
+    test.send(&run(), JobGraphMsg::Start).await;
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1);
+    test.send(&run(), result("a", 1)).await;
+    let pending: Vec<String> = test.pending(&run()).await.into_iter().map(|m| m.message_type).collect();
+    assert_eq!(pending, ["Dispatch", "Result"]);
+    test.advance_time_by(std::time::Duration::from_secs(600)).await;
+    assert_eq!(failed_of(&test, "Dispatch").await.len(), 1);
+    let state = state(&test).await;
+    assert_eq!(state.jobs[0].status, Succeeded);
+    assert_eq!(state.jobs[0].attempts[0].dispatched_at, None, "a result taken before its dispatch");
+    assert_eq!(state.status, JobGraphStatus::Succeeded);
+}
+
+/// The run watches a target from the turn that sends a job message to it, and unwatches it once none of its running
+/// jobs has it.
+#[tokio::test(start_paused = true)]
+async fn the_run_unwatches_a_target_once_no_running_job_has_it() {
+    let test = node().await;
+    start(&test, vec![job("a", &[]), job("b", &[]), job_to("c", "builder/b")], 3).await;
+    assert_eq!(watchers_of(&test, "a").await, ["cicada.job-graph/run-7"]);
+    assert_eq!(watchers_of(&test, "b").await, ["cicada.job-graph/run-7"]);
+    succeed(&test, "a").await;
+    assert_eq!(watchers_of(&test, "a").await, ["cicada.job-graph/run-7"], "b still runs on builder/a");
+    let start = starts(&test, "b").await.pop().unwrap();
+    test.send(&run(), JobGraphMsg::failed(&start, "c broke")).await;
+    test.run_until_idle().await;
+    assert!(watchers_of(&test, "b").await.is_empty());
+    succeed(&test, "b").await;
+    assert!(watchers_of(&test, "a").await.is_empty());
+    let watches = test.system().watches(Some(&addr(&run())), None, None, 10).await.unwrap().items;
+    let targets: Vec<String> = watches.iter().map(|w| w.target.to_string()).collect();
+    assert_eq!(targets, ["cicada.job-graph/run-7"], "the run keeps its watch on itself");
 }
