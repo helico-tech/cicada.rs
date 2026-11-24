@@ -5,8 +5,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 
 use crate::{
-    ContainerError, ContainerSpec, CopyFile, CopyLimits, CopyOut, ErrorKind, Label, LogCursor, LogPage, NetworkSpec,
-    VolumeSpec,
+    ContainerError, ContainerSpec, CopyDir, CopyFile, CopyLimits, CopyOut, ErrorKind, Label, LogCursor, LogPage,
+    NetworkSpec, VolumeSpec,
 };
 
 /// A container runtime: Docker, or the fake in tests. Use it as `Arc<dyn ContainerRuntime>` to pick one at run time.
@@ -28,6 +28,39 @@ pub trait ContainerRuntime: Send + Sync + 'static {
     /// start would hide it; one on a read-only mount; and, with [`read_only_root`](ContainerSpec::read_only_root), one
     /// on no volume or bind mount. `/work/./a` and `/work/a` are one file.
     async fn copy_in(&self, name: &str, files: &[CopyFile]) -> Result<(), ContainerError>;
+
+    /// Makes the missing folders of `dirs` in the container `name`, which must be `Created`, so that a program that
+    /// does not run as root can write there: each missing named folder with its [`mode`](CopyDir::mode), and each
+    /// missing parent with `0o755`. For a host that prepares output folders before [`start`](Self::start).
+    ///
+    /// **Only what is missing is made.** An existing folder is left exactly as it is, whoever owns it and whatever its
+    /// mode, also when `dirs` names it with another mode; so is an existing parent. A folder named in `dirs` gets its
+    /// own mode also when it is a parent of another named folder, in any order. The same path named twice with one
+    /// mode is made once. A repeat makes nothing, as everything exists then: the same end state.
+    ///
+    /// **Links are followed to a folder.** A symbolic link at a named path or a parent, such as `/var/run -> /run`,
+    /// counts as the folder it points to, up to 8 links in a row; a folder made below it is made at the link's
+    /// target, and the link stays. The path rule below applies to that target too.
+    ///
+    /// Fails, before any write, with `Conflict` for a file, a link to anything but a folder (a missing target too) or
+    /// more than 8 links in a row at a named path or a parent, and for a container that is missing, running or ended.
+    /// Fails with `InvalidSpec` for a mode above `0o7777`, one path named twice with two modes, and every path
+    /// [`copy_in`](Self::copy_in) refuses: relative, with a `..` part, `/`, a mount target, at or below a tmpfs, on a
+    /// read-only mount, and with [`read_only_root`](ContainerSpec::read_only_root) on no volume or bind mount.
+    ///
+    /// Limits: the mode of a volume's own root folder cannot be set, as the path rule refuses a mount target: make a
+    /// folder inside the volume, or set the mode in the image. A folder that another API caller makes between the
+    /// check and the write is not seen; the container has no process yet, so nothing else can race.
+    ///
+    /// The default fails with `Other`, so a runtime written before this method compiles unchanged; the fake and
+    /// the Docker backend implement it.
+    async fn make_dirs(&self, name: &str, dirs: &[CopyDir]) -> Result<(), ContainerError> {
+        let _ = dirs;
+        Err(ContainerError::new(
+            ErrorKind::Other,
+            format!("make folders in {name}: make_dirs is not supported by this runtime"),
+        ))
+    }
 
     /// Starts the created container `name`. For a running, exited or failed one it is `Ok` and does nothing, so a
     /// container runs at most once. Fails with `Conflict` for a missing one.

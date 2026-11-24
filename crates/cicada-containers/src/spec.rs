@@ -272,6 +272,24 @@ impl fmt::Debug for CopyFile {
     }
 }
 
+/// A folder for [`make_dirs`](crate::ContainerRuntime::make_dirs): its absolute path and the mode it is made with when
+/// it is missing.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CopyDir {
+    /// The absolute path in the container.
+    pub path: String,
+    /// Its permission bits, at most `0o7777`; an existing folder keeps its own.
+    pub mode: u32,
+}
+
+impl CopyDir {
+    /// A folder at `path` with mode `0o755`.
+    pub fn new(path: impl Into<String>) -> Self {
+        Self { path: path.into(), mode: 0o755 }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,6 +308,12 @@ mod tests {
     fn debug_output_of_a_file_shows_no_contents() {
         let file = CopyFile::new("/work/token", "s3cret");
         assert_eq!(format!("{file:?}"), r#"CopyFile { path: "/work/token", mode: 0o644, len: 6 }"#);
+    }
+
+    #[test]
+    fn a_new_folder_has_mode_0o755() {
+        let dir = CopyDir::new("/out");
+        assert_eq!((dir.path.as_str(), dir.mode), ("/out", 0o755));
     }
 
     #[test]

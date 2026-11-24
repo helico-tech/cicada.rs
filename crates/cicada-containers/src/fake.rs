@@ -2,18 +2,22 @@
 
 use std::collections::BTreeMap;
 use std::convert::Infallible;
+use std::future::Future;
+use std::pin::pin;
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use async_trait::async_trait;
 
 use crate::copy::{Collector, EntryKind};
+use crate::dirs::{Stat, ToMake, named, walk};
 use crate::logs::{check_max_lines, page};
 use crate::paths::{MountTarget, Mounted, deepest_mount, path_parts, place};
 use crate::{
-    ContainerError, ContainerRuntime, ContainerSpec, ContainerStatus, ContainerSummary, CopyFile, CopyLimits, CopyOut,
-    ErrorKind, Label, LogCursor, LogLine, LogPage, LogStream, MountKind, NetworkSpec, Networking, Resource, Skipped,
-    Swept, VolumeSpec,
+    ContainerError, ContainerRuntime, ContainerSpec, ContainerStatus, ContainerSummary, CopyDir, CopyFile, CopyLimits,
+    CopyOut, ErrorKind, Label, LogCursor, LogLine, LogPage, LogStream, MountKind, NetworkSpec, Networking, Resource,
+    Skipped, Swept, VolumeSpec,
 };
 
 /// The exit code of a container the fake stops, as Docker reports one ended by SIGTERM.
@@ -24,7 +28,8 @@ const STOPPED_CODE: i64 = 143;
 /// It keeps containers, networks and volumes by name with their labels and states, and answers at once: it uses no
 /// timer, so it runs under paused time. A test scripts it: [`exit_with`](Self::exit_with) ends a running container,
 /// [`set_logs`](Self::set_logs) and [`push_log`](Self::push_log) give it output, [`put_file`](Self::put_file) gives
-/// it a file to copy out, [`fail_next`](Self::fail_next) and [`fail_always`](Self::fail_always) make calls of a
+/// it a file to copy out, [`make_dirs`](ContainerRuntime::make_dirs) keeps the folders it makes with their modes,
+/// [`fail_next`](Self::fail_next) and [`fail_always`](Self::fail_always) make calls of a
 /// method fail without effect, and [`calls`](Self::calls) lists every call in order. A started
 /// container runs until a test ends it or [`stop`](ContainerRuntime::stop) does (exit code 143).
 #[derive(Clone, Debug, Default)]
@@ -50,6 +55,33 @@ struct FakeContainer {
     logs: Vec<LogLine>,
     /// Its files by cleaned path, from `copy_in` and `put_file`.
     files: BTreeMap<String, CopyFile>,
+    /// The folders `make_dirs` made, by cleaned path, with their modes.
+    dirs: BTreeMap<String, u32>,
+}
+
+impl FakeContainer {
+    /// What is at the cleaned `path`: a held file; a folder when it was made, or is a parent of a held file or folder
+    /// or the target or a parent of a volume or bind mount; else nothing. The fake has no links.
+    fn stat(&self, path: &str) -> Stat {
+        if self.files.contains_key(path) {
+            return Stat::Other;
+        }
+        let below = format!("{path}/");
+        let held = self.files.keys().chain(self.dirs.keys()).any(|held| held.starts_with(&below));
+        let mounted = self.spec.mounts.iter().any(|m| {
+            let target = format!("/{}", MountTarget::new(&m.target, Mounted::Tmpfs).parts.join("/"));
+            target == path || target.starts_with(&below)
+        });
+        if self.dirs.contains_key(path) || held || mounted { Stat::Folder } else { Stat::Missing }
+    }
+}
+
+/// Runs a future that never waits, such as the walk over the fake's stat, to its end at its first poll.
+fn ready<T>(future: impl Future<Output = T>) -> T {
+    match pin!(future).poll(&mut Context::from_waker(Waker::noop())) {
+        Poll::Ready(value) => value,
+        Poll::Pending => unreachable!("the fake's stat never waits"),
+    }
 }
 
 /// A method of [`ContainerRuntime`], to script failures of the [`FakeRuntime`].
@@ -60,6 +92,8 @@ pub enum Method {
     Create,
     /// [`ContainerRuntime::copy_in`].
     CopyIn,
+    /// [`ContainerRuntime::make_dirs`].
+    MakeDirs,
     /// [`ContainerRuntime::start`].
     Start,
     /// [`ContainerRuntime::inspect`].
@@ -96,6 +130,13 @@ pub enum Call {
         name: String,
         /// The files.
         files: Vec<CopyFile>,
+    },
+    /// [`ContainerRuntime::make_dirs`] with its folders.
+    MakeDirs {
+        /// The container.
+        name: String,
+        /// The folders, as given.
+        dirs: Vec<CopyDir>,
     },
     /// [`ContainerRuntime::start`].
     Start(String),
@@ -150,6 +191,7 @@ impl Call {
         match self {
             Self::Create(_) => Method::Create,
             Self::CopyIn { .. } => Method::CopyIn,
+            Self::MakeDirs { .. } => Method::MakeDirs,
             Self::Start(_) => Method::Start,
             Self::Inspect(_) => Method::Inspect,
             Self::Logs { .. } => Method::Logs,
@@ -299,6 +341,7 @@ impl ContainerRuntime for FakeRuntime {
             status: ContainerStatus::Created,
             logs: Vec::new(),
             files: BTreeMap::new(),
+            dirs: BTreeMap::new(),
         });
         Ok(())
     }
@@ -319,6 +362,25 @@ impl ContainerRuntime for FakeRuntime {
         }
         for file in placed {
             container.files.insert(file.path.clone(), file);
+        }
+        Ok(())
+    }
+
+    async fn make_dirs(&self, name: &str, dirs: &[CopyDir]) -> Result<(), ContainerError> {
+        let mut state = self.enter(Call::MakeDirs { name: name.into(), dirs: dirs.to_vec() })?;
+        let container = state.containers.get_mut(name).ok_or_else(|| conflict(format!("no container {name}")))?;
+        if container.status != ContainerStatus::Created {
+            return Err(conflict(format!("container {name} is {:?}, not created", container.status)));
+        }
+        let mounts = mount_targets(&container.spec);
+        let read_only_root = container.spec.read_only_root;
+        let mut to_make = ToMake::default();
+        for (parts, mode) in named(name, dirs, read_only_root, &mounts)? {
+            let found = ready(walk(name, &parts, |path| std::future::ready(container.stat(&path))))?;
+            to_make.add(name, found, mode)?;
+        }
+        for make in to_make.finish(name, read_only_root, &mounts)? {
+            container.dirs.insert(format!("/{}", make.parts.join("/")), make.mode);
         }
         Ok(())
     }
@@ -493,10 +555,6 @@ impl ContainerRuntime for FakeRuntime {
 
 #[cfg(test)]
 mod tests {
-    use std::future::Future;
-    use std::pin::pin;
-    use std::task::{Context, Poll, Waker};
-
     use super::*;
     use crate::{Mount, NetworkAttachment, Tmpfs};
 
@@ -777,8 +835,8 @@ mod tests {
     }
 
     #[test]
-    fn a_runtime_without_logs_since_or_copy_out_compiles_and_fails_with_other() {
-        /// A host's runtime written before `logs_since` and `copy_out`.
+    fn a_runtime_without_logs_since_copy_out_or_make_dirs_compiles_and_fails_with_other() {
+        /// A host's runtime written before `logs_since`, `copy_out` and `make_dirs`.
         struct Older;
 
         #[async_trait]
@@ -825,6 +883,129 @@ mod tests {
         let error = now(runtime.copy_out("job-1", "/out", CopyLimits::new(10, 100))).unwrap_err();
         assert_eq!(error.kind, ErrorKind::Other, "{error}");
         assert!(error.message.contains("not supported"), "{error}");
+        let error = now(runtime.make_dirs("job-1", &[CopyDir::new("/out")])).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Other, "{error}");
+        assert!(error.message.contains("not supported"), "{error}");
+    }
+
+    fn dir(path: &str, mode: u32) -> CopyDir {
+        CopyDir { mode, ..CopyDir::new(path) }
+    }
+
+    fn made(fake: &FakeRuntime) -> Vec<(String, u32)> {
+        fake.lock().containers["job-1"].dirs.iter().map(|(path, mode)| (path.clone(), *mode)).collect()
+    }
+
+    fn created(fake: &FakeRuntime) {
+        now(fake.create(&ContainerSpec::new("job-1", "alpine:3"))).unwrap();
+    }
+
+    #[test]
+    fn make_dirs_makes_a_folder_and_its_parents_and_a_repeat_makes_nothing() {
+        let fake = FakeRuntime::new();
+        created(&fake);
+        let dirs = [dir("/out", 0o777), dir("/tmp/./run/a/", 0o700)];
+        now(fake.make_dirs("job-1", &dirs)).unwrap();
+        now(fake.make_dirs("job-1", &dirs)).unwrap();
+        let expected = [("/out", 0o777), ("/tmp", 0o755), ("/tmp/run", 0o755), ("/tmp/run/a", 0o700)];
+        assert_eq!(made(&fake), expected.map(|(p, m)| (p.to_owned(), m)));
+        assert_eq!(fake.calls()[1], Call::MakeDirs { name: "job-1".into(), dirs: dirs.to_vec() });
+    }
+
+    #[test]
+    fn an_existing_folder_is_left_alone_and_gets_a_new_child() {
+        let fake = FakeRuntime::new();
+        created(&fake);
+        now(fake.make_dirs("job-1", &[dir("/data", 0o700)])).unwrap();
+        now(fake.make_dirs("job-1", &[dir("/data", 0o777), dir("/data/new", 0o777)])).unwrap();
+        assert_eq!(made(&fake), [("/data".to_owned(), 0o700), ("/data/new".to_owned(), 0o777)]);
+        // The parent of a held file is a folder too.
+        now(fake.copy_in("job-1", &[CopyFile::new("/srv/a", "x")])).unwrap();
+        now(fake.make_dirs("job-1", &[dir("/srv", 0o777), dir("/srv/b", 0o777)])).unwrap();
+        assert!(!fake.lock().containers["job-1"].dirs.contains_key("/srv"), "an existing folder is not made");
+    }
+
+    #[test]
+    fn a_file_at_the_path_or_a_parent_is_a_conflict_and_nothing_is_made() {
+        let fake = FakeRuntime::new();
+        created(&fake);
+        now(fake.copy_in("job-1", &[CopyFile::new("/out", "x")])).unwrap();
+        for path in ["/out", "/out/sub", "/out/./sub/deeper"] {
+            let dirs = [dir("/ok", 0o777), dir(path, 0o777)];
+            let error = now(fake.make_dirs("job-1", &dirs)).unwrap_err();
+            assert_eq!(error.kind, ErrorKind::Conflict, "{path}");
+            assert!(error.message.contains("/out is a file, not a folder"), "{error}");
+        }
+        assert!(made(&fake).is_empty(), "nothing made");
+        assert_eq!(fake.lock().containers["job-1"].files["/out"].contents, b"x", "the file is unchanged");
+    }
+
+    #[test]
+    fn a_named_parent_keeps_its_own_mode_in_either_order() {
+        for dirs in [[dir("/a/b", 0o755), dir("/a", 0o777)], [dir("/a", 0o777), dir("/a/b", 0o755)]] {
+            let fake = FakeRuntime::new();
+            created(&fake);
+            now(fake.make_dirs("job-1", &dirs)).unwrap();
+            assert_eq!(made(&fake), [("/a".to_owned(), 0o777), ("/a/b".to_owned(), 0o755)], "{dirs:?}");
+        }
+    }
+
+    #[test]
+    fn one_path_named_twice() {
+        let fake = FakeRuntime::new();
+        created(&fake);
+        now(fake.make_dirs("job-1", &[dir("/out", 0o777), dir("/out/", 0o777)])).unwrap();
+        assert_eq!(made(&fake), [("/out".to_owned(), 0o777)]);
+        let two = [dir("/other", 0o777), dir("/other", 0o755)];
+        assert_eq!(kind(now(fake.make_dirs("job-1", &two))), ErrorKind::InvalidSpec);
+        assert_eq!(made(&fake).len(), 1, "nothing made");
+    }
+
+    #[test]
+    fn a_bad_mode_and_a_late_or_missing_container() {
+        let fake = FakeRuntime::new();
+        created(&fake);
+        let bad = [dir("/ok", 0o755), dir("/out", 0o10000)];
+        assert_eq!(kind(now(fake.make_dirs("job-1", &bad))), ErrorKind::InvalidSpec);
+        assert!(made(&fake).is_empty());
+        now(fake.start("job-1")).unwrap();
+        assert_eq!(kind(now(fake.make_dirs("job-1", &[dir("/out", 0o777)]))), ErrorKind::Conflict);
+        fake.exit_with("job-1", ContainerStatus::Exited { code: 0 });
+        assert_eq!(kind(now(fake.make_dirs("job-1", &[dir("/out", 0o777)]))), ErrorKind::Conflict);
+        assert!(made(&fake).is_empty());
+        assert_eq!(kind(now(fake.make_dirs("gone", &[dir("/out", 0o777)]))), ErrorKind::Conflict);
+    }
+
+    #[test]
+    fn make_dirs_follows_the_path_rule_of_copy_in() {
+        let fake = FakeRuntime::new();
+        let mut spec = ContainerSpec::new("job-1", "alpine:3");
+        spec.read_only_root = true;
+        spec.mounts.push(Mount::new(MountKind::Volume, "work", "/work"));
+        spec.tmpfs.push(Tmpfs::new("/work/tmp"));
+        now(fake.create(&spec)).unwrap();
+        for bad in ["/etc/x", "/work", "/work/tmp/x", "work/a", "/", "/work/../etc"] {
+            let dirs = [dir("/work/cache", 0o777), dir(bad, 0o777)];
+            let error = now(fake.make_dirs("job-1", &dirs)).unwrap_err();
+            assert_eq!(error.kind, ErrorKind::InvalidSpec, "{bad}");
+            assert!(error.message.starts_with("make folders in job-1: "), "{error}");
+        }
+        assert!(made(&fake).is_empty(), "nothing made");
+        now(fake.make_dirs("job-1", &[dir("/work/cache", 0o777)])).unwrap();
+        assert_eq!(made(&fake), [("/work/cache".to_owned(), 0o777)], "the volume's root is a folder");
+    }
+
+    #[test]
+    fn a_scripted_failure_of_make_dirs_is_recorded_and_makes_nothing() {
+        let fake = FakeRuntime::new();
+        created(&fake);
+        fake.fail_next(Method::MakeDirs, ErrorKind::DaemonUnavailable);
+        let dirs = [dir("/out", 0o777)];
+        assert_eq!(kind(now(fake.make_dirs("job-1", &dirs))), ErrorKind::DaemonUnavailable);
+        assert!(made(&fake).is_empty());
+        now(fake.make_dirs("job-1", &dirs)).unwrap();
+        let call = Call::MakeDirs { name: "job-1".into(), dirs: dirs.to_vec() };
+        assert_eq!(fake.calls().iter().filter(|c| **c == call).count(), 2);
     }
 
     const ROOMY: CopyLimits = CopyLimits { max_files: 100, max_bytes: 1 << 20 };

@@ -7,12 +7,12 @@ Version). Builds on `container-consistency` (the shared path rule, landed) and f
 `specs/container-runtime/spec.md` and `specs/container-docker/spec.md`. Run the crate's tests with every feature:
 `cargo test -p cicada-containers --all-features`.
 
-- [ ] 1. **The type and the trait method.** In `crates/cicada-containers/src/`: `CopyDir` (`non_exhaustive`,
+- [x] 1. **The type and the trait method.** In `crates/cicada-containers/src/`: `CopyDir` (`non_exhaustive`,
   `CopyDir::new(path)` with mode 0o755), exported from `lib.rs`; `ContainerRuntime::make_dirs` with a default that
   fails with `Other` (decision 1). Its rustdoc names the rules of decisions 2, 3 and 5 and the design's limits (a
   volume root's mode, an existing folder keeps its mode and owner, the race with another caller). Verify: a unit test
   that a runtime without `make_dirs` compiles and fails with `Other`; `cargo test -p cicada-containers --all-features`.
-- [ ] 2. **The fake.** `make_dirs` in `src/fake.rs` (decision 6): the checks of decision 3 (state, shared path rule,
+- [x] 2. **The fake.** `make_dirs` in `src/fake.rs` (decision 6): the checks of decision 3 (state, shared path rule,
   mode above 0o7777) and decision 2 (a held file at the path or a parent is `Conflict`; existing folders, `/` and the
   parents of held entries are left alone; a named mode beats the implied 0755 in any order; one path with two modes
   is `InvalidSpec`, with one mode it is made once), all before any change; made folders kept with their modes;

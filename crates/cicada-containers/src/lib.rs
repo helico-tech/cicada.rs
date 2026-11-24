@@ -34,6 +34,9 @@ mod actor;
 // The collector of every runtime; without one of them, nothing calls it yet.
 #[cfg_attr(not(any(test, feature = "testing", feature = "docker")), allow(dead_code))]
 mod copy;
+// The rule of `make_dirs` for every runtime; without one of them, nothing calls it yet.
+#[cfg_attr(not(any(test, feature = "testing", feature = "docker")), allow(dead_code))]
+mod dirs;
 #[cfg(feature = "docker")]
 mod docker;
 mod error;
@@ -42,7 +45,7 @@ mod fake;
 // The pager of every runtime; without one of them, nothing calls it yet.
 #[cfg_attr(not(any(test, feature = "testing", feature = "docker")), allow(dead_code))]
 mod logs;
-// The rule of `copy_in` and `copy_out` for every runtime; without one of them, nothing calls it yet.
+// The rule of `copy_in`, `copy_out` and `make_dirs` for every runtime; without one of them, nothing calls it yet.
 #[cfg_attr(not(any(test, feature = "testing", feature = "docker")), allow(dead_code))]
 mod paths;
 mod runtime;
@@ -61,5 +64,6 @@ pub use fake::{Call, FakeRuntime, Method};
 pub use logs::{LOG_PAGE_MAX, LogCursor, LogLine, LogPage, LogStream};
 pub use runtime::{ContainerRuntime, ContainerStatus, ContainerSummary, Resource, Skipped, Swept};
 pub use spec::{
-    ContainerSpec, CopyFile, Label, Mount, MountKind, NetworkAttachment, NetworkSpec, Networking, Tmpfs, VolumeSpec,
+    ContainerSpec, CopyDir, CopyFile, Label, Mount, MountKind, NetworkAttachment, NetworkSpec, Networking, Tmpfs,
+    VolumeSpec,
 };

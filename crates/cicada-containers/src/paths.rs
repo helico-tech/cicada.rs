@@ -1,5 +1,5 @@
-//! The path rule of `copy_in` and `copy_out`, shared by every runtime so they cannot drift: which paths are files,
-//! and which mount of a container a file lies on.
+//! The path rule of `copy_in`, `copy_out` and `make_dirs`, shared by every runtime so they cannot drift: which paths
+//! are files, and which mount of a container a file lies on.
 
 use crate::{ContainerError, ErrorKind};
 
@@ -59,8 +59,19 @@ pub(crate) fn place<'p, 'm>(
     read_only_root: bool,
     mounts: &'m [MountTarget],
 ) -> Result<(Vec<&'p str>, Option<&'m MountTarget>), ContainerError> {
-    let invalid = |why: &str| ContainerError::new(ErrorKind::InvalidSpec, format!("copy into {name}: {path} {why}"));
-    let parts = path_parts("copy into", name, path)?;
+    place_as("copy into", name, path, read_only_root, mounts)
+}
+
+/// [`place`] for `action` on the container `name`, such as `make folders in`, which starts each message.
+pub(crate) fn place_as<'p, 'm>(
+    action: &str,
+    name: &str,
+    path: &'p str,
+    read_only_root: bool,
+    mounts: &'m [MountTarget],
+) -> Result<(Vec<&'p str>, Option<&'m MountTarget>), ContainerError> {
+    let invalid = |why: &str| ContainerError::new(ErrorKind::InvalidSpec, format!("{action} {name}: {path} {why}"));
+    let parts = path_parts(action, name, path)?;
     if mounts.iter().any(|m| m.parts == parts) {
         return Err(invalid("is the target of a mount"));
     }
