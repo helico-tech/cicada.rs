@@ -18,7 +18,7 @@ No public API, wire format, schema, guarantee or command-line change; `cicada-ap
   result with `tracing::warn!` before it spawns anything (not in `initialize`). Verify: unit tests of `pool_warning`
   (`None` never warns; `concurrency + 4` exactly does not; one less does and the text holds both numbers and the
   setting names; `usize::MAX` concurrency does not overflow); `cargo test -p cicada --lib`.
-- [ ] 3. **The warning at start, on PostgreSQL.** Add `tracing-subscriber` (workspace) to `cicada`'s
+- [x] 3. **The warning at start, on PostgreSQL.** Add `tracing-subscriber` (workspace) to `cicada`'s
   dev-dependencies. In `crates/cicada/src/tests/postgres/runtime.rs` (skipped without `CICADA_PG_URL`): a node with
   concurrency 4 hosting one type on a pool of 6 logs one warning naming 6, 4 and 8 and starts; at a pool of 8, and
   a node hosting no types on a pool of 1, it logs none. Capture with a thread-local test subscriber
