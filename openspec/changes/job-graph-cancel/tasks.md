@@ -11,13 +11,13 @@ before this one). Runtime behaviour is tested on virtual time (`#[tokio::test(st
   (bounds of decision 2) in the constructor and the decoder; the state's own attempt-outcome type `succeeded | failed
   | cancelled`, apart from the `Result`'s outcome type (decision 3); `JobCancel {run, job, attempt}`;
   `JobGraphMsg::Cancel { job? }` and the internal `SendCancel {job, attempt}`; the decoder's new checks (decision 4).
-  Verify: unit tests of the `cancelType` bounds and of each new decoder check (a cancelled job's open or succeeded
-  last attempt, a `cancelled` outcome of a job that is not cancelled); `cargo test -p cicada-actors --lib`.
-- [ ] 2. **The handler.** `Cancel` of one job or all (decision 1), followed in its commit by `job-graph-failures`'
-  skip, start and end step; the unwatch of a cancelled job's target unless another running job has it; `SendCancel`
-  sent in the `Cancel` commit for a dispatched job with a `cancelType`, and acted on only by the run itself while the
-  job is `cancelled` with that attempt (decision 2). Verify: `cargo test -p cicada-actors`;
-  `cargo clippy -p cicada-actors --all-targets`.
+  Verify: unit tests of the `cancelType` bounds and of the new decoder check (a cancelled job's open or succeeded
+  last attempt); `cargo test -p cicada-actors --lib`.
+- [ ] 2. **The handler.** `Cancel` of one job or all (decision 1), followed in its commit by `job-graph-failures`' skip,
+  start and end step; the unwatch of a cancelled job's target unless another running job has it; `SendCancel` sent in
+  the `Cancel` commit for a dispatched job with a `cancelType`, and acted on only by the run itself while that attempt
+  is kept, dispatched and closed `cancelled`, whatever the job's status (decision 2). Verify:
+  `cargo test -p cicada-actors`; `cargo clippy -p cicada-actors --all-targets`.
 - [ ] 3. **Virtual-time tests.** In `crates/cicada-actors/tests/job_graph.rs`, one test or more for every scenario of
   the spec delta: `Cancel` of one running job (dependent skipped, late result refused), of the whole run (ends
   `cancelled`, reported), of the whole run after a failure (ends `failed`), of one job of an otherwise succeeding run

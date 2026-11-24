@@ -50,8 +50,8 @@ input over 16 KiB or 32 levels, or an in-flight limit outside 1 through 100.
 
 #### Scenario: Inconsistent cancelled jobs
 
-- **WHEN** a state is decoded with a cancelled job whose last attempt ended `succeeded` or is still open, an attempt
-  with outcome `cancelled` of a job that is not cancelled, or an ended run with status `cancelled` and a failed job
+- **WHEN** a state is decoded with a cancelled job whose last attempt ended `succeeded` or is still open, or an ended
+  run with status `cancelled` and a failed job
 - **THEN** the decoder refuses it with the reason
 
 ## ADDED Requirements
@@ -108,8 +108,9 @@ job's attempt SHALL be refused, and a worker's result SHALL NOT name the outcome
 ### Requirement: A running worker is told through the job's cancel message type
 
 When a dispatched running job with a cancel message type is cancelled, the run SHALL send itself an internal
-`SendCancel`. Only a `SendCancel` the run sent itself, while that job is `cancelled` with that attempt, SHALL send the
-cancel message type to the job's target with the run, job and attempt. A job without a cancel message type, or not
+`SendCancel`. Only a `SendCancel` the run sent itself, while that attempt is still kept, dispatched and closed
+`cancelled`, SHALL send the cancel message type to the job's target with the run, job and attempt, whatever the job's
+status is then. A job without a cancel message type, or not
 yet dispatched, SHALL NOT be told. A failed `SendCancel` SHALL change nothing.
 
 #### Scenario: A worker is told

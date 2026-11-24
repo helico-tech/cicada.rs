@@ -15,20 +15,22 @@ decision N of `job-graph`'s `design.md`, "jf N" of `job-graph-failures`'s.
    one out of bounds, is refused for good, state unchanged. Then jf 7 applies in that commit: dependents skip (jf 1),
    ready jobs start in the freed slots, and the run may end, `cancelled` when no job failed (jf 2).
 2. **A running worker is told through a cancel message type per job**: a new optional field `cancelType` (1–200
-   characters, no NUL, checked by the constructor and the decoder). For a cancelled job whose attempt was dispatched
-   and that has a `cancelType`, the `Cancel` commit sends the run an internal `SendCancel {job, attempt}`; only one
-   the run sent itself, while that job is `cancelled` with that last attempt, sends `cancelType` to `to` with
-   `JobCancel {run, job, attempt}` and the crate's shared retry policy. A worker's family takes it as e.g.
-   `CancelBuild(JobCancel)`. The job is `cancelled` from the `Cancel`, not from the notice: in the same commit, a gone
-   target would reject the `Cancel` itself. A failed `SendCancel` changes nothing. A job not yet dispatched is not
-   told, and its `Dispatch` sends nothing (jf 6); one whose failed `Dispatch` is reported after the `Cancel` stays
-   `cancelled` (jf 6). A job without `cancelType` is not told; its outside work goes on, and its late result is
-   refused (jg 7).
+   characters, no NUL, checked by the constructor and the decoder). For a cancelled job whose attempt was dispatched and
+   that has a `cancelType`, the `Cancel` commit sends the run an internal `SendCancel {job, attempt}`; only one the run
+   sent itself, while that attempt is still kept, was dispatched and is closed `cancelled`, sends `cancelType` to `to`
+   with `JobCancel {run, job, attempt}` and the crate's shared retry policy, whatever the job's status is by then: a
+   later `Retry` (`job-graph-retry`) must not keep the replaced attempt's worker from its cancel. A worker's family
+   takes it as e.g. `CancelBuild(JobCancel)`. The job is `cancelled` from the `Cancel`, not from the notice: in the same
+   commit, a gone target would reject the `Cancel` itself. A failed `SendCancel` changes nothing. A job not yet
+   dispatched is not told, and its `Dispatch` sends nothing (jf 6); one whose failed `Dispatch` is reported after the
+   `Cancel` stays `cancelled` (jf 6). A job without `cancelType` is not told; its outside work goes on, and its late
+   result is refused (jg 7).
 3. **The attempt outcome is its own type in the state, `succeeded | failed | cancelled`** (picked in review 1); the
    worker's `Result` keeps its outcome type `succeeded | failed`, so a worker cannot report `cancelled`.
    `JobGraphEnd` names the attempt by its number (jg 11), so the end report's contract does not change.
-4. **The decoder also checks**: a `cancelled` job's last attempt, when it has one, is closed with outcome
-   `cancelled` (an open one is refused); an attempt with outcome `cancelled` belongs to a `cancelled` job.
+4. **The decoder also checks** that a `cancelled` job's last attempt, when it has one, is closed with outcome
+   `cancelled` (an open one is refused). Not "an attempt with outcome `cancelled` belongs to a `cancelled` job": a
+   retried job keeps its old cancelled attempt (`job-graph-retry`).
 
 Wire, a job: `{"name":"build",...,"cancelType":"CancelBuild","status":"cancelled","attempts":[{"attempt":1,
 "dispatchedAt":"…","endedAt":"…","outcome":"cancelled","reason":"cancelled"}]}`; `cancelType` absent or null: none.
