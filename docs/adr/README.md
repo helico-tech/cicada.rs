@@ -15,7 +15,7 @@ accepted ADR is not rewritten: a later one supersedes it. A change that makes a 
 | [0008](0008-rust-only.md) | Cicada for Rust stands alone: no contract with the Kotlin implementation. |
 | [0009](0009-one-baseline-schema.md) | The six early migrations are merged into one schema at version 1. |
 | [0010](0010-openspec-for-work-tracking.md) | Changes, designs and tasks live in `openspec/` (OpenSpec). |
-| [0011](0011-library-only.md) | A library only: the console (`cicada-ui`) and container handles (`cicada-docker`) are removed. |
+| [0011](0011-library-only.md) | A library only: the console (`cicada-ui`) and container handles (`cicada-docker`) are removed. Partly superseded by 0056: shared layers for external resources. |
 | [0012](0012-slimmer-api-and-wire-format.md) | A slimmer API and wire format: turn hooks that only observe (replaced by one observer in 0018), one way to configure and send, ISO-8601 durations only, twelve endpoints. |
 | [0013](0013-type-and-key-addresses.md) | Actors are addressed by type name and key (`sync/acme`) instead of URIs. |
 | [0014](0014-management-reads-and-type-removal.md) | Management reads over HTTP (outcomes, stats, caused-by) and removing a type's registration. |
@@ -60,6 +60,7 @@ accepted ADR is not rewritten: a later one supersedes it. A change that makes a 
 | [0053](0053-a-bounded-pinned-process-example.md) | One pinned actor per process run, retained host handles/tombstones and explicit reconciliation after host restart. |
 | [0054](0054-node-down-alerts-through-a-monitor-actor.md) | An optional singleton monitor publishes sampled node-down alerts through Topic with durable deduplication and explicit observation limits. |
 | [0055](0055-one-change-loop-a-fast-lane-and-batched-releases.md) | One session runs the change loop with builder and reviewer subagents; a fast lane without a design for rustdoc, tests and internal refactors; landing pushes `main` and a batch of landed changes is released together, with E2E at the release. |
+| [0056](0056-shared-external-resource-crates.md) | A layer for an external resource that two or more consumers need may live in an optional crate of the workspace (`cicada-containers`); the core and the other crates never depend on it. Supersedes in part 0011. |
 
 ## Design questions
 

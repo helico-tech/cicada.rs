@@ -4,7 +4,8 @@ Date: 2026-11-09
 
 ## Status
 
-Accepted. Supersedes 0005, 0006 and 0007
+Accepted. Supersedes 0005, 0006 and 0007. Partly superseded by [ADR 0056](0056-shared-external-resource-crates.md):
+no container handles.
 
 ## Context
 
