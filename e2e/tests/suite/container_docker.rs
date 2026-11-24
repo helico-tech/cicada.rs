@@ -1,13 +1,14 @@
 //! `DockerRuntime` of `cicada-containers` against the real daemon: the repeat rules, the status and error mappings,
-//! `copy_in`, the pull, the hardening and the sweep. Everything it makes is named `cicada-rs-e2e-ctr-*` and carries
+//! `copy_in`, the log pages, the pull, the hardening and the sweep. Everything it makes is named `cicada-rs-e2e-ctr-*` and carries
 //! `CONTAINER_LABEL`; the hooks sweep that label, and the suite's teardown removes it after a panic or Ctrl-C.
 
 use std::sync::OnceLock;
 use std::time::Duration;
 
 use cicada_containers::{
-    ContainerError, ContainerRuntime, ContainerSpec, ContainerStatus, CopyFile, DockerRuntime, ErrorKind, Label, Mount,
-    MountKind, NetworkAttachment, NetworkSpec, Networking, Resource, Tmpfs, VolumeSpec,
+    ContainerError, ContainerRuntime, ContainerSpec, ContainerStatus, CopyFile, DockerRuntime, ErrorKind, Label,
+    LogCursor, LogLine, LogStream, Mount, MountKind, NetworkAttachment, NetworkSpec, Networking, Resource, Tmpfs,
+    VolumeSpec,
 };
 use cicada_e2e::cluster::eventually;
 use cicada_e2e::docker::{docker, docker_blocking};
@@ -35,6 +36,10 @@ pub fn class() -> Class {
                 step!(an_id_prefix_is_not_a_name),
                 step!(copy_in_writes_before_start_and_conflicts_after),
                 step!(copy_in_on_a_read_only_root_writes_only_to_a_mount),
+                step!(log_pages_give_each_line_once_with_its_stream),
+                step!(a_follower_collects_every_line_of_a_running_container_once),
+                step!(log_pages_of_what_has_no_lines_and_bad_page_sizes),
+                step!(a_log_byte_that_is_not_utf8_is_replaced),
                 step!(out_of_memory_is_failed),
                 step!(a_missing_executable_fails_start_once),
                 step!(an_unknown_tag_is_image_not_found),
@@ -263,6 +268,107 @@ async fn copy_in_on_a_read_only_root_writes_only_to_a_mount() {
     assert!(logs.starts_with("on the volume\n"), "{logs}");
     assert!(logs.contains("No such file"), "nothing written to the root: {logs}");
     assert!(!logs.contains("x written"), "nothing written with the mount target: {logs}");
+    runtime().remove(&spec.name).await.unwrap();
+}
+
+/// Every line of `name` from the start, in pages of `max_lines`, until a page has fewer.
+async fn read_to_end(name: &str, max_lines: u32) -> Vec<LogLine> {
+    let mut lines = Vec::new();
+    let mut next = None;
+    loop {
+        let page = runtime().logs_since(name, next, max_lines).await.unwrap();
+        let short = page.lines.len() < max_lines as usize;
+        lines.extend(page.lines);
+        next = Some(page.next);
+        if short {
+            return lines;
+        }
+    }
+}
+
+fn texts(lines: &[LogLine], stream: LogStream) -> Vec<&str> {
+    lines.iter().filter(|line| line.stream == stream).map(|line| line.text.as_str()).collect()
+}
+
+async fn log_pages_give_each_line_once_with_its_stream() {
+    let script =
+        r#"for i in $(seq 1 50); do if [ $((i % 2)) = 0 ]; then echo "out $i"; else echo "err $i" >&2; fi; done"#;
+    let spec = spec("log-pages", script);
+    runtime().create(&spec).await.unwrap();
+    runtime().start(&spec.name).await.unwrap();
+    assert_eq!(ended(&spec.name).await, ContainerStatus::Exited { code: 0 });
+
+    let paged = read_to_end(&spec.name, 7).await;
+    assert_eq!(paged.len(), 50, "{paged:?}");
+    let outs: Vec<String> = (1..=50).filter(|i| i % 2 == 0).map(|i| format!("out {i}")).collect();
+    let errs: Vec<String> = (1..=50).filter(|i| i % 2 == 1).map(|i| format!("err {i}")).collect();
+    assert_eq!(texts(&paged, LogStream::Out), outs);
+    assert_eq!(texts(&paged, LogStream::Err), errs);
+    // Pages of 7 give the lines of one whole read, in its log order.
+    let whole = runtime().logs_since(&spec.name, None, 1000).await.unwrap();
+    assert_eq!(paged, whole.lines);
+
+    // The same cursor twice gives the same page, also after a trip through JSON.
+    let first = runtime().logs_since(&spec.name, None, 7).await.unwrap();
+    let again = runtime().logs_since(&spec.name, Some(first.next), 7).await.unwrap();
+    let stored: LogCursor = serde_json::from_str(&serde_json::to_string(&first.next).unwrap()).unwrap();
+    assert_eq!(runtime().logs_since(&spec.name, Some(stored), 7).await.unwrap(), again);
+    assert_eq!(again.lines, whole.lines[7..14]);
+    runtime().remove(&spec.name).await.unwrap();
+}
+
+async fn a_follower_collects_every_line_of_a_running_container_once() {
+    let spec = spec("log-follow", r#"for i in $(seq 1 10); do echo "line $i"; sleep 0.3; done"#);
+    runtime().create(&spec).await.unwrap();
+    runtime().start(&spec.name).await.unwrap();
+    let mut collected = Vec::new();
+    let mut next = None;
+    let mut exited = false;
+    loop {
+        let page = runtime().logs_since(&spec.name, next, 2).await.unwrap();
+        let short = page.lines.len() < 2;
+        if page.lines.is_empty() {
+            assert_eq!(Some(page.next), next.or(Some("0:0".parse().unwrap())), "an empty page keeps the cursor");
+        }
+        collected.extend(page.lines.into_iter().map(|line| line.text));
+        next = Some(page.next);
+        if short && exited {
+            break;
+        }
+        // Once ended, read on until a short page; until then, poll gently.
+        exited = matches!(status(&spec.name).await, ContainerStatus::Exited { .. });
+        if !exited {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+    let expected: Vec<String> = (1..=10).map(|i| format!("line {i}")).collect();
+    assert_eq!(collected, expected);
+    runtime().remove(&spec.name).await.unwrap();
+}
+
+async fn log_pages_of_what_has_no_lines_and_bad_page_sizes() {
+    let missing = name("log-missing");
+    assert_eq!(kind(runtime().logs_since(&missing, None, 5).await), ErrorKind::Conflict);
+    let spec = spec("log-created", "echo never");
+    runtime().create(&spec).await.unwrap();
+    let page = runtime().logs_since(&spec.name, None, 5).await.unwrap();
+    assert!(page.lines.is_empty(), "{page:?}");
+    assert_eq!(page.next, "0:0".parse().unwrap());
+    for bad in [0, 1001] {
+        assert_eq!(kind(runtime().logs_since(&spec.name, None, bad).await), ErrorKind::InvalidSpec, "{bad}");
+        assert_eq!(kind(runtime().logs_since(&missing, None, bad).await), ErrorKind::InvalidSpec, "{bad}");
+    }
+    runtime().remove(&spec.name).await.unwrap();
+}
+
+async fn a_log_byte_that_is_not_utf8_is_replaced() {
+    let spec = spec("log-utf8", r"printf '\377\n'");
+    runtime().create(&spec).await.unwrap();
+    runtime().start(&spec.name).await.unwrap();
+    assert_eq!(ended(&spec.name).await, ContainerStatus::Exited { code: 0 });
+    let page = runtime().logs_since(&spec.name, None, 10).await.unwrap();
+    let lines: Vec<(LogStream, &str)> = page.lines.iter().map(|line| (line.stream, line.text.as_str())).collect();
+    assert_eq!(lines, [(LogStream::Out, "\u{fffd}")]);
     runtime().remove(&spec.name).await.unwrap();
 }
 

@@ -32,7 +32,7 @@ Version). Builds on `container-consistency`, which must have landed first. Follo
   a time); feed the pager and drop the stream once the page is full. A cursor whose second does not fit an `i32`
   fails with `Other`. Verify: unit tests of the frame parser (out and err, nanoseconds, a missing newline, a byte
   that is not UTF-8, no time) and of the `i32` check; `cargo test -p cicada-containers --all-features`.
-- [ ] 4. **E2E, changelog and docs handoff.** In `e2e/tests/suite/container_docker.rs`, the cases of the design's
+- [x] 4. **E2E, changelog and docs handoff.** In `e2e/tests/suite/container_docker.rs`, the cases of the design's
   Tests section: pages of 7 through 50 lines on both streams in one second; a follower polling a container that
   prints across several seconds; the same cursor twice; a missing container (`Conflict`), `max_lines` 0 and 1001
   (`InvalidSpec`) and a created container (empty page); a byte that is not UTF-8. The 0.20.9 section of

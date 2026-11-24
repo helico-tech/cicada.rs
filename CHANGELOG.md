@@ -10,8 +10,29 @@ moves: a correction is a new version.
 ## 0.20.9 — unreleased
 
 The fake and the Docker backend of `cicada-containers` give the same answers, so a host's tests on `FakeRuntime`
-predict Docker. No new method, field or error kind; the actor contracts, wire formats, the store schema and the
-guarantees are those of 0.20.8.
+predict Docker, and a host can follow a container's log in pages while it runs. Additive: the actor contracts, wire
+formats, the store schema and the guarantees are those of 0.20.8.
+
+### Added
+
+- `cicada-containers`: `ContainerRuntime::logs_since(name, cursor, max_lines)` reads a container's log in pages, for a
+  host that follows a run's output and keeps it outside the container; call it outside actor turns. A `LogPage` holds
+  up to `max_lines` `LogLine`s (`time`, `stream`: `LogStream::Out` or `Err`, and `text` as lossy UTF-8 without the
+  newline) and `next`, the `LogCursor` to call again with; `None` reads from the first line. Paging to the end gives
+  every line once, in log order, also when several lines share a second or are out of time order within one; a page
+  with fewer than `max_lines` lines has read everything there is now, and an empty page keeps the cursor. `LogCursor`
+  is opaque: written and read as a string by `Display`, `FromStr` and serde, with a string JSON schema; its form is
+  kept across 0.20 patches and a string that is not a cursor is `InvalidSpec`. `max_lines` outside 1 to
+  `LOG_PAGE_MAX` (1000) is `InvalidSpec` before any read; a missing container is `Conflict`, a created one gives an
+  empty page, and a log Docker cannot read (log driver `none`) is `Other`. The method has a default that fails with
+  `Other`, so a runtime written outside this repo compiles unchanged. Docker reads with timestamps from the cursor's
+  second and drops lines stamped before it whatever its filter let through; limits: a line stamped before the
+  cursor's second but written after the cursor is missed, each read scans the log from that second (poll every few
+  seconds), rotation of that second shifts the cursor, a line over 16 KiB comes back in parts, and a cursor after
+  January 2038 is `Other`. The fake's `push_log(name, LogLine)` adds timed lines; `set_logs` now gives `Out` lines at
+  the Unix epoch, which `logs` and `logs_since` both read; `Call::LogsSince` and `Method::LogsSince` record and script
+  the call. Covered by the unit tests in `src/logs.rs`, `src/fake.rs` and `src/docker/map.rs`, and by
+  `ContainerDockerTest` in `e2e/tests/suite/container_docker.rs`.
 
 ### Fixed
 
