@@ -30,19 +30,14 @@ A coordinator actor per run that:
 - starts ready jobs up to an in-flight limit, and records each attempt;
 - takes an explicit result from a worker for a running attempt, marks the job succeeded or failed, and starts the jobs
   that became ready;
-- reports the run's end to a target when every job has a result.
+- reports the run's end to a target when no job runs and none can start.
 
-To decide in the design:
-
-- A new crate `cicada-jobs`, or a module in `cicada-actors`.
-- What a job is: a child actor of a type the host gives (as in brood), a message to a target, or a flow.
-- How a worker reports, and how an attempt is named so that `job-graph-retry` can refuse a late result.
-- What the coordinator keeps per job, so a console can show each one.
+The decisions are in [design.md](design.md) (ADR 0059).
 
 ## Out of scope
 
-Cancel, failure notices and skipped dependents (`job-graph-cancel`). Retry of one job and refusing a late result
-(`job-graph-retry`). Capacity from `capacity-permits`: a later proposal if a consumer needs it. A graph that changes while it runs. Scheduling across several graphs beyond what `capacity-permits` gives. Moving
+Cancel, failure notices and skipped dependents (`job-graph-cancel`). Retry of one job (`job-graph-retry`); this change
+already refuses a result that does not name the job's current attempt. Capacity from `capacity-permits`: a later proposal if a consumer needs it. A graph that changes while it runs. Scheduling across several graphs beyond what `capacity-permits` gives. Moving
 brood or the factory onto it. A YAML or other file format: the host parses its own format into the graph.
 
 ## Order
@@ -51,5 +46,5 @@ After `capacity-permits`, before `job-graph-cancel`.
 
 ## Impact
 
-A new crate or module and its tests; new contracts in `docs/reference/contracts`. An ADR. Additive. The docs handoff
+A module of `cicada-actors` and its tests; new contracts in `docs/reference/contracts`. An ADR. Additive. The docs handoff
 carries a guide section, a pattern for the design guide and a skill route. Link the result in issue #2.

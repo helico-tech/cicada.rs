@@ -63,6 +63,7 @@ accepted ADR is not rewritten: a later one supersedes it. A change that makes a 
 | [0056](0056-shared-external-resource-crates.md) | A layer for an external resource that two or more consumers need may live in an optional crate of the workspace (`cicada-containers`); the core and the other crates never depend on it. Supersedes in part 0011. |
 | [0057](0057-a-reconciled-container-actor.md) | A ready-made container actor in `cicada-containers`, under a host-chosen type name, reconciles one armed poll at a time toward a goal, finds its container by a name made from its key, reports its end before removal and leaves placement to the host (ADR 0052). |
 | [0058](0058-a-ready-made-permit-pool.md) | A ready-made permit pool, `cicada.permits`, with its capacity in the state, one permit per `Acquire` keyed by a request ID, FIFO grants fenced by a number that only goes up, release only by an explicit `Release` with that number or when a grant notice fails before it was delivered, and notices outside an `Acquire` sent in a turn of their own. |
+| [0059](0059-a-ready-made-job-graph.md) | A ready-made job graph, `cicada.job-graph`, one run per actor with the graph as its state, refused at the create for a cycle, an unknown need or out of bounds; jobs are messages to a target per job, sent in turns of their own up to an in-flight limit, with numbered attempts; only a result for the current attempt is taken; a failed job blocks its dependents, and the end is reported to a target. |
 
 ## Design questions
 

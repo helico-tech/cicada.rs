@@ -19,11 +19,16 @@ Issue #2 (higher-level actors) asks for the coordinator to own cancellation and 
 
 Retry (`job-graph-retry`). A graph that changes while it runs. Capacity across runs.
 
+Telling work the worker handed on: cancel tells only the job's own target (its `to`); a worker that hands work on
+passes the cancel along itself.
+
 ## Order
 
 After `job-graph`, before `job-graph-retry`.
 
 ## Impact
 
-The coordinator of `job-graph` and its tests and contract. Additive within the unreleased or next patch version. The
-docs handoff extends the guide section of `job-graph`.
+The coordinator of `job-graph` and its tests and contract. Telling a running worker to cancel needs a cancel message
+type per job, a new field of the job. The statuses `skipped` and `cancelled` are already in `job-graph`'s contract, so
+the end report's contract does not change. Additive within the unreleased or next patch version. The docs handoff
+extends the guide section of `job-graph`.
