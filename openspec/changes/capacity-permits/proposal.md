@@ -21,26 +21,18 @@ Issue #2 adds two rules the factory gets from its fresh run keys:
 
 ## What Changes
 
-- A ready-made permit pool in `cicada-actors`, one actor per pool, under a fixed type name (for example
-  `cicada.permits`).
+- A ready-made permit pool in `cicada-actors`, one actor per pool, under the fixed type name `cicada.permits`.
 - Messages: `Acquire` (a request ID and the target to tell), `Release` (the request ID, and the grant it releases),
-  `Cancel` (leave the queue), and `Audit`.
+  `Cancel` (leave the queue), `Resize` (change the capacity) and `Audit`.
 - State: the capacity, the grants keyed by request ID with a grant number that only goes up, and a bounded FIFO
   queue. A full queue refuses an `Acquire` and says so.
-- A grant is a stored message sent to the requester's target, in the commit that made room.
+- A grant is a notice sent to the requester's target: in the `Acquire`'s commit when there is room, otherwise in a
+  turn of its own right after the commit that made room (design decision 7).
 - Its contract is checked like the other ready-made actors' (`docs/reference/contracts`).
 - Tests on virtual time with `TestActors`: a repeated acquire, a stale release, cancel while waiting, a full queue,
   FIFO order, and an audit that frees a slot only on a confirmed stop.
 
-To decide in the design:
-
-- Where the capacity lives: in the state (an operator can change it with a message) or in the host's configuration,
-  as the factory does so that a change needs no migration.
-- How a grant is fenced: a number that only goes up, carried by the holder to the resource, or only checked by
-  `Release`.
-- What `Audit` asks and what answer frees a slot: a message to each holder's target, or a check the host supplies.
-- The queue bound and what a refused `Acquire` returns.
-- Whether a holder may ask for more than one permit at a time. Probably not in this change.
+The decisions on the open questions are in [design.md](design.md).
 
 ## Out of scope
 
