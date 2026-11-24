@@ -457,10 +457,10 @@ async fn a_start_with_a_message_type_out_of_bounds_is_refused_and_saves_nothing(
     assert_eq!((state.phase, state.target.unwrap().message_type.as_str()), (Phase::Started, "Ended"));
 }
 
-/// Any success resets the errors in a row: an inspect that works after failed ones leaves a failed log read room to
-/// be tried again, so the end gets the logs.
+/// Errors reset only when a whole step completes: logs that never can be read count on every poll, and at the limit
+/// the end is saved with `(no logs: …)`.
 #[tokio::test(start_paused = true)]
-async fn a_successful_inspect_resets_the_errors_before_the_log_read() {
+async fn logs_that_always_fail_end_at_the_limit_without_logs() {
     let fake = FakeRuntime::new();
     let mut settings = settings();
     settings.max_errors = 3;
@@ -468,19 +468,45 @@ async fn a_successful_inspect_resets_the_errors_before_the_log_read() {
     let job = container(&test, "j1", "alpine:3").await;
     test.send(&job, start()).await;
     test.run_until_idle().await;
-    fake.fail_next(Method::Inspect, ErrorKind::DaemonUnavailable);
-    fake.fail_next(Method::Inspect, ErrorKind::DaemonUnavailable);
-    fake.fail_next(Method::Logs, ErrorKind::DaemonUnavailable);
-    fake.set_logs("app-j1", "done");
-    fake.exit_with("app-j1", ContainerStatus::Exited { code: 0 });
+    fake.fail_always(Method::Logs, ErrorKind::DaemonUnavailable);
+    fake.exit_with("app-j1", ContainerStatus::Exited { code: 2 });
     test.advance_time_by(6 * SECOND).await;
-    assert_eq!(test.state::<_, State>(&job).await.errors, 2, "two failed inspects");
+    assert_eq!(test.state::<_, State>(&job).await.errors, 2, "the inspects do not reset the count");
     test.advance_time_by(8 * SECOND).await;
     let state: State = test.state(&job).await;
-    assert_eq!((state.errors, state.end.is_none()), (1, true), "the inspect reset the count; the log read failed once");
-    test.advance_time_by(60 * SECOND).await;
-    let end = test.state::<_, State>(&job).await.end.unwrap();
-    assert_eq!((end.outcome, end.logs.as_str()), (Outcome::Exited, "done\n"));
+    let end = state.end.unwrap();
+    assert_eq!((end.outcome, end.code), (Outcome::Exited, Some(2)));
+    assert!(end.logs.starts_with("(no logs: daemon unavailable"), "{}", end.logs);
+    assert_eq!((state.errors, state.armed), (0, None));
+    assert_eq!(ends(&test).await.len(), 1);
+}
+
+/// A started container the runtime reports as created, whose start always fails, ends `failed` at the limit.
+#[tokio::test(start_paused = true)]
+async fn a_created_container_whose_start_always_fails_ends_failed_at_the_limit() {
+    let fake = FakeRuntime::new();
+    fake.create(&ContainerSpec::new("app-j1", "alpine:3")).await.unwrap();
+    fake.fail_always(Method::Start, ErrorKind::Other);
+    let mut settings = settings();
+    settings.max_errors = 3;
+    let test = harness(&fake, settings).await;
+    let job = Container::<TestJob>::named("j1");
+    let mut state = ContainerState::new(Run { image: "alpine:3".into() });
+    state.goal = Some(Goal::Run);
+    state.phase = Phase::Started;
+    test.create(&job, &state).await;
+    test.send(&job, ContainerMsg::Check).await;
+    test.run_until_idle().await;
+    assert_eq!(test.state::<_, State>(&job).await.errors, 1);
+    test.advance_time_by(4 * SECOND).await;
+    assert_eq!(test.state::<_, State>(&job).await.errors, 2, "the inspects do not reset the count");
+    test.advance_time_by(8 * SECOND).await;
+    let state: State = test.state(&job).await;
+    let end = state.end.unwrap();
+    assert_eq!(end.outcome, Outcome::Failed);
+    assert!(end.reason.contains("3 times in a row"), "{}", end.reason);
+    assert_eq!(methods(&fake).iter().filter(|m| **m == "start").count(), 3);
+    assert_eq!(fake.inspect("app-j1").await.unwrap(), ContainerStatus::Created);
 }
 
 /// Scenario: A purged poll comes back on `Check`, and the container is followed to its end.

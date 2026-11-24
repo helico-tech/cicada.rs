@@ -396,7 +396,6 @@ impl<J: ContainerJob> ContainerActor<J> {
             Ok(status) => status,
             Err(e) => return self.error(turn, e).await,
         };
-        turn.state_mut().errors = 0;
         match status {
             ContainerStatus::Running | ContainerStatus::Created => {
                 if status == ContainerStatus::Created
@@ -404,6 +403,7 @@ impl<J: ContainerJob> ContainerActor<J> {
                 {
                     return self.error(turn, e).await;
                 }
+                turn.state_mut().errors = 0;
                 let now = turn.current_time();
                 if turn.state().deadline.is_some_and(|deadline| now >= deadline) {
                     turn.state_mut().goal = Some(Goal::Stop);
@@ -435,7 +435,6 @@ impl<J: ContainerJob> ContainerActor<J> {
             Ok(status) => status,
             Err(e) => return self.error(turn, e).await,
         };
-        turn.state_mut().errors = 0;
         if status == ContainerStatus::Missing {
             let reason = "stopped; no container was found".to_owned();
             return self.end(turn, Outcome::Stopped, None, reason, String::new()).await;

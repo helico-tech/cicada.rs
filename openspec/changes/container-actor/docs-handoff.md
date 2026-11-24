@@ -49,12 +49,13 @@ Behaviour:
 - Runtime errors never fail a turn: they count in `errors`, and the next poll waits `min(poll_interval × 2^errors,
   max_backoff)`. At `max_errors` in a row, a container without an end ends `failed` ("the runtime failed N times in a
   row: …"); a removal keeps trying at `max_backoff`. A failed `logs` counts the same; at the limit the end gets
-  `(no logs: …)`. Any success resets `errors`, a successful inspect too, so a log read that fails after failed
-  inspects is tried again.
+  `(no logs: …)`. `errors` resets only when a whole step completes (the container started, followed to its next
+  poll, ended or removed), not after a successful inspect alone: a step whose later call always fails still reaches
+  the limit. So a log read that fails after failed inspects may hit the limit at once and save `(no logs: …)`.
 - Logs: NUL → U+FFFD, the last `log_lines` lines, then the last `log_bytes` bytes on a character boundary. A reason:
   NUL → U+FFFD and its first 1 KiB.
 
-Proved by `crates/cicada-containers/tests/actor.rs` (21 tests on virtual time with `TestActors` and `FakeRuntime`,
+Proved by `crates/cicada-containers/tests/actor.rs` (22 tests on virtual time with `TestActors` and `FakeRuntime`,
 one per spec scenario, plus the contract and samples), the unit tests in `crates/cicada-containers/src/actor/`, and the
 pinned contract `crates/cicada-containers/tests/contracts/test.container.json`. No worked example in `examples/`.
 
@@ -119,6 +120,6 @@ None: no doctest, link, guarantee row or skill route breaks.
 
 ## Status
 
-Ran `cargo test -p cicada-containers` (35 unit, 21 actor tests, 6 doctests), `cargo test -p cicada-examples --test
+Ran `cargo test -p cicada-containers` (35 unit, 22 actor tests, 6 doctests), `cargo test -p cicada-examples --test
 skill`, the resolver's Python tests, and `cargo test -p cicada-examples --test docs`. All prose above is proposed text;
 none of it is written yet.
