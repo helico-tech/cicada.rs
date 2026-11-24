@@ -32,4 +32,5 @@ After `container-logs`, before `container-inputs`.
 
 ## Impact
 
-The trait (an added method), the fake, the Docker backend and its E2E class. A patch.
+The trait (an added method with a default that fails with `Other`, so no implementation outside this repo breaks;
+design decision 9), the fake, the Docker backend and its E2E class. A patch.
