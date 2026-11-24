@@ -42,7 +42,7 @@ brood or the factory onto it. A YAML or other file format: the host parses its o
 
 ## Order
 
-After `capacity-permits`, before `job-graph-cancel`.
+After `capacity-permits`, before `job-graph-failures`.
 
 ## Impact
 
