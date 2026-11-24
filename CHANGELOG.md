@@ -13,7 +13,8 @@ The fake and the Docker backend of `cicada-containers` give the same answers, so
 predict Docker, a host can follow a container's log in pages while it runs, it can copy a run's files out of a
 container within limits, and it can make writable folders in a container before start; a container job gives its
 container folders and files before start, and a time limit per request; a `failed` container end says why in a
-machine-readable `kind`. A breaking release (ADR 0062): `ContainerEnd` gains the public field `kind`, so the contract
+machine-readable `kind`; and a node on PostgreSQL warns at start when its pool is smaller than its concurrency plus 4.
+A breaking release (ADR 0062): `ContainerEnd` gains the public field `kind`, so the contract
 hash of every container job type, and of every target type whose messages take a `ContainerEnded`, changes. Hosts on
 0.20.x follow "Changing a contract" in the operations guide for those types. The store schema, the HTTP API, the
 ready-made actors' contracts and the guarantees are those of 0.20.8.
@@ -122,6 +123,15 @@ ready-made actors' contracts and the guarantees are those of 0.20.8.
   `tests/actor.rs`.
 - `cicada-containers`: a deadline past the largest instant is capped at `MAX_INSTANT`; it used to be dropped, which
   meant no limit. Covered by `tests/actor.rs`.
+- `cicada`: a node that hosts at least one type and starts on PostgreSQL with a pool smaller than its concurrency
+  plus 4 logs one `tracing` warning that names the pool, the concurrency, the number it needs and the settings to
+  change (`PostgresOptions::max_pool_size` or `--store-pool-size` / `CICADA_STORE_POOL_SIZE`, and
+  `NodeConfig::concurrency` or `--concurrency` / `CICADA_CONCURRENCY`), and starts as before. Too small a pool can
+  starve lease renewals under load, and a turn whose renewal comes too late is lost. Only at start; SQLite, the
+  in-memory store and nodes without types never warn; nodes, or a local `Worker`, that share one `Store` are each
+  checked alone, not summed. In `cicada-app` the default pool never warns; a smaller `--store-pool-size` is kept
+  and warns. Covered by the unit test of `pool_warning` in `runtime/system.rs` and by
+  `a_node_warns_at_start_when_its_pool_is_smaller_than_its_concurrency_plus_4` in `src/tests/postgres/runtime.rs`.
 
 ### Changed (breaking)
 

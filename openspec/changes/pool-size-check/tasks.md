@@ -26,7 +26,7 @@ No public API, wire format, schema, guarantee or command-line change; `cicada-ap
   (`#[tokio::test]`, not `multi_thread`): the subscriber sees only its own thread, which works because `start` logs
   the warning before it spawns anything. Verify: `CICADA_PG_URL=postgres://cicada:cicada@localhost:55432/cicada
   cargo test -p cicada --lib tests::postgres`.
-- [ ] 4. **Changelog and docs handoff.** In `CHANGELOG.md` under the unreleased heading, Changed: a node on
+- [x] 4. **Changelog and docs handoff.** In `CHANGELOG.md` under the unreleased heading, Changed: a node on
   PostgreSQL warns at start when its pool is smaller than its concurrency plus 4. `docs-handoff.md` (template in
   `.claude/skills/change-loop/builder.md`) carries the warning, its text and when it fires (start only, nodes that
   host types, PostgreSQL only), and the limit that nodes or a local `Worker` sharing one `Store` are not summed, for:
