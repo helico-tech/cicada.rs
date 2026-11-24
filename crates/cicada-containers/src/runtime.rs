@@ -58,7 +58,8 @@ pub trait ContainerRuntime: Send + Sync + 'static {
     /// Removes every container, then every network, then every volume that carries `label`, and says what it removed
     /// and what it skipped. Best effort: a network or volume still in use, or anything the runtime refuses to remove,
     /// is skipped with its reason and the sweep goes on; only `DaemonUnavailable` ends it with an error, and the next
-    /// sweep finishes the work. `Ok` with nothing removed when nothing carries the label.
+    /// sweep finishes the work. `Ok` with nothing removed when nothing carries the label. The result names only what
+    /// this sweep removed or skipped: something already gone, or a container another caller is removing, is in no list.
     async fn sweep(&self, label: &Label) -> Result<Swept, ContainerError>;
 }
 
@@ -103,15 +104,16 @@ impl ContainerSummary {
     }
 }
 
-/// What a [`sweep`](ContainerRuntime::sweep) removed, per kind, and what it skipped.
+/// What a [`sweep`](ContainerRuntime::sweep) removed, per kind, and what it skipped. Something another caller removed
+/// first, or a container another caller is removing, is in no list.
 #[non_exhaustive]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Swept {
-    /// The names of the removed containers.
+    /// The names of the containers this sweep removed.
     pub containers: Vec<String>,
-    /// The names of the removed networks.
+    /// The names of the networks this sweep removed.
     pub networks: Vec<String>,
-    /// The names of the removed volumes.
+    /// The names of the volumes this sweep removed.
     pub volumes: Vec<String>,
     /// What it left, with the reason.
     pub skipped: Vec<Skipped>,

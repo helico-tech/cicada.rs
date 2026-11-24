@@ -10,7 +10,9 @@ use bollard::models::{
 };
 
 use crate::paths::{MountTarget, Mounted, place};
-use crate::{ContainerError, ContainerSpec, ContainerStatus, CopyFile, ErrorKind, MountKind, Networking, Tmpfs};
+use crate::{
+    ContainerError, ContainerSpec, ContainerStatus, CopyFile, ErrorKind, MountKind, Networking, Resource, Tmpfs,
+};
 
 /// The HTTP status of a refusal by the daemon; `None` for every other error.
 pub(super) fn status_code(error: &DockerError) -> Option<u16> {
@@ -32,6 +34,16 @@ pub(super) fn kind_of(error: &DockerError) -> ErrorKind {
         DockerError::DockerResponseServerError { status_code: 409, .. } => ErrorKind::Conflict,
         DockerError::DockerResponseServerError { status_code: 400, .. } => ErrorKind::InvalidSpec,
         _ => ErrorKind::Other,
+    }
+}
+
+/// Whether a refused remove of a sweep says the `resource` is gone: 404 for every kind, and 409 for a container,
+/// which a forced remove gets only when another caller is removing it already. A volume's 409 means in use.
+pub(super) fn gone(resource: Resource, error: &DockerError) -> bool {
+    match status_code(error) {
+        Some(404) => true,
+        Some(409) => resource == Resource::Container,
+        _ => false,
     }
 }
 
@@ -401,6 +413,16 @@ mod tests {
         assert_eq!(kind_of(&DockerError::UnsupportedURISchemeError { uri: "ssh://h".into() }), ErrorKind::Other);
         let error = fail("start", "job-1", &server(400, "no such executable"));
         assert_eq!(error, ContainerError::new(ErrorKind::InvalidSpec, "start job-1: no such executable"));
+    }
+
+    #[test]
+    fn a_sweep_counts_404_as_gone_and_409_only_for_a_container() {
+        for resource in [Resource::Container, Resource::Network, Resource::Volume] {
+            assert!(gone(resource, &server(404, "no such")), "{resource:?}");
+            assert_eq!(gone(resource, &server(409, "busy")), resource == Resource::Container, "{resource:?}");
+            assert!(!gone(resource, &server(500, "internal")), "{resource:?}");
+            assert!(!gone(resource, &DockerError::RequestTimeoutError), "{resource:?}");
+        }
     }
 
     #[test]

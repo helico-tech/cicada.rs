@@ -17,7 +17,7 @@ and `specs/container-docker/spec.md`. Run the crate's tests with every feature:
   path below it, a volume below a tmpfs, the deepest mount); the fake's tests for an exact target on a read-only and
   a writable root, a tmpfs path on a writable root, `/`, and `/work/./a` then `/work/a` as one file; the map tests
   still pass; `cargo test -p cicada-containers --all-features`.
-- [ ] 2. **A sweep names only what it removed** (decision 2). A pure `map::gone(resource, &error)`: 404 for every
+- [x] 2. **A sweep names only what it removed** (decision 2). A pure `map::gone(resource, &error)`: 404 for every
   kind, 409 for a container only. The three loops of `DockerRuntime::sweep` (`src/docker/mod.rs`) leave a gone item,
   and a container another caller is removing, out of every list; a volume's 409 stays a skip. Update the rustdoc of
   `sweep` and of `Swept`'s lists. Verify: unit tests of `gone` for each kind and 404, 409 and another code;

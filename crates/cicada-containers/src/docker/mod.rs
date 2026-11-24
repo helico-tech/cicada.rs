@@ -382,7 +382,7 @@ impl ContainerRuntime for DockerRuntime {
             let options = RemoveContainerOptionsBuilder::new().force(true).v(true).build();
             match docker.remove_container(&id, Some(options)).await {
                 Ok(()) => swept.containers.push(name),
-                Err(e) if matches!(status_code(&e), Some(404 | 409)) => swept.containers.push(name),
+                Err(e) if map::gone(Resource::Container, &e) => {} // gone, or another caller removes it
                 Err(e) => skip_or_end(&mut swept, Resource::Container, &name, &e)?,
             }
         }
@@ -393,7 +393,7 @@ impl ContainerRuntime for DockerRuntime {
             let (Some(id), Some(name)) = (network.id, network.name) else { continue };
             match docker.remove_network(&id).await {
                 Ok(()) => swept.networks.push(name),
-                Err(e) if status_code(&e) == Some(404) => {}
+                Err(e) if map::gone(Resource::Network, &e) => {}
                 Err(e) => skip_or_end(&mut swept, Resource::Network, &name, &e)?,
             }
         }
@@ -403,7 +403,7 @@ impl ContainerRuntime for DockerRuntime {
         for volume in volumes.volumes.unwrap_or_default() {
             match docker.remove_volume(&volume.name, None::<RemoveVolumeOptions>).await {
                 Ok(()) => swept.volumes.push(volume.name),
-                Err(e) if status_code(&e) == Some(404) => {}
+                Err(e) if map::gone(Resource::Volume, &e) => {}
                 Err(e) => skip_or_end(&mut swept, Resource::Volume, &volume.name, &e)?,
             }
         }
