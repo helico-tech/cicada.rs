@@ -39,11 +39,13 @@ pub trait ContainerRuntime: Send + Sync + 'static {
     /// mode is made once. A repeat makes nothing, as everything exists then: the same end state.
     ///
     /// **Links are followed to a folder.** A symbolic link at a named path or a parent, such as `/var/run -> /run`,
-    /// counts as the folder it points to, up to 8 links in a row; a folder made below it is made at the link's
-    /// target, and the link stays. The path rule below applies to that target too.
+    /// counts as the folder it points to; a folder made below it is made at the link's target, and the link stays.
+    /// The path rule below applies to that target too. The walk of one named folder follows at most 8 links, counting
+    /// every link on its way; one more is `Conflict`. Docker resolves a chain of links itself, so a chain counts as one
+    /// link there, and a link loop fails with `Other` from Docker.
     ///
-    /// Fails, before any write, with `Conflict` for a file, a link to anything but a folder (a missing target too) or
-    /// more than 8 links in a row at a named path or a parent, and for a container that is missing, running or ended.
+    /// Fails, before any write, with `Conflict` for a file or a link to anything but a folder (a missing target too)
+    /// at a named path or a parent, more than 8 links in the walk, and a container that is missing, running or ended.
     /// Fails with `InvalidSpec` for a mode above `0o7777`, one path named twice with two modes, and every path
     /// [`copy_in`](Self::copy_in) refuses: relative, with a `..` part, `/`, a mount target, at or below a tmpfs, on a
     /// read-only mount, and with [`read_only_root`](ContainerSpec::read_only_root) on no volume or bind mount.

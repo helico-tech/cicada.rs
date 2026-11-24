@@ -11,7 +11,8 @@ use crate::{ContainerError, CopyDir, ErrorKind};
 /// The action that starts every message of `make_dirs`.
 pub(crate) const MAKE: &str = "make folders in";
 
-/// The most links the walk of one named folder follows; one more is `Conflict`.
+/// The most links the walk of one named folder follows, counting every link on its way; one more is `Conflict`. A
+/// guard: Docker's stat resolves a chain itself and fails on a loop.
 pub(crate) const MAX_LINKS: usize = 8;
 
 /// The mode of a missing parent that is not named itself.
@@ -322,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn eight_links_in_a_row_are_followed_and_a_ninth_is_a_conflict() {
+    fn eight_links_in_the_walk_are_followed_and_a_ninth_is_a_conflict() {
         let mut entries: Vec<(String, String)> = (1..=8).map(|i| (format!("/l{i}"), format!(">/l{}", i + 1))).collect();
         entries.push(("/l9".into(), "d".into()));
         let tree: HashMap<String, String> = entries.into_iter().collect();

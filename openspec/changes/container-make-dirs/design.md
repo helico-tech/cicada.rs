@@ -74,7 +74,8 @@ The rustdoc of `make_dirs` names each one; the handoff carries them to the guide
 ## Spec deltas
 
 `container-runtime`: *Folders are made only where missing, before start* is added. `container-docker`: *Folders reach
-Docker without touching what exists* is added. No guarantee, wire format, schema or actor contract changes, so no ADR.
+Docker without touching what exists* and *Links on Docker are followed to a folder* are added (the second split out
+by code review 1). No guarantee, wire format, schema or actor contract changes, so no ADR.
 
 ## Tests
 

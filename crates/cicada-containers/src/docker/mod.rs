@@ -54,7 +54,8 @@ const STOP_SLACK: Duration = Duration::from_secs(60);
 ///   writes at or below a tmpfs, which Docker mounts only at start, over the file, and never onto a mount target.
 /// - [`make_dirs`](ContainerRuntime::make_dirs) asks Docker's archive stat for each part of a named folder from the
 ///   root, follows links itself, and uploads a tar of only the missing folders under their paths without links, owned
-///   by uid and gid 0, so no existing folder's owner or mode changes.
+///   by uid and gid 0, so no existing folder's owner or mode changes. Docker's stat answers a link with its target
+///   already resolved, so a chain of links counts as one; a link loop makes the stat fail, and the call with `Other`.
 /// - [`logs_since`](ContainerRuntime::logs_since) reads Docker's log with timestamps from the cursor's second and
 ///   stops once the page is full; a container whose log driver cannot be read (`none`) fails with `Other`.
 /// - [`copy_out`](ContainerRuntime::copy_out) reads Docker's archive of the path as a stream, on a blocking thread of

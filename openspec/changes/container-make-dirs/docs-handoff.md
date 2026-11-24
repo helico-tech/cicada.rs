@@ -16,8 +16,8 @@ runtime.
   record and script the call.
 
 Proved by the unit tests in `crates/cicada-containers/src/dirs.rs` (the named-folder check, the walk: missing parts, a
-file on the way, absolute and relative links, `..` stopping at the root, a link to no folder, eight links and a
-ninth; named modes in either order, the path rule on the folders to make), `src/fake.rs`
+file on the way, absolute and relative links, `..` stopping at the root, a link to no folder, eight links in the walk
+and a ninth; named modes in either order, the path rule on the folders to make), `src/fake.rs`
 (`make_dirs_makes_a_folder_and_its_parents_and_a_repeat_makes_nothing`,
 `an_existing_folder_is_left_alone_and_gets_a_new_child`,
 `a_file_at_the_path_or_a_parent_is_a_conflict_and_nothing_is_made`,
@@ -61,9 +61,11 @@ another mode: `/tmp` keeps 1777, and an image's `/run/postgresql` keeps its owne
 an existing parent. A folder named in `dirs` gets its own mode also when it is a parent of another named folder, in
 any order. The same path named twice with one mode is made once; with two modes it is `InvalidSpec`.
 
-A symbolic link at a named path or a parent counts as the folder it points to, up to 8 links in a row: in
-`postgres:18`, `/var/run` links to `/run`, so `/var/run/app` makes `/run/app` and the link stays. The path rules
-below apply to the link's target.
+A symbolic link at a named path or a parent counts as the folder it points to: in `postgres:18`, `/var/run` links to
+`/run`, so `/var/run/app` makes `/run/app` and the link stays. The path rules below apply to the link's target. The
+walk of one named folder follows at most 8 links, counting every link on its way. Docker resolves a chain of links
+itself (`/tmp/l1 -> l2 -> /tmp` comes back as `/tmp`), so a chain counts as one link there, and a link loop fails with
+`Other` from Docker rather than `Conflict`.
 
 ## 3. Errors and limits
 
@@ -71,7 +73,9 @@ below apply to the link's target.
 **Text.** Every check is done before anything is made, so a refused call makes nothing.
 
 - `Conflict`: a file at a named path or a parent (`/etc/passwd`, or `/etc/passwd/x` below it), a link to anything but
-  a folder (a missing target too), more than 8 links in a row, and a container that is missing, running or ended.
+  a folder (a missing target too), more than 8 links in the walk, and a container that is missing, running or ended.
+- `Other`: on Docker, a link loop at a named path or a parent (Docker's stat fails on it), and Docker's other
+  refusals.
 - `InvalidSpec`: a mode above 0o7777, one path with two modes, and every path `copy_in` refuses: relative, with a `..`
   part, `/`, a volume or bind mount target, at or below a tmpfs, on a read-only mount, and with `read_only_root` a
   path on no volume or bind mount.

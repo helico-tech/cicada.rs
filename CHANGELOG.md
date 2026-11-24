@@ -56,15 +56,17 @@ contracts, wire formats, the store schema and the guarantees are those of 0.20.8
   its mode, each missing parent with 0o755; an existing folder or parent is left exactly as it is, owner and mode
   included, also when named with another mode. A named folder gets its own mode also when it is a parent of another
   named one, in any order; one path named twice with one mode is made once. A symbolic link at a named path or a parent
-  (`/var/run -> /run`) counts as the folder it points to, up to 8 links in a row, and a folder below it is made at the
-  target. Before any write: a file, or a link to anything but a folder, at a named path or a parent is `Conflict`, as is
-  a container that is not `Created`; a mode above 0o7777, one path with two modes, and every path `copy_in` refuses
-  (a mount target, at or below a tmpfs, on a read-only mount, on the read-only root) are `InvalidSpec`. The method has
-  a default that fails with `Other`, so a runtime written outside this repo compiles unchanged. Docker asks its
-  archive stat for each part of the path from the root and uploads a tar of only the missing folders, owned by uid and
-  gid 0, so `/tmp` keeps 1777 and an image's folder keeps its owner. The fake keeps the folders it makes;
-  `Call::MakeDirs` and `Method::MakeDirs` record and script the call. Covered by the unit tests in `src/dirs.rs`,
-  `src/fake.rs` and `src/docker/map.rs`, and by `ContainerDockerTest` in `e2e/tests/suite/container_docker.rs`.
+  (`/var/run -> /run`) counts as the folder it points to, and a folder below it is made at the target; the walk of one
+  folder follows at most 8 links (`Conflict` beyond), and Docker resolves a chain itself, so it counts as one link
+  there, while a link loop fails with `Other` from Docker. Before any write: a file, or a link to anything but a
+  folder, at a named path or a parent is `Conflict`, as is a container that is not `Created`; a mode above 0o7777, one
+  path with two modes, and every path `copy_in` refuses (a mount target, at or below a tmpfs, on a read-only mount, on
+  the read-only root) are `InvalidSpec`. The method has a default that fails with `Other`, so a runtime written
+  outside this repo compiles unchanged. Docker asks its archive stat for each part of the path from the root and
+  uploads a tar of only the missing folders, owned by uid and gid 0, so `/tmp` keeps 1777 and an image's folder keeps
+  its owner. The fake keeps the folders it makes; `Call::MakeDirs` and `Method::MakeDirs` record and script the call.
+  Covered by the unit tests in `src/dirs.rs`, `src/fake.rs` and `src/docker/map.rs`, and by `ContainerDockerTest` in
+  `e2e/tests/suite/container_docker.rs`.
 
 ### Fixed
 
