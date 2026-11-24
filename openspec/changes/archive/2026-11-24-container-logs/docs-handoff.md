@@ -46,13 +46,15 @@ the guide; make it a doctest of `examples/` if it goes in):
 
 ```rust,ignore
 let mut next: Option<LogCursor> = load_cursor(run)?; // None the first time
+let mut seen_end = false;
 loop {
     let page = runtime.logs_since(&name, next, 500).await?;
     store_lines(run, &page.lines, page.next)?; // the lines and the cursor in one write
     next = Some(page.next);
     if page.lines.len() < 500 {
-        if ended(runtime.inspect(&name).await?) { break } // after a short page of an ended container: done
-        tokio::time::sleep(Duration::from_secs(3)).await; // poll gently
+        if seen_end { break } // a short page read after the end was seen: every line is in
+        seen_end = ended(runtime.inspect(&name).await?); // if it ended, read once more before stopping
+        if !seen_end { tokio::time::sleep(Duration::from_secs(3)).await } // poll gently
     }
 }
 ```
@@ -88,8 +90,11 @@ None.
 
 ## Status
 
-`cargo test -p cicada-containers --all-features` (84 unit, 22 and 6 integration tests) and `cargo test -p
+`cargo test -p cicada-containers --all-features` (112 tests: 84 unit, 22 and 6 integration) and `cargo test -p
 cicada-examples --test docs` pass; `ContainerDockerTest` passed against Docker (19 steps); `cargo fmt --all --check`,
 `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` (3347 passed, 0 failed) and
 `openspec validate container-logs --strict` pass. All text above is proposed;
 no guide covers `cicada-containers` yet, so nothing is written in `docs/`.
+
+(The change loop corrected the follower example after the code review: it stops only on a short page read after it
+saw the container end, so lines printed between the last read and the end are not lost.)
