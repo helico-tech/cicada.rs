@@ -12,7 +12,9 @@ the tar and the mount check of `copy_in`) are unit tests that run without Docker
   --all-targets`.
 - [ ] 2. **The other methods.** `start`, `stop`, `remove` (decision 6), `copy_in` (decision 7, the read-only mount
   rule), `inspect` with the status mapping, `logs` and `list` (decision 8), `ensure_network`, `ensure_volume`
-  (decision 9) and `sweep`. Verify: unit tests of the status mapping, the tar and the mount check;
+  (decision 9) and `sweep`. Bring the fake in line where `container-runtime`'s review found it looser than Docker:
+  its `copy_in` also refuses a path with `..` and a path on a read-only mount, and `CopyFile`'s `Debug` shows the path,
+  mode and length, not the contents. Verify: unit tests of the status mapping, the tar and the mount check;
   `cargo test -p cicada-containers --features docker`.
 - [ ] 3. **The Docker test.** The new class in `cicada-e2e` as in the design's test section: every scenario of the spec
   against a real daemon, its label, its sweep before and after, and the cleanup after a panic. Verify:
