@@ -7,6 +7,25 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.20.7 — unreleased
+
+A new optional crate, `cicada-containers`, for applications that run containers. The existing crates, actor contracts,
+wire formats, the store schema and the guarantees are those of 0.20.6.
+
+### Added
+
+- `cicada-containers` (ADR 0056): the `ContainerRuntime` trait, usable as `Arc<dyn ContainerRuntime>`, with `create`,
+  `copy_in`, `start`, `inspect`, `logs`, `stop`, `remove`, `list`, `ensure_network`, `ensure_volume` and `sweep`. Every
+  call is safe to repeat: a container is found by its name, `start` never runs an ended container again, and `stop` and
+  `remove` of a missing one are `Ok`. `ContainerSpec` keeps secret environment apart (its `Debug` shows only the
+  names) and has hardening fields that are off by default. `ContainerStatus` tells a program's exit (`Exited`) from
+  the runtime's failure (`Failed`), and `ContainerError` has one `ErrorKind`, of which only `DaemonUnavailable` is
+  retryable. The feature `testing` adds `FakeRuntime`, an in-memory runtime without timers that scripts exits, logs
+  and failures and records every call. No backend yet: the Docker backend comes with `container-docker`. No other crate
+  of the workspace depends on it, which the gate checks. Covered by the unit tests of the crate.
+- ADR 0056: a layer for an external resource that two consumers need may live in an optional crate of this
+  workspace; it supersedes in part ADR 0011.
+
 ## 0.20.6 — 2026-11-23
 
 A security update of the dependencies. The libraries' behaviour, public signatures, actor contracts, wire formats, the

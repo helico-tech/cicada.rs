@@ -22,7 +22,7 @@ command line. Follow `design.md`; the spec is `specs/container-runtime/spec.md`.
   `cicada-client`, `cicada-otel`, `cicada-actors`, `cicada-app`) has `cicada-containers` in its tree (ADR 0056).
   Verify: `bash scripts/ci/feature-builds.sh`, `bash scripts/ci/dependency-trees.sh`, and the script tests
   `python3 -m unittest discover -s scripts -p 'test_*.py'`.
-- [ ] 4. **Version, changelog and docs handoff.** Set 0.20.7 in every version place, as a patch release does
+- [x] 4. **Version, changelog and docs handoff.** Set 0.20.7 in every version place, as a patch release does
   (`builder.md`), with a `## 0.20.7 — unreleased` changelog section naming the new crate and ADR 0056. Write
   `docs-handoff.md` from "Docs it breaks": nothing blocks; the AGENTS.md map row, `README.md#layers`,
   `docs/how-to/install.md#choose-the-crates` and the crate table of `docs/architecture.md`. Verify:
