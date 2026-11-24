@@ -20,7 +20,7 @@ behaviour is tested on virtual time (`#[tokio::test(start_paused = true)]` with 
   `failed`; `Conflict` inspects again (`Created` ends `failed`, anything else counts an error); `Other` from
   `make_dirs` ends `failed` at once; other errors count. Without inputs the calls stay `create` and `start`. Verify:
   `cargo test -p cicada-containers --all-features`; `cargo clippy -p cicada-containers --all-targets --all-features`.
-- [ ] 3. **Virtual-time tests.** In the actor's tests (`crates/cicada-containers/tests/actor.rs`), one test or more
+- [x] 3. **Virtual-time tests.** In the actor's tests (`crates/cicada-containers/tests/actor.rs`), one test or more
   for every scenario of the spec delta: inputs before start (calls in order, nothing of the inputs in the stored
   state), no inputs, a replayed step after start, inputs that cannot be built (all four cases), a refused input, a
   conflict while copying (still `Created`, and `Missing`), a runtime without `make_dirs` (a fake wrapper that keeps

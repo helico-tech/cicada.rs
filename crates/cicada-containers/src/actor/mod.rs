@@ -275,9 +275,9 @@ fn retry_policy() -> RetryPolicy {
 /// The container actor type of the job `J`, under `J::TYPE`, with its runtime and settings.
 ///
 /// Each poll takes one step for its goal and phase: for run, a new container is built by the job's spec, created, given
-/// the job's inputs and started, and a started one is inspected until it ends (started again while created, stopped at its deadline); for
-/// stop or remove before the end, it is stopped and inspected, and ends `stopped`, or `timedOut` past its deadline; for
-/// remove after the end, it is removed. `ImageNotFound` and `InvalidSpec` from `create` end it `failed` at once. Any
+/// the job's inputs and started, and a started one is inspected until it ends (started again while created, stopped
+/// at its deadline); for stop or remove before the end, it is stopped and inspected, and ends `stopped`, or `timedOut`
+/// past its deadline; for remove after the end, it is removed. `ImageNotFound` and `InvalidSpec` from `create` end it `failed` at once. Any
 /// other runtime error counts in a row and delays the next poll by the interval doubled per error, up to the maximum;
 /// at the maximum errors in a row a container without an end ends `failed`.
 ///

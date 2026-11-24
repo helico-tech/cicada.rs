@@ -5,7 +5,10 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
+
+use async_trait::async_trait;
 
 use cicada::actor::contract_of;
 use cicada::contract::Contract;
@@ -13,8 +16,9 @@ use cicada::prelude::*;
 use cicada::time::{self, Timestamp};
 use cicada_axum::{assert_message_sample, assert_state_sample};
 use cicada_containers::{
-    Call, Container, ContainerActor, ContainerEnded, ContainerJob, ContainerMsg, ContainerRuntime, ContainerSettings,
-    ContainerSpec, ContainerState, ContainerStatus, ErrorKind, FakeRuntime, Goal, Label, Method, Outcome, Phase,
+    Call, Container, ContainerActor, ContainerEnded, ContainerError, ContainerJob, ContainerMsg, ContainerRuntime,
+    ContainerSettings, ContainerSpec, ContainerState, ContainerStatus, ContainerSummary, CopyDir, CopyFile, ErrorKind,
+    FakeRuntime, Goal, Inputs, Label, Method, NetworkSpec, Outcome, Phase, Swept, VolumeSpec,
 };
 use cicada_test::{TestActors, UPDATE_CONTRACTS_ENV, describe_changes};
 use serde::{Deserialize, Serialize};
@@ -31,8 +35,18 @@ struct Run {
     image: String,
 }
 
-/// The test job: builds a spec with a secret and a label from the request.
-struct TestJob;
+/// The test job: builds a spec with a secret and a label from the request, and gives its inputs.
+struct TestJob {
+    /// What `inputs` returns.
+    inputs: Result<Inputs, String>,
+}
+
+impl TestJob {
+    /// The job without inputs.
+    fn plain() -> Self {
+        Self { inputs: Ok(Inputs::default()) }
+    }
+}
 
 impl ContainerJob for TestJob {
     const TYPE: &'static str = "test.container";
@@ -46,6 +60,10 @@ impl ContainerJob for TestJob {
         spec.secret_env.insert("TOKEN".into(), SECRET.into());
         spec.labels.insert("made".into(), "actor".into());
         Ok(spec)
+    }
+
+    fn inputs(&self, _: &str, _: &Run) -> Result<Inputs, String> {
+        self.inputs.clone()
     }
 }
 
@@ -94,9 +112,13 @@ fn settings() -> ContainerSettings {
 
 /// A node that hosts the test job on `fake` with `settings`, and the target, which exists.
 async fn harness(fake: &FakeRuntime, settings: ContainerSettings) -> TestActors {
-    let runtime: Arc<dyn ContainerRuntime> = Arc::new(fake.clone());
+    harness_on(Arc::new(fake.clone()), settings, TestJob::plain()).await
+}
+
+/// A node that hosts `job` on `runtime` with `settings`, and the target, which exists.
+async fn harness_on(runtime: Arc<dyn ContainerRuntime>, settings: ContainerSettings, job: TestJob) -> TestActors {
     let test = TestActors::builder()
-        .with(move |node| node.host(ContainerActor::new(TestJob, runtime, settings)).host(WatcherActor))
+        .with(move |node| node.host(ContainerActor::new(job, runtime, settings)).host(WatcherActor))
         .build()
         .await
         .unwrap();
@@ -125,6 +147,8 @@ fn methods(fake: &FakeRuntime) -> Vec<&'static str> {
         .iter()
         .map(|call| match call {
             Call::Create(_) => "create",
+            Call::MakeDirs { .. } => "make_dirs",
+            Call::CopyIn { .. } => "copy_in",
             Call::Start(_) => "start",
             Call::Inspect(_) => "inspect",
             Call::Logs { .. } => "logs",
@@ -566,6 +590,269 @@ async fn a_nul_in_the_logs_is_stored_as_the_replacement_character_within_the_cap
     let logs = test.state::<_, State>(&job).await.end.unwrap().logs;
     assert_eq!(logs, "xxx\nend\u{FFFD}of it\n", "the last line whole, then the last 16 bytes");
     assert!(logs.len() <= 16);
+}
+
+/// Writes the runtime of `$ty`, a wrapper of the fake in its field `fake`, with every method but `inspect` and
+/// `make_dirs` passed to the fake, and the methods given in braces.
+macro_rules! wrapper {
+    ($ty:ty { $($methods:tt)* }) => {
+        #[async_trait]
+        impl ContainerRuntime for $ty {
+            async fn create(&self, spec: &ContainerSpec) -> Result<(), ContainerError> {
+                self.fake.create(spec).await
+            }
+            async fn copy_in(&self, name: &str, files: &[CopyFile]) -> Result<(), ContainerError> {
+                self.fake.copy_in(name, files).await
+            }
+            async fn start(&self, name: &str) -> Result<(), ContainerError> {
+                self.fake.start(name).await
+            }
+            async fn logs(&self, name: &str, tail_lines: u32) -> Result<String, ContainerError> {
+                self.fake.logs(name, tail_lines).await
+            }
+            async fn stop(&self, name: &str, grace: Duration) -> Result<(), ContainerError> {
+                self.fake.stop(name, grace).await
+            }
+            async fn remove(&self, name: &str) -> Result<(), ContainerError> {
+                self.fake.remove(name).await
+            }
+            async fn list(&self, label: &Label) -> Result<Vec<ContainerSummary>, ContainerError> {
+                self.fake.list(label).await
+            }
+            async fn ensure_network(&self, spec: &NetworkSpec) -> Result<(), ContainerError> {
+                self.fake.ensure_network(spec).await
+            }
+            async fn ensure_volume(&self, spec: &VolumeSpec) -> Result<(), ContainerError> {
+                self.fake.ensure_volume(spec).await
+            }
+            async fn sweep(&self, label: &Label) -> Result<Swept, ContainerError> {
+                self.fake.sweep(label).await
+            }
+            $($methods)*
+        }
+    };
+}
+
+/// A host's runtime written before `make_dirs`: the fake, with the trait's default `make_dirs`, which fails with
+/// `Other`.
+struct Older {
+    fake: FakeRuntime,
+}
+
+wrapper!(Older {
+    async fn inspect(&self, name: &str) -> Result<ContainerStatus, ContainerError> {
+        self.fake.inspect(name).await
+    }
+});
+
+/// The fake, where someone else removes the container once, just before the `at`-th inspect (from 1).
+struct Removing {
+    fake: FakeRuntime,
+    at: usize,
+    inspects: AtomicUsize,
+}
+
+impl Removing {
+    /// The runtime of `fake`, which removes the container before the `at`-th inspect.
+    fn runtime(fake: &FakeRuntime, at: usize) -> Arc<dyn ContainerRuntime> {
+        Arc::new(Self { fake: fake.clone(), at, inspects: Default::default() })
+    }
+}
+
+wrapper!(Removing {
+    async fn inspect(&self, name: &str) -> Result<ContainerStatus, ContainerError> {
+        if self.inspects.fetch_add(1, Ordering::SeqCst) + 1 == self.at {
+            self.fake.remove(name).await?;
+        }
+        self.fake.inspect(name).await
+    }
+    async fn make_dirs(&self, name: &str, dirs: &[CopyDir]) -> Result<(), ContainerError> {
+        self.fake.make_dirs(name, dirs).await
+    }
+});
+
+/// The folder `/out` at `0o777` and the file `/in/config.json`, which holds the secret.
+fn out_and_config() -> Inputs {
+    let mut inputs = Inputs::default();
+    let mut out = CopyDir::new("/out");
+    out.mode = 0o777;
+    inputs.dirs.push(out);
+    inputs.files.push(CopyFile::new("/in/config.json", SECRET));
+    inputs
+}
+
+/// The test job with `inputs`.
+fn with(inputs: Result<Inputs, String>) -> TestJob {
+    TestJob { inputs }
+}
+
+/// A started container of the job `j1` with `inputs` on `runtime`, after its first poll.
+async fn started_with(runtime: Arc<dyn ContainerRuntime>, inputs: Inputs) -> (TestActors, Container<TestJob>) {
+    let test = harness_on(runtime, settings(), with(Ok(inputs))).await;
+    let job = container(&test, "j1", "alpine:3").await;
+    test.send(&job, start()).await;
+    test.run_until_idle().await;
+    (test, job)
+}
+
+/// Scenario: Inputs before start: the folders, then the files, then the start; the state holds none of them.
+#[tokio::test(start_paused = true)]
+async fn inputs_are_made_and_written_between_create_and_start_and_never_stored() {
+    let fake = FakeRuntime::new();
+    let (test, job) = started_with(Arc::new(fake.clone()), out_and_config()).await;
+    assert_eq!(methods(&fake), ["create", "inspect", "make_dirs", "copy_in", "start"]);
+    let calls = fake.calls();
+    assert_eq!(calls[2], Call::MakeDirs { name: "app-j1".into(), dirs: out_and_config().dirs });
+    assert_eq!(calls[3], Call::CopyIn { name: "app-j1".into(), files: out_and_config().files });
+    assert_eq!(fake.inspect("app-j1").await.unwrap(), ContainerStatus::Running);
+    let state: State = test.state(&job).await;
+    assert_eq!((state.phase, state.errors), (Phase::Started, 0));
+    let stored = test.state_json(&job).await.unwrap().to_string();
+    assert!(!stored.contains(SECRET) && !stored.contains("/out") && !stored.contains("config.json"), "{stored}");
+}
+
+/// Scenario: No inputs: only `create` and `start`, as before.
+#[tokio::test(start_paused = true)]
+async fn a_job_without_inputs_only_creates_and_starts() {
+    let fake = FakeRuntime::new();
+    let (test, job) = started_with(Arc::new(fake.clone()), Inputs::default()).await;
+    assert_eq!(methods(&fake), ["create", "start"]);
+    assert_eq!(test.state::<_, State>(&job).await.phase, Phase::Started);
+}
+
+/// Scenario: A replayed step after start: the running container keeps what it has, and runs once.
+#[tokio::test(start_paused = true)]
+async fn a_replayed_step_after_the_start_puts_no_inputs_in() {
+    let fake = FakeRuntime::new();
+    fake.create(&ContainerSpec::new("app-j1", "alpine:3")).await.unwrap();
+    fake.start("app-j1").await.unwrap();
+    let (test, job) = started_with(Arc::new(fake.clone()), out_and_config()).await;
+    assert_eq!(methods(&fake)[2..], ["create", "inspect", "start"], "no make_dirs or copy_in");
+    assert_eq!(fake.inspect("app-j1").await.unwrap(), ContainerStatus::Running);
+    assert_eq!(test.state::<_, State>(&job).await.phase, Phase::Started);
+}
+
+/// Scenario: Inputs that cannot be built: an `Err`, a file at a folder, at a folder's parent, at `/out/.`, and a path
+/// the shared rule refuses each end the container `failed` with no runtime call.
+#[tokio::test(start_paused = true)]
+async fn inputs_that_cannot_be_built_end_failed_before_the_create() {
+    let both = |dir: &str, file: &str| {
+        let mut inputs = Inputs::default();
+        inputs.dirs.push(CopyDir::new(dir));
+        inputs.files.push(CopyFile::new(file, "x"));
+        Ok(inputs)
+    };
+    let cases = [
+        (Err("no config today".to_owned()), "no config today"),
+        (both("/out", "/out"), "the file /out is at or above the folder /out:"),
+        (both("/a/b", "/a"), "the file /a is at or above the folder /a/b:"),
+        (both("/out/.", "/out"), "the file /out is at or above the folder /out/.:"),
+        (both("/out", "in/x"), "invalid spec: copy into app-j1: relative path in/x"),
+    ];
+    for (inputs, reason) in cases {
+        let fake = FakeRuntime::new();
+        let test = harness_on(Arc::new(fake.clone()), settings(), with(inputs)).await;
+        let job = container(&test, "j1", "alpine:3").await;
+        test.send(&job, start()).await;
+        test.run_until_idle().await;
+        let state: State = test.state(&job).await;
+        let end = state.end.unwrap();
+        assert_eq!(end.outcome, Outcome::Failed);
+        assert!(end.reason.starts_with(reason), "{reason}: {}", end.reason);
+        assert_eq!((state.errors, state.armed), (0, None));
+        assert!(fake.calls().is_empty(), "{reason}: {:?}", fake.calls());
+        assert_eq!(ends(&test).await.len(), 1);
+    }
+}
+
+/// Scenario: A refused input: `InvalidSpec` from `copy_in` ends the container `failed`, and it is not started.
+#[tokio::test(start_paused = true)]
+async fn an_input_the_runtime_refuses_ends_failed_without_a_start() {
+    let fake = FakeRuntime::new();
+    fake.fail_next(Method::CopyIn, ErrorKind::InvalidSpec);
+    let (test, job) = started_with(Arc::new(fake.clone()), out_and_config()).await;
+    let state: State = test.state(&job).await;
+    let end = state.end.unwrap();
+    assert_eq!(end.outcome, Outcome::Failed);
+    assert!(end.reason.starts_with("invalid spec: scripted failure of CopyIn"), "{}", end.reason);
+    assert_eq!((state.errors, state.armed), (0, None), "no backoff");
+    test.advance_time_by(120 * SECOND).await;
+    assert_eq!(methods(&fake), ["create", "inspect", "make_dirs", "copy_in"], "no start, no retry");
+    assert_eq!(fake.inspect("app-j1").await.unwrap(), ContainerStatus::Created, "kept until Remove");
+}
+
+/// Scenario: A conflict while copying, while the container is still `Created`: the job's mistake.
+#[tokio::test(start_paused = true)]
+async fn a_conflict_while_the_container_is_still_created_ends_failed() {
+    let fake = FakeRuntime::new();
+    fake.fail_next(Method::MakeDirs, ErrorKind::Conflict);
+    let (test, job) = started_with(Arc::new(fake.clone()), out_and_config()).await;
+    let state: State = test.state(&job).await;
+    let end = state.end.unwrap();
+    assert_eq!(end.outcome, Outcome::Failed);
+    assert!(end.reason.starts_with("conflict: scripted failure of MakeDirs"), "{}", end.reason);
+    assert_eq!((state.errors, state.armed), (0, None));
+    assert_eq!(methods(&fake), ["create", "inspect", "make_dirs", "inspect"], "inspected again");
+}
+
+/// Scenario: A conflict while copying, with the container gone at the new inspect: an error that backs off, and the
+/// next poll creates the container again, puts the inputs in and starts it.
+#[tokio::test(start_paused = true)]
+async fn a_conflict_with_the_container_gone_backs_off_and_the_next_poll_starts_it() {
+    let fake = FakeRuntime::new();
+    fake.fail_next(Method::MakeDirs, ErrorKind::Conflict);
+    let (test, job) = started_with(Removing::runtime(&fake, 2), out_and_config()).await;
+    let state: State = test.state(&job).await;
+    assert_eq!((state.phase, state.errors, state.end), (Phase::New, 1, None));
+    assert_eq!(methods(&fake), ["create", "inspect", "make_dirs", "remove", "inspect"]);
+    test.advance_time_by(4 * SECOND).await;
+    assert_eq!(methods(&fake)[5..], ["create", "inspect", "make_dirs", "copy_in", "start"]);
+    let state: State = test.state(&job).await;
+    assert_eq!((state.phase, state.errors), (Phase::Started, 0));
+    assert_eq!(fake.inspect("app-j1").await.unwrap(), ContainerStatus::Running);
+}
+
+/// Scenario: A runtime without make_dirs: the trait's default `Other` ends the container `failed` at once.
+#[tokio::test(start_paused = true)]
+async fn a_runtime_without_make_dirs_ends_failed_at_once() {
+    let fake = FakeRuntime::new();
+    let (test, job) = started_with(Arc::new(Older { fake: fake.clone() }), out_and_config()).await;
+    let state: State = test.state(&job).await;
+    let end = state.end.unwrap();
+    assert_eq!(end.outcome, Outcome::Failed);
+    assert!(end.reason.contains("make_dirs is not supported by this runtime"), "{}", end.reason);
+    assert_eq!((state.errors, state.armed), (0, None), "no backoff");
+    test.advance_time_by(120 * SECOND).await;
+    assert_eq!(methods(&fake), ["create", "inspect"], "nothing more reaches the fake");
+}
+
+/// Scenario: A container gone after create: an error that backs off, and the next poll creates it again.
+#[tokio::test(start_paused = true)]
+async fn a_container_gone_after_its_create_backs_off_and_the_next_poll_starts_it() {
+    let fake = FakeRuntime::new();
+    let (test, job) = started_with(Removing::runtime(&fake, 1), out_and_config()).await;
+    let state: State = test.state(&job).await;
+    assert_eq!((state.phase, state.errors, state.end), (Phase::New, 1, None));
+    assert_eq!(methods(&fake), ["create", "remove", "inspect"]);
+    test.advance_time_by(4 * SECOND).await;
+    assert_eq!(methods(&fake)[3..], ["create", "inspect", "make_dirs", "copy_in", "start"]);
+    assert_eq!(test.state::<_, State>(&job).await.phase, Phase::Started);
+}
+
+/// Scenario: An unavailable daemon while copying: an error that backs off, and the next poll puts the inputs in.
+#[tokio::test(start_paused = true)]
+async fn an_unavailable_daemon_while_copying_backs_off_and_the_next_poll_starts_it() {
+    let fake = FakeRuntime::new();
+    fake.fail_next(Method::MakeDirs, ErrorKind::DaemonUnavailable);
+    let (test, job) = started_with(Arc::new(fake.clone()), out_and_config()).await;
+    let state: State = test.state(&job).await;
+    assert_eq!((state.phase, state.errors, state.end), (Phase::New, 1, None));
+    assert_eq!(methods(&fake), ["create", "inspect", "make_dirs"]);
+    test.advance_time_by(4 * SECOND).await;
+    assert_eq!(methods(&fake)[3..], ["create", "inspect", "make_dirs", "copy_in", "start"]);
+    let state: State = test.state(&job).await;
+    assert_eq!((state.phase, state.errors), (Phase::Started, 0));
+    assert!(test.failures().await.is_empty(), "no turn fails");
 }
 
 /// `value` with the keys of every object sorted, so that the fixture's text does not follow the order of a map.
