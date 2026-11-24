@@ -59,3 +59,5 @@ None.
 
 Ran `cargo test -p cicada-examples --test docs` and `--test skill` (see the build report). All text above is
 proposed; no protected prose was edited.
+
+(From the code review: the warning comes once per start; a node stopped and started again warns again.)
