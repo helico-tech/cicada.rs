@@ -1,14 +1,14 @@
 //! `DockerRuntime` of `cicada-containers` against the real daemon: the repeat rules, the status and error mappings,
-//! `copy_in`, the log pages, the pull, the hardening and the sweep. Everything it makes is named `cicada-rs-e2e-ctr-*` and carries
+//! `copy_in`, `copy_out`, the log pages, the pull, the hardening and the sweep. Everything it makes is named `cicada-rs-e2e-ctr-*` and carries
 //! `CONTAINER_LABEL`; the hooks sweep that label, and the suite's teardown removes it after a panic or Ctrl-C.
 
 use std::sync::OnceLock;
 use std::time::Duration;
 
 use cicada_containers::{
-    ContainerError, ContainerRuntime, ContainerSpec, ContainerStatus, CopyFile, DockerRuntime, ErrorKind, Label,
-    LogCursor, LogLine, LogStream, Mount, MountKind, NetworkAttachment, NetworkSpec, Networking, Resource, Tmpfs,
-    VolumeSpec,
+    ContainerError, ContainerRuntime, ContainerSpec, ContainerStatus, CopyFile, CopyLimits, CopyOut, DockerRuntime,
+    ErrorKind, Label, LogCursor, LogLine, LogStream, Mount, MountKind, NetworkAttachment, NetworkSpec, Networking,
+    Resource, Tmpfs, VolumeSpec,
 };
 use cicada_e2e::cluster::eventually;
 use cicada_e2e::docker::{docker, docker_blocking};
@@ -36,6 +36,11 @@ pub fn class() -> Class {
                 step!(an_id_prefix_is_not_a_name),
                 step!(copy_in_writes_before_start_and_conflicts_after),
                 step!(copy_in_on_a_read_only_root_writes_only_to_a_mount),
+                step!(copy_out_collects_regular_files_and_skips_links),
+                step!(copy_out_keeps_within_its_limits),
+                step!(copy_out_after_the_end_reads_a_volume_and_not_a_tmpfs),
+                step!(copy_out_reads_a_progress_file_whole_while_it_is_renamed),
+                step!(copy_out_reads_copy_in_back_and_refuses_what_is_not_there),
                 step!(log_pages_give_each_line_once_with_its_stream),
                 step!(a_follower_collects_every_line_of_a_running_container_once),
                 step!(log_pages_of_what_has_no_lines_and_bad_page_sizes),
@@ -268,6 +273,135 @@ async fn copy_in_on_a_read_only_root_writes_only_to_a_mount() {
     assert!(logs.starts_with("on the volume\n"), "{logs}");
     assert!(logs.contains("No such file"), "nothing written to the root: {logs}");
     assert!(!logs.contains("x written"), "nothing written with the mount target: {logs}");
+    runtime().remove(&spec.name).await.unwrap();
+}
+
+/// Room for every file of a test.
+fn roomy() -> CopyLimits {
+    CopyLimits::new(100, 1 << 20)
+}
+
+/// A kept file as path, contents and mode; a skipped entry as path and reason.
+type Kept<'a> = (&'a str, &'a [u8], u32);
+type Left<'a> = (&'a str, &'a str);
+
+/// The kept files and the skipped entries, each sorted: the order of Docker's archive may differ between engine
+/// versions.
+fn sorted(out: &CopyOut) -> (Vec<Kept<'_>>, Vec<Left<'_>>) {
+    let mut files: Vec<_> = out.files.iter().map(|f| (f.path.as_str(), f.contents.as_slice(), f.mode)).collect();
+    let mut skipped: Vec<_> = out.skipped.iter().map(|s| (s.path.as_str(), s.reason.as_str())).collect();
+    files.sort();
+    skipped.sort();
+    (files, skipped)
+}
+
+/// Creates and starts `spec`, waits until it exits with code 0, and returns its name.
+async fn ran(spec: &ContainerSpec) -> &str {
+    runtime().create(spec).await.unwrap();
+    runtime().start(&spec.name).await.unwrap();
+    assert_eq!(ended(&spec.name).await, ContainerStatus::Exited { code: 0 });
+    &spec.name
+}
+
+async fn copy_out_collects_regular_files_and_skips_links() {
+    let script = "mkdir -p /out/sub && printf ay > /out/a && printf bee > /out/sub/b && chmod 755 /out/sub/b \
+        && ln -s /etc/passwd /out/out && ln -s a /out/in";
+    let spec = spec("copy-out", script);
+    let name = ran(&spec).await;
+    let out = runtime().copy_out(name, "/out", roomy()).await.unwrap();
+    assert_eq!(
+        sorted(&out),
+        (
+            vec![("/out/a", &b"ay"[..], 0o644), ("/out/sub/b", &b"bee"[..], 0o755)],
+            vec![
+                ("/out/in", "a symbolic link to a, not followed"),
+                ("/out/out", "a symbolic link to /etc/passwd, not followed"),
+            ]
+        )
+    );
+    let one = runtime().copy_out(name, "/out/./sub/b", roomy()).await.unwrap();
+    assert_eq!(sorted(&one), (vec![("/out/sub/b", &b"bee"[..], 0o755)], vec![]), "one file by its path");
+    assert_eq!(runtime().copy_out(name, "/missing", roomy()).await.unwrap(), CopyOut::default());
+    runtime().remove(name).await.unwrap();
+}
+
+async fn copy_out_keeps_within_its_limits() {
+    let script = "mkdir -p /sizes /five /two && head -c 10 /dev/zero > /sizes/a && head -c 5000 /dev/zero > /sizes/b \
+        && head -c 20 /dev/zero > /sizes/c && for i in 1 2 3 4 5; do echo $i > /five/$i; done \
+        && echo 1 > /two/1 && echo 2 > /two/2";
+    let spec = spec("copy-limits", script);
+    let name = ran(&spec).await;
+    let out = runtime().copy_out(name, "/sizes", CopyLimits::new(10, 100)).await.unwrap();
+    let mut sizes: Vec<usize> = out.files.iter().map(|f| f.contents.len()).collect();
+    sizes.sort();
+    assert_eq!(sizes, [10, 20], "the small ones, whole");
+    assert_eq!(out.skipped.len(), 1, "{out:?}");
+    assert_eq!(out.skipped[0].path, "/sizes/b");
+    assert!(out.skipped[0].reason.starts_with("5000 bytes, more than the "), "{out:?}");
+
+    let out = runtime().copy_out(name, "/five", CopyLimits::new(2, 100)).await.unwrap();
+    assert_eq!(out.files.len(), 2, "{out:?}");
+    assert_eq!(sorted(&out).1, [("/five", "more than 2 files; the rest was not read")]);
+    let out = runtime().copy_out(name, "/two", CopyLimits::new(2, 100)).await.unwrap();
+    assert_eq!((out.files.len(), out.skipped.len()), (2, 0), "exactly at the limit: {out:?}");
+    for zero in [CopyLimits::new(0, 100), CopyLimits::new(2, 0)] {
+        assert_eq!(kind(runtime().copy_out(name, "/two", zero).await), ErrorKind::InvalidSpec, "{zero:?}");
+    }
+    runtime().remove(name).await.unwrap();
+}
+
+async fn copy_out_after_the_end_reads_a_volume_and_not_a_tmpfs() {
+    let volume = labelled_volume("copy-out-vol").await;
+    let mut spec = spec("copy-out-end", "printf vee > /vol/v && printf ess > /scratch/s && printf root > /r");
+    spec.mounts.push(Mount::new(MountKind::Volume, &volume, "/vol"));
+    spec.tmpfs.push(Tmpfs::new("/scratch"));
+    let name = ran(&spec).await;
+    let on_volume = runtime().copy_out(name, "/vol", roomy()).await.unwrap();
+    assert_eq!(sorted(&on_volume).0, [("/vol/v", &b"vee"[..], 0o644)]);
+    let on_root = runtime().copy_out(name, "/r", roomy()).await.unwrap();
+    assert_eq!(sorted(&on_root).0, [("/r", &b"root"[..], 0o644)]);
+    let on_tmpfs = runtime().copy_out(name, "/scratch", roomy()).await.unwrap();
+    assert!(on_tmpfs.files.iter().all(|f| f.path != "/scratch/s"), "gone with the tmpfs: {on_tmpfs:?}");
+    assert_eq!(runtime().copy_out(name, "/scratch/s", roomy()).await.unwrap(), CopyOut::default());
+    runtime().remove(name).await.unwrap();
+}
+
+async fn copy_out_reads_a_progress_file_whole_while_it_is_renamed() {
+    let script = r#"mkdir -p /work; pad=$(printf '%2000s' | tr ' ' x); i=0
+        while true; do i=$((i+1)); printf '{"step":%d,"pad":"%s"}' $i "$pad" > /work/.progress.tmp
+        mv /work/.progress.tmp /work/progress.json; done"#;
+    let spec = spec("copy-out-progress", script);
+    runtime().create(&spec).await.unwrap();
+    runtime().start(&spec.name).await.unwrap();
+    let limits = CopyLimits::new(1, 64 << 10);
+    let mut steps = Vec::new();
+    for _ in 0..10 {
+        let out = eventually("a progress file", secs(60), async || {
+            let out = runtime().copy_out(&spec.name, "/work/progress.json", limits).await?;
+            Ok((!out.files.is_empty()).then_some(out))
+        })
+        .await;
+        assert_eq!((out.files.len(), out.skipped.len()), (1, 0), "{out:?}");
+        let progress: serde_json::Value = serde_json::from_slice(&out.files[0].contents).expect("one whole file");
+        assert_eq!(progress["pad"].as_str().map(str::len), Some(2000));
+        steps.push(progress["step"].as_u64().unwrap());
+    }
+    assert!(steps.windows(2).all(|w| w[0] <= w[1]), "{steps:?}");
+    runtime().remove(&spec.name).await.unwrap();
+}
+
+async fn copy_out_reads_copy_in_back_and_refuses_what_is_not_there() {
+    let spec = spec("copy-out-created", "echo never");
+    runtime().create(&spec).await.unwrap();
+    let mut file = CopyFile::new("/in/config.json", "{}");
+    file.mode = 0o600;
+    runtime().copy_in(&spec.name, std::slice::from_ref(&file)).await.unwrap();
+    let out = runtime().copy_out(&spec.name, "/in/config.json", roomy()).await.unwrap();
+    assert_eq!(out, CopyOut::new(vec![file], Vec::new()), "from a created container");
+    assert_eq!(kind(runtime().copy_out(&name("copy-out-missing"), "/in", roomy()).await), ErrorKind::Conflict);
+    for bad in ["in", "/", "/in/../etc"] {
+        assert_eq!(kind(runtime().copy_out(&spec.name, bad, roomy()).await), ErrorKind::InvalidSpec, "{bad}");
+    }
     runtime().remove(&spec.name).await.unwrap();
 }
 

@@ -33,7 +33,7 @@ which must have landed first. Follow `design.md`; the specs are `specs/container
   the reader (a long PAX name, a big skipped entry never read into memory, a stream error mid-file coming back as
   `DaemonUnavailable`, a 404 first chunk); `cargo test -p cicada-containers --all-features`;
   `cargo tree -p cicada-containers --features docker` shows no new crate.
-- [ ] 4. **E2E, changelog and docs handoff.** In `e2e/tests/suite/container_docker.rs`, the cases of the design's
+- [x] 4. **E2E, changelog and docs handoff.** In `e2e/tests/suite/container_docker.rs`, the cases of the design's
   Tests section, including the container spec's scenarios that a real daemon can stage (artifacts on the root and a
   volume after the end, a progress file while running, a tmpfs after the end). The 0.20.9 section of `CHANGELOG.md`
   names `copy_out`, `CopyLimits`, `CopyOut`, `SkippedFile` and the fake's `put_file` under Added. `docs-handoff.md`

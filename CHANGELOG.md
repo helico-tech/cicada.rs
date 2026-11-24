@@ -10,7 +10,8 @@ moves: a correction is a new version.
 ## 0.20.9 — unreleased
 
 The fake and the Docker backend of `cicada-containers` give the same answers, so a host's tests on `FakeRuntime`
-predict Docker, and a host can follow a container's log in pages while it runs. Additive: the actor contracts, wire
+predict Docker, a host can follow a container's log in pages while it runs, and it can copy a run's files out of a
+container within limits. Additive: the actor contracts, wire
 formats, the store schema and the guarantees are those of 0.20.8.
 
 ### Added
@@ -33,6 +34,22 @@ formats, the store schema and the guarantees are those of 0.20.8.
   the Unix epoch, which `logs` and `logs_since` both read; `Call::LogsSince` and `Method::LogsSince` record and script
   the call. Covered by the unit tests in `src/logs.rs`, `src/fake.rs` and `src/docker/map.rs`, and by
   `ContainerDockerTest` in `e2e/tests/suite/container_docker.rs`.
+- `cicada-containers`: `ContainerRuntime::copy_out(name, path, limits)` copies the regular files at or below `path`
+  out of a created, running or ended container (until `remove`), for a host that collects a run's artifacts after it
+  ended or reads a progress file while it runs. It returns a `CopyOut`: `files`, each a whole `CopyFile` with its
+  absolute path, contents and permission bits (ready for `copy_in` of another container), and `skipped`, each a
+  `SkippedFile { path, reason }`. `CopyLimits::new(max_files, max_bytes)` bounds memory whatever the folder holds: a
+  file larger than the bytes left is skipped with its size and the copy goes on; once `files` and `skipped` hold
+  `max_files` entries, the next entry stops the copy with one last skipped entry for `path` ("the rest was not
+  read"). No link is followed: symbolic and hard links, devices and pipes, and entries outside `path` are skipped with
+  a reason. A relative path, a `..` part, `/` or a zero limit is `InvalidSpec` before any call; a missing container
+  is `Conflict`, a missing path an empty result. Files written to a tmpfs are gone once the container ended. The three
+  types are `non_exhaustive` with constructors; the method has a default that fails with `Other`, so a runtime
+  written outside this repo compiles unchanged. Docker's archive is read as a stream and a skipped file's data is
+  passed over, not held; an error during the stream fails the whole call. The fake's `put_file(name, CopyFile)` adds
+  a file its program "wrote", and the fake walks a folder in Docker's order; `Call::CopyOut` and `Method::CopyOut`
+  record and script the call. Covered by the unit tests in `src/copy.rs`, `src/fake.rs` and `src/docker/archive.rs`,
+  and by `ContainerDockerTest` in `e2e/tests/suite/container_docker.rs`.
 
 ### Fixed
 
