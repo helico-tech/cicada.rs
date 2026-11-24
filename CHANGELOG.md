@@ -11,8 +11,9 @@ moves: a correction is a new version.
 
 The fake and the Docker backend of `cicada-containers` give the same answers, so a host's tests on `FakeRuntime`
 predict Docker, a host can follow a container's log in pages while it runs, it can copy a run's files out of a
-container within limits, and it can make writable folders in a container before start. Additive: the actor
-contracts, wire formats, the store schema and the guarantees are those of 0.20.8.
+container within limits, and it can make writable folders in a container before start; a container job gives its
+container folders and files before start. Additive: the actor contracts, wire formats, the store schema and the
+guarantees are those of 0.20.8.
 
 ### Added
 
@@ -67,6 +68,20 @@ contracts, wire formats, the store schema and the guarantees are those of 0.20.8
   its owner. The fake keeps the folders it makes; `Call::MakeDirs` and `Method::MakeDirs` record and script the call.
   Covered by the unit tests in `src/dirs.rs`, `src/fake.rs` and `src/docker/map.rs`, and by `ContainerDockerTest` in
   `e2e/tests/suite/container_docker.rs`.
+- `cicada-containers`: `ContainerJob::inputs(name, request) -> Result<Inputs, String>` gives the folders and files of
+  a container: `Inputs { dirs: Vec<CopyDir>, files: Vec<CopyFile> }` (`non_exhaustive`, `Default`, exported from the
+  crate root). The default gives none, so a job compiles unchanged. Like `spec`, it is sync, built at each create and
+  never stored, so secret files never reach the store. The container actor now puts the inputs in between create and
+  start: it inspects the created container and, only while it is `Created`, makes the folders (`make_dirs`) and then
+  writes the files (`copy_in`), so a file can go into a fresh folder; a step that runs again after its container
+  started skips them, and one still `Created` puts them in again. Without inputs the step calls only `create` and
+  `start`, as before. The container ends `failed` before anything is made for an `Err` from `inputs`, a path the
+  shared path rule refuses, and a file at a folder's path or above it (dirs `/a/b`, file `/a`; `/out/.` and `/out` are
+  one path), as writing it would replace the folder. It ends `failed` too for `InvalidSpec` from `make_dirs` or
+  `copy_in`, `Conflict` while a new inspect still finds the container `Created`, and `Other` from `make_dirs` (a
+  runtime without it); the created container stays until `Remove`. Any other error, also a container missing right
+  after its create, counts and backs off, and the next poll puts the inputs in again. Covered by the unit tests of the
+  check in `src/actor/mod.rs` and by `tests/actor.rs`.
 
 ### Fixed
 

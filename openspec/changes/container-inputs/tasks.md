@@ -26,7 +26,7 @@ behaviour is tested on virtual time (`#[tokio::test(start_paused = true)]` with 
   conflict while copying (still `Created`, and `Missing`), a runtime without `make_dirs` (a fake wrapper that keeps
   the trait's default), a container gone after create, an unavailable daemon while copying. Verify:
   `cargo test -p cicada-containers --test actor`.
-- [ ] 4. **Changelog and docs handoff.** The 0.20.9 section of `CHANGELOG.md` names `ContainerJob::inputs` and
+- [x] 4. **Changelog and docs handoff.** The 0.20.9 section of `CHANGELOG.md` names `ContainerJob::inputs` and
   `Inputs` under Added, and that the actor now puts inputs in between create and start. `docs-handoff.md` carries
   `inputs`, `Inputs`, the order, the refusals and the secret-file advice for the container guide; nothing blocks. No
   edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify: `cargo test -p cicada-examples --test docs`.
