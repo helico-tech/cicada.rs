@@ -33,7 +33,7 @@ on virtual time (`#[tokio::test(start_paused = true)]` with `TestActors`).
   `CICADA_UPDATE_CONTRACTS=true cargo test -p cicada-actors --test wire_formats` writes
   `docs/reference/contracts/cicada.job-graph.json`, which is committed. Verify:
   `cargo test -p cicada-actors --test wire_formats`.
-- [ ] 5. **Changelog and docs handoff.** The unreleased changelog section names the job graph and ADR 0059.
+- [x] 5. **Changelog and docs handoff.** The unreleased changelog section names the job graph and ADR 0059.
   `docs-handoff.md` from "Docs it breaks" in the design, including that a report target treats a repeated report for
   the same run as one; nothing blocks. No edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify:
   `cargo test -p cicada-examples --test docs`, `cargo test -p cicada-examples --test skill`.

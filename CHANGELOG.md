@@ -9,8 +9,9 @@ moves: a correction is a new version.
 
 ## 0.20.8 — unreleased
 
-A ready-made permit pool in `cicada-actors`, which caps how many jobs hold a permit at once. Additive: the existing
-actor contracts, wire formats, the store schema and the guarantees are those of 0.20.7.
+A ready-made permit pool in `cicada-actors`, which caps how many jobs hold a permit at once, and a ready-made job
+graph, which runs a graph of jobs given as data. Additive: the existing actor contracts, wire formats, the store schema
+and the guarantees are those of 0.20.7.
 
 ### Added
 
@@ -31,6 +32,27 @@ actor contracts, wire formats, the store schema and the guarantees are those of 
   `docs/reference/contracts/cicada.permits.json`. Covered by `crates/cicada-actors/tests/permits.rs`, the unit tests in
   `src/permits.rs` and `tests/wire_formats.rs`.
 - ADR 0058: a ready-made permit pool.
+- `cicada-actors`: the job graph (ADR 0059), `JobGraphActor` under the fixed type name `cicada.job-graph`, one actor per
+  run (`JobGraph::named(run)`), with no settings. The graph is the state, given at the create:
+  `JobGraphState::new(jobs, max_in_flight, &report_to, report_type)`, each job a `Job::new(name, &target,
+  message_type, input)` with `.with_needs([...])`. The constructor and the decoder refuse a cycle (named by a job of
+  it), a need that names no job, is repeated or names the job itself, a repeated name, no jobs or more than 100, a name
+  that is not 1–64 ASCII letters, digits, `-`, `_` or `.`, a message or report type out of bounds, an input over 16 KiB
+  or 32 levels, and an in-flight limit outside 1–100; so a bad graph never becomes a run. `Start` starts every ready
+  job in graph order while fewer than `maxInFlight` run, each with a new attempt numbered per job from 1; a second
+  `Start` changes nothing. Each job message, a `JobStart { run, job, attempt, input }` sent as the job's message type
+  to its target, goes in a `Dispatch` turn of the run's own, so a gone target, a type not registered or a type that
+  does not take the message fails only that attempt (`the job message was not sent (<cause>): <error>`) and the run
+  goes on. A worker reports `Result { job, attempt, outcome, output, reason }` (helpers `JobGraphMsg::succeeded(&start,
+  output)` and `JobGraphMsg::failed(&start, reason)`); only a result for a running job's current attempt is taken, any
+  other is refused for good, the state unchanged, and the sender is not checked. A failed job blocks the jobs that need
+  it, which stay `waiting`. When no job runs and none can start the run ends `succeeded` or `failed` and sends its
+  `JobGraphEnd { run, status, jobs }` to the report target in a turn of its own; anyone may send `Report` again, so a
+  report target treats a repeated report for the same run as one. Job statuses include `skipped` and `cancelled`,
+  which this release never sets. Its contract is checked against `docs/reference/contracts/cicada.job-graph.json`.
+  Covered by `crates/cicada-actors/tests/job_graph.rs`, the unit tests in `src/job_graph.rs` and
+  `tests/wire_formats.rs`.
+- ADR 0059: a ready-made job graph.
 
 ## 0.20.7 — 2026-11-24
 
