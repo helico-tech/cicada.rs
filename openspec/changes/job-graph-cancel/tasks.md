@@ -18,7 +18,7 @@ before this one). Runtime behaviour is tested on virtual time (`#[tokio::test(st
   the `Cancel` commit for a dispatched job with a `cancelType`, and acted on only by the run itself while that attempt
   is kept, dispatched and closed `cancelled`, whatever the job's status (decision 2). Verify:
   `cargo test -p cicada-actors`; `cargo clippy -p cicada-actors --all-targets`.
-- [ ] 3. **Virtual-time tests.** In `crates/cicada-actors/tests/job_graph.rs`, one test or more for every scenario of
+- [x] 3. **Virtual-time tests.** In `crates/cicada-actors/tests/job_graph.rs`, one test or more for every scenario of
   the spec delta: `Cancel` of one running job (dependent skipped, late result refused), of the whole run (ends
   `cancelled`, reported), of the whole run after a failure (ends `failed`), of one job of an otherwise succeeding run
   (ends `cancelled`), a cancel that frees a slot for the next job, of an ended job, of an unknown job, a failed

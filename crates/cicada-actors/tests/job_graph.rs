@@ -1,6 +1,7 @@
 //! The job graph, on virtual time with `TestActors` (ADR 0059, ADR 0060): ready jobs in graph order up to the in-flight
 //! limit, each job message in a turn of its own, a failed dispatch that fails only its attempt, the attempt fence on
-//! results, a failed job that skips its dependents, the watch on each target, and the end report.
+//! results, a failed job that skips its dependents, the watch on each target, `Cancel` and the cancel message, and the
+//! end report.
 
 mod common;
 
@@ -8,16 +9,16 @@ use cicada::prelude::*;
 use cicada::store::{Message, OutcomeStatus};
 use cicada::{FailureCause, WatchTarget};
 use cicada_actors::{
-    AttemptOutcome, Job, JobGraph, JobGraphActor, JobGraphEnd, JobGraphMsg, JobGraphState, JobGraphStatus, JobOutcome,
-    JobStart, JobStatus,
+    AttemptOutcome, Job, JobCancel, JobGraph, JobGraphActor, JobGraphEnd, JobGraphMsg, JobGraphState, JobGraphStatus,
+    JobOutcome, JobStart, JobStatus,
 };
 use cicada_test::TestActors;
 use common::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-/// `builder/{id}`: keeps every job message it is sent, fails its handler on one whose input has `"fail": true`, and
-/// relays a result to a run when told.
+/// `builder/{id}`: keeps every job message and cancel message it is sent, fails its handler on a job message whose
+/// input has `"fail": true`, and relays a result to a run when told.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Builder {
     id: String,
@@ -36,6 +37,7 @@ fn builder(id: &str) -> Builder {
 #[serde(tag = "type")]
 enum BuilderMsg {
     Build(JobStart),
+    CancelBuild(JobCancel),
     /// Sends `result` to the run `run`.
     Relay {
         run: String,
@@ -52,6 +54,8 @@ enum BuilderMsg {
 struct Starts {
     #[serde(default)]
     log: Vec<JobStart>,
+    #[serde(default)]
+    cancels: Vec<JobCancel>,
 }
 
 struct BuilderActor;
@@ -66,6 +70,7 @@ impl Actor for BuilderActor {
                 return Err(HandlerError::msg("the build broke"));
             }
             BuilderMsg::Build(start) => turn.state_mut().log.push(start),
+            BuilderMsg::CancelBuild(cancel) => turn.state_mut().cancels.push(cancel),
             BuilderMsg::Relay { run, result } => {
                 turn.send(&JobGraph::named(run), result)?;
             }
@@ -215,7 +220,7 @@ async fn failed_of(test: &TestActors, message_type: &str) -> Vec<cicada::Failed>
     told(test).await.into_iter().filter(|f| f.message_type == message_type).collect()
 }
 
-use JobStatus::{Failed, Running, Skipped, Succeeded, Waiting};
+use JobStatus::{Cancelled, Failed, Running, Skipped, Succeeded, Waiting};
 
 fn named(statuses: &[(&str, JobStatus)]) -> Vec<(String, JobStatus)> {
     statuses.iter().map(|(n, s)| (n.to_string(), *s)).collect()
@@ -777,4 +782,257 @@ async fn the_run_unwatches_a_target_once_no_running_job_has_it() {
     let watches = test.system().watches(Some(&addr(&run())), None, None, 10).await.unwrap().items;
     let targets: Vec<String> = watches.iter().map(|w| w.target.to_string()).collect();
     assert_eq!(targets, ["cicada.job-graph/run-7"], "the run keeps its watch on itself");
+}
+
+/// A `Cancel` of `job`.
+fn cancel(job: &str) -> JobGraphMsg {
+    JobGraphMsg::Cancel { job: Some(job.into()) }
+}
+
+/// A `Cancel` of every job.
+fn cancel_all() -> JobGraphMsg {
+    JobGraphMsg::Cancel { job: None }
+}
+
+/// The cancel messages `builder/{id}` got.
+async fn cancels(test: &TestActors, id: &str) -> Vec<JobCancel> {
+    test.state::<_, Starts>(&builder(id)).await.cancels
+}
+
+/// The types of the messages waiting for the run.
+async fn pending_types(test: &TestActors) -> Vec<String> {
+    test.pending(&run()).await.into_iter().map(|m| m.message_type).collect()
+}
+
+/// Scenario: Cancel one running job: its dependent is skipped in the commit of the `Cancel`, its attempt ends
+/// `cancelled`, its target is unwatched, and a later result for its attempt is refused for good.
+#[tokio::test(start_paused = true)]
+async fn cancel_of_one_running_job_skips_its_dependent_and_refuses_its_late_result() {
+    let test = node().await;
+    start(&test, vec![job("a", &[]), job("b", &["a"])], 2).await;
+    let start = start_of(&test, "a").await;
+    let m = test.send(&run(), cancel("a")).await;
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1);
+    assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done));
+    assert_eq!(statuses(&test).await, named(&[("a", Cancelled), ("b", Skipped)]));
+    let state = state(&test).await;
+    let attempt = &state.jobs[0].attempts[0];
+    assert_eq!((attempt.outcome, attempt.reason.as_deref()), (Some(AttemptOutcome::Cancelled), Some("cancelled")));
+    assert!(attempt.ended_at.is_some() && attempt.dispatched_at.is_some());
+    assert_eq!(state.status, JobGraphStatus::Cancelled, "nothing runs or can start, and no job failed");
+    assert!(watchers_of(&test, "a").await.is_empty());
+    test.run_until_idle().await;
+    assert!(cancels(&test, "a").await.is_empty(), "a job without a cancelType is not told");
+    let error = assert_refused(&test, JobGraphMsg::succeeded(&start, ()).unwrap()).await;
+    assert!(error.contains("not running: it is cancelled"), "{error}");
+}
+
+/// Scenario: Cancel the whole run: the running and waiting jobs are cancelled, the succeeded one stays, and the run
+/// ends `cancelled` and is reported.
+#[tokio::test(start_paused = true)]
+async fn cancel_of_the_whole_run_cancels_every_waiting_and_running_job_and_reports() {
+    let test = node().await;
+    start(&test, vec![job("a", &[]), job("b", &[]), job("c", &["b"]), job("d", &["b"])], 2).await;
+    succeed(&test, "a").await;
+    assert_eq!(statuses(&test).await, named(&[("a", Succeeded), ("b", Running), ("c", Waiting), ("d", Waiting)]));
+    test.send(&run(), cancel_all()).await;
+    test.run_until_idle().await;
+    assert_eq!(statuses(&test).await, named(&[("a", Succeeded), ("b", Cancelled), ("c", Cancelled), ("d", Cancelled)]));
+    assert_eq!(run_status(&test).await, JobGraphStatus::Cancelled);
+    let expected: JobGraphEnd = serde_json::from_value(json!({"run": "run-7", "status": "cancelled", "jobs": [
+        {"name": "a", "status": "succeeded", "attempt": 1, "output": {"built": "a"}, "reason": null},
+        {"name": "b", "status": "cancelled", "attempt": 1, "output": null, "reason": "cancelled"},
+        {"name": "c", "status": "cancelled", "attempt": null, "output": null, "reason": null},
+        {"name": "d", "status": "cancelled", "attempt": null, "output": null, "reason": null}]}))
+    .unwrap();
+    assert_eq!(reports(&test, "main").await, [expected]);
+}
+
+/// Scenario: Cancel the whole run after a failure: it ends `failed`.
+#[tokio::test(start_paused = true)]
+async fn cancel_of_the_whole_run_after_a_failure_ends_it_failed() {
+    let test = node().await;
+    start(&test, vec![job("a", &[]), job("b", &[])], 2).await;
+    fail(&test, "a").await;
+    test.send(&run(), cancel_all()).await;
+    test.run_until_idle().await;
+    assert_eq!(statuses(&test).await, named(&[("a", Failed), ("b", Cancelled)]));
+    assert_eq!(run_status(&test).await, JobGraphStatus::Failed);
+    assert_eq!(reports(&test, "main").await[0].status, JobGraphStatus::Failed);
+}
+
+/// Scenario: Cancel one job of a run that otherwise succeeds: it ends `cancelled`.
+#[tokio::test(start_paused = true)]
+async fn cancel_of_one_job_of_a_run_that_otherwise_succeeds_ends_it_cancelled() {
+    let test = node().await;
+    start(&test, vec![job("a", &[]), job("b", &[])], 2).await;
+    test.send(&run(), cancel("a")).await;
+    test.run_until_idle().await;
+    assert_eq!(run_status(&test).await, JobGraphStatus::Running);
+    assert_eq!(watchers_of(&test, "a").await, ["cicada.job-graph/run-7"], "b still runs on builder/a");
+    succeed(&test, "b").await;
+    assert_eq!(statuses(&test).await, named(&[("a", Cancelled), ("b", Succeeded)]));
+    assert_eq!(run_status(&test).await, JobGraphStatus::Cancelled);
+}
+
+/// Scenario: A cancel frees a slot: the next job starts in the commit of the `Cancel`.
+#[tokio::test(start_paused = true)]
+async fn a_cancel_frees_a_slot_for_the_next_job_in_its_commit() {
+    let test = node().await;
+    start(&test, vec![job("a", &[]), job("b", &[])], 1).await;
+    test.send(&run(), cancel("a")).await;
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1);
+    assert_eq!(statuses(&test).await, named(&[("a", Cancelled), ("b", Running)]));
+    assert_eq!(pending_types(&test).await, ["Dispatch"]);
+    test.run_until_idle().await;
+    assert_eq!(started(&test, "a").await, ["a", "b"]);
+}
+
+/// Scenario: Cancel of an ended job. And of a skipped job, a repeated `Cancel` and a `Cancel` of an ended run, which
+/// change nothing either.
+#[tokio::test(start_paused = true)]
+async fn cancel_of_an_ended_or_skipped_job_or_an_ended_run_changes_nothing() {
+    let test = node().await;
+    start(&test, vec![job("a", &[]), job("b", &[]), job("c", &["b"]), job("d", &[])], 3).await;
+    succeed(&test, "a").await;
+    fail(&test, "b").await;
+    test.send(&run(), cancel("d")).await;
+    test.run_until_idle().await;
+    assert_eq!(statuses(&test).await, named(&[("a", Succeeded), ("b", Failed), ("c", Skipped), ("d", Cancelled)]));
+    let reported = reports(&test, "main").await.len();
+    let version = test.version(&run()).await;
+    for message in [cancel("a"), cancel("b"), cancel("c"), cancel("d"), cancel_all()] {
+        let m = test.send(&run(), message).await;
+        test.run_until_idle().await;
+        assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done));
+    }
+    assert_eq!(test.version(&run()).await, version);
+    assert_eq!(reports(&test, "main").await.len(), reported);
+
+    let test = node().await;
+    start(&test, vec![job("a", &[]), job("b", &[])], 2).await;
+    succeed(&test, "a").await;
+    let version = test.version(&run()).await;
+    let m = test.send(&run(), cancel("a")).await;
+    test.run_until_idle().await;
+    assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done));
+    assert_eq!(test.version(&run()).await, version, "a running run, a succeeded job");
+    assert_eq!(statuses(&test).await, named(&[("a", Succeeded), ("b", Running)]));
+}
+
+/// Scenario: Cancel of an unknown job. And of a job name out of bounds.
+#[tokio::test(start_paused = true)]
+async fn cancel_of_an_unknown_job_is_refused_for_good() {
+    let test = node().await;
+    start(&test, vec![job("a", &[])], 2).await;
+    let error = assert_refused(&test, cancel("nope")).await;
+    assert!(error.contains("no job named 'nope'"), "{error}");
+    for name in ["", "a b"] {
+        let error = assert_refused(&test, cancel(name)).await;
+        assert!(error.contains("job name"), "{error}");
+        assert_refused(&test, JobGraphMsg::SendCancel { job: name.into(), attempt: 1 }).await;
+    }
+    assert_eq!(statuses(&test).await, named(&[("a", Running)]));
+}
+
+/// Scenario: A failed dispatch reported after the cancel: the job stays `cancelled`.
+#[tokio::test(start_paused = true)]
+async fn a_failed_dispatch_reported_after_the_cancel_leaves_the_job_cancelled() {
+    let test = node().await;
+    create(&test, vec![job_to("a", "builder/ghost").with_cancel_type("CancelBuild")], 2).await;
+    test.send(&run(), JobGraphMsg::Start).await;
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1);
+    test.send(&run(), cancel("a")).await;
+    assert_eq!(pending_types(&test).await, ["Dispatch", "Cancel"]);
+    test.advance_time_by(std::time::Duration::from_secs(600)).await;
+    assert_eq!(failed_of(&test, "Dispatch").await.len(), 1);
+    assert!(failed_of(&test, "SendCancel").await.is_empty(), "a job not dispatched is not told");
+    let state = state(&test).await;
+    assert_eq!(state.jobs[0].status, Cancelled);
+    let attempt = &state.jobs[0].attempts[0];
+    assert_eq!((attempt.outcome, attempt.dispatched_at), (Some(AttemptOutcome::Cancelled), None));
+    assert_eq!(state.status, JobGraphStatus::Cancelled);
+}
+
+/// Scenario: A worker is told: its target gets the cancel type with the run, the job and the attempt, in a later turn
+/// of the run, with the shared retry policy and the correlation id of the `Cancel`.
+#[tokio::test(start_paused = true)]
+async fn a_worker_is_told_through_the_jobs_cancel_type_in_a_later_turn() {
+    let test = node().await;
+    start(&test, vec![job("a", &[]).with_cancel_type("CancelBuild")], 2).await;
+    test.system().pause_mailbox(&addr(&builder("a"))).await.unwrap();
+    test.send_with(&run(), cancel("a"), SendOptions::new().correlation_id("c9")).await;
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1);
+    assert_eq!(statuses(&test).await, named(&[("a", Cancelled)]));
+    let pending = test.pending(&run()).await;
+    let send_cancel = pending.iter().find(|m| m.message_type == "SendCancel").expect("a SendCancel");
+    assert_eq!(send_cancel.payload, json!({"job": "a", "attempt": 1}));
+    assert!(test.pending(&builder("a")).await.is_empty(), "not in the commit of the Cancel");
+    test.run_until_idle().await;
+    let told = test.pending(&builder("a")).await;
+    assert_eq!(told.len(), 1);
+    assert_eq!(told[0].message_type, "CancelBuild");
+    assert_eq!(told[0].payload, json!({"run": "run-7", "job": "a", "attempt": 1}));
+    assert_eq!(told[0].correlation_id.as_deref(), Some("c9"));
+    assert!(told[0].retry.is_some(), "with the shared retry policy");
+    test.system().resume_mailbox(&addr(&builder("a"))).await.unwrap();
+    test.run_until_idle().await;
+    assert_eq!(cancels(&test, "a").await, [JobCancel { run: "run-7".into(), job: "a".into(), attempt: 1 }]);
+}
+
+/// Scenario: A gone worker: the `Cancel` commits and only the `SendCancel` fails.
+#[tokio::test(start_paused = true)]
+async fn a_gone_workers_send_cancel_fails_alone() {
+    let test = node().await;
+    start(&test, vec![job("a", &[]).with_cancel_type("CancelBuild"), job("b", &["a"])], 2).await;
+    let m = test.send(&run(), cancel("a")).await;
+    test.system().delete_actor(&addr(&builder("a"))).await.unwrap();
+    assert_eq!(pending_types(&test).await, ["Cancel", "Stopped"]);
+    test.run_until_idle().await;
+    assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done));
+    assert_eq!(statuses(&test).await, named(&[("a", Cancelled), ("b", Skipped)]));
+    let failed = failed_of(&test, "SendCancel").await;
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert_eq!(failed[0].cause, FailureCause::Commit);
+    assert_eq!(run_status(&test).await, JobGraphStatus::Cancelled);
+    assert_eq!(reports(&test, "main").await.len(), 1);
+}
+
+/// Scenario: A job not yet dispatched: its target gets neither the job message nor the cancel message.
+#[tokio::test(start_paused = true)]
+async fn a_job_cancelled_before_its_dispatch_is_never_sent_anything() {
+    let test = node().await;
+    create(&test, vec![job("a", &[]).with_cancel_type("CancelBuild")], 2).await;
+    test.send(&run(), JobGraphMsg::Start).await;
+    test.send(&run(), cancel("a")).await;
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1);
+    assert_eq!(statuses(&test).await, named(&[("a", Running)]));
+    assert_eq!(pending_types(&test).await, ["Cancel", "Dispatch"], "the Cancel runs before the Dispatch");
+    test.run_until_idle().await;
+    assert_eq!(statuses(&test).await, named(&[("a", Cancelled)]));
+    assert!(started(&test, "a").await.is_empty());
+    assert!(cancels(&test, "a").await.is_empty());
+    assert!(failed_of(&test, "Dispatch").await.is_empty(), "the Dispatch sends nothing and is done");
+    assert_eq!(state(&test).await.jobs[0].attempts[0].dispatched_at, None);
+}
+
+/// A `SendCancel` the run did not send itself sends nothing, also for an attempt that was dispatched and cancelled.
+#[tokio::test(start_paused = true)]
+async fn a_send_cancel_sent_by_a_client_sends_nothing() {
+    let test = node().await;
+    start(&test, vec![job("a", &[]).with_cancel_type("CancelBuild"), job("b", &[]).with_cancel_type("CancelBuild")], 2)
+        .await;
+    test.send(&run(), cancel("a")).await;
+    test.run_until_idle().await;
+    assert_eq!(cancels(&test, "a").await.len(), 1);
+    let version = test.version(&run()).await;
+    for attempt in [1, 2] {
+        for job in ["a", "b"] {
+            let m = test.send(&run(), JobGraphMsg::SendCancel { job: job.into(), attempt }).await;
+            test.run_until_idle().await;
+            assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done));
+        }
+    }
+    assert_eq!(cancels(&test, "a").await.len(), 1, "no second cancel message");
+    assert_eq!(test.version(&run()).await, version);
 }
