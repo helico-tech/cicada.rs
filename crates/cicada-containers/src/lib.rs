@@ -1,9 +1,11 @@
 //! A container runtime for applications on Cicada: the [`ContainerRuntime`] trait, its types and one error type,
 //! [`ContainerError`], with a fake, `FakeRuntime`, behind the feature `testing`, and a Docker backend, `DockerRuntime`,
-//! behind the feature `docker`.
+//! behind the feature `docker`. On top of the trait, the container actor, [`ContainerActor`] (ADR 0057): one actor per
+//! container under a type name its [`ContainerJob`] chooses, which reconciles the container toward a goal by one armed
+//! poll at a time and reports its end once.
 //!
-//! The crate needs nothing from Cicada and its public items name no type of a Docker client, so another backend fits
-//! the trait. It is an optional layer outside the core (ADR 0056): no library crate of the workspace depends on it.
+//! The runtime's public items name no type of a Docker client, so another backend fits the trait. The crate is an
+//! optional layer outside the core (ADR 0056): no library crate of the workspace depends on it.
 //!
 //! **Every call is safe to repeat.** A container is found by its name, which its owner chooses: [`create`] keeps an
 //! existing container, [`start`] never runs an ended one again, and [`stop`] and [`remove`] of a missing one are `Ok`.
@@ -28,6 +30,7 @@
 //! [`stop`]: ContainerRuntime::stop
 //! [`remove`]: ContainerRuntime::remove
 
+mod actor;
 #[cfg(feature = "docker")]
 mod docker;
 mod error;
@@ -36,6 +39,10 @@ mod fake;
 mod runtime;
 mod spec;
 
+pub use actor::{
+    Container, ContainerActor, ContainerEnd, ContainerEnded, ContainerJob, ContainerMsg, ContainerSettings,
+    ContainerState, EndTarget, Goal, InvalidContainer, Outcome, Phase,
+};
 #[cfg(feature = "docker")]
 pub use docker::DockerRuntime;
 pub use error::{ContainerError, ErrorKind};

@@ -1,6 +1,6 @@
 [package]
 name = "cicada-containers"
-description = "A container runtime trait, its types and a fake, shared by Cicada applications that run containers."
+description = "A container runtime trait, its types and a fake, and a reconciled container actor, shared by Cicada applications that run containers."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,10 +16,22 @@ docker = ["dep:bollard", "dep:futures", "dep:tar", "dep:tokio"]
 [dependencies]
 async-trait.workspace = true
 bollard = { workspace = true, optional = true }
+# The container actor runs on Cicada's public API; no store feature: the host picks its store.
+cicada.workspace = true
 futures = { workspace = true, optional = true }
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 tar = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio = { workspace = true, optional = true }
+
+[dev-dependencies]
+# The actor's tests: `TestActors` on virtual time, the fake runtime, and the sample checks of the HTTP door.
+cicada-axum.workspace = true
+cicada-containers = { path = ".", features = ["testing"] }
+cicada-test.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true
