@@ -157,9 +157,20 @@ every holder its permit; new grants SHALL wait until fewer hold than the new cap
 ### Requirement: Audit asks every request to check in
 
 `Audit` SHALL send a `check` notice to every request in the books, holders with their grant number and waiting
-requests without one. It SHALL free nothing: a delivered permit SHALL come back only by a `Release`.
+requests without one, except a holder whose `granted` notice has not committed: a grant number SHALL reach a holder
+only through `granted`. It SHALL free nothing: a delivered permit SHALL come back only by a `Release`.
 
 #### Scenario: An audit frees only on a release
 
 - **WHEN** a pool with two holders gets `Audit`, and only one holder answers its `check` with `Release`
 - **THEN** both holders got a `check`, and only the holder that released lost its permit
+
+#### Scenario: A holder not yet told
+
+- **WHEN** a holder's `granted` notice has not committed, and the pool gets `Audit`
+- **THEN** that holder gets no `check`; once its `granted` notice committed, the next audit sends it one
+
+#### Scenario: A waiter granted before its check
+
+- **WHEN** an audit checks a waiting request, and a release grants it before its `check` runs
+- **THEN** it gets its `granted` notice and no `check`

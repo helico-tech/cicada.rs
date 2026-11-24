@@ -50,7 +50,10 @@ never meets a gone holder, as it creates each holder before it sends. ADR 0058.
 9. **Bad input is refused for good, state unchanged**: a `capacity` above 1,000, a request ID out of bounds (in any
    message), a `messageType` or `to` the send refuses (no such type, a type that does not take the message, a type
    name out of bounds). Not clamping: a silent change is worse than a visible refusal.
-10. **`Audit` frees nothing.** It sends `check` to every request in the books, holders and waiters. A holder whose
+10. **`Audit` frees nothing.** It sends `check` to every request in the books, holders and waiters, but not to a
+    holder whose `notified` is false (its grant notice is on its way; the next audit checks it), and a `check` that
+    runs when its request has become such a holder sends nothing: a grant number reaches a holder only through
+    `granted`, so decision 8 stays safe (owner, after build review 1). A holder whose
     work is confirmed stopped answers with `Release`; a waiter that gave up with `Cancel`; one still working ignores
     it. A delivered permit comes back only by `Release`, from the holder or an operator; never on a timeout.
 11. **Grants after every message, in FIFO order**: while fewer hold than the capacity and the queue is not empty, the

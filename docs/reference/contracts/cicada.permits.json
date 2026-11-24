@@ -32,7 +32,7 @@
     },
     "Audit": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "Sends a `check` notice to every request in the books, holders with their grant number and waiting requests\nwithout, each in a turn of its own. It frees nothing: a holder whose work is confirmed stopped answers with\n`Release`, a waiting request that gave up with `Cancel`.",
+      "description": "Sends a `check` notice to every request in the books, holders with their grant number and waiting requests\nwithout, each in a turn of its own. A holder whose `granted` notice has not committed yet gets none: its grant\nis on its way, and the next audit checks it; so a grant number reaches a holder only through `granted`. It frees\nnothing: a holder whose work is confirmed stopped answers with `Release`, a waiting request that gave up with\n`Cancel`.",
       "properties": {},
       "title": "Audit",
       "type": "object"
@@ -160,7 +160,7 @@
     },
     "Notify": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "Sends `request` what is true when it runs: its `granted` notice, or with `check` a `check` notice; nothing for a\nrequest no longer in the books. Sent by the pool to itself, with a retry policy.",
+      "description": "Sends `request` what is true when it runs: its `granted` notice, or with `check` a `check` notice; nothing for a\nrequest no longer in the books, and no `check` to a holder not yet told of its grant. Sent by the pool to itself,\nwith a retry policy.",
       "properties": {
         "check": {
           "description": "A `check` of an audit; false: a grant.",

@@ -483,6 +483,39 @@ async fn an_audit_asks_every_request_and_frees_nothing_itself() {
     assert_eq!(holders(&test).await, [("b".to_owned(), 2), ("c".to_owned(), 3)]);
 }
 
+/// An audit sends no `check` to a holder whose `granted` notice has not committed; once it has, the next audit does.
+#[tokio::test(start_paused = true)]
+async fn an_audit_checks_a_holder_only_after_its_grant_notice_committed() {
+    let test = node(1, 10).await;
+    test.system().delete_actor(&addr(&pool())).await.unwrap();
+    let untold = serde_json::json!({"capacity": 1, "maxWaiting": 10, "nextGrant": 2, "holders": [
+        {"request": "a", "to": "holder/a", "messageType": "Permit", "grant": 1, "notified": false}]});
+    test.create(&pool(), &untold).await;
+    test.send(&pool(), PermitsMsg::Audit).await;
+    test.run_until_idle().await;
+    assert!(notices(&test, "a").await.is_empty(), "no check before its grant notice");
+    ask(&test, "a").await;
+    assert_eq!(notices(&test, "a").await, [(Granted, Some(1))]);
+    assert!(state(&test).await.holders[0].notified);
+    test.send(&pool(), PermitsMsg::Audit).await;
+    test.run_until_idle().await;
+    assert_eq!(notices(&test, "a").await, [(Granted, Some(1)), (Check, Some(1))]);
+}
+
+/// A waiter checked by an audit and granted before its `check` runs gets no `check`: its number comes by `granted`.
+#[tokio::test(start_paused = true)]
+async fn a_waiter_granted_before_its_check_runs_gets_only_its_grant() {
+    let test = node(1, 10).await;
+    ask(&test, "e").await;
+    ask(&test, "a").await;
+    test.send(&pool(), PermitsMsg::Audit).await;
+    test.send(&pool(), PermitsMsg::Release { request: "e".into(), grant: 1 }).await;
+    test.run_until_idle().await;
+    assert_eq!(notices(&test, "a").await, [(Queued, None), (Granted, Some(2))]);
+    assert_eq!(notices(&test, "e").await, [(Granted, Some(1))], "a released holder is no longer checked");
+    assert_eq!(holders(&test).await, [("a".to_owned(), 2)]);
+}
+
 /// A notice of a `Notify` carries the correlation id of the message that made it.
 #[tokio::test(start_paused = true)]
 async fn a_grant_notice_carries_the_correlation_id_of_the_release() {

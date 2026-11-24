@@ -23,7 +23,7 @@ actor contracts, wire formats, the store schema and the guarantees are those of 
   nothing either. A repeated `Acquire` answers the same grant, or `queued` with its place kept, to the first target.
   `Release { request, grant }` frees a permit only for its current grant number; `Cancel` only leaves the queue;
   `Resize { capacity }` grants to the queue on a growth and revokes nothing on a shrink; `Audit` sends every request in
-  the books a `check` and frees nothing. A grant made by a release, cancel, resize or freed permit, and each `check`, is
+  the books a `check`, but none to a holder not yet told of its grant, and frees nothing. A grant made by a release, cancel, resize or freed permit, and each `check`, is
   sent by the pool's own `Notify` in a turn of its own, so a holder that is gone fails only its own notice; the pool
   watches itself, and a grant notice that failed before it ever reached its holder frees that permit and grants the
   next request. Bad input (a capacity above 1,000, a request ID or message type out of bounds, a target or type the send

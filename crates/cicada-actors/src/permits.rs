@@ -80,11 +80,14 @@ pub enum PermitsMsg {
         capacity: u32,
     },
     /// Sends a `check` notice to every request in the books, holders with their grant number and waiting requests
-    /// without, each in a turn of its own. It frees nothing: a holder whose work is confirmed stopped answers with
-    /// `Release`, a waiting request that gave up with `Cancel`.
+    /// without, each in a turn of its own. A holder whose `granted` notice has not committed yet gets none: its grant
+    /// is on its way, and the next audit checks it; so a grant number reaches a holder only through `granted`. It frees
+    /// nothing: a holder whose work is confirmed stopped answers with `Release`, a waiting request that gave up with
+    /// `Cancel`.
     Audit,
     /// Sends `request` what is true when it runs: its `granted` notice, or with `check` a `check` notice; nothing for a
-    /// request no longer in the books. Sent by the pool to itself, with a retry policy.
+    /// request no longer in the books, and no `check` to a holder not yet told of its grant. Sent by the pool to itself,
+    /// with a retry policy.
     Notify {
         /// The request.
         #[schemars(length(min = 1, max = 200))]
@@ -365,7 +368,7 @@ fn check_message_type(message_type: &str) -> Result<(), InvalidPermits> {
 /// A delivered permit comes back only by a `Release` that names its grant number, from the holder or an operator; no
 /// timeout and no audit frees one. A holder that is gone before its `granted` notice ever committed costs nothing: the
 /// pool watches itself, and the `Failed` of its own grant `Notify` frees that permit and grants the next waiter. A
-/// failed `check` frees nothing. Bad input is refused for good with the state unchanged: a capacity above 1,000, a
+/// failed `check` frees nothing, and no `check` goes to a holder before its `granted` committed. Bad input is refused for good with the state unchanged: a capacity above 1,000, a
 /// request ID or message type out of bounds, and a target or message type the send refuses (no registered type, or a
 /// type that does not take the message); a read of the store that fails is tried again.
 #[derive(Debug, Clone, Copy, Default)]
@@ -402,7 +405,7 @@ impl Actor for PermitsActor {
             }
             PermitsMsg::Audit => {
                 let state = turn.state();
-                let held = state.holders.iter().map(|h| h.request.clone());
+                let held = state.holders.iter().filter(|h| h.notified).map(|h| h.request.clone());
                 let requests: Vec<String> = held.chain(state.waiting.iter().map(|w| w.request.clone())).collect();
                 notify_later(turn, requests, true)?;
             }
@@ -500,13 +503,17 @@ fn notify_later(turn: &mut Turn<PermitsActor>, requests: Vec<String>, check: boo
 }
 
 /// Sends `request` what is true now: a holder its `granted` notice, marked as notified, or its `check` with the grant
-/// number; a waiting request its `check`; nothing otherwise.
+/// number once it was told of its grant; a waiting request its `check`; nothing otherwise. A waiter checked by an audit
+/// may be granted before its `check` runs: it gets no `check` until its `granted` committed.
 async fn notify(turn: &mut Turn<PermitsActor>, request: &str, check: bool) -> HandlerResult {
     let state = turn.state();
     if let Some(i) = state.holders.iter().position(|h| h.request == request) {
         let holder = &state.holders[i];
         let (to, message_type, grant, notified) =
             (holder.to.clone(), holder.message_type.clone(), holder.grant, holder.notified);
+        if check && !notified {
+            return Ok(());
+        }
         let kind = if check { PermitNoticeKind::Check } else { PermitNoticeKind::Granted };
         tell(turn, &to, &message_type, request, kind, Some(grant)).await?;
         if !check && !notified {

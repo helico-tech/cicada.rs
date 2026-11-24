@@ -39,6 +39,9 @@ Behaviour:
 - `Release` frees a permit only when that request holds that grant number; otherwise it is ignored. `Cancel` takes a
   waiter out of the queue and is ignored for a holder. `Resize` grows (grants to the queue) or shrinks (revokes
   nothing; new grants wait until fewer hold than the capacity). `Audit` frees nothing.
+- No `check` goes to a holder whose `granted` notice has not committed yet: an audit skips it (the next audit checks
+  it), and a waiter checked by an audit but granted before its `check` runs gets only its `granted`. So a grant number
+  reaches a holder only through `granted`: start work on `granted`, never on a `check`.
 - The pool watches itself once it sends a `Notify`. When its own grant `Notify` fails for a holder whose `granted` never
   committed, it frees that permit and grants the next waiter. A failed `check` frees nothing. A `Notify` or `Failed`
   a client sends does nothing.
@@ -46,7 +49,7 @@ Behaviour:
   of bounds, a target without a registered type or whose type does not take the message type. A NUL is refused by the
   core at the send.
 
-Proved by `crates/cicada-actors/tests/permits.rs` (25 tests on virtual time, one or more per spec scenario), the unit
+Proved by `crates/cicada-actors/tests/permits.rs` (27 tests on virtual time, one or more per spec scenario), the unit
 tests in `crates/cicada-actors/src/permits.rs`, and `tests/wire_formats.rs` (contract against
 `docs/reference/contracts/cicada.permits.json`, samples of each message, states with holders and waiting requests, a
 notice of each kind, and a state the pool writes). No worked example in `examples/` (design: the skill test would ask
