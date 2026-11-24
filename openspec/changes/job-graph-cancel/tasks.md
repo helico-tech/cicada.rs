@@ -32,6 +32,6 @@ before this one). Runtime behaviour is tested on virtual time (`#[tokio::test(st
   (already written; ADR 0059 is not edited). `docs-handoff.md` from "Docs it breaks" in the design; nothing blocks.
   No edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify: `cargo test -p cicada-examples --test docs`,
   `cargo test -p cicada-examples --test skill`.
-- [ ] 6. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
+- [x] 6. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
   `cargo test --workspace`, `openspec validate job-graph-cancel --strict`, commit, then `python3 scripts/gate.py run`
   (no E2E: no sample service, HTTP crate or app command changes; E2E runs at the release).
