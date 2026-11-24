@@ -47,7 +47,7 @@ cicada-code-factory `src/actors/container.rs`.
    (a failed poll would be lost): they count in `errors` and the next poll waits `min(interval × 2^errors,
    max_backoff)`; at `max_errors` in a row a container without an end ends `failed` (reason with the last error), while
    a removal keeps trying at `max_backoff`. A failed `logs` counts the same; at the limit the end is saved with
-   `(no logs: …)`. Any success resets `errors`. Not one turn that waits: a turn must not hold a claim for a container's
+   `(no logs: …)`. `errors` resets when a whole step completes (a start, or a recorded end), not after one call in it. Not one turn that waits: a turn must not hold a claim for a container's
    life.
 5. **The name is the settings' `prefix` plus the decoded key** (the key as given, not its percent-encoded form), so a repeated step finds the container. The prefix (required,
    `ContainerSettings::new(prefix)`) starts with a letter or digit and uses only `A-Za-z0-9_.-`. A key with other
