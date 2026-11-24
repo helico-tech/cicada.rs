@@ -11,21 +11,23 @@ use async_trait::async_trait;
 use bollard::errors::Error as DockerError;
 use bollard::models::{ContainerInspectResponse, NetworkCreateRequest, VolumeCreateRequest};
 use bollard::query_parameters::{
-    CreateContainerOptionsBuilder, CreateImageOptionsBuilder, DownloadFromContainerOptionsBuilder,
-    InspectContainerOptions, InspectNetworkOptions, ListContainersOptionsBuilder, ListNetworksOptionsBuilder,
-    ListVolumesOptionsBuilder, LogsOptionsBuilder, RemoveContainerOptionsBuilder, RemoveVolumeOptions,
-    StartContainerOptions, StopContainerOptionsBuilder, UploadToContainerOptionsBuilder,
+    ContainerArchiveInfoOptionsBuilder, CreateContainerOptionsBuilder, CreateImageOptionsBuilder,
+    DownloadFromContainerOptionsBuilder, InspectContainerOptions, InspectNetworkOptions, ListContainersOptionsBuilder,
+    ListNetworksOptionsBuilder, ListVolumesOptionsBuilder, LogsOptionsBuilder, RemoveContainerOptionsBuilder,
+    RemoveVolumeOptions, StartContainerOptions, StopContainerOptionsBuilder, UploadToContainerOptionsBuilder,
 };
 use bollard::{ClientVersion, Docker};
 use futures::StreamExt;
 use tokio::sync::OnceCell;
 
-use self::map::{fail, kind_of, message_of, status_code};
+use self::map::{Upload, fail, kind_of, message_of, status_code};
 use crate::copy::Collector;
+use crate::dirs::{self, MAKE, Stat, ToMake};
 use crate::logs::{Pager, check_max_lines};
+use crate::paths::MountTarget;
 use crate::{
-    ContainerError, ContainerRuntime, ContainerSpec, ContainerStatus, ContainerSummary, CopyFile, CopyLimits, CopyOut,
-    ErrorKind, Label, LogCursor, LogPage, NetworkSpec, Resource, Skipped, Swept, VolumeSpec,
+    ContainerError, ContainerRuntime, ContainerSpec, ContainerStatus, ContainerSummary, CopyDir, CopyFile, CopyLimits,
+    CopyOut, ErrorKind, Label, LogCursor, LogPage, NetworkSpec, Resource, Skipped, Swept, VolumeSpec,
 };
 
 /// The oldest Docker Engine API the backend speaks: Docker 25, which joins several networks in one create.
@@ -50,6 +52,9 @@ const STOP_SLACK: Duration = Duration::from_secs(60);
 ///   unless the image names another, such as SIGINT (130) for `postgres`.
 /// - [`copy_in`](ContainerRuntime::copy_in) writes with a read-only root only below a volume or bind mount. It never
 ///   writes at or below a tmpfs, which Docker mounts only at start, over the file, and never onto a mount target.
+/// - [`make_dirs`](ContainerRuntime::make_dirs) asks Docker's archive stat for each part of a named folder from the
+///   root, follows links itself, and uploads a tar of only the missing folders under their paths without links, owned
+///   by uid and gid 0, so no existing folder's owner or mode changes.
 /// - [`logs_since`](ContainerRuntime::logs_since) reads Docker's log with timestamps from the cursor's second and
 ///   stops once the page is full; a container whose log driver cannot be read (`none`) fails with `Other`.
 /// - [`copy_out`](ContainerRuntime::copy_out) reads Docker's archive of the path as a stream, on a blocking thread of
@@ -170,6 +175,55 @@ impl DockerRuntime {
         }
     }
 
+    /// The found container `name` if it is `Created`, with its read-only root flag and mounts; else `Conflict`, for
+    /// `action` such as `copy into`.
+    async fn created(
+        &self,
+        docker: &Docker,
+        action: &str,
+        name: &str,
+    ) -> Result<(Found, bool, Vec<MountTarget>), ContainerError> {
+        let found = self.find(docker, name).await?.ok_or_else(|| conflict(action, name))?;
+        let status = Self::status(name, &found)?;
+        if status != ContainerStatus::Created {
+            return Err(ContainerError::new(
+                ErrorKind::Conflict,
+                format!("{action} {name}: the container is {status:?}, not created"),
+            ));
+        }
+        let host_config = found.info.host_config.as_ref();
+        let read_only_root = host_config.and_then(|h| h.readonly_rootfs).unwrap_or(false);
+        let tmpfs = host_config.and_then(|h| h.tmpfs.as_ref());
+        let mounts = map::mount_targets(found.info.mounts.as_deref().unwrap_or_default(), tmpfs);
+        Ok((found, read_only_root, mounts))
+    }
+
+    /// Sends each of `uploads` into the container `id`, for `action` on `name`.
+    async fn upload(
+        docker: &Docker,
+        action: &str,
+        name: &str,
+        id: &str,
+        uploads: Vec<Upload>,
+    ) -> Result<(), ContainerError> {
+        for upload in uploads {
+            let options = UploadToContainerOptionsBuilder::new().path(&upload.dir).build();
+            let body = bollard::body_full(upload.tar.into());
+            docker.upload_to_container(id, Some(options), body).await.map_err(|e| fail(action, name, &e))?;
+        }
+        Ok(())
+    }
+
+    /// What Docker's archive stat finds at `path` of the container `id`: its 404 is [`Stat::Missing`].
+    async fn stat(docker: &Docker, name: &str, id: &str, path: String) -> Stat {
+        let options = ContainerArchiveInfoOptionsBuilder::new().path(&path).build();
+        match docker.get_container_archive_info(id, Some(options)).await {
+            Ok(stat) => map::stat_of(stat.file_mode, &stat.link_target),
+            Err(e) if status_code(&e) == Some(404) => Stat::Missing,
+            Err(e) => Stat::Failed(fail(MAKE, name, &e)),
+        }
+    }
+
     /// Removes the container `id`, forced, with its anonymous volumes; gone already or being removed is `Ok`.
     async fn remove_id(docker: &Docker, name: &str, id: &str) -> Result<(), ContainerError> {
         let options = RemoveContainerOptionsBuilder::new().force(true).v(true).build();
@@ -218,27 +272,27 @@ impl ContainerRuntime for DockerRuntime {
 
     async fn copy_in(&self, name: &str, files: &[CopyFile]) -> Result<(), ContainerError> {
         let docker = self.docker().await?;
-        let found = self.find(docker, name).await?.ok_or_else(|| conflict("copy into", name))?;
-        let status = Self::status(name, &found)?;
-        if status != ContainerStatus::Created {
-            return Err(ContainerError::new(
-                ErrorKind::Conflict,
-                format!("copy into {name}: the container is {status:?}, not created"),
-            ));
+        let (found, read_only_root, mounts) = self.created(docker, "copy into", name).await?;
+        let uploads = map::uploads(name, files, read_only_root, &mounts)?;
+        Self::upload(docker, "copy into", name, &found.id, uploads).await
+    }
+
+    async fn make_dirs(&self, name: &str, dirs: &[CopyDir]) -> Result<(), ContainerError> {
+        let docker = self.docker().await?;
+        let (container, read_only_root, mounts) = self.created(docker, MAKE, name).await?;
+        let mut to_make = ToMake::default();
+        let mut saw_missing = false;
+        for (parts, mode) in dirs::named(name, dirs, read_only_root, &mounts)? {
+            let found = dirs::walk(name, &parts, |path| Self::stat(docker, name, &container.id, path)).await?;
+            saw_missing |= !found.missing.is_empty();
+            to_make.add(name, found, mode)?;
         }
-        let host_config = found.info.host_config.as_ref();
-        let read_only_root = host_config.and_then(|h| h.readonly_rootfs).unwrap_or(false);
-        let tmpfs = host_config.and_then(|h| h.tmpfs.as_ref());
-        let mounts = map::mount_targets(found.info.mounts.as_deref().unwrap_or_default(), tmpfs);
-        for upload in map::uploads(name, files, read_only_root, &mounts)? {
-            let options = UploadToContainerOptionsBuilder::new().path(&upload.dir).build();
-            let body = bollard::body_full(upload.tar.into());
-            docker
-                .upload_to_container(&found.id, Some(options), body)
-                .await
-                .map_err(|e| fail("copy into", name, &e))?;
+        // Docker's 404 also answers for a container removed since the inspect.
+        if saw_missing && self.find(docker, name).await?.is_none() {
+            return Err(conflict(MAKE, name));
         }
-        Ok(())
+        let made = to_make.finish(name, read_only_root, &mounts)?;
+        Self::upload(docker, MAKE, name, &container.id, map::dir_uploads(name, &made)?).await
     }
 
     async fn start(&self, name: &str) -> Result<(), ContainerError> {

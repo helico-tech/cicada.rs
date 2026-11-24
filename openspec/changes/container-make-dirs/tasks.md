@@ -20,7 +20,7 @@ Version). Builds on `container-consistency` (the shared path rule, landed) and f
   runtime spec (a folder made twice, an existing folder left alone with a new child, a file at the path and at a
   parent, a named parent in either order, one path named twice, a bad mode, a late call) and a scripted failure;
   `cargo test -p cicada-containers --all-features`.
-- [ ] 3. **The Docker backend.** `DockerRuntime::make_dirs` in `src/docker/mod.rs`, pure parts in `src/docker/map.rs`
+- [x] 3. **The Docker backend.** `DockerRuntime::make_dirs` in `src/docker/mod.rs`, pure parts in `src/docker/map.rs`
   (decisions 4 and 5): find the container (`Conflict` unless `Created`); check paths, modes and overlaps; ask
   `get_container_archive_info` for each named folder; on 404, or any other error, walk its parents upward until one
   exists (a parent that is a file is `Conflict`; with no such parent a non-404 error maps by `kind_of`); follow a

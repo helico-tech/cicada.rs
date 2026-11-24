@@ -1,6 +1,6 @@
 //! The pure half of the Docker backend: a spec onto Docker's create body, Docker's state onto a status, its errors
-//! onto kinds, the secret scrub, the paths and tars of `copy_in`, and the frames of a timed log read. Nothing here
-//! talks to the daemon.
+//! onto kinds, the secret scrub, the paths and tars of `copy_in` and `make_dirs`, the archive stat, and the frames of a
+//! timed log read. Nothing here talks to the daemon.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -11,6 +11,7 @@ use bollard::models::{
     HostConfig, Mount as DockerMount, MountPoint, MountType, NetworkingConfig,
 };
 
+use crate::dirs::{Make, Stat};
 use crate::paths::{MountTarget, Mounted, place};
 use crate::{
     ContainerError, ContainerSpec, ContainerStatus, ContainerSummary, CopyFile, ErrorKind, LogCursor, LogLine,
@@ -269,6 +270,62 @@ pub(super) fn uploads(
             Ok(Upload { dir: format!("/{}", dir.join("/")), tar })
         })
         .collect()
+}
+
+/// The bit of Go's `os.FileMode` that Docker's archive stat sets for a folder (`ModeDir`).
+const GO_MODE_DIR: u32 = 1 << 31;
+/// The bit of Go's `os.FileMode` that Docker's archive stat sets for a symbolic link (`ModeSymlink`).
+const GO_MODE_SYMLINK: u32 = 1 << 27;
+
+/// What Docker's archive stat says of a path, from its Go file mode and link target: a folder, a link to
+/// `link_target`, or anything else. The stat does not follow a link at the path's last part.
+pub(super) fn stat_of(file_mode: u32, link_target: &str) -> Stat {
+    if file_mode & GO_MODE_DIR != 0 {
+        Stat::Folder
+    } else if file_mode & GO_MODE_SYMLINK != 0 {
+        Stat::Link(link_target.to_owned())
+    } else {
+        Stat::Other
+    }
+}
+
+/// The uploads that make the folders of `made`, in its order (parents first): one tar of folder entries at `/`, or
+/// with a read-only root one per mount, each folder named by its path relative to the upload's directory.
+pub(super) fn dir_uploads(name: &str, made: &[Make]) -> Result<Vec<Upload>, ContainerError> {
+    let mut groups: BTreeMap<Vec<String>, Vec<(String, u32)>> = BTreeMap::new();
+    for make in made {
+        let dir = make.mount.clone().unwrap_or_default();
+        let relative = make.parts[dir.len()..].join("/");
+        groups.entry(dir).or_default().push((relative, make.mode));
+    }
+    groups
+        .into_iter()
+        .map(|(dir, dirs)| {
+            let tar = dir_tar(&dirs).map_err(|e| {
+                ContainerError::new(
+                    ErrorKind::InvalidSpec,
+                    format!("make folders in {name}: cannot build the tar: {e}"),
+                )
+            })?;
+            Ok(Upload { dir: format!("/{}", dir.join("/")), tar })
+        })
+        .collect()
+}
+
+/// A tar of folder entries under their relative paths: each with its mode, owned by uid and gid 0, with mtime 0.
+fn dir_tar(dirs: &[(String, u32)]) -> std::io::Result<Vec<u8>> {
+    let mut builder = tar::Builder::new(Vec::new());
+    for (path, mode) in dirs {
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Directory);
+        header.set_size(0);
+        header.set_mode(*mode);
+        header.set_uid(0);
+        header.set_gid(0);
+        header.set_mtime(0);
+        builder.append_data(&mut header, format!("{path}/"), std::io::empty())?;
+    }
+    builder.into_inner()
 }
 
 /// A tar of `files` under their relative paths: each with its mode, owned by uid and gid 0, with mtime 0.
@@ -667,6 +724,67 @@ mod tests {
         let error = uploads("job-1", &files, false, &mounts).unwrap_err();
         assert_eq!(error.kind, ErrorKind::InvalidSpec);
         assert!(error.message.contains("/scratch/c"), "{error}");
+    }
+
+    #[test]
+    fn the_archive_stat_tells_a_folder_a_link_and_anything_else() {
+        assert!(matches!(stat_of(GO_MODE_DIR | 0o755, ""), Stat::Folder));
+        assert!(matches!(stat_of(GO_MODE_DIR | 0o1777, ""), Stat::Folder), "with the sticky bit");
+        assert!(matches!(stat_of(GO_MODE_SYMLINK | 0o777, "/run"), Stat::Link(target) if target == "/run"));
+        assert!(matches!(stat_of(0o644, ""), Stat::Other), "a regular file");
+        assert!(matches!(stat_of(1 << 26 | 0o660, ""), Stat::Other), "a device");
+    }
+
+    fn make(path: &str, mode: u32, mount: Option<&str>) -> Make {
+        let parts = |p: &str| p.split('/').filter(|p| !p.is_empty()).map(str::to_owned).collect::<Vec<_>>();
+        Make { parts: parts(path), mode, mount: mount.map(parts) }
+    }
+
+    #[test]
+    fn the_tar_of_make_dirs_holds_the_folders_parents_first_with_their_modes() {
+        let made = [make("/run/app", 0o755, None), make("/run/app/sock", 0o777, None), make("/tmp/out", 0o700, None)];
+        let uploads = dir_uploads("job-1", &made).unwrap();
+        assert_eq!(uploads.len(), 1);
+        assert_eq!(uploads[0].dir, "/");
+        let mut archive = tar::Archive::new(uploads[0].tar.as_slice());
+        let headers: Vec<(String, tar::EntryType, u32, u64, u64, u64)> = archive
+            .entries()
+            .unwrap()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                let header = entry.header();
+                let path = entry.path().unwrap().display().to_string();
+                let size = header.size().unwrap();
+                (path, header.entry_type(), header.mode().unwrap(), header.uid().unwrap(), header.gid().unwrap(), size)
+            })
+            .collect();
+        let folder = tar::EntryType::Directory;
+        assert_eq!(
+            headers,
+            [
+                ("run/app/".to_owned(), folder, 0o755, 0, 0, 0),
+                ("run/app/sock/".to_owned(), folder, 0o777, 0, 0, 0),
+                ("tmp/out/".to_owned(), folder, 0o700, 0, 0, 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_read_only_root_gets_one_folder_tar_per_mount() {
+        let made = [
+            make("/work/cache", 0o755, Some("/work")),
+            make("/work/cache/a", 0o777, Some("/work")),
+            make("/out/x", 0o777, Some("/out")),
+        ];
+        let uploads = dir_uploads("job-1", &made).unwrap();
+        let dirs: Vec<&str> = uploads.iter().map(|u| u.dir.as_str()).collect();
+        assert_eq!(dirs, ["/out", "/work"]);
+        let paths = |tar: &[u8]| -> Vec<String> {
+            let mut archive = tar::Archive::new(tar);
+            archive.entries().unwrap().map(|e| e.unwrap().path().unwrap().display().to_string()).collect()
+        };
+        assert_eq!(paths(&uploads[0].tar), ["x/"]);
+        assert_eq!(paths(&uploads[1].tar), ["cache/", "cache/a/"]);
     }
 
     #[test]
