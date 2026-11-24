@@ -25,5 +25,6 @@ After `container-consistency`, before `container-copy-out`.
 
 ## Impact
 
-The trait (an added method, so every implementation outside this repo must add it), the fake, the Docker backend and
-its E2E class. Additive for callers, a patch. Docs handoff: the runtime section of the guide.
+The trait (an added method with a default that fails with `Other`, so no implementation outside this repo breaks; design
+decision 5), the fake, the Docker backend and its E2E class. Additive for callers, a patch. Docs handoff: the runtime
+section of the guide.
