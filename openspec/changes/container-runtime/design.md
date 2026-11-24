@@ -52,7 +52,7 @@ References: cicada-code-factory `src/runner/` (bollard `Runner` and fake), brood
 9. **`copy_in` takes files, not a tar** (C-COPY): `&[CopyFile { path, contents: Vec<u8>, mode: u32 }]` with absolute
    paths, meant for a created container before `start`. The backend builds the archive; the trait needs no tar crate
    and the fake records readable files. Repeating it writes the same files again. With `read_only_root`, a path must
-   lie on a mount; a backend refuses another with `InvalidSpec`. Not a raw tar: every caller would
+   lie on a volume or bind mount (a tmpfs is mounted only at start); a backend refuses another with `InvalidSpec`. Not a raw tar: every caller would
    build one.
 10. **No streaming** (C-STREAM): `logs(name, tail_lines)` returns the last lines of stdout and stderr together, as
     lossy UTF-8. brood's live output stays in brood. Not an optional attach method: the actor cannot use it, and it
