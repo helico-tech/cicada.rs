@@ -1,14 +1,14 @@
 //! `DockerRuntime` of `cicada-containers` against the real daemon: the repeat rules, the status and error mappings,
-//! `copy_in`, `copy_out`, the log pages, the pull, the hardening and the sweep. Everything it makes is named `cicada-rs-e2e-ctr-*` and carries
+//! `copy_in`, `make_dirs`, `copy_out`, the log pages, the pull, the hardening and the sweep. Everything it makes is named `cicada-rs-e2e-ctr-*` and carries
 //! `CONTAINER_LABEL`; the hooks sweep that label, and the suite's teardown removes it after a panic or Ctrl-C.
 
 use std::sync::OnceLock;
 use std::time::Duration;
 
 use cicada_containers::{
-    ContainerError, ContainerRuntime, ContainerSpec, ContainerStatus, CopyFile, CopyLimits, CopyOut, DockerRuntime,
-    ErrorKind, Label, LogCursor, LogLine, LogStream, Mount, MountKind, NetworkAttachment, NetworkSpec, Networking,
-    Resource, Tmpfs, VolumeSpec,
+    ContainerError, ContainerRuntime, ContainerSpec, ContainerStatus, CopyDir, CopyFile, CopyLimits, CopyOut,
+    DockerRuntime, ErrorKind, Label, LogCursor, LogLine, LogStream, Mount, MountKind, NetworkAttachment, NetworkSpec,
+    Networking, Resource, Tmpfs, VolumeSpec,
 };
 use cicada_e2e::cluster::eventually;
 use cicada_e2e::docker::{docker, docker_blocking};
@@ -36,6 +36,9 @@ pub fn class() -> Class {
                 step!(an_id_prefix_is_not_a_name),
                 step!(copy_in_writes_before_start_and_conflicts_after),
                 step!(copy_in_on_a_read_only_root_writes_only_to_a_mount),
+                step!(make_dirs_gives_user_1000_a_folder_and_leaves_existing_ones_alone),
+                step!(make_dirs_refuses_a_file_and_a_path_below_a_file_and_a_late_call),
+                step!(make_dirs_on_a_read_only_root_makes_only_on_a_mount),
                 step!(copy_out_collects_regular_files_and_skips_links),
                 step!(copy_out_keeps_within_its_limits),
                 step!(copy_out_after_the_end_reads_a_volume_and_not_a_tmpfs),
@@ -273,6 +276,84 @@ async fn copy_in_on_a_read_only_root_writes_only_to_a_mount() {
     assert!(logs.starts_with("on the volume\n"), "{logs}");
     assert!(logs.contains("No such file"), "nothing written to the root: {logs}");
     assert!(!logs.contains("x written"), "nothing written with the mount target: {logs}");
+    runtime().remove(&spec.name).await.unwrap();
+}
+
+fn dir(path: &str, mode: u32) -> CopyDir {
+    let mut dir = CopyDir::new(path);
+    dir.mode = mode;
+    dir
+}
+
+/// The mode, owner and group of each folder the make_dirs tests look at.
+const STAT_FOLDERS: &str = "stat -c '%n %a %u:%g' /tmp /run/postgresql";
+
+async fn make_dirs_gives_user_1000_a_folder_and_leaves_existing_ones_alone() {
+    // What the image holds before any call: /tmp at 1777, /run/postgresql at 3777 of postgres, /var/run a link.
+    let before = spec("dirs-before", STAT_FOLDERS);
+    let before_name = ran(&before).await;
+    let before = runtime().logs(before_name, 100).await.unwrap();
+    runtime().remove(before_name).await.unwrap();
+    assert_eq!(before, "/tmp 1777 0:0\n/run/postgresql 3777 999:999\n", "the image changed");
+
+    let script = format!(
+        "touch /out/a && test -f /out/a && {STAT_FOLDERS} /out /tmp/out /run/app && test -L /var/run && echo link"
+    );
+    let mut spec = spec("dirs", &script);
+    spec.user = Some("1000".into());
+    runtime().create(&spec).await.unwrap();
+    let dirs =
+        [dir("/out", 0o777), CopyDir::new("/tmp/out"), dir("/run/postgresql", 0o700), CopyDir::new("/var/run/app")];
+    runtime().make_dirs(&spec.name, &dirs).await.unwrap();
+    runtime().make_dirs(&spec.name, &dirs).await.unwrap();
+    runtime().start(&spec.name).await.unwrap();
+    assert_eq!(ended(&spec.name).await, ContainerStatus::Exited { code: 0 }, "user 1000 writes /out/a");
+    let logs = runtime().logs(&spec.name, 100).await.unwrap();
+    let expected = format!("{before}/out 777 0:0\n/tmp/out 755 0:0\n/run/app 755 0:0\nlink\n");
+    assert_eq!(logs, expected, "existing folders keep their owner and mode; /var/run/app is made through the link");
+    runtime().remove(&spec.name).await.unwrap();
+}
+
+async fn make_dirs_refuses_a_file_and_a_path_below_a_file_and_a_late_call() {
+    let spec = spec("dirs-file", "sleep 600");
+    runtime().create(&spec).await.unwrap();
+    // A file at the path, and below a file: this pins Docker's answer for a path below a file.
+    for path in ["/etc/passwd", "/etc/passwd/x"] {
+        let dirs = [CopyDir::new("/not-made"), CopyDir::new(path)];
+        let error = runtime().make_dirs(&spec.name, &dirs).await.unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Conflict, "{path}: {error}");
+        assert!(error.message.contains("/etc/passwd is a file, not a folder"), "{error}");
+    }
+    let twice = [dir("/twice", 0o777), dir("/twice", 0o755)];
+    assert_eq!(kind(runtime().make_dirs(&spec.name, &twice).await), ErrorKind::InvalidSpec);
+    let bad_mode = [dir("/bad-mode", 0o10000)];
+    assert_eq!(kind(runtime().make_dirs(&spec.name, &bad_mode).await), ErrorKind::InvalidSpec);
+    runtime().start(&spec.name).await.unwrap();
+    for path in ["/not-made", "/twice", "/bad-mode"] {
+        assert!(!exists(&spec.name, path).await, "{path} not made");
+    }
+    let late = [CopyDir::new("/late")];
+    assert_eq!(kind(runtime().make_dirs(&spec.name, &late).await), ErrorKind::Conflict, "after start");
+    assert!(!exists(&spec.name, "/late").await, "nothing made");
+    runtime().remove(&spec.name).await.unwrap();
+    assert_eq!(kind(runtime().make_dirs(&spec.name, &late).await), ErrorKind::Conflict, "a missing container");
+}
+
+async fn make_dirs_on_a_read_only_root_makes_only_on_a_mount() {
+    let volume = labelled_volume("ro-dirs").await;
+    let mut spec = spec("ro-dirs", "stat -c '%n %a %u:%g' /work/cache; test -e /etc/x || echo no /etc/x");
+    spec.read_only_root = true;
+    spec.mounts.push(Mount::new(MountKind::Volume, &volume, "/work"));
+    runtime().create(&spec).await.unwrap();
+    let both = [dir("/work/cache", 0o777), CopyDir::new("/etc/x")];
+    assert_eq!(kind(runtime().make_dirs(&spec.name, &both).await), ErrorKind::InvalidSpec);
+    let root = [CopyDir::new("/work")];
+    assert_eq!(kind(runtime().make_dirs(&spec.name, &root).await), ErrorKind::InvalidSpec, "the volume's root");
+    runtime().make_dirs(&spec.name, &both[..1]).await.unwrap();
+    runtime().start(&spec.name).await.unwrap();
+    assert_eq!(ended(&spec.name).await, ContainerStatus::Exited { code: 0 });
+    let logs = runtime().logs(&spec.name, 100).await.unwrap();
+    assert_eq!(logs, "/work/cache 777 0:0\nno /etc/x\n");
     runtime().remove(&spec.name).await.unwrap();
 }
 

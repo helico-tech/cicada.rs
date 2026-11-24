@@ -31,7 +31,7 @@ Version). Builds on `container-consistency` (the shared path rule, landed) and f
   the missing folders, parents first, with their modes and resolved paths; the folder bit and a link target of a
   stat; link resolution: absolute, relative, `..` stopping at `/`, a ninth hop; grouping per mount with a read-only
   root); `cargo test -p cicada-containers --all-features`.
-- [ ] 4. **E2E, changelog and docs handoff.** In `e2e/tests/suite/container_docker.rs`, the cases of the design's
+- [x] 4. **E2E, changelog and docs handoff.** In `e2e/tests/suite/container_docker.rs`, the cases of the design's
   Tests section: `/out` at 0777 written by a program running as user 1000; `/tmp/out` leaves `/tmp` at 1777;
   `/run/postgresql` keeps the owner and mode it had before the call; `/var/run/app` makes `/run/app` through the
   image's link and `/var/run` stays a link; a file at the path, and `/etc/passwd/x` below a file, are `Conflict`
