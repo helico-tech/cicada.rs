@@ -44,7 +44,7 @@ with `TestActors`) and the fake.
   types and end targets; add `kind` to `ContainerEnd` literals) for the container guide and `docs/how-to/upgrading.md`;
   nothing blocks. No edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify: `cargo test -p cicada-containers
   --test actor`; `cargo test -p cicada-examples --test docs`; `cargo test -p cicada-examples --test skill`.
-- [ ] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
+- [x] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
   `cargo test --workspace`, `openspec validate container-limits-and-kinds --strict`, commit, then
   `python3 scripts/gate.py run` (no E2E: the actor runs on the fake and no task touches `e2e/`; E2E runs at the
   release).
