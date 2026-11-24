@@ -16,10 +16,10 @@ the tar and the mount check of `copy_in`) are unit tests that run without Docker
   its `copy_in` also refuses a path with `..` and a path on a read-only mount, and `CopyFile`'s `Debug` shows the path,
   mode and length, not the contents. Verify: unit tests of the status mapping, the tar and the mount check;
   `cargo test -p cicada-containers --features docker`.
-- [ ] 3. **The Docker test.** The new class in `cicada-e2e` as in the design's test section: every scenario of the spec
+- [x] 3. **The Docker test.** The new class in `cicada-e2e` as in the design's test section: every scenario of the spec
   against a real daemon, its label, its sweep before and after, and the cleanup after a panic. Verify:
   `CICADA_E2E=1 cargo test -p cicada-e2e -- --nocapture` (the new class, then the whole suite).
-- [ ] 4. **Gate, version and docs handoff.** `scripts/ci/feature-builds.sh`: the crate with `--features docker`.
+- [x] 4. **Gate, version and docs handoff.** `scripts/ci/feature-builds.sh`: the crate with `--features docker`.
   `scripts/ci/dependency-trees.sh`: no `bollard` in the crate's default tree, no rustls or native-tls with `docker`.
   The `0.20.7 — unreleased` changelog section names the backend. `docs-handoff.md` from the design's handoff list;
   nothing blocks. Verify: `bash scripts/ci/feature-builds.sh`, `bash scripts/ci/dependency-trees.sh`,

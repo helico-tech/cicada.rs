@@ -40,6 +40,8 @@ const STOP_SLACK: Duration = Duration::from_secs(60);
 ///   treats another name as missing and acts on the full ID it found.
 /// - [`create`](ContainerRuntime::create) pulls a missing image without a registry login, so a private image must be
 ///   local. An existing container is kept, even when its image is gone.
+/// - [`stop`](ContainerRuntime::stop) sends the image's stop signal, as `docker stop` does: SIGTERM (exit code 143)
+///   unless the image names another, such as SIGINT (130) for `postgres`.
 /// - [`copy_in`](ContainerRuntime::copy_in) writes with a read-only root only below a volume or bind mount, not a
 ///   tmpfs, which Docker mounts only at start.
 /// - Secret environment goes to Docker only in the body of the create call, and an error message never holds a secret

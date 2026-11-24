@@ -9,7 +9,7 @@ moves: a correction is a new version.
 
 ## 0.20.7 — unreleased
 
-A new optional crate, `cicada-containers`, for applications that run containers. The existing crates, actor contracts,
+A new optional crate, `cicada-containers`, for applications that run containers, with a Docker backend. The existing crates, actor contracts,
 wire formats, the store schema and the guarantees are those of 0.20.6.
 
 ### Added
@@ -21,8 +21,18 @@ wire formats, the store schema and the guarantees are those of 0.20.6.
   names) and has hardening fields that are off by default. `ContainerStatus` tells a program's exit (`Exited`) from
   the runtime's failure (`Failed`), and `ContainerError` has one `ErrorKind`, of which only `DaemonUnavailable` is
   retryable. The feature `testing` adds `FakeRuntime`, an in-memory runtime without timers that scripts exits, logs
-  and failures and records every call. No backend yet: the Docker backend comes with `container-docker`. No other crate
-  of the workspace depends on it, which the gate checks. Covered by the unit tests of the crate.
+  and failures and records every call. No other crate of the workspace depends on it, which the gate checks. Covered
+  by the unit tests of the crate.
+- `cicada-containers` feature `docker`: `DockerRuntime::connect()`, the `ContainerRuntime` over the Docker Engine API
+  (bollard, without TLS). It reads `DOCKER_HOST` (`unix://`, `tcp://`, `http://`) or uses the local socket, agrees the
+  API version on the first call and needs Docker 25 or later. Containers are found by their exact name, never an ID
+  prefix; `create` pulls a missing image (`ImageNotFound` when the registry has none) and keeps an existing container
+  even when its image is gone; `copy_in` with a read-only root writes only below a volume or bind mount. The spec's
+  limits and hardening map onto Docker's create call (a memory limit allows no swap), and secret environment goes
+  only into its body and never into an error message. bollard logs request bodies at `debug` under the target
+  `bollard`: keep that target at `info`. Covered by unit tests and the E2E class `ContainerDockerTest`.
+- `FakeRuntime::copy_in` also refuses a path with a `..` part and a path on a read-only mount, as Docker does, and
+  `CopyFile`'s `Debug` shows its path, mode and length, not its contents.
 - ADR 0056: a layer for an external resource that two consumers need may live in an optional crate of this
   workspace; it supersedes in part ADR 0011.
 

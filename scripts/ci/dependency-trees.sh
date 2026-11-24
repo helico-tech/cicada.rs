@@ -8,6 +8,7 @@
 # - The whole workspace, on every target and with its dev-dependencies, builds rustls with one crypto provider: with
 #   both ring and aws-lc-rs, every caller that leaves the choice to rustls panics.
 # - No library crate has cicada-containers in its tree, with every feature and its dev-dependencies (ADR 0056).
+# - cicada-containers without features builds no Docker client; with docker it builds bollard and no TLS library.
 set -euo pipefail
 trees=$(mktemp -d)
 trap 'rm -rf "$trees"' EXIT
@@ -36,3 +37,9 @@ for crate in cicada cicada-test cicada-axum cicada-client cicada-otel cicada-act
     grep -q "^$crate v" "$trees/lib-$crate.txt" || { echo "the tree of $crate does not hold $crate"; exit 1; }
     if grep -q '^cicada-containers v' "$trees/lib-$crate.txt"; then echo "$crate builds cicada-containers"; exit 1; fi
 done
+
+cargo tree -p cicada-containers -e normal --target all > "$trees/containers.txt"
+cargo tree -p cicada-containers -e normal --target all --features docker > "$trees/containers-docker.txt"
+grep -q 'bollard v' "$trees/containers-docker.txt" || { echo "docker does not build bollard"; exit 1; }
+if grep -q bollard "$trees/containers.txt"; then echo "cicada-containers without docker builds bollard"; exit 1; fi
+if grep -qE 'rustls|native-tls' "$trees/containers-docker.txt"; then echo "cicada-containers with docker builds a TLS library"; exit 1; fi
