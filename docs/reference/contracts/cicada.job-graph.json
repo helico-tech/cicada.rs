@@ -1,5 +1,22 @@
 {
   "messages": {
+    "Cancel": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Cancels `job`, or every job when it is absent: a waiting job becomes `cancelled`, and so does a running one, whose\nattempt ends with outcome `cancelled` and reason `cancelled`; its worker is told when the job names a\n`cancelType` and its job message was sent. Ended and skipped jobs, and an ended run, are left alone, so a\nrepeated `Cancel` changes nothing. A job name the run does not have is refused for good with the state unchanged.\nThen, in its commit, the dependents of a cancelled job are skipped, ready jobs start in the freed slots and the\nrun may end: `cancelled` when no job failed.",
+      "properties": {
+        "job": {
+          "description": "The job; absent or null: every job.",
+          "maxLength": 64,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "title": "Cancel",
+      "type": "object"
+    },
     "Dispatch": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "description": "Sends the job message of `attempt` when it is still the job's current attempt, not yet dispatched, while the\njob is running. Sent by the run to itself, with a retry policy.",
@@ -138,7 +155,7 @@
     "Result": {
       "$defs": {
         "JobOutcome": {
-          "description": "How an attempt ended.",
+          "description": "How an attempt ended, as its worker reports it in a `Result`: a worker cannot report `cancelled`.",
           "oneOf": [
             {
               "const": "succeeded",
@@ -190,6 +207,30 @@
         "outcome"
       ],
       "title": "Result",
+      "type": "object"
+    },
+    "SendCancel": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Sends the job's `cancelType` with a [`JobCancel`] to its target while `attempt` is still kept, was dispatched\nand ended `cancelled`, whatever the job's status is by then. Sent by the run to itself, with a retry policy, in\nthe commit of the `Cancel`; so a gone worker fails only this message.",
+      "properties": {
+        "attempt": {
+          "description": "The cancelled attempt.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "job": {
+          "description": "The job.",
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "job",
+        "attempt"
+      ],
+      "title": "SendCancel",
       "type": "object"
     },
     "Start": {
@@ -247,6 +288,26 @@
   },
   "state": {
     "$defs": {
+      "AttemptOutcome": {
+        "description": "How an attempt ended, as the run keeps it: the outcome of its result, or `cancelled` by a `Cancel`.",
+        "oneOf": [
+          {
+            "const": "succeeded",
+            "description": "The job did its work.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "The job did not do its work.",
+            "type": "string"
+          },
+          {
+            "const": "cancelled",
+            "description": "The job was cancelled while the attempt was open.",
+            "type": "string"
+          }
+        ]
+      },
       "JobAttempt": {
         "description": "One attempt of a job: the last one of a job is its current attempt.",
         "properties": {
@@ -275,7 +336,7 @@
           "outcome": {
             "anyOf": [
               {
-                "$ref": "#/$defs/JobOutcome"
+                "$ref": "#/$defs/AttemptOutcome"
               },
               {
                 "type": "null"
@@ -308,6 +369,15 @@
             },
             "type": "array"
           },
+          "cancelType": {
+            "description": "The message type through which its running worker is told it was cancelled, whose payload is a [`JobCancel`]; not\nempty, at most 200 characters, without NUL. Absent or null: the worker is not told.",
+            "maxLength": 200,
+            "minLength": 1,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "input": {
             "description": "Its input: any JSON value of at most 16 KiB and 32 levels."
           },
@@ -336,7 +406,7 @@
           "status": {
             "$ref": "#/$defs/JobStatus",
             "default": "waiting",
-            "description": "Its status, matching its last attempt; absent: `waiting`."
+            "description": "Its status, matching its last attempt; a cancelled job's last attempt, when it has one, ended `cancelled`.\nAbsent: `waiting`."
           },
           "to": {
             "description": "The target of its job message.",
@@ -373,22 +443,7 @@
           },
           {
             "const": "cancelled",
-            "description": "Ended: a job was cancelled, none failed; not set by this release.",
-            "type": "string"
-          }
-        ]
-      },
-      "JobOutcome": {
-        "description": "How an attempt ended.",
-        "oneOf": [
-          {
-            "const": "succeeded",
-            "description": "The job did its work.",
-            "type": "string"
-          },
-          {
-            "const": "failed",
-            "description": "The job did not do its work.",
+            "description": "Ended: a job was cancelled, none failed.",
             "type": "string"
           }
         ]
@@ -423,14 +478,14 @@
           },
           {
             "const": "cancelled",
-            "description": "Cancelled; not set by this release.",
+            "description": "Cancelled by a `Cancel` while waiting or running: its last attempt, when it has one, ended `cancelled`.",
             "type": "string"
           }
         ]
       }
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "description": "The state of a [`JobGraph`] run: its graph, in-flight limit and report target, given at its create, its status, and\nper job its status, output and attempts. Build it with `JobGraphState::new`; a decoded state is checked the same\nway, so a bad graph never becomes a run.\n\nOn the wire: `{\"maxInFlight\":2,\"reportTo\":\"ci/run-7\",\"reportType\":\"GraphEnded\",\"status\":\"running\",\"endedAt\":null,\n\"jobs\":[{\"name\":\"build\",\"needs\":[],\"to\":\"builder/run-7\",\"messageType\":\"Build\",\"input\":{},\"status\":\"waiting\",\n\"output\":null,\"attempts\":[]}]}`; `status`, `endedAt` and a job's `status`, `output` and `attempts` may be left out\nof a create.",
+    "description": "The state of a [`JobGraph`] run: its graph, in-flight limit and report target, given at its create, its status, and\nper job its status, output and attempts. Build it with `JobGraphState::new`; a decoded state is checked the same\nway, so a bad graph never becomes a run.\n\nOn the wire: `{\"maxInFlight\":2,\"reportTo\":\"ci/run-7\",\"reportType\":\"GraphEnded\",\"status\":\"running\",\"endedAt\":null,\n\"jobs\":[{\"name\":\"build\",\"needs\":[],\"to\":\"builder/run-7\",\"messageType\":\"Build\",\"cancelType\":null,\"input\":{},\n\"status\":\"waiting\",\"output\":null,\"attempts\":[]}]}`; `status`, `endedAt` and a job's `cancelType`, `status`, `output`\nand `attempts` may be left out of a create.",
     "properties": {
       "endedAt": {
         "description": "The store time it ended; set exactly when it ended. Absent: null.",

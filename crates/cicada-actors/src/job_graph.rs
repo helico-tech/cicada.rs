@@ -48,14 +48,27 @@ impl ActorRef for JobGraph {
     type Message = JobGraphMsg;
 }
 
-/// The messages of a [`JobGraph`] run. `Dispatch` is its own: it acts on one only when it sent it itself. A job name is
-/// 1 through 64 ASCII letters, digits, `-`, `_` or `.`; a message with one out of bounds is refused for good.
+/// The messages of a [`JobGraph`] run. `Dispatch` and `SendCancel` are its own: it acts on one only when it sent it
+/// itself. A job name is 1 through 64 ASCII letters, digits, `-`, `_` or `.`; a message with one out of bounds is refused
+/// for good.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all_fields = "camelCase")]
 pub enum JobGraphMsg {
     /// Starts every ready job, in graph order, while fewer jobs run than the in-flight limit. Send it with the create,
     /// in one commit; once nothing more can start it does nothing, so a second one is harmless.
     Start,
+    /// Cancels `job`, or every job when it is absent: a waiting job becomes `cancelled`, and so does a running one, whose
+    /// attempt ends with outcome `cancelled` and reason `cancelled`; its worker is told when the job names a
+    /// `cancelType` and its job message was sent. Ended and skipped jobs, and an ended run, are left alone, so a
+    /// repeated `Cancel` changes nothing. A job name the run does not have is refused for good with the state unchanged.
+    /// Then, in its commit, the dependents of a cancelled job are skipped, ready jobs start in the freed slots and the
+    /// run may end: `cancelled` when no job failed.
+    Cancel {
+        /// The job; absent or null: every job.
+        #[serde(default)]
+        #[schemars(length(min = 1, max = 64))]
+        job: Option<String>,
+    },
     /// The result of one attempt of a job, from its worker or whoever the work was handed to: the sender is not
     /// checked. Taken only when the job is `running` and `attempt` is its current attempt: the attempt ends with the
     /// outcome and reason, the job takes the outcome and keeps `output`, and ready jobs start. Any other result is
@@ -87,6 +100,16 @@ pub enum JobGraphMsg {
         #[schemars(length(min = 1, max = 64))]
         job: String,
         /// The attempt to dispatch.
+        attempt: u32,
+    },
+    /// Sends the job's `cancelType` with a [`JobCancel`] to its target while `attempt` is still kept, was dispatched
+    /// and ended `cancelled`, whatever the job's status is by then. Sent by the run to itself, with a retry policy, in
+    /// the commit of the `Cancel`; so a gone worker fails only this message.
+    SendCancel {
+        /// The job.
+        #[schemars(length(min = 1, max = 64))]
+        job: String,
+        /// The cancelled attempt.
         attempt: u32,
     },
     /// A message to the run itself or to a job's target ended `failed`: a failed `Dispatch` of a current attempt not yet
@@ -155,7 +178,7 @@ pub enum JobGraphStatus {
     Succeeded,
     /// Ended: a job failed.
     Failed,
-    /// Ended: a job was cancelled, none failed; not set by this release.
+    /// Ended: a job was cancelled, none failed.
     Cancelled,
 }
 
@@ -173,11 +196,11 @@ pub enum JobStatus {
     Failed,
     /// Never run, without an attempt: a job it needs, directly or through other jobs, failed, was skipped or cancelled.
     Skipped,
-    /// Cancelled; not set by this release.
+    /// Cancelled by a `Cancel` while waiting or running: its last attempt, when it has one, ended `cancelled`.
     Cancelled,
 }
 
-/// How an attempt ended.
+/// How an attempt ended, as its worker reports it in a `Result`: a worker cannot report `cancelled`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum JobOutcome {
@@ -196,6 +219,27 @@ impl From<JobOutcome> for JobStatus {
     }
 }
 
+/// How an attempt ended, as the run keeps it: the outcome of its result, or `cancelled` by a `Cancel`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum AttemptOutcome {
+    /// The job did its work.
+    Succeeded,
+    /// The job did not do its work.
+    Failed,
+    /// The job was cancelled while the attempt was open.
+    Cancelled,
+}
+
+impl From<JobOutcome> for AttemptOutcome {
+    fn from(outcome: JobOutcome) -> Self {
+        match outcome {
+            JobOutcome::Succeeded => AttemptOutcome::Succeeded,
+            JobOutcome::Failed => AttemptOutcome::Failed,
+        }
+    }
+}
+
 /// A job of a graph, as given at the create: a message to a target, sent once every job it needs succeeded.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -208,6 +252,10 @@ pub struct Job {
     pub to: ActorAddress,
     /// The message type of its job message, whose payload is a [`JobStart`].
     pub message_type: String,
+    /// The message type through which its running worker is told it was cancelled, whose payload is a [`JobCancel`];
+    /// absent or null: the worker is not told.
+    #[serde(default)]
+    pub cancel_type: Option<String>,
     /// Its input, passed in the [`JobStart`]: any JSON value of at most 16 KiB and 32 levels.
     pub input: Value,
 }
@@ -224,12 +272,26 @@ impl Job {
     ) -> Result<Self, InvalidJobGraph> {
         let to = target.address().map_err(|e| InvalidJobGraph(e.to_string()))?;
         let input = serde_json::to_value(input).map_err(|e| InvalidJobGraph(e.to_string()))?;
-        Ok(Self { name: name.into(), needs: Vec::new(), to, message_type: message_type.into(), input })
+        Ok(Self {
+            name: name.into(),
+            needs: Vec::new(),
+            to,
+            message_type: message_type.into(),
+            cancel_type: None,
+            input,
+        })
     }
 
     /// This job, needing `needs`.
     pub fn with_needs(mut self, needs: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.needs = needs.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// This job, whose running worker is told it was cancelled with `cancel_type` and a [`JobCancel`]. Its bounds are
+    /// checked by [`JobGraphState::new`].
+    pub fn with_cancel_type(mut self, cancel_type: impl Into<String>) -> Self {
+        self.cancel_type = Some(cancel_type.into());
         self
     }
 }
@@ -247,7 +309,7 @@ pub struct JobAttempt {
     /// The store time it ended; null while open.
     pub ended_at: Option<Timestamp>,
     /// How it ended; set exactly when it ended.
-    pub outcome: Option<JobOutcome>,
+    pub outcome: Option<AttemptOutcome>,
     /// Why it ended so, at most 2,000 characters; only on an ended attempt.
     #[schemars(length(max = 2000))]
     pub reason: Option<String>,
@@ -268,9 +330,15 @@ pub struct JobEntry {
     /// without NUL.
     #[schemars(length(min = 1, max = 200))]
     pub message_type: String,
+    /// The message type through which its running worker is told it was cancelled, whose payload is a [`JobCancel`]; not
+    /// empty, at most 200 characters, without NUL. Absent or null: the worker is not told.
+    #[serde(default)]
+    #[schemars(length(min = 1, max = 200))]
+    pub cancel_type: Option<String>,
     /// Its input: any JSON value of at most 16 KiB and 32 levels.
     pub input: Value,
-    /// Its status, matching its last attempt; absent: `waiting`.
+    /// Its status, matching its last attempt; a cancelled job's last attempt, when it has one, ended `cancelled`.
+    /// Absent: `waiting`.
     #[serde(default = "waiting")]
     pub status: JobStatus,
     /// The output of its last result; absent or null: none.
@@ -293,6 +361,7 @@ impl From<Job> for JobEntry {
             needs: job.needs,
             to: job.to,
             message_type: job.message_type,
+            cancel_type: job.cancel_type,
             input: job.input,
             status: JobStatus::Waiting,
             output: None,
@@ -317,6 +386,23 @@ pub struct JobStart {
     pub attempt: u32,
     /// The job's input.
     pub input: Value,
+}
+
+/// The payload of a job's cancel message, sent as the job's `cancelType` to its target when the job was cancelled after
+/// its job message was sent. A worker's family takes it as a variant such as `CancelBuild(JobCancel)`. It can arrive
+/// before the [`JobStart`] of the same attempt, when the worker's turn on the job message was rescheduled: the worker
+/// then ignores that attempt's job message.
+///
+/// On the wire: `{"run":"run-7","job":"build","attempt":1}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct JobCancel {
+    /// The run: the key of its address.
+    pub run: String,
+    /// The job.
+    pub job: String,
+    /// The cancelled attempt.
+    pub attempt: u32,
 }
 
 /// One job in the end report of a run.
@@ -361,9 +447,9 @@ pub struct InvalidJobGraph(String);
 /// way, so a bad graph never becomes a run.
 ///
 /// On the wire: `{"maxInFlight":2,"reportTo":"ci/run-7","reportType":"GraphEnded","status":"running","endedAt":null,
-/// "jobs":[{"name":"build","needs":[],"to":"builder/run-7","messageType":"Build","input":{},"status":"waiting",
-/// "output":null,"attempts":[]}]}`; `status`, `endedAt` and a job's `status`, `output` and `attempts` may be left out
-/// of a create.
+/// "jobs":[{"name":"build","needs":[],"to":"builder/run-7","messageType":"Build","cancelType":null,"input":{},
+/// "status":"waiting","output":null,"attempts":[]}]}`; `status`, `endedAt` and a job's `cancelType`, `status`, `output`
+/// and `attempts` may be left out of a create.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", try_from = "RawState")]
 pub struct JobGraphState {
@@ -433,8 +519,8 @@ impl JobGraphState {
     /// A run of `jobs` that runs at most `max_in_flight` of them at once and reports its end to `report_to` as
     /// `report_type`; running, with every job waiting. Fails for a ref without an address, a cycle, a need that names no
     /// job of the graph, is repeated or names the job itself, a repeated job name, no jobs or more than 100, a name that
-    /// is not 1 through 64 ASCII letters, digits, `-`, `_` or `.`, a message or report type that is empty, longer than
-    /// 200 characters or holds a NUL, an input over 16 KiB as JSON or deeper than 32 levels, and an in-flight limit
+    /// is not 1 through 64 ASCII letters, digits, `-`, `_` or `.`, a message, cancel or report type that is empty, longer
+    /// than 200 characters or holds a NUL, an input over 16 KiB as JSON or deeper than 32 levels, and an in-flight limit
     /// outside 1 through 100.
     ///
     /// ```
@@ -496,6 +582,9 @@ impl JobGraphState {
         for job in &self.jobs {
             check_type("messageType", &job.message_type)
                 .map_err(|e| invalid(format!("the job '{}': {e}", job.name)))?;
+            if let Some(cancel_type) = &job.cancel_type {
+                check_type("cancelType", cancel_type).map_err(|e| invalid(format!("the job '{}': {e}", job.name)))?;
+            }
             check_value("input", &job.input).map_err(|e| invalid(format!("the job '{}': {e}", job.name)))?;
             let mut seen = HashSet::new();
             for need in &job.needs {
@@ -710,9 +799,11 @@ fn check_job(job: &JobEntry) -> Result<(), InvalidJobGraph> {
     let matches = match job.status {
         JobStatus::Waiting => last.is_none(),
         JobStatus::Running => open,
-        JobStatus::Succeeded => last.is_some_and(|a| a.outcome == Some(JobOutcome::Succeeded)),
-        JobStatus::Failed => last.is_some_and(|a| a.outcome == Some(JobOutcome::Failed)),
-        JobStatus::Skipped | JobStatus::Cancelled => !open,
+        JobStatus::Succeeded => last.is_some_and(|a| a.outcome == Some(AttemptOutcome::Succeeded)),
+        JobStatus::Failed => last.is_some_and(|a| a.outcome == Some(AttemptOutcome::Failed)),
+        JobStatus::Skipped => !open,
+        // An attempt has an outcome exactly when it ended.
+        JobStatus::Cancelled => last.is_none_or(|a| a.outcome == Some(AttemptOutcome::Cancelled)),
     };
     if !matches {
         return Err(invalid(format!(
@@ -798,8 +889,8 @@ fn cut(reason: String) -> String {
 /// The job graph type. It has no settings: the graph, the in-flight limit and the report target are in the state of
 /// each run, given at its create; a create of a run that exists changes nothing. It never stops itself.
 ///
-/// After `Start` and every change of a job's status (a taken `Result`, a failed dispatch, a failure seen by the watch on
-/// a target), in that commit, the run skips, starts and checks its end. It skips every waiting job that needs a failed,
+/// After `Start` and every change of a job's status (a taken `Result`, a `Cancel`, a failed dispatch, a failure seen by
+/// the watch on a target), in that commit, the run skips, starts and checks its end. It skips every waiting job that needs a failed,
 /// skipped or cancelled job, directly or through others: it becomes `skipped`, without an attempt. It starts every ready
 /// job (waiting, with every job it needs succeeded) in graph order while fewer than `maxInFlight` run. Starting a job
 /// marks it `running` with a new attempt in that commit, which also sends the run a `Dispatch` with the crate's shared
@@ -821,11 +912,20 @@ fn cut(reason: String) -> String {
 /// instance went away, and a result whose turn was rescheduled can be overtaken by a `Stopped` of its worker, which
 /// fails the job and refuses the result.
 ///
+/// `Cancel` of one job or of every job makes each waiting or running one `cancelled` in its commit; a running job's
+/// attempt ends with outcome and reason `cancelled`, and its target is unwatched unless another running job has it. A
+/// cancelled job whose job message was sent and that names a `cancelType` makes that commit send the run a `SendCancel`
+/// with the shared retry policy, which sends the `cancelType` with a [`JobCancel`] to the target in a turn of its own:
+/// a gone worker fails only that `SendCancel`, never the `Cancel`. A job without a `cancelType` is not told: its
+/// outside work goes on and its late result is refused. A job not yet dispatched is not told, and its `Dispatch` sends
+/// nothing. Work the worker handed on is not told either; a worker that hands work on passes the cancel along itself.
+///
 /// When no job runs and none can start, the run ends in that commit: `succeeded` when every job succeeded, else
 /// `failed` when a job failed, else `cancelled`. It sends itself a `Report`, which sends the [`JobGraphEnd`] in a turn
 /// of its own: a gone report target fails only that `Report`, and a later one sends it. Bad input is refused for good
-/// with the state unchanged: a job name, output or reason out of bounds, and a result for an unknown job, a job not
-/// running, or an attempt that is not current; a read of the store that fails is tried again.
+/// with the state unchanged: a job name, output or reason out of bounds, a result for an unknown job, a job not
+/// running, or an attempt that is not current, and a `Cancel` of an unknown job; a read of the store that fails is
+/// tried again.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct JobGraphActor;
 
@@ -836,6 +936,12 @@ impl Actor for JobGraphActor {
     async fn handle(&self, turn: &mut Turn<Self>, message: JobGraphMsg) -> HandlerResult {
         match message {
             JobGraphMsg::Start => settle(turn, &[]),
+            JobGraphMsg::Cancel { job } => {
+                if let Some(job) = &job {
+                    check_name(job).map_err(HandlerError::permanent)?;
+                }
+                cancel(turn, job.as_deref())
+            }
             JobGraphMsg::Result { job, attempt, outcome, output, reason } => {
                 check_name(&job).map_err(HandlerError::permanent)?;
                 if let Some(output) = &output {
@@ -852,6 +958,13 @@ impl Actor for JobGraphActor {
                 check_name(&job).map_err(HandlerError::permanent)?;
                 if turn.message().from.as_ref() == Some(turn.self_address()) {
                     dispatch(turn, &job, attempt).await?;
+                }
+                Ok(())
+            }
+            JobGraphMsg::SendCancel { job, attempt } => {
+                check_name(&job).map_err(HandlerError::permanent)?;
+                if turn.message().from.as_ref() == Some(turn.self_address()) {
+                    send_cancel(turn, &job, attempt).await?;
                 }
                 Ok(())
             }
@@ -972,7 +1085,7 @@ fn take_result(
     let entry = &mut turn.state_mut().jobs[i];
     let last = entry.attempts.last_mut().expect("a running job has an attempt");
     last.ended_at = Some(now);
-    last.outcome = Some(outcome);
+    last.outcome = Some(outcome.into());
     last.reason = reason;
     entry.status = outcome.into();
     entry.output = output;
@@ -981,7 +1094,7 @@ fn take_result(
 
 /// Sends the job message of `attempt` when it is the current attempt of the running `job`, not yet dispatched, sets its
 /// `dispatchedAt` and watches the job's target. A send the registry refuses is refused for good; a failed read of the
-/// store is tried again.
+/// store is tried again. A cancelled job is not running, so its job message is never sent.
 async fn dispatch(turn: &mut Turn<JobGraphActor>, job: &str, attempt: u32) -> HandlerResult {
     let state = turn.state();
     let Some(i) = state.position(job) else {
@@ -994,14 +1107,7 @@ async fn dispatch(turn: &mut Turn<JobGraphActor>, job: &str, attempt: u32) -> Ha
     }
     let start = JobStart { run: turn.self_ref().run.clone(), job: job.to_owned(), attempt, input: entry.input.clone() };
     let (to, message_type) = (entry.to.clone(), entry.message_type.clone());
-    let options = options(turn);
-    match turn.send_raw(&to, &message_type, serde_json::to_value(start)?, options).await {
-        Ok(_) => {}
-        // Tried again by the retry policy of the incoming message.
-        Err(e @ TurnError::Store(_)) => return Err(e.into()),
-        // No registered type, a type that does not take the message, or a field out of bounds.
-        Err(e) => return Err(HandlerError::permanent_from(e)),
-    }
+    send(turn, &to, &message_type, serde_json::to_value(start)?).await?;
     turn.watch(&to)?;
     let now = turn.now();
     if let Some(last) = turn.state_mut().jobs[i].attempts.last_mut() {
@@ -1078,7 +1184,7 @@ fn fail_current(turn: &mut Turn<JobGraphActor>, i: usize, reason: String) -> Act
     let entry = &mut turn.state_mut().jobs[i];
     if let Some(last) = entry.attempts.last_mut() {
         last.ended_at = Some(now);
-        last.outcome = Some(JobOutcome::Failed);
+        last.outcome = Some(AttemptOutcome::Failed);
         last.reason = Some(cut(reason));
     }
     entry.status = JobStatus::Failed;
@@ -1104,14 +1210,82 @@ async fn report(turn: &mut Turn<JobGraphActor>) -> HandlerResult {
     });
     let end = JobGraphEnd { run: turn.self_ref().run.clone(), status: state.status, jobs: jobs.collect() };
     let (to, message_type) = (state.report_to.clone(), state.report_type.clone());
+    send(turn, &to, &message_type, serde_json::to_value(end)?).await
+}
+
+/// Sends `payload` as `message_type` to `to` with the run's send options. A send the registry refuses (no registered
+/// type, a type that does not take the message, or a field out of bounds) is refused for good; a failed read of the
+/// store is tried again by the retry policy of the incoming message.
+async fn send(turn: &mut Turn<JobGraphActor>, to: &ActorAddress, message_type: &str, payload: Value) -> HandlerResult {
     let options = options(turn);
-    match turn.send_raw(&to, &message_type, serde_json::to_value(end)?, options).await {
+    match turn.send_raw(to, message_type, payload, options).await {
         Ok(_) => Ok(()),
-        // Tried again by the retry policy of the incoming message.
         Err(e @ TurnError::Store(_)) => Err(e.into()),
-        // No registered type, a type that does not take the message, or a payload out of bounds.
         Err(e) => Err(HandlerError::permanent_from(e)),
     }
+}
+
+/// Cancels `job`, or every job: each waiting or running one becomes `cancelled`, a running one's open attempt ends
+/// `cancelled`, and one whose job message was sent and that names a cancel type makes the run send itself a
+/// `SendCancel`. Then settles the run with the targets of the running jobs it ended. A job name the run does not have is
+/// refused for good; a `Cancel` that cancels nothing changes nothing. An ended run has no waiting or running job.
+fn cancel(turn: &mut Turn<JobGraphActor>, job: Option<&str>) -> HandlerResult {
+    let state = turn.state();
+    let named = match job {
+        Some(job) => {
+            let i = state.position(job);
+            Some(i.ok_or_else(|| HandlerError::permanent(format!("the run has no job named '{job}'")))?)
+        }
+        None => None,
+    };
+    let open = |i: &usize| matches!(state.jobs[*i].status, JobStatus::Waiting | JobStatus::Running);
+    let cancelled: Vec<usize> = match named {
+        Some(i) => [i].into_iter().filter(open).collect(),
+        None => (0..state.jobs.len()).filter(open).collect(),
+    };
+    if cancelled.is_empty() {
+        return Ok(());
+    }
+    let now = turn.now();
+    let mut ended = Vec::new();
+    for i in cancelled {
+        let options = options(turn);
+        let entry = &mut turn.state_mut().jobs[i];
+        let mut tell = None;
+        if entry.status == JobStatus::Running {
+            let last = entry.attempts.last_mut().expect("a running job has an attempt");
+            last.ended_at = Some(now);
+            last.outcome = Some(AttemptOutcome::Cancelled);
+            last.reason = Some("cancelled".to_owned());
+            if last.dispatched_at.is_some() && entry.cancel_type.is_some() {
+                tell = Some(JobGraphMsg::SendCancel { job: entry.name.clone(), attempt: last.attempt });
+            }
+            ended.push(entry.to.clone());
+        }
+        entry.status = JobStatus::Cancelled;
+        if let Some(tell) = tell {
+            turn.send_self_with(tell, options)?;
+        }
+    }
+    settle(turn, &ended)
+}
+
+/// Sends the cancel type of `job` with a [`JobCancel`] of `attempt` to the job's target, when the job names a cancel
+/// type and `attempt` is still kept, was dispatched and ended `cancelled`, whatever the job's status is now.
+async fn send_cancel(turn: &mut Turn<JobGraphActor>, job: &str, attempt: u32) -> HandlerResult {
+    let state = turn.state();
+    let Some(entry) = state.position(job).map(|i| &state.jobs[i]) else {
+        return Ok(());
+    };
+    let cancelled = |a: &JobAttempt| {
+        a.attempt == attempt && a.dispatched_at.is_some() && a.outcome == Some(AttemptOutcome::Cancelled)
+    };
+    let (Some(cancel_type), true) = (entry.cancel_type.clone(), entry.attempts.iter().any(cancelled)) else {
+        return Ok(());
+    };
+    let to = entry.to.clone();
+    let cancel = JobCancel { run: turn.self_ref().run.clone(), job: job.to_owned(), attempt };
+    send(turn, &to, &cancel_type, serde_json::to_value(cancel)?).await
 }
 
 #[cfg(test)]
@@ -1276,6 +1450,23 @@ mod tests {
     }
 
     #[test]
+    fn a_cancel_type_out_of_bounds_is_refused_and_names_the_job() {
+        let long_type = "T".repeat(MAX_TYPE_LENGTH + 1);
+        for cancel_type in ["", long_type.as_str(), "Can\0cel"] {
+            let bad = job("build", &[]).with_cancel_type(cancel_type);
+            let json = state(vec![entry("build", &[], json!({"cancelType": cancel_type}))], json!({}));
+            assert_refused(build(vec![bad]), json, &["'build'", "cancelType"]);
+        }
+        let longest = job("build", &[]).with_cancel_type("T".repeat(MAX_TYPE_LENGTH));
+        let built = build(vec![longest, job("test", &[])]).unwrap();
+        let written = serde_json::to_value(&built).unwrap();
+        assert_eq!(written["jobs"][0]["cancelType"], json!("T".repeat(MAX_TYPE_LENGTH)));
+        assert_eq!(written["jobs"][1]["cancelType"], Value::Null, "none is written as null");
+        assert_eq!(serde_json::from_value::<JobGraphState>(written).unwrap(), built);
+        taken(state(vec![entry("build", &[], json!({"cancelType": null}))], json!({})));
+    }
+
+    #[test]
     fn a_ref_without_an_address_is_refused() {
         #[derive(Debug, Clone, Serialize, Deserialize)]
         struct Bad;
@@ -1358,6 +1549,10 @@ mod tests {
             ("failed", vec![attempt(1, None)]),
             ("skipped", vec![attempt(1, None)]),
             ("cancelled", vec![attempt(1, None)]),
+            ("cancelled", vec![attempt(1, Some("succeeded"))]),
+            ("cancelled", vec![attempt(1, Some("failed"))]),
+            ("succeeded", vec![attempt(1, Some("cancelled"))]),
+            ("failed", vec![attempt(1, Some("cancelled"))]),
         ] {
             refused(
                 state(vec![entry("a", &[], json!({"status": status, "attempts": attempts}))], ended.clone()),
@@ -1445,6 +1640,25 @@ mod tests {
         let mut both = failed;
         both["name"] = json!("f");
         taken(state(vec![bare("x", &[], "cancelled"), both, bare("b", &["f", "x"], "skipped")], ended("failed")));
+    }
+
+    #[test]
+    fn inconsistent_cancelled_jobs_are_refused() {
+        let ended = |status: &str| json!({"status": status, "endedAt": "2026-01-01T00:00:02Z"});
+        let cancelled = |attempts: Vec<Value>| entry("a", &[], json!({"status": "cancelled", "attempts": attempts}));
+        let open = json!({"attempt": 1, "dispatchedAt": null, "endedAt": null, "outcome": null, "reason": null});
+        refused(state(vec![cancelled(vec![attempt(1, Some("succeeded"))])], ended("cancelled")), "does not match");
+        refused(state(vec![cancelled(vec![open])], ended("cancelled")), "does not match");
+        let failed = entry("f", &[], json!({"status": "failed", "attempts": [attempt(1, Some("failed"))]}));
+        refused(state(vec![cancelled(vec![]), failed.clone()], ended("cancelled")), "it is cancelled, not failed");
+        let mut told = attempt(1, Some("cancelled"));
+        told["reason"] = json!("cancelled");
+        taken(state(vec![cancelled(vec![told.clone()])], ended("cancelled")));
+        taken(state(vec![cancelled(vec![])], ended("cancelled")));
+        taken(state(vec![cancelled(vec![told]), failed], ended("failed")));
+        let mut retried = attempt(2, Some("cancelled"));
+        retried["dispatchedAt"] = Value::Null;
+        taken(state(vec![cancelled(vec![attempt(1, Some("failed")), retried])], ended("cancelled")));
     }
 
     /// The decoded state of `jobs`, running, with in-flight limit 100.

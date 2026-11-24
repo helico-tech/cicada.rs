@@ -54,8 +54,8 @@ pub use heartbeat_watch::{
     HeartbeatStatus, HeartbeatWatch, HeartbeatWatchActor, HeartbeatWatchMsg, HeartbeatWatchState, InvalidHeartbeat,
 };
 pub use job_graph::{
-    InvalidJobGraph, Job, JobAttempt, JobEntry, JobGraph, JobGraphActor, JobGraphEnd, JobGraphMsg, JobGraphState,
-    JobGraphStatus, JobOutcome, JobReport, JobStart, JobStatus,
+    AttemptOutcome, InvalidJobGraph, Job, JobAttempt, JobCancel, JobEntry, JobGraph, JobGraphActor, JobGraphEnd,
+    JobGraphMsg, JobGraphState, JobGraphStatus, JobOutcome, JobReport, JobStart, JobStatus,
 };
 pub use node_down::{
     InvalidNodeDown, NodeDown, NodeDownMonitor, NodeDownMonitorActor, NodeDownMonitorMsg, NodeDownMonitorState,

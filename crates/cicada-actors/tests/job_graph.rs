@@ -8,8 +8,8 @@ use cicada::prelude::*;
 use cicada::store::{Message, OutcomeStatus};
 use cicada::{FailureCause, WatchTarget};
 use cicada_actors::{
-    Job, JobGraph, JobGraphActor, JobGraphEnd, JobGraphMsg, JobGraphState, JobGraphStatus, JobOutcome, JobStart,
-    JobStatus,
+    AttemptOutcome, Job, JobGraph, JobGraphActor, JobGraphEnd, JobGraphMsg, JobGraphState, JobGraphStatus, JobOutcome,
+    JobStart, JobStatus,
 };
 use cicada_test::TestActors;
 use common::*;
@@ -255,7 +255,7 @@ async fn a_diamond_starts_each_job_once_its_needs_succeeded() {
     assert_eq!(state.status, JobGraphStatus::Succeeded);
     assert_eq!(state.jobs[3].output, Some(json!({"built": "d"})));
     let attempt = &state.jobs[0].attempts[0];
-    assert_eq!((attempt.attempt, attempt.outcome), (1, Some(JobOutcome::Succeeded)));
+    assert_eq!((attempt.attempt, attempt.outcome), (1, Some(AttemptOutcome::Succeeded)));
     assert!(attempt.dispatched_at.is_some() && attempt.ended_at.is_some());
 }
 
@@ -321,7 +321,7 @@ async fn a_gone_target_fails_only_its_attempt() {
     let attempt = &state.jobs[0].attempts[0];
     let reason = attempt.reason.as_deref().unwrap();
     assert!(reason.starts_with("the job message was not sent (commit): "), "{reason}");
-    assert_eq!((attempt.outcome, attempt.dispatched_at), (Some(JobOutcome::Failed), None));
+    assert_eq!((attempt.outcome, attempt.dispatched_at), (Some(AttemptOutcome::Failed), None));
     assert!(attempt.ended_at.is_some());
     let m = succeed(&test, "b").await;
     assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done), "b reports");

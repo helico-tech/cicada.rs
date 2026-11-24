@@ -7,13 +7,13 @@ spec is `specs/job-graph/spec.md`, a delta on `job-graph`'s capability (archive 
 before this one). Runtime behaviour is tested on virtual time (`#[tokio::test(start_paused = true)]` with
 `TestActors`).
 
-- [ ] 1. **State and messages.** In `crates/cicada-actors/src/job_graph.rs`: the optional job field `cancelType`
+- [x] 1. **State and messages.** In `crates/cicada-actors/src/job_graph.rs`: the optional job field `cancelType`
   (bounds of decision 2) in the constructor and the decoder; the state's own attempt-outcome type `succeeded | failed
   | cancelled`, apart from the `Result`'s outcome type (decision 3); `JobCancel {run, job, attempt}`;
   `JobGraphMsg::Cancel { job? }` and the internal `SendCancel {job, attempt}`; the decoder's new checks (decision 4).
   Verify: unit tests of the `cancelType` bounds and of the new decoder check (a cancelled job's open or succeeded
   last attempt); `cargo test -p cicada-actors --lib`.
-- [ ] 2. **The handler.** `Cancel` of one job or all (decision 1), followed in its commit by `job-graph-failures`' skip,
+- [x] 2. **The handler.** `Cancel` of one job or all (decision 1), followed in its commit by `job-graph-failures`' skip,
   start and end step; the unwatch of a cancelled job's target unless another running job has it; `SendCancel` sent in
   the `Cancel` commit for a dispatched job with a `cancelType`, and acted on only by the run itself while that attempt
   is kept, dispatched and closed `cancelled`, whatever the job's status (decision 2). Verify:
@@ -24,7 +24,7 @@ before this one). Runtime behaviour is tested on virtual time (`#[tokio::test(st
   (ends `cancelled`), a cancel that frees a slot for the next job, of an ended job, of an unknown job, a failed
   dispatch reported after the cancel, a worker told by `cancelType`, a gone worker's `SendCancel` failing alone, and a
   job cancelled before its `Dispatch`. Verify: `cargo test -p cicada-actors --test job_graph`.
-- [ ] 4. **Contract and wire format.** `CICADA_UPDATE_CONTRACTS=true cargo test -p cicada-actors --test wire_formats`
+- [x] 4. **Contract and wire format.** `CICADA_UPDATE_CONTRACTS=true cargo test -p cicada-actors --test wire_formats`
   rewrites `docs/reference/contracts/cicada.job-graph.json`, which is committed; samples of `Cancel`, `SendCancel`,
   `JobCancel` and a state with cancelled jobs are taken by the schemas and the decoders, and the `JobGraphEnd` schema
   does not change. Verify: `cargo test -p cicada-actors --test wire_formats`.
