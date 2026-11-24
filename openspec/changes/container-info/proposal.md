@@ -21,7 +21,7 @@ A daemon version or other `/version` fields (Factory needs none). Health checks 
 
 ## Order
 
-After `pool-size-check`. No following change.
+After `pool-size-check`, before `container-registry-auth`.
 
 ## Impact
 
