@@ -202,7 +202,7 @@ async fn failed_of(test: &TestActors, message_type: &str) -> Vec<cicada::Failed>
     told(test).await.into_iter().filter(|f| f.message_type == message_type).collect()
 }
 
-use JobStatus::{Failed, Running, Succeeded, Waiting};
+use JobStatus::{Failed, Running, Skipped, Succeeded, Waiting};
 
 fn named(statuses: &[(&str, JobStatus)]) -> Vec<(String, JobStatus)> {
     statuses.iter().map(|(n, s)| (n.to_string(), *s)).collect()
@@ -482,21 +482,28 @@ async fn a_result_out_of_bounds_is_refused_for_good() {
     assert_eq!(statuses(&test).await, named(&[("a", Running)]));
 }
 
-/// Scenario: A failed job.
+/// Scenario: A failed job: its dependents are skipped, through any number of jobs, in the commit of its result.
 #[tokio::test(start_paused = true)]
-async fn a_failed_job_blocks_only_its_dependents() {
+async fn a_failed_job_skips_its_dependents_transitively_and_only_them() {
     let test = node().await;
-    start(&test, vec![job("a", &[]), job("b", &["a"]), job("c", &[])], 2).await;
-    assert_eq!(started(&test, "a").await, ["a", "c"]);
-    fail(&test, "a").await;
-    assert_eq!(statuses(&test).await, named(&[("a", Failed), ("b", Waiting), ("c", Running)]));
-    assert_eq!(run_status(&test).await, JobGraphStatus::Running);
-    succeed(&test, "c").await;
+    start(&test, vec![job("a", &[]), job("b", &["a"]), job("c", &["b"]), job("d", &[])], 2).await;
+    assert_eq!(started(&test, "a").await, ["a", "d"]);
+    let start = start_of(&test, "a").await;
+    test.send(&run(), JobGraphMsg::failed(&start, "a broke")).await;
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1);
+    assert_eq!(statuses(&test).await, named(&[("a", Failed), ("b", Skipped), ("c", Skipped), ("d", Running)]));
+    let mid = state(&test).await;
+    assert!(mid.jobs[1..3].iter().all(|j| j.attempts.is_empty()), "a skipped job has no attempt");
+    assert_eq!(mid.status, JobGraphStatus::Running);
+    succeed(&test, "d").await;
     let state = state(&test).await;
     assert_eq!(state.status, JobGraphStatus::Failed);
     assert!(state.ended_at.is_some());
-    assert_eq!(statuses(&test).await, named(&[("a", Failed), ("b", Waiting), ("c", Succeeded)]));
-    assert_eq!(started(&test, "a").await, ["a", "c"], "b never starts");
+    assert_eq!(statuses(&test).await, named(&[("a", Failed), ("b", Skipped), ("c", Skipped), ("d", Succeeded)]));
+    assert_eq!(started(&test, "a").await, ["a", "d"], "b and c never start");
+    let report = &reports(&test, "main").await[0];
+    let skipped: Vec<_> = report.jobs.iter().filter(|j| j.status == Skipped).map(|j| j.attempt).collect();
+    assert_eq!(skipped, [None, None]);
 }
 
 /// Scenario: Every job succeeds: the run ends in the commit of the last result, and its report follows in a turn of its
@@ -587,5 +594,6 @@ async fn a_job_message_carries_the_correlation_id_of_the_start() {
     assert_eq!(pending[0].correlation_id.as_deref(), Some("c1"));
     assert!(pending[0].retry.is_some(), "with the shared retry policy");
     let of_builder = test.system().watches(None, Some(&WatchTarget::from(addr(&builder("a")))), None, 10).await;
-    assert!(of_builder.unwrap().items.is_empty(), "the run watches no worker");
+    let watchers: Vec<String> = of_builder.unwrap().items.iter().map(|w| w.watcher.to_string()).collect();
+    assert_eq!(watchers, ["cicada.job-graph/run-7"], "the turn that sent the job message watches its target");
 }

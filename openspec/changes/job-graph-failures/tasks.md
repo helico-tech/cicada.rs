@@ -6,11 +6,11 @@ Normal lane, additive: 0.20.8, the unreleased batch, released together with `job
 `specs/job-graph/spec.md`, a delta on `job-graph`'s capability (archive `job-graph` before this one). Runtime behaviour
 is tested on virtual time (`#[tokio::test(start_paused = true)]` with `TestActors`).
 
-- [ ] 1. **State rules.** In `crates/cicada-actors/src/job_graph.rs`: the skip loop (decision 1) and the end status
+- [x] 1. **State rules.** In `crates/cicada-actors/src/job_graph.rs`: the skip loop (decision 1) and the end status
   (decision 2) as methods of the state, and the decoder's new checks (decision 8). Verify: unit tests of the skip loop
   (transitive, from failed, skipped and cancelled needs), of the end status (succeeded, failed, cancelled) and of each
   new decoder check; `cargo test -p cicada-actors --lib`.
-- [ ] 2. **The handler.** After every change of a job's status, in its commit: the skip loop, then the start of ready
+- [x] 2. **The handler.** After every change of a job's status, in its commit: the skip loop, then the start of ready
   jobs, then the check of the run's end (decision 7); the `running` condition on `Dispatch` and on its failure (decision
   6); the watch on the target in the `Dispatch` turn and the unwatch when no running job has that target; a
   store-written `Failed` about a target matched to a running job's current job message, and a `Stopped` about a target,

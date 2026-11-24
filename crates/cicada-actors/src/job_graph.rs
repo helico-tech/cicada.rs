@@ -89,10 +89,13 @@ pub enum JobGraphMsg {
         /// The attempt to dispatch.
         attempt: u32,
     },
-    /// A message of the run itself ended `failed`: a failed `Dispatch` of a current attempt not yet dispatched ends that
-    /// attempt and its job `failed`, as no worker got the job message. Only a notification that the store wrote counts.
+    /// A message to the run itself or to a job's target ended `failed`: a failed `Dispatch` of a current attempt not yet
+    /// dispatched ends that attempt and its job `failed`, as no worker got the job message; so does the failure of the
+    /// job message of a running job's current attempt at its target. Any other failure is ignored. Only a notification
+    /// that the store wrote counts.
     Failed(Failed),
-    /// Ignored.
+    /// A job's target went away: every running job whose job message was sent to it ends `failed`. Only a notification
+    /// that the store wrote counts.
     Stopped(Stopped),
 }
 
@@ -150,9 +153,9 @@ pub enum JobGraphStatus {
     Running,
     /// Ended: every job succeeded.
     Succeeded,
-    /// Ended: no job runs and none can start, and not every job succeeded.
+    /// Ended: a job failed.
     Failed,
-    /// Ended by a cancel; not set by this release.
+    /// Ended: a job was cancelled, none failed; not set by this release.
     Cancelled,
 }
 
@@ -166,9 +169,9 @@ pub enum JobStatus {
     Running,
     /// Its last attempt succeeded.
     Succeeded,
-    /// Its last attempt failed; the jobs that need it do not start.
+    /// Its last attempt failed; the jobs that need it are skipped.
     Failed,
-    /// Not run, as a job it needs did not succeed; not set by this release.
+    /// Never run, without an attempt: a job it needs, directly or through other jobs, failed, was skipped or cancelled.
     Skipped,
     /// Cancelled; not set by this release.
     Cancelled,
@@ -238,7 +241,8 @@ pub struct JobAttempt {
     /// Its number, per job from 1.
     #[schemars(range(min = 1))]
     pub attempt: u32,
-    /// The store time of the commit that sent its job message; null until then, and for good when that failed.
+    /// The store time of the commit that sent its job message; null until then, and for good when that failed or when
+    /// a `Result` ended the attempt before its `Dispatch` ran (the sender of a result is not checked).
     pub dispatched_at: Option<Timestamp>,
     /// The store time it ended; null while open.
     pub ended_at: Option<Timestamp>,
@@ -390,15 +394,16 @@ struct RawState {
     /// without NUL.
     #[schemars(length(min = 1, max = 200))]
     report_type: String,
-    /// The status of the run: ended exactly when no job runs and none can start, `succeeded` only when every job
-    /// succeeded. Absent: `running`.
+    /// The status of the run: ended exactly when no job runs and none can start, then `succeeded` when every job
+    /// succeeded, else `failed` when a job failed, else `cancelled`. Absent: `running`.
     #[serde(default = "running")]
     status: JobGraphStatus,
     /// The store time it ended; set exactly when it ended. Absent: null.
     #[serde(default)]
     ended_at: Option<Timestamp>,
-    /// The jobs, in graph order, 1 through 100, without a cycle; at most `maxInFlight` run, and a started job's needs
-    /// all succeeded.
+    /// The jobs, in graph order, 1 through 100, without a cycle; at most `maxInFlight` run, a started job's needs all
+    /// succeeded, and a job is skipped, without an attempt, exactly when it did not start and a job it needs failed,
+    /// was skipped or cancelled.
     #[schemars(length(min = 1, max = 100))]
     jobs: Vec<JobEntry>,
 }
@@ -512,6 +517,7 @@ impl JobGraphState {
         for job in &self.jobs {
             check_job(job)?;
         }
+        self.check_skipped()?;
         self.check_progress()
     }
 
@@ -575,13 +581,84 @@ impl JobGraphState {
         if ended != self.ended_at.is_some() {
             return Err(invalid("endedAt is set exactly when the run ended"));
         }
-        let all_succeeded = self.jobs.iter().all(|j| j.status == JobStatus::Succeeded);
-        match self.status {
-            JobGraphStatus::Succeeded if !all_succeeded => {
-                Err(invalid("a run succeeded only when every job succeeded"))
+        let end = self.end_status();
+        if ended && self.status != end {
+            return Err(invalid(format!(
+                "an ended run is succeeded when every job succeeded, else failed when a job failed, else cancelled: \
+                 it is {}, not {}",
+                name_of(self.status),
+                name_of(end)
+            )));
+        }
+        Ok(())
+    }
+
+    /// Checks that a skipped job has no attempt and a need that failed, was skipped or cancelled, and that no waiting
+    /// job has such a need.
+    fn check_skipped(&self) -> Result<(), InvalidJobGraph> {
+        let statuses = self.statuses();
+        for job in &self.jobs {
+            let blocked = job.needs.iter().any(|n| blocks(statuses[n.as_str()]));
+            match job.status {
+                JobStatus::Skipped if !job.attempts.is_empty() => {
+                    return Err(invalid(format!("the skipped job '{}' has an attempt", job.name)));
+                }
+                JobStatus::Skipped if !blocked => {
+                    return Err(invalid(format!(
+                        "the job '{}' is skipped, but no job it needs failed, was skipped or cancelled",
+                        job.name
+                    )));
+                }
+                JobStatus::Waiting if blocked => {
+                    return Err(invalid(format!(
+                        "the job '{}' is waiting, but a job it needs failed, was skipped or cancelled",
+                        job.name
+                    )));
+                }
+                _ => {}
             }
-            JobGraphStatus::Failed if all_succeeded => Err(invalid("a run whose every job succeeded did not fail")),
-            _ => Ok(()),
+        }
+        Ok(())
+    }
+
+    /// The waiting jobs that need a job that failed, was skipped or cancelled, directly or through other waiting jobs:
+    /// the jobs [`Self::skip_blocked`] skips. A loop until nothing changes, at most one pass per job, no recursion.
+    fn blocked(&self) -> Vec<usize> {
+        let mut statuses = self.statuses();
+        let mut blocked = Vec::new();
+        loop {
+            let mut more = false;
+            for (i, job) in self.jobs.iter().enumerate() {
+                let name = job.name.as_str();
+                if statuses[name] == JobStatus::Waiting && job.needs.iter().any(|n| blocks(statuses[n.as_str()])) {
+                    statuses.insert(name, JobStatus::Skipped);
+                    blocked.push(i);
+                    more = true;
+                }
+            }
+            if !more {
+                return blocked;
+            }
+        }
+    }
+
+    /// Skips every waiting job that needs a job that failed, was skipped or cancelled, directly or through others. A
+    /// skipped job gets no attempt.
+    fn skip_blocked(&mut self) {
+        for i in self.blocked() {
+            self.jobs[i].status = JobStatus::Skipped;
+        }
+    }
+
+    /// The status of the run once it ended: `succeeded` when every job succeeded, else `failed` when a job failed,
+    /// else `cancelled`.
+    fn end_status(&self) -> JobGraphStatus {
+        if self.jobs.iter().all(|j| j.status == JobStatus::Succeeded) {
+            JobGraphStatus::Succeeded
+        } else if self.jobs.iter().any(|j| j.status == JobStatus::Failed) {
+            JobGraphStatus::Failed
+        } else {
+            JobGraphStatus::Cancelled
         }
     }
 
@@ -644,6 +721,11 @@ fn check_job(job: &JobEntry) -> Result<(), InvalidJobGraph> {
         )));
     }
     Ok(())
+}
+
+/// True for a status that keeps the jobs that need it from ever starting: `failed`, `skipped` or `cancelled`.
+fn blocks(status: JobStatus) -> bool {
+    matches!(status, JobStatus::Failed | JobStatus::Skipped | JobStatus::Cancelled)
 }
 
 fn invalid(reason: impl Into<String>) -> InvalidJobGraph {
@@ -716,22 +798,34 @@ fn cut(reason: String) -> String {
 /// The job graph type. It has no settings: the graph, the in-flight limit and the report target are in the state of
 /// each run, given at its create; a create of a run that exists changes nothing. It never stops itself.
 ///
-/// `Start`, a taken `Result` and a failed dispatch start every ready job (waiting, with every job it needs succeeded) in
-/// graph order while fewer than `maxInFlight` run. Starting a job marks it `running` with a new attempt in that commit,
-/// which also sends the run a `Dispatch` with the crate's shared retry policy and watches the run itself. That
-/// `Dispatch` sends the job message, a [`JobStart`] as the job's message type, to its target with the shared retry
-/// policy and sets the attempt's `dispatchedAt`; so a gone target of one job never rejects the commit of another. A send
-/// the call refuses (a target type not registered, a type that does not take the message type) fails the `Dispatch` for
+/// After `Start` and every change of a job's status (a taken `Result`, a failed dispatch, a failure seen by the watch on
+/// a target), in that commit, the run skips, starts and checks its end. It skips every waiting job that needs a failed,
+/// skipped or cancelled job, directly or through others: it becomes `skipped`, without an attempt. It starts every ready
+/// job (waiting, with every job it needs succeeded) in graph order while fewer than `maxInFlight` run. Starting a job
+/// marks it `running` with a new attempt in that commit, which also sends the run a `Dispatch` with the crate's shared
+/// retry policy and watches the run itself. That `Dispatch`, while the job is running, sends the job message, a
+/// [`JobStart`] as the job's message type, to its target with the shared retry policy, sets the attempt's
+/// `dispatchedAt` and watches the target; so a gone target of one job never rejects the commit of another. A send the
+/// call refuses (a target type not registered, a type that does not take the message type) fails the `Dispatch` for
 /// good (cause `refused`), a gone target rejects its commit (`commit`), and the `Failed` of the run's own `Dispatch`
-/// ends that attempt and its job `failed` with the reason `the job message was not sent (<cause>): <error>`; the run
-/// goes on.
+/// ends that attempt and its job `failed` with the reason `the job message was not sent (<cause>): <error>`, while the
+/// job is running; the run goes on.
 ///
-/// A failed job blocks the jobs that need it: they stay `waiting`. When no job runs and none can start, the run ends in
-/// that commit, `succeeded` when every job succeeded and `failed` otherwise, and sends itself a `Report`, which sends the
-/// [`JobGraphEnd`] in a turn of its own: a gone report target fails only that `Report`, and a later one sends it. A
-/// worker that fails after it took its job message leaves its job running. Bad input is refused for good with the state
-/// unchanged: a job name, output or reason out of bounds, and a result for an unknown job, a job not running, or an
-/// attempt that is not current; a read of the store that fails is tried again.
+/// The watch on a target ends a running job `failed` when its worker fails it: a `Failed` the store wrote about the
+/// job message of its current attempt, from the run, ends it with the reason `the job message failed at the worker
+/// (<cause>): <error>`, and a `Stopped` the store wrote about the target ends every running job dispatched to it with
+/// the reason `the worker went away (<cause>)`. Other failures of a watched target, and notifications a client sent,
+/// change nothing. The run unwatches a target once none of its running jobs has it. The run cannot see work the worker
+/// handed on, a worker that lost its outside work without failing the job message, stopping or reporting, or the
+/// failure of a later message of the worker; a target must stay until its job reports. A `Stopped` does not say which
+/// instance went away, and a result whose turn was rescheduled can be overtaken by a `Stopped` of its worker, which
+/// fails the job and refuses the result.
+///
+/// When no job runs and none can start, the run ends in that commit: `succeeded` when every job succeeded, else
+/// `failed` when a job failed, else `cancelled`. It sends itself a `Report`, which sends the [`JobGraphEnd`] in a turn
+/// of its own: a gone report target fails only that `Report`, and a later one sends it. Bad input is refused for good
+/// with the state unchanged: a job name, output or reason out of bounds, and a result for an unknown job, a job not
+/// running, or an attempt that is not current; a read of the store that fails is tried again.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct JobGraphActor;
 
@@ -741,7 +835,7 @@ impl Actor for JobGraphActor {
 
     async fn handle(&self, turn: &mut Turn<Self>, message: JobGraphMsg) -> HandlerResult {
         match message {
-            JobGraphMsg::Start => advance(turn),
+            JobGraphMsg::Start => settle(turn, &[]),
             JobGraphMsg::Result { job, attempt, outcome, output, reason } => {
                 check_name(&job).map_err(HandlerError::permanent)?;
                 if let Some(output) = &output {
@@ -750,8 +844,8 @@ impl Actor for JobGraphActor {
                 if let Some(reason) = &reason {
                     check_reason(reason).map_err(HandlerError::permanent)?;
                 }
-                take_result(turn, &job, attempt, outcome, output, reason)?;
-                advance(turn)
+                let to = take_result(turn, &job, attempt, outcome, output, reason)?;
+                settle(turn, &[to])
             }
             JobGraphMsg::Report => report(turn).await,
             JobGraphMsg::Dispatch { job, attempt } => {
@@ -762,10 +856,14 @@ impl Actor for JobGraphActor {
                 Ok(())
             }
             JobGraphMsg::Failed(failed) if turn.message().notification => {
-                if undispatched(turn, &failed) {
-                    advance(turn)?;
+                match undispatched(turn, &failed).or_else(|| job_message_failed(turn, &failed)) {
+                    Some(to) => settle(turn, &[to]),
+                    None => Ok(()),
                 }
-                Ok(())
+            }
+            JobGraphMsg::Stopped(stopped) if turn.message().notification => {
+                let ended = worker_gone(turn, &stopped);
+                if ended.is_empty() { Ok(()) } else { settle(turn, &ended) }
             }
             JobGraphMsg::Failed(_) | JobGraphMsg::Stopped(_) => Ok(()),
         }
@@ -779,13 +877,18 @@ fn options(turn: &Turn<JobGraphActor>) -> SendOptions {
     options
 }
 
-/// Starts the ready jobs of a running run in graph order up to the in-flight limit, each with a new attempt and a
-/// `Dispatch`; ends the run when no job runs and none can start. Changes nothing otherwise.
-fn advance(turn: &mut Turn<JobGraphActor>) -> HandlerResult {
-    let state = turn.state();
-    if state.status != JobGraphStatus::Running {
+/// The one rule after every change of a job's status, in its commit, on a running run: skips the waiting jobs that need
+/// a failed, skipped or cancelled one; starts the ready jobs in graph order up to the in-flight limit, each with a new
+/// attempt and a `Dispatch`; ends the run when no job runs and none can start; and unwatches each target in `ended`, the
+/// targets of the jobs that just ended, that no running job has any more. Changes nothing otherwise.
+fn settle(turn: &mut Turn<JobGraphActor>, ended: &[ActorAddress]) -> HandlerResult {
+    if turn.state().status != JobGraphStatus::Running {
         return Ok(());
     }
+    if !turn.state().blocked().is_empty() {
+        turn.state_mut().skip_blocked();
+    }
+    let state = turn.state();
     let statuses = state.statuses();
     let mut running = state.jobs.iter().filter(|j| j.status == JobStatus::Running).count();
     let mut started = Vec::new();
@@ -822,16 +925,26 @@ fn advance(turn: &mut Turn<JobGraphActor>) -> HandlerResult {
     if running == 0 {
         let now = turn.now();
         let state = turn.state_mut();
-        let all_succeeded = state.jobs.iter().all(|j| j.status == JobStatus::Succeeded);
-        state.status = if all_succeeded { JobGraphStatus::Succeeded } else { JobGraphStatus::Failed };
+        state.status = state.end_status();
         state.ended_at = Some(now);
         let options = options(turn);
         turn.send_self_with(JobGraphMsg::Report, options)?;
     }
+    let mut unwatched: Vec<&ActorAddress> = Vec::new();
+    for to in ended {
+        let state = turn.state();
+        let still = state.jobs.iter().any(|j| j.status == JobStatus::Running && &j.to == to);
+        if to == turn.self_address() || still || unwatched.contains(&to) {
+            continue;
+        }
+        unwatched.push(to);
+        turn.unwatch(to)?;
+    }
     Ok(())
 }
 
-/// Ends the current attempt of `job` with the result, or refuses the result for good, with the state unchanged.
+/// Ends the current attempt of `job` with the result and returns the job's target, or refuses the result for good, with
+/// the state unchanged.
 fn take_result(
     turn: &mut Turn<JobGraphActor>,
     job: &str,
@@ -839,7 +952,7 @@ fn take_result(
     outcome: JobOutcome,
     output: Option<Value>,
     reason: Option<String>,
-) -> HandlerResult {
+) -> Result<ActorAddress, HandlerError> {
     let state = turn.state();
     let Some(i) = state.position(job) else {
         return Err(HandlerError::permanent(format!("the run has no job named '{job}'")));
@@ -863,11 +976,12 @@ fn take_result(
     last.reason = reason;
     entry.status = outcome.into();
     entry.output = output;
-    Ok(())
+    Ok(entry.to.clone())
 }
 
-/// Sends the job message of `attempt` when it is the current attempt of the running `job`, not yet dispatched, and sets
-/// its `dispatchedAt`. A send the registry refuses is refused for good; a failed read of the store is tried again.
+/// Sends the job message of `attempt` when it is the current attempt of the running `job`, not yet dispatched, sets its
+/// `dispatchedAt` and watches the job's target. A send the registry refuses is refused for good; a failed read of the
+/// store is tried again.
 async fn dispatch(turn: &mut Turn<JobGraphActor>, job: &str, attempt: u32) -> HandlerResult {
     let state = turn.state();
     let Some(i) = state.position(job) else {
@@ -888,6 +1002,7 @@ async fn dispatch(turn: &mut Turn<JobGraphActor>, job: &str, attempt: u32) -> Ha
         // No registered type, a type that does not take the message, or a field out of bounds.
         Err(e) => return Err(HandlerError::permanent_from(e)),
     }
+    turn.watch(&to)?;
     let now = turn.now();
     if let Some(last) = turn.state_mut().jobs[i].attempts.last_mut() {
         last.dispatched_at = Some(now);
@@ -896,36 +1011,78 @@ async fn dispatch(turn: &mut Turn<JobGraphActor>, job: &str, attempt: u32) -> Ha
 }
 
 /// Ends the attempt of a `Dispatch` that the run sent itself and that failed while the attempt was current, running and
-/// not dispatched: its commit never happened, so no worker has the job message. True when it ended one.
-fn undispatched(turn: &mut Turn<JobGraphActor>, failed: &Failed) -> bool {
+/// not dispatched: its commit never happened, so no worker has the job message. Returns the job's target when it ended
+/// one.
+fn undispatched(turn: &mut Turn<JobGraphActor>, failed: &Failed) -> Option<ActorAddress> {
     let itself = turn.self_address();
     if &failed.actor != itself || failed.from.as_ref() != Some(itself) {
-        return false;
+        return None;
     }
     let Ok(JobGraphMsg::Dispatch { job, attempt }) =
         cicada::message::decode::<JobGraphMsg>(&failed.message_type, &failed.payload)
     else {
-        return false;
+        return None;
     };
     let state = turn.state();
-    let Some(i) = state.position(&job) else {
-        return false;
-    };
+    let i = state.position(&job)?;
     let entry = &state.jobs[i];
     let current = entry.attempts.last().is_some_and(|a| a.attempt == attempt && a.dispatched_at.is_none());
     if entry.status != JobStatus::Running || !current {
-        return false;
+        return None;
     }
-    let reason = cut(format!("the job message was not sent ({}): {}", failed.cause, failed.error));
+    let reason = format!("the job message was not sent ({}): {}", failed.cause, failed.error);
+    Some(fail_current(turn, i, reason))
+}
+
+/// Ends the running job whose current job message a `Failed` is about: sent by the run to the job's target as its
+/// message type, with a [`JobStart`] of this run, that job and its current attempt. Returns the job's target when it
+/// ended one.
+fn job_message_failed(turn: &mut Turn<JobGraphActor>, failed: &Failed) -> Option<ActorAddress> {
+    if failed.from.as_ref() != Some(turn.self_address()) {
+        return None;
+    }
+    let start = JobStart::deserialize(&failed.payload).ok()?;
+    if start.run != turn.self_ref().run {
+        return None;
+    }
+    let state = turn.state();
+    let i = state.position(&start.job)?;
+    let entry = &state.jobs[i];
+    let current = entry.attempts.last().is_some_and(|a| a.attempt == start.attempt);
+    if entry.status != JobStatus::Running
+        || !current
+        || entry.to != failed.actor
+        || entry.message_type != failed.message_type
+    {
+        return None;
+    }
+    let reason = format!("the job message failed at the worker ({}): {}", failed.cause, failed.error);
+    Some(fail_current(turn, i, reason))
+}
+
+/// Ends every running job whose job message was sent to the actor that went away; returns their targets.
+fn worker_gone(turn: &mut Turn<JobGraphActor>, stopped: &Stopped) -> Vec<ActorAddress> {
+    let gone: Vec<usize> = (turn.state().jobs.iter().enumerate())
+        .filter(|(_, j)| j.status == JobStatus::Running && j.to == stopped.actor)
+        .filter(|(_, j)| j.attempts.last().is_some_and(|a| a.dispatched_at.is_some()))
+        .map(|(i, _)| i)
+        .collect();
+    let reason = format!("the worker went away ({})", name_of(stopped.cause));
+    gone.into_iter().map(|i| fail_current(turn, i, reason.clone())).collect()
+}
+
+/// Ends the open current attempt of the job at `i`, and the job, `failed` with `reason`, cut to 2,000 characters;
+/// returns the job's target.
+fn fail_current(turn: &mut Turn<JobGraphActor>, i: usize, reason: String) -> ActorAddress {
     let now = turn.now();
     let entry = &mut turn.state_mut().jobs[i];
     if let Some(last) = entry.attempts.last_mut() {
         last.ended_at = Some(now);
         last.outcome = Some(JobOutcome::Failed);
-        last.reason = Some(reason);
+        last.reason = Some(cut(reason));
     }
     entry.status = JobStatus::Failed;
-    true
+    entry.to.clone()
 }
 
 /// Sends the end report of an ended run to its report target; nothing on a running run. A send the registry refuses is
@@ -1237,17 +1394,135 @@ mod tests {
         refused(state(vec![job("a", &[], "running", None)], json!({"endedAt": at})), "endedAt");
         refused(
             state(vec![job("a", &[], "failed", Some("failed"))], json!({"status": "succeeded", "endedAt": at})),
-            "succeeded only when every job succeeded",
+            "it is succeeded, not failed",
         );
         refused(
             state(vec![job("a", &[], "succeeded", Some("succeeded"))], json!({"status": "failed", "endedAt": at})),
-            "did not fail",
+            "it is failed, not succeeded",
         );
         taken(state(
-            vec![job("a", &[], "failed", Some("failed")), job("b", &["a"], "waiting", None)],
+            vec![job("a", &[], "failed", Some("failed")), bare("b", &["a"], "skipped")],
             json!({"status": "failed", "endedAt": at}),
         ));
         taken(state(vec![job("a", &[], "succeeded", Some("succeeded")), job("b", &["a"], "running", None)], json!({})));
+    }
+
+    /// A job's JSON with `status` and no attempts.
+    fn bare(name: &str, needs: &[&str], status: &str) -> Value {
+        entry(name, needs, json!({"status": status}))
+    }
+
+    #[test]
+    fn inconsistent_skipped_jobs_and_end_statuses_are_refused() {
+        let at = "2026-01-01T00:00:02Z";
+        let ended = |status: &str| json!({"status": status, "endedAt": at});
+        let failed = entry("a", &[], json!({"status": "failed", "attempts": [attempt(1, Some("failed"))]}));
+        let succeeded = entry("a", &[], json!({"status": "succeeded", "attempts": [attempt(1, Some("succeeded"))]}));
+        refused(state(vec![succeeded.clone(), bare("b", &["a"], "skipped")], ended("succeeded")), "no job it needs");
+        refused(state(vec![bare("b", &[], "skipped")], ended("cancelled")), "no job it needs");
+        let skipped_attempt =
+            entry("b", &["a"], json!({"status": "skipped", "attempts": [attempt(1, Some("failed"))]}));
+        refused(state(vec![failed.clone(), skipped_attempt], ended("failed")), "skipped job 'b' has an attempt");
+        refused(state(vec![failed.clone(), bare("b", &["a"], "waiting")], ended("failed")), "'b' is waiting");
+        refused(
+            state(
+                vec![bare("a", &[], "cancelled"), bare("b", &["a"], "waiting"), bare("c", &["b"], "waiting")],
+                ended("cancelled"),
+            ),
+            "'b' is waiting",
+        );
+        refused(
+            state(vec![failed.clone(), bare("b", &["a"], "skipped")], ended("succeeded")),
+            "it is succeeded, not failed",
+        );
+        refused(state(vec![succeeded.clone()], ended("cancelled")), "it is cancelled, not succeeded");
+        refused(state(vec![bare("x", &[], "cancelled"), failed.clone()], ended("cancelled")), "not failed");
+        refused(state(vec![bare("a", &[], "cancelled")], ended("failed")), "it is failed, not cancelled");
+        taken(state(
+            vec![bare("x", &[], "cancelled"), bare("b", &["x"], "skipped"), bare("c", &["b"], "skipped")],
+            ended("cancelled"),
+        ));
+        let mut both = failed;
+        both["name"] = json!("f");
+        taken(state(vec![bare("x", &[], "cancelled"), both, bare("b", &["f", "x"], "skipped")], ended("failed")));
+    }
+
+    /// The decoded state of `jobs`, running, with in-flight limit 100.
+    fn running(jobs: Vec<Value>) -> JobGraphState {
+        serde_json::from_value(state(jobs, json!({"maxInFlight": 100}))).unwrap()
+    }
+
+    fn skipped_names(state: &JobGraphState) -> Vec<&str> {
+        state.jobs.iter().filter(|j| j.status == JobStatus::Skipped).map(|j| j.name.as_str()).collect()
+    }
+
+    #[test]
+    fn the_skip_loop_skips_every_waiting_job_that_needs_a_blocked_one_through_any_number_of_jobs() {
+        let failed =
+            |name: &str| entry(name, &[], json!({"status": "failed", "attempts": [attempt(1, Some("failed"))]}));
+        let open = json!({"attempt": 1, "dispatchedAt": null, "endedAt": null, "outcome": null, "reason": null});
+        let ended: JobAttempt = serde_json::from_value(attempt(1, Some("failed"))).unwrap();
+        for (status, attempts) in [(JobStatus::Failed, vec![ended]), (JobStatus::Cancelled, vec![])] {
+            // Dependents listed before the jobs they need, so one pass in graph order is not enough.
+            let mut state = running(vec![
+                bare("d", &["c"], "waiting"),
+                bare("c", &["b"], "waiting"),
+                bare("b", &["a"], "waiting"),
+                entry("a", &[], json!({"status": "running", "attempts": [open.clone()]})),
+                entry("e", &[], json!({"status": "running", "attempts": [open.clone()]})),
+                bare("f", &["e"], "waiting"),
+                bare("g", &[], "waiting"),
+            ]);
+            (state.jobs[3].status, state.jobs[3].attempts) = (status, attempts);
+            state.skip_blocked();
+            assert_eq!(skipped_names(&state), ["d", "c", "b"]);
+            assert!(state.jobs.iter().filter(|j| j.status == JobStatus::Skipped).all(|j| j.attempts.is_empty()));
+            assert_eq!(state.jobs[5].status, JobStatus::Waiting, "f needs a running job");
+            assert_eq!(state.jobs[6].status, JobStatus::Waiting, "g needs nothing");
+            assert!(state.check().is_ok(), "{:?}", state.check());
+            let before = state.clone();
+            state.skip_blocked();
+            assert_eq!(state, before, "a second pass changes nothing");
+        }
+        // A job skipped already blocks the jobs that need it.
+        let mut state = running(vec![
+            failed("a"),
+            bare("b", &["a"], "skipped"),
+            entry("x", &[], json!({"status": "running", "attempts": [open]})),
+        ]);
+        state.jobs.push(JobEntry::from(job("c", &["b"])));
+        state.skip_blocked();
+        assert_eq!(skipped_names(&state), ["b", "c"]);
+    }
+
+    #[test]
+    fn the_end_status_follows_the_jobs() {
+        let succeeded =
+            |n: &str| entry(n, &[], json!({"status": "succeeded", "attempts": [attempt(1, Some("succeeded"))]}));
+        let failed = |n: &str| entry(n, &[], json!({"status": "failed", "attempts": [attempt(1, Some("failed"))]}));
+        let at = json!({"maxInFlight": 2});
+        let of = |jobs: Vec<Value>| {
+            let mut json = state(jobs, at.clone());
+            json["status"] = json!("failed");
+            json["endedAt"] = json!("2026-01-01T00:00:02Z");
+            let raw: RawState = serde_json::from_value(json).unwrap();
+            JobGraphState {
+                max_in_flight: raw.max_in_flight,
+                report_to: raw.report_to,
+                report_type: raw.report_type,
+                status: raw.status,
+                ended_at: raw.ended_at,
+                jobs: raw.jobs,
+            }
+            .end_status()
+        };
+        assert_eq!(of(vec![succeeded("a"), succeeded("b")]), JobGraphStatus::Succeeded);
+        assert_eq!(of(vec![succeeded("a"), failed("b"), bare("c", &["b"], "skipped")]), JobGraphStatus::Failed);
+        assert_eq!(of(vec![bare("a", &[], "cancelled"), failed("b")]), JobGraphStatus::Failed, "a failure wins");
+        assert_eq!(
+            of(vec![succeeded("a"), bare("b", &[], "cancelled"), bare("c", &["b"], "skipped")]),
+            JobGraphStatus::Cancelled
+        );
     }
 
     #[test]

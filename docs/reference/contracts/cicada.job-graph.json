@@ -257,7 +257,7 @@
             "type": "integer"
           },
           "dispatchedAt": {
-            "description": "The store time of the commit that sent its job message; null until then, and for good when that failed.",
+            "description": "The store time of the commit that sent its job message; null until then, and for good when that failed or when\na `Result` ended the attempt before its `Dispatch` ran (the sender of a result is not checked).",
             "format": "date-time",
             "type": [
               "string",
@@ -368,12 +368,12 @@
           },
           {
             "const": "failed",
-            "description": "Ended: no job runs and none can start, and not every job succeeded.",
+            "description": "Ended: a job failed.",
             "type": "string"
           },
           {
             "const": "cancelled",
-            "description": "Ended by a cancel; not set by this release.",
+            "description": "Ended: a job was cancelled, none failed; not set by this release.",
             "type": "string"
           }
         ]
@@ -413,12 +413,12 @@
           },
           {
             "const": "failed",
-            "description": "Its last attempt failed; the jobs that need it do not start.",
+            "description": "Its last attempt failed; the jobs that need it are skipped.",
             "type": "string"
           },
           {
             "const": "skipped",
-            "description": "Not run, as a job it needs did not succeed; not set by this release.",
+            "description": "Never run, without an attempt: a job it needs, directly or through other jobs, failed, was skipped or cancelled.",
             "type": "string"
           },
           {
@@ -441,7 +441,7 @@
         ]
       },
       "jobs": {
-        "description": "The jobs, in graph order, 1 through 100, without a cycle; at most `maxInFlight` run, and a started job's needs\nall succeeded.",
+        "description": "The jobs, in graph order, 1 through 100, without a cycle; at most `maxInFlight` run, a started job's needs all\nsucceeded, and a job is skipped, without an attempt, exactly when it did not start and a job it needs failed,\nwas skipped or cancelled.",
         "items": {
           "$ref": "#/$defs/JobEntry"
         },
@@ -470,7 +470,7 @@
       "status": {
         "$ref": "#/$defs/JobGraphStatus",
         "default": "running",
-        "description": "The status of the run: ended exactly when no job runs and none can start, `succeeded` only when every job\nsucceeded. Absent: `running`."
+        "description": "The status of the run: ended exactly when no job runs and none can start, then `succeeded` when every job\nsucceeded, else `failed` when a job failed, else `cancelled`. Absent: `running`."
       }
     },
     "required": [
