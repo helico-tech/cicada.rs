@@ -233,6 +233,15 @@ class Fixtures(unittest.TestCase):
         self.assertEqual(report["status"], "ok")
         self.assertEqual([p["name"] for p in report["packages"]], ["cicada"])
 
+    def test_the_containers_crate_alone_resolves_to_its_source(self):
+        tree = self.dir / "cicada.rs"
+        make_tree(tree, names=("cicada", "cicada-containers"))
+        containers = package("cicada-containers", "0.17.2", tree / "crates/cicada-containers/Cargo.toml")
+        report = self.resolve(metadata([containers], self.app))
+        self.assertEqual(report["status"], "ok")
+        self.assertEqual([p["name"] for p in report["packages"]], ["cicada-containers"])
+        self.assertEqual(report["groups"][0]["root"], str(tree))
+
     def test_an_equal_version_with_another_commit_is_no_match(self):
         tree = self.dir / "checkout"
         head = make_tree(tree, commit=True)

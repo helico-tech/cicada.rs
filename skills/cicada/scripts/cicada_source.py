@@ -29,7 +29,16 @@ import sys
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-PACKAGES = ("cicada", "cicada-test", "cicada-axum", "cicada-client", "cicada-otel", "cicada-actors", "cicada-app")
+PACKAGES = (
+    "cicada",
+    "cicada-test",
+    "cicada-axum",
+    "cicada-client",
+    "cicada-otel",
+    "cicada-actors",
+    "cicada-app",
+    "cicada-containers",
+)
 SKILL_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_TIMEOUT = 120.0
 GIT_TIMEOUT = 20.0

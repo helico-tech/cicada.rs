@@ -1,0 +1,284 @@
+{
+  "messages": {
+    "Check": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Arms a fresh poll when one was lost: due when the armed one was, or at once when that passed. Does nothing with no\nwork left.",
+      "properties": {},
+      "title": "Check",
+      "type": "object"
+    },
+    "Poll": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The actor's own timer: only the armed one acts, by taking one step toward the goal. Any other is ignored.",
+      "properties": {},
+      "title": "Poll",
+      "type": "object"
+    },
+    "Remove": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Stops the container if needed, records its end, then removes it. Send it before deleting the actor, or the\ncontainer stays.",
+      "properties": {},
+      "title": "Remove",
+      "type": "object"
+    },
+    "Start": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Runs the container until it ends, and sends the end to `to`. The first `Start` sets the target; a later one\nchanges nothing, unless the container has ended: then it sends the saved end to its own target at once.",
+      "properties": {
+        "messageType": {
+          "description": "The message type of the end, whose payload is `{\"key\": …, \"end\": …}`, a [`ContainerEnded`]; not empty, at\nmost 200 characters, without NUL. The target's registry is checked only when the end is sent.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "to": {
+          "description": "The target of the end.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "to",
+        "messageType"
+      ],
+      "title": "Start",
+      "type": "object"
+    },
+    "Stop": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Stops the container and ends it `stopped`, or `timedOut` past its deadline; one never started is never created.",
+      "properties": {},
+      "title": "Stop",
+      "type": "object"
+    }
+  },
+  "state": {
+    "$defs": {
+      "ContainerEnd": {
+        "description": "The end of a container: saved in the state and sent to the target in the commit that records it, before anything\nremoves the container.",
+        "properties": {
+          "code": {
+            "description": "The exit code, when the runtime gave one.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "logs": {
+            "default": "",
+            "description": "The tail of its output, stdout and stderr together: at most the settings' last lines and bytes, without NUL;\nempty when nothing was made, or `(no logs: …)` when they could not be read.",
+            "type": "string"
+          },
+          "outcome": {
+            "$ref": "#/$defs/Outcome",
+            "description": "How it ended."
+          },
+          "reason": {
+            "description": "Why, in words: at most 1 KiB, without NUL.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "outcome",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "EndTarget": {
+        "description": "Where the end goes: the target and message type of the first `Start`.",
+        "properties": {
+          "messageType": {
+            "description": "The message type, whose payload is a [`ContainerEnded`].",
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "to": {
+            "description": "The target.",
+            "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "to",
+          "messageType"
+        ],
+        "type": "object"
+      },
+      "Goal": {
+        "description": "What is wanted of a container; it moves only forward.",
+        "oneOf": [
+          {
+            "const": "run",
+            "description": "Running until it ends.",
+            "type": "string"
+          },
+          {
+            "const": "stop",
+            "description": "Stopped, with its end recorded.",
+            "type": "string"
+          },
+          {
+            "const": "remove",
+            "description": "Removed, after its end is recorded.",
+            "type": "string"
+          }
+        ]
+      },
+      "Outcome": {
+        "description": "How a container ended.",
+        "oneOf": [
+          {
+            "const": "exited",
+            "description": "The program exited by itself, with its code.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "The runtime ended it, or it could not be run: it did not start, ran out of memory, went missing, the runtime\nfailed too often in a row, or its key, request or spec was refused.",
+            "type": "string"
+          },
+          {
+            "const": "timedOut",
+            "description": "It ran past its deadline and was stopped.",
+            "type": "string"
+          },
+          {
+            "const": "stopped",
+            "description": "It was stopped on request, or never made.",
+            "type": "string"
+          }
+        ]
+      },
+      "Phase": {
+        "description": "Where a container is.",
+        "oneOf": [
+          {
+            "const": "new",
+            "description": "Nothing made yet, or made by a step whose commit was lost.",
+            "type": "string"
+          },
+          {
+            "const": "started",
+            "description": "Created and started.",
+            "type": "string"
+          },
+          {
+            "const": "ended",
+            "description": "Ended, its end recorded.",
+            "type": "string"
+          },
+          {
+            "const": "removed",
+            "description": "Removed, after its end.",
+            "type": "string"
+          }
+        ]
+      },
+      "Run": {
+        "description": "The request of a test container.",
+        "properties": {
+          "image": {
+            "description": "The image to run.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "image"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "The state of a container actor: the host's typed request, never a spec, and the reconciliation's progress. Create it\nwith [`ContainerState::new`]; a decoded state is checked the same way.",
+    "properties": {
+      "armed": {
+        "description": "The id of the armed poll; absent or null when none is armed.",
+        "minLength": 1,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "deadline": {
+        "description": "The deadline of a running container; absent or null without a timeout.",
+        "format": "date-time",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "due": {
+        "description": "When the armed poll is due; present exactly with `armed`.",
+        "format": "date-time",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "end": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ContainerEnd"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The end; present exactly once ended or removed."
+      },
+      "errors": {
+        "default": 0,
+        "description": "Runtime errors in a row; absent: 0.",
+        "format": "uint32",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "goal": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/Goal"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Run, stop or remove; absent or null before the first `Start`, `Stop` or `Remove`, and set in any other phase\nthan new."
+      },
+      "phase": {
+        "$ref": "#/$defs/Phase",
+        "default": "new",
+        "description": "New, started, ended or removed; absent: new."
+      },
+      "request": {
+        "$ref": "#/$defs/Run",
+        "description": "The host's request, from which its job builds the spec at each create."
+      },
+      "target": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/EndTarget"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Where the end goes; absent or null before the first `Start`."
+      },
+      "undelivered": {
+        "description": "Why the end could not be sent; absent or null when it was, or was not yet.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "request"
+    ],
+    "title": "ContainerState",
+    "type": "object"
+  },
+  "type": "test.container"
+}

@@ -1,17 +1,24 @@
 //! The container actor on virtual time (ADR 0057): `TestActors` and the fake runtime, one scenario of the spec per
-//! test, with a target actor that keeps every end it is sent.
+//! test, with a target actor that keeps every end it is sent. And its wire format: a test job's contract, whose type
+//! name its host chooses, pinned in `tests/contracts`, with samples of every message, the state in each phase and an
+//! end payload, taken by the schemas and the decoders (ADR 0026).
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use cicada::actor::contract_of;
+use cicada::contract::Contract;
 use cicada::prelude::*;
 use cicada::time::{self, Timestamp};
+use cicada_axum::{assert_message_sample, assert_state_sample};
 use cicada_containers::{
     Call, Container, ContainerActor, ContainerEnded, ContainerJob, ContainerMsg, ContainerRuntime, ContainerSettings,
     ContainerSpec, ContainerState, ContainerStatus, ErrorKind, FakeRuntime, Goal, Label, Method, Outcome, Phase,
 };
-use cicada_test::TestActors;
+use cicada_test::{TestActors, UPDATE_CONTRACTS_ENV, describe_changes};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
 
 const SECOND: Duration = Duration::from_secs(1);
 /// The secret the job puts in every spec; it must never reach the store.
@@ -481,4 +488,151 @@ async fn a_nul_in_the_logs_is_stored_as_the_replacement_character_within_the_cap
     let logs = test.state::<_, State>(&job).await.end.unwrap().logs;
     assert_eq!(logs, "xxx\nend\u{FFFD}of it\n", "the last line whole, then the last 16 bytes");
     assert!(logs.len() <= 16);
+}
+
+/// `value` with the keys of every object sorted, so that the fixture's text does not follow the order of a map.
+fn sorted(value: &Value) -> Value {
+    match value {
+        Value::Object(o) => {
+            let mut keys: Vec<&String> = o.keys().collect();
+            keys.sort();
+            Value::Object(keys.into_iter().map(|k| (k.clone(), sorted(&o[k]))).collect::<Map<_, _>>())
+        }
+        Value::Array(a) => Value::Array(a.iter().map(sorted).collect()),
+        other => other.clone(),
+    }
+}
+
+/// Compares `contract` with its fixture in `tests/contracts` as text, descriptions included; with `update`, a fixture
+/// that differs or is missing is written instead.
+fn check_fixture(contract: &Contract, update: bool) -> Result<(), String> {
+    let file = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/contracts/{}.json", contract.type_name()));
+    let current = serde_json::to_string_pretty(&sorted(&contract.to_json())).unwrap() + "\n";
+    let recorded = std::fs::read_to_string(&file).ok();
+    if recorded.as_deref() == Some(current.as_str()) {
+        return Ok(());
+    }
+    if update {
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        return std::fs::write(&file, &current).map_err(|e| format!("Cannot write {}: {e}", file.display()));
+    }
+    let changes = match recorded.as_deref().map(serde_json::from_str::<Value>) {
+        None => vec!["the fixture is missing".to_owned()],
+        Some(Err(e)) => vec![format!("the fixture is not JSON: {e}")],
+        Some(Ok(json)) => match Contract::from_json(&json) {
+            Err(e) => vec![format!("the fixture is not a contract: {e}")],
+            Ok(old) if old.hash() == contract.hash() => vec!["a description (doc comment) changed".to_owned()],
+            Ok(old) => describe_changes(&old, contract),
+        },
+    };
+    Err(format!(
+        "The contract of {} differs from {}:\n  - {}\nIf the change is meant, rewrite it with {UPDATE_CONTRACTS_ENV}=true \
+         and commit it.",
+        contract.type_name(),
+        file.display(),
+        changes.join("\n  - ")
+    ))
+}
+
+/// A container job's contract is the host's: pinned with the actor tests, not in `docs/reference/contracts`.
+#[test]
+fn the_contract_of_a_test_job_matches_its_fixture() {
+    let contract = contract_of::<ContainerActor<TestJob>>().unwrap();
+    assert_eq!(contract.type_name().as_str(), "test.container");
+    let update = std::env::var(UPDATE_CONTRACTS_ENV).is_ok_and(|v| v == "true");
+    if let Err(e) = check_fixture(&contract, update) {
+        panic!("{e}");
+    }
+    let json = contract.to_json();
+    let messages: Vec<&String> = json["messages"].as_object().unwrap().keys().collect();
+    assert_eq!(messages, ["Check", "Poll", "Remove", "Start", "Stop"]);
+    let start = &json["messages"]["Start"];
+    assert_eq!(start["required"], json!(["to", "messageType"]));
+    assert_eq!(
+        (
+            start["properties"]["messageType"]["minLength"].clone(),
+            start["properties"]["messageType"]["maxLength"].clone()
+        ),
+        (json!(1), json!(200))
+    );
+    let state = &json["state"];
+    assert_eq!(state["required"], json!(["request"]), "every other field has a default");
+    assert_eq!(state["properties"]["request"]["$ref"], "#/$defs/Run", "the host's typed request");
+    let names = |def: &str| -> Vec<Value> {
+        state["$defs"][def]["oneOf"].as_array().unwrap().iter().map(|v| v["const"].clone()).collect()
+    };
+    assert_eq!(names("Goal"), [json!("run"), json!("stop"), json!("remove")]);
+    assert_eq!(names("Phase"), [json!("new"), json!("started"), json!("ended"), json!("removed")]);
+    assert_eq!(names("Outcome"), [json!("exited"), json!("failed"), json!("timedOut"), json!("stopped")]);
+    let docs = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/reference/contracts/test.container.json");
+    assert!(!docs.exists(), "no fixed type name in the catalog");
+}
+
+/// The messages pass their samples: what the helpers write and what a client sends.
+#[test]
+fn the_messages_pass_their_samples() {
+    let start = serde_json::to_value(start()).unwrap();
+    assert_eq!(start, json!({"type": "Start", "to": "test.watcher/_", "messageType": "Ended"}));
+    assert_message_sample::<ContainerMsg>(&start);
+    for message in [ContainerMsg::Stop, ContainerMsg::Remove, ContainerMsg::Check, ContainerMsg::Poll] {
+        assert_message_sample::<ContainerMsg>(&serde_json::to_value(message).unwrap());
+    }
+    assert!(cicada::message::decode::<ContainerMsg>("Start", &json!({"to": "test.watcher/_"})).is_err());
+    assert!(cicada::message::decode::<ContainerMsg>("Start", &json!({"to": "nope", "messageType": "E"})).is_err());
+}
+
+/// The state in each phase, as the actor writes it, and a minimal one pass their samples; an end payload, as the target
+/// gets it, passes as a host's message; inconsistent states are refused.
+#[tokio::test(start_paused = true)]
+async fn the_states_of_each_phase_and_the_end_payload_pass_their_samples() {
+    let fake = FakeRuntime::new();
+    let mut settings = settings();
+    settings.timeout = Some(60 * SECOND);
+    let test = harness(&fake, settings).await;
+    let job = container(&test, "j1", "alpine:3").await;
+    let mut phases = Vec::new();
+    let new = test.state_json(&job).await.unwrap();
+    assert_eq!(
+        new,
+        json!({"request": {"image": "alpine:3"}, "goal": null, "phase": "new", "target": null,
+        "deadline": null, "end": null, "undelivered": null, "armed": null, "due": null, "errors": 0})
+    );
+    phases.push(new);
+    test.send(&job, start()).await;
+    test.run_until_idle().await;
+    phases.push(test.state_json(&job).await.unwrap());
+    fake.set_logs("app-j1", "done");
+    fake.exit_with("app-j1", ContainerStatus::Failed { code: Some(137), reason: "OOMKilled".into() });
+    test.advance_time_by(2 * SECOND).await;
+    phases.push(test.state_json(&job).await.unwrap());
+    test.send(&job, ContainerMsg::Remove).await;
+    test.run_until_idle().await;
+    phases.push(test.state_json(&job).await.unwrap());
+    let written: Vec<&Value> = phases.iter().map(|state| &state["phase"]).collect();
+    assert_eq!(written, ["new", "started", "ended", "removed"]);
+    for state in &phases {
+        assert_state_sample::<State>(state);
+    }
+    assert_state_sample::<State>(&json!({"request": {"image": "alpine:3"}}));
+    let end = &phases[3]["end"];
+    assert_eq!(end, &json!({"outcome": "failed", "code": 137, "reason": "OOMKilled", "logs": "done\n"}));
+
+    let ended = serde_json::to_value(&ends(&test).await[0]).unwrap();
+    assert_eq!(ended, json!({"key": "j1", "end": end}));
+    let mut sample = json!({"type": "Ended"});
+    sample.as_object_mut().unwrap().extend(ended.as_object().unwrap().clone());
+    assert_message_sample::<WatcherMsg>(&sample);
+
+    for invalid in [
+        json!({}),
+        json!({"request": {"image": 1}}),
+        json!({"request": {"image": "a"}, "phase": "paused"}),
+        json!({"request": {"image": "a"}, "goal": "pause"}),
+        json!({"request": {"image": "a"}, "goal": "stop", "phase": "ended"}),
+        json!({"request": {"image": "a"}, "phase": "started"}),
+        json!({"request": {"image": "a"}, "armed": "m1"}),
+        json!({"request": {"image": "a"}, "goal": "stop", "phase": "ended", "end": {"outcome": "gone", "reason": ""}}),
+    ] {
+        assert!(serde_json::from_value::<State>(invalid.clone()).is_err(), "{invalid}");
+    }
 }

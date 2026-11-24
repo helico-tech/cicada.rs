@@ -17,7 +17,7 @@ with `TestActors` and `FakeRuntime`).
 - [x] 3. **Virtual-time tests.** `crates/cicada-containers/tests/actor.rs` with the dev-dependencies of "Contract and
   tests", covering every scenario of the spec and the test list of the design. Verify:
   `cargo test -p cicada-containers --test actor`.
-- [ ] 4. **Contract and resolver.** A test job's contract pinned in `crates/cicada-containers/tests/contracts/` with
+- [x] 4. **Contract and resolver.** A test job's contract pinned in `crates/cicada-containers/tests/contracts/` with
   samples of every message, each phase's state and an end payload (`CICADA_UPDATE_CONTRACTS=true` writes it).
   `cicada-containers` in `PACKAGES` of `skills/cicada/scripts/cicada_source.py`, with its Python test. Verify:
   `cargo test -p cicada-containers`, `cargo test -p cicada-examples --test skill`.
