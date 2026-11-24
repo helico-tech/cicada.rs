@@ -550,7 +550,7 @@ async fn the_end_report_names_each_job_with_its_status_output_and_reason() {
     succeed(&test, "a").await;
     fail(&test, "b").await;
     let reports = reports(&test, "main").await;
-    let expected: JobGraphEnd = serde_json::from_value(json!({"run": "run-7", "status": "failed", "jobs": [
+    let expected: JobGraphEnd = serde_json::from_value(json!({"run": "run-7", "end": 1, "status": "failed", "jobs": [
         {"name": "a", "status": "succeeded", "attempt": 1, "output": {"built": "a"}, "reason": null},
         {"name": "b", "status": "failed", "attempt": 1, "output": null, "reason": "b broke"}]}))
     .unwrap();
@@ -574,6 +574,7 @@ async fn a_report_sent_again_sends_the_same_report() {
     let reports = reports(&test, "main").await;
     assert_eq!(reports.len(), 2);
     assert_eq!(reports[0], reports[1]);
+    assert_eq!(reports[1].end, 1, "the same end number");
     assert_eq!(test.version(&run()).await, version);
 }
 
@@ -839,12 +840,13 @@ async fn cancel_of_the_whole_run_cancels_every_waiting_and_running_job_and_repor
     test.run_until_idle().await;
     assert_eq!(statuses(&test).await, named(&[("a", Succeeded), ("b", Cancelled), ("c", Cancelled), ("d", Cancelled)]));
     assert_eq!(run_status(&test).await, JobGraphStatus::Cancelled);
-    let expected: JobGraphEnd = serde_json::from_value(json!({"run": "run-7", "status": "cancelled", "jobs": [
+    let expected: JobGraphEnd =
+        serde_json::from_value(json!({"run": "run-7", "end": 1, "status": "cancelled", "jobs": [
         {"name": "a", "status": "succeeded", "attempt": 1, "output": {"built": "a"}, "reason": null},
         {"name": "b", "status": "cancelled", "attempt": 1, "output": null, "reason": "cancelled"},
         {"name": "c", "status": "cancelled", "attempt": null, "output": null, "reason": null},
         {"name": "d", "status": "cancelled", "attempt": null, "output": null, "reason": null}]}))
-    .unwrap();
+        .unwrap();
     assert_eq!(reports(&test, "main").await, [expected]);
 }
 

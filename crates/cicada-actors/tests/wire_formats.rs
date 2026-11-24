@@ -638,6 +638,7 @@ fn the_job_graph_messages_job_message_and_end_report_are_written_in_camel_case_a
             JobGraphMsg::SendCancel { job: "build".into(), attempt: 2 },
             json!({"type": "SendCancel", "job": "build", "attempt": 2}),
         ),
+        (JobGraphMsg::Retry { job: "build".into() }, json!({"type": "Retry", "job": "build"})),
     ];
     for (message, written) in messages {
         assert_eq!(json_of(&message), written);
@@ -660,6 +661,8 @@ fn the_job_graph_messages_job_message_and_end_report_are_written_in_camel_case_a
         ("Cancel", json!({"job": 7})),
         ("SendCancel", json!({"job": "build"})),
         ("SendCancel", json!({"attempt": 2})),
+        ("Retry", json!({})),
+        ("Retry", json!({"job": null})),
     ] {
         assert!(cicada::message::decode::<JobGraphMsg>(message_type, &invalid).is_err(), "{message_type} {invalid}");
     }
@@ -677,7 +680,7 @@ fn the_job_graph_messages_job_message_and_end_report_are_written_in_camel_case_a
     let CiMsg::CancelBuild(read) = serde_json::from_value::<CiMsg>(written).unwrap() else { panic!("a cancel") };
     assert_eq!(read, cancel);
 
-    let end = json!({"type": "GraphEnded", "run": "run-7", "status": "failed", "jobs": [
+    let end = json!({"type": "GraphEnded", "run": "run-7", "end": 2, "status": "failed", "jobs": [
         {"name": "build", "status": "succeeded", "attempt": 1, "output": {"artifact": "app.tar"}, "reason": null},
         {"name": "test", "status": "failed", "attempt": 1, "output": null, "reason": "3 tests failed"},
         {"name": "deploy", "status": "waiting", "attempt": null, "output": null, "reason": null}]});
@@ -685,12 +688,16 @@ fn the_job_graph_messages_job_message_and_end_report_are_written_in_camel_case_a
     let CiMsg::GraphEnded(read) = serde_json::from_value::<CiMsg>(end.clone()).unwrap() else { panic!("a report") };
     assert_eq!(json_of(CiMsg::GraphEnded(read)), end);
     for status in ["running", "succeeded", "failed", "cancelled"] {
-        assert_message_sample::<CiMsg>(&json!({"type": "GraphEnded", "run": "r", "status": status, "jobs": []}));
+        let end = json!({"type": "GraphEnded", "run": "r", "end": 1, "status": status, "jobs": []});
+        assert_message_sample::<CiMsg>(&end);
     }
     for status in ["waiting", "running", "succeeded", "failed", "skipped", "cancelled"] {
         let job = json!({"name": "a", "status": status, "attempt": null, "output": null, "reason": null});
-        assert_message_sample::<CiMsg>(&json!({"type": "GraphEnded", "run": "r", "status": "failed", "jobs": [job]}));
+        let end = json!({"type": "GraphEnded", "run": "r", "end": 1, "status": "failed", "jobs": [job]});
+        assert_message_sample::<CiMsg>(&end);
     }
+    let unnumbered = json!({"type": "GraphEnded", "run": "r", "status": "failed", "jobs": []});
+    assert!(serde_json::from_value::<CiMsg>(unnumbered).is_err(), "an end report names its end");
 }
 
 #[test]
@@ -707,6 +714,7 @@ fn a_job_graph_state_is_written_in_camel_case_passes_its_samples_and_refuses_inv
     let mut full = created.clone();
     full["status"] = json!("running");
     full["endedAt"] = Value::Null;
+    full["ends"] = json!(0);
     for entry in full["jobs"].as_array_mut().unwrap() {
         entry["cancelType"] = Value::Null;
         entry["status"] = json!("waiting");
@@ -717,7 +725,7 @@ fn a_job_graph_state_is_written_in_camel_case_passes_its_samples_and_refuses_inv
     assert_state_sample::<JobGraphState>(&written);
     assert_state_sample::<JobGraphState>(&created);
     let mid_run = json!({"maxInFlight": 2, "reportTo": "ci/run-7", "reportType": "GraphEnded", "status": "running",
-        "endedAt": null, "jobs": [
+        "endedAt": null, "ends": 0, "jobs": [
             {"name": "build", "needs": [], "to": "ci/run-7", "messageType": "Build", "cancelType": null,
              "input": {}, "status": "succeeded", "output": {"artifact": "app.tar"}, "attempts": [{"attempt": 1,
              "dispatchedAt": "2026-01-01T00:00:00Z", "endedAt": "2026-01-01T00:00:05Z", "outcome": "succeeded",
@@ -751,7 +759,7 @@ fn a_job_graph_state_is_written_in_camel_case_passes_its_samples_and_refuses_inv
         assert!(serde_json::from_value::<JobGraphState>(invalid.clone()).is_err(), "{invalid}");
     }
     let ended = json!({"maxInFlight": 2, "reportTo": "ci/run-7", "reportType": "GraphEnded", "status": "failed",
-        "endedAt": "2026-01-01T00:00:09Z", "jobs": [
+        "endedAt": "2026-01-01T00:00:09Z", "ends": 1, "jobs": [
             {"name": "build", "needs": [], "to": "ci/run-7", "messageType": "Build", "cancelType": null,
              "input": {}, "status": "failed", "output": null, "attempts": [{"attempt": 1,
              "dispatchedAt": "2026-01-01T00:00:00Z", "endedAt": "2026-01-01T00:00:05Z", "outcome": "failed",
@@ -777,11 +785,14 @@ fn a_job_graph_state_is_written_in_camel_case_passes_its_samples_and_refuses_inv
         with(&|j| j["jobs"][2]["status"] = json!("waiting")),
         with(&|j| j["jobs"][1]["attempts"] = j["jobs"][0]["attempts"].clone()),
         with(&|j| j["jobs"][3]["status"] = json!("skipped")),
+        with(&|j| j["ends"] = json!(0)),
+        with(&|j| j.as_object_mut().unwrap().remove("ends").map(drop).unwrap()),
+        with(&|j| j["ends"] = json!(-1)),
     ] {
         assert!(serde_json::from_value::<JobGraphState>(invalid.clone()).is_err(), "{invalid}");
     }
     let cancelled = json!({"maxInFlight": 2, "reportTo": "ci/run-7", "reportType": "GraphEnded", "status": "cancelled",
-        "endedAt": "2026-01-01T00:00:09Z", "jobs": [
+        "endedAt": "2026-01-01T00:00:09Z", "ends": 1, "jobs": [
             {"name": "build", "needs": [], "to": "ci/run-7", "messageType": "Build", "cancelType": "CancelBuild",
              "input": {}, "status": "cancelled", "output": null, "attempts": [{"attempt": 1,
              "dispatchedAt": "2026-01-01T00:00:00Z", "endedAt": "2026-01-01T00:00:09Z", "outcome": "cancelled",
@@ -805,10 +816,37 @@ fn a_job_graph_state_is_written_in_camel_case_passes_its_samples_and_refuses_inv
     ] {
         assert!(serde_json::from_value::<JobGraphState>(invalid.clone()).is_err(), "{invalid}");
     }
+    // Reopened by a `Retry` after its first end: `build` waits with its failed attempt, and was cancelled once before.
+    let reopened = json!({"maxInFlight": 1, "reportTo": "ci/run-7", "reportType": "GraphEnded", "status": "running",
+        "endedAt": null, "ends": 1, "jobs": [
+            {"name": "build", "needs": [], "to": "ci/run-7", "messageType": "Build", "cancelType": "CancelBuild",
+             "input": {}, "status": "waiting", "output": null, "attempts": [{"attempt": 1,
+             "dispatchedAt": "2026-01-01T00:00:00Z", "endedAt": "2026-01-01T00:00:05Z", "outcome": "cancelled",
+             "reason": "cancelled"}, {"attempt": 2, "dispatchedAt": "2026-01-01T00:00:06Z",
+             "endedAt": "2026-01-01T00:00:09Z", "outcome": "failed", "reason": "exit 1"}]},
+            {"name": "test", "needs": ["build"], "to": "ci/run-7", "messageType": "Build", "cancelType": null,
+             "input": {}, "status": "waiting", "output": null, "attempts": []},
+            {"name": "lint", "needs": [], "to": "ci/run-7", "messageType": "Build", "cancelType": null,
+             "input": {}, "status": "running", "output": null, "attempts": [{"attempt": 1, "dispatchedAt": null,
+             "endedAt": null, "outcome": null, "reason": null}]}]});
+    assert_state_sample::<JobGraphState>(&reopened);
+    assert_eq!(json_of(serde_json::from_value::<JobGraphState>(reopened.clone()).unwrap()), reopened);
+    let with = |edit: &dyn Fn(&mut Value)| {
+        let mut json = reopened.clone();
+        edit(&mut json);
+        json
+    };
+    for invalid in [
+        with(&|j| j["jobs"][0]["attempts"][1]["outcome"] = json!("succeeded")),
+        with(&|j| j["jobs"][0]["status"] = json!("skipped")),
+        with(&|j| j["jobs"][1]["status"] = json!("skipped")),
+    ] {
+        assert!(serde_json::from_value::<JobGraphState>(invalid.clone()).is_err(), "{invalid}");
+    }
 }
 
-/// The states a run writes: mid-run with a job dispatched and one not yet, ended, ended with a skipped job, and
-/// cancelled.
+/// The states a run writes: mid-run with a job dispatched and one not yet, ended, ended with a skipped job, cancelled,
+/// reopened by a `Retry`, and ended again.
 #[tokio::test(start_paused = true)]
 async fn the_states_a_run_writes_pass_their_sample() {
     let test = TestActors::builder().with(|node| node.host(JobGraphActor).host(CiActor)).build().await.unwrap();
@@ -880,6 +918,25 @@ async fn the_states_a_run_writes_pass_their_sample() {
     let written = test.state_json(&cancelled).await.unwrap();
     assert_eq!(written["status"], "cancelled", "{written}");
     assert_eq!(written["jobs"][0]["attempts"][0]["outcome"], "cancelled", "{written}");
+    assert_state_sample::<JobGraphState>(&written);
+
+    test.send(&cancelled, JobGraphMsg::Retry { job: "build".into() }).await;
+    test.run_until_idle().await;
+    let written = test.state_json(&cancelled).await.unwrap();
+    assert_eq!((&written["status"], &written["ends"]), (&json!("running"), &json!(1)), "{written}");
+    assert_eq!(written["jobs"][0]["attempts"][1]["attempt"], 2, "{written}");
+    assert_state_sample::<JobGraphState>(&written);
+    let result = JobGraphMsg::Result {
+        job: "build".into(),
+        attempt: 2,
+        outcome: JobOutcome::Succeeded,
+        output: None,
+        reason: None,
+    };
+    test.send(&cancelled, result).await;
+    test.run_until_idle().await;
+    let written = test.state_json(&cancelled).await.unwrap();
+    assert_eq!((&written["status"], &written["ends"]), (&json!("cancelled"), &json!(2)), "{written}");
     assert_state_sample::<JobGraphState>(&written);
 }
 

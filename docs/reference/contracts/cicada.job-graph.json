@@ -147,7 +147,7 @@
     },
     "Report": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "Sends the end report to the report target when the run has ended; on a running run it does nothing. The run\nsends it itself in the commit that ends it; anyone may send it again, for a report that was lost or whose\ntarget was gone, so a report target treats a repeated report for the same run as one.",
+      "description": "Sends the end report of the run's current end to the report target when the run has ended; on a running run it\ndoes nothing. The run sends it itself in the commit that ends it; anyone may send it again, for a report that was\nlost or whose target was gone, so a report target can get the same report, with the same `end`, more than once.",
       "properties": {},
       "title": "Report",
       "type": "object"
@@ -207,6 +207,23 @@
         "outcome"
       ],
       "title": "Result",
+      "type": "object"
+    },
+    "Retry": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Puts `job` back to `waiting` when it is `failed` or `cancelled` and none of its needs is `failed`, `skipped` or\n`cancelled`: its output is cleared and its attempts are kept. In the same commit every `skipped` job becomes\n`waiting` and the skips are computed again, an ended run goes back to `running` with no end time, and ready jobs\nstart, the retried one with the next attempt number. Results and failures of a replaced attempt stay refused or\nignored, and its `SendCancel` still tells its worker. Refused for good with the state unchanged: an unknown job,\na job that is not `failed` or `cancelled`, a job with such a need, a job whose last attempt number is the\nlargest, and an ended run whose count of ends is the largest.",
+      "properties": {
+        "job": {
+          "description": "The job.",
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "job"
+      ],
+      "title": "Retry",
       "type": "object"
     },
     "SendCancel": {
@@ -406,7 +423,7 @@
           "status": {
             "$ref": "#/$defs/JobStatus",
             "default": "waiting",
-            "description": "Its status, matching its last attempt; a cancelled job's last attempt, when it has one, ended `cancelled`.\nAbsent: `waiting`."
+            "description": "Its status, matching its last attempt: `running` has an open one, `succeeded` and `failed` one that ended so,\n`skipped` none, and `waiting` and `cancelled` none or one that ended `failed` or `cancelled`. Absent: `waiting`."
           },
           "to": {
             "description": "The target of its job message.",
@@ -453,7 +470,7 @@
         "oneOf": [
           {
             "const": "waiting",
-            "description": "Not started: some job it needs has not succeeded, or no room was free.",
+            "description": "Not started: some job it needs has not succeeded, or no room was free. A retried job keeps its old attempts, the\nlast one ended `failed` or `cancelled`.",
             "type": "string"
           },
           {
@@ -478,14 +495,14 @@
           },
           {
             "const": "cancelled",
-            "description": "Cancelled by a `Cancel` while waiting or running: its last attempt, when it has one, ended `cancelled`.",
+            "description": "Cancelled by a `Cancel` while waiting or running: its last attempt, when it has one, ended `cancelled`, or\n`failed` when it was cancelled while waiting after a `Retry`.",
             "type": "string"
           }
         ]
       }
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "description": "The state of a [`JobGraph`] run: its graph, in-flight limit and report target, given at its create, its status, and\nper job its status, output and attempts. Build it with `JobGraphState::new`; a decoded state is checked the same\nway, so a bad graph never becomes a run.\n\nOn the wire: `{\"maxInFlight\":2,\"reportTo\":\"ci/run-7\",\"reportType\":\"GraphEnded\",\"status\":\"running\",\"endedAt\":null,\n\"jobs\":[{\"name\":\"build\",\"needs\":[],\"to\":\"builder/run-7\",\"messageType\":\"Build\",\"cancelType\":null,\"input\":{},\n\"status\":\"waiting\",\"output\":null,\"attempts\":[]}]}`; `status`, `endedAt` and a job's `cancelType`, `status`, `output`\nand `attempts` may be left out of a create.",
+    "description": "The state of a [`JobGraph`] run: its graph, in-flight limit and report target, given at its create, its status, and\nper job its status, output and attempts. Build it with `JobGraphState::new`; a decoded state is checked the same\nway, so a bad graph never becomes a run.\n\nOn the wire: `{\"maxInFlight\":2,\"reportTo\":\"ci/run-7\",\"reportType\":\"GraphEnded\",\"status\":\"running\",\"endedAt\":null,\n\"ends\":0,\"jobs\":[{\"name\":\"build\",\"needs\":[],\"to\":\"builder/run-7\",\"messageType\":\"Build\",\"cancelType\":null,\"input\":{},\n\"status\":\"waiting\",\"output\":null,\"attempts\":[]}]}`; `status`, `endedAt`, `ends` and a job's `cancelType`, `status`,\n`output` and `attempts` may be left out of a create.",
     "properties": {
       "endedAt": {
         "description": "The store time it ended; set exactly when it ended. Absent: null.",
@@ -494,6 +511,13 @@
           "string",
           "null"
         ]
+      },
+      "ends": {
+        "default": 0,
+        "description": "How many times the run ended, the number of its current end; 1 or more on an ended run. Absent: 0.",
+        "format": "uint32",
+        "minimum": 0,
+        "type": "integer"
       },
       "jobs": {
         "description": "The jobs, in graph order, 1 through 100, without a cycle; at most `maxInFlight` run, a started job's needs all\nsucceeded, and a job is skipped, without an attempt, exactly when it did not start and a job it needs failed,\nwas skipped or cancelled.",
