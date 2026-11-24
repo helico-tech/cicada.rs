@@ -30,7 +30,7 @@ behaviour is tested on virtual time (`#[tokio::test(start_paused = true)]` with 
   `Inputs` under Added, and that the actor now puts inputs in between create and start. `docs-handoff.md` carries
   `inputs`, `Inputs`, the order, the refusals and the secret-file advice for the container guide; nothing blocks. No
   edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify: `cargo test -p cicada-examples --test docs`.
-- [ ] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
+- [x] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
   `cargo test --workspace`, `openspec validate container-inputs --strict`, commit, then
   `python3 scripts/gate.py run` (no E2E: the actor runs on the fake and no task touches `e2e/`; E2E runs at the
   release).
