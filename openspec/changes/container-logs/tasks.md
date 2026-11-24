@@ -19,7 +19,9 @@ Version). Builds on `container-consistency`, which must have landed first. Follo
   turns, and the limits of the design (a late-stamped line missed, gentle polling, rotation, lines over 16 KiB in
   parts, bollard's 32-bit `since` after 2038). The fake (decision 7): one timed line store, `push_log`, `set_logs` as
   `Out` lines at the Unix epoch, `logs` from the same store, `logs_since` through the pager, `Call::LogsSince` and
-  `Method::LogsSince`. Verify: a unit test that a runtime without `logs_since` compiles and fails with `Other`; the
+  `Method::LogsSince`. From Factory's review, the rustdoc also says: a page with fewer than `max_lines` lines has read everything there is
+  now (still true after the pager drops early lines), and which error kind a log driver that cannot be read (for example
+  `none`) gives — not `DaemonUnavailable`, so a follower stops retrying. Verify: a unit test that a runtime without `logs_since` compiles and fails with `Other`; the
   fake's tests for paging timed lines, `set_logs` read by both calls, `Conflict` for a missing container, an empty
   page for a created one, `InvalidSpec` for `max_lines` 0 and 1001, and a scripted failure;
   `cargo test -p cicada-containers --all-features`.

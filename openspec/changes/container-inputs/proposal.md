@@ -14,6 +14,11 @@ and secrets in as files, only as environment variables.
 - The actor calls `copy_in` between create and start, only while the container is `Created`; a replayed step skips
   it. An `Err` ends the container as a bad spec does.
 
+Factory's review (2026-11-24) adds: inputs need folders too, not only files. Factory makes empty folders with a mode
+(its output and progress folders at 0777, parents at 0755) so a program that does not run as root can write. So the
+input list needs a folder entry, such as a kind on `CopyFile` or a `CopyDir { path, mode }`; decide in the design. Secret
+files stay on the container's own file system until removal (the tmpfs rule of `container-consistency`).
+
 ## Out of scope
 
 Copying files out (`container-copy-out`). Changing files after start.

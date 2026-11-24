@@ -17,6 +17,10 @@ the program overwrites while it runs.
   followed.
 - The Docker backend reads Docker's archive and unpacks it in memory; the fake returns what it holds.
 
+Factory's review (2026-11-24) adds: `copy_out` must work after the container has exited and before `Remove` (when
+artifacts are collected), and its rustdoc says a tmpfs folder is empty once the container has ended: artifacts belong
+on the container's own file system or a volume.
+
 ## Out of scope
 
 Copying into the store. A separate `read_file`: one file with small limits is `copy_out`. The actor (the host copies
