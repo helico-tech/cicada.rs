@@ -1,7 +1,7 @@
 //! The job graph, on virtual time with `TestActors` (ADR 0059, ADR 0060): ready jobs in graph order up to the in-flight
 //! limit, each job message in a turn of its own, a failed dispatch that fails only its attempt, the attempt fence on
-//! results, a failed job that skips its dependents, the watch on each target, `Cancel` and the cancel message, and the
-//! end report.
+//! results, a failed job that skips its dependents, the watch on each target, `Cancel` and the cancel message, `Retry`
+//! and the numbered end report.
 
 mod common;
 
@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 /// `builder/{id}`: keeps every job message and cancel message it is sent, fails its handler on a job message whose
-/// input has `"fail": true`, and relays a result to a run when told.
+/// input has `"fail": true` or whose attempt is the input's `"failAttempt"`, and relays a result to a run when told.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Builder {
     id: String,
@@ -66,7 +66,9 @@ impl Actor for BuilderActor {
 
     async fn handle(&self, turn: &mut Turn<Self>, message: BuilderMsg) -> HandlerResult {
         match message {
-            BuilderMsg::Build(start) if start.input["fail"] == json!(true) => {
+            BuilderMsg::Build(start)
+                if start.input["fail"] == json!(true) || start.input["failAttempt"] == start.attempt =>
+            {
                 return Err(HandlerError::msg("the build broke"));
             }
             BuilderMsg::Build(start) => turn.state_mut().log.push(start),
@@ -1037,4 +1039,335 @@ async fn a_send_cancel_sent_by_a_client_sends_nothing() {
     }
     assert_eq!(cancels(&test, "a").await.len(), 1, "no second cancel message");
     assert_eq!(test.version(&run()).await, version);
+}
+
+/// A `Retry` of `job`.
+fn retry(job: &str) -> JobGraphMsg {
+    JobGraphMsg::Retry { job: job.into() }
+}
+
+/// The attempt numbers of the job at `i`.
+async fn attempts_of(test: &TestActors, i: usize) -> Vec<u32> {
+    state(test).await.jobs[i].attempts.iter().map(|a| a.attempt).collect()
+}
+
+/// Scenario: Retry a failed job: it starts with attempt 2 in the commit of the `Retry`, its output is cleared, and its
+/// job message names attempt 2.
+#[tokio::test(start_paused = true)]
+async fn retry_of_a_failed_job_starts_attempt_two_in_its_commit() {
+    let test = node().await;
+    start(&test, vec![job("a", &[]), job("b", &[])], 2).await;
+    let failed = JobGraphMsg::Result {
+        job: "a".into(),
+        attempt: 1,
+        outcome: JobOutcome::Failed,
+        output: Some(json!({"log": "exit 1"})),
+        reason: Some("exit 1".into()),
+    };
+    test.send(&run(), failed).await;
+    test.run_until_idle().await;
+    assert_eq!(state(&test).await.jobs[0].output, Some(json!({"log": "exit 1"})));
+    test.send(&run(), retry("a")).await;
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1);
+    let state = state(&test).await;
+    let a = &state.jobs[0];
+    assert_eq!((a.status, a.output.as_ref()), (Running, None), "running again, its output cleared");
+    assert_eq!(attempts_of(&test, 0).await, [1, 2], "the old attempt is kept");
+    assert_eq!(a.attempts[0].reason.as_deref(), Some("exit 1"));
+    let pending = test.pending(&run()).await;
+    let dispatch = pending.iter().find(|m| m.message_type == "Dispatch").expect("a Dispatch");
+    assert_eq!(dispatch.payload, json!({"job": "a", "attempt": 2}));
+    test.run_until_idle().await;
+    assert_eq!(start_of(&test, "a").await.attempt, 2);
+    assert_eq!(watchers_of(&test, "a").await, ["cicada.job-graph/run-7"]);
+    succeed(&test, "a").await;
+    succeed(&test, "b").await;
+    assert_eq!(run_status(&test).await, JobGraphStatus::Succeeded);
+}
+
+/// Scenario: Skipped dependents come back: those skipped only because of the retried job wait again, one that also
+/// needs another failed job stays skipped.
+#[tokio::test(start_paused = true)]
+async fn retry_brings_back_the_dependents_skipped_only_because_of_the_retried_job() {
+    let test = node().await;
+    let jobs = vec![job("a", &[]), job("x", &[]), job("b", &["a"]), job("c", &["b"]), job("d", &["a", "x"])];
+    start(&test, jobs, 2).await;
+    fail(&test, "a").await;
+    fail(&test, "x").await;
+    assert_eq!(
+        statuses(&test).await,
+        named(&[("a", Failed), ("x", Failed), ("b", Skipped), ("c", Skipped), ("d", Skipped)])
+    );
+    assert_eq!(run_status(&test).await, JobGraphStatus::Failed);
+    test.send(&run(), retry("a")).await;
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1);
+    assert_eq!(
+        statuses(&test).await,
+        named(&[("a", Running), ("x", Failed), ("b", Waiting), ("c", Waiting), ("d", Skipped)])
+    );
+    test.run_until_idle().await;
+    succeed(&test, "a").await;
+    succeed(&test, "b").await;
+    succeed(&test, "c").await;
+    assert_eq!(
+        statuses(&test).await,
+        named(&[("a", Succeeded), ("x", Failed), ("b", Succeeded), ("c", Succeeded), ("d", Skipped)])
+    );
+    assert_eq!(run_status(&test).await, JobGraphStatus::Failed);
+}
+
+/// Scenario: A late result of a replaced attempt: refused for good, and the job still runs its new attempt.
+#[tokio::test(start_paused = true)]
+async fn a_late_result_of_a_replaced_attempt_is_refused_for_good() {
+    let test = node().await;
+    start(&test, vec![job("a", &[])], 2).await;
+    let first = start_of(&test, "a").await;
+    fail(&test, "a").await;
+    test.send(&run(), retry("a")).await;
+    test.run_until_idle().await;
+    let error = assert_refused(&test, JobGraphMsg::succeeded(&first, ()).unwrap()).await;
+    assert!(error.contains("attempt 1") && error.contains("current attempt 2"), "{error}");
+    assert_eq!(statuses(&test).await, named(&[("a", Running)]));
+    assert_eq!(attempts_of(&test, 0).await, [1, 2]);
+}
+
+/// A worker's `Failed` about the job message of a replaced attempt is ignored, and so is, for the retried job, one about
+/// another job on the same worker, which fails only that job.
+#[tokio::test(start_paused = true)]
+async fn a_failed_about_a_replaced_attempt_or_another_job_on_a_shared_worker_leaves_the_retried_job_running() {
+    let test = node().await;
+    let mut a = job("a", &[]);
+    a.input = json!({"job": "a", "failAttempt": 1});
+    let mut b = job("b", &[]);
+    b.input = json!({"job": "b", "fail": true});
+    start(&test, vec![a, b], 2).await;
+    // Attempt 1's job message is still being tried at the worker when its failed result comes in.
+    let first = JobStart { run: "run-7".into(), job: "a".into(), attempt: 1, input: json!({}) };
+    test.send(&run(), JobGraphMsg::failed(&first, "timed out")).await;
+    test.send(&run(), retry("a")).await;
+    test.run_until_idle().await;
+    assert_eq!(statuses(&test).await, named(&[("a", Running), ("b", Running)]));
+    assert_eq!(attempts_of(&test, 0).await, [1, 2]);
+    test.advance_time_by(std::time::Duration::from_secs(600)).await;
+    let mut failed: Vec<(String, u64)> = (test.failures().await.into_iter())
+        .filter(|f| f.envelope.message_type == "Build")
+        .map(|f| {
+            (f.envelope.payload["job"].as_str().unwrap().to_owned(), f.envelope.payload["attempt"].as_u64().unwrap())
+        })
+        .collect();
+    failed.sort();
+    assert_eq!(failed, [("a".to_owned(), 1), ("b".to_owned(), 1)], "both failed at the worker");
+    assert_eq!(statuses(&test).await, named(&[("a", Running), ("b", Failed)]));
+    assert!(reason_of(&test, 1).await.starts_with("the job message failed at the worker (handler): "));
+    assert_eq!(start_of(&test, "a").await.attempt, 2, "the worker took attempt 2");
+    succeed(&test, "a").await;
+    assert_eq!(statuses(&test).await, named(&[("a", Succeeded), ("b", Failed)]));
+    assert_eq!(run_status(&test).await, JobGraphStatus::Failed);
+}
+
+/// Scenario: Retry before the cancel notice ran: the `Cancel` and the `Retry` wait while the clock moves on, so the
+/// `SendCancel` that the `Cancel` commits is due after the `Retry` (G5), runs after it, and still tells the worker of
+/// attempt 1.
+#[tokio::test(start_paused = true)]
+async fn a_retry_before_the_cancel_notice_ran_still_tells_the_worker_of_the_old_attempt() {
+    let test = node().await;
+    start(&test, vec![job("a", &[]).with_cancel_type("CancelBuild")], 2).await;
+    test.send(&run(), cancel("a")).await;
+    test.send(&run(), retry("a")).await;
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1);
+    assert_eq!(statuses(&test).await, named(&[("a", Cancelled)]));
+    assert_eq!(pending_types(&test).await, ["Retry", "SendCancel", "Report"]);
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1);
+    assert_eq!(statuses(&test).await, named(&[("a", Running)]), "attempt 2 starts before the cancel notice ran");
+    assert_eq!(attempts_of(&test, 0).await, [1, 2]);
+    assert_eq!(pending_types(&test).await[0], "SendCancel");
+    test.run_until_idle().await;
+    assert_eq!(start_of(&test, "a").await.attempt, 2);
+    assert_eq!(cancels(&test, "a").await, [JobCancel { run: "run-7".into(), job: "a".into(), attempt: 1 }]);
+    assert!(reports(&test, "main").await.is_empty(), "the Report found the run running again");
+}
+
+/// Scenario: Retry after the cancel notice ran: attempt 2 starts, and no second cancel is sent.
+#[tokio::test(start_paused = true)]
+async fn a_retry_after_the_cancel_notice_ran_sends_no_second_cancel() {
+    let test = node().await;
+    start(&test, vec![job("a", &[]).with_cancel_type("CancelBuild")], 2).await;
+    test.send(&run(), cancel("a")).await;
+    test.run_until_idle().await;
+    assert_eq!(cancels(&test, "a").await.len(), 1);
+    assert_eq!(reports(&test, "main").await.len(), 1);
+    test.send(&run(), retry("a")).await;
+    test.run_until_idle().await;
+    assert_eq!(statuses(&test).await, named(&[("a", Running)]));
+    assert_eq!(start_of(&test, "a").await.attempt, 2);
+    assert_eq!(cancels(&test, "a").await.len(), 1, "no second cancel message");
+}
+
+/// Scenario: Retry within the in-flight limit: the retried job waits for a free slot.
+#[tokio::test(start_paused = true)]
+async fn a_retried_job_waits_for_a_free_slot() {
+    let test = node().await;
+    start(&test, vec![job("a", &[]), job("b", &[])], 1).await;
+    fail(&test, "a").await;
+    assert_eq!(statuses(&test).await, named(&[("a", Failed), ("b", Running)]));
+    test.send(&run(), retry("a")).await;
+    test.run_until_idle().await;
+    assert_eq!(statuses(&test).await, named(&[("a", Waiting), ("b", Running)]));
+    assert_eq!(attempts_of(&test, 0).await, [1], "no new attempt yet");
+    succeed(&test, "b").await;
+    assert_eq!(statuses(&test).await, named(&[("a", Running), ("b", Succeeded)]));
+    assert_eq!(start_of(&test, "a").await.attempt, 2);
+}
+
+/// Scenario: A retried job cancelled before it starts: it is `cancelled`, its last attempt ended `failed`, and the end
+/// report shows it without the old attempt's reason.
+#[tokio::test(start_paused = true)]
+async fn a_retried_job_cancelled_before_it_starts_is_reported_without_the_old_reason() {
+    let test = node().await;
+    start(&test, vec![job("a", &[]), job("b", &[])], 1).await;
+    fail(&test, "a").await;
+    test.send(&run(), retry("a")).await;
+    test.send(&run(), cancel("a")).await;
+    test.run_until_idle().await;
+    let state = state(&test).await;
+    assert_eq!(state.jobs[0].status, Cancelled);
+    assert_eq!(state.jobs[0].attempts[0].outcome, Some(AttemptOutcome::Failed));
+    succeed(&test, "b").await;
+    let expected: JobGraphEnd =
+        serde_json::from_value(json!({"run": "run-7", "end": 1, "status": "cancelled", "jobs": [
+        {"name": "a", "status": "cancelled", "attempt": 1, "output": null, "reason": null},
+        {"name": "b", "status": "succeeded", "attempt": 1, "output": {"built": "b"}, "reason": null}]}))
+        .unwrap();
+    assert_eq!(reports(&test, "main").await, [expected]);
+}
+
+/// Scenario: A run that ends twice: its second report has end 2.
+#[tokio::test(start_paused = true)]
+async fn a_run_that_ends_twice_reports_end_two() {
+    let test = node().await;
+    start(&test, vec![job("a", &[]), job("b", &[])], 2).await;
+    succeed(&test, "b").await;
+    fail(&test, "a").await;
+    let first = state(&test).await;
+    assert_eq!((first.status, first.ends), (JobGraphStatus::Failed, 1));
+    test.send(&run(), retry("a")).await;
+    test.run_until_idle().await;
+    let reopened = state(&test).await;
+    assert_eq!((reopened.status, reopened.ended_at, reopened.ends), (JobGraphStatus::Running, None, 1));
+    succeed(&test, "a").await;
+    let second = state(&test).await;
+    assert_eq!((second.status, second.ends), (JobGraphStatus::Succeeded, 2));
+    assert!(second.ended_at.is_some());
+    let reports = reports(&test, "main").await;
+    let ends: Vec<(u32, JobGraphStatus)> = reports.iter().map(|r| (r.end, r.status)).collect();
+    assert_eq!(ends, [(1, JobGraphStatus::Failed), (2, JobGraphStatus::Succeeded)]);
+    assert_eq!(reports[1].jobs[0].attempt, Some(2));
+    assert_eq!(reports[1].jobs[0].reason, None);
+}
+
+/// Scenario: A report while running again sends nothing. And an end reopened before its `Report` ran is never
+/// reported, so the numbers have a gap.
+#[tokio::test(start_paused = true)]
+async fn a_report_while_running_again_sends_nothing_and_an_end_reopened_before_its_report_is_skipped() {
+    let test = node().await;
+    start(&test, vec![job("a", &[])], 2).await;
+    let first = start_of(&test, "a").await;
+    test.send(&run(), JobGraphMsg::failed(&first, "exit 1")).await;
+    test.send(&run(), retry("a")).await;
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1, "the result ends the run");
+    assert_eq!(state(&test).await.ends, 1);
+    assert_eq!(pending_types(&test).await, ["Retry", "Report"]);
+    test.run_until_idle().await;
+    assert!(reports(&test, "main").await.is_empty(), "the Report found the run running again");
+    let version = test.version(&run()).await;
+    test.send(&run(), JobGraphMsg::Report).await;
+    test.run_until_idle().await;
+    assert!(reports(&test, "main").await.is_empty());
+    assert_eq!(test.version(&run()).await, version);
+    succeed(&test, "a").await;
+    let reports = reports(&test, "main").await;
+    assert_eq!(reports.len(), 1);
+    assert_eq!((reports[0].end, reports[0].status), (2, JobGraphStatus::Succeeded));
+}
+
+/// Scenario: A waiting job with old attempts, decoded from a create, starts with the next attempt number.
+#[tokio::test(start_paused = true)]
+async fn a_decoded_waiting_job_with_old_attempts_starts_with_the_next_attempt() {
+    let test = node().await;
+    let old = json!({"attempt": 4, "dispatchedAt": "2026-01-01T00:00:00Z", "endedAt": "2026-01-01T00:00:01Z",
+        "outcome": "failed", "reason": "exit 1"});
+    let created = json!({"maxInFlight": 2, "reportTo": "ci/main", "reportType": "GraphEnded", "ends": 1, "jobs": [
+        {"name": "a", "needs": [], "to": "builder/a", "messageType": "Build", "input": {}, "status": "waiting",
+         "attempts": [old]}]});
+    test.create(&run(), &created).await;
+    test.send(&run(), JobGraphMsg::Start).await;
+    test.run_until_idle().await;
+    assert_eq!(attempts_of(&test, 0).await, [4, 5]);
+    assert_eq!(start_of(&test, "a").await.attempt, 5);
+    succeed(&test, "a").await;
+    assert_eq!(reports(&test, "main").await[0].end, 2);
+}
+
+/// Scenario: Retry of a running job, also a second `Retry` of the same job. And of a waiting, succeeded or skipped job.
+#[tokio::test(start_paused = true)]
+async fn retry_of_a_job_that_is_not_failed_or_cancelled_is_refused_for_good() {
+    let test = node().await;
+    start(&test, vec![job("a", &[]), job("b", &["a"]), job("c", &[]), job("d", &[])], 2).await;
+    fail(&test, "a").await;
+    succeed(&test, "c").await;
+    assert_eq!(statuses(&test).await, named(&[("a", Failed), ("b", Skipped), ("c", Succeeded), ("d", Running)]));
+    test.send(&run(), retry("a")).await;
+    test.run_until_idle().await;
+    let error = assert_refused(&test, retry("a")).await;
+    assert!(error.contains("the job 'a' is running"), "{error}");
+    let error = assert_refused(&test, retry("b")).await;
+    assert!(error.contains("the job 'b' is waiting"), "{error}");
+    let error = assert_refused(&test, retry("c")).await;
+    assert!(error.contains("is succeeded"), "{error}");
+    fail(&test, "a").await;
+    let error = assert_refused(&test, retry("b")).await;
+    assert!(error.contains("is skipped"), "{error}");
+}
+
+/// Scenario: Retry of a job whose need failed: refused with a reason that names the need.
+#[tokio::test(start_paused = true)]
+async fn retry_of_a_job_whose_need_failed_is_refused_and_names_the_need() {
+    let test = node().await;
+    start(&test, vec![job("a", &[]), job("b", &["a"])], 2).await;
+    test.send(&run(), cancel("b")).await;
+    test.run_until_idle().await;
+    fail(&test, "a").await;
+    assert_eq!(statuses(&test).await, named(&[("a", Failed), ("b", Cancelled)]));
+    let error = assert_refused(&test, retry("b")).await;
+    assert!(error.contains("'a'") && error.contains("failed") && error.contains("retry its need first"), "{error}");
+}
+
+/// Scenario: Retry of an unknown job. And a job name out of bounds.
+#[tokio::test(start_paused = true)]
+async fn retry_of_an_unknown_job_or_a_name_out_of_bounds_is_refused_for_good() {
+    let test = node().await;
+    start(&test, vec![job("a", &[])], 2).await;
+    fail(&test, "a").await;
+    let error = assert_refused(&test, retry("nope")).await;
+    assert!(error.contains("no job named 'nope'"), "{error}");
+    let error = assert_refused(&test, retry("a b")).await;
+    assert!(error.contains("job name"), "{error}");
+}
+
+/// A retry is refused when the job has no attempt number left, or the ended run no end number.
+#[tokio::test(start_paused = true)]
+async fn retry_without_an_attempt_or_end_number_left_is_refused_for_good() {
+    for (attempt, ends, why) in [(u32::MAX, 1, "no attempt numbers left"), (1, u32::MAX, "no end numbers left")] {
+        let test = node().await;
+        let last = json!({"attempt": attempt, "dispatchedAt": null, "endedAt": "2026-01-01T00:00:01Z",
+            "outcome": "failed", "reason": null});
+        let created = json!({"maxInFlight": 2, "reportTo": "ci/main", "reportType": "GraphEnded", "status": "failed",
+            "endedAt": "2026-01-01T00:00:01Z", "ends": ends, "jobs": [
+            {"name": "a", "needs": [], "to": "builder/a", "messageType": "Build", "input": {}, "status": "failed",
+             "attempts": [last]}]});
+        test.create(&run(), &created).await;
+        let error = assert_refused(&test, retry("a")).await;
+        assert!(error.contains(why), "{error}");
+    }
 }

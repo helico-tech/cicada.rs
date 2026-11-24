@@ -18,7 +18,7 @@ and `job-graph-cancel` before this one). Runtime behaviour is tested on virtual 
   ended run reopened; then `job-graph-failures`' skip, start and end step in the same commit. Each end raises `ends`,
   and `report` sends it as `end`; a job's `reason` in the report only when its last attempt's outcome is its status
   (decision 1). Verify: `cargo test -p cicada-actors`; `cargo clippy -p cicada-actors --all-targets`.
-- [ ] 3. **Virtual-time tests.** In `crates/cicada-actors/tests/job_graph.rs`, one test or more for every scenario of
+- [x] 3. **Virtual-time tests.** In `crates/cicada-actors/tests/job_graph.rs`, one test or more for every scenario of
   the spec delta: retry of a failed job (attempt 2 in the same commit), skipped dependents coming back (and one skipped
   for another job staying), a late result of a replaced attempt, a worker `Failed` about a replaced attempt and one about another job on a
   shared worker (both ignored; from the job-graph-failures review), retry before and after the cancel notice ran, a
