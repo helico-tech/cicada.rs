@@ -45,14 +45,27 @@ and the guarantees are those of 0.20.7.
   does not take the message fails only that attempt (`the job message was not sent (<cause>): <error>`) and the run
   goes on. A worker reports `Result { job, attempt, outcome, output, reason }` (helpers `JobGraphMsg::succeeded(&start,
   output)` and `JobGraphMsg::failed(&start, reason)`); only a result for a running job's current attempt is taken, any
-  other is refused for good, the state unchanged, and the sender is not checked. A failed job blocks the jobs that need
-  it, which stay `waiting`. When no job runs and none can start the run ends `succeeded` or `failed` and sends its
+  other is refused for good, the state unchanged, and the sender is not checked. A failed job skips every waiting job
+  that needs it, directly or through others, in the commit of its failure: each becomes `skipped`, without an attempt.
+  The `Dispatch` turn that sends a job message also watches the job's target, and the run unwatches a target once none
+  of its running jobs has it: a `Failed` the store wrote about the job message of a running job's current attempt
+  ends that job `failed` (`the job message failed at the worker (<cause>): <error>`), and a `Stopped` about the target
+  ends every running job dispatched to it (`the worker went away (<cause>)`); other failures of the target and
+  notifications a client sent change nothing. A job message, and the failure of its `Dispatch`, count only while the
+  job is `running`, and ready jobs start after every change of a job's status. The run cannot see work the worker
+  handed on, a worker that lost its outside work without failing the job message, stopping or reporting, or a later
+  message of the worker that fails; a target must stay until its job reports, and a result whose turn is rescheduled
+  can be overtaken by a `Stopped` of its worker. When no job runs and none can start the run ends `succeeded` when
+  every job succeeded, else `failed` when a job failed, else `cancelled`, and sends its
   `JobGraphEnd { run, status, jobs }` to the report target in a turn of its own; anyone may send `Report` again, so a
-  report target treats a repeated report for the same run as one. Job statuses include `skipped` and `cancelled`,
-  which this release never sets. Its contract is checked against `docs/reference/contracts/cicada.job-graph.json`.
-  Covered by `crates/cicada-actors/tests/job_graph.rs`, the unit tests in `src/job_graph.rs` and
-  `tests/wire_formats.rs`.
+  report target treats a repeated report for the same run as one. The decoder also refuses a skipped job with an
+  attempt or without a failed, skipped or cancelled need, a waiting job with such a need, and an ended run whose
+  status does not follow its jobs. The job status `cancelled` exists but is not set yet. Its contract is checked
+  against `docs/reference/contracts/cicada.job-graph.json`. Covered by `crates/cicada-actors/tests/job_graph.rs`, the
+  unit tests in `src/job_graph.rs` and `tests/wire_formats.rs`.
 - ADR 0059: a ready-made job graph.
+- ADR 0060: cancel and skipped dependents in the job graph; skipped dependents, the end status, the watch on each
+  target and what it cannot see.
 
 ## 0.20.7 — 2026-11-24
 

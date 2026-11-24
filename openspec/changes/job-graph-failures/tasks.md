@@ -27,7 +27,7 @@ is tested on virtual time (`#[tokio::test(start_paused = true)]` with `TestActor
   `crates/cicada-actors/tests/wire_formats.rs`, taken by the schema and the decoder; `CICADA_UPDATE_CONTRACTS=true cargo
   test -p cicada-actors --test wire_formats` only if a doc comment changed the reference, whose hash must stay. Verify:
   `cargo test -p cicada-actors --test wire_formats`.
-- [ ] 5. **Changelog and docs handoff.** The unreleased changelog section names the skipped dependents, the end status
+- [x] 5. **Changelog and docs handoff.** The unreleased changelog section names the skipped dependents, the end status
   and the watch on each target, and ADR 0060 (already written; ADR 0059 is not edited). `docs-handoff.md` from "Docs it
   breaks" in the design; nothing blocks. No edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify: `cargo
   test -p cicada-examples --test docs`, `cargo test -p cicada-examples --test skill`.
