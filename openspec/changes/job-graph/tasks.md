@@ -5,7 +5,7 @@ Normal lane, additive: the next patch. At the time of the build, take the versio
 the last release. Follow `design.md` and ADR 0059; the spec is `specs/job-graph/spec.md`. Runtime behaviour is tested
 on virtual time (`#[tokio::test(start_paused = true)]` with `TestActors`).
 
-- [ ] 1. **Types, state and decoder.** In `crates/cicada-actors/src/job_graph.rs`: `JobGraph` (`cicada.job-graph`,
+- [x] 1. **Types, state and decoder.** In `crates/cicada-actors/src/job_graph.rs`: `JobGraph` (`cicada.job-graph`,
   `JobGraph::named`), `JobGraphMsg` (`Start`, `Result`, the public `Report`, the internal `Dispatch`, and
   `Failed`/`Stopped` for the watch on itself) with the `succeeded` and `failed` helpers (the latter cuts the reason to
   2,000 characters), `JobGraphState::new(jobs, max_in_flight, &report_to, report_type)` with its jobs, attempts, run
@@ -14,7 +14,7 @@ on virtual time (`#[tokio::test(start_paused = true)]` with `TestActors`).
   most 20, consecutive and ending at the current one); exported from `lib.rs`, with its row in the rustdoc table.
   Verify: unit tests of the constructor and the decoder (cycle, unknown, repeated and self needs, every bound, the
   attempt rules, status consistency); `cargo test -p cicada-actors --lib`.
-- [ ] 2. **The handler.** `Start` and the start of ready jobs in graph order up to `maxInFlight`, each with a new
+- [x] 2. **The handler.** `Start` and the start of ready jobs in graph order up to `maxInFlight`, each with a new
   attempt and a `Dispatch` to itself and a watch on itself; `Dispatch` acted on only when the run sent it, for the
   current attempt not yet dispatched (job message with the crate's shared retry policy, `dispatchedAt` set); a
   `Failed` the store wrote for its own `Dispatch` (causes `refused`, `commit` and others) ends that attempt `failed`

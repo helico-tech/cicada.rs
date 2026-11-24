@@ -11,6 +11,7 @@
 //! | [`DebouncerActor`] | `cicada.debouncer` | Keeps the latest submission of a burst and sends it once the burst is quiet |
 //! | [`BatcherActor`] | `cicada.batcher` | Collects items and sends them to its target as one batch on count or time |
 //! | [`PermitsActor`] | `cicada.permits` | Lets at most its capacity of requests hold a permit, queues the rest in FIFO order, fences each grant |
+//! | [`JobGraphActor`] | `cicada.job-graph` | Runs a graph of jobs given as data: starts each once its needs succeeded, up to a limit, takes a result per attempt, reports the end |
 //! | [`HeartbeatWatchActor`] | `cicada.heartbeat-watch` | Sends a stored alarm once when no `Beat` came within the allowed silence |
 //! | [`NodeDownMonitorActor`] | `cicada.node-down` | Publishes one `NodeDown` to a topic for each node row it sees silent for two minutes |
 //! | [`EventActor`] | `cicada.event` | Creates and starts one run of each subscribed flow for each publication, in one commit |
@@ -28,6 +29,7 @@ mod error;
 pub mod event;
 pub mod flow;
 pub mod heartbeat_watch;
+pub mod job_graph;
 pub mod node_down;
 pub mod permits;
 pub mod rate_limiter;
@@ -50,6 +52,10 @@ pub use flow::{
 };
 pub use heartbeat_watch::{
     HeartbeatStatus, HeartbeatWatch, HeartbeatWatchActor, HeartbeatWatchMsg, HeartbeatWatchState, InvalidHeartbeat,
+};
+pub use job_graph::{
+    InvalidJobGraph, Job, JobAttempt, JobEntry, JobGraph, JobGraphActor, JobGraphEnd, JobGraphMsg, JobGraphState,
+    JobGraphStatus, JobOutcome, JobReport, JobStart, JobStatus,
 };
 pub use node_down::{
     InvalidNodeDown, NodeDown, NodeDownMonitor, NodeDownMonitorActor, NodeDownMonitorMsg, NodeDownMonitorState,
