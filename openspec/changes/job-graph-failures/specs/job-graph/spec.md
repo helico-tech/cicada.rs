@@ -43,6 +43,29 @@ levels, or an in-flight limit outside 1 through 100.
   job with a failed need, or an ended run with status `succeeded` and a failed job
 - **THEN** the decoder refuses it with the reason
 
+### Requirement: Ready jobs start up to the in-flight limit
+
+On `Start` and after every change of a job's status (a result, a failure from the watch on its target, a failed
+dispatch, a cancel), the run SHALL start each waiting job whose needs all succeeded, in graph order, while fewer jobs
+run than the in-flight limit. Starting a job SHALL mark it `running` with a new attempt, numbered per job from 1, in
+that commit. A second `Start` SHALL change nothing.
+
+#### Scenario: A diamond graph
+
+- **WHEN** a run with `a`, `b` and `c` needing `a`, and `d` needing `b` and `c`, gets `Start` and every job succeeds
+- **THEN** `a` starts first, `b` and `c` start only after `a` succeeded, and `d` starts only after both succeeded
+
+#### Scenario: The in-flight limit
+
+- **WHEN** a run with four independent jobs and in-flight limit 2 gets `Start`
+- **THEN** two jobs run, and the third starts only when one of them has its result
+
+#### Scenario: A slot freed by a gone worker
+
+- **WHEN** a run with independent jobs `a` and `b` and in-flight limit 1 runs `a`, and a `Stopped` about `a`'s target
+  arrives
+- **THEN** `a` ends `failed`, and `b` starts in the same commit
+
 ### Requirement: Each job message is sent in a turn of its own
 
 The commit that starts a job SHALL send the run an internal `Dispatch`. Only a `Dispatch` the run sent itself, while

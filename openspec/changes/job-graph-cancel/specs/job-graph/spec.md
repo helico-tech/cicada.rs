@@ -50,8 +50,8 @@ input over 16 KiB or 32 levels, or an in-flight limit outside 1 through 100.
 
 #### Scenario: Inconsistent cancelled jobs
 
-- **WHEN** a state is decoded with a cancelled job whose last attempt ended `succeeded`, an attempt with outcome
-  `cancelled` of a job that is not cancelled, or an ended run with status `cancelled` and a failed job
+- **WHEN** a state is decoded with a cancelled job whose last attempt ended `succeeded` or is still open, an attempt
+  with outcome `cancelled` of a job that is not cancelled, or an ended run with status `cancelled` and a failed job
 - **THEN** the decoder refuses it with the reason
 
 ## ADDED Requirements
@@ -83,6 +83,11 @@ job's attempt SHALL be refused, and a worker's result SHALL NOT name the outcome
 
 - **WHEN** a run has independent jobs `a` and `b`, `a` is cancelled, and `b` succeeds
 - **THEN** the run ends `cancelled`
+
+#### Scenario: A cancel frees a slot
+
+- **WHEN** a run with independent jobs `a` and `b` and in-flight limit 1 runs `a`, and gets `Cancel` for `a`
+- **THEN** `a` becomes `cancelled`, and `b` starts in the same commit
 
 #### Scenario: Cancel of an ended job
 

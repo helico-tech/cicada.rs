@@ -42,7 +42,10 @@ Notification, G5) and the reference (brood `crates/brood-core/src/pipeline/actor
    attempt not yet dispatched", and jg 5 fails such an attempt on a failed `Dispatch`; both now also need the job
    `running`. A client's `Result` can end an undispatched attempt first (the sender is not checked, jg 6), and
    `job-graph-cancel`'s `Cancel` will: the job must keep that status when its failed `Dispatch` is reported later.
-7. **The decoder also checks**: an ended run's status follows decision 2; a `skipped` job has a need that is failed,
+7. **Ready jobs start after every change of a job's status**, not only on `Start` and after a result (jg's
+   requirement): also after a failure from the watch (decision 3) and a failed dispatch (jg 5), and later after a
+   `Cancel`, each freeing a slot. One rule in the handler: skip, start, then check the end, in that commit.
+8. **The decoder also checks**: an ended run's status follows decision 2; a `skipped` job has a need that is failed,
    skipped or cancelled, and no attempt; no waiting job has such a need.
 
 ## ADR
@@ -59,8 +62,9 @@ loop, the end status and the decoder's new checks.
 
 ## Version
 
-Additive: the next patch, taken at the build from `python3 scripts/status.py`. No guarantee, core wire format, schema
-or command line change; the end report's contract stays.
+Additive: 0.20.8, the unreleased batch. The change loop ships `job-graph`, `job-graph-failures`, `job-graph-cancel`
+and `job-graph-retry` in that one release, so no host sees two contract changes. No guarantee, core wire format,
+schema or command line change; the end report's contract stays.
 
 ## Docs it breaks
 

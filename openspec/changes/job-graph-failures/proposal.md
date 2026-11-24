@@ -16,6 +16,7 @@ after its design review: that change keeps `Cancel` and the cancel message type.
 - The run ends `succeeded` when every job succeeded, else `failed` when a job failed, else `cancelled`; the last is
   reached only once `job-graph-cancel` cancels jobs.
 - Sending a job message, and failing a job on a failed dispatch, apply only while the job is `running`.
+- Ready jobs start after every change of a job's status, not only after a result.
 
 The decisions are in [design.md](design.md) (ADR 0060, supplementing ADR 0059).
 
