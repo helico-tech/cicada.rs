@@ -22,7 +22,9 @@ with `TestActors`) and the fake.
   `inspect` after `create` of `container-inputs` goes (decision 6); a `kind` on every `failed` end by the table of
   decision 3; `start` failing with `InvalidSpec` ends at once as `notStarted` (decision 5). Update the rustdoc of
   `ContainerJob` (`timeout`; `inputs` no longer leaves a running container on a replayed step), `ContainerEnd`,
-  `Outcome::Failed` and the refused-start limit. Verify: `cargo test -p cicada-containers --all-features`;
+  `Outcome::Failed` and the refused-start limit. Also `ErrorKind::Unsupported`, returned by the trait's default `logs_since`, `copy_out` and `make_dirs` (update their
+  rustdoc and specs), and the actor ends at once only on `Unsupported` from `make_dirs`; `Other` backs off ("Added after
+  the container-inputs code review"); a test for each. Rewrap `src/actor/mod.rs:280` to 120 columns. Verify: `cargo test -p cicada-containers --all-features`;
   `cargo clippy -p cicada-containers --all-targets --all-features`.
 - [ ] 3. **Virtual-time tests.** In `crates/cicada-containers/tests/actor.rs`, one test or more for every scenario of
   the spec deltas: a lost commit after start (adopted, no `spec` or `inputs` call, no `notStarted`), the kinds of

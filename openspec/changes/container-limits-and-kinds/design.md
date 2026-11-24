@@ -72,6 +72,14 @@ pub const OUT_OF_MEMORY: &str = "out of memory";  // the reason of ContainerStat
    `CICADA_UPDATE_CONTRACTS=true`. Not taken: a waiver to ship it as 0.20.9 (the rule exists for this case);
    a `non_exhaustive` `ContainerEnd` (hosts' tests build ends by literal; a constructor would cost them more).
 
+## Added after the container-inputs code review
+
+An unsupported runtime call gets its own error kind. `ErrorKind::Unsupported` (the enum is `#[non_exhaustive]`, so
+this is additive) is what the trait's default methods (`logs_since`, `copy_out`, `make_dirs`) return instead of `Other`.
+The actor ends a container `failed` with kind `notStarted` at once only on `Unsupported` from `make_dirs`; an `Other`
+(on Docker, any daemon 500) backs off and retries like any other runtime error, as it does for `copy_in`. Not keeping
+`Other` as permanent: a passing daemon error would end a job for good.
+
 ## Spec deltas
 
 `container-actor`: *The end is reported once, before removal* (kinds) and *A deadline and errors in a row end a
