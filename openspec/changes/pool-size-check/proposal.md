@@ -19,20 +19,15 @@ Found while answering how far Cicada scales on PostgreSQL (2026-11-17).
   numbers and the setting to change.
 - The same applies to an explicit `--store-pool-size` in `cicada-app`.
 
-To decide in the design:
-
-- Warn at start or refuse to start. A warning breaks nobody, but is easy to miss. Refusing catches every case, but
-  stops setups that work today, such as slow handlers with few commits.
-- Whether the rule is exactly concurrency plus 4, as `cicada-app` uses, or a smaller margin. No load test will
-  measure it (`postgres-load-test` was dropped on 2026-11-24), so the margin follows the documented rule.
-- How the node learns the pool size. The store is built before the node, and the backend trait is private
-  (ADR 0018), so the store could report its pool size to the runtime; SQLite and the in-memory store have none.
+The decisions (warn, not refuse; exactly concurrency plus 4; the pool through the private backend trait) are in
+[design.md](design.md).
 
 ## Out of scope
 
 Changing the default pool size or concurrency. Sizing the pool from the node's concurrency in embedded nodes: the store
 and its pool exist before the node starts. The load of HTTP workers on a server's pool, which the server cannot know
-in advance. SQLite.
+in advance. Nodes, or a local `Worker` on a node, that share one cloned `Store` share one pool: each node checks only
+its own concurrency, and the sum is not checked. SQLite.
 
 ## Order
 
