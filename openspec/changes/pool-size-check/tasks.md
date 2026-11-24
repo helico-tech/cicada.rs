@@ -5,12 +5,12 @@ has landed; builder.md, Version: add entries under the existing unreleased headi
 `container-limits-and-kinds`. Follow `design.md`; the specs are `specs/store-backends/spec.md` and `specs/app/spec.md`.
 No public API, wire format, schema, guarantee or command-line change; `cicada-app` gets no code change.
 
-- [ ] 1. **The pool through the private trait.** In `crates/cicada/src/store/mod.rs`: `fn pool_size(&self) ->
+- [x] 1. **The pool through the private trait.** In `crates/cicada/src/store/mod.rs`: `fn pool_size(&self) ->
   Option<u32>` on `Backend` with a default `None` and a doc comment (decision 3). The PostgreSQL backend
   (`crates/cicada/src/store/postgres/`) returns its `max_pool_size`; `Store` in `store/handle.rs` delegates, as for
   `wake_ups`; SQLite and the in-memory store keep the default. Verify: `cargo check -p cicada --features postgres`,
   `cargo check -p cicada --features sqlite`, `cargo check -p cicada --features testing`.
-- [ ] 2. **The rule and the warning.** In `crates/cicada/src/runtime/system.rs`: a private
+- [x] 2. **The rule and the warning.** In `crates/cicada/src/runtime/system.rs`: a private
   `pool_warning(pool: Option<u32>, concurrency: usize) -> Option<String>` with the rule `pool < concurrency + 4`
   without overflow and the text of decision 4 (both numbers, the number needed, `PostgresOptions::max_pool_size`,
   `--store-pool-size` / `CICADA_STORE_POOL_SIZE` and the concurrency). `ActorSystem::start` calls it with

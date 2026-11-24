@@ -143,6 +143,8 @@ macro_rules! transaction {
 /// The store owns its pool and listener; [`Backend::close`] releases them.
 pub struct PostgresStore {
     pool: PgPool,
+    /// The pool's [`PostgresOptions::max_pool_size`], for [`Backend::pool_size`].
+    pool_size: u32,
     retention: Duration,
     socket_timeout: Duration,
     channel: String,
@@ -220,6 +222,7 @@ impl PostgresStore {
             NotificationListener::new(channel.clone(), base.application_name("cicada-listener"), hub.clone());
         Ok(Self {
             pool,
+            pool_size: config.max_pool_size,
             retention: config.retention,
             socket_timeout: config.socket_timeout,
             channel,
@@ -2466,6 +2469,10 @@ impl Backend for PostgresStore {
             notify(tx, &r.event, notices).await?;
             commit(CommitResult::Committed { version, sent, cancelled })
         })
+    }
+
+    fn pool_size(&self) -> Option<u32> {
+        Some(self.pool_size)
     }
 
     // ---- wake-ups ----

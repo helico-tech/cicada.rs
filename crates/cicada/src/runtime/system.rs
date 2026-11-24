@@ -73,6 +73,22 @@ fn node_details(label: Option<String>) -> NodeDetails {
     NodeDetails { hostname, cicada_version: Some(env!("CARGO_PKG_VERSION").to_owned()), label }
 }
 
+/// The warning for a store pool smaller than a node's `concurrency` plus 4: the connections its turns, renewals and
+/// background calls need at once. `None` when the store has no pool or the pool is large enough.
+fn pool_warning(pool: Option<u32>, concurrency: usize) -> Option<String> {
+    let pool = pool?;
+    let needed = concurrency.saturating_add(4);
+    if usize::try_from(pool).is_ok_and(|pool| pool >= needed) {
+        return None;
+    }
+    Some(format!(
+        "The PostgreSQL pool has {pool} connections, fewer than the {needed} this node needs (concurrency {concurrency} \
+         + 4): lease renewals can wait for a connection and turns can be lost. Raise the pool \
+         (PostgresOptions::max_pool_size, or --store-pool-size / CICADA_STORE_POOL_SIZE in cicada-app) or lower the \
+         concurrency (NodeConfig::concurrency, or --concurrency / CICADA_CONCURRENCY in cicada-app)."
+    ))
+}
+
 /// The most messages one bulk call acts on, and the most ids it takes.
 pub const BULK_LIMIT: usize = 1000;
 
@@ -539,6 +555,9 @@ impl ActorSystem {
         let details = node_details(self.inner.config.label.clone());
         self.inner.stopping.store(false, Ordering::SeqCst);
         if !init.types.is_empty() {
+            if let Some(warning) = pool_warning(self.inner.store.pool_size(), self.inner.config.concurrency) {
+                tracing::warn!("{warning}");
+            }
             let this = self.clone();
             let tracker = lifecycle.tracker.clone();
             let cancel = lifecycle.cancel_turns.clone();
@@ -1925,5 +1944,27 @@ mod tests {
         assert_eq!(details.cicada_version.as_deref(), Some(env!("CARGO_PKG_VERSION")));
         assert_eq!(details.label.as_deref(), Some(" app 1.2 "));
         assert!(details.hostname.as_ref().is_none_or(|h| usable_hostname::<()>(Ok(h.clone())).is_ok()));
+    }
+
+    #[test]
+    fn a_pool_below_the_concurrency_plus_4_warns_with_both_numbers_and_the_settings() {
+        assert_eq!(pool_warning(None, 64), None, "a store without a pool never warns");
+        assert_eq!(pool_warning(None, usize::MAX), None);
+        assert_eq!(pool_warning(Some(68), 64), None, "exactly the concurrency plus 4");
+        assert_eq!(pool_warning(Some(u32::MAX), 64), None);
+        let warning = pool_warning(Some(67), 64).expect("one connection short");
+        for part in [
+            "has 67 connections",
+            "the 68 this node needs",
+            "concurrency 64",
+            "PostgresOptions::max_pool_size",
+            "--store-pool-size",
+            "CICADA_STORE_POOL_SIZE",
+            "NodeConfig::concurrency",
+        ] {
+            assert!(warning.contains(part), "{part:?} in {warning:?}");
+        }
+        let huge = pool_warning(Some(u32::MAX), usize::MAX).expect("no overflow");
+        assert!(huge.contains(&format!("the {} this node needs", usize::MAX)), "{huge}");
     }
 }

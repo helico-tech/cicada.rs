@@ -382,6 +382,10 @@ impl Backend for Store {
         self.backend.wake_ups(types)
     }
 
+    fn pool_size(&self) -> Option<u32> {
+        self.backend.pool_size()
+    }
+
     async fn close(&self) {
         self.backend.close().await
     }

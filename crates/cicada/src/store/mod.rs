@@ -395,6 +395,12 @@ pub(crate) trait Backend: Send + Sync + 'static {
         None
     }
 
+    /// The most connections the store's pool opens, which bounds the store calls that run at once; `None` when the
+    /// store has no pool (SQLite, the in-memory store). A node compares it with its concurrency at start.
+    fn pool_size(&self) -> Option<u32> {
+        None
+    }
+
     /// Releases resources such as connections. The store must not be used afterwards.
     ///
     /// The first poll, before any await, makes operations unavailable, closes the hub and stops new connections; a
