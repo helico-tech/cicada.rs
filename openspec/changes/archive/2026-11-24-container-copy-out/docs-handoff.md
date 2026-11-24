@@ -102,3 +102,11 @@ Ran `cargo test -p cicada-containers --all-features` (lib and integration tests)
 E2E crate, the three single-feature builds of `cicada-containers` with warnings denied, and the five new
 `ContainerDockerTest` steps against Docker; the finishing checks and the gate are in the build report. Every section
 above is proposed text; no protected prose is written yet.
+
+## Notes from the code review (added by the change loop)
+
+- Memory: besides `max_bytes` and the paths, one entry's headers are held whole (long names); Docker's archive writer
+  keeps them small. Say "plus one entry's headers", as the design does.
+- A stream that ends cleanly exactly between two entries looks like the archive's end to the `tar` crate, so the call
+  would return what it read as a success. Docker always writes the end marker and a cut connection is an error, so
+  this is a stated limit, not an expected case.
