@@ -20,7 +20,8 @@ and `job-graph-cancel` before this one). Runtime behaviour is tested on virtual 
   (decision 1). Verify: `cargo test -p cicada-actors`; `cargo clippy -p cicada-actors --all-targets`.
 - [ ] 3. **Virtual-time tests.** In `crates/cicada-actors/tests/job_graph.rs`, one test or more for every scenario of
   the spec delta: retry of a failed job (attempt 2 in the same commit), skipped dependents coming back (and one skipped
-  for another job staying), a late result of a replaced attempt, retry before and after the cancel notice ran, a
+  for another job staying), a late result of a replaced attempt, a worker `Failed` about a replaced attempt and one about another job on a
+  shared worker (both ignored; from the job-graph-failures review), retry before and after the cancel notice ran, a
   retried job cancelled before it starts (no old reason), retry within the in-flight limit, a run that ends twice (end
   2), a report while running again, a waiting job with old attempts decoded, and each refusal (a running job, a job
   whose need failed, an unknown job). Verify: `cargo test -p cicada-actors --test job_graph`.
