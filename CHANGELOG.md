@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.21.0 — unreleased
+## 0.21.0 — 2026-11-24
 
 The fake and the Docker backend of `cicada-containers` give the same answers, so a host's tests on `FakeRuntime`
 predict Docker, a host can follow a container's log in pages while it runs, it can copy a run's files out of a
