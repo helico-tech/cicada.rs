@@ -9,8 +9,9 @@ moves: a correction is a new version.
 
 ## 0.20.7 — unreleased
 
-A new optional crate, `cicada-containers`, for applications that run containers, with a Docker backend. The existing crates, actor contracts,
-wire formats, the store schema and the guarantees are those of 0.20.6.
+A new optional crate, `cicada-containers`, for applications that run containers, with a Docker backend and a
+reconciled container actor. The existing crates, actor contracts, wire formats, the store schema and the guarantees are
+those of 0.20.6.
 
 ### Added
 
@@ -36,6 +37,18 @@ wire formats, the store schema and the guarantees are those of 0.20.6.
   `CopyFile`'s `Debug` shows its path, mode and length, not its contents.
 - ADR 0056: a layer for an external resource that two consumers need may live in an optional crate of this
   workspace; it supersedes in part ADR 0011.
+- `cicada-containers`: the container actor (ADR 0057), `ContainerActor::new(job, runtime, settings)`, one actor per
+  container under the type name of a host's `ContainerJob`, whose `spec` builds the `ContainerSpec` from a typed
+  request in the state at each create, so secrets never reach the store. `Start { to, messageType }`, `Stop` and
+  `Remove` only set the goal; one armed `Poll` at a time takes one step toward it, and `Check` brings back a lost one.
+  The container's name is the settings' prefix plus the actor's key, so a step that runs again finds it. A container
+  ends once, `exited`, `failed`, `timedOut` or `stopped`, with the tail of its logs; the end is saved and sent to the
+  target as `ContainerEnded` (`{"key", "end"}`) in the commit that records it, before any removal, and an end the
+  target's type refuses is saved as `undelivered`. Runtime errors back off and never fail a turn; at `max_errors` in a
+  row a container ends `failed`. Logs and reasons are stored without NUL and bounded. The crate now depends on
+  `cicada`. Covered by the tests in `crates/cicada-containers/tests/actor.rs`, with a test job's contract in its
+  `tests/contracts`.
+- ADR 0057: a reconciled container actor; placement stays with the host.
 
 ## 0.20.6 — 2026-11-23
 

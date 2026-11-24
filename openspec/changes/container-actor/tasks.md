@@ -21,7 +21,7 @@ with `TestActors` and `FakeRuntime`).
   samples of every message, each phase's state and an end payload (`CICADA_UPDATE_CONTRACTS=true` writes it).
   `cicada-containers` in `PACKAGES` of `skills/cicada/scripts/cicada_source.py`, with its Python test. Verify:
   `cargo test -p cicada-containers`, `cargo test -p cicada-examples --test skill`.
-- [ ] 5. **Changelog and docs handoff.** The `0.20.7 — unreleased` changelog section names the container actor and
+- [x] 5. **Changelog and docs handoff.** The `0.20.7 — unreleased` changelog section names the container actor and
   ADR 0057. `docs-handoff.md` from "Docs it breaks"; nothing blocks. Verify: `cargo test -p cicada-examples --test docs`.
 - [ ] 6. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
   `cargo test --workspace`, `openspec validate container-actor --strict`, commit, then `python3 scripts/gate.py run`
