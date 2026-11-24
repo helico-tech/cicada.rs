@@ -36,7 +36,7 @@ in advance. SQLite.
 
 ## Order
 
-After `postgres-load-test`. No following change.
+After `postgres-load-test`, before `container-consistency`.
 
 ## Impact
 
