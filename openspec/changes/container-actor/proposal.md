@@ -25,27 +25,15 @@ This is the hard part of running containers from actors. Every consumer gets the
 ## What Changes
 
 - A ready-made container actor in `cicada-containers`, generic over the `ContainerRuntime` trait of
-  `container-runtime`, under a type name the host chooses (as a flow does, ADR 0031) or a fixed one.
+  `container-runtime`, under a type name the host chooses (as a flow does, ADR 0031).
 - Its messages: `Start`, `Stop`, `Remove`, and a `Check` that arms a fresh poll when one was lost.
-- It tells one watcher (its parent or a named actor) how the container ended: exit code or reason, and the tail of
+- It tells one target, named in `Start`, how the container ended: exit code or reason, and the tail of
   the logs, recorded in the commit that records the exit and before anything removes the container.
-- Its contract is checked like the other ready-made actors' (`docs/reference/contracts`).
+- Its contract is checked like a flow's: a test job's contract pinned in the crate's `tests/contracts`.
 - Tests on virtual time with `TestActors` and the fake runtime: a turn that runs twice starts one container, a lost
   poll comes back, the deadline, errors in a row, stop before start, remove after exit.
 
-To decide in the design:
-
-- Type name: fixed (`cicada.container`) or chosen by the host. The host needs its own runtime and settings, so
-  probably chosen.
-- How the result is reported: a message to a stored target (`StoredMessage`), a reply to the sender, or both.
-- Poll timing: fixed, backoff after errors, and the defaults.
-- Placement: a container actor must run on a node that can reach the Docker daemon. Pin it with ADR 0052's claim
-  owner, or leave placement to the host.
-- What the state holds: the spec, or only the key and a kind from which the host builds the spec at each start.
-  Factory keeps the spec out, so secrets planned at start never reach the store.
-- Where log and output text go: the store refuses a NUL, so output is made plain text before it is kept.
-- How this fits ADR 0053, which kept process ownership as an example only. A container found by a fixed name avoids
-  the PID problem that ADR describes, but it needs a new ADR.
+The decisions on the open questions are in [design.md](design.md).
 
 ## Out of scope
 
@@ -59,6 +47,6 @@ After `container-docker`, before `capacity-permits`.
 
 ## Impact
 
-`crates/cicada-containers` and its tests; a new contract snapshot in `docs/reference/contracts`. A new ADR for the
+`crates/cicada-containers` and its tests, with a test job's contract snapshot in its `tests/contracts`. A new ADR for the
 ready-made container actor and its placement. Additive, so a patch release. The docs handoff carries a section for
 the actors guide, a pattern for the design guide, and a skill route; nothing that exists breaks.
