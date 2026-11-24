@@ -82,6 +82,23 @@ and the guarantees are those of 0.20.7.
   `tests/wire_formats.rs`.
 - ADR 0060: cancel and skipped dependents in the job graph; skipped dependents, the end status, the watch on each
   target and what it cannot see; `Cancel` and the cancel message type.
+- `cicada-actors`: retry in the job graph (ADR 0061). `Retry { job }` puts one `failed` or `cancelled` job back to
+  `waiting`, its output cleared and its attempts kept; in the same commit every `skipped` job waits again and the skips
+  are computed anew, so only the dependents skipped because of that job come back, an ended run goes back to
+  `running` with no end time, and ready jobs start, the retried one with the next attempt number. A `Retry` is
+  refused for good, the state unchanged, for an unknown job, a job that is not `failed` or `cancelled`, a job with a
+  `failed`, `skipped` or `cancelled` need ("retry its need first"), and when the attempt number or the count of ends
+  is at its largest; there is no cap on retries (the 20 kept attempts stay the bound). A result or failure of a
+  replaced attempt is refused or ignored by the existing attempt checks, and a `SendCancel` of a replaced attempt
+  still tells its worker. The state counts the run's ends (`ends`, absent: 0; 1 or more once ended), and
+  `JobGraphEnd` carries `end`, the number of that end: a report sent again repeats it, a retried run's next end has a
+  higher one, and an end reopened before its `Report` ran is never reported, so a report target keeps the report
+  with the highest `end` per run. The end report's `reason` of a job is its last attempt's only when that attempt's
+  outcome is the job's status, so a retried job cancelled before it started again has none. The decoder lets a
+  `waiting` or `cancelled` job keep a last attempt that ended `failed` or `cancelled`, and refuses an ended run with
+  `ends` 0. Covered by `crates/cicada-actors/tests/job_graph.rs`, the unit tests in `src/job_graph.rs` and
+  `tests/wire_formats.rs`.
+- ADR 0061: retry in the job graph, and the end number of its report.
 
 ## 0.20.7 — 2026-11-24
 

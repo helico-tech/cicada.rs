@@ -29,7 +29,7 @@ and `job-graph-cancel` before this one). Runtime behaviour is tested on virtual 
   rewrites `docs/reference/contracts/cicada.job-graph.json`, which is committed; samples of `Retry`, a reopened state
   with `ends` and old attempts, and an end report with `end` are taken by the schemas and the decoders. Verify:
   `cargo test -p cicada-actors --test wire_formats`.
-- [ ] 5. **Changelog and docs handoff.** The 0.20.8 changelog section names `Retry`, the end number and ADR 0061
+- [x] 5. **Changelog and docs handoff.** The 0.20.8 changelog section names `Retry`, the end number and ADR 0061
   (already written). `docs-handoff.md` from "Docs it breaks" in the design; nothing blocks. No edit to `README.md`,
   `AGENTS.md` or the handwritten docs. Verify: `cargo test -p cicada-examples --test docs`,
   `cargo test -p cicada-examples --test skill`.
