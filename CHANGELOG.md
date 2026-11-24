@@ -115,9 +115,11 @@ ready-made actors' contracts and the guarantees are those of 0.20.8.
   running container as `notStarted`. A missing or `Created` container goes through the step as before. Without inputs
   the runtime calls are `inspect`, `create` and `start`. Covered by `tests/actor.rs`.
 - `cicada-containers`: a start refused with `InvalidSpec` ends the container `failed` as `notStarted` in the poll that
-  tried it, without reading logs, as a refused `create` does; it used to count as an error and end at a later poll
-  with Docker's reason. A start refused with another kind, such as `Other`, still counts as an error and ends later as
-  `runtimeEnded`, as a status bears no mark of a refused start. Covered by `tests/actor.rs`.
+  tried it, without reading logs, as a refused `create` does; in 0.20.8 it was retried at every poll until
+  `max_errors` and ended "the runtime failed N times in a row". A start refused with another kind, such as `Other`, is
+  a change too: on Docker such a container then shows as `Failed`, so the next poll adopts it and ends it
+  `runtimeEnded`, where 0.20.8 retried the start; a passing daemon error on start now ends the job. Covered by
+  `tests/actor.rs`.
 - `cicada-containers`: a deadline past the largest instant is capped at `MAX_INSTANT`; it used to be dropped, which
   meant no limit. Covered by `tests/actor.rs`.
 

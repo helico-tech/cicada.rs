@@ -86,12 +86,18 @@ removed by another caller.
 
 `inspect` SHALL report a container as `Missing`, `Created`, `Running`, `Exited` with the program's exit code, or
 `Failed` with an optional exit code and a reason when the container did not start, ran out of memory or was lost by
-the runtime. A container ended by `stop` SHALL be reported as `Exited`.
+the runtime. A container ended by `stop` SHALL be reported as `Exited`. For a container killed for lack of memory,
+the reason SHALL be exactly the crate's constant `OUT_OF_MEMORY`.
 
 #### Scenario: Inspecting a container that never existed
 
 - **WHEN** `inspect` is called for a name that has no container
 - **THEN** it returns `Missing`, not an error
+
+#### Scenario: Out of memory on every runtime
+
+- **WHEN** the Docker backend reports a container killed for lack of memory
+- **THEN** its status is `Failed` with the reason `OUT_OF_MEMORY`, which the container actor reads as `outOfMemory`
 
 ### Requirement: Files are copied only before start
 
@@ -129,9 +135,10 @@ bind mount of the container, or lies at or below a tmpfs target with no deeper v
 ### Requirement: Errors say whether a retry can help
 
 Every method SHALL fail only with a `ContainerError` whose kind is `DaemonUnavailable`, `Conflict`, `ImageNotFound`,
-`InvalidSpec` or `Other`. `is_retryable()` SHALL be true only for `DaemonUnavailable`. A call that does not fit the
-current state SHALL fail with `Conflict`: `start`, `copy_in` or `logs` on a missing container, and `ensure_network` on
-an existing network whose `internal` flag differs.
+`InvalidSpec`, `Unsupported` or `Other`. `is_retryable()` SHALL be true only for `DaemonUnavailable`. A call that does
+not fit the current state SHALL fail with `Conflict`: `start`, `copy_in` or `logs` on a missing container, and
+`ensure_network` on an existing network whose `internal` flag differs. A call the runtime does not implement SHALL fail
+with `Unsupported`.
 
 #### Scenario: Starting a missing container
 
@@ -229,13 +236,13 @@ cursor SHALL fail with `InvalidSpec`. A cursor SHALL mean the same on every runt
 
 ### Requirement: Adding a method keeps other runtimes compiling
 
-`logs_since` SHALL have a default implementation that fails with `Other`, so an implementation of `ContainerRuntime`
-outside this repo compiles unchanged. The fake and the Docker backend SHALL implement it.
+`logs_since` SHALL have a default implementation that fails with `Unsupported`, so an implementation of
+`ContainerRuntime` outside this repo compiles unchanged. The fake and the Docker backend SHALL implement it.
 
 #### Scenario: A runtime written before logs_since
 
 - **WHEN** a host's own runtime implements every method but `logs_since`, and `logs_since` is called on it
-- **THEN** it compiles, and the call fails with `Other`
+- **THEN** it compiles, and the call fails with `Unsupported`
 
 ### Requirement: Files can be copied out within limits
 
@@ -287,13 +294,13 @@ skip with a reason every link, device, pipe or socket, and every entry whose nam
 
 ### Requirement: copy_out keeps other runtimes compiling
 
-`copy_out` SHALL have a default implementation that fails with `Other`, so an implementation of `ContainerRuntime`
-outside this repo compiles unchanged. The fake and the Docker backend SHALL implement it.
+`copy_out` SHALL have a default implementation that fails with `Unsupported`, so an implementation of
+`ContainerRuntime` outside this repo compiles unchanged. The fake and the Docker backend SHALL implement it.
 
 #### Scenario: A runtime written before copy_out
 
 - **WHEN** a host's own runtime implements every method but `copy_out`, and `copy_out` is called on it
-- **THEN** it compiles, and the call fails with `Other`
+- **THEN** it compiles, and the call fails with `Unsupported`
 
 ### Requirement: The fake holds files to copy out
 
@@ -318,7 +325,7 @@ container it SHALL leave out files written to a tmpfs.
 `Created` container, and SHALL leave every existing folder as it is, mode and owner included. It SHALL fail before any
 write with `Conflict` for a file, or a link to no folder, at a named path or a parent, or a container that is not
 `Created`, and with `InvalidSpec` for a mode above 0o7777, one path with two modes, or a path `copy_in` refuses. Its
-default SHALL fail with `Other`.
+default SHALL fail with `Unsupported`.
 
 #### Scenario: A folder for a program that does not run as root
 
@@ -353,4 +360,4 @@ default SHALL fail with `Other`.
 #### Scenario: A runtime written before make_dirs
 
 - **WHEN** a host's own runtime implements every method but `make_dirs`, and `make_dirs` is called on it
-- **THEN** it compiles, and the call fails with `Other`
+- **THEN** it compiles, and the call fails with `Unsupported`
