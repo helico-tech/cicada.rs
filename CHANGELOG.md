@@ -7,13 +7,16 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.20.9 — unreleased
+## 0.21.0 — unreleased
 
 The fake and the Docker backend of `cicada-containers` give the same answers, so a host's tests on `FakeRuntime`
 predict Docker, a host can follow a container's log in pages while it runs, it can copy a run's files out of a
 container within limits, and it can make writable folders in a container before start; a container job gives its
-container folders and files before start. Additive: the actor contracts, wire formats, the store schema and the
-guarantees are those of 0.20.8.
+container folders and files before start, and a time limit per request; a `failed` container end says why in a
+machine-readable `kind`. A breaking release (ADR 0062): `ContainerEnd` gains the public field `kind`, so the contract
+hash of every container job type, and of every target type whose messages take a `ContainerEnded`, changes. Hosts on
+0.20.x follow "Changing a contract" in the operations guide for those types. The store schema, the HTTP API, the
+ready-made actors' contracts and the guarantees are those of 0.20.8.
 
 ### Added
 
@@ -24,10 +27,10 @@ guarantees are those of 0.20.8.
   every line once, in log order, also when several lines share a second or are out of time order within one; a page
   with fewer than `max_lines` lines has read everything there is now, and an empty page keeps the cursor. `LogCursor`
   is opaque: written and read as a string by `Display`, `FromStr` and serde, with a string JSON schema; its form is
-  kept across 0.20 patches and a string that is not a cursor is `InvalidSpec`. `max_lines` outside 1 to
+  kept across 0.21 patches and a string that is not a cursor is `InvalidSpec`. `max_lines` outside 1 to
   `LOG_PAGE_MAX` (1000) is `InvalidSpec` before any read; a missing container is `Conflict`, a created one gives an
   empty page, and a log Docker cannot read (log driver `none`) is `Other`. The method has a default that fails with
-  `Other`, so a runtime written outside this repo compiles unchanged. Docker reads with timestamps from the cursor's
+  `Unsupported`, so a runtime written outside this repo compiles unchanged. Docker reads with timestamps from the cursor's
   second and drops lines stamped before it whatever its filter let through; limits: a line stamped before the
   cursor's second but written after the cursor is missed, each read scans the log from that second (poll every few
   seconds), rotation of that second shifts the cursor, a line over 16 KiB comes back in parts, and a cursor after
@@ -45,7 +48,7 @@ guarantees are those of 0.20.8.
   read"). No link is followed: symbolic and hard links, devices and pipes, and entries outside `path` are skipped with
   a reason. A relative path, a `..` part, `/` or a zero limit is `InvalidSpec` before any call; a missing container
   is `Conflict`, a missing path an empty result. Files written to a tmpfs are gone once the container ended. The three
-  types are `non_exhaustive` with constructors; the method has a default that fails with `Other`, so a runtime
+  types are `non_exhaustive` with constructors; the method has a default that fails with `Unsupported`, so a runtime
   written outside this repo compiles unchanged. Docker's archive is read as a stream and a skipped file's data is
   passed over, not held; an error during the stream fails the whole call. The fake's `put_file(name, CopyFile)` adds
   a file its program "wrote", and the fake walks a folder in Docker's order; `Call::CopyOut` and `Method::CopyOut`
@@ -62,7 +65,7 @@ guarantees are those of 0.20.8.
   there, while a link loop fails with `Other` from Docker. Before any write: a file, or a link to anything but a
   folder, at a named path or a parent is `Conflict`, as is a container that is not `Created`; a mode above 0o7777, one
   path with two modes, and every path `copy_in` refuses (a mount target, at or below a tmpfs, on a read-only mount, on
-  the read-only root) are `InvalidSpec`. The method has a default that fails with `Other`, so a runtime written
+  the read-only root) are `InvalidSpec`. The method has a default that fails with `Unsupported`, so a runtime written
   outside this repo compiles unchanged. Docker asks its archive stat for each part of the path from the root and
   uploads a tar of only the missing folders, owned by uid and gid 0, so `/tmp` keeps 1777 and an image's folder keeps
   its owner. The fake keeps the folders it makes; `Call::MakeDirs` and `Method::MakeDirs` record and script the call.
@@ -72,16 +75,58 @@ guarantees are those of 0.20.8.
   a container: `Inputs { dirs: Vec<CopyDir>, files: Vec<CopyFile> }` (`non_exhaustive`, `Default`, exported from the
   crate root). The default gives none, so a job compiles unchanged. Like `spec`, it is sync, built at each create and
   never stored, so secret files never reach the store. The container actor now puts the inputs in between create and
-  start: it inspects the created container and, only while it is `Created`, makes the folders (`make_dirs`) and then
-  writes the files (`copy_in`), so a file can go into a fresh folder; a step that runs again after its container
-  started skips them, and one still `Created` puts them in again. Without inputs the step calls only `create` and
-  `start`, as before. The container ends `failed` before anything is made for an `Err` from `inputs`, a path the
-  shared path rule refuses, and a file at a folder's path or above it (dirs `/a/b`, file `/a`; `/out/.` and `/out` are
-  one path), as writing it would replace the folder. It ends `failed` too for `InvalidSpec` from `make_dirs` or
-  `copy_in`, `Conflict` while a new inspect still finds the container `Created`, and `Other` from `make_dirs` (a
-  runtime without it); the created container stays until `Remove`. Any other error, also a container missing right
-  after its create, counts and backs off, and the next poll puts the inputs in again. Covered by the unit tests of the
-  check in `src/actor/mod.rs` and by `tests/actor.rs`.
+  start: it makes the folders (`make_dirs`) and then writes the files (`copy_in`), so a file can go into a fresh
+  folder; a container that an earlier step started is adopted without them (see Changed), and one still `Created`
+  gets them again. The container ends `failed` with the kind `notStarted` before anything is made for an `Err` from
+  `inputs`, a path the shared path rule refuses, and a file at a folder's path or above it (dirs `/a/b`, file `/a`;
+  `/out/.` and `/out` are one path), as writing it would replace the folder. It ends so too for `InvalidSpec` from
+  `make_dirs` or `copy_in`, `Conflict` while a new inspect still finds the container `Created`, and `Unsupported` from
+  `make_dirs` (a runtime without it); the created container stays until `Remove`. Any other error, `Other` and a
+  container removed before the copies too, counts and backs off, and the next poll puts the inputs in again. Covered
+  by the unit tests of the check in `src/actor/mod.rs` and by `tests/actor.rs`.
+- `cicada-containers`: `ContainerEnd::kind: Option<FailureKind>` says why a container ended `failed`:
+  `FailureKind::NotStarted` (its key, spec, image, start or inputs were refused, or a runtime call it needs is
+  unsupported), `OutOfMemory` (the runtime reported `Failed` with the reason `OUT_OF_MEMORY`), `RuntimeEnded` (another
+  failure the runtime reported for a started container, such as a dead one), `Missing` (a started container was
+  gone) and `RuntimeErrors` (the settings' maximum errors in a row). Every new `failed` end has one and no other end
+  has one; on the wire it is `kind`, camelCase (`notStarted`, …), written as `null` like `code`. A `failed` end saved
+  before 0.21.0 decodes with no kind, as none is guessed from its reason; decoding an end, in the state or in a
+  `ContainerEnded`, refuses a `kind` on an end that is not `failed`. `FailureKind` is `non_exhaustive`. Covered by the
+  unit tests in `src/actor/wire.rs` and by `tests/actor.rs`.
+- `cicada-containers`: `ContainerJob::timeout(&self, request, settings: Option<Duration>) -> Option<Duration>` gives
+  each request its time limit; the default returns `settings`, the settings' `timeout`, so a job compiles unchanged,
+  and `None` is no limit. It is asked once, at the start, and the deadline is saved then and never moves. Covered by
+  `tests/actor.rs`.
+- `cicada-containers`: `OUT_OF_MEMORY` ("out of memory"), the exact reason of `ContainerStatus::Failed` for a
+  container killed for lack of memory; the Docker backend uses it, and another runtime must too for the actor to
+  report `outOfMemory`. Docker's reason text does not change. Covered by the unit test of `map::status_of`.
+- `cicada-containers`: `ErrorKind::Unsupported`, for a call the runtime does not implement: the trait's default
+  `logs_since`, `copy_out` and `make_dirs` return it. `ErrorKind` is `non_exhaustive`, so this is additive; it is not
+  retryable. The container actor ends a container at once only on `Unsupported` from `make_dirs`; `Other` (on Docker,
+  any daemon 500) backs off and retries like any runtime error. Covered by the unit tests in `src/error.rs` and
+  `src/fake.rs`, and by `tests/actor.rs`.
+- ADR 0062: a failure kind on the container end.
+
+### Changed
+
+- `cicada-containers`: the container actor's create step begins with `inspect`. A container past `Created`, which an
+  earlier step started before its commit was lost, is adopted: saved as started with a fresh deadline, counted from
+  the adoption, without calling `spec`, `inputs`, `create`, the copies or `start`, so a job's refusal now never ends a
+  running container as `notStarted`. A missing or `Created` container goes through the step as before. Without inputs
+  the runtime calls are `inspect`, `create` and `start`. Covered by `tests/actor.rs`.
+- `cicada-containers`: a start refused with `InvalidSpec` ends the container `failed` as `notStarted` in the poll that
+  tried it, without reading logs, as a refused `create` does; it used to count as an error and end at a later poll
+  with Docker's reason. A start refused with another kind, such as `Other`, still counts as an error and ends later as
+  `runtimeEnded`, as a status bears no mark of a refused start. Covered by `tests/actor.rs`.
+- `cicada-containers`: a deadline past the largest instant is capped at `MAX_INSTANT`; it used to be dropped, which
+  meant no limit. Covered by `tests/actor.rs`.
+
+### Changed (breaking)
+
+- `cicada-containers`: `ContainerEnd` has the new public field `kind`: a struct literal or an exhaustive
+  destructuring of it no longer compiles; add `kind: None`, or the kind of a `failed` end. The end is in a container
+  actor's state and in its end message, so the contract hash of every container job type, and of every target type
+  whose messages take a `ContainerEnded`, changes, and a node refuses the old hash.
 
 ### Fixed
 
@@ -100,6 +145,15 @@ guarantees are those of 0.20.8.
 - `cicada-containers`: a Docker `list` leaves out a container whose state Docker does not report, as it leaves out
   one removed since the listing, instead of failing the whole call with `Other`. `inspect`, `start`, `copy_in` and
   `stop` of that name still fail with `Other`. Covered by the unit test of `map::summary`.
+
+### Upgrading
+
+- Hosts on 0.20.x with container job types or end targets follow "Changing a contract" in the operations guide for
+  each of them: a versioned type name for new runs while the old actors finish, or a maintenance window (stop every
+  host of the type, delete its actors and then its registration, start the new hosts). Send `Remove` to a container
+  actor before deleting it, or its container stays. Add `kind` to every `ContainerEnd` literal, such as in a host's
+  tests.
+- A host that told failures apart by the reason text can match `kind` instead; an end saved before 0.21.0 has none.
 
 ## 0.20.8 — 2026-11-24
 

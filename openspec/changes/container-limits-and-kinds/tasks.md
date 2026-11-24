@@ -32,7 +32,7 @@ with `TestActors`) and the fake.
   deadline capped at `MAX_INSTANT`, too many errors with `runtimeErrors`; update the call lists of existing tests to
   begin with `inspect` (inputs before start, no inputs, a replayed step after start). Verify:
   `cargo test -p cicada-containers --test actor`.
-- [ ] 4. **Contract, version, changelog and docs handoff.**
+- [x] 4. **Contract, version, changelog and docs handoff.**
   `CICADA_UPDATE_CONTRACTS=true cargo test -p cicada-containers --test actor` rewrites
   `tests/contracts/test.container.json`, which is committed, with samples of ends with and without `kind`. Set 0.21.0 as
   builder.md, Version, says for a BREAKING change. In `CHANGELOG.md`: the renamed heading, a summary for the whole batch
