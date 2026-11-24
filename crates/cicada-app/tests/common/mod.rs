@@ -79,7 +79,10 @@ impl Running {
         let running = Self::spawn(app, env, list);
         let started = Instant::now();
         loop {
-            if let Some(line) = running.out.text().lines().find(|l| l.starts_with("Listening on ")) {
+            // Only complete lines: the last one may still be arriving in pieces.
+            let text = running.out.text();
+            let complete = text.rsplit_once('\n').map_or("", |(done, _)| done);
+            if let Some(line) = complete.lines().find(|l| l.starts_with("Listening on ")) {
                 let base = line.trim_start_matches("Listening on ").to_owned();
                 return (running, base);
             }

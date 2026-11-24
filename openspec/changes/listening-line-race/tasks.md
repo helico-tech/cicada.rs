@@ -2,7 +2,7 @@
 
 Fast lane, tests only. Version: none (no crate's behaviour, API or output changes; no changelog entry).
 
-- [ ] 1. **Complete lines only.** In `start_as` of `sample-service/tests/sample_service.rs` and `serve` of
+- [x] 1. **Complete lines only.** In `start_as` of `sample-service/tests/sample_service.rs` and `serve` of
   `crates/cicada-app/tests/common/mod.rs`, look for the listening line only among lines that end in a newline: take
   the output up to its last `\n` and search those lines, so a last line still being written is never read. Keep the
   rest of each loop (the end check, the 20 s limit). Do not change `serve`, `node.rs` or the line it writes. The

@@ -94,7 +94,10 @@ impl Node {
         }));
         let started = Instant::now();
         let base = loop {
-            if let Some(l) = out.text().lines().find(|l| l.starts_with("Listening on ")) {
+            // Only complete lines: the last one may still be arriving in pieces.
+            let text = out.text();
+            let complete = text.rsplit_once('\n').map_or("", |(done, _)| done);
+            if let Some(l) = complete.lines().find(|l| l.starts_with("Listening on ")) {
                 break l.trim_start_matches("Listening on ").to_owned();
             }
             if task.is_finished() {
