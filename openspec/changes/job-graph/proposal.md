@@ -20,33 +20,34 @@ replaced. cicada-code-factory's run is a fixed flow today, but its steps would f
 
 ## What Changes
 
-A coordinator actor per run, probably in a new `cicada-jobs` crate, that:
+The first of three changes (split on 2026-11-24; the owner asked the change loop to work through the queue on its own
+picks): `job-graph` (this one), `job-graph-cancel`, `job-graph-retry`.
 
-- accepts a graph as data and refuses a cycle or an unknown dependency before it dispatches anything;
+A coordinator actor per run that:
+
+- accepts a graph as data and refuses a cycle, an unknown dependency or a graph out of bounds before it dispatches
+  anything;
 - starts ready jobs up to an in-flight limit, and records each attempt;
-- takes explicit results from workers, and refuses one from a replaced attempt;
-- owns cancellation, skipped dependents and retry of one job.
-
-**This is too big for one change.** Before it is designed, the design loop splits it into a line of small changes,
-for example: the graph as data and its checks; dispatch with an in-flight limit and results; cancel, skip and
-retry with attempt fencing; then optional capacity from `capacity-permits`.
+- takes an explicit result from a worker for a running attempt, marks the job succeeded or failed, and starts the jobs
+  that became ready;
+- reports the run's end to a target when every job has a result.
 
 To decide in the design:
 
 - A new crate `cicada-jobs`, or a module in `cicada-actors`.
 - What a job is: a child actor of a type the host gives (as in brood), a message to a target, or a flow.
-- How a worker reports, and how an attempt is named so a late result is refused.
-- How the in-flight limit relates to `capacity-permits`: a limit per run, a shared pool across runs, or both.
-- What the coordinator keeps per job, so a console can show and retry each one.
+- How a worker reports, and how an attempt is named so that `job-graph-retry` can refuse a late result.
+- What the coordinator keeps per job, so a console can show each one.
 
 ## Out of scope
 
-A graph that changes while it runs. Scheduling across several graphs beyond what `capacity-permits` gives. Moving
+Cancel, failure notices and skipped dependents (`job-graph-cancel`). Retry of one job and refusing a late result
+(`job-graph-retry`). Capacity from `capacity-permits`: a later proposal if a consumer needs it. A graph that changes while it runs. Scheduling across several graphs beyond what `capacity-permits` gives. Moving
 brood or the factory onto it. A YAML or other file format: the host parses its own format into the graph.
 
 ## Order
 
-After `capacity-permits`, before `postgres-load-test`.
+After `capacity-permits`, before `job-graph-cancel`.
 
 ## Impact
 

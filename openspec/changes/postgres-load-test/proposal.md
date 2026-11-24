@@ -53,7 +53,7 @@ behaviour, schema, wire format, public API or guarantees. Pass/fail thresholds a
 
 ## Order
 
-After `job-graph`, before `pool-size-check`.
+After `job-graph-retry`, before `pool-size-check`.
 
 ## Impact
 
