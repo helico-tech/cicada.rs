@@ -27,6 +27,6 @@ command line. Follow `design.md`; the spec is `specs/container-runtime/spec.md`.
   `docs-handoff.md` from "Docs it breaks": nothing blocks; the AGENTS.md map row, `README.md#layers`,
   `docs/how-to/install.md#choose-the-crates` and the crate table of `docs/architecture.md`. Verify:
   `cargo test -p cicada-examples --test skill` and `--test docs`.
-- [ ] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
+- [x] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
   `cargo test --workspace`, `openspec validate container-runtime --strict`, commit, then `python3 scripts/gate.py run`
   (no E2E: E2E runs at the release).
