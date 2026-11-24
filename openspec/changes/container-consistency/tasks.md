@@ -27,7 +27,7 @@ and `specs/container-docker/spec.md`. Run the crate's tests with every feature:
   container removed since the listing. `inspect`, `start`, `copy_in` and `stop` keep failing with `Other` for it.
   Update the rustdoc of `list` or the notes on `DockerRuntime`. Verify: unit tests of `summary` (a state, no state, an
   empty status); `cargo test -p cicada-containers --all-features`.
-- [ ] 4. **E2E, changelog and docs handoff.** In `e2e/tests/suite/container_docker.rs`, extend the two `copy_in`
+- [x] 4. **E2E, changelog and docs handoff.** In `e2e/tests/suite/container_docker.rs`, extend the two `copy_in`
   steps: a path equal to the volume target `/work` fails with `InvalidSpec` and writes nothing, with a read-only root
   and with a writable one; on a writable root with a tmpfs at `/scratch`, `/scratch/c` fails with `InvalidSpec`. The
   0.20.9 section of `CHANGELOG.md` names under Fixed the refused paths (an exact mount target, a tmpfs path, `/` on the
@@ -35,6 +35,6 @@ and `specs/container-docker/spec.md`. Run the crate's tests with every feature:
   container that has no state. `docs-handoff.md` carries the three rules for the container guide; nothing blocks. No
   edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify: `CICADA_E2E=1 cargo test -p cicada-e2e --
   --nocapture` (or the gate below); `cargo test -p cicada-examples --test docs`.
-- [ ] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
+- [x] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
   `cargo test --workspace`, `openspec validate container-consistency --strict`, commit, then
   `python3 scripts/gate.py run --e2e` (the change touches `e2e/`).
