@@ -22,7 +22,9 @@ pub use wire::{
     ContainerEnd, ContainerEnded, ContainerMsg, ContainerState, EndTarget, Goal, InvalidContainer, Outcome, Phase,
 };
 
-use crate::{ContainerError, ContainerRuntime, ContainerSpec, ContainerStatus, ErrorKind};
+use crate::dirs::MAKE;
+use crate::paths::path_parts;
+use crate::{ContainerError, ContainerRuntime, ContainerSpec, ContainerStatus, CopyDir, CopyFile, ErrorKind};
 
 /// The longest container name, prefix and key together.
 const MAX_NAME_LENGTH: usize = 200;
@@ -69,6 +71,74 @@ pub trait ContainerJob: Send + Sync + 'static {
     /// sets the spec's name to `name` whatever it returns. An `Err` ends the container `failed` with its text, and
     /// nothing is made. It is sync: load what it needs before the actor runs.
     fn spec(&self, name: &str, request: &Self::Request) -> Result<ContainerSpec, String>;
+
+    /// The folders and files the container `name` gets for `request` before it starts; none by default. Like
+    /// [`spec`](Self::spec) it is sync and built at each create, after the spec, and never stored, so secrets never
+    /// reach the store.
+    ///
+    /// The actor creates the container, makes the folders ([`make_dirs`](ContainerRuntime::make_dirs)), then writes the
+    /// files ([`copy_in`](ContainerRuntime::copy_in)), then starts it, so a file can go into a fresh folder. It puts
+    /// them in only while the container is `Created`: a step that runs again after its container started skips them.
+    /// One still `Created` gets them again, which is safe: nothing that exists is made again, and the same files are
+    /// written. Without inputs the step calls only `create` and `start`.
+    ///
+    /// The container ends `failed`, before anything is made, for an `Err`, with its text; for a path that is relative,
+    /// has a `..` part or names no file; and for a file at a folder's path or above it (dirs `/a/b`, file `/a`), as
+    /// writing it would replace the folder and what is in it. Paths are compared without empty and `.` parts, so
+    /// `/out/.` and `/out` are one. It ends `failed` too when the runtime refuses an input (`InvalidSpec`), finds a
+    /// file where a folder is asked (`Conflict` while the container is still `Created`), or has no `make_dirs`
+    /// (`Other`); the created container then stays until `Remove`. Any other runtime error counts and backs off, and
+    /// the next poll puts the inputs in again. As with `spec`, an `Err` on a step that runs again after its container
+    /// started ends it `failed` and leaves it running until `Remove`.
+    ///
+    /// Put secret files on the container's own file system, not on a volume: `Remove` deletes the container with its
+    /// files, while a named volume outlives it. A tmpfs is refused, as it is mounted only at start.
+    fn inputs(&self, name: &str, request: &Self::Request) -> Result<Inputs, String> {
+        let _ = (name, request);
+        Ok(Inputs::default())
+    }
+}
+
+/// The folders and files of a container, from [`ContainerJob::inputs`]: put in between its create and its start, the
+/// folders first. Make it with [`Inputs::default`] and push to the lists. `Debug` shows no file contents.
+///
+/// ```
+/// use cicada_containers::{CopyDir, CopyFile, Inputs};
+///
+/// let mut inputs = Inputs::default();
+/// let mut out = CopyDir::new("/out");
+/// out.mode = 0o777;
+/// inputs.dirs.push(out);
+/// inputs.files.push(CopyFile::new("/in/config.json", "{}"));
+/// assert!(!format!("{inputs:?}").contains("{}"));
+/// ```
+#[non_exhaustive]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Inputs {
+    /// The folders to make, each with its mode when it is missing.
+    pub dirs: Vec<CopyDir>,
+    /// The files to write, after the folders.
+    pub files: Vec<CopyFile>,
+}
+
+/// Checks the inputs of the container `name` before anything is made: every path parsed by the shared path rule, and
+/// no file at a folder's path or above it, as `copy_in` would replace the folder. The reason is the runtime's for a
+/// path the rule refuses.
+fn check_inputs(name: &str, inputs: &Inputs) -> Result<(), String> {
+    let mut dirs = Vec::with_capacity(inputs.dirs.len());
+    for dir in &inputs.dirs {
+        dirs.push((dir, path_parts(MAKE, name, &dir.path).map_err(|e| e.to_string())?));
+    }
+    for file in &inputs.files {
+        let parts = path_parts("copy into", name, &file.path).map_err(|e| e.to_string())?;
+        if let Some((dir, _)) = dirs.iter().find(|(_, dir)| dir.starts_with(&parts)) {
+            return Err(format!(
+                "the file {} is at or above the folder {}: writing it would replace the folder",
+                file.path, dir.path
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The container actor of the job `J` keyed `key`, `<J::TYPE>/<key>`: a typed ref whose one string is the key. It needs
@@ -204,8 +274,8 @@ fn retry_policy() -> RetryPolicy {
 
 /// The container actor type of the job `J`, under `J::TYPE`, with its runtime and settings.
 ///
-/// Each poll takes one step for its goal and phase: for run, a new container is built by the job's spec, created and
-/// started, and a started one is inspected until it ends (started again while created, stopped at its deadline); for
+/// Each poll takes one step for its goal and phase: for run, a new container is built by the job's spec, created, given
+/// the job's inputs and started, and a started one is inspected until it ends (started again while created, stopped at its deadline); for
 /// stop or remove before the end, it is stopped and inspected, and ends `stopped`, or `timedOut` past its deadline; for
 /// remove after the end, it is removed. `ImageNotFound` and `InvalidSpec` from `create` end it `failed` at once. Any
 /// other runtime error counts in a row and delays the next poll by the interval doubled per error, up to the maximum;
@@ -365,10 +435,17 @@ impl<J: ContainerJob> ContainerActor<J> {
         }
     }
 
-    /// Builds the spec, creates and starts the container, and sets the deadline.
+    /// Builds the spec and the inputs, creates the container, puts the inputs in while it is `Created`, starts it, and
+    /// sets the deadline.
     async fn create(&self, turn: &mut ContainerTurn<J>, name: &str) -> HandlerResult {
-        let mut spec = match self.job.spec(name, &turn.state().request) {
-            Ok(spec) => spec,
+        let request = &turn.state().request;
+        let built = self.job.spec(name, request).and_then(|spec| {
+            let inputs = self.job.inputs(name, request)?;
+            check_inputs(name, &inputs)?;
+            Ok((spec, inputs))
+        });
+        let (mut spec, inputs) = match built {
+            Ok(built) => built,
             Err(reason) => return self.end(turn, Outcome::Failed, None, reason, String::new()).await,
         };
         spec.name = name.to_owned();
@@ -377,6 +454,29 @@ impl<J: ContainerJob> ContainerActor<J> {
                 return self.end(turn, Outcome::Failed, None, e.to_string(), String::new()).await;
             }
             return self.error(turn, e).await;
+        }
+        if !(inputs.dirs.is_empty() && inputs.files.is_empty()) {
+            match self.runtime.inspect(name).await {
+                Ok(ContainerStatus::Created) => {
+                    if !inputs.dirs.is_empty()
+                        && let Err(e) = self.runtime.make_dirs(name, &inputs.dirs).await
+                    {
+                        return self.refused(turn, name, e, true).await;
+                    }
+                    if !inputs.files.is_empty()
+                        && let Err(e) = self.runtime.copy_in(name, &inputs.files).await
+                    {
+                        return self.refused(turn, name, e, false).await;
+                    }
+                }
+                Ok(ContainerStatus::Missing) => {
+                    let missing = format!("container {name} is missing right after its create");
+                    return self.error(turn, ContainerError::new(ErrorKind::Conflict, missing)).await;
+                }
+                // Started by an earlier run of this step, whose commit was lost: its inputs are in.
+                Ok(_) => {}
+                Err(e) => return self.error(turn, e).await,
+            }
         }
         if let Err(e) = self.runtime.start(name).await {
             return self.error(turn, e).await;
@@ -480,6 +580,29 @@ impl<J: ContainerJob> ContainerActor<J> {
         Ok(Some(text::logs(&text, self.settings.log_lines, self.settings.log_bytes)))
     }
 
+    /// Handles `error` from putting the inputs in, of `make_dirs` when `making`, else of `copy_in`: ends the container
+    /// `failed` for `InvalidSpec`, for `Other` from `make_dirs` (a runtime without it, which a retry cannot help), and
+    /// for `Conflict` while a new inspect still finds it `Created` (a file where a folder is asked); else counts it.
+    async fn refused(
+        &self,
+        turn: &mut ContainerTurn<J>,
+        name: &str,
+        error: ContainerError,
+        making: bool,
+    ) -> HandlerResult {
+        let refused = match error.kind {
+            ErrorKind::InvalidSpec => true,
+            ErrorKind::Other => making,
+            // The first inspect can be out of date: a container no longer `Created` is a runtime error.
+            ErrorKind::Conflict => matches!(self.runtime.inspect(name).await, Ok(ContainerStatus::Created)),
+            _ => false,
+        };
+        if refused {
+            return self.end(turn, Outcome::Failed, None, error.to_string(), String::new()).await;
+        }
+        self.error(turn, error).await
+    }
+
     /// Counts a runtime error and arms the next poll after the backoff; at the maximum in a row, a container without an
     /// end ends `failed`, while a removal keeps trying.
     async fn error(&self, turn: &mut ContainerTurn<J>, error: ContainerError) -> HandlerResult {
@@ -564,5 +687,37 @@ mod tests {
         assert_eq!(waits, [4, 8, 16, 32, 60, 60]);
         assert_eq!(settings.backoff(40), settings.max_backoff, "no overflow");
         assert_eq!(settings.backoff(u32::MAX), settings.max_backoff);
+    }
+
+    fn inputs(dirs: &[&str], files: &[&str]) -> Inputs {
+        Inputs {
+            dirs: dirs.iter().map(|path| CopyDir::new(*path)).collect(),
+            files: files.iter().map(|path| CopyFile::new(*path, "x")).collect(),
+        }
+    }
+
+    #[test]
+    fn a_file_at_or_above_a_folder_is_refused() {
+        for (dirs, file) in [(["/out"], "/out"), (["/a/b"], "/a"), (["/out/."], "/out"), (["/a/b/c"], "/a//./b/")] {
+            let refused = check_inputs("app-j1", &inputs(&dirs, &[file])).unwrap_err();
+            assert!(refused.contains(&format!("the file {file} is at or above the folder {}", dirs[0])), "{refused}");
+        }
+    }
+
+    #[test]
+    fn folders_and_files_side_by_side_pass() {
+        let side = inputs(&["/out", "/in/cache", "/a/b"], &["/in/config.json", "/out/x", "/output", "/a/bc", "/a/b/c"]);
+        assert_eq!(check_inputs("app-j1", &side), Ok(()));
+        assert_eq!(check_inputs("app-j1", &Inputs::default()), Ok(()));
+    }
+
+    #[test]
+    fn a_path_the_rule_refuses_is_refused_with_the_runtimes_reason() {
+        let refused = check_inputs("app-j1", &inputs(&["out"], &[])).unwrap_err();
+        assert_eq!(refused, "invalid spec: make folders in app-j1: relative path out");
+        let refused = check_inputs("app-j1", &inputs(&[], &["/in/../etc/passwd"])).unwrap_err();
+        assert_eq!(refused, "invalid spec: copy into app-j1: a `..` part in /in/../etc/passwd");
+        let refused = check_inputs("app-j1", &inputs(&["/out"], &["/"])).unwrap_err();
+        assert_eq!(refused, "invalid spec: copy into app-j1: no file name in /");
     }
 }

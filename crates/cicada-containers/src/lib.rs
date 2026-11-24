@@ -53,7 +53,7 @@ mod spec;
 
 pub use actor::{
     Container, ContainerActor, ContainerEnd, ContainerEnded, ContainerJob, ContainerMsg, ContainerSettings,
-    ContainerState, EndTarget, Goal, InvalidContainer, Outcome, Phase,
+    ContainerState, EndTarget, Goal, Inputs, InvalidContainer, Outcome, Phase,
 };
 pub use copy::{CopyLimits, CopyOut, SkippedFile};
 #[cfg(feature = "docker")]

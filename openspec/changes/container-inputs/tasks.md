@@ -6,7 +6,7 @@ Version). Builds on `container-make-dirs` (`CopyDir`, `make_dirs`) and `containe
 rule), which must have landed first. Follow `design.md`; the spec is `specs/container-actor/spec.md`. Runtime
 behaviour is tested on virtual time (`#[tokio::test(start_paused = true)]` with `TestActors`) and the fake.
 
-- [ ] 1. **The job method and the check.** In `crates/cicada-containers/src/actor/mod.rs`: `Inputs { dirs, files }`
+- [x] 1. **The job method and the check.** In `crates/cicada-containers/src/actor/mod.rs`: `Inputs { dirs, files }`
   (`non_exhaustive`, `Default`), exported from `lib.rs`; `ContainerJob::inputs` with a default of no inputs
   (decision 1). Its rustdoc names when it is called (at each create, never stored, sync), the order (folders, then
   files, then start), the refusals of decisions 3 and 4, that an `Err` on a replayed step leaves a running container
@@ -14,7 +14,7 @@ behaviour is tested on virtual time (`#[tokio::test(start_paused = true)]` with 
   every path parsed by the shared path rule, a file at or above a folder refused. Verify: unit tests of the check
   (a file at a folder, at a parent, `/out/.` with `/out`, a path parsing refuses, folders and files side by side);
   `cargo test -p cicada-containers --all-features`.
-- [ ] 2. **The create step.** In `ContainerActor::create`: build the spec and the inputs, check the inputs, `create`,
+- [x] 2. **The create step.** In `ContainerActor::create`: build the spec and the inputs, check the inputs, `create`,
   then with inputs `inspect` and, only when `Created`, `make_dirs` (with folders) and `copy_in` (with files), then
   `start` (decision 2); `Missing` after `create` counts an error. Failures by decision 4: `InvalidSpec` ends
   `failed`; `Conflict` inspects again (`Created` ends `failed`, anything else counts an error); `Other` from
