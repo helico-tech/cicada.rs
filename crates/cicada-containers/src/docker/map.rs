@@ -5,13 +5,14 @@ use std::collections::{BTreeMap, HashMap};
 
 use bollard::errors::Error as DockerError;
 use bollard::models::{
-    ContainerCreateBody, ContainerState, ContainerStateStatusEnum, EndpointSettings, HostConfig, Mount as DockerMount,
-    MountPoint, MountType, NetworkingConfig,
+    ContainerCreateBody, ContainerInspectResponse, ContainerState, ContainerStateStatusEnum, EndpointSettings,
+    HostConfig, Mount as DockerMount, MountPoint, MountType, NetworkingConfig,
 };
 
 use crate::paths::{MountTarget, Mounted, place};
 use crate::{
-    ContainerError, ContainerSpec, ContainerStatus, CopyFile, ErrorKind, MountKind, Networking, Resource, Tmpfs,
+    ContainerError, ContainerSpec, ContainerStatus, ContainerSummary, CopyFile, ErrorKind, MountKind, Networking,
+    Resource, Tmpfs,
 };
 
 /// The HTTP status of a refusal by the daemon; `None` for every other error.
@@ -210,6 +211,14 @@ pub(super) fn status_of(state: &ContainerState) -> Option<ContainerStatus> {
     })
 }
 
+/// The summary of an inspected container for `list`; `None` when Docker reports no state or an empty status, so
+/// `list` leaves it out instead of inventing a status.
+pub(super) fn summary(info: &ContainerInspectResponse) -> Option<ContainerSummary> {
+    let status = info.state.as_ref().and_then(status_of)?;
+    let name = info.name.as_deref().unwrap_or_default().trim_start_matches('/');
+    Some(ContainerSummary::new(name, status))
+}
+
 /// The mounts of an inspected, created container: its volume and bind mounts, and its tmpfs targets from `tmpfs` of
 /// its host config, as Docker makes a tmpfs mount point only at start.
 pub(super) fn mount_targets(mounts: &[MountPoint], tmpfs: Option<&HashMap<String, String>>) -> Vec<MountTarget> {
@@ -397,6 +406,20 @@ mod tests {
         assert_eq!(status_of(&state(S::DEAD)), Some(ContainerStatus::Failed { code: Some(0), reason: "dead".into() }));
         assert_eq!(status_of(&state(S::EMPTY)), None);
         assert_eq!(status_of(&ContainerState::default()), None);
+    }
+
+    #[test]
+    fn list_leaves_out_a_container_without_a_state() {
+        let info = |state: Option<ContainerState>| ContainerInspectResponse {
+            name: Some("/job-1".into()),
+            state,
+            ..Default::default()
+        };
+        let created = info(Some(state(ContainerStateStatusEnum::CREATED)));
+        assert_eq!(summary(&created), Some(ContainerSummary::new("job-1", ContainerStatus::Created)));
+        assert_eq!(summary(&info(None)), None, "no state");
+        assert_eq!(summary(&info(Some(ContainerState::default()))), None, "no status");
+        assert_eq!(summary(&info(Some(state(ContainerStateStatusEnum::EMPTY)))), None, "an empty status");
     }
 
     #[test]

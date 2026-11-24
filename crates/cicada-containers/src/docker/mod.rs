@@ -40,6 +40,9 @@ const STOP_SLACK: Duration = Duration::from_secs(60);
 ///   treats another name as missing and acts on the full ID it found.
 /// - [`create`](ContainerRuntime::create) pulls a missing image without a registry login, so a private image must be
 ///   local. An existing container is kept, even when its image is gone.
+/// - [`list`](ContainerRuntime::list) leaves out a container removed since Docker listed it, and one whose state
+///   Docker does not report; [`inspect`](ContainerRuntime::inspect), [`start`](ContainerRuntime::start),
+///   [`copy_in`](ContainerRuntime::copy_in) and [`stop`](ContainerRuntime::stop) of such a name fail with `Other`.
 /// - [`stop`](ContainerRuntime::stop) sends the image's stop signal, as `docker stop` does: SIGTERM (exit code 143)
 ///   unless the image names another, such as SIGINT (130) for `postgres`.
 /// - [`copy_in`](ContainerRuntime::copy_in) writes with a read-only root only below a volume or bind mount. It never
@@ -306,9 +309,7 @@ impl ContainerRuntime for DockerRuntime {
                 Err(e) if status_code(&e) == Some(404) => continue, // removed since the list
                 Err(e) => return Err(fail("inspect", &id, &e)),
             };
-            let name = info.name.as_deref().unwrap_or_default().trim_start_matches('/').to_owned();
-            let status = Self::status(&name, &Found { id, info })?;
-            summaries.push(ContainerSummary::new(name, status));
+            summaries.extend(map::summary(&info)); // none when Docker reports no state
         }
         summaries.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(summaries)

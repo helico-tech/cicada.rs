@@ -22,7 +22,7 @@ and `specs/container-docker/spec.md`. Run the crate's tests with every feature:
   and a container another caller is removing, out of every list; a volume's 409 stays a skip. Update the rustdoc of
   `sweep` and of `Swept`'s lists. Verify: unit tests of `gone` for each kind and 404, 409 and another code;
   `cargo test -p cicada-containers --all-features`.
-- [ ] 3. **`list` leaves out a container without a state** (decision 3). A pure `map::summary(&inspect_response)`
+- [x] 3. **`list` leaves out a container without a state** (decision 3). A pure `map::summary(&inspect_response)`
   returns `None` when Docker reports no state or an empty status; `DockerRuntime::list` skips it as it skips a
   container removed since the listing. `inspect`, `start`, `copy_in` and `stop` keep failing with `Other` for it.
   Update the rustdoc of `list` or the notes on `DockerRuntime`. Verify: unit tests of `summary` (a state, no state, an
