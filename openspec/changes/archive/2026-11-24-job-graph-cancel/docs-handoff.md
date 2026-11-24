@@ -81,3 +81,8 @@ Ran: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D wa
 `--test skill` (18 passed), `openspec validate job-graph-cancel --strict` (valid); the gate's result is in the review
 request. All text above is proposed; no protected prose is written. The guide section itself is still to be written
 from the `job-graph` and `job-graph-failures` handoffs.
+
+## Note from the code review (added by the change loop)
+
+- Say "a cancelled running job has its attempt number" in the guide: a job cancelled before its `Dispatch` ran also has
+  an attempt, though no worker got anything.
