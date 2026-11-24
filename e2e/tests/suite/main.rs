@@ -4,6 +4,7 @@
 mod cluster_api;
 mod cluster_examples;
 mod cluster_restart;
+mod container_docker;
 mod node_fault;
 mod ordering;
 mod outcomes_under_fault;
@@ -38,5 +39,6 @@ fn e2e() {
         cluster_restart::class(),      // @Order(7)
         sqlite_node::class(),          // @Order(8)
         sample_executor::class(),      // @Order(9)
+        container_docker::class(),     // @Order(10)
     ]);
 }

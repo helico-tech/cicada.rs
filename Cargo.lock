@@ -635,6 +635,7 @@ dependencies = [
  "chrono",
  "cicada",
  "cicada-client",
+ "cicada-containers",
  "cicada-examples",
  "cicada-sample-service",
  "futures",

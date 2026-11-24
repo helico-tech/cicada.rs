@@ -34,6 +34,10 @@ pub const EXECUTOR_CONTAINERS: [&str; 2] = ["cicada-rs-e2e-exec-server", "cicada
 /// The docker network of the executor class; the teardown removes it.
 pub const EXECUTOR_NETWORK: &str = "cicada-rs-e2e-executor";
 
+/// The label `key=value` on every container, network and volume of the container class (`cicada-containers`'
+/// Docker backend); the teardown removes what carries it.
+pub const CONTAINER_LABEL: (&str, &str) = ("cicada-rs-e2e", "containers");
+
 /// A bound for every test (and every hook), so a hung fault scenario cannot stall the run.
 pub const TEST_TIMEOUT: Duration = Duration::from_secs(240);
 
@@ -193,9 +197,9 @@ impl Drop for Stack {
 
 static TORN_DOWN: AtomicBool = AtomicBool::new(false);
 
-/// Removes the compose stack (containers, network, volumes), the single containers and their volume, and the
-/// executor class's containers and network. With
-/// `final_run`, saves the compose logs first and does it only once.
+/// Removes the compose stack (containers, network, volumes), the single containers and their volume, the executor
+/// class's containers and network, and what carries [`CONTAINER_LABEL`]. With `final_run`, saves the compose logs
+/// first and does it only once.
 fn teardown(final_run: bool) {
     if final_run {
         if TORN_DOWN.swap(true, Ordering::SeqCst) {
@@ -212,6 +216,23 @@ fn teardown(final_run: bool) {
     }
     docker_blocking(&["volume", "rm", "-f", SQLITE_VOLUME]);
     docker_blocking(&["network", "rm", "-f", EXECUTOR_NETWORK]);
+    remove_labelled();
+}
+
+/// Removes every container, then every network, then every volume with [`CONTAINER_LABEL`], with the docker CLI.
+fn remove_labelled() {
+    let filter = format!("label={}={}", CONTAINER_LABEL.0, CONTAINER_LABEL.1);
+    for (list, remove) in [
+        (&["ps", "-aq", "--filter"][..], &["rm", "-f", "-v"][..]),
+        (&["network", "ls", "-q", "--filter"][..], &["network", "rm", "-f"][..]),
+        (&["volume", "ls", "-q", "--filter"][..], &["volume", "rm", "-f"][..]),
+    ] {
+        let listed = docker_blocking(&[list, &[filter.as_str()]].concat());
+        let ids: Vec<&str> = listed.text.split_whitespace().collect();
+        if listed.ok() && !ids.is_empty() {
+            docker_blocking(&[remove, &ids].concat());
+        }
+    }
 }
 
 /// `target/e2e-logs` (under `CARGO_TARGET_DIR` when set).

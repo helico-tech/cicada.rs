@@ -12,6 +12,8 @@ anyhow.workspace = true
 chrono.workspace = true
 cicada.workspace = true
 cicada-client.workspace = true
+# The Docker backend under test in the container class (ADR 0056 allows it in a test crate).
+cicada-containers = { path = "../crates/cicada-containers", features = ["docker"] }
 cicada-examples.workspace = true
 # The refs, messages and states of the E2E actors that the tests send and read.
 cicada-sample-service = { path = "../sample-service" }
