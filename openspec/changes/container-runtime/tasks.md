@@ -17,7 +17,7 @@ command line. Follow `design.md`; the spec is `specs/container-runtime/spec.md`.
   (`Exited` with 143) and of a created one, remove and stop of a missing one, `copy_in` outside `Created`, repeated
   ensure, an internal-flag conflict, a sweep by label and a sweep that skips a network in use, scripted exit and
   failure. Verify: `cargo test -p cicada-containers` and `cargo test -p cicada-containers --features testing`.
-- [ ] 3. **The gate.** `scripts/ci/feature-builds.sh`: `cargo check -p cicada-containers` with and without
+- [x] 3. **The gate.** `scripts/ci/feature-builds.sh`: `cargo check -p cicada-containers` with and without
   `--features testing`. `scripts/ci/dependency-trees.sh`: no library crate (`cicada`, `cicada-test`, `cicada-axum`,
   `cicada-client`, `cicada-otel`, `cicada-actors`, `cicada-app`) has `cicada-containers` in its tree (ADR 0056).
   Verify: `bash scripts/ci/feature-builds.sh`, `bash scripts/ci/dependency-trees.sh`, and the script tests
