@@ -42,8 +42,8 @@ const STOP_SLACK: Duration = Duration::from_secs(60);
 ///   local. An existing container is kept, even when its image is gone.
 /// - [`stop`](ContainerRuntime::stop) sends the image's stop signal, as `docker stop` does: SIGTERM (exit code 143)
 ///   unless the image names another, such as SIGINT (130) for `postgres`.
-/// - [`copy_in`](ContainerRuntime::copy_in) writes with a read-only root only below a volume or bind mount, not a
-///   tmpfs, which Docker mounts only at start.
+/// - [`copy_in`](ContainerRuntime::copy_in) writes with a read-only root only below a volume or bind mount. It never
+///   writes at or below a tmpfs, which Docker mounts only at start, over the file, and never onto a mount target.
 /// - Secret environment goes to Docker only in the body of the create call, and an error message never holds a secret
 ///   value. The backend logs nothing; bollard logs request bodies at `debug` under the target `bollard`, so keep that
 ///   target at `info` or above.
@@ -216,8 +216,10 @@ impl ContainerRuntime for DockerRuntime {
                 format!("copy into {name}: the container is {status:?}, not created"),
             ));
         }
-        let read_only_root = found.info.host_config.as_ref().and_then(|h| h.readonly_rootfs).unwrap_or(false);
-        let mounts = map::mount_targets(found.info.mounts.as_deref().unwrap_or_default());
+        let host_config = found.info.host_config.as_ref();
+        let read_only_root = host_config.and_then(|h| h.readonly_rootfs).unwrap_or(false);
+        let tmpfs = host_config.and_then(|h| h.tmpfs.as_ref());
+        let mounts = map::mount_targets(found.info.mounts.as_deref().unwrap_or_default(), tmpfs);
         for upload in map::uploads(name, files, read_only_root, &mounts)? {
             let options = UploadToContainerOptionsBuilder::new().path(&upload.dir).build();
             let body = bollard::body_full(upload.tar.into());

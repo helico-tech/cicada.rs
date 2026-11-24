@@ -19,8 +19,11 @@ pub trait ContainerRuntime: Send + Sync + 'static {
 
     /// Writes `files` into the container `name`, which must be `Created`: meant for a container before
     /// [`start`](Self::start). Repeating it writes the same files again. Fails with `Conflict` for a container that is
-    /// missing, running or ended, and with `InvalidSpec` for a relative path or, with
-    /// [`read_only_root`](ContainerSpec::read_only_root), a path on no volume or bind mount.
+    /// missing, running or ended. Fails with `InvalidSpec`, before any write, for a path that is relative, has a `..`
+    /// part or names no file once empty and `.` parts are dropped (`/`); one equal to a mount target, as a file cannot
+    /// replace a mount point; one at or below a tmpfs with no deeper volume or bind mount, as the tmpfs mounted at
+    /// start would hide it; one on a read-only mount; and, with [`read_only_root`](ContainerSpec::read_only_root), one
+    /// on no volume or bind mount. `/work/./a` and `/work/a` are one file.
     async fn copy_in(&self, name: &str, files: &[CopyFile]) -> Result<(), ContainerError>;
 
     /// Starts the created container `name`. For a running, exited or failed one it is `Ok` and does nothing, so a

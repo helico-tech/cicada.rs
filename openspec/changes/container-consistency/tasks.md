@@ -6,7 +6,7 @@ the whole container line, through `container-limits-and-kinds`, has landed (chec
 and `specs/container-docker/spec.md`. Run the crate's tests with every feature:
 `cargo test -p cicada-containers --all-features`.
 
-- [ ] 1. **One path rule for `copy_in`** (decision 1). Move `path_parts` and the choice of the deepest mount out of
+- [x] 1. **One path rule for `copy_in`** (decision 1). Move `path_parts` and the choice of the deepest mount out of
   `crates/cicada-containers/src/docker/map.rs` into a private module compiled without features. Add two refusals with
   `InvalidSpec`: a path equal to a volume or bind mount target, and a path whose deepest mount is a tmpfs, on any root.
   `map::uploads` and the fake's `copy_in` (`src/fake.rs`) both call it; the backend takes the tmpfs targets from the

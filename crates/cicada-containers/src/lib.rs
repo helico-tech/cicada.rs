@@ -36,6 +36,9 @@ mod docker;
 mod error;
 #[cfg(any(test, feature = "testing"))]
 mod fake;
+// The rule of `copy_in` for every runtime; without one of them, nothing calls it yet.
+#[cfg_attr(not(any(test, feature = "testing", feature = "docker")), allow(dead_code))]
+mod paths;
 mod runtime;
 mod spec;
 

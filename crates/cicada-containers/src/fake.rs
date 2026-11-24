@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
+use crate::paths::{MountTarget, Mounted, place};
 use crate::{
     ContainerError, ContainerRuntime, ContainerSpec, ContainerStatus, ContainerSummary, CopyFile, ErrorKind, Label,
     MountKind, NetworkSpec, Networking, Resource, Skipped, Swept, VolumeSpec,
@@ -216,12 +217,6 @@ fn has(labels: &BTreeMap<String, String>, label: &Label) -> bool {
     labels.get(&label.key) == Some(&label.value)
 }
 
-/// Whether `path` is `target` or lies under it.
-fn under(path: &str, target: &str) -> bool {
-    let target = target.trim_end_matches('/');
-    path == target || path.strip_prefix(target).is_some_and(|rest| rest.starts_with('/'))
-}
-
 #[async_trait]
 impl ContainerRuntime for FakeRuntime {
     async fn create(&self, spec: &ContainerSpec) -> Result<(), ContainerError> {
@@ -241,31 +236,21 @@ impl ContainerRuntime for FakeRuntime {
         if container.status != ContainerStatus::Created {
             return Err(conflict(format!("container {name} is {:?}, not created", container.status)));
         }
+        let spec = &container.spec;
+        let mounts: Vec<MountTarget> = spec
+            .mounts
+            .iter()
+            .map(|m| MountTarget::new(&m.target, Mounted::Mount { writable: !m.read_only }))
+            .chain(spec.tmpfs.iter().map(|t| MountTarget::new(&t.target, Mounted::Tmpfs)))
+            .collect();
+        let mut placed = Vec::with_capacity(files.len());
         for file in files {
-            let invalid = |why: &str| ContainerError::new(ErrorKind::InvalidSpec, format!("{} {why}", file.path));
-            if !file.path.starts_with('/') {
-                return Err(invalid("is a relative path"));
-            }
-            if file.path.split('/').any(|part| part == "..") {
-                return Err(invalid("has a `..` part"));
-            }
-            // The deepest mount that holds the path, as Docker writes there.
-            let mount = container
-                .spec
-                .mounts
-                .iter()
-                .filter(|mount| under(&file.path, &mount.target))
-                .max_by_key(|mount| mount.target.trim_end_matches('/').len());
-            match mount {
-                Some(mount) if mount.read_only => return Err(invalid(&format!("is on a read-only mount of {name}"))),
-                None if container.spec.read_only_root => {
-                    return Err(invalid(&format!("is on the read-only root of {name}")));
-                }
-                _ => {}
-            }
+            let (parts, _) = place(name, &file.path, spec.read_only_root, &mounts)?;
+            let path = format!("/{}", parts.join("/"));
+            placed.push(CopyFile { path, ..file.clone() });
         }
-        for file in files {
-            container.files.insert(file.path.clone(), file.clone());
+        for file in placed {
+            container.files.insert(file.path.clone(), file);
         }
         Ok(())
     }
@@ -401,7 +386,7 @@ mod tests {
     use std::task::{Context, Poll, Waker};
 
     use super::*;
-    use crate::{Mount, NetworkAttachment};
+    use crate::{Mount, NetworkAttachment, Tmpfs};
 
     /// Runs a future of the fake, which never waits: it is ready at its first poll.
     fn now<T>(future: impl Future<Output = T>) -> T {
@@ -557,6 +542,50 @@ mod tests {
         assert_eq!(kind(now(fake.copy_in("job-1", &[CopyFile::new("/in/a", "x")]))), ErrorKind::InvalidSpec);
         assert!(fake.lock().containers["job-1"].files.is_empty());
         now(fake.copy_in("job-1", &[CopyFile::new("/in/out/a", "x"), CopyFile::new("/etc/b", "x")])).unwrap();
+    }
+
+    #[test]
+    fn copy_in_refuses_a_mount_target_on_any_root() {
+        for read_only_root in [false, true] {
+            let fake = FakeRuntime::new();
+            let mut spec = ContainerSpec::new("job-1", "alpine:3");
+            spec.read_only_root = read_only_root;
+            spec.mounts.push(Mount::new(MountKind::Volume, "work", "/work"));
+            now(fake.create(&spec)).unwrap();
+            for exact in ["/work", "/work/"] {
+                let files = [CopyFile::new("/work/a", "x"), CopyFile::new(exact, "x")];
+                assert_eq!(
+                    kind(now(fake.copy_in("job-1", &files))),
+                    ErrorKind::InvalidSpec,
+                    "{exact} {read_only_root}"
+                );
+            }
+            assert!(fake.lock().containers["job-1"].files.is_empty(), "nothing written");
+        }
+    }
+
+    #[test]
+    fn copy_in_refuses_a_tmpfs_path_and_the_root_path_on_a_writable_root() {
+        let fake = FakeRuntime::new();
+        let mut spec = ContainerSpec::new("job-1", "alpine:3");
+        spec.tmpfs.push(Tmpfs::new("/scratch"));
+        now(fake.create(&spec)).unwrap();
+        for bad in ["/scratch/c", "/scratch", "/", "/./"] {
+            let files = [CopyFile::new("/etc/a", "x"), CopyFile::new(bad, "x")];
+            assert_eq!(kind(now(fake.copy_in("job-1", &files))), ErrorKind::InvalidSpec, "{bad}");
+        }
+        assert!(fake.lock().containers["job-1"].files.is_empty(), "nothing written");
+    }
+
+    #[test]
+    fn copy_in_keeps_one_file_under_two_spellings() {
+        let fake = FakeRuntime::new();
+        now(fake.create(&ContainerSpec::new("job-1", "alpine:3"))).unwrap();
+        now(fake.copy_in("job-1", &[CopyFile::new("/work/./a", "first")])).unwrap();
+        now(fake.copy_in("job-1", &[CopyFile::new("/work/a", "second")])).unwrap();
+        let files = &fake.lock().containers["job-1"].files;
+        assert_eq!(files.keys().collect::<Vec<_>>(), ["/work/a"]);
+        assert_eq!((files["/work/a"].path.as_str(), files["/work/a"].contents.as_slice()), ("/work/a", &b"second"[..]));
     }
 
     #[test]

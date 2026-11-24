@@ -9,6 +9,7 @@ use bollard::models::{
     MountPoint, MountType, NetworkingConfig,
 };
 
+use crate::paths::{MountTarget, Mounted, place};
 use crate::{ContainerError, ContainerSpec, ContainerStatus, CopyFile, ErrorKind, MountKind, Networking, Tmpfs};
 
 /// The HTTP status of a refusal by the daemon; `None` for every other error.
@@ -197,43 +198,16 @@ pub(super) fn status_of(state: &ContainerState) -> Option<ContainerStatus> {
     })
 }
 
-/// The parts of an absolute `path` without empty and `.` parts; `InvalidSpec` for a relative path, a `..` part or no
-/// part at all.
-pub(super) fn path_parts<'a>(name: &str, path: &'a str) -> Result<Vec<&'a str>, ContainerError> {
-    let invalid = |why: &str| ContainerError::new(ErrorKind::InvalidSpec, format!("copy into {name}: {why} {path}"));
-    if !path.starts_with('/') {
-        return Err(invalid("relative path"));
-    }
-    let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty() && *part != ".").collect();
-    if parts.contains(&"..") {
-        return Err(invalid("a `..` part in"));
-    }
-    if parts.is_empty() {
-        return Err(invalid("no file name in"));
-    }
-    Ok(parts)
-}
-
-/// A volume or bind mount of a created container, from its inspect.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct MountTarget {
-    /// Its parts, as [`path_parts`] gives them.
-    pub parts: Vec<String>,
-    /// Whether it is writable.
-    pub writable: bool,
-}
-
-/// The volume and bind mounts of an inspected container; a tmpfs does not count, as Docker mounts it only at start.
-pub(super) fn mount_targets(mounts: &[MountPoint]) -> Vec<MountTarget> {
-    mounts
-        .iter()
-        .filter(|mount| matches!(mount.typ.as_deref(), Some("volume" | "bind")))
-        .filter_map(|mount| {
-            let destination = mount.destination.as_deref()?;
-            let parts = destination.split('/').filter(|p| !p.is_empty() && *p != ".").map(str::to_owned).collect();
-            Some(MountTarget { parts, writable: mount.rw.unwrap_or(true) })
-        })
-        .collect()
+/// The mounts of an inspected, created container: its volume and bind mounts, and its tmpfs targets from `tmpfs` of
+/// its host config, as Docker makes a tmpfs mount point only at start.
+pub(super) fn mount_targets(mounts: &[MountPoint], tmpfs: Option<&HashMap<String, String>>) -> Vec<MountTarget> {
+    let volumes_and_binds =
+        mounts.iter().filter(|mount| matches!(mount.typ.as_deref(), Some("volume" | "bind"))).filter_map(|mount| {
+            let writable = mount.rw.unwrap_or(true);
+            Some(MountTarget::new(mount.destination.as_deref()?, Mounted::Mount { writable }))
+        });
+    let tmpfs = tmpfs.into_iter().flat_map(HashMap::keys).map(|target| MountTarget::new(target, Mounted::Tmpfs));
+    volumes_and_binds.chain(tmpfs).collect()
 }
 
 /// One upload of `copy_in`: a tar of files under the directory `dir`.
@@ -246,8 +220,7 @@ pub(super) struct Upload {
 }
 
 /// The uploads that write `files` into the created container `name`: one tar at `/`, or with a read-only root one
-/// per mount target. Refuses, before any write, a bad path (see [`path_parts`]), a path on a read-only mount, and with
-/// `read_only_root` a path on no mount. A path belongs to the deepest mount that holds it.
+/// per mount target. Refuses, before any write, every path the shared rule refuses (see [`place`]).
 pub(super) fn uploads(
     name: &str,
     files: &[CopyFile],
@@ -258,18 +231,7 @@ pub(super) fn uploads(
     // Per upload directory (as parts), its files with their paths relative to it.
     let mut groups: BTreeMap<Vec<String>, Vec<(String, &CopyFile)>> = BTreeMap::new();
     for file in files {
-        let parts = path_parts(name, &file.path)?;
-        let mount = mounts
-            .iter()
-            .filter(|m| m.parts.len() < parts.len() && parts.iter().zip(&m.parts).all(|(a, b)| a == b))
-            .max_by_key(|m| m.parts.len());
-        match mount {
-            Some(m) if !m.writable => return Err(invalid(format!("{} is on a read-only mount", file.path))),
-            None if read_only_root => {
-                return Err(invalid(format!("{} is on the read-only root, on no volume or bind mount", file.path)));
-            }
-            _ => {}
-        }
+        let (parts, mount) = place(name, &file.path, read_only_root, mounts)?;
         let dir: Vec<String> = match mount {
             Some(m) if read_only_root => m.parts.clone(),
             _ => Vec::new(),
@@ -483,28 +445,22 @@ mod tests {
         assert_eq!(pull_reference("alpine@sha256:abc"), "alpine@sha256:abc");
     }
 
-    #[test]
-    fn paths_must_be_absolute_without_parent_parts() {
-        assert_eq!(path_parts("c", "/work//./a").unwrap(), ["work", "a"]);
-        for bad in ["work/a", "/work/../etc/passwd", "/", "/./", ""] {
-            assert_eq!(path_parts("c", bad).unwrap_err().kind, ErrorKind::InvalidSpec, "{bad:?}");
-        }
-    }
-
     fn target(path: &str, writable: bool) -> MountTarget {
-        MountTarget { parts: path.split('/').filter(|p| !p.is_empty()).map(str::to_owned).collect(), writable }
+        MountTarget::new(path, Mounted::Mount { writable })
     }
 
     #[test]
-    fn only_volume_and_bind_mounts_are_targets() {
+    fn volume_and_bind_mounts_and_the_tmpfs_of_the_host_config_are_targets() {
         let point = |typ: &str, destination: &str, rw: bool| MountPoint {
             typ: Some(typ.into()),
             destination: Some(destination.into()),
             rw: Some(rw),
             ..Default::default()
         };
-        let mounts = [point("volume", "/work", true), point("bind", "/in/", false), point("tmpfs", "/tmp", true)];
-        assert_eq!(mount_targets(&mounts), [target("/work", true), target("/in", false)]);
+        let mounts = [point("volume", "/work", true), point("bind", "/in/", false), point("npipe", "/pipe", true)];
+        assert_eq!(mount_targets(&mounts, None), [target("/work", true), target("/in", false)]);
+        let tmpfs = HashMap::from([("/scratch".to_owned(), "size=1024".to_owned())]);
+        assert_eq!(mount_targets(&[], Some(&tmpfs)), [MountTarget::new("/scratch", Mounted::Tmpfs)]);
     }
 
     fn entries(tar: &[u8]) -> Vec<(String, u32, u64, u64, u64, Vec<u8>)> {
@@ -565,10 +521,22 @@ mod tests {
         let error = uploads("job-1", &files, true, &mounts).unwrap_err();
         assert_eq!(error.kind, ErrorKind::InvalidSpec);
         assert!(error.message.contains("/etc/b"), "{error}");
-        let mount_itself = [CopyFile::new("/work", "1")];
-        assert_eq!(uploads("job-1", &mount_itself, true, &mounts).unwrap_err().kind, ErrorKind::InvalidSpec);
+        for read_only_root in [false, true] {
+            let mount_itself = [CopyFile::new("/work/", "1")];
+            let error = uploads("job-1", &mount_itself, read_only_root, &mounts).unwrap_err();
+            assert_eq!(error.kind, ErrorKind::InvalidSpec, "{read_only_root}");
+        }
         let sibling = [CopyFile::new("/workspace/a", "1")];
         assert_eq!(uploads("job-1", &sibling, true, &mounts).unwrap_err().kind, ErrorKind::InvalidSpec);
+    }
+
+    #[test]
+    fn a_path_on_a_tmpfs_is_refused_on_a_writable_root() {
+        let mounts = [MountTarget::new("/scratch", Mounted::Tmpfs)];
+        let files = [CopyFile::new("/etc/a", "1"), CopyFile::new("/scratch/c", "2")];
+        let error = uploads("job-1", &files, false, &mounts).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::InvalidSpec);
+        assert!(error.message.contains("/scratch/c"), "{error}");
     }
 
     #[test]
