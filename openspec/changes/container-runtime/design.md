@@ -39,7 +39,9 @@ References: cicada-code-factory `src/runner/` (bollard `Runner` and fake), brood
    `memory_bytes`, `mounts: Vec<Mount>` (volume or bind, target, read-only), `network: Networking` (`Default`, `None`,
    or `Attach(Vec<NetworkAttachment { name, aliases }>)`; factory's services need aliases), and the hardening (C-SPEC),
    all off by default: `read_only_root`, `drop_all_capabilities`, `no_new_privileges`, `tmpfs: Vec<Tmpfs { target,
-   size_bytes }>`, `init`, `pids_limit`. `Debug` shows `secret_env` names only; a backend never puts its values on a
+   size_bytes, mode: Option<u32>, uid: Option<u32>, gid: Option<u32>, exec: bool }>` (factory needs an executable
+   `/tmp` and a home owned by its user; a backend's own defaults, such as Docker's `noexec`, apply when `exec` is
+   off), `init`, `pids_limit`. `Debug` shows `secret_env` names only; a backend never puts its values on a
    command line. Every public struct and enum of the crate is `#[non_exhaustive]` the same way (`ErrorKind`,
    `ContainerStatus`, `Networking`, `Mount`, `NetworkSpec`, `VolumeSpec`, `CopyFile`, `Swept`), with a `new` where a
    caller builds one. Not a builder type: twice the API for the same thing.
@@ -49,7 +51,8 @@ References: cicada-code-factory `src/runner/` (bollard `Runner` and fake), brood
    (Docker: 143 after SIGTERM, 137 after the grace period): the stop was asked for, so its watcher sees an exit.
 9. **`copy_in` takes files, not a tar** (C-COPY): `&[CopyFile { path, contents: Vec<u8>, mode: u32 }]` with absolute
    paths, meant for a created container before `start`. The backend builds the archive; the trait needs no tar crate
-   and the fake records readable files. Repeating it writes the same files again. Not a raw tar: every caller would
+   and the fake records readable files. Repeating it writes the same files again. With `read_only_root`, a path must
+   lie on a mount; a backend refuses another with `InvalidSpec`. Not a raw tar: every caller would
    build one.
 10. **No streaming** (C-STREAM): `logs(name, tail_lines)` returns the last lines of stdout and stderr together, as
     lossy UTF-8. brood's live output stays in brood. Not an optional attach method: the actor cannot use it, and it
