@@ -10,9 +10,14 @@ only by the reason text.
 
 ## What Changes
 
-- `ContainerJob::timeout(&self, &Request) -> Option<Duration>`, defaulting to the settings' timeout.
-- A machine-readable `kind` next to `reason` on a `failed` end, for example `notStarted` (image, spec or start
-  refused), `missing`, `outOfMemory` and `runtimeErrors`; the four outcomes stay.
+**BREAKING** (design review): `ContainerEnd` gains a public field, and the contract hashes of every container job
+type and of every target type that takes a `ContainerEnded` change, so the unreleased batch becomes 0.21.0.
+
+- `ContainerJob::timeout(&self, &Request, settings: Option<Duration>) -> Option<Duration>`, returning the settings'
+  timeout by default; computed at the create and saved as the deadline.
+- A machine-readable `kind` next to `reason` on a `failed` end: `notStarted` (key, image, spec, start or inputs
+  refused, an unsupported runtime call), `outOfMemory`, `runtimeEnded` (the runtime reported another failure),
+  `missing` and `runtimeErrors`; the four outcomes stay.
 - Refused inputs of `container-inputs` (an `Err` from `inputs`, a file at a folder's path, or a refusal by `make_dirs`
   or `copy_in`) get the kind `notStarted` (container-inputs design review).
 
@@ -26,5 +31,6 @@ After `container-inputs`, before `pool-size-check`.
 
 ## Impact
 
-The actor, its tests and its contract: the end gains a field, so hosts on 0.20.7 follow "Changing a contract". A patch,
-released with the rest of the container line.
+The actor, its tests and its contract, and the runtime's out-of-memory reason as a constant. **BREAKING**: hosts on
+0.20.x follow "Changing a contract" for their container job types and end targets, and a struct literal of
+`ContainerEnd` needs `kind`. The batch is released as 0.21.0 when this change has landed (ADR 0062).
