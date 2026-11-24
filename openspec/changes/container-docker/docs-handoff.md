@@ -13,6 +13,11 @@ public item names a bollard type.
   `DOCKER_HOST` (`unix://`, `tcp://`, `http://`) or uses the local socket. A missing socket file is
   `DaemonUnavailable`; an unsupported scheme (`https`, `ssh`) is `Other`. The API version is agreed on the first call
   and kept; a failed agreement is retried on the next call. Docker 25 (API 1.44) or later; an older daemon is `Other`.
+- `DockerRuntime::connect_to(host: &str) -> Result<DockerRuntime, ContainerError>`: the same with an explicit host
+  in `DOCKER_HOST`'s form (`unix:///path`, `tcp://h:p`, `http://h:p`), for a host that finds its daemon another way,
+  such as the current Docker CLI context. A missing socket file is `DaemonUnavailable`, another scheme `Other`.
+  `connect()` is unchanged. Added at the owner's request so the E2E class can follow the CLI's context without a
+  process-wide `DOCKER_HOST`; it takes a string, so no bollard type enters the API.
 - Containers are found by their exact name: Docker would also accept an ID prefix, so the backend inspects first and
   treats another name as missing.
 - `create` keeps an existing container (no image check), refuses an empty env name or one with `=` (`InvalidSpec`),
@@ -61,7 +66,8 @@ mappings".
 **Text.** For hosts:
 - `DOCKER_HOST` is read; Docker CLI contexts (`docker context use`) are not. When the daemon has no socket at the
   default place (OrbStack without its `/var/run/docker.sock` link, Colima, rootless Docker), set
-  `DOCKER_HOST=$(docker context inspect -f '{{.Endpoints.docker.Host}}')`. Docker 25 or later.
+  `DOCKER_HOST=$(docker context inspect -f '{{.Endpoints.docker.Host}}')`, or pass that endpoint to
+  `DockerRuntime::connect_to`. Docker 25 or later.
 - `stop`'s exit code depends on the image's stop signal: 143 after SIGTERM, 130 after SIGINT (`postgres`), 137 when
   the grace period runs out.
 - The backend needs the host's Tokio runtime.
@@ -83,8 +89,8 @@ pull and the unknown-tag test. Everything it makes is named `cicada-rs-e2e-ctr-*
 `docker network rm $(docker network ls -q --filter label=cicada-rs-e2e=containers)` and
 `docker volume rm $(docker volume ls -q --filter label=cicada-rs-e2e=containers)`.
 **Caveats.** Run only this class with `CICADA_E2E_ONLY=ContainerDockerTest` (the stack still comes up first). The
-class talks to the daemon at `DOCKER_HOST` or `/var/run/docker.sock`, while the rest of the suite uses the CLI and its
-context: on a machine without the default socket, export `DOCKER_HOST` as in 3 (the gate passes it through).
+class reaches the same daemon as the rest of the suite: `DOCKER_HOST` when it is set, else the endpoint of the CLI's
+current context (`docker context inspect`), passed to `DockerRuntime::connect_to`. No `DOCKER_HOST` is needed.
 
 ## Blocking
 

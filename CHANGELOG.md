@@ -25,7 +25,8 @@ wire formats, the store schema and the guarantees are those of 0.20.6.
   by the unit tests of the crate.
 - `cicada-containers` feature `docker`: `DockerRuntime::connect()`, the `ContainerRuntime` over the Docker Engine API
   (bollard, without TLS). It reads `DOCKER_HOST` (`unix://`, `tcp://`, `http://`) or uses the local socket, agrees the
-  API version on the first call and needs Docker 25 or later. Containers are found by their exact name, never an ID
+  API version on the first call and needs Docker 25 or later. `DockerRuntime::connect_to(host)` takes such a host
+  directly, such as the endpoint of the current Docker CLI context, which the backend does not read itself. Containers are found by their exact name, never an ID
   prefix; `create` pulls a missing image (`ImageNotFound` when the registry has none) and keeps an existing container
   even when its image is gone; `copy_in` with a read-only root writes only below a volume or bind mount. The spec's
   limits and hardening map onto Docker's create call (a memory limit allows no swap), and secret environment goes

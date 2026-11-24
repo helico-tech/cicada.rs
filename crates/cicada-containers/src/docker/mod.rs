@@ -68,6 +68,14 @@ impl DockerRuntime {
         Ok(Self::with_client(client))
     }
 
+    /// A runtime for the daemon at `host`, read as `DOCKER_HOST` would be: `unix:///path/docker.sock`,
+    /// `tcp://host:port` or `http://host:port`. For a host that finds its daemon another way, such as the endpoint of
+    /// the current Docker CLI context; otherwise as [`connect`](Self::connect), which it does not change.
+    pub fn connect_to(host: &str) -> Result<Self, ContainerError> {
+        let client = Docker::connect_with_host(host).map_err(|e| fail("connect to", host, &e))?;
+        Ok(Self::with_client(client))
+    }
+
     fn with_client(client: Docker) -> Self {
         Self { client, negotiated: OnceCell::new() }
     }
@@ -413,8 +421,18 @@ mod tests {
         let path = std::env::temp_dir().join(format!("cicada-ctr-{}-{tag}.sock", std::process::id()));
         let _ = std::fs::remove_file(&path);
         drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
-        let client = Docker::connect_with_unix(path.to_str().unwrap(), 5, bollard::API_DEFAULT_VERSION).unwrap();
-        (path, DockerRuntime::with_client(client))
+        let runtime = DockerRuntime::connect_to(&format!("unix://{}", path.display())).unwrap();
+        (path, runtime)
+    }
+
+    #[test]
+    fn connect_to_refuses_a_missing_socket_and_an_unsupported_scheme() {
+        let missing = DockerRuntime::connect_to("unix:///nonexistent/cicada/docker.sock").unwrap_err();
+        assert_eq!(missing.kind, ErrorKind::DaemonUnavailable, "{missing}");
+        for host in ["https://docker.example:2376", "ssh://user@docker.example"] {
+            assert_eq!(DockerRuntime::connect_to(host).unwrap_err().kind, ErrorKind::Other, "{host}");
+        }
+        DockerRuntime::connect_to("tcp://127.0.0.1:1").unwrap();
     }
 
     #[tokio::test]

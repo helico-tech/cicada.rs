@@ -10,7 +10,7 @@ use cicada_containers::{
     MountKind, NetworkAttachment, NetworkSpec, Networking, Resource, Tmpfs, VolumeSpec,
 };
 use cicada_e2e::cluster::eventually;
-use cicada_e2e::docker::docker;
+use cicada_e2e::docker::{docker, docker_blocking};
 use cicada_e2e::{CONTAINER_LABEL, Class, step};
 
 use crate::secs;
@@ -47,12 +47,18 @@ pub fn class() -> Class {
     }
 }
 
+/// The backend, on the daemon the rest of the suite reaches through the CLI: `DOCKER_HOST` when it is set, else the
+/// endpoint of the CLI's current context (the backend itself reads no context).
 fn runtime() -> &'static DockerRuntime {
     static RUNTIME: OnceLock<DockerRuntime> = OnceLock::new();
-    // The backend reads DOCKER_HOST, not the CLI's context: point it at the context's socket when the default is gone.
     RUNTIME.get_or_init(|| {
-        DockerRuntime::connect()
-            .expect("a Docker connection; set DOCKER_HOST to `docker context inspect -f '{{.Endpoints.docker.Host}}'`")
+        if std::env::var_os("DOCKER_HOST").is_some() {
+            return DockerRuntime::connect().expect("a Docker connection at DOCKER_HOST");
+        }
+        let context = docker_blocking(&["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"]);
+        assert!(context.ok(), "the endpoint of the current Docker context: {}", context.text);
+        let host = context.text.trim();
+        DockerRuntime::connect_to(host).unwrap_or_else(|e| panic!("a Docker connection at {host}: {e}"))
     })
 }
 
