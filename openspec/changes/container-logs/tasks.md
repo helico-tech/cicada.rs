@@ -41,6 +41,6 @@ Version). Builds on `container-consistency`, which must have landed first. Follo
   16 KiB in parts, 2038) and the follower loop for the runtime section of the container guide; nothing blocks. No
   edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify: `CICADA_E2E=1 cargo test -p cicada-e2e --
   --nocapture` (or the gate below); `cargo test -p cicada-examples --test docs`.
-- [ ] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
+- [x] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
   `cargo test --workspace`, `openspec validate container-logs --strict`, commit, then
   `python3 scripts/gate.py run --e2e` (the change touches `e2e/`).

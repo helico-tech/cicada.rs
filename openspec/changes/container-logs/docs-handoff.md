@@ -89,5 +89,7 @@ None.
 ## Status
 
 `cargo test -p cicada-containers --all-features` (84 unit, 22 and 6 integration tests) and `cargo test -p
-cicada-examples --test docs` pass; `ContainerDockerTest` passed against Docker (19 steps). All text above is proposed;
+cicada-examples --test docs` pass; `ContainerDockerTest` passed against Docker (19 steps); `cargo fmt --all --check`,
+`cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` (3347 passed, 0 failed) and
+`openspec validate container-logs --strict` pass. All text above is proposed;
 no guide covers `cicada-containers` yet, so nothing is written in `docs/`.
