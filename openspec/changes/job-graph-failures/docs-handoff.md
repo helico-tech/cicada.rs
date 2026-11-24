@@ -71,6 +71,8 @@ None.
 
 ## Status
 
-Ran: `cargo test -p cicada-actors` (all pass), `cargo test -p cicada-examples --test docs` and `--test skill` (pass),
-the finishing checks of task 6 (see the review request). All text above is proposed; no protected prose is written.
-The guide section itself is still to be written from the `job-graph` handoff.
+Ran: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` (clean), `cargo test
+--workspace` with PostgreSQL (3,285 passed, 0 failed), `cargo test -p cicada-examples --test docs` (11 passed) and
+`--test skill` (18 passed), `openspec validate job-graph-failures --strict` (valid); the gate's result is in the review
+request. All text above is proposed; no protected prose is written. The guide section itself is still to be written
+from the `job-graph` handoff.
