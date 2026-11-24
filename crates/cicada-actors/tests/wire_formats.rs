@@ -1,4 +1,4 @@
-//! The wire formats of the ten ready-made actors (ADR 0028): their contracts against the references in
+//! The wire formats of the eleven ready-made actors (ADR 0028): their contracts against the references in
 //! `docs/reference/contracts`, the JSON their messages and states are written as, and sample checks for what the
 //! helpers and the actors write: both the registered schemas and the decoders take it (ADR 0026). And the wire format
 //! of a flow (ADR 0031, ADR 0044): a test flow's contract, whose type name its host chooses, pinned in `tests/contracts`,
@@ -17,10 +17,10 @@ use cicada_actors::{
     DeadLettersState, Debouncer, DebouncerActor, DebouncerMsg, DebouncerState, Event, EventActor, EventMsg, EventState,
     Flow, FlowActor, FlowMsg, FlowRun, FlowState, FlowStatus, HeartbeatStatus, HeartbeatWatch, HeartbeatWatchActor,
     HeartbeatWatchMsg, HeartbeatWatchState, JournalEntry, NodeDown, NodeDownMonitor, NodeDownMonitorActor,
-    NodeDownMonitorMsg, NodeDownMonitorState, NodeReadError, NodeSnapshot, NodeSnapshotSource, RateLimiter,
-    RateLimiterActor, RateLimiterMsg, RateLimiterState, ReplyTo, Schedule, Scheduler, SchedulerActor, SchedulerMsg,
-    SchedulerState, StoredMessage, Supervisor, SupervisorActor, SupervisorMsg, SupervisorState, Topic, TopicActor,
-    TopicMsg, TopicState,
+    NodeDownMonitorMsg, NodeDownMonitorState, NodeReadError, NodeSnapshot, NodeSnapshotSource, PermitNotice,
+    PermitNoticeKind, Permits, PermitsActor, PermitsMsg, PermitsState, RateLimiter, RateLimiterActor, RateLimiterMsg,
+    RateLimiterState, ReplyTo, Schedule, Scheduler, SchedulerActor, SchedulerMsg, SchedulerState, StoredMessage,
+    Supervisor, SupervisorActor, SupervisorMsg, SupervisorState, Topic, TopicActor, TopicMsg, TopicState,
 };
 use cicada_axum::{assert_message_sample, assert_state_sample};
 use cicada_test::{TestActors, UPDATE_CONTRACTS_ENV, describe_changes};
@@ -91,7 +91,7 @@ fn check_references(dir: &Path, contracts: &[Contract], update: bool) -> Result<
     }
 }
 
-fn the_ten_contracts() -> [Contract; 10] {
+fn the_eleven_contracts() -> [Contract; 11] {
     [
         contract_of::<SupervisorActor>().unwrap(),
         contract_of::<DeadLettersActor>().unwrap(),
@@ -103,12 +103,13 @@ fn the_ten_contracts() -> [Contract; 10] {
         contract_of::<EventActor>().unwrap(),
         contract_of::<HeartbeatWatchActor>().unwrap(),
         contract_of::<NodeDownMonitorActor>().unwrap(),
+        contract_of::<PermitsActor>().unwrap(),
     ]
 }
 
 #[test]
-fn the_contracts_of_the_ten_types_match_their_references() {
-    let contracts = the_ten_contracts();
+fn the_contracts_of_the_eleven_types_match_their_references() {
+    let contracts = the_eleven_contracts();
     let names: Vec<&str> = contracts.iter().map(|c| c.type_name().as_str()).collect();
     assert_eq!(
         names,
@@ -122,7 +123,8 @@ fn the_contracts_of_the_ten_types_match_their_references() {
             "cicada.batcher",
             "cicada.event",
             "cicada.heartbeat-watch",
-            "cicada.node-down"
+            "cicada.node-down",
+            "cicada.permits"
         ]
     );
     let update = std::env::var(UPDATE_CONTRACTS_ENV).is_ok_and(|v| v == "true");
@@ -412,6 +414,163 @@ fn the_messages_are_written_in_camel_case_and_pass_their_samples() {
         assert_message_sample::<NodeDownMonitorMsg>(&written);
     }
     assert!(cicada::message::decode::<NodeDownMonitorMsg>("Start", &json!({})).is_err(), "no Start message");
+}
+
+/// A family of a holder of a permit: it declares `Permit` with the notice of the crate.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type")]
+enum BuildMsg {
+    /// A notice of a permit pool.
+    Permit(PermitNotice),
+}
+
+/// `build/{id}`: keeps nothing; it takes the notices of a pool.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Build {
+    id: String,
+}
+
+impl ActorRef for Build {
+    const TYPE: &'static str = "build";
+    type Message = BuildMsg;
+}
+
+struct BuildActor;
+
+impl Actor for BuildActor {
+    type Ref = Build;
+    type State = Value;
+
+    async fn handle(&self, _turn: &mut Turn<Self>, _message: BuildMsg) -> HandlerResult {
+        Ok(())
+    }
+}
+
+#[test]
+fn the_permit_messages_and_notices_are_written_in_camel_case_and_pass_their_samples() {
+    let build = Build { id: "b1".into() };
+    let permits = [
+        (
+            PermitsMsg::acquire("b1-1", &build, "Permit").unwrap(),
+            json!({"type": "Acquire", "request": "b1-1", "to": "build/b1", "messageType": "Permit"}),
+        ),
+        (
+            PermitsMsg::Release { request: "b1-1".into(), grant: 4 },
+            json!({"type": "Release", "request": "b1-1", "grant": 4}),
+        ),
+        (PermitsMsg::Cancel { request: "b1-1".into() }, json!({"type": "Cancel", "request": "b1-1"})),
+        (PermitsMsg::Resize { capacity: 3 }, json!({"type": "Resize", "capacity": 3})),
+        (PermitsMsg::Audit, json!({"type": "Audit"})),
+        (
+            PermitsMsg::Notify { request: "b1-1".into(), check: true },
+            json!({"type": "Notify", "request": "b1-1", "check": true}),
+        ),
+    ];
+    for (message, written) in permits {
+        assert_eq!(json_of(&message), written);
+        assert_message_sample::<PermitsMsg>(&written);
+    }
+    for message in [PermitsMsg::Failed(failed()), PermitsMsg::Stopped(stopped())] {
+        assert_message_sample::<PermitsMsg>(&json_of(message));
+    }
+    for (message_type, invalid) in [
+        ("Acquire", json!({"request": "b1-1", "to": "build/b1"})),
+        ("Acquire", json!({"request": "b1-1", "messageType": "Permit"})),
+        ("Release", json!({"request": "b1-1"})),
+        ("Release", json!({"request": "b1-1", "grant": -1})),
+        ("Cancel", json!({})),
+        ("Resize", json!({})),
+        ("Notify", json!({"request": "b1-1"})),
+    ] {
+        assert!(cicada::message::decode::<PermitsMsg>(message_type, &invalid).is_err(), "{message_type} {invalid}");
+    }
+
+    let kinds = [
+        (PermitNoticeKind::Granted, Some(4), "granted"),
+        (PermitNoticeKind::Queued, None, "queued"),
+        (PermitNoticeKind::Refused, None, "refused"),
+        (PermitNoticeKind::Check, Some(4), "check"),
+        (PermitNoticeKind::Check, None, "check"),
+    ];
+    for (kind, grant, name) in kinds {
+        let notice = PermitNotice { pool: "builds".into(), request: "b1-1".into(), kind, grant };
+        let written = json!({"type": "Permit", "pool": "builds", "request": "b1-1", "kind": name, "grant": grant});
+        assert_eq!(json_of(BuildMsg::Permit(notice.clone())), written);
+        assert_message_sample::<BuildMsg>(&written);
+        let BuildMsg::Permit(read) = serde_json::from_value::<BuildMsg>(written).unwrap();
+        assert_eq!(read, notice);
+    }
+    assert_message_sample::<BuildMsg>(
+        &json!({"type": "Permit", "pool": "builds", "request": "b1-1", "kind": "queued"}),
+    );
+    let unknown = json!({"type": "Permit", "pool": "builds", "request": "b1-1", "kind": "revoked"});
+    assert!(serde_json::from_value::<BuildMsg>(unknown).is_err(), "four kinds");
+}
+
+#[test]
+fn a_permits_state_is_written_in_camel_case_passes_its_samples_and_refuses_invalid_states() {
+    let written = json_of(PermitsState::new(4, 100).unwrap());
+    let settings = json!({"capacity": 4, "maxWaiting": 100});
+    let with = |extra: Value| {
+        let mut json = settings.clone();
+        json.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        json
+    };
+    assert_eq!(written, with(json!({"nextGrant": 1, "holders": [], "waiting": []})));
+    assert_state_sample::<PermitsState>(&written);
+    assert_state_sample::<PermitsState>(&settings);
+    let holder = |request: &str, grant: u64, notified: bool| json!({"request": request, "to": "build/b1", "messageType": "Permit", "grant": grant, "notified": notified});
+    let waiter = |request: &str| json!({"request": request, "to": "build/b2", "messageType": "Permit"});
+    let books = with(json!({"nextGrant": 6, "holders": [holder("a", 3, true), holder("b", 5, false)],
+        "waiting": [waiter("c"), waiter("d")]}));
+    assert_state_sample::<PermitsState>(&books);
+    assert_eq!(json_of(serde_json::from_value::<PermitsState>(books.clone()).unwrap()), books);
+    for invalid in [
+        with(json!({"capacity": 1001})),
+        with(json!({"capacity": -1})),
+        with(json!({"maxWaiting": 1001})),
+        with(json!({"nextGrant": 0})),
+        with(json!({"nextGrant": 6, "holders": [holder("a", 3, true), holder("a", 5, true)]})),
+        with(json!({"nextGrant": 6, "holders": [holder("a", 3, true)], "waiting": [waiter("a")]})),
+        with(json!({"nextGrant": 3, "holders": [holder("a", 3, true)]})),
+        with(
+            json!({"nextGrant": 3, "holders": [{"request": "a", "to": "build/b1", "messageType": "Permit", "grant": 1}]}),
+        ),
+        with(json!({"waiting": [waiter("")]})),
+        with(json!({"waiting": [waiter(&"r".repeat(201))]})),
+        with(json!({"waiting": [{"request": "c", "to": "not an address", "messageType": "Permit"}]})),
+        with(json!({"waiting": [{"request": "c", "to": "build/b2", "messageType": ""}]})),
+        json!({"capacity": 1, "maxWaiting": 1, "waiting": [waiter("c"), waiter("d")]}),
+        json!({"capacity": 4}),
+    ] {
+        assert!(serde_json::from_value::<PermitsState>(invalid.clone()).is_err(), "{invalid}");
+    }
+}
+
+/// The state a pool writes with holders, one told and one not yet, and waiting requests.
+#[tokio::test(start_paused = true)]
+async fn the_state_a_pool_writes_passes_its_sample() {
+    let test = TestActors::builder().with(|node| node.host(PermitsActor).host(BuildActor)).build().await.unwrap();
+    let pool = Permits::named("builds");
+    test.create(&pool, &PermitsState::new(1, 10).unwrap()).await;
+    for id in ["b1", "b2", "b3", "b4"] {
+        let build = Build { id: id.into() };
+        test.create(&build, &json!({})).await;
+        test.send(&pool, PermitsMsg::acquire(id, &build, "Permit").unwrap()).await;
+    }
+    test.run_until_idle().await;
+    test.send(&pool, PermitsMsg::Resize { capacity: 2 }).await;
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1);
+    let written = test.state_json(&pool).await.unwrap();
+    assert_eq!(written["holders"][0]["notified"], true, "{written}");
+    assert_eq!(written["holders"][1]["notified"], false, "{written}");
+    assert_eq!(written["waiting"].as_array().unwrap().len(), 2, "{written}");
+    assert_eq!(written["nextGrant"], 3, "{written}");
+    assert_state_sample::<PermitsState>(&written);
+    test.run_until_idle().await;
+    let written = test.state_json(&pool).await.unwrap();
+    assert_eq!(written["holders"][1]["notified"], true, "{written}");
+    assert_state_sample::<PermitsState>(&written);
 }
 
 /// A family of a subscriber of the node-down topic: it declares `NodeDown` with the payload of the crate.

@@ -1,0 +1,391 @@
+{
+  "messages": {
+    "Acquire": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Asks one permit for `request`, and names where its notices go. With room it grants at once; otherwise the request\nwaits in FIFO order; with the queue full it is refused and nothing is recorded. The answer, `granted`, `queued` or\n`refused`, goes to the target in this commit, so a target that is gone rejects it and nothing is recorded. A\nrepeated `Acquire` of a holder answers `granted` with the same number, one of a waiting request `queued` with its\nplace kept; both keep the target of the first. A request ID is forgotten at its release: use a fresh one per\nattempt.",
+      "properties": {
+        "messageType": {
+          "description": "The message type of the notices, whose payload is a [`PermitNotice`]; not empty, at most 200 characters,\nwithout NUL.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "request": {
+          "description": "The request: names this attempt.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "to": {
+          "description": "The target of the notices.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "request",
+        "to",
+        "messageType"
+      ],
+      "title": "Acquire",
+      "type": "object"
+    },
+    "Audit": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Sends a `check` notice to every request in the books, holders with their grant number and waiting requests\nwithout, each in a turn of its own. It frees nothing: a holder whose work is confirmed stopped answers with\n`Release`, a waiting request that gave up with `Cancel`.",
+      "properties": {},
+      "title": "Audit",
+      "type": "object"
+    },
+    "Cancel": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Takes a waiting request out of the queue; ignored for a holder, which releases with its grant number instead.",
+      "properties": {
+        "request": {
+          "description": "The request.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "request"
+      ],
+      "title": "Cancel",
+      "type": "object"
+    },
+    "Failed": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The notification of a message to a watched actor that ended `failed`: what the failed message was and why it\nfailed. Its type name is `Failed`. A watcher's message family declares it as `Failed(cicada::Failed)`.\n\nIts schema is part of every watcher's contract; a snapshot test pins it.",
+      "properties": {
+        "actor": {
+          "description": "The actor the failed message was for: the actor of the event, not the target of the watch.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": "string"
+        },
+        "attempts": {
+          "description": "How often the message was claimed: its `attempt`.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cause": {
+          "description": "What failed, one of:\n- `handler`: the handler returned an error or panicked and no retry is left, or it returned a state that cannot\n  be stored;\n- `node`: a read of the store the node needed failed, also one the handler passed on, or a panic outside the\n  handler;\n- `refused`: the handler refused the message for good;\n- `timeout`: the turn ran past its maximum duration;\n- `message`: the message cannot be decoded;\n- `state`: the state or the address of the actor cannot be read by its type;\n- `commit`: the effects of the turn were refused, or its commit was rejected or refused;\n- `claim-limit`: the message reached the claim limit.",
+          "oneOf": [
+            {
+              "const": "handler",
+              "description": "The handler returned an error or panicked, and no retry is left; or it returned a new state that cannot be\nstored.",
+              "type": "string"
+            },
+            {
+              "const": "node",
+              "description": "The node or the store failed around the turn: a read the node needed failed, also one the handler passed on,\nor a panic outside the handler.",
+              "type": "string"
+            },
+            {
+              "const": "refused",
+              "description": "The handler refused the message for good (a permanent failure).",
+              "type": "string"
+            },
+            {
+              "const": "timeout",
+              "description": "The turn ran past its maximum duration.",
+              "type": "string"
+            },
+            {
+              "const": "message",
+              "description": "The message cannot be decoded.",
+              "type": "string"
+            },
+            {
+              "const": "state",
+              "description": "The state or the address of the actor cannot be read by its type.",
+              "type": "string"
+            },
+            {
+              "const": "commit",
+              "description": "The effects of the turn were refused, or its commit was rejected or refused.",
+              "type": "string"
+            },
+            {
+              "const": "claim-limit",
+              "description": "The message reached the claim limit (ADR 0025).",
+              "type": "string"
+            }
+          ]
+        },
+        "correlationId": {
+          "description": "The correlation id of the failed message; null when it has none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "error": {
+          "description": "The error it failed with.",
+          "type": "string"
+        },
+        "from": {
+          "description": "The sender of the failed message; null for a message sent from outside a turn.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "messageId": {
+          "description": "The id of the failed message.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "messageType": {
+          "description": "The type name of the failed message.",
+          "type": "string"
+        },
+        "payload": {
+          "description": "The payload of the failed message."
+        }
+      },
+      "required": [
+        "actor",
+        "messageId",
+        "messageType",
+        "payload",
+        "error",
+        "attempts",
+        "cause"
+      ],
+      "title": "Failed",
+      "type": "object"
+    },
+    "Notify": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Sends `request` what is true when it runs: its `granted` notice, or with `check` a `check` notice; nothing for a\nrequest no longer in the books. Sent by the pool to itself, with a retry policy.",
+      "properties": {
+        "check": {
+          "description": "A `check` of an audit; false: a grant.",
+          "type": "boolean"
+        },
+        "request": {
+          "description": "The request.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "request",
+        "check"
+      ],
+      "title": "Notify",
+      "type": "object"
+    },
+    "Release": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Frees the permit of `request` when it holds `grant`; ignored otherwise, so a late release of an earlier grant\nfrees nothing.",
+      "properties": {
+        "grant": {
+          "description": "The grant number it releases.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "request": {
+          "description": "The request.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "request",
+        "grant"
+      ],
+      "title": "Release",
+      "type": "object"
+    },
+    "Resize": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Sets the capacity, 0 through 1,000; 0 pauses the pool. A growth grants to the head of the queue; a shrink\nrevokes nothing, and new grants wait until fewer hold than the capacity.",
+      "properties": {
+        "capacity": {
+          "description": "The new capacity.",
+          "format": "uint32",
+          "maximum": 1000,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "capacity"
+      ],
+      "title": "Resize",
+      "type": "object"
+    },
+    "Stopped": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The notification of a watched actor that went away. Its type name is `Stopped`. A watcher's message family declares\nit as `Stopped(cicada::Stopped)`. Only a watch on the actor's own address tells of it.\n\nIts schema is part of every watcher's contract; a snapshot test pins it.",
+      "properties": {
+        "actor": {
+          "description": "The actor that went away.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": "string"
+        },
+        "by": {
+          "description": "The actor whose turn removed it: the actor itself when it stopped, the stopping ancestor when it went with it;\nnull for a removal from outside a turn.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cause": {
+          "description": "Why it went away.",
+          "oneOf": [
+            {
+              "const": "stopped",
+              "description": "Its own turn stopped it.",
+              "type": "string"
+            },
+            {
+              "const": "deleted",
+              "description": "It was deleted from outside a turn.",
+              "type": "string"
+            },
+            {
+              "const": "parent",
+              "description": "It was removed with its parent (ADR 0019).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "required": [
+        "actor",
+        "cause"
+      ],
+      "title": "Stopped",
+      "type": "object"
+    }
+  },
+  "state": {
+    "$defs": {
+      "PermitHolder": {
+        "description": "A holder of a permit.",
+        "properties": {
+          "grant": {
+            "description": "Its grant number: at least 1, below the pool's `nextGrant`.",
+            "format": "uint64",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "messageType": {
+            "description": "The message type of its notices; not empty, at most 200 characters, without NUL.",
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "notified": {
+            "description": "True once a `granted` notice to it committed; while false, a failed grant `Notify` frees the permit.",
+            "type": "boolean"
+          },
+          "request": {
+            "description": "The request; not empty, at most 200 characters, without NUL.",
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "to": {
+            "description": "The target of its notices.",
+            "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request",
+          "to",
+          "messageType",
+          "grant",
+          "notified"
+        ],
+        "type": "object"
+      },
+      "WaitingRequest": {
+        "description": "A request waiting for a permit.",
+        "properties": {
+          "messageType": {
+            "description": "The message type of its notices; not empty, at most 200 characters, without NUL.",
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "request": {
+            "description": "The request; not empty, at most 200 characters, without NUL.",
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "to": {
+            "description": "The target of its notices.",
+            "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request",
+          "to",
+          "messageType"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "The state of a [`Permits`] pool: its capacity and queue bound, given at its create, its holders in the order they\nwere granted, its waiting requests in FIFO order, and the next grant number. Build it with `PermitsState::new`; a\ndecoded state is checked the same way.\n\nOn the wire: `{\"capacity\":4,\"maxWaiting\":100,\"nextGrant\":1,\"holders\":[],\"waiting\":[]}`; `nextGrant`, `holders` and\n`waiting` may be left out of a create.",
+    "properties": {
+      "capacity": {
+        "description": "The most holders that are granted at once; 0 through 1000, 0 pauses the pool. After a shrink more may hold\nuntil they release.",
+        "format": "uint32",
+        "maximum": 1000,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "holders": {
+        "default": [],
+        "description": "The holders, in the order they were granted, each request ID once in the books; absent: none.",
+        "items": {
+          "$ref": "#/$defs/PermitHolder"
+        },
+        "type": "array"
+      },
+      "maxWaiting": {
+        "description": "The most waiting requests; 0 through 1000.",
+        "format": "uint32",
+        "maximum": 1000,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "nextGrant": {
+        "default": 1,
+        "description": "The number of the next grant, at least 1; it only goes up. Absent: 1.",
+        "format": "uint64",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "waiting": {
+        "default": [],
+        "description": "The waiting requests, in FIFO order, at most `maxWaiting`, each request ID once in the books; absent: none.",
+        "items": {
+          "$ref": "#/$defs/WaitingRequest"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "capacity",
+      "maxWaiting"
+    ],
+    "title": "PermitsState",
+    "type": "object"
+  },
+  "type": "cicada.permits"
+}

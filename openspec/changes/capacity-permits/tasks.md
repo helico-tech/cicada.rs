@@ -19,7 +19,7 @@ tested on virtual time (`#[tokio::test(start_paused = true)]` with `TestActors`)
 - [x] 3. **Virtual-time tests.** `crates/cicada-actors/tests/permits.rs`, one test or more for every scenario of the
   spec, including the deleted waiter whose permit comes back, the failed `check` that keeps its permit, the foreign
   `Notify` and `Failed`, and each refusal. Verify: `cargo test -p cicada-actors --test permits`.
-- [ ] 4. **Contract and wire format.** `cicada.permits` joins the contracts checked in
+- [x] 4. **Contract and wire format.** `cicada.permits` joins the contracts checked in
   `crates/cicada-actors/tests/wire_formats.rs` (ten become eleven), with samples of each message, a state with
   holders and waiting requests, and a notice of each kind taken by the schemas and the decoders;
   `CICADA_UPDATE_CONTRACTS=true cargo test -p cicada-actors --test wire_formats` writes
