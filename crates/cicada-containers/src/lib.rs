@@ -53,7 +53,7 @@ mod spec;
 
 pub use actor::{
     Container, ContainerActor, ContainerEnd, ContainerEnded, ContainerJob, ContainerMsg, ContainerSettings,
-    ContainerState, EndTarget, Goal, Inputs, InvalidContainer, Outcome, Phase,
+    ContainerState, EndTarget, FailureKind, Goal, Inputs, InvalidContainer, Outcome, Phase,
 };
 pub use copy::{CopyLimits, CopyOut, SkippedFile};
 #[cfg(feature = "docker")]
@@ -62,7 +62,7 @@ pub use error::{ContainerError, ErrorKind};
 #[cfg(any(test, feature = "testing"))]
 pub use fake::{Call, FakeRuntime, Method};
 pub use logs::{LOG_PAGE_MAX, LogCursor, LogLine, LogPage, LogStream};
-pub use runtime::{ContainerRuntime, ContainerStatus, ContainerSummary, Resource, Skipped, Swept};
+pub use runtime::{ContainerRuntime, ContainerStatus, ContainerSummary, OUT_OF_MEMORY, Resource, Skipped, Swept};
 pub use spec::{
     ContainerSpec, CopyDir, CopyFile, Label, Mount, MountKind, NetworkAttachment, NetworkSpec, Networking, Tmpfs,
     VolumeSpec,

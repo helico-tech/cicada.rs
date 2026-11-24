@@ -9,11 +9,17 @@ use crate::{
     NetworkSpec, VolumeSpec,
 };
 
+/// The reason of [`ContainerStatus::Failed`] for a container the runtime killed for lack of memory, exactly; the
+/// container actor reports such an end with the kind [`OutOfMemory`](crate::FailureKind::OutOfMemory).
+pub const OUT_OF_MEMORY: &str = "out of memory";
+
 /// A container runtime: Docker, or the fake in tests. Use it as `Arc<dyn ContainerRuntime>` to pick one at run time.
 ///
 /// Every call is safe to repeat: called again with the same arguments, it gives the same end state. Containers,
 /// networks and volumes are found by name. Every method fails only with a [`ContainerError`], whose kind says whether
-/// a retry can help.
+/// a retry can help. [`inspect`](Self::inspect) reports a container killed for lack of memory as
+/// [`ContainerStatus::Failed`] with the reason [`OUT_OF_MEMORY`], which the container actor matches exactly: another
+/// runtime must use it too.
 #[async_trait]
 pub trait ContainerRuntime: Send + Sync + 'static {
     /// Creates the container `spec.name`, pulling its image when the backend has to. An existing container of that
@@ -54,12 +60,12 @@ pub trait ContainerRuntime: Send + Sync + 'static {
     /// folder inside the volume, or set the mode in the image. A folder that another API caller makes between the
     /// check and the write is not seen; the container has no process yet, so nothing else can race.
     ///
-    /// The default fails with `Other`, so a runtime written before this method compiles unchanged; the fake and
+    /// The default fails with `Unsupported`, so a runtime written before this method compiles unchanged; the fake and
     /// the Docker backend implement it.
     async fn make_dirs(&self, name: &str, dirs: &[CopyDir]) -> Result<(), ContainerError> {
         let _ = dirs;
         Err(ContainerError::new(
-            ErrorKind::Other,
+            ErrorKind::Unsupported,
             format!("make folders in {name}: make_dirs is not supported by this runtime"),
         ))
     }
@@ -95,7 +101,7 @@ pub trait ContainerRuntime: Send + Sync + 'static {
     /// Docker stores it in parts. Docker takes the second as a 32-bit number: a cursor after January 2038 fails with
     /// `Other` rather than read from the wrong time.
     ///
-    /// The default fails with `Other`, so a runtime written before this method compiles unchanged; the fake and
+    /// The default fails with `Unsupported`, so a runtime written before this method compiles unchanged; the fake and
     /// the Docker backend implement it.
     async fn logs_since(
         &self,
@@ -105,7 +111,7 @@ pub trait ContainerRuntime: Send + Sync + 'static {
     ) -> Result<LogPage, ContainerError> {
         let _ = (cursor, max_lines);
         Err(ContainerError::new(
-            ErrorKind::Other,
+            ErrorKind::Unsupported,
             format!("logs of {name}: logs_since is not supported by this runtime"),
         ))
     }
@@ -141,12 +147,12 @@ pub trait ContainerRuntime: Send + Sync + 'static {
     /// come back short, or be missing, without an error. The order of the entries, and so which files fit the limits
     /// first, may differ between Docker engine versions.
     ///
-    /// The default fails with `Other`, so a runtime written before this method compiles unchanged; the fake and
+    /// The default fails with `Unsupported`, so a runtime written before this method compiles unchanged; the fake and
     /// the Docker backend implement it.
     async fn copy_out(&self, name: &str, path: &str, limits: CopyLimits) -> Result<CopyOut, ContainerError> {
         let _ = (path, limits);
         Err(ContainerError::new(
-            ErrorKind::Other,
+            ErrorKind::Unsupported,
             format!("copy out of {name}: copy_out is not supported by this runtime"),
         ))
     }
@@ -196,7 +202,7 @@ pub enum ContainerStatus {
     Failed {
         /// The exit code, when the runtime has one.
         code: Option<i64>,
-        /// Why.
+        /// Why: exactly [`OUT_OF_MEMORY`] for a container killed for lack of memory.
         reason: String,
     },
 }

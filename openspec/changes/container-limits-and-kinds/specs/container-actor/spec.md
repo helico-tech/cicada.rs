@@ -104,10 +104,10 @@ container is `Created`, then start it. Without inputs, its runtime calls SHALL b
 ### Requirement: Refused inputs end the container
 
 An `Err` from `inputs`, a file at or above a folder (paths compared after the shared path rule's parsing), or a path
-that parsing refuses SHALL end the container `failed` before anything is made. `InvalidSpec` from `make_dirs` or
-`copy_in`, `Conflict` from either while a new `inspect` still finds the container `Created`, and `Other` from
-`make_dirs` SHALL end it `failed` with the kind `notStarted`. Other errors SHALL count and back off, and the next poll
-SHALL run the step again.
+that parsing refuses SHALL end the container `failed` with the kind `notStarted` before anything is made. `InvalidSpec`
+from `make_dirs` or `copy_in`, `Conflict` from either while a new `inspect` still finds the container `Created`, and
+`Unsupported` from `make_dirs` SHALL end it `failed` with the kind `notStarted`. Other errors, `Other` too, SHALL count
+and back off, and the next poll SHALL run the step again.
 
 #### Scenario: Inputs that cannot be built
 
@@ -127,10 +127,22 @@ SHALL run the step again.
 - **THEN** the first ends the container `failed` with the reason; the second counts an error and backs off, and the
   next poll creates the container again, copies and starts it
 
+#### Scenario: A container gone after create
+
+- **WHEN** the container is removed between `create` and the copies, so `make_dirs` fails with `Conflict` and the new
+  `inspect` reports `Missing`
+- **THEN** the error counts and backs off, and the next poll creates the container again, copies and starts it
+
 #### Scenario: A runtime without make_dirs
 
-- **WHEN** a job gives a folder, and the runtime's `make_dirs` is the trait's default, which fails with `Other`
-- **THEN** the poll ends the container `failed` at once, without backing off
+- **WHEN** a job gives a folder, and the runtime's `make_dirs` is the trait's default, which fails with `Unsupported`
+- **THEN** the poll ends the container `failed` with the kind `notStarted` at once, without backing off
+
+#### Scenario: Another error from make_dirs
+
+- **WHEN** `make_dirs` fails with `Other` once
+- **THEN** the error counts and backs off, and the next poll makes the folders, writes the files and starts the
+  container
 
 #### Scenario: An unavailable daemon while copying
 

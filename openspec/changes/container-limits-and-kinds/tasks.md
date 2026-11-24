@@ -8,7 +8,7 @@ requirements). Follow `design.md` and ADR 0062 (already written); the specs are 
 `specs/container-runtime/spec.md`. Runtime behaviour is tested on virtual time (`#[tokio::test(start_paused = true)]`
 with `TestActors`) and the fake.
 
-- [ ] 1. **Wire and the out-of-memory reason.** In `crates/cicada-containers/src/actor/wire.rs`: `FailureKind`
+- [x] 1. **Wire and the out-of-memory reason.** In `crates/cicada-containers/src/actor/wire.rs`: `FailureKind`
   (`non_exhaustive`, camelCase), `kind: Option<FailureKind>` on `ContainerEnd` with `#[serde(default)]`, and a check
   in `ContainerEnd`'s own decoding that refuses a `kind` on an end that is not `failed` (decision 2), so the state and
   a `ContainerEnded` both get it; export `FailureKind` from `lib.rs`. In `src/runtime.rs`: `OUT_OF_MEMORY`, named in
@@ -16,7 +16,7 @@ with `TestActors`) and the fake.
   tests of the decoding (an old `failed` end without `kind`, a `kind` on a `stopped` end refused in a state and in a
   `ContainerEnded`) and Docker's `status_of` test with `OUT_OF_MEMORY`;
   `cargo test -p cicada-containers --all-features`.
-- [ ] 2. **The actor.** In `crates/cicada-containers/src/actor/mod.rs`: `ContainerJob::timeout(request, settings)`
+- [x] 2. **The actor.** In `crates/cicada-containers/src/actor/mod.rs`: `ContainerJob::timeout(request, settings)`
   with its default, used at the start and capped at `MAX_INSTANT` (decision 1); the create step begins with
   `inspect` and adopts a container past `Created` without `spec`, `inputs`, `create`, the copies or `start`, and the
   `inspect` after `create` of `container-inputs` goes (decision 6); a `kind` on every `failed` end by the table of
@@ -26,7 +26,7 @@ with `TestActors`) and the fake.
   rustdoc and specs), and the actor ends at once only on `Unsupported` from `make_dirs`; `Other` backs off ("Added after
   the container-inputs code review"); a test for each. Rewrap `src/actor/mod.rs:280` to 120 columns. Verify: `cargo test -p cicada-containers --all-features`;
   `cargo clippy -p cicada-containers --all-targets --all-features`.
-- [ ] 3. **Virtual-time tests.** In `crates/cicada-containers/tests/actor.rs`, one test or more for every scenario of
+- [x] 3. **Virtual-time tests.** In `crates/cicada-containers/tests/actor.rs`, one test or more for every scenario of
   the spec deltas: a lost commit after start (adopted, no `spec` or `inputs` call, no `notStarted`), the kinds of
   failure (each row of the table, other ends without a kind), the timeout per request (shorter, longer, none) and a
   deadline capped at `MAX_INSTANT`, too many errors with `runtimeErrors`; update the call lists of existing tests to

@@ -835,7 +835,7 @@ mod tests {
     }
 
     #[test]
-    fn a_runtime_without_logs_since_copy_out_or_make_dirs_compiles_and_fails_with_other() {
+    fn a_runtime_without_logs_since_copy_out_or_make_dirs_compiles_and_fails_with_unsupported() {
         /// A host's runtime written before `logs_since`, `copy_out` and `make_dirs`.
         struct Older;
 
@@ -878,13 +878,13 @@ mod tests {
 
         let runtime: Arc<dyn ContainerRuntime> = Arc::new(Older);
         let error = now(runtime.logs_since("job-1", None, 10)).unwrap_err();
-        assert_eq!(error.kind, ErrorKind::Other, "{error}");
+        assert_eq!(error.kind, ErrorKind::Unsupported, "{error}");
         assert!(error.message.contains("not supported"), "{error}");
         let error = now(runtime.copy_out("job-1", "/out", CopyLimits::new(10, 100))).unwrap_err();
-        assert_eq!(error.kind, ErrorKind::Other, "{error}");
+        assert_eq!(error.kind, ErrorKind::Unsupported, "{error}");
         assert!(error.message.contains("not supported"), "{error}");
         let error = now(runtime.make_dirs("job-1", &[CopyDir::new("/out")])).unwrap_err();
-        assert_eq!(error.kind, ErrorKind::Other, "{error}");
+        assert_eq!(error.kind, ErrorKind::Unsupported, "{error}");
         assert!(error.message.contains("not supported"), "{error}");
     }
 

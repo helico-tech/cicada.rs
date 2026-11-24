@@ -3,9 +3,10 @@
 //! name its host chooses, pinned in `tests/contracts`, with samples of every message, the state in each phase and an
 //! end payload, taken by the schemas and the decoders (ADR 0026).
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -13,12 +14,13 @@ use async_trait::async_trait;
 use cicada::actor::contract_of;
 use cicada::contract::Contract;
 use cicada::prelude::*;
-use cicada::time::{self, Timestamp};
+use cicada::time::{self, MAX_INSTANT, Timestamp};
 use cicada_axum::{assert_message_sample, assert_state_sample};
 use cicada_containers::{
-    Call, Container, ContainerActor, ContainerEnded, ContainerError, ContainerJob, ContainerMsg, ContainerRuntime,
-    ContainerSettings, ContainerSpec, ContainerState, ContainerStatus, ContainerSummary, CopyDir, CopyFile, ErrorKind,
-    FakeRuntime, Goal, Inputs, Label, Method, NetworkSpec, Outcome, Phase, Swept, VolumeSpec,
+    Call, Container, ContainerActor, ContainerEnd, ContainerEnded, ContainerError, ContainerJob, ContainerMsg,
+    ContainerRuntime, ContainerSettings, ContainerSpec, ContainerState, ContainerStatus, ContainerSummary, CopyDir,
+    CopyFile, ErrorKind, FailureKind, FakeRuntime, Goal, Inputs, Label, Method, NetworkSpec, OUT_OF_MEMORY, Outcome,
+    Phase, Swept, VolumeSpec,
 };
 use cicada_test::{TestActors, UPDATE_CONTRACTS_ENV, describe_changes};
 use serde::{Deserialize, Serialize};
@@ -35,16 +37,18 @@ struct Run {
     image: String,
 }
 
-/// The test job: builds a spec with a secret and a label from the request, and gives its inputs.
+/// The test job: builds a spec with a secret and a label from the request, and gives its inputs and timeouts.
 struct TestJob {
     /// What `inputs` returns.
     inputs: Result<Inputs, String>,
+    /// The timeout of a request by its image; the settings' for an image not here.
+    timeouts: HashMap<String, Option<Duration>>,
 }
 
 impl TestJob {
-    /// The job without inputs.
+    /// The job without inputs, with the settings' timeout.
     fn plain() -> Self {
-        Self { inputs: Ok(Inputs::default()) }
+        Self { inputs: Ok(Inputs::default()), timeouts: HashMap::new() }
     }
 }
 
@@ -64,6 +68,10 @@ impl ContainerJob for TestJob {
 
     fn inputs(&self, _: &str, _: &Run) -> Result<Inputs, String> {
         self.inputs.clone()
+    }
+
+    fn timeout(&self, run: &Run, settings: Option<Duration>) -> Option<Duration> {
+        self.timeouts.get(&run.image).copied().unwrap_or(settings)
     }
 }
 
@@ -168,7 +176,8 @@ async fn the_spec_is_built_at_the_create_and_an_exit_is_reported_with_its_logs()
     test.send(&job, start()).await;
     test.run_until_idle().await;
 
-    let Call::Create(spec) = &fake.calls()[0] else { panic!("{:?}", fake.calls()) };
+    assert_eq!(methods(&fake), ["inspect", "create", "start"]);
+    let Call::Create(spec) = &fake.calls()[1] else { panic!("{:?}", fake.calls()) };
     assert_eq!((spec.name.as_str(), spec.image.as_str()), ("app-j1", "alpine:3"));
     assert_eq!(spec.secret_env.get("TOKEN").map(String::as_str), Some(SECRET));
     assert_eq!(fake.inspect("app-j1").await.unwrap(), ContainerStatus::Running);
@@ -182,7 +191,7 @@ async fn the_spec_is_built_at_the_create_and_an_exit_is_reported_with_its_logs()
     test.advance_time_by(2 * SECOND).await;
     let state: State = test.state(&job).await;
     let end = state.end.clone().unwrap();
-    assert_eq!((end.outcome, end.code, end.logs.as_str()), (Outcome::Exited, Some(3), "done\n"));
+    assert_eq!((end.outcome, end.code, end.kind, end.logs.as_str()), (Outcome::Exited, Some(3), None, "done\n"));
     assert_eq!(state.phase, Phase::Ended);
     assert_eq!(ends(&test).await, [ContainerEnded { key: "j1".into(), end }]);
     assert_eq!(state.armed, None, "no work left");
@@ -199,7 +208,7 @@ async fn a_key_that_cannot_name_a_container_ends_failed_without_a_runtime_call()
     test.send(&job, start()).await;
     test.run_until_idle().await;
     let end = test.state::<_, State>(&job).await.end.unwrap();
-    assert_eq!(end.outcome, Outcome::Failed);
+    assert_eq!((end.outcome, end.kind), (Outcome::Failed, Some(FailureKind::NotStarted)));
     assert!(end.reason.contains("\"a/b\""), "{}", end.reason);
     assert!(fake.calls().is_empty());
     assert_eq!(ends(&test).await[0].key, "a/b", "the key as given");
@@ -248,7 +257,7 @@ async fn a_stop_before_the_start_makes_nothing_and_the_start_gets_the_end() {
     test.run_until_idle().await;
     let state: State = test.state(&job).await;
     let end = state.end.clone().unwrap();
-    assert_eq!((end.outcome, end.code, end.logs.as_str()), (Outcome::Stopped, None, ""));
+    assert_eq!((end.outcome, end.code, end.kind, end.logs.as_str()), (Outcome::Stopped, None, None, ""));
     assert_eq!((state.goal, state.errors), (Some(Goal::Stop), 0));
     assert_eq!(methods(&fake), ["stop", "inspect"]);
     assert!(ends(&test).await.is_empty(), "no target yet");
@@ -277,22 +286,24 @@ async fn a_remove_with_no_start_ends_stopped_and_removes_nothing() {
     assert!(test.failures().await.is_empty());
 }
 
-/// Scenario: A missing image.
+/// Scenario: A missing image, and a spec the runtime refuses: `notStarted`.
 #[tokio::test(start_paused = true)]
 async fn a_missing_image_ends_failed_at_the_first_poll() {
-    let fake = FakeRuntime::new();
-    fake.fail_next(Method::Create, ErrorKind::ImageNotFound);
-    let test = harness(&fake, settings()).await;
-    let job = container(&test, "j1", "nope:1").await;
-    test.send(&job, start()).await;
-    test.run_until_idle().await;
-    let state: State = test.state(&job).await;
-    let end = state.end.unwrap();
-    assert_eq!(end.outcome, Outcome::Failed);
-    assert!(end.reason.starts_with("image not found"), "{}", end.reason);
-    assert_eq!((state.errors, state.armed), (0, None), "no backoff");
-    test.advance_time_by(120 * SECOND).await;
-    assert_eq!(methods(&fake), ["create"], "no further create");
+    for (kind, reason) in [(ErrorKind::ImageNotFound, "image not found"), (ErrorKind::InvalidSpec, "invalid spec")] {
+        let fake = FakeRuntime::new();
+        fake.fail_next(Method::Create, kind);
+        let test = harness(&fake, settings()).await;
+        let job = container(&test, "j1", "nope:1").await;
+        test.send(&job, start()).await;
+        test.run_until_idle().await;
+        let state: State = test.state(&job).await;
+        let end = state.end.unwrap();
+        assert_eq!((end.outcome, end.kind), (Outcome::Failed, Some(FailureKind::NotStarted)));
+        assert!(end.reason.starts_with(reason), "{}", end.reason);
+        assert_eq!((state.errors, state.armed), (0, None), "no backoff");
+        test.advance_time_by(120 * SECOND).await;
+        assert_eq!(methods(&fake), ["inspect", "create"], "no further create");
+    }
 }
 
 /// A spec the job refuses ends the container `failed` with its text, and nothing is made.
@@ -304,8 +315,11 @@ async fn a_spec_the_job_refuses_ends_failed_with_its_text() {
     test.send(&job, start()).await;
     test.run_until_idle().await;
     let end = test.state::<_, State>(&job).await.end.unwrap();
-    assert_eq!((end.outcome, end.reason.as_str()), (Outcome::Failed, "no image"));
-    assert!(fake.calls().is_empty());
+    assert_eq!(
+        (end.outcome, end.kind, end.reason.as_str()),
+        (Outcome::Failed, Some(FailureKind::NotStarted), "no image")
+    );
+    assert_eq!(methods(&fake), ["inspect"], "nothing is made");
 }
 
 /// Scenario: Remove after the exit: the end with its logs is recorded before the removal, and sent once.
@@ -322,7 +336,7 @@ async fn a_remove_after_the_exit_removes_without_a_second_end() {
     test.send(&job, ContainerMsg::Remove).await;
     test.run_until_idle().await;
 
-    assert_eq!(methods(&fake), ["create", "start", "inspect", "logs", "remove"]);
+    assert_eq!(methods(&fake), ["inspect", "create", "start", "inspect", "logs", "remove"]);
     assert_eq!(fake.inspect("app-j1").await.unwrap(), ContainerStatus::Missing);
     let state: State = test.state(&job).await;
     assert_eq!((state.phase, state.end.unwrap().logs.as_str()), (Phase::Removed, "bye\n"));
@@ -347,10 +361,10 @@ async fn a_remove_while_it_runs_stops_records_and_removes() {
     fake.set_logs("app-j1", "working");
     test.send(&job, ContainerMsg::Remove).await;
     test.run_until_idle().await;
-    assert_eq!(methods(&fake), ["create", "start", "stop", "inspect", "logs", "remove"]);
+    assert_eq!(methods(&fake), ["inspect", "create", "start", "stop", "inspect", "logs", "remove"]);
     let state: State = test.state(&job).await;
     let end = state.end.unwrap();
-    assert_eq!((end.outcome, end.code, end.logs.as_str()), (Outcome::Stopped, Some(143), "working\n"));
+    assert_eq!((end.outcome, end.code, end.kind, end.logs.as_str()), (Outcome::Stopped, Some(143), None, "working\n"));
     assert_eq!(state.phase, Phase::Removed);
     assert_eq!(ends(&test).await.len(), 1);
 }
@@ -395,7 +409,7 @@ async fn a_container_past_its_deadline_is_stopped_and_ends_timed_out() {
     test.advance_time_by(2 * SECOND).await;
     let state: State = test.state(&job).await;
     let end = state.end.unwrap();
-    assert_eq!((end.outcome, end.code), (Outcome::TimedOut, Some(143)));
+    assert_eq!((end.outcome, end.code, end.kind), (Outcome::TimedOut, Some(143), None));
     assert_eq!(state.goal, Some(Goal::Stop));
     assert!(fake.calls().iter().any(|call| matches!(call, Call::Stop { grace, .. } if *grace == 10 * SECOND)));
 }
@@ -424,7 +438,7 @@ async fn errors_in_a_row_back_off_and_end_failed_at_the_maximum() {
     test.advance_time_by(SECOND).await;
     let state: State = test.state(&job).await;
     let end = state.end.unwrap();
-    assert_eq!(end.outcome, Outcome::Failed);
+    assert_eq!((end.outcome, end.kind), (Outcome::Failed, Some(FailureKind::RuntimeErrors)));
     assert!(end.reason.contains("3 times in a row") && end.reason.contains("daemon unavailable"), "{}", end.reason);
     assert_eq!((state.errors, state.armed), (0, None));
     assert!(test.failures().await.is_empty(), "no turn fails");
@@ -527,7 +541,7 @@ async fn a_created_container_whose_start_always_fails_ends_failed_at_the_limit()
     test.advance_time_by(8 * SECOND).await;
     let state: State = test.state(&job).await;
     let end = state.end.unwrap();
-    assert_eq!(end.outcome, Outcome::Failed);
+    assert_eq!((end.outcome, end.kind), (Outcome::Failed, Some(FailureKind::RuntimeErrors)));
     assert!(end.reason.contains("3 times in a row"), "{}", end.reason);
     assert_eq!(methods(&fake).iter().filter(|m| **m == "start").count(), 3);
     assert_eq!(fake.inspect("app-j1").await.unwrap(), ContainerStatus::Created);
@@ -571,7 +585,7 @@ async fn a_goal_asked_again_keeps_the_backoff() {
     assert_eq!(test.pending(&job).await.len(), 1, "the old one is cancelled");
     test.send(&job, ContainerMsg::Poll).await;
     test.run_until_idle().await;
-    assert_eq!(methods(&fake), ["create", "start"], "a poll that is not armed does nothing");
+    assert_eq!(methods(&fake), ["inspect", "create", "start"], "a poll that is not armed does nothing");
 }
 
 /// Scenario: A NUL in the logs.
@@ -592,15 +606,168 @@ async fn a_nul_in_the_logs_is_stored_as_the_replacement_character_within_the_cap
     assert!(logs.len() <= 16);
 }
 
-/// Writes the runtime of `$ty`, a wrapper of the fake in its field `fake`, with every method but `inspect` and
-/// `make_dirs` passed to the fake, and the methods given in braces.
+/// Scenario: A lost commit after start: the running container is adopted with a fresh deadline, and neither `spec`
+/// nor `inputs`, which now fail, is called.
+#[tokio::test(start_paused = true)]
+async fn a_lost_commit_after_the_start_adopts_the_running_container() {
+    let fake = FakeRuntime::new();
+    fake.create(&ContainerSpec::new("app-j1", "alpine:3")).await.unwrap();
+    fake.start("app-j1").await.unwrap();
+    let mut settings = settings();
+    settings.timeout = Some(60 * SECOND);
+    let test = harness_on(Arc::new(fake.clone()), settings, with(Err("no inputs today".to_owned()))).await;
+    // An empty image makes the job's `spec` fail.
+    let job = container(&test, "j1", "").await;
+    test.send(&job, start()).await;
+    test.run_until_idle().await;
+    let state: State = test.state(&job).await;
+    assert_eq!((state.phase, state.end, state.errors), (Phase::Started, None, 0), "adopted, no notStarted end");
+    assert_eq!(state.deadline, Some(time::add(test.now(), 60 * SECOND).unwrap()), "a fresh deadline");
+    assert_eq!(methods(&fake)[2..], ["inspect"], "no create, copies or start");
+
+    fake.exit_with("app-j1", ContainerStatus::Exited { code: 0 });
+    test.advance_time_by(2 * SECOND).await;
+    let end = test.state::<_, State>(&job).await.end.unwrap();
+    assert_eq!((end.outcome, end.kind), (Outcome::Exited, None));
+}
+
+/// Scenario: Kinds of failure: a start refused with `InvalidSpec` ends `notStarted` in the poll that tried it, without
+/// reading logs or backing off.
+#[tokio::test(start_paused = true)]
+async fn a_refused_start_ends_not_started_at_once() {
+    let fake = FakeRuntime::new();
+    fake.fail_next(Method::Start, ErrorKind::InvalidSpec);
+    let test = harness(&fake, settings()).await;
+    let job = container(&test, "j1", "alpine:3").await;
+    test.send(&job, start()).await;
+    test.run_until_idle().await;
+    let state: State = test.state(&job).await;
+    let end = state.end.unwrap();
+    assert_eq!((end.outcome, end.kind, end.logs.as_str()), (Outcome::Failed, Some(FailureKind::NotStarted), ""));
+    assert!(end.reason.starts_with("invalid spec: scripted failure of Start"), "{}", end.reason);
+    assert_eq!((state.errors, state.armed), (0, None), "no backoff");
+    test.advance_time_by(120 * SECOND).await;
+    assert_eq!(methods(&fake), ["inspect", "create", "start"], "no logs, no retry");
+    assert_eq!(ends(&test).await.len(), 1);
+}
+
+/// A started container that the runtime reports `Created`, whose start it refuses with `InvalidSpec`, ends
+/// `notStarted` too.
+#[tokio::test(start_paused = true)]
+async fn a_refused_start_of_a_created_container_being_followed_ends_not_started() {
+    let fake = FakeRuntime::new();
+    fake.create(&ContainerSpec::new("app-j1", "alpine:3")).await.unwrap();
+    fake.fail_next(Method::Start, ErrorKind::InvalidSpec);
+    let test = harness(&fake, settings()).await;
+    let job = Container::<TestJob>::named("j1");
+    let mut state = ContainerState::new(Run { image: "alpine:3".into() });
+    state.goal = Some(Goal::Run);
+    state.phase = Phase::Started;
+    test.create(&job, &state).await;
+    test.send(&job, ContainerMsg::Check).await;
+    test.run_until_idle().await;
+    let state: State = test.state(&job).await;
+    let end = state.end.unwrap();
+    assert_eq!((end.outcome, end.kind), (Outcome::Failed, Some(FailureKind::NotStarted)));
+    assert_eq!((state.errors, state.armed), (0, None));
+    assert_eq!(methods(&fake)[1..], ["inspect", "start"]);
+}
+
+/// Scenario: Kinds of failure, of a started container: `Failed` with `OUT_OF_MEMORY` is `outOfMemory`, with any other
+/// reason `runtimeEnded`, and `Missing` is `missing`; each keeps the runtime's code and reason.
+#[tokio::test(start_paused = true)]
+async fn the_runtimes_failures_of_a_started_container_have_their_kinds() {
+    let failed = |reason: &str| Some(ContainerStatus::Failed { code: Some(137), reason: reason.into() });
+    let cases = [
+        (failed(OUT_OF_MEMORY), FailureKind::OutOfMemory, Some(137), "out of memory"),
+        (failed("dead"), FailureKind::RuntimeEnded, Some(137), "dead"),
+        (failed("Out of memory"), FailureKind::RuntimeEnded, Some(137), "Out of memory"),
+        (None, FailureKind::Missing, None, "the container went missing"),
+    ];
+    for (status, kind, code, reason) in cases {
+        let fake = FakeRuntime::new();
+        let test = harness(&fake, settings()).await;
+        let job = container(&test, "j1", "alpine:3").await;
+        test.send(&job, start()).await;
+        test.run_until_idle().await;
+        match status {
+            Some(status) => fake.exit_with("app-j1", status),
+            None => fake.remove("app-j1").await.unwrap(),
+        }
+        test.advance_time_by(2 * SECOND).await;
+        let end = test.state::<_, State>(&job).await.end.unwrap();
+        assert_eq!((end.outcome, end.kind, end.code, end.reason.as_str()), (Outcome::Failed, Some(kind), code, reason));
+        assert_eq!(ends(&test).await[0].end, end);
+    }
+}
+
+/// Scenario: A timeout per request: with 60 s in the settings, a request the job gives 10 s ends `timedOut` after
+/// 10 s, one it gives 90 s after 90 s, one it gives none still runs after 120 s, and one it does not name gets 60 s.
+#[tokio::test(start_paused = true)]
+async fn each_request_gets_the_timeout_its_job_gives() {
+    let fake = FakeRuntime::new();
+    let mut settings = settings();
+    settings.timeout = Some(60 * SECOND);
+    let mut job = TestJob::plain();
+    job.timeouts.insert("short:1".into(), Some(10 * SECOND));
+    job.timeouts.insert("long:1".into(), Some(90 * SECOND));
+    job.timeouts.insert("endless:1".into(), None);
+    let test = harness_on(Arc::new(fake.clone()), settings, job).await;
+    let mut containers = Vec::new();
+    for (key, image) in [("short", "short:1"), ("long", "long:1"), ("endless", "endless:1"), ("plain", "alpine:3")] {
+        let container = container(&test, key, image).await;
+        test.send(&container, start()).await;
+        containers.push(container);
+    }
+    test.run_until_idle().await;
+    let started = test.now();
+    let deadlines = async || {
+        let mut deadlines = Vec::new();
+        for container in &containers {
+            let state: State = test.state(container).await;
+            deadlines.push(state.deadline.map(|deadline| time::between(started, deadline)));
+        }
+        deadlines
+    };
+    assert_eq!(deadlines().await, [Some(10 * SECOND), Some(90 * SECOND), None, Some(60 * SECOND)]);
+
+    let outcome = async |container: &Container<TestJob>| test.state::<_, State>(container).await.end.map(|e| e.outcome);
+    test.advance_time_by(10 * SECOND).await;
+    assert_eq!(outcome(&containers[0]).await, Some(Outcome::TimedOut));
+    assert_eq!(outcome(&containers[1]).await, None);
+    test.advance_time_by(50 * SECOND).await;
+    assert_eq!(outcome(&containers[3]).await, Some(Outcome::TimedOut), "the settings' 60 s");
+    assert_eq!(outcome(&containers[1]).await, None);
+    test.advance_time_by(30 * SECOND).await;
+    assert_eq!(outcome(&containers[1]).await, Some(Outcome::TimedOut));
+    test.advance_time_by(30 * SECOND).await;
+    assert_eq!(outcome(&containers[2]).await, None, "no limit");
+    assert_eq!(fake.inspect("app-endless").await.unwrap(), ContainerStatus::Running);
+}
+
+/// A timeout past the largest instant gives the deadline `MAX_INSTANT`, not no limit.
+#[tokio::test(start_paused = true)]
+async fn a_deadline_past_the_largest_instant_is_capped() {
+    let fake = FakeRuntime::new();
+    let mut job = TestJob::plain();
+    job.timeouts.insert("alpine:3".into(), Some(Duration::MAX));
+    job.timeouts.insert("busybox:1".into(), Some(Duration::from_secs(9000 * 365 * 24 * 3600)));
+    let test = harness_on(Arc::new(fake.clone()), settings(), job).await;
+    for (key, image) in [("j1", "alpine:3"), ("j2", "busybox:1")] {
+        let container = container(&test, key, image).await;
+        test.send(&container, start()).await;
+        test.run_until_idle().await;
+        let state: State = test.state(&container).await;
+        assert_eq!((state.phase, state.deadline), (Phase::Started, Some(MAX_INSTANT)), "{image}");
+    }
+}
+
+/// Writes the runtime of `$ty`, a wrapper of the fake in its field `fake`, with every method but `create`, `inspect`
+/// and `make_dirs` passed to the fake, and the methods given in braces.
 macro_rules! wrapper {
     ($ty:ty { $($methods:tt)* }) => {
         #[async_trait]
         impl ContainerRuntime for $ty {
-            async fn create(&self, spec: &ContainerSpec) -> Result<(), ContainerError> {
-                self.fake.create(spec).await
-            }
             async fn copy_in(&self, name: &str, files: &[CopyFile]) -> Result<(), ContainerError> {
                 self.fake.copy_in(name, files).await
             }
@@ -634,12 +801,15 @@ macro_rules! wrapper {
 }
 
 /// A host's runtime written before `make_dirs`: the fake, with the trait's default `make_dirs`, which fails with
-/// `Other`.
+/// `Unsupported`.
 struct Older {
     fake: FakeRuntime,
 }
 
 wrapper!(Older {
+    async fn create(&self, spec: &ContainerSpec) -> Result<(), ContainerError> {
+        self.fake.create(spec).await
+    }
     async fn inspect(&self, name: &str) -> Result<ContainerStatus, ContainerError> {
         self.fake.inspect(name).await
     }
@@ -660,10 +830,35 @@ impl Removing {
 }
 
 wrapper!(Removing {
+    async fn create(&self, spec: &ContainerSpec) -> Result<(), ContainerError> {
+        self.fake.create(spec).await
+    }
     async fn inspect(&self, name: &str) -> Result<ContainerStatus, ContainerError> {
         if self.inspects.fetch_add(1, Ordering::SeqCst) + 1 == self.at {
             self.fake.remove(name).await?;
         }
+        self.fake.inspect(name).await
+    }
+    async fn make_dirs(&self, name: &str, dirs: &[CopyDir]) -> Result<(), ContainerError> {
+        self.fake.make_dirs(name, dirs).await
+    }
+});
+
+/// The fake, where someone else removes the container right after its first create.
+struct Vanishing {
+    fake: FakeRuntime,
+    removed: AtomicBool,
+}
+
+wrapper!(Vanishing {
+    async fn create(&self, spec: &ContainerSpec) -> Result<(), ContainerError> {
+        self.fake.create(spec).await?;
+        if !self.removed.swap(true, Ordering::SeqCst) {
+            self.fake.remove(&spec.name).await?;
+        }
+        Ok(())
+    }
+    async fn inspect(&self, name: &str) -> Result<ContainerStatus, ContainerError> {
         self.fake.inspect(name).await
     }
     async fn make_dirs(&self, name: &str, dirs: &[CopyDir]) -> Result<(), ContainerError> {
@@ -683,7 +878,7 @@ fn out_and_config() -> Inputs {
 
 /// The test job with `inputs`.
 fn with(inputs: Result<Inputs, String>) -> TestJob {
-    TestJob { inputs }
+    TestJob { inputs, ..TestJob::plain() }
 }
 
 /// A started container of the job `j1` with `inputs` on `runtime`, after its first poll.
@@ -700,7 +895,7 @@ async fn started_with(runtime: Arc<dyn ContainerRuntime>, inputs: Inputs) -> (Te
 async fn inputs_are_made_and_written_between_create_and_start_and_never_stored() {
     let fake = FakeRuntime::new();
     let (test, job) = started_with(Arc::new(fake.clone()), out_and_config()).await;
-    assert_eq!(methods(&fake), ["create", "inspect", "make_dirs", "copy_in", "start"]);
+    assert_eq!(methods(&fake), ["inspect", "create", "make_dirs", "copy_in", "start"]);
     let calls = fake.calls();
     assert_eq!(calls[2], Call::MakeDirs { name: "app-j1".into(), dirs: out_and_config().dirs });
     assert_eq!(calls[3], Call::CopyIn { name: "app-j1".into(), files: out_and_config().files });
@@ -711,12 +906,12 @@ async fn inputs_are_made_and_written_between_create_and_start_and_never_stored()
     assert!(!stored.contains(SECRET) && !stored.contains("/out") && !stored.contains("config.json"), "{stored}");
 }
 
-/// Scenario: No inputs: only `create` and `start`, as before.
+/// Scenario: No inputs: only `inspect`, `create` and `start`.
 #[tokio::test(start_paused = true)]
 async fn a_job_without_inputs_only_creates_and_starts() {
     let fake = FakeRuntime::new();
     let (test, job) = started_with(Arc::new(fake.clone()), Inputs::default()).await;
-    assert_eq!(methods(&fake), ["create", "start"]);
+    assert_eq!(methods(&fake), ["inspect", "create", "start"]);
     assert_eq!(test.state::<_, State>(&job).await.phase, Phase::Started);
 }
 
@@ -727,7 +922,7 @@ async fn a_replayed_step_after_the_start_puts_no_inputs_in() {
     fake.create(&ContainerSpec::new("app-j1", "alpine:3")).await.unwrap();
     fake.start("app-j1").await.unwrap();
     let (test, job) = started_with(Arc::new(fake.clone()), out_and_config()).await;
-    assert_eq!(methods(&fake)[2..], ["create", "inspect", "start"], "no make_dirs or copy_in");
+    assert_eq!(methods(&fake)[2..], ["inspect"], "adopted: no create, make_dirs, copy_in or start");
     assert_eq!(fake.inspect("app-j1").await.unwrap(), ContainerStatus::Running);
     assert_eq!(test.state::<_, State>(&job).await.phase, Phase::Started);
 }
@@ -757,10 +952,10 @@ async fn inputs_that_cannot_be_built_end_failed_before_the_create() {
         test.run_until_idle().await;
         let state: State = test.state(&job).await;
         let end = state.end.unwrap();
-        assert_eq!(end.outcome, Outcome::Failed);
+        assert_eq!((end.outcome, end.kind), (Outcome::Failed, Some(FailureKind::NotStarted)));
         assert!(end.reason.starts_with(reason), "{reason}: {}", end.reason);
         assert_eq!((state.errors, state.armed), (0, None));
-        assert!(fake.calls().is_empty(), "{reason}: {:?}", fake.calls());
+        assert_eq!(methods(&fake), ["inspect"], "{reason}: no create");
         assert_eq!(ends(&test).await.len(), 1);
     }
 }
@@ -773,11 +968,11 @@ async fn an_input_the_runtime_refuses_ends_failed_without_a_start() {
     let (test, job) = started_with(Arc::new(fake.clone()), out_and_config()).await;
     let state: State = test.state(&job).await;
     let end = state.end.unwrap();
-    assert_eq!(end.outcome, Outcome::Failed);
+    assert_eq!((end.outcome, end.kind), (Outcome::Failed, Some(FailureKind::NotStarted)));
     assert!(end.reason.starts_with("invalid spec: scripted failure of CopyIn"), "{}", end.reason);
     assert_eq!((state.errors, state.armed), (0, None), "no backoff");
     test.advance_time_by(120 * SECOND).await;
-    assert_eq!(methods(&fake), ["create", "inspect", "make_dirs", "copy_in"], "no start, no retry");
+    assert_eq!(methods(&fake), ["inspect", "create", "make_dirs", "copy_in"], "no start, no retry");
     assert_eq!(fake.inspect("app-j1").await.unwrap(), ContainerStatus::Created, "kept until Remove");
 }
 
@@ -789,10 +984,10 @@ async fn a_conflict_while_the_container_is_still_created_ends_failed() {
     let (test, job) = started_with(Arc::new(fake.clone()), out_and_config()).await;
     let state: State = test.state(&job).await;
     let end = state.end.unwrap();
-    assert_eq!(end.outcome, Outcome::Failed);
+    assert_eq!((end.outcome, end.kind), (Outcome::Failed, Some(FailureKind::NotStarted)));
     assert!(end.reason.starts_with("conflict: scripted failure of MakeDirs"), "{}", end.reason);
     assert_eq!((state.errors, state.armed), (0, None));
-    assert_eq!(methods(&fake), ["create", "inspect", "make_dirs", "inspect"], "inspected again");
+    assert_eq!(methods(&fake), ["inspect", "create", "make_dirs", "inspect"], "inspected again");
 }
 
 /// Scenario: A conflict while copying, with the container gone at the new inspect: an error that backs off, and the
@@ -804,38 +999,56 @@ async fn a_conflict_with_the_container_gone_backs_off_and_the_next_poll_starts_i
     let (test, job) = started_with(Removing::runtime(&fake, 2), out_and_config()).await;
     let state: State = test.state(&job).await;
     assert_eq!((state.phase, state.errors, state.end), (Phase::New, 1, None));
-    assert_eq!(methods(&fake), ["create", "inspect", "make_dirs", "remove", "inspect"]);
+    assert_eq!(methods(&fake), ["inspect", "create", "make_dirs", "remove", "inspect"]);
     test.advance_time_by(4 * SECOND).await;
-    assert_eq!(methods(&fake)[5..], ["create", "inspect", "make_dirs", "copy_in", "start"]);
+    assert_eq!(methods(&fake)[5..], ["inspect", "create", "make_dirs", "copy_in", "start"]);
     let state: State = test.state(&job).await;
     assert_eq!((state.phase, state.errors), (Phase::Started, 0));
     assert_eq!(fake.inspect("app-j1").await.unwrap(), ContainerStatus::Running);
 }
 
-/// Scenario: A runtime without make_dirs: the trait's default `Other` ends the container `failed` at once.
+/// Scenario: A runtime without make_dirs: the trait's default `Unsupported` ends the container `failed` at once.
 #[tokio::test(start_paused = true)]
 async fn a_runtime_without_make_dirs_ends_failed_at_once() {
     let fake = FakeRuntime::new();
     let (test, job) = started_with(Arc::new(Older { fake: fake.clone() }), out_and_config()).await;
     let state: State = test.state(&job).await;
     let end = state.end.unwrap();
-    assert_eq!(end.outcome, Outcome::Failed);
+    assert_eq!((end.outcome, end.kind), (Outcome::Failed, Some(FailureKind::NotStarted)));
+    assert!(end.reason.starts_with("unsupported: "), "{}", end.reason);
     assert!(end.reason.contains("make_dirs is not supported by this runtime"), "{}", end.reason);
     assert_eq!((state.errors, state.armed), (0, None), "no backoff");
     test.advance_time_by(120 * SECOND).await;
-    assert_eq!(methods(&fake), ["create", "inspect"], "nothing more reaches the fake");
+    assert_eq!(methods(&fake), ["inspect", "create"], "nothing more reaches the fake");
 }
 
-/// Scenario: A container gone after create: an error that backs off, and the next poll creates it again.
+/// Scenario: Another error from make_dirs: `Other`, such as a passing error of the daemon, counts and backs off like
+/// any runtime error, and the next poll puts the inputs in.
+#[tokio::test(start_paused = true)]
+async fn another_error_from_make_dirs_backs_off_and_the_next_poll_starts_it() {
+    let fake = FakeRuntime::new();
+    fake.fail_next(Method::MakeDirs, ErrorKind::Other);
+    let (test, job) = started_with(Arc::new(fake.clone()), out_and_config()).await;
+    let state: State = test.state(&job).await;
+    assert_eq!((state.phase, state.errors, state.end), (Phase::New, 1, None));
+    assert_eq!(methods(&fake), ["inspect", "create", "make_dirs"]);
+    test.advance_time_by(4 * SECOND).await;
+    assert_eq!(methods(&fake)[3..], ["inspect", "create", "make_dirs", "copy_in", "start"]);
+    assert_eq!(test.state::<_, State>(&job).await.phase, Phase::Started);
+}
+
+/// Scenario: A container gone after create: removed before the copies, `make_dirs` finds it missing (`Conflict`), the
+/// new inspect does too, so the error backs off and the next poll creates it again.
 #[tokio::test(start_paused = true)]
 async fn a_container_gone_after_its_create_backs_off_and_the_next_poll_starts_it() {
     let fake = FakeRuntime::new();
-    let (test, job) = started_with(Removing::runtime(&fake, 1), out_and_config()).await;
+    let runtime = Arc::new(Vanishing { fake: fake.clone(), removed: AtomicBool::new(false) });
+    let (test, job) = started_with(runtime, out_and_config()).await;
     let state: State = test.state(&job).await;
     assert_eq!((state.phase, state.errors, state.end), (Phase::New, 1, None));
-    assert_eq!(methods(&fake), ["create", "remove", "inspect"]);
+    assert_eq!(methods(&fake), ["inspect", "create", "remove", "make_dirs", "inspect"]);
     test.advance_time_by(4 * SECOND).await;
-    assert_eq!(methods(&fake)[3..], ["create", "inspect", "make_dirs", "copy_in", "start"]);
+    assert_eq!(methods(&fake)[5..], ["inspect", "create", "make_dirs", "copy_in", "start"]);
     assert_eq!(test.state::<_, State>(&job).await.phase, Phase::Started);
 }
 
@@ -847,9 +1060,9 @@ async fn an_unavailable_daemon_while_copying_backs_off_and_the_next_poll_starts_
     let (test, job) = started_with(Arc::new(fake.clone()), out_and_config()).await;
     let state: State = test.state(&job).await;
     assert_eq!((state.phase, state.errors, state.end), (Phase::New, 1, None));
-    assert_eq!(methods(&fake), ["create", "inspect", "make_dirs"]);
+    assert_eq!(methods(&fake), ["inspect", "create", "make_dirs"]);
     test.advance_time_by(4 * SECOND).await;
-    assert_eq!(methods(&fake)[3..], ["create", "inspect", "make_dirs", "copy_in", "start"]);
+    assert_eq!(methods(&fake)[3..], ["inspect", "create", "make_dirs", "copy_in", "start"]);
     let state: State = test.state(&job).await;
     assert_eq!((state.phase, state.errors), (Phase::Started, 0));
     assert!(test.failures().await.is_empty(), "no turn fails");
@@ -929,6 +1142,12 @@ fn the_contract_of_a_test_job_matches_its_fixture() {
     assert_eq!(names("Goal"), [json!("run"), json!("stop"), json!("remove")]);
     assert_eq!(names("Phase"), [json!("new"), json!("started"), json!("ended"), json!("removed")]);
     assert_eq!(names("Outcome"), [json!("exited"), json!("failed"), json!("timedOut"), json!("stopped")]);
+    let kinds =
+        [json!("notStarted"), json!("outOfMemory"), json!("runtimeEnded"), json!("missing"), json!("runtimeErrors")];
+    assert_eq!(names("FailureKind"), kinds);
+    let end = &state["$defs"]["ContainerEnd"];
+    assert_eq!(end["required"], json!(["outcome", "reason"]), "an end saved before kinds has none");
+    assert!(end["properties"]["kind"].is_object());
     let docs = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/reference/contracts/test.container.json");
     assert!(!docs.exists(), "no fixed type name in the catalog");
 }
@@ -967,7 +1186,7 @@ async fn the_states_of_each_phase_and_the_end_payload_pass_their_samples() {
     test.run_until_idle().await;
     phases.push(test.state_json(&job).await.unwrap());
     fake.set_logs("app-j1", "done");
-    fake.exit_with("app-j1", ContainerStatus::Failed { code: Some(137), reason: "OOMKilled".into() });
+    fake.exit_with("app-j1", ContainerStatus::Failed { code: Some(137), reason: OUT_OF_MEMORY.into() });
     test.advance_time_by(2 * SECOND).await;
     phases.push(test.state_json(&job).await.unwrap());
     test.send(&job, ContainerMsg::Remove).await;
@@ -980,13 +1199,27 @@ async fn the_states_of_each_phase_and_the_end_payload_pass_their_samples() {
     }
     assert_state_sample::<State>(&json!({"request": {"image": "alpine:3"}}));
     let end = &phases[3]["end"];
-    assert_eq!(end, &json!({"outcome": "failed", "code": 137, "reason": "OOMKilled", "logs": "done\n"}));
+    assert_eq!(
+        end,
+        &json!({"outcome": "failed", "code": 137, "kind": "outOfMemory", "reason": "out of memory", "logs": "done\n"})
+    );
+    // Ends without a kind: one that did not fail, and a failed one saved before kinds.
+    for end in [
+        json!({"outcome": "exited", "code": 0, "kind": null, "reason": "exited with code 0", "logs": ""}),
+        json!({"outcome": "failed", "code": null, "reason": "the container went missing", "logs": ""}),
+    ] {
+        let state = json!({"request": {"image": "alpine:3"}, "goal": "run", "phase": "ended", "end": end});
+        assert_state_sample::<State>(&state);
+        assert_eq!(serde_json::from_value::<ContainerEnd>(end).unwrap().kind, None);
+    }
 
     let ended = serde_json::to_value(&ends(&test).await[0]).unwrap();
     assert_eq!(ended, json!({"key": "j1", "end": end}));
     let mut sample = json!({"type": "Ended"});
     sample.as_object_mut().unwrap().extend(ended.as_object().unwrap().clone());
     assert_message_sample::<WatcherMsg>(&sample);
+    let stopped = json!({"key": "j1", "end": {"outcome": "stopped", "kind": "missing", "reason": "stopped"}});
+    assert!(cicada::message::decode::<WatcherMsg>("Ended", &stopped).is_err(), "a kind where none belongs");
 
     for invalid in [
         json!({}),
@@ -997,6 +1230,10 @@ async fn the_states_of_each_phase_and_the_end_payload_pass_their_samples() {
         json!({"request": {"image": "a"}, "phase": "started"}),
         json!({"request": {"image": "a"}, "armed": "m1"}),
         json!({"request": {"image": "a"}, "goal": "stop", "phase": "ended", "end": {"outcome": "gone", "reason": ""}}),
+        json!({"request": {"image": "a"}, "goal": "stop", "phase": "ended",
+            "end": {"outcome": "stopped", "kind": "missing", "reason": "stopped"}}),
+        json!({"request": {"image": "a"}, "goal": "stop", "phase": "ended",
+            "end": {"outcome": "failed", "kind": "lost", "reason": "x"}}),
     ] {
         assert!(serde_json::from_value::<State>(invalid.clone()).is_err(), "{invalid}");
     }

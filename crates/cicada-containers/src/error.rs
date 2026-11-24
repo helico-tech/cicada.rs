@@ -40,6 +40,13 @@ pub enum ErrorKind {
     /// The runtime refused the spec or the arguments, such as a relative path for `copy_in` or `copy_out`, a
     /// `max_lines` of 0 for `logs_since` or a zero limit for `copy_out`.
     InvalidSpec,
+    /// The runtime does not implement the call: the trait's default [`logs_since`], [`copy_out`] and [`make_dirs`] of a
+    /// runtime written before them. A retry cannot help.
+    ///
+    /// [`logs_since`]: crate::ContainerRuntime::logs_since
+    /// [`copy_out`]: crate::ContainerRuntime::copy_out
+    /// [`make_dirs`]: crate::ContainerRuntime::make_dirs
+    Unsupported,
     /// Anything else the backend reports.
     Other,
 }
@@ -51,6 +58,7 @@ impl fmt::Display for ErrorKind {
             Self::Conflict => "conflict",
             Self::ImageNotFound => "image not found",
             Self::InvalidSpec => "invalid spec",
+            Self::Unsupported => "unsupported",
             Self::Other => "error",
         })
     }
@@ -63,7 +71,8 @@ mod tests {
     #[test]
     fn only_an_unavailable_daemon_is_retryable() {
         assert!(ContainerError::new(ErrorKind::DaemonUnavailable, "no socket").is_retryable());
-        for kind in [ErrorKind::Conflict, ErrorKind::ImageNotFound, ErrorKind::InvalidSpec, ErrorKind::Other] {
+        let others = [ErrorKind::Conflict, ErrorKind::ImageNotFound, ErrorKind::InvalidSpec, ErrorKind::Unsupported];
+        for kind in others.into_iter().chain([ErrorKind::Other]) {
             assert!(!ContainerError::new(kind, "x").is_retryable(), "{kind:?}");
         }
     }

@@ -15,7 +15,7 @@ use crate::dirs::{Make, Stat};
 use crate::paths::{MountTarget, Mounted, place};
 use crate::{
     ContainerError, ContainerSpec, ContainerStatus, ContainerSummary, CopyFile, ErrorKind, LogCursor, LogLine,
-    LogStream, MountKind, Networking, Resource, Tmpfs,
+    LogStream, MountKind, Networking, OUT_OF_MEMORY, Resource, Tmpfs,
 };
 
 /// The HTTP status of a refusal by the daemon; `None` for every other error.
@@ -205,7 +205,7 @@ pub(super) fn status_of(state: &ContainerState) -> Option<ContainerStatus> {
         },
         S::RUNNING | S::PAUSED | S::RESTARTING | S::STOPPING => ContainerStatus::Running,
         S::EXITED | S::REMOVING => match (state.oom_killed == Some(true), error) {
-            (true, _) => failed("out of memory"),
+            (true, _) => failed(OUT_OF_MEMORY),
             (false, Some(reason)) => failed(reason),
             (false, None) => ContainerStatus::Exited { code: code.unwrap_or(-1) },
         },
@@ -534,7 +534,8 @@ mod tests {
             assert_eq!(status_of(&three), Some(ContainerStatus::Exited { code: 3 }), "{exited:?}");
         }
         let oom = ContainerState { oom_killed: Some(true), exit_code: Some(137), ..state(S::EXITED) };
-        assert_eq!(status_of(&oom), Some(ContainerStatus::Failed { code: Some(137), reason: "out of memory".into() }));
+        assert_eq!(status_of(&oom), Some(ContainerStatus::Failed { code: Some(137), reason: OUT_OF_MEMORY.into() }));
+        assert_eq!(OUT_OF_MEMORY, "out of memory", "the text Docker's backend gave before the constant");
         let error = ContainerState { error: Some("lost".into()), exit_code: Some(1), ..state(S::EXITED) };
         assert_eq!(status_of(&error), Some(ContainerStatus::Failed { code: Some(1), reason: "lost".into() }));
         let empty_error = ContainerState { error: Some(String::new()), ..state(S::EXITED) };

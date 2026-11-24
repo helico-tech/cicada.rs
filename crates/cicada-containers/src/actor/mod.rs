@@ -19,12 +19,15 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 pub use wire::{
-    ContainerEnd, ContainerEnded, ContainerMsg, ContainerState, EndTarget, Goal, InvalidContainer, Outcome, Phase,
+    ContainerEnd, ContainerEnded, ContainerMsg, ContainerState, EndTarget, FailureKind, Goal, InvalidContainer,
+    Outcome, Phase,
 };
 
 use crate::dirs::MAKE;
 use crate::paths::path_parts;
-use crate::{ContainerError, ContainerRuntime, ContainerSpec, ContainerStatus, CopyDir, CopyFile, ErrorKind};
+use crate::{
+    ContainerError, ContainerRuntime, ContainerSpec, ContainerStatus, CopyDir, CopyFile, ErrorKind, OUT_OF_MEMORY,
+};
 
 /// The longest container name, prefix and key together.
 const MAX_NAME_LENGTH: usize = 200;
@@ -68,28 +71,72 @@ pub trait ContainerJob: Send + Sync + 'static {
     type Request: Serialize + DeserializeOwned + JsonSchema + Send + Sync + 'static;
 
     /// The spec of the container `name` for `request`, built at each create, so secrets never reach the store. The actor
-    /// sets the spec's name to `name` whatever it returns. An `Err` ends the container `failed` with its text, and
-    /// nothing is made. It is sync: load what it needs before the actor runs.
+    /// sets the spec's name to `name` whatever it returns. An `Err` ends the container `failed` with its text and the
+    /// kind `notStarted`, and nothing is made. It is sync: load what it needs before the actor runs.
+    ///
+    /// A create step first inspects the container: one an earlier step started, whose commit was lost, is adopted
+    /// without calling `spec` or [`inputs`](Self::inputs), so a refusal now never ends a running container.
     fn spec(&self, name: &str, request: &Self::Request) -> Result<ContainerSpec, String>;
+
+    /// How long the container of `request` may run before it is stopped and ends `timedOut`, given the settings'
+    /// [`timeout`](ContainerSettings::timeout) as `settings`, which it returns by default; `None` is no limit. Asked
+    /// once, when the container starts: the deadline, capped at the largest instant, is saved then and never moves,
+    /// also when the settings or this method change later. An adopted container gets a fresh deadline, counted from
+    /// its adoption.
+    ///
+    /// ```
+    /// # use cicada::prelude::*;
+    /// # use cicada_containers::{ContainerJob, ContainerSpec};
+    /// # use serde::{Deserialize, Serialize};
+    /// use std::time::Duration;
+    ///
+    /// #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+    /// struct Run {
+    ///     /// The run's own limit in seconds, or the settings' when none.
+    ///     limit: Option<u64>,
+    /// }
+    ///
+    /// struct Runs;
+    ///
+    /// impl ContainerJob for Runs {
+    ///     const TYPE: &'static str = "factory.run";
+    ///     type Request = Run;
+    ///
+    ///     fn spec(&self, name: &str, _: &Run) -> Result<ContainerSpec, String> {
+    ///         Ok(ContainerSpec::new(name, "alpine:3"))
+    ///     }
+    ///
+    ///     fn timeout(&self, run: &Run, settings: Option<Duration>) -> Option<Duration> {
+    ///         run.limit.map(Duration::from_secs).or(settings)
+    ///     }
+    /// }
+    ///
+    /// let ten = Some(Duration::from_secs(10));
+    /// assert_eq!(Runs.timeout(&Run { limit: Some(3) }, ten), Some(Duration::from_secs(3)));
+    /// assert_eq!(Runs.timeout(&Run { limit: None }, ten), ten);
+    /// ```
+    fn timeout(&self, request: &Self::Request, settings: Option<Duration>) -> Option<Duration> {
+        let _ = request;
+        settings
+    }
 
     /// The folders and files the container `name` gets for `request` before it starts; none by default. Like
     /// [`spec`](Self::spec) it is sync and built at each create, after the spec, and never stored, so secrets never
     /// reach the store.
     ///
     /// The actor creates the container, makes the folders ([`make_dirs`](ContainerRuntime::make_dirs)), then writes the
-    /// files ([`copy_in`](ContainerRuntime::copy_in)), then starts it, so a file can go into a fresh folder. It puts
-    /// them in only while the container is `Created`: a step that runs again after its container started skips them.
-    /// One still `Created` gets them again, which is safe: nothing that exists is made again, and the same files are
-    /// written. Without inputs the step calls only `create` and `start`.
+    /// files ([`copy_in`](ContainerRuntime::copy_in)), then starts it, so a file can go into a fresh folder. The step
+    /// first inspects the container and adopts one past `Created` without building the inputs, so they go in only
+    /// while it is missing or `Created`. One still `Created` gets them again, which is safe: nothing that exists is
+    /// made again, and the same files are written. Without inputs the step calls only `inspect`, `create` and `start`.
     ///
-    /// The container ends `failed`, before anything is made, for an `Err`, with its text; for a path that is relative,
-    /// has a `..` part or names no file; and for a file at a folder's path or above it (dirs `/a/b`, file `/a`), as
-    /// writing it would replace the folder and what is in it. Paths are compared without empty and `.` parts, so
-    /// `/out/.` and `/out` are one. It ends `failed` too when the runtime refuses an input (`InvalidSpec`), finds a
-    /// file where a folder is asked (`Conflict` while the container is still `Created`), or has no `make_dirs`
-    /// (`Other`); the created container then stays until `Remove`. Any other runtime error counts and backs off, and
-    /// the next poll puts the inputs in again. As with `spec`, an `Err` on a step that runs again after its container
-    /// started ends it `failed` and leaves it running until `Remove`.
+    /// The container ends `failed` with the kind `notStarted`, before anything is made, for an `Err`, with its text;
+    /// for a path that is relative, has a `..` part or names no file; and for a file at a folder's path or above it
+    /// (dirs `/a/b`, file `/a`), as writing it would replace the folder and what is in it. Paths are compared without
+    /// empty and `.` parts, so `/out/.` and `/out` are one. It ends so too when the runtime refuses an input
+    /// (`InvalidSpec`), finds a file where a folder is asked (`Conflict` while the container is still `Created`), or
+    /// has no `make_dirs` (`Unsupported`); the created container then stays until `Remove`. Any other runtime error,
+    /// `Other` too, counts and backs off, and the next poll puts the inputs in again.
     ///
     /// Put secret files on the container's own file system, not on a volume: `Remove` deletes the container with its
     /// files, while a named volume outlives it. A tmpfs is refused, as it is mounted only at start.
@@ -205,7 +252,8 @@ pub struct ContainerSettings {
     pub max_backoff: Duration,
     /// The runtime errors in a row that end a container without an end `failed`; 10. A removal keeps trying.
     pub max_errors: u32,
-    /// How long a container may run before it is stopped and ends `timedOut`; none.
+    /// How long a container may run before it is stopped and ends `timedOut`; none. The default of
+    /// [`ContainerJob::timeout`], which can change it per request.
     pub timeout: Option<Duration>,
     /// How long a stop waits before it kills the container; 10 s. It runs inside one turn.
     pub stop_grace: Duration,
@@ -274,12 +322,18 @@ fn retry_policy() -> RetryPolicy {
 
 /// The container actor type of the job `J`, under `J::TYPE`, with its runtime and settings.
 ///
-/// Each poll takes one step for its goal and phase: for run, a new container is built by the job's spec, created, given
-/// the job's inputs and started, and a started one is inspected until it ends (started again while created, stopped
-/// at its deadline); for stop or remove before the end, it is stopped and inspected, and ends `stopped`, or `timedOut`
-/// past its deadline; for remove after the end, it is removed. `ImageNotFound` and `InvalidSpec` from `create` end it `failed` at once. Any
-/// other runtime error counts in a row and delays the next poll by the interval doubled per error, up to the maximum;
-/// at the maximum errors in a row a container without an end ends `failed`.
+/// Each poll takes one step for its goal and phase: for run, a new container is inspected and adopted when an earlier
+/// step started it, else built by the job's spec, created, given the job's inputs and started; a started one is
+/// inspected until it ends (started again while created, stopped at its deadline); for stop or remove before the end,
+/// it is stopped and inspected, and ends `stopped`, or `timedOut` past its deadline; for remove after the end, it is
+/// removed. `ImageNotFound` and `InvalidSpec` from `create`, and `InvalidSpec` from `start`, end it `failed` at once,
+/// with the kind `notStarted`. Any other runtime error counts in a row and delays the next poll by the interval
+/// doubled per error, up to the maximum; at the maximum errors in a row a container without an end ends `failed`
+/// with the kind `runtimeErrors`.
+///
+/// Limit: a start refused with another error kind, such as `Other`, counts as an error, and the end comes from a later
+/// inspect, as `runtimeEnded` when the runtime reports the container `Failed`: a status bears no mark of a refused
+/// start.
 ///
 /// Every node that can claim these actors must reach the same daemon: pin them with a claim owner when only some do
 /// (ADR 0052). A create's image pull and a stop's grace run inside one turn and its maximum duration.
@@ -425,7 +479,7 @@ impl<J: ContainerJob> ContainerActor<J> {
                 turn.state_mut().phase = Phase::Removed;
                 return Ok(());
             }
-            Err(reason) => return self.end(turn, Outcome::Failed, None, reason, String::new()).await,
+            Err(reason) => return self.refuse(turn, reason).await,
         };
         match (goal, phase) {
             (Goal::Run, Phase::New) => self.create(turn, &name).await,
@@ -435,9 +489,15 @@ impl<J: ContainerJob> ContainerActor<J> {
         }
     }
 
-    /// Builds the spec and the inputs, creates the container, puts the inputs in while it is `Created`, starts it, and
-    /// sets the deadline.
+    /// Adopts a container an earlier step started; else builds the spec and the inputs, creates the container, puts
+    /// the inputs in, starts it and sets the deadline.
     async fn create(&self, turn: &mut ContainerTurn<J>, name: &str) -> HandlerResult {
+        match self.runtime.inspect(name).await {
+            Ok(ContainerStatus::Missing | ContainerStatus::Created) => {}
+            // Started by an earlier run of this step, whose commit was lost: its spec and inputs are not built again.
+            Ok(_) => return self.started(turn),
+            Err(e) => return self.error(turn, e).await,
+        }
         let request = &turn.state().request;
         let built = self.job.spec(name, request).and_then(|spec| {
             let inputs = self.job.inputs(name, request)?;
@@ -446,48 +506,52 @@ impl<J: ContainerJob> ContainerActor<J> {
         });
         let (mut spec, inputs) = match built {
             Ok(built) => built,
-            Err(reason) => return self.end(turn, Outcome::Failed, None, reason, String::new()).await,
+            Err(reason) => return self.refuse(turn, reason).await,
         };
         spec.name = name.to_owned();
         if let Err(e) = self.runtime.create(&spec).await {
             if matches!(e.kind, ErrorKind::ImageNotFound | ErrorKind::InvalidSpec) {
-                return self.end(turn, Outcome::Failed, None, e.to_string(), String::new()).await;
+                return self.refuse(turn, e.to_string()).await;
             }
             return self.error(turn, e).await;
         }
-        if !(inputs.dirs.is_empty() && inputs.files.is_empty()) {
-            match self.runtime.inspect(name).await {
-                Ok(ContainerStatus::Created) => {
-                    if !inputs.dirs.is_empty()
-                        && let Err(e) = self.runtime.make_dirs(name, &inputs.dirs).await
-                    {
-                        return self.refused(turn, name, e, true).await;
-                    }
-                    if !inputs.files.is_empty()
-                        && let Err(e) = self.runtime.copy_in(name, &inputs.files).await
-                    {
-                        return self.refused(turn, name, e, false).await;
-                    }
-                }
-                Ok(ContainerStatus::Missing) => {
-                    let missing = format!("container {name} is missing right after its create");
-                    return self.error(turn, ContainerError::new(ErrorKind::Conflict, missing)).await;
-                }
-                // Started by an earlier run of this step, whose commit was lost: its inputs are in.
-                Ok(_) => {}
-                Err(e) => return self.error(turn, e).await,
-            }
+        // A container removed since the inspect makes the copies fail with `Conflict`, which `refused` inspects.
+        if !inputs.dirs.is_empty()
+            && let Err(e) = self.runtime.make_dirs(name, &inputs.dirs).await
+        {
+            return self.refused(turn, name, e, true).await;
+        }
+        if !inputs.files.is_empty()
+            && let Err(e) = self.runtime.copy_in(name, &inputs.files).await
+        {
+            return self.refused(turn, name, e, false).await;
         }
         if let Err(e) = self.runtime.start(name).await {
-            return self.error(turn, e).await;
+            return self.start_failed(turn, e).await;
         }
+        self.started(turn)
+    }
+
+    /// Saves the container as started with its deadline from now, and arms the next poll.
+    fn started(&self, turn: &mut ContainerTurn<J>) -> HandlerResult {
         let now = turn.current_time();
-        let deadline = self.settings.timeout.and_then(|timeout| time::add(now, timeout).ok());
+        let timeout = self.job.timeout(&turn.state().request, self.settings.timeout);
+        let deadline = timeout.map(|timeout| {
+            time::add(now, timeout).ok().filter(|deadline| *deadline <= MAX_INSTANT).unwrap_or(MAX_INSTANT)
+        });
         let state = turn.state_mut();
         state.phase = Phase::Started;
         state.errors = 0;
-        state.deadline = deadline.filter(|deadline| *deadline <= MAX_INSTANT);
+        state.deadline = deadline;
         arm_after(turn, self.settings.poll_interval)
+    }
+
+    /// Handles `error` from `start`: ends the container `failed` as `notStarted` for `InvalidSpec`, else counts it.
+    async fn start_failed(&self, turn: &mut ContainerTurn<J>, error: ContainerError) -> HandlerResult {
+        if error.kind == ErrorKind::InvalidSpec {
+            return self.refuse(turn, error.to_string()).await;
+        }
+        self.error(turn, error).await
     }
 
     /// Inspects a started container: follows it while it runs, stops it at its deadline, and records its end.
@@ -501,7 +565,7 @@ impl<J: ContainerJob> ContainerActor<J> {
                 if status == ContainerStatus::Created
                     && let Err(e) = self.runtime.start(name).await
                 {
-                    return self.error(turn, e).await;
+                    return self.start_failed(turn, e).await;
                 }
                 turn.state_mut().errors = 0;
                 let now = turn.current_time();
@@ -513,14 +577,16 @@ impl<J: ContainerJob> ContainerActor<J> {
             }
             ContainerStatus::Exited { code } => {
                 let Some(logs) = self.logs(turn, name).await? else { return Ok(()) };
-                self.end(turn, Outcome::Exited, Some(code), format!("exited with code {code}"), logs).await
+                self.end(turn, Outcome::Exited, None, Some(code), format!("exited with code {code}"), logs).await
             }
             ContainerStatus::Failed { code, reason } => {
                 let Some(logs) = self.logs(turn, name).await? else { return Ok(()) };
-                self.end(turn, Outcome::Failed, code, reason, logs).await
+                let kind = if reason == OUT_OF_MEMORY { FailureKind::OutOfMemory } else { FailureKind::RuntimeEnded };
+                self.fail(turn, kind, code, reason, logs).await
             }
             ContainerStatus::Missing => {
-                self.end(turn, Outcome::Failed, None, "the container went missing".to_owned(), String::new()).await
+                let reason = "the container went missing".to_owned();
+                self.fail(turn, FailureKind::Missing, None, reason, String::new()).await
             }
         }
     }
@@ -537,7 +603,7 @@ impl<J: ContainerJob> ContainerActor<J> {
         };
         if status == ContainerStatus::Missing {
             let reason = "stopped; no container was found".to_owned();
-            return self.end(turn, Outcome::Stopped, None, reason, String::new()).await;
+            return self.end(turn, Outcome::Stopped, None, None, reason, String::new()).await;
         }
         let Some(logs) = self.logs(turn, name).await? else { return Ok(()) };
         let now = turn.current_time();
@@ -547,7 +613,7 @@ impl<J: ContainerJob> ContainerActor<J> {
             }
             _ => (Outcome::Stopped, "stopped".to_owned()),
         };
-        self.end(turn, outcome, exit_code(&status), reason, logs).await
+        self.end(turn, outcome, None, exit_code(&status), reason, logs).await
     }
 
     /// Removes an ended container.
@@ -581,8 +647,9 @@ impl<J: ContainerJob> ContainerActor<J> {
     }
 
     /// Handles `error` from putting the inputs in, of `make_dirs` when `making`, else of `copy_in`: ends the container
-    /// `failed` for `InvalidSpec`, for `Other` from `make_dirs` (a runtime without it, which a retry cannot help), and
-    /// for `Conflict` while a new inspect still finds it `Created` (a file where a folder is asked); else counts it.
+    /// `failed` as `notStarted` for `InvalidSpec`, for `Unsupported` from `make_dirs` (a runtime without it, which a
+    /// retry cannot help), and for `Conflict` while a new inspect still finds it `Created` (a file where a folder is
+    /// asked); else counts it, `Other` too, as a passing daemon error must not end a job for good.
     async fn refused(
         &self,
         turn: &mut ContainerTurn<J>,
@@ -592,40 +659,59 @@ impl<J: ContainerJob> ContainerActor<J> {
     ) -> HandlerResult {
         let refused = match error.kind {
             ErrorKind::InvalidSpec => true,
-            ErrorKind::Other => making,
+            ErrorKind::Unsupported => making,
             // The first inspect can be out of date: a container no longer `Created` is a runtime error.
             ErrorKind::Conflict => matches!(self.runtime.inspect(name).await, Ok(ContainerStatus::Created)),
             _ => false,
         };
         if refused {
-            return self.end(turn, Outcome::Failed, None, error.to_string(), String::new()).await;
+            return self.refuse(turn, error.to_string()).await;
         }
         self.error(turn, error).await
     }
 
     /// Counts a runtime error and arms the next poll after the backoff; at the maximum in a row, a container without an
-    /// end ends `failed`, while a removal keeps trying.
+    /// end ends `failed` as `runtimeErrors`, while a removal keeps trying.
     async fn error(&self, turn: &mut ContainerTurn<J>, error: ContainerError) -> HandlerResult {
         let state = turn.state_mut();
         state.errors = state.errors.saturating_add(1);
         let errors = state.errors;
         if errors >= self.settings.max_errors && state.end.is_none() {
             let reason = format!("the runtime failed {errors} times in a row: {error}");
-            return self.end(turn, Outcome::Failed, None, reason, String::new()).await;
+            return self.fail(turn, FailureKind::RuntimeErrors, None, reason, String::new()).await;
         }
         arm_after(turn, self.settings.backoff(errors))
     }
 
-    /// Records the end, sends it to the target in the same commit, and arms the removal when that is the goal.
-    async fn end(
+    /// Ends the container `failed` as `notStarted` for `reason`, without code or logs: it never ran.
+    async fn refuse(&self, turn: &mut ContainerTurn<J>, reason: String) -> HandlerResult {
+        self.fail(turn, FailureKind::NotStarted, None, reason, String::new()).await
+    }
+
+    /// Ends the container `failed` with `kind`.
+    async fn fail(
         &self,
         turn: &mut ContainerTurn<J>,
-        outcome: Outcome,
+        kind: FailureKind,
         code: Option<i64>,
         reason: String,
         logs: String,
     ) -> HandlerResult {
-        let end = ContainerEnd { outcome, code, reason: text::reason(&reason), logs };
+        self.end(turn, Outcome::Failed, Some(kind), code, reason, logs).await
+    }
+
+    /// Records the end, sends it to the target in the same commit, and arms the removal when that is the goal. `kind`
+    /// is set exactly for `failed`.
+    async fn end(
+        &self,
+        turn: &mut ContainerTurn<J>,
+        outcome: Outcome,
+        kind: Option<FailureKind>,
+        code: Option<i64>,
+        reason: String,
+        logs: String,
+    ) -> HandlerResult {
+        let end = ContainerEnd { outcome, code, kind, reason: text::reason(&reason), logs };
         let state = turn.state_mut();
         state.end = Some(end.clone());
         state.phase = Phase::Ended;

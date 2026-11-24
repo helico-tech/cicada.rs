@@ -3,8 +3,8 @@
 use cicada::prelude::*;
 use cicada::runtime::limits::MAX_TYPE_LENGTH;
 use cicada::time::Timestamp;
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use serde::de::{DeserializeOwned, Error as _};
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// Settings, a `Start` or a state of a container actor out of their bounds; it prints why.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -131,7 +131,8 @@ pub enum Outcome {
     /// The program exited by itself, with its code.
     Exited,
     /// The runtime ended it, or it could not be run: it did not start, ran out of memory, went missing, the runtime
-    /// failed too often in a row, or its key, request or spec was refused.
+    /// failed too often in a row, or its key, request, spec, start or inputs were refused. The end's
+    /// [`kind`](ContainerEnd::kind) says which.
     Failed,
     /// It ran past its deadline and was stopped.
     TimedOut,
@@ -139,21 +140,67 @@ pub enum Outcome {
     Stopped,
 }
 
+/// Why a container ended `failed`, for a host that routes failures: set on every `failed` end since 0.21.0 and on no
+/// other end. An end saved before has none, also when it failed, as no kind is guessed from its reason.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum FailureKind {
+    /// It never ran: its key, spec, image, start or inputs were refused, or a runtime call it needs is unsupported.
+    NotStarted,
+    /// The runtime killed it for lack of memory: it reported `Failed` with the reason
+    /// [`OUT_OF_MEMORY`](crate::OUT_OF_MEMORY).
+    OutOfMemory,
+    /// The runtime reported another failure of a started container, such as a dead one or an error of the daemon.
+    RuntimeEnded,
+    /// A started container was gone.
+    Missing,
+    /// The runtime failed the settings' maximum errors in a row.
+    RuntimeErrors,
+}
+
 /// The end of a container: saved in the state and sent to the target in the commit that records it, before anything
-/// removes the container.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+/// removes the container. Decoding refuses a `kind` on an end that is not `failed`, in a state and in a
+/// [`ContainerEnded`] alike.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct ContainerEnd {
     /// How it ended.
     pub outcome: Outcome,
     /// The exit code, when the runtime gave one.
     #[serde(default)]
     pub code: Option<i64>,
+    /// Why it failed, on a `failed` end only; none on an end saved before 0.21.0.
+    #[serde(default)]
+    pub kind: Option<FailureKind>,
     /// Why, in words: at most 1 KiB, without NUL.
     pub reason: String,
     /// The tail of its output, stdout and stderr together: at most the settings' last lines and bytes, without NUL;
     /// empty when nothing was made, or `(no logs: …)` when they could not be read.
     #[serde(default)]
     pub logs: String,
+}
+
+impl<'de> Deserialize<'de> for ContainerEnd {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        /// The wire form of a [`ContainerEnd`], unchecked.
+        #[derive(Deserialize)]
+        struct RawEnd {
+            outcome: Outcome,
+            #[serde(default)]
+            code: Option<i64>,
+            #[serde(default)]
+            kind: Option<FailureKind>,
+            reason: String,
+            #[serde(default)]
+            logs: String,
+        }
+
+        let RawEnd { outcome, code, kind, reason, logs } = RawEnd::deserialize(deserializer)?;
+        if kind.is_some() && outcome != Outcome::Failed {
+            return Err(D::Error::custom("an end has a kind only when it is failed"));
+        }
+        Ok(Self { outcome, code, kind, reason, logs })
+    }
 }
 
 /// The payload of the end message a container actor sends: its key, as given, and its end. A host's message family
@@ -183,8 +230,8 @@ pub struct ContainerState<R> {
     pub phase: Phase,
     /// Where the end goes; none before the first `Start`.
     pub target: Option<EndTarget>,
-    /// The store time after which a running container is stopped and ends `timedOut`; set at its start when the
-    /// settings have a timeout.
+    /// The store time after which a running container is stopped and ends `timedOut`; set at its start when its job's
+    /// `timeout` gives one, capped at the largest instant, and never moved.
     pub deadline: Option<Timestamp>,
     /// The end, once recorded.
     pub end: Option<ContainerEnd>,
@@ -334,6 +381,52 @@ mod tests {
         }
         let removed = json!({"request": 1, "goal": "remove", "phase": "removed", "end": end});
         assert!(decode(removed).is_ok());
+    }
+
+    #[test]
+    fn a_failed_end_saved_before_kinds_decodes_without_one() {
+        let end = json!({"outcome": "failed", "code": null, "reason": "the container went missing", "logs": ""});
+        let state = json!({"request": 1, "goal": "run", "phase": "ended", "end": end});
+        assert_eq!(decode(state).unwrap().end.unwrap().kind, None);
+        let ended: ContainerEnded = serde_json::from_value(json!({"key": "j1", "end": end})).unwrap();
+        assert_eq!((ended.end.outcome, ended.end.kind), (Outcome::Failed, None));
+    }
+
+    #[test]
+    fn a_kind_on_an_end_that_is_not_failed_is_refused() {
+        for outcome in ["exited", "timedOut", "stopped"] {
+            let end = json!({"outcome": outcome, "kind": "missing", "reason": "x"});
+            let state = json!({"request": 1, "goal": "stop", "phase": "ended", "end": end});
+            let decoded = decode(state);
+            assert!(decoded.as_ref().is_err_and(|e| e.to_string().contains("only when it is failed")), "{decoded:?}");
+            let ended = serde_json::from_value::<ContainerEnded>(json!({"key": "j1", "end": end}));
+            assert!(ended.as_ref().is_err_and(|e| e.to_string().contains("only when it is failed")), "{ended:?}");
+        }
+        let failed = json!({"outcome": "failed", "kind": "outOfMemory", "reason": "out of memory"});
+        let ended: ContainerEnded = serde_json::from_value(json!({"key": "j1", "end": failed})).unwrap();
+        assert_eq!(ended.end.kind, Some(FailureKind::OutOfMemory));
+    }
+
+    #[test]
+    fn the_failure_kinds_are_camel_case() {
+        let kinds = [
+            FailureKind::NotStarted,
+            FailureKind::OutOfMemory,
+            FailureKind::RuntimeEnded,
+            FailureKind::Missing,
+            FailureKind::RuntimeErrors,
+        ];
+        let names: Vec<Value> = kinds.iter().map(|kind| serde_json::to_value(kind).unwrap()).collect();
+        assert_eq!(
+            names,
+            [
+                json!("notStarted"),
+                json!("outOfMemory"),
+                json!("runtimeEnded"),
+                json!("missing"),
+                json!("runtimeErrors")
+            ]
+        );
     }
 
     #[test]
