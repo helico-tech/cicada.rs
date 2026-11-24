@@ -21,7 +21,7 @@ Automatic retry policies per job (a host can send `Retry` from its own policy). 
 
 ## Order
 
-After `job-graph-cancel`, before `postgres-load-test`.
+After `job-graph-cancel`, before `pool-size-check`.
 
 ## Impact
 
