@@ -243,9 +243,9 @@ impl VolumeSpec {
     }
 }
 
-/// A file for [`copy_in`](crate::ContainerRuntime::copy_in).
+/// A file for [`copy_in`](crate::ContainerRuntime::copy_in). `Debug` shows its path, mode and length, not its contents.
 #[non_exhaustive]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct CopyFile {
     /// The absolute path in the container.
     pub path: String,
@@ -262,6 +262,16 @@ impl CopyFile {
     }
 }
 
+impl fmt::Debug for CopyFile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CopyFile")
+            .field("path", &self.path)
+            .field("mode", &format_args!("{:#o}", self.mode))
+            .field("len", &self.contents.len())
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,6 +284,12 @@ mod tests {
         assert!(debug.contains("TOKEN"), "{debug}");
         assert!(!debug.contains("s3cret"), "{debug}");
         assert!(!format!("{spec:#?}").contains("s3cret"));
+    }
+
+    #[test]
+    fn debug_output_of_a_file_shows_no_contents() {
+        let file = CopyFile::new("/work/token", "s3cret");
+        assert_eq!(format!("{file:?}"), r#"CopyFile { path: "/work/token", mode: 0o644, len: 6 }"#);
     }
 
     #[test]

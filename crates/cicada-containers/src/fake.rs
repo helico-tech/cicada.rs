@@ -242,15 +242,26 @@ impl ContainerRuntime for FakeRuntime {
             return Err(conflict(format!("container {name} is {:?}, not created", container.status)));
         }
         for file in files {
+            let invalid = |why: &str| ContainerError::new(ErrorKind::InvalidSpec, format!("{} {why}", file.path));
             if !file.path.starts_with('/') {
-                return Err(ContainerError::new(ErrorKind::InvalidSpec, format!("relative path {}", file.path)));
+                return Err(invalid("is a relative path"));
             }
-            let mounted = container.spec.mounts.iter().any(|mount| under(&file.path, &mount.target));
-            if container.spec.read_only_root && !mounted {
-                return Err(ContainerError::new(
-                    ErrorKind::InvalidSpec,
-                    format!("{} is on the read-only root of {name}", file.path),
-                ));
+            if file.path.split('/').any(|part| part == "..") {
+                return Err(invalid("has a `..` part"));
+            }
+            // The deepest mount that holds the path, as Docker writes there.
+            let mount = container
+                .spec
+                .mounts
+                .iter()
+                .filter(|mount| under(&file.path, &mount.target))
+                .max_by_key(|mount| mount.target.trim_end_matches('/').len());
+            match mount {
+                Some(mount) if mount.read_only => return Err(invalid(&format!("is on a read-only mount of {name}"))),
+                None if container.spec.read_only_root => {
+                    return Err(invalid(&format!("is on the read-only root of {name}")));
+                }
+                _ => {}
             }
         }
         for file in files {
@@ -531,6 +542,21 @@ mod tests {
         assert_eq!(kind(now(fake.copy_in("job-1", &root))), ErrorKind::InvalidSpec);
         assert!(fake.lock().containers["job-1"].files.is_empty(), "all or nothing");
         now(fake.copy_in("job-1", &[CopyFile::new("/work/a", "x")])).unwrap();
+    }
+
+    #[test]
+    fn copy_in_refuses_a_parent_part_and_a_read_only_mount() {
+        let fake = FakeRuntime::new();
+        let mut spec = ContainerSpec::new("job-1", "alpine:3");
+        let mut input = Mount::new(MountKind::Bind, "/srv/in", "/in");
+        input.read_only = true;
+        spec.mounts = vec![input, Mount::new(MountKind::Volume, "out", "/in/out")];
+        now(fake.create(&spec)).unwrap();
+        let parent = [CopyFile::new("/work/../etc/passwd", "x")];
+        assert_eq!(kind(now(fake.copy_in("job-1", &parent))), ErrorKind::InvalidSpec);
+        assert_eq!(kind(now(fake.copy_in("job-1", &[CopyFile::new("/in/a", "x")]))), ErrorKind::InvalidSpec);
+        assert!(fake.lock().containers["job-1"].files.is_empty());
+        now(fake.copy_in("job-1", &[CopyFile::new("/in/out/a", "x"), CopyFile::new("/etc/b", "x")])).unwrap();
     }
 
     #[test]
