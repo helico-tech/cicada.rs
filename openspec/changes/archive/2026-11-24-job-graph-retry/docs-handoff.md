@@ -91,3 +91,10 @@ Ran: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D wa
 cicada-examples --test docs` (11 passed) and `--test skill` (18 passed), `openspec validate job-graph-retry --strict`
 (valid); the gate's result is in the review request. All text above is proposed; no protected prose is written. The guide section itself is still to be written from the
 `job-graph`, `job-graph-failures` and `job-graph-cancel` handoffs.
+
+## Notes from the code review (added by the change loop)
+
+- A run keeps a job's last 20 attempts. If 20 newer attempts start before a waiting cancel notice of an old attempt
+  runs, that attempt is dropped and its cancel is never sent; only many fast retries get there. Worth a caveat.
+- The decoder accepts a hand-made running state whose `ends` is already at its maximum; when such a run ends, the last
+  result, cancel or failure notice is refused for good and the run stays running. A `Retry` cannot get there.
