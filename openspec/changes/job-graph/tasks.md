@@ -21,7 +21,7 @@ on virtual time (`#[tokio::test(start_paused = true)]` with `TestActors`).
   with the cause and reason; `Result` taken only for a running job's current attempt, any other refused for good; the
   run's end and its `Report` in a turn of its own; the refusals for good of decision 12, state unchanged (decisions
   2–12). Verify: `cargo test -p cicada-actors`; `cargo clippy -p cicada-actors --all-targets`.
-- [ ] 3. **Virtual-time tests.** `crates/cicada-actors/tests/job_graph.rs`, one test or more for every scenario of the
+- [x] 3. **Virtual-time tests.** `crates/cicada-actors/tests/job_graph.rs`, one test or more for every scenario of the
   spec: a diamond in order, the in-flight limit, a second `Start`, a gone target, an unregistered target type and a
   type that does not take the message each failing only their attempt, a foreign `Dispatch` and `Failed` ignored, a
   result for another attempt, a late result, a result from another actor taken, an output too large, a failed job
