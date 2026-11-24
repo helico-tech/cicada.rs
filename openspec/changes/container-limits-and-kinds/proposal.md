@@ -13,6 +13,8 @@ only by the reason text.
 - `ContainerJob::timeout(&self, &Request) -> Option<Duration>`, defaulting to the settings' timeout.
 - A machine-readable `kind` next to `reason` on a `failed` end, for example `notStarted` (image, spec or start
   refused), `missing`, `outOfMemory` and `runtimeErrors`; the four outcomes stay.
+- Refused inputs of `container-inputs` (an `Err` from `inputs`, a file at a folder's path, or a refusal by `make_dirs`
+  or `copy_in`) get the kind `notStarted` (container-inputs design review).
 
 ## Out of scope
 

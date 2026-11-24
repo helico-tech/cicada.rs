@@ -28,7 +28,7 @@ after `ContainerEnded` and before it sends `Remove`).
 
 ## Order
 
-After `container-logs`, before `container-inputs`.
+After `container-logs`, before `container-make-dirs`.
 
 ## Impact
 
