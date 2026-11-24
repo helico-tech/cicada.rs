@@ -14,7 +14,8 @@ is tested on virtual time (`#[tokio::test(start_paused = true)]` with `TestActor
   jobs, then the check of the run's end (decision 7); the `running` condition on `Dispatch` and on its failure (decision
   6); the watch on the target in the `Dispatch` turn and the unwatch when no running job has that target; a
   store-written `Failed` about a target matched to a running job's current job message, and a `Stopped` about a target,
-  each ending their jobs `failed` (decision 3). Verify: `cargo test -p cicada-actors`; `cargo clippy -p cicada-actors
+  each ending their jobs `failed` (decision 3). From the job-graph review: a `Result` taken before its `Dispatch` ran
+  leaves the attempt's `dispatchedAt` empty; say so in the doc comment of `JobAttempt`. Verify: `cargo test -p cicada-actors`; `cargo clippy -p cicada-actors
   --all-targets`.
 - [ ] 3. **Virtual-time tests.** In `crates/cicada-actors/tests/job_graph.rs`, one test or more for every scenario of
   the spec delta: transitive skips, a job message that fails at the worker, a deleted worker with two jobs, another

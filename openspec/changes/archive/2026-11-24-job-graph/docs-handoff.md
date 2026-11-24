@@ -101,3 +101,9 @@ None: no doctest, link, guarantee row or skill route names the job graph yet.
 Ran `cargo test -p cicada-examples --test docs` and `--test skill` (both pass) on the branch head; nothing protected was
 edited. All sections above are proposed text; no prose is written yet. After landing, the change loop links the change
 in issue #2.
+
+## Notes from the code review (added by the change loop)
+
+- Because the run watches itself, every refused `Result` or `Report` and every failed `Dispatch` costs the run one
+  extra turn (a `Failed` about its own message, which it ignores or uses). Harmless; worth a line in the guide.
+- The table row should link to `crates/cicada-actors/tests/job_graph.rs`, not the `tests/` folder.
