@@ -34,7 +34,7 @@ No public API, wire format, schema, guarantee or command-line change; `cicada-ap
   pool row) and `docs/guide/app.md` (the `--store-pool-size` row: a smaller given pool is kept and warns); nothing
   blocks. No edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify: `cargo test -p cicada-examples --test
   docs`; `cargo test -p cicada-examples --test skill`.
-- [ ] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
+- [x] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
   `cargo test --workspace`, `openspec validate pool-size-check --strict`, commit, then `python3 scripts/gate.py run`
   (no E2E: the change touches the core's start, not `sample-service/`, `e2e/`, the serve or worker code of
   `cicada-app` or the HTTP crates; E2E runs at the release).
