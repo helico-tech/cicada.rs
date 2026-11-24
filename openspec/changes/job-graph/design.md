@@ -62,8 +62,8 @@ after design review 1. ADR 0059.
 State on the wire: `{"maxInFlight":2,"reportTo":"ci/run-7","reportType":"GraphEnded","status":"running",
 "endedAt":null,"jobs":[{"name":"build","needs":[],"to":"builder/run-7","messageType":"Build","input":{},
 "status":"running","output":null,"attempts":[{"attempt":1,"dispatchedAt":null,"endedAt":null,"outcome":null,
-"reason":null}]}]}`. Run status `running | succeeded | failed`; job status `waiting | running | succeeded | failed |
-skipped | cancelled`, the last two only from `job-graph-cancel`.
+"reason":null}]}]}`. Run status `running | succeeded | failed | cancelled`; job status `waiting | running | succeeded |
+failed | skipped | cancelled`; the run's `cancelled` and the last two job statuses are set only from `job-graph-cancel`.
 
 ## Contract and tests
 
