@@ -3,7 +3,7 @@
 Patch 0.20.7, normal lane. A new crate only: no change to existing crates, guarantees, wire formats, schema or the
 command line. Follow `design.md`; the spec is `specs/container-runtime/spec.md`.
 
-- [ ] 1. **The crate and its types.** Add `crates/cicada-containers` to the workspace (version from the workspace,
+- [x] 1. **The crate and its types.** Add `crates/cicada-containers` to the workspace (version from the workspace,
   dependencies `async-trait` and `thiserror` only, feature `testing`, `missing_docs` like the other crates). Write
   `ContainerSpec` (decision 7, `Debug` without secret values), `ContainerStatus` (decision 8), `ContainerError` and
   `ErrorKind` (decision 5), `Label`, `Mount`, `Networking`, `NetworkSpec`, `VolumeSpec`, `CopyFile`,
@@ -11,7 +11,7 @@ command line. Follow `design.md`; the spec is `specs/container-runtime/spec.md`.
   `ContainerRuntime` trait with the doc of each method's repeat rule (decisions 6, 9, 10, 11; `create` may pull).
   Verify: unit tests for the scenarios "Debug output of a spec with a secret", "A new spec is plain" and
   `is_retryable`; `cargo test -p cicada-containers`; `cargo clippy -p cicada-containers --all-targets`.
-- [ ] 2. **The fake.** `FakeRuntime` behind `cfg(any(test, feature = "testing"))` as in "The fake": shared state,
+- [x] 2. **The fake.** `FakeRuntime` behind `cfg(any(test, feature = "testing"))` as in "The fake": shared state,
   `exit_with`, `set_logs`, `fail_next`, `fail_always`, `clear_failures`, `calls()`. Its unit tests cover every
   scenario of the spec on the fake: repeated create, start after an exit or a failure, stop of a running container
   (`Exited` with 143) and of a created one, remove and stop of a missing one, `copy_in` outside `Created`, repeated

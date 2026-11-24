@@ -8,6 +8,7 @@ members = [
     "crates/cicada-otel",
     "crates/cicada-actors",
     "crates/cicada-app",
+    "crates/cicada-containers",
     "examples",
     "sample-service",
     "e2e",

@@ -1,0 +1,675 @@
+//! [`FakeRuntime`]: an in-memory [`ContainerRuntime`] for tests (feature `testing`).
+
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
+
+use async_trait::async_trait;
+
+use crate::{
+    ContainerError, ContainerRuntime, ContainerSpec, ContainerStatus, ContainerSummary, CopyFile, ErrorKind, Label,
+    MountKind, NetworkSpec, Networking, Resource, Skipped, Swept, VolumeSpec,
+};
+
+/// The exit code of a container the fake stops, as Docker reports one ended by SIGTERM.
+const STOPPED_CODE: i64 = 143;
+
+/// An in-memory [`ContainerRuntime`] that follows the trait's repeat rules. Clones share their state.
+///
+/// It keeps containers, networks and volumes by name with their labels and states, and answers at once: it uses no
+/// timer, so it runs under paused time. A test scripts it: [`exit_with`](Self::exit_with) ends a running container,
+/// [`set_logs`](Self::set_logs) gives it output, [`fail_next`](Self::fail_next) and [`fail_always`](Self::fail_always)
+/// make calls of a method fail without effect, and [`calls`](Self::calls) lists every call in order. A started
+/// container runs until a test ends it or [`stop`](ContainerRuntime::stop) does (exit code 143).
+#[derive(Clone, Debug, Default)]
+pub struct FakeRuntime {
+    state: Arc<Mutex<State>>,
+}
+
+#[derive(Debug, Default)]
+struct State {
+    containers: BTreeMap<String, FakeContainer>,
+    networks: BTreeMap<String, NetworkSpec>,
+    volumes: BTreeMap<String, VolumeSpec>,
+    calls: Vec<Call>,
+    fail_next: Vec<(Method, ErrorKind)>,
+    fail_always: Vec<(Method, ErrorKind)>,
+}
+
+#[derive(Debug)]
+struct FakeContainer {
+    spec: ContainerSpec,
+    status: ContainerStatus,
+    logs: String,
+    files: BTreeMap<String, CopyFile>,
+}
+
+/// A method of [`ContainerRuntime`], to script failures of the [`FakeRuntime`].
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Method {
+    /// [`ContainerRuntime::create`].
+    Create,
+    /// [`ContainerRuntime::copy_in`].
+    CopyIn,
+    /// [`ContainerRuntime::start`].
+    Start,
+    /// [`ContainerRuntime::inspect`].
+    Inspect,
+    /// [`ContainerRuntime::logs`].
+    Logs,
+    /// [`ContainerRuntime::stop`].
+    Stop,
+    /// [`ContainerRuntime::remove`].
+    Remove,
+    /// [`ContainerRuntime::list`].
+    List,
+    /// [`ContainerRuntime::ensure_network`].
+    EnsureNetwork,
+    /// [`ContainerRuntime::ensure_volume`].
+    EnsureVolume,
+    /// [`ContainerRuntime::sweep`].
+    Sweep,
+}
+
+/// A call the [`FakeRuntime`] received, with its arguments; failed calls too.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Call {
+    /// [`ContainerRuntime::create`] with its spec.
+    Create(Box<ContainerSpec>),
+    /// [`ContainerRuntime::copy_in`] with its files.
+    CopyIn {
+        /// The container.
+        name: String,
+        /// The files.
+        files: Vec<CopyFile>,
+    },
+    /// [`ContainerRuntime::start`].
+    Start(String),
+    /// [`ContainerRuntime::inspect`].
+    Inspect(String),
+    /// [`ContainerRuntime::logs`].
+    Logs {
+        /// The container.
+        name: String,
+        /// The lines asked for.
+        tail_lines: u32,
+    },
+    /// [`ContainerRuntime::stop`].
+    Stop {
+        /// The container.
+        name: String,
+        /// The grace period.
+        grace: Duration,
+    },
+    /// [`ContainerRuntime::remove`].
+    Remove(String),
+    /// [`ContainerRuntime::list`].
+    List(Label),
+    /// [`ContainerRuntime::ensure_network`].
+    EnsureNetwork(NetworkSpec),
+    /// [`ContainerRuntime::ensure_volume`].
+    EnsureVolume(VolumeSpec),
+    /// [`ContainerRuntime::sweep`].
+    Sweep(Label),
+}
+
+impl Call {
+    fn method(&self) -> Method {
+        match self {
+            Self::Create(_) => Method::Create,
+            Self::CopyIn { .. } => Method::CopyIn,
+            Self::Start(_) => Method::Start,
+            Self::Inspect(_) => Method::Inspect,
+            Self::Logs { .. } => Method::Logs,
+            Self::Stop { .. } => Method::Stop,
+            Self::Remove(_) => Method::Remove,
+            Self::List(_) => Method::List,
+            Self::EnsureNetwork(_) => Method::EnsureNetwork,
+            Self::EnsureVolume(_) => Method::EnsureVolume,
+            Self::Sweep(_) => Method::Sweep,
+        }
+    }
+}
+
+impl FakeRuntime {
+    /// An empty runtime.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Ends the running container `name` with `status`, `Exited` or `Failed`.
+    ///
+    /// # Panics
+    ///
+    /// When the container is not running or `status` is not an end state: the test is wrong.
+    pub fn exit_with(&self, name: &str, status: ContainerStatus) {
+        assert!(
+            matches!(status, ContainerStatus::Exited { .. } | ContainerStatus::Failed { .. }),
+            "exit_with({name:?}) needs Exited or Failed, not {status:?}"
+        );
+        let mut state = self.lock();
+        let container = state.containers.get_mut(name).unwrap_or_else(|| panic!("exit_with: no container {name:?}"));
+        assert_eq!(container.status, ContainerStatus::Running, "exit_with: container {name:?} is not running");
+        container.status = status;
+    }
+
+    /// Sets the output of the container `name`, which [`logs`](ContainerRuntime::logs) returns the tail of.
+    ///
+    /// # Panics
+    ///
+    /// When there is no container `name`.
+    pub fn set_logs(&self, name: &str, text: impl Into<String>) {
+        let mut state = self.lock();
+        let container = state.containers.get_mut(name).unwrap_or_else(|| panic!("set_logs: no container {name:?}"));
+        container.logs = text.into();
+    }
+
+    /// Makes the next call of `method` fail with `kind` and without effect. Several queue up, one per call.
+    pub fn fail_next(&self, method: Method, kind: ErrorKind) {
+        self.lock().fail_next.push((method, kind));
+    }
+
+    /// Makes every call of `method` fail with `kind` and without effect, until [`clear_failures`](Self::clear_failures).
+    pub fn fail_always(&self, method: Method, kind: ErrorKind) {
+        self.lock().fail_always.push((method, kind));
+    }
+
+    /// Drops every scripted failure, of [`fail_next`](Self::fail_next) and [`fail_always`](Self::fail_always).
+    pub fn clear_failures(&self) {
+        let mut state = self.lock();
+        state.fail_next.clear();
+        state.fail_always.clear();
+    }
+
+    /// Every call so far, in order, failed ones too.
+    pub fn calls(&self) -> Vec<Call> {
+        self.lock().calls.clone()
+    }
+
+    fn lock(&self) -> MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Records `call` and returns the state, or the scripted failure of its method.
+    fn enter(&self, call: Call) -> Result<MutexGuard<'_, State>, ContainerError> {
+        let mut state = self.lock();
+        let method = call.method();
+        state.calls.push(call);
+        if let Some(at) = state.fail_next.iter().position(|(m, _)| *m == method) {
+            let (_, kind) = state.fail_next.remove(at);
+            return Err(ContainerError::new(kind, format!("scripted failure of {method:?}")));
+        }
+        if let Some((_, kind)) = state.fail_always.iter().find(|(m, _)| *m == method) {
+            return Err(ContainerError::new(*kind, format!("scripted failure of {method:?}")));
+        }
+        Ok(state)
+    }
+}
+
+fn conflict(message: String) -> ContainerError {
+    ContainerError::new(ErrorKind::Conflict, message)
+}
+
+fn has(labels: &BTreeMap<String, String>, label: &Label) -> bool {
+    labels.get(&label.key) == Some(&label.value)
+}
+
+/// Whether `path` is `target` or lies under it.
+fn under(path: &str, target: &str) -> bool {
+    let target = target.trim_end_matches('/');
+    path == target || path.strip_prefix(target).is_some_and(|rest| rest.starts_with('/'))
+}
+
+#[async_trait]
+impl ContainerRuntime for FakeRuntime {
+    async fn create(&self, spec: &ContainerSpec) -> Result<(), ContainerError> {
+        let mut state = self.enter(Call::Create(Box::new(spec.clone())))?;
+        state.containers.entry(spec.name.clone()).or_insert_with(|| FakeContainer {
+            spec: spec.clone(),
+            status: ContainerStatus::Created,
+            logs: String::new(),
+            files: BTreeMap::new(),
+        });
+        Ok(())
+    }
+
+    async fn copy_in(&self, name: &str, files: &[CopyFile]) -> Result<(), ContainerError> {
+        let mut state = self.enter(Call::CopyIn { name: name.into(), files: files.to_vec() })?;
+        let container = state.containers.get_mut(name).ok_or_else(|| conflict(format!("no container {name}")))?;
+        if container.status != ContainerStatus::Created {
+            return Err(conflict(format!("container {name} is {:?}, not created", container.status)));
+        }
+        for file in files {
+            if !file.path.starts_with('/') {
+                return Err(ContainerError::new(ErrorKind::InvalidSpec, format!("relative path {}", file.path)));
+            }
+            let mounted = container.spec.mounts.iter().any(|mount| under(&file.path, &mount.target));
+            if container.spec.read_only_root && !mounted {
+                return Err(ContainerError::new(
+                    ErrorKind::InvalidSpec,
+                    format!("{} is on the read-only root of {name}", file.path),
+                ));
+            }
+        }
+        for file in files {
+            container.files.insert(file.path.clone(), file.clone());
+        }
+        Ok(())
+    }
+
+    async fn start(&self, name: &str) -> Result<(), ContainerError> {
+        let mut state = self.enter(Call::Start(name.into()))?;
+        let container = state.containers.get_mut(name).ok_or_else(|| conflict(format!("no container {name}")))?;
+        if container.status == ContainerStatus::Created {
+            container.status = ContainerStatus::Running;
+        }
+        Ok(())
+    }
+
+    async fn inspect(&self, name: &str) -> Result<ContainerStatus, ContainerError> {
+        let state = self.enter(Call::Inspect(name.into()))?;
+        Ok(state.containers.get(name).map_or(ContainerStatus::Missing, |container| container.status.clone()))
+    }
+
+    async fn logs(&self, name: &str, tail_lines: u32) -> Result<String, ContainerError> {
+        let state = self.enter(Call::Logs { name: name.into(), tail_lines })?;
+        let container = state.containers.get(name).ok_or_else(|| conflict(format!("no container {name}")))?;
+        let lines: Vec<&str> = container.logs.lines().collect();
+        let start = lines.len().saturating_sub(tail_lines as usize);
+        Ok(lines[start..].iter().map(|line| format!("{line}\n")).collect())
+    }
+
+    async fn stop(&self, name: &str, grace: Duration) -> Result<(), ContainerError> {
+        let mut state = self.enter(Call::Stop { name: name.into(), grace })?;
+        if let Some(container) = state.containers.get_mut(name)
+            && container.status == ContainerStatus::Running
+        {
+            container.status = ContainerStatus::Exited { code: STOPPED_CODE };
+        }
+        Ok(())
+    }
+
+    async fn remove(&self, name: &str) -> Result<(), ContainerError> {
+        let mut state = self.enter(Call::Remove(name.into()))?;
+        state.containers.remove(name);
+        Ok(())
+    }
+
+    async fn list(&self, label: &Label) -> Result<Vec<ContainerSummary>, ContainerError> {
+        let state = self.enter(Call::List(label.clone()))?;
+        Ok(state
+            .containers
+            .iter()
+            .filter(|(_, container)| has(&container.spec.labels, label))
+            .map(|(name, container)| ContainerSummary::new(name.clone(), container.status.clone()))
+            .collect())
+    }
+
+    async fn ensure_network(&self, spec: &NetworkSpec) -> Result<(), ContainerError> {
+        let mut state = self.enter(Call::EnsureNetwork(spec.clone()))?;
+        match state.networks.get(&spec.name) {
+            Some(existing) if existing.internal != spec.internal => Err(conflict(format!(
+                "network {} exists with internal = {}, not {}",
+                spec.name, existing.internal, spec.internal
+            ))),
+            Some(_) => Ok(()),
+            None => {
+                state.networks.insert(spec.name.clone(), spec.clone());
+                Ok(())
+            }
+        }
+    }
+
+    async fn ensure_volume(&self, spec: &VolumeSpec) -> Result<(), ContainerError> {
+        let mut state = self.enter(Call::EnsureVolume(spec.clone()))?;
+        state.volumes.entry(spec.name.clone()).or_insert_with(|| spec.clone());
+        Ok(())
+    }
+
+    async fn sweep(&self, label: &Label) -> Result<Swept, ContainerError> {
+        let mut state = self.enter(Call::Sweep(label.clone()))?;
+        let mut swept = Swept::default();
+        state.containers.retain(|name, container| {
+            let labelled = has(&container.spec.labels, label);
+            if labelled {
+                swept.containers.push(name.clone());
+            }
+            !labelled
+        });
+        let state = &mut *state;
+        let user_of_network = |network: &str| {
+            state.containers.iter().find_map(|(name, container)| match &container.spec.network {
+                Networking::Attach(attached) if attached.iter().any(|a| a.name == network) => Some(name.clone()),
+                _ => None,
+            })
+        };
+        let mut networks = Vec::new();
+        for (name, network) in &state.networks {
+            if !has(&network.labels, label) {
+                continue;
+            }
+            match user_of_network(name) {
+                Some(user) => swept.skipped.push(Skipped::new(Resource::Network, name, format!("in use by {user}"))),
+                None => networks.push(name.clone()),
+            }
+        }
+        let user_of_volume = |volume: &str| {
+            state.containers.iter().find_map(|(name, container)| {
+                let mounted = container.spec.mounts.iter().any(|m| m.kind == MountKind::Volume && m.source == volume);
+                mounted.then(|| name.clone())
+            })
+        };
+        let mut volumes = Vec::new();
+        for (name, volume) in &state.volumes {
+            if !has(&volume.labels, label) {
+                continue;
+            }
+            match user_of_volume(name) {
+                Some(user) => swept.skipped.push(Skipped::new(Resource::Volume, name, format!("in use by {user}"))),
+                None => volumes.push(name.clone()),
+            }
+        }
+        for name in &networks {
+            state.networks.remove(name);
+        }
+        for name in &volumes {
+            state.volumes.remove(name);
+        }
+        swept.networks = networks;
+        swept.volumes = volumes;
+        Ok(swept)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::Future;
+    use std::pin::pin;
+    use std::task::{Context, Poll, Waker};
+
+    use super::*;
+    use crate::{Mount, NetworkAttachment};
+
+    /// Runs a future of the fake, which never waits: it is ready at its first poll.
+    fn now<T>(future: impl Future<Output = T>) -> T {
+        match pin!(future).poll(&mut Context::from_waker(Waker::noop())) {
+            Poll::Ready(value) => value,
+            Poll::Pending => panic!("the fake waited"),
+        }
+    }
+
+    fn labelled(name: &str, run: &str) -> ContainerSpec {
+        let mut spec = ContainerSpec::new(name, "alpine:3");
+        spec.labels.insert("run".into(), run.into());
+        spec
+    }
+
+    fn started(fake: &FakeRuntime, name: &str) {
+        now(fake.create(&ContainerSpec::new(name, "alpine:3"))).unwrap();
+        now(fake.start(name)).unwrap();
+    }
+
+    fn kind<T: std::fmt::Debug>(result: Result<T, ContainerError>) -> ErrorKind {
+        result.unwrap_err().kind
+    }
+
+    #[test]
+    fn a_host_calls_every_method_through_a_trait_object() {
+        let runtime: Arc<dyn ContainerRuntime> = Arc::new(FakeRuntime::new());
+        let run = Label::new("run", "r1");
+        now(runtime.ensure_network(&NetworkSpec::new("net"))).unwrap();
+        now(runtime.ensure_volume(&VolumeSpec::new("vol"))).unwrap();
+        now(runtime.create(&labelled("job-1", "r1"))).unwrap();
+        now(runtime.copy_in("job-1", &[CopyFile::new("/etc/job", "x")])).unwrap();
+        now(runtime.start("job-1")).unwrap();
+        assert_eq!(now(runtime.inspect("job-1")).unwrap(), ContainerStatus::Running);
+        assert_eq!(now(runtime.logs("job-1", 10)).unwrap(), "");
+        assert_eq!(now(runtime.list(&run)).unwrap(), [ContainerSummary::new("job-1", ContainerStatus::Running)]);
+        now(runtime.stop("job-1", Duration::from_secs(1))).unwrap();
+        now(runtime.remove("job-1")).unwrap();
+        assert_eq!(now(runtime.sweep(&run)).unwrap(), Swept::default());
+    }
+
+    #[test]
+    fn a_repeated_create_keeps_the_first_container() {
+        let fake = FakeRuntime::new();
+        let first = ContainerSpec::new("job-1", "alpine:3");
+        let second = ContainerSpec::new("job-1", "busybox:1");
+        now(fake.create(&first)).unwrap();
+        now(fake.start("job-1")).unwrap();
+        now(fake.create(&second)).unwrap();
+        let state = fake.lock();
+        assert_eq!(state.containers.len(), 1);
+        assert_eq!(state.containers["job-1"].spec, first);
+        assert_eq!(state.containers["job-1"].status, ContainerStatus::Running, "not replaced");
+    }
+
+    #[test]
+    fn a_repeated_start_does_not_run_an_ended_container_again() {
+        let fake = FakeRuntime::new();
+        started(&fake, "exited");
+        fake.exit_with("exited", ContainerStatus::Exited { code: 0 });
+        now(fake.start("exited")).unwrap();
+        assert_eq!(now(fake.inspect("exited")).unwrap(), ContainerStatus::Exited { code: 0 });
+
+        let failed = ContainerStatus::Failed { code: Some(137), reason: "out of memory".into() };
+        started(&fake, "failed");
+        fake.exit_with("failed", failed.clone());
+        now(fake.start("failed")).unwrap();
+        assert_eq!(now(fake.inspect("failed")).unwrap(), failed);
+
+        started(&fake, "running");
+        now(fake.start("running")).unwrap();
+        assert_eq!(now(fake.inspect("running")).unwrap(), ContainerStatus::Running);
+    }
+
+    #[test]
+    fn stopping_a_running_container_exits_it_and_a_created_one_stays() {
+        let fake = FakeRuntime::new();
+        started(&fake, "job-1");
+        now(fake.stop("job-1", Duration::from_secs(10))).unwrap();
+        assert_eq!(now(fake.inspect("job-1")).unwrap(), ContainerStatus::Exited { code: 143 });
+        now(fake.stop("job-1", Duration::from_secs(10))).unwrap();
+        assert_eq!(now(fake.inspect("job-1")).unwrap(), ContainerStatus::Exited { code: 143 }, "keeps its end");
+
+        now(fake.create(&ContainerSpec::new("job-2", "alpine:3"))).unwrap();
+        now(fake.stop("job-2", Duration::ZERO)).unwrap();
+        assert_eq!(now(fake.inspect("job-2")).unwrap(), ContainerStatus::Created);
+    }
+
+    #[test]
+    fn removing_and_stopping_what_is_gone_is_ok() {
+        let fake = FakeRuntime::new();
+        now(fake.stop("gone", Duration::ZERO)).unwrap();
+        now(fake.remove("gone")).unwrap();
+        started(&fake, "job-1");
+        now(fake.remove("job-1")).unwrap();
+        now(fake.remove("job-1")).unwrap();
+        assert_eq!(now(fake.inspect("job-1")).unwrap(), ContainerStatus::Missing);
+    }
+
+    #[test]
+    fn calls_on_a_missing_container_conflict_and_inspect_reports_it_missing() {
+        let fake = FakeRuntime::new();
+        let error = now(fake.start("gone")).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Conflict);
+        assert!(!error.is_retryable());
+        assert_eq!(kind(now(fake.copy_in("gone", &[]))), ErrorKind::Conflict);
+        assert_eq!(kind(now(fake.logs("gone", 5))), ErrorKind::Conflict);
+        assert_eq!(now(fake.inspect("gone")).unwrap(), ContainerStatus::Missing);
+    }
+
+    #[test]
+    fn copy_in_writes_only_into_a_created_container() {
+        let fake = FakeRuntime::new();
+        now(fake.create(&ContainerSpec::new("job-1", "alpine:3"))).unwrap();
+        let files = [CopyFile::new("/work/input.json", "{}")];
+        now(fake.copy_in("job-1", &files)).unwrap();
+        now(fake.copy_in("job-1", &files)).unwrap();
+        assert_eq!(fake.lock().containers["job-1"].files.len(), 1, "the same file again");
+
+        now(fake.start("job-1")).unwrap();
+        let late = [CopyFile::new("/work/late", "x")];
+        assert_eq!(kind(now(fake.copy_in("job-1", &late))), ErrorKind::Conflict);
+        fake.exit_with("job-1", ContainerStatus::Exited { code: 0 });
+        assert_eq!(kind(now(fake.copy_in("job-1", &late))), ErrorKind::Conflict);
+        assert!(!fake.lock().containers["job-1"].files.contains_key("/work/late"), "no file written");
+        assert_eq!(fake.calls()[1], Call::CopyIn { name: "job-1".into(), files: files.to_vec() });
+    }
+
+    #[test]
+    fn copy_in_refuses_a_relative_path_and_the_read_only_root() {
+        let fake = FakeRuntime::new();
+        let mut spec = ContainerSpec::new("job-1", "alpine:3");
+        spec.read_only_root = true;
+        spec.mounts.push(Mount::new(MountKind::Volume, "work", "/work"));
+        now(fake.create(&spec)).unwrap();
+        assert_eq!(kind(now(fake.copy_in("job-1", &[CopyFile::new("work/a", "x")]))), ErrorKind::InvalidSpec);
+        let root = [CopyFile::new("/work/a", "x"), CopyFile::new("/workspace/b", "x")];
+        assert_eq!(kind(now(fake.copy_in("job-1", &root))), ErrorKind::InvalidSpec);
+        assert!(fake.lock().containers["job-1"].files.is_empty(), "all or nothing");
+        now(fake.copy_in("job-1", &[CopyFile::new("/work/a", "x")])).unwrap();
+    }
+
+    #[test]
+    fn logs_return_the_tail() {
+        let fake = FakeRuntime::new();
+        started(&fake, "job-1");
+        fake.set_logs("job-1", "one\ntwo\nthree\n");
+        assert_eq!(now(fake.logs("job-1", 2)).unwrap(), "two\nthree\n");
+        assert_eq!(now(fake.logs("job-1", 10)).unwrap(), "one\ntwo\nthree\n");
+        assert_eq!(now(fake.logs("job-1", 0)).unwrap(), "");
+    }
+
+    #[test]
+    fn a_repeated_ensure_keeps_one_network_and_volume() {
+        let fake = FakeRuntime::new();
+        let mut network = NetworkSpec::new("net");
+        network.internal = true;
+        now(fake.ensure_network(&network)).unwrap();
+        now(fake.ensure_network(&network)).unwrap();
+        now(fake.ensure_volume(&VolumeSpec::new("vol"))).unwrap();
+        now(fake.ensure_volume(&VolumeSpec::new("vol"))).unwrap();
+        let state = fake.lock();
+        assert_eq!((state.networks.len(), state.volumes.len()), (1, 1));
+    }
+
+    #[test]
+    fn an_existing_network_with_another_internal_flag_conflicts() {
+        let fake = FakeRuntime::new();
+        let mut internal = NetworkSpec::new("net");
+        internal.internal = true;
+        now(fake.ensure_network(&internal)).unwrap();
+        let mut labelled = NetworkSpec::new("net");
+        labelled.internal = true;
+        labelled.labels.insert("other".into(), "label".into());
+        now(fake.ensure_network(&labelled)).unwrap();
+        assert_eq!(kind(now(fake.ensure_network(&NetworkSpec::new("net")))), ErrorKind::Conflict);
+        assert!(fake.lock().networks["net"].internal);
+    }
+
+    #[test]
+    fn a_sweep_removes_by_label() {
+        let fake = FakeRuntime::new();
+        for run in ["r1", "r2"] {
+            let mut network = NetworkSpec::new(format!("net-{run}"));
+            network.labels.insert("run".into(), run.into());
+            now(fake.ensure_network(&network)).unwrap();
+            let mut volume = VolumeSpec::new(format!("vol-{run}"));
+            volume.labels.insert("run".into(), run.into());
+            now(fake.ensure_volume(&volume)).unwrap();
+            let mut spec = labelled(&format!("job-{run}"), run);
+            spec.network = Networking::Attach(vec![NetworkAttachment::new(format!("net-{run}"))]);
+            spec.mounts.push(Mount::new(MountKind::Volume, format!("vol-{run}"), "/work"));
+            now(fake.create(&spec)).unwrap();
+            now(fake.start(&format!("job-{run}"))).unwrap();
+        }
+        let swept = now(fake.sweep(&Label::new("run", "r1"))).unwrap();
+        assert_eq!(swept.containers, ["job-r1"]);
+        assert_eq!(swept.networks, ["net-r1"]);
+        assert_eq!(swept.volumes, ["vol-r1"]);
+        assert!(swept.skipped.is_empty());
+        let state = fake.lock();
+        assert_eq!(state.containers.keys().collect::<Vec<_>>(), ["job-r2"]);
+        assert_eq!(state.networks.keys().collect::<Vec<_>>(), ["net-r2"]);
+        assert_eq!(state.volumes.keys().collect::<Vec<_>>(), ["vol-r2"]);
+        drop(state);
+        assert_eq!(now(fake.sweep(&Label::new("run", "r1"))).unwrap(), Swept::default(), "nothing left");
+    }
+
+    #[test]
+    fn a_sweep_skips_a_network_and_a_volume_in_use() {
+        let fake = FakeRuntime::new();
+        let mut network = NetworkSpec::new("net-r1");
+        network.labels.insert("run".into(), "r1".into());
+        now(fake.ensure_network(&network)).unwrap();
+        let mut volume = VolumeSpec::new("vol-r1");
+        volume.labels.insert("run".into(), "r1".into());
+        now(fake.ensure_volume(&volume)).unwrap();
+        let mut other = ContainerSpec::new("other", "alpine:3");
+        other.network = Networking::Attach(vec![NetworkAttachment::new("net-r1")]);
+        other.mounts.push(Mount::new(MountKind::Volume, "vol-r1", "/data"));
+        now(fake.create(&other)).unwrap();
+
+        let swept = now(fake.sweep(&Label::new("run", "r1"))).unwrap();
+        assert!(swept.networks.is_empty() && swept.volumes.is_empty());
+        assert_eq!(
+            swept.skipped,
+            [
+                Skipped::new(Resource::Network, "net-r1", "in use by other"),
+                Skipped::new(Resource::Volume, "vol-r1", "in use by other"),
+            ]
+        );
+        let state = fake.lock();
+        assert!(state.networks.contains_key("net-r1") && state.volumes.contains_key("vol-r1"));
+    }
+
+    #[test]
+    fn scripted_exit() {
+        let fake = FakeRuntime::new();
+        started(&fake, "job-1");
+        fake.exit_with("job-1", ContainerStatus::Exited { code: 3 });
+        assert_eq!(now(fake.inspect("job-1")).unwrap(), ContainerStatus::Exited { code: 3 });
+        let methods: Vec<Method> = fake.calls().iter().map(Call::method).collect();
+        assert_eq!(methods, [Method::Create, Method::Start, Method::Inspect]);
+    }
+
+    #[test]
+    fn scripted_failure() {
+        let fake = FakeRuntime::new();
+        let spec = ContainerSpec::new("job-1", "alpine:3");
+        fake.fail_next(Method::Create, ErrorKind::DaemonUnavailable);
+        let error = now(fake.create(&spec)).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::DaemonUnavailable);
+        assert!(error.is_retryable());
+        assert_eq!(now(fake.inspect("job-1")).unwrap(), ContainerStatus::Missing);
+        now(fake.create(&spec)).unwrap();
+        assert_eq!(now(fake.inspect("job-1")).unwrap(), ContainerStatus::Created);
+    }
+
+    #[test]
+    fn a_failure_lasts_until_it_is_cleared_and_has_no_effect() {
+        let fake = FakeRuntime::new();
+        started(&fake, "job-1");
+        fake.fail_always(Method::Stop, ErrorKind::Other);
+        for _ in 0..2 {
+            assert_eq!(kind(now(fake.stop("job-1", Duration::ZERO))), ErrorKind::Other);
+            assert_eq!(now(fake.inspect("job-1")).unwrap(), ContainerStatus::Running);
+        }
+        fake.clear_failures();
+        now(fake.stop("job-1", Duration::ZERO)).unwrap();
+        assert_eq!(now(fake.inspect("job-1")).unwrap(), ContainerStatus::Exited { code: 143 });
+        assert_eq!(fake.calls().iter().filter(|call| call.method() == Method::Stop).count(), 3, "failed ones too");
+    }
+
+    #[test]
+    fn clones_share_their_state() {
+        let fake = FakeRuntime::new();
+        let clone = fake.clone();
+        started(&clone, "job-1");
+        assert_eq!(now(fake.inspect("job-1")).unwrap(), ContainerStatus::Running);
+        assert_eq!(fake.calls(), clone.calls());
+    }
+}

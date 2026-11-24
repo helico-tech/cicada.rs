@@ -573,6 +573,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cicada-containers"
+version = "0.20.6"
+dependencies = [
+ "async-trait",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "cicada-e2e"
 version = "0.20.6"
 dependencies = [
