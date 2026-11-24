@@ -28,7 +28,7 @@ before this one). Runtime behaviour is tested on virtual time (`#[tokio::test(st
   rewrites `docs/reference/contracts/cicada.job-graph.json`, which is committed; samples of `Cancel`, `SendCancel`,
   `JobCancel` and a state with cancelled jobs are taken by the schemas and the decoders, and the `JobGraphEnd` schema
   does not change. Verify: `cargo test -p cicada-actors --test wire_formats`.
-- [ ] 5. **Changelog and docs handoff.** The 0.20.8 changelog section names `Cancel`, `cancelType` and ADR 0060
+- [x] 5. **Changelog and docs handoff.** The 0.20.8 changelog section names `Cancel`, `cancelType` and ADR 0060
   (already written; ADR 0059 is not edited). `docs-handoff.md` from "Docs it breaks" in the design; nothing blocks.
   No edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify: `cargo test -p cicada-examples --test docs`,
   `cargo test -p cicada-examples --test skill`.

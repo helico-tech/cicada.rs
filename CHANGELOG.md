@@ -60,12 +60,28 @@ and the guarantees are those of 0.20.7.
   `JobGraphEnd { run, status, jobs }` to the report target in a turn of its own; anyone may send `Report` again, so a
   report target treats a repeated report for the same run as one. The decoder also refuses a skipped job with an
   attempt or without a failed, skipped or cancelled need, a waiting job with such a need, and an ended run whose
-  status does not follow its jobs. The job status `cancelled` exists but is not set yet. Its contract is checked
+  status does not follow its jobs. Its contract is checked
   against `docs/reference/contracts/cicada.job-graph.json`. Covered by `crates/cicada-actors/tests/job_graph.rs`, the
   unit tests in `src/job_graph.rs` and `tests/wire_formats.rs`.
 - ADR 0059: a ready-made job graph.
+- `cicada-actors`: cancel in the job graph (ADR 0060). `Cancel { job }` cancels one job, or every job when `job` is
+  absent: a waiting job becomes `cancelled`, and so does a running one, whose attempt ends with outcome `cancelled` and
+  reason `cancelled`; its target is unwatched unless another running job has it. Ended and skipped jobs and an ended
+  run are left alone, so a repeated `Cancel` changes nothing; an unknown job name is refused for good, the state
+  unchanged. In its commit the cancelled job's dependents are skipped, ready jobs start in the freed slots and the run
+  may end: `cancelled` when no job failed, else `failed`. A job may name a cancel message type,
+  `Job::with_cancel_type("CancelBuild")` (field `cancelType`, 1–200 characters without NUL, checked by the constructor
+  and the decoder): a cancelled job whose job message was sent is told by the run's own `SendCancel` in a later turn,
+  which sends `JobCancel { run, job, attempt }` as that type to the job's target with the shared retry policy, so a
+  gone worker fails only that message. A worker's family takes it as e.g. `CancelBuild(JobCancel)`, and may get it
+  before the `JobStart` of the same attempt. A job without a cancel type, or not yet dispatched, is not told, and a
+  late result of a cancelled job is refused. The state keeps an attempt's outcome as `AttemptOutcome` (`succeeded`,
+  `failed` or `cancelled`); a worker's `Result` keeps `JobOutcome`, so it cannot report `cancelled`. The decoder also
+  refuses a cancelled job whose last attempt is open or did not end `cancelled`. The end report's contract does not
+  change. Covered by `crates/cicada-actors/tests/job_graph.rs`, the unit tests in `src/job_graph.rs` and
+  `tests/wire_formats.rs`.
 - ADR 0060: cancel and skipped dependents in the job graph; skipped dependents, the end status, the watch on each
-  target and what it cannot see.
+  target and what it cannot see; `Cancel` and the cancel message type.
 
 ## 0.20.7 — 2026-11-24
 
