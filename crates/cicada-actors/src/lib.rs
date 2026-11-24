@@ -10,6 +10,7 @@
 //! | [`RateLimiterActor`] | `cicada.rate-limiter` | Sends each submitted message to its target at the next free slot of a rate |
 //! | [`DebouncerActor`] | `cicada.debouncer` | Keeps the latest submission of a burst and sends it once the burst is quiet |
 //! | [`BatcherActor`] | `cicada.batcher` | Collects items and sends them to its target as one batch on count or time |
+//! | [`PermitsActor`] | `cicada.permits` | Lets at most its capacity of requests hold a permit, queues the rest in FIFO order, fences each grant |
 //! | [`HeartbeatWatchActor`] | `cicada.heartbeat-watch` | Sends a stored alarm once when no `Beat` came within the allowed silence |
 //! | [`NodeDownMonitorActor`] | `cicada.node-down` | Publishes one `NodeDown` to a topic for each node row it sees silent for two minutes |
 //! | [`EventActor`] | `cicada.event` | Creates and starts one run of each subscribed flow for each publication, in one commit |
@@ -28,6 +29,7 @@ pub mod event;
 pub mod flow;
 pub mod heartbeat_watch;
 pub mod node_down;
+pub mod permits;
 pub mod rate_limiter;
 mod schedule;
 pub mod scheduler;
@@ -52,6 +54,10 @@ pub use heartbeat_watch::{
 pub use node_down::{
     InvalidNodeDown, NodeDown, NodeDownMonitor, NodeDownMonitorActor, NodeDownMonitorMsg, NodeDownMonitorState,
     NodeDownWatermark, NodeReadError, NodeReadProblem, NodeSnapshot, NodeSnapshotSource,
+};
+pub use permits::{
+    InvalidPermits, PermitHolder, PermitNotice, PermitNoticeKind, Permits, PermitsActor, PermitsMsg, PermitsState,
+    WaitingRequest,
 };
 pub use rate_limiter::{InvalidRate, RateLimiter, RateLimiterActor, RateLimiterMsg, RateLimiterState};
 pub use schedule::{Schedule, ScheduleError};
