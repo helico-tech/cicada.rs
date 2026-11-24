@@ -6,10 +6,11 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
+use crate::logs::{check_max_lines, page};
 use crate::paths::{MountTarget, Mounted, place};
 use crate::{
     ContainerError, ContainerRuntime, ContainerSpec, ContainerStatus, ContainerSummary, CopyFile, ErrorKind, Label,
-    MountKind, NetworkSpec, Networking, Resource, Skipped, Swept, VolumeSpec,
+    LogCursor, LogLine, LogPage, LogStream, MountKind, NetworkSpec, Networking, Resource, Skipped, Swept, VolumeSpec,
 };
 
 /// The exit code of a container the fake stops, as Docker reports one ended by SIGTERM.
@@ -19,7 +20,7 @@ const STOPPED_CODE: i64 = 143;
 ///
 /// It keeps containers, networks and volumes by name with their labels and states, and answers at once: it uses no
 /// timer, so it runs under paused time. A test scripts it: [`exit_with`](Self::exit_with) ends a running container,
-/// [`set_logs`](Self::set_logs) gives it output, [`fail_next`](Self::fail_next) and [`fail_always`](Self::fail_always)
+/// [`set_logs`](Self::set_logs) and [`push_log`](Self::push_log) give it output, [`fail_next`](Self::fail_next) and [`fail_always`](Self::fail_always)
 /// make calls of a method fail without effect, and [`calls`](Self::calls) lists every call in order. A started
 /// container runs until a test ends it or [`stop`](ContainerRuntime::stop) does (exit code 143).
 #[derive(Clone, Debug, Default)]
@@ -41,7 +42,8 @@ struct State {
 struct FakeContainer {
     spec: ContainerSpec,
     status: ContainerStatus,
-    logs: String,
+    /// Its log lines in log order, which `logs` and `logs_since` both read.
+    logs: Vec<LogLine>,
     files: BTreeMap<String, CopyFile>,
 }
 
@@ -59,6 +61,8 @@ pub enum Method {
     Inspect,
     /// [`ContainerRuntime::logs`].
     Logs,
+    /// [`ContainerRuntime::logs_since`].
+    LogsSince,
     /// [`ContainerRuntime::stop`].
     Stop,
     /// [`ContainerRuntime::remove`].
@@ -97,6 +101,15 @@ pub enum Call {
         /// The lines asked for.
         tail_lines: u32,
     },
+    /// [`ContainerRuntime::logs_since`].
+    LogsSince {
+        /// The container.
+        name: String,
+        /// The cursor given.
+        cursor: Option<LogCursor>,
+        /// The page size asked for.
+        max_lines: u32,
+    },
     /// [`ContainerRuntime::stop`].
     Stop {
         /// The container.
@@ -124,6 +137,7 @@ impl Call {
             Self::Start(_) => Method::Start,
             Self::Inspect(_) => Method::Inspect,
             Self::Logs { .. } => Method::Logs,
+            Self::LogsSince { .. } => Method::LogsSince,
             Self::Stop { .. } => Method::Stop,
             Self::Remove(_) => Method::Remove,
             Self::List(_) => Method::List,
@@ -156,15 +170,27 @@ impl FakeRuntime {
         container.status = status;
     }
 
-    /// Sets the output of the container `name`, which [`logs`](ContainerRuntime::logs) returns the tail of.
+    /// Sets the output of the container `name`, which [`logs`](ContainerRuntime::logs) returns the tail of: one
+    /// [`LogStream::Out`] line per line of `text`, stamped at the Unix epoch, in place of every earlier line.
+    /// [`logs_since`](ContainerRuntime::logs_since) pages the same lines.
     ///
     /// # Panics
     ///
     /// When there is no container `name`.
     pub fn set_logs(&self, name: &str, text: impl Into<String>) {
-        let mut state = self.lock();
-        let container = state.containers.get_mut(name).unwrap_or_else(|| panic!("set_logs: no container {name:?}"));
-        container.logs = text.into();
+        let epoch = cicada::time::from_micros(0);
+        let lines = text.into().lines().map(|line| LogLine::new(epoch, LogStream::Out, line)).collect();
+        self.change(name, "set_logs", |container| container.logs = lines);
+    }
+
+    /// Adds `line` to the end of the log of the container `name`. Times may repeat or go back, as on Docker, where
+    /// stdout and stderr are stamped apart; [`logs_since`](ContainerRuntime::logs_since) pages them as Docker does.
+    ///
+    /// # Panics
+    ///
+    /// When there is no container `name`.
+    pub fn push_log(&self, name: &str, line: LogLine) {
+        self.change(name, "push_log", |container| container.logs.push(line));
     }
 
     /// Makes the next call of `method` fail with `kind` and without effect. Several queue up, one per call.
@@ -187,6 +213,12 @@ impl FakeRuntime {
     /// Every call so far, in order, failed ones too.
     pub fn calls(&self) -> Vec<Call> {
         self.lock().calls.clone()
+    }
+
+    /// Runs `change` on the container `name` for the script method `what`, which panics without one.
+    fn change(&self, name: &str, what: &str, change: impl FnOnce(&mut FakeContainer)) {
+        let mut state = self.lock();
+        change(state.containers.get_mut(name).unwrap_or_else(|| panic!("{what}: no container {name:?}")));
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -224,7 +256,7 @@ impl ContainerRuntime for FakeRuntime {
         state.containers.entry(spec.name.clone()).or_insert_with(|| FakeContainer {
             spec: spec.clone(),
             status: ContainerStatus::Created,
-            logs: String::new(),
+            logs: Vec::new(),
             files: BTreeMap::new(),
         });
         Ok(())
@@ -272,9 +304,21 @@ impl ContainerRuntime for FakeRuntime {
     async fn logs(&self, name: &str, tail_lines: u32) -> Result<String, ContainerError> {
         let state = self.enter(Call::Logs { name: name.into(), tail_lines })?;
         let container = state.containers.get(name).ok_or_else(|| conflict(format!("no container {name}")))?;
-        let lines: Vec<&str> = container.logs.lines().collect();
-        let start = lines.len().saturating_sub(tail_lines as usize);
-        Ok(lines[start..].iter().map(|line| format!("{line}\n")).collect())
+        let start = container.logs.len().saturating_sub(tail_lines as usize);
+        Ok(container.logs[start..].iter().map(|line| format!("{}\n", line.text)).collect())
+    }
+
+    async fn logs_since(
+        &self,
+        name: &str,
+        cursor: Option<LogCursor>,
+        max_lines: u32,
+    ) -> Result<LogPage, ContainerError> {
+        let state = self.enter(Call::LogsSince { name: name.into(), cursor, max_lines })?;
+        check_max_lines(name, max_lines)?;
+        let container = state.containers.get(name).ok_or_else(|| conflict(format!("no container {name}")))?;
+        // Every line: the pager drops those before the cursor's second, as it does for Docker.
+        Ok(page(container.logs.iter().cloned(), cursor, max_lines))
     }
 
     async fn stop(&self, name: &str, grace: Duration) -> Result<(), ContainerError> {
@@ -596,6 +640,120 @@ mod tests {
         assert_eq!(now(fake.logs("job-1", 2)).unwrap(), "two\nthree\n");
         assert_eq!(now(fake.logs("job-1", 10)).unwrap(), "one\ntwo\nthree\n");
         assert_eq!(now(fake.logs("job-1", 0)).unwrap(), "");
+    }
+
+    fn texts(page: &LogPage) -> Vec<(LogStream, &str)> {
+        page.lines.iter().map(|line| (line.stream, line.text.as_str())).collect()
+    }
+
+    #[test]
+    fn scripted_log_lines_are_paged_and_read_by_logs() {
+        let fake = FakeRuntime::new();
+        started(&fake, "job-1");
+        let time = cicada::time::from_micros(1_764_000_000_000_000);
+        fake.push_log("job-1", LogLine::new(time, LogStream::Out, "one"));
+        fake.push_log("job-1", LogLine::new(time, LogStream::Err, "two"));
+        fake.push_log("job-1", LogLine::new(time, LogStream::Out, "three"));
+        let first = now(fake.logs_since("job-1", None, 2)).unwrap();
+        assert_eq!(texts(&first), [(LogStream::Out, "one"), (LogStream::Err, "two")]);
+        assert_eq!(first.lines[0].time, time);
+        let second = now(fake.logs_since("job-1", Some(first.next), 2)).unwrap();
+        assert_eq!(texts(&second), [(LogStream::Out, "three")]);
+        let empty = now(fake.logs_since("job-1", Some(second.next), 2)).unwrap();
+        assert_eq!(empty, LogPage::new(Vec::new(), second.next), "an empty page keeps the cursor");
+        assert_eq!(now(fake.logs("job-1", 10)).unwrap(), "one\ntwo\nthree\n");
+        // A cursor kept as JSON reads the same page.
+        let stored: LogCursor = serde_json::from_str(&serde_json::to_string(&first.next).unwrap()).unwrap();
+        assert_eq!(now(fake.logs_since("job-1", Some(stored), 2)).unwrap(), second);
+    }
+
+    #[test]
+    fn set_logs_gives_out_lines_at_the_epoch_to_both_calls() {
+        let fake = FakeRuntime::new();
+        started(&fake, "job-1");
+        fake.set_logs("job-1", "one\ntwo\n");
+        let page = now(fake.logs_since("job-1", None, 10)).unwrap();
+        assert_eq!(texts(&page), [(LogStream::Out, "one"), (LogStream::Out, "two")]);
+        assert!(page.lines.iter().all(|line| line.time.timestamp() == 0));
+        assert_eq!(now(fake.logs("job-1", 1)).unwrap(), "two\n");
+        // A pushed line follows the set ones; set_logs replaces them all.
+        fake.push_log("job-1", LogLine::new(cicada::time::from_micros(5_000_000), LogStream::Err, "three"));
+        assert_eq!(now(fake.logs("job-1", 10)).unwrap(), "one\ntwo\nthree\n");
+        fake.set_logs("job-1", "four");
+        assert_eq!(texts(&now(fake.logs_since("job-1", None, 10)).unwrap()), [(LogStream::Out, "four")]);
+    }
+
+    #[test]
+    fn logs_since_of_a_missing_or_created_container_and_a_bad_page_size() {
+        let fake = FakeRuntime::new();
+        assert_eq!(kind(now(fake.logs_since("gone", None, 5))), ErrorKind::Conflict);
+        now(fake.create(&ContainerSpec::new("job-1", "alpine:3"))).unwrap();
+        assert_eq!(now(fake.logs_since("job-1", None, 5)).unwrap(), LogPage::new(Vec::new(), "0:0".parse().unwrap()));
+        for bad in [0, 1001] {
+            assert_eq!(kind(now(fake.logs_since("job-1", None, bad))), ErrorKind::InvalidSpec, "{bad}");
+        }
+        assert!(now(fake.logs_since("job-1", None, crate::LOG_PAGE_MAX)).is_ok());
+    }
+
+    #[test]
+    fn a_scripted_failure_of_logs_since_is_recorded() {
+        let fake = FakeRuntime::new();
+        started(&fake, "job-1");
+        fake.set_logs("job-1", "one");
+        fake.fail_next(Method::LogsSince, ErrorKind::DaemonUnavailable);
+        let cursor: LogCursor = "0:0".parse().unwrap();
+        assert_eq!(kind(now(fake.logs_since("job-1", Some(cursor), 3))), ErrorKind::DaemonUnavailable);
+        assert_eq!(now(fake.logs_since("job-1", Some(cursor), 3)).unwrap().lines.len(), 1);
+        let call = Call::LogsSince { name: "job-1".into(), cursor: Some(cursor), max_lines: 3 };
+        assert_eq!(fake.calls().iter().filter(|c| **c == call).count(), 2);
+    }
+
+    #[test]
+    fn a_runtime_without_logs_since_compiles_and_fails_with_other() {
+        /// A host's runtime written before `logs_since`.
+        struct Older;
+
+        #[async_trait]
+        impl ContainerRuntime for Older {
+            async fn create(&self, _: &ContainerSpec) -> Result<(), ContainerError> {
+                Ok(())
+            }
+            async fn copy_in(&self, _: &str, _: &[CopyFile]) -> Result<(), ContainerError> {
+                Ok(())
+            }
+            async fn start(&self, _: &str) -> Result<(), ContainerError> {
+                Ok(())
+            }
+            async fn inspect(&self, _: &str) -> Result<ContainerStatus, ContainerError> {
+                Ok(ContainerStatus::Missing)
+            }
+            async fn logs(&self, _: &str, _: u32) -> Result<String, ContainerError> {
+                Ok(String::new())
+            }
+            async fn stop(&self, _: &str, _: Duration) -> Result<(), ContainerError> {
+                Ok(())
+            }
+            async fn remove(&self, _: &str) -> Result<(), ContainerError> {
+                Ok(())
+            }
+            async fn list(&self, _: &Label) -> Result<Vec<ContainerSummary>, ContainerError> {
+                Ok(Vec::new())
+            }
+            async fn ensure_network(&self, _: &NetworkSpec) -> Result<(), ContainerError> {
+                Ok(())
+            }
+            async fn ensure_volume(&self, _: &VolumeSpec) -> Result<(), ContainerError> {
+                Ok(())
+            }
+            async fn sweep(&self, _: &Label) -> Result<Swept, ContainerError> {
+                Ok(Swept::default())
+            }
+        }
+
+        let runtime: Arc<dyn ContainerRuntime> = Arc::new(Older);
+        let error = now(runtime.logs_since("job-1", None, 10)).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Other, "{error}");
+        assert!(error.message.contains("not supported"), "{error}");
     }
 
     #[test]

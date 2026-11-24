@@ -14,7 +14,7 @@ Version). Builds on `container-consistency`, which must have landed first. Follo
   pager (lines sharing a second, out of time order within a second, a page cut in a second, an empty read keeping the
   cursor, a repeated cursor, and lines A, B, C of decision 1: B dropped, C not again) and of the cursor (round trip
   through `Display`/`FromStr` and JSON, bad strings); `cargo test -p cicada-containers --all-features`.
-- [ ] 2. **The trait and the fake.** `ContainerRuntime::logs_since` with a default that fails with `Other` (decision
+- [x] 2. **The trait and the fake.** `ContainerRuntime::logs_since` with a default that fails with `Other` (decision
   5); its rustdoc names the bound, what a missing and a created container give, that it is called outside actor
   turns, and the limits of the design (a late-stamped line missed, gentle polling, rotation, lines over 16 KiB in
   parts, bollard's 32-bit `since` after 2038). The fake (decision 7): one timed line store, `push_log`, `set_logs` as

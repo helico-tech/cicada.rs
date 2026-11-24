@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
-use crate::{ContainerError, ContainerSpec, CopyFile, Label, NetworkSpec, VolumeSpec};
+use crate::{ContainerError, ContainerSpec, CopyFile, ErrorKind, Label, LogCursor, LogPage, NetworkSpec, VolumeSpec};
 
 /// A container runtime: Docker, or the fake in tests. Use it as `Arc<dyn ContainerRuntime>` to pick one at run time.
 ///
@@ -36,6 +36,41 @@ pub trait ContainerRuntime: Send + Sync + 'static {
     /// The last `tail_lines` lines of the container's stdout and stderr together, as lossy UTF-8. Fails with
     /// `Conflict` for a missing container.
     async fn logs(&self, name: &str, tail_lines: u32) -> Result<String, ContainerError>;
+
+    /// Up to `max_lines` log lines of the container `name` after `cursor` (from the first line for `None`), each
+    /// with its time, its stream and its text as lossy UTF-8 without the newline, and the cursor to call again with.
+    /// For a host that follows a run's output and keeps it outside the container; call it outside actor turns, as a
+    /// page is too big for actor state.
+    ///
+    /// Paging to the end gives every line once, in log order, and the same cursor gives the same lines first. A page
+    /// with fewer than `max_lines` lines has read everything there is now: call again later with
+    /// [`next`](LogPage::next), which an empty page leaves at the cursor given (the start for `None`). `max_lines`
+    /// outside 1 to [`LOG_PAGE_MAX`](crate::LOG_PAGE_MAX) fails with `InvalidSpec` before any read. A missing container fails with
+    /// `Conflict`, also when it is removed during the read; a created one gives an empty page, a running or ended
+    /// one its lines. A container whose log cannot be read, such as Docker's log driver `none`, fails with `Other`,
+    /// not `DaemonUnavailable`, so a follower stops retrying.
+    ///
+    /// Limits, from how Docker keeps logs: a line stamped before the cursor's second but written after it (a race of
+    /// microseconds at a second boundary between stdout and stderr) is missed. Each read makes Docker scan the log
+    /// from the cursor's second, so poll gently, every few seconds, not in a tight loop. Log rotation that removes
+    /// part of that second shifts the cursor's count. A line longer than 16 KiB comes back as several lines, as
+    /// Docker stores it in parts. Docker takes the second as a 32-bit number: a cursor after January 2038 fails with
+    /// `Other` rather than read from the wrong time.
+    ///
+    /// The default fails with `Other`, so a runtime written before this method compiles unchanged; the fake and
+    /// the Docker backend implement it.
+    async fn logs_since(
+        &self,
+        name: &str,
+        cursor: Option<LogCursor>,
+        max_lines: u32,
+    ) -> Result<LogPage, ContainerError> {
+        let _ = (cursor, max_lines);
+        Err(ContainerError::new(
+            ErrorKind::Other,
+            format!("logs of {name}: logs_since is not supported by this runtime"),
+        ))
+    }
 
     /// Stops the running container `name`, killing it after `grace`; it then reports `Exited` with the code the
     /// runtime gave the stopped process (Docker: 143 after SIGTERM, 137 after the grace period). A created container

@@ -31,12 +31,14 @@ impl ContainerError {
 pub enum ErrorKind {
     /// The runtime could not be reached, or timed out; the only kind a retry is expected to cure.
     DaemonUnavailable,
-    /// The call does not fit the current state: `start`, `copy_in` or `logs` on a missing container, `copy_in` on a
-    /// container that is not `Created`, or `ensure_network` on an existing network with another `internal` flag.
+    /// The call does not fit the current state: `start`, `copy_in`, `logs` or `logs_since` on a missing container,
+    /// `copy_in` on a container that is not `Created`, or `ensure_network` on an existing network with another
+    /// `internal` flag.
     Conflict,
     /// The image does not exist, or could not be pulled.
     ImageNotFound,
-    /// The runtime refused the spec or the arguments, such as a relative path for `copy_in`.
+    /// The runtime refused the spec or the arguments, such as a relative path for `copy_in` or a `max_lines` of 0
+    /// for `logs_since`.
     InvalidSpec,
     /// Anything else the backend reports.
     Other,
