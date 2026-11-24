@@ -7,6 +7,30 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.20.9 — unreleased
+
+The fake and the Docker backend of `cicada-containers` give the same answers, so a host's tests on `FakeRuntime`
+predict Docker. No new method, field or error kind; the actor contracts, wire formats, the store schema and the
+guarantees are those of 0.20.8.
+
+### Fixed
+
+- `cicada-containers`: one path rule for `copy_in` on every runtime. Both now refuse with `InvalidSpec`, before any
+  write, a path equal to the target of a volume or bind mount, with a writable or a read-only root (a file cannot
+  replace a mount point: the fake wrote one at `/work`, and Docker uploaded one at a read-only bind's target and
+  failed late with `Other`), and a path at or below a tmpfs with no deeper volume or bind mount, on any root (with a
+  writable root both wrote it, and Docker then hid it under the tmpfs mounted at start). The fake now also refuses
+  `/` and drops empty and `.` parts as Docker does, so `/work/./a` and `/work/a` are one file. Covered by the unit
+  tests in `src/paths.rs`, `src/fake.rs` and `src/docker/map.rs`, and by `ContainerDockerTest` in
+  `e2e/tests/suite/container_docker.rs`.
+- `cicada-containers`: the `Swept` of a Docker `sweep` names only what this sweep removed or skipped. A container
+  that was already gone or was being removed by another caller (Docker's 404 or 409) was counted as removed; now it is
+  in no list, as a network or volume that was already gone was. A volume's 409 (in use) stays a skip. Covered by the
+  unit test of `map::gone`.
+- `cicada-containers`: a Docker `list` leaves out a container whose state Docker does not report, as it leaves out
+  one removed since the listing, instead of failing the whole call with `Other`. `inspect`, `start`, `copy_in` and
+  `stop` of that name still fail with `Other`. Covered by the unit test of `map::summary`.
+
 ## 0.20.8 — 2026-11-24
 
 A ready-made permit pool in `cicada-actors`, which caps how many jobs hold a permit at once, and a ready-made job

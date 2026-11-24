@@ -198,9 +198,31 @@ async fn an_id_prefix_is_not_a_name() {
     runtime().remove(&spec.name).await.unwrap();
 }
 
+/// The volume `name(suffix)` with the suite's label.
+async fn labelled_volume(suffix: &str) -> String {
+    let volume = name(suffix);
+    let mut volume_spec = VolumeSpec::new(&volume);
+    volume_spec.labels.insert(CONTAINER_LABEL.0.into(), CONTAINER_LABEL.1.into());
+    runtime().ensure_volume(&volume_spec).await.unwrap();
+    volume
+}
+
+/// Whether `path` exists in the running container `name`.
+async fn exists(name: &str, path: &str) -> bool {
+    docker(&["exec", name, "test", "-e", path], secs(60), false).await.unwrap().ok()
+}
+
 async fn copy_in_writes_before_start_and_conflicts_after() {
-    let spec = spec("copy", "stat -c '%a %u' /job/run.sh; /job/run.sh; cat /etc/job.json; sleep 600");
+    let volume = labelled_volume("rw-work").await;
+    let mut spec = spec("copy", "stat -c '%a %u' /job/run.sh; /job/run.sh; cat /etc/job.json; sleep 600");
+    spec.mounts.push(Mount::new(MountKind::Volume, &volume, "/work"));
+    spec.tmpfs.push(Tmpfs::new("/scratch"));
     runtime().create(&spec).await.unwrap();
+    // On a writable root too: a file cannot replace a mount point, and the tmpfs mounted at start would hide one.
+    let target = [CopyFile::new("/work/x", "x"), CopyFile::new("/work", "x")];
+    assert_eq!(kind(runtime().copy_in(&spec.name, &target).await), ErrorKind::InvalidSpec, "the volume target");
+    let tmpfs = [CopyFile::new("/etc/x", "x"), CopyFile::new("/scratch/c", "x")];
+    assert_eq!(kind(runtime().copy_in(&spec.name, &tmpfs).await), ErrorKind::InvalidSpec, "a path on a tmpfs");
     let mut script = CopyFile::new("/job/run.sh", "#!/bin/sh\necho script ran\n");
     script.mode = 0o755;
     let files = [script, CopyFile::new("/etc/job.json", "{\"job\":1}\n")];
@@ -210,19 +232,19 @@ async fn copy_in_writes_before_start_and_conflicts_after() {
     let logs = logs_hold(&spec.name, "{\"job\":1}").await;
     assert_eq!(logs, "755 0\nscript ran\n{\"job\":1}\n");
 
+    for refused in ["/work/x", "/etc/x"] {
+        assert!(!exists(&spec.name, refused).await, "{refused} not written");
+    }
+
     let late = [CopyFile::new("/job/late", "x")];
     assert_eq!(kind(runtime().copy_in(&spec.name, &late).await), ErrorKind::Conflict);
-    let exists = docker(&["exec", &spec.name, "test", "-e", "/job/late"], secs(60), false).await.unwrap();
-    assert!(!exists.ok(), "no file written");
+    assert!(!exists(&spec.name, "/job/late").await, "no file written");
     runtime().remove(&spec.name).await.unwrap();
 }
 
 async fn copy_in_on_a_read_only_root_writes_only_to_a_mount() {
-    let volume = name("ro-work");
-    let mut volume_spec = VolumeSpec::new(&volume);
-    volume_spec.labels.insert(CONTAINER_LABEL.0.into(), CONTAINER_LABEL.1.into());
-    runtime().ensure_volume(&volume_spec).await.unwrap();
-    let mut spec = spec("ro-copy", "cat /work/a; ls /etc/b 2>&1 || true");
+    let volume = labelled_volume("ro-work").await;
+    let mut spec = spec("ro-copy", "cat /work/a; test -e /work/x && echo x written; ls /etc/b 2>&1 || true");
     spec.read_only_root = true;
     spec.mounts.push(Mount::new(MountKind::Volume, &volume, "/work"));
     spec.tmpfs.push(Tmpfs::new("/scratch"));
@@ -232,12 +254,15 @@ async fn copy_in_on_a_read_only_root_writes_only_to_a_mount() {
     assert_eq!(kind(runtime().copy_in(&spec.name, &both).await), ErrorKind::InvalidSpec);
     let tmpfs = [CopyFile::new("/scratch/c", "x")];
     assert_eq!(kind(runtime().copy_in(&spec.name, &tmpfs).await), ErrorKind::InvalidSpec, "a tmpfs is no mount yet");
+    let target = [CopyFile::new("/work/x", "x"), CopyFile::new("/work/", "x")];
+    assert_eq!(kind(runtime().copy_in(&spec.name, &target).await), ErrorKind::InvalidSpec, "the volume target");
     runtime().copy_in(&spec.name, &both[..1]).await.unwrap();
     runtime().start(&spec.name).await.unwrap();
     assert_eq!(ended(&spec.name).await, ContainerStatus::Exited { code: 0 });
     let logs = runtime().logs(&spec.name, 100).await.unwrap();
     assert!(logs.starts_with("on the volume\n"), "{logs}");
     assert!(logs.contains("No such file"), "nothing written to the root: {logs}");
+    assert!(!logs.contains("x written"), "nothing written with the mount target: {logs}");
     runtime().remove(&spec.name).await.unwrap();
 }
 
