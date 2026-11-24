@@ -1,0 +1,486 @@
+{
+  "messages": {
+    "Dispatch": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Sends the job message of `attempt` when it is still the job's current attempt, not yet dispatched, while the\njob is running. Sent by the run to itself, with a retry policy.",
+      "properties": {
+        "attempt": {
+          "description": "The attempt to dispatch.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "job": {
+          "description": "The job.",
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "job",
+        "attempt"
+      ],
+      "title": "Dispatch",
+      "type": "object"
+    },
+    "Failed": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The notification of a message to a watched actor that ended `failed`: what the failed message was and why it\nfailed. Its type name is `Failed`. A watcher's message family declares it as `Failed(cicada::Failed)`.\n\nIts schema is part of every watcher's contract; a snapshot test pins it.",
+      "properties": {
+        "actor": {
+          "description": "The actor the failed message was for: the actor of the event, not the target of the watch.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": "string"
+        },
+        "attempts": {
+          "description": "How often the message was claimed: its `attempt`.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cause": {
+          "description": "What failed, one of:\n- `handler`: the handler returned an error or panicked and no retry is left, or it returned a state that cannot\n  be stored;\n- `node`: a read of the store the node needed failed, also one the handler passed on, or a panic outside the\n  handler;\n- `refused`: the handler refused the message for good;\n- `timeout`: the turn ran past its maximum duration;\n- `message`: the message cannot be decoded;\n- `state`: the state or the address of the actor cannot be read by its type;\n- `commit`: the effects of the turn were refused, or its commit was rejected or refused;\n- `claim-limit`: the message reached the claim limit.",
+          "oneOf": [
+            {
+              "const": "handler",
+              "description": "The handler returned an error or panicked, and no retry is left; or it returned a new state that cannot be\nstored.",
+              "type": "string"
+            },
+            {
+              "const": "node",
+              "description": "The node or the store failed around the turn: a read the node needed failed, also one the handler passed on,\nor a panic outside the handler.",
+              "type": "string"
+            },
+            {
+              "const": "refused",
+              "description": "The handler refused the message for good (a permanent failure).",
+              "type": "string"
+            },
+            {
+              "const": "timeout",
+              "description": "The turn ran past its maximum duration.",
+              "type": "string"
+            },
+            {
+              "const": "message",
+              "description": "The message cannot be decoded.",
+              "type": "string"
+            },
+            {
+              "const": "state",
+              "description": "The state or the address of the actor cannot be read by its type.",
+              "type": "string"
+            },
+            {
+              "const": "commit",
+              "description": "The effects of the turn were refused, or its commit was rejected or refused.",
+              "type": "string"
+            },
+            {
+              "const": "claim-limit",
+              "description": "The message reached the claim limit (ADR 0025).",
+              "type": "string"
+            }
+          ]
+        },
+        "correlationId": {
+          "description": "The correlation id of the failed message; null when it has none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "error": {
+          "description": "The error it failed with.",
+          "type": "string"
+        },
+        "from": {
+          "description": "The sender of the failed message; null for a message sent from outside a turn.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "messageId": {
+          "description": "The id of the failed message.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "messageType": {
+          "description": "The type name of the failed message.",
+          "type": "string"
+        },
+        "payload": {
+          "description": "The payload of the failed message."
+        }
+      },
+      "required": [
+        "actor",
+        "messageId",
+        "messageType",
+        "payload",
+        "error",
+        "attempts",
+        "cause"
+      ],
+      "title": "Failed",
+      "type": "object"
+    },
+    "Report": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Sends the end report to the report target when the run has ended; on a running run it does nothing. The run\nsends it itself in the commit that ends it; anyone may send it again, for a report that was lost or whose\ntarget was gone, so a report target treats a repeated report for the same run as one.",
+      "properties": {},
+      "title": "Report",
+      "type": "object"
+    },
+    "Result": {
+      "$defs": {
+        "JobOutcome": {
+          "description": "How an attempt ended.",
+          "oneOf": [
+            {
+              "const": "succeeded",
+              "description": "The job did its work.",
+              "type": "string"
+            },
+            {
+              "const": "failed",
+              "description": "The job did not do its work.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The result of one attempt of a job, from its worker or whoever the work was handed to: the sender is not\nchecked. Taken only when the job is `running` and `attempt` is its current attempt: the attempt ends with the\noutcome and reason, the job takes the outcome and keeps `output`, and ready jobs start. Any other result is\nrefused for good with the reason and the state unchanged, so the store keeps it as a failed message of the run.",
+      "properties": {
+        "attempt": {
+          "description": "The attempt it reports, from the [`JobStart`].",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "job": {
+          "description": "The job.",
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        },
+        "outcome": {
+          "$ref": "#/$defs/JobOutcome",
+          "description": "How the attempt ended."
+        },
+        "output": {
+          "description": "What the job made, any JSON value of at most 16 KiB and 32 levels; absent or null: none."
+        },
+        "reason": {
+          "description": "Why it ended so, at most 2,000 characters; absent or null: none.",
+          "maxLength": 2000,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "job",
+        "attempt",
+        "outcome"
+      ],
+      "title": "Result",
+      "type": "object"
+    },
+    "Start": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Starts every ready job, in graph order, while fewer jobs run than the in-flight limit. Send it with the create,\nin one commit; once nothing more can start it does nothing, so a second one is harmless.",
+      "properties": {},
+      "title": "Start",
+      "type": "object"
+    },
+    "Stopped": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The notification of a watched actor that went away. Its type name is `Stopped`. A watcher's message family declares\nit as `Stopped(cicada::Stopped)`. Only a watch on the actor's own address tells of it.\n\nIts schema is part of every watcher's contract; a snapshot test pins it.",
+      "properties": {
+        "actor": {
+          "description": "The actor that went away.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": "string"
+        },
+        "by": {
+          "description": "The actor whose turn removed it: the actor itself when it stopped, the stopping ancestor when it went with it;\nnull for a removal from outside a turn.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cause": {
+          "description": "Why it went away.",
+          "oneOf": [
+            {
+              "const": "stopped",
+              "description": "Its own turn stopped it.",
+              "type": "string"
+            },
+            {
+              "const": "deleted",
+              "description": "It was deleted from outside a turn.",
+              "type": "string"
+            },
+            {
+              "const": "parent",
+              "description": "It was removed with its parent (ADR 0019).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "required": [
+        "actor",
+        "cause"
+      ],
+      "title": "Stopped",
+      "type": "object"
+    }
+  },
+  "state": {
+    "$defs": {
+      "JobAttempt": {
+        "description": "One attempt of a job: the last one of a job is its current attempt.",
+        "properties": {
+          "attempt": {
+            "description": "Its number, per job from 1.",
+            "format": "uint32",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "dispatchedAt": {
+            "description": "The store time of the commit that sent its job message; null until then, and for good when that failed.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "endedAt": {
+            "description": "The store time it ended; null while open.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/JobOutcome"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How it ended; set exactly when it ended."
+          },
+          "reason": {
+            "description": "Why it ended so, at most 2,000 characters; only on an ended attempt.",
+            "maxLength": 2000,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "attempt"
+        ],
+        "type": "object"
+      },
+      "JobEntry": {
+        "description": "A job of a run: its definition, its status, its output and its attempts.",
+        "properties": {
+          "attempts": {
+            "default": [],
+            "description": "Its attempts, oldest first, at most 20, numbered consecutively; the last is the current one and the only one\nthat may be open. Absent: none.",
+            "items": {
+              "$ref": "#/$defs/JobAttempt"
+            },
+            "type": "array"
+          },
+          "input": {
+            "description": "Its input: any JSON value of at most 16 KiB and 32 levels."
+          },
+          "messageType": {
+            "description": "The message type of its job message, whose payload is a [`JobStart`]; not empty, at most 200 characters,\nwithout NUL.",
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "name": {
+            "description": "Its name: 1 through 64 ASCII letters, digits, `-`, `_` or `.`, unique in the graph.",
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          },
+          "needs": {
+            "description": "The jobs that must succeed before it starts, each a job of the graph other than itself, named once.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "output": {
+            "description": "The output of its last result; absent or null: none."
+          },
+          "status": {
+            "$ref": "#/$defs/JobStatus",
+            "default": "waiting",
+            "description": "Its status, matching its last attempt; absent: `waiting`."
+          },
+          "to": {
+            "description": "The target of its job message.",
+            "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "needs",
+          "to",
+          "messageType",
+          "input"
+        ],
+        "type": "object"
+      },
+      "JobGraphStatus": {
+        "description": "The status of a run.",
+        "oneOf": [
+          {
+            "const": "running",
+            "description": "A job runs or can start.",
+            "type": "string"
+          },
+          {
+            "const": "succeeded",
+            "description": "Ended: every job succeeded.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "Ended: no job runs and none can start, and not every job succeeded.",
+            "type": "string"
+          },
+          {
+            "const": "cancelled",
+            "description": "Ended by a cancel; not set by this release.",
+            "type": "string"
+          }
+        ]
+      },
+      "JobOutcome": {
+        "description": "How an attempt ended.",
+        "oneOf": [
+          {
+            "const": "succeeded",
+            "description": "The job did its work.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "The job did not do its work.",
+            "type": "string"
+          }
+        ]
+      },
+      "JobStatus": {
+        "description": "The status of a job.",
+        "oneOf": [
+          {
+            "const": "waiting",
+            "description": "Not started: some job it needs has not succeeded, or no room was free.",
+            "type": "string"
+          },
+          {
+            "const": "running",
+            "description": "Its current attempt is open: dispatched or about to be.",
+            "type": "string"
+          },
+          {
+            "const": "succeeded",
+            "description": "Its last attempt succeeded.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "Its last attempt failed; the jobs that need it do not start.",
+            "type": "string"
+          },
+          {
+            "const": "skipped",
+            "description": "Not run, as a job it needs did not succeed; not set by this release.",
+            "type": "string"
+          },
+          {
+            "const": "cancelled",
+            "description": "Cancelled; not set by this release.",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "The state of a [`JobGraph`] run: its graph, in-flight limit and report target, given at its create, its status, and\nper job its status, output and attempts. Build it with `JobGraphState::new`; a decoded state is checked the same\nway, so a bad graph never becomes a run.\n\nOn the wire: `{\"maxInFlight\":2,\"reportTo\":\"ci/run-7\",\"reportType\":\"GraphEnded\",\"status\":\"running\",\"endedAt\":null,\n\"jobs\":[{\"name\":\"build\",\"needs\":[],\"to\":\"builder/run-7\",\"messageType\":\"Build\",\"input\":{},\"status\":\"waiting\",\n\"output\":null,\"attempts\":[]}]}`; `status`, `endedAt` and a job's `status`, `output` and `attempts` may be left out\nof a create.",
+    "properties": {
+      "endedAt": {
+        "description": "The store time it ended; set exactly when it ended. Absent: null.",
+        "format": "date-time",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "jobs": {
+        "description": "The jobs, in graph order, 1 through 100, without a cycle; at most `maxInFlight` run, and a started job's needs\nall succeeded.",
+        "items": {
+          "$ref": "#/$defs/JobEntry"
+        },
+        "maxItems": 100,
+        "minItems": 1,
+        "type": "array"
+      },
+      "maxInFlight": {
+        "description": "The most jobs that run at once, dispatched or not; 1 through 100.",
+        "format": "uint32",
+        "maximum": 100,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "reportTo": {
+        "description": "The target of the end report.",
+        "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+        "type": "string"
+      },
+      "reportType": {
+        "description": "The message type of the end report, whose payload is a `JobGraphEnd`; not empty, at most 200 characters,\nwithout NUL.",
+        "maxLength": 200,
+        "minLength": 1,
+        "type": "string"
+      },
+      "status": {
+        "$ref": "#/$defs/JobGraphStatus",
+        "default": "running",
+        "description": "The status of the run: ended exactly when no job runs and none can start, `succeeded` only when every job\nsucceeded. Absent: `running`."
+      }
+    },
+    "required": [
+      "maxInFlight",
+      "reportTo",
+      "reportType",
+      "jobs"
+    ],
+    "title": "JobGraphState",
+    "type": "object"
+  },
+  "type": "cicada.job-graph"
+}

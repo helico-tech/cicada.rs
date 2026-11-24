@@ -27,7 +27,7 @@ on virtual time (`#[tokio::test(start_paused = true)]` with `TestActors`).
   result for another attempt, a late result, a result from another actor taken, an output too large, a failed job
   blocking only its dependents, the end report, a report sent again, and a gone report target recovered by a later
   `Report`. Verify: `cargo test -p cicada-actors --test job_graph`.
-- [ ] 4. **Contract and wire format.** `cicada.job-graph` joins the contracts checked in
+- [x] 4. **Contract and wire format.** `cicada.job-graph` joins the contracts checked in
   `crates/cicada-actors/tests/wire_formats.rs` (update the count in its module comment), with samples of each message,
   a state mid-run, a `JobStart` and a `JobGraphEnd` taken by the schemas and the decoders;
   `CICADA_UPDATE_CONTRACTS=true cargo test -p cicada-actors --test wire_formats` writes

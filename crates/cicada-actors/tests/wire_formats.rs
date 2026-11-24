@@ -1,4 +1,4 @@
-//! The wire formats of the eleven ready-made actors (ADR 0028): their contracts against the references in
+//! The wire formats of the twelve ready-made actors (ADR 0028): their contracts against the references in
 //! `docs/reference/contracts`, the JSON their messages and states are written as, and sample checks for what the
 //! helpers and the actors write: both the registered schemas and the decoders take it (ADR 0026). And the wire format
 //! of a flow (ADR 0031, ADR 0044): a test flow's contract, whose type name its host chooses, pinned in `tests/contracts`,
@@ -12,15 +12,17 @@ use cicada::actor::contract_of;
 use cicada::contract::Contract;
 use cicada::prelude::*;
 use cicada::{Failed, FailureCause, StopCause, Stopped, WatchTarget};
+use cicada_actors::Job as GraphJob;
 use cicada_actors::{
     Batcher, BatcherActor, BatcherMsg, BatcherState, Child, DeadLetters, DeadLettersActor, DeadLettersMsg,
     DeadLettersState, Debouncer, DebouncerActor, DebouncerMsg, DebouncerState, Event, EventActor, EventMsg, EventState,
     Flow, FlowActor, FlowMsg, FlowRun, FlowState, FlowStatus, HeartbeatStatus, HeartbeatWatch, HeartbeatWatchActor,
-    HeartbeatWatchMsg, HeartbeatWatchState, JournalEntry, NodeDown, NodeDownMonitor, NodeDownMonitorActor,
-    NodeDownMonitorMsg, NodeDownMonitorState, NodeReadError, NodeSnapshot, NodeSnapshotSource, PermitNotice,
-    PermitNoticeKind, Permits, PermitsActor, PermitsMsg, PermitsState, RateLimiter, RateLimiterActor, RateLimiterMsg,
-    RateLimiterState, ReplyTo, Schedule, Scheduler, SchedulerActor, SchedulerMsg, SchedulerState, StoredMessage,
-    Supervisor, SupervisorActor, SupervisorMsg, SupervisorState, Topic, TopicActor, TopicMsg, TopicState,
+    HeartbeatWatchMsg, HeartbeatWatchState, JobGraph, JobGraphActor, JobGraphEnd, JobGraphMsg, JobGraphState,
+    JobOutcome, JobStart, JournalEntry, NodeDown, NodeDownMonitor, NodeDownMonitorActor, NodeDownMonitorMsg,
+    NodeDownMonitorState, NodeReadError, NodeSnapshot, NodeSnapshotSource, PermitNotice, PermitNoticeKind, Permits,
+    PermitsActor, PermitsMsg, PermitsState, RateLimiter, RateLimiterActor, RateLimiterMsg, RateLimiterState, ReplyTo,
+    Schedule, Scheduler, SchedulerActor, SchedulerMsg, SchedulerState, StoredMessage, Supervisor, SupervisorActor,
+    SupervisorMsg, SupervisorState, Topic, TopicActor, TopicMsg, TopicState,
 };
 use cicada_axum::{assert_message_sample, assert_state_sample};
 use cicada_test::{TestActors, UPDATE_CONTRACTS_ENV, describe_changes};
@@ -91,7 +93,7 @@ fn check_references(dir: &Path, contracts: &[Contract], update: bool) -> Result<
     }
 }
 
-fn the_eleven_contracts() -> [Contract; 11] {
+fn the_twelve_contracts() -> [Contract; 12] {
     [
         contract_of::<SupervisorActor>().unwrap(),
         contract_of::<DeadLettersActor>().unwrap(),
@@ -104,12 +106,13 @@ fn the_eleven_contracts() -> [Contract; 11] {
         contract_of::<HeartbeatWatchActor>().unwrap(),
         contract_of::<NodeDownMonitorActor>().unwrap(),
         contract_of::<PermitsActor>().unwrap(),
+        contract_of::<JobGraphActor>().unwrap(),
     ]
 }
 
 #[test]
-fn the_contracts_of_the_eleven_types_match_their_references() {
-    let contracts = the_eleven_contracts();
+fn the_contracts_of_the_twelve_types_match_their_references() {
+    let contracts = the_twelve_contracts();
     let names: Vec<&str> = contracts.iter().map(|c| c.type_name().as_str()).collect();
     assert_eq!(
         names,
@@ -124,7 +127,8 @@ fn the_contracts_of_the_eleven_types_match_their_references() {
             "cicada.event",
             "cicada.heartbeat-watch",
             "cicada.node-down",
-            "cicada.permits"
+            "cicada.permits",
+            "cicada.job-graph"
         ]
     );
     let update = std::env::var(UPDATE_CONTRACTS_ENV).is_ok_and(|v| v == "true");
@@ -571,6 +575,198 @@ async fn the_state_a_pool_writes_passes_its_sample() {
     let written = test.state_json(&pool).await.unwrap();
     assert_eq!(written["holders"][1]["notified"], true, "{written}");
     assert_state_sample::<PermitsState>(&written);
+}
+
+/// A family of a worker and report target of a job graph: it declares `Build` with the job message of the crate and
+/// `GraphEnded` with its end report.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type")]
+enum CiMsg {
+    /// A job message.
+    Build(JobStart),
+    /// The end report of a run.
+    GraphEnded(JobGraphEnd),
+}
+
+/// `ci/{id}`: keeps nothing; it takes the job messages and the end report of a run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Ci {
+    id: String,
+}
+
+impl ActorRef for Ci {
+    const TYPE: &'static str = "ci";
+    type Message = CiMsg;
+}
+
+struct CiActor;
+
+impl Actor for CiActor {
+    type Ref = Ci;
+    type State = Value;
+
+    async fn handle(&self, _turn: &mut Turn<Self>, _message: CiMsg) -> HandlerResult {
+        Ok(())
+    }
+}
+
+#[test]
+fn the_job_graph_messages_job_message_and_end_report_are_written_in_camel_case_and_pass_their_samples() {
+    let start = JobStart { run: "run-7".into(), job: "build".into(), attempt: 2, input: json!({"ref": "main"}) };
+    let messages = [
+        (JobGraphMsg::Start, json!({"type": "Start"})),
+        (JobGraphMsg::Report, json!({"type": "Report"})),
+        (
+            JobGraphMsg::succeeded(&start, json!({"artifact": "app.tar"})).unwrap(),
+            json!({"type": "Result", "job": "build", "attempt": 2, "outcome": "succeeded",
+                "output": {"artifact": "app.tar"}, "reason": null}),
+        ),
+        (
+            JobGraphMsg::failed(&start, "it broke"),
+            json!({"type": "Result", "job": "build", "attempt": 2, "outcome": "failed", "output": null,
+                "reason": "it broke"}),
+        ),
+        (
+            JobGraphMsg::Dispatch { job: "build".into(), attempt: 2 },
+            json!({"type": "Dispatch", "job": "build", "attempt": 2}),
+        ),
+    ];
+    for (message, written) in messages {
+        assert_eq!(json_of(&message), written);
+        assert_message_sample::<JobGraphMsg>(&written);
+    }
+    assert_message_sample::<JobGraphMsg>(&json!({"type": "Result", "job": "build", "attempt": 2,
+        "outcome": "succeeded"}));
+    for message in [JobGraphMsg::Failed(failed()), JobGraphMsg::Stopped(stopped())] {
+        assert_message_sample::<JobGraphMsg>(&json_of(message));
+    }
+    for (message_type, invalid) in [
+        ("Result", json!({"job": "build", "attempt": 2})),
+        ("Result", json!({"job": "build", "attempt": 2, "outcome": "cancelled"})),
+        ("Result", json!({"job": "build", "attempt": -1, "outcome": "failed"})),
+        ("Result", json!({"attempt": 2, "outcome": "failed"})),
+        ("Dispatch", json!({"job": "build"})),
+    ] {
+        assert!(cicada::message::decode::<JobGraphMsg>(message_type, &invalid).is_err(), "{message_type} {invalid}");
+    }
+
+    let written = json!({"type": "Build", "run": "run-7", "job": "build", "attempt": 2, "input": {"ref": "main"}});
+    assert_eq!(json_of(CiMsg::Build(start.clone())), written);
+    assert_message_sample::<CiMsg>(&written);
+    let CiMsg::Build(read) = serde_json::from_value::<CiMsg>(written).unwrap() else { panic!("a job message") };
+    assert_eq!(read, start);
+
+    let end = json!({"type": "GraphEnded", "run": "run-7", "status": "failed", "jobs": [
+        {"name": "build", "status": "succeeded", "attempt": 1, "output": {"artifact": "app.tar"}, "reason": null},
+        {"name": "test", "status": "failed", "attempt": 1, "output": null, "reason": "3 tests failed"},
+        {"name": "deploy", "status": "waiting", "attempt": null, "output": null, "reason": null}]});
+    assert_message_sample::<CiMsg>(&end);
+    let CiMsg::GraphEnded(read) = serde_json::from_value::<CiMsg>(end.clone()).unwrap() else { panic!("a report") };
+    assert_eq!(json_of(CiMsg::GraphEnded(read)), end);
+    for status in ["running", "succeeded", "failed", "cancelled"] {
+        assert_message_sample::<CiMsg>(&json!({"type": "GraphEnded", "run": "r", "status": status, "jobs": []}));
+    }
+    for status in ["waiting", "running", "succeeded", "failed", "skipped", "cancelled"] {
+        let job = json!({"name": "a", "status": status, "attempt": null, "output": null, "reason": null});
+        assert_message_sample::<CiMsg>(&json!({"type": "GraphEnded", "run": "r", "status": "failed", "jobs": [job]}));
+    }
+}
+
+#[test]
+fn a_job_graph_state_is_written_in_camel_case_passes_its_samples_and_refuses_invalid_states() {
+    let ci = Ci { id: "run-7".into() };
+    let jobs = vec![
+        GraphJob::new("build", &ci, "Build", json!({})).unwrap(),
+        GraphJob::new("test", &ci, "Build", json!({"suite": "all"})).unwrap().with_needs(["build"]),
+    ];
+    let written = json_of(JobGraphState::new(jobs, 2, &ci, "GraphEnded").unwrap());
+    let job = |name: &str, needs: Value, input: Value| json!({"name": name, "needs": needs, "to": "ci/run-7", "messageType": "Build", "input": input});
+    let created = json!({"maxInFlight": 2, "reportTo": "ci/run-7", "reportType": "GraphEnded",
+        "jobs": [job("build", json!([]), json!({})), job("test", json!(["build"]), json!({"suite": "all"}))]});
+    let mut full = created.clone();
+    full["status"] = json!("running");
+    full["endedAt"] = Value::Null;
+    for entry in full["jobs"].as_array_mut().unwrap() {
+        entry["status"] = json!("waiting");
+        entry["output"] = Value::Null;
+        entry["attempts"] = json!([]);
+    }
+    assert_eq!(written, full);
+    assert_state_sample::<JobGraphState>(&written);
+    assert_state_sample::<JobGraphState>(&created);
+    let mid_run = json!({"maxInFlight": 2, "reportTo": "ci/run-7", "reportType": "GraphEnded", "status": "running",
+        "endedAt": null, "jobs": [
+            {"name": "build", "needs": [], "to": "ci/run-7", "messageType": "Build", "input": {},
+             "status": "succeeded", "output": {"artifact": "app.tar"}, "attempts": [{"attempt": 1,
+             "dispatchedAt": "2026-01-01T00:00:00Z", "endedAt": "2026-01-01T00:00:05Z", "outcome": "succeeded",
+             "reason": null}]},
+            {"name": "test", "needs": ["build"], "to": "ci/run-7", "messageType": "Build", "input": {},
+             "status": "running", "output": null, "attempts": [{"attempt": 1, "dispatchedAt": null,
+             "endedAt": null, "outcome": null, "reason": null}]}]});
+    assert_state_sample::<JobGraphState>(&mid_run);
+    assert_eq!(json_of(serde_json::from_value::<JobGraphState>(mid_run.clone()).unwrap()), mid_run);
+    let with = |edit: &dyn Fn(&mut Value)| {
+        let mut json = mid_run.clone();
+        edit(&mut json);
+        json
+    };
+    for invalid in [
+        with(&|j| j["maxInFlight"] = json!(0)),
+        with(&|j| j["maxInFlight"] = json!(101)),
+        with(&|j| j["reportType"] = json!("")),
+        with(&|j| j["reportTo"] = json!("not an address")),
+        with(&|j| j["status"] = json!("done")),
+        with(&|j| j["jobs"] = json!([])),
+        with(&|j| j["jobs"][1]["needs"] = json!(["test"])),
+        with(&|j| j["jobs"][1]["needs"] = json!(["deploy"])),
+        with(&|j| j["jobs"][0]["needs"] = json!(["test"])),
+        with(&|j| j["jobs"][1]["name"] = json!("build")),
+        with(&|j| j["jobs"][1]["status"] = json!("waiting")),
+        with(&|j| j["jobs"][0]["attempts"][0]["outcome"] = json!("cancelled")),
+        with(&|j| j["jobs"][1]["attempts"][0]["attempt"] = json!(0)),
+        with(&|j| j.as_object_mut().unwrap().remove("jobs").map(drop).unwrap()),
+    ] {
+        assert!(serde_json::from_value::<JobGraphState>(invalid.clone()).is_err(), "{invalid}");
+    }
+}
+
+/// The states a run writes: mid-run with a job dispatched and one not yet, and ended.
+#[tokio::test(start_paused = true)]
+async fn the_states_a_run_writes_pass_their_sample() {
+    let test = TestActors::builder().with(|node| node.host(JobGraphActor).host(CiActor)).build().await.unwrap();
+    let ci = Ci { id: "run-7".into() };
+    test.create(&ci, &json!({})).await;
+    let jobs = vec![
+        GraphJob::new("build", &ci, "Build", json!({})).unwrap(),
+        GraphJob::new("lint", &ci, "Build", json!({})).unwrap(),
+        GraphJob::new("test", &ci, "Build", json!({})).unwrap().with_needs(["build"]),
+    ];
+    let run = JobGraph::named("run-7");
+    test.create(&run, &JobGraphState::new(jobs, 2, &ci, "GraphEnded").unwrap()).await;
+    test.send(&run, JobGraphMsg::Start).await;
+    for _ in 0..2 {
+        assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1, "the start, then the first dispatch");
+    }
+    let written = test.state_json(&run).await.unwrap();
+    assert!(written["jobs"][0]["attempts"][0]["dispatchedAt"].is_string(), "{written}");
+    assert!(written["jobs"][1]["attempts"][0]["dispatchedAt"].is_null(), "{written}");
+    assert_state_sample::<JobGraphState>(&written);
+    test.run_until_idle().await;
+    for job in ["build", "lint", "test"] {
+        let attempt = 1;
+        let result = JobGraphMsg::Result {
+            job: job.into(),
+            attempt,
+            outcome: JobOutcome::Succeeded,
+            output: Some(json!({"job": job})),
+            reason: None,
+        };
+        test.send(&run, result).await;
+        test.run_until_idle().await;
+    }
+    let written = test.state_json(&run).await.unwrap();
+    assert_eq!(written["status"], "succeeded", "{written}");
+    assert_state_sample::<JobGraphState>(&written);
 }
 
 /// A family of a subscriber of the node-down topic: it declares `NodeDown` with the payload of the crate.
