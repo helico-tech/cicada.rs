@@ -50,12 +50,12 @@ To decide in the design:
 ## Out of scope
 
 Groups of containers (factory's workspace with its slot and its services), slot limits, and a pool of containers.
-Streaming output to an actor. Moving factory and brood onto the actor. Runtimes other than the one in
-`container-runtime`.
+Streaming output to an actor. Moving factory and brood onto the actor. Runtimes other than Docker
+(`container-docker`).
 
 ## Order
 
-After `container-runtime`, before `capacity-permits`.
+After `container-docker`, before `capacity-permits`.
 
 ## Impact
 
