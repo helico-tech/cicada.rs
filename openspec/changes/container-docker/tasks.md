@@ -25,6 +25,6 @@ the tar and the mount check of `copy_in`) are unit tests that run without Docker
   nothing blocks. Verify: `bash scripts/ci/feature-builds.sh`, `bash scripts/ci/dependency-trees.sh`,
   `python3 -m unittest discover -s scripts -p 'test_*.py'`, `cargo test -p cicada-examples --test docs` and
   `--test skill`.
-- [ ] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
+- [x] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
   `cargo test --workspace`, `cargo deny check advisories`, `openspec validate container-docker --strict`, commit, then
   `python3 scripts/gate.py run --e2e` (the change touches `e2e/`).
