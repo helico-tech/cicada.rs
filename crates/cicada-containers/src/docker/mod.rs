@@ -20,9 +20,10 @@ use futures::StreamExt;
 use tokio::sync::OnceCell;
 
 use self::map::{fail, kind_of, message_of, status_code};
+use crate::logs::{Pager, check_max_lines};
 use crate::{
     ContainerError, ContainerRuntime, ContainerSpec, ContainerStatus, ContainerSummary, CopyFile, ErrorKind, Label,
-    NetworkSpec, Resource, Skipped, Swept, VolumeSpec,
+    LogCursor, LogPage, NetworkSpec, Resource, Skipped, Swept, VolumeSpec,
 };
 
 /// The oldest Docker Engine API the backend speaks: Docker 25, which joins several networks in one create.
@@ -47,6 +48,8 @@ const STOP_SLACK: Duration = Duration::from_secs(60);
 ///   unless the image names another, such as SIGINT (130) for `postgres`.
 /// - [`copy_in`](ContainerRuntime::copy_in) writes with a read-only root only below a volume or bind mount. It never
 ///   writes at or below a tmpfs, which Docker mounts only at start, over the file, and never onto a mount target.
+/// - [`logs_since`](ContainerRuntime::logs_since) reads Docker's log with timestamps from the cursor's second and
+///   stops once the page is full; a container whose log driver cannot be read (`none`) fails with `Other`.
 /// - Secret environment goes to Docker only in the body of the create call, and an error message never holds a secret
 ///   value. The backend logs nothing; bollard logs request bodies at `debug` under the target `bollard`, so keep that
 ///   target at `info` or above.
@@ -270,6 +273,31 @@ impl ContainerRuntime for DockerRuntime {
             }
         }
         Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    async fn logs_since(
+        &self,
+        name: &str,
+        cursor: Option<LogCursor>,
+        max_lines: u32,
+    ) -> Result<LogPage, ContainerError> {
+        check_max_lines(name, max_lines)?;
+        let since = map::since(name, cursor)?;
+        let docker = self.docker().await?;
+        let found = self.find(docker, name).await?.ok_or_else(|| conflict("logs of", name))?;
+        let options =
+            LogsOptionsBuilder::new().follow(false).stdout(true).stderr(true).timestamps(true).since(since).build();
+        let mut stream = docker.logs(&found.id, Some(options));
+        let mut pager = Pager::new(cursor, max_lines);
+        while !pager.is_full() {
+            match stream.next().await {
+                Some(Ok(frame)) => pager.push(map::log_line(name, frame)?),
+                Some(Err(e)) if status_code(&e) == Some(404) => return Err(conflict("logs of", name)),
+                Some(Err(e)) => return Err(fail("logs of", name, &e)),
+                None => break,
+            }
+        }
+        Ok(pager.finish()) // dropping the stream ends the read
     }
 
     async fn stop(&self, name: &str, grace: Duration) -> Result<(), ContainerError> {

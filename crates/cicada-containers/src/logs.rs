@@ -78,6 +78,7 @@ impl LogCursor {
     pub(crate) const START: Self = Self { second: 0, skip: 0 };
 
     /// The Unix second a read from this cursor starts from: Docker's `since`.
+    #[cfg(any(test, feature = "docker"))]
     pub(crate) fn second(self) -> i64 {
         self.second
     }

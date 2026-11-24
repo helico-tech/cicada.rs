@@ -1,8 +1,10 @@
 //! The pure half of the Docker backend: a spec onto Docker's create body, Docker's state onto a status, its errors
-//! onto kinds, the secret scrub, and the paths and tars of `copy_in`. Nothing here talks to the daemon.
+//! onto kinds, the secret scrub, the paths and tars of `copy_in`, and the frames of a timed log read. Nothing here
+//! talks to the daemon.
 
 use std::collections::{BTreeMap, HashMap};
 
+use bollard::container::LogOutput;
 use bollard::errors::Error as DockerError;
 use bollard::models::{
     ContainerCreateBody, ContainerInspectResponse, ContainerState, ContainerStateStatusEnum, EndpointSettings,
@@ -11,8 +13,8 @@ use bollard::models::{
 
 use crate::paths::{MountTarget, Mounted, place};
 use crate::{
-    ContainerError, ContainerSpec, ContainerStatus, ContainerSummary, CopyFile, ErrorKind, MountKind, Networking,
-    Resource, Tmpfs,
+    ContainerError, ContainerSpec, ContainerStatus, ContainerSummary, CopyFile, ErrorKind, LogCursor, LogLine,
+    LogStream, MountKind, Networking, Resource, Tmpfs,
 };
 
 /// The HTTP status of a refusal by the daemon; `None` for every other error.
@@ -285,6 +287,45 @@ fn tar_of(files: &[(String, &CopyFile)]) -> std::io::Result<Vec<u8>> {
     builder.into_inner()
 }
 
+/// Docker's `since` for a read from `cursor` (0, the start, for `None`): bollard takes an `i32`, so a second after
+/// January 2038 fails with `Other` rather than read from the wrong time.
+pub(super) fn since(name: &str, cursor: Option<LogCursor>) -> Result<i32, ContainerError> {
+    let second = cursor.map_or(0, LogCursor::second);
+    i32::try_from(second).map_err(|_| {
+        ContainerError::new(
+            ErrorKind::Other,
+            format!("logs of {name}: the cursor's second {second} does not fit Docker's 32-bit `since`"),
+        )
+    })
+}
+
+/// One frame of a log read with `timestamps=true`, which is one log entry: an RFC 3339 time, a space and the text,
+/// with a newline unless Docker split the line at 16 KiB. The text is lossy UTF-8 without the newline; stderr is
+/// [`LogStream::Err`], anything else (stdout, or the one stream of a TTY) [`LogStream::Out`]. A frame that does not
+/// start with a time fails with `Other`.
+pub(super) fn log_line(name: &str, frame: LogOutput) -> Result<LogLine, ContainerError> {
+    let (stream, message) = match frame {
+        LogOutput::StdErr { message } => (LogStream::Err, message),
+        LogOutput::StdOut { message } | LogOutput::StdIn { message } | LogOutput::Console { message } => {
+            (LogStream::Out, message)
+        }
+    };
+    let bytes = message.strip_suffix(b"\n").unwrap_or(&message[..]);
+    let time = bytes
+        .iter()
+        .position(|b| *b == b' ')
+        .and_then(|space| Some((std::str::from_utf8(&bytes[..space]).ok()?, space)))
+        .and_then(|(time, space)| Some((cicada::time::parse_instant(time).ok()?, space)));
+    let Some((time, space)) = time else {
+        let start = String::from_utf8_lossy(&bytes[..bytes.len().min(40)]).into_owned();
+        return Err(ContainerError::new(
+            ErrorKind::Other,
+            format!("logs of {name}: Docker sent a log frame without a time: {start:?}"),
+        ));
+    };
+    Ok(LogLine::new(time, stream, String::from_utf8_lossy(&bytes[space + 1..])))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,6 +333,50 @@ mod tests {
 
     fn server(status_code: u16, message: &str) -> DockerError {
         DockerError::DockerResponseServerError { status_code, message: message.into() }
+    }
+
+    fn frame(stderr: bool, bytes: &[u8]) -> LogOutput {
+        let message = bytes.to_vec().into();
+        if stderr { LogOutput::StdErr { message } } else { LogOutput::StdOut { message } }
+    }
+
+    #[test]
+    fn a_log_frame_gives_its_time_stream_and_text() {
+        let line = log_line("job-1", frame(false, b"2026-11-24T10:00:01.123456789Z hello world\n")).unwrap();
+        assert_eq!(line.time, cicada::time::parse_instant("2026-11-24T10:00:01.123456789Z").unwrap());
+        assert_eq!(line.time.timestamp_subsec_nanos(), 123_456_789);
+        assert_eq!((line.stream, line.text.as_str()), (LogStream::Out, "hello world"));
+        let line = log_line("job-1", frame(true, b"2026-11-24T10:00:01Z  two spaces\n")).unwrap();
+        assert_eq!((line.stream, line.text.as_str()), (LogStream::Err, " two spaces"));
+        // A part of a line Docker split at 16 KiB has no newline; an empty line keeps its space.
+        assert_eq!(log_line("job-1", frame(false, b"2026-11-24T10:00:01Z part")).unwrap().text, "part");
+        assert_eq!(log_line("job-1", frame(false, b"2026-11-24T10:00:01Z \n")).unwrap().text, "");
+        let console = LogOutput::Console { message: b"2026-11-24T10:00:01Z tty\n".to_vec().into() };
+        assert_eq!(log_line("job-1", console).unwrap().stream, LogStream::Out);
+    }
+
+    #[test]
+    fn a_byte_that_is_not_utf8_becomes_the_replacement_character() {
+        let line = log_line("job-1", frame(false, b"2026-11-24T10:00:01Z \xff\n")).unwrap();
+        assert_eq!(line.text, "\u{fffd}");
+    }
+
+    #[test]
+    fn a_log_frame_without_a_time_is_other() {
+        for bytes in [&b"hello world\n"[..], b"", b"2026-11-24T10:00:01Z", b"\xff\xfe x\n", b"2026-13-01T00:00:00Z x"] {
+            let error = log_line("job-1", frame(false, bytes)).unwrap_err();
+            assert_eq!(error.kind, ErrorKind::Other, "{bytes:?}");
+            assert!(error.message.starts_with("logs of job-1: "), "{error}");
+        }
+    }
+
+    #[test]
+    fn since_is_the_cursor_second_and_refuses_one_past_2038() {
+        assert_eq!(since("job-1", None).unwrap(), 0);
+        assert_eq!(since("job-1", Some("1764000000:3".parse().unwrap())).unwrap(), 1_764_000_000);
+        assert_eq!(since("job-1", Some("2147483647:0".parse().unwrap())).unwrap(), i32::MAX);
+        let error = since("job-1", Some("2147483648:0".parse().unwrap())).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Other, "{error}");
     }
 
     #[test]

@@ -25,7 +25,7 @@ Version). Builds on `container-consistency`, which must have landed first. Follo
   fake's tests for paging timed lines, `set_logs` read by both calls, `Conflict` for a missing container, an empty
   page for a created one, `InvalidSpec` for `max_lines` 0 and 1001, and a scripted failure;
   `cargo test -p cicada-containers --all-features`.
-- [ ] 3. **The Docker backend.** `DockerRuntime::logs_since` in `src/docker/mod.rs`, with the pure parts in
+- [x] 3. **The Docker backend.** `DockerRuntime::logs_since` in `src/docker/mod.rs`, with the pure parts in
   `src/docker/map.rs`: check `max_lines` first; `Conflict` for a missing container and for a 404 during the read;
   read with `timestamps=true`, `follow=false` and `since=S`; parse each frame into a `LogLine` (time by
   `cicada::time::parse_instant`, stream from the frame, lossy text without the newline; `Other` for a frame without
