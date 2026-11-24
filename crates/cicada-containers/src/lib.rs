@@ -1,8 +1,9 @@
 //! A container runtime for applications on Cicada: the [`ContainerRuntime`] trait, its types and one error type,
-//! [`ContainerError`], with a fake, `FakeRuntime`, behind the feature `testing`.
+//! [`ContainerError`], with a fake, `FakeRuntime`, behind the feature `testing`, and a Docker backend, `DockerRuntime`,
+//! behind the feature `docker`.
 //!
-//! The crate needs nothing from Cicada and names no type of a Docker client, so another backend fits the trait. It is
-//! an optional layer outside the core (ADR 0056): no library crate of the workspace depends on it.
+//! The crate needs nothing from Cicada and its public items name no type of a Docker client, so another backend fits
+//! the trait. It is an optional layer outside the core (ADR 0056): no library crate of the workspace depends on it.
 //!
 //! **Every call is safe to repeat.** A container is found by its name, which its owner chooses: [`create`] keeps an
 //! existing container, [`start`] never runs an ended one again, and [`stop`] and [`remove`] of a missing one are `Ok`.
@@ -27,12 +28,16 @@
 //! [`stop`]: ContainerRuntime::stop
 //! [`remove`]: ContainerRuntime::remove
 
+#[cfg(feature = "docker")]
+mod docker;
 mod error;
 #[cfg(any(test, feature = "testing"))]
 mod fake;
 mod runtime;
 mod spec;
 
+#[cfg(feature = "docker")]
+pub use docker::DockerRuntime;
 pub use error::{ContainerError, ErrorKind};
 #[cfg(any(test, feature = "testing"))]
 pub use fake::{Call, FakeRuntime, Method};

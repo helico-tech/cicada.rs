@@ -10,10 +10,16 @@ publish.workspace = true
 [features]
 # `FakeRuntime`, an in-memory runtime for tests. Nothing in the workspace turns it on.
 testing = []
+# `DockerRuntime`, the backend over the Docker Engine API (bollard).
+docker = ["dep:bollard", "dep:futures", "dep:tar", "dep:tokio"]
 
 [dependencies]
 async-trait.workspace = true
+bollard = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+tar = { workspace = true, optional = true }
 thiserror.workspace = true
+tokio = { workspace = true, optional = true }
 
 [lints]
 workspace = true
