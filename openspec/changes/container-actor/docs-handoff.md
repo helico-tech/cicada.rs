@@ -23,7 +23,9 @@ Public items (all re-exported at the crate root):
   the first message), `phase` (`new`/`started`/`ended`/`removed`), `target`, `deadline`, `end`, `undelivered`, `armed`,
   `due`, `errors`. The state never holds a spec.
 - `ContainerMsg`: `Start { to, messageType }` (helper `ContainerMsg::start(&target_ref, "Ended")`), `Stop`, `Remove`,
-  `Check`, and `Poll` (the actor's own timer; any poll that is not the armed one is ignored).
+  `Check`, and `Poll` (the actor's own timer; any poll that is not the armed one is ignored). A `Start` whose message
+  type is empty or over 200 characters, sent from code past the HTTP door's schema, is refused for good (the cause
+  `refused`) and saves nothing; the actor goes on taking messages. A NUL is refused by the core at the send.
 - `ContainerEnd { outcome, code, reason, logs }` with `Outcome` = `exited` | `failed` | `timedOut` | `stopped`; the end
   message's payload is `ContainerEnded { key, end }`, so a host's family takes it as `Ended(ContainerEnded)`.
 - `Goal`, `Phase`, `EndTarget`, `InvalidContainer`.
@@ -40,17 +42,19 @@ Behaviour:
 - The container's name is the prefix plus the key as given (not percent-encoded). A key with other characters, or a
   name over 200 characters, ends `failed` at its first step, without a runtime call.
 - A container ends once. The end is saved and sent to the first `Start`'s target in the commit that records it,
-  before any removal. A `Start` after the end sends the saved end to that `Start`'s target at once. An end the
+  before any removal. A `Start` after the end sends the saved end to that `Start`'s target at once, again for each
+  such `Start` (a redelivered `Start` too), so a target can get the same end more than once. An end the
   target's type refuses (not registered, or not taking the message) is saved in `undelivered` and the actor goes on,
   so a removal is never blocked. The end message has the ready-made actors' retry policy (7 attempts, 1 s to 32 s).
 - Runtime errors never fail a turn: they count in `errors`, and the next poll waits `min(poll_interval × 2^errors,
   max_backoff)`. At `max_errors` in a row, a container without an end ends `failed` ("the runtime failed N times in a
   row: …"); a removal keeps trying at `max_backoff`. A failed `logs` counts the same; at the limit the end gets
-  `(no logs: …)`. Any success resets `errors`.
+  `(no logs: …)`. Any success resets `errors`, a successful inspect too, so a log read that fails after failed
+  inspects is tried again.
 - Logs: NUL → U+FFFD, the last `log_lines` lines, then the last `log_bytes` bytes on a character boundary. A reason:
   NUL → U+FFFD and its first 1 KiB.
 
-Proved by `crates/cicada-containers/tests/actor.rs` (19 tests on virtual time with `TestActors` and `FakeRuntime`,
+Proved by `crates/cicada-containers/tests/actor.rs` (21 tests on virtual time with `TestActors` and `FakeRuntime`,
 one per spec scenario, plus the contract and samples), the unit tests in `crates/cicada-containers/src/actor/`, and the
 pinned contract `crates/cicada-containers/tests/contracts/test.container.json`. No worked example in `examples/`.
 
@@ -61,8 +65,9 @@ pinned contract `crates/cicada-containers/tests/contracts/test.container.json`. 
 `crates/cicada-containers/src/actor/mod.rs` and the harness of `tests/actor.rs`:
 - Define a `ContainerJob` (type name, typed request, `spec`), host `ContainerActor::new(job, runtime, settings)`, create
   each actor with `ContainerState::new(request)`, then send `ContainerMsg::start(&target, "Ended")`.
-- The target's family takes `Ended(ContainerEnded)`; it gets one end per container, with the outcome, code, reason and
-  the tail of the logs.
+- The target's family takes `Ended(ContainerEnded)`, with the outcome, code, reason and the tail of the logs. A
+  container has one end, but the target can get it more than once: each `Start` after the end sends it again. Treat a
+  repeat for the same key as one end (keep the first, or ignore an end for a key already ended).
 - Settings and their defaults (above); the prefix rule.
 - Never reuse a key, also after a delete: a new actor under an old key adopts the old container and reports its old
   end.
@@ -114,6 +119,6 @@ None: no doctest, link, guarantee row or skill route breaks.
 
 ## Status
 
-Ran `cargo test -p cicada-containers` (35 unit, 19 actor tests, 6 doctests), `cargo test -p cicada-examples --test
+Ran `cargo test -p cicada-containers` (35 unit, 21 actor tests, 6 doctests), `cargo test -p cicada-examples --test
 skill`, the resolver's Python tests, and `cargo test -p cicada-examples --test docs`. All prose above is proposed text;
 none of it is written yet.

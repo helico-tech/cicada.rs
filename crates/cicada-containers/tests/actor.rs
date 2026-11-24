@@ -431,6 +431,58 @@ async fn a_removal_keeps_trying_past_the_maximum() {
     assert_eq!((state.phase, state.errors), (Phase::Removed, 0));
 }
 
+/// A `Start` whose message type the state decoder would refuse, sent from code past the schema, is refused for good
+/// with nothing saved, and the actor still takes messages.
+#[tokio::test(start_paused = true)]
+async fn a_start_with_a_message_type_out_of_bounds_is_refused_and_saves_nothing() {
+    let fake = FakeRuntime::new();
+    let test = harness(&fake, settings()).await;
+    let job = container(&test, "j1", "alpine:3").await;
+    let before = test.state_json(&job).await.unwrap();
+    let to = Watcher.address().unwrap();
+    // A NUL never gets this far: the core refuses it at the send.
+    for message_type in [String::new(), "E".repeat(201)] {
+        let sent = test.send(&job, ContainerMsg::Start { to: to.clone(), message_type }).await;
+        test.run_until_idle().await;
+        let outcome = test.outcome(&sent).await.unwrap();
+        assert_eq!(outcome.envelope.attempt, 1, "refused for good");
+        assert!(outcome.error.unwrap_or_default().contains("messageType must be"));
+        assert_eq!(test.state_json(&job).await.unwrap(), before, "nothing saved");
+    }
+    assert!(fake.calls().is_empty());
+
+    test.send(&job, start()).await;
+    test.run_until_idle().await;
+    let state: State = test.state(&job).await;
+    assert_eq!((state.phase, state.target.unwrap().message_type.as_str()), (Phase::Started, "Ended"));
+}
+
+/// Any success resets the errors in a row: an inspect that works after failed ones leaves a failed log read room to
+/// be tried again, so the end gets the logs.
+#[tokio::test(start_paused = true)]
+async fn a_successful_inspect_resets_the_errors_before_the_log_read() {
+    let fake = FakeRuntime::new();
+    let mut settings = settings();
+    settings.max_errors = 3;
+    let test = harness(&fake, settings).await;
+    let job = container(&test, "j1", "alpine:3").await;
+    test.send(&job, start()).await;
+    test.run_until_idle().await;
+    fake.fail_next(Method::Inspect, ErrorKind::DaemonUnavailable);
+    fake.fail_next(Method::Inspect, ErrorKind::DaemonUnavailable);
+    fake.fail_next(Method::Logs, ErrorKind::DaemonUnavailable);
+    fake.set_logs("app-j1", "done");
+    fake.exit_with("app-j1", ContainerStatus::Exited { code: 0 });
+    test.advance_time_by(6 * SECOND).await;
+    assert_eq!(test.state::<_, State>(&job).await.errors, 2, "two failed inspects");
+    test.advance_time_by(8 * SECOND).await;
+    let state: State = test.state(&job).await;
+    assert_eq!((state.errors, state.end.is_none()), (1, true), "the inspect reset the count; the log read failed once");
+    test.advance_time_by(60 * SECOND).await;
+    let end = test.state::<_, State>(&job).await.end.unwrap();
+    assert_eq!((end.outcome, end.logs.as_str()), (Outcome::Exited, "done\n"));
+}
+
 /// Scenario: A purged poll comes back on `Check`, and the container is followed to its end.
 #[tokio::test(start_paused = true)]
 async fn a_purged_poll_comes_back_on_check() {

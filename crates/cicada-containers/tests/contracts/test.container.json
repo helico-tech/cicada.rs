@@ -23,7 +23,7 @@
     },
     "Start": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "Runs the container until it ends, and sends the end to `to`. The first `Start` sets the target; a later one\nchanges nothing, unless the container has ended: then it sends the saved end to its own target at once.",
+      "description": "Runs the container until it ends, and sends the end to `to`. The first `Start` sets the target; a later one\nchanges nothing, unless the container has ended: then it sends the saved end to its own target at once, again\nfor each such `Start`. A message type out of bounds is refused for good, and nothing is saved.",
       "properties": {
         "messageType": {
           "description": "The message type of the end, whose payload is `{\"key\": …, \"end\": …}`, a [`ContainerEnded`]; not empty, at\nmost 200 characters, without NUL. The target's registry is checked only when the end is sent.",

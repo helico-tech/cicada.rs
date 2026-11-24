@@ -24,7 +24,8 @@ pub struct InvalidContainer(pub(crate) String);
 #[serde(tag = "type", rename_all_fields = "camelCase")]
 pub enum ContainerMsg {
     /// Runs the container until it ends, and sends the end to `to`. The first `Start` sets the target; a later one
-    /// changes nothing, unless the container has ended: then it sends the saved end to its own target at once.
+    /// changes nothing, unless the container has ended: then it sends the saved end to its own target at once, again
+    /// for each such `Start`. A message type out of bounds is refused for good, and nothing is saved.
     Start {
         /// The target of the end.
         to: ActorAddress,
@@ -74,7 +75,8 @@ impl ContainerMsg {
     }
 }
 
-fn check_message_type(message_type: &str) -> Result<(), InvalidContainer> {
+/// Refuses a message type the state decoder would refuse.
+pub(crate) fn check_message_type(message_type: &str) -> Result<(), InvalidContainer> {
     let length = message_type.chars().count();
     if length == 0 || length > MAX_TYPE_LENGTH || message_type.contains('\0') {
         return Err(InvalidContainer(format!(
