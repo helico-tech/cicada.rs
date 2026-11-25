@@ -69,6 +69,7 @@ accepted ADR is not rewritten: a later one supersedes it. A change that makes a 
 | [0062](0062-a-failure-kind-on-the-container-end.md) | A `failed` container end carries a kind (`notStarted`, `outOfMemory`, `runtimeEnded`, `missing`, `runtimeErrors`); out of memory is the runtime reason `OUT_OF_MEMORY`; a replayed create step adopts a started container; each request can have its own timeout; the contract change makes the batch 0.21.0. |
 | [0063](0063-a-watch-of-an-actor-that-must-exist.md) | `Turn::watch_existing` watches one actor that must exist: at the commit it sets the watch when the actor is there and otherwise puts a `Stopped` (cause `deleted`, `by` null) into the watcher's mailbox in the same transaction; the remote turn report carries `existing: true`. |
 | [0064](0064-background-tasks-of-an-app.md) | `App::task` runs a host's task with the node: started after `on_start`, told to stop when the node's stop begins and sharing its grace period, the store closing last; an early end, error or panic stops the node and fails the command; an `App` with a task refuses an HTTP worker. |
+| [0065](0065-container-progress-through-a-file.md) | With `progressType` on `Start`, the container actor sets `CICADA_PROGRESS_FILE`, reads the file at each running poll and before the end, and sends `ContainerProgress { key, seq, text }` when it changed; best effort; late progress is dropped by `seq`; a contract change (0.23.0). |
 
 ## Design questions
 
