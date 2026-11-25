@@ -34,12 +34,74 @@ with the error in `outputs`.
 - **WHEN** the job's outputs path is relative
 - **THEN** the collection ends at once and the end is delivered with the error in `outputs`
 
+#### Scenario: No store
+
+- **WHEN** an actor without a store records an end
+- **THEN** it records and sends the end in one commit, without `outputs`
+
+#### Scenario: A store that comes back
+
+- **WHEN** the store fails with `Unavailable` for two polls during the collection and then answers
+- **THEN** the files are stored and the end is delivered without an error
+
 #### Scenario: An end from 0.22
 
 - **WHEN** an owner decodes an end message without `outputs`
 - **THEN** it decodes, with `outputs` absent
 
 ## MODIFIED Requirements
+
+### Requirement: The end is reported once, before removal
+
+A container SHALL end once, as `exited` with the program's exit code, `failed` with the runtime's reason, `timedOut`
+or `stopped`. A new `failed` end SHALL carry a `kind`: `notStarted`, `outOfMemory`, `runtimeEnded`, `missing` or
+`runtimeErrors`; other ends SHALL carry none. The commit that records the end SHALL save it in the state with the tail
+of the logs and SHALL send `{key, end}` to the target named in the first `Start`; an actor with an `OutputStore` SHALL
+first hold an end the container ran for as pending in the phase `Collecting` and record and send it, with `outputs`,
+in the commit that finishes the collection. No step SHALL remove a container before its end is recorded.
+
+#### Scenario: An exit is reported with its logs
+
+- **WHEN** a started container exits with code 3 and logs `done`
+- **THEN** one commit records the end `exited` with code 3, no kind and logs `done`, and sends it to the target
+
+#### Scenario: Remove after the exit
+
+- **WHEN** an exited container whose end is recorded gets `Remove`
+- **THEN** the runtime removes it and the actor sends no second end
+
+#### Scenario: An unknown target type
+
+- **WHEN** `Start` names a target type that is not registered, and the container exits and then gets `Remove`
+- **THEN** the end is saved as undelivered with the reason, no poll fails, and the container is removed
+
+#### Scenario: Kinds of failure
+
+- **WHEN** a container's image is unknown; its start is refused with `InvalidSpec`; the runtime reports it `Failed`
+  with the reason `OUT_OF_MEMORY`; `Failed` with another reason; `Missing` while it runs
+- **THEN** the ends are `failed` with the kinds `notStarted`, `notStarted`, `outOfMemory`, `runtimeEnded` and
+  `missing`, and the refused start ends in the poll that tried it
+
+#### Scenario: A kind where none belongs
+
+- **WHEN** a state or a `ContainerEnded` holds a `stopped` end with a `kind`
+- **THEN** decoding it fails
+
+#### Scenario: An end saved before kinds
+
+- **WHEN** a state saved by 0.20.8 holds a `failed` end without `kind`
+- **THEN** it decodes with no kind
+
+#### Scenario: Start and Remove during the collection
+
+- **WHEN** a container is `Collecting` and gets a second `Start` and then `Remove`
+- **THEN** the end is sent once, to the first target, when the collection finishes, and the container is removed after
+
+#### Scenario: An end saved by 0.22
+
+- **WHEN** a state saved by 0.22 is `Ended` with an end, and the actor now has a store
+- **THEN** it collects nothing and sends no second end
+
 
 ### Requirement: A deadline and errors in a row end a container
 
@@ -77,3 +139,37 @@ outputs are collected, the end SHALL be delivered with its recorded outcome and 
 
 - **WHEN** an exited container's output copy fails with `DaemonUnavailable` for `max_errors` polls in a row
 - **THEN** the end is delivered as `exited` with its code, and `outputs.error` holds the error
+
+### Requirement: A container reports progress through a file
+
+When `Start` names a `progressType`, the container actor SHALL set `CICADA_PROGRESS_FILE` to the job's progress path in
+the container's environment, read that file at each poll while the container runs and once in the turn that delivers its
+end (the turn that finishes the collection when the actor has an `OutputStore`), and send `ContainerProgress { key, seq,
+text }` to the end's target as `progressType` whenever the text changed, with `seq` counting from 1. A missing,
+oversized or unreadable file SHALL send nothing and SHALL not count as a runtime error.
+
+#### Scenario: Three updates
+
+- **WHEN** a running container's program writes three different progress texts over several polls
+- **THEN** the owner gets three progress messages with `seq` 1, 2 and 3, and none for a poll where the text did not
+  change
+
+#### Scenario: The last progress before the end
+
+- **WHEN** the program writes progress and exits before the next poll
+- **THEN** that progress message is sent in the turn that records the end, before the end message
+
+#### Scenario: A NUL in the file
+
+- **WHEN** the progress file holds a NUL byte
+- **THEN** the message's text has U+FFFD in its place and is sent
+
+#### Scenario: A progress path the runtime refuses
+
+- **WHEN** `Start` names a `progressType` and the job's `PROGRESS_FILE` is a relative path
+- **THEN** the container ends `failed` with the kind `notStarted` and nothing is made
+
+#### Scenario: No progress asked for
+
+- **WHEN** `Start` has no `progressType`
+- **THEN** the actor sets no `CICADA_PROGRESS_FILE` and reads no file
