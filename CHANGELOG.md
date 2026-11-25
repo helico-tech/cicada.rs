@@ -10,7 +10,8 @@ moves: a correction is a new version.
 ## 0.22.1 — unreleased
 
 A host keeps a container's log and output files in its own `OutputStore` of `cicada-containers`, with one guarded write
-for lines and cursor and a conformance check to test it. Additive: the contracts, wire formats, the store schema, the
+for lines and cursor and a conformance check to test it, and a `LogArchiver` follows its containers' logs into it.
+Additive: the contracts, wire formats, the store schema, the
 HTTP API and the guarantees are those of 0.22.0.
 
 ### Added
@@ -35,6 +36,24 @@ HTTP API and the guarantees are those of 0.22.0.
   in parallel. Covered by the tests of `src/outputs/` (the check passes on the memory store and fails on four broken
   ones).
 - `cicada-containers`: `LogLine` and `LogStream` have serde: `{"time": "<RFC 3339>", "stream": "out" | "err", "text"}`.
+- `cicada-containers`: `LogArchiver`, which follows the log of every container of a container job and keeps it in an
+  `OutputStore`, outside actor turns. `LogArchiver::new(runtime, store, prefix, settings)` takes the job's container
+  prefix and `ArchiveSettings` (`interval` 2 s, `page_lines` 500, `max_parallel` 16 reads at once); a `page_lines`
+  outside 1 to `LOG_PAGE_MAX` fails with `InvalidArchive`. `run(stop)` archives until `stop` completes: each round
+  lists the containers labelled with the prefix and starts a read for each one not drained and not still being read,
+  without waiting for them, so a slow log holds up only itself. A read appends each page of `logs_since` from the
+  stored cursor with the guarded `append_logs`, so every line is stored once and in order, also after a restart and
+  with two archivers on one store; an ended container is drained once and then skipped. No error ends `run`: a log
+  that is `Unsupported` is drained and logged once, a container gone during its read is dropped, a store's `Invalid`
+  skips the container, a store's `Conflict` reads the cursor again, and every other error, and a failed `list`, is
+  tried again in a later round, with a wait that doubles from the fifth failure in a row, at most 60 s. A host runs it
+  as an `App::task` or spawns it, one per Docker daemon. Limits: a container made before the label is not archived,
+  and lines a container writes after the last read are lost when it is removed before the next round. Logging goes
+  through `tracing`, a new dependency of the crate, and `tokio` is no longer optional. Covered by the tests of
+  `src/archive/`.
+- `cicada-containers`: the container actor puts the label `PREFIX_LABEL` (`cicada.container.prefix`) with its
+  settings' prefix on every container it creates, after the job's `spec`, which cannot drop or change it. Covered by
+  `the_actor_labels_its_containers_with_its_prefix_after_the_job_spec` in `tests/actor.rs`.
 
 ## 0.22.0 — 2026-11-25
 

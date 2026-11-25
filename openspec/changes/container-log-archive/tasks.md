@@ -18,7 +18,7 @@ tests with every feature: `cargo test -p cicada-containers --all-features`.
   `Conflict` dropped; every other kind retried with the wait `interval × 2^(n−5)`, at most 60 s, after 5 failures;
   the store's `Conflict`, `Unavailable`, `Other` and `Invalid`. Verify: the error tests of the design;
   `cargo test -p cicada-containers --all-features`.
-- [ ] 4. **Changelog and docs handoff.** The unreleased section of `CHANGELOG.md` names `LogArchiver`, `ArchiveSettings`
+- [x] 4. **Changelog and docs handoff.** The unreleased section of `CHANGELOG.md` names `LogArchiver`, `ArchiveSettings`
   and the label under Added. `docs-handoff.md` carries what the design's Docs section lists, the limits included;
   nothing blocks. No edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify:
   `cargo test -p cicada-examples --test docs` and `--doc`.
