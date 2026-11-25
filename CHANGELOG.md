@@ -7,6 +7,51 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.23.0 — unreleased
+
+A container job's program reports its progress through a file, and the container actor sends it to the owner as
+numbered messages (ADR 0065). A breaking release: `Start` and `EndTarget` gain `progressType` and `ContainerState` two
+progress fields, so the contract hash of every container job type changes. Hosts on 0.22.x follow "Changing a
+contract" in the operations guide for those types. The store schema, the HTTP API, the ready-made actors' contracts and
+the guarantees are those of 0.22.1.
+
+### Added
+
+- `cicada-containers`: progress through a file. `ContainerMsg::Start` and `EndTarget` take an optional `progressType`
+  (not empty, at most 200 characters, no NUL, as `messageType`; one out of bounds is refused for good), kept from the
+  first `Start` as the end's target is; `ContainerMsg::start_with_progress(target, message_type, progress_type)` builds
+  it. With it, the actor sets `CICADA_PROGRESS_FILE` to the job's new `ContainerJob::PROGRESS_FILE` (default
+  `/tmp/cicada-progress`) in the spec, after the job's `spec`, which cannot change or hide it; a path that is relative,
+  has a `..` part or names no file ends the container `failed` with the kind `notStarted` before anything is made. The
+  actor reads the file with `copy_out` (at most 64 KiB, one file) at each poll of the running container and once in the
+  turn that records an end for which it ran (`exited`, `failed` with `runtimeEnded` or `outOfMemory`, `stopped`,
+  `timedOut`), and when its text changed sends `ContainerProgress { key, seq, text }` to the end's target as
+  `progressType`, with `seq` counting from 1 and the end's retry policy. The text is lossy UTF-8 with NUL replaced by
+  U+FFFD, sent as it is; an empty text only after one that was not. The last progress goes in the end's commit, before
+  the end, but a retried progress can arrive after a later one or after the end: drop a progress whose `seq` is not
+  above the last one handled. Best effort: a missing file, one over 64 KiB or not a regular file, and a failed read send
+  nothing and are not runtime errors; a send the target's registry refuses is not retried, still moves `seq` on and
+  does not hold up the end. The program writes the file to a temporary name and renames it into place; `copy_out`
+  cannot see a tmpfs, so with a read-only root and a tmpfs on `/tmp` set `PROGRESS_FILE` on a volume. The state keeps
+  `progressSeq` and `progressHash` (the SHA-256 of the last text sent); `sha2` is no longer optional in the crate.
+  Covered by the progress tests in `crates/cicada-containers/tests/actor.rs`.
+
+### Changed
+
+- **BREAKING** for container job types: their contract changes ("Changing a contract"), as `Start` and `EndTarget`
+  gain `progressType` and the state gains `progressSeq` and `progressHash`. Rust code that builds or matches
+  `ContainerMsg::Start` or `EndTarget` gains the field `progress_type`, and code that builds `ContainerState` by its
+  fields gains `progress_seq` and `progress_hash`. A target type's contract changes only when it adds a variant that
+  takes a `ContainerProgress`.
+
+### Upgrading
+
+- Hosts on 0.22.x with container job types follow "Changing a contract" in the operations guide for each of them: a
+  versioned type name for new runs while the old actors finish, or a maintenance window (stop every host of the type,
+  delete its actors and then its registration, start the new hosts). Send `Remove` to a container actor before
+  deleting it, or its container stays. Add `progress_type: None` to every `ContainerMsg::Start` and `EndTarget`
+  literal, such as in a host's tests.
+
 ## 0.22.1 — 2026-11-25
 
 A host keeps a container's log and output files in its own `OutputStore` of `cicada-containers`, with one guarded write
