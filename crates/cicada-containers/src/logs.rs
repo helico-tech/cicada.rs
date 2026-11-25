@@ -32,9 +32,10 @@ impl LogPage {
     }
 }
 
-/// One log line: its time, its stream and its text as lossy UTF-8 without the newline.
+/// One log line: its time, its stream and its text as lossy UTF-8 without the newline. Its serde form, for a store
+/// that writes it: `{"time": "<RFC 3339>", "stream": "out" | "err", "text": "…"}`.
 #[non_exhaustive]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogLine {
     /// When the runtime stamped it.
     pub time: Timestamp,
@@ -51,9 +52,10 @@ impl LogLine {
     }
 }
 
-/// The stream a [`LogLine`] came from.
+/// The stream a [`LogLine`] came from; `out` or `err` in serde.
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum LogStream {
     /// Standard output.
     Out,

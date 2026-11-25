@@ -17,6 +17,11 @@ accepted the split (CO-SPLIT, PL-SPLIT, AB-ORDER: container outputs first)).
 To decide in the design: where it runs (outside turns, as the copy is too big for state), how the end waits for it, the
 report's contract, the limits' defaults, what a failed copy gives.
 
+From the code review of `container-output-store`: tighten the store's input rules where the collection writes files: a
+container name over the actor's 200-character limit and control characters (NUL included) in a path part give
+`Invalid`; the rustdoc warns that a store on a case-insensitive file system (macOS, Windows) must not map `Job` and
+`job` to one folder.
+
 ## Out of scope
 
 Retention, orphans.
