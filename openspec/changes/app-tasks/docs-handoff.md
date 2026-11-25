@@ -15,8 +15,8 @@ published.
   calls. Each task is polled once before `serve` writes `Listening on`, so its code before the first `await` has run
   and `/ready` answers only once the tasks run.
 - Early end: a task that returns `Ok`, returns `Err` or panics before the stop stops the node in good order (as a
-  signal does) and fails the command with exit code 1, whatever the grace period (also 0 s), and `task <name> ended before the stop` (`: <error>` or
-  `: <panic message>` added). The other tasks see `Stopping`. An early end recorded before a signal wins.
+  signal does) and fails the command with exit code 1, whatever the grace period (also 0 s), and
+  `task <name> ended before the stop` (`: <error>` or `: <panic message>` added). The other tasks see `Stopping`. An early end recorded before a signal wins.
 - Stop: on SIGTERM/SIGINT (or an early end, a failed write of `Listening on`, a failed HTTP server), `Stopping` is set
   when the node's stop begins: the node claims no more and `/ready` answers 503 at once. The tasks share the node's
   `shutdown_grace_period`; a task still running at its end is aborted with the warning
