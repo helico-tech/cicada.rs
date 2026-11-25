@@ -22,6 +22,6 @@ tests with every feature: `cargo test -p cicada-containers --all-features`.
   and the label under Added. `docs-handoff.md` carries what the design's Docs section lists, the limits included;
   nothing blocks. No edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify:
   `cargo test -p cicada-examples --test docs` and `--doc`.
-- [ ] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
+- [x] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
   `cargo test --workspace`, `openspec validate container-log-archive --strict`, commit, then
   `python3 scripts/gate.py run`.

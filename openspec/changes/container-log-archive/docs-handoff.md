@@ -92,5 +92,6 @@ None.
 ## Status
 
 Ran: `cargo test -p cicada-containers --all-features` (197 unit, 46 actor, 14 doc tests pass),
-`cargo test -p cicada-examples --test docs` (11 pass) and `cargo test -p cicada-examples --doc` (41 pass). The text above is
-proposed; no prose is written yet.
+`cargo test -p cicada-examples --test docs` (11 pass) and `cargo test -p cicada-examples --doc` (41 pass). Finishing checks: `cargo fmt --all --check`, `cargo clippy --workspace
+--all-targets -- -D warnings`, `cargo test --workspace` with PostgreSQL (3561 pass, 0 fail) and
+`openspec validate container-log-archive --strict` pass. The text above is proposed; no prose is written yet.
