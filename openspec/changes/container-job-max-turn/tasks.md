@@ -9,7 +9,7 @@ Run the crate's tests with every feature: `cargo test -p cicada-containers --all
   rustdoc names the create step and the stop's `stop_grace` as the long turns, says to set the limit above both, and
   what a timeout does (decision 3). Verify: a unit test that the actor's `MAX_TURN` is the job's, and `None` without
   it; `cargo test -p cicada-containers --all-features`.
-- [ ] 2. **Behaviour on virtual time.** With `TestActors` and a test runtime that wraps the fake and sleeps in
+- [x] 2. **Behaviour on virtual time.** With `TestActors` and a test runtime that wraps the fake and sleeps in
   `create`: a step longer than the node's default but shorter than the job's limit ends `done`; a job limit below the
   step ends it `failed` (`timeout`) and the retry makes no second container; a zero `MAX_TURN` is refused at
   registration. Verify: `cargo test -p cicada-containers --all-features`.

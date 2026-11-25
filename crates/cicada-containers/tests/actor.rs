@@ -1238,3 +1238,100 @@ async fn the_states_of_each_phase_and_the_end_payload_pass_their_samples() {
         assert!(serde_json::from_value::<State>(invalid.clone()).is_err(), "{invalid}");
     }
 }
+
+/// The job of the turn-limit tests: the test job's spec, with a `MAX_TURN` of `SECS` seconds.
+struct Limited<const SECS: u64>;
+
+impl<const SECS: u64> ContainerJob for Limited<SECS> {
+    const TYPE: &'static str = "test.limited";
+    const MAX_TURN: Option<Duration> = Some(Duration::from_secs(SECS));
+    type Request = Run;
+
+    fn spec(&self, name: &str, run: &Run) -> Result<ContainerSpec, String> {
+        TestJob::plain().spec(name, run)
+    }
+}
+
+/// The fake, whose first create takes `pull` after the container is made: a slow pull a turn limit can cut off.
+struct SlowPull {
+    fake: FakeRuntime,
+    pull: Duration,
+    pulled: AtomicBool,
+}
+
+wrapper!(SlowPull {
+    async fn create(&self, spec: &ContainerSpec) -> Result<(), ContainerError> {
+        self.fake.create(spec).await?;
+        if !self.pulled.swap(true, Ordering::SeqCst) {
+            tokio::time::sleep(self.pull).await;
+        }
+        Ok(())
+    }
+    async fn inspect(&self, name: &str) -> Result<ContainerStatus, ContainerError> {
+        self.fake.inspect(name).await
+    }
+});
+
+/// A node with the default turn limit (15 minutes) that hosts `Limited<SECS>` on `fake`, whose first create takes
+/// `pull`, and the target; the container `j1` of `alpine:3` is created and sent its start.
+async fn limited<const SECS: u64>(fake: &FakeRuntime, pull: Duration) -> (TestActors, Container<Limited<SECS>>) {
+    let runtime = Arc::new(SlowPull { fake: fake.clone(), pull, pulled: AtomicBool::new(false) });
+    let test = TestActors::builder()
+        .with(move |node| node.host(ContainerActor::new(Limited::<SECS>, runtime, settings())).host(WatcherActor))
+        .build()
+        .await
+        .unwrap();
+    test.create(&Watcher, &Ends::default()).await;
+    let job = Container::<Limited<SECS>>::named("j1");
+    test.create(&job, &ContainerState::new(Run { image: "alpine:3".into() })).await;
+    test.send(&job, start()).await;
+    (test, job)
+}
+
+/// Scenario: A slow pull fits: a create step of 20 minutes, past the node's default of 15, within the job's 35.
+#[tokio::test(start_paused = true)]
+async fn a_create_step_past_the_nodes_default_fits_the_jobs_turn_limit() {
+    let fake = FakeRuntime::new();
+    let (test, job) = limited::<{ 35 * 60 }>(&fake, 20 * 60 * SECOND).await;
+    test.run_until_idle().await;
+    assert_eq!(fake.inspect("app-j1").await.unwrap(), ContainerStatus::Running);
+    assert_eq!(test.state::<_, State>(&job).await.phase, Phase::Started);
+    assert!(test.failures().await.is_empty(), "no turn fails");
+    let poll = test.pending(&job).await.into_iter().next().expect("the next poll");
+    assert_eq!((poll.failures, poll.last_error), (0, None), "the step ended done");
+}
+
+/// Scenario: A limit below the create step: the step fails with `timeout`, its retry runs it again on the container
+/// the cut-off step made.
+#[tokio::test(start_paused = true)]
+async fn a_create_step_past_the_jobs_turn_limit_times_out_and_its_retry_makes_no_second_container() {
+    let fake = FakeRuntime::new();
+    let (test, job) = limited::<60>(&fake, 120 * SECOND).await;
+    test.run_until_idle().await;
+    let poll = test.pending(&job).await.into_iter().next().expect("the poll, to retry");
+    assert_eq!(poll.failures, 1);
+    assert!(poll.last_error.as_deref().is_some_and(|e| e.contains("timeout")), "{:?}", poll.last_error);
+    assert_eq!(fake.inspect("app-j1").await.unwrap(), ContainerStatus::Created, "made, never started");
+    let state: State = test.state(&job).await;
+    assert_eq!((state.phase, state.errors), (Phase::New, 0), "not a runtime error");
+
+    test.advance_time_by(2 * SECOND).await;
+    assert_eq!(fake.inspect("app-j1").await.unwrap(), ContainerStatus::Running);
+    assert_eq!(test.state::<_, State>(&job).await.phase, Phase::Started);
+    assert_eq!(fake.list(&Label::new("made", "actor")).await.unwrap().len(), 1, "no second container");
+    assert!(test.failures().await.is_empty(), "the retry ended done");
+}
+
+/// Scenario: A zero limit is refused at registration.
+#[tokio::test(start_paused = true)]
+async fn a_zero_turn_limit_is_refused_at_registration() {
+    let runtime = Arc::new(FakeRuntime::new());
+    let refused = TestActors::builder()
+        .with(move |node| node.host(ContainerActor::new(Limited::<0>, runtime, settings())))
+        .build()
+        .await
+        .err()
+        .expect("refused");
+    let problems: Vec<String> = refused.problems.iter().map(ToString::to_string).collect();
+    assert!(problems.iter().any(|p| p.contains("MAX_TURN must be positive")), "{problems:?}");
+}
