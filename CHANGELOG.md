@@ -58,8 +58,8 @@ store schema, actor contract, contract hash or guarantee changes.
   worst case is unchanged. An error or panic after the stop is a warning and leaves exit code 0. Two tasks with one
   name refuse `serve` and `worker` (exit code 2, `two tasks named <name>`); a worker over HTTP refuses an `App` with a
   task as with `on_start` (exit code 2), and the `worker` help names both (`docs/reference/cli.md`). Covered by
-  `crates/cicada-app/tests/tasks.rs` and `on_start_and_a_task_are_refused_over_http_before_any_request` in
-  `tests/worker_http.rs`.
+  `crates/cicada-app/tests/tasks.rs`, `tests/task_logs.rs` and
+  `on_start_and_a_task_are_refused_over_http_before_any_request` in `tests/worker_http.rs`.
 
 ### Changed
 

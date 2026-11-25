@@ -30,8 +30,9 @@
 //!   without them a non-blank `CICADA_STORE` wins over `CICADA_SERVER` and `CICADA_CONTEXT`. Over HTTP the server,
 //!   token and headers resolve as for the operator commands, the settings the server owns (`--lease-ttl`,
 //!   `--retention`, the store's, …) are refused, no store is opened (no store feature is needed), and an `App` with
-//!   [`App::on_start`] or [`App::task`] is refused. It lists the server's types while they answer "unavailable", a second apart and no
-//!   try after a minute, then registers its contracts and runs until the stop or until the worker stops by itself.
+//!   [`App::on_start`] or [`App::task`] is refused. It lists the server's types while they answer "unavailable", a
+//!   second apart and no try after a minute, then registers its contracts and runs until the stop or until the worker
+//!   stops by itself.
 //! - The operator commands of `cicada` (`get`, `send`, `create`, …), which talk to a node only over HTTP, through
 //!   [`cicada_client::ActorClient`], also in a binary that serves. The server comes from `--server`, `CICADA_SERVER` or
 //!   a context of the config file.
@@ -178,19 +179,19 @@ impl App {
         self
     }
 
-    /// Adds a task named `name` that lives as long as the node (ADR 0064): for work next to the node, such as a loop that
-    /// takes jobs from outside. In `serve` and `worker` on the store, `f` gets the node's `ActorSystem` and a
-    /// [`Stopping`] once every function of [`Self::on_start`] has finished, in the order of the calls, and is polled once
-    /// before `serve` listens.
+    /// Adds a task named `name` that lives as long as the node (ADR 0064): for work next to the node, such as a loop
+    /// that takes jobs from outside. In `serve` and `worker` on the store, `f` gets the node's `ActorSystem` and a
+    /// [`Stopping`] once every function of [`Self::on_start`] has finished, in the order of the calls, and is polled
+    /// once before `serve` listens.
     ///
     /// The task is meant to run until the stop. If it returns `Ok`, returns `Err` or panics before the stop, the node
     /// stops in good order, as at a signal, and the command fails (exit code 1) with
     /// `task <name> ended before the stop: <error>`, so a supervisor of the process restarts it.
     ///
     /// At a stop, `Stopping` is set when the node's stop begins: the node claims no more and `/ready` answers 503 at
-    /// once. The tasks share the node's shutdown grace period: a task still running at its end is aborted with a warning
-    /// that names it, and the store closes after the tasks and the node. An error or a panic after the stop is logged
-    /// as a warning and leaves the exit code alone. A task can still use the `ActorSystem` while it ends.
+    /// once. The tasks share the node's shutdown grace period: a task still running at its end is aborted with a
+    /// warning that names it, and the store closes after the tasks and the node. An error or a panic after the stop is
+    /// logged as a warning and leaves the exit code alone. A task can still use the `ActorSystem` while it ends.
     ///
     /// Two tasks with one name refuse `serve` and `worker` (exit code 2); the operator commands run no task. A worker
     /// over HTTP has no `ActorSystem` to give `f`, so an `App` with a task refuses to run one (exit code 2), before it

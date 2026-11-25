@@ -5,7 +5,7 @@ mod common;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use axum::http::StatusCode;
 use cicada::store::SqliteOptions;
@@ -115,6 +115,23 @@ async fn a_task_that_ends_before_the_stop_stops_the_node_and_fails_the_command()
     }
 }
 
+/// An early end fails the command also with a grace period of zero: the task records its end before the stop begins.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_early_end_with_a_grace_period_of_zero_still_fails_the_command() {
+    for _ in 0..20 {
+        let db = TempDb::new();
+        let mut env = db.env();
+        env.insert("CICADA_SHUTDOWN_GRACE_PERIOD".into(), "0s".into());
+        let app = App::new()
+            .host(CounterActor)
+            .task("other", |_, _| std::future::pending())
+            .task("runner", |_, _| async { anyhow::bail!("the queue is gone") });
+        let error = run(app, &env, &["myapp", "worker"]).await.unwrap_err();
+        assert_eq!(error.exit_code(), 1, "{error}");
+        assert_eq!(error.to_string(), "task runner ended before the stop: the queue is gone");
+    }
+}
+
 /// Scenario: A stop (in `serve`): `/ready` answers 503 while the tasks end.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_stop_sets_stopping_and_ready_answers_503_while_the_tasks_end() {
@@ -154,40 +171,6 @@ async fn a_stop_of_a_worker_ends_its_task_with_exit_code_0() {
     eventually("the task began", || async { began.get() }).await;
     worker.stop().await.expect("exit code 0");
     assert!(saw.get());
-}
-
-/// Scenario: A task that does not stop. Scenario: An error after the stop.
-#[tokio::test]
-async fn a_task_that_ignores_the_stop_is_aborted_and_an_error_after_the_stop_is_a_warning() {
-    let log = Out::default();
-    let writer = log.clone();
-    let subscriber = tracing_subscriber::fmt().with_ansi(false).with_writer(move || writer.clone()).finish();
-    let _logging = tracing::subscriber::set_default(subscriber);
-    let db = TempDb::new();
-    let mut env = db.env();
-    env.insert("CICADA_SHUTDOWN_GRACE_PERIOD".into(), "300ms".into());
-    let began = Flag::default();
-    let b = began.clone();
-    let app = App::new()
-        .host(CounterActor)
-        .task("stubborn", move |_, _| async move {
-            b.set();
-            std::future::pending::<anyhow::Result<()>>().await
-        })
-        .task("sloppy", |_, stopping| async move {
-            stopping.wait().await;
-            anyhow::bail!("the connection was already closed")
-        });
-    let mut node = Running::spawn(app, &env, &["myapp", "worker"]);
-    eventually("the task began", || async { began.get() }).await;
-    let signalled = Instant::now();
-    node.signal();
-    node.ended().await.expect("exit code 0");
-    let took = signalled.elapsed();
-    assert!(took >= Duration::from_millis(300) && took < Duration::from_secs(3), "{took:?}");
-    let log = log.text();
-    assert!(log.contains("Task stubborn did not end within the shutdown grace period of 300ms; aborted"), "{log}");
-    assert!(log.contains("Task sloppy failed after the stop: the connection was already closed"), "{log}");
 }
 
 /// An output that cannot be written to.

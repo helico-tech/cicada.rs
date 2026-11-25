@@ -145,8 +145,8 @@ impl Drop for Stop {
 }
 
 /// The stop of a node as a task of [`App::task`](crate::App::task) sees it. It is set when the node's stop begins: on
-/// SIGTERM or SIGINT (the future given to [`App::run_with`](crate::App::run_with) in a test), when a task ends before the
-/// stop, or when `serve` fails after the tasks started. It is never unset.
+/// SIGTERM or SIGINT (the future given to [`App::run_with`](crate::App::run_with) in a test), when a task ends before
+/// the stop, or when `serve` fails after the tasks started. It is never unset.
 #[derive(Debug, Clone)]
 pub struct Stopping(CancellationToken);
 
@@ -166,14 +166,20 @@ impl Stopping {
     }
 }
 
-/// How a task ended: its result, or the message of its panic.
-type TaskEnd = Result<anyhow::Result<()>, String>;
+/// What the tasks of `App::task` record of their ends, shared with [`Tasks`].
+#[derive(Default)]
+struct TaskBook {
+    /// The names of the tasks that have not recorded their end.
+    running: Vec<String>,
+    /// The error of the first task that ended before the stop.
+    early_end: Option<anyhow::Error>,
+}
 
 /// The running tasks of `App::task` and their [`Stopping`], which the node's stop shares.
 pub(crate) struct Tasks {
     stopping: Stopping,
-    running: JoinSet<(TaskEnd, bool)>,
-    names: Vec<(tokio::task::Id, String)>,
+    running: JoinSet<()>,
+    book: Arc<std::sync::Mutex<TaskBook>>,
 }
 
 impl Tasks {
@@ -181,86 +187,62 @@ impl Tasks {
     /// `await` has run. Their `Stopping` is set by `stop` too.
     async fn start(tasks: Vec<HostTask>, system: &ActorSystem, stop: &Stop) -> Self {
         let stopping = Stopping(stop.token.child_token());
+        let book = Arc::new(std::sync::Mutex::new(TaskBook::default()));
         let mut running = JoinSet::new();
-        let mut names = Vec::with_capacity(tasks.len());
         let mut began = Vec::with_capacity(tasks.len());
         for task in tasks {
             let (polled, first_poll) = tokio::sync::oneshot::channel();
             let (system, given) = (system.clone(), stopping.clone());
             let run = task.run;
-            let id = running.spawn(run_task(async move { run(system, given).await }, stopping.clone(), polled)).id();
-            names.push((id, task.name));
+            book.lock().expect("the book of the tasks").running.push(task.name.clone());
+            let ending = TaskEnding { name: task.name, stopping: stopping.clone(), book: book.clone() };
+            running.spawn(run_task(async move { run(system, given).await }, ending, polled));
             began.push(first_poll);
         }
         for first_poll in began {
-            // An error: the task panicked in its first poll, which `finish` reports.
+            // An error: the task panicked in its first poll, which it recorded.
             let _ = first_poll.await;
         }
-        Self { stopping, running, names }
+        Self { stopping, running, book }
     }
 
-    /// Waits for the stop, then for the tasks within `grace` from it: a task still running then is aborted with a warning
-    /// and not waited for. The error of the first task that ended before the stop, if one did; an error or a panic after
-    /// the stop is a warning. At once without tasks.
+    /// Waits for the stop, then for the tasks within `grace` from it: a task that has not recorded its end by then is
+    /// aborted with a warning and not waited for. The error of the first task that ended before the stop, if one did.
+    /// At once without tasks.
     async fn finish(mut self, grace: Duration) -> Result<(), AppError> {
-        if self.names.is_empty() {
+        if self.running.is_empty() {
             return Ok(());
         }
         self.stopping.wait().await;
         let deadline = tokio::time::Instant::now() + grace;
-        let mut early_end = None;
-        loop {
-            let joined = match tokio::time::timeout_at(deadline, self.running.join_next_with_id()).await {
-                Ok(Some(joined)) => joined,
-                Ok(None) => break,
-                Err(_) => {
-                    for (_, name) in &self.names {
-                        tracing::warn!(
-                            "Task {name} did not end within the shutdown grace period of {grace:?}; aborted"
-                        );
-                    }
-                    // Dropping the set aborts the tasks without waiting: a task that never yields cannot be aborted.
-                    break;
-                }
-            };
-            let (id, end, early) = match joined {
-                Ok((id, (end, early))) => (id, end, early),
-                Err(e) => (e.id(), Err(e.to_string()), false),
-            };
-            let at = self.names.iter().position(|(task, _)| *task == id).expect("a task of the set");
-            let (_, name) = self.names.remove(at);
-            match (end, early) {
-                (Ok(Ok(())), false) => {}
-                (end, true) if early_end.is_none() => {
-                    let ended = format!("task {name} ended before the stop");
-                    early_end = Some(match end {
-                        Ok(Ok(())) => anyhow!(ended),
-                        Ok(Err(e)) => e.context(ended),
-                        Err(panic) => anyhow!("{ended}: {panic}"),
-                    });
-                }
-                (end, early) => {
-                    let text = match end {
-                        Ok(Ok(())) => "it returned".to_owned(),
-                        Ok(Err(e)) => format!("{e:#}"),
-                        Err(panic) => panic,
-                    };
-                    let when = if early { "also ended before the stop" } else { "failed after the stop" };
-                    tracing::warn!("Task {name} {when}: {text}");
-                }
+        let all_ended = async { while self.running.join_next().await.is_some() {} };
+        let timed_out = tokio::time::timeout_at(deadline, all_ended).await.is_err();
+        let mut book = self.book.lock().expect("the book of the tasks");
+        if timed_out {
+            for name in &book.running {
+                tracing::warn!("Task {name} did not end within the shutdown grace period of {grace:?}; aborted");
             }
+            // Dropping the set aborts the tasks without waiting: a task that never yields cannot be aborted.
         }
-        early_end.map_or(Ok(()), |e| Err(AppError::Failed(e)))
+        book.early_end.take().map_or(Ok(()), |e| Err(AppError::Failed(e)))
     }
 }
 
-/// Runs `task`, sends `polled` after its first poll, and catches its panic. True with its end when it ended before the
-/// stop: it then sets `stopping`, which stops the node.
+/// What a task needs to record its end.
+struct TaskEnding {
+    name: String,
+    stopping: Stopping,
+    book: Arc<std::sync::Mutex<TaskBook>>,
+}
+
+/// Runs `task`, sends `polled` after its first poll, and catches its panic. Then it records its end in the book before
+/// it sets `stopping`, so that [`Tasks::finish`], which wakes on `stopping`, finds it: the first end before the stop is
+/// the error of the command, a later one before the stop or an error or panic after it a warning.
 async fn run_task(
     task: impl Future<Output = anyhow::Result<()>> + Send,
-    stopping: Stopping,
+    ending: TaskEnding,
     polled: tokio::sync::oneshot::Sender<()>,
-) -> (TaskEnd, bool) {
+) {
     let mut task = std::pin::pin!(task);
     let mut polled = Some(polled);
     let first_poll = std::future::poll_fn(move |cx| {
@@ -271,11 +253,36 @@ async fn run_task(
         poll
     });
     let end = AssertUnwindSafe(first_poll).catch_unwind().await.map_err(|panic| panic_text(panic.as_ref()));
-    let early = !stopping.is_set();
+    let TaskEnding { name, stopping, book } = ending;
+    let early = {
+        let mut book = book.lock().expect("the book of the tasks");
+        book.running.retain(|running| *running != name);
+        let early = !stopping.is_set();
+        match (end, early) {
+            (Ok(Ok(())), false) => {}
+            (end, true) if book.early_end.is_none() => {
+                let ended = format!("task {name} ended before the stop");
+                book.early_end = Some(match end {
+                    Ok(Ok(())) => anyhow!(ended),
+                    Ok(Err(e)) => e.context(ended),
+                    Err(panic) => anyhow!("{ended}: {panic}"),
+                });
+            }
+            (end, early) => {
+                let text = match end {
+                    Ok(Ok(())) => "it returned".to_owned(),
+                    Ok(Err(e)) => format!("{e:#}"),
+                    Err(panic) => panic,
+                };
+                let when = if early { "also ended before the stop" } else { "failed after the stop" };
+                tracing::warn!("Task {name} {when}: {text}");
+            }
+        }
+        early
+    };
     if early {
         stopping.set();
     }
-    (end, early)
 }
 
 /// Sets `Stopping` and stops the node and the tasks together, then closes the store: the error of a task that ended

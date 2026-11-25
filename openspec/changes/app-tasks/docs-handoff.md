@@ -15,7 +15,7 @@ published.
   calls. Each task is polled once before `serve` writes `Listening on`, so its code before the first `await` has run
   and `/ready` answers only once the tasks run.
 - Early end: a task that returns `Ok`, returns `Err` or panics before the stop stops the node in good order (as a
-  signal does) and fails the command with exit code 1 and `task <name> ended before the stop` (`: <error>` or
+  signal does) and fails the command with exit code 1, whatever the grace period (also 0 s), and `task <name> ended before the stop` (`: <error>` or
   `: <panic message>` added). The other tasks see `Stopping`. An early end recorded before a signal wins.
 - Stop: on SIGTERM/SIGINT (or an early end, a failed write of `Listening on`, a failed HTTP server), `Stopping` is set
   when the node's stop begins: the node claims no more and `/ready` answers 503 at once. The tasks share the node's
@@ -30,9 +30,9 @@ published.
   request). The message names `App::on_start or App::task`; the `worker` help says "A binary with App::on_start or
   App::task cannot run over HTTP." (`docs/reference/cli.md` regenerated).
 
-Tests: `crates/cicada-app/tests/tasks.rs` (start order, early end `Ok`/`Err`/panic in `serve` and `worker`, `/ready`
-503 while a task ends, a worker's stop, abort after the grace period and an error after the stop, a failed
-`Listening on`, duplicate names) and `on_start_and_a_task_are_refused_over_http_before_any_request` in
+Tests: `crates/cicada-app/tests/tasks.rs` (start order, early end `Ok`/`Err`/panic in `serve` and `worker`, an early
+end with a grace period of 0 s, `/ready` 503 while a task ends, a worker's stop, a failed `Listening on`, duplicate
+names), `crates/cicada-app/tests/task_logs.rs` (abort after the grace period and an error after the stop) and `on_start_and_a_task_are_refused_over_http_before_any_request` in
 `crates/cicada-app/tests/worker_http.rs`. Rustdoc example on `App::task` (compiled, `no_run`).
 
 ## 1. App guide: background tasks
