@@ -916,7 +916,11 @@ impl TryFrom<TurnEffectsView> for TurnEffects {
     /// Fails when a send has both delivery times, or a create's pin is beyond its bounds.
     fn try_from(e: TurnEffectsView) -> Result<Self, RequestError> {
         Ok(Self {
-            watches: e.watches.into_iter().map(|w| WatchChange { target: w.target, set: w.set }).collect(),
+            watches: e
+                .watches
+                .into_iter()
+                .map(|w| WatchChange { target: w.target, set: w.set, existing: false })
+                .collect(),
             creates: e.creates.into_iter().map(ActorCreate::try_from).collect::<Result<_, _>>()?,
             sends: e.sends.into_iter().map(TurnSend::try_from).collect::<Result<_, _>>()?,
             cancels: e.cancels,

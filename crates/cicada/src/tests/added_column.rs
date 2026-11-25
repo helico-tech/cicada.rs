@@ -101,7 +101,7 @@ pub async fn operations(store: &dyn Backend, round: &str) {
     let caused_by_first = |message: OutgoingMessage| OutgoingMessage { caused_by: Some(first.id.clone()), ..message };
     commit.sends = vec![caused_by_first(send(&watcher, 8)), caused_by_first(send(&child, 9))];
     commit.cancels = vec![cancelled_in_commit.id.clone()];
-    commit.watches = vec![WatchChange { target: WatchTarget::from(other.clone()), set: true }];
+    commit.watches = vec![WatchChange { target: WatchTarget::from(other.clone()), set: true, existing: false }];
     commit.controls = vec![Control { effect: ControlEffect::Purge, actor: other.clone() }];
     let done = committed(store.commit(commit).await.unwrap());
     assert_eq!((done.sent.len(), done.cancelled.as_slice()), (2, std::slice::from_ref(&cancelled_in_commit.id)));

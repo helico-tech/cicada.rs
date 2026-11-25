@@ -1261,7 +1261,7 @@ impl Side {
             watches: commit
                 .watches
                 .iter()
-                .map(|(target, set)| WatchChange { target: target_at(*target), set: *set })
+                .map(|(target, set)| WatchChange { target: target_at(*target), set: *set, existing: false })
                 .collect(),
             controls,
         };

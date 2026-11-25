@@ -261,7 +261,8 @@ pub async fn changes_mailbox_lease_watch_registry_node_and_sweep_work_and_a_turn
         let mut commit = done(&claim);
         commit.sends = vec![to(&w)];
         commit.cancels = vec![cancelled.id];
-        commit.watches = vec![WatchChange { target: WatchTarget::parse("other/w").unwrap(), set: true }];
+        commit.watches =
+            vec![WatchChange { target: WatchTarget::parse("other/w").unwrap(), set: true, existing: false }];
         committed(store.commit(commit).await.unwrap());
         // A rescheduled message, a purge, watches from outside, nodes and a sweep.
         t.send(&a).await;

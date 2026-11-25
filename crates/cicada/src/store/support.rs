@@ -19,7 +19,7 @@ use crate::retention::{Keep, Retention};
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
 use crate::retry::RetryPolicy;
 use crate::time::{self, MAX_INSTANT, Timestamp};
-use crate::watch::{self, Failed, FailureCause, StopCause, Stopped, Watch, WatchTarget};
+use crate::watch::{self, Failed, FailureCause, StopCause, Stopped, Watch, WatchChange, WatchTarget};
 
 // ---- registry ----
 
@@ -258,6 +258,29 @@ pub fn headers_from_json(value: &Value) -> StoreResult<BTreeMap<String, String>>
 
 // ---- watches ----
 
+/// Checks the watch changes of a commit (ADR 0063): [`StoreError::Invalid`] for an `existing` change that does not
+/// set a watch of one actor, which a turn never asks for. A commit runs it first, before it reads the store.
+pub fn check_watches(watches: &[WatchChange]) -> StoreResult<()> {
+    match watches.iter().find_map(WatchChange::problem) {
+        Some(problem) => Err(StoreError::Invalid(problem)),
+        None => Ok(()),
+    }
+}
+
+/// The actors of the `existing` watch changes of a commit (ADR 0063), each once, in address order: the rows a commit
+/// checks, and on PostgreSQL locks, where it applies the watches.
+#[cfg(feature = "postgres")]
+pub fn existing_targets(watches: &[WatchChange]) -> BTreeSet<&ActorAddress> {
+    watches
+        .iter()
+        .filter(|w| w.existing)
+        .filter_map(|w| match &w.target {
+            WatchTarget::Actor(a) => Some(a),
+            _ => None,
+        })
+        .collect()
+}
+
 /// One notification of an event, before the store numbered it: about the actor `about`, which went away or whose
 /// message failed, for `watcher`.
 #[derive(Debug, Clone, PartialEq)]
@@ -317,6 +340,15 @@ impl Notice {
             caused_by: caused_by.cloned(),
             retention: None,
         }
+    }
+}
+
+impl Notice {
+    /// The [`Stopped`] of `actor`, which was not there when the commit of `watcher` for `caused_by` checked its
+    /// [`Turn::watch_existing`](crate::Turn::watch_existing) (ADR 0063): the cause `deleted` and `by` null, as for a
+    /// delete from outside a turn, with that message as `causedBy`.
+    pub fn absent(actor: &ActorAddress, watcher: &ActorAddress, caused_by: &MessageId) -> Self {
+        Self::stopped(actor, StopCause::Deleted, None, Some(caused_by), watcher)
     }
 }
 

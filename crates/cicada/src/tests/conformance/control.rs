@@ -421,7 +421,7 @@ pub async fn control_the_watches_of_the_commit_are_set_before_its_deletes<B: Fix
         let p = t.new_actor_named(&TYPE, "p", json!({})).await;
         let x = t.new_actor_named(&OTHER, "x", json!({})).await;
         let c = turn_of(t, &p).await;
-        let set = WatchChange { target: WatchTarget::Actor(x.clone()), set: true };
+        let set = WatchChange { target: WatchTarget::Actor(x.clone()), set: true, existing: false };
         t.commit_ok(CommitRequest { event: event("e1"), watches: vec![set], controls: vec![delete(&x)], ..done(&c) })
             .await;
         let got = notifications(t, &p).await;

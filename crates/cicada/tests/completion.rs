@@ -208,7 +208,7 @@ async fn a_returned_report_commits_its_state_and_every_effect_together_and_retur
     to_c2.headers.insert("tenant".into(), "acme".into());
     let to_new = add("c5", 1);
     let effects = TurnEffects {
-        watches: vec![WatchChange { target: WatchTarget::from(address("c2")), set: true }],
+        watches: vec![WatchChange { target: WatchTarget::from(address("c2")), set: true, existing: false }],
         creates: vec![
             ActorCreate { address: address("c5"), state: json!({"total": 10}), child: false, pinned_to: None },
             ActorCreate { address: address("c6"), state: json!({"total": 0}), child: true, pinned_to: None },

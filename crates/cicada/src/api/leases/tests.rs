@@ -125,8 +125,8 @@ fn full_report() -> TurnReport {
         state: StateReport::Set(json!({"count": 8})),
         effects: TurnEffects {
             watches: vec![
-                WatchChange { target: WatchTarget::parse("billing").unwrap(), set: true },
-                WatchChange { target: WatchTarget::parse("*").unwrap(), set: false },
+                WatchChange { target: WatchTarget::parse("billing").unwrap(), set: true, existing: false },
+                WatchChange { target: WatchTarget::parse("*").unwrap(), set: false, existing: false },
             ],
             creates: vec![
                 ActorCreate { address: addr("child/c"), state: json!({}), child: true, pinned_to: None },
@@ -444,7 +444,7 @@ fn the_schema_requires_exactly_the_fields_the_decoder_requires() {
                 sends: vec![send],
                 creates: vec![ActorCreate { address: addr("c/d"), state: json!({}), child: false, pinned_to: None }],
                 cancels: vec![id("p")],
-                watches: vec![WatchChange { target: WatchTarget::parse("*").unwrap(), set: true }],
+                watches: vec![WatchChange { target: WatchTarget::parse("*").unwrap(), set: true, existing: false }],
                 controls: vec![Control { effect: ControlEffect::Pause, actor: addr("e/f") }],
             },
         }

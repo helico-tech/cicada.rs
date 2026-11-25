@@ -67,6 +67,7 @@ mod retention;
 mod robustness;
 mod s1_to_s10;
 mod turn_cancel;
+mod watch_existing;
 mod watches;
 
 pub use env::*;
@@ -86,6 +87,7 @@ pub mod cases {
     pub use super::robustness::*;
     pub use super::s1_to_s10::*;
     pub use super::turn_cancel::*;
+    pub use super::watch_existing::*;
     pub use super::watches::*;
 }
 
@@ -264,6 +266,16 @@ macro_rules! for_each_case {
             watches_a_watch_set_while_a_message_of_its_target_fails_ends_without_an_error,
             watches_the_failed_of_a_payload_at_the_depth_limit_is_written_and_claimed_whole,
             watches_numbers_in_a_state_a_payload_and_its_failed_are_read_back_exactly,
+            // watch_existing.rs
+            watch_existing_of_a_present_actor_sets_the_watch_and_a_later_delete_writes_one_stopped,
+            watch_existing_of_an_absent_actor_writes_one_stopped_and_leaves_no_watch,
+            watch_existing_of_a_type_or_without_set_is_invalid,
+            watch_existing_with_a_delete_of_the_target_in_the_same_turn_writes_the_stopped_of_the_delete,
+            watch_existing_of_an_actor_created_in_the_same_turn_writes_a_stopped,
+            watch_existing_of_the_watcher_itself_sets_the_watch,
+            watch_existing_applies_in_the_order_of_the_calls_and_two_calls_give_one_stopped,
+            watch_existing_numbers_its_stopped_with_the_other_notifications_of_the_event,
+            watch_existing_racing_a_delete_of_the_target_gives_exactly_one_stopped,
             // control.rs
             control_a_pause_a_resume_and_a_purge_by_a_commit_do_what_the_calls_from_outside_do_also_to_the_committing_actor,
             control_a_delete_by_a_commit_removes_the_actor_its_mailbox_and_its_descendants_and_voids_a_turn,
@@ -367,6 +379,7 @@ fn every_case_is_generated() {
         include_str!("retention.rs"),
         include_str!("robustness.rs"),
         include_str!("turn_cancel.rs"),
+        include_str!("watch_existing.rs"),
         include_str!("watches.rs"),
     ];
     let defined: BTreeSet<&str> = sources

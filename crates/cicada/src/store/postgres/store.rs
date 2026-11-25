@@ -2123,6 +2123,7 @@ impl Backend for PostgresStore {
     async fn commit(&self, request: CommitRequest) -> StoreResult<CommitResult> {
         support::check_creates(&request.creates)?;
         support::check_controls(&request.address, &request.controls)?;
+        support::check_watches(&request.watches)?;
         let r = &request;
         transaction!(self, false, |tx| -> CommitResult {
             if r.cancels.contains(&r.message_id) {
@@ -2140,11 +2141,14 @@ impl Backend for PostgresStore {
             first_targets.extend(deletes.iter().map(|a| (*a).to_owned()));
             let watchers = watchers_of(tx, &first_targets).await?;
             // Lock every instance this commit touches, in address order, so that concurrent commits cannot deadlock.
+            // The targets of `watch_existing` are among them: their lock decides whether they are there (ADR 0063).
+            let existing = support::existing_targets(&r.watches);
             let touched: BTreeSet<&str> = std::iter::once(r.address.as_str())
                 .chain(r.creates.iter().map(|c| c.address.as_str()))
                 .chain(r.sends.iter().map(|s| s.to.as_str()))
                 .chain(r.controls.iter().map(|c| c.actor.as_str()))
                 .chain(watchers.iter().map(String::as_str))
+                .chain(existing.iter().map(|a| a.as_str()))
                 .collect();
             let touched: Vec<&str> = touched.into_iter().collect();
             let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
@@ -2161,6 +2165,10 @@ impl Backend for PostgresStore {
                 types.insert(address.clone(), t);
                 parents.insert(address, parent);
             }
+            // A target of `watch_existing` is there when this lock found its row, before the creates insert theirs: a
+            // delete by another transaction committed before it, or waits for it and then finds the watch.
+            let absent: HashSet<&ActorAddress> =
+                existing.into_iter().filter(|a| !locked.contains(a.as_str())).collect();
             let claimed: Option<Option<String>> = sqlx::query_scalar(
                 "SELECT lease_message FROM actors WHERE address = $1 AND epoch = $2 AND lease_owner IS NOT NULL",
             )
@@ -2282,9 +2290,22 @@ impl Backend for PostgresStore {
                 deleted.iter().chain(&tree).cloned().collect::<BTreeSet<_>>().into_iter().collect();
             let later: Vec<String> = removed.iter().filter(|a| !first_targets.contains(a)).cloned().collect();
             lock_watchers_of(tx, &later, &mut locked).await?;
-            // The turn's watches, in the order of its calls, under this instance's lock; then the watches of the event
-            // are read again.
+            // The turn's watches, in the order of its calls, under this instance's lock; an existing one of an absent
+            // actor is a Stopped and removes the pair. Then the watches of the event are read again.
+            let mut absent_notices = Vec::new();
             for change in &r.watches {
+                if let WatchTarget::Actor(actor) = &change.target
+                    && change.existing
+                    && absent.contains(actor)
+                {
+                    sqlx::query("DELETE FROM watches WHERE target = $1 AND watcher = $2")
+                        .bind(actor.as_str())
+                        .bind(r.address.as_str())
+                        .execute(&mut *tx.c)
+                        .await?;
+                    absent_notices.push(Notice::absent(actor, &r.address, &r.message_id));
+                    continue;
+                }
                 let sql = if change.set {
                     "INSERT INTO watches (target, watcher) VALUES ($1, $2) ON CONFLICT (target, watcher) DO NOTHING"
                 } else {
@@ -2434,7 +2455,10 @@ impl Backend for PostgresStore {
             // 8. state, 9. release, 10. the notifications of the event
             let removal = Removal::of_commit(&r.address, &r.message_id, &r.controls, stopping);
             let removals = (!removed.is_empty()).then_some((&removal, &removed[..]));
-            let notices = notices(tx, &watches, &gone, failed, removals).await?;
+            let mut notices = notices(tx, &watches, &gone, failed, removals).await?;
+            if !stopping {
+                notices.extend(absent_notices);
+            }
             match &r.state {
                 StateChange::Unchanged => {}
                 StateChange::NewState(state) => {

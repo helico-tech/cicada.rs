@@ -34,11 +34,11 @@ fn event(id: &str) -> MessageId {
 }
 
 fn set(text: &str) -> WatchChange {
-    WatchChange { target: target(text), set: true }
+    WatchChange { target: target(text), set: true, existing: false }
 }
 
 fn unset(text: &str) -> WatchChange {
-    WatchChange { target: target(text), set: false }
+    WatchChange { target: target(text), set: false, existing: false }
 }
 
 /// Creates the watcher `w/key`.

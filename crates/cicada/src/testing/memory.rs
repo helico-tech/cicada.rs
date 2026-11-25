@@ -320,15 +320,17 @@ impl InMemoryStore {
         purged
     }
 
-    /// The notices of an event: the `Failed` of `failed` (a message that ends `failed`, with its error) for the
-    /// watchers of its failure, and a `Stopped` of each actor of `removed` for the watchers of its address. A watcher
-    /// the event removes gets nothing; one that does not exist gets nothing and loses its watches.
+    /// The notices of an event: `absent`, the `Stopped` of the absent targets of the commit's `watch_existing`, the
+    /// `Failed` of `failed` (a message that ends `failed`, with its error) for the watchers of its failure, and a
+    /// `Stopped` of each actor of `removed` for the watchers of its address. A watcher the event removes gets nothing;
+    /// one that does not exist gets nothing and loses its watches.
     fn notices(
         s: &mut State,
+        absent: Vec<Notice>,
         failed: Option<(&Message, &str, FailureCause)>,
         removed: Option<(&Removal, &BTreeSet<ActorAddress>)>,
     ) -> Vec<Notice> {
-        let mut notices = Vec::new();
+        let mut notices = absent;
         if let Some((message, error, cause)) = failed {
             let targets = watch::failure_targets(&message.to);
             let watchers: BTreeSet<&ActorAddress> =
@@ -561,7 +563,7 @@ impl Backend for InMemoryStore {
                 return Ok(DeleteResult::Absent);
             }
             let tree = Self::tree(s, address);
-            let notices = Self::notices(s, None, Some((&Removal::delete(address), &tree)));
+            let notices = Self::notices(s, Vec::new(), None, Some((&Removal::delete(address), &tree)));
             let purged = self.remove_all(s, &tree, now);
             self.notify(s, event, notices, now)?;
             Ok(DeleteResult::Deleted { purged })
@@ -954,6 +956,7 @@ impl Backend for InMemoryStore {
     async fn commit(&self, commit: CommitRequest) -> StoreResult<CommitResult> {
         support::check_creates(&commit.creates)?;
         support::check_controls(&commit.address, &commit.controls)?;
+        support::check_watches(&commit.watches)?;
         self.locked(|s, now| {
             let Some(row) = held_lease(s, &commit.address, commit.epoch) else {
                 return Ok(CommitResult::LeaseLost);
@@ -1014,10 +1017,18 @@ impl Backend for InMemoryStore {
                 _ => None,
             };
 
-            // 0. the turn's watches, in the order of its calls
+            // 0. the turn's watches, in the order of its calls; an existing one of an absent actor is a Stopped
+            let mut absent = Vec::new();
             for change in &commit.watches {
                 let key = (change.target.to_string(), commit.address.clone());
-                if change.set {
+                let gone = match &change.target {
+                    WatchTarget::Actor(a) if change.existing && !s.actors.contains_key(a.as_str()) => Some(a),
+                    _ => None,
+                };
+                if let Some(actor) = gone {
+                    s.watches.remove(&key);
+                    absent.push(Notice::absent(actor, &commit.address, &commit.message_id));
+                } else if change.set {
                     s.watches.insert(key);
                 } else {
                     s.watches.remove(&key);
@@ -1100,7 +1111,7 @@ impl Backend for InMemoryStore {
             let removed: BTreeSet<ActorAddress> = deleted.iter().chain(&tree).cloned().collect();
             let removal = Removal::of_commit(&commit.address, &commit.message_id, &commit.controls, stops);
             let failed = failed.as_ref().map(|(m, e)| (m, e.as_str(), commit.cause));
-            let notices = Self::notices(s, failed, (!removed.is_empty()).then_some((&removal, &removed)));
+            let notices = Self::notices(s, absent, failed, (!removed.is_empty()).then_some((&removal, &removed)));
             self.remove_all(s, &tree, now);
             if let Some(row) = s.actors.get_mut(commit.address.as_str()) {
                 row.clear_lease();

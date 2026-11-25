@@ -381,6 +381,25 @@ pub struct WatchChange {
     pub target: WatchTarget,
     /// True to set the watch, false to remove it.
     pub set: bool,
+    /// True for [`Turn::watch_existing`](crate::Turn::watch_existing) (ADR 0063): the commit sets the watch when the
+    /// target actor exists, and otherwise writes a [`Stopped`] of it to the watcher and leaves the pair without a
+    /// watch. Only with `set` and an actor target.
+    pub existing: bool,
+}
+
+impl WatchChange {
+    /// Why this change cannot be applied: `existing` on a type or every type, or without `set`.
+    pub(crate) fn problem(&self) -> Option<String> {
+        if !self.existing {
+            None
+        } else if !self.set {
+            Some(format!("The watch change of {} is existing but does not set the watch", self.target))
+        } else if !matches!(self.target, WatchTarget::Actor(_)) {
+            Some(format!("The watch change of {} is existing but its target is not one actor", self.target))
+        } else {
+            None
+        }
+    }
 }
 
 #[cfg(test)]

@@ -7,13 +7,13 @@ whole batch; set 0.22.0 wherever the version lives (builder.md, Version). Follow
 (`docs/adr/0063-a-watch-of-an-actor-that-must-exist.md`, committed with this change); the specs are
 `specs/watches/spec.md` and `specs/remote-turn-http/spec.md`.
 
-- [ ] 1. **The turn call and the model.** `Turn::watch_existing(target)` in `crates/cicada/src/turn.rs` (one actor only;
+- [x] 1. **The turn call and the model.** `Turn::watch_existing(target)` in `crates/cicada/src/turn.rs` (one actor only;
   a type prefix or `*` is `TurnError::Invalid`; the family check of `watch`), `WatchChange::existing`, and the
   rustdoc of both methods (decisions 1 to 3; the `Stopped` names the absent actor; `watch` points to
   `watch_existing`). The in-memory store's commit checks the target in the order of the calls, writes the `Stopped`
   as a notification of the commit's event and leaves the pair without a watch. Conformance tests for every case of
   the design's Tests section. Verify: `cargo test -p cicada --features testing`.
-- [ ] 2. **SQLite and PostgreSQL.** The same commit on both backends (decisions 4 and 5): on PostgreSQL the target joins
+- [x] 2. **SQLite and PostgreSQL.** The same commit on both backends (decisions 4 and 5): on PostgreSQL the target joins
   the ordered `FOR UPDATE` lock set and "present" means the lock found its row, before the rows of the turn's
   creates; on SQLite inside the commit's write transaction. A PostgreSQL test races a delete against the commit for
   many rounds and finds exactly one `Stopped`. Verify: the conformance suite on SQLite, and with

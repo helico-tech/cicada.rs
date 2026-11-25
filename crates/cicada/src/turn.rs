@@ -24,7 +24,7 @@ use crate::store::{
     ActorCreate, Control, ControlEffect, Delivery, Message, MessageId, NodeId, OutgoingMessage, StoreError,
 };
 use crate::time::{self, Timestamp};
-use crate::watch::{FailureCause, IntoWatchTarget, WatchChange};
+use crate::watch::{FailureCause, IntoWatchTarget, WatchChange, WatchTarget};
 
 /// The result of a handler.
 pub type HandlerResult = Result<(), HandlerError>;
@@ -656,7 +656,9 @@ impl<A: Actor> Turn<A> {
     /// (`billing.invoices/acme`, a type prefix such as `billing`, or `*` for every type). From then on the store puts a
     /// [`Failed`](crate::Failed) into this instance's mailbox when a message to a matching actor ends `failed`, and a
     /// [`Stopped`](crate::Stopped) when the watched actor itself goes away; a watch on a type prefix or on every type
-    /// tells of failures only. The target need not exist, and the watch survives its delete and re-create.
+    /// tells of failures only. The target need not exist, and the watch survives its delete and re-create. A turn that
+    /// is not sure its target is still there, and must learn when it goes, uses [`Self::watch_existing`]: a watch of an
+    /// actor that is already gone tells nothing.
     ///
     /// Buffered and applied by the commit before the turn's creates and sends, in the order of the calls; a turn that
     /// fails sets none. Setting a watch that exists changes nothing. Fails with [`TurnError::Invalid`] for a text that
@@ -669,7 +671,38 @@ impl<A: Actor> Turn<A> {
         if let Some(problem) = &self.watch_problem {
             return Err(TurnError::Invalid(problem.clone()));
         }
-        self.effects.watches.push(WatchChange { target, set: true });
+        self.effects.watches.push(WatchChange { target, set: true, existing: false });
+        Ok(())
+    }
+
+    /// Watches the actor `target` from this instance at commit, as [`Self::watch`] does, when the actor exists then
+    /// (ADR 0063). When it does not, the commit puts a [`Stopped`](crate::Stopped) of it into this instance's mailbox
+    /// instead, with the cause `deleted` and `by` null, as for a delete from outside a turn, and leaves this instance
+    /// without a watch of it, a watch an earlier turn set included. So the watcher learns of the actor's end exactly
+    /// once, whether it went before the commit or after it. That `Stopped` names the absent actor as `actor` and as
+    /// sender, has this turn's message as `causedBy`, and is a notification of this commit; `deleted` with `by` null
+    /// therefore also means "not there when the watch was set". A later create of that address is not watched.
+    ///
+    /// The commit checks the target where it applies the watches, in the order of the calls, before the turn's deletes
+    /// and creates: a delete in the same turn finds the watch set and writes its own `Stopped`; an actor created in
+    /// the same turn is not there yet and gives a `Stopped`, so watch that one with [`Self::watch`]. This instance
+    /// itself is always there. Two calls for one absent actor give one `Stopped`, and an [`Self::unwatch`] after it
+    /// leaves no watch.
+    ///
+    /// `target` is a typed ref, an address or the text of one. Fails with [`TurnError::Invalid`] for a type prefix or
+    /// `*`, which have no "absent", for a text that is no target, and when this actor's message family does not declare
+    /// `Failed(cicada::Failed)` and `Stopped(cicada::Stopped)`; the turn can go on.
+    pub fn watch_existing(&mut self, target: impl IntoWatchTarget) -> Result<(), TurnError> {
+        let target = target.into_watch_target().map_err(|e| TurnError::Invalid(e.to_string()))?;
+        if !matches!(target, WatchTarget::Actor(_)) {
+            return Err(TurnError::Invalid(format!(
+                "watch_existing takes one actor, not {target}: a type has no absent instance; use watch"
+            )));
+        }
+        if let Some(problem) = &self.watch_problem {
+            return Err(TurnError::Invalid(problem.clone()));
+        }
+        self.effects.watches.push(WatchChange { target, set: true, existing: true });
         Ok(())
     }
 
@@ -678,7 +711,7 @@ impl<A: Actor> Turn<A> {
     /// is no target.
     pub fn unwatch(&mut self, target: impl IntoWatchTarget) -> Result<(), TurnError> {
         let target = target.into_watch_target().map_err(|e| TurnError::Invalid(e.to_string()))?;
-        self.effects.watches.push(WatchChange { target, set: false });
+        self.effects.watches.push(WatchChange { target, set: false, existing: false });
         Ok(())
     }
 

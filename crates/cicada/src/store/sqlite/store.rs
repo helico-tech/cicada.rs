@@ -640,16 +640,18 @@ impl SqliteStore {
         Ok(purged)
     }
 
-    /// The notices of an event: the `Failed` of `failed` (a message that ends `failed`, with its error) for the
-    /// watchers of its failure, and a `Stopped` of each actor of `removed` for the watchers of its address. A watcher
-    /// the event removes gets nothing; one that does not exist gets nothing and loses its watches.
+    /// The notices of an event: `absent`, the `Stopped` of the absent targets of the commit's `watch_existing`, the
+    /// `Failed` of `failed` (a message that ends `failed`, with its error) for the watchers of its failure, and a
+    /// `Stopped` of each actor of `removed` for the watchers of its address. A watcher the event removes gets nothing;
+    /// one that does not exist gets nothing and loses its watches.
     async fn notices(
         c: &mut SqliteConnection,
+        absent: Vec<Notice>,
         failed: Option<(&Message, &str, FailureCause)>,
         removed: Option<(&Removal<'_>, &[ActorAddress])>,
     ) -> StoreResult<Vec<Notice>> {
         let watcher = |row: &SqliteRow| rows::address(&col::<String>(row, "watcher")?);
-        let mut notices = Vec::new();
+        let mut notices = absent;
         if let Some((message, error, cause)) = failed {
             let targets = watch::failure_targets(&message.to);
             let sql = format!(
@@ -1213,8 +1215,19 @@ impl SqliteStore {
             }
         }
 
-        // 0. the turn's watches, in the order of its calls
+        // 0. the turn's watches, in the order of its calls; an existing one of an absent actor is a Stopped. The
+        // transaction holds the write lock, so no delete comes between the check and the watch (ADR 0063).
+        let mut absent = Vec::new();
         for change in &watches {
+            if let WatchTarget::Actor(actor) = &change.target
+                && change.existing
+                && !Self::actor_exists(c, actor.as_str()).await?
+            {
+                let sql = "DELETE FROM watches WHERE target = ? AND watcher = ?";
+                execute(c, sqlx::query(sql).bind(actor.as_str()).bind(address.as_str())).await?;
+                absent.push(Notice::absent(actor, &address, &message_id));
+                continue;
+            }
             let sql = if change.set {
                 "INSERT INTO watches (target, watcher) VALUES (?, ?) ON CONFLICT DO NOTHING"
             } else {
@@ -1321,7 +1334,8 @@ impl SqliteStore {
             deleted.iter().chain(&tree).cloned().collect::<BTreeSet<_>>().into_iter().collect();
         let removal = Removal::of_commit(&address, &message_id, &controls, stop);
         let failed = failed.as_ref().map(|(m, e)| (m, e.as_str(), cause));
-        let notices = Self::notices(c, failed, (!removed.is_empty()).then_some((&removal, &removed[..]))).await?;
+        let notices =
+            Self::notices(c, absent, failed, (!removed.is_empty()).then_some((&removal, &removed[..]))).await?;
         if stop {
             self.remove_all(c, changes, &tree, now).await?;
         } else {
@@ -1507,7 +1521,7 @@ impl Backend for SqliteStore {
             }
             let tree = Self::tree(c, address).await?;
             let removal = Removal::delete(address);
-            let notices = Self::notices(c, None, Some((&removal, &tree[..]))).await?;
+            let notices = Self::notices(c, Vec::new(), None, Some((&removal, &tree[..]))).await?;
             let purged = self.remove_all(c, changes, &tree, now).await?;
             self.notify(c, event, notices, now).await?;
             Ok(DeleteResult::Deleted { purged })
@@ -2119,6 +2133,7 @@ impl Backend for SqliteStore {
     async fn commit(&self, commit: CommitRequest) -> StoreResult<CommitResult> {
         support::check_creates(&commit.creates)?;
         support::check_controls(&commit.address, &commit.controls)?;
+        support::check_watches(&commit.watches)?;
         let mut tx = self.write().await?;
         let now = tx.now;
         let (c, changes) = tx.parts();
