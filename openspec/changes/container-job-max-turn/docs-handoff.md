@@ -64,4 +64,5 @@ None.
 ## Status
 
 Proposed text only; nothing prepared by the docs session yet. Checks: `cargo test -p cicada-containers --all-features`
-(169 + 42 + 9 doctests passed), `cargo test -p cicada-examples --test docs` (see the builder's report).
+(169 + 42 + 9 doctests passed), `cargo test -p cicada-examples --test docs` (11 passed), `cargo test --workspace` with
+PostgreSQL (3460 passed, 0 failed), clippy and fmt clean.

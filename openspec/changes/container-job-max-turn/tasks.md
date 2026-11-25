@@ -17,6 +17,6 @@ Run the crate's tests with every feature: `cargo test -p cicada-containers --all
   if it is missing) names `ContainerJob::MAX_TURN` under Added. `docs-handoff.md` carries `MAX_TURN`, when to set it
   and what a timeout does; nothing blocks. No edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify:
   `cargo test -p cicada-examples --test docs`.
-- [ ] 4. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
+- [x] 4. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
   `cargo test --workspace`, `openspec validate container-job-max-turn --strict`, commit, then
   `python3 scripts/gate.py run`.
