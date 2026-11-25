@@ -1,7 +1,8 @@
 //! `DockerRuntime` of `cicada-containers` against the real daemon: the runtime info, the repeat rules, the status and error mappings,
-//! `copy_in`, `make_dirs`, `copy_out`, the log pages, the pull, the hardening and the sweep. Everything it makes is named `cicada-rs-e2e-ctr-*` and carries
+//! `copy_in`, `make_dirs`, `copy_out`, the log pages, the pull, the pull from a private registry, the hardening and the sweep. Everything it makes is named `cicada-rs-e2e-ctr-*` and carries
 //! `CONTAINER_LABEL`; the hooks sweep that label, and the suite's teardown removes it after a panic or Ctrl-C.
 
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -53,6 +54,7 @@ pub fn class() -> Class {
                 step!(a_missing_executable_fails_start_once),
                 step!(an_unknown_tag_is_image_not_found),
                 step!(a_missing_image_is_pulled_and_a_repeated_create_needs_none),
+                step!(a_private_image_is_pulled_with_the_login_of_config_json),
                 step!(a_hardened_container_gets_its_limits_and_secret),
                 step!(ensures_repeat_and_an_internal_flag_conflicts),
                 step!(a_sweep_removes_in_order_and_skips_a_network_in_use),
@@ -61,19 +63,33 @@ pub fn class() -> Class {
     }
 }
 
-/// The backend, on the daemon the rest of the suite reaches through the CLI: `DOCKER_HOST` when it is set, else the
-/// endpoint of the CLI's current context (the backend itself reads no context).
+/// The backend, on the daemon the rest of the suite reaches through the CLI: see [`connect`].
 fn runtime() -> &'static DockerRuntime {
     static RUNTIME: OnceLock<DockerRuntime> = OnceLock::new();
-    RUNTIME.get_or_init(|| {
+    RUNTIME.get_or_init(connect)
+}
+
+/// A new backend on `DOCKER_HOST` when it is set, else on the endpoint of the CLI's current context (the backend
+/// itself reads no context).
+fn connect() -> DockerRuntime {
+    match context_host() {
+        None => DockerRuntime::connect().expect("a Docker connection at DOCKER_HOST"),
+        Some(host) => DockerRuntime::connect_to(host).unwrap_or_else(|e| panic!("a Docker connection at {host}: {e}")),
+    }
+}
+
+/// The endpoint of the CLI's current context; `None` when `DOCKER_HOST` is set, which the CLI and the backend read.
+fn context_host() -> Option<&'static str> {
+    static HOST: OnceLock<Option<String>> = OnceLock::new();
+    HOST.get_or_init(|| {
         if std::env::var_os("DOCKER_HOST").is_some() {
-            return DockerRuntime::connect().expect("a Docker connection at DOCKER_HOST");
+            return None;
         }
         let context = docker_blocking(&["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"]);
         assert!(context.ok(), "the endpoint of the current Docker context: {}", context.text);
-        let host = context.text.trim();
-        DockerRuntime::connect_to(host).unwrap_or_else(|e| panic!("a Docker connection at {host}: {e}"))
+        Some(context.text.trim().to_owned())
     })
+    .as_deref()
 }
 
 fn suite_label() -> Label {
@@ -644,6 +660,147 @@ async fn a_missing_image_is_pulled_and_a_repeated_create_needs_none() {
     assert!(docker_inspect("{{.Id}}", PULLED).await.is_none(), "no pull");
     assert_eq!(status(&spec.name).await, ContainerStatus::Created);
     runtime().remove(&spec.name).await.unwrap();
+}
+
+/// The user, password and `htpasswd -Bbn` line of the private registry.
+const REGISTRY_USER: &str = "cicada-e2e";
+const REGISTRY_PASSWORD: &str = "e2e-registry-pass";
+const REGISTRY_HTPASSWD: &str = "cicada-e2e:$2y$05$OdcV5C9vc02VmEMF77aetOPuSPfGHHe8B.YdDSkTSx5c/kZS8lLsa";
+
+/// A `registry:2` with basic auth on a free port of the host, a tag of [`PULLED`] in it, and two config folders of
+/// its own: `login`, where the CLI logs in, and `empty`. Dropping it removes the registry, the tag and the folders;
+/// the registry also carries the suite's label for the sweep.
+struct PrivateRegistry {
+    container: String,
+    /// `localhost:<port>`.
+    host: String,
+    /// `<host>/cicada-rs-e2e/private:1`.
+    image: String,
+    folders: PathBuf,
+}
+
+impl PrivateRegistry {
+    async fn start() -> Self {
+        let container = name("registry");
+        let folders = std::env::temp_dir().join(format!("cicada-rs-e2e-registry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folders);
+        for folder in ["login", "empty"] {
+            std::fs::create_dir_all(folders.join(folder)).unwrap();
+        }
+        docker(&["rm", "-f", &container], secs(60), false).await.unwrap();
+        // The guard exists before the registry, so a failed start still cleans up.
+        let mut registry = Self { container, host: String::new(), image: String::new(), folders };
+        let label = format!("{}={}", CONTAINER_LABEL.0, CONTAINER_LABEL.1);
+        let htpasswd = format!("HTPASSWD={REGISTRY_HTPASSWD}");
+        let script = "mkdir -p /auth && printf '%s\\n' \"$HTPASSWD\" > /auth/htpasswd \
+                      && exec /entrypoint.sh /etc/docker/registry/config.yml";
+        let run = [
+            "run",
+            "-d",
+            "--name",
+            &registry.container,
+            "--label",
+            &label,
+            "-p",
+            "127.0.0.1::5000",
+            "-e",
+            "REGISTRY_AUTH=htpasswd",
+            "-e",
+            "REGISTRY_AUTH_HTPASSWD_REALM=cicada-e2e",
+            "-e",
+            "REGISTRY_AUTH_HTPASSWD_PATH=/auth/htpasswd",
+            "-e",
+            &htpasswd,
+            "--entrypoint",
+            "sh",
+            "registry:2",
+            "-c",
+            script,
+        ];
+        docker(&run, secs(120), true).await.unwrap();
+        let port = docker(&["port", &registry.container, "5000/tcp"], secs(60), true).await.unwrap();
+        let port = port.text.lines().next().and_then(|line| line.rsplit(':').next()).unwrap().trim().to_owned();
+        registry.host = format!("localhost:{port}");
+        registry.image = format!("{}/cicada-rs-e2e/private:1", registry.host);
+        registry
+    }
+
+    fn folder(&self, name: &str) -> PathBuf {
+        self.folders.join(name)
+    }
+
+    /// `docker --config <login> [-H <context host>] <args>`: the CLI with the registry's own config folder, never the
+    /// developer's `~/.docker`. That folder holds no context, so the daemon's endpoint is given.
+    async fn cli(&self, args: &[&str]) -> cicada_e2e::docker::Output {
+        let login = self.folder("login");
+        let mut all = vec!["--config", login.to_str().unwrap()];
+        if let Some(host) = context_host() {
+            all.extend(["-H", host]);
+        }
+        all.extend(args);
+        docker(&all, secs(120), false).await.unwrap()
+    }
+
+    /// Logs in with [`Self::cli`] once the registry answers, and pushes [`Self::image`]. The login lands in
+    /// `login/config.json`: it starts with an entry for the registry, so the CLI keeps the login in the file instead of
+    /// the platform's default helper (the keychain on macOS).
+    async fn login_and_push(&self) {
+        let config = self.folder("login").join("config.json");
+        std::fs::write(&config, serde_json::json!({ "auths": { &self.host: {} } }).to_string()).unwrap();
+        eventually(&format!("a login to {}", self.host), secs(60), async || {
+            let output = self.cli(&["login", &self.host, "-u", REGISTRY_USER, "-p", REGISTRY_PASSWORD]).await;
+            if output.ok() { Ok(Some(())) } else { Err(anyhow::anyhow!("{}", output.text)) }
+        })
+        .await;
+        let written: serde_json::Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+        assert!(written["auths"][&self.host]["auth"].is_string(), "the login is in the file: {written}");
+        assert!(written.get("credsStore").is_none(), "no helper: {written}");
+
+        docker(&["pull", PULLED], secs(120), true).await.unwrap();
+        docker(&["tag", PULLED, &self.image], secs(60), true).await.unwrap();
+        let push = self.cli(&["push", &self.image]).await;
+        assert!(push.ok(), "push {}: {}", self.image, push.text);
+        docker(&["image", "rm", &self.image], secs(60), true).await.unwrap();
+    }
+}
+
+impl Drop for PrivateRegistry {
+    fn drop(&mut self) {
+        if !self.image.is_empty() {
+            docker_blocking(&["image", "rm", "-f", &self.image]);
+        }
+        docker_blocking(&["rm", "-f", "-v", &self.container]);
+        let _ = std::fs::remove_dir_all(&self.folders);
+    }
+}
+
+/// A container `name(suffix)` of `image` that runs `true`, from a backend that reads its login from `folder`.
+async fn create_from(folder: &Path, suffix: &str, image: &str) -> (ContainerSpec, Result<(), ContainerError>) {
+    let mut spec = spec(suffix, "true");
+    spec.image = image.into();
+    let result = connect().docker_config(folder).create(&spec).await;
+    (spec, result)
+}
+
+/// Scenario: A private image after docker login; A private image without a login.
+async fn a_private_image_is_pulled_with_the_login_of_config_json() {
+    let registry = PrivateRegistry::start().await;
+    registry.login_and_push().await;
+
+    let (spec, created) = create_from(&registry.folder("login"), "private", &registry.image).await;
+    created.unwrap();
+    assert_eq!(status(&spec.name).await, ContainerStatus::Created);
+    assert!(docker_inspect("{{.Id}}", &registry.image).await.is_some(), "pulled");
+    runtime().remove(&spec.name).await.unwrap();
+    docker(&["image", "rm", &registry.image], secs(60), true).await.unwrap();
+
+    let (spec, created) = create_from(&registry.folder("empty"), "private-no-login", &registry.image).await;
+    let error = created.unwrap_err();
+    println!("a pull from {} without a login: {:?}, {}", registry.host, error.kind, error.message);
+    assert!(matches!(error.kind, ErrorKind::ImageNotFound | ErrorKind::Other), "{error}");
+    assert!(error.message.ends_with(&format!("(no credentials for {})", registry.host)), "{error}");
+    assert!(!error.message.contains(REGISTRY_PASSWORD), "{error}");
+    assert_eq!(status(&spec.name).await, ContainerStatus::Missing);
 }
 
 async fn a_hardened_container_gets_its_limits_and_secret() {

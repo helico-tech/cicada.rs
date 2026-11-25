@@ -25,7 +25,7 @@ Run the crate's tests with every feature: `cargo test -p cicada-containers --all
   they are (decision 8). The `DockerRuntime` rustdoc that says a private image must be local gives the credential
   rules, the 10 s limit and `docker_config` instead. Verify: a unit test that a failed pull's message holds the
   source and never a credential; `cargo test -p cicada-containers --all-features`.
-- [ ] 4. **E2E, changelog and docs handoff.** In `e2e/tests/suite/container_docker.rs`, the E2E case of the design's
+- [x] 4. **E2E, changelog and docs handoff.** In `e2e/tests/suite/container_docker.rs`, the E2E case of the design's
   Tests section (a `registry:2` with htpasswd, a push with `docker --config <tempdir>`, a create with an `auths`
   entry, a failed create with an empty folder whose message says `no credentials for localhost:<port>`), cleaned up
   also after a failure; if the daemon cannot reach the registry, report it. The `## 0.21.1 — unreleased` section of

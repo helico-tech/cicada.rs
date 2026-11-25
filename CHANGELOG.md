@@ -10,7 +10,8 @@ moves: a correction is a new version.
 ## 0.21.1 — unreleased
 
 A container runtime of `cicada-containers` reports its processor kind and operating system, which also shows that it
-answers. Additive: the contracts, wire formats, the store schema, the HTTP API and the guarantees are those of 0.21.0.
+answers, and `DockerRuntime` pulls a private image with the machine's `docker login`. Additive: the contracts, wire
+formats, the store schema, the HTTP API and the guarantees are those of 0.21.0.
 
 ### Added
 
@@ -27,6 +28,18 @@ answers. Additive: the contracts, wire formats, the store schema, the HTTP API a
   `set_info(RuntimeInfo)`; `Call::Info` and `Method::Info` record and script the call. Covered by the unit tests in
   `src/fake.rs`, `src/docker/map.rs` and `src/docker/mod.rs`, and by `info_gives_linux_and_the_arch_the_cli_prints`
   in `e2e/tests/suite/container_docker.rs`.
+- `cicada-containers`: `DockerRuntime::create` pulls a missing image with the machine's `docker login`, read as the
+  Docker CLI reads it, so a private image no longer has to be on the machine first. At each pull it reads
+  `config.json` from the folder set with the new `DockerRuntime::docker_config(dir)`, else `DOCKER_CONFIG`, else
+  `$HOME/.docker`, and takes the credentials for the image's registry from the helper `credHelpers` names, else the
+  `credsStore` helper (`docker-credential-<name> get`, killed after 10 s), else the `auths` entry. A missing or broken
+  file, a registry without an entry or a failing helper gives a pull without credentials, so a public image still
+  works. The message of a failed pull ends with where its credentials came from or why there were none (such as
+  `(no credentials for registry.example.com)`), never with a credential or a helper's output; the error kinds stay
+  as they were. Adds `base64` 0.22 to the `docker` feature (already in the tree through bollard). Covered by the unit
+  tests in `src/docker/auth.rs` and `src/docker/mod.rs`, and by
+  `a_private_image_is_pulled_with_the_login_of_config_json` in `e2e/tests/suite/container_docker.rs`, against a
+  `registry:2` with basic auth.
 
 ## 0.21.0 — 2026-11-24
 
