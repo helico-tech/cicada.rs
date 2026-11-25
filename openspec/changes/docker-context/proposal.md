@@ -35,7 +35,7 @@ after connect.
 
 ## Order
 
-First in the line. No following change.
+First in the line, before `watch-absent-target`.
 
 ## Impact
 
