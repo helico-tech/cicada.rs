@@ -620,6 +620,7 @@ name = "cicada-containers"
 version = "0.21.1"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "bollard",
  "cicada",
  "cicada-axum",
@@ -630,6 +631,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tar",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",

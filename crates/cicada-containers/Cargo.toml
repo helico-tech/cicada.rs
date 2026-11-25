@@ -11,10 +11,12 @@ publish.workspace = true
 # `FakeRuntime`, an in-memory runtime for tests. Nothing in the workspace turns it on.
 testing = []
 # `DockerRuntime`, the backend over the Docker Engine API (bollard).
-docker = ["dep:bollard", "dep:futures", "dep:tar", "dep:tokio", "dep:tokio-util"]
+docker = ["dep:base64", "dep:bollard", "dep:futures", "dep:tar", "dep:tokio", "dep:tokio-util"]
 
 [dependencies]
 async-trait.workspace = true
+# Decodes the `auth` entries of Docker's config.json for a pull.
+base64 = { workspace = true, optional = true }
 bollard = { workspace = true, optional = true }
 # The container actor runs on Cicada's public API; no store feature: the host picks its store.
 cicada.workspace = true
@@ -33,6 +35,8 @@ tokio-util = { workspace = true, optional = true, features = ["io", "io-util"] }
 cicada-axum.workspace = true
 cicada-containers = { path = ".", features = ["testing"] }
 cicada-test.workspace = true
+# The config folders and credential helper scripts of the Docker backend's tests.
+tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 
 [lints]

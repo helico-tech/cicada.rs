@@ -1,10 +1,12 @@
 //! [`DockerRuntime`]: the [`ContainerRuntime`] over the Docker Engine API (feature `docker`).
 
 mod archive;
+mod auth;
 mod map;
 
 use std::collections::HashMap;
 use std::fmt;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -43,8 +45,14 @@ const STOP_SLACK: Duration = Duration::from_secs(60);
 ///
 /// - Containers are found by their exact name: Docker would also take an ID prefix, so every call inspects first,
 ///   treats another name as missing and acts on the full ID it found.
-/// - [`create`](ContainerRuntime::create) pulls a missing image without a registry login, so a private image must be
-///   local. An existing container is kept, even when its image is gone.
+/// - [`create`](ContainerRuntime::create) pulls a missing image with the machine's `docker login`, read as the CLI
+///   reads it at each pull: `config.json` in the folder set with [`docker_config`](Self::docker_config), else in
+///   `DOCKER_CONFIG`, else in `$HOME/.docker`. For the image's registry (Docker Hub when its first part names no host)
+///   it takes the helper `credHelpers` names, else the `credsStore` helper, else the `auths` entry. A helper runs as
+///   `docker-credential-<name> get` from `PATH` and is killed after 10 s. A missing or broken file, a registry without
+///   an entry or a failing helper gives a pull without credentials, so a public image still works. The message of a
+///   failed pull ends with where its credentials came from, or why there were none, never with a credential. An
+///   existing container is kept, even when its image is gone.
 /// - [`list`](ContainerRuntime::list) leaves out a container removed since Docker listed it, and one whose state
 ///   Docker does not report; [`inspect`](ContainerRuntime::inspect), [`start`](ContainerRuntime::start),
 ///   [`copy_in`](ContainerRuntime::copy_in) and [`stop`](ContainerRuntime::stop) of such a name fail with `Other`.
@@ -68,6 +76,7 @@ const STOP_SLACK: Duration = Duration::from_secs(60);
 pub struct DockerRuntime {
     client: Docker,
     negotiated: OnceCell<Docker>,
+    docker_config: Option<PathBuf>,
 }
 
 impl fmt::Debug for DockerRuntime {
@@ -95,7 +104,14 @@ impl DockerRuntime {
     }
 
     fn with_client(client: Docker) -> Self {
-        Self { client, negotiated: OnceCell::new() }
+        Self { client, negotiated: OnceCell::new(), docker_config: None }
+    }
+
+    /// Reads Docker's `config.json` for a pull from `dir` instead of `DOCKER_CONFIG` or `$HOME/.docker`: for a host
+    /// that runs as a service whose home is not the user's, or a test with its own login.
+    pub fn docker_config(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.docker_config = Some(dir.into());
+        self
     }
 
     /// The client at the agreed API version; a failed agreement is not kept, so the next call tries again.
@@ -138,7 +154,8 @@ impl DockerRuntime {
             .ok_or_else(|| ContainerError::new(ErrorKind::Other, format!("inspect {name}: Docker reports no state")))
     }
 
-    /// Pulls `image` unless Docker has it: `ImageNotFound` when the registry does not.
+    /// Pulls `image` unless Docker has it, with the credentials of [`auth::lookup`]: `ImageNotFound` when the
+    /// registry does not have it.
     async fn pull_if_missing(&self, docker: &Docker, image: &str) -> Result<(), ContainerError> {
         match docker.inspect_image(image).await {
             Ok(_) => return Ok(()),
@@ -147,11 +164,12 @@ impl DockerRuntime {
         }
         let reference = map::pull_reference(image);
         let options = CreateImageOptionsBuilder::new().from_image(&reference).build();
-        let mut pull = docker.create_image(Some(options), None, None);
+        let auth::Lookup { credentials, source } =
+            auth::lookup(self.docker_config.as_deref(), image, auth::HELPER_LIMIT).await;
+        let mut pull = docker.create_image(Some(options), None, credentials);
         while let Some(progress) = pull.next().await {
             if let Err(e) = progress {
-                let kind = if map::image_unknown(&e) { ErrorKind::ImageNotFound } else { kind_of(&e) };
-                return Err(ContainerError::new(kind, format!("pull {image}: {}", message_of(&e))));
+                return Err(pull_failed(image, &e, &source));
             }
         }
         Ok(())
@@ -242,6 +260,13 @@ impl DockerRuntime {
 struct Found {
     id: String,
     info: ContainerInspectResponse,
+}
+
+/// The error of a failed pull of `image`: `ImageNotFound` when the registry has no such image, else the kind of
+/// [`kind_of`]; the message ends with `source`, where its credentials came from.
+fn pull_failed(image: &str, error: &DockerError, source: &str) -> ContainerError {
+    let kind = if map::image_unknown(error) { ErrorKind::ImageNotFound } else { kind_of(error) };
+    ContainerError::new(kind, format!("pull {image}: {} ({source})", message_of(error)))
 }
 
 fn conflict(action: &str, name: &str) -> ContainerError {
@@ -591,6 +616,54 @@ mod tests {
     fn debug_shows_no_client() {
         let (path, runtime) = dead_socket("debug");
         assert_eq!(format!("{runtime:?}"), "DockerRuntime { negotiated: false, .. }");
+        let runtime = runtime.docker_config("/srv/factory/.docker");
+        assert_eq!(format!("{runtime:?}"), "DockerRuntime { negotiated: false, .. }");
         std::fs::remove_file(path).unwrap();
+    }
+
+    /// Scenario: A private image without a login; a helper that fails. The message says where the credentials came
+    /// from, never what they are, and the kind stays the one Docker's answer maps to.
+    #[tokio::test]
+    async fn a_failed_pull_names_its_credential_source_and_never_a_credential() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = "localhost:5000/team/app:1";
+        let refused = DockerError::DockerStreamError {
+            error: "Head \"http://localhost:5000/v2/\": no basic auth credentials".into(),
+        };
+
+        let none = auth::lookup(Some(dir.path()), image, auth::HELPER_LIMIT).await;
+        let error = pull_failed(image, &refused, &none.source);
+        assert_eq!(error.kind, ErrorKind::Other, "{error}");
+        assert_eq!(
+            error.message,
+            "pull localhost:5000/team/app:1: Docker stream error: Head \"http://localhost:5000/v2/\": no basic auth credentials \
+             (no credentials for localhost:5000)"
+        );
+
+        let auth = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, "e2e-user:pass-s3cret");
+        std::fs::write(
+            dir.path().join("config.json"),
+            format!(r#"{{"auths": {{"localhost:5000": {{"auth": "{auth}"}}}}}}"#),
+        )
+        .unwrap();
+        let found = auth::lookup(Some(dir.path()), image, auth::HELPER_LIMIT).await;
+        assert_eq!(found.credentials.as_ref().and_then(|c| c.password.as_deref()), Some("pass-s3cret"));
+        let denied = DockerError::DockerStreamError { error: "pull access denied, repository does not exist".into() };
+        let error = pull_failed(image, &denied, &found.source);
+        assert_eq!(error.kind, ErrorKind::ImageNotFound, "{error}");
+        assert!(error.message.ends_with(" (credentials from config.json)"), "{error}");
+        for secret in ["e2e-user", "pass-s3cret", auth.as_str()] {
+            assert!(!error.message.contains(secret), "{error}");
+        }
+
+        let helper = r#"{"credsStore": "cicada-no-such-helper"}"#;
+        std::fs::write(dir.path().join("config.json"), helper).unwrap();
+        let failing = auth::lookup(Some(dir.path()), image, auth::HELPER_LIMIT).await;
+        assert!(failing.credentials.is_none());
+        let error = pull_failed(image, &refused, &failing.source);
+        assert!(
+            error.message.ends_with(" (no credentials: docker-credential-cicada-no-such-helper not found)"),
+            "{error}"
+        );
     }
 }

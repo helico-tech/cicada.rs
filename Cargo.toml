@@ -36,6 +36,8 @@ aide = { version = "=0.16.0-alpha.4", features = ["axum", "axum-json", "axum-que
 anyhow = "1.0.104"
 async-trait = "0.1.92"
 axum = "0.8.9"
+# The `auth` of Docker's config.json, in the Docker backend of cicada-containers; bollard uses the same version.
+base64 = "0.22.1"
 # The Docker backend of cicada-containers: the Unix socket, the Windows pipe and plain TCP; no TLS or SSH (no rustls).
 bollard = { version = "0.21.1", default-features = false, features = ["http", "pipe"] }
 chrono = { version = "0.4.42", default-features = false, features = ["std", "clock", "serde"] }
