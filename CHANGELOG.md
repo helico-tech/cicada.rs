@@ -7,6 +7,28 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.21.2 — unreleased
+
+`DockerRuntime::connect()` finds Docker through the Docker CLI's context, so it works on a Mac with OrbStack, Colima or
+Docker Desktop and no `/var/run/docker.sock`. Additive: the contracts, wire formats, the store schema, the HTTP API and
+the guarantees are those of 0.21.1.
+
+### Changed
+
+- `cicada-containers`: `DockerRuntime::connect()` finds the daemon as the `docker` CLI does, in this order:
+  `DOCKER_HOST`; else the context `DOCKER_CONTEXT` names (not empty), even when the local socket exists, with
+  `default` meaning the local socket; else `/var/run/docker.sock` when it exists; else the `currentContext` of
+  `config.json` in `DOCKER_CONFIG`, else `$HOME/.docker` (none, `default` or no `config.json`: the local socket, as
+  before). A context's endpoint is `Endpoints.docker.Host` of `contexts/meta/<sha256 of its name>/meta.json`, and is
+  connected as `connect_to` connects it; `docker_config(dir)` does not steer it. A server with its socket keeps it,
+  whatever `config.json` names. A context that cannot be read (no meta file, no docker endpoint, broken JSON, no config
+  folder) or used (`SkipTLSVerify`, TLS files under `contexts/tls`, or a scheme other than `unix`, `tcp` and `http`,
+  such as `ssh`) fails with `Other`, naming the context and whether its name came from `DOCKER_CONTEXT` or
+  `currentContext`; it never falls back to the socket or plain `tcp`: set `DOCKER_HOST` or use `connect_to`. A context
+  whose unix socket is missing fails with the retryable `DaemonUnavailable`, naming the context and the endpoint.
+  Covered by the unit tests in `src/docker/context.rs` and `src/docker/mod.rs`; the E2E class of
+  `e2e/tests/suite/container_docker.rs` now connects with `connect()` alone.
+
 ## 0.21.1 — 2026-11-25
 
 A container runtime of `cicada-containers` reports its processor kind and operating system, which also shows that it

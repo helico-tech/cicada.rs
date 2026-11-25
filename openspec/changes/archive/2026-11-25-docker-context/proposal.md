@@ -23,6 +23,11 @@ To decide in the design: whether a set `DOCKER_CONTEXT` wins over an existing de
 whether `docker_config(dir)` applies (it is set after `connect`, so probably not); TLS contexts (`SkipTLSVerify`, the
 `tls/` folder): refuse with a clear error, or support; the E2E class dropping its own context lookup.
 
+Factory's view (2026-11-25), input for the design: `DOCKER_HOST` wins over everything; a set `DOCKER_CONTEXT` wins
+over an existing default socket, as in the CLI; `currentContext` from `config.json` is read only when the socket is
+missing, so servers keep today's behaviour; a TLS context (TLS files or `SkipTLSVerify`) is refused in `connect()` with
+an error that names the context and says to set `DOCKER_HOST`, with no silent fallback to the socket or plain `tcp`.
+
 ## Out of scope
 
 `ssh://` and TLS endpoints, unless the design takes TLS. Kubernetes or other context endpoints. Switching contexts
@@ -30,7 +35,7 @@ after connect.
 
 ## Order
 
-First in the line. No following change.
+First in the line, before `watch-absent-target`.
 
 ## Impact
 
