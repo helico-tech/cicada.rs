@@ -64,6 +64,16 @@ pub(super) fn fail(action: &str, name: &str, error: &DockerError) -> ContainerEr
     ContainerError::new(kind_of(error), format!("{action} {name}: {}", message_of(error)))
 }
 
+/// The error of a log read of `name`: Docker's 501 (a logging driver that does not support reading, such as `none`)
+/// is `Unsupported`, as no retry can read that log; every other error is as [`fail`] maps it. Only the status counts:
+/// once Docker streams, its errors are text in the log.
+pub(super) fn log_read_failed(name: &str, error: &DockerError) -> ContainerError {
+    match status_code(error) {
+        Some(501) => ContainerError::new(ErrorKind::Unsupported, format!("logs of {name}: {}", message_of(error))),
+        _ => fail("logs of", name, error),
+    }
+}
+
 /// Whether a failed pull says the registry has no such image. The pull stream carries no code, so its text decides.
 pub(super) fn image_unknown(error: &DockerError) -> bool {
     if status_code(error) == Some(404) {
@@ -588,6 +598,17 @@ mod tests {
         assert_eq!(kind_of(&DockerError::UnsupportedURISchemeError { uri: "ssh://h".into() }), ErrorKind::Other);
         let error = fail("start", "job-1", &server(400, "no such executable"));
         assert_eq!(error, ContainerError::new(ErrorKind::InvalidSpec, "start job-1: no such executable"));
+    }
+
+    #[test]
+    fn a_log_read_answered_with_501_is_unsupported_and_a_500_stays_other() {
+        let message = "configured logging driver does not support reading";
+        let error = log_read_failed("job-1", &server(501, message));
+        assert_eq!(error, ContainerError::new(ErrorKind::Unsupported, format!("logs of job-1: {message}")));
+        assert!(!error.is_retryable());
+        assert_eq!(log_read_failed("job-1", &server(500, "boom")).kind, ErrorKind::Other);
+        assert_eq!(log_read_failed("job-1", &DockerError::RequestTimeoutError).kind, ErrorKind::DaemonUnavailable);
+        assert_eq!(kind_of(&server(501, message)), ErrorKind::Other, "only a log read maps the 501");
     }
 
     #[test]

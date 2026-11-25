@@ -78,7 +78,8 @@ pub trait ContainerRuntime: Send + Sync + 'static {
     async fn inspect(&self, name: &str) -> Result<ContainerStatus, ContainerError>;
 
     /// The last `tail_lines` lines of the container's stdout and stderr together, as lossy UTF-8. Fails with
-    /// `Conflict` for a missing container.
+    /// `Conflict` for a missing container, and with `Unsupported` for one whose log the runtime can never read, such
+    /// as Docker's log driver `none`.
     async fn logs(&self, name: &str, tail_lines: u32) -> Result<String, ContainerError>;
 
     /// Up to `max_lines` log lines of the container `name` after `cursor` (from the first line for `None`), each
@@ -91,8 +92,8 @@ pub trait ContainerRuntime: Send + Sync + 'static {
     /// [`next`](LogPage::next), which an empty page leaves at the cursor given (the start for `None`). `max_lines`
     /// outside 1 to [`LOG_PAGE_MAX`](crate::LOG_PAGE_MAX) fails with `InvalidSpec` before any read. A missing container fails with
     /// `Conflict`, also when it is removed during the read; a created one gives an empty page, a running or ended
-    /// one its lines. A container whose log cannot be read, such as Docker's log driver `none`, fails with `Other`,
-    /// not `DaemonUnavailable`, so a follower stops retrying.
+    /// one its lines. A container whose log the runtime can never read, such as Docker's log driver `none`, fails with
+    /// `Unsupported`, so a follower stops; it may retry the other kinds, counting errors in a row.
     ///
     /// Limits, from how Docker keeps logs: a line stamped before the cursor's second but written after it (a race of
     /// microseconds at a second boundary between stdout and stderr) is missed. Each read makes Docker scan the log

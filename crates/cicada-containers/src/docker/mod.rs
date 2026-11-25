@@ -69,7 +69,8 @@ const STOP_SLACK: Duration = Duration::from_secs(60);
 ///   by uid and gid 0, so no existing folder's owner or mode changes. Docker's stat answers a link with its target
 ///   already resolved, so a chain of links counts as one; a link loop makes the stat fail, and the call with `Other`.
 /// - [`logs_since`](ContainerRuntime::logs_since) reads Docker's log with timestamps from the cursor's second and
-///   stops once the page is full; a container whose log driver cannot be read (`none`) fails with `Other`.
+///   stops once the page is full. [`logs`](ContainerRuntime::logs) and `logs_since` of a container whose log driver
+///   cannot be read (`none`; Docker's 501) fail with `Unsupported`.
 /// - [`info`](ContainerRuntime::info) asks `GET /version` and gives its `Arch` and `Os` as they are, with bollard's
 ///   request timeout (120 s) and no limit of its own.
 /// - [`copy_out`](ContainerRuntime::copy_out) reads Docker's archive of the path as a stream, on a blocking thread of
@@ -399,7 +400,7 @@ impl ContainerRuntime for DockerRuntime {
             match chunk {
                 Ok(chunk) => bytes.extend_from_slice(chunk.as_ref()),
                 Err(e) if status_code(&e) == Some(404) => return Err(conflict("logs of", name)),
-                Err(e) => return Err(fail("logs of", name, &e)),
+                Err(e) => return Err(map::log_read_failed(name, &e)),
             }
         }
         Ok(String::from_utf8_lossy(&bytes).into_owned())
@@ -423,7 +424,7 @@ impl ContainerRuntime for DockerRuntime {
             match stream.next().await {
                 Some(Ok(frame)) => pager.push(map::log_line(name, frame)?),
                 Some(Err(e)) if status_code(&e) == Some(404) => return Err(conflict("logs of", name)),
-                Some(Err(e)) => return Err(fail("logs of", name, &e)),
+                Some(Err(e)) => return Err(map::log_read_failed(name, &e)),
                 None => break,
             }
         }
