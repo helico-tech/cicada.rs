@@ -281,6 +281,23 @@ is a `400`. `ActorClient` leaves absent optional fields out of request bodies (n
 works against an older node as long as it does not use a newer feature. A release whose views lose a field that old
 clients require, as 0.6.0 does, needs its clients upgraded together with the nodes; the changelog says so.
 
+## Upgrade to 0.21.0
+
+**Version 0.21.0 changes container contracts.** `ContainerEnd` gains the field `kind`, so the contract hash of every
+[container job type](../guide/containers.md#define-a-job), and of every type whose messages take a `ContainerEnded`,
+changes. A node requires the exact registered hash, so for each such type follow
+[Changing a contract](../operations.md#changing-a-contract): a versioned type name for new runs while old actors finish
+on old hosts, or a maintenance window (stop every host of the type, delete its actors and then its registration, start
+the new hosts). Send `Remove` to a container actor before deleting it, or its container stays.
+
+In Rust, add `kind` to every `ContainerEnd` struct literal (`kind: None`, or the kind of a `failed` end), such as in your
+tests, and bind or ignore it in exhaustive patterns. Code that told failures apart by the reason text can match
+[`kind`](../guide/containers.md#the-end) instead; an end saved before 0.21.0 has none. `ErrorKind` gains
+`Unsupported`, which the trait's defaults now return: code that read `Other` from them as "unsupported" must match
+`Unsupported`. A start refused with `InvalidSpec` now ends the container at once, and one refused with another kind
+ends it `runtimeEnded` on Docker, where 0.20.8 retried the start. The store schema, the HTTP API, the other ready-made
+actors' contracts and the guarantees do not change.
+
 ## Update dependencies for 0.20.6
 
 Run `cargo update` in your project and resolve any dependencies that conflict with the

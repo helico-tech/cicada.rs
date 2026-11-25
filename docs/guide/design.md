@@ -138,6 +138,8 @@ Use [durable steps](../../examples/src/steps.rs) for independent progress, [flow
 managers with waits and deadlines, and [fan-out/fan-in](../../examples/src/fanout.rs) for a fixed set of parallel jobs.
 Record who owns completion, cancellation and timeout. A timeout means the result is unknown; it does not stop the target.
 
+When the caller supplies the steps and their dependencies as data and wants to inspect, cancel and retry them one by one (CI pipelines, media processing, imports), use the [job graph](actors.md#job-graph); a flow fits fixed steps written as code, and reply waits fit one actor that needs all or the first of a few replies. To cap how many jobs run at once across actors (a build farm, licensed workers, a machine with room for N containers), use the [permit pool](actors.md#permit-pool): a job asks with a fresh request ID, starts on `granted`, passes the grant number to the resource and releases once its work is confirmed stopped. The pool frees nothing on a timeout.
+
 Time belongs in the protocol. Define expiry, late replies and the race with completion. A
 [timer](../../examples/src/timer.rs) keeps the pending message id; a generation number can also reject an obsolete
 timeout. [Cron](../../examples/src/cron.rs) and the [scheduler](actors.md#scheduler) handle recurring work.
@@ -262,6 +264,10 @@ The second form works with hosts on several nodes sharing the store; the [websoc
 demonstrates it. Pinning that session fits badly when a connection can arrive at any host. For observation alone, a
 local task can send readings or `Beat` messages to an actor that runs anywhere.
 
+### Reconcile an outside resource
+
+A resource with a stable outside name, such as a container, can be reconciled instead of held. A message only records the goal; one armed poll at a time asks the outside system what is true and takes one step toward the goal; the name derived from the actor's key makes a repeated step find what an earlier one made. Errors count and back off instead of failing a turn, as a failed poll would be lost. A resource without a durable outside identity, such as a process known only by its PID, needs a host-held handle instead, as above. The [container actor](containers.md#the-container-actor) is the worked case ([ADR 0057](../adr/0057-a-reconciled-container-actor.md)).
+
 ## Choose a pattern
 
 For a stock reservation, choose one inventory owner and request/reply first. Add a saga only when the order must
@@ -279,6 +285,9 @@ coordinate several independently committed decisions. Each extra conversation ad
 | Outside service | A handler calls another system | Stable effect key and reconciliation | [Import](../../examples/src/sync.rs), [steps](../../examples/src/steps.rs) |
 | Turn uses a host-held handle | A resource exists on one machine | Placement, bounded handle slots and restart reconciliation | [Pinned process](../../examples/src/pinned_process.rs) |
 | Host follows state | A live handle can be held by any host | Periodic reads and reconnect logic | [Websocket session](../../examples/src/websocket_session.rs) |
+| Reconciled resource | An outside resource has a stable name | A poll turn per interval; one step per poll | [Containers](containers.md#the-container-actor) |
+| Job graph | Steps and dependencies arrive as data | One run actor; workers report per attempt | [Job graph](actors.md#job-graph) |
+| Permit pool | Jobs share a capacity across actors | A release per grant; nothing expires | [Permit pool](actors.md#permit-pool) |
 | Ready-made actor | A limiter, debouncer, batcher, scheduler or topic fits | Its particular contract and bounds | [Actors](actors.md) |
 
 ## Recognize design mistakes

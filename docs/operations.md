@@ -8,7 +8,7 @@ For version changes use [the upgrade procedure](how-to/upgrading.md); for exact 
 | Resource | Starting point | Watch for |
 | --- | --- | --- |
 | Turn concurrency | 16 per node | Lag for busy types; slow dependencies |
-| PostgreSQL pool | At least concurrency + 4 (default 20) | Renewal delays from connection starvation |
+| PostgreSQL pool | At least concurrency + 4 (default 20) | Renewal delays from connection starvation; the start warning “The PostgreSQL pool has N connections, fewer than the M this node needs” |
 | PostgreSQL connections | Sum node pools plus up to 2 listener/probe connections per node | Server `max_connections` |
 | Lease TTL | 30 s, heartbeat every 10 s | Recovery speed versus tolerance of pauses |
 | Maximum turn | 15 min, overridable by type | Timeouts and blocking handlers |
@@ -118,6 +118,8 @@ old nodes against the migrated schema. A non-additive migration requires stoppin
 Upgrade nodes before clients unless the release requires coordinated replacement.
 Version 0.20.0's schema 8 requires draining every old direct-store node and worker before migration; old claimers
 ignore pins. Follow the [0.20.0 procedure](how-to/upgrading.md#upgrade-to-0200).
+Version 0.21.0 changes the contract of every container job type and of every type that takes a `ContainerEnded`;
+follow the [0.21.0 procedure](how-to/upgrading.md#upgrade-to-0210).
 
 ## Releasing
 
@@ -183,6 +185,18 @@ For a run still owned by its original host, send `RunMsg::Stop` and see a termin
 it. Deleting the actor does not stop its child and proves no cleanup; the live host still owns the child and keeps
 its slot for the host's whole life, even after exit. [The design guide](guide/design.md#work-with-outside-systems)
 explains the host-lifetime limit.
+
+### Containers and Docker placement
+
+Every node that can claim a [container actor](guide/containers.md#the-container-actor) must reach the same Docker
+daemon. When only some nodes do, host the job's type only there, or pin its actors to them with
+`CreateOptions::pinned_to`. A node that reaches another daemon sees the container missing and ends it `failed`, or
+creates a second one there; the actor cannot tell.
+
+An image pull and the stop grace run inside one turn: keep `max_turn` for the type above both. Keep the log target
+`bollard` at `info` or above, as it logs request bodies with secret environment at `debug`. A container actor that
+ends `runtimeErrors` met `max_errors` runtime errors in a row: check that Docker answers on that node. Send `Remove`
+before deleting a container actor; leftovers carry the spec's labels, so `sweep` with a label removes them.
 
 ### Destructive controls
 

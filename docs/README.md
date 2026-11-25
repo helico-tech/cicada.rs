@@ -22,7 +22,10 @@ The guides assume you know Rust, serde and async functions.
 | Own child actors or react to failures | [Children](guide/core.md#child-actors), [watches](guide/core.md#watches) |
 | Run actors without database credentials | [HTTP worker](guide/app.md#a-worker-over-http) |
 | Choose a scheduler, limiter, debouncer or batcher | [Ready-made actors](guide/actors.md) |
+| Cap how many jobs run at once | [Permit pool](guide/actors.md#permit-pool) |
+| Run a graph of jobs given as data, with cancel and retry | [Job graph](guide/actors.md#job-graph) |
 | Write a durable multi-step job | [Flows](guide/actors.md#flows) |
+| Run containers from actors or host code | [Containers](guide/containers.md) |
 | Wait durably for another actor or a human decision | [Flow requests and replies](guide/actors.md#requests-and-reply-waits) |
 | Build a live view of actor state | [Change hints](guide/http.md#follow-changes-over-http) |
 | Deploy, diagnose or tune a node | [Operations](operations.md) |

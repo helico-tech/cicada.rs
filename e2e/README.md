@@ -16,6 +16,12 @@ The sample service (`sample-service`) in Docker, driven over HTTP only:
   The class checks selected-type registration, no sample singleton or watch, a counter recording `exec-worker`,
   and exit code 0 after SIGTERM. Teardown removes both containers, their anonymous volumes and the network, also
   after a failure.
+- `ContainerDockerTest` runs tenth: `DockerRuntime` of `cicada-containers` against the same daemon, at `DOCKER_HOST`
+  when it is set, else at the endpoint of the CLI's current context (`docker context inspect`), so no `DOCKER_HOST` is
+  needed. It uses `postgres:18`, pulls `busybox:1.37.0` (removed first when no container uses it) and runs a
+  `registry:2` with basic auth for the private pull, so it needs registry access. Everything it makes is named
+  `cicada-rs-e2e-ctr-*` and labelled `cicada-rs-e2e=containers`; its hooks sweep that label and the suite's teardown
+  removes it. Run only this class with `CICADA_E2E_ONLY=ContainerDockerTest` (the stack still comes up first).
 
 ## Run the suite
 
@@ -31,13 +37,21 @@ Without `CICADA_E2E=1` the suite's one test returns at once, so `cargo test --wo
 The test builds the image (`docker build -f sample-service/Dockerfile -t cicada-rs-sample:e2e .`), removes leftovers of
 an aborted run, starts the compose stack once, runs the classes in a fixed order (API, examples, ordering under
 load, kill / pause / stop a node mid-turn, outcomes while a node is killed, PostgreSQL stopped and started again, full
-cluster restart, SQLite node, sample HTTP executor), and always removes every container and volume afterwards:
+cluster restart, SQLite node, sample HTTP executor, Docker containers), and always removes every container and volume afterwards:
 at the end of the run, while unwinding from a panic, and on Ctrl-C. Every test is bounded by 4 minutes. A run takes about 3 minutes (170–180 s; plus the
 first image build, which compiles the workspace in Docker). `--nocapture` shows progress (`E2E: PASS …` per test); without it
 the output appears only when the suite fails.
 
 Container logs of every run are saved to `target/e2e-logs/` before teardown (`compose-<time>.log`,
 `sqlite-<time>.log`, `executor-<time>.log`).
+
+To remove what an aborted container class left by hand:
+
+```sh
+docker rm -f -v $(docker ps -aq --filter label=cicada-rs-e2e=containers)
+docker network rm $(docker network ls -q --filter label=cicada-rs-e2e=containers)
+docker volume rm $(docker volume ls -q --filter label=cicada-rs-e2e=containers)
+```
 
 Useful variations:
 

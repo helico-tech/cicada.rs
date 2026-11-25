@@ -9,8 +9,8 @@ For an app binary backed by SQLite:
 
 ```toml
 [dependencies]
-cicada = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.20.6" }
-cicada-app = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.20.6", features = ["sqlite"] }
+cicada = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.21.1" }
+cicada-app = { git = "https://github.com/helico-tech/cicada.rs", tag = "v0.21.1", features = ["sqlite"] }
 serde = { version = "1", features = ["derive"] }
 schemars = "1.2.3"
 ```
@@ -22,10 +22,11 @@ schemars = "1.2.3"
 | Use a typed HTTP client | Add `cicada-client` from the same tag |
 | Mount the API | Add `cicada-axum` from the same tag |
 | Use ready-made actors | Add `cicada-actors` from the same tag |
+| Run containers | Add `cicada-containers` from the same tag with `features = ["docker"]` for `DockerRuntime`; `features = ["testing"]` in dev dependencies for `FakeRuntime` ([guide](../guide/containers.md)) |
 | Test actors | Add `cicada-test` as a dev dependency and `tokio` with `test-util` |
 | Use the terminal UI | Enable `tui` on `cicada-app` |
 
-No store or terminal feature is enabled by default. An HTTP worker needs no store feature.
+No store, terminal, Docker or testing feature is enabled by default. An HTTP worker needs no store feature.
 In a workspace, place shared entries under `[workspace.dependencies]` and inherit them from each package.
 
 ## Dependencies and lockfiles
@@ -103,8 +104,8 @@ For a **first install** into a project without either skill folder:
 
 ```sh
 staging=$(mktemp -d)
-gh release download v0.20.6 --repo helico-tech/cicada.rs --pattern 'cicada-skill-*.tar.gz' --dir "$staging"
-tar -xzf "$staging/cicada-skill-v0.20.6.tar.gz" -C "$staging"
+gh release download v0.21.1 --repo helico-tech/cicada.rs --pattern 'cicada-skill-*.tar.gz' --dir "$staging"
+tar -xzf "$staging/cicada-skill-v0.21.1.tar.gz" -C "$staging"
 # Inspect both skills, the helper and the design template before copying them.
 mkdir -p .claude/skills
 cp -R "$staging/cicada" "$staging/actor-design" .claude/skills/
