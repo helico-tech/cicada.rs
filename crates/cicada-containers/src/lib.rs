@@ -4,7 +4,8 @@
 //! container under a type name its [`ContainerJob`] chooses, which reconciles the container toward a goal by one armed
 //! poll at a time and reports its end once. A host keeps a container's log and output files in its own
 //! [`OutputStore`], keyed by container name, with an in-memory one, `MemoryOutputStore`, and the conformance check
-//! `check_output_store` behind `testing`.
+//! `check_output_store` behind `testing`. A [`LogArchiver`] follows the logs of a job's containers into that store,
+//! outside actor turns.
 //!
 //! The runtime's public items name no type of a Docker client, so another backend fits the trait. The crate is an
 //! optional layer outside the core (ADR 0056): no library crate of the workspace depends on it.
@@ -33,6 +34,7 @@
 //! [`remove`]: ContainerRuntime::remove
 
 mod actor;
+mod archive;
 // The collector of every runtime; without one of them, nothing calls it yet.
 #[cfg_attr(not(any(test, feature = "testing", feature = "docker")), allow(dead_code))]
 mod copy;
@@ -56,8 +58,9 @@ mod spec;
 
 pub use actor::{
     Container, ContainerActor, ContainerEnd, ContainerEnded, ContainerJob, ContainerMsg, ContainerSettings,
-    ContainerState, EndTarget, FailureKind, Goal, Inputs, InvalidContainer, Outcome, Phase,
+    ContainerState, EndTarget, FailureKind, Goal, Inputs, InvalidContainer, Outcome, PREFIX_LABEL, Phase,
 };
+pub use archive::{ArchiveSettings, InvalidArchive, LogArchiver};
 pub use copy::{CopyLimits, CopyOut, SkippedFile};
 #[cfg(feature = "docker")]
 pub use docker::DockerRuntime;

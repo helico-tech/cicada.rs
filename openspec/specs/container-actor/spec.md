@@ -253,3 +253,13 @@ it as its `Actor::MAX_TURN`, so it wins over the node's default turn limit; `Non
 
 - **WHEN** a host registers a container job whose `MAX_TURN` is zero
 - **THEN** the registration is refused with "MAX_TURN must be positive"
+
+### Requirement: The actor labels its containers with its prefix
+
+`ContainerActor` SHALL add the label `cicada.container.prefix` with the settings' prefix to the spec of every container
+it creates, after the job's `spec`, so a job cannot remove it.
+
+#### Scenario: A job with its own labels
+
+- **WHEN** a job's spec sets the label `team=ci` and the actor creates the container
+- **THEN** the container carries `team=ci` and `cicada.container.prefix` with the prefix
