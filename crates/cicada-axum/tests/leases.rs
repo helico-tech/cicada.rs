@@ -468,6 +468,15 @@ async fn malformed_bodies_are_400_before_any_operation_and_old_routes_keep_their
                 "deliverAt": "2026-01-01T00:00:00Z", "delay": "PT1S"}]}),
         ),
         returned(json!({"kind": "unchanged"}), json!({"controls": [{"effect": "freeze", "actor": "counter/m"}]})),
+        // `existing` on a type, or without `set` (ADR 0063)
+        returned(
+            json!({"kind": "unchanged"}),
+            json!({"watches": [{"target": "counter", "set": true, "existing": true}]}),
+        ),
+        returned(
+            json!({"kind": "unchanged"}),
+            json!({"watches": [{"target": "counter/m", "set": false, "existing": true}]}),
+        ),
     ];
     for report in reports {
         let reply = post(&app, "/leases/complete", &complete_body(&lease, report.clone())).await;

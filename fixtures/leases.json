@@ -239,6 +239,13 @@
       "direction": "request",
       "status": null,
       "body": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":7,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"unchanged\"},\"effects\":{\"sends\":[],\"creates\":[{\"address\":\"vm/host-a\",\"state\":{},\"child\":true,\"pinnedTo\":\"host-a\"},{\"address\":\"free/f\",\"state\":{},\"child\":false}],\"cancels\":[],\"watches\":[],\"controls\":[]}}}"
+    },
+    {
+      "name": "complete-request-returned-watch-existing",
+      "operation": "complete",
+      "direction": "request",
+      "status": null,
+      "body": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":7,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"unchanged\"},\"effects\":{\"sends\":[],\"creates\":[],\"cancels\":[],\"watches\":[{\"target\":\"run/r1\",\"set\":true,\"existing\":true},{\"target\":\"run/r2\",\"set\":true}],\"controls\":[]}}}"
     }
   ],
   "accepted": [
@@ -332,6 +339,13 @@
       "direction": "request",
       "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":7,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"unchanged\"},\"effects\":{\"sends\":[],\"creates\":[{\"address\":\"vm/host-a\",\"state\":{},\"child\":true,\"pinnedTo\":\"host-a\"},{\"address\":\"free/f\",\"state\":{},\"child\":false,\"pinnedTo\":null}],\"cancels\":[],\"watches\":[],\"controls\":[]}}}",
       "expected": "complete-request-returned-pinned-create"
+    },
+    {
+      "name": "complete-request-watch-existing-false",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":7,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"unchanged\"},\"effects\":{\"sends\":[],\"creates\":[],\"cancels\":[],\"watches\":[{\"target\":\"run/r1\",\"set\":true,\"existing\":true},{\"target\":\"run/r2\",\"set\":true,\"existing\":false}],\"controls\":[]}}}",
+      "expected": "complete-request-returned-watch-existing"
     }
   ],
   "invalid": [
@@ -915,6 +929,20 @@
       "direction": "request",
       "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":7,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"unchanged\"},\"effects\":{\"sends\":[],\"creates\":[{\"address\":\"vm/host-a\",\"state\":{},\"child\":true,\"pinnedTo\":7}],\"cancels\":[],\"watches\":[],\"controls\":[]}}}",
       "stage": "decode"
+    },
+    {
+      "name": "complete-request-watch-existing-on-a-type",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":7,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"unchanged\"},\"effects\":{\"sends\":[],\"creates\":[],\"cancels\":[],\"watches\":[{\"target\":\"billing\",\"set\":true,\"existing\":true}],\"controls\":[]}}}",
+      "stage": "conversion"
+    },
+    {
+      "name": "complete-request-watch-existing-without-set",
+      "operation": "complete",
+      "direction": "request",
+      "input": "{\"actor\":\"counter/a%20b%2Fc\",\"epoch\":7,\"messageId\":\"m1\",\"report\":{\"kind\":\"returned\",\"state\":{\"kind\":\"unchanged\"},\"effects\":{\"sends\":[],\"creates\":[],\"cancels\":[],\"watches\":[{\"target\":\"run/r1\",\"set\":false,\"existing\":true}],\"controls\":[]}}}",
+      "stage": "conversion"
     }
   ]
 }

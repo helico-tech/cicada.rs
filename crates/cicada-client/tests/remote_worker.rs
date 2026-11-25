@@ -30,7 +30,7 @@ use cicada::runtime::{
     TurnSource, Worker, WorkerConfig,
 };
 use cicada::store::{MessageStatus, NodeId, OutcomeStatus, TypeDef};
-use cicada::{FailureCause, Store};
+use cicada::{FailureCause, StopCause, Stopped, Store};
 use cicada_axum::{ApiConfig, actor_api, actor_api_with};
 use cicada_client::ActorClient;
 use cicada_test::{TokioClock, default_start};
@@ -67,11 +67,20 @@ enum LedgerMsg {
     Forward { to: String, n: i64 },
     /// Sends the ledger `to` an `Add` with a note of `bytes` characters.
     Big { to: String, bytes: usize },
+    /// Watches the ledger `id` with `watch_existing`.
+    Track { id: String },
+    /// A watched ledger's message failed.
+    Failed(cicada::Failed),
+    /// A watched ledger went away, or was not there for `Track`.
+    Stopped(Stopped),
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 struct Balance {
     total: i64,
+    /// The `Stopped` notifications handled.
+    #[serde(default)]
+    stopped: Vec<Stopped>,
 }
 
 /// What the test sees of the handler: how often it ran, when a `Hold` started, and the gate it waits on.
@@ -109,6 +118,9 @@ impl Actor for LedgerActor {
             LedgerMsg::Big { to, bytes } => {
                 turn.send(&Ledger { id: to }, LedgerMsg::Add { n: 1, note: "x".repeat(bytes) })?;
             }
+            LedgerMsg::Track { id } => turn.watch_existing(&Ledger { id })?,
+            LedgerMsg::Failed(_) => {}
+            LedgerMsg::Stopped(stopped) => turn.state_mut().stopped.push(stopped),
         }
         Ok(())
     }
@@ -340,6 +352,33 @@ async fn a_turn_leased_on_one_server_is_renewed_and_completed_through_another_af
     assert_eq!(s.probe.runs.load(Ordering::SeqCst), 2, "no handler ran twice");
     s.worker.stop().await;
     assert!(s.worker.stopped().await.is_none());
+}
+
+/// Scenario: A worker over HTTP (ADR 0063). A turn that calls `watch_existing` for an absent ledger reports
+/// `"existing": true`, and the store writes the `Stopped` a local commit writes: cause `deleted`, `by` null, caused by
+/// the turn's message, and no watch.
+#[tokio::test(start_paused = true)]
+async fn a_watch_existing_of_an_absent_actor_over_http_writes_the_stopped_of_a_local_commit() {
+    let store = virtual_store();
+    let s = setup(store.clone(), store, Duration::from_secs(2)).await;
+    ledger(&s.first, "a").await;
+    let tracked = send(&s.first, "a", LedgerMsg::Track { id: "gone".into() }).await;
+    assert_eq!(ended(&s.second, &tracked).await.0, OutcomeStatus::Done);
+    let report = &s.balancer.bodies("/leases/complete")[0]["report"];
+    assert_eq!(report["effects"]["watches"], json!([{"target": "ledger/gone", "set": true, "existing": true}]));
+    let gone: ActorAddress = "ledger/gone".parse().unwrap();
+    let state = async || {
+        let row = s.second.get_actor(&"ledger/a".parse().unwrap()).await.unwrap().unwrap();
+        serde_json::from_value::<Balance>(row.state).unwrap()
+    };
+    eventually(async || !state().await.stopped.is_empty()).await;
+    assert_eq!(state().await.stopped, [Stopped { actor: gone.clone(), cause: StopCause::Deleted, by: None }]);
+    let outcomes = s.second.outcomes(None, "ledger/a", None, None, 10).await.unwrap().items;
+    let notification = outcomes.iter().find(|o| o.envelope.notification).expect("the handled Stopped");
+    assert_eq!(notification.envelope.caused_by.as_ref(), Some(&tracked), "caused by the turn's message");
+    assert_eq!(notification.envelope.from.as_ref(), Some(&gone), "sent by the absent actor");
+    assert!(s.second.watches(None, None, None, 10).await.unwrap().items.is_empty(), "no watch on nothing");
+    s.worker.stop().await;
 }
 
 /// An operator's cancel reaches the worker through the next renewal, on the other server, a third of the TTL after the

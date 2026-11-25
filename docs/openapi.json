@@ -4411,6 +4411,10 @@
           "set": {
             "description": "True to set the watch, false to remove it.",
             "type": "boolean"
+          },
+          "existing": {
+            "description": "True for `Turn::watch_existing` (ADR 0063): the commit sets the watch when the target actor exists, and\notherwise writes a `Stopped` of it to the leased actor and leaves the pair without a watch. Only with `set` and\nan actor target; a report with it on a type, on every type or without `set` is invalid. Absent means false, and\nit is left out when false.",
+            "type": "boolean"
           }
         },
         "additionalProperties": false,

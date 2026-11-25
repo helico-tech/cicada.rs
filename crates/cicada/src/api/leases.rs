@@ -347,6 +347,12 @@ pub struct WatchChangeView via WatchChangeViewWire = "WatchChangeView" {
     pub target: WatchTarget,
     /// True to set the watch, false to remove it.
     pub set: bool,
+    /// True for `Turn::watch_existing` (ADR 0063): the commit sets the watch when the target actor exists, and
+    /// otherwise writes a `Stopped` of it to the leased actor and leaves the pair without a watch. Only with `set` and
+    /// an actor target; a report with it on a type, on every type or without `set` is invalid. Absent means false, and
+    /// it is left out when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub existing: bool,
 }
 }
 
@@ -894,6 +900,19 @@ impl TryFrom<ActorCreateView> for ActorCreate {
     }
 }
 
+impl TryFrom<WatchChangeView> for WatchChange {
+    type Error = RequestError;
+
+    /// Fails when the change is existing on a type, on every type or without set (ADR 0063).
+    fn try_from(w: WatchChangeView) -> Result<Self, RequestError> {
+        let change = Self { target: w.target, set: w.set, existing: w.existing };
+        match change.problem() {
+            Some(problem) => Err(RequestError(problem)),
+            None => Ok(change),
+        }
+    }
+}
+
 impl From<TurnEffects> for TurnEffectsView {
     fn from(e: TurnEffects) -> Self {
         Self {
@@ -904,7 +923,11 @@ impl From<TurnEffects> for TurnEffectsView {
                 .map(|c| ActorCreateView { address: c.address, state: c.state, child: c.child, pinned_to: c.pinned_to })
                 .collect(),
             cancels: e.cancels,
-            watches: e.watches.into_iter().map(|w| WatchChangeView { target: w.target, set: w.set }).collect(),
+            watches: e
+                .watches
+                .into_iter()
+                .map(|w| WatchChangeView { target: w.target, set: w.set, existing: w.existing })
+                .collect(),
             controls: e.controls.into_iter().map(|c| ControlView { effect: c.effect.into(), actor: c.actor }).collect(),
         }
     }
@@ -913,14 +936,11 @@ impl From<TurnEffects> for TurnEffectsView {
 impl TryFrom<TurnEffectsView> for TurnEffects {
     type Error = RequestError;
 
-    /// Fails when a send has both delivery times, or a create's pin is beyond its bounds.
+    /// Fails when a send has both delivery times, a create's pin is beyond its bounds, or a watch change is existing
+    /// on a type, on every type or without set.
     fn try_from(e: TurnEffectsView) -> Result<Self, RequestError> {
         Ok(Self {
-            watches: e
-                .watches
-                .into_iter()
-                .map(|w| WatchChange { target: w.target, set: w.set, existing: false })
-                .collect(),
+            watches: e.watches.into_iter().map(WatchChange::try_from).collect::<Result<_, _>>()?,
             creates: e.creates.into_iter().map(ActorCreate::try_from).collect::<Result<_, _>>()?,
             sends: e.sends.into_iter().map(TurnSend::try_from).collect::<Result<_, _>>()?,
             cancels: e.cancels,
@@ -966,7 +986,7 @@ impl From<TurnReport> for TurnReportView {
 impl TryFrom<TurnReportView> for TurnReport {
     type Error = RequestError;
 
-    /// Fails when a send has both delivery times.
+    /// Fails when a send has both delivery times, or an effect is invalid as [`TurnEffects`] says.
     fn try_from(r: TurnReportView) -> Result<Self, RequestError> {
         Ok(match r {
             TurnReportView::Returned { state, effects } => {

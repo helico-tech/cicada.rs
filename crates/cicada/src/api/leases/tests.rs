@@ -730,6 +730,38 @@ fn a_returned_create_carries_its_pin_and_a_bad_pin_fails_conversion() {
     assert!(ActorCreate::try_from(longest).is_ok(), "200 characters, not bytes");
 }
 
+/// Scenarios: A worker over HTTP; An invalid watch change (ADR 0063).
+#[test]
+fn a_watch_change_carries_existing_when_true_and_an_invalid_one_fails_conversion() {
+    let existing = WatchChange { target: WatchTarget::parse("run/r1").unwrap(), set: true, existing: true };
+    let plain = WatchChange { existing: false, ..existing.clone() };
+    let view =
+        TurnEffectsView::from(TurnEffects { watches: vec![existing.clone(), plain.clone()], ..Default::default() });
+    assert_eq!(
+        serde_json::to_value(&view).unwrap()["watches"],
+        json!([{"target": "run/r1", "set": true, "existing": true}, {"target": "run/r1", "set": true}]),
+        "left out when false"
+    );
+    assert_eq!(TurnEffects::try_from(wire(&view)).unwrap().watches, [existing, plain]);
+    for absent in
+        [json!({"target": "run/r1", "set": true}), json!({"target": "run/r1", "set": true, "existing": false})]
+    {
+        assert!(!decode::<WatchChangeView>(absent).unwrap().existing, "reads as a plain watch change");
+    }
+    assert!(decode::<WatchChangeView>(json!({"target": "run/r1", "set": true, "existing": null})).is_err());
+    for bad in [
+        json!({"target": "billing", "set": true, "existing": true}),
+        json!({"target": "*", "set": true, "existing": true}),
+        json!({"target": "run/r1", "set": false, "existing": true}),
+    ] {
+        let view = decode::<WatchChangeView>(bad.clone()).unwrap();
+        let effects = TurnEffectsView { watches: vec![view], ..Default::default() };
+        let report = TurnReportView::Returned { state: StateReportView::Unchanged {}, effects };
+        let error = TurnReport::try_from(report).unwrap_err().to_string();
+        assert!(error.contains("existing"), "{bad}: {error}");
+    }
+}
+
 // ---- numbers, durations, addresses ----
 
 /// Scenario: Exact numbers and addresses.

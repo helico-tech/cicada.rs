@@ -18,7 +18,7 @@ whole batch; set 0.22.0 wherever the version lives (builder.md, Version). Follow
   creates; on SQLite inside the commit's write transaction. A PostgreSQL test races a delete against the commit for
   many rounds and finds exactly one `Stopped`. Verify: the conformance suite on SQLite, and with
   `CICADA_PG_URL=postgres://cicada:cicada@localhost:55432/cicada` on PostgreSQL.
-- [ ] 3. **The wire.** `WatchChangeView` gets `existing` (left out when false); the view's conversion to `WatchChange`
+- [x] 3. **The wire.** `WatchChangeView` gets `existing` (left out when false); the view's conversion to `WatchChange`
   refuses `existing` on a type target or with `set: false` as an invalid report (decision 6); `cicada-client` sends
   it. Regenerate `docs/openapi.json` (`CICADA_UPDATE_OPENAPI=true`). `fixtures/leases.json` gains an accepted body with
   `existing` and a refused one, checked by `crates/cicada/tests/fixtures.rs`. A remote-worker test runs a turn with
