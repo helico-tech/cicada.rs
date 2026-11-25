@@ -13,7 +13,7 @@ and `specs/container-docker/spec.md`. Run the crate's tests with every feature:
   liveness check treats every error but `Unsupported` as "not here" (decision 4). The doc of `ErrorKind::Unsupported`
   names `info`. Verify: a unit test that a runtime without `info` compiles and fails with `Unsupported`;
   `cargo test -p cicada-containers --all-features`.
-- [ ] 2. **The fake.** `info` in `src/fake.rs` (decision 5): `amd64` on `linux` by default, `set_info(RuntimeInfo)`,
+- [x] 2. **The fake.** `info` in `src/fake.rs` (decision 5): `amd64` on `linux` by default, `set_info(RuntimeInfo)`,
   `Call::Info` and `Method::Info` with `fail_next` and `fail_always`. Verify: tests for the default, `set_info`, a
   scripted `DaemonUnavailable` followed by an answer with two `Info` calls recorded, and a repeated call that leaves a
   created container `Created`; `cargo test -p cicada-containers --all-features`.

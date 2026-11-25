@@ -17,7 +17,7 @@ use crate::paths::{MountTarget, Mounted, deepest_mount, path_parts, place};
 use crate::{
     ContainerError, ContainerRuntime, ContainerSpec, ContainerStatus, ContainerSummary, CopyDir, CopyFile, CopyLimits,
     CopyOut, ErrorKind, Label, LogCursor, LogLine, LogPage, LogStream, MountKind, NetworkSpec, Networking, Resource,
-    Skipped, Swept, VolumeSpec,
+    RuntimeInfo, Skipped, Swept, VolumeSpec,
 };
 
 /// The exit code of a container the fake stops, as Docker reports one ended by SIGTERM.
@@ -29,6 +29,7 @@ const STOPPED_CODE: i64 = 143;
 /// timer, so it runs under paused time. A test scripts it: [`exit_with`](Self::exit_with) ends a running container,
 /// [`set_logs`](Self::set_logs) and [`push_log`](Self::push_log) give it output, [`put_file`](Self::put_file) gives
 /// it a file to copy out, [`make_dirs`](ContainerRuntime::make_dirs) keeps the folders it makes with their modes,
+/// [`set_info`](Self::set_info) sets what [`info`](ContainerRuntime::info) answers (`amd64` on `linux` until then),
 /// [`fail_next`](Self::fail_next) and [`fail_always`](Self::fail_always) make calls of a
 /// method fail without effect, and [`calls`](Self::calls) lists every call in order. A started
 /// container runs until a test ends it or [`stop`](ContainerRuntime::stop) does (exit code 143).
@@ -45,6 +46,8 @@ struct State {
     calls: Vec<Call>,
     fail_next: Vec<(Method, ErrorKind)>,
     fail_always: Vec<(Method, ErrorKind)>,
+    /// What `info` answers; `amd64` on `linux` for `None`.
+    info: Option<RuntimeInfo>,
 }
 
 #[derive(Debug)]
@@ -116,6 +119,8 @@ pub enum Method {
     EnsureVolume,
     /// [`ContainerRuntime::sweep`].
     Sweep,
+    /// [`ContainerRuntime::info`].
+    Info,
 }
 
 /// A call the [`FakeRuntime`] received, with its arguments; failed calls too.
@@ -184,6 +189,8 @@ pub enum Call {
     EnsureVolume(VolumeSpec),
     /// [`ContainerRuntime::sweep`].
     Sweep(Label),
+    /// [`ContainerRuntime::info`].
+    Info,
 }
 
 impl Call {
@@ -203,6 +210,7 @@ impl Call {
             Self::EnsureNetwork(_) => Method::EnsureNetwork,
             Self::EnsureVolume(_) => Method::EnsureVolume,
             Self::Sweep(_) => Method::Sweep,
+            Self::Info => Method::Info,
         }
     }
 }
@@ -265,6 +273,11 @@ impl FakeRuntime {
         self.change(name, "put_file", |container| {
             container.files.insert(file.path.clone(), file);
         });
+    }
+
+    /// Sets what [`info`](ContainerRuntime::info) answers from now on, in place of `amd64` on `linux`.
+    pub fn set_info(&self, info: RuntimeInfo) {
+        self.lock().info = Some(info);
     }
 
     /// Makes the next call of `method` fail with `kind` and without effect. Several queue up, one per call.
@@ -551,6 +564,11 @@ impl ContainerRuntime for FakeRuntime {
         swept.volumes = volumes;
         Ok(swept)
     }
+
+    async fn info(&self) -> Result<RuntimeInfo, ContainerError> {
+        let state = self.enter(Call::Info)?;
+        Ok(state.info.clone().unwrap_or_else(|| RuntimeInfo::new("amd64", "linux")))
+    }
 }
 
 #[cfg(test)]
@@ -832,6 +850,40 @@ mod tests {
         assert_eq!(now(fake.logs_since("job-1", Some(cursor), 3)).unwrap().lines.len(), 1);
         let call = Call::LogsSince { name: "job-1".into(), cursor: Some(cursor), max_lines: 3 };
         assert_eq!(fake.calls().iter().filter(|c| **c == call).count(), 2);
+    }
+
+    #[test]
+    fn info_answers_amd64_on_linux_until_a_test_sets_another_machine() {
+        let fake = FakeRuntime::new();
+        assert_eq!(now(fake.info()).unwrap(), RuntimeInfo::new("amd64", "linux"));
+        fake.set_info(RuntimeInfo::new("arm64", "linux"));
+        assert_eq!(now(fake.info()).unwrap(), RuntimeInfo::new("arm64", "linux"));
+    }
+
+    /// Scenario: A scripted machine and a daemon that stops answering.
+    #[test]
+    fn info_fails_as_scripted_and_records_every_call() {
+        let fake = FakeRuntime::new();
+        fake.set_info(RuntimeInfo::new("arm64", "linux"));
+        fake.fail_next(Method::Info, ErrorKind::DaemonUnavailable);
+        assert_eq!(kind(now(fake.info())), ErrorKind::DaemonUnavailable);
+        assert_eq!(now(fake.info()).unwrap(), RuntimeInfo::new("arm64", "linux"));
+        assert_eq!(fake.calls(), [Call::Info, Call::Info]);
+        fake.fail_always(Method::Info, ErrorKind::Other);
+        assert_eq!(kind(now(fake.info())), ErrorKind::Other);
+        assert_eq!(kind(now(fake.info())), ErrorKind::Other);
+        fake.clear_failures();
+        assert_eq!(now(fake.info()).unwrap(), RuntimeInfo::new("arm64", "linux"));
+    }
+
+    /// Scenario: A repeated call changes nothing.
+    #[test]
+    fn a_repeated_info_changes_nothing() {
+        let fake = FakeRuntime::new();
+        now(fake.create(&ContainerSpec::new("job-1", "alpine:3"))).unwrap();
+        let first = now(fake.info()).unwrap();
+        assert_eq!(now(fake.info()).unwrap(), first);
+        assert_eq!(now(fake.inspect("job-1")).unwrap(), ContainerStatus::Created);
     }
 
     #[test]
