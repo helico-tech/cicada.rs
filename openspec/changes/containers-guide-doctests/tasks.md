@@ -7,6 +7,6 @@ Fast lane, tests only: version `none`.
   features `testing` and `docker` to the dev-dependencies of `examples/Cargo.toml`. Verify:
   `cargo test -p cicada-examples --doc` passes (the page has no Rust blocks yet), and a temporary local Rust block in
   the page compiles and fails as expected (not committed).
-- [ ] 2. **Handoff and finishing checks.** `docs-handoff.md` asks the docs session to add `ContainersGuideDoctests` to
+- [x] 2. **Handoff and finishing checks.** `docs-handoff.md` asks the docs session to add `ContainersGuideDoctests` to
   AGENTS.md's list of doctest structs; nothing blocks. `cargo fmt --all --check`,
   `cargo clippy --workspace --all-targets`, `cargo test -p cicada-examples`, commit, then `python3 scripts/gate.py run`.
