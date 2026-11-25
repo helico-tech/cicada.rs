@@ -53,7 +53,7 @@ An invalid label from a flag or variable is a usage error; an invalid label in t
 | --- | --- | --- | --- |
 | `--store` | `CICADA_STORE` | required, but for a worker over HTTP | `postgres://…` or `postgresql://…` (PostgreSQL), `sqlite:FILE`, or the path of a SQLite file. Another value with `://`, or one that starts with `postgres:`, is refused and never printed, as it may hold a password |
 | `--store-schema` | `CICADA_STORE_SCHEMA` | `public` | the schema, on PostgreSQL |
-| `--store-pool-size` | `CICADA_STORE_POOL_SIZE` | the larger of 20 and the concurrency plus 4 | the connections of this node, on PostgreSQL |
+| `--store-pool-size` | `CICADA_STORE_POOL_SIZE` | the larger of 20 and the concurrency plus 4 | the connections of this node, on PostgreSQL; a smaller value is used as given, and the node then warns at start |
 | `--retention` | `CICADA_RETENTION` | 7 days | how long outcomes are kept, also the window in which a message id is known (S10); set one value on every node |
 | `--listen` | `CICADA_LISTEN` | `127.0.0.1:8080` | the address `serve` listens on |
 | `--types` | `CICADA_TYPES` | `all` | the types of the node: `all`, type names with commas, or (`serve` only) `none`; `all` and `none` are keywords only as the whole value |

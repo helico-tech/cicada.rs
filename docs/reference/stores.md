@@ -7,7 +7,7 @@ PostgreSQL (`PostgresOptions`, feature `postgres`):
 | --- | --- | --- |
 | `schema` | `public` | Created on start when absent. Separate schemas let environments or tests share a database. |
 | `retention` | 7 days | Outcome retention and the dedup window of message ids. |
-| `max_pool_size` | 20 | At least `concurrency + 4`; see [Sizing](../operations.md#sizing). |
+| `max_pool_size` | 20 | At least `concurrency + 4`; see [Sizing](../operations.md#sizing). A node that hosts types warns at start, with both numbers and the settings to change, when its pool is smaller, and starts anyway. Each node checks only its own concurrency, not the sum of nodes or workers sharing one `Store`. |
 | `socket_timeout` | 30 s | Longest single transaction attempt; then it fails and its connection is closed, so a dead peer without a TCP reset cannot block a claim, commit or stop. It also bounds the largest tree a delete or a stop can remove ([On call](../operations.md#on-call)). Zero disables it. |
 
 Connection parameters (`sslmode`, `sslrootcert`, `application_name`, `options`, …) go in the URL of

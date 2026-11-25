@@ -14,6 +14,8 @@ They use ordinary actor guarantees, watches and control effects from the [core](
 | Collect items into one delivery | `BatcherActor` / `cicada.batcher` | [batching](../../examples/src/batching.rs) |
 | Notice that something stopped happening | `HeartbeatWatchActor` / `cicada.heartbeat-watch` | [heartbeat](../../examples/src/heartbeat.rs) |
 | Tell people a node stopped heartbeating | `NodeDownMonitorActor` / `cicada.node-down` | [node_down](../../examples/src/node_down.rs) |
+| Cap how many jobs run at once | `PermitsActor` / `cicada.permits` | [permits tests](../../crates/cicada-actors/tests/permits.rs) |
+| Run a graph of jobs given as data | `JobGraphActor` / `cicada.job-graph` | [job graph tests](../../crates/cicada-actors/tests/job_graph.rs) |
 | Run a durable multi-step job | `FlowActor<F>` / host-chosen name | [flow_onboarding](../../examples/src/flow_onboarding.rs) |
 | Start flows from a publication | `EventActor` / `cicada.event` | [flow_events](../../examples/src/flow_events.rs) |
 
@@ -393,6 +395,278 @@ The 1000-row cap bounds retained state, not the full node-table read; slow reads
 See the [wire contract](../reference/contracts/cicada.node-down.json),
 [implementation](../../crates/cicada-actors/src/node_down.rs) and
 [tests](../../crates/cicada-actors/tests/node_down.rs) for exact checks and recovery cases.
+
+## Permit pool
+
+Use a permit pool to cap how many jobs run at once across actors: a build farm, licensed workers, a machine with room
+for N containers. One `PermitsActor` per pool (`Permits::named("builders")`, type `cicada.permits`) lets at most its
+capacity of requests hold a permit; the rest wait in FIFO order. Each grant carries a number that only goes up per
+pool, so the resource you guard can refuse work under an older number ([ADR 0058](../adr/0058-a-ready-made-permit-pool.md)).
+
+1. Host `PermitsActor` (no settings) and create the pool with `PermitsState::new(capacity, max_waiting)`, each 0
+   through 1,000. A capacity of 0 pauses the pool. Creating a pool that exists changes nothing; `maxWaiting` changes
+   only by delete and create.
+2. Ask with a fresh request ID per attempt, such as `<job>-<attempt>`, and name the message type of the notices. The
+   holder's family takes that type with a `PermitNotice`:
+
+<!-- doctest
+# use cicada::prelude::*;
+# use serde::{Deserialize, Serialize};
+# #[derive(Debug, Clone, Serialize, Deserialize)]
+# struct Build { id: String }
+# impl ActorRef for Build { const TYPE: &'static str = "build"; type Message = BuildMsg; }
+# #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+# struct BuildState { grant: Option<u64> }
+@@9
+# struct BuildActor;
+# impl Actor for BuildActor {
+# type Ref = Build;
+# type State = BuildState;
+@@12
+# }
+-->
+```rust
+use cicada_actors::{PermitNotice, PermitNoticeKind, Permits, PermitsMsg};
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type")]
+enum BuildMsg {
+    Begin { attempt: u32 },
+    Permit(PermitNotice),
+}
+
+async fn handle(&self, turn: &mut Turn<Self>, message: BuildMsg) -> HandlerResult {
+    match message {
+        BuildMsg::Begin { attempt } => {
+            let request = format!("{}-{attempt}", turn.self_ref().id);
+            let acquire = PermitsMsg::acquire(request, turn.self_ref(), "Permit")?;
+            turn.send(&Permits::named("builders"), acquire)?;
+        }
+        BuildMsg::Permit(notice) if notice.kind == PermitNoticeKind::Granted => turn.state_mut().grant = notice.grant,
+        BuildMsg::Permit(_) => {} // queued, refused or check: see the table
+    }
+    Ok(())
+}
+```
+
+| Notice `kind` | What the holder does |
+| --- | --- |
+| `granted` | Start the work. Keep `grant` and pass it to the resource you guard |
+| `queued` | Wait for `granted`; a repeated `Acquire` keeps the place in the queue |
+| `refused` | The queue was full and nothing was recorded: try later or give up |
+| `check` | An `Audit` asks. Release if the work is confirmed stopped, cancel if you gave up waiting, ignore it while working. Never start work on a `check` |
+
+3. When the work ends, send `PermitsMsg::Release { request, grant }`. A release with another grant number is ignored,
+   so a late release of an earlier grant frees nothing.
+
+Other messages: `Cancel { request }` takes a waiting request out of the queue and is ignored for a holder.
+`Resize { capacity }` grants to the queue on a growth and revokes nothing on a shrink; new grants then wait until fewer
+hold than the capacity. `Audit` sends a `check` to every request in the books and frees nothing; it skips a holder
+that has not been told of its grant yet.
+
+**What frees a permit.** Only a `Release` with the current grant number, or a grant notice that failed before it ever
+reached its holder. No timeout frees a permit. A holder deleted after it got its number keeps the permit: release
+before you delete a holder, or have an operator send `Release` with the number read from the pool's state. A `Cancel`
+that loses the race to its grant does nothing; the holder then gets `granted` for a request it cancelled, and must
+release it.
+
+Every `Acquire` is answered in its own commit, so an `Acquire` whose target is gone records nothing. A repeated
+`Acquire` answers the first `Acquire`'s target with the same grant. A request ID is forgotten at its release: reusing
+it asks a new permit. Grants made later (by a release, cancel or resize) and each `check` go out in a turn of the
+pool's own (`Notify`), so a holder that is gone fails only its own notice; each such notice costs the pool one more
+turn. Bad input is refused for good with the state unchanged: a capacity above 1,000, a request ID that is empty,
+over 200 characters or holds a NUL, a message type out of bounds, a target whose type is not registered or does not
+take the message type.
+
+One permit per `Acquire`; there are no priorities, weights or expiry. See the
+[wire contract](../reference/contracts/cicada.permits.json),
+[implementation](../../crates/cicada-actors/src/permits.rs) and [tests](../../crates/cicada-actors/tests/permits.rs).
+
+## Job graph
+
+Use a job graph when the caller supplies the steps and their dependencies as data, and wants to inspect, cancel and
+retry them job by job: a CI pipeline, media processing, an import. One `JobGraphActor` per run
+(`JobGraph::named("run-7")`, type `cicada.job-graph`) starts each job once every job it needs succeeded, up to an
+in-flight limit, takes one result per attempt and reports the run's end to a target. When the steps are fixed and
+written as code, use a [flow](#flows) instead. ADRs [0059](../adr/0059-a-ready-made-job-graph.md),
+[0060](../adr/0060-cancel-and-skipped-dependents-in-the-job-graph.md) and [0061](../adr/0061-retry-in-the-job-graph.md) record the decisions.
+
+### Start a run
+
+Host `JobGraphActor` (no settings) beside the worker and report types. Create the run with its graph and send `Start`
+in one turn, so a run never exists without its start:
+
+<!-- doctest
+# use cicada::prelude::*;
+# use serde::{Deserialize, Serialize};
+# use cicada_actors::{JobGraphEnd, JobStart};
+# #[derive(Debug, Clone, Serialize, Deserialize)]
+# struct Builder { id: String }
+# impl ActorRef for Builder { const TYPE: &'static str = "builder"; type Message = BuilderMsg; }
+# #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+# #[serde(tag = "type")]
+# enum BuilderMsg { Build(JobStart) }
+# #[derive(Debug, Clone, Serialize, Deserialize)]
+# struct Ci { run: String }
+# impl ActorRef for Ci { const TYPE: &'static str = "ci"; type Message = CiMsg; }
+# #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+# #[serde(tag = "type")]
+# enum CiMsg { GraphEnded(JobGraphEnd) }
+# struct CiActor;
+# impl Actor for CiActor {
+# type Ref = Ci;
+# type State = NoState;
+# async fn handle(&self, turn: &mut Turn<Self>, _: CiMsg) -> HandlerResult {
+@@12
+# Ok(())
+# }
+# }
+-->
+```rust
+use cicada_actors::{Job, JobGraph, JobGraphMsg, JobGraphState};
+use serde_json::json;
+
+let ci = turn.self_ref().clone();
+let builder = Builder { id: "pool-a".into() };
+let jobs = vec![
+    Job::new("build", &builder, "Build", json!({"ref": "main"}))?,
+    Job::new("test", &builder, "Build", json!({"suite": "all"}))?.with_needs(["build"]),
+];
+let run = JobGraph::named(ci.run.clone());
+turn.create(&run, &JobGraphState::new(jobs, 2, &ci, "GraphEnded")?)?;
+turn.send(&run, JobGraphMsg::Start)?;
+```
+
+The constructor and the decoder refuse a bad graph, so it never becomes a run: a cycle (named by one of its jobs), a
+need that names no job, is repeated or names the job itself, a repeated name, no jobs or more than 100, a name that
+is not 1–64 ASCII letters, digits, `-`, `_` or `.`, a message, cancel or report type that is empty, over 200
+characters or holds a NUL, an input over 16 KiB as JSON or deeper than 32 levels, and an in-flight limit outside
+1–100. The graph is fixed for the run.
+
+`Start` starts every ready job in graph order while fewer than `maxInFlight` run; a second `Start` changes nothing.
+The limit counts the run's own running jobs; for a limit across runs, let the workers take a [permit](#permit-pool).
+
+### Do the work
+
+A job is a message to its target: the worker's family takes the job's message type with a `JobStart { run, job,
+attempt, input }`, such as `Build(JobStart)`. Any actor can be a worker (a host actor, a flow, a container actor), and
+one graph can mix types. The worker answers the run with `JobGraphMsg::succeeded(&start, output)` or
+`JobGraphMsg::failed(&start, reason)`; the reason is cut to 2,000 characters.
+
+<!-- doctest
+# use cicada::prelude::*;
+# use serde::{Deserialize, Serialize};
+# use cicada_actors::JobStart;
+# #[derive(Debug, Clone, Serialize, Deserialize)]
+# struct Builder { id: String }
+# impl ActorRef for Builder { const TYPE: &'static str = "builder"; type Message = BuilderMsg; }
+# #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+# #[serde(tag = "type")]
+# enum BuilderMsg { Build(JobStart) }
+# struct BuilderActor;
+# impl Actor for BuilderActor {
+# type Ref = Builder;
+# type State = NoState;
+# async fn handle(&self, turn: &mut Turn<Self>, message: BuilderMsg) -> HandlerResult {
+# let BuilderMsg::Build(start) = message;
+@@4
+# Ok(())
+# }
+# }
+-->
+```rust
+use cicada_actors::{JobGraph, JobGraphMsg};
+
+let result = JobGraphMsg::succeeded(&start, serde_json::json!({"artifact": "app.tar"}))?;
+turn.send(&JobGraph::named(start.run.clone()), result)?;
+```
+
+Only a result that names a running job's current attempt is taken. Any other (an unknown job, a job that is not
+running, another attempt, a late result) is refused for good with the state unchanged, and the store keeps it as a
+failed message of the run, which [dead letters](#dead-letters) can keep. The sender is not checked, so a worker may
+hand the work on to whoever reports. Key outside work by run, job and attempt.
+
+Each job message goes out in a turn of the run's own (`Dispatch`). A gone target, a type no node registers, or a type
+that does not take the message fails only that attempt, with the reason
+`the job message was not sent (<cause>): <error>`, and the run goes on. The run watches itself, so every refused
+`Result` or `Report` and every failed `Dispatch` costs it one more turn.
+
+### Failures and skipped jobs
+
+A failed job skips every waiting job that needs it, directly or through others: each becomes `skipped`, without an
+attempt, in the commit of the failure. Jobs that do not need it still run, and ready jobs start after every change of
+a job's status.
+
+The run watches each job's target from the turn that sends the job message, and unwatches it once none of its running
+jobs has it. A job ends `failed`:
+
+- when its job message fails at the worker (the handler failed until its retries ran out, or refused it), with the
+  reason `the job message failed at the worker (<cause>): <error>`;
+- when its worker goes away (it stopped itself, was deleted or was removed with its parent), with the reason
+  `the worker went away (<cause>)`. Every running job dispatched to that worker ends so.
+
+Other failures of a shared worker change no job; each is one ignored turn of the run. Notifications a client sends
+change nothing.
+
+**What the run cannot see.** Work the worker handed on to another actor; a worker that took the job message and then
+lost its outside work without failing a message, stopping or reporting; the failure of a later message of the worker.
+Such a job stays `running`: give it your own deadline and send `Cancel`. So a target must stay until its job reports;
+one that hands work on and then stops itself fails its job. A `Stopped` does not say which incarnation went away, so a
+target deleted and created again before the run handles it fails a job dispatched to the new one. A worker that
+reports and stops in one turn normally has its result taken, but when the run's turn on that result is rescheduled,
+the `Stopped` overtakes it: the job ends `failed` and you can [retry](#retry-a-job) it.
+
+### Cancel jobs
+
+Send the run `JobGraphMsg::Cancel { job: Some("build".into()) }` to cancel one job, or `Cancel { job: None }` for the
+whole run. Waiting and running jobs become `cancelled` in that commit; a running job's attempt ends with outcome
+`cancelled` and reason `cancelled`. In the same commit the cancelled job's dependents are skipped, ready jobs start in
+the freed slots, and the run may end. Ended and skipped jobs, and an ended run, are left alone, so cancelling twice
+is harmless; an unknown job name is refused for good.
+
+To tell a running worker, give the job a cancel message type, `Job::new(...)?.with_cancel_type("CancelBuild")`, and
+let the worker's family take it: `enum BuilderMsg { Build(JobStart), CancelBuild(JobCancel) }`. A cancelled job whose
+job message was sent is told in a later turn of the run (`SendCancel`), with `JobCancel { run, job, attempt }` and the
+shared retry policy; a gone worker fails only that message, and the job is `cancelled` already. The worker stops the
+work of that attempt only.
+
+A job without a cancel type is not told: its outside work goes on, and its late result is refused. A job cancelled
+before its job message was sent gets neither message. Cancel tells only the job's own target; a worker that handed
+the work on passes the cancel along. A worker can get `JobCancel` before the `JobStart` of the same attempt, when its
+turn on the job message is rescheduled: keep the cancelled attempts you saw and ignore their job messages.
+
+### Retry a job
+
+Send the run `JobGraphMsg::Retry { job: "test".into() }` to run a `failed` or `cancelled` job again. It waits again,
+with its output cleared and its attempts kept, and starts with the next attempt number once its needs succeeded and a
+slot is free, in the same commit when it can. The jobs skipped only because of it wait again too; a job that also
+needs another failed or cancelled job stays skipped. An ended run goes back to `running`.
+
+A `Retry` is refused for good with the state unchanged for an unknown job, a job that is not `failed` or `cancelled`,
+and a job with a `failed`, `skipped` or `cancelled` need: retry the need first, as the reason says. The job graph has
+no retry policy of its own and no cap: a host that retries automatically sends `Retry` from its own code, for example
+from its report target on a failed end, and keeps its own count. A run keeps the last 20 attempts of each job.
+
+A result of a replaced attempt is refused, so a worker always names the attempt of its `JobStart`. The cancel of a
+replaced attempt can arrive after the `Retry`, even after the new attempt's `JobStart`: it must stop only that old
+attempt's work. After many fast retries, an old attempt can drop out of the 20 kept before its cancel goes out; then
+it is never sent.
+
+### The end report
+
+When no job runs and none can start, the run ends `succeeded` when every job succeeded, else `failed` when a job
+failed, else `cancelled`. It sends `JobGraphEnd { run, end, status, jobs }` to the report target in a turn of its own;
+the target's family takes it under the report type, such as `GraphEnded(JobGraphEnd)`. Each `JobReport` names the job's
+`status`, last `attempt`, `output` and `reason`. A cancelled job that was dispatched has its attempt number and the
+reason `cancelled`; a retried job cancelled before it started again shows its old attempt and no reason.
+
+`end` numbers the run's ends. Keep, per run, the report with the highest `end`; one with the same `end` is a repeat.
+Anyone may send `JobGraphMsg::Report` again, for example once a gone report target exists again, and it repeats the
+same number. A retried run's next end has a higher number. Expect gaps, as an end reopened by a `Retry` before its
+report went out is never reported, and compare `end` rather than the order of arrival.
+
+See the [wire contract](../reference/contracts/cicada.job-graph.json),
+[implementation](../../crates/cicada-actors/src/job_graph.rs) and [tests](../../crates/cicada-actors/tests/job_graph.rs).
 
 ## Flows
 
