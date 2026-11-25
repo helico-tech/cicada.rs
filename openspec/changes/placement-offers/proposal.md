@@ -4,7 +4,8 @@
 
 Work that must run on a particular kind of machine (Factory's containers, its git mirror per machine, issue 0004)
 needs a pool where nodes offer capacity and work asks for a place; the answer is a node to pin a child to (ADR 0052).
-Factory built one (`pool.rs`, `member.rs`, about 900 lines); nothing in it is about containers (request from the Factory session, 2026-11-25; the owner accepted the split (CO-SPLIT, PL-SPLIT, AB-ORDER: container outputs first)).
+Factory built one (`pool.rs`, `member.rs`, about 900 lines); nothing in it is about containers (request from the Factory
+session, 2026-11-25; the owner accepted the split (CO-SPLIT, PL-SPLIT, AB-ORDER: container outputs first)).
 
 ## What Changes
 

@@ -4,7 +4,8 @@
 
 At a container's end, a host drains the rest of its log, copies an output folder out within limits into its store
 and tells the owner what was stored and what was skipped. Factory does this one container after another in its
-runner, so a slow copy holds up the others (Factory issue 0005; request from the Factory session, 2026-11-25; the owner accepted the split (CO-SPLIT, PL-SPLIT, AB-ORDER: container outputs first)).
+runner, so a slow copy holds up the others (Factory issue 0005; request from the Factory session, 2026-11-25; the owner
+accepted the split (CO-SPLIT, PL-SPLIT, AB-ORDER: container outputs first)).
 
 ## What Changes
 
