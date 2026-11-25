@@ -26,4 +26,4 @@ After `container-logs-unreadable`. No following change.
 
 ## Impact
 
-`crates/cicada-app` (`App`, `serve`, `worker`, `/ready`), its tests and the E2E suite. Additive: a patch.
+`crates/cicada-app` (`App`, `serve`, `worker`), its tests; the finishing gate runs E2E. Additive, in the 0.22.0 batch.
