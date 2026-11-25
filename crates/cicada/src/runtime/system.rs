@@ -89,6 +89,20 @@ fn pool_warning(pool: Option<u32>, concurrency: usize) -> Option<String> {
     ))
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The pool warnings `start` logged on this thread, for the tests of this crate. A test subscriber can miss the
+    /// event: `tracing` caches for the whole process whether a call site is heard, and other tests log this warning
+    /// from threads without a subscriber.
+    static POOL_WARNINGS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Takes the pool warnings that [`ActorSystem::start`] logged on this thread so far.
+#[cfg(test)]
+pub(crate) fn take_pool_warnings() -> Vec<String> {
+    POOL_WARNINGS.with(std::cell::RefCell::take)
+}
+
 /// The most messages one bulk call acts on, and the most ids it takes.
 pub const BULK_LIMIT: usize = 1000;
 
@@ -557,6 +571,8 @@ impl ActorSystem {
         if !init.types.is_empty() {
             if let Some(warning) = pool_warning(self.inner.store.pool_size(), self.inner.config.concurrency) {
                 tracing::warn!("{warning}");
+                #[cfg(test)]
+                POOL_WARNINGS.with(|warnings| warnings.borrow_mut().push(warning));
             }
             let this = self.clone();
             let tracker = lifecycle.tracker.clone();

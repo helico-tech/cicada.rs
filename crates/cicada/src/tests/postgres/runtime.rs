@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use super::common::{TestDb, eventually};
 use crate::prelude::*;
 use crate::runtime::CreateActorResult;
-use crate::runtime::{NodeConfig, NodeState};
+use crate::runtime::{NodeConfig, NodeState, take_pool_warnings};
 use crate::store::postgres::{PostgresOptions, PostgresStore};
 use crate::store::{Backend, MessageStatus, NodeId, OutcomeStatus, RemoveTypeResult, Store};
 use crate::tests::conformance::outcome_record;
@@ -382,49 +382,24 @@ async fn removing_a_type_races_with_creates_without_leaving_an_actor_of_a_remove
     cluster.cleanup().await;
 }
 
-/// The lines a test subscriber writes, without colours.
-#[derive(Clone, Default)]
-struct Logs(Arc<Mutex<Vec<u8>>>);
-
-impl std::io::Write for Logs {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-impl Logs {
-    fn pool_warnings(&self) -> Vec<String> {
-        let text = String::from_utf8(self.0.lock().unwrap().clone()).unwrap();
-        text.lines().filter(|line| line.contains("PostgreSQL pool")).map(str::to_owned).collect()
-    }
-}
-
 /// Scenarios: A pool that is too small, A pool that is large enough, A node without types (store-backends).
 ///
-/// The subscriber is the default of this thread only, so the test runs on a single-thread runtime: `start` logs the
-/// warning itself, before it spawns anything.
+/// `start` logs the warning and records it for this thread before it spawns anything, so the test runs on a
+/// single-thread runtime and reads that record. It does not catch the event with a subscriber of its own: the other
+/// tests of this file log the same warning (their `Cluster::store` pools are small too), and when one of them hits its
+/// call site first, `tracing` can cache it as unheard for the whole process. `pool_warning` has unit tests of the text.
 #[tokio::test]
 async fn a_node_warns_at_start_when_its_pool_is_smaller_than_its_concurrency_plus_4() {
     let cluster = Cluster::new(test_db!("rt"));
-    let logs = Logs::default();
-    let writer = logs.clone();
-    let subscriber = tracing_subscriber::fmt().with_ansi(false).with_writer(move || writer.clone()).finish();
-    let _default = tracing::subscriber::set_default(subscriber);
     let pool = |max_pool_size| cluster.db.open_with(PostgresOptions { max_pool_size, ..cluster.db.config() });
+    assert_eq!(take_pool_warnings(), Vec::<String>::new());
 
     let small = cluster.node_on("small", POLL, true, pool(6).await);
     small.start().await.unwrap();
     assert_eq!(small.state(), NodeState::Started);
-    let warnings = logs.pool_warnings();
+    let warnings = take_pool_warnings();
     assert_eq!(warnings.len(), 1, "{warnings:?}");
-    for part in
-        ["WARN", "has 6 connections", "the 8 this node needs", "concurrency 4", "max_pool_size", "--concurrency"]
-    {
+    for part in ["has 6 connections", "the 8 this node needs", "concurrency 4", "max_pool_size", "--concurrency"] {
         assert!(warnings[0].contains(part), "{part:?} in {:?}", warnings[0]);
     }
 
@@ -433,6 +408,6 @@ async fn a_node_warns_at_start_when_its_pool_is_smaller_than_its_concurrency_plu
     let sender = cluster.node_on("sender", POLL, false, pool(1).await);
     sender.start().await.unwrap();
     assert_eq!(sender.state(), NodeState::Started);
-    assert_eq!(logs.pool_warnings().len(), 1, "a pool of concurrency + 4 and a node without types do not warn");
+    assert_eq!(take_pool_warnings(), Vec::<String>::new(), "a pool of concurrency + 4 and a node without types");
     cluster.cleanup().await;
 }

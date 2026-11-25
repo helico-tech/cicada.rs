@@ -6,13 +6,13 @@ Fast lane, tests only: version `none` (no crate behaviour changes; a test-only s
 (`CARGO_PROFILE_DEV_DEBUG=line-tables-only`), also on main (e39fd912). The warning, its threshold and its text stay as
 they are.
 
-- [ ] 1. **Reproduce and find the cause.** Run the test the way the gate builds it, with PostgreSQL:
+- [x] 1. **Reproduce and find the cause.** Run the test the way the gate builds it, with PostgreSQL:
   `CARGO_PROFILE_DEV_DEBUG=line-tables-only CICADA_PG_URL=postgres://cicada:cicada@localhost:55432/cicada cargo test -p cicada --lib a_node_warns_at_start`,
   alone and with the whole `cicada` lib suite, several times. Find why the warning is not caught (the global
   call-site interest cache, the max level, another thread, the subscriber's writer, or the warning not being sent).
   Write the cause in a few lines into this change's `proposal.md` under a `## Cause` section. Verify: the failure
   reproduces before the fix.
-- [ ] 2. **Fix the test at the cause.** Catch the warning in a way that does not depend on what other tests do to
+- [x] 2. **Fix the test at the cause.** Catch the warning in a way that does not depend on what other tests do to
   `tracing`'s global state, for instance a `pub(crate)` seam that records the start warning for tests in
   `crates/cicada/src/tests`, while the pure function `pool_warning` keeps unit tests for the text; or a fix of the
   subscriber setup when the cause is there. No retry loop, no sleep, no weaker assertion: the test still proves that

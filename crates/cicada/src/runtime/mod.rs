@@ -17,6 +17,8 @@ pub use results::{
     OpError, RegisterContractResult, RenewTurnResult, RetryResult, SendResult, TurnLease, WatchResult,
 };
 pub use source::{SourceError, TurnSource};
+#[cfg(test)]
+pub(crate) use system::take_pool_warnings;
 pub use system::{
     ActorSystem, ActorSystemBuilder, BULK_LIMIT, MAX_LEASE_BATCH, MAX_LEASE_TYPES, MAX_REFUSAL_DETAIL, NodeConfig,
     NodeState, StartError, StartProblem,
