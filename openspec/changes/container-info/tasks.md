@@ -21,7 +21,7 @@ and `specs/container-docker/spec.md`. Run the crate's tests with every feature:
   `version()`, the map from `SystemVersion` in `src/docker/map.rs` (a missing or empty `Arch` or `Os` is `Other`),
   errors through `kind_of` (decision 4). Verify: map unit tests; a socket without a daemon gives `DaemonUnavailable`
   twice; `cargo test -p cicada-containers --all-features`.
-- [ ] 4. **E2E, changelog and docs handoff.** In `e2e/tests/suite/container_docker.rs`: `info()` gives `os` `linux`
+- [x] 4. **E2E, changelog and docs handoff.** In `e2e/tests/suite/container_docker.rs`: `info()` gives `os` `linux`
   and the `arch` that `docker version --format '{{.Server.Arch}}'` prints for the same context. A new section
   `## 0.21.1 — unreleased` in `CHANGELOG.md`, above 0.21.0, with a one-line summary, names `RuntimeInfo` and `info` under Added.
   `docs-handoff.md` carries `info`, `RuntimeInfo`, the spelling of `arch`, the timeout hint and the liveness rule

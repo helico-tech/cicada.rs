@@ -1,6 +1,6 @@
 //! The pure half of the Docker backend: a spec onto Docker's create body, Docker's state onto a status, its errors
 //! onto kinds, the secret scrub, the paths and tars of `copy_in` and `make_dirs`, the archive stat, and the frames of a
-//! timed log read, and Docker's version onto the runtime info. Nothing here talks to the daemon.
+//! timed log read and Docker's version onto the runtime info. Nothing here talks to the daemon.
 
 use std::collections::{BTreeMap, HashMap};
 

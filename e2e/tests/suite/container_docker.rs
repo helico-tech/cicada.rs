@@ -1,4 +1,4 @@
-//! `DockerRuntime` of `cicada-containers` against the real daemon: the repeat rules, the status and error mappings,
+//! `DockerRuntime` of `cicada-containers` against the real daemon: the runtime info, the repeat rules, the status and error mappings,
 //! `copy_in`, `make_dirs`, `copy_out`, the log pages, the pull, the hardening and the sweep. Everything it makes is named `cicada-rs-e2e-ctr-*` and carries
 //! `CONTAINER_LABEL`; the hooks sweep that label, and the suite's teardown removes it after a panic or Ctrl-C.
 
@@ -8,7 +8,7 @@ use std::time::Duration;
 use cicada_containers::{
     ContainerError, ContainerRuntime, ContainerSpec, ContainerStatus, CopyDir, CopyFile, CopyLimits, CopyOut,
     DockerRuntime, ErrorKind, Label, LogCursor, LogLine, LogStream, Mount, MountKind, NetworkAttachment, NetworkSpec,
-    Networking, Resource, Tmpfs, VolumeSpec,
+    Networking, Resource, RuntimeInfo, Tmpfs, VolumeSpec,
 };
 use cicada_e2e::cluster::eventually;
 use cicada_e2e::docker::{docker, docker_blocking};
@@ -28,6 +28,7 @@ pub fn class() -> Class {
         ..Class::new(
             "ContainerDockerTest",
             vec![
+                step!(info_gives_linux_and_the_arch_the_cli_prints),
                 step!(a_repeated_create_keeps_the_first_spec),
                 step!(an_exited_container_is_not_run_again),
                 step!(stop_ends_with_143_under_init_and_137_without),
@@ -127,6 +128,14 @@ fn kind<T: std::fmt::Debug>(result: Result<T, ContainerError>) -> ErrorKind {
 async fn docker_inspect(format: &str, target: &str) -> Option<String> {
     let output = docker(&["inspect", "-f", format, target], secs(60), false).await.unwrap();
     output.ok().then(|| output.text.trim().to_owned())
+}
+
+/// Scenario: The local daemon. The CLI reaches the same daemon as [`runtime`].
+async fn info_gives_linux_and_the_arch_the_cli_prints() {
+    let output = docker(&["version", "--format", "{{.Server.Arch}}"], secs(60), true).await.unwrap();
+    let arch = output.text.trim();
+    assert!(!arch.is_empty(), "docker version prints the server's Arch");
+    assert_eq!(runtime().info().await.unwrap(), RuntimeInfo::new(arch, "linux"));
 }
 
 async fn a_repeated_create_keeps_the_first_spec() {

@@ -7,6 +7,27 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.21.1 — unreleased
+
+A container runtime of `cicada-containers` reports its processor kind and operating system, which also shows that it
+answers. Additive: the contracts, wire formats, the store schema, the HTTP API and the guarantees are those of 0.21.0.
+
+### Added
+
+- `cicada-containers`: `ContainerRuntime::info()` returns a `RuntimeInfo` with `arch` and `os` in the spelling of image
+  platforms (`amd64`, `arm64`, `arm`; `linux`), for a host that says it is here only while its runtime answers and
+  picks the runs that fit the machine. It changes nothing and is safe to repeat; a runtime that cannot be reached
+  fails with the retryable `DaemonUnavailable`. `RuntimeInfo` is `#[non_exhaustive]` with public fields and
+  `RuntimeInfo::new(arch, os)`. The method has a default that fails with `Unsupported`, so a runtime written outside
+  this repo compiles unchanged. `DockerRuntime` asks `GET /version` and gives its `Arch` and `Os` as they are (no
+  variant: `arm` does not say `v6` or `v7`); a missing or empty one is `Other`. It has no time limit of its own
+  (bollard's 120 s apply; wrap the call in `tokio::time::timeout` for a faster answer), and an answering but unhealthy
+  Docker (a 5xx, such as an engine that is starting, or a Docker below the API floor) fails with `Other`: a liveness
+  check treats every error but `Unsupported` as "not here this round". The fake answers `amd64` on `linux` until
+  `set_info(RuntimeInfo)`; `Call::Info` and `Method::Info` record and script the call. Covered by the unit tests in
+  `src/fake.rs`, `src/docker/map.rs` and `src/docker/mod.rs`, and by `info_gives_linux_and_the_arch_the_cli_prints`
+  in `e2e/tests/suite/container_docker.rs`.
+
 ## 0.21.0 — 2026-11-24
 
 The fake and the Docker backend of `cicada-containers` give the same answers, so a host's tests on `FakeRuntime`
