@@ -9,7 +9,7 @@ over HTTP, and two tasks with one name SHALL refuse the command, both with exit 
 #### Scenario: A worker over HTTP
 
 - **WHEN** an `App` with a task runs `worker --server <url>`
-- **THEN** it exits with code 2 before it sends a request
+- **THEN** it exits with code 2 before it reads the config file or sends a request
 
 #### Scenario: After on_start
 
@@ -28,6 +28,11 @@ the store closes.
 - **WHEN** a `serve` node runs two tasks and one panics
 - **THEN** the other task sees `Stopping`, the node stops, and the command fails with exit code 1 and an error naming
   the task that panicked
+
+#### Scenario: The server fails after the tasks started
+
+- **WHEN** `serve` cannot write `Listening on`, or its HTTP server fails, after the tasks started
+- **THEN** every task sees `Stopping` and ends, or is aborted at the end of the grace period, before the store closes
 
 #### Scenario: A task returns early
 
