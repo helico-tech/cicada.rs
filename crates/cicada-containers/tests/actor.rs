@@ -519,6 +519,67 @@ async fn logs_that_always_fail_end_at_the_limit_without_logs() {
     assert_eq!(ends(&test).await.len(), 1);
 }
 
+/// Scenario: An ended container without logs. A log the runtime can never read (`Unsupported`) ends the end at once
+/// with `(no logs: …)`: not counted as an error, the read not retried.
+#[tokio::test(start_paused = true)]
+async fn logs_the_runtime_cannot_read_end_at_once_without_logs() {
+    let fake = FakeRuntime::new();
+    let test = harness(&fake, settings()).await;
+    let job = container(&test, "j1", "alpine:3").await;
+    test.send(&job, start()).await;
+    test.run_until_idle().await;
+    fake.fail_always(Method::Logs, ErrorKind::Unsupported);
+    fake.exit_with("app-j1", ContainerStatus::Exited { code: 0 });
+    let before = fake.calls().len();
+    test.advance_time_by(2 * SECOND).await;
+    let state: State = test.state(&job).await;
+    let end = state.end.unwrap();
+    assert_eq!((end.outcome, end.code), (Outcome::Exited, Some(0)));
+    assert!(end.logs.starts_with("(no logs: unsupported"), "{}", end.logs);
+    assert_eq!((state.errors, state.armed), (0, None));
+    assert_eq!(methods(&fake)[before..], ["inspect", "logs"], "one read, no retry");
+    assert_eq!(ends(&test).await.len(), 1);
+}
+
+/// `Other` from a log read, which a passing daemon error gives too, still counts and is retried.
+#[tokio::test(start_paused = true)]
+async fn other_from_a_log_read_is_still_counted_and_retried() {
+    let fake = FakeRuntime::new();
+    let test = harness(&fake, settings()).await;
+    let job = container(&test, "j1", "alpine:3").await;
+    test.send(&job, start()).await;
+    test.run_until_idle().await;
+    fake.fail_next(Method::Logs, ErrorKind::Other);
+    fake.set_logs("app-j1", "bye\n");
+    fake.exit_with("app-j1", ContainerStatus::Exited { code: 0 });
+    test.advance_time_by(2 * SECOND).await;
+    let state: State = test.state(&job).await;
+    assert_eq!((state.errors, state.end.is_none()), (1, true), "counted, no end yet");
+    test.advance_time_by(10 * SECOND).await;
+    let state: State = test.state(&job).await;
+    assert_eq!((state.errors, state.end.unwrap().logs.as_str()), (0, "bye\n"), "the retry read the logs");
+}
+
+/// With the goal `Remove`, an unreadable log ends the container at once and the removal goes on as before.
+#[tokio::test(start_paused = true)]
+async fn an_unreadable_log_does_not_hold_up_a_removal() {
+    let fake = FakeRuntime::new();
+    let test = harness(&fake, settings()).await;
+    let job = container(&test, "j1", "alpine:3").await;
+    test.send(&job, start()).await;
+    test.run_until_idle().await;
+    fake.fail_always(Method::Logs, ErrorKind::Unsupported);
+    fake.exit_with("app-j1", ContainerStatus::Exited { code: 3 });
+    test.send(&job, ContainerMsg::Remove).await;
+    test.run_until_idle().await;
+    let state: State = test.state(&job).await;
+    assert_eq!(state.phase, Phase::Removed);
+    let end = state.end.unwrap();
+    assert_eq!(end.code, Some(3));
+    assert!(end.logs.starts_with("(no logs: unsupported"), "{}", end.logs);
+    assert_eq!(ends(&test).await.len(), 1);
+}
+
 /// A started container the runtime reports as created, whose start always fails, ends `failed` at the limit.
 #[tokio::test(start_paused = true)]
 async fn a_created_container_whose_start_always_fails_ends_failed_at_the_limit() {

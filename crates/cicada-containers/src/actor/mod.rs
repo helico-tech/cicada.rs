@@ -666,10 +666,12 @@ impl<J: ContainerJob> ContainerActor<J> {
     }
 
     /// The container's logs as stored, or `None` when they could not be read and the next poll is armed. A failure
-    /// counts like any runtime error; at the maximum in a row the end gets `(no logs: …)` instead.
+    /// counts like any runtime error; at the maximum in a row the end gets `(no logs: …)` instead. `Unsupported` (a
+    /// log the runtime can never read) gets `(no logs: …)` at once, not counted, as a retry cannot help.
     async fn logs(&self, turn: &mut ContainerTurn<J>, name: &str) -> Result<Option<String>, HandlerError> {
         let text = match self.runtime.logs(name, self.settings.log_lines).await {
             Ok(text) => text,
+            Err(e) if e.kind == ErrorKind::Unsupported => format!("(no logs: {e})"),
             Err(e) => {
                 let state = turn.state_mut();
                 state.errors = state.errors.saturating_add(1);
