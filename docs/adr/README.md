@@ -67,6 +67,7 @@ accepted ADR is not rewritten: a later one supersedes it. A change that makes a 
 | [0060](0060-cancel-and-skipped-dependents-in-the-job-graph.md) | The job graph skips the dependents of a failed, skipped or cancelled job, ends `succeeded`, `failed` or `cancelled` from its jobs, watches each job's target to fail a job whose message failed or whose worker went away, and takes `Cancel` of one job or all, telling a dispatched worker through an optional cancel message type in a turn of its own. |
 | [0061](0061-retry-in-the-job-graph.md) | `Retry` of a failed or cancelled job in the job graph puts it back to waiting for its next attempt, recomputes the skips and reopens an ended run; it is refused for a job that is not failed or cancelled or whose need is failed, skipped or cancelled; the end report carries the number of its end. |
 | [0062](0062-a-failure-kind-on-the-container-end.md) | A `failed` container end carries a kind (`notStarted`, `outOfMemory`, `runtimeEnded`, `missing`, `runtimeErrors`); out of memory is the runtime reason `OUT_OF_MEMORY`; a replayed create step adopts a started container; each request can have its own timeout; the contract change makes the batch 0.21.0. |
+| [0063](0063-a-watch-of-an-actor-that-must-exist.md) | `Turn::watch_existing` watches one actor that must exist: at the commit it sets the watch when the actor is there and otherwise puts a `Stopped` (cause `deleted`, `by` null) into the watcher's mailbox in the same transaction; the remote turn report carries `existing: true`. |
 
 ## Design questions
 

@@ -31,5 +31,6 @@ After `docker-context`, before `container-job-max-turn`.
 
 ## Impact
 
-`crates/cicada` (turn, watch, commit on SQLite and PostgreSQL, the conformance suite), perhaps the remote turn wire
-model and `cicada-client`. Additive (a new method): a patch.
+`crates/cicada` (turn, watch, commit on SQLite and PostgreSQL, the conformance suite), the remote turn wire model and
+`cicada-client`. **BREAKING**: a field on the public `WatchChange` and `WatchChangeView` makes the batch 0.22.0
+(design review).
