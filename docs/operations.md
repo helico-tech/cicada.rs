@@ -193,7 +193,8 @@ daemon. When only some nodes do, host the job's type only there, or pin its acto
 `CreateOptions::pinned_to`. A node that reaches another daemon sees the container missing and ends it `failed`, or
 creates a second one there; the actor cannot tell.
 
-An image pull and the stop grace run inside one turn: keep `max_turn` for the type above both. Keep the log target
+An image pull and the stop grace run inside one turn: set the job's `ContainerJob::MAX_TURN` above both. Once a job sets
+one, the node's `--max-turn` does not change that type's limit. Keep the log target
 `bollard` at `info` or above, as it logs request bodies with secret environment at `debug`. A container actor that
 ends `runtimeErrors` met `max_errors` runtime errors in a row: check that Docker answers on that node. Send `Remove`
 before deleting a container actor; leftovers carry the spec's labels, so `sweep` with a label removes them.

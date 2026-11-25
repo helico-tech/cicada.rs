@@ -228,6 +228,10 @@ A `ContainerJob` names the actor type, as a flow does, and builds the spec from 
   `Inputs::default()`.
 - `timeout(request, settings)`, optional, returns the request's time limit; the default returns the settings'
   `timeout`, and `None` is no limit.
+- `const MAX_TURN: Option<Duration>`, optional (from 0.22.0), is the turn limit of its actors; `None` keeps the node's
+  default. Set it above the two long turns: the create step (a pull of a missing image, the create, the folders and
+  the copies) and a stop, which waits up to `stop_grace`. It wins over `--max-turn` and `CICADA_MAX_TURN`, so an
+  operator cannot lower it, and zero is refused at registration. It is not part of the contract.
 
 `spec` and `inputs` are sync and run at each create; their results are never stored. **Put secrets there, never in the
 request**: the request is in the state. Put secret files on the container's own file system, not on a volume, as
@@ -296,7 +300,10 @@ gets its inputs again, which is safe.
   leftovers.
 - **Keep the target until the end.** A target deleted before it makes the poll's commit fail, which blocks the actor
   until the target exists again. A target whose type is not registered does not block: the end is `undelivered`.
-- **Keep the node's `max_turn` above an image pull and the stop grace**, which run inside one turn.
+- **Set the job's `MAX_TURN` above an image pull and the stop grace**, which run inside one turn; without it the
+  node's default applies. A step past the limit ends `failed` (`timeout`) and does not count as a runtime error: the
+  poll's retry policy runs it again up to 7 times (1 to 32 s apart), finding by name what the cut-off step made. Then
+  the container waits for the next `Check`, `Start`, `Stop` or `Remove`.
 - **Every node that can claim the actors must reach the same Docker.** See
   [Operations](../operations.md#containers-and-docker-placement).
 - **Stop before start creates nothing.** A `Stop` before any `Start` makes the container `stopped`; a later `Start`
