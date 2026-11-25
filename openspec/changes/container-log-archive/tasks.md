@@ -5,7 +5,7 @@ Version; after the 0.22.0 release it is a new patch). Builds on `container-outpu
 Follow `design.md`; the specs are `specs/container-outputs/spec.md` and `specs/container-actor/spec.md`. Run the crate's
 tests with every feature: `cargo test -p cicada-containers --all-features`.
 
-- [ ] 1. **The label.** `ContainerActor` adds `cicada.container.prefix` = the settings' prefix to every spec it creates,
+- [x] 1. **The label.** `ContainerActor` adds `cicada.container.prefix` = the settings' prefix to every spec it creates,
   after the job's `spec` (decision 1). Verify: an actor test with a job that sets its own labels;
   `cargo test -p cicada-containers --all-features`.
 - [ ] 2. **The archiver and its settings.** `LogArchiver::new(runtime, store, prefix, settings)`, `ArchiveSettings`

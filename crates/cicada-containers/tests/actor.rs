@@ -20,7 +20,7 @@ use cicada_containers::{
     Call, Container, ContainerActor, ContainerEnd, ContainerEnded, ContainerError, ContainerJob, ContainerMsg,
     ContainerRuntime, ContainerSettings, ContainerSpec, ContainerState, ContainerStatus, ContainerSummary, CopyDir,
     CopyFile, ErrorKind, FailureKind, FakeRuntime, Goal, Inputs, Label, Method, NetworkSpec, OUT_OF_MEMORY, Outcome,
-    Phase, Swept, VolumeSpec,
+    PREFIX_LABEL, Phase, Swept, VolumeSpec,
 };
 use cicada_test::{TestActors, UPDATE_CONTRACTS_ENV, describe_changes};
 use serde::{Deserialize, Serialize};
@@ -63,6 +63,9 @@ impl ContainerJob for TestJob {
         let mut spec = ContainerSpec::new(name, run.image.clone());
         spec.secret_env.insert("TOKEN".into(), SECRET.into());
         spec.labels.insert("made".into(), "actor".into());
+        if run.image == "thief" {
+            spec.labels.insert(PREFIX_LABEL.into(), "other-".into()); // the actor's own label wins
+        }
         Ok(spec)
     }
 
@@ -165,6 +168,34 @@ fn methods(fake: &FakeRuntime) -> Vec<&'static str> {
             _ => "other",
         })
         .collect()
+}
+
+/// Scenario: A job with its own labels.
+#[tokio::test(start_paused = true)]
+async fn the_actor_labels_its_containers_with_its_prefix_after_the_job_spec() {
+    let fake = FakeRuntime::new();
+    let test = harness(&fake, settings()).await;
+    for (key, image) in [("j1", "alpine:3"), ("j2", "thief")] {
+        let job = container(&test, key, image).await;
+        test.send(&job, start()).await;
+    }
+    test.run_until_idle().await;
+
+    let specs: Vec<Box<ContainerSpec>> = fake
+        .calls()
+        .into_iter()
+        .filter_map(|call| match call {
+            Call::Create(spec) => Some(spec),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(specs.len(), 2);
+    for spec in &specs {
+        assert_eq!(spec.labels.get("made").map(String::as_str), Some("actor"), "{}", spec.name);
+        assert_eq!(spec.labels.get(PREFIX_LABEL).map(String::as_str), Some("app-"), "{}", spec.name);
+    }
+    let listed = fake.list(&Label::new(PREFIX_LABEL, "app-")).await.unwrap();
+    assert_eq!(listed.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["app-j1", "app-j2"]);
 }
 
 /// Scenario: The spec is built, not stored. Scenario: An exit is reported with its logs.

@@ -32,6 +32,11 @@ use crate::{
 /// The longest container name, prefix and key together.
 const MAX_NAME_LENGTH: usize = 200;
 
+/// The label the container actor puts on every container it creates, with its settings' prefix as the value, after
+/// the job's [`spec`](ContainerJob::spec), which cannot drop or change it. The [`LogArchiver`](crate::LogArchiver)
+/// finds a job's containers by it. A container made before 0.22.1 does not carry it.
+pub const PREFIX_LABEL: &str = "cicada.container.prefix";
+
 /// A container job: a host-named actor type whose actors each run one container, built from a small typed request.
 ///
 /// ```
@@ -547,6 +552,8 @@ impl<J: ContainerJob> ContainerActor<J> {
             Err(reason) => return self.refuse(turn, reason).await,
         };
         spec.name = name.to_owned();
+        // After the job's spec, so a job cannot drop it: the log archiver finds the containers by it.
+        spec.labels.insert(PREFIX_LABEL.to_owned(), self.settings.prefix.clone());
         if let Err(e) = self.runtime.create(&spec).await {
             if matches!(e.kind, ErrorKind::ImageNotFound | ErrorKind::InvalidSpec) {
                 return self.refuse(turn, e.to_string()).await;
