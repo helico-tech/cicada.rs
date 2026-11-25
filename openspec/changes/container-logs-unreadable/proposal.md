@@ -9,7 +9,8 @@ gives. A follower cannot tell "stop, there will never be logs" from "try again",
 
 ## What Changes
 
-- A distinct error kind for a container whose log can never be read, on Docker and in the fake. Options for the
+- A distinct error kind for a container whose log can never be read, on Docker (the fake scripts it with its
+  existing failure calls). Options for the
   design: `Unsupported` with a clear message (Factory's suggestion; today it means "the runtime lacks the call"), or a
   new `ErrorKind` variant (the enum is `#[non_exhaustive]`).
 
