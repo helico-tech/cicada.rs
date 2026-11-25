@@ -5,7 +5,7 @@ builder.md, Version). Builds on `container-output-collect` (`ContainerActor::wit
 `design.md`; the spec is `specs/container-actor/spec.md`. Run the crate's tests with every feature:
 `cargo test -p cicada-containers --all-features`.
 
-- [ ] 1. **The setting and the state.** `ContainerSettings::output_retention: Option<Duration>` (default `None`); the
+- [x] 1. **The setting and the state.** `ContainerSettings::output_retention: Option<Duration>` (default `None`); the
   state field `outputs_until: Option<Timestamp>`, valid only in `Removed`, capped at the largest instant; the contract
   snapshot updated. Verify: wire and validity tests.
 - [ ] 2. **The due poll.** The removal step saves `outputs_until` and arms a poll (with a store and a retention);

@@ -1647,7 +1647,7 @@ async fn the_states_of_each_phase_and_the_end_payload_pass_their_samples() {
         new,
         json!({"request": {"image": "alpine:3"}, "goal": null, "phase": "new", "target": null,
         "deadline": null, "end": null, "pending": null, "undelivered": null, "armed": null, "due": null, "errors": 0,
-        "progressSeq": 0, "progressHash": null})
+        "progressSeq": 0, "progressHash": null, "outputsUntil": null})
     );
     phases.push(new);
     test.send(&job, start()).await;

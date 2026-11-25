@@ -384,6 +384,14 @@
         ],
         "description": "Run, stop or remove; absent or null before the first `Start`, `Stop` or `Remove`, and set in any other phase\nthan new."
       },
+      "outputsUntil": {
+        "description": "When the stored outputs of a removed container are deleted; absent or null when none wait, and set only when\nremoved.",
+        "format": "date-time",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "pending": {
         "anyOf": [
           {

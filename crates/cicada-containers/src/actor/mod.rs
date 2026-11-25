@@ -398,6 +398,12 @@ pub struct ContainerSettings {
     pub log_lines: u32,
     /// The most bytes of output an end keeps, after the lines; 16 KiB.
     pub log_bytes: usize,
+    /// How long a container's stored outputs stay in the actor's store after its removal; none: kept until the host
+    /// deletes them. With a store ([`ContainerActor::with_store`]), the step that removes the container saves the time
+    /// of the deletion, now plus this, capped at the largest instant, and the actor deletes them then with
+    /// [`OutputStore::remove`]. The saved time decides: changing or unsetting this later does not move it. Zero
+    /// deletes them in the poll after the removal.
+    pub output_retention: Option<Duration>,
 }
 
 impl ContainerSettings {
@@ -419,6 +425,7 @@ impl ContainerSettings {
             stop_grace: Duration::from_secs(10),
             log_lines: 200,
             log_bytes: 16 * 1024,
+            output_retention: None,
         })
     }
 
@@ -1192,6 +1199,7 @@ mod tests {
         assert_eq!((settings.poll_interval, settings.max_backoff, settings.max_errors), (2 * second, 60 * second, 10));
         assert_eq!((settings.timeout, settings.stop_grace), (None, 10 * second));
         assert_eq!((settings.log_lines, settings.log_bytes), (200, 16 * 1024));
+        assert_eq!(settings.output_retention, None, "kept until the host deletes them");
     }
 
     #[test]

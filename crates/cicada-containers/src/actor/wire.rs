@@ -358,6 +358,11 @@ pub struct ContainerState<R> {
     pub progress_seq: u64,
     /// The SHA-256 of the last progress text sent, in lower-case hex; none before the first.
     pub progress_hash: Option<String>,
+    /// The store time after which the container's stored outputs are deleted from the actor's
+    /// [`OutputStore`](crate::OutputStore): set by the removal when the actor has a store and an
+    /// [`output_retention`](crate::ContainerSettings::output_retention), capped at the largest instant, never moved,
+    /// and cleared once they are deleted. Only in the phase `Removed`.
+    pub outputs_until: Option<Timestamp>,
 }
 
 /// The wire form of a [`ContainerState`], unchecked: its schema is the contract's.
@@ -403,6 +408,10 @@ struct RawState<R> {
     /// The lower-case hex SHA-256 of the last progress text sent; absent or null exactly while `progressSeq` is 0.
     #[serde(default)]
     progress_hash: Option<String>,
+    /// When the stored outputs of a removed container are deleted; absent or null when none wait, and set only when
+    /// removed.
+    #[serde(default)]
+    outputs_until: Option<Timestamp>,
 }
 
 impl<R> TryFrom<RawState<R>> for ContainerState<R> {
@@ -423,6 +432,7 @@ impl<R> TryFrom<RawState<R>> for ContainerState<R> {
             errors: raw.errors,
             progress_seq: raw.progress_seq,
             progress_hash: raw.progress_hash,
+            outputs_until: raw.outputs_until,
         };
         state.check()?;
         Ok(state)
@@ -438,7 +448,7 @@ impl<R> ContainerState<R> {
     /// let state = ContainerState::new(serde_json::json!({"commit": "abc"}));
     /// assert_eq!(serde_json::to_value(&state)?, serde_json::json!({"request": {"commit": "abc"}, "goal": null,
     ///     "phase": "new", "target": null, "deadline": null, "end": null, "pending": null, "undelivered": null,
-    ///     "armed": null, "due": null, "errors": 0, "progressSeq": 0, "progressHash": null}));
+    ///     "armed": null, "due": null, "errors": 0, "progressSeq": 0, "progressHash": null, "outputsUntil": null}));
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn new(request: R) -> Self {
@@ -456,6 +466,7 @@ impl<R> ContainerState<R> {
             errors: 0,
             progress_seq: 0,
             progress_hash: None,
+            outputs_until: None,
         }
     }
 
@@ -479,6 +490,9 @@ impl<R> ContainerState<R> {
             if let Some(progress_type) = &target.progress_type {
                 check_type("progressType", progress_type)?;
             }
+        }
+        if self.outputs_until.is_some() && self.phase != Phase::Removed {
+            return Err(InvalidContainer("a container has outputs to delete only once it is removed".to_owned()));
         }
         if self.progress_hash.is_some() != (self.progress_seq > 0) {
             return Err(InvalidContainer("a progress hash is kept exactly once a progress was sent".to_owned()));
@@ -523,12 +537,21 @@ mod tests {
             (json!({"request": 1, "goal": "run", "phase": "collecting", "pending": end, "end": end}), "an end exactly"),
             (json!({"request": 1, "progressSeq": 1}), "progress hash"),
             (json!({"request": 1, "progressHash": "ab"}), "progress hash"),
+            (
+                json!({"request": 1, "goal": "remove", "phase": "ended", "end": end, "outputsUntil": "2026-01-08T00:00:00Z"}),
+                "only once it is removed",
+            ),
         ] {
             let decoded = decode(state.clone());
             assert!(decoded.as_ref().is_err_and(|e| e.to_string().contains(why)), "{decoded:?} for {state}");
         }
         let removed = json!({"request": 1, "goal": "remove", "phase": "removed", "end": end});
-        assert!(decode(removed).is_ok());
+        assert_eq!(decode(removed.clone()).unwrap().outputs_until, None, "a state from 0.22 has none");
+        let mut waiting = removed;
+        waiting["outputsUntil"] = json!("2026-01-08T00:00:00Z");
+        let decoded = decode(waiting.clone()).unwrap();
+        assert!(decoded.outputs_until.is_some());
+        assert_eq!(serde_json::to_value(&decoded).unwrap()["outputsUntil"], waiting["outputsUntil"]);
         let collecting = json!({"request": 1, "goal": "remove", "phase": "collecting", "pending": end});
         assert!(decode(collecting).is_ok());
     }
