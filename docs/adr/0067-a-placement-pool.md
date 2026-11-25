@@ -15,11 +15,13 @@ display and is not a basis for placement (ADR 0054). The permit pool counts one 
 
 ## Decision
 
-- A ready-made actor `cicada.placement/<pool>` in `cicada-actors`. Nodes offer `labels` and `places` with `Offer`, a
-  renewal that replaces the node's last offer and records when it was heard.
-- The pool's own timer marks a node not heard from for its silence time (default 60 s) as silent: no new places, and
-  one `silent` notice to the pool's alert target per silence; its next offer makes it live with a `back` notice.
-- `Forget` removes a silent node. Bounds: up to 1000 nodes, 32 labels each, 1000 places.
+- A ready-made actor `cicada.placement/<pool>` in `cicada-actors`, created by the host with its settings (silence time,
+  node limit up to 1000) in its state. Nodes offer `instance`, `labels` and `places` with `Offer`, a renewal that
+  replaces the node's last offer and records when it was heard.
+- The pool's own timer (a self-only `Check`, re-armed by `Rearm`) marks a node not heard from for its silence time as
+  silent: no new places, and one `silent` notice to the pool's alert target per silence, sent in a turn of its own;
+  its next offer makes it live with a `back` notice. Bounds: 32 labels each, 1000 places per node.
+- The line (offers, asks, holders, drain and gone) is released as one minor version.
 
 ## Consequences
 

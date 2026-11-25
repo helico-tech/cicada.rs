@@ -71,7 +71,7 @@ accepted ADR is not rewritten: a later one supersedes it. A change that makes a 
 | [0064](0064-background-tasks-of-an-app.md) | `App::task` runs a host's task with the node: started after `on_start`, told to stop when the node's stop begins and sharing its grace period, the store closing last; an early end, error or panic stops the node and fails the command; an `App` with a task refuses an HTTP worker. |
 | [0065](0065-container-progress-through-a-file.md) | With `progressType` on `Start`, the container actor sets `CICADA_PROGRESS_FILE`, reads the file at each running poll and before the end, and sends `ContainerProgress { key, seq, text }` when it changed; best effort; late progress is dropped by `seq`; a contract change (0.23.0). |
 | [0066](0066-container-outputs-at-the-end.md) | With a store on the actor, the container actor holds an end the container ran for as pending in the phase `Collecting`, drains the rest of the log and copies the job's output folder into the store, then records and delivers the end with an `outputs` report; a refused file is skipped; errors in a row keep the recorded outcome; a contract change (0.23.0). |
-| [0067](0067-a-placement-pool.md) | A ready-made placement pool `cicada.placement/<pool>`: nodes renew `Offer`s of labels and places; the pool's own timer marks a quiet node silent (no new places, one notice) until it offers again; `Forget` removes a silent node. |
+| [0067](0067-a-placement-pool.md) | A ready-made placement pool `cicada.placement/<pool>`, created with its settings in its state: nodes renew `Offer`s of instance, labels and places; the pool's own timer marks a quiet node silent (no new places, one notice in its own turn) until it offers again; the line ships as one release. |
 
 ## Design questions
 

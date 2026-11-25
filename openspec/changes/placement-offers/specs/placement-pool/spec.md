@@ -2,9 +2,9 @@
 
 ### Requirement: Nodes offer places to a placement pool
 
-`cicada-actors` SHALL provide the ready-made actor `cicada.placement/<pool>`, to which a node offers its labels and
-number of places with `Offer`; each offer SHALL replace the node's last one and record the store time of its turn as
-when the node was heard.
+`cicada-actors` SHALL provide the ready-made actor `cicada.placement/<pool>`, created by the host with its silence time
+and node limit in its state, to which a node offers its instance, labels and number of places with `Offer`; each offer
+SHALL replace the node's last one and record the store time of its turn as when the node was heard.
 
 #### Scenario: A renewed offer
 
@@ -21,7 +21,12 @@ target for that silence, and mark it live again with a notice of kind `back` at 
 - **WHEN** a node's last offer is older than the silence time over three checks, and then it offers again
 - **THEN** one `silent` notice goes out, then one `back` notice, and the node is live
 
-#### Scenario: Forgetting a node
+#### Scenario: A lost check
 
-- **WHEN** an operator sends `Forget` for a silent node, and for a live one
-- **THEN** the silent node is removed, and the live one is refused with a reason
+- **WHEN** the pool's armed `Check` is purged and someone sends `Rearm`
+- **THEN** a fresh check is armed at the old time and silent nodes are still found
+
+#### Scenario: A failing alert target
+
+- **WHEN** the alert target refuses the pool's notice
+- **THEN** only that `Alert` turn fails, and the node is marked silent all the same
