@@ -18,6 +18,13 @@ than the turn limit is retried by the step's retry policy (7 attempts), then the
   `debug`; warn once the retries reach `max_errors`, and say in the rustdoc of `max_errors` that the deletion keeps
   trying.
 
+- Factory's request (2026-11-26, its epic 0007): a cap on the bytes `copy_out` reads in total, skipped data included
+  (on `CopyLimits` or `Outputs`, default a few times `max_bytes`). Today one big file over the limits is read in full on
+  every try; with a turn limit alone it is still read on every try, each timed-out try leaving a Docker read and up to
+  64 MiB in memory that `Stop` cannot end. Over the cap, the copy stops reading, reports the rest as skipped with a
+  reason, and the end goes out with what was stored. The design checks whether `CopyLimits` can take a field without a
+  break.
+
 ## Order
 
 After `container-orphan-alert`, before `placement-offers`.
