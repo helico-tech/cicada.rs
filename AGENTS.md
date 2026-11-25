@@ -18,7 +18,7 @@ python3 scripts/gate.py status         # evidence for HEAD and what a push needs
 python3 -m unittest discover -s scripts -p 'test_*.py'   # script tests, including the gate
 cargo build --workspace
 cargo test --workspace                 # unit, runtime, SQLite, HTTP, doctest and docs tests; every feature of cicada and cicada-app on
-cargo test -p cicada-examples --doc    # only the Rust blocks of README.md, the guides and docs/operations.md
+cargo test -p cicada-examples --doc    # only the Rust blocks of README.md, the guides, docs/operations.md and the upgrade guide
 cargo test -p cicada-examples --test docs   # the table of guarantees and the links between the Markdown files
 cargo test -p cicada-examples --test skill  # consumer skills: versions, routes, design/review structure, resolver and packaging (python3 3.11+)
 cargo test -p cicada --test fixtures   # fixed portable expectations in fixtures/; no update variable (ADR 0047)
@@ -90,9 +90,10 @@ The `advisories` check needs `cargo-deny` 0.20.2 and network access; see the rel
   owner's yes; [the release procedure](docs/how-to/releasing.md) has the steps. The change must be implemented,
   checked and committed on `main`. Never move or delete a remote version tag, whether a GitHub Release exists or not.
 - Public items have doc comments (`missing_docs` is an error). Keep comments as dense as the surrounding code.
-- The Rust blocks of `README.md`, of the guides in `docs/guide/` and of `docs/operations.md` are doctests of
-  `cicada-examples` (`ReadmeDoctests`, `CoreGuideDoctests`, `HttpGuideDoctests`, `AppGuideDoctests`,
-  `ActorsGuideDoctests`, `DesignGuideDoctests` and `OperationsDoctests` in `examples/src/lib.rs`): a public API change keeps them compiling
+- The Rust blocks of `README.md`, of the guides in `docs/guide/` (`containers.md` included), of `docs/operations.md`
+  and of `docs/how-to/upgrading.md` are doctests of `cicada-examples` (`ReadmeDoctests`, `CoreGuideDoctests`,
+  `HttpGuideDoctests`, `AppGuideDoctests`, `ActorsGuideDoctests`, `DesignGuideDoctests`, `ContainersGuideDoctests`,
+  `OperationsDoctests` and `UpgradeGuideDoctests` in `examples/src/lib.rs`): a public API change keeps them compiling
   through fixes prepared by the docs session (ADR 0045). Use `no_run` for blocks that start a server or need a database.
   A worked example names its file in `examples/`. User-facing behaviour goes in its layer guide, written by the docs
   session from the change's handoff.

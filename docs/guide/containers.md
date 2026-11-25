@@ -11,9 +11,8 @@ No other Cicada crate depends on it ([ADR 0056](../adr/0056-shared-external-reso
 same tag as the other crates ([install](../how-to/install.md#choose-the-crates)): `features = ["docker"]` for
 `DockerRuntime`, and `features = ["testing"]` in dev-dependencies for `FakeRuntime`.
 
-This page has no compiled examples of its own yet. The crate's rustdoc has tested examples (generate it with
-`cargo doc -p cicada-containers --all-features --no-deps`), and
-[`tests/actor.rs`](../../crates/cicada-containers/tests/actor.rs) hosts the container actor end to end.
+The crate's rustdoc has more examples (generate it with `cargo doc -p cicada-containers --all-features --no-deps`),
+and [`tests/actor.rs`](../../crates/cicada-containers/tests/actor.rs) tests the container actor end to end.
 
 ## Choose a runtime
 
@@ -35,8 +34,19 @@ local socket.
 
 `connect()` does not contact the daemon: the API version is agreed on the first call, so a host starts while Docker is
 down and its calls fail with the retryable `DaemonUnavailable` until it is up. It needs Docker 25 or later and the
-host's Tokio runtime. For a setup `connect()` does not take, such as an endpoint the host knows, pass it to
-`DockerRuntime::connect_to("tcp://build-host:2375")`.
+host's Tokio runtime. For a setup `connect()` does not take, such as an endpoint the host knows, use `connect_to`:
+
+<!-- doctest
+@@5
+# Ok::<(), Box<dyn std::error::Error>>(())
+-->
+```rust,no_run
+use cicada_containers::DockerRuntime;
+
+let local = DockerRuntime::connect()?; // as the docker CLI finds it
+let remote = DockerRuntime::connect_to("tcp://build-host:2375")?; // an endpoint you give
+let service = DockerRuntime::connect()?.docker_config("/srv/ci/.docker"); // the logins of a service user
+```
 
 - A machine with a working local socket keeps using it whatever the current context is; only `DOCKER_CONTEXT` or
   `DOCKER_HOST` move it. Set `DOCKER_CONTEXT` when `docker` and your host must agree.
@@ -177,6 +187,52 @@ a `LogLine` with its `time`, its `stream` (`Out` or `Err`) and its `text` as los
    empty page keeps the cursor.
 4. Once `inspect` shows the container ended, read once more and stop after that short page, so no last line is lost.
 
+<!-- doctest
+# #[tokio::main(flavor = "current_thread", start_paused = true)]
+# async fn main() -> Result<(), Box<dyn std::error::Error>> {
+@@28
+# use cicada_containers::{ContainerSpec, FakeRuntime};
+# let fake = FakeRuntime::new();
+# fake.create(&ContainerSpec::new("ci-run-7", "rust:1")).await?;
+# fake.start("ci-run-7").await?;
+# fake.set_logs("ci-run-7", "compiling\ntest result: ok\n");
+# fake.exit_with("ci-run-7", ContainerStatus::Exited { code: 0 });
+# let lines = follow(&fake, "ci-run-7", None).await?;
+# assert_eq!(lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(), ["compiling", "test result: ok"]);
+# Ok(())
+# }
+-->
+```rust
+use std::time::Duration;
+
+use cicada_containers::{ContainerError, ContainerRuntime, ContainerStatus, LogCursor, LogLine};
+
+/// Follows the container `name` to its end from `cursor`, `None` the first time, and returns its lines.
+async fn follow(
+    runtime: &dyn ContainerRuntime,
+    name: &str,
+    mut cursor: Option<LogCursor>,
+) -> Result<Vec<LogLine>, ContainerError> {
+    let mut lines = Vec::new();
+    let mut ended = false;
+    loop {
+        let page = runtime.logs_since(name, cursor, 500).await?;
+        let short = page.lines.len() < 500;
+        lines.extend(page.lines); // a host stores these and `page.next` in one write of its own
+        cursor = Some(page.next);
+        if short && ended {
+            return Ok(lines); // a short page read after the end: every line is in
+        }
+        if short {
+            ended = !matches!(runtime.inspect(name).await?, ContainerStatus::Created | ContainerStatus::Running);
+            if !ended {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
+        }
+    }
+}
+```
+
 A missing container is `Conflict`, a created one gives an empty page, an out-of-range `max_lines` or a string that is
 not a cursor is `InvalidSpec`. A log the runtime can never read (Docker's log driver `none`) is `Unsupported` from
 0.22.0, and `logs` gives the same kind: stop following then, as no retry will read it. Retry the other kinds, counting
@@ -239,8 +295,50 @@ A `ContainerJob` names the actor type, as a flow does, and builds the spec from 
 request**: the request is in the state. Put secret files on the container's own file system, not on a volume, as
 `Remove` deletes the container's files while a named volume outlives it.
 
-The rustdoc of `ContainerJob` and `ContainerJob::timeout` in
-[`src/actor/mod.rs`](../../crates/cicada-containers/src/actor/mod.rs) has tested examples.
+A job that runs a commit's tests, gives the program a writable `/out` and the commit as a file, and lets a slow pull
+fit one turn:
+
+```rust
+use std::time::Duration;
+
+use cicada::prelude::*;
+use cicada_containers::{ContainerJob, ContainerSpec, CopyDir, CopyFile, Inputs};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+struct Test {
+    /// The commit to test.
+    commit: String,
+}
+
+/// Holds what builds the specs, such as a token; never stored.
+struct Tests {
+    token: String,
+}
+
+impl ContainerJob for Tests {
+    const TYPE: &'static str = "ci.tests";
+    const MAX_TURN: Option<Duration> = Some(Duration::from_secs(35 * 60)); // a slow pull fits one turn
+    type Request = Test;
+
+    fn spec(&self, name: &str, test: &Test) -> Result<ContainerSpec, String> {
+        let mut spec = ContainerSpec::new(name, "rust:1");
+        spec.command = Some(vec!["sh".into(), "-c".into(), "cargo test > /out/report.txt".into()]);
+        spec.env.insert("COMMIT".into(), test.commit.clone());
+        spec.secret_env.insert("CARGO_REGISTRY_TOKEN".into(), self.token.clone());
+        Ok(spec)
+    }
+
+    fn inputs(&self, _name: &str, test: &Test) -> Result<Inputs, String> {
+        let mut out = CopyDir::new("/out");
+        out.mode = 0o777; // the program does not run as root
+        let mut inputs = Inputs::default();
+        inputs.dirs.push(out);
+        inputs.files.push(CopyFile::new("/in/commit.txt", test.commit.clone()));
+        Ok(inputs)
+    }
+}
+```
 
 ### Host and start
 
@@ -338,6 +436,74 @@ the same way as the Docker backend.
 | `set_info(RuntimeInfo)` | Changes the machine; `amd64` on `linux` before |
 | `fail_next(Method, kind)`, `fail_always(Method, kind)`, `clear_failures()` | Scripts failures per call |
 | `calls()` | Every call, as `Call` values |
+
+This test hosts the container actor on the fake, with a target that keeps the ends, and drives one container to its
+exit on virtual time (the `Tests` job of [Define a job](#define-a-job)):
+
+<!-- doctest
+# use std::time::Duration;
+# use cicada::prelude::*;
+# use cicada_containers::{ContainerEnded, ContainerJob, ContainerSpec};
+# use serde::{Deserialize, Serialize};
+# #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+# struct Test { commit: String }
+# struct Tests { token: String }
+# impl ContainerJob for Tests {
+#     const TYPE: &'static str = "ci.tests";
+#     type Request = Test;
+#     fn spec(&self, name: &str, _: &Test) -> Result<ContainerSpec, String> { Ok(ContainerSpec::new(name, "rust:1")) }
+# }
+# #[derive(Debug, Clone, Serialize, Deserialize)]
+# struct Ci;
+# impl ActorRef for Ci { const TYPE: &'static str = "ci"; type Message = CiMsg; }
+# #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+# #[serde(tag = "type")]
+# enum CiMsg { Ended(ContainerEnded) }
+# #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+# struct Ends { ends: Vec<ContainerEnded> }
+# struct CiActor;
+# impl Actor for CiActor {
+#     type Ref = Ci;
+#     type State = Ends;
+#     async fn handle(&self, turn: &mut Turn<Self>, message: CiMsg) -> HandlerResult {
+#         let CiMsg::Ended(ended) = message;
+#         turn.state_mut().ends.push(ended);
+#         Ok(())
+#     }
+# }
+# #[tokio::main(flavor = "current_thread", start_paused = true)]
+# async fn main() -> Result<(), Box<dyn std::error::Error>> {
+@@25
+# Ok(())
+# }
+-->
+```rust
+use std::sync::Arc;
+
+use cicada_containers::{
+    Container, ContainerActor, ContainerMsg, ContainerRuntime, ContainerSettings, ContainerState, ContainerStatus,
+    FakeRuntime, Outcome,
+};
+use cicada_test::TestActors;
+
+let fake = FakeRuntime::new();
+let runtime = Arc::new(fake.clone());
+let settings = ContainerSettings::new("ci-")?;
+let job = Tests { token: "t0ken".into() };
+let test = TestActors::builder().with(move |node| node.host(ContainerActor::new(job, runtime, settings)).host(CiActor));
+let test = test.build().await?;
+test.create(&Ci, &Ends::default()).await;
+
+let tests = Container::<Tests>::named("run-7");
+test.create(&tests, &ContainerState::new(Test { commit: "abc123".into() })).await;
+test.send(&tests, ContainerMsg::start(&Ci, "Ended")?).await;
+test.run_until_idle().await;
+assert_eq!(fake.inspect("ci-run-7").await?, ContainerStatus::Running);
+
+fake.exit_with("ci-run-7", ContainerStatus::Exited { code: 0 });
+test.advance_time_by(Duration::from_secs(2)).await;
+assert_eq!(test.state::<_, Ends>(&Ci).await.ends[0].end.outcome, Outcome::Exited);
+```
 
 The fake has no links and holds only regular files. On an ended container it leaves out files whose deepest mount is
 a tmpfs, as Docker does. See [`tests/actor.rs`](../../crates/cicada-containers/tests/actor.rs) for a node with the
