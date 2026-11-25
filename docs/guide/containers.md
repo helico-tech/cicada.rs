@@ -396,6 +396,9 @@ gets its inputs again, which is safe.
 
 ### Rules for hosts
 
+- **Keep the prefix label.** The actor adds the label `cicada.container.prefix` with its prefix to every spec, after
+  `spec`; a job's own labels stay, and a job that sets this label is overruled. The log archiver finds containers by
+  it.
 - **Never reuse a key**, also after a delete: a new actor under an old key adopts the old container and reports its
   old end.
 - **Send `Remove` before you delete the actor**, or the container stays. Use the spec's labels and `sweep` for
@@ -415,8 +418,8 @@ gets its inputs again, which is safe.
 
 A host keeps each container's log lines, log cursor and output files outside the container, in a store it
 implements: `OutputStore` (from 0.22.1), keyed by the container's name, so one store serves every job, such as a
-folder per run or a database table. Use it as `Arc<dyn OutputStore>`. Nothing in Cicada writes to it yet; a host's
-log follower and file collector do.
+folder per run or a database table. Use it as `Arc<dyn OutputStore>`. A [`LogArchiver`](#archive-the-logs) fills it
+with the logs of a job's containers.
 
 | Method | What it does |
 | --- | --- |
@@ -457,6 +460,86 @@ assert_eq!(store.read_logs("job-1", 1, 10).await?[0].line.text, "world");
 
 check_output_store(&store).await; // the rules of the trait hold
 ```
+
+### Archive the logs
+
+You do not write the log pages yourself: a `LogArchiver` follows the log of every container of a container job and
+keeps it in your `OutputStore`, so the log survives the container's removal and your route can serve it with
+`read_logs`. It runs outside actor turns, as a page is too big for actor state. Run it as an
+[app task](app.md#run-it-as-a-binary), with the runtime you give the container actor and the actor's prefix:
+
+<!-- doctest
+@@13
+-->
+```rust,no_run
+use std::sync::Arc;
+
+use cicada_app::App;
+use cicada_containers::{ArchiveSettings, ContainerRuntime, DockerRuntime, LogArchiver, OutputStore};
+
+fn app(store: Arc<dyn OutputStore>) -> Result<App, Box<dyn std::error::Error>> {
+    let runtime: Arc<dyn ContainerRuntime> = Arc::new(DockerRuntime::connect()?); // also given to ContainerActor
+    let archiver = LogArchiver::new(runtime, store, "ci-", ArchiveSettings::new())?;
+    Ok(App::new().task("logs", move |_system, stopping| async move {
+        archiver.run(async move { stopping.wait().await }).await;
+        Ok(())
+    }))
+}
+```
+
+A host without `cicada-app` spawns `archiver.run(stop)` on Tokio itself. On the fake, with a stop after one second:
+
+<!-- doctest
+# #[tokio::main(flavor = "current_thread", start_paused = true)]
+# async fn main() -> Result<(), Box<dyn std::error::Error>> {
+@@18
+# Ok(())
+# }
+-->
+```rust
+use std::sync::Arc;
+use std::time::Duration;
+
+use cicada_containers::{
+    ArchiveSettings, ContainerRuntime, ContainerSpec, FakeRuntime, LogArchiver, MemoryOutputStore, OutputStore,
+    PREFIX_LABEL,
+};
+
+let runtime = FakeRuntime::new();
+let mut spec = ContainerSpec::new("ci-1", "alpine:3");
+spec.labels.insert(PREFIX_LABEL.into(), "ci-".into()); // as the container actor does
+runtime.create(&spec).await?;
+runtime.set_logs("ci-1", "hello\nworld");
+
+let store = MemoryOutputStore::new();
+let archiver = LogArchiver::new(Arc::new(runtime), Arc::new(store.clone()), "ci-", ArchiveSettings::new())?;
+archiver.run(tokio::time::sleep(Duration::from_secs(1))).await;
+assert_eq!(store.read_logs("ci-1", 0, 10).await?[1].line.text, "world");
+```
+
+- **Which containers.** The container actor labels every container it creates with `cicada.container.prefix`
+  (`PREFIX_LABEL`) and its prefix. The archiver lists the containers with that label, so give it the same prefix as
+  the job's `ContainerSettings`.
+- **Rounds that never wait.** Every `interval` (2 s) a round lists the containers and starts a read for each one that
+  is neither drained nor still being read, up to `max_parallel` (16) at once, without waiting for them: a slow log
+  holds up only itself. A read appends each page of `logs_since` (`page_lines`, 500 lines) from the stored cursor. A
+  running container is read again each round; an ended one is drained once, then skipped.
+- **Once and in order.** Every line is stored once and in order, also after a restart, which reads on from the stored
+  cursor, and with two archivers on one store, where the second writer of a page gets `Conflict` and reads again.
+- **Errors never end it.** Only `stop` ends `run`. A log that is `Unsupported` (Docker's log driver `none`) is logged
+  once and not read again; a container that is gone is dropped; a name the store refuses (`Invalid`) skips the
+  container. Every other error, and a failed `list`, is tried again in a later round; from the fifth failure in a row
+  the wait doubles, up to 60 s. Errors are logged through `tracing`.
+- **One per Docker daemon.** Each archiver repeats every log scan of its daemon, and Docker scans a log from the
+  cursor's second on each read. Run one archiver per daemon, not one per node; two stay correct but cost twice.
+
+`ArchiveSettings::new()` gives the defaults, with public fields to change; `LogArchiver::new` refuses a `page_lines`
+outside 1 to `LOG_PAGE_MAX`, a zero `interval` and a zero `max_parallel` with `InvalidArchive`. Mind these limits:
+
+- A container made before 0.22.1 has no label and is not archived, also when the actor adopts it.
+- Lines a container writes after the last read are lost when the container is removed before the next round.
+- Do not `remove` a container's outputs while the container exists: its cursor would be `None` again, and the archiver
+  would store the log from the start once more.
 
 ### One write for lines and cursor
 
