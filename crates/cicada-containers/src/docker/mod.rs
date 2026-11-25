@@ -2,11 +2,12 @@
 
 mod archive;
 mod auth;
+mod context;
 mod map;
 
 use std::collections::HashMap;
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -40,8 +41,11 @@ const STOP_SLACK: Duration = Duration::from_secs(60);
 
 /// A [`ContainerRuntime`] over the Docker Engine API, by [bollard](https://docs.rs/bollard), without TLS.
 ///
-/// [`connect`](Self::connect) reads `DOCKER_HOST` (`unix://`, `tcp://` or `http://`) and uses the local socket when it
-/// is not set; Docker CLI contexts are not read. It needs Docker 25 or later (API 1.44) and the host's Tokio runtime.
+/// [`connect`](Self::connect) finds the daemon as the `docker` CLI does, in this order: `DOCKER_HOST`; else the CLI
+/// context `DOCKER_CONTEXT` names; else the local socket `/var/run/docker.sock` when it exists; else the
+/// `currentContext` of the CLI's `config.json`. A context's endpoint must be `unix://`, `tcp://` or `http://` without
+/// TLS; other setups use [`connect_to`](Self::connect_to). It needs Docker 25 or later (API 1.44) and the host's Tokio
+/// runtime.
 ///
 /// - Containers are found by their exact name: Docker would also take an ID prefix, so every call inspects first,
 ///   treats another name as missing and acts on the full ID it found.
@@ -86,20 +90,60 @@ impl fmt::Debug for DockerRuntime {
 }
 
 impl DockerRuntime {
-    /// A runtime for the daemon at `DOCKER_HOST`, or at the local socket when that is not set. It does not contact
-    /// the daemon: the API version is agreed on the first call, so a host starts while the daemon is down and its
-    /// calls fail with the retryable `DaemonUnavailable` until it is up. Fails with `DaemonUnavailable` when the
-    /// socket file does not exist, and with `Other` for a `DOCKER_HOST` scheme it does not support (`https`, `ssh`).
+    /// A runtime for the daemon the `docker` CLI would use, found in this order:
+    ///
+    /// 1. `DOCKER_HOST`, when it is set.
+    /// 2. The context `DOCKER_CONTEXT` names, when it is set and not empty, even when the local socket exists; the
+    ///    context `default` is the local socket.
+    /// 3. The local socket `/var/run/docker.sock`, when it exists.
+    /// 4. The `currentContext` of `config.json` in `DOCKER_CONFIG`, else in `$HOME/.docker`; none, `default` or a
+    ///    missing `config.json` is the local socket.
+    ///
+    /// A context's endpoint is `Endpoints.docker.Host` of `contexts/meta/<sha256 of its name>/meta.json` in that
+    /// folder ([`docker_config`](Self::docker_config) does not apply: it is set after `connect`).
+    ///
+    /// It does not contact the daemon: the API version is agreed on the first call, so a host starts while the daemon
+    /// is down and its calls fail with the retryable `DaemonUnavailable` until it is up. Fails with
+    /// `DaemonUnavailable` when the socket file does not exist, naming the context and its endpoint for a context's.
+    /// Fails with `Other` for a `DOCKER_HOST` scheme it does not support (`https`, `ssh`), and, naming the context and
+    /// where its name came from, for a context it cannot read (no meta file, no docker endpoint, broken JSON, no config
+    /// folder) or use: one with TLS (`SkipTLSVerify`, or TLS files under `contexts/tls`) or a scheme other than
+    /// `unix`, `tcp` and `http`. It never falls back to the local socket then; set `DOCKER_HOST` or use
+    /// [`connect_to`](Self::connect_to).
     pub fn connect() -> Result<Self, ContainerError> {
-        let client = Docker::connect_with_defaults().map_err(|e| fail("connect to", "docker", &e))?;
-        Ok(Self::with_client(client))
+        let docker_context = std::env::var("DOCKER_CONTEXT").ok();
+        let config_dir = auth::config_dir(None);
+        Self::connect_from(&context::Inputs {
+            docker_host: std::env::var("DOCKER_HOST").is_ok(),
+            docker_context: docker_context.as_deref(),
+            config_dir: config_dir.as_deref(),
+            socket_exists: Path::new(context::LOCAL_SOCKET).exists(),
+        })
+    }
+
+    /// [`connect`](Self::connect) with what it reads from the process given as values.
+    fn connect_from(inputs: &context::Inputs<'_>) -> Result<Self, ContainerError> {
+        match context::resolve(inputs)? {
+            context::Endpoint::Defaults => {
+                let client = Docker::connect_with_defaults().map_err(|e| fail("connect to", "docker", &e))?;
+                Ok(Self::with_client(client))
+            }
+            context::Endpoint::Context(context) => {
+                Self::connect_host(&context.host, &format!("{} of {context}", context.host))
+            }
+        }
     }
 
     /// A runtime for the daemon at `host`, read as `DOCKER_HOST` would be: `unix:///path/docker.sock`,
-    /// `tcp://host:port` or `http://host:port`. For a host that finds its daemon another way, such as the endpoint of
-    /// the current Docker CLI context; otherwise as [`connect`](Self::connect), which it does not change.
+    /// `tcp://host:port` or `http://host:port`. For a host that finds its daemon in a way [`connect`](Self::connect)
+    /// does not, such as a TLS or `ssh` context; otherwise as `connect`, which it does not change.
     pub fn connect_to(host: &str) -> Result<Self, ContainerError> {
-        let client = Docker::connect_with_host(host).map_err(|e| fail("connect to", host, &e))?;
+        Self::connect_host(host, host)
+    }
+
+    /// A runtime for the daemon at `host`, whose errors name `label`.
+    fn connect_host(host: &str, label: &str) -> Result<Self, ContainerError> {
+        let client = Docker::connect_with_host(host).map_err(|e| fail("connect to", label, &e))?;
         Ok(Self::with_client(client))
     }
 
@@ -572,6 +616,52 @@ mod tests {
             assert_eq!(DockerRuntime::connect_to(host).unwrap_err().kind, ErrorKind::Other, "{host}");
         }
         DockerRuntime::connect_to("tcp://127.0.0.1:1").unwrap();
+    }
+
+    /// Scenario: A context whose socket is missing.
+    #[test]
+    fn a_context_whose_socket_is_missing_is_daemon_unavailable_naming_both() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = dir.path().join("contexts/meta/2d89b732b01a00a2d1675ed3cee9fd0f965daadf90603c989dd3afd4569c6896");
+        std::fs::create_dir_all(&meta).unwrap();
+        let host = "unix:///nonexistent/cicada/orbstack.sock";
+        std::fs::write(meta.join("meta.json"), format!(r#"{{"Endpoints": {{"docker": {{"Host": "{host}"}}}}}}"#))
+            .unwrap();
+        let inputs = context::Inputs {
+            docker_host: false,
+            docker_context: Some("orbstack"),
+            config_dir: Some(dir.path()),
+            socket_exists: true,
+        };
+        let error = DockerRuntime::connect_from(&inputs).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::DaemonUnavailable, "{error}");
+        assert!(
+            error.message.starts_with(&format!("connect to {host} of context orbstack from DOCKER_CONTEXT: ")),
+            "{error}"
+        );
+    }
+
+    /// A context's live socket is connected as `connect_to` connects it, without contacting the daemon.
+    #[tokio::test]
+    async fn a_context_endpoint_is_connected_as_connect_to() {
+        let (path, _) = dead_socket("context");
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.json"), r#"{"currentContext": "orbstack"}"#).unwrap();
+        let meta = dir.path().join("contexts/meta/2d89b732b01a00a2d1675ed3cee9fd0f965daadf90603c989dd3afd4569c6896");
+        std::fs::create_dir_all(&meta).unwrap();
+        let host = format!("unix://{}", path.display());
+        std::fs::write(meta.join("meta.json"), format!(r#"{{"Endpoints": {{"docker": {{"Host": "{host}"}}}}}}"#))
+            .unwrap();
+        let inputs = context::Inputs {
+            docker_host: false,
+            docker_context: None,
+            config_dir: Some(dir.path()),
+            socket_exists: false,
+        };
+        let runtime = DockerRuntime::connect_from(&inputs).unwrap();
+        let error = runtime.info().await.unwrap_err();
+        assert_eq!(error.kind, ErrorKind::DaemonUnavailable, "{error}");
+        std::fs::remove_file(path).unwrap();
     }
 
     #[tokio::test]
