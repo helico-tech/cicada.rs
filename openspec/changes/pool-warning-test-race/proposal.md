@@ -26,7 +26,8 @@ The warning, its threshold and its text. Other tests that capture logs, unless t
 
 ## Order
 
-After `container-registry-auth`. No following change.
+After `container-info`, before `container-registry-auth`: the test fails 3 of 3 gate runs on main (e39fd912) with the
+gate's profile (`CARGO_PROFILE_DEV_DEBUG=line-tables-only`), so no head gets gate evidence until it is fixed.
 
 ## Impact
 

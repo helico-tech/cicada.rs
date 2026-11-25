@@ -31,7 +31,7 @@ Registry login from Cicada. Image builds. Other runtimes than Docker. Credential
 
 ## Order
 
-After `container-info`, before `pool-warning-test-race`.
+After `pool-warning-test-race`, which must land first so that gate evidence can pass. No following change.
 
 ## Impact
 
