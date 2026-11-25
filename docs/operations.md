@@ -66,9 +66,12 @@ id after a restart leaves existing pins waiting. Labels and host names do not se
 
 ### Shutdown and probes
 
-Serve handles SIGTERM/SIGINT in this order: stop claims, drain/cancel turns, drain HTTP (up to 5 s), close store.
+Serve handles SIGTERM/SIGINT in this order: stop claims and set `Stopping` for the app's background tasks, drain/cancel
+turns while the tasks end within the same grace period (then they are aborted), drain HTTP (up to 5 s), close store.
 Default turn grace is 30 s and cancellation timeout 5 s. Give the platform more than their sum plus HTTP drain,
-for example 45 s. A forced kill uses up lost claims and delays recovery until lease expiry.
+for example 45 s. A forced kill uses up lost claims and delays recovery until lease expiry. A
+[background task](guide/app.md#run-it-as-a-binary) that ends before the stop makes the process exit with code 1:
+let the supervisor restart it.
 
 Use `/ready` for readiness: 200 when the node runs and reaches the store, 503 during outage/stop.
 Keep liveness independent of the database, so an outage does not restart every node.

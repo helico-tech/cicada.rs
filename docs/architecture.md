@@ -387,8 +387,10 @@ nothing. Over HTTP it maps the id, concurrency, poll interval, longest turn and 
 `NodeConfig`, default) and the host's cancel timeout to a `WorkerConfig`, refuses the flags of the store and of the
 lease policy, which the server owns, and reads none of their variables; it opens no store and no listener, and resolves
 the server, token and headers as the operator commands do. The types and observers move into a private
-`Hosting::{System, Worker}`, so one `App` feeds either builder; `on_start`, which needs an `ActorSystem`, is refused
-before any request. The client has no redirects (a `307` would send a POST again), no retry of its own, a 30 s total
+`Hosting::{System, Worker}`, so one `App` feeds either builder; `on_start` and `App::task`, which need an
+`ActorSystem`, are refused before any request. In `serve` and a worker on the store, tasks start after every
+`on_start`; an early end stops the node with an error, and at a stop they share the node's grace period, with the
+store closed after both (ADR 0064). The client has no redirects (a `307` would send a POST again), no retry of its own, a 30 s total
 timeout and `ActorClient`'s 10 s turn timeout. Before the start it lists the types while the server answers
 "unavailable", a second apart and no try after a minute; then `Worker::start` registers, and a failure there fails the
 command. A stop calls `Worker::stop`; an error the worker recorded when it stopped by itself fails the command, also

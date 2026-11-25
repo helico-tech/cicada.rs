@@ -35,12 +35,50 @@ a host route named `/ready` cannot replace it. See [HTTP composition](http.md#ru
 
 **Lifecycle.** SIGTERM/SIGINT stops claims, drains turns within the grace period, then cancels them. Serve keeps HTTP
 answering during the node stop, with `/ready` returning 503; afterward it drains HTTP for up to 5 s and closes the
-store. Worker serves no `/ready`. See [deployment](../operations.md#deploying) for platform stop timeouts.
+store. Worker serves no `/ready`. See [deployment](../operations.md#deploying) for platform stop timeouts. At the stop,
+background tasks see `Stopping` as claims stop and get the same grace period as the turns; one still running then is
+aborted with a warning. Serve keeps answering HTTP until the node and the tasks have stopped, and closes the store
+after both. A task's error after the stop is a warning, not a failure.
 
 **Host hooks.** `on_start` runs after the local node starts and before serve listens; use it to create required actors.
 Errors stop the node. `observe`, `node_config` and `version` configure the host. Use `run_async` from an async main;
 `run_with` supplies arguments, environment, output and stop handling for tests. Avoid expensive setup for operator
 commands by checking `cicada_app::node_command` before building dependencies.
+
+**Background tasks.** Work that runs next to the node, such as a loop that takes jobs from outside, belongs in
+`App::task` (from 0.22.0, [ADR 0064](../adr/0064-background-tasks-of-an-app.md)), not in a task spawned from
+`on_start`: nothing watches that one, so a crash leaves the node running with `/ready` at 200. A task starts in `serve`
+and in a worker on the store, after every `on_start`, in the order of the calls, and before serve listens. It gets
+the node's `ActorSystem` and a `Stopping`, and must run until the stop: watch `stopping.wait()` and return when it
+completes.
+
+```rust,no_run
+use std::time::Duration;
+
+use cicada_app::App;
+use cicada_examples::sync::ReportsActor;
+
+fn main() -> std::process::ExitCode {
+    App::new()
+        .host(ReportsActor)
+        .task("runner", |system, stopping| async move {
+            loop {
+                tokio::select! {
+                    () = stopping.wait() => return Ok(()), // the stop began: end in good order
+                    () = tokio::time::sleep(Duration::from_secs(5)) => {
+                        let _ = system.now().await?; // take outside work here, using the node
+                    }
+                }
+            }
+        })
+        .run()
+}
+```
+
+A task that returns, fails or panics before the stop stops the node in good order and fails the command with exit
+code 1 and `task <name> ended before the stop`, so the process supervisor restarts it; there are no restarts inside
+the process. Two tasks with one name refuse `serve` and `worker` with exit code 2; operator commands run no task. A
+task that ignores `Stopping` is aborted at the end of the grace period; one that never yields cannot be aborted.
 
 ### Settings
 
@@ -79,7 +117,7 @@ Exit codes: **0** success or requested stop, **2** invalid usage/environment, **
 
 ### A worker over HTTP
 
-Use the same App without an `on_start` hook:
+Use the same App without `on_start` hooks or tasks:
 
 ```sh
 myapp worker --server https://actors.internal --token "$TOKEN"
@@ -101,7 +139,8 @@ For HTTP mode, resolve server/context/token as for [operator commands](#command-
 The server owns TTL, heartbeat, claim limit, retention and store configuration: their flags are rejected and their
 variables ignored. Worker id, concurrency, poll interval, maximum turn and grace period still apply.
 An HTTP worker has no node row: `--node-label` is refused, while `CICADA_NODE_LABEL` and the host's label are ignored.
-`on_start` is refused before any request; bootstrap through serve or a local-store worker instead.
+`on_start` and `App::task` are refused before any request (exit code 2); bootstrap and run tasks through serve or a
+local-store worker instead.
 
 The HTTP client disables redirects and retries of its own. Requests have a 30 s total timeout, with a 10 s turn-call
 timeout. Startup probes `GET /types` while unavailable, with no new probe after a minute, then registers contracts
