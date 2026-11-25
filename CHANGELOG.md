@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.22.1 — unreleased
+## 0.22.1 — 2026-11-25
 
 A host keeps a container's log and output files in its own `OutputStore` of `cicada-containers`, with one guarded write
 for lines and cursor and a conformance check to test it, and a `LogArchiver` follows its containers' logs into it.
