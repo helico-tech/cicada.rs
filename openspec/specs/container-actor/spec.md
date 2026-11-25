@@ -98,7 +98,8 @@ A container past its deadline SHALL be stopped and end `timedOut`. The deadline 
 `ContainerJob::timeout` (by default the settings' timeout), capped at the largest instant, and not moved. A runtime
 error SHALL count in a row and delay the next poll by a growing backoff up to the settings' maximum, never failing the
 turn. At the maximum errors in a row, a container without an end SHALL end `failed` with the kind `runtimeErrors`; a
-removal SHALL keep trying.
+removal SHALL keep trying. A log read for the end that fails with `Unsupported` SHALL not count: the end SHALL be
+recorded at once with `(no logs: …)` and the runtime's message.
 
 #### Scenario: The deadline passes
 
@@ -115,6 +116,12 @@ removal SHALL keep trying.
 - **WHEN** every `inspect` of a started container fails with `DaemonUnavailable` and `max_errors` is 3
 - **THEN** the polls wait longer after each error, and the third error records the end `failed` with the kind
   `runtimeErrors` and the last error
+
+#### Scenario: An ended container without logs
+
+- **WHEN** a container ends and the runtime answers its log read with `Unsupported`
+- **THEN** the end is recorded in that turn with the logs `(no logs: …)`, the errors in a row are not counted, and the
+  log read is not retried
 
 ### Requirement: A lost poll comes back
 
