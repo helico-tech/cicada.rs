@@ -13,14 +13,28 @@ use crate::{CopyFile, LogCursor, LogLine, LogPage};
 /// An in-memory [`OutputStore`] that keeps every rule of the trait; clones share their outputs. Its guarded append
 /// runs under one lock, so it holds under writers in parallel within the process.
 ///
+/// A writer archives a container's log through the guarded append; a repeat of a write fails with `Conflict`:
+///
 /// ```
-/// use cicada_containers::{MemoryOutputStore, OutputStore, check_output_store};
+/// use cicada_containers::{
+///     ContainerRuntime, ContainerSpec, FakeRuntime, MemoryOutputStore, OutputErrorKind, OutputStore, check_output_store,
+/// };
 ///
 /// # #[tokio::main(flavor = "current_thread")]
-/// # async fn main() -> Result<(), cicada_containers::OutputError> {
+/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let runtime = FakeRuntime::new();
+/// runtime.create(&ContainerSpec::new("job-1", "alpine:3")).await?;
+/// runtime.set_logs("job-1", "hello\nworld");
+///
 /// let store = MemoryOutputStore::new();
-/// check_output_store(&store).await;
-/// assert_eq!(store.log_end("job-1").await?.lines, 0);
+/// let end = store.log_end("job-1").await?;
+/// let page = runtime.logs_since("job-1", end.cursor, 500).await?;
+/// assert_eq!(store.append_logs("job-1", end.cursor.as_ref(), &page).await?, 2);
+/// let again = store.append_logs("job-1", end.cursor.as_ref(), &page).await.unwrap_err();
+/// assert_eq!(again.kind, OutputErrorKind::Conflict);
+/// assert_eq!(store.read_logs("job-1", 1, 10).await?[0].line.text, "world");
+///
+/// check_output_store(&store).await; // the rules of the trait hold
 /// # Ok(())
 /// # }
 /// ```

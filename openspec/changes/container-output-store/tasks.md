@@ -1,8 +1,8 @@
 # Tasks
 
-Normal lane, additive: in the unreleased batch (0.22.0; check the `release:` line of `python3 scripts/status.py`,
-builder.md, Version). Follow `design.md`; the spec is `specs/container-outputs/spec.md` (a new capability). Run the
-crate's tests with every feature: `cargo test -p cicada-containers --all-features`.
+Normal lane, additive: in the unreleased batch (0.22.1 after the 0.22.0 release; check the `release:` line of `python3
+scripts/status.py`, builder.md, Version). Follow `design.md`; the spec is `specs/container-outputs/spec.md` (a new
+capability). Run the crate's tests with every feature: `cargo test -p cicada-containers --all-features`.
 
 - [x] 1. **The trait and its types.** A new module in `crates/cicada-containers/src/` with `OutputStore` (async,
   `Send + Sync + 'static`, the seven methods of the design), `LogEnd`, `StoredLine`, `StoredFile`, `OutputError` and
@@ -17,7 +17,7 @@ crate's tests with every feature: `cargo test -p cicada-containers --all-feature
 - [x] 3. **The conformance check.** `check_output_store(store)` behind `testing`, with its own container names, covering
   the design's Tests section, and panicking with the rule it broke; it passes on `MemoryOutputStore`, and a
   deliberately broken store in a test makes it panic. Verify: `cargo test -p cicada-containers --all-features`.
-- [ ] 4. **Changelog and docs handoff.** The 0.22.0 section of `CHANGELOG.md` names `OutputStore`, its types, the
+- [x] 4. **Changelog and docs handoff.** The 0.22.1 section of `CHANGELOG.md` names `OutputStore`, its types, the
   helpers, `MemoryOutputStore`, `check_output_store` and serde on `LogLine` under Added. `docs-handoff.md` carries
   the trait, the one-write rule, the input rules and the check for `docs/guide/containers.md`; nothing blocks. No edit
   to `README.md`, `AGENTS.md` or the handwritten docs. Verify: `cargo test -p cicada-examples --test docs`.

@@ -7,6 +7,35 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.22.1 — unreleased
+
+A host keeps a container's log and output files in its own `OutputStore` of `cicada-containers`, with one guarded write
+for lines and cursor and a conformance check to test it. Additive: the contracts, wire formats, the store schema, the
+HTTP API and the guarantees are those of 0.22.0.
+
+### Added
+
+- `cicada-containers`: `OutputStore`, an async trait a host implements to keep a container's outputs outside it, keyed
+  by container name and used as `Arc<dyn OutputStore>`: `log_end` (the stored `LogCursor`, `None` when nothing is
+  stored, and the number of stored lines, as `LogEnd`), `append_logs(container, after, page)`, `read_logs(container,
+  from, limit)` (up to `limit` lines from the 0-based line number `from`, each a `StoredLine` with its number),
+  `put_file` (a `CopyFile`, replacing one at the same path), `files` (`StoredFile { path, size, mode }` in path
+  order), `read_file` and `remove` (lines, cursor and files; nothing is `Ok`). `append_logs` stores a page's lines and
+  its `next` cursor in one write, and only when the stored cursor equals `after`; otherwise it fails with `Conflict`
+  and stores nothing, so a writer that crashed after a write resumes from `log_end` without a repeated or lost line,
+  and two writers cannot interleave. An empty page stores its cursor alone. After `remove` a container starts afresh.
+  Errors are `OutputError { kind, message }` with `OutputErrorKind::{Invalid, Conflict, Unavailable, Other}`;
+  `is_retryable` is true only for `Unavailable`. Every method checks its input first with the new public
+  `check_container_name` (the container actor's rule: a letter or digit first, then only `A-Za-z0-9_.-`) and
+  `clean_output_path` (the rule of `copy_out`: absolute, no `..` part, not `/`; empty and `.` parts dropped, so `/a`,
+  `//a` and `/./a` are one file), and fails with `Invalid` before it touches anything. Behind `testing`:
+  `MemoryOutputStore`, an in-memory store whose clones share their outputs, and `check_output_store(&store)`, an async
+  conformance check that runs every rule against any store under container names of its own and panics naming the
+  rule it broke; it cannot prove that a write is all or nothing after a crash, or that the guard holds under writers
+  in parallel. Covered by the tests of `src/outputs/` (the check passes on the memory store and fails on four broken
+  ones).
+- `cicada-containers`: `LogLine` and `LogStream` have serde: `{"time": "<RFC 3339>", "stream": "out" | "err", "text"}`.
+
 ## 0.22.0 — 2026-11-25
 
 A turn can watch an actor that must exist (ADR 0063): `Turn::watch_existing` tells the watcher at once when the actor is
