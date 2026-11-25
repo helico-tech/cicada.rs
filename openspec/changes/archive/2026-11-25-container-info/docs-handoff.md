@@ -53,6 +53,12 @@ or `v7`. The names are Go's (`amd64`, `arm64`), not Rust's `std::env::consts::AR
 
 None.
 
+## Added after release (from Factory, 2026-11-25)
+
+A host that wraps a `DockerRuntime` in its own `ContainerRuntime` (to add logging, metrics or a pin) must forward
+`info()` (and every other method with a default: `logs_since`, `copy_out`, `make_dirs`) to the inner runtime; otherwise
+the trait's default answers `Unsupported`. Worth one line next to `info` in the guide.
+
 ## Status
 
 No protected prose was edited; the text above is proposed. Checks run: see the build report
