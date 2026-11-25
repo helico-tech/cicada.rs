@@ -291,6 +291,8 @@ Rust code that builds `WatchChange` or `WatchChangeView` field by field adds `ex
 bind or ignore it. There is no store migration and no contract hash change. `DockerRuntime::connect()` now also finds
 Docker through the CLI's context ([Connect to Docker](../guide/containers.md#connect-to-docker)): a host that relied on
 `connect()` failing without `DOCKER_HOST` or a local socket now connects, or fails with `Other` for a TLS context.
+`logs` and `logs_since` of a container whose log cannot be read (Docker's log driver `none`) fail with `Unsupported`
+instead of `Other`: code that matched `Other` for this case matches `Unsupported`.
 
 ## Upgrade to 0.21.0
 

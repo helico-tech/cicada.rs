@@ -125,7 +125,7 @@ A `ContainerError` has a `kind` and a message (`<action> <name>: <Docker's messa
 | `Conflict` | The container is in the wrong state or missing for this call, or a path holds a file where a folder is asked |
 | `ImageNotFound` | The registry has no such image; Docker Hub and `registry:2` say so for a refused login too |
 | `InvalidSpec` | The request is refused before anything is done, such as a bad path or limit |
-| `Unsupported` | The runtime does not implement this call |
+| `Unsupported` | The runtime does not implement this call, or cannot do it for this container, such as the logs of a container whose log driver keeps none. A retry cannot help |
 | `Other` | Anything else, such as a daemon error |
 
 `ErrorKind` is `non_exhaustive`: give a match a wildcard arm.
@@ -178,7 +178,9 @@ a `LogLine` with its `time`, its `stream` (`Out` or `Err`) and its `text` as los
 4. Once `inspect` shows the container ended, read once more and stop after that short page, so no last line is lost.
 
 A missing container is `Conflict`, a created one gives an empty page, an out-of-range `max_lines` or a string that is
-not a cursor is `InvalidSpec`, and a log Docker cannot read (log driver `none`) is `Other`. On Docker each read scans
+not a cursor is `InvalidSpec`. A log the runtime can never read (Docker's log driver `none`) is `Unsupported` from
+0.22.0, and `logs` gives the same kind: stop following then, as no retry will read it. Retry the other kinds, counting
+errors in a row. On Docker each read scans
 the log from the cursor's second, so poll every few seconds, not in a tight loop. A line over 16 KiB comes back in
 parts. A line stamped before the cursor's second but written after it is missed, log rotation of that second shifts
 the cursor, and a cursor after January 2038 is `Other`.
@@ -286,7 +288,9 @@ target can get the same end more than once. Keep the first end per key.
 
 Runtime errors never fail a turn: they count, and the next poll waits `min(poll_interval × 2^errors, max_backoff)`. A
 start refused with `InvalidSpec` ends the container as `notStarted` at once; another refused start shows on Docker as
-`Failed` and ends it `runtimeEnded`. A container that ended after its create stays until `Remove`.
+`Failed` and ends it `runtimeEnded`. A log read the runtime answers with `Unsupported` does not count: the end is
+recorded at once with the logs `(no logs: …)` and the runtime's message. A container that ended after its create
+stays until `Remove`.
 
 A replayed create step first inspects the container. One past `Created`, started by a step whose commit was lost, is
 adopted with a fresh deadline, without calling `spec`, `inputs`, `create`, the copies or `start`. One still `Created`
