@@ -17,6 +17,7 @@ pub use check::check_output_store;
 #[cfg(any(test, feature = "testing"))]
 pub use memory::MemoryOutputStore;
 
+use crate::actor::MAX_NAME_LENGTH;
 use crate::{CopyFile, LogCursor, LogLine, LogPage};
 
 /// Where a host keeps a container's outputs, keyed by the container's name, so one store serves every job. Used as
@@ -31,6 +32,10 @@ use crate::{CopyFile, LogCursor, LogLine, LogPage};
 /// method first checks the name with [`check_container_name`] and a path with [`clean_output_path`], and fails with
 /// [`OutputErrorKind::Invalid`] before it touches anything. Paths that differ only in empty and `.` parts, such as
 /// `/a`, `//a` and `/./a`, are one file.
+///
+/// **Case.** Paths differ by case: `/out/Job` and `/out/job` are two files, and so are the containers `Job` and `job`.
+/// A store on a case-insensitive file system, such as the defaults of macOS and Windows, must not map them to one
+/// file or folder: keep them apart, for example by encoding the names, or the second write replaces the first.
 ///
 /// **What a store promises that no test proves.** That a write is all or nothing also after a crash of the process,
 /// and that the guard of `append_logs` holds under writers in parallel, also on other nodes. `check_output_store`
@@ -168,7 +173,7 @@ impl fmt::Display for OutputErrorKind {
 }
 
 /// The container name `name`, or [`OutputErrorKind::Invalid`] unless it follows the container actor's rule: a letter
-/// or digit first, then only `A-Za-z0-9_.-`. So a name holds no `/` and is never `..`.
+/// or digit first, then only `A-Za-z0-9_.-`, and at most 200 characters. So a name holds no `/` and is never `..`.
 ///
 /// ```
 /// use cicada_containers::check_container_name;
@@ -176,25 +181,31 @@ impl fmt::Display for OutputErrorKind {
 /// assert_eq!(check_container_name("ci-job-1.a_b")?, "ci-job-1.a_b");
 /// assert!(check_container_name("../x").is_err());
 /// assert!(check_container_name("a/b").is_err());
+/// assert!(check_container_name(&"a".repeat(201)).is_err());
 /// # Ok::<(), cicada_containers::OutputError>(())
 /// ```
 pub fn check_container_name(name: &str) -> Result<&str, OutputError> {
     let mut chars = name.chars();
-    let valid = chars.next().is_some_and(|c| c.is_ascii_alphanumeric())
+    let valid = name.len() <= MAX_NAME_LENGTH
+        && chars.next().is_some_and(|c| c.is_ascii_alphanumeric())
         && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'));
     if valid {
         Ok(name)
     } else {
         Err(OutputError::new(
             OutputErrorKind::Invalid,
-            format!("{name:?} is not a container name: a letter or a digit first, then only A-Za-z0-9_.-"),
+            format!(
+                "{name:?} is not a container name: a letter or a digit first, then only A-Za-z0-9_.-, and at most \
+                 {MAX_NAME_LENGTH} characters"
+            ),
         ))
     }
 }
 
 /// The cleaned form of the file path `path`: absolute, with its empty and `.` parts dropped, such as `/a/b` for
-/// `//a/./b/`. [`OutputErrorKind::Invalid`] for a relative path, a `..` part or no part at all: the rule of
-/// [`copy_out`](crate::ContainerRuntime::copy_out).
+/// `//a/./b/`. [`OutputErrorKind::Invalid`] for a relative path, a `..` part or no part at all, the rule of
+/// [`copy_out`](crate::ContainerRuntime::copy_out), and for a control character (NUL included) in a part, which a
+/// container's file name can hold but a store need not keep.
 ///
 /// ```
 /// use cicada_containers::clean_output_path;
@@ -203,6 +214,7 @@ pub fn check_container_name(name: &str) -> Result<&str, OutputError> {
 /// assert!(clean_output_path("/out/../../etc/passwd").is_err());
 /// assert!(clean_output_path("out/a.txt").is_err());
 /// assert!(clean_output_path("/").is_err());
+/// assert!(clean_output_path("/out/a\0b").is_err());
 /// # Ok::<(), cicada_containers::OutputError>(())
 /// ```
 pub fn clean_output_path(path: &str) -> Result<String, OutputError> {
@@ -216,6 +228,9 @@ pub fn clean_output_path(path: &str) -> Result<String, OutputError> {
     }
     if parts.is_empty() {
         return Err(invalid("names no file"));
+    }
+    if path.chars().any(char::is_control) {
+        return Err(invalid("has a control character"));
     }
     Ok(parts.iter().fold(String::with_capacity(path.len()), |mut clean, part| {
         clean.push('/');
@@ -237,6 +252,10 @@ mod tests {
         for bad in ["", "..", ".a", "-a", "_a", "a/b", "../x", "a b", "a:b", "é", "a\0"] {
             assert_eq!(check_container_name(bad).unwrap_err().kind, OutputErrorKind::Invalid, "{bad:?}");
         }
+        assert!(check_container_name(&"a".repeat(200)).is_ok(), "200 characters");
+        let long = check_container_name(&"a".repeat(201)).unwrap_err();
+        assert_eq!(long.kind, OutputErrorKind::Invalid);
+        assert!(long.message.ends_with("at most 200 characters"), "{long}");
     }
 
     #[test]
@@ -248,6 +267,11 @@ mod tests {
         }
         for bad in ["", "a", "./a", "../x", "/", "//", "/./", "/a/../b", "/out/../../etc/passwd", "/.."] {
             assert_eq!(clean_output_path(bad).unwrap_err().kind, OutputErrorKind::Invalid, "{bad:?}");
+        }
+        for bad in ["/out/a\0b", "/out\n/a", "/out/\u{1b}[31m", "/a\u{7f}", "/a\u{85}"] {
+            let error = clean_output_path(bad).unwrap_err();
+            assert_eq!(error.kind, OutputErrorKind::Invalid, "{bad:?}");
+            assert!(error.message.ends_with("has a control character"), "{error}");
         }
     }
 

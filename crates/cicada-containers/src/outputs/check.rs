@@ -13,10 +13,11 @@ const B: &str = "cicada-output-check-b";
 /// the way Cicada checks its store backends. It uses container names of its own (`cicada-output-check-a` and `-b`),
 /// removes them before and after, and so runs on a store that holds other data.
 ///
-/// It checks the input rules (`Invalid` for a bad name or path, and one file for `/a`, `//a` and `/./a`), `log_end`
-/// before and after appends, appends read back across pages, the guard of `append_logs` (a wrong or repeated `after`
-/// fails with `Conflict` and stores nothing), an empty page that moves the cursor, `read_logs` past the end, files
-/// replaced, listed in path order, read and missing, `remove` of everything and of nothing, and two containers apart.
+/// It checks the input rules (`Invalid` for a bad or too long name and for a bad path, a control character in it too,
+/// and one file for `/a`, `//a` and `/./a`), `log_end` before and after appends, appends read back across pages, the
+/// guard of `append_logs` (a wrong or repeated `after` fails with `Conflict` and stores nothing), an empty page that
+/// moves the cursor, `read_logs` past the end, files replaced, listed in path order, read and missing, `remove` of
+/// everything and of nothing, and two containers apart.
 ///
 /// It cannot prove that a write is all or nothing after a crash, nor that the guard holds under writers in parallel:
 /// the host's store promises that. Nor does it check a file at `/a` next to one at `/a/b`: `copy_out` gives only
@@ -36,7 +37,8 @@ pub async fn check_output_store(store: &dyn OutputStore) {
 async fn input_rules(store: &dyn OutputStore) {
     let page = LogPage::new(vec![line(0, "x")], cursor("1:1"));
     let file = CopyFile::new("/out/a.txt", "x");
-    for name in ["../x", "a/b", "", ".."] {
+    let long = "a".repeat(201);
+    for name in ["../x", "a/b", "", "..", long.as_str()] {
         let rule = format!("a bad container name {name:?} is Invalid");
         invalid(store.log_end(name).await, &rule);
         invalid(store.append_logs(name, None, &page).await, &rule);
@@ -46,7 +48,7 @@ async fn input_rules(store: &dyn OutputStore) {
         invalid(store.read_file(name, "/out/a.txt").await, &rule);
         invalid(store.remove(name).await, &rule);
     }
-    for path in ["out/a.txt", "../x", "/out/../../etc/passwd", "/", ""] {
+    for path in ["out/a.txt", "../x", "/out/../../etc/passwd", "/", "", "/out/a\0b", "/out/a\nb", "/out\u{1}/a"] {
         let rule = format!("a bad path {path:?} is Invalid");
         invalid(store.put_file(A, &CopyFile::new(path, "x")).await, &rule);
         invalid(store.read_file(A, path).await, &rule);

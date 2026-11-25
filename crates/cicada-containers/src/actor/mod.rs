@@ -21,24 +21,33 @@ use sha2::{Digest, Sha256};
 
 pub use wire::{
     ContainerEnd, ContainerEnded, ContainerMsg, ContainerProgress, ContainerState, EndTarget, FailureKind, Goal,
-    InvalidContainer, Outcome, Phase,
+    InvalidContainer, Outcome, OutputsReport, Phase,
 };
 
 use crate::dirs::MAKE;
 use crate::paths::path_parts;
 use crate::{
     ContainerError, ContainerRuntime, ContainerSpec, ContainerStatus, CopyDir, CopyFile, CopyLimits, ErrorKind,
-    OUT_OF_MEMORY,
+    LogCursor, OUT_OF_MEMORY, OutputError, OutputErrorKind, OutputStore, SkippedFile,
 };
 
-/// The longest container name, prefix and key together.
-const MAX_NAME_LENGTH: usize = 200;
+/// The longest container name, prefix and key together; the output store's name rule too.
+pub(crate) const MAX_NAME_LENGTH: usize = 200;
 
 /// The environment variable that gives the program its progress file, when its `Start` names a `progressType`.
 const PROGRESS_ENV: &str = "CICADA_PROGRESS_FILE";
 
 /// The most bytes of a progress file read; a longer one is skipped.
 const MAX_PROGRESS_BYTES: u64 = 64 * 1024;
+
+/// The most log pages one collecting turn reads into the store.
+const LOG_PAGES_PER_TURN: usize = 20;
+
+/// The lines of each log page a collecting turn reads: 20 pages of 500, so at most 10 000 lines per turn.
+const LOG_PAGE_LINES: u32 = 500;
+
+/// The skipped entries an [`OutputsReport`] lists.
+const FIRST_SKIPPED: usize = 10;
 
 /// The label the container actor puts on every container it creates, with its settings' prefix as the value, after
 /// the job's [`spec`](ContainerJob::spec), which cannot drop or change it. The [`LogArchiver`](crate::LogArchiver)
@@ -89,6 +98,10 @@ pub trait ContainerJob: Send + Sync + 'static {
     /// Two turns are long. The create step pulls a missing image, creates the container, makes its folders and copies
     /// its inputs in, all in one turn; a stop waits up to the settings'
     /// [`stop_grace`](ContainerSettings::stop_grace) in one turn. Set the limit above both, or stops time out too.
+    ///
+    /// With a store ([`ContainerActor::with_store`]), one turn at the end copies the job's
+    /// [`outputs`](Self::outputs) folder out and into the store, and each turn before it stores up to 10 000 log
+    /// lines: set the limit above the time a copy of the folder's byte limit takes too.
     ///
     /// A turn past the limit ends `failed` (`timeout`) without counting as a runtime error: the poll's own retry
     /// policy runs the step again (7 attempts, waiting 1 to 32 s; every step is safe to repeat, and a container the
@@ -208,6 +221,65 @@ pub trait ContainerJob: Send + Sync + 'static {
         let _ = (name, request);
         Ok(Inputs::default())
     }
+
+    /// The output folder of the container of `request`, copied into the actor's store at its end; none by default.
+    /// Asked in the turn that copies, so only an actor with a store ([`ContainerActor::with_store`]) asks.
+    ///
+    /// At an end the container ran for, the actor first stores the rest of its log, then copies this folder out
+    /// ([`copy_out`](ContainerRuntime::copy_out), with its limits) and puts each file into the store, and the end
+    /// carries what was stored and skipped in [`ContainerEnd::outputs`]. Without an outputs folder only the log is
+    /// stored, and the counts are 0. A path that is relative, has a `..` part or names no file ends the collection at
+    /// once with the error in the report; the end keeps its outcome.
+    ///
+    /// The copy holds the files in memory, at most [`max_bytes`](CopyLimits::max_bytes) per collecting container:
+    /// size the limits against the node's concurrency.
+    ///
+    /// ```
+    /// # use cicada::prelude::*;
+    /// # use cicada_containers::{ContainerJob, ContainerSpec, Outputs};
+    /// # use serde::{Deserialize, Serialize};
+    /// # #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+    /// # struct Test {}
+    /// struct Tests;
+    ///
+    /// impl ContainerJob for Tests {
+    ///     const TYPE: &'static str = "ci.tests";
+    ///     type Request = Test;
+    ///
+    ///     fn spec(&self, name: &str, _: &Test) -> Result<ContainerSpec, String> {
+    ///         Ok(ContainerSpec::new(name, "rust:1"))
+    ///     }
+    ///
+    ///     fn outputs(&self, _: &Test) -> Option<Outputs> {
+    ///         Some(Outputs::new("/work/out")) // at most 64 MiB in 1000 files
+    ///     }
+    /// }
+    ///
+    /// let outputs = Tests.outputs(&Test {}).unwrap();
+    /// assert_eq!((outputs.limits.max_files, outputs.limits.max_bytes), (1000, 64 * 1024 * 1024));
+    /// ```
+    fn outputs(&self, request: &Self::Request) -> Option<Outputs> {
+        let _ = request;
+        None
+    }
+}
+
+/// The output folder of a container and the limits of its copy, from [`ContainerJob::outputs`]. Make it with
+/// [`Outputs::new`] and set the limits by name.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Outputs {
+    /// The absolute path of the folder, or of one file, in the container.
+    pub path: String,
+    /// The limits of the copy: 1000 entries and 64 MiB by default.
+    pub limits: CopyLimits,
+}
+
+impl Outputs {
+    /// The folder `path`, with at most 1000 entries and 64 MiB.
+    pub fn new(path: impl Into<String>) -> Self {
+        Self { path: path.into(), limits: CopyLimits::new(1000, 64 * 1024 * 1024) }
+    }
 }
 
 /// The folders and files of a container, from [`ContainerJob::inputs`]: put in between its create and its start, the
@@ -314,7 +386,8 @@ pub struct ContainerSettings {
     pub poll_interval: Duration,
     /// The longest wait between polls after errors; 60 s.
     pub max_backoff: Duration,
-    /// The runtime errors in a row that end a container without an end `failed`; 10. A removal keeps trying.
+    /// The runtime errors in a row that end a container without an end `failed`; 10. A removal keeps trying. While the
+    /// outputs are collected, they send the pending end with its outcome and the error in its report.
     pub max_errors: u32,
     /// How long a container may run before it is stopped and ends `timedOut`; none. The default of
     /// [`ContainerJob::timeout`], which can change it per request.
@@ -399,19 +472,64 @@ fn retry_policy() -> RetryPolicy {
 /// inspect, as `runtimeEnded` when the runtime reports the container `Failed`: a status bears no mark of a refused
 /// start.
 ///
+/// With a store ([`with_store`](Self::with_store)), an end the container ran for (`exited`, `failed` as
+/// `runtimeEnded` or `outOfMemory`, `stopped`, `timedOut`) is first held as pending in the phase
+/// [`Collecting`](Phase::Collecting); the next polls store the rest of its log and its job's outputs, and the poll that
+/// finishes records the end with its [`outputs`](ContainerEnd::outputs) and sends it.
+///
 /// Every node that can claim these actors must reach the same daemon: pin them with a claim owner when only some do
-/// (ADR 0052). A create's image pull and a stop's grace run inside one turn and its maximum duration, the job's
-/// [`MAX_TURN`](ContainerJob::MAX_TURN) or else the node's default.
+/// (ADR 0052). A create's image pull, a stop's grace and an output copy run inside one turn and its maximum duration,
+/// the job's [`MAX_TURN`](ContainerJob::MAX_TURN) or else the node's default.
 pub struct ContainerActor<J> {
     job: J,
     runtime: Arc<dyn ContainerRuntime>,
     settings: ContainerSettings,
+    store: Option<Arc<dyn OutputStore>>,
 }
 
 impl<J: ContainerJob> ContainerActor<J> {
-    /// The actor type of `job`, on `runtime`, with `settings`.
+    /// The actor type of `job`, on `runtime`, with `settings`, and without a store.
     pub fn new(job: J, runtime: Arc<dyn ContainerRuntime>, settings: ContainerSettings) -> Self {
-        Self { job, runtime, settings }
+        Self { job, runtime, settings, store: None }
+    }
+
+    /// This actor type with `store`: at an end the container ran for, the actor stores the rest of its log and its
+    /// job's [`outputs`](ContainerJob::outputs) there, keyed by the container's name, before it records and sends the
+    /// end (ADR 0066). The store may be the one a [`LogArchiver`](crate::LogArchiver) of the same prefix writes: the
+    /// guarded append stores each line once.
+    ///
+    /// The collection runs in the actor's own turns, so a slow copy holds up only its own container. A runtime or
+    /// store error a retry can cure counts as a runtime error and backs off; at the settings' maximum in a row the end
+    /// is sent with its outcome and the error in its report. A `Start` during the collection gets the end when it is
+    /// done, and a `Remove` removes the container after it.
+    ///
+    /// A state saved in the phase `Collecting` cannot be read by 0.22: do not roll a node back while one is.
+    ///
+    /// ```
+    /// # use cicada::prelude::*;
+    /// # use cicada_containers::{ContainerActor, ContainerJob, ContainerSettings, ContainerSpec, FakeRuntime};
+    /// # use serde::{Deserialize, Serialize};
+    /// # #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+    /// # struct Test {}
+    /// # struct Tests;
+    /// # impl ContainerJob for Tests {
+    /// #     const TYPE: &'static str = "ci.tests";
+    /// #     type Request = Test;
+    /// #     fn spec(&self, name: &str, _: &Test) -> Result<ContainerSpec, String> {
+    /// #         Ok(ContainerSpec::new(name, "rust:1"))
+    /// #     }
+    /// # }
+    /// use std::sync::Arc;
+    /// use cicada_containers::MemoryOutputStore;
+    ///
+    /// let store = Arc::new(MemoryOutputStore::new());
+    /// let actor = ContainerActor::new(Tests, Arc::new(FakeRuntime::new()), ContainerSettings::new("ci-")?)
+    ///     .with_store(store);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn with_store(mut self, store: Arc<dyn OutputStore>) -> Self {
+        self.store = Some(store);
+        self
     }
 }
 
@@ -553,9 +671,14 @@ impl<J: ContainerJob> ContainerActor<J> {
                 turn.state_mut().phase = Phase::Removed;
                 return Ok(());
             }
+            // The prefix changed since the end: nothing to collect from.
+            Err(reason) if phase == Phase::Collecting => {
+                return self.record_pending(turn, OutputsReport::failed(&reason)).await;
+            }
             Err(reason) => return self.refuse(turn, reason).await,
         };
         match (goal, phase) {
+            (_, Phase::Collecting) => self.collect(turn, &name).await,
             (Goal::Run, Phase::New) => self.create(turn, &name).await,
             (Goal::Run, _) => self.follow(turn, &name).await,
             (_, Phase::Ended) => self.remove(turn, &name).await,
@@ -665,12 +788,13 @@ impl<J: ContainerJob> ContainerActor<J> {
             }
             ContainerStatus::Exited { code } => {
                 let Some(logs) = self.logs(turn, name).await? else { return Ok(()) };
-                self.progress(turn, name).await?;
-                self.end(turn, Outcome::Exited, None, Some(code), format!("exited with code {code}"), logs).await
+                self.last_progress(turn, name).await?;
+                let reason = format!("exited with code {code}");
+                self.end(turn, Outcome::Exited, None, Some(code), reason, logs, true).await
             }
             ContainerStatus::Failed { code, reason } => {
                 let Some(logs) = self.logs(turn, name).await? else { return Ok(()) };
-                self.progress(turn, name).await?;
+                self.last_progress(turn, name).await?;
                 let kind = if reason == OUT_OF_MEMORY { FailureKind::OutOfMemory } else { FailureKind::RuntimeEnded };
                 self.fail(turn, kind, code, reason, logs).await
             }
@@ -693,10 +817,10 @@ impl<J: ContainerJob> ContainerActor<J> {
         };
         if status == ContainerStatus::Missing {
             let reason = "stopped; no container was found".to_owned();
-            return self.end(turn, Outcome::Stopped, None, None, reason, String::new()).await;
+            return self.end(turn, Outcome::Stopped, None, None, reason, String::new(), false).await;
         }
         let Some(logs) = self.logs(turn, name).await? else { return Ok(()) };
-        self.progress(turn, name).await?;
+        self.last_progress(turn, name).await?;
         let now = turn.current_time();
         let (outcome, reason) = match turn.state().deadline {
             Some(deadline) if now >= deadline => {
@@ -704,7 +828,7 @@ impl<J: ContainerJob> ContainerActor<J> {
             }
             _ => (Outcome::Stopped, "stopped".to_owned()),
         };
-        self.end(turn, outcome, None, exit_code(&status), reason, logs).await
+        self.end(turn, outcome, None, exit_code(&status), reason, logs, true).await
     }
 
     /// Removes an ended container.
@@ -737,6 +861,15 @@ impl<J: ContainerJob> ContainerActor<J> {
             }
         };
         Ok(Some(text::logs(&text, self.settings.log_lines, self.settings.log_bytes)))
+    }
+
+    /// Reads the progress file once more in the turn that records an end, without a store; with one, the turn that
+    /// finishes the collection reads it.
+    async fn last_progress(&self, turn: &mut ContainerTurn<J>, name: &str) -> HandlerResult {
+        if self.store.is_some() {
+            return Ok(());
+        }
+        self.progress(turn, name).await
     }
 
     /// Reads the progress file of the container `name` and sends its text to the target when it changed since the last
@@ -816,7 +949,7 @@ impl<J: ContainerJob> ContainerActor<J> {
         self.fail(turn, FailureKind::NotStarted, None, reason, String::new()).await
     }
 
-    /// Ends the container `failed` with `kind`.
+    /// Ends the container `failed` with `kind`; it ran for `outOfMemory` and `runtimeEnded`.
     async fn fail(
         &self,
         turn: &mut ContainerTurn<J>,
@@ -825,11 +958,13 @@ impl<J: ContainerJob> ContainerActor<J> {
         reason: String,
         logs: String,
     ) -> HandlerResult {
-        self.end(turn, Outcome::Failed, Some(kind), code, reason, logs).await
+        let ran = matches!(kind, FailureKind::OutOfMemory | FailureKind::RuntimeEnded);
+        self.end(turn, Outcome::Failed, Some(kind), code, reason, logs, ran).await
     }
 
-    /// Records the end, sends it to the target in the same commit, and arms the removal when that is the goal. `kind`
-    /// is set exactly for `failed`.
+    /// Ends the container. `kind` is set exactly for `failed`. With a store and an end the container `ran` for, the end
+    /// is held as pending in the phase `Collecting` and a poll is armed at once; else it is recorded and sent now.
+    #[allow(clippy::too_many_arguments)]
     async fn end(
         &self,
         turn: &mut ContainerTurn<J>,
@@ -838,9 +973,24 @@ impl<J: ContainerJob> ContainerActor<J> {
         code: Option<i64>,
         reason: String,
         logs: String,
+        ran: bool,
     ) -> HandlerResult {
-        let end = ContainerEnd { outcome, code, kind, reason: text::reason(&reason), logs };
+        let end = ContainerEnd { outcome, code, kind, reason: text::reason(&reason), logs, outputs: None };
+        if ran && self.store.is_some() {
+            let state = turn.state_mut();
+            state.pending = Some(end);
+            state.phase = Phase::Collecting;
+            state.errors = 0;
+            let now = turn.current_time();
+            return arm(turn, now);
+        }
+        self.record(turn, end).await
+    }
+
+    /// Records `end`, sends it to the target in the same commit, and arms the removal when that is the goal.
+    async fn record(&self, turn: &mut ContainerTurn<J>, end: ContainerEnd) -> HandlerResult {
         let state = turn.state_mut();
+        state.pending = None;
         state.end = Some(end.clone());
         state.phase = Phase::Ended;
         state.errors = 0;
@@ -852,6 +1002,139 @@ impl<J: ContainerJob> ContainerActor<J> {
             return arm(turn, now);
         }
         Ok(())
+    }
+
+    /// One collecting step: stores up to 20 pages of the rest of the log, and arms the next poll at once while more
+    /// is left; once the log is drained, copies the outputs into the store and finishes. An error a retry can cure
+    /// counts and backs off; any other finishes with it in the report.
+    async fn collect(&self, turn: &mut ContainerTurn<J>, name: &str) -> HandlerResult {
+        let Some(store) = self.store.clone() else {
+            // Saved by an actor with a store, now read by one without: the end goes out with nothing collected.
+            return self.finish(turn, name, OutputsReport::failed("the actor has no output store")).await;
+        };
+        let collected = match self.drain(&*store, name).await {
+            Ok(true) => self.copy(turn, &*store, name).await,
+            Ok(false) => {
+                turn.state_mut().errors = 0;
+                let now = turn.current_time();
+                return arm(turn, now);
+            }
+            Err(halt) => Err(halt),
+        };
+        match collected {
+            Ok(report) => self.finish(turn, name, report).await,
+            Err(Halt::End(error)) => self.finish(turn, name, OutputsReport::failed(&error)).await,
+            Err(Halt::Retry(error)) => {
+                let state = turn.state_mut();
+                state.errors = state.errors.saturating_add(1);
+                let errors = state.errors;
+                if errors >= self.settings.max_errors {
+                    let error = format!("failed {errors} times in a row: {error}");
+                    return self.finish(turn, name, OutputsReport::failed(&error)).await;
+                }
+                arm_after(turn, self.settings.backoff(errors))
+            }
+        }
+    }
+
+    /// Stores up to [`LOG_PAGES_PER_TURN`] pages of the log of `name` after the stored cursor with the guarded append;
+    /// true once a short page shows it drained, or when the runtime cannot read the log (`Unsupported`), which skips
+    /// it. Another writer of the same store, such as a log archiver, moves the cursor: its `Conflict` reads it again.
+    async fn drain(&self, store: &dyn OutputStore, name: &str) -> Result<bool, Halt> {
+        let mut cursor: Option<LogCursor> = store.log_end(name).await.map_err(Halt::store)?.cursor;
+        for _ in 0..LOG_PAGES_PER_TURN {
+            let page = match self.runtime.logs_since(name, cursor, LOG_PAGE_LINES).await {
+                Ok(page) => page,
+                Err(e) if e.kind == ErrorKind::Unsupported => return Ok(true),
+                Err(e) => return Err(Halt::runtime(e)),
+            };
+            // An empty page leaves the cursor where it was: nothing to write.
+            if !page.lines.is_empty() {
+                match store.append_logs(name, cursor.as_ref(), &page).await {
+                    Ok(_) => {}
+                    Err(e) if e.kind == OutputErrorKind::Conflict => {
+                        cursor = store.log_end(name).await.map_err(Halt::store)?.cursor;
+                        continue;
+                    }
+                    Err(e) => return Err(Halt::store(e)),
+                }
+            }
+            cursor = Some(page.next);
+            if page.lines.len() < LOG_PAGE_LINES as usize {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Copies the job's outputs of `name` out and puts each file into the store, in one turn; a file the store
+    /// refuses (`Invalid`) is skipped with its reason. Counts 0 without an outputs folder.
+    async fn copy(&self, turn: &ContainerTurn<J>, store: &dyn OutputStore, name: &str) -> Result<OutputsReport, Halt> {
+        let Some(outputs) = self.job.outputs(&turn.state().request) else { return Ok(OutputsReport::default()) };
+        let out = self.runtime.copy_out(name, &outputs.path, outputs.limits).await.map_err(Halt::runtime)?;
+        let mut skipped = out.skipped;
+        let (mut stored, mut bytes) = (0u32, 0u64);
+        for file in &out.files {
+            match store.put_file(name, file).await {
+                Ok(()) => {
+                    stored = stored.saturating_add(1);
+                    bytes = bytes.saturating_add(file.contents.len() as u64);
+                }
+                Err(e) if e.kind == OutputErrorKind::Invalid => {
+                    skipped.push(SkippedFile::new(&file.path, e.to_string()))
+                }
+                Err(e) => return Err(Halt::Retry(e.to_string())),
+            }
+        }
+        Ok(OutputsReport {
+            stored,
+            bytes,
+            skipped: u32::try_from(skipped.len()).unwrap_or(u32::MAX),
+            first_skipped: (skipped.into_iter().take(FIRST_SKIPPED))
+                .map(|s| SkippedFile::new(text::reason(&s.path), text::reason(&s.reason)))
+                .collect(),
+            error: None,
+        })
+    }
+
+    /// Reads the last progress, then records the pending end with `outputs` and sends it.
+    async fn finish(&self, turn: &mut ContainerTurn<J>, name: &str, outputs: OutputsReport) -> HandlerResult {
+        self.progress(turn, name).await?;
+        self.record_pending(turn, outputs).await
+    }
+
+    /// Records the pending end with `outputs` and sends it.
+    async fn record_pending(&self, turn: &mut ContainerTurn<J>, outputs: OutputsReport) -> HandlerResult {
+        let Some(mut end) = turn.state_mut().pending.take() else { return Ok(()) };
+        end.outputs = Some(outputs);
+        self.record(turn, end).await
+    }
+}
+
+/// Why a collecting step stopped early.
+enum Halt {
+    /// An error a retry can cure: it counts as a runtime error.
+    Retry(String),
+    /// An error a retry cannot cure: the collection finishes with it.
+    End(String),
+}
+
+impl Halt {
+    /// A runtime error: a bad path (`InvalidSpec`), a missing call (`Unsupported`) and a gone container (`Conflict`)
+    /// end the collection; the others are retried.
+    fn runtime(error: ContainerError) -> Self {
+        match error.kind {
+            ErrorKind::InvalidSpec | ErrorKind::Unsupported | ErrorKind::Conflict => Self::End(error.to_string()),
+            _ => Self::Retry(error.to_string()),
+        }
+    }
+
+    /// A store error of the log: `Invalid` ends the collection; the others are retried.
+    fn store(error: OutputError) -> Self {
+        match error.kind {
+            OutputErrorKind::Invalid => Self::End(error.to_string()),
+            _ => Self::Retry(error.to_string()),
+        }
     }
 }
 

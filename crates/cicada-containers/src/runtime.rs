@@ -84,8 +84,9 @@ pub trait ContainerRuntime: Send + Sync + 'static {
 
     /// Up to `max_lines` log lines of the container `name` after `cursor` (from the first line for `None`), each
     /// with its time, its stream and its text as lossy UTF-8 without the newline, and the cursor to call again with.
-    /// For a host that follows a run's output and keeps it outside the container; call it outside actor turns, as a
-    /// page is too big for actor state.
+    /// For a host that follows a run's output and keeps it outside the container, such as the container actor with a
+    /// store ([`ContainerActor::with_store`](crate::ContainerActor::with_store)). A page goes to a store, not into
+    /// actor state; called in a turn, a long read needs the job's [`MAX_TURN`](crate::ContainerJob::MAX_TURN).
     ///
     /// Paging to the end gives every line once, in log order, and the same cursor gives the same lines first. A page
     /// with fewer than `max_lines` lines has read everything there is now: call again later with
@@ -120,8 +121,9 @@ pub trait ContainerRuntime: Send + Sync + 'static {
     /// The regular files at or below `path` of the container `name`, created, running or ended (until
     /// [`remove`](Self::remove)): every file below a folder, or the one file `path` names. Each kept file is whole,
     /// with its absolute path, contents and permission bits, so it can go to [`copy_in`](Self::copy_in) of another
-    /// container. For a host that collects a run's artifacts after it ended, or reads a small progress file while it
-    /// runs; call it outside actor turns, as the files are too big for actor state.
+    /// container. For a host that collects a run's artifacts after it ended, as the container actor with a store does,
+    /// or reads a small progress file while it runs. The files go to a store, not into actor state; called in a turn,
+    /// a long copy needs the job's [`MAX_TURN`](crate::ContainerJob::MAX_TURN).
     ///
     /// **Limits.** A file goes into [`files`](CopyOut::files) when its size fits what is left of
     /// [`max_bytes`](CopyLimits::max_bytes); else it is in [`skipped`](CopyOut::skipped) with its size, and the copy

@@ -23,7 +23,7 @@
     },
     "Start": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "Runs the container until it ends, and sends the end to `to`, with its progress first when `progressType` is\ngiven. The first `Start` sets the target; a later one changes nothing, unless the container has ended: then it\nsends the saved end to its own target at once, again for each such `Start`. A message type out of bounds is\nrefused for good, and nothing is saved.",
+      "description": "Runs the container until it ends, and sends the end to `to`, with its progress first when `progressType` is\ngiven. The first `Start` sets the target; a later one changes nothing, unless the container has ended: then it\nsends the saved end to its own target at once, again for each such `Start`. While the outputs are collected\nthe end is not saved yet: it goes to the first target when the collection finishes. A message type out of\nbounds is refused for good, and nothing is saved.",
       "properties": {
         "messageType": {
           "description": "The message type of the end, whose payload is `{\"key\": …, \"end\": …}`, a [`ContainerEnded`]; not empty, at\nmost 200 characters, without NUL. The target's registry is checked only when the end is sent.",
@@ -64,7 +64,7 @@
   "state": {
     "$defs": {
       "ContainerEnd": {
-        "description": "The end of a container: saved in the state and sent to the target in the commit that records it, before anything\nremoves the container. Decoding refuses a `kind` on an end that is not `failed`, in a state and in a\n[`ContainerEnded`] alike.",
+        "description": "The end of a container: saved in the state and sent to the target in the commit that records it, before anything\nremoves the container. Decoding refuses a `kind` on an end that is not `failed`, in a state and in a\n[`ContainerEnded`] alike.\n\nBuilt as a literal, it names every field: `outputs: None` for an end without a store.",
         "properties": {
           "code": {
             "description": "The exit code, when the runtime gave one.",
@@ -93,6 +93,17 @@
           "outcome": {
             "$ref": "#/$defs/Outcome",
             "description": "How it ended."
+          },
+          "outputs": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/OutputsReport"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What went into the actor's [`OutputStore`](crate::OutputStore) at the end: on every end of a container that ran,\nwhen the actor has a store; absent without a store, on an end the container did not run for (`notStarted`,\n`missing`, `runtimeErrors`) and on an end saved before 0.23.0."
           },
           "reason": {
             "description": "Why, in words: at most 1 KiB, without NUL.",
@@ -210,6 +221,51 @@
           }
         ]
       },
+      "OutputsReport": {
+        "description": "What the container actor stored at a container's end, in [`ContainerEnd::outputs`]: the rest of its log, then the\nfiles of its job's [`outputs`](crate::ContainerJob::outputs) folder within its limits. The counts are those of the\nlast attempt; all 0 without an outputs folder.",
+        "properties": {
+          "bytes": {
+            "description": "Their bytes together.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "error": {
+            "description": "Why the outputs could not be stored, as `(no outputs: …)`: the collection failed too often in a row, or a retry\ncannot help (a bad outputs path, a runtime or store without the call, or the container gone); none when it went\nthrough. What was stored before the error stays stored.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "firstSkipped": {
+            "description": "The first 10 skipped entries, each with its path and reason (a size appears only in a reason); both without NUL\nand at most 1 KiB.",
+            "items": {
+              "$ref": "#/$defs/SkippedFile"
+            },
+            "maxItems": 10,
+            "type": "array"
+          },
+          "skipped": {
+            "description": "How many entries were skipped: by [`copy_out`](crate::ContainerRuntime::copy_out)'s limits and link rule, or\nrefused by the store.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "stored": {
+            "description": "How many files were stored.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stored",
+          "bytes",
+          "skipped",
+          "firstSkipped"
+        ],
+        "type": "object"
+      },
       "Phase": {
         "description": "Where a container is.",
         "oneOf": [
@@ -221,6 +277,11 @@
           {
             "const": "started",
             "description": "Created and started.",
+            "type": "string"
+          },
+          {
+            "const": "collecting",
+            "description": "Ended, its end held as pending while its log and outputs go into the actor's\n[`OutputStore`](crate::OutputStore); its end is recorded and sent when that is done. Only with a store.",
             "type": "string"
           },
           {
@@ -245,6 +306,24 @@
         },
         "required": [
           "image"
+        ],
+        "type": "object"
+      },
+      "SkippedFile": {
+        "description": "An entry a [`copy_out`](crate::ContainerRuntime::copy_out) left out, or a file an\n[`OutputStore`](crate::OutputStore) refused; in an [`OutputsReport`](crate::OutputsReport) as\n`{\"path\": …, \"reason\": …}`.",
+        "properties": {
+          "path": {
+            "description": "Its absolute path in the container, or the archive's name for an entry outside the folder.",
+            "type": "string"
+          },
+          "reason": {
+            "description": "Why it is left, such as its size and the bytes left.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "reason"
         ],
         "type": "object"
       }
@@ -305,10 +384,21 @@
         ],
         "description": "Run, stop or remove; absent or null before the first `Start`, `Stop` or `Remove`, and set in any other phase\nthan new."
       },
+      "pending": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ContainerEnd"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The end held while the outputs are collected; present exactly while collecting."
+      },
       "phase": {
         "$ref": "#/$defs/Phase",
         "default": "new",
-        "description": "New, started, ended or removed; absent: new."
+        "description": "New, started, collecting, ended or removed; absent: new."
       },
       "progressHash": {
         "description": "The lower-case hex SHA-256 of the last progress text sent; absent or null exactly while `progressSeq` is 0.",

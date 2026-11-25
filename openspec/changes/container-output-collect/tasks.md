@@ -6,15 +6,15 @@ check the `release:` line of `python3 scripts/status.py`, builder.md, Version). 
 requirement needs `container-progress` archived first) and `specs/container-outputs/spec.md`. Run the crate's tests
 with every feature: `cargo test -p cicada-containers --all-features`.
 
-- [ ] 1. **Types and the store's rules.** `Outputs` (`Outputs::new(path)`, 64 MiB and 1000 files),
+- [x] 1. **Types and the store's rules.** `Outputs` (`Outputs::new(path)`, 64 MiB and 1000 files),
   `ContainerJob::outputs` (default `None`), `OutputsReport`, serde and `JsonSchema` on `SkippedFile`, the optional
   `outputs` of `ContainerEnd`, the phase `Collecting` and the state field `pending` with the validity rule;
   `ContainerActor::with_store`. The store's tighter input rules (decision 6) in the helpers, `MemoryOutputStore` and
   `check_output_store`. Update the test job's contract snapshot. Verify: wire, schema and store tests.
-- [ ] 2. **The collecting phase.** With a store, an end the container ran for goes to `Collecting` with `pending`;
+- [x] 2. **The collecting phase.** With a store, an end the container ran for goes to `Collecting` with `pending`;
   `Start`, `Stop` and `Remove` during it as decision 1 says; a 0.22 `Ended` state never collects; without a store,
   today's single commit. Verify: actor tests for each of these.
-- [ ] 3. **The log and the folder.** The log drained at most 20 pages per turn with the guarded append (decision 3);
+- [x] 3. **The log and the folder.** The log drained at most 20 pages per turn with the guarded append (decision 3);
   then one turn of `copy_out` and `put_file` per file, refused files skipped, the report built (decision 4); the turn
   that finishes records the end with `outputs`, sets `Ended`, sends it and the last progress. Verify: the store and
   report tests of the design's Tests section, a running archiver next to it, two containers with one slow.

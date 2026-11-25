@@ -6,6 +6,8 @@ use cicada::time::Timestamp;
 use serde::de::{DeserializeOwned, Error as _};
 use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::SkippedFile;
+
 /// Settings, a `Start` or a state of a container actor out of their bounds; it prints why.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{0}")]
@@ -25,8 +27,9 @@ pub struct InvalidContainer(pub(crate) String);
 pub enum ContainerMsg {
     /// Runs the container until it ends, and sends the end to `to`, with its progress first when `progressType` is
     /// given. The first `Start` sets the target; a later one changes nothing, unless the container has ended: then it
-    /// sends the saved end to its own target at once, again for each such `Start`. A message type out of bounds is
-    /// refused for good, and nothing is saved.
+    /// sends the saved end to its own target at once, again for each such `Start`. While the outputs are collected
+    /// the end is not saved yet: it goes to the first target when the collection finishes. A message type out of
+    /// bounds is refused for good, and nothing is saved.
     Start {
         /// The target of the end.
         to: ActorAddress,
@@ -147,6 +150,9 @@ pub enum Phase {
     New,
     /// Created and started.
     Started,
+    /// Ended, its end held as pending while its log and outputs go into the actor's
+    /// [`OutputStore`](crate::OutputStore); its end is recorded and sent when that is done. Only with a store.
+    Collecting,
     /// Ended, its end recorded.
     Ended,
     /// Removed, after its end.
@@ -206,6 +212,8 @@ pub enum FailureKind {
 /// The end of a container: saved in the state and sent to the target in the commit that records it, before anything
 /// removes the container. Decoding refuses a `kind` on an end that is not `failed`, in a state and in a
 /// [`ContainerEnded`] alike.
+///
+/// Built as a literal, it names every field: `outputs: None` for an end without a store.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct ContainerEnd {
     /// How it ended.
@@ -222,6 +230,35 @@ pub struct ContainerEnd {
     /// empty when nothing was made, or `(no logs: …)` when they could not be read.
     #[serde(default)]
     pub logs: String,
+    /// What went into the actor's [`OutputStore`](crate::OutputStore) at the end: on every end of a container that ran,
+    /// when the actor has a store; absent without a store, on an end the container did not run for (`notStarted`,
+    /// `missing`, `runtimeErrors`) and on an end saved before 0.23.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outputs: Option<OutputsReport>,
+}
+
+/// What the container actor stored at a container's end, in [`ContainerEnd::outputs`]: the rest of its log, then the
+/// files of its job's [`outputs`](crate::ContainerJob::outputs) folder within its limits. The counts are those of the
+/// last attempt; all 0 without an outputs folder.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OutputsReport {
+    /// How many files were stored.
+    pub stored: u32,
+    /// Their bytes together.
+    pub bytes: u64,
+    /// How many entries were skipped: by [`copy_out`](crate::ContainerRuntime::copy_out)'s limits and link rule, or
+    /// refused by the store.
+    pub skipped: u32,
+    /// The first 10 skipped entries, each with its path and reason (a size appears only in a reason); both without NUL
+    /// and at most 1 KiB.
+    #[schemars(length(max = 10))]
+    pub first_skipped: Vec<SkippedFile>,
+    /// Why the outputs could not be stored, as `(no outputs: …)`: the collection failed too often in a row, or a retry
+    /// cannot help (a bad outputs path, a runtime or store without the call, or the container gone); none when it went
+    /// through. What was stored before the error stays stored.
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 impl<'de> Deserialize<'de> for ContainerEnd {
@@ -237,13 +274,22 @@ impl<'de> Deserialize<'de> for ContainerEnd {
             reason: String,
             #[serde(default)]
             logs: String,
+            #[serde(default)]
+            outputs: Option<OutputsReport>,
         }
 
-        let RawEnd { outcome, code, kind, reason, logs } = RawEnd::deserialize(deserializer)?;
+        let RawEnd { outcome, code, kind, reason, logs, outputs } = RawEnd::deserialize(deserializer)?;
         if kind.is_some() && outcome != Outcome::Failed {
             return Err(D::Error::custom("an end has a kind only when it is failed"));
         }
-        Ok(Self { outcome, code, kind, reason, logs })
+        Ok(Self { outcome, code, kind, reason, logs, outputs })
+    }
+}
+
+impl OutputsReport {
+    /// Nothing stored, and `error` as `(no outputs: …)`, bounded as a reason.
+    pub(crate) fn failed(error: &str) -> Self {
+        Self { error: Some(super::text::reason(&format!("(no outputs: {error})"))), ..Self::default() }
     }
 }
 
@@ -298,6 +344,8 @@ pub struct ContainerState<R> {
     pub deadline: Option<Timestamp>,
     /// The end, once recorded.
     pub end: Option<ContainerEnd>,
+    /// The end held while the container is collecting, recorded with its outputs when that is done.
+    pub pending: Option<ContainerEnd>,
     /// Why the end could not be sent to the target: its type is not registered or does not take the message.
     pub undelivered: Option<String>,
     /// The armed poll; only it acts.
@@ -322,7 +370,7 @@ struct RawState<R> {
     /// than new.
     #[serde(default)]
     goal: Option<Goal>,
-    /// New, started, ended or removed; absent: new.
+    /// New, started, collecting, ended or removed; absent: new.
     #[serde(default)]
     phase: Phase,
     /// Where the end goes; absent or null before the first `Start`.
@@ -334,6 +382,9 @@ struct RawState<R> {
     /// The end; present exactly once ended or removed.
     #[serde(default)]
     end: Option<ContainerEnd>,
+    /// The end held while the outputs are collected; present exactly while collecting.
+    #[serde(default)]
+    pending: Option<ContainerEnd>,
     /// Why the end could not be sent; absent or null when it was, or was not yet.
     #[serde(default)]
     undelivered: Option<String>,
@@ -365,6 +416,7 @@ impl<R> TryFrom<RawState<R>> for ContainerState<R> {
             target: raw.target,
             deadline: raw.deadline,
             end: raw.end,
+            pending: raw.pending,
             undelivered: raw.undelivered,
             armed: raw.armed,
             due: raw.due,
@@ -385,8 +437,8 @@ impl<R> ContainerState<R> {
     ///
     /// let state = ContainerState::new(serde_json::json!({"commit": "abc"}));
     /// assert_eq!(serde_json::to_value(&state)?, serde_json::json!({"request": {"commit": "abc"}, "goal": null,
-    ///     "phase": "new", "target": null, "deadline": null, "end": null, "undelivered": null, "armed": null,
-    ///     "due": null, "errors": 0, "progressSeq": 0, "progressHash": null}));
+    ///     "phase": "new", "target": null, "deadline": null, "end": null, "pending": null, "undelivered": null,
+    ///     "armed": null, "due": null, "errors": 0, "progressSeq": 0, "progressHash": null}));
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn new(request: R) -> Self {
@@ -397,6 +449,7 @@ impl<R> ContainerState<R> {
             target: None,
             deadline: None,
             end: None,
+            pending: None,
             undelivered: None,
             armed: None,
             due: None,
@@ -411,6 +464,9 @@ impl<R> ContainerState<R> {
         let ended = matches!(self.phase, Phase::Ended | Phase::Removed);
         if ended != self.end.is_some() {
             return Err(InvalidContainer("a container has an end exactly once it is ended or removed".to_owned()));
+        }
+        if (self.phase == Phase::Collecting) != self.pending.is_some() {
+            return Err(InvalidContainer("a container has a pending end exactly while it is collecting".to_owned()));
         }
         if self.phase != Phase::New && self.goal.is_none() {
             return Err(InvalidContainer("a container past new has a goal".to_owned()));
@@ -462,6 +518,9 @@ mod tests {
                 json!({"request": 1, "target": {"to": "build/b1", "messageType": "E", "progressType": ""}}),
                 "progressType",
             ),
+            (json!({"request": 1, "goal": "run", "phase": "collecting"}), "pending end exactly"),
+            (json!({"request": 1, "goal": "run", "phase": "started", "pending": end}), "pending end exactly"),
+            (json!({"request": 1, "goal": "run", "phase": "collecting", "pending": end, "end": end}), "an end exactly"),
             (json!({"request": 1, "progressSeq": 1}), "progress hash"),
             (json!({"request": 1, "progressHash": "ab"}), "progress hash"),
         ] {
@@ -470,6 +529,8 @@ mod tests {
         }
         let removed = json!({"request": 1, "goal": "remove", "phase": "removed", "end": end});
         assert!(decode(removed).is_ok());
+        let collecting = json!({"request": 1, "goal": "remove", "phase": "collecting", "pending": end});
+        assert!(decode(collecting).is_ok());
     }
 
     #[test]
@@ -494,6 +555,23 @@ mod tests {
         let failed = json!({"outcome": "failed", "kind": "outOfMemory", "reason": "out of memory"});
         let ended: ContainerEnded = serde_json::from_value(json!({"key": "j1", "end": failed})).unwrap();
         assert_eq!(ended.end.kind, Some(FailureKind::OutOfMemory));
+    }
+
+    #[test]
+    fn an_end_without_outputs_decodes_and_keeps_none_on_the_wire() {
+        let old = json!({"outcome": "exited", "code": 0, "kind": null, "reason": "exited with code 0", "logs": ""});
+        let ended: ContainerEnded = serde_json::from_value(json!({"key": "j1", "end": old})).unwrap();
+        assert_eq!(ended.end.outputs, None);
+        assert_eq!(serde_json::to_value(&ended.end).unwrap(), old, "no `outputs` written without one");
+        let report = json!({"stored": 1, "bytes": 3, "skipped": 1,
+            "firstSkipped": [{"path": "/out/big", "reason": "70 bytes, more than the 3 left"}], "error": null});
+        let mut with = old.clone();
+        with["outputs"] = report.clone();
+        let end: ContainerEnd = serde_json::from_value(with.clone()).unwrap();
+        let outputs = end.outputs.clone().unwrap();
+        assert_eq!((outputs.stored, outputs.bytes, outputs.skipped), (1, 3, 1));
+        assert_eq!(outputs.first_skipped, [SkippedFile::new("/out/big", "70 bytes, more than the 3 left")]);
+        assert_eq!(serde_json::to_value(&end).unwrap(), with);
     }
 
     #[test]

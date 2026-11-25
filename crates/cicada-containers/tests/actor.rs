@@ -1597,7 +1597,7 @@ fn the_contract_of_a_test_job_matches_its_fixture() {
         state["$defs"][def]["oneOf"].as_array().unwrap().iter().map(|v| v["const"].clone()).collect()
     };
     assert_eq!(names("Goal"), [json!("run"), json!("stop"), json!("remove")]);
-    assert_eq!(names("Phase"), [json!("new"), json!("started"), json!("ended"), json!("removed")]);
+    assert_eq!(names("Phase"), [json!("new"), json!("started"), json!("collecting"), json!("ended"), json!("removed")]);
     assert_eq!(names("Outcome"), [json!("exited"), json!("failed"), json!("timedOut"), json!("stopped")]);
     let kinds =
         [json!("notStarted"), json!("outOfMemory"), json!("runtimeEnded"), json!("missing"), json!("runtimeErrors")];
@@ -1605,6 +1605,10 @@ fn the_contract_of_a_test_job_matches_its_fixture() {
     let end = &state["$defs"]["ContainerEnd"];
     assert_eq!(end["required"], json!(["outcome", "reason"]), "an end saved before kinds has none");
     assert!(end["properties"]["kind"].is_object());
+    assert!(end["properties"]["outputs"].is_object(), "the outputs report, optional");
+    let report = &state["$defs"]["OutputsReport"];
+    assert_eq!(report["required"], json!(["stored", "bytes", "skipped", "firstSkipped"]));
+    assert_eq!(report["properties"]["firstSkipped"]["maxItems"], json!(10));
     let docs = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/reference/contracts/test.container.json");
     assert!(!docs.exists(), "no fixed type name in the catalog");
 }
@@ -1642,7 +1646,7 @@ async fn the_states_of_each_phase_and_the_end_payload_pass_their_samples() {
     assert_eq!(
         new,
         json!({"request": {"image": "alpine:3"}, "goal": null, "phase": "new", "target": null,
-        "deadline": null, "end": null, "undelivered": null, "armed": null, "due": null, "errors": 0,
+        "deadline": null, "end": null, "pending": null, "undelivered": null, "armed": null, "due": null, "errors": 0,
         "progressSeq": 0, "progressHash": null})
     );
     phases.push(new);

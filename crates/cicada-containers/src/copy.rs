@@ -1,6 +1,9 @@
 //! Copying out: [`CopyLimits`], [`CopyOut`] and [`SkippedFile`], and the private collector that both runtimes feed
 //! with the entries of a folder in order, so they keep and skip the same files.
 
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
 use crate::paths::path_parts;
 use crate::{ContainerError, CopyFile, ErrorKind};
 
@@ -41,9 +44,11 @@ impl CopyOut {
     }
 }
 
-/// An entry a [`copy_out`](crate::ContainerRuntime::copy_out) left out.
+/// An entry a [`copy_out`](crate::ContainerRuntime::copy_out) left out, or a file an
+/// [`OutputStore`](crate::OutputStore) refused; in an [`OutputsReport`](crate::OutputsReport) as
+/// `{"path": …, "reason": …}`.
 #[non_exhaustive]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SkippedFile {
     /// Its absolute path in the container, or the archive's name for an entry outside the folder.
     pub path: String,

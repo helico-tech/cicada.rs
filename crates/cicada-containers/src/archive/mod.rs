@@ -1,5 +1,5 @@
-//! The [`LogArchiver`]: follows the logs of a job's containers and keeps them in an [`OutputStore`], outside actor
-//! turns.
+//! The [`LogArchiver`]: follows the logs of a job's containers and keeps them in an [`OutputStore`], in a task of its
+//! own.
 
 #[cfg(test)]
 mod tests;
@@ -73,8 +73,10 @@ impl Default for ArchiveSettings {
 pub struct InvalidArchive(String);
 
 /// Follows the log of every container of a container job and keeps it in an [`OutputStore`], so it survives the
-/// container's removal. It runs outside actor turns, as a page is too big for actor state: a host runs
-/// [`run`](Self::run) as an app task or spawns it itself.
+/// container's removal. It runs as a task, not in actor turns: a host runs [`run`](Self::run) as an app task or spawns
+/// it itself. The container actor with the same store ([`ContainerActor::with_store`](crate::ContainerActor::with_store))
+/// stores the rest of each log at the end in its own turns, where a long read needs the job's
+/// [`MAX_TURN`](crate::ContainerJob::MAX_TURN); the guarded append keeps each line once between the two.
 ///
 /// **Which containers.** The containers [`list`](ContainerRuntime::list) gives for the label [`PREFIX_LABEL`] with the
 /// job's prefix, which the container actor puts on every container it creates. Only existing containers are followed,
@@ -96,7 +98,8 @@ pub struct InvalidArchive(String);
 /// at most 60 s. A store's `Conflict` reads the cursor again next round, and its `Invalid` skips the container.
 ///
 /// **Limits.** A container made before the label existed is not followed. Lines a container writes after the last
-/// read, when it is removed before the next round, are not stored.
+/// read, when it is removed before the next round, are not stored, unless its actor has the store and collects them
+/// at the end.
 ///
 /// ```
 /// use std::sync::Arc;

@@ -4,8 +4,9 @@
 //! container under a type name its [`ContainerJob`] chooses, which reconciles the container toward a goal by one armed
 //! poll at a time and reports its end once. A host keeps a container's log and output files in its own
 //! [`OutputStore`], keyed by container name, with an in-memory one, `MemoryOutputStore`, and the conformance check
-//! `check_output_store` behind `testing`. A [`LogArchiver`] follows the logs of a job's containers into that store,
-//! outside actor turns.
+//! `check_output_store` behind `testing`. A [`LogArchiver`] follows the logs of a job's containers into that store in a
+//! task of its own, and the actor with the store ([`ContainerActor::with_store`]) keeps the rest of each log and the
+//! job's [`Outputs`] there at the end.
 //!
 //! The runtime's public items name no type of a Docker client, so another backend fits the trait. The crate is an
 //! optional layer outside the core (ADR 0056): no library crate of the workspace depends on it.
@@ -58,8 +59,8 @@ mod spec;
 
 pub use actor::{
     Container, ContainerActor, ContainerEnd, ContainerEnded, ContainerJob, ContainerMsg, ContainerProgress,
-    ContainerSettings, ContainerState, EndTarget, FailureKind, Goal, Inputs, InvalidContainer, Outcome, PREFIX_LABEL,
-    Phase,
+    ContainerSettings, ContainerState, EndTarget, FailureKind, Goal, Inputs, InvalidContainer, Outcome, Outputs,
+    OutputsReport, PREFIX_LABEL, Phase,
 };
 pub use archive::{ArchiveSettings, InvalidArchive, LogArchiver};
 pub use copy::{CopyLimits, CopyOut, SkippedFile};
