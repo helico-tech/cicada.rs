@@ -16,9 +16,8 @@ The sample service (`sample-service`) in Docker, driven over HTTP only:
   The class checks selected-type registration, no sample singleton or watch, a counter recording `exec-worker`,
   and exit code 0 after SIGTERM. Teardown removes both containers, their anonymous volumes and the network, also
   after a failure.
-- `ContainerDockerTest` runs tenth: `DockerRuntime` of `cicada-containers` against the same daemon, at `DOCKER_HOST`
-  when it is set, else at the endpoint of the CLI's current context (`docker context inspect`), so no `DOCKER_HOST` is
-  needed. It uses `postgres:18`, pulls `busybox:1.37.0` (removed first when no container uses it) and runs a
+- `ContainerDockerTest` runs tenth: `DockerRuntime` of `cicada-containers` against the daemon `connect()` finds, as
+  the `docker` CLI does, so no `DOCKER_HOST` is needed. It uses `postgres:18`, pulls `busybox:1.37.0` (removed first when no container uses it) and runs a
   `registry:2` with basic auth for the private pull, so it needs registry access. Everything it makes is named
   `cicada-rs-e2e-ctr-*` and labelled `cicada-rs-e2e=containers`; its hooks sweep that label and the suite's teardown
   removes it. Run only this class with `CICADA_E2E_ONLY=ContainerDockerTest` (the stack still comes up first).

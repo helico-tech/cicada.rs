@@ -27,14 +27,24 @@ The trait is an `async_trait` and works as `Arc<dyn ContainerRuntime>`. No publi
 
 ### Connect to Docker
 
-`DockerRuntime::connect()` reads `DOCKER_HOST` (`unix://`, `tcp://` or `http://`) or uses the local socket. It does not
-contact the daemon: the API version is agreed on the first call, so a host starts while Docker is down and its calls
-fail with the retryable `DaemonUnavailable` until it is up. A missing socket file is `DaemonUnavailable`; `https://`
-and `ssh://` are `Other`, as there is no TLS. It needs Docker 25 or later and the host's Tokio runtime.
+`DockerRuntime::connect()` uses the Docker the `docker` CLI uses, in this order: `DOCKER_HOST` (`unix://`, `tcp://` or
+`http://`); else the context `DOCKER_CONTEXT` names; else `/var/run/docker.sock` when it exists; else the CLI's current
+context (`docker context use`). So on a Mac with OrbStack, Colima or Docker Desktop it works without a link at
+`/var/run/docker.sock`. Context lookup arrives in 0.21.2; up to 0.21.1, `connect()` reads only `DOCKER_HOST` and the
+local socket.
 
-Docker CLI contexts (`docker context use`) are not read. When Docker has no socket at the default place (OrbStack
-without its `/var/run/docker.sock` link, Colima, rootless Docker), pass the context's endpoint to
-`DockerRuntime::connect_to(host)`, or set `DOCKER_HOST=$(docker context inspect -f '{{.Endpoints.docker.Host}}')`.
+`connect()` does not contact the daemon: the API version is agreed on the first call, so a host starts while Docker is
+down and its calls fail with the retryable `DaemonUnavailable` until it is up. It needs Docker 25 or later and the
+host's Tokio runtime. For a setup `connect()` does not take, such as an endpoint the host knows, pass it to
+`DockerRuntime::connect_to("tcp://build-host:2375")`.
+
+- A machine with a working local socket keeps using it whatever the current context is; only `DOCKER_CONTEXT` or
+  `DOCKER_HOST` move it. Set `DOCKER_CONTEXT` when `docker` and your host must agree.
+- There is no TLS. A TLS context, an `https://` or `ssh://` endpoint and a context that cannot be read fail with
+  `Other`, naming the context; nothing falls back to the socket. Set `DOCKER_HOST` to a plain endpoint, or use
+  `connect_to`. A context whose socket is missing is `DaemonUnavailable`.
+- The context is read once, at `connect()`: switching contexts later does not move a runtime. `docker_config(dir)`
+  sets only where pulls find logins, not where `connect()` finds contexts.
 
 **Keep secrets out of logs.** bollard logs request bodies, secret environment included, at `debug` under the target
 `bollard`. Keep that target at `info` or above, for example `RUST_LOG=debug,bollard=info`. The backend itself logs
