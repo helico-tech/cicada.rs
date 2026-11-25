@@ -21,6 +21,6 @@ with every feature: `cargo test -p cicada-containers --all-features`.
   `Other` (decision 4). `docs-handoff.md` carries the kind and that a follower stops at `Unsupported`; nothing blocks.
   No edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify: `CICADA_E2E=1 cargo test -p cicada-e2e --
   --nocapture` (or the gate below); `cargo test -p cicada-examples --test docs`.
-- [ ] 4. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
+- [x] 4. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
   `cargo test --workspace`, `openspec validate container-logs-unreadable --strict`, commit, then
   `python3 scripts/gate.py run --e2e` (the change touches `e2e/`).
