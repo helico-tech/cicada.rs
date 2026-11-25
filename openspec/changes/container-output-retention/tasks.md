@@ -14,7 +14,7 @@ builder.md, Version). Builds on `container-output-collect` (`ContainerActor::wit
   `Check`, a restart, a retention unset later.
 - [x] 3. **Errors.** `Unavailable` and `Other` retry with the backoff without limit; `Invalid` clears with a warning;
   no store at the due time clears with a warning (decision 3). Verify: the error tests of the design.
-- [ ] 4. **Changelog and docs handoff.** The 0.23.0 section names `output_retention` under Added and the state field
+- [x] 4. **Changelog and docs handoff.** The 0.23.0 section names `output_retention` under Added and the state field
   in its BREAKING notes; the handoff carries the design's Docs section. No edit to `README.md`, `AGENTS.md` or the
   handwritten docs. Verify: `cargo test -p cicada-examples --test docs` and `--doc`.
 - [ ] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,

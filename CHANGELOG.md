@@ -12,9 +12,10 @@ moves: a correction is a new version.
 A container job's program reports its progress through a file, and the container actor sends it to the owner as
 numbered messages (ADR 0065). With an output store, the container actor keeps the rest of a container's log and its
 job's output folder there at the end, in its own turns, and the end tells the owner what was stored and skipped (ADR
-0066). A breaking release: `Start` and `EndTarget` gain `progressType`, `ContainerState` two progress fields, a
-`pending` end and the phase `collecting`, and `ContainerEnd` an optional `outputs`, so the contract hash of every
-container job type changes. Hosts on 0.22.x follow "Changing a contract" in the operations guide for those types. The
+0066). With `output_retention`, the actor deletes those outputs a set time after the container's removal. A breaking
+release: `Start` and `EndTarget` gain `progressType`, `ContainerState` two progress fields, a `pending` end, the phase
+`collecting` and `outputsUntil`, and `ContainerEnd` an optional `outputs`, so the contract hash of every container job
+type changes. Hosts on 0.22.x follow "Changing a contract" in the operations guide for those types. The
 store schema, the HTTP API, the ready-made actors' contracts and the guarantees are those of 0.22.1.
 
 ### Added
@@ -60,6 +61,16 @@ store schema, the HTTP API, the ready-made actors' contracts and the guarantees 
   over 200 characters and a control character (NUL included) in a path give `Invalid` in `check_container_name`,
   `clean_output_path`, `MemoryOutputStore` and `check_output_store`; the rustdoc of `OutputStore` warns that a store on a
   case-insensitive file system must keep `Job` and `job` apart.
+- `cicada-containers`: output retention. `ContainerSettings::output_retention: Option<Duration>` (default `None`: kept
+  until the host deletes them). With a store and a retention, the step that removes the container saves
+  `outputsUntil`, now plus the retention capped at the largest instant, in the state and arms a poll then; that poll
+  calls `OutputStore::remove` with the container's name and clears it. The container is removed from the runtime first,
+  so no `LogArchiver` stores it again. The saved time decides: a retention changed or unset later does not move it, and
+  zero deletes in the poll after the removal. `Unavailable` and `Other` are tried again with the backoff up to
+  `max_backoff`, without limit; `Invalid`, and an actor without a store at the due time, clear `outputsUntil` with a
+  warning. While it is set, a removed container has work left, so `Check` re-arms a lost poll at the saved time. The
+  actor's own record stays. An actor deleted before the due time leaves its outputs in the store: call
+  `OutputStore::remove` then. Covered by the retention tests in `crates/cicada-containers/tests/outputs.rs`.
 
 ### Changed
 
@@ -73,6 +84,9 @@ store schema, the HTTP API, the ready-made actors' contracts and the guarantees 
   `#[non_exhaustive]`: Rust code that builds it gains `outputs: None`; code that matches `Phase` exhaustively gains
   `Collecting`, and code that builds `ContainerState` by its fields gains `pending: None`. An owner's message family
   that takes `ContainerEnded` changes its contract too, as the end's schema gains `outputs`.
+- **BREAKING** for container job types, the same contract change: the state gains `outputsUntil`, set only in the phase
+  `removed`; a state saved by 0.22 has none, and its outputs are not deleted. Code that builds `ContainerState` by its
+  fields gains `outputs_until: None`.
 - `cicada-containers`: `check_container_name` and `clean_output_path` refuse what they took before: a name over 200
   characters and a path with a control character. A host's own store that uses them refuses them too.
 
