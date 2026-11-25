@@ -7,16 +7,17 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.23.0 — unreleased
+## 0.23.0 — 2026-11-25
 
-A container job's program reports its progress through a file, and the container actor sends it to the owner as
-numbered messages (ADR 0065). With an output store, the container actor keeps the rest of a container's log and its
-job's output folder there at the end, in its own turns, and the end tells the owner what was stored and skipped (ADR
-0066). With `output_retention`, the actor deletes those outputs a set time after the container's removal. A breaking
-release: `Start` and `EndTarget` gain `progressType`, `ContainerState` two progress fields, a `pending` end, the phase
+A container job's program reports its progress through a file, and the container actor sends it to the owner as numbered
+messages (ADR 0065). With an output store, the container actor keeps the rest of a container's log and its job's output
+folder there at the end, in its own turns, and the end tells the owner what was stored and skipped (ADR 0066). With
+`output_retention`, the actor deletes those outputs a set time after the container's removal. A breaking release:
+`Start` and `EndTarget` gain `progressType`, `ContainerState` two progress fields, a `pending` end, the phase
 `collecting` and `outputsUntil`, and `ContainerEnd` an optional `outputs`, so the contract hash of every container job
-type changes. Hosts on 0.22.x follow "Changing a contract" in the operations guide for those types. The
-store schema, the HTTP API, the ready-made actors' contracts and the guarantees are those of 0.22.1.
+type, and of every owner type whose messages take a `ContainerEnded`, changes. Hosts on 0.22.x follow "Changing a
+contract" in the operations guide for those types. The store schema, the HTTP API, the ready-made actors' contracts and
+the guarantees are those of 0.22.1.
 
 ### Added
 
