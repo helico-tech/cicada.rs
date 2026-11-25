@@ -7,7 +7,7 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.21.1 — unreleased
+## 0.21.1 — 2026-11-25
 
 A container runtime of `cicada-containers` reports its processor kind and operating system, which also shows that it
 answers, and `DockerRuntime` pulls a private image with the machine's `docker login`. Additive: the contracts, wire
