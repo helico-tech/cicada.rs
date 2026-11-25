@@ -17,6 +17,10 @@ and can be served to users. Factory does this in its runner; this line moves it 
 To decide in the design: how the archiver learns which containers to follow (the actor's state, a list by label, or a
 message from the actor), its poll interval, and how it hands over to the end of the container (`container-output-collect`).
 
+From the design review of `container-output-store`: `read_logs` already serves read-back, so no helper is needed; and
+after `remove` a container's cursor is `None` again, so no archiver may run for a container after its outputs were
+removed.
+
 ## Out of scope
 
 Progress files, output folders, retention.

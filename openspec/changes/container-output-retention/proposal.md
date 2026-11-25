@@ -13,6 +13,10 @@ itself (request from the Factory session, 2026-11-25; the owner accepted the spl
 To decide in the design: who schedules it (the container actor with its own timer, or the scheduler actor), the
 setting, and what happens to the container actor's own record.
 
+From the design review of `container-output-store`: after `remove` a container's cursor is `None` again, so retention
+removes only once no archiver runs for it; and whether outputs whose actor is gone stay findable (a list of stored
+containers) is decided here.
+
 ## Out of scope
 
 Retention of the actor's state (Cicada's retention covers messages).

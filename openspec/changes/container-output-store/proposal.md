@@ -4,7 +4,9 @@
 
 Factory keeps each run's logs and files in its own store (a folder per run) and reads them back for an HTTP route.
 Any host that runs containers needs the same, so `cicada-containers` gets the interface and the later changes of this
-line write through it (Factory's `store.rs`, about 1,000 lines with the runner, request from the Factory session, 2026-11-25; the owner accepted the split (CO-SPLIT, PL-SPLIT, AB-ORDER: container outputs first)).
+line write through it. ADR 0056 keeps a single consumer's layer at that consumer; the owner waived that on 2026-11-25
+(CO-SPLIT) for these general parts (Factory's `store.rs`, about 1,000 lines with the runner, request from the Factory
+session, 2026-11-25; the owner accepted the split (CO-SPLIT, PL-SPLIT, AB-ORDER: container outputs first)).
 
 ## What Changes
 
