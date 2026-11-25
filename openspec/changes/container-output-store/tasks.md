@@ -21,6 +21,6 @@ capability). Run the crate's tests with every feature: `cargo test -p cicada-con
   helpers, `MemoryOutputStore`, `check_output_store` and serde on `LogLine` under Added. `docs-handoff.md` carries
   the trait, the one-write rule, the input rules and the check for `docs/guide/containers.md`; nothing blocks. No edit
   to `README.md`, `AGENTS.md` or the handwritten docs. Verify: `cargo test -p cicada-examples --test docs`.
-- [ ] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
+- [x] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
   `cargo test --workspace`, `openspec validate container-output-store --strict`, commit, then
   `python3 scripts/gate.py run`.
