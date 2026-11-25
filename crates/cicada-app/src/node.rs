@@ -21,9 +21,10 @@ use cicada::runtime::{ActorSystemBuilder, SourceError, TurnSource, Worker, Worke
 use cicada::store::StoreError;
 use cicada::{Actor, ActorSystem, ActorType, Store};
 use cicada_axum::{actor_api, actor_health};
+use futures::FutureExt as _;
 use futures::future::BoxFuture;
 use tokio::net::TcpListener;
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 
 use crate::AppError;
@@ -94,12 +95,19 @@ pub(crate) type HttpFn = Box<dyn FnOnce(Router, &ActorSystem) -> Router + Send>;
 /// A function of `App::on_start`.
 pub(crate) type OnStartFn = Box<dyn FnOnce(ActorSystem) -> BoxFuture<'static, anyhow::Result<()>> + Send>;
 
+/// A task of `App::task`: its name and its function.
+pub(crate) struct HostTask {
+    pub name: String,
+    pub run: Box<dyn FnOnce(ActorSystem, Stopping) -> BoxFuture<'static, anyhow::Result<()>> + Send>,
+}
+
 /// What the host gave `App` for a node.
 pub(crate) struct Parts {
     pub types: Vec<HostedType>,
     pub observers: Vec<Arc<dyn TurnObserver>>,
     pub http: Vec<HttpFn>,
     pub on_start: Vec<OnStartFn>,
+    pub tasks: Vec<HostTask>,
 }
 
 /// The stop of a node: it is set once the future given to `run_with` completes, which is watched from the moment the
@@ -136,6 +144,149 @@ impl Drop for Stop {
     }
 }
 
+/// The stop of a node as a task of [`App::task`](crate::App::task) sees it. It is set when the node's stop begins: on
+/// SIGTERM or SIGINT (the future given to [`App::run_with`](crate::App::run_with) in a test), when a task ends before the
+/// stop, or when `serve` fails after the tasks started. It is never unset.
+#[derive(Debug, Clone)]
+pub struct Stopping(CancellationToken);
+
+impl Stopping {
+    /// Completes once the stop has begun; at once when it has.
+    pub async fn wait(&self) {
+        self.0.cancelled().await
+    }
+
+    /// Whether the stop has begun.
+    pub fn is_set(&self) -> bool {
+        self.0.is_cancelled()
+    }
+
+    fn set(&self) {
+        self.0.cancel()
+    }
+}
+
+/// How a task ended: its result, or the message of its panic.
+type TaskEnd = Result<anyhow::Result<()>, String>;
+
+/// The running tasks of `App::task` and their [`Stopping`], which the node's stop shares.
+pub(crate) struct Tasks {
+    stopping: Stopping,
+    running: JoinSet<(TaskEnd, bool)>,
+    names: Vec<(tokio::task::Id, String)>,
+}
+
+impl Tasks {
+    /// Starts `tasks` on `system` in order and returns once each was polled once, so the code of each before its first
+    /// `await` has run. Their `Stopping` is set by `stop` too.
+    async fn start(tasks: Vec<HostTask>, system: &ActorSystem, stop: &Stop) -> Self {
+        let stopping = Stopping(stop.token.child_token());
+        let mut running = JoinSet::new();
+        let mut names = Vec::with_capacity(tasks.len());
+        let mut began = Vec::with_capacity(tasks.len());
+        for task in tasks {
+            let (polled, first_poll) = tokio::sync::oneshot::channel();
+            let (system, given) = (system.clone(), stopping.clone());
+            let run = task.run;
+            let id = running.spawn(run_task(async move { run(system, given).await }, stopping.clone(), polled)).id();
+            names.push((id, task.name));
+            began.push(first_poll);
+        }
+        for first_poll in began {
+            // An error: the task panicked in its first poll, which `finish` reports.
+            let _ = first_poll.await;
+        }
+        Self { stopping, running, names }
+    }
+
+    /// Waits for the stop, then for the tasks within `grace` from it: a task still running then is aborted with a warning
+    /// and not waited for. The error of the first task that ended before the stop, if one did; an error or a panic after
+    /// the stop is a warning. At once without tasks.
+    async fn finish(mut self, grace: Duration) -> Result<(), AppError> {
+        if self.names.is_empty() {
+            return Ok(());
+        }
+        self.stopping.wait().await;
+        let deadline = tokio::time::Instant::now() + grace;
+        let mut early_end = None;
+        loop {
+            let joined = match tokio::time::timeout_at(deadline, self.running.join_next_with_id()).await {
+                Ok(Some(joined)) => joined,
+                Ok(None) => break,
+                Err(_) => {
+                    for (_, name) in &self.names {
+                        tracing::warn!(
+                            "Task {name} did not end within the shutdown grace period of {grace:?}; aborted"
+                        );
+                    }
+                    // Dropping the set aborts the tasks without waiting: a task that never yields cannot be aborted.
+                    break;
+                }
+            };
+            let (id, end, early) = match joined {
+                Ok((id, (end, early))) => (id, end, early),
+                Err(e) => (e.id(), Err(e.to_string()), false),
+            };
+            let at = self.names.iter().position(|(task, _)| *task == id).expect("a task of the set");
+            let (_, name) = self.names.remove(at);
+            match (end, early) {
+                (Ok(Ok(())), false) => {}
+                (end, true) if early_end.is_none() => {
+                    let ended = format!("task {name} ended before the stop");
+                    early_end = Some(match end {
+                        Ok(Ok(())) => anyhow!(ended),
+                        Ok(Err(e)) => e.context(ended),
+                        Err(panic) => anyhow!("{ended}: {panic}"),
+                    });
+                }
+                (end, early) => {
+                    let text = match end {
+                        Ok(Ok(())) => "it returned".to_owned(),
+                        Ok(Err(e)) => format!("{e:#}"),
+                        Err(panic) => panic,
+                    };
+                    let when = if early { "also ended before the stop" } else { "failed after the stop" };
+                    tracing::warn!("Task {name} {when}: {text}");
+                }
+            }
+        }
+        early_end.map_or(Ok(()), |e| Err(AppError::Failed(e)))
+    }
+}
+
+/// Runs `task`, sends `polled` after its first poll, and catches its panic. True with its end when it ended before the
+/// stop: it then sets `stopping`, which stops the node.
+async fn run_task(
+    task: impl Future<Output = anyhow::Result<()>> + Send,
+    stopping: Stopping,
+    polled: tokio::sync::oneshot::Sender<()>,
+) -> (TaskEnd, bool) {
+    let mut task = std::pin::pin!(task);
+    let mut polled = Some(polled);
+    let first_poll = std::future::poll_fn(move |cx| {
+        let poll = task.as_mut().poll(cx);
+        if let Some(polled) = polled.take() {
+            let _ = polled.send(());
+        }
+        poll
+    });
+    let end = AssertUnwindSafe(first_poll).catch_unwind().await.map_err(|panic| panic_text(panic.as_ref()));
+    let early = !stopping.is_set();
+    if early {
+        stopping.set();
+    }
+    (end, early)
+}
+
+/// Sets `Stopping` and stops the node and the tasks together, then closes the store: the error of a task that ended
+/// before the stop, if one did.
+async fn stop_all(system: &ActorSystem, store: &Store, tasks: Tasks, grace: Duration) -> Result<(), AppError> {
+    tasks.stopping.set();
+    let ((), ended) = tokio::join!(system.stop(), tasks.finish(grace));
+    store.close().await;
+    ended
+}
+
 /// `serve`: steps 1 to 6 of the start, then requests until the stop.
 pub(crate) async fn serve(
     parts: Parts,
@@ -163,32 +314,53 @@ pub(crate) async fn serve(
     if !start(&system, &store, parts.on_start, &stop).await? {
         return Ok(());
     }
-    let address = listener.local_addr().map_err(|e| AppError::Failed(e.into()))?;
+    let tasks = Tasks::start(parts.tasks, &system, &stop).await;
+    let grace = settings.node.shutdown_grace_period;
+    let address = match listener.local_addr() {
+        Ok(address) => address,
+        Err(e) => {
+            stop_all(&system, &store, tasks, grace).await?;
+            return Err(AppError::Failed(e.into()));
+        }
+    };
     let written = writeln!(out, "Listening on http://{address}").and_then(|()| out.flush());
     if let Err(e) = written {
-        system.stop().await;
-        store.close().await;
+        stop_all(&system, &store, tasks, grace).await?;
         return Err(AppError::Failed(anyhow!(e).context("cannot write to the output")));
     }
     tracing::info!("Serving the HTTP API on {address}");
-    let served = serve_and_close(listener, routes, &system, &store, &stop, DRAIN).await;
-    served.context("the HTTP server failed").map_err(AppError::Failed)
+    serve_and_close(listener, routes, &system, &store, tasks, grace, DRAIN).await
 }
 
-/// The end of `serve`: requests until the stop (see [`serve_until_stopped`]), then the node stops (at once when the
-/// stop stopped it; else the server failed first) and the store is closed.
+/// The end of `serve`: requests until the stop (see [`serve_until_stopped`]), while the tasks are waited for (see
+/// [`Tasks::finish`]); then the node stops (at once when the stop stopped it; else the server failed first and sets
+/// `Stopping`), and the store is closed after the node and the tasks. An early end of a task wins over a failed server.
 async fn serve_and_close(
     listener: TcpListener,
     routes: Router,
     system: &ActorSystem,
     store: &Store,
-    stop: &Stop,
+    tasks: Tasks,
+    grace: Duration,
     drain: Duration,
-) -> std::io::Result<()> {
-    let served = serve_until_stopped(listener, routes, system, stop, drain).await;
-    system.stop().await;
+) -> Result<(), AppError> {
+    let stopping = tasks.stopping.clone();
+    let tasks_done = CancellationToken::new();
+    let serving = async {
+        let served = serve_until_stopped(listener, routes, system, &stopping, tasks_done.clone(), drain).await;
+        stopping.set();
+        system.stop().await;
+        served
+    };
+    let finishing = async {
+        let ended = tasks.finish(grace).await;
+        tasks_done.cancel();
+        ended
+    };
+    let (served, ended) = tokio::join!(serving, finishing);
     store.close().await;
-    served
+    ended?;
+    served.context("the HTTP server failed").map_err(AppError::Failed)
 }
 
 /// `worker`: steps 1, 4 and 5 of the start, then work until the stop.
@@ -198,10 +370,9 @@ pub(crate) async fn worker(parts: Parts, settings: Settings, stop: Stop) -> Resu
     if !start(&system, &store, parts.on_start, &stop).await? {
         return Ok(());
     }
-    stop.wait().await;
-    system.stop().await;
-    store.close().await;
-    Ok(())
+    let tasks = Tasks::start(parts.tasks, &system, &stop).await;
+    tasks.stopping.wait().await;
+    stop_all(&system, &store, tasks, settings.node.shutdown_grace_period).await
 }
 
 /// A worker over HTTP: waits for the server ([`wait_for_server`]), starts a `Worker` of the selected types on the
@@ -451,22 +622,23 @@ async fn start(system: &ActorSystem, store: &Store, on_start: Vec<OnStartFn>, st
     Ok(true)
 }
 
-/// Serves `routes` on `listener` until the stop: the node stops first (it claims no more, running turns get its grace
-/// period, and the API keeps answering while `/ready` answers `503`), then the server stops, and requests that are
-/// still open get `drain` to end before they are cut off.
+/// Serves `routes` on `listener` until `stopping` is set: the node and the tasks stop first (the node claims no more,
+/// running turns get its grace period, and the API keeps answering while `/ready` answers `503`) until `tasks_done` is
+/// set too, then the server stops, and requests that are still open get `drain` to end before they are cut off.
 async fn serve_until_stopped(
     listener: TcpListener,
     routes: Router,
     system: &ActorSystem,
-    stop: &Stop,
+    stopping: &Stopping,
+    tasks_done: CancellationToken,
     drain: Duration,
 ) -> std::io::Result<()> {
     let (stopped, node_stopped) = tokio::sync::oneshot::channel::<()>();
-    let token = stop.token.clone();
+    let token = stopping.0.clone();
     let node = system.clone();
     let graceful = async move {
         token.cancelled().await;
-        node.stop().await;
+        tokio::join!(node.stop(), tasks_done.cancelled());
         let _ = stopped.send(());
     };
     let cut_off = CancellationToken::new();
@@ -608,7 +780,9 @@ mod tests {
         let serving = {
             let system = system.clone();
             tokio::spawn(async move {
-                serve_until_stopped(listener, routes, &system, &stop, Duration::from_millis(300)).await
+                let (stopping, done) = (Stopping(stop.token.clone()), CancellationToken::new());
+                done.cancel();
+                serve_until_stopped(listener, routes, &system, &stopping, done, Duration::from_millis(300)).await
             })
         };
         let open = tokio::spawn(reqwest::get(format!("http://{address}/hang")));
@@ -644,7 +818,10 @@ mod tests {
         let serving = {
             let (system, store) = (system.clone(), store.clone());
             let routes = actor_api(system.clone());
-            tokio::spawn(async move { serve_and_close(listener, routes, &system, &store, &stop, drain).await })
+            tokio::spawn(async move {
+                let tasks = Tasks::start(Vec::new(), &system, &stop).await;
+                serve_and_close(listener, routes, &system, &store, tasks, Duration::from_secs(30), drain).await
+            })
         };
         let mut stream = reqwest::get(format!("http://{address}/changes")).await.unwrap();
         assert_eq!(stream.headers()["content-type"], "text/event-stream");
@@ -862,7 +1039,7 @@ mod worker_tests {
     fn parts() -> Parts {
         let actor = ActorType::from(TickActor);
         let tick = HostedType { name: "tick", host: Box::new(move |hosting| hosting.host(actor)) };
-        Parts { types: vec![tick], observers: Vec::new(), http: Vec::new(), on_start: Vec::new() }
+        Parts { types: vec![tick], observers: Vec::new(), http: Vec::new(), on_start: Vec::new(), tasks: Vec::new() }
     }
 
     fn settings() -> HttpSettings {
@@ -1194,7 +1371,7 @@ mod worker_tests {
     fn gated_parts(gate: &Gate) -> Parts {
         let actor = ActorType::from(GatedActor(gate.clone()));
         let gated = HostedType { name: "gated", host: Box::new(move |hosting| hosting.host(actor)) };
-        Parts { types: vec![gated], observers: Vec::new(), http: Vec::new(), on_start: Vec::new() }
+        Parts { types: vec![gated], observers: Vec::new(), http: Vec::new(), on_start: Vec::new(), tasks: Vec::new() }
     }
 
     fn gated_settings() -> HttpSettings {

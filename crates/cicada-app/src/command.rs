@@ -66,7 +66,7 @@ selects HTTP; a token, or the current context of the config file, alone selects 
 
 Over HTTP the server owns the store and the leases: --store-schema, --store-pool-size, --retention, --lease-ttl,
 --heartbeat-interval and --max-lost-claims are refused, and their variables are not read. The server, the token
-and the headers come as for the operator commands. A binary with App::on_start cannot run over HTTP.";
+and the headers come as for the operator commands. A binary with App::on_start or App::task cannot run over HTTP.";
 
 /// The flags `flags` of the operator commands, hidden: clap then does not give the global ones to `command`, so its
 /// help does not show them, and [`refuse_flags`] still sees them.

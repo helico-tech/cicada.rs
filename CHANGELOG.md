@@ -13,7 +13,9 @@ A turn can watch an actor that must exist (ADR 0063): `Turn::watch_existing` tel
 is already gone, so a pool that gives a place to a run and watches it frees the place also when the run went before
 its turn. `DockerRuntime::connect()` of `cicada-containers` finds Docker through the Docker CLI's context, so it works
 on a Mac with OrbStack, Colima or Docker Desktop and no `/var/run/docker.sock`. A container job sets its actor's turn
-limit, so a slow image pull fits one turn without raising the node's default. **BREAKING**: the public `WatchChange`
+limit, so a slow image pull fits one turn without raising the node's default. `App::task` ties a host's background
+task to its node (ADR 0064): an early end of the task stops the node with an error, so a supervisor restarts it.
+**BREAKING**: the public `WatchChange`
 and `WatchChangeView` gain a field. The HTTP field is optional and every older request and fixture keeps its bytes. No
 store schema, actor contract, contract hash or guarantee changes.
 
@@ -45,6 +47,19 @@ store schema, actor contract, contract hash or guarantee changes.
   it again (7 attempts, 1 to 32 s), and a container the cut-off step made is found, not made twice. Not part of the
   contract. Covered by `the_actors_turn_limit_is_the_jobs` in `src/actor/mod.rs` and the three turn-limit tests of
   `tests/actor.rs`.
+- `cicada-app`: `App::task(name, f)` and the public `Stopping` (`Clone`, `async fn wait`, `fn is_set`), ADR 0064. In
+  `serve` and `worker` on the store, `f` gets the node's `ActorSystem` and a `Stopping` once every `on_start` function
+  has finished, in the order of the calls, and is polled once before `serve` writes `Listening on`. A task that
+  returns `Ok`, returns `Err` or panics before the stop stops the node in good order and fails the command (exit code
+  1) with `task <name> ended before the stop: <error>`. At a stop (a signal, an early end, a failed write of
+  `Listening on` or a failed HTTP server), `Stopping` is set when the node's stop begins; the tasks share the node's
+  `shutdown_grace_period`, and a task still running at its end is aborted with a warning naming it. `serve` keeps
+  answering, with `/ready` at 503, until the node and the tasks have stopped; the store closes after both, so a stop's
+  worst case is unchanged. An error or panic after the stop is a warning and leaves exit code 0. Two tasks with one
+  name refuse `serve` and `worker` (exit code 2, `two tasks named <name>`); a worker over HTTP refuses an `App` with a
+  task as with `on_start` (exit code 2), and the `worker` help names both (`docs/reference/cli.md`). Covered by
+  `crates/cicada-app/tests/tasks.rs` and `on_start_and_a_task_are_refused_over_http_before_any_request` in
+  `tests/worker_http.rs`.
 
 ### Changed
 

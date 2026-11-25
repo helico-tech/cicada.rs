@@ -425,26 +425,36 @@ async fn a_stop_without_a_grace_period_releases_the_lease_of_an_unfinished_handl
     assert!(server.behaviour.seen().iter().all(|s| s.authorization.as_deref() == Some("Bearer s3cret")));
 }
 
-/// Scenario: Startup hooks require an ActorSystem: refused before the config file or the network.
+/// Scenario: Startup hooks require an ActorSystem: refused before the config file or the network. Scenario: A worker
+/// over HTTP (with `App::task`).
 #[tokio::test]
-async fn on_start_is_refused_over_http_before_any_request() {
+async fn on_start_and_a_task_are_refused_over_http_before_any_request() {
     let server = Server::start().await;
     let broken = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(broken.path(), "this is = not [toml").unwrap();
     let ran = Arc::new(AtomicBool::new(false));
-    for selector in [&["--server", server.base.as_str()][..], &[]] {
+    let selectors = [&["--server", server.base.as_str()][..], &[]];
+    for (selector, task) in selectors.into_iter().flat_map(|s| [(s, false), (s, true)]) {
         let flag = ran.clone();
-        let app = App::new().host(CounterActor).on_start(move |_| async move {
-            flag.store(true, Ordering::SeqCst);
-            Ok(())
-        });
+        let app = App::new().host(CounterActor);
+        let app = if task {
+            app.task("runner", move |_, _| async move {
+                flag.store(true, Ordering::SeqCst);
+                Ok(())
+            })
+        } else {
+            app.on_start(move |_| async move {
+                flag.store(true, Ordering::SeqCst);
+                Ok(())
+            })
+        };
         let mut env = http_env();
         env.insert("CICADA_CONFIG".into(), broken.path().display().to_string());
         env.insert("CICADA_CONTEXT".into(), "prod".into());
         let args: Vec<&str> = ["myapp", "worker"].into_iter().chain(selector.iter().copied()).collect();
         let error = run(app, &env, &args).await.unwrap_err();
         assert_eq!(error.exit_code(), 2, "{error}");
-        assert!(error.to_string().contains("App::on_start"), "{error}");
+        assert!(error.to_string().contains("App::on_start or App::task"), "{error}");
     }
     assert!(!ran.load(Ordering::SeqCst));
     assert!(server.behaviour.seen().is_empty(), "no request: {:?}", server.behaviour.seen());

@@ -30,7 +30,7 @@
 //!   without them a non-blank `CICADA_STORE` wins over `CICADA_SERVER` and `CICADA_CONTEXT`. Over HTTP the server,
 //!   token and headers resolve as for the operator commands, the settings the server owns (`--lease-ttl`,
 //!   `--retention`, the store's, …) are refused, no store is opened (no store feature is needed), and an `App` with
-//!   [`App::on_start`] is refused. It lists the server's types while they answer "unavailable", a second apart and no
+//!   [`App::on_start`] or [`App::task`] is refused. It lists the server's types while they answer "unavailable", a second apart and no
 //!   try after a minute, then registers its contracts and runs until the stop or until the worker stops by itself.
 //! - The operator commands of `cicada` (`get`, `send`, `create`, …), which talk to a node only over HTTP, through
 //!   [`cicada_client::ActorClient`], also in a binary that serves. The server comes from `--server`, `CICADA_SERVER` or
@@ -74,7 +74,8 @@ use cicada::runtime::NodeConfig;
 use cicada::{Actor, ActorSystem, ActorType};
 
 use crate::command::Parsed;
-use crate::node::{HostedType, HttpFn, OnStartFn, Parts, Stop};
+pub use crate::node::Stopping;
+use crate::node::{HostTask, HostedType, HttpFn, OnStartFn, Parts, Stop};
 use crate::settings::{Kind, WorkerMode};
 
 /// Environment variables, by name: the process environment in [`App::run`], a literal map in tests.
@@ -87,6 +88,7 @@ pub struct App {
     node_config: Option<NodeConfig>,
     http: Vec<HttpFn>,
     on_start: Vec<OnStartFn>,
+    tasks: Vec<HostTask>,
     version: Option<String>,
 }
 
@@ -98,6 +100,7 @@ impl fmt::Debug for App {
             .field("node_config", &self.node_config)
             .field("http", &self.http.len())
             .field("on_start", &self.on_start.len())
+            .field("tasks", &self.tasks.iter().map(|t| t.name.as_str()).collect::<Vec<_>>())
             .field("version", &self.version)
             .finish()
     }
@@ -118,6 +121,7 @@ impl App {
             node_config: None,
             http: Vec::new(),
             on_start: Vec::new(),
+            tasks: Vec::new(),
             version: None,
         }
     }
@@ -171,6 +175,48 @@ impl App {
         Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
     {
         self.on_start.push(Box::new(move |system| Box::pin(f(system))));
+        self
+    }
+
+    /// Adds a task named `name` that lives as long as the node (ADR 0064): for work next to the node, such as a loop that
+    /// takes jobs from outside. In `serve` and `worker` on the store, `f` gets the node's `ActorSystem` and a
+    /// [`Stopping`] once every function of [`Self::on_start`] has finished, in the order of the calls, and is polled once
+    /// before `serve` listens.
+    ///
+    /// The task is meant to run until the stop. If it returns `Ok`, returns `Err` or panics before the stop, the node
+    /// stops in good order, as at a signal, and the command fails (exit code 1) with
+    /// `task <name> ended before the stop: <error>`, so a supervisor of the process restarts it.
+    ///
+    /// At a stop, `Stopping` is set when the node's stop begins: the node claims no more and `/ready` answers 503 at
+    /// once. The tasks share the node's shutdown grace period: a task still running at its end is aborted with a warning
+    /// that names it, and the store closes after the tasks and the node. An error or a panic after the stop is logged
+    /// as a warning and leaves the exit code alone. A task can still use the `ActorSystem` while it ends.
+    ///
+    /// Two tasks with one name refuse `serve` and `worker` (exit code 2); the operator commands run no task. A worker
+    /// over HTTP has no `ActorSystem` to give `f`, so an `App` with a task refuses to run one (exit code 2), before it
+    /// reads the config file or sends a request.
+    ///
+    /// ```no_run
+    /// # fn app(app: cicada_app::App) -> cicada_app::App {
+    /// app.task("runner", |system, stopping| async move {
+    ///     loop {
+    ///         tokio::select! {
+    ///             () = stopping.wait() => return Ok(()),
+    ///             () = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
+    ///                 let _ = system.now().await?;
+    ///             }
+    ///         }
+    ///     }
+    /// })
+    /// # }
+    /// ```
+    pub fn task<F, Fut>(mut self, name: impl Into<String>, f: F) -> Self
+    where
+        F: FnOnce(ActorSystem, Stopping) -> Fut + Send + 'static,
+        Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
+    {
+        self.tasks
+            .push(HostTask { name: name.into(), run: Box::new(move |system, stopping| Box::pin(f(system, stopping))) });
         self
     }
 
@@ -236,6 +282,7 @@ impl App {
                 }
                 Parsed::Operator(cli) => operator::run(*cli, &name, &env, &mut out).await.map_err(AppError::Failed),
                 Parsed::Serve(args) => {
+                    self.check_task_names()?;
                     let stop = Stop::watch(shutdown);
                     let settings = settings::resolve(
                         Kind::Serve,
@@ -249,6 +296,7 @@ impl App {
                     node::serve(self.into_parts(), settings, &mut out, stop).await
                 }
                 Parsed::Worker(args) => {
+                    self.check_task_names()?;
                     let stop = Stop::watch(shutdown);
                     match settings::worker_mode(&args, &env).map_err(AppError::usage)? {
                         WorkerMode::Store => {
@@ -258,11 +306,11 @@ impl App {
                             node::worker(self.into_parts(), settings, stop).await
                         }
                         WorkerMode::Http => {
-                            if !self.on_start.is_empty() {
+                            if !self.on_start.is_empty() || !self.tasks.is_empty() {
                                 return Err(AppError::usage(
-                                    "a worker over HTTP cannot run App::on_start: its functions need an ActorSystem, \
-                                     which only a node on the store has; bootstrap with serve or a worker on the store, \
-                                     or move that work out of this binary's App"
+                                    "a worker over HTTP cannot run App::on_start or App::task: their functions need an \
+                                     ActorSystem, which only a node on the store has; bootstrap with serve or a worker \
+                                     on the store, or move that work out of this binary's App"
                                         .to_owned(),
                                 ));
                             }
@@ -277,8 +325,24 @@ impl App {
         }
     }
 
+    /// Refuses two tasks with one name.
+    fn check_task_names(&self) -> Result<(), AppError> {
+        for (at, task) in self.tasks.iter().enumerate() {
+            if self.tasks[..at].iter().any(|t| t.name == task.name) {
+                return Err(AppError::usage(format!("two tasks named {}", task.name)));
+            }
+        }
+        Ok(())
+    }
+
     fn into_parts(self) -> Parts {
-        Parts { types: self.types, observers: self.observers, http: self.http, on_start: self.on_start }
+        Parts {
+            types: self.types,
+            observers: self.observers,
+            http: self.http,
+            on_start: self.on_start,
+            tasks: self.tasks,
+        }
     }
 }
 

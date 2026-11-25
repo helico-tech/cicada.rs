@@ -65,7 +65,11 @@ pub struct Running {
 impl Running {
     /// Starts `app` with `args` and `env`.
     pub fn spawn(app: App, env: &Env, list: &[&str]) -> Self {
-        let out = Out::default();
+        Self::spawn_to(app, env, list, Out::default())
+    }
+
+    /// Starts `app` with `args` and `env`, writing to `out`.
+    pub fn spawn_to(app: App, env: &Env, list: &[&str], out: Out) -> Self {
         let (stop, stopped) = oneshot::channel::<()>();
         let shutdown = async move {
             let _ = stopped.await;
@@ -76,7 +80,12 @@ impl Running {
 
     /// Starts `serve` and waits until it takes requests; its base URL.
     pub async fn serve(app: App, env: &Env, list: &[&str]) -> (Self, String) {
-        let running = Self::spawn(app, env, list);
+        Self::serve_to(app, env, list, Out::default()).await
+    }
+
+    /// [`Self::serve`], writing to `out`.
+    pub async fn serve_to(app: App, env: &Env, list: &[&str], out: Out) -> (Self, String) {
+        let running = Self::spawn_to(app, env, list, out);
         let started = Instant::now();
         loop {
             // Only complete lines: the last one may still be arriving in pieces.
