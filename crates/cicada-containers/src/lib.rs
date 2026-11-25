@@ -62,7 +62,9 @@ pub use error::{ContainerError, ErrorKind};
 #[cfg(any(test, feature = "testing"))]
 pub use fake::{Call, FakeRuntime, Method};
 pub use logs::{LOG_PAGE_MAX, LogCursor, LogLine, LogPage, LogStream};
-pub use runtime::{ContainerRuntime, ContainerStatus, ContainerSummary, OUT_OF_MEMORY, Resource, Skipped, Swept};
+pub use runtime::{
+    ContainerRuntime, ContainerStatus, ContainerSummary, OUT_OF_MEMORY, Resource, RuntimeInfo, Skipped, Swept,
+};
 pub use spec::{
     ContainerSpec, CopyDir, CopyFile, Label, Mount, MountKind, NetworkAttachment, NetworkSpec, Networking, Tmpfs,
     VolumeSpec,

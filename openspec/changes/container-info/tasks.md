@@ -5,7 +5,7 @@ Normal lane, additive: 0.21.1, released together with `container-registry-auth` 
 and `specs/container-docker/spec.md`. Run the crate's tests with every feature:
 `cargo test -p cicada-containers --all-features`.
 
-- [ ] 1. **The type and the trait method.** In `crates/cicada-containers/src/runtime.rs`: `RuntimeInfo`
+- [x] 1. **The type and the trait method.** In `crates/cicada-containers/src/runtime.rs`: `RuntimeInfo`
   (`#[non_exhaustive]`, public `arch` and `os`, `RuntimeInfo::new(arch, os)`), exported from `lib.rs`;
   `ContainerRuntime::info` after `sweep`, with a default that fails with `Unsupported` (decisions 1 to 3). Its rustdoc
   names Docker's `/version`, the spelling of `arch` (image platforms, no variant), bollard's 120 s timeout and

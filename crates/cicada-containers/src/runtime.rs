@@ -181,6 +181,42 @@ pub trait ContainerRuntime: Send + Sync + 'static {
     /// sweep finishes the work. `Ok` with nothing removed when nothing carries the label. The result names only what
     /// this sweep removed or skipped: something already gone, or a container another caller is removing, is in no list.
     async fn sweep(&self, label: &Label) -> Result<Swept, ContainerError>;
+
+    /// The processor kind and operating system of the runtime, which also shows that it answers. It changes nothing
+    /// and is safe to repeat. A runtime that cannot be reached fails with `DaemonUnavailable`.
+    ///
+    /// Docker answers with the fields `Arch` and `Os` of its `GET /version`, as they are: Go's names, the spelling of
+    /// image platforms (`amd64`, `arm64`, `arm`; `linux`), so they compare with an image's platform as they are. Docker
+    /// gives no variant: `arm` does not say `v6` or `v7`. A missing or empty field is `Other`.
+    ///
+    /// The call has no time limit of its own: Docker's client gives up after 120 seconds. A host that wants a faster
+    /// answer wraps the call in `tokio::time::timeout`. A Docker that answers but is not healthy fails with `Other`,
+    /// as for every call: a 5xx, such as a Docker Desktop engine that is starting, and a Docker below the API floor
+    /// (Docker 25). So a liveness check treats every error but `Unsupported` as "not here this round".
+    ///
+    /// The default fails with `Unsupported`, so a runtime written before this method compiles unchanged; the fake and
+    /// the Docker backend implement it.
+    async fn info(&self) -> Result<RuntimeInfo, ContainerError> {
+        Err(ContainerError::new(ErrorKind::Unsupported, "runtime info: info is not supported by this runtime"))
+    }
+}
+
+/// What [`info`](ContainerRuntime::info) reports: the runtime's processor kind and operating system, in the spelling
+/// of image platforms.
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeInfo {
+    /// The processor kind, such as `amd64` or `arm64`; no variant.
+    pub arch: String,
+    /// The operating system, such as `linux`.
+    pub os: String,
+}
+
+impl RuntimeInfo {
+    /// A runtime on the processor kind `arch` and the operating system `os`.
+    pub fn new(arch: impl Into<String>, os: impl Into<String>) -> Self {
+        Self { arch: arch.into(), os: os.into() }
+    }
 }
 
 /// The status of a container. Two end states tell a program's own exit from the runtime's failure.

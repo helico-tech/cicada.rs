@@ -835,8 +835,8 @@ mod tests {
     }
 
     #[test]
-    fn a_runtime_without_logs_since_copy_out_or_make_dirs_compiles_and_fails_with_unsupported() {
-        /// A host's runtime written before `logs_since`, `copy_out` and `make_dirs`.
+    fn a_runtime_without_logs_since_copy_out_make_dirs_or_info_compiles_and_fails_with_unsupported() {
+        /// A host's runtime written before `logs_since`, `copy_out`, `make_dirs` and `info`.
         struct Older;
 
         #[async_trait]
@@ -884,6 +884,9 @@ mod tests {
         assert_eq!(error.kind, ErrorKind::Unsupported, "{error}");
         assert!(error.message.contains("not supported"), "{error}");
         let error = now(runtime.make_dirs("job-1", &[CopyDir::new("/out")])).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Unsupported, "{error}");
+        assert!(error.message.contains("not supported"), "{error}");
+        let error = now(runtime.info()).unwrap_err();
         assert_eq!(error.kind, ErrorKind::Unsupported, "{error}");
         assert!(error.message.contains("not supported"), "{error}");
     }

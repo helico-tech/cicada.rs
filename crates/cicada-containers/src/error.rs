@@ -40,12 +40,13 @@ pub enum ErrorKind {
     /// The runtime refused the spec or the arguments, such as a relative path for `copy_in` or `copy_out`, a
     /// `max_lines` of 0 for `logs_since` or a zero limit for `copy_out`.
     InvalidSpec,
-    /// The runtime does not implement the call: the trait's default [`logs_since`], [`copy_out`] and [`make_dirs`] of a
-    /// runtime written before them. A retry cannot help.
+    /// The runtime does not implement the call: the trait's default [`logs_since`], [`copy_out`], [`make_dirs`] and
+    /// [`info`] of a runtime written before them. A retry cannot help.
     ///
     /// [`logs_since`]: crate::ContainerRuntime::logs_since
     /// [`copy_out`]: crate::ContainerRuntime::copy_out
     /// [`make_dirs`]: crate::ContainerRuntime::make_dirs
+    /// [`info`]: crate::ContainerRuntime::info
     Unsupported,
     /// Anything else the backend reports.
     Other,
