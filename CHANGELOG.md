@@ -12,7 +12,8 @@ moves: a correction is a new version.
 A turn can watch an actor that must exist (ADR 0063): `Turn::watch_existing` tells the watcher at once when the actor
 is already gone, so a pool that gives a place to a run and watches it frees the place also when the run went before
 its turn. `DockerRuntime::connect()` of `cicada-containers` finds Docker through the Docker CLI's context, so it works
-on a Mac with OrbStack, Colima or Docker Desktop and no `/var/run/docker.sock`. **BREAKING**: the public `WatchChange`
+on a Mac with OrbStack, Colima or Docker Desktop and no `/var/run/docker.sock`. A container job sets its actor's turn
+limit, so a slow image pull fits one turn without raising the node's default. **BREAKING**: the public `WatchChange`
 and `WatchChangeView` gain a field. The HTTP field is optional and every older request and fixture keeps its bytes. No
 store schema, actor contract, contract hash or guarantee changes.
 
@@ -36,6 +37,14 @@ store schema, actor contract, contract hash or guarantee changes.
   false otherwise and left out when false. With a type target, every type or `set: false` the report is invalid
   (`400`). Portable fixtures: a valid body with `existing`, an `existing: false` input, and both refusals at
   conversion. `docs/openapi.json` has the field.
+- `cicada-containers`: `ContainerJob::MAX_TURN: Option<Duration>`, `None` by default, is the `Actor::MAX_TURN` of
+  `ContainerActor<J>`: it wins over the node's default turn limit and over `--max-turn` / `CICADA_MAX_TURN`, and
+  `None` keeps the node's default. Set it above the create step (a pull of a missing image, the create, the folders and
+  copies in) and the settings' `stop_grace`, which each run inside one turn. Zero is refused when the type is
+  registered. A step past it ends `failed` (`timeout`), not counted as a runtime error; the poll's retry policy runs
+  it again (7 attempts, 1 to 32 s), and a container the cut-off step made is found, not made twice. Not part of the
+  contract. Covered by `the_actors_turn_limit_is_the_jobs` in `src/actor/mod.rs` and the three turn-limit tests of
+  `tests/actor.rs`.
 
 ### Changed
 

@@ -13,7 +13,7 @@ Run the crate's tests with every feature: `cargo test -p cicada-containers --all
   `create`: a step longer than the node's default but shorter than the job's limit ends `done`; a job limit below the
   step ends it `failed` (`timeout`) and the retry makes no second container; a zero `MAX_TURN` is refused at
   registration. Verify: `cargo test -p cicada-containers --all-features`.
-- [ ] 3. **Changelog and docs handoff.** The unreleased section of `CHANGELOG.md` (made by `docker-context`; make it
+- [x] 3. **Changelog and docs handoff.** The unreleased section of `CHANGELOG.md` (made by `docker-context`; make it
   if it is missing) names `ContainerJob::MAX_TURN` under Added. `docs-handoff.md` carries `MAX_TURN`, when to set it
   and what a timeout does; nothing blocks. No edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify:
   `cargo test -p cicada-examples --test docs`.
