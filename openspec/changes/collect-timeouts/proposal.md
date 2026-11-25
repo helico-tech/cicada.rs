@@ -14,6 +14,10 @@ than the turn limit is retried by the step's retry policy (7 attempts), then the
   step message's attempt number in the turn, a counter written before the long call in its own commit, or a smaller
   copy per turn).
 
+- From the code review of `container-output-retention`: store failures while deleting outputs are logged only at
+  `debug`; warn once the retries reach `max_errors`, and say in the rustdoc of `max_errors` that the deletion keeps
+  trying.
+
 ## Order
 
 After `container-orphan-alert`, before `placement-offers`.
