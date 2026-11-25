@@ -411,6 +411,81 @@ gets its inputs again, which is safe.
 - **Stop before start creates nothing.** A `Stop` before any `Start` makes the container `stopped`; a later `Start`
   gets that end.
 
+## Keep outputs
+
+A host keeps each container's log lines, log cursor and output files outside the container, in a store it
+implements: `OutputStore` (from 0.22.1), keyed by the container's name, so one store serves every job, such as a
+folder per run or a database table. Use it as `Arc<dyn OutputStore>`. Nothing in Cicada writes to it yet; a host's
+log follower and file collector do.
+
+| Method | What it does |
+| --- | --- |
+| `log_end(container)` | The stored cursor (`None` when nothing is stored) and the number of stored lines; a writer resumes from the cursor |
+| `append_logs(container, after, page)` | Stores a `LogPage`'s lines and its `next` cursor in one write; see below |
+| `read_logs(container, from, limit)` | Up to `limit` `StoredLine`s from line number `from` (0-based, stored order); none past the end |
+| `put_file(container, file)` | Stores a `CopyFile`, as `copy_out` gives them, replacing one at the same path |
+| `files(container)` | The path, size and mode of each stored file, in path order |
+| `read_file(container, path)` | The file, or none |
+| `remove(container)` | Deletes lines, cursor and files; afterwards the cursor is `None` again. Nothing stored is `Ok` |
+
+This follows a container's log into the in-memory store of the tests, `MemoryOutputStore`, and checks the store's
+rules:
+
+<!-- doctest
+# #[tokio::main(flavor = "current_thread")]
+# async fn main() -> Result<(), Box<dyn std::error::Error>> {
+@@17
+# Ok(())
+# }
+-->
+```rust
+use cicada_containers::{
+    ContainerRuntime, ContainerSpec, FakeRuntime, MemoryOutputStore, OutputErrorKind, OutputStore, check_output_store,
+};
+
+let runtime = FakeRuntime::new();
+runtime.create(&ContainerSpec::new("job-1", "alpine:3")).await?;
+runtime.set_logs("job-1", "hello\nworld");
+
+let store = MemoryOutputStore::new();
+let end = store.log_end("job-1").await?;
+let page = runtime.logs_since("job-1", end.cursor, 500).await?;
+assert_eq!(store.append_logs("job-1", end.cursor.as_ref(), &page).await?, 2);
+let again = store.append_logs("job-1", end.cursor.as_ref(), &page).await.unwrap_err();
+assert_eq!(again.kind, OutputErrorKind::Conflict);
+assert_eq!(store.read_logs("job-1", 1, 10).await?[0].line.text, "world");
+
+check_output_store(&store).await; // the rules of the trait hold
+```
+
+### One write for lines and cursor
+
+`append_logs` stores the lines and the cursor together or not at all, and only when the stored cursor equals `after`
+(`None` for a container with nothing stored). Otherwise it fails with `Conflict` and stores nothing. So a writer that
+crashed after a write reads `log_end` again and goes on without a repeated or lost line, and two writers of one
+container cannot interleave: the second gets `Conflict`. An empty page stores its cursor alone. Implement it as one
+transaction (a database) or one atomic replace (a folder). No test can prove atomicity across a crash or the guard
+under writers in parallel on several nodes: your store must promise both.
+
+### Names and paths
+
+A container name and a file path can come from a user, such as through your HTTP route, and a folder store turns them
+into file paths. Every method checks them first and fails with `Invalid` before it touches anything:
+`check_container_name` (a letter or digit first, then only `A-Za-z0-9_.-`: no `/`, never `..`) and `clean_output_path`
+(absolute, no `..` part, not `/`; empty and `.` parts dropped, so `/a`, `//a` and `/./a` are one file, `/a`). Call both
+in your store and use the cleaned path as the key; `files` and `read_file` give the cleaned path, not the one put.
+
+`OutputError` has a `kind`: `Invalid` (a name or path outside the rules), `Conflict` (a stale `after`), `Unavailable`
+(the store could not be reached; the only kind `is_retryable` calls retryable) and `Other`.
+
+### Test a store
+
+`MemoryOutputStore` (feature `testing`) is an in-memory store; clones share their outputs. `check_output_store(&store)`
+runs every rule against any store and panics naming the rule it broke, so you check your own store the way Cicada
+checks its store backends. Call it in a `#[tokio::test]`. It uses container names of its own
+(`cicada-output-check-a` and `-b`) and removes them before and after, so it can run on a store that holds other data.
+It does not check atomicity after a crash, the guard under parallel writers, or a file at `/a` next to one at `/a/b`.
+
 ## Write or wrap a runtime
 
 Implement `ContainerRuntime` for another engine. `logs_since`, `copy_out`, `make_dirs` and `info` have defaults that
