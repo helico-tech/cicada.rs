@@ -18,6 +18,6 @@ they are.
   subscriber setup when the cause is there. No retry loop, no sleep, no weaker assertion: the test still proves that
   `start` warns once for a small pool and not for a pool of concurrency + 4 or a node without types. Verify: the
   command of task 1, 10 times in a row with the gate's profile, alone and in the lib suite.
-- [ ] 3. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
+- [x] 3. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
   `cargo test --workspace` with PostgreSQL, commit, then `python3 scripts/gate.py run` (no E2E: nothing under
   `e2e/`, `sample-service/` or the HTTP crates changes).
