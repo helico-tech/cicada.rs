@@ -27,7 +27,9 @@ normalisation, the order, `auth` decoding, helper scripts that answer, give `<to
 sleep over the limit, a missing and a broken file), `a_failed_pull_names_its_credential_source_and_never_a_credential`
 and `debug_shows_no_client` in `src/docker/mod.rs`, and the E2E step
 `a_private_image_is_pulled_with_the_login_of_config_json` in `e2e/tests/suite/container_docker.rs` (a `registry:2` with
-basic auth; the CLI logs in and pushes with its own `--config` folder). Against that registry, Docker reports a pull
+basic auth; the CLI logs in and pushes with its own `--config` folder, after the runtime that pulls was made), and
+`a_public_image_is_pulled_past_a_helper_that_is_not_installed` (a public image pulled while `credsStore` names a missing
+helper). The unit test `a_configured_helper_gives_the_credentials_instead_of_auths` runs a helper through the lookup. Against that registry, Docker reports a pull
 without a login as "pull access denied … no basic auth credentials", which maps to `ImageNotFound`.
 
 ## 1. The container runtime: private images
@@ -46,7 +48,9 @@ let runtime = DockerRuntime::connect()?.docker_config("/srv/factory/.docker"); /
 ```
 
 **Caveats.** Run `docker login` as the user the host runs as: a service whose `$HOME` is not that user's reads another
-`~/.docker`; give it the folder with `docker_config` or `DOCKER_CONFIG`. A helper must be on the host's `PATH` and
+`~/.docker`; give it the folder with `docker_config` or `DOCKER_CONFIG`. Without `DOCKER_CONFIG` or `docker_config`, the runtime looks
+only in `$HOME/.docker`: on a Windows host it does not read the profile folder (`USERPROFILE`) as the CLI does, so set
+one of the two there. A helper must be on the host's `PATH` and
 answer within 10 seconds; a keychain helper that waits for a prompt is killed and the pull runs without credentials.
 A failing source never fails the create by itself: a public image still pulls. A refused login keeps its kind: Docker
 Hub and `registry:2` say "pull access denied" (`ImageNotFound`), others answer "unauthorized" or "denied" (`Other`,

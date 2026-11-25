@@ -138,11 +138,16 @@ impl Config {
     }
 
     /// The credentials for `registry` by the CLI's order: the helper when one is configured (its `auths` entry is then
-    /// not used), else the `auths` entry. A helper is run as `docker-credential-<name>` from `PATH`, within `limit`.
-    pub(super) async fn credentials(&self, registry: &Registry, limit: Duration) -> Lookup {
+    /// not used), else the `auths` entry. A helper is run as `docker-credential-<name>` within `limit`, from `PATH`,
+    /// or from `helpers` when set (for tests, which cannot change `PATH`).
+    pub(super) async fn credentials(&self, registry: &Registry, limit: Duration, helpers: Option<&Path>) -> Lookup {
         if let Some(name) = self.helper(registry) {
             let program = format!("docker-credential-{name}");
-            return match run_helper(OsStr::new(&program), &registry.key, limit).await {
+            let path = match helpers {
+                Some(dir) => dir.join(&program).into_os_string(),
+                None => program.clone().into(),
+            };
+            return match run_helper(&path, &registry.key, limit).await {
                 Ok(credentials) => {
                     Lookup { credentials: Some(credentials), source: format!("credentials from {program}") }
                 }
@@ -171,7 +176,7 @@ pub(super) async fn lookup(dir: Option<&Path>, image: &str, limit: Duration) -> 
         None => None,
     };
     match config {
-        Some(config) => config.credentials(&registry, limit).await,
+        Some(config) => config.credentials(&registry, limit, None).await,
         None => no_credentials(&registry),
     }
 }
@@ -318,7 +323,7 @@ mod tests {
             r#"{{"credsStore": "cicada-no-such-helper", "auths": {{"ghcr.io": {{"auth": "{}"}}}}}}"#,
             basic("u", "p")
         );
-        let lookup = config(&json).credentials(&registry_of("ghcr.io/o/x"), HELPER_LIMIT).await;
+        let lookup = config(&json).credentials(&registry_of("ghcr.io/o/x"), HELPER_LIMIT, None).await;
         assert!(lookup.credentials.is_none());
         assert_eq!(lookup.source, "no credentials: docker-credential-cicada-no-such-helper not found");
     }
@@ -398,6 +403,23 @@ mod tests {
             assert_eq!(run_helper(chatty.as_os_str(), "ghcr.io", LIMIT).await.unwrap_err(), "gave no JSON");
             let missing = dir.path().join("docker-credential-missing");
             assert_eq!(run_helper(missing.as_os_str(), "ghcr.io", LIMIT).await.unwrap_err(), "not found");
+        }
+
+        /// Scenario: Credentials from a helper. The `credsStore` helper answers, and the `auths` entry is not used.
+        #[tokio::test]
+        async fn a_configured_helper_gives_the_credentials_instead_of_auths() {
+            let dir = tempfile::tempdir().unwrap();
+            helper(dir.path(), "cicada-test", r#"read s; printf '{"Username":"from-helper","Secret":"for-%s"}' "$s""#);
+            let json = format!(
+                r#"{{"credsStore": "cicada-test", "auths": {{"ghcr.io": {{"auth": "{}"}}}}}}"#,
+                basic("u", "p")
+            );
+            let lookup = config(&json).credentials(&registry_of("ghcr.io/o/x"), LIMIT, Some(dir.path())).await;
+            assert_eq!(lookup.source, "credentials from docker-credential-cicada-test");
+            let credentials = lookup.credentials.unwrap();
+            assert_eq!(credentials.username.as_deref(), Some("from-helper"));
+            assert_eq!(credentials.password.as_deref(), Some("for-ghcr.io"));
+            assert_eq!(credentials.serveraddress.as_deref(), Some("ghcr.io"));
         }
 
         /// Real time: a paused clock would fire the limit at once while the child runs.

@@ -54,6 +54,7 @@ pub fn class() -> Class {
                 step!(a_missing_executable_fails_start_once),
                 step!(an_unknown_tag_is_image_not_found),
                 step!(a_missing_image_is_pulled_and_a_repeated_create_needs_none),
+                step!(a_public_image_is_pulled_past_a_helper_that_is_not_installed),
                 step!(a_private_image_is_pulled_with_the_login_of_config_json),
                 step!(a_hardened_container_gets_its_limits_and_secret),
                 step!(ensures_repeat_and_an_internal_flag_conflicts),
@@ -774,27 +775,73 @@ impl Drop for PrivateRegistry {
     }
 }
 
-/// A container `name(suffix)` of `image` that runs `true`, from a backend that reads its login from `folder`.
-async fn create_from(folder: &Path, suffix: &str, image: &str) -> (ContainerSpec, Result<(), ContainerError>) {
+/// A config folder of its own under the temp folder, removed when dropped.
+struct TempFolder(PathBuf);
+
+impl TempFolder {
+    fn new(tag: &str) -> Self {
+        let path = std::env::temp_dir().join(format!("cicada-rs-e2e-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).unwrap();
+        Self(path)
+    }
+}
+
+impl Drop for TempFolder {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A backend that reads its login from `folder` instead of the developer's `~/.docker`.
+fn reading(folder: &Path) -> DockerRuntime {
+    connect().docker_config(folder)
+}
+
+/// A container `name(suffix)` of `image` that runs `true`, created by `runtime`.
+async fn create_from(
+    runtime: &DockerRuntime,
+    suffix: &str,
+    image: &str,
+) -> (ContainerSpec, Result<(), ContainerError>) {
     let mut spec = spec(suffix, "true");
     spec.image = image.into();
-    let result = connect().docker_config(folder).create(&spec).await;
+    let result = runtime.create(&spec).await;
     (spec, result)
 }
 
-/// Scenario: A private image after docker login; A private image without a login.
+/// Scenario: A public image with a broken helper. The runtime reads its own folder, whose `credsStore` names a helper
+/// that is not installed, and still pulls the public image.
+async fn a_public_image_is_pulled_past_a_helper_that_is_not_installed() {
+    let folder = TempFolder::new("broken-helper");
+    std::fs::write(folder.0.join("config.json"), r#"{"credsStore": "cicada-no-such-helper"}"#).unwrap();
+    docker(&["image", "rm", "-f", PULLED], secs(60), false).await.unwrap();
+    assert!(docker_inspect("{{.Id}}", PULLED).await.is_none(), "{PULLED} is not local");
+
+    let (spec, created) = create_from(&reading(&folder.0), "broken-helper", PULLED).await;
+    created.unwrap();
+    assert_eq!(status(&spec.name).await, ContainerStatus::Created);
+    assert!(docker_inspect("{{.Id}}", PULLED).await.is_some(), "pulled");
+    runtime().remove(&spec.name).await.unwrap();
+}
+
+/// Scenarios: A login made after connect; A private image after docker login; A private image without a login.
 async fn a_private_image_is_pulled_with_the_login_of_config_json() {
     let registry = PrivateRegistry::start().await;
+    // Made, and talking to the daemon, before the login folder has a `config.json`.
+    let after_login = reading(&registry.folder("login"));
+    after_login.info().await.unwrap();
+    assert!(!registry.folder("login").join("config.json").exists());
     registry.login_and_push().await;
 
-    let (spec, created) = create_from(&registry.folder("login"), "private", &registry.image).await;
+    let (spec, created) = create_from(&after_login, "private", &registry.image).await;
     created.unwrap();
     assert_eq!(status(&spec.name).await, ContainerStatus::Created);
     assert!(docker_inspect("{{.Id}}", &registry.image).await.is_some(), "pulled");
     runtime().remove(&spec.name).await.unwrap();
     docker(&["image", "rm", &registry.image], secs(60), true).await.unwrap();
 
-    let (spec, created) = create_from(&registry.folder("empty"), "private-no-login", &registry.image).await;
+    let (spec, created) = create_from(&reading(&registry.folder("empty")), "private-no-login", &registry.image).await;
     let error = created.unwrap_err();
     println!("a pull from {} without a login: {:?}, {}", registry.host, error.kind, error.message);
     assert!(matches!(error.kind, ErrorKind::ImageNotFound | ErrorKind::Other), "{error}");
