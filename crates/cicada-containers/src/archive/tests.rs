@@ -328,6 +328,16 @@ fn page_lines_outside_1_to_the_page_maximum_are_refused() {
 }
 
 #[test]
+fn a_zero_interval_and_no_parallel_reads_are_refused() {
+    let new =
+        |settings| LogArchiver::new(Arc::new(FakeRuntime::new()), Arc::new(MemoryOutputStore::new()), "ci-", settings);
+    let zero_interval = ArchiveSettings { interval: Duration::ZERO, ..ArchiveSettings::new() };
+    assert_eq!(new(zero_interval).err().unwrap().to_string(), "interval is zero");
+    let no_reads = ArchiveSettings { max_parallel: 0, ..ArchiveSettings::new() };
+    assert_eq!(new(no_reads).err().unwrap().to_string(), "max_parallel is 0");
+}
+
+#[test]
 fn the_backoff_doubles_from_the_fifth_failure_up_to_a_minute() {
     let settings = ArchiveSettings::new();
     let waits: Vec<u64> = (0..12).map(|n| settings.backoff(n).as_secs()).collect();

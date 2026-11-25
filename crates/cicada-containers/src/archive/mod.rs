@@ -36,12 +36,12 @@ const MAX_BACKOFF: Duration = Duration::from_secs(60);
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArchiveSettings {
-    /// The time between rounds, and the base of the wait after failures; 2 s. Keep it positive: each round makes
-    /// Docker scan every followed log from its cursor's second.
+    /// The time between rounds, and the base of the wait after failures; 2 s, and more than zero. Each round makes
+    /// Docker scan every followed log from its cursor's second, so keep it at a few seconds.
     pub interval: Duration,
     /// The `max_lines` of each [`logs_since`](ContainerRuntime::logs_since) call; 500, and 1 to [`LOG_PAGE_MAX`].
     pub page_lines: u32,
-    /// The most log reads at once; 16. Keep it positive.
+    /// The most log reads at once; 16, and at least 1.
     pub max_parallel: usize,
 }
 
@@ -130,8 +130,10 @@ pub struct LogArchiver {
 }
 
 impl LogArchiver {
-    /// An archiver of the containers of `runtime` whose names start with `prefix`, the container actor's prefix, into
-    /// `store`. Fails when [`page_lines`](ArchiveSettings::page_lines) is not 1 to [`LOG_PAGE_MAX`].
+    /// An archiver of the containers of `runtime` that carry the label [`PREFIX_LABEL`](crate::PREFIX_LABEL) with the
+    /// value `prefix`, the container actor's prefix, into `store`. Fails when
+    /// [`page_lines`](ArchiveSettings::page_lines) is not 1 to [`LOG_PAGE_MAX`], when
+    /// [`interval`](ArchiveSettings::interval) is zero, and when [`max_parallel`](ArchiveSettings::max_parallel) is 0.
     pub fn new(
         runtime: Arc<dyn ContainerRuntime>,
         store: Arc<dyn OutputStore>,
@@ -140,6 +142,12 @@ impl LogArchiver {
     ) -> Result<Self, InvalidArchive> {
         if !(1..=LOG_PAGE_MAX).contains(&settings.page_lines) {
             return Err(InvalidArchive(format!("page_lines is {}, not 1 to {LOG_PAGE_MAX}", settings.page_lines)));
+        }
+        if settings.interval.is_zero() {
+            return Err(InvalidArchive("interval is zero".into()));
+        }
+        if settings.max_parallel == 0 {
+            return Err(InvalidArchive("max_parallel is 0".into()));
         }
         Ok(Self { runtime, store, label: Label::new(PREFIX_LABEL, prefix.into()), settings })
     }

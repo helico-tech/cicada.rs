@@ -11,8 +11,7 @@ moves: a correction is a new version.
 
 A host keeps a container's log and output files in its own `OutputStore` of `cicada-containers`, with one guarded write
 for lines and cursor and a conformance check to test it, and a `LogArchiver` follows its containers' logs into it.
-Additive: the contracts, wire formats, the store schema, the
-HTTP API and the guarantees are those of 0.22.0.
+Additive: the contracts, wire formats, the store schema, the HTTP API and the guarantees are those of 0.22.0.
 
 ### Added
 
