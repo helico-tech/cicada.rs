@@ -2,7 +2,9 @@
 //! [`ContainerError`], with a fake, `FakeRuntime`, behind the feature `testing`, and a Docker backend, `DockerRuntime`,
 //! behind the feature `docker`. On top of the trait, the container actor, [`ContainerActor`] (ADR 0057): one actor per
 //! container under a type name its [`ContainerJob`] chooses, which reconciles the container toward a goal by one armed
-//! poll at a time and reports its end once.
+//! poll at a time and reports its end once. A host keeps a container's log and output files in its own
+//! [`OutputStore`], keyed by container name, with an in-memory one, `MemoryOutputStore`, and the conformance check
+//! `check_output_store` behind `testing`.
 //!
 //! The runtime's public items name no type of a Docker client, so another backend fits the trait. The crate is an
 //! optional layer outside the core (ADR 0056): no library crate of the workspace depends on it.
@@ -45,6 +47,7 @@ mod fake;
 // The pager of every runtime; without one of them, nothing calls it yet.
 #[cfg_attr(not(any(test, feature = "testing", feature = "docker")), allow(dead_code))]
 mod logs;
+mod outputs;
 // The rule of `copy_in`, `copy_out` and `make_dirs` for every runtime; without one of them, nothing calls it yet.
 #[cfg_attr(not(any(test, feature = "testing", feature = "docker")), allow(dead_code))]
 mod paths;
@@ -62,6 +65,11 @@ pub use error::{ContainerError, ErrorKind};
 #[cfg(any(test, feature = "testing"))]
 pub use fake::{Call, FakeRuntime, Method};
 pub use logs::{LOG_PAGE_MAX, LogCursor, LogLine, LogPage, LogStream};
+pub use outputs::{
+    LogEnd, OutputError, OutputErrorKind, OutputStore, StoredFile, StoredLine, check_container_name, clean_output_path,
+};
+#[cfg(any(test, feature = "testing"))]
+pub use outputs::{MemoryOutputStore, check_output_store};
 pub use runtime::{
     ContainerRuntime, ContainerStatus, ContainerSummary, OUT_OF_MEMORY, Resource, RuntimeInfo, Skipped, Swept,
 };
