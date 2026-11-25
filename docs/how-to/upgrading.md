@@ -289,12 +289,19 @@ hash of every container job type changes. A node requires the exact registered h
 [Changing a contract](../operations.md#changing-a-contract): a versioned type name for new runs while old actors finish
 on old hosts, or a maintenance window (stop every host of the type, delete its actors and then its registration, start
 the new hosts). Send `Remove` to a container actor before deleting it, or its container stays. A target type changes
-only when it adds a variant that takes a `ContainerProgress`.
+only when it adds a variant that takes a `ContainerProgress`. The state also gains `pending` and the phase
+`collecting`, and `ContainerEnd` the optional `outputs`, so **an owner type whose messages take a `ContainerEnded`
+changes its contract too**: follow Changing a contract for those types as well.
 
 In Rust, add `progress_type: None` to every `ContainerMsg::Start` and `EndTarget` struct literal, such as in your
 tests, and bind or ignore it (`..`) in exhaustive patterns. Add `progress_seq: 0, progress_hash: None` where you build a
-`ContainerState` by its fields; `ContainerState::new` needs no change. The store schema, the HTTP API, the ready-made
-actors' contracts and the guarantees do not change.
+`ContainerState` by its fields, with `pending: None`; `ContainerState::new` needs no change. Add `outputs: None` to
+every `ContainerEnd` struct literal, and `Phase::Collecting` to exhaustive matches on `Phase`. A store of your own that
+uses `check_container_name` and `clean_output_path` now refuses names over 200 characters and paths with a control
+character. The store schema, the HTTP API, the ready-made actors' contracts and the guarantees do not change.
+
+**Do not roll back to 0.22 while a container actor with a store is collecting.** It saves states in the phase
+`collecting`, which 0.22 cannot read.
 
 ## Upgrade to 0.22.0
 

@@ -3,7 +3,7 @@
 `cicada-containers` is an optional crate for applications that run containers. It has two levels:
 
 - **The runtime**, `ContainerRuntime`: calls on containers, networks and volumes, found by names you choose. Call it
-  from host code, outside actor turns, for work such as following logs or collecting files.
+  from host code or a task of its own, for work such as following logs or collecting files.
 - **The container actor**, `ContainerActor`: one durable actor per container, which creates, starts, watches, stops
   and removes it, and reports its end once to a target you name.
 
@@ -286,6 +286,8 @@ A `ContainerJob` names the actor type, as a flow does, and builds the spec from 
   `Inputs::default()`.
 - `timeout(request, settings)`, optional, returns the request's time limit; the default returns the settings'
   `timeout`, and `None` is no limit.
+- `outputs(request)`, optional (from 0.23.0), names the output folder the actor keeps at the end; see
+  [Outputs at the end](#outputs-at-the-end).
 - `const MAX_TURN: Option<Duration>`, optional (from 0.22.0), is the turn limit of its actors; `None` keeps the node's
   default. Set it above the two long turns: the create step (a pull of a missing image, the create, the folders and
   the copies) and a stop, which waits up to `stop_grace`. It wins over `--max-turn` and `CICADA_MAX_TURN`, so an
@@ -302,7 +304,7 @@ fit one turn:
 use std::time::Duration;
 
 use cicada::prelude::*;
-use cicada_containers::{ContainerJob, ContainerSpec, CopyDir, CopyFile, Inputs};
+use cicada_containers::{ContainerJob, ContainerSpec, CopyDir, CopyFile, Inputs, Outputs};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -336,6 +338,10 @@ impl ContainerJob for Tests {
         inputs.dirs.push(out);
         inputs.files.push(CopyFile::new("/in/commit.txt", test.commit.clone()));
         Ok(inputs)
+    }
+
+    fn outputs(&self, _test: &Test) -> Option<Outputs> {
+        Some(Outputs::new("/out")) // kept in the actor's store at the end: at most 64 MiB in 1000 files
     }
 }
 ```
@@ -453,6 +459,64 @@ let start = ContainerMsg::start_with_progress(&owner, "TestEnded", "TestProgress
   retried after a backoff, so it can arrive after a later one or after the end. **Drop a progress whose `seq` is not
   above the last one you handled, and any that arrives after the end.**
 
+### Outputs at the end
+
+An actor with an [output store](#keep-outputs) keeps what a container leaves behind, the rest of its log and the job's
+output folder, and the owner learns with the end what was kept (from 0.23.0,
+[ADR 0066](../adr/0066-container-outputs-at-the-end.md)). Give the actor the store with `with_store`, and the job an
+`outputs` folder, as `Tests` does in [Define a job](#define-a-job):
+
+<!-- doctest
+# use cicada::prelude::*;
+# use cicada_containers::{ContainerJob, ContainerSpec};
+# use serde::{Deserialize, Serialize};
+# #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+# struct Test {}
+# struct Tests;
+# impl ContainerJob for Tests {
+#     const TYPE: &'static str = "ci.tests";
+#     type Request = Test;
+#     fn spec(&self, name: &str, _: &Test) -> Result<ContainerSpec, String> { Ok(ContainerSpec::new(name, "rust:1")) }
+# }
+@@7
+# Ok::<(), Box<dyn std::error::Error>>(())
+-->
+```rust
+use std::sync::Arc;
+
+use cicada_containers::{ContainerActor, ContainerSettings, FakeRuntime, MemoryOutputStore, OutputStore};
+
+let store: Arc<dyn OutputStore> = Arc::new(MemoryOutputStore::new()); // your own store in production
+let runtime = Arc::new(FakeRuntime::new());
+let actor = ContainerActor::new(Tests, runtime, ContainerSettings::new("ci-")?).with_store(store.clone());
+```
+
+- **What happens.** At an end the container ran for (`exited`, `stopped`, `timedOut`, and `failed` with
+  `runtimeEnded` or `outOfMemory`), the actor holds the end as `pending` in the phase `collecting`. Its next polls
+  store the rest of the log (at most 10,000 lines per turn, the next poll at once while more is left), then copy the
+  outputs folder out within its limits and put each file into the store, keyed by the container's name. The poll that
+  finishes reads the last progress, records the end with `outputs` and sends it. A saved end still means a sent end.
+- **The report.** The end's `outputs` is an `OutputsReport`:
+  `{"stored": 12, "bytes": 40960, "skipped": 1, "firstSkipped": [{"path": "/out/core", "reason": "…"}], "error": null}`.
+  `skipped` counts every entry the limits or the link rule of `copy_out` left out and every file the store refused,
+  each with its reason; `firstSkipped` lists the first 10.
+- **Without an outputs folder** only the log is stored, and the counts are 0. **Without a store** nothing changes:
+  the end is recorded and sent in one commit, without `outputs`. Ends the container did not run for (`notStarted`,
+  `missing`, `runtimeErrors`) never collect.
+- **Errors.** A runtime or store error a retry can cure counts as a runtime error and backs off; at `max_errors` in a
+  row the end goes out with its outcome unchanged and `error: "(no outputs: failed N times in a row: …)"`. A relative
+  outputs path, a runtime without `copy_out` and a container removed by someone else end the collection at once with
+  the error; a runtime without `logs_since` skips the log. What was stored before an error stays stored.
+- **Messages meanwhile.** A second `Start` changes nothing: the end goes to the first target. A `Stop` stops nothing
+  more. A `Remove` removes the container after the end is sent.
+- **Next to a `LogArchiver`.** Give both the same store: the guarded append stores each line once, and the actor
+  stores the lines the archiver had not read when the container ended.
+- **Turn limit and memory.** The copy runs in one turn: set the job's `MAX_TURN` above the time a copy of the byte
+  limit takes. A collecting container holds up to its byte limit in memory: size the limits against the node's
+  concurrency. Each actor collects in its own turns, so a slow copy holds up only its own container.
+
+The store is yours: the actor does not delete stored outputs.
+
 ### Rules for hosts
 
 - **Keep the prefix label.** The actor adds the label `cicada.container.prefix` with its prefix to every spec, after
@@ -524,7 +588,7 @@ check_output_store(&store).await; // the rules of the trait hold
 
 You do not write the log pages yourself: a `LogArchiver` follows the log of every container of a container job and
 keeps it in your `OutputStore`, so the log survives the container's removal and your route can serve it with
-`read_logs`. It runs outside actor turns, as a page is too big for actor state. Run it as an
+`read_logs`. It runs as a task of its own and writes to the store, not to actor state. Run it as an
 [app task](app.md#run-it-as-a-binary), with the runtime you give the container actor and the actor's prefix:
 
 <!-- doctest
@@ -616,6 +680,9 @@ into file paths. Every method checks them first and fails with `Invalid` before 
 `check_container_name` (a letter or digit first, then only `A-Za-z0-9_.-`: no `/`, never `..`) and `clean_output_path`
 (absolute, no `..` part, not `/`; empty and `.` parts dropped, so `/a`, `//a` and `/./a` are one file, `/a`). Call both
 in your store and use the cleaned path as the key; `files` and `read_file` give the cleaned path, not the one put.
+From 0.23.0, a container name over 200 characters and a path with a control character (NUL included) are `Invalid`
+too. A store on a case-insensitive file system (the defaults of macOS and Windows) must keep `/out/Job` and `/out/job`,
+and the containers `Job` and `job`, apart.
 
 `OutputError` has a `kind`: `Invalid` (a name or path outside the rules), `Conflict` (a stale `after`), `Unavailable`
 (the store could not be reached; the only kind `is_retryable` calls retryable) and `Other`.
