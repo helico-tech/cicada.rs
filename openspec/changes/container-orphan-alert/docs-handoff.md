@@ -50,5 +50,6 @@ None.
 
 ## Status
 
-`cargo test -p cicada-containers --all-features` (the nine watch tests and the two doctests pass). The text above is
+`cargo test -p cicada-containers --all-features` (the nine watch tests and the two doctests pass); `cargo test
+--workspace` (3620 passed, 0 failed); `cicada-examples` `--test docs`, `--doc` and `--test skill` pass. The text above is
 proposed; no protected prose is written yet.
