@@ -27,7 +27,7 @@ use crate::logs::{Pager, check_max_lines};
 use crate::paths::MountTarget;
 use crate::{
     ContainerError, ContainerRuntime, ContainerSpec, ContainerStatus, ContainerSummary, CopyDir, CopyFile, CopyLimits,
-    CopyOut, ErrorKind, Label, LogCursor, LogPage, NetworkSpec, Resource, Skipped, Swept, VolumeSpec,
+    CopyOut, ErrorKind, Label, LogCursor, LogPage, NetworkSpec, Resource, RuntimeInfo, Skipped, Swept, VolumeSpec,
 };
 
 /// The oldest Docker Engine API the backend speaks: Docker 25, which joins several networks in one create.
@@ -58,6 +58,8 @@ const STOP_SLACK: Duration = Duration::from_secs(60);
 ///   already resolved, so a chain of links counts as one; a link loop makes the stat fail, and the call with `Other`.
 /// - [`logs_since`](ContainerRuntime::logs_since) reads Docker's log with timestamps from the cursor's second and
 ///   stops once the page is full; a container whose log driver cannot be read (`none`) fails with `Other`.
+/// - [`info`](ContainerRuntime::info) asks `GET /version` and gives its `Arch` and `Os` as they are, with bollard's
+///   request timeout (120 s) and no limit of its own.
 /// - [`copy_out`](ContainerRuntime::copy_out) reads Docker's archive of the path as a stream, on a blocking thread of
 ///   the host's Tokio runtime, and holds only the kept files. An error during the stream fails the whole call.
 /// - Secret environment goes to Docker only in the body of the create call, and an error message never holds a secret
@@ -516,6 +518,12 @@ impl ContainerRuntime for DockerRuntime {
         swept.volumes.sort();
         Ok(swept)
     }
+
+    async fn info(&self) -> Result<RuntimeInfo, ContainerError> {
+        let docker = self.docker().await?;
+        let version = docker.version().await.map_err(|e| fail("read", "docker /version", &e))?;
+        map::runtime_info(&version)
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -552,6 +560,17 @@ mod tests {
         assert!(!runtime.negotiated.initialized(), "a failed agreement is not kept");
         let error = runtime.sweep(&Label::new("run", "a")).await.unwrap_err();
         assert_eq!(error.kind, ErrorKind::DaemonUnavailable);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    /// Scenario: No daemon behind the socket.
+    #[tokio::test]
+    async fn info_without_a_daemon_is_daemon_unavailable_twice() {
+        let (path, runtime) = dead_socket("info");
+        for _ in 0..2 {
+            let error = runtime.info().await.unwrap_err();
+            assert_eq!(error.kind, ErrorKind::DaemonUnavailable, "{error}");
+        }
         std::fs::remove_file(path).unwrap();
     }
 

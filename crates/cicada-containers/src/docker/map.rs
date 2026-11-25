@@ -1,6 +1,6 @@
 //! The pure half of the Docker backend: a spec onto Docker's create body, Docker's state onto a status, its errors
 //! onto kinds, the secret scrub, the paths and tars of `copy_in` and `make_dirs`, the archive stat, and the frames of a
-//! timed log read. Nothing here talks to the daemon.
+//! timed log read, and Docker's version onto the runtime info. Nothing here talks to the daemon.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -8,14 +8,14 @@ use bollard::container::LogOutput;
 use bollard::errors::Error as DockerError;
 use bollard::models::{
     ContainerCreateBody, ContainerInspectResponse, ContainerState, ContainerStateStatusEnum, EndpointSettings,
-    HostConfig, Mount as DockerMount, MountPoint, MountType, NetworkingConfig,
+    HostConfig, Mount as DockerMount, MountPoint, MountType, NetworkingConfig, SystemVersion,
 };
 
 use crate::dirs::{Make, Stat};
 use crate::paths::{MountTarget, Mounted, place};
 use crate::{
     ContainerError, ContainerSpec, ContainerStatus, ContainerSummary, CopyFile, ErrorKind, LogCursor, LogLine,
-    LogStream, MountKind, Networking, OUT_OF_MEMORY, Resource, Tmpfs,
+    LogStream, MountKind, Networking, OUT_OF_MEMORY, Resource, RuntimeInfo, Tmpfs,
 };
 
 /// The HTTP status of a refusal by the daemon; `None` for every other error.
@@ -381,6 +381,15 @@ pub(super) fn log_line(name: &str, frame: LogOutput) -> Result<LogLine, Containe
         ));
     };
     Ok(LogLine::new(time, stream, String::from_utf8_lossy(&bytes[space + 1..])))
+}
+
+/// The `Arch` and `Os` of Docker's `/version`, as they are; a missing or empty one is `Other`.
+pub(super) fn runtime_info(version: &SystemVersion) -> Result<RuntimeInfo, ContainerError> {
+    let field = |value: &Option<String>, name: &str| match value.as_deref() {
+        Some(value) if !value.is_empty() => Ok(value.to_owned()),
+        _ => Err(ContainerError::new(ErrorKind::Other, format!("docker /version gave no {name}"))),
+    };
+    Ok(RuntimeInfo::new(field(&version.arch, "Arch")?, field(&version.os, "Os")?))
 }
 
 #[cfg(test)]
@@ -795,6 +804,28 @@ mod tests {
             let error = uploads("job-1", &[CopyFile::new("/in/a", "1")], read_only_root, &mounts).unwrap_err();
             assert_eq!(error.kind, ErrorKind::InvalidSpec, "{read_only_root}");
             uploads("job-1", &[CopyFile::new("/in/rw/a", "1")], read_only_root, &mounts).unwrap();
+        }
+    }
+
+    #[test]
+    fn runtime_info_takes_arch_and_os_as_docker_gives_them() {
+        let version = SystemVersion { arch: Some("arm64".into()), os: Some("linux".into()), ..Default::default() };
+        assert_eq!(runtime_info(&version).unwrap(), RuntimeInfo::new("arm64", "linux"));
+    }
+
+    #[test]
+    fn a_missing_or_empty_arch_or_os_is_other() {
+        let cases = [
+            (None, Some("linux"), "Arch"),
+            (Some(""), Some("linux"), "Arch"),
+            (Some("amd64"), None, "Os"),
+            (Some("amd64"), Some(""), "Os"),
+        ];
+        for (arch, os, name) in cases {
+            let version = SystemVersion { arch: arch.map(Into::into), os: os.map(Into::into), ..Default::default() };
+            let error = runtime_info(&version).unwrap_err();
+            assert_eq!(error.kind, ErrorKind::Other, "{error}");
+            assert_eq!(error.message, format!("docker /version gave no {name}"));
         }
     }
 }

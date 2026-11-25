@@ -17,7 +17,7 @@ and `specs/container-docker/spec.md`. Run the crate's tests with every feature:
   `Call::Info` and `Method::Info` with `fail_next` and `fail_always`. Verify: tests for the default, `set_info`, a
   scripted `DaemonUnavailable` followed by an answer with two `Info` calls recorded, and a repeated call that leaves a
   created container `Created`; `cargo test -p cicada-containers --all-features`.
-- [ ] 3. **The Docker backend.** `DockerRuntime::info` in `src/docker/mod.rs` through `docker()` and bollard's
+- [x] 3. **The Docker backend.** `DockerRuntime::info` in `src/docker/mod.rs` through `docker()` and bollard's
   `version()`, the map from `SystemVersion` in `src/docker/map.rs` (a missing or empty `Arch` or `Os` is `Other`),
   errors through `kind_of` (decision 4). Verify: map unit tests; a socket without a daemon gives `DaemonUnavailable`
   twice; `cargo test -p cicada-containers --all-features`.
