@@ -3,7 +3,8 @@
 ## Why
 
 A holder that is deleted without a `Release` would keep its place for good. Factory hit this (issue 0014), which
-`watch-absent-target` fixes in the core (request from the Factory session, 2026-11-25; the owner accepted the split (CO-SPLIT, PL-SPLIT, AB-ORDER: container outputs first)).
+`watch-absent-target` fixes in the core (request from the Factory session, 2026-11-25; the owner accepted the split
+(CO-SPLIT, PL-SPLIT, AB-ORDER: container outputs first)).
 
 ## What Changes
 

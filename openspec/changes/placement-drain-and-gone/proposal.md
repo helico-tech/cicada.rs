@@ -3,7 +3,8 @@
 ## Why
 
 An operator takes a node out of service: drain (no new places; running work finishes) and undrain, and declares a
-silent node gone, after which its holders are told (request from the Factory session, 2026-11-25; the owner accepted the split (CO-SPLIT, PL-SPLIT, AB-ORDER: container outputs first)).
+silent node gone, after which its holders are told (request from the Factory session, 2026-11-25; the owner accepted the
+split (CO-SPLIT, PL-SPLIT, AB-ORDER: container outputs first)).
 
 ## What Changes
 

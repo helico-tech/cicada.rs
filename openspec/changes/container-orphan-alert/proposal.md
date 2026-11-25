@@ -3,7 +3,8 @@
 ## Why
 
 Containers with a job's name prefix that no container actor owns (left from a lost store, a test, a crash between a
-create and its commit) run on unnoticed. Factory alerts on them (request from the Factory session, 2026-11-25; the owner accepted the split (CO-SPLIT, PL-SPLIT, AB-ORDER: container outputs first)).
+create and its commit) run on unnoticed. Factory alerts on them (request from the Factory session, 2026-11-25; the owner
+accepted the split (CO-SPLIT, PL-SPLIT, AB-ORDER: container outputs first)).
 
 ## What Changes
 

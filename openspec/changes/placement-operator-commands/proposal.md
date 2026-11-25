@@ -2,7 +2,8 @@
 
 ## Why
 
-An operator drains, undrains, declares gone and releases from the command line (request from the Factory session, 2026-11-25; the owner accepted the split (CO-SPLIT, PL-SPLIT, AB-ORDER: container outputs first)).
+An operator drains, undrains, declares gone and releases from the command line (request from the Factory session,
+2026-11-25; the owner accepted the split (CO-SPLIT, PL-SPLIT, AB-ORDER: container outputs first)).
 
 ## What Changes
 

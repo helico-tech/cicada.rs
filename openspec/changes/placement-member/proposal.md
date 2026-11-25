@@ -3,7 +3,8 @@
 ## Why
 
 Each node must offer its places only while its runtime answers, under an id that stays the same across restarts and
-that another machine cannot take. Factory does this with a machine-id file and its own task (request from the Factory session, 2026-11-25; the owner accepted the split (CO-SPLIT, PL-SPLIT, AB-ORDER: container outputs first)).
+that another machine cannot take. Factory does this with a machine-id file and its own task (request from the Factory
+session, 2026-11-25; the owner accepted the split (CO-SPLIT, PL-SPLIT, AB-ORDER: container outputs first)).
 
 ## What Changes
 

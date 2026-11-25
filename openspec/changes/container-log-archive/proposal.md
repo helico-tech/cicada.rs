@@ -3,7 +3,8 @@
 ## Why
 
 A host follows a running container's log and keeps it outside the container, so it survives the container's removal
-and can be served to users. Factory does this in its runner; this line moves it into `cicada-containers` (request from the Factory session, 2026-11-25; the owner accepted the split (CO-SPLIT, PL-SPLIT, AB-ORDER: container outputs first)).
+and can be served to users. Factory does this in its runner; this line moves it into `cicada-containers` (request from
+the Factory session, 2026-11-25; the owner accepted the split (CO-SPLIT, PL-SPLIT, AB-ORDER: container outputs first)).
 
 ## What Changes
 
@@ -15,7 +16,8 @@ and can be served to users. Factory does this in its runner; this line moves it 
 - A read-back helper (from an offset, with a limit) for a host's HTTP route or API.
 
 To decide in the design: how the archiver learns which containers to follow (the actor's state, a list by label, or a
-message from the actor), its poll interval, and how it hands over to the end of the container (`container-output-collect`).
+message from the actor), its poll interval, and how it hands over to the end of the container
+(`container-output-collect`).
 
 From the design review of `container-output-store`: `read_logs` already serves read-back, so no helper is needed; and
 after `remove` a container's cursor is `None` again, so no archiver may run for a container after its outputs were
