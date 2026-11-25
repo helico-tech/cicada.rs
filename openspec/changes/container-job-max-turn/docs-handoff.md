@@ -1,7 +1,7 @@
 # Docs handoff for container-job-max-turn
 
-Version: 0.22.0 (the unreleased batch; `CHANGELOG.md` on main still heads it `0.21.2 — unreleased` until
-`watch-absent-target` renames it). Refresh the dependency pins of `docs/how-to/install.md` once it is published.
+Version: 0.22.0 (the unreleased batch, with `watch-absent-target` and `docker-context`). Refresh the dependency
+pins of `docs/how-to/install.md` once it is published.
 
 ## What changed
 
