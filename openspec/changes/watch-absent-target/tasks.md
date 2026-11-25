@@ -24,7 +24,7 @@ whole batch; set 0.22.0 wherever the version lives (builder.md, Version). Follow
   `existing` and a refused one, checked by `crates/cicada/tests/fixtures.rs`. A remote-worker test runs a turn with
   `watch_existing` over HTTP and finds the same `Stopped` as a local commit. Verify:
   `cargo test -p cicada --test fixtures`, `cargo test -p cicada-client`, `cargo test -p cicada-axum`.
-- [ ] 4. **The pool case, changelog and docs handoff.** A runtime test on virtual time with `TestActors`: a run deleted
+- [x] 4. **The pool case, changelog and docs handoff.** A runtime test on virtual time with `TestActors`: a run deleted
   between the message that gives it a place and the pool's turn frees the place through `watch_existing`. The
   changelog names `Turn::watch_existing` under Added and the `WatchChange` field under a **BREAKING** line, with the
   upgrade order (servers before workers). `docs-handoff.md` carries what the design's Docs section lists; nothing

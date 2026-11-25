@@ -7,11 +7,35 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.21.2 — unreleased
+## 0.22.0 — unreleased
 
-`DockerRuntime::connect()` finds Docker through the Docker CLI's context, so it works on a Mac with OrbStack, Colima or
-Docker Desktop and no `/var/run/docker.sock`. Additive: the contracts, wire formats, the store schema, the HTTP API and
-the guarantees are those of 0.21.1.
+A turn can watch an actor that must exist (ADR 0063): `Turn::watch_existing` tells the watcher at once when the actor
+is already gone, so a pool that gives a place to a run and watches it frees the place also when the run went before
+its turn. `DockerRuntime::connect()` of `cicada-containers` finds Docker through the Docker CLI's context, so it works
+on a Mac with OrbStack, Colima or Docker Desktop and no `/var/run/docker.sock`. **BREAKING**: the public `WatchChange`
+and `WatchChangeView` gain a field. The HTTP field is optional and every older request and fixture keeps its bytes. No
+store schema, actor contract, contract hash or guarantee changes.
+
+### Added
+
+- `Turn::watch_existing(target)`: one actor (a typed ref, an address or its text). The commit checks the target where
+  it applies the watches, in the order of the calls and before the turn's deletes and creates. When the actor is
+  there, a plain watch, as `Turn::watch` sets it. When it is not, the watcher gets one `Stopped` of it in the same
+  transaction, with the cause `deleted` and `by` null, as for a delete from outside a turn, the turn's message as
+  `causedBy` and the absent actor as sender, numbered with the commit's other notifications; the pair holds no watch
+  then, an older one included, and a later create of that address is not watched. A delete in the same turn writes
+  its own `Stopped`; an actor created in the same turn is not there yet and gives a `Stopped` (use `watch` there).
+  Two calls for one absent actor give one `Stopped`. A type prefix or `*` is `TurnError::Invalid`, as is a family
+  without `Failed` and `Stopped`. A delete by another node is seen exactly once: on PostgreSQL the commit locks the
+  target's row with its other rows and "there" means that lock found it; SQLite and the in-memory store check inside
+  their write lock. Covered by `crates/cicada/src/tests/conformance/watch_existing.rs` on every backend (with a race
+  of a delete against the commit), `crates/cicada/tests/watch_existing.rs` (the pool case) and
+  `a_watch_existing_of_an_absent_actor_over_http_writes_the_stopped_of_a_local_commit` in
+  `crates/cicada-client/tests/remote_worker.rs`.
+- `existing` on a watch change of `POST /leases/complete` (`WatchChangeView`), `true` for `watch_existing`, absent or
+  false otherwise and left out when false. With a type target, every type or `set: false` the report is invalid
+  (`400`). Portable fixtures: a valid body with `existing`, an `existing: false` input, and both refusals at
+  conversion. `docs/openapi.json` has the field.
 
 ### Changed
 
@@ -28,6 +52,17 @@ the guarantees are those of 0.21.1.
   whose unix socket is missing fails with the retryable `DaemonUnavailable`, naming the context and the endpoint.
   Covered by the unit tests in `src/docker/context.rs` and `src/docker/mod.rs`; the E2E class of
   `e2e/tests/suite/container_docker.rs` now connects with `connect()` alone.
+
+### Changed (breaking)
+
+- `WatchChange` and `WatchChangeView` have the new public field `existing`: a struct literal or an exhaustive
+  destructuring of them no longer compiles; add `existing: false`. A store commit refuses a `WatchChange` with
+  `existing` on a type, every type or without `set` as `StoreError::Invalid`.
+
+### Upgrading
+
+- Upgrade every HTTP server before a worker runs a turn that calls `watch_existing`: a 0.21 server refuses the field
+  `existing` as unknown, and the turn's report is refused. A 0.21 worker keeps working against an upgraded server.
 
 ## 0.21.1 — 2026-11-25
 
