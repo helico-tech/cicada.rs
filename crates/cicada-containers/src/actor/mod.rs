@@ -69,6 +69,42 @@ pub trait ContainerJob: Send + Sync + 'static {
     const TYPE: &'static str;
     /// The request of one container, fixed at its create and kept in its state; its schema is part of the contract.
     type Request: Serialize + DeserializeOwned + JsonSchema + Send + Sync + 'static;
+    /// The maximum duration of one turn of these actors, their [`Actor::MAX_TURN`]: it wins over the node's default
+    /// and over `--max-turn`; `None`, the default, keeps the node's default. Zero is refused when the type is
+    /// registered.
+    ///
+    /// Two turns are long. The create step pulls a missing image, creates the container, makes its folders and copies
+    /// its inputs in, all in one turn; a stop waits up to the settings'
+    /// [`stop_grace`](ContainerSettings::stop_grace) in one turn. Set the limit above both, or stops time out too.
+    ///
+    /// A turn past the limit ends `failed` (`timeout`) without counting as a runtime error: the poll's own retry
+    /// policy runs the step again (7 attempts, waiting 1 to 32 s; every step is safe to repeat, and a container the
+    /// cut-off step made is found, not made again). After the last attempt the container waits for the next `Check`,
+    /// `Start`, `Stop` or `Remove`. The limit is not part of the contract.
+    ///
+    /// ```
+    /// # use cicada::prelude::*;
+    /// # use cicada_containers::{ContainerActor, ContainerJob, ContainerSpec};
+    /// # use serde::{Deserialize, Serialize};
+    /// use std::time::Duration;
+    ///
+    /// # #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+    /// # struct Test {}
+    /// struct Tests;
+    ///
+    /// impl ContainerJob for Tests {
+    ///     const TYPE: &'static str = "ci.tests";
+    ///     const MAX_TURN: Option<Duration> = Some(Duration::from_secs(35 * 60)); // a slow pull fits one turn
+    ///     type Request = Test;
+    ///
+    ///     fn spec(&self, name: &str, _: &Test) -> Result<ContainerSpec, String> {
+    ///         Ok(ContainerSpec::new(name, "rust:1"))
+    ///     }
+    /// }
+    ///
+    /// assert_eq!(<ContainerActor<Tests> as Actor>::MAX_TURN, Some(Duration::from_secs(35 * 60)));
+    /// ```
+    const MAX_TURN: Option<Duration> = None;
 
     /// The spec of the container `name` for `request`, built at each create, so secrets never reach the store. The actor
     /// sets the spec's name to `name` whatever it returns. An `Err` ends the container `failed` with its text and the
@@ -336,7 +372,8 @@ fn retry_policy() -> RetryPolicy {
 /// start.
 ///
 /// Every node that can claim these actors must reach the same daemon: pin them with a claim owner when only some do
-/// (ADR 0052). A create's image pull and a stop's grace run inside one turn and its maximum duration.
+/// (ADR 0052). A create's image pull and a stop's grace run inside one turn and its maximum duration, the job's
+/// [`MAX_TURN`](ContainerJob::MAX_TURN) or else the node's default.
 pub struct ContainerActor<J> {
     job: J,
     runtime: Arc<dyn ContainerRuntime>,
@@ -355,6 +392,7 @@ type ContainerTurn<J> = Turn<ContainerActor<J>>;
 impl<J: ContainerJob> Actor for ContainerActor<J> {
     type Ref = Container<J>;
     type State = ContainerState<J::Request>;
+    const MAX_TURN: Option<Duration> = J::MAX_TURN;
 
     async fn handle(&self, turn: &mut ContainerTurn<J>, message: ContainerMsg) -> HandlerResult {
         match message {
@@ -730,6 +768,38 @@ impl<J: ContainerJob> ContainerActor<J> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    struct Nothing {}
+
+    struct Plain;
+
+    impl ContainerJob for Plain {
+        const TYPE: &'static str = "test.plain";
+        type Request = Nothing;
+
+        fn spec(&self, name: &str, _: &Nothing) -> Result<ContainerSpec, String> {
+            Ok(ContainerSpec::new(name, "alpine:3"))
+        }
+    }
+
+    struct Slow;
+
+    impl ContainerJob for Slow {
+        const TYPE: &'static str = "test.slow";
+        const MAX_TURN: Option<Duration> = Some(Duration::from_secs(35 * 60));
+        type Request = Nothing;
+
+        fn spec(&self, name: &str, _: &Nothing) -> Result<ContainerSpec, String> {
+            Ok(ContainerSpec::new(name, "alpine:3"))
+        }
+    }
+
+    #[test]
+    fn the_actors_turn_limit_is_the_jobs() {
+        assert_eq!(<ContainerActor<Slow> as Actor>::MAX_TURN, Some(Duration::from_secs(35 * 60)));
+        assert_eq!(<ContainerActor<Plain> as Actor>::MAX_TURN, None);
+    }
 
     #[test]
     fn the_prefix_must_be_a_name() {

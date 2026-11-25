@@ -4,7 +4,7 @@ Normal lane, additive: in the unreleased batch with `docker-context` (check the 
 `python3 scripts/status.py`, builder.md, Version). Follow `design.md`; the spec is `specs/container-actor/spec.md`.
 Run the crate's tests with every feature: `cargo test -p cicada-containers --all-features`.
 
-- [ ] 1. **The constant.** `ContainerJob::MAX_TURN: Option<Duration> = None` in `crates/cicada-containers/src/actor/`,
+- [x] 1. **The constant.** `ContainerJob::MAX_TURN: Option<Duration> = None` in `crates/cicada-containers/src/actor/`,
   and `const MAX_TURN: Option<Duration> = J::MAX_TURN` in `impl Actor for ContainerActor<J>` (decisions 1 and 2). Its
   rustdoc names the create step and the stop's `stop_grace` as the long turns, says to set the limit above both, and
   what a timeout does (decision 3). Verify: a unit test that the actor's `MAX_TURN` is the job's, and `None` without
