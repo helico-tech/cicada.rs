@@ -7,6 +7,28 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.23.1 — unreleased
+
+An `OrphanWatch` of `cicada-containers` reports the containers of a job that have no container actor, without removing
+them. Additive: the contracts, wire formats, the store schema, the HTTP API and the guarantees are those of 0.23.0.
+
+### Added
+
+- `cicada-containers`: `OrphanWatch<J: ContainerJob>`, which reports the containers of a job that have no container
+  actor (left by a lost store, a test, an actor deleted by hand), outside actor turns.
+  `OrphanWatch::new(runtime, prefix, settings, on_orphan)` takes the job's container prefix, `OrphanSettings`
+  (`interval` 5 minutes) and a plain `Fn(&str)`; a zero interval fails with `InvalidOrphanWatch`. `run(system, stop)`
+  watches until `stop` completes: each round lists the containers labelled with the prefix and reads the actor of
+  `J::TYPE` keyed by the name without the prefix with `ActorSystem::get_actor`. A container whose actor is missing in
+  two rounds in a row is an orphan: the watch logs a warning and calls `on_orphan` with its name once, and never
+  removes it. What it reported is kept in memory, pruned to the listed names: a container whose actor appears is
+  dropped, a removed one is forgotten, and after a restart each orphan is reported once more. A labelled name without
+  the prefix, or without a valid key, is skipped with one warning. No error ends `run`: a failed `list` or actor read
+  is logged and tried next round, and that round does not count. A host runs it as an `App::task`, one per Docker
+  daemon. Limits: two stores on one daemon with the same prefix see each other's containers as orphans, so give each
+  its own prefix; a container made before 0.22.1 carries no label and is never seen. Covered by the tests of
+  `src/orphans/`.
+
 ## 0.23.0 — 2026-11-25
 
 A container job's program reports its progress through a file, and the container actor sends it to the owner as numbered

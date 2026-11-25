@@ -12,7 +12,7 @@ Version). Follow `design.md`; the spec is `specs/container-outputs/spec.md`. Run
   names without the prefix skipped with one warning (decision 2). Verify: the tests of the design's Tests section.
 - [x] 3. **Errors.** A failed `list` or `get_actor` logged and retried, not counted; nothing ends `run`; the limits in
   the rustdoc (decision 3). Verify: the error tests.
-- [ ] 4. **Changelog and docs handoff.** The unreleased section names `OrphanWatch` and `OrphanSettings` under Added;
+- [x] 4. **Changelog and docs handoff.** The unreleased section names `OrphanWatch` and `OrphanSettings` under Added;
   the handoff carries the design's Docs section and the limits. No edit to `README.md`, `AGENTS.md` or the
   handwritten docs. Verify: `cargo test -p cicada-examples --test docs` and `--doc`.
 - [ ] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
