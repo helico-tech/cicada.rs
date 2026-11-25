@@ -7,17 +7,18 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
-## 0.22.0 — unreleased
+## 0.22.0 — 2026-11-25
 
-A turn can watch an actor that must exist (ADR 0063): `Turn::watch_existing` tells the watcher at once when the actor
-is already gone, so a pool that gives a place to a run and watches it frees the place also when the run went before
-its turn. `DockerRuntime::connect()` of `cicada-containers` finds Docker through the Docker CLI's context, so it works
-on a Mac with OrbStack, Colima or Docker Desktop and no `/var/run/docker.sock`. A container job sets its actor's turn
-limit, so a slow image pull fits one turn without raising the node's default. `App::task` ties a host's background
-task to its node (ADR 0064): an early end of the task stops the node with an error, so a supervisor restarts it.
-**BREAKING**: the public `WatchChange`
-and `WatchChangeView` gain a field. The HTTP field is optional and every older request and fixture keeps its bytes. No
-store schema, actor contract, contract hash or guarantee changes.
+A turn can watch an actor that must exist (ADR 0063): `Turn::watch_existing` tells the watcher at once when the actor is
+already gone, so a pool that gives a place to a run and watches it frees the place also when the run went before its
+turn. `DockerRuntime::connect()` of `cicada-containers` finds Docker through the Docker CLI's context, so it works on a
+Mac with OrbStack, Colima or Docker Desktop and no `/var/run/docker.sock`. A container job sets its actor's turn limit,
+so a slow image pull fits one turn without raising the node's default. `App::task` ties a host's background task to its
+node (ADR 0064): an early end of the task stops the node with an error, so a supervisor restarts it. A container whose
+log can never be read (Docker's log driver `none`) gives `Unsupported`, so a log follower stops, and the container actor
+ends it without retries. **BREAKING**: the public `WatchChange` and `WatchChangeView` gain a field. The HTTP field is
+optional and every older request and fixture keeps its bytes. No store schema, actor contract, contract hash or
+guarantee changes.
 
 ### Added
 
