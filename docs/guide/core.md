@@ -159,6 +159,15 @@ Use `turn.watch(target)` / `unwatch(target)`, or the corresponding `ActorSystem`
 | `*` | Every final failure |
 
 A watch survives deletion and recreation of its target; deleting the watcher removes its watches.
+
+When a turn must learn that one actor ends but is not sure it is still there, use `turn.watch_existing(&actor)` (from
+0.22.0, [ADR 0063](../adr/0063-a-watch-of-an-actor-that-must-exist.md)). If the actor is there at the commit, it is a
+plain watch. If it is gone, the same commit writes the watcher a `Stopped` with the cause `deleted` and `by` null, and
+keeps no watch. So a pool that gives a run a place and watches it frees the place even when the run went before the
+pool's turn; a plain watch would land on nothing and never tell. It takes one actor: a type prefix or `*` is refused
+at the call, and the turn goes on. An actor created in the same turn is not there yet and gives a `Stopped`, so use
+`watch` for it. The watcher cannot tell "gone before the watch" from a delete by an outside caller, and a later
+create of that address is not watched. See [the public API tests](../../crates/cicada/tests/watch_existing.rs).
 Notifications commit with their event. Retried or cancelled messages do not notify, and a notification that fails
 notifies nobody. Inspect its outcome directly. `Failed.cause` distinguishes handler, node, refused, timeout, message,
 state, commit and claim-limit failures; see the [cause table](../architecture.md#turn-semantics).

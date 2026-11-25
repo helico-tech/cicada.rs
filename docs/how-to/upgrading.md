@@ -281,6 +281,17 @@ is a `400`. `ActorClient` leaves absent optional fields out of request bodies (n
 works against an older node as long as it does not use a newer feature. A release whose views lose a field that old
 clients require, as 0.6.0 does, needs its clients upgraded together with the nodes; the changelog says so.
 
+## Upgrade to 0.22.0
+
+**Upgrade every HTTP server before a worker runs a turn that calls `watch_existing`.** The remote turn report's watch
+change then carries `"existing": true`, which a 0.21 server refuses as an unknown field, with the whole report. A 0.21
+worker keeps working against a 0.22 server, and direct-store nodes of 0.21 and 0.22 can share a store.
+
+Rust code that builds `WatchChange` or `WatchChangeView` field by field adds `existing: false`; exhaustive patterns
+bind or ignore it. There is no store migration and no contract hash change. `DockerRuntime::connect()` now also finds
+Docker through the CLI's context ([Connect to Docker](../guide/containers.md#connect-to-docker)): a host that relied on
+`connect()` failing without `DOCKER_HOST` or a local socket now connects, or fails with `Other` for a TLS context.
+
 ## Upgrade to 0.21.0
 
 **Version 0.21.0 changes container contracts.** `ContainerEnd` gains the field `kind`, so the contract hash of every

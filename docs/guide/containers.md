@@ -30,7 +30,7 @@ The trait is an `async_trait` and works as `Arc<dyn ContainerRuntime>`. No publi
 `DockerRuntime::connect()` uses the Docker the `docker` CLI uses, in this order: `DOCKER_HOST` (`unix://`, `tcp://` or
 `http://`); else the context `DOCKER_CONTEXT` names; else `/var/run/docker.sock` when it exists; else the CLI's current
 context (`docker context use`). So on a Mac with OrbStack, Colima or Docker Desktop it works without a link at
-`/var/run/docker.sock`. Context lookup arrives in 0.21.2; up to 0.21.1, `connect()` reads only `DOCKER_HOST` and the
+`/var/run/docker.sock`. Context lookup arrives in 0.22.0; up to 0.21.1, `connect()` reads only `DOCKER_HOST` and the
 local socket.
 
 `connect()` does not contact the daemon: the API version is agreed on the first call, so a host starts while Docker is
