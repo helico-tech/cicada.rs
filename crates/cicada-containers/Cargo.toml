@@ -11,7 +11,7 @@ publish.workspace = true
 # `FakeRuntime`, an in-memory runtime for tests. Only dev-dependencies turn it on (the examples' guide doctests).
 testing = []
 # `DockerRuntime`, the backend over the Docker Engine API (bollard).
-docker = ["dep:base64", "dep:bollard", "dep:futures", "dep:sha2", "dep:tar", "dep:tokio", "dep:tokio-util"]
+docker = ["dep:base64", "dep:bollard", "dep:futures", "dep:sha2", "dep:tar", "dep:tokio-util"]
 
 [dependencies]
 async-trait.workspace = true
@@ -28,9 +28,12 @@ serde_json.workspace = true
 sha2 = { workspace = true, optional = true }
 tar = { workspace = true, optional = true }
 thiserror.workspace = true
-tokio = { workspace = true, optional = true }
+# The log archiver's rounds, reads and timers; the Docker backend's streams.
+tokio.workspace = true
 # `copy_out` reads Docker's archive stream as a blocking reader for `tar`.
 tokio-util = { workspace = true, optional = true, features = ["io", "io-util"] }
+# What the log archiver logs: it keeps going through every error.
+tracing.workspace = true
 
 [dev-dependencies]
 # The actor's tests: `TestActors` on virtual time, the fake runtime, and the sample checks of the HTTP door.
