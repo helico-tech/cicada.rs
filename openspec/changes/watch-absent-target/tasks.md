@@ -30,6 +30,6 @@ whole batch; set 0.22.0 wherever the version lives (builder.md, Version). Follow
   upgrade order (servers before workers). `docs-handoff.md` carries what the design's Docs section lists; nothing
   blocks unless a check says so. No edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify:
   `cargo test -p cicada-examples --test docs`, `--doc` and `--test skill`.
-- [ ] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
+- [x] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
   `cargo test --workspace` with PostgreSQL, `openspec validate watch-absent-target --strict`, commit, then
   `python3 scripts/gate.py run --e2e` (the change touches the HTTP crates).
