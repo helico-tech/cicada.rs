@@ -87,6 +87,12 @@ pub struct ActorsGuideDoctests;
 #[doc = include_str!(concat!(env!("OUT_DIR"), "/guide-design.md"))]
 pub struct DesignGuideDoctests;
 
+/// The Rust code blocks of the guide of the container runtime (`docs/guide/containers.md`), compiled and run like the
+/// README's.
+#[cfg(doctest)]
+#[doc = include_str!(concat!(env!("OUT_DIR"), "/guide-containers.md"))]
+pub struct ContainersGuideDoctests;
+
 /// The Rust code blocks of the operations guide, compiled and run like the README's.
 #[cfg(doctest)]
 #[doc = include_str!(concat!(env!("OUT_DIR"), "/operations.md"))]

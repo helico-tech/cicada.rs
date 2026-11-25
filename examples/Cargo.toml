@@ -31,6 +31,8 @@ cicada = { workspace = true, features = ["sqlite", "postgres"] }
 async-trait.workspace = true
 cicada-app = { workspace = true, features = ["sqlite", "postgres"] }
 cicada-axum.workspace = true
+# The guide of the container runtime builds jobs on the fake and connects to Docker (no_run blocks).
+cicada-containers = { path = "../crates/cicada-containers", features = ["testing", "docker"] }
 cicada-otel.workspace = true
 cicada-test.workspace = true
 # tests/docs.rs writes small trees of Markdown files.

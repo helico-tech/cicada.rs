@@ -668,6 +668,7 @@ dependencies = [
  "cicada-app",
  "cicada-axum",
  "cicada-client",
+ "cicada-containers",
  "cicada-otel",
  "cicada-test",
  "futures",

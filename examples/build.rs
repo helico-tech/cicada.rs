@@ -31,6 +31,7 @@ fn main() {
         ("docs/guide/app.md", "guide-app.md"),
         ("docs/guide/actors.md", "guide-actors.md"),
         ("docs/guide/design.md", "guide-design.md"),
+        ("docs/guide/containers.md", "guide-containers.md"),
         ("docs/operations.md", "operations.md"),
         ("docs/how-to/upgrading.md", "upgrading.md"),
     ] {
