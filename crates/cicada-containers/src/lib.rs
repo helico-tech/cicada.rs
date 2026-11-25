@@ -6,7 +6,8 @@
 //! [`OutputStore`], keyed by container name, with an in-memory one, `MemoryOutputStore`, and the conformance check
 //! `check_output_store` behind `testing`. A [`LogArchiver`] follows the logs of a job's containers into that store in a
 //! task of its own, and the actor with the store ([`ContainerActor::with_store`]) keeps the rest of each log and the
-//! job's [`Outputs`] there at the end.
+//! job's [`Outputs`] there at the end. An [`OrphanWatch`] reports the containers of a job that have no actor, without
+//! removing them.
 //!
 //! The runtime's public items name no type of a Docker client, so another backend fits the trait. The crate is an
 //! optional layer outside the core (ADR 0056): no library crate of the workspace depends on it.
@@ -50,6 +51,7 @@ mod fake;
 // The pager of every runtime; without one of them, nothing calls it yet.
 #[cfg_attr(not(any(test, feature = "testing", feature = "docker")), allow(dead_code))]
 mod logs;
+mod orphans;
 mod outputs;
 // The rule of `copy_in`, `copy_out` and `make_dirs` for every runtime; without one of them, nothing calls it yet.
 #[cfg_attr(not(any(test, feature = "testing", feature = "docker")), allow(dead_code))]
@@ -70,6 +72,7 @@ pub use error::{ContainerError, ErrorKind};
 #[cfg(any(test, feature = "testing"))]
 pub use fake::{Call, FakeRuntime, Method};
 pub use logs::{LOG_PAGE_MAX, LogCursor, LogLine, LogPage, LogStream};
+pub use orphans::{InvalidOrphanWatch, OrphanSettings, OrphanWatch};
 pub use outputs::{
     LogEnd, OutputError, OutputErrorKind, OutputStore, StoredFile, StoredLine, check_container_name, clean_output_path,
 };
