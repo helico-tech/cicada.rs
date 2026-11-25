@@ -515,7 +515,57 @@ let actor = ContainerActor::new(Tests, runtime, ContainerSettings::new("ci-")?).
   limit takes. A collecting container holds up to its byte limit in memory: size the limits against the node's
   concurrency. Each actor collects in its own turns, so a slow copy holds up only its own container.
 
-The store is yours: the actor does not delete stored outputs.
+The store is yours: the actor deletes stored outputs only with a [retention](#retention).
+
+### Retention
+
+With a store and `ContainerSettings::output_retention`, the actor deletes a container's stored log and files a set
+time after the container's removal (from 0.23.0). The default, `None`, keeps them until you delete them:
+
+<!-- doctest
+# use cicada::prelude::*;
+# use cicada_containers::{ContainerJob, ContainerSpec};
+# use serde::{Deserialize, Serialize};
+# #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+# struct Test {}
+# struct Tests;
+# impl ContainerJob for Tests {
+#     const TYPE: &'static str = "ci.tests";
+#     type Request = Test;
+#     fn spec(&self, name: &str, _: &Test) -> Result<ContainerSpec, String> { Ok(ContainerSpec::new(name, "rust:1")) }
+# }
+# let store: std::sync::Arc<dyn cicada_containers::OutputStore> = std::sync::Arc::new(cicada_containers::MemoryOutputStore::new());
+# let runtime = std::sync::Arc::new(cicada_containers::FakeRuntime::new());
+@@7
+# Ok::<(), Box<dyn std::error::Error>>(())
+-->
+```rust
+use std::time::Duration;
+
+use cicada_containers::{ContainerActor, ContainerSettings};
+
+let mut settings = ContainerSettings::new("ci-")?;
+settings.output_retention = Some(Duration::from_secs(7 * 24 * 3600)); // keep a week after the removal
+let actor = ContainerActor::new(Tests, runtime, settings).with_store(store);
+```
+
+- **When.** The clock starts at the container's removal (`Remove`), not at its end, so a container its owner keeps
+  keeps its outputs. The removal saves the due time in the state (`outputsUntil`), and a poll then calls
+  `OutputStore::remove` for the container's name. Zero deletes in the poll right after the removal. The container is
+  removed from the runtime first, so a `LogArchiver` does not store its log again.
+- **The saved time decides.** A retention changed or unset after the removal does not move it; a restart keeps it.
+  `Check` brings back a lost poll at the saved time, or at once when that passed.
+- **Errors.** A store that is `Unavailable` or fails with `Other` is tried again with the backoff, without limit. A
+  name the store refuses (`Invalid`), and a node without a store at the due time, clear the due time with a warning in
+  the log; the outputs then stay.
+- **What stays.** The actor's own state, with its end, stays after the deletion.
+
+Mind these limits:
+
+- An actor deleted before its due time leaves its outputs: call `OutputStore::remove` with the container's name
+  (prefix plus key) when you delete it. The actor does not list outputs whose actor is gone; list your own store.
+- A container removed before 0.23.0, or by an actor without a store or a retention, gets no due time.
+- The name is computed from the settings' prefix at the due time: do not change the prefix while outputs wait.
 
 ### Rules for hosts
 
@@ -525,7 +575,7 @@ The store is yours: the actor does not delete stored outputs.
 - **Never reuse a key**, also after a delete: a new actor under an old key adopts the old container and reports its
   old end.
 - **Send `Remove` before you delete the actor**, or the container stays. Use the spec's labels and `sweep` for
-  leftovers.
+  leftovers. With a store, also remove its stored outputs, or wait for its [retention](#retention) first.
 - **Keep the target until the end.** A target deleted before it makes the poll's commit fail, which blocks the actor
   until the target exists again. A target whose type is not registered does not block: the end is `undelivered`.
 - **Set the job's `MAX_TURN` above an image pull and the stop grace**, which run inside one turn; without it the

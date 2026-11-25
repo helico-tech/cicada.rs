@@ -295,10 +295,13 @@ changes its contract too**: follow Changing a contract for those types as well.
 
 In Rust, add `progress_type: None` to every `ContainerMsg::Start` and `EndTarget` struct literal, such as in your
 tests, and bind or ignore it (`..`) in exhaustive patterns. Add `progress_seq: 0, progress_hash: None` where you build a
-`ContainerState` by its fields, with `pending: None`; `ContainerState::new` needs no change. Add `outputs: None` to
+`ContainerState` by its fields, with `pending: None` and `outputs_until: None`; `ContainerState::new` needs no change. Add `outputs: None` to
 every `ContainerEnd` struct literal, and `Phase::Collecting` to exhaustive matches on `Phase`. A store of your own that
 uses `check_container_name` and `clean_output_path` now refuses names over 200 characters and paths with a control
 character. The store schema, the HTTP API, the ready-made actors' contracts and the guarantees do not change.
+
+Containers removed before the upgrade get no [retention](../guide/containers.md#retention) due time: delete their
+stored outputs yourself, or keep them.
 
 **Do not roll back to 0.22 while a container actor with a store is collecting.** It saves states in the phase
 `collecting`, which 0.22 cannot read.
