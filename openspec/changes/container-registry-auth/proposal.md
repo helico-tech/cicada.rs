@@ -31,7 +31,7 @@ Registry login from Cicada. Image builds. Other runtimes than Docker. Credential
 
 ## Order
 
-After `container-info`. No following change.
+After `container-info`, before `pool-warning-test-race`.
 
 ## Impact
 
