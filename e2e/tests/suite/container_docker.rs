@@ -70,16 +70,16 @@ fn runtime() -> &'static DockerRuntime {
     RUNTIME.get_or_init(connect)
 }
 
-/// A new backend on `DOCKER_HOST` when it is set, else on the endpoint of the CLI's current context (the backend
-/// itself reads no context).
+/// A new backend from `DockerRuntime::connect()` alone, which finds the daemon through `DOCKER_HOST`, `DOCKER_CONTEXT`,
+/// the local socket and the CLI's current context, so the class passes on a machine without `/var/run/docker.sock`.
+/// On a machine with both a working local socket and another current context, the backend uses the socket while the
+/// CLI uses the context: the suite then needs `DOCKER_CONTEXT` or `DOCKER_HOST`, which both read.
 fn connect() -> DockerRuntime {
-    match context_host() {
-        None => DockerRuntime::connect().expect("a Docker connection at DOCKER_HOST"),
-        Some(host) => DockerRuntime::connect_to(host).unwrap_or_else(|e| panic!("a Docker connection at {host}: {e}")),
-    }
+    DockerRuntime::connect().unwrap_or_else(|e| panic!("a Docker connection: {e}"))
 }
 
-/// The endpoint of the CLI's current context; `None` when `DOCKER_HOST` is set, which the CLI and the backend read.
+/// The endpoint of the CLI's current context, for the CLI of the registry test, whose own config folder holds no
+/// context; `None` when `DOCKER_HOST` is set, which the CLI reads.
 fn context_host() -> Option<&'static str> {
     static HOST: OnceLock<Option<String>> = OnceLock::new();
     HOST.get_or_init(|| {

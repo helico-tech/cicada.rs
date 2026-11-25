@@ -16,7 +16,7 @@ every feature: `cargo test -p cicada-containers --all-features`.
   unix endpoint whose socket file is missing is `DaemonUnavailable`, naming the context and the endpoint. The rustdoc
   of `DockerRuntime`, `connect()` and `connect_to` gives the order and the TLS refusal instead of "contexts are not
   read". Verify: a unit test for the missing socket of a context; `cargo test -p cicada-containers --all-features`.
-- [ ] 3. **E2E, changelog and docs handoff.** In `e2e/tests/suite/container_docker.rs`, the helper `connect()` calls
+- [x] 3. **E2E, changelog and docs handoff.** In `e2e/tests/suite/container_docker.rs`, the helper `connect()` calls
   `DockerRuntime::connect()` alone; the CLI helper of the registry test keeps `-H` with the context's host; the
   helper's doc comment says what the design's Tests section says about a machine with both a socket and another
   context. A new section `## 0.21.2 — unreleased` in `CHANGELOG.md`, above 0.21.1, with a one-line summary, names the
