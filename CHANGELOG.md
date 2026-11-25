@@ -61,6 +61,17 @@ store schema, actor contract, contract hash or guarantee changes.
   whose unix socket is missing fails with the retryable `DaemonUnavailable`, naming the context and the endpoint.
   Covered by the unit tests in `src/docker/context.rs` and `src/docker/mod.rs`; the E2E class of
   `e2e/tests/suite/container_docker.rs` now connects with `connect()` alone.
+- `cicada-containers`: `logs` and `logs_since` of a container whose log the runtime can never read fail with
+  `Unsupported`, no longer `Other`, so a follower can tell "stop, there will never be logs" from a passing daemon
+  error (Factory issue 0021). `DockerRuntime` maps Docker's 501 to a log read ("configured logging driver does not
+  support reading", log driver `none`) to `Unsupported` with Docker's message; every other error keeps its kind. The
+  0.21.0 notes and the rustdoc of `logs_since` and `DockerRuntime` promised `Other` for this case: a caller that
+  matched `Other` there now matches `Unsupported`. `ErrorKind::Unsupported` now also means "cannot do it for this
+  container". The container actor records an end at once with `(no logs: …)` when its log read is `Unsupported`,
+  without counting an error or retrying the read; other kinds keep the count. The fake scripts such a container with
+  `fail_always(Method::Logs, ErrorKind::Unsupported)` (or `Method::LogsSince`). Covered by the unit test in
+  `src/docker/map.rs`, the actor tests in `tests/actor.rs` and the E2E step
+  `a_log_driver_none_is_unsupported_created_and_after_it_ran`.
 
 ### Changed (breaking)
 

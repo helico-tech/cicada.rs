@@ -50,6 +50,7 @@ pub fn class() -> Class {
                 step!(a_follower_collects_every_line_of_a_running_container_once),
                 step!(log_pages_of_what_has_no_lines_and_bad_page_sizes),
                 step!(a_log_byte_that_is_not_utf8_is_replaced),
+                step!(a_log_driver_none_is_unsupported_created_and_after_it_ran),
                 step!(out_of_memory_is_failed),
                 step!(a_missing_executable_fails_start_once),
                 step!(an_unknown_tag_is_image_not_found),
@@ -611,6 +612,38 @@ async fn a_log_byte_that_is_not_utf8_is_replaced() {
     let lines: Vec<(LogStream, &str)> = page.lines.iter().map(|line| (line.stream, line.text.as_str())).collect();
     assert_eq!(lines, [(LogStream::Out, "\u{fffd}")]);
     runtime().remove(&spec.name).await.unwrap();
+}
+
+/// Scenario: Log driver none. `ContainerSpec` has no log driver, so the CLI creates the container; Docker answers its
+/// log reads with 501, which both log calls give as `Unsupported`, before the start and after the run.
+async fn a_log_driver_none_is_unsupported_created_and_after_it_ran() {
+    let name = name("log-none");
+    let label = format!("{}={}", CONTAINER_LABEL.0, CONTAINER_LABEL.1);
+    let args = [
+        "create",
+        "--name",
+        &name,
+        "--label",
+        &label,
+        "--log-driver",
+        "none",
+        "--entrypoint",
+        "sh",
+        IMAGE,
+        "-c",
+        "echo hidden",
+    ];
+    docker(&args, secs(60), true).await.unwrap();
+    let unreadable = async || {
+        let error = runtime().logs(&name, 10).await.unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Unsupported, "{error}");
+        assert_eq!(kind(runtime().logs_since(&name, None, 10).await), ErrorKind::Unsupported);
+    };
+    unreadable().await;
+    runtime().start(&name).await.unwrap();
+    assert_eq!(ended(&name).await, ContainerStatus::Exited { code: 0 });
+    unreadable().await;
+    runtime().remove(&name).await.unwrap();
 }
 
 async fn out_of_memory_is_failed() {
