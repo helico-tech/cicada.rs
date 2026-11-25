@@ -27,15 +27,19 @@ impl ContainerJob for Tests {
    keeps the first target and gets the end when the collection finishes; a `Stop` does nothing more; a `Remove` sets
    the goal and the container is removed after the end is sent (no cut-short collection). A state saved by 0.22 that
    is `Ended` never collects and sends no second end. The state's validity rule allows `pending` only in
-   `Collecting`. The spec's rule "The end is reported once, before removal" is modified to say this (design review
+   `Collecting`, and `Collecting` requires `pending` and no `end`. A state saved in `Collecting` cannot be read by 0.22,
+   so
+   the upgrade handoff warns against rolling back. The spec's rule "The end is reported once, before removal" is
+   modified to say this (design review
    round 2). The rustdoc of `logs_since`, `copy_out` and `LogArchiver` changes from "outside
    actor turns" to "in a turn, a long call needs the job's `MAX_TURN`". Not taken: a collector task outside turns (the
    end would wait for it through messages or polling; two places own one end).
 2. **Opt-in twice: a store on the actor, outputs on the job.** `ContainerActor::with_store(Arc<dyn OutputStore>)`
    gives the actor a store; `ContainerJob::outputs(&self, request) -> Option<Outputs>` (default `None`) names the
    folder and limits (`Outputs::new(path)`: 64 MiB and 1000 files, `CopyLimits` of `copy_out`). Without a store nothing
-   changes and `outputs` is absent. With a store, `outputs` is always present: with no outputs folder only the log is
-   drained and the counts are 0, so an error after too many failures has a place.
+   changes and `outputs` is absent. With a store, every end that went through `Collecting` carries `outputs`: with no
+   outputs folder only the log is drained and the counts are 0, so an error after too many failures has a place. Ends
+   the container did not run for (`notStarted`, `missing`, `runtimeErrors`) never collect and carry no `outputs`.
 3. **The log first, a few pages per turn, through the archiver's write.** Each collection turn reads `log_end` and
    pages `logs_since` from its cursor with `append_logs(container, after, page)`, at most 20 pages (10 000 lines), then
    arms an immediate next poll while pages stay full, so no turn reads a whole log. Next to a running `LogArchiver` it
@@ -47,15 +51,17 @@ impl ContainerJob for Tests {
    name) goes into the skipped list with the store's reason, and the rest go on; `copy_out`'s own skipped entries join
    that list. The report is the new optional field `outputs` of `ContainerEnd`: `OutputsReport { stored, bytes,
    skipped, firstSkipped, error }`, with `firstSkipped` the first 10 `SkippedFile { path, reason }` (the type of
-   `copy_out`; a size appears only in a reason) and `error: Option<String>`. With the new phase and state fields, a
+   `copy_out`, which gains serde and `JsonSchema` derives; a size appears only in a reason) and `error: Option<String>`.
+   With the new phase and state fields, a
    contract change of every container job type, shipped with `container-progress` in 0.23.0; ADR 0066 records it.
    `ContainerEnd` is not `#[non_exhaustive]`, so Rust code that builds it changes too (the upgrade handoff). Memory
    per container is at most the byte limit: the rustdoc says to size it against the concurrency.
 5. **Errors retry like runtime errors, then deliver the end as recorded.** A `copy_out`, `logs_since` or store error a
    retry can cure (`DaemonUnavailable`, `Other`, `OutputError::Unavailable`/`Other`) counts as a runtime error and arms
-   the next poll with the backoff. At `max_errors` in a row the end is delivered with its recorded outcome unchanged
+   the next poll with the backoff. At `max_errors` in a row in the phase `Collecting`, the pending end is recorded and
+   delivered with its outcome unchanged
    and `outputs.error` = `(no outputs: …)`; the spec's rule of errors in a row is modified to say so (`runtimeErrors`
-   stays for a container without a recorded end). `InvalidSpec` (a bad outputs path) and `Unsupported` from
+   stays for a container in `New` or `Started`). `InvalidSpec` (a bad outputs path) and `Unsupported` from
    `copy_out` end the collection at once with that error; a `ContainerError` of kind `Conflict` (the container is gone)
    delivers the end with
    what is stored. The container is removed only after the end is delivered, as today.

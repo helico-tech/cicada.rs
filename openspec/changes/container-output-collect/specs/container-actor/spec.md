@@ -108,10 +108,10 @@ in the commit that finishes the collection. No step SHALL remove a container bef
 A container past its deadline SHALL be stopped and end `timedOut`. The deadline SHALL be set at its start from
 `ContainerJob::timeout` (by default the settings' timeout), capped at the largest instant, and not moved. A runtime
 error SHALL count in a row and delay the next poll by a growing backoff up to the settings' maximum, never failing the
-turn. At the maximum errors in a row, a container without an end SHALL end `failed` with the kind `runtimeErrors`; a
-removal SHALL keep trying. A log read for the end that fails with `Unsupported` SHALL not count: the end SHALL be
-recorded at once with `(no logs: …)` and the runtime's message. At the maximum errors in a row while a recorded end's
-outputs are collected, the end SHALL be delivered with its recorded outcome and the error in `outputs`.
+turn. At the maximum errors in a row, a container in the phase `New` or `Started` SHALL end `failed` with the kind
+`runtimeErrors`; a removal SHALL keep trying. A log read for the end that fails with `Unsupported` SHALL not count: the
+end SHALL be recorded at once with `(no logs: …)` and the runtime's message. At the maximum errors in a row in the phase
+`Collecting`, the pending end SHALL be recorded and delivered with its outcome and the error in `outputs`.
 
 #### Scenario: The deadline passes
 
@@ -157,7 +157,8 @@ oversized or unreadable file SHALL send nothing and SHALL not count as a runtime
 #### Scenario: The last progress before the end
 
 - **WHEN** the program writes progress and exits before the next poll
-- **THEN** that progress message is sent in the turn that records the end, before the end message
+- **THEN** that progress message is sent in the turn that records the end (with a store, the turn that finishes the
+  collection), before the end message
 
 #### Scenario: A NUL in the file
 
