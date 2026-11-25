@@ -18,7 +18,7 @@ with every feature: `cargo test -p cicada-containers --all-features`.
   then one turn of `copy_out` and `put_file` per file, refused files skipped, the report built (decision 4); the turn
   that finishes records the end with `outputs`, sets `Ended`, sends it and the last progress. Verify: the store and
   report tests of the design's Tests section, a running archiver next to it, two containers with one slow.
-- [ ] 4. **Errors, changelog and docs handoff.** The rules of decision 5 (retries, `max_errors` in `Collecting`,
+- [x] 4. **Errors, changelog and docs handoff.** The rules of decision 5 (retries, `max_errors` in `Collecting`,
   `InvalidSpec`/`Unsupported` at once, a gone container); the rustdoc changes of decision 1. The 0.23.0 section names
   the outputs under Added and the contract change under its **BREAKING** line; the handoff carries the design's Docs
   section and the rollback warning. No edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify: the error

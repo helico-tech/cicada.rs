@@ -10,10 +10,12 @@ moves: a correction is a new version.
 ## 0.23.0 — unreleased
 
 A container job's program reports its progress through a file, and the container actor sends it to the owner as
-numbered messages (ADR 0065). A breaking release: `Start` and `EndTarget` gain `progressType` and `ContainerState` two
-progress fields, so the contract hash of every container job type changes. Hosts on 0.22.x follow "Changing a
-contract" in the operations guide for those types. The store schema, the HTTP API, the ready-made actors' contracts and
-the guarantees are those of 0.22.1.
+numbered messages (ADR 0065). With an output store, the container actor keeps the rest of a container's log and its
+job's output folder there at the end, in its own turns, and the end tells the owner what was stored and skipped (ADR
+0066). A breaking release: `Start` and `EndTarget` gain `progressType`, `ContainerState` two progress fields, a
+`pending` end and the phase `collecting`, and `ContainerEnd` an optional `outputs`, so the contract hash of every
+container job type changes. Hosts on 0.22.x follow "Changing a contract" in the operations guide for those types. The
+store schema, the HTTP API, the ready-made actors' contracts and the guarantees are those of 0.22.1.
 
 ### Added
 
@@ -35,6 +37,29 @@ the guarantees are those of 0.22.1.
   cannot see a tmpfs, so with a read-only root and a tmpfs on `/tmp` set `PROGRESS_FILE` on a volume. The state keeps
   `progressSeq` and `progressHash` (the SHA-256 of the last text sent); `sha2` is no longer optional in the crate.
   Covered by the progress tests in `crates/cicada-containers/tests/actor.rs`.
+- `cicada-containers`: outputs at the end (ADR 0066). `ContainerActor::with_store(Arc<dyn OutputStore>)` gives the
+  actor a store, and `ContainerJob::outputs(&request) -> Option<Outputs>` (default `None`) names a folder with its
+  limits (`Outputs::new(path)`: 1000 entries and 64 MiB, the `CopyLimits` of `copy_out`). With a store, an end the
+  container ran for (`exited`, `failed` with `runtimeEnded` or `outOfMemory`, `stopped`, `timedOut`) is first held in
+  the state's new `pending` in the new phase `Collecting`, with `end` still empty, so a saved end still means a sent
+  end. The next polls store the rest of the log with the guarded append (at most 20 pages of 500 lines per turn, an
+  immediate next poll while more is left; next to a `LogArchiver` of the same store each line is stored once), then one
+  turn copies the folder out and puts each file into the store. The poll that finishes reads the last progress, records
+  the end with `outputs: OutputsReport { stored, bytes, skipped, firstSkipped, error }` (the first 10 skipped as
+  `SkippedFile { path, reason }`, which gains serde and `JsonSchema`; a file the store refuses is skipped with its
+  reason), sets `Ended` and sends it. Without an outputs folder only the log is stored and the counts are 0. A runtime
+  or store error a retry can cure counts as a runtime error and backs off; at `max_errors` in a row the end goes out with
+  its outcome and `error: "(no outputs: …)"`; a bad outputs path (`InvalidSpec`), a missing `copy_out` (`Unsupported`)
+  and a gone container (`Conflict`) end the collection at once with the error; a missing `logs_since` skips the log. A
+  `Start` during the collection changes nothing: the end goes to the first target when it finishes; a `Stop` stops
+  nothing more; a `Remove` removes the container after the end is sent. Ends the container did not run for, actors
+  without a store and ends saved by 0.22 never collect and carry no `outputs`. Memory per collecting container is at most
+  its byte limit, and the copy runs in one turn under the job's `MAX_TURN`. Covered by
+  `crates/cicada-containers/tests/outputs.rs`.
+- `cicada-containers`: the store's input rules are tighter (from the review of the output store): a container name
+  over 200 characters and a control character (NUL included) in a path give `Invalid` in `check_container_name`,
+  `clean_output_path`, `MemoryOutputStore` and `check_output_store`; the rustdoc of `OutputStore` warns that a store on a
+  case-insensitive file system must keep `Job` and `job` apart.
 
 ### Changed
 
@@ -43,6 +68,13 @@ the guarantees are those of 0.22.1.
   `ContainerMsg::Start` or `EndTarget` gains the field `progress_type`, and code that builds `ContainerState` by its
   fields gains `progress_seq` and `progress_hash`. A target type's contract changes only when it adds a variant that
   takes a `ContainerProgress`.
+- **BREAKING** for container job types, the same contract change: the state gains `pending` and the phase
+  `collecting`, and `ContainerEnd` the optional `outputs`, written only when there is one. `ContainerEnd` is not
+  `#[non_exhaustive]`: Rust code that builds it gains `outputs: None`; code that matches `Phase` exhaustively gains
+  `Collecting`, and code that builds `ContainerState` by its fields gains `pending: None`. An owner's message family
+  that takes `ContainerEnded` changes its contract too, as the end's schema gains `outputs`.
+- `cicada-containers`: `check_container_name` and `clean_output_path` refuse what they took before: a name over 200
+  characters and a path with a control character. A host's own store that uses them refuses them too.
 
 ### Upgrading
 
@@ -50,7 +82,9 @@ the guarantees are those of 0.22.1.
   versioned type name for new runs while the old actors finish, or a maintenance window (stop every host of the type,
   delete its actors and then its registration, start the new hosts). Send `Remove` to a container actor before
   deleting it, or its container stays. Add `progress_type: None` to every `ContainerMsg::Start` and `EndTarget`
-  literal, such as in a host's tests.
+  literal, such as in a host's tests, and `outputs: None` to every `ContainerEnd` literal.
+- Do not roll a node back to 0.22 while a container actor with a store is in the phase `collecting`: 0.22 cannot read
+  that state.
 
 ## 0.22.1 — 2026-11-25
 
