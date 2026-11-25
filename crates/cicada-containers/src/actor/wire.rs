@@ -23,9 +23,10 @@ pub struct InvalidContainer(pub(crate) String);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all_fields = "camelCase")]
 pub enum ContainerMsg {
-    /// Runs the container until it ends, and sends the end to `to`. The first `Start` sets the target; a later one
-    /// changes nothing, unless the container has ended: then it sends the saved end to its own target at once, again
-    /// for each such `Start`. A message type out of bounds is refused for good, and nothing is saved.
+    /// Runs the container until it ends, and sends the end to `to`, with its progress first when `progressType` is
+    /// given. The first `Start` sets the target; a later one changes nothing, unless the container has ended: then it
+    /// sends the saved end to its own target at once, again for each such `Start`. A message type out of bounds is
+    /// refused for good, and nothing is saved.
     Start {
         /// The target of the end.
         to: ActorAddress,
@@ -33,6 +34,12 @@ pub enum ContainerMsg {
         /// most 200 characters, without NUL. The target's registry is checked only when the end is sent.
         #[schemars(length(min = 1, max = 200))]
         message_type: String,
+        /// The message type of the container's progress, whose payload is a [`ContainerProgress`]; bounded as
+        /// `messageType`. With it, the program finds its progress file, the job's `PROGRESS_FILE`, in
+        /// `CICADA_PROGRESS_FILE`; absent or null: no progress is read.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(length(min = 1, max = 200))]
+        progress_type: Option<String>,
     },
     /// Stops the container and ends it `stopped`, or `timedOut` past its deadline; one never started is never created.
     Stop,
@@ -70,17 +77,50 @@ impl ContainerMsg {
     pub fn start<R: ActorRef>(target: &R, message_type: impl Into<String>) -> Result<Self, InvalidContainer> {
         let to = target.address().map_err(|e| InvalidContainer(e.to_string()))?;
         let message_type = message_type.into();
-        check_message_type(&message_type)?;
-        Ok(Self::Start { to, message_type })
+        check_type("messageType", &message_type)?;
+        Ok(Self::Start { to, message_type, progress_type: None })
+    }
+
+    /// A `Start` whose end goes to `target` as `message_type`, and its progress as `progress_type`. Fails as
+    /// [`start`](Self::start) does, and for a progress type out of the same bounds.
+    ///
+    /// ```
+    /// # use cicada::prelude::*;
+    /// # use serde::{Deserialize, Serialize};
+    /// # #[derive(Debug, Clone, Serialize, Deserialize)]
+    /// # struct Build { id: String }
+    /// # impl ActorRef for Build { const TYPE: &'static str = "build"; type Message = BuildMsg; }
+    /// # #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+    /// # #[serde(tag = "type")]
+    /// # enum BuildMsg { Ended(cicada_containers::ContainerEnded), Progress(cicada_containers::ContainerProgress) }
+    /// use cicada_containers::ContainerMsg;
+    ///
+    /// let start = ContainerMsg::start_with_progress(&Build { id: "b1".into() }, "Ended", "Progress")?;
+    /// assert_eq!(serde_json::to_value(&start)?, serde_json::json!({"type": "Start", "to": "build/b1",
+    ///     "messageType": "Ended", "progressType": "Progress"}));
+    /// assert!(ContainerMsg::start_with_progress(&Build { id: "b1".into() }, "Ended", "").is_err());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn start_with_progress<R: ActorRef>(
+        target: &R,
+        message_type: impl Into<String>,
+        progress_type: impl Into<String>,
+    ) -> Result<Self, InvalidContainer> {
+        let progress_type = progress_type.into();
+        check_type("progressType", &progress_type)?;
+        let Self::Start { to, message_type, .. } = Self::start(target, message_type)? else {
+            unreachable!("start builds a Start")
+        };
+        Ok(Self::Start { to, message_type, progress_type: Some(progress_type) })
     }
 }
 
-/// Refuses a message type the state decoder would refuse.
-pub(crate) fn check_message_type(message_type: &str) -> Result<(), InvalidContainer> {
+/// Refuses a message type, named `field` in the error, that the state decoder would refuse.
+pub(crate) fn check_type(field: &str, message_type: &str) -> Result<(), InvalidContainer> {
     let length = message_type.chars().count();
     if length == 0 || length > MAX_TYPE_LENGTH || message_type.contains('\0') {
         return Err(InvalidContainer(format!(
-            "messageType must be 1 through {MAX_TYPE_LENGTH} characters without NUL, had {length}"
+            "{field} must be 1 through {MAX_TYPE_LENGTH} characters without NUL, had {length}"
         )));
     }
     Ok(())
@@ -113,7 +153,7 @@ pub enum Phase {
     Removed,
 }
 
-/// Where the end goes: the target and message type of the first `Start`.
+/// Where the end and the progress go: the target and message types of the first `Start`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct EndTarget {
@@ -122,6 +162,10 @@ pub struct EndTarget {
     /// The message type, whose payload is a [`ContainerEnded`].
     #[schemars(length(min = 1, max = 200))]
     pub message_type: String,
+    /// The message type of the progress, whose payload is a [`ContainerProgress`]; absent or null: no progress is read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = 200))]
+    pub progress_type: Option<String>,
 }
 
 /// How a container ended.
@@ -213,6 +257,25 @@ pub struct ContainerEnded {
     pub end: ContainerEnd,
 }
 
+/// The payload of a progress message a container actor sends when its `Start` named a `progressType`: its key, the
+/// number of this progress, counting from 1, and the progress file's text as the program wrote it. A host's message
+/// family takes it as a variant such as `Progress(ContainerProgress)`.
+///
+/// The actor reads the file at each poll of the running container and once in the turn that records an end for which
+/// it ran, and sends its text only when it changed: a new `seq` per change. The last progress goes in the end's commit,
+/// before the end; but a progress the owner fails to handle is retried after a backoff, so it can arrive after a later
+/// progress or after the end. Drop a progress whose `seq` is not above the last one handled, and any after the end.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ContainerProgress {
+    /// The key of the container actor.
+    pub key: String,
+    /// The number of this progress: 1 for the first, one more for each change.
+    pub seq: u64,
+    /// The file's text: at most 64 KiB read, as UTF-8 with each invalid sequence and NUL replaced by U+FFFD; empty only
+    /// after a progress that was not.
+    pub text: String,
+}
+
 /// The state of a container actor: the host's typed request, never a spec, and the reconciliation's progress. Create it
 /// with [`ContainerState::new`]; a decoded state is checked the same way.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -243,6 +306,10 @@ pub struct ContainerState<R> {
     pub due: Option<Timestamp>,
     /// Runtime errors in a row.
     pub errors: u32,
+    /// The `seq` of the last progress sent; 0 before the first.
+    pub progress_seq: u64,
+    /// The SHA-256 of the last progress text sent, in lower-case hex; none before the first.
+    pub progress_hash: Option<String>,
 }
 
 /// The wire form of a [`ContainerState`], unchecked: its schema is the contract's.
@@ -279,6 +346,12 @@ struct RawState<R> {
     /// Runtime errors in a row; absent: 0.
     #[serde(default)]
     errors: u32,
+    /// The `seq` of the last progress sent; absent: 0, before the first.
+    #[serde(default)]
+    progress_seq: u64,
+    /// The lower-case hex SHA-256 of the last progress text sent; absent or null exactly while `progressSeq` is 0.
+    #[serde(default)]
+    progress_hash: Option<String>,
 }
 
 impl<R> TryFrom<RawState<R>> for ContainerState<R> {
@@ -296,6 +369,8 @@ impl<R> TryFrom<RawState<R>> for ContainerState<R> {
             armed: raw.armed,
             due: raw.due,
             errors: raw.errors,
+            progress_seq: raw.progress_seq,
+            progress_hash: raw.progress_hash,
         };
         state.check()?;
         Ok(state)
@@ -311,7 +386,7 @@ impl<R> ContainerState<R> {
     /// let state = ContainerState::new(serde_json::json!({"commit": "abc"}));
     /// assert_eq!(serde_json::to_value(&state)?, serde_json::json!({"request": {"commit": "abc"}, "goal": null,
     ///     "phase": "new", "target": null, "deadline": null, "end": null, "undelivered": null, "armed": null,
-    ///     "due": null, "errors": 0}));
+    ///     "due": null, "errors": 0, "progressSeq": 0, "progressHash": null}));
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn new(request: R) -> Self {
@@ -326,6 +401,8 @@ impl<R> ContainerState<R> {
             armed: None,
             due: None,
             errors: 0,
+            progress_seq: 0,
+            progress_hash: None,
         }
     }
 
@@ -342,7 +419,13 @@ impl<R> ContainerState<R> {
             return Err(InvalidContainer("an armed poll has a due time, and only an armed poll".to_owned()));
         }
         if let Some(target) = &self.target {
-            check_message_type(&target.message_type)?;
+            check_type("messageType", &target.message_type)?;
+            if let Some(progress_type) = &target.progress_type {
+                check_type("progressType", progress_type)?;
+            }
+        }
+        if self.progress_hash.is_some() != (self.progress_seq > 0) {
+            return Err(InvalidContainer("a progress hash is kept exactly once a progress was sent".to_owned()));
         }
         Ok(())
     }
@@ -375,6 +458,12 @@ mod tests {
             (json!({"request": 1, "armed": "m1"}), "due time"),
             (json!({"request": 1, "due": "2026-01-01T00:00:00Z"}), "due time"),
             (json!({"request": 1, "target": {"to": "build/b1", "messageType": "E\u{0}"}}), "messageType"),
+            (
+                json!({"request": 1, "target": {"to": "build/b1", "messageType": "E", "progressType": ""}}),
+                "progressType",
+            ),
+            (json!({"request": 1, "progressSeq": 1}), "progress hash"),
+            (json!({"request": 1, "progressHash": "ab"}), "progress hash"),
         ] {
             let decoded = decode(state.clone());
             assert!(decoded.as_ref().is_err_and(|e| e.to_string().contains(why)), "{decoded:?} for {state}");

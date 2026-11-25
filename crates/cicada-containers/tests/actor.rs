@@ -18,15 +18,19 @@ use cicada::time::{self, MAX_INSTANT, Timestamp};
 use cicada_axum::{assert_message_sample, assert_state_sample};
 use cicada_containers::{
     Call, Container, ContainerActor, ContainerEnd, ContainerEnded, ContainerError, ContainerJob, ContainerMsg,
-    ContainerRuntime, ContainerSettings, ContainerSpec, ContainerState, ContainerStatus, ContainerSummary, CopyDir,
-    CopyFile, ErrorKind, FailureKind, FakeRuntime, Goal, Inputs, Label, Method, NetworkSpec, OUT_OF_MEMORY, Outcome,
-    PREFIX_LABEL, Phase, Swept, VolumeSpec,
+    ContainerProgress, ContainerRuntime, ContainerSettings, ContainerSpec, ContainerState, ContainerStatus,
+    ContainerSummary, CopyDir, CopyFile, ErrorKind, FailureKind, FakeRuntime, Goal, Inputs, Label, Method, NetworkSpec,
+    OUT_OF_MEMORY, Outcome, PREFIX_LABEL, Phase, Swept, VolumeSpec,
 };
 use cicada_test::{TestActors, UPDATE_CONTRACTS_ENV, describe_changes};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 const SECOND: Duration = Duration::from_secs(1);
+/// The environment variable of the progress file.
+const PROGRESS_ENV: &str = "CICADA_PROGRESS_FILE";
+/// The default progress file.
+const PROGRESS_FILE: &str = "/tmp/cicada-progress";
 /// The secret the job puts in every spec; it must never reach the store.
 const SECRET: &str = "s3cret-token";
 
@@ -65,6 +69,8 @@ impl ContainerJob for TestJob {
         spec.labels.insert("made".into(), "actor".into());
         if run.image == "thief" {
             spec.labels.insert(PREFIX_LABEL.into(), "other-".into()); // the actor's own label wins
+            spec.env.insert(PROGRESS_ENV.into(), "/elsewhere".into()); // and so does its progress file
+            spec.secret_env.insert(PROGRESS_ENV.into(), "/hidden".into());
         }
         Ok(spec)
     }
@@ -93,13 +99,21 @@ impl ActorRef for Watcher {
 enum WatcherMsg {
     /// A container's end.
     Ended(ContainerEnded),
+    /// A container's progress.
+    Progress(ContainerProgress),
 }
 
-/// The ends the target got, in order.
+/// The ends and progress the target got, in order.
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 struct Ends {
     /// The ends.
     ends: Vec<ContainerEnded>,
+    /// The progress messages.
+    #[serde(default)]
+    progress: Vec<ContainerProgress>,
+    /// What came, in order: `progress <seq>` or `end`.
+    #[serde(default)]
+    order: Vec<String>,
 }
 
 struct WatcherActor;
@@ -109,8 +123,17 @@ impl Actor for WatcherActor {
     type State = Ends;
 
     async fn handle(&self, turn: &mut Turn<Self>, message: WatcherMsg) -> HandlerResult {
-        let WatcherMsg::Ended(ended) = message;
-        turn.state_mut().ends.push(ended);
+        let state = turn.state_mut();
+        match message {
+            WatcherMsg::Ended(ended) => {
+                state.ends.push(ended);
+                state.order.push("end".to_owned());
+            }
+            WatcherMsg::Progress(progress) => {
+                state.order.push(format!("progress {}", progress.seq));
+                state.progress.push(progress);
+            }
+        }
         Ok(())
     }
 }
@@ -407,7 +430,7 @@ async fn an_end_refused_by_an_unknown_target_type_is_saved_as_undelivered() {
     let test = harness(&fake, settings()).await;
     let job = container(&test, "j1", "alpine:3").await;
     let to = ActorAddress::parse("nobody.home/x").unwrap();
-    test.send(&job, ContainerMsg::Start { to, message_type: "Ended".into() }).await;
+    test.send(&job, ContainerMsg::Start { to, message_type: "Ended".into(), progress_type: None }).await;
     test.run_until_idle().await;
     fake.exit_with("app-j1", ContainerStatus::Exited { code: 1 });
     test.advance_time_by(2 * SECOND).await;
@@ -511,7 +534,7 @@ async fn a_start_with_a_message_type_out_of_bounds_is_refused_and_saves_nothing(
     let to = Watcher.address().unwrap();
     // A NUL never gets this far: the core refuses it at the send.
     for message_type in [String::new(), "E".repeat(201)] {
-        let sent = test.send(&job, ContainerMsg::Start { to: to.clone(), message_type }).await;
+        let sent = test.send(&job, ContainerMsg::Start { to: to.clone(), message_type, progress_type: None }).await;
         test.run_until_idle().await;
         let outcome = test.outcome(&sent).await.unwrap();
         assert_eq!(outcome.envelope.attempt, 1, "refused for good");
@@ -1160,6 +1183,346 @@ async fn an_unavailable_daemon_while_copying_backs_off_and_the_next_poll_starts_
     assert!(test.failures().await.is_empty(), "no turn fails");
 }
 
+// Progress through a file (ADR 0065).
+
+fn start_progress() -> ContainerMsg {
+    ContainerMsg::start_with_progress(&Watcher, "Ended", "Progress").unwrap()
+}
+
+async fn progress(test: &TestActors) -> Vec<(u64, String)> {
+    test.state::<_, Ends>(&Watcher).await.progress.into_iter().map(|p| (p.seq, p.text)).collect()
+}
+
+/// Writes `contents` to the progress file of `app-j1`, as its program would.
+fn write_progress(fake: &FakeRuntime, contents: impl Into<Vec<u8>>) {
+    fake.put_file("app-j1", CopyFile::new(PROGRESS_FILE, contents));
+}
+
+fn copy_outs(fake: &FakeRuntime) -> usize {
+    fake.calls().iter().filter(|call| matches!(call, Call::CopyOut { .. })).count()
+}
+
+fn sha256(text: &str) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(text.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// A started `j1` of `alpine:3` that asked for progress.
+async fn started_with_progress(fake: &FakeRuntime) -> (TestActors, Container<TestJob>) {
+    let test = harness(fake, settings()).await;
+    let job = container(&test, "j1", "alpine:3").await;
+    test.send(&job, start_progress()).await;
+    test.run_until_idle().await;
+    (test, job)
+}
+
+/// Scenario: Three updates.
+#[tokio::test(start_paused = true)]
+async fn three_changes_over_polls_are_sent_with_seq_one_two_three() {
+    let fake = FakeRuntime::new();
+    let (test, job) = started_with_progress(&fake).await;
+    test.advance_time_by(2 * SECOND).await;
+    assert!(progress(&test).await.is_empty(), "no file yet");
+    for text in ["1/3", "1/3", "2/3", "2/3", "3/3"] {
+        write_progress(&fake, text);
+        test.advance_time_by(2 * SECOND).await;
+    }
+    assert_eq!(progress(&test).await, [(1, "1/3".into()), (2, "2/3".into()), (3, "3/3".into())]);
+    let state: State = test.state(&job).await;
+    assert_eq!((state.progress_seq, state.progress_hash, state.errors), (3, Some(sha256("3/3")), 0));
+    assert_eq!(copy_outs(&fake), 6, "one read per running poll");
+    let Some(Call::CopyOut { path, limits, .. }) = fake.calls().into_iter().find(|c| matches!(c, Call::CopyOut { .. }))
+    else {
+        unreachable!()
+    };
+    assert_eq!((path.as_str(), limits.max_files, limits.max_bytes), (PROGRESS_FILE, 1, 64 * 1024));
+    assert_state_sample::<State>(&test.state_json(&job).await.unwrap());
+    assert!(test.failures().await.is_empty());
+}
+
+/// Scenario: The last progress before the end.
+#[tokio::test(start_paused = true)]
+async fn the_last_change_before_the_exit_is_sent_before_the_end() {
+    let fake = FakeRuntime::new();
+    let (test, _job) = started_with_progress(&fake).await;
+    write_progress(&fake, "1/2");
+    test.advance_time_by(2 * SECOND).await;
+    write_progress(&fake, "2/2");
+    fake.exit_with("app-j1", ContainerStatus::Exited { code: 0 });
+    test.advance_time_by(2 * SECOND).await;
+    let watcher = test.state::<_, Ends>(&Watcher).await;
+    assert_eq!(watcher.order, ["progress 1", "progress 2", "end"]);
+    assert_eq!(watcher.progress[1], ContainerProgress { key: "j1".into(), seq: 2, text: "2/2".into() });
+
+    // The ended actor's saved end goes again to a later `Start`; the progress does not.
+    test.send(&Container::<TestJob>::named("j1"), start_progress()).await;
+    test.run_until_idle().await;
+    assert_eq!(test.state::<_, Ends>(&Watcher).await.order, ["progress 1", "progress 2", "end", "end"]);
+}
+
+/// The other ends for which the container ran read the file once more: a failure, a stop and a deadline.
+#[tokio::test(start_paused = true)]
+async fn the_ends_of_a_container_that_ran_read_the_file_once_more() {
+    for end in ["failed", "stopped", "timedOut"] {
+        let fake = FakeRuntime::new();
+        let mut settings = settings();
+        settings.timeout = Some(60 * SECOND);
+        let test = harness(&fake, settings).await;
+        let job = container(&test, "j1", "alpine:3").await;
+        test.send(&job, start_progress()).await;
+        test.run_until_idle().await;
+        write_progress(&fake, "last");
+        match end {
+            "failed" => {
+                fake.exit_with("app-j1", ContainerStatus::Failed { code: Some(137), reason: OUT_OF_MEMORY.into() });
+                test.advance_time_by(2 * SECOND).await;
+            }
+            "stopped" => {
+                test.send(&job, ContainerMsg::Stop).await;
+                test.run_until_idle().await;
+            }
+            _ => {
+                test.advance_time_by(60 * SECOND).await;
+            }
+        }
+        let watcher = test.state::<_, Ends>(&Watcher).await;
+        assert_eq!(watcher.order, ["progress 1", "end"], "{end}");
+        assert_eq!(watcher.progress[0].text, "last", "{end}");
+        // The end's turn reads the file after the logs, as its last runtime call.
+        assert!(matches!(fake.calls().last(), Some(Call::CopyOut { .. })), "{end}: {:?}", fake.calls());
+    }
+}
+
+/// Scenario: No progress asked for.
+#[tokio::test(start_paused = true)]
+async fn without_a_progress_type_no_file_is_read_and_no_env_is_set() {
+    let fake = FakeRuntime::new();
+    let test = harness(&fake, settings()).await;
+    let job = container(&test, "j1", "alpine:3").await;
+    test.send(&job, start()).await;
+    test.run_until_idle().await;
+    write_progress(&fake, "1/3");
+    test.advance_time_by(2 * SECOND).await;
+    fake.exit_with("app-j1", ContainerStatus::Exited { code: 0 });
+    test.advance_time_by(2 * SECOND).await;
+    assert_eq!(copy_outs(&fake), 0);
+    let Call::Create(spec) = &fake.calls()[1] else { panic!("{:?}", fake.calls()) };
+    assert!(!spec.env.contains_key(PROGRESS_ENV));
+    assert!(progress(&test).await.is_empty());
+    assert_eq!(test.state::<_, State>(&job).await.progress_seq, 0);
+    assert_eq!(test.state::<_, Ends>(&Watcher).await.order, ["end"]);
+}
+
+/// The actor sets the progress file after the job's spec, which cannot change or hide it.
+#[tokio::test(start_paused = true)]
+async fn the_progress_env_is_set_after_the_jobs_spec() {
+    let fake = FakeRuntime::new();
+    let test = harness(&fake, settings()).await;
+    for (key, image) in [("j1", "alpine:3"), ("j2", "thief")] {
+        let job = container(&test, key, image).await;
+        test.send(&job, start_progress()).await;
+    }
+    test.run_until_idle().await;
+    let specs: Vec<Box<ContainerSpec>> = fake
+        .calls()
+        .into_iter()
+        .filter_map(|call| match call {
+            Call::Create(spec) => Some(spec),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(specs.len(), 2);
+    for spec in &specs {
+        assert_eq!(spec.env.get(PROGRESS_ENV).map(String::as_str), Some(PROGRESS_FILE), "{}", spec.name);
+        assert!(!spec.secret_env.contains_key(PROGRESS_ENV), "{}", spec.name);
+    }
+}
+
+/// A missing file, one over 64 KiB, one the runtime cannot read, a folder at the path and a failing `copy_out` send
+/// nothing and are no runtime errors.
+#[tokio::test(start_paused = true)]
+async fn a_file_that_cannot_be_read_sends_nothing_and_is_no_error() {
+    let fake = FakeRuntime::new();
+    let (test, job) = started_with_progress(&fake).await;
+    test.advance_time_by(2 * SECOND).await; // missing
+    fake.put_file("app-j1", CopyFile::new(format!("{PROGRESS_FILE}/inside"), "a folder"));
+    test.advance_time_by(2 * SECOND).await;
+
+    let fake = FakeRuntime::new();
+    let (test2, job2) = started_with_progress(&fake).await;
+    write_progress(&fake, vec![b'x'; 64 * 1024 + 1]);
+    test2.advance_time_by(2 * SECOND).await;
+    for kind in [ErrorKind::Other, ErrorKind::Unsupported, ErrorKind::Conflict] {
+        fake.fail_next(Method::CopyOut, kind);
+        write_progress(&fake, "fits");
+        test2.advance_time_by(2 * SECOND).await;
+        write_progress(&fake, vec![b'x'; 64 * 1024 + 1]);
+    }
+    assert_eq!(copy_outs(&fake), 4);
+    for (test, job) in [(&test, &job), (&test2, &job2)] {
+        let state: State = test.state(job).await;
+        assert_eq!((state.phase, state.errors, state.progress_seq), (Phase::Started, 0, 0));
+        assert!(progress(test).await.is_empty());
+        assert!(test.failures().await.is_empty());
+    }
+
+    // A file of exactly 64 KiB fits.
+    write_progress(&fake, vec![b'x'; 64 * 1024]);
+    test2.advance_time_by(2 * SECOND).await;
+    assert_eq!(progress(&test2).await.iter().map(|(seq, text)| (*seq, text.len())).collect::<Vec<_>>(), [(1, 65536)]);
+}
+
+/// Scenario: A NUL in the file. Invalid UTF-8 is replaced too.
+#[tokio::test(start_paused = true)]
+async fn a_nul_and_invalid_utf8_become_the_replacement_character() {
+    let fake = FakeRuntime::new();
+    let (test, _job) = started_with_progress(&fake).await;
+    write_progress(&fake, b"a\0b\xffc".to_vec());
+    test.advance_time_by(2 * SECOND).await;
+    assert_eq!(progress(&test).await, [(1, "a\u{FFFD}b\u{FFFD}c".into())]);
+}
+
+/// An empty file sends nothing until a progress was sent; after one it is a change like any other.
+#[tokio::test(start_paused = true)]
+async fn an_empty_text_is_sent_only_after_one_that_was_not() {
+    let fake = FakeRuntime::new();
+    let (test, job) = started_with_progress(&fake).await;
+    write_progress(&fake, "");
+    test.advance_time_by(2 * SECOND).await;
+    assert!(progress(&test).await.is_empty());
+    assert_eq!(test.state::<_, State>(&job).await.progress_hash, None);
+    write_progress(&fake, "half");
+    test.advance_time_by(2 * SECOND).await;
+    write_progress(&fake, "");
+    test.advance_time_by(2 * SECOND).await;
+    assert_eq!(progress(&test).await, [(1, "half".into()), (2, String::new())]);
+}
+
+/// A progress type the target does not take: the send is refused, not retried, and `seq` still moves on; the end is
+/// delivered.
+#[tokio::test(start_paused = true)]
+async fn a_refused_progress_send_moves_seq_and_does_not_block_the_end() {
+    let fake = FakeRuntime::new();
+    let test = harness(&fake, settings()).await;
+    let job = container(&test, "j1", "alpine:3").await;
+    test.send(&job, ContainerMsg::start_with_progress(&Watcher, "Ended", "Nope").unwrap()).await;
+    test.run_until_idle().await;
+    write_progress(&fake, "1");
+    test.advance_time_by(2 * SECOND).await;
+    write_progress(&fake, "2");
+    fake.exit_with("app-j1", ContainerStatus::Exited { code: 0 });
+    test.advance_time_by(2 * SECOND).await;
+    let state: State = test.state(&job).await;
+    assert_eq!((state.phase, state.progress_seq, state.undelivered), (Phase::Ended, 2, None));
+    assert_eq!(test.state::<_, Ends>(&Watcher).await.order, ["end"]);
+    assert!(test.failures().await.is_empty());
+}
+
+/// A `Start` whose progress type the state decoder would refuse is refused for good with nothing saved.
+#[tokio::test(start_paused = true)]
+async fn a_start_with_a_progress_type_out_of_bounds_is_refused() {
+    let fake = FakeRuntime::new();
+    let test = harness(&fake, settings()).await;
+    let job = container(&test, "j1", "alpine:3").await;
+    let before = test.state_json(&job).await.unwrap();
+    let to = Watcher.address().unwrap();
+    for progress_type in [String::new(), "P".repeat(201)] {
+        let message_type = "Ended".to_owned();
+        let start = ContainerMsg::Start { to: to.clone(), message_type, progress_type: Some(progress_type.clone()) };
+        let sent = test.send(&job, start).await;
+        test.run_until_idle().await;
+        let outcome = test.outcome(&sent).await.unwrap();
+        assert_eq!(outcome.envelope.attempt, 1, "refused for good");
+        assert!(outcome.error.unwrap_or_default().contains("progressType must be"));
+        assert_eq!(test.state_json(&job).await.unwrap(), before, "nothing saved");
+        assert!(ContainerMsg::start_with_progress(&Watcher, "Ended", progress_type).is_err());
+    }
+    assert!(fake.calls().is_empty());
+}
+
+/// A job whose progress file is a relative path.
+struct Relative;
+
+impl ContainerJob for Relative {
+    const TYPE: &'static str = "test.relative";
+    const PROGRESS_FILE: &'static str = "tmp/progress";
+    type Request = Run;
+
+    fn spec(&self, name: &str, run: &Run) -> Result<ContainerSpec, String> {
+        TestJob::plain().spec(name, run)
+    }
+}
+
+/// Scenario: A progress path the runtime refuses. Without a progress type the path is not checked.
+#[tokio::test(start_paused = true)]
+async fn a_progress_path_the_rule_refuses_ends_not_started_and_makes_nothing() {
+    let fake = FakeRuntime::new();
+    let runtime: Arc<dyn ContainerRuntime> = Arc::new(fake.clone());
+    let test = TestActors::builder()
+        .with(move |node| node.host(ContainerActor::new(Relative, runtime, settings())).host(WatcherActor))
+        .build()
+        .await
+        .unwrap();
+    test.create(&Watcher, &Ends::default()).await;
+    let job = Container::<Relative>::named("j1");
+    test.create(&job, &ContainerState::new(Run { image: "alpine:3".into() })).await;
+    test.send(&job, start_progress()).await;
+    test.run_until_idle().await;
+    let end = test.state::<_, State>(&job).await.end.unwrap();
+    assert_eq!((end.outcome, end.kind), (Outcome::Failed, Some(FailureKind::NotStarted)));
+    assert_eq!(end.reason, "invalid spec: copy out of app-j1: relative path tmp/progress");
+    assert_eq!(methods(&fake), ["inspect"], "nothing made");
+
+    let plain = Container::<Relative>::named("j2");
+    test.create(&plain, &ContainerState::new(Run { image: "alpine:3".into() })).await;
+    test.send(&plain, start()).await;
+    test.run_until_idle().await;
+    assert_eq!(test.state::<_, State>(&plain).await.phase, Phase::Started);
+}
+
+/// Ends for which the container never ran read no file: a stop before the start, a refused spec, a missing container
+/// and too many runtime errors.
+#[tokio::test(start_paused = true)]
+async fn ends_without_a_run_read_nothing() {
+    let fake = FakeRuntime::new();
+    let mut settings = settings();
+    settings.max_errors = 2;
+    let test = harness(&fake, settings).await;
+    let stopped = container(&test, "j1", "alpine:3").await;
+    test.send(&stopped, ContainerMsg::Stop).await;
+    test.send(&stopped, start_progress()).await;
+    let refused = container(&test, "j2", "").await;
+    test.send(&refused, start_progress()).await;
+    let missing = container(&test, "j3", "alpine:3").await;
+    test.send(&missing, start_progress()).await;
+    test.run_until_idle().await;
+    fake.remove("app-j3").await.unwrap();
+    test.advance_time_by(2 * SECOND).await;
+    let errors = container(&test, "j4", "alpine:3").await;
+    fake.fail_always(Method::Inspect, ErrorKind::Other);
+    test.send(&errors, start_progress()).await;
+    test.advance_time_by(60 * SECOND).await;
+
+    let kinds: Vec<(Outcome, Option<FailureKind>)> =
+        ends(&test).await.into_iter().map(|ended| (ended.end.outcome, ended.end.kind)).collect();
+    assert_eq!(kinds.len(), 4, "{kinds:?}");
+    assert!(kinds.contains(&(Outcome::Stopped, None)));
+    for kind in [FailureKind::NotStarted, FailureKind::Missing, FailureKind::RuntimeErrors] {
+        assert!(kinds.contains(&(Outcome::Failed, Some(kind))), "{kind:?} in {kinds:?}");
+    }
+    assert_eq!(copy_outs(&fake), 0);
+}
+
+/// The progress payload passes as a host's message, as the target gets it.
+#[test]
+fn the_progress_payload_passes_its_sample() {
+    let progress = ContainerProgress { key: "j1".into(), seq: 2, text: "{\"done\": 40}".into() };
+    let mut sample = serde_json::to_value(&progress).unwrap();
+    assert_eq!(sample, json!({"key": "j1", "seq": 2, "text": "{\"done\": 40}"}));
+    sample.as_object_mut().unwrap().insert("type".into(), json!("Progress"));
+    assert_message_sample::<WatcherMsg>(&sample);
+}
+
 /// `value` with the keys of every object sorted, so that the fixture's text does not follow the order of a map.
 fn sorted(value: &Value) -> Value {
     match value {
@@ -1225,6 +1588,8 @@ fn the_contract_of_a_test_job_matches_its_fixture() {
         ),
         (json!(1), json!(200))
     );
+    let progress_type = &start["properties"]["progressType"];
+    assert_eq!((progress_type["minLength"].clone(), progress_type["maxLength"].clone()), (json!(1), json!(200)));
     let state = &json["state"];
     assert_eq!(state["required"], json!(["request"]), "every other field has a default");
     assert_eq!(state["properties"]["request"]["$ref"], "#/$defs/Run", "the host's typed request");
@@ -1250,6 +1615,12 @@ fn the_messages_pass_their_samples() {
     let start = serde_json::to_value(start()).unwrap();
     assert_eq!(start, json!({"type": "Start", "to": "test.watcher/_", "messageType": "Ended"}));
     assert_message_sample::<ContainerMsg>(&start);
+    let with_progress = serde_json::to_value(start_progress()).unwrap();
+    assert_eq!(
+        with_progress,
+        json!({"type": "Start", "to": "test.watcher/_", "messageType": "Ended", "progressType": "Progress"})
+    );
+    assert_message_sample::<ContainerMsg>(&with_progress);
     for message in [ContainerMsg::Stop, ContainerMsg::Remove, ContainerMsg::Check, ContainerMsg::Poll] {
         assert_message_sample::<ContainerMsg>(&serde_json::to_value(message).unwrap());
     }
@@ -1271,7 +1642,8 @@ async fn the_states_of_each_phase_and_the_end_payload_pass_their_samples() {
     assert_eq!(
         new,
         json!({"request": {"image": "alpine:3"}, "goal": null, "phase": "new", "target": null,
-        "deadline": null, "end": null, "undelivered": null, "armed": null, "due": null, "errors": 0})
+        "deadline": null, "end": null, "undelivered": null, "armed": null, "due": null, "errors": 0,
+        "progressSeq": 0, "progressHash": null})
     );
     phases.push(new);
     test.send(&job, start()).await;

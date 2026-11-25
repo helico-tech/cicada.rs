@@ -17,20 +17,28 @@ use cicada::time::{self, MAX_INSTANT, Timestamp};
 use cicada::turn::TurnError;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 pub use wire::{
-    ContainerEnd, ContainerEnded, ContainerMsg, ContainerState, EndTarget, FailureKind, Goal, InvalidContainer,
-    Outcome, Phase,
+    ContainerEnd, ContainerEnded, ContainerMsg, ContainerProgress, ContainerState, EndTarget, FailureKind, Goal,
+    InvalidContainer, Outcome, Phase,
 };
 
 use crate::dirs::MAKE;
 use crate::paths::path_parts;
 use crate::{
-    ContainerError, ContainerRuntime, ContainerSpec, ContainerStatus, CopyDir, CopyFile, ErrorKind, OUT_OF_MEMORY,
+    ContainerError, ContainerRuntime, ContainerSpec, ContainerStatus, CopyDir, CopyFile, CopyLimits, ErrorKind,
+    OUT_OF_MEMORY,
 };
 
 /// The longest container name, prefix and key together.
 const MAX_NAME_LENGTH: usize = 200;
+
+/// The environment variable that gives the program its progress file, when its `Start` names a `progressType`.
+const PROGRESS_ENV: &str = "CICADA_PROGRESS_FILE";
+
+/// The most bytes of a progress file read; a longer one is skipped.
+const MAX_PROGRESS_BYTES: u64 = 64 * 1024;
 
 /// The label the container actor puts on every container it creates, with its settings' prefix as the value, after
 /// the job's [`spec`](ContainerJob::spec), which cannot drop or change it. The [`LogArchiver`](crate::LogArchiver)
@@ -110,6 +118,21 @@ pub trait ContainerJob: Send + Sync + 'static {
     /// assert_eq!(<ContainerActor<Tests> as Actor>::MAX_TURN, Some(Duration::from_secs(35 * 60)));
     /// ```
     const MAX_TURN: Option<Duration> = None;
+
+    /// The absolute path of the progress file in the container; `/tmp/cicada-progress` by default. When the container's
+    /// `Start` names a `progressType`, the actor sets `CICADA_PROGRESS_FILE` to it in the spec, after the job's
+    /// [`spec`](Self::spec), which cannot change it, reads the file at each poll while the container runs and once
+    /// when it ends, and sends its text to the end's target as a [`ContainerProgress`] each time it changed. A path
+    /// that is relative, has a `..` part or names no file ends the container `failed` with the kind `notStarted`
+    /// before anything is made. Progress is best effort: a missing file, one over 64 KiB or not a regular file, and a
+    /// failed read send nothing and are not runtime errors.
+    ///
+    /// The program writes the file whole: to a temporary name in the same folder, then renamed onto the path, as a file
+    /// read while it is written can come back half written (the next poll corrects it).
+    ///
+    /// The file is read with [`copy_out`](ContainerRuntime::copy_out), which cannot see a tmpfs: with a read-only root
+    /// file system and a tmpfs on `/tmp`, set this to a path on a volume.
+    const PROGRESS_FILE: &'static str = "/tmp/cicada-progress";
 
     /// The spec of the container `name` for `request`, built at each create, so secrets never reach the store. The actor
     /// sets the spec's name to `name` whatever it returns. An `Err` ends the container `failed` with its text and the
@@ -401,10 +424,13 @@ impl<J: ContainerJob> Actor for ContainerActor<J> {
 
     async fn handle(&self, turn: &mut ContainerTurn<J>, message: ContainerMsg) -> HandlerResult {
         match message {
-            ContainerMsg::Start { to, message_type } => {
+            ContainerMsg::Start { to, message_type, progress_type } => {
                 // Code sends skip the schema: a type the state decoder refuses would make the state unreadable.
-                wire::check_message_type(&message_type).map_err(HandlerError::permanent)?;
-                let target = EndTarget { to, message_type };
+                wire::check_type("messageType", &message_type).map_err(HandlerError::permanent)?;
+                if let Some(progress_type) = &progress_type {
+                    wire::check_type("progressType", progress_type).map_err(HandlerError::permanent)?;
+                }
+                let target = EndTarget { to, message_type, progress_type };
                 let state = turn.state_mut();
                 if state.target.is_none() {
                     state.target = Some(target.clone());
@@ -428,6 +454,11 @@ impl<J: ContainerJob> Actor for ContainerActor<J> {
             }
         }
     }
+}
+
+/// The progress type of the state's target, when its `Start` named one.
+fn progress_type<R>(state: &ContainerState<R>) -> Option<&str> {
+    state.target.as_ref()?.progress_type.as_deref()
 }
 
 /// True while a poll has something to do: a goal, not removed, and no end yet unless it is to be removed.
@@ -542,9 +573,13 @@ impl<J: ContainerJob> ContainerActor<J> {
             Err(e) => return self.error(turn, e).await,
         }
         let request = &turn.state().request;
+        let progress = progress_type(turn.state()).is_some();
         let built = self.job.spec(name, request).and_then(|spec| {
             let inputs = self.job.inputs(name, request)?;
             check_inputs(name, &inputs)?;
+            if progress {
+                path_parts("copy out of", name, J::PROGRESS_FILE).map_err(|e| e.to_string())?;
+            }
             Ok((spec, inputs))
         });
         let (mut spec, inputs) = match built {
@@ -554,6 +589,11 @@ impl<J: ContainerJob> ContainerActor<J> {
         spec.name = name.to_owned();
         // After the job's spec, so a job cannot drop it: the log archiver finds the containers by it.
         spec.labels.insert(PREFIX_LABEL.to_owned(), self.settings.prefix.clone());
+        // After the job's spec too, so the program finds the file the actor reads.
+        if progress {
+            spec.secret_env.remove(PROGRESS_ENV);
+            spec.env.insert(PROGRESS_ENV.to_owned(), J::PROGRESS_FILE.to_owned());
+        }
         if let Err(e) = self.runtime.create(&spec).await {
             if matches!(e.kind, ErrorKind::ImageNotFound | ErrorKind::InvalidSpec) {
                 return self.refuse(turn, e.to_string()).await;
@@ -613,6 +653,9 @@ impl<J: ContainerJob> ContainerActor<J> {
                     return self.start_failed(turn, e).await;
                 }
                 turn.state_mut().errors = 0;
+                if status == ContainerStatus::Running {
+                    self.progress(turn, name).await?;
+                }
                 let now = turn.current_time();
                 if turn.state().deadline.is_some_and(|deadline| now >= deadline) {
                     turn.state_mut().goal = Some(Goal::Stop);
@@ -622,10 +665,12 @@ impl<J: ContainerJob> ContainerActor<J> {
             }
             ContainerStatus::Exited { code } => {
                 let Some(logs) = self.logs(turn, name).await? else { return Ok(()) };
+                self.progress(turn, name).await?;
                 self.end(turn, Outcome::Exited, None, Some(code), format!("exited with code {code}"), logs).await
             }
             ContainerStatus::Failed { code, reason } => {
                 let Some(logs) = self.logs(turn, name).await? else { return Ok(()) };
+                self.progress(turn, name).await?;
                 let kind = if reason == OUT_OF_MEMORY { FailureKind::OutOfMemory } else { FailureKind::RuntimeEnded };
                 self.fail(turn, kind, code, reason, logs).await
             }
@@ -651,6 +696,7 @@ impl<J: ContainerJob> ContainerActor<J> {
             return self.end(turn, Outcome::Stopped, None, None, reason, String::new()).await;
         }
         let Some(logs) = self.logs(turn, name).await? else { return Ok(()) };
+        self.progress(turn, name).await?;
         let now = turn.current_time();
         let (outcome, reason) = match turn.state().deadline {
             Some(deadline) if now >= deadline => {
@@ -691,6 +737,41 @@ impl<J: ContainerJob> ContainerActor<J> {
             }
         };
         Ok(Some(text::logs(&text, self.settings.log_lines, self.settings.log_bytes)))
+    }
+
+    /// Reads the progress file of the container `name` and sends its text to the target when it changed since the last
+    /// progress sent, with the next `seq`; nothing without a `progressType`. A missing, skipped or unreadable file sends
+    /// nothing and is not an error, and an empty text is sent only after one that was not. A send the registry refuses
+    /// is not retried and still moves `seq` on; a failed read of the registry fails the turn, to be tried again.
+    async fn progress(&self, turn: &mut ContainerTurn<J>, name: &str) -> HandlerResult {
+        let Some((to, progress_type)) =
+            turn.state().target.as_ref().and_then(|t| Some((t.to.clone(), t.progress_type.clone()?)))
+        else {
+            return Ok(());
+        };
+        let limits = CopyLimits::new(1, MAX_PROGRESS_BYTES);
+        let Ok(out) = self.runtime.copy_out(name, J::PROGRESS_FILE, limits).await else { return Ok(()) };
+        // A folder at the path gives the files below it: only the file at the path itself is progress.
+        let Ok(parts) = path_parts("copy out of", name, J::PROGRESS_FILE) else { return Ok(()) };
+        let path = format!("/{}", parts.join("/"));
+        let Some(file) = out.files.into_iter().find(|file| file.path == path) else { return Ok(()) };
+        let text = text::plain(&String::from_utf8_lossy(&file.contents));
+        let hash: String = Sha256::digest(text.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect();
+        let state = turn.state_mut();
+        if state.progress_hash.as_deref() == Some(hash.as_str()) || (state.progress_hash.is_none() && text.is_empty()) {
+            return Ok(());
+        }
+        state.progress_seq = state.progress_seq.saturating_add(1);
+        state.progress_hash = Some(hash);
+        let seq = state.progress_seq;
+        let payload = serde_json::to_value(ContainerProgress { key: turn.self_ref().key.clone(), seq, text })?;
+        let options = SendOptions::new().retry(retry_policy());
+        match turn.send_raw(&to, &progress_type, payload, options).await {
+            Ok(_) => {}
+            Err(e @ TurnError::Store(_)) => return Err(e.into()),
+            Err(e) => tracing::warn!(container = name, seq, error = %e, "the progress was not sent"),
+        }
+        Ok(())
     }
 
     /// Handles `error` from putting the inputs in, of `make_dirs` when `making`, else of `copy_in`: ends the container

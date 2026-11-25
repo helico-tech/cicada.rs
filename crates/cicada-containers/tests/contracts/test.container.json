@@ -23,13 +23,22 @@
     },
     "Start": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "Runs the container until it ends, and sends the end to `to`. The first `Start` sets the target; a later one\nchanges nothing, unless the container has ended: then it sends the saved end to its own target at once, again\nfor each such `Start`. A message type out of bounds is refused for good, and nothing is saved.",
+      "description": "Runs the container until it ends, and sends the end to `to`, with its progress first when `progressType` is\ngiven. The first `Start` sets the target; a later one changes nothing, unless the container has ended: then it\nsends the saved end to its own target at once, again for each such `Start`. A message type out of bounds is\nrefused for good, and nothing is saved.",
       "properties": {
         "messageType": {
           "description": "The message type of the end, whose payload is `{\"key\": …, \"end\": …}`, a [`ContainerEnded`]; not empty, at\nmost 200 characters, without NUL. The target's registry is checked only when the end is sent.",
           "maxLength": 200,
           "minLength": 1,
           "type": "string"
+        },
+        "progressType": {
+          "description": "The message type of the container's progress, whose payload is a [`ContainerProgress`]; bounded as\n`messageType`. With it, the program finds its progress file, the job's `PROGRESS_FILE`, in\n`CICADA_PROGRESS_FILE`; absent or null: no progress is read.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "to": {
           "description": "The target of the end.",
@@ -97,13 +106,22 @@
         "type": "object"
       },
       "EndTarget": {
-        "description": "Where the end goes: the target and message type of the first `Start`.",
+        "description": "Where the end and the progress go: the target and message types of the first `Start`.",
         "properties": {
           "messageType": {
             "description": "The message type, whose payload is a [`ContainerEnded`].",
             "maxLength": 200,
             "minLength": 1,
             "type": "string"
+          },
+          "progressType": {
+            "description": "The message type of the progress, whose payload is a [`ContainerProgress`]; absent or null: no progress is read.",
+            "maxLength": 200,
+            "minLength": 1,
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "to": {
             "description": "The target.",
@@ -291,6 +309,20 @@
         "$ref": "#/$defs/Phase",
         "default": "new",
         "description": "New, started, ended or removed; absent: new."
+      },
+      "progressHash": {
+        "description": "The lower-case hex SHA-256 of the last progress text sent; absent or null exactly while `progressSeq` is 0.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "progressSeq": {
+        "default": 0,
+        "description": "The `seq` of the last progress sent; absent: 0, before the first.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": "integer"
       },
       "request": {
         "$ref": "#/$defs/Run",

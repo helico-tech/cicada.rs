@@ -6,7 +6,7 @@
 pub(crate) const MAX_REASON_BYTES: usize = 1024;
 
 /// `text` with every NUL replaced by U+FFFD.
-fn plain(text: &str) -> String {
+pub(crate) fn plain(text: &str) -> String {
     text.replace('\0', "\u{FFFD}")
 }
 

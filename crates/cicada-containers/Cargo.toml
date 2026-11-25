@@ -11,7 +11,7 @@ publish.workspace = true
 # `FakeRuntime`, an in-memory runtime for tests. Only dev-dependencies turn it on (the examples' guide doctests).
 testing = []
 # `DockerRuntime`, the backend over the Docker Engine API (bollard).
-docker = ["dep:base64", "dep:bollard", "dep:futures", "dep:sha2", "dep:tar", "dep:tokio-util"]
+docker = ["dep:base64", "dep:bollard", "dep:futures", "dep:tar", "dep:tokio-util"]
 
 [dependencies]
 async-trait.workspace = true
@@ -24,8 +24,8 @@ futures = { workspace = true, optional = true }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-# The folder names of Docker CLI contexts, `contexts/meta/<sha256 of the name>`.
-sha2 = { workspace = true, optional = true }
+# The container actor's hash of the last progress it sent; the folder names of Docker CLI contexts.
+sha2.workspace = true
 tar = { workspace = true, optional = true }
 thiserror.workspace = true
 # The log archiver's rounds, reads and timers; the Docker backend's streams.

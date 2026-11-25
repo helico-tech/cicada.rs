@@ -57,8 +57,9 @@ mod runtime;
 mod spec;
 
 pub use actor::{
-    Container, ContainerActor, ContainerEnd, ContainerEnded, ContainerJob, ContainerMsg, ContainerSettings,
-    ContainerState, EndTarget, FailureKind, Goal, Inputs, InvalidContainer, Outcome, PREFIX_LABEL, Phase,
+    Container, ContainerActor, ContainerEnd, ContainerEnded, ContainerJob, ContainerMsg, ContainerProgress,
+    ContainerSettings, ContainerState, EndTarget, FailureKind, Goal, Inputs, InvalidContainer, Outcome, PREFIX_LABEL,
+    Phase,
 };
 pub use archive::{ArchiveSettings, InvalidArchive, LogArchiver};
 pub use copy::{CopyLimits, CopyOut, SkippedFile};
