@@ -22,7 +22,7 @@ Supervision of tasks inside the node (restarts). Tasks for operator commands.
 
 ## Order
 
-After `container-logs-unreadable`. No following change.
+After `container-logs-unreadable`, before `container-output-store`.
 
 ## Impact
 
