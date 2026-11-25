@@ -114,4 +114,4 @@ None.
 
 Ran `cargo test -p cicada-examples --doc` (45 passed), `--test docs` (11 passed) and `--test skill` (18 passed) on this
 branch: no guide block builds `ContainerEnd` or matches `Phase`, so nothing blocks. All of the above is proposed text;
-no prose is written yet.
+no prose is written yet. `cargo test --workspace` with PostgreSQL passes (3600 tests).

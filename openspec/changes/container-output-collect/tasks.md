@@ -24,6 +24,6 @@ with every feature: `cargo test -p cicada-containers --all-features`.
   section and the rollback warning. No edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify: the error
   tests; `cargo test -p cicada-examples --test docs` and `--doc` (report `Docs: blocked` if a guide block stops
   compiling).
-- [ ] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
+- [x] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
   `cargo test --workspace`, `openspec validate container-output-collect --strict`, commit, then
   `python3 scripts/gate.py run`.
