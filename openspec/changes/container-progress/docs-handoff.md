@@ -103,6 +103,6 @@ None.
 
 ## Status
 
-Ran `cargo test -p cicada-examples --doc` and `cargo test -p cicada-examples --test docs` on this branch: both pass, so
-no guide block builds `Start` or `EndTarget` and nothing blocks. All of the above is proposed text; no prose is written
+Ran `cargo test -p cicada-examples --doc`, `--test docs` and `--test skill` on this branch: all pass, so no guide
+block builds `Start` or `EndTarget` and nothing blocks. `cargo test --workspace` with PostgreSQL passes. All of the above is proposed text; no prose is written
 yet.
