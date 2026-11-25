@@ -20,7 +20,7 @@ Removing orphans automatically.
 
 ## Order
 
-After `container-output-retention`, before `placement-offers`.
+After `container-output-retention`, before `collect-timeouts`.
 
 ## Impact
 

@@ -24,7 +24,7 @@ Asks and holders (the next changes).
 
 ## Order
 
-After `container-orphan-alert`, before `placement-asks`.
+After `collect-timeouts`, before `placement-asks`.
 
 ## Impact
 
