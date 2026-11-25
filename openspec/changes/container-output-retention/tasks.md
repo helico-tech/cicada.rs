@@ -17,6 +17,6 @@ builder.md, Version). Builds on `container-output-collect` (`ContainerActor::wit
 - [x] 4. **Changelog and docs handoff.** The 0.23.0 section names `output_retention` under Added and the state field
   in its BREAKING notes; the handoff carries the design's Docs section. No edit to `README.md`, `AGENTS.md` or the
   handwritten docs. Verify: `cargo test -p cicada-examples --test docs` and `--doc`.
-- [ ] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
+- [x] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
   `cargo test --workspace`, `openspec validate container-output-retention --strict`, commit, then
   `python3 scripts/gate.py run`.
