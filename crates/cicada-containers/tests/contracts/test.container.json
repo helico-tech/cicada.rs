@@ -2,7 +2,7 @@
   "messages": {
     "Check": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "Arms a fresh poll when one was lost: due when the armed one was, or at once when that passed. Does nothing with no\nwork left.",
+      "description": "Arms a fresh poll when one was lost: due when the armed one was, or at once when that passed. Does nothing with no\nwork left; a removed container whose stored outputs wait for their deletion has work left.",
       "properties": {},
       "title": "Check",
       "type": "object"
@@ -16,7 +16,7 @@
     },
     "Remove": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "Stops the container if needed, records its end, then removes it. Send it before deleting the actor, or the\ncontainer stays.",
+      "description": "Stops the container if needed, records its end, then removes it. Send it before deleting the actor, or the\ncontainer stays. With a store and an output retention, the actor deletes the stored outputs that long after the\nremoval; deleting the actor before then leaves them in the store.",
       "properties": {},
       "title": "Remove",
       "type": "object"

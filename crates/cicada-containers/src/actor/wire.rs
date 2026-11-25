@@ -47,10 +47,11 @@ pub enum ContainerMsg {
     /// Stops the container and ends it `stopped`, or `timedOut` past its deadline; one never started is never created.
     Stop,
     /// Stops the container if needed, records its end, then removes it. Send it before deleting the actor, or the
-    /// container stays.
+    /// container stays. With a store and an output retention, the actor deletes the stored outputs that long after the
+    /// removal; deleting the actor before then leaves them in the store.
     Remove,
     /// Arms a fresh poll when one was lost: due when the armed one was, or at once when that passed. Does nothing with no
-    /// work left.
+    /// work left; a removed container whose stored outputs wait for their deletion has work left.
     Check,
     /// The actor's own timer: only the armed one acts, by taking one step toward the goal. Any other is ignored.
     Poll,

@@ -482,7 +482,9 @@ fn retry_policy() -> RetryPolicy {
 /// With a store ([`with_store`](Self::with_store)), an end the container ran for (`exited`, `failed` as
 /// `runtimeEnded` or `outOfMemory`, `stopped`, `timedOut`) is first held as pending in the phase
 /// [`Collecting`](Phase::Collecting); the next polls store the rest of its log and its job's outputs, and the poll that
-/// finishes records the end with its [`outputs`](ContainerEnd::outputs) and sends it.
+/// finishes records the end with its [`outputs`](ContainerEnd::outputs) and sends it. With an
+/// [`output_retention`](ContainerSettings::output_retention) too, the removal saves when the stored outputs are
+/// deleted, and a poll then deletes them; the actor's own record stays.
 ///
 /// Every node that can claim these actors must reach the same daemon: pin them with a claim owner when only some do
 /// (ADR 0052). A create's image pull, a stop's grace and an output copy run inside one turn and its maximum duration,
@@ -509,6 +511,11 @@ impl<J: ContainerJob> ContainerActor<J> {
     /// store error a retry can cure counts as a runtime error and backs off; at the settings' maximum in a row the end
     /// is sent with its outcome and the error in its report. A `Start` during the collection gets the end when it is
     /// done, and a `Remove` removes the container after it.
+    ///
+    /// The store keeps what the actor put there until the host deletes it, or, with the settings'
+    /// [`output_retention`](ContainerSettings::output_retention), until the actor deletes it that long after the
+    /// container's removal. An actor deleted before then leaves its outputs in the store: call
+    /// [`OutputStore::remove`] with the container's name when deleting it.
     ///
     /// A state saved in the phase `Collecting` cannot be read by 0.22: do not roll a node back while one is.
     ///
@@ -586,9 +593,13 @@ fn progress_type<R>(state: &ContainerState<R>) -> Option<&str> {
     state.target.as_ref()?.progress_type.as_deref()
 }
 
-/// True while a poll has something to do: a goal, not removed, and no end yet unless it is to be removed.
+/// True while a poll has something to do: a goal, not removed, and no end yet unless it is to be removed; or removed
+/// with stored outputs waiting for their deletion.
 fn work_left<R>(state: &ContainerState<R>) -> bool {
-    state.goal.is_some() && state.phase != Phase::Removed && (state.end.is_none() || state.goal == Some(Goal::Remove))
+    if state.phase == Phase::Removed {
+        return state.outputs_until.is_some();
+    }
+    state.goal.is_some() && (state.end.is_none() || state.goal == Some(Goal::Remove))
 }
 
 /// Moves the goal forward to `goal` and arms a poll at once, skipping a backoff; a goal asked again re-arms instead.
@@ -668,7 +679,10 @@ impl<J: ContainerJob> ContainerActor<J> {
         let (Some(goal), phase) = (state.goal, state.phase) else {
             return Ok(());
         };
-        if phase == Phase::Removed || (phase == Phase::Ended && goal != Goal::Remove) {
+        if phase == Phase::Removed {
+            return self.expire(turn).await;
+        }
+        if phase == Phase::Ended && goal != Goal::Remove {
             return Ok(());
         }
         let name = match self.settings.name(&turn.self_ref().key) {
@@ -838,13 +852,52 @@ impl<J: ContainerJob> ContainerActor<J> {
         self.end(turn, outcome, None, exit_code(&status), reason, logs, true).await
     }
 
-    /// Removes an ended container.
+    /// Removes an ended container; with a store and an output retention, saves when its stored outputs are deleted and
+    /// arms a poll then. The container is gone from the runtime first, so no log archiver stores it again.
     async fn remove(&self, turn: &mut ContainerTurn<J>, name: &str) -> HandlerResult {
         if let Err(e) = self.runtime.remove(name).await {
             return self.error(turn, e).await;
         }
         let state = turn.state_mut();
         state.phase = Phase::Removed;
+        state.errors = 0;
+        let (Some(_), Some(retention)) = (&self.store, self.settings.output_retention) else { return Ok(()) };
+        let now = turn.current_time();
+        let until = time::add(now, retention).ok().filter(|until| *until <= MAX_INSTANT).unwrap_or(MAX_INSTANT);
+        turn.state_mut().outputs_until = Some(until);
+        arm(turn, until)
+    }
+
+    /// Deletes the stored outputs of a removed container once their saved time has come, and clears it; a poll before
+    /// it arms one then. An error a retry can cure backs off without limit; a name the store refuses, or an actor
+    /// without a store, clears it with a warning, as nothing can be deleted.
+    async fn expire(&self, turn: &mut ContainerTurn<J>) -> HandlerResult {
+        let Some(until) = turn.state().outputs_until else { return Ok(()) };
+        let now = turn.current_time();
+        if now < until {
+            return arm(turn, until);
+        }
+        let key = turn.self_ref().key.clone();
+        let deleted = match (&self.store, self.settings.name(&key)) {
+            (None, _) => Err("the actor has no output store".to_owned()),
+            (Some(_), Err(reason)) => Err(reason),
+            (Some(store), Ok(name)) => match store.remove(&name).await {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind == OutputErrorKind::Invalid => Err(e.to_string()),
+                Err(e) => {
+                    let state = turn.state_mut();
+                    state.errors = state.errors.saturating_add(1);
+                    let errors = state.errors;
+                    tracing::debug!(container = name, errors, error = %e, "the stored outputs were not deleted yet");
+                    return arm_after(turn, self.settings.backoff(errors));
+                }
+            },
+        };
+        if let Err(reason) = deleted {
+            tracing::warn!(key, reason, "the stored outputs cannot be deleted; they stay in the store");
+        }
+        let state = turn.state_mut();
+        state.outputs_until = None;
         state.errors = 0;
         Ok(())
     }

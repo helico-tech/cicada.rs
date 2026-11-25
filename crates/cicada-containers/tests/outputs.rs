@@ -2,13 +2,15 @@
 //! memory store: at an end the container ran for, the rest of its log and its job's outputs go into the store before
 //! the end is recorded and sent with its report. One scenario of the spec per test, and the design's tests.
 
-use std::sync::Arc;
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
 
 use cicada::prelude::*;
+use cicada::time::MAX_INSTANT;
 use cicada_axum::{assert_message_sample, assert_state_sample};
 use cicada_containers::{
     ArchiveSettings, Call, Container, ContainerActor, ContainerEnded, ContainerError, ContainerJob, ContainerMsg,
@@ -759,4 +761,252 @@ async fn a_slow_copy_holds_up_only_its_own_container() {
     test.run_until_idle().await;
     assert_eq!(test.state::<_, Got>(&Watcher).await.order, ["end fast", "end slow"]);
     assert_eq!(stored_files(&store, "app-slow").await, ["/work/out/a"]);
+}
+
+/// An output store whose `remove` fails with the given kinds first, in order, and counts its calls.
+#[derive(Default)]
+struct Flaky {
+    store: MemoryOutputStore,
+    remove_errors: Mutex<VecDeque<OutputErrorKind>>,
+    removes: AtomicUsize,
+}
+
+impl Flaky {
+    fn failing(kinds: &[OutputErrorKind]) -> Arc<Self> {
+        Arc::new(Self { remove_errors: Mutex::new(kinds.iter().copied().collect()), ..Self::default() })
+    }
+}
+
+#[async_trait]
+impl OutputStore for Flaky {
+    async fn log_end(&self, container: &str) -> Result<LogEnd, OutputError> {
+        self.store.log_end(container).await
+    }
+
+    async fn append_logs(
+        &self,
+        container: &str,
+        after: Option<&LogCursor>,
+        page: &LogPage,
+    ) -> Result<u64, OutputError> {
+        self.store.append_logs(container, after, page).await
+    }
+
+    async fn read_logs(&self, container: &str, from: u64, limit: u32) -> Result<Vec<StoredLine>, OutputError> {
+        self.store.read_logs(container, from, limit).await
+    }
+
+    async fn put_file(&self, container: &str, file: &CopyFile) -> Result<(), OutputError> {
+        self.store.put_file(container, file).await
+    }
+
+    async fn files(&self, container: &str) -> Result<Vec<StoredFile>, OutputError> {
+        self.store.files(container).await
+    }
+
+    async fn read_file(&self, container: &str, path: &str) -> Result<Option<CopyFile>, OutputError> {
+        self.store.read_file(container, path).await
+    }
+
+    async fn remove(&self, container: &str) -> Result<(), OutputError> {
+        self.removes.fetch_add(1, Ordering::SeqCst);
+        if let Some(kind) = self.remove_errors.lock().unwrap().pop_front() {
+            return Err(OutputError::new(kind, "the store said no"));
+        }
+        self.store.remove(container).await
+    }
+}
+
+const DAY: Duration = Duration::from_secs(24 * 3600);
+
+/// The settings with an output retention of `retention`.
+fn retained(retention: Duration) -> ContainerSettings {
+    let mut settings = settings();
+    settings.output_retention = Some(retention);
+    settings
+}
+
+/// A node with `store` and `settings`, and the container `j1` with stored outputs, removed.
+async fn removed(
+    fake: &FakeRuntime,
+    store: Arc<dyn OutputStore>,
+    settings: ContainerSettings,
+) -> (TestActors, Container<Job>) {
+    let test = harness_on(Arc::new(fake.clone()), Some(store), settings, Job::out()).await;
+    let job = started(&test, "j1").await;
+    fake.set_logs(NAME, "one");
+    write(fake, "/work/out/a", "abc");
+    exit(&test, fake).await;
+    test.send(&job, ContainerMsg::Remove).await;
+    test.run_until_idle().await;
+    assert_eq!(test.state::<_, State>(&job).await.phase, Phase::Removed);
+    (test, job)
+}
+
+/// True while `store` still holds the stored outputs of `app-j1`.
+async fn kept(store: &dyn OutputStore) -> bool {
+    let (files, log) = (stored_files(store, NAME).await, stored_log(store, NAME).await);
+    assert_eq!(files.is_empty(), log.is_empty(), "the files and the log go together: {files:?} {log:?}");
+    !files.is_empty()
+}
+
+/// Scenario: A week after removal. The actor's own record stays.
+#[tokio::test(start_paused = true)]
+async fn stored_outputs_are_deleted_a_retention_after_the_removal_and_not_before() {
+    let (fake, store) = (FakeRuntime::new(), MemoryOutputStore::new());
+    let (test, job) = removed(&fake, Arc::new(store.clone()), retained(7 * DAY)).await;
+    let state: State = test.state(&job).await;
+    let until = cicada::time::add(test.now(), 7 * DAY).unwrap();
+    assert_eq!((state.outputs_until, state.due), (Some(until), Some(until)));
+    assert_state_sample::<State>(&test.state_json(&job).await.unwrap());
+    let calls = fake.calls();
+    assert!(calls.iter().any(|c| matches!(c, Call::Remove(_))), "the container is removed first: {calls:?}");
+
+    test.advance_time_by(6 * DAY).await;
+    assert!(kept(&store).await, "still there after 6 days");
+    test.advance_time_by(DAY).await;
+    assert!(!kept(&store).await, "gone after 7");
+    let state: State = test.state(&job).await;
+    assert_eq!((state.phase, state.outputs_until, state.armed, state.errors), (Phase::Removed, None, None, 0));
+    assert_eq!(state.end.unwrap().outcome, Outcome::Exited, "the actor's record stays");
+    assert_eq!(ends(&test).await.len(), 1);
+    assert!(test.failures().await.is_empty());
+}
+
+/// Scenario: No retention. And with a retention but no store, nothing waits.
+#[tokio::test(start_paused = true)]
+async fn without_a_retention_or_a_store_nothing_is_deleted() {
+    let (fake, store) = (FakeRuntime::new(), MemoryOutputStore::new());
+    let (test, job) = removed(&fake, Arc::new(store.clone()), settings()).await;
+    test.advance_time_by(365 * DAY).await;
+    assert!(kept(&store).await);
+    let state: State = test.state(&job).await;
+    assert_eq!((state.outputs_until, state.armed), (None, None));
+
+    let fake = FakeRuntime::new();
+    let test = harness_on(Arc::new(fake.clone()), None, retained(DAY), Job::out()).await;
+    let job = started(&test, "j1").await;
+    exit(&test, &fake).await;
+    test.send(&job, ContainerMsg::Remove).await;
+    test.run_until_idle().await;
+    let state: State = test.state(&job).await;
+    assert_eq!((state.phase, state.outputs_until, state.armed), (Phase::Removed, None, None));
+}
+
+/// A retention of zero deletes in the poll right after the removal; one past the largest instant is capped there.
+#[tokio::test(start_paused = true)]
+async fn a_zero_retention_deletes_at_once_and_a_huge_one_is_capped() {
+    let (fake, store) = (FakeRuntime::new(), MemoryOutputStore::new());
+    let (test, job) = removed(&fake, Arc::new(store.clone()), retained(Duration::ZERO)).await;
+    assert!(!kept(&store).await);
+    assert_eq!(test.state::<_, State>(&job).await.outputs_until, None);
+
+    let (fake, store) = (FakeRuntime::new(), MemoryOutputStore::new());
+    let (test, job) = removed(&fake, Arc::new(store.clone()), retained(Duration::MAX)).await;
+    assert_eq!(test.state::<_, State>(&job).await.outputs_until, Some(MAX_INSTANT));
+    assert!(kept(&store).await);
+}
+
+/// Scenario: A store that is down at the due time. `Other` keeps trying too, with the backoff and without limit.
+#[tokio::test(start_paused = true)]
+async fn a_store_down_at_the_due_time_is_tried_again_with_the_backoff_and_then_deletes() {
+    let fake = FakeRuntime::new();
+    let flaky = Flaky::failing(&[OutputErrorKind::Unavailable, OutputErrorKind::Other, OutputErrorKind::Unavailable]);
+    let mut settings = retained(DAY);
+    settings.max_errors = 2;
+    let (test, job) = removed(&fake, flaky.clone(), settings).await;
+    test.advance_time_by(DAY).await;
+    assert_eq!(flaky.removes.load(Ordering::SeqCst), 1);
+    let state: State = test.state(&job).await;
+    assert_eq!((state.errors, state.outputs_until.is_some()), (1, true));
+    // The backoff: 4, 8 and 16 s; past `max_errors` it keeps trying.
+    test.advance_time_by(4 * SECOND + 8 * SECOND + 15 * SECOND).await;
+    assert_eq!(flaky.removes.load(Ordering::SeqCst), 3);
+    assert!(kept(&flaky.store).await);
+    test.advance_time_by(SECOND).await;
+    assert_eq!(flaky.removes.load(Ordering::SeqCst), 4, "deleted at the fourth try");
+    assert!(!kept(&flaky.store).await);
+    let state: State = test.state(&job).await;
+    assert_eq!((state.errors, state.outputs_until, state.armed), (0, None, None));
+    assert!(test.failures().await.is_empty());
+}
+
+/// Scenario: A store that refuses the name.
+#[tokio::test(start_paused = true)]
+async fn a_store_that_refuses_the_name_clears_the_due_time_without_retrying() {
+    let fake = FakeRuntime::new();
+    let flaky = Flaky::failing(&[OutputErrorKind::Invalid]);
+    let (test, job) = removed(&fake, flaky.clone(), retained(DAY)).await;
+    test.advance_time_by(30 * DAY).await;
+    assert_eq!(flaky.removes.load(Ordering::SeqCst), 1, "not retried");
+    let state: State = test.state(&job).await;
+    assert_eq!((state.outputs_until, state.armed, state.errors), (None, None, 0));
+}
+
+/// Scenario: A lost retention poll. `Check` before the due time arms a fresh poll due then, not sooner; after it, at
+/// once.
+#[tokio::test(start_paused = true)]
+async fn a_lost_retention_poll_comes_back_on_check_and_deletes_at_the_saved_time() {
+    let (fake, store) = (FakeRuntime::new(), MemoryOutputStore::new());
+    let (test, job) = removed(&fake, Arc::new(store.clone()), retained(7 * DAY)).await;
+    let until = test.state::<_, State>(&job).await.outputs_until;
+    let address = job.address().unwrap();
+    assert_eq!(test.system().purge_mailbox(&address).await.unwrap(), Some(1));
+    test.send(&job, ContainerMsg::Check).await;
+    test.run_until_idle().await;
+    assert_eq!(test.state::<_, State>(&job).await.due, until, "due at the saved time");
+    test.advance_time_by(7 * DAY - SECOND).await;
+    assert!(kept(&store).await);
+    test.advance_time_by(SECOND).await;
+    assert!(!kept(&store).await);
+
+    // Lost again and found only after the due time: the Check deletes at once.
+    let (fake, store) = (FakeRuntime::new(), MemoryOutputStore::new());
+    let (test, job) = removed(&fake, Arc::new(store.clone()), retained(DAY)).await;
+    test.system().purge_mailbox(&job.address().unwrap()).await.unwrap();
+    test.advance_time_by(2 * DAY).await;
+    assert!(kept(&store).await, "the poll is lost");
+    test.send(&job, ContainerMsg::Check).await;
+    test.run_until_idle().await;
+    assert!(!kept(&store).await);
+    assert_eq!(test.state::<_, State>(&job).await.outputs_until, None);
+    test.send(&job, ContainerMsg::Check).await;
+    assert_eq!(test.run_until_idle().await, 1, "no work left: the Check arms nothing");
+}
+
+/// A restart between the removal and the due time: a new node with the state as saved, whose retention is unset by
+/// now, still deletes at the saved time. And a node without a store at the due time clears it.
+#[tokio::test(start_paused = true)]
+async fn a_restart_with_the_retention_unset_still_deletes_at_the_saved_time() {
+    let (fake, store) = (FakeRuntime::new(), MemoryOutputStore::new());
+    let (test, job) = removed(&fake, Arc::new(store.clone()), retained(7 * DAY)).await;
+    let mut saved = test.state_json(&job).await.unwrap();
+    let until = test.state::<_, State>(&job).await.outputs_until;
+    // The poll is not carried over to the new node.
+    saved["armed"] = json!(null);
+    saved["due"] = json!(null);
+
+    let at = test.now();
+    // Without a store first: the outputs stay for the node with one.
+    for with_store in [false, true] {
+        let restart = |store: Option<Arc<dyn OutputStore>>| {
+            let fake = fake.clone();
+            TestActors::builder().start_at(at).with(move |node| {
+                let actor = ContainerActor::new(Job::out(), Arc::new(fake), settings());
+                let actor = match store {
+                    Some(store) => actor.with_store(store),
+                    None => actor,
+                };
+                node.host(actor).host(WatcherActor)
+            })
+        };
+        let node = restart(with_store.then(|| Arc::new(store.clone()) as Arc<dyn OutputStore>)).build().await.unwrap();
+        node.create(&job, &saved).await;
+        node.send(&job, ContainerMsg::Check).await;
+        node.run_until_idle().await;
+        assert_eq!(node.state::<_, State>(&job).await.due, until);
+        node.advance_time_by(7 * DAY).await;
+        assert_eq!(node.state::<_, State>(&job).await.outputs_until, None);
+        assert_eq!(kept(&store).await, !with_store, "with a store: deleted; without: kept and cleared");
+    }
 }
