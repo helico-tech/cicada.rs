@@ -345,7 +345,9 @@ impl ContainerJob for Tests {
 1. Host `ContainerActor::new(job, runtime, settings)`, with the runtime as `Arc<dyn ContainerRuntime>` and
    `ContainerSettings::new("ci-")?`, beside the target type.
 2. Create each actor `Container::<Job>::named(key)` with `ContainerState::new(request)`.
-3. Send `ContainerMsg::start(&target, "Ended")?`. The target's family takes `Ended(ContainerEnded)`.
+3. Send `ContainerMsg::start(&target, "Ended")?`. The target's family takes `Ended(ContainerEnded)`. Or send
+   `ContainerMsg::start_with_progress(&target, "Ended", "Progress")?` to get [progress](#progress) too; the family then
+   also takes `Progress(ContainerProgress)`.
 4. Later send `ContainerMsg::Stop` to stop it early, and `ContainerMsg::Remove` to remove the container.
 
 `Start`, `Stop` and `Remove` only move the goal forward (run, then stop, then remove). `Check` brings back a lost poll;
@@ -393,6 +395,63 @@ stays until `Remove`.
 A replayed create step first inspects the container. One past `Created`, started by a step whose commit was lost, is
 adopted with a fresh deadline, without calling `spec`, `inputs`, `create`, the copies or `start`. One still `Created`
 gets its inputs again, which is safe.
+
+### Progress
+
+A job's program can report its progress while it runs (from 0.23.0,
+[ADR 0065](../adr/0065-container-progress-through-a-file.md)). Ask for it in the `Start`; the owner's family takes the
+progress under its own variant:
+
+<!-- doctest
+# use cicada::prelude::*;
+# use serde::{Deserialize, Serialize};
+# #[derive(Debug, Clone, Serialize, Deserialize)]
+# struct Ci { run: String }
+# impl ActorRef for Ci { const TYPE: &'static str = "ci"; type Message = CiMsg; }
+@@11
+# assert_eq!(serde_json::to_value(&start)?["progressType"], "TestProgress");
+# Ok::<(), Box<dyn std::error::Error>>(())
+-->
+```rust
+use cicada_containers::{ContainerEnded, ContainerMsg, ContainerProgress};
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type")]
+enum CiMsg {
+    TestEnded(ContainerEnded),
+    TestProgress(ContainerProgress), // { key, seq, text }
+}
+
+let owner = Ci { run: "run-7".into() };
+let start = ContainerMsg::start_with_progress(&owner, "TestEnded", "TestProgress")?;
+```
+
+- **The file.** The actor sets `CICADA_PROGRESS_FILE` in the container's environment to the job's `PROGRESS_FILE`
+  (default `/tmp/cicada-progress`; override the constant in your `impl ContainerJob`), after the job's `spec`, which
+  cannot change or hide it. The program writes its progress there in any text format; the actor does not parse it. A
+  `PROGRESS_FILE` that is relative, has a `..` part or names no file ends the container `notStarted`.
+- **Write it atomically.** Write a temporary name in the same folder, then rename it onto the path; a file read while
+  it is written can come back half written:
+
+  ```sh
+  printf '{"done": %d, "total": %d}' "$done" "$total" > "$CICADA_PROGRESS_FILE.tmp" && mv "$CICADA_PROGRESS_FILE.tmp" "$CICADA_PROGRESS_FILE"
+  ```
+
+- **Not on a tmpfs.** The actor reads the file with `copy_out`, which cannot see a tmpfs. With a read-only root and a
+  tmpfs on `/tmp`, set `PROGRESS_FILE` to a path on a volume.
+- **When it is read.** At each poll of the running container, and once in the turn that records an end for which the
+  container ran (`exited`, `stopped`, `timedOut`, and `failed` with `runtimeEnded` or `outOfMemory`). Each running
+  container with progress costs one `copy_out` per poll.
+- **What is sent.** When the text changed since the last progress sent, the owner gets a `ContainerProgress
+  { key, seq, text }`, with `seq` counting from 1. At most 64 KiB is read, as UTF-8 with each invalid sequence and NUL
+  replaced by U+FFFD. An empty file is sent only after a progress that was not empty. The state keeps only `seq` and
+  a hash, not the text.
+- **Best effort.** A missing file, one over 64 KiB or not a regular file, and a failed read send nothing and are not
+  runtime errors: progress never ends a container. A progress the target's type refuses is not retried and does not
+  hold up the end.
+- **Order.** The last progress goes out in the end's commit, before the end. A progress the owner fails to handle is
+  retried after a backoff, so it can arrive after a later one or after the end. **Drop a progress whose `seq` is not
+  above the last one you handled, and any that arrives after the end.**
 
 ### Rules for hosts
 

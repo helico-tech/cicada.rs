@@ -281,6 +281,21 @@ is a `400`. `ActorClient` leaves absent optional fields out of request bodies (n
 works against an older node as long as it does not use a newer feature. A release whose views lose a field that old
 clients require, as 0.6.0 does, needs its clients upgraded together with the nodes; the changelog says so.
 
+## Upgrade to 0.23.0
+
+**Version 0.23.0 changes container contracts again.** `Start` and `EndTarget` gain the optional `progressType`, and
+the [container actor's](../guide/containers.md#progress) state gains `progressSeq` and `progressHash`, so the contract
+hash of every container job type changes. A node requires the exact registered hash, so for each such type follow
+[Changing a contract](../operations.md#changing-a-contract): a versioned type name for new runs while old actors finish
+on old hosts, or a maintenance window (stop every host of the type, delete its actors and then its registration, start
+the new hosts). Send `Remove` to a container actor before deleting it, or its container stays. A target type changes
+only when it adds a variant that takes a `ContainerProgress`.
+
+In Rust, add `progress_type: None` to every `ContainerMsg::Start` and `EndTarget` struct literal, such as in your
+tests, and bind or ignore it (`..`) in exhaustive patterns. Add `progress_seq: 0, progress_hash: None` where you build a
+`ContainerState` by its fields; `ContainerState::new` needs no change. The store schema, the HTTP API, the ready-made
+actors' contracts and the guarantees do not change.
+
 ## Upgrade to 0.22.0
 
 **Upgrade every HTTP server before a worker runs a turn that calls `watch_existing`.** The remote turn report's watch
