@@ -32,3 +32,8 @@ as they are on disk.
 
 - **WHEN** `CICADA_TYPES` names one type and the settings of `prod` pick all types
 - **THEN** the worker starts with `--types` naming all types
+
+#### Scenario: No registered type left
+
+- **WHEN** the saved settings of `prod` name only types the binary no longer registers, and the tray connects to `prod`
+- **THEN** the tray is `Failed` with an error that tells the user to open Settings, and no worker starts
