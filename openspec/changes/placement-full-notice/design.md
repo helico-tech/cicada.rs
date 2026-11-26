@@ -21,9 +21,11 @@ ignore it, and say once that it is full.
 3. **The check timer covers the mark.** `armed` and `armedId` are set exactly while a node is live, a contest is listed
    or the pool is marked full; the next check is the earliest of those ends, and the check that ends the mark clears
    `armed` when nothing else is left. A decoded `full` is checked like a contest: a node id in bounds and an `at` whose
-   end is representable. This extends placement-settings: a new silence re-arms at the earliest end including the
+   end is representable; the field is `#[serde(default)]`, so stored states without it decode. `next_check` includes
+   the mark's end. This extends placement-settings: a new silence re-arms at the earliest end including the
    mark, and the state check on its copy covers the mark. The rustdoc of `Check`, `Rearm` and `armed` says so.
-4. **The notice kind.** `PlacementNoticeKind::Full` (`"full"` on the wire), sent to the alert target with the shared
+4. **The notice kind.** `PlacementNoticeKind::Full` (`"full"` on the wire), naming the first ignored node of the period
+   (the `PlacementNotice` rustdoc says so), sent to the alert target with the shared
    retry policy like the others; a target that refuses it fails that alert only (during a rolling upgrade, a target on
    an older node fails it for good; the changelog says so). `PlacementNoticeKind` becomes `#[non_exhaustive]` now, so
    the next kind does not break hosts again; a match on it in a host breaks once, which the changelog names (inside

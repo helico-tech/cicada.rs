@@ -10,7 +10,8 @@ alert (request from the Factory session, 2026-11-26, its epic 0008).
 - The pool accepts such an offer's turn, ignores it, and sends one notice of a new kind `full` (as the conflict alert
   of ADR 0069); the design picks one per full period of the pool, not one per node, so there is an alert and no stream of dead letters.
 
-To decide in the design: once per node or per pool, when the mark ends.
+Decided in the design: one mark per pool, ended one silence time after the last ignored offer or when an offer adds a
+new node.
 
 ## Order
 

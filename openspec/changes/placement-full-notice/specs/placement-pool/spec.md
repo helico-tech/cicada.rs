@@ -22,3 +22,13 @@ adds a new node. An offer of a key another live node holds SHALL be handled as a
 - **WHEN** a full pool's `maxNodes` is raised, a new node is added, and the pool is full again before one silence time
   passed, and another new node offers
 - **THEN** a second `full` notice goes out
+
+#### Scenario: A held key in a full pool
+
+- **WHEN** a full pool gets an offer from a new node with a resource key another live node holds
+- **THEN** the offer is recorded as a contest with its `conflict` alert, and no `full` notice goes out
+
+#### Scenario: A known node in a full pool
+
+- **WHEN** a known node of a full pool offers
+- **THEN** its entry is renewed as before
