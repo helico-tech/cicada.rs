@@ -10,7 +10,7 @@ first). Follow `design.md`; the spec is `specs/app/spec.md`. No ADR.
 - [x] 2. **The built-in store check moves.** `check_built_in` is called from `lib.rs` on the parsed store, before the
   point where the hook will run, instead of inside `open_unless_stopped`; one path; a worker over HTTP skips it
   (decision 4). Verify: the existing test of a store whose feature is not built.
-- [ ] 3. **`App::node_config_for`.** The method (synchronous, `FnOnce(&[&'static str]) -> anyhow::Result<NodeConfig>`),
+- [x] 3. **`App::node_config_for`.** The method (synchronous, `FnOnce(&[&'static str]) -> anyhow::Result<NodeConfig>`),
   one slot with `node_config` (the last call wins), called once after every local check (usage errors, the HTTP
   refusal of `on_start`/`task`, `http_target`, the built-in store check) and before the wait for the store or server,
   with the run's types; flags override its fields; an `Err` fails with exit code 1; the worker over HTTP takes its id

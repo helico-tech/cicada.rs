@@ -152,6 +152,39 @@ async fn send(client: &ActorClient, name: &str, message: CounterMsg) -> MessageI
     client.send(&counter, message).await.unwrap().id
 }
 
+#[tokio::test]
+async fn an_http_worker_uses_the_id_from_the_node_config_hook() {
+    let server = Server::start().await;
+    let id = cicada::store::NodeId::new("runner-http").unwrap();
+    let worker_id = id.clone();
+    let app = App::new().host(RegistryActor).host(CounterActor).node_config_for(move |types| {
+        assert_eq!(types, ["counter"]);
+        Ok(NodeConfig { node_id: worker_id, ..NodeConfig::default() })
+    });
+    let worker = Running::spawn(app, &http_env(), &["myapp", "worker", "--server", &server.base, "--types", "counter"]);
+    server.registers("counter").await;
+    let counter = Counter { name: "pinned".into() };
+    server.system.create_with(&counter, &CounterState::default(), CreateOptions::new().pinned_to(id)).await.unwrap();
+    let sent = server.client().send(&counter, CounterMsg::Add { amount: 1 }).await.unwrap();
+    done(&server.client(), &sent.id).await;
+    worker.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn an_invalid_http_target_skips_the_node_config_hook() {
+    let cases = [
+        (&["myapp", "worker", "--context", "missing"][..], "no context 'missing'"),
+        (&["myapp", "worker", "--server", "no-url"][..], "invalid server URL"),
+        (&["myapp", "worker", "--server", "http://localhost", "--token", "bad\ntoken"][..], "invalid token"),
+    ];
+    for (args, diagnostic) in cases {
+        let app = App::new().host(CounterActor).node_config_for(|_| panic!("the HTTP target is invalid"));
+        let error = run(app, &http_env(), args).await.unwrap_err();
+        assert_eq!(error.exit_code(), 1, "{error}");
+        assert!(error.to_string().contains(diagnostic), "{error}");
+    }
+}
+
 // ---- an actor that waits for the test ----
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -436,7 +469,7 @@ async fn on_start_and_a_task_are_refused_over_http_before_any_request() {
     let selectors = [&["--server", server.base.as_str()][..], &[]];
     for (selector, task) in selectors.into_iter().flat_map(|s| [(s, false), (s, true)]) {
         let flag = ran.clone();
-        let app = App::new().host(CounterActor);
+        let app = App::new().host(CounterActor).node_config_for(|_| panic!("HTTP mode refused the startup hook"));
         let app = if task {
             app.task("runner", move |_, _| async move {
                 flag.store(true, Ordering::SeqCst);

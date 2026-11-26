@@ -27,7 +27,6 @@ use tokio::net::TcpListener;
 use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 
-use crate::config::Target;
 use crate::settings::{HttpSettings, Settings, StoreSpec};
 use crate::{AppError, WorkerReady};
 
@@ -386,20 +385,9 @@ pub(crate) async fn worker(parts: Parts, settings: Settings, stop: Stop) -> Resu
 }
 
 /// A worker over HTTP: waits for the server ([`wait_for_server`]), starts a `Worker` of the selected types on the
-/// client of `target`, and runs until the stop or until the worker stops by itself. It opens no store and no listener,
-/// and never stops or closes the source.
+/// source, and runs until the stop or until the worker stops by itself. It opens no store and no listener, and never
+/// stops or closes the source.
 pub(crate) async fn http_worker(
-    parts: Parts,
-    settings: HttpSettings,
-    target: Target,
-    stop: Stop,
-) -> Result<(), AppError> {
-    let client = target.worker_client().map_err(AppError::Failed)?;
-    run_worker(parts, settings, Arc::new(client), stop).await
-}
-
-/// [`http_worker`] on any `source`.
-async fn run_worker(
     parts: Parts,
     settings: HttpSettings,
     source: Arc<dyn TurnSource>,
@@ -888,6 +876,7 @@ mod worker_tests {
 
     use super::*;
     use crate::App;
+    use crate::config::Target;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     struct Tick {
@@ -1143,7 +1132,7 @@ mod worker_tests {
     #[tokio::test(start_paused = true)]
     async fn a_stop_while_the_server_is_waited_for_starts_no_worker() {
         let fake = Arc::new(Fake::new().listing(|_| unavailable()));
-        run_worker(parts(), settings(), fake.clone(), stop_after(Duration::from_millis(1500))).await.unwrap();
+        http_worker(parts(), settings(), fake.clone(), stop_after(Duration::from_millis(1500))).await.unwrap();
         assert_eq!(fake.count("register") + fake.count("lease"), 0);
     }
 
@@ -1152,7 +1141,7 @@ mod worker_tests {
     async fn a_stop_during_registration_stops_the_worker_before_any_lease() {
         let fake = Arc::new(Fake::new().registering(|| Box::pin(std::future::pending())));
         let started = Instant::now();
-        run_worker(parts(), settings(), fake.clone(), stop_after(Duration::from_secs(2))).await.expect("success");
+        http_worker(parts(), settings(), fake.clone(), stop_after(Duration::from_secs(2))).await.expect("success");
         assert_eq!(started.elapsed(), Duration::from_secs(2));
         assert_eq!((fake.count("register"), fake.count("lease")), (1, 0));
     }
@@ -1163,7 +1152,7 @@ mod worker_tests {
         let fake = Fake::new();
         fake.system.register_contract(&contract_of::<OtherTickActor>().unwrap()).await.unwrap();
         let fake = Arc::new(fake);
-        let error = run_worker(parts(), settings(), fake.clone(), never()).await.unwrap_err();
+        let error = http_worker(parts(), settings(), fake.clone(), never()).await.unwrap_err();
         assert_eq!(error.exit_code(), 1);
         let text = error.to_string();
         assert!(text.starts_with("the worker cannot start") && text.contains("tick"), "{text}");
@@ -1174,7 +1163,7 @@ mod worker_tests {
     #[tokio::test(start_paused = true)]
     async fn an_unavailable_registration_fails_the_start_without_a_retry() {
         let fake = Arc::new(Fake::new().registering(unavailable));
-        let error = run_worker(parts(), settings(), fake.clone(), never()).await.unwrap_err();
+        let error = http_worker(parts(), settings(), fake.clone(), never()).await.unwrap_err();
         assert_eq!(error.exit_code(), 1);
         assert!(error.to_string().contains("connection refused"), "{error}");
         assert_eq!((fake.count("list"), fake.count("register"), fake.count("lease")), (1, 1, 0));
@@ -1184,7 +1173,7 @@ mod worker_tests {
     #[tokio::test(start_paused = true)]
     async fn a_stop_of_a_healthy_worker_succeeds() {
         let fake = Arc::new(Fake::new());
-        run_worker(parts(), settings(), fake.clone(), stop_after(Duration::from_secs(2))).await.expect("exit 0");
+        http_worker(parts(), settings(), fake.clone(), stop_after(Duration::from_secs(2))).await.expect("exit 0");
         assert!(fake.count("lease") >= 2, "it leased until the stop");
     }
 
@@ -1204,7 +1193,7 @@ mod worker_tests {
             .into_parts();
         let mut settings = settings();
         settings.worker.shutdown_cancel_timeout = Duration::from_secs(3);
-        let worker = tokio::spawn(run_worker(parts, settings, fake, stopped));
+        let worker = tokio::spawn(http_worker(parts, settings, fake, stopped));
         assert_eq!(
             rx.await.unwrap(),
             WorkerReady { grace_period: Duration::from_secs(1), cancel_timeout: Duration::from_secs(3) }
@@ -1217,7 +1206,7 @@ mod worker_tests {
     async fn a_worker_ready_hook_is_skipped_when_registration_fails() {
         let parts = App::new().host(TickActor).on_worker_ready(|_| panic!("the worker did not start")).into_parts();
         let fake = Arc::new(Fake::new().registering(unavailable));
-        let error = run_worker(parts, settings(), fake, never()).await.unwrap_err();
+        let error = http_worker(parts, settings(), fake, never()).await.unwrap_err();
         assert!(error.to_string().starts_with("the worker cannot start"), "{error}");
     }
 
@@ -1225,7 +1214,7 @@ mod worker_tests {
     #[tokio::test(start_paused = true)]
     async fn a_worker_that_stops_by_itself_fails_the_command() {
         let fake = Fake { lease_error: Some(SourceError::Fatal("Leasing turns: HTTP 307".into())), ..Fake::new() };
-        let error = run_worker(parts(), settings(), Arc::new(fake), never()).await.unwrap_err();
+        let error = http_worker(parts(), settings(), Arc::new(fake), never()).await.unwrap_err();
         assert_eq!(error.exit_code(), 1);
         assert!(error.to_string().starts_with("the worker stopped") && error.to_string().contains("307"), "{error}");
     }
@@ -1454,7 +1443,7 @@ mod worker_tests {
         let server = Server::start().await;
         let gate = gate();
         let (stop, stopped) = signal();
-        let worker = tokio::spawn(run_worker(gated_parts(&gate), gated_settings(), server.source("s3cret"), stopped));
+        let worker = tokio::spawn(http_worker(gated_parts(&gate), gated_settings(), server.source("s3cret"), stopped));
         let id = server.send_wait().await;
         gate.began.notified().await;
         tokio::time::sleep(Duration::from_millis(4500)).await;
@@ -1484,7 +1473,7 @@ mod worker_tests {
     async fn over_http_a_refused_token_fails_at_once() {
         let server = Server::start().await;
         let started = Instant::now();
-        let error = run_worker(gated_parts(&gate()), gated_settings(), server.source("wrong"), never()).await;
+        let error = http_worker(gated_parts(&gate()), gated_settings(), server.source("wrong"), never()).await;
         let error = error.unwrap_err();
         assert_eq!(error.exit_code(), 1);
         assert!(
@@ -1504,7 +1493,7 @@ mod worker_tests {
         let gate = gate();
         let (stop, stopped) = signal();
         let mut worker =
-            tokio::spawn(run_worker(gated_parts(&gate), gated_settings(), server.source("s3cret"), stopped));
+            tokio::spawn(http_worker(gated_parts(&gate), gated_settings(), server.source("s3cret"), stopped));
         let id = server.send_wait().await;
         gate.began.notified().await;
         stop.send(()).unwrap();

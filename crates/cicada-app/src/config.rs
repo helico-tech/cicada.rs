@@ -205,8 +205,12 @@ impl Target {
     }
 
     /// The client of a worker over HTTP: the token and headers of [`Self::client`], [`WORKER_TIMEOUT`], and no
-    /// redirects, as a `307` or `308` would send a POST of a lease call again. It adds no retry of its own.
+    /// redirects, as a `307` or `308` would send a POST of a lease call again. Checks the URL and adds no retry of its own.
     pub(crate) fn worker_client(&self) -> anyhow::Result<ActorClient> {
+        let server = reqwest::Url::parse(&self.server).context("invalid server URL")?;
+        if !matches!(server.scheme(), "http" | "https") {
+            bail!("the server URL must use http or https");
+        }
         let http = reqwest::Client::builder()
             .default_headers(self.headers()?)
             .timeout(WORKER_TIMEOUT)
