@@ -12,9 +12,9 @@ moves: a correction is a new version.
 The first parts of the placement pool (ADR 0067, ADR 0068): nodes offer places with labels to a pool, a node that stops
 offering is marked silent, with one notice, and work asks for a place with its needs and gets a node to pin its actors
 to; a holder that is deleted frees its place; an operator drains a node and declares a silent node gone, whose holders
-are told; a second machine under a live node's id is ignored and reported once (ADR 0069). The member follows in this version. Additive: a new
-ready-made actor with its own contract; the contracts of the other actors, the store schema, the HTTP API and the
-guarantees are those of 0.23.1.
+are told; a second machine under a live node's id is ignored and reported once (ADR 0069); a member offers a node's
+places while its runtime answers, under an identity kept across restarts. Additive: a new ready-made actor with its own
+contract; the contracts of the other actors, the store schema, the HTTP API and the guarantees are those of 0.23.1.
 
 ### Added
 
@@ -71,9 +71,22 @@ guarantees are those of 0.23.1.
   silence time or more after the mark's time; a later conflict alerts again. A silent node's entry is taken over by the
   next offer, whatever its instance. A decoded `conflict` on a node that is not live, or naming the recorded instance,
   is refused. The pool only reports: two machines under one node id also share leases and the node row in the store,
-  and a cloned disk with the identity copied looks like one machine. Until the member keeps its instance across
-  restarts, a restart within the silence time counts as a conflict. Covered by
+  and a cloned disk with the identity copied looks like one machine. An instance drawn at each process start makes a
+  restart within the silence time count as a conflict; the member's `NodeIdentity` keeps it (below). Covered by
   `crates/cicada-actors/tests/placement.rs` and `tests/wire_formats.rs`.
+- `cicada-actors`: the placement member (`PlacementMember`, `MemberSettings`, `Capacity`, `NodeIdentity`,
+  `InvalidIdentity`). `NodeIdentity::load_or_create(dir)` reads `dir/placement-identity.json`
+  (`{"node": …, "instance": …}`), or creates the folder and the file with the node id `node-<16 hex digits>` and a
+  random instance, written to a temporary file and renamed; a file that cannot be read or parsed is an
+  `InvalidIdentity` and stays as it is, never a new identity. `node_id()` is the default for `NodeConfig::node_id`;
+  `instance()` goes into each offer, so a restart is the same machine to the pool. `PlacementMember::new(pool,
+  identity, settings, probe)` and `run(system, stop)`, run as an app task: a round at the start and then every
+  `interval` (`MemberSettings`, 15 s; `with_interval` refuses zero) calls the host's probe; a `Capacity { labels,
+  places }` sends an `Offer` with the node's own id (`ActorSystem::node_id`, so `--node-id` and `CICADA_NODE_ID` still
+  win) and the identity's instance, `None` sends nothing, so the node goes silent at the pool. An offer out of bounds
+  and a failed or refused send are logged and tried next round; `stop` ends `run`, also while a probe hangs. The
+  rustdoc of `Offer::instance`, and so the pool's contract reference, says the instance is kept across restarts.
+  Covered by `crates/cicada-actors/tests/placement_member.rs`.
 
 ## 0.23.1 — 2026-11-26
 

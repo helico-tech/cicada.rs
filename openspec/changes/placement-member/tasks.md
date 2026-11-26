@@ -12,7 +12,7 @@ the spec is `specs/placement-pool/spec.md`. Code in `crates/cicada-actors/src/pl
   `PlacementMember::new(pool, identity, settings, probe)` and `run(system, stop)`: each interval the probe raced
   against `stop`; `Some` sends `Offer { node: system.node_id(), instance, labels, places }`, `None` nothing; a failed
   send logged and retried next round (decisions 1 and 2). Verify: actor tests on virtual time with `TestActors`.
-- [ ] 3. **Changelog and docs handoff.** The 0.24.0 section names the member and the identity under Added; the handoff
+- [x] 3. **Changelog and docs handoff.** The 0.24.0 section names the member and the identity under Added; the handoff
   carries the design's Docs section (with Docker's `info()` as the probe example). No edit to `README.md`,
   `AGENTS.md` or the handwritten docs. Verify: `cargo test -p cicada-actors`, `cargo test -p cicada-examples --test
   docs`
