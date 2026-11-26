@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime};
 
 use cicada_app::Contexts;
 use objc2::rc::{Retained, autoreleasepool};
-use objc2::runtime::ProtocolObject;
+use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSApplicationTerminateReply,
@@ -169,11 +169,15 @@ define_class!(
 
     // SAFETY: These callbacks have the signatures required by NSMenuDelegate.
     unsafe impl NSMenuDelegate for Target {
+        #[unsafe(method(menuNeedsUpdate:))]
+        fn menu_needs_update(&self, _: &NSMenu) {
+            self.reload_contexts();
+            self.render();
+        }
+
         #[unsafe(method(menuWillOpen:))]
         fn menu_will_open(&self, _: &NSMenu) {
             self.ivars().menu_open.set(true);
-            self.reload_contexts();
-            self.render();
         }
 
         #[unsafe(method(menuDidClose:))]
@@ -223,13 +227,18 @@ define_class!(
             }
         }
 
-        // SAFETY: Only the header's NSSwitch is wired to this action.
+        // SAFETY: AppKit passes the NSSwitch or its containing NSMenuItem as the sender.
         #[unsafe(method(trayToggle:))]
-        fn toggle(&self, sender: &NSSwitch) {
+        fn toggle(&self, sender: &AnyObject) {
             let c = self.ivars();
+            let state = self.state();
+            let on = sender.downcast_ref::<NSSwitch>().map_or_else(
+                || matches!(state, TrayState::Offline | TrayState::Failed { .. }),
+                |switch| switch.state() == NSControlStateValueOn,
+            );
             let contexts = c.contexts.borrow();
             let current = contexts.current().filter(|name| contexts.names().iter().any(|context| context == name));
-            let action = c.control.borrow().toggle(&self.state(), sender.state() == NSControlStateValueOn, current);
+            let action = c.control.borrow().toggle(&state, on, current);
             drop(contexts);
             self.act(action);
             self.render();

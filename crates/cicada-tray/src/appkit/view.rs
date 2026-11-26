@@ -54,8 +54,6 @@ impl MenuView {
 
         let root = native_menu(mtm, &title);
         let header = HeaderView::new(mtm);
-        let header_item = item(mtm, ns_string!(""), None, ns_string!(""));
-        header_item.setView(Some(&header.view));
         let running_section = NSMenuItem::sectionHeaderWithTitle(ns_string!("Running"), mtm);
         let context_section = NSMenuItem::sectionHeaderWithTitle(ns_string!("Context"), mtm);
         let (registered, registered_item) = submenu(mtm, ns_string!("Registered Types"));
@@ -64,7 +62,7 @@ impl MenuView {
         settings.setEnabled(false);
         let quit = item(mtm, ns_string!("Quit"), Some(sel!(trayQuit:)), ns_string!("q"));
         for row in [
-            &header_item,
+            &header.item,
             &NSMenuItem::separatorItem(mtm),
             &running_section,
             &NSMenuItem::separatorItem(mtm),
@@ -108,6 +106,7 @@ impl MenuView {
         unsafe {
             self.header.switch.setTarget(Some(target));
             self.header.switch.setAction(Some(sel!(trayToggle:)));
+            self.header.item.setTarget(Some(target));
             self.quit.setTarget(Some(target));
         }
     }
@@ -211,7 +210,7 @@ fn mark(marked: bool) -> NSControlStateValue {
 }
 
 struct HeaderView {
-    view: Retained<NSView>,
+    item: Retained<NSMenuItem>,
     title: Retained<NSTextField>,
     subtitle: Retained<NSTextField>,
     switch: Retained<NSSwitch>,
@@ -234,7 +233,10 @@ impl HeaderView {
         view.addSubview(&title);
         view.addSubview(&subtitle);
         view.addSubview(&switch);
-        Self { view, title, subtitle, switch, shown: RefCell::default() }
+        // AppKit gives the custom view mouse events and handles keyboard selection on the item itself.
+        let item = item(mtm, ns_string!("Worker Connection"), Some(sel!(trayToggle:)), ns_string!(""));
+        item.setView(Some(&view));
+        Self { item, title, subtitle, switch, shown: RefCell::default() }
     }
 
     fn update(&self, header: Header) {
@@ -245,6 +247,7 @@ impl HeaderView {
             let tooltip = NSString::from_str(header.error.as_deref().unwrap_or(&header.subtitle));
             self.subtitle.setToolTip(Some(&tooltip));
             self.switch.setEnabled(header.enabled);
+            self.item.setEnabled(header.enabled);
         }
         let state = mark(header.on);
         if self.switch.state() != state {
