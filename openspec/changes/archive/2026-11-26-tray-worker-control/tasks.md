@@ -15,7 +15,7 @@ Version). Follow `design.md` and ADR 0074 (`docs/adr/0074-a-tray-crate-next-to-t
 - [x] 4. **Changelog and docs handoff.** The 0.25.0 section names the crate, `type_names` and `on_worker_ready` under
   Added; the handoff gives the app guide "A menu bar worker". No edit to `README.md`, `AGENTS.md` or the handwritten
   docs. Verify: `cargo test -p cicada-examples --test docs` and `--doc`.
-- [ ] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
+- [x] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
   `cargo test --workspace`, `openspec validate tray-worker-control --strict`, commit, then
   `python3 scripts/gate.py run --e2e` (the change touches the `worker` command's code path; wait for the lock in short
-  tries, the run as its own background command with a 2-hour timeout).
+  tries, the run as its own background command with a 2-hour timeout). The gate ran at landing, on the merged tip.
