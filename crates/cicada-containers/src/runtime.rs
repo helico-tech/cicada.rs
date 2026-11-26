@@ -91,10 +91,10 @@ pub trait ContainerRuntime: Send + Sync + 'static {
     /// Paging to the end gives every line once, in log order, and the same cursor gives the same lines first. A page
     /// with fewer than `max_lines` lines has read everything there is now: call again later with
     /// [`next`](LogPage::next), which an empty page leaves at the cursor given (the start for `None`). `max_lines`
-    /// outside 1 to [`LOG_PAGE_MAX`](crate::LOG_PAGE_MAX) fails with `InvalidSpec` before any read. A missing container fails with
-    /// `Conflict`, also when it is removed during the read; a created one gives an empty page, a running or ended
-    /// one its lines. A container whose log the runtime can never read, such as Docker's log driver `none`, fails with
-    /// `Unsupported`, so a follower stops; it may retry the other kinds, counting errors in a row.
+    /// outside 1 to [`LOG_PAGE_MAX`](crate::LOG_PAGE_MAX) fails with `InvalidSpec` before any read. A missing container
+    /// fails with `Conflict`, also when it is removed during the read; a created one gives an empty page, a running or
+    /// ended one its lines. A container whose log the runtime can never read, such as Docker's log driver `none`, fails
+    /// with `Unsupported`, so a follower stops; it may retry the other kinds, counting errors in a row.
     ///
     /// Limits, from how Docker keeps logs: a line stamped before the cursor's second but written after it (a race of
     /// microseconds at a second boundary between stdout and stderr) is missed. Each read makes Docker scan the log
@@ -201,8 +201,8 @@ pub trait ContainerRuntime: Send + Sync + 'static {
     /// (Docker 25). So a liveness check treats every error but `Unsupported` as "not here this round".
     ///
     /// The Docker backend also reads Docker's `/info` for the daemon's [`id`](RuntimeInfo::id), a second call next to
-    /// `/version`; an error of either fails the call. `/info` gathers the daemon's whole state and can take seconds on a
-    /// busy daemon, so a host that probes often pays it at every probe.
+    /// `/version`; an error of either fails the call. `/info` gathers the daemon's whole state and can take seconds on
+    /// a busy daemon, so a host that probes often pays it at every probe.
     ///
     /// The default fails with `Unsupported`, so a runtime written before this method compiles unchanged; the fake and
     /// the Docker backend implement it.

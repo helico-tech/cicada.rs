@@ -113,16 +113,16 @@ fn an_unreadable_identity_file_is_refused() {
     assert!(temp.path().join("placement-identity.json").is_dir());
 }
 
-/// A read-only folder that holds the identity file loads without a lock, with a warning, whether the lock file is
-/// missing (it cannot be created) or there but read-only (it cannot be opened for writing).
+/// A read-only folder that holds the identity file still loads it. With the lock file missing (it cannot be created)
+/// it goes on without a lock, with a warning; with the lock file there but read-only it is opened read-only and locked,
+/// so a second load is refused while the first lives.
 #[cfg(unix)]
 #[test]
-fn a_read_only_folder_loads_the_identity_without_a_lock() {
+fn a_read_only_folder_loads_the_identity_and_locks_a_read_only_lock_file() {
     use std::os::unix::fs::PermissionsExt;
     let temp = TempDir::new().unwrap();
     let dir = temp.path().join("placement");
     let made = NodeIdentity::load_or_create(&dir).unwrap();
-    drop(made.clone());
     let (node, instance) = (made.node_id(), made.instance().to_owned());
     drop(made);
     let lock = dir.join("placement-identity.lock");
@@ -141,9 +141,20 @@ fn a_read_only_folder_loads_the_identity_without_a_lock() {
         mode(&dir, 0o755);
         let read = read.unwrap_or_else(|e| panic!("missing lock file {missing}: {e}"));
         assert_eq!((read.node_id(), read.instance()), (node.clone(), instance.as_str()), "{missing}");
-        assert!(format!("{read:?}").contains("locked: false"), "{read:?}");
-        assert!(again.is_ok(), "no lock held, so a second load is not refused: {again:?}");
         assert!(!created, "nothing created");
+        if missing {
+            assert!(format!("{read:?}").contains("locked: false"), "{read:?}");
+            assert!(again.is_ok(), "no lock held, so a second load is not refused: {again:?}");
+        } else {
+            assert!(format!("{read:?}").contains("locked: true"), "{read:?}");
+            let e = again.unwrap_err();
+            assert_eq!(e.kind(), IdentityErrorKind::Locked, "{e}");
+            drop(read);
+            mode(&dir, 0o555);
+            let after = NodeIdentity::load_or_create(&dir);
+            mode(&dir, 0o755);
+            assert!(after.is_ok(), "the lock is released with the identity: {after:?}");
+        }
     }
 }
 

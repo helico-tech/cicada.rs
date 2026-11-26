@@ -17,8 +17,8 @@ process per identity. An offer can name a resource key, such as the Docker daemo
 reports, and one live node holds a key (ADR 0072), so two nodes on one daemon count its places once. **BREAKING** for
 placement pools: the contract of `cicada.placement` changes (a new message, optional fields of the offer, the node and
 the conflict mark, and the state's `contested`), so hosts of 0.24.0 pools follow Upgrading below; `NodeConfig`,
-`PlacementConflict`, `PlacementMsg`, `PlacementNode`, `PlacementState` and `Capacity` gain a field or a variant. The store schema, the HTTP API, the other actors'
-contracts and the guarantees are those of 0.24.0.
+`PlacementConflict`, `PlacementMsg`, `PlacementNode`, `PlacementState` and `Capacity` gain a field or a variant. The
+store schema, the HTTP API, the other actors' contracts and the guarantees are those of 0.24.0.
 
 ### Added
 
@@ -31,9 +31,9 @@ contracts and the guarantees are those of 0.24.0.
 - `cicada-actors`: the duplicate check of `PlacementMember` (ADR 0071). Each round first reads the node's own row
   (`ActorSystem::node`); a host name there that is set and differs from `ActorSystem::hostname()` makes the round skip
   its probe and offer, send the pool `Duplicate { node, host }` and log an error, once for each other host name in a
-  row; a round that finds no other host ends that run, so a later one is logged again. No host name of its own or in the row, or a failed read (a warning), checks nothing. A redeploy under a new host
-  name trips nothing, as the old node removes its row when it stops. Covered by
-  `crates/cicada-actors/tests/placement_duplicate.rs`.
+  row; a round that finds no other host ends that run, so a later one is logged again. No host name of its own or in the
+  row, or a failed read (a warning), checks nothing. A redeploy under a new host name trips nothing, as the old node
+  removes its row when it stops. Covered by `crates/cicada-actors/tests/placement_duplicate.rs`.
 - `cicada-actors`: the pool's `Duplicate { node, host }`, from anyone. For a live node it sets the conflict mark of
   ADR 0069 with the new optional `host` (and the node's own instance for a new mark, which the state's check now
   accepts only with a `host`), and a new mark is told `conflict` once. While its mark has a `host` the node gets no new
@@ -49,14 +49,15 @@ contracts and the guarantees are those of 0.24.0.
   lasts as long as the member. A second load fails with `InvalidIdentity::kind()` `IdentityErrorKind::Locked`; the
   other errors are `IdentityErrorKind::Invalid` (`#[non_exhaustive]`). Two processes starting at once on a missing file
   can no longer both write one. On a file system without locks, and in a read-only folder that holds the identity file
-  (the lock file cannot be created or opened for writing), it logs a warning and goes on without one. Covered by
+  but no lock file (it cannot be created), it logs a warning and goes on without one; a lock file that cannot be
+  opened for writing is opened read-only and locked the same way. Covered by
   `a_second_load_fails_while_the_identity_lives_and_succeeds_after_all_are_dropped` and
-  `a_read_only_folder_loads_the_identity_without_a_lock`.
-- `cicada-containers`: `RuntimeInfo::id`, the id of the runtime instance, and `RuntimeInfo::with_id`. `DockerRuntime::info`
-  fills it from the `ID` of Docker's `/info` (empty: `None`), the same for every node on that daemon, in a second call
-  next to `/version`; an error of either fails `info()`. `/info` gathers the daemon's whole state and can take seconds
-  on a busy daemon, at every probe. The fake reports no id until `set_info` sets one. Covered by
-  `runtime_info_takes_the_daemon_id_of_info_and_an_empty_one_is_none`,
+  `a_read_only_folder_loads_the_identity_and_locks_a_read_only_lock_file`.
+- `cicada-containers`: `RuntimeInfo::id`, the id of the runtime instance, and `RuntimeInfo::with_id`.
+  `DockerRuntime::info` fills it from the `ID` of Docker's `/info` (empty: `None`), the same for every node on that
+  daemon, in a second call next to `/version`; an error of either fails `info()`. `/info` gathers the daemon's whole
+  state and can take seconds on a busy daemon, at every probe. The fake reports no id until `set_info` sets one. Covered
+  by `runtime_info_takes_the_daemon_id_of_info_and_an_empty_one_is_none`,
   `info_answers_amd64_on_linux_until_a_test_sets_another_machine` and the E2E step
   `info_gives_linux_and_the_arch_the_cli_prints`.
 - `cicada-actors`: resource keys in the placement pool (ADR 0072). `Capacity::resource(key)` makes the member send it

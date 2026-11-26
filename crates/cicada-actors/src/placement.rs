@@ -101,10 +101,10 @@ pub enum PlacementMsg {
     },
     /// A report, from anyone, such as a [`PlacementMember`] that found another host name in its node's row: another
     /// machine, `host`, runs under the id of `node` (ADR 0071). For a live node it marks the node in `conflict` with
-    /// `host`, the node's own instance unless another instance marked it already, and the store time; a new mark is told
-    /// `conflict`. The node gets no new places while the mark has a `host`, which ends one silence time after the last
-    /// report (a mark set by an offer too ends as an offer's would, so when both would). Nothing for a silent node, which
-    /// gets no new places anyway; refused for good for an unknown node.
+    /// `host`, the node's own instance unless another instance marked it already, and the store time; a new mark is
+    /// told `conflict`. The node gets no new places while the mark has a `host`, which ends one silence time after the
+    /// last report (a mark set by an offer too ends as an offer's would, so when both would). Nothing for a silent
+    /// node, which gets no new places anyway; refused for good for an unknown node.
     Duplicate {
         /// The node id the other machine runs under.
         #[schemars(length(min = 1, max = 200))]
@@ -802,8 +802,8 @@ impl PlacementState {
         Ok(())
     }
 
-    /// Checks the resource keys: at most one live node holds each, and the contests are at most `maxNodes`, each key and
-    /// node once, in bounds.
+    /// Checks the resource keys: at most one live node holds each, and the contests are at most `maxNodes`, each key
+    /// and node once, in bounds.
     fn check_resources(&self) -> Result<(), InvalidPlacement> {
         let mut held = HashSet::new();
         let live = self.nodes.values().filter(|n| n.status == PlacementNodeStatus::Live);
@@ -1038,14 +1038,14 @@ fn check_message_type(message_type: &str) -> Result<(), InvalidPlacement> {
 /// without a key are not checked; the pool cannot tell that two different keys name one resource.
 ///
 /// While a node is live or a contest is listed the pool has one `Check` armed, with the crate's shared retry policy, at
-/// the earliest `heardAt` of a live node or `at` of a contest plus the silence, and keeps its time in `armed` and its id in `armedId`. The armed check marks each
-/// live node whose silence ended as `silent` and queues one `Alert` to itself for each; its next offer makes the node
-/// live and queues a `back` alert. Each `Alert` sends a [`PlacementNotice`] to the target of the last `Alerts`, so a
-/// target that is gone or refuses the notice fails that alert and nothing else; the node stays silent. The armed check
-/// run early, made due by an operator, marks nothing and arms itself again at `armed`; any other `Check` the pool sent
-/// itself changes nothing, and one from another sender (an operator's retry or redrive comes without one) is refused. A
-/// check that is purged, cancelled or failed for good leaves the pool with a stale `armedId` and no timer until
-/// `Rearm`, which cancels it and arms a new one at `armed`.
+/// the earliest `heardAt` of a live node or `at` of a contest plus the silence, and keeps its time in `armed` and its
+/// id in `armedId`. The armed check marks each live node whose silence ended as `silent` and queues one `Alert` to
+/// itself for each; its next offer makes the node live and queues a `back` alert. Each `Alert` sends a
+/// [`PlacementNotice`] to the target of the last `Alerts`, so a target that is gone or refuses the notice fails that
+/// alert and nothing else; the node stays silent. The armed check run early, made due by an operator, marks nothing and
+/// arms itself again at `armed`; any other `Check` the pool sent itself changes nothing, and one from another sender
+/// (an operator's retry or redrive comes without one) is refused. A check that is purged, cancelled or failed for good
+/// leaves the pool with a stale `armedId` and no timer until `Rearm`, which cancels it and arms a new one at `armed`.
 ///
 /// Each `Ask` is answered in its own commit with a [`PlacementAnswer`], with the shared retry policy: `granted` with
 /// the next grant number and the node, `queued`, or `refused` with its reason, so a target that is gone fails the ask
@@ -1505,8 +1505,8 @@ fn contest(turn: &mut Turn<PlacementActor>, resource: &str, node: String) -> Han
     Ok(queue_alert(turn, node, PlacementNoticeKind::Conflict)?)
 }
 
-/// Marks a live `node` in conflict with `host`, with an alert for a new mark; nothing for a silent node, and refused for
-/// good for an unknown one.
+/// Marks a live `node` in conflict with `host`, with an alert for a new mark; nothing for a silent node, and refused
+/// for good for an unknown one.
 fn duplicate(turn: &mut Turn<PlacementActor>, node: String, host: String) -> HandlerResult {
     let now = turn.now();
     let Some(entry) = turn.state_mut().nodes.get_mut(&node) else {

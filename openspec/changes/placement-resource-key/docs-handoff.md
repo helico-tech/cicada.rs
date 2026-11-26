@@ -43,11 +43,12 @@ twice. An offer can now name a resource key, and the pool lets one live node hol
   `a_contest_past_max_nodes_is_refused` in `crates/cicada-actors/tests/placement.rs`; decode and wire tests in
   `src/placement.rs` and `tests/wire_formats.rs`; `docs/reference/contracts/cicada.placement.json` regenerated.
 - Two fixes to placement-identity-lock's member code (from its code review), also in 0.25.0: a read-only identity
-  folder that holds `placement-identity.json` now loads without a lock and a warning, whether the lock file is missing
-  or there but read-only (before: `Invalid`); and a member that logged a duplicate host logs it again after a round
-  that found no other host (before: never again for the same host). Proved by
-  `a_read_only_folder_loads_the_identity_without_a_lock` (`tests/placement_member.rs`) and
-  `a_second_duplicate_with_the_same_host_is_logged_again` (`tests/placement_duplicate.rs`).
+  folder that holds `placement-identity.json` now loads (before: `Invalid`): without a lock and with a warning when
+  the lock file is missing, and locked through a read-only handle when the lock file is there but read-only; and a
+  member that logged a duplicate host logs it again after a round that found no other host (before: never again for the
+  same host). Proved by `a_read_only_folder_loads_the_identity_and_locks_a_read_only_lock_file`
+  (`tests/placement_member.rs`) and `a_second_duplicate_with_the_same_host_is_logged_again`
+  (`tests/placement_duplicate.rs`).
 
 ## 1. The daemon's id in the containers guide
 
@@ -108,10 +109,11 @@ state's `contested`: the same maintenance-window procedure. Rust code that build
 
 **Where.** `docs/guide/actors.md`, `Placement pool`, the bullets after the member example (the lock text that
 placement-identity-lock's handoff proposed).
-**Text.** Where the lock's limits are listed: a read-only folder that holds the identity file, like a file system
-without locks, loads without a lock and logs a warning. Where the duplicate log is described: it is logged once per run
-of a duplicate host; after a round that finds no other host, a later one is logged again.
-**Caveats.** Without a lock, two processes on one read-only folder are not stopped.
+**Text.** Where the lock's limits are listed: a read-only folder that holds the identity file but no lock file, like
+a file system without locks, loads without a lock and logs a warning; a read-only lock file is still locked. Where the
+duplicate log is described: it is logged once per run of a duplicate host; after a round that finds no other host, a
+later one is logged again.
+**Caveats.** Without a lock file, two processes on one read-only folder are not stopped.
 
 ## Blocking
 

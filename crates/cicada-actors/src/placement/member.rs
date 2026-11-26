@@ -149,19 +149,29 @@ impl NodeIdentity {
     }
 }
 
-/// Creates `dir` when missing and takes the exclusive lock on its lock file: `Locked` when another holds it, none with
-/// a warning on a file system without locks or when the lock file cannot be opened for writing for lack of permission.
+/// Creates `dir` when missing and takes the exclusive lock on its lock file: `Locked` when another holds it. A lock
+/// file that cannot be opened for writing for lack of permission is opened read-only and locked the same way; none,
+/// with a warning, on a file system without locks or when the lock file cannot be opened at all (missing in a read-only
+/// folder).
 fn lock(dir: &Path) -> Result<Option<Arc<fs::File>>, InvalidIdentity> {
     let path = dir.join(LOCK_FILE);
     let fail =
         |what: &str, e: &dyn std::fmt::Display| InvalidIdentity::invalid(format!("{}: {what}: {e}", path.display()));
+    let refused = |e: &std::io::Error| matches!(e.kind(), ErrorKind::PermissionDenied | ErrorKind::ReadOnlyFilesystem);
     fs::create_dir_all(dir).map_err(|e| fail("its folder cannot be created", &e))?;
     let file = match fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path) {
         Ok(file) => file,
-        Err(e) if matches!(e.kind(), ErrorKind::PermissionDenied | ErrorKind::ReadOnlyFilesystem) => {
-            tracing::warn!("placement identity {}: no lock, as the lock file cannot be opened: {e}", path.display());
-            return Ok(None);
-        }
+        Err(e) if refused(&e) => match fs::File::open(&path) {
+            Ok(file) => file,
+            Err(e) if refused(&e) || e.kind() == ErrorKind::NotFound => {
+                tracing::warn!(
+                    "placement identity {}: no lock, as the lock file cannot be opened: {e}",
+                    path.display()
+                );
+                return Ok(None);
+            }
+            Err(e) => return Err(fail("cannot be opened", &e)),
+        },
         Err(e) => return Err(fail("cannot be opened", &e)),
     };
     match file.try_lock() {
@@ -297,9 +307,9 @@ impl Capacity {
 ///
 /// **Rounds.** A round runs at the start of `run` and then every [`interval`](MemberSettings::interval); a round that
 /// takes longer delays the next one. It calls the probe: a [`Capacity`] sends
-/// `Offer { node, instance, labels, places, resource }` to the pool, with the node's own id ([`ActorSystem::node_id`], the one its
-/// claims and pins use, also when `--node-id` overrides the identity's) and the identity's instance; `None` sends
-/// nothing, so a node whose runtime does not answer goes silent at the pool by itself.
+/// `Offer { node, instance, labels, places, resource }` to the pool, with the node's own id ([`ActorSystem::node_id`],
+/// the one its claims and pins use, also when `--node-id` overrides the identity's) and the identity's instance; `None`
+/// sends nothing, so a node whose runtime does not answer goes silent at the pool by itself.
 ///
 /// **Duplicates** (ADR 0071). Each round first reads the node's own row in the node table
 /// ([`ActorSystem::node`]). Two machines under one node id write that one row in turn, so a host name there that is set
