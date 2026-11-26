@@ -248,11 +248,17 @@ until `remove`. Collect a run's artifacts after its end and before you send `Rem
 its absolute path, contents and mode, ready for `copy_in` of another container.
 
 `CopyLimits::new(max_files, max_bytes)` bounds memory whatever the folder holds. A file larger than the bytes left goes
-into `skipped` with its size, and the copy goes on; a file is never cut. `max_files` bounds `files` and `skipped`
-together: the next entry past it stops the copy with one last `SkippedFile` for `path` ("the rest was not read").
+into `skipped` with its size, and the copy goes on, though its bytes still count as read; a file is never cut.
+`max_files` bounds `files` and `skipped` together: the next entry past it stops the copy with one last `SkippedFile` for
+`path` ("the rest was not read"). From 0.23.1, `max_read` bounds what a copy reads: by default four times `max_bytes`,
+it counts the content bytes of every regular file, kept or skipped, as Docker sends a skipped file's data all the same.
+A file that would take the count past it stops the copy before its data, with one last `SkippedFile` for `path` ("the
+rest was not read: over the read limit of N bytes"); the files before it are kept. Change it with
+`CopyLimits::new(1000, 64 << 20).with_max_read(1 << 30)`. So a huge file early in a folder ends the copy there, and the
+smaller files after it are not kept, which 0.23.0 still kept; the order of entries is Docker's.
 Links are never followed: symbolic and hard links, devices, pipes and entries outside `path` are skipped with a reason.
 
-A relative path, a `..` part, `/` or a zero limit is `InvalidSpec`; a missing container is `Conflict`; a missing path
+A relative path, a `..` part, `/` or a zero limit, `max_read` included, is `InvalidSpec`; a missing container is `Conflict`; a missing path
 gives an empty result. An error during Docker's stream fails the whole call. Mind these limits:
 
 - Files on a tmpfs are gone once the container ended: put artifacts on the container's own file system or a volume.
@@ -290,7 +296,8 @@ A `ContainerJob` names the actor type, as a flow does, and builds the spec from 
   [Outputs at the end](#outputs-at-the-end).
 - `const MAX_TURN: Option<Duration>`, optional (from 0.22.0), is the turn limit of its actors; `None` keeps the node's
   default. Set it above the two long turns: the create step (a pull of a missing image, the create, the folders and
-  the copies) and a stop, which waits up to `stop_grace`. It wins over `--max-turn` and `CICADA_MAX_TURN`, so an
+  the copies) and a stop, which waits up to `stop_grace`; with [outputs](#outputs-at-the-end), the copy at the end is a
+  third. It wins over `--max-turn` and `CICADA_MAX_TURN`, so an
   operator cannot lower it, and zero is refused at registration. It is not part of the contract.
 
 `spec` and `inputs` are sync and run at each create; their results are never stored. **Put secrets there, never in the
@@ -341,7 +348,7 @@ impl ContainerJob for Tests {
     }
 
     fn outputs(&self, _test: &Test) -> Option<Outputs> {
-        Some(Outputs::new("/out")) // kept in the actor's store at the end: at most 64 MiB in 1000 files
+        Some(Outputs::new("/out")) // kept in the actor's store at the end: 64 MiB in 1000 files, 256 MiB read
     }
 }
 ```
@@ -504,15 +511,19 @@ let actor = ContainerActor::new(Tests, runtime, ContainerSettings::new("ci-")?).
   the end is recorded and sent in one commit, without `outputs`. Ends the container did not run for (`notStarted`,
   `missing`, `runtimeErrors`) never collect.
 - **Errors.** A runtime or store error a retry can cure counts as a runtime error and backs off; at `max_errors` in a
-  row the end goes out with its outcome unchanged and `error: "(no outputs: failed N times in a row: …)"`. A relative
+  row the end goes out with its outcome unchanged and `error: "(no outputs: failed N times in a row: …)"`, with a
+  warning in the log. A collecting turn past the job's `MAX_TURN` commits nothing and is not a runtime error, but
+  after 3 failed tries of the same poll, timeouts included, the next try makes no copy and sends the end with
+  `error: "(no outputs: the collection failed 3 times; last: …)"` and the counts of what the store already holds; so a
+  copy that always takes too long still ends, after about three turn limits (from 0.23.1). A relative
   outputs path, a runtime without `copy_out` and a container removed by someone else end the collection at once with
   the error; a runtime without `logs_since` skips the log. What was stored before an error stays stored.
 - **Messages meanwhile.** A second `Start` changes nothing: the end goes to the first target. A `Stop` stops nothing
   more. A `Remove` removes the container after the end is sent.
 - **Next to a `LogArchiver`.** Give both the same store: the guarded append stores each line once, and the actor
   stores the lines the archiver had not read when the container ended.
-- **Turn limit and memory.** The copy runs in one turn: set the job's `MAX_TURN` above the time a copy of the byte
-  limit takes. A collecting container holds up to its byte limit in memory: size the limits against the node's
+- **Turn limit and memory.** The copy runs in one turn: set the job's `MAX_TURN` above the time a copy of the read
+  limit takes (`max_read`, four times the byte limit by default; `Outputs::new` reads at most 256 MiB). A collecting container holds up to its byte limit in memory: size the limits against the node's
   concurrency. Each actor collects in its own turns, so a slow copy holds up only its own container.
 
 The store is yours: the actor deletes stored outputs only with a [retention](#retention).
@@ -555,7 +566,8 @@ let actor = ContainerActor::new(Tests, runtime, settings).with_store(store);
   removed from the runtime first, so a `LogArchiver` does not store its log again.
 - **The saved time decides.** A retention changed or unset after the removal does not move it; a restart keeps it.
   `Check` brings back a lost poll at the saved time, or at once when that passed.
-- **Errors.** A store that is `Unavailable` or fails with `Other` is tried again with the backoff, without limit. A
+- **Errors.** A store that is `Unavailable` or fails with `Other` is tried again with the backoff, without limit; when
+  the errors in a row reach `max_errors`, the actor logs one warning. A
   name the store refuses (`Invalid`), and a node without a store at the due time, clear the due time with a warning in
   the log; the outputs then stay.
 - **What stays.** The actor's own state, with its end, stays after the deletion.
