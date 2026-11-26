@@ -70,11 +70,13 @@ pub enum PlacementMsg {
         #[schemars(range(max = 1000))]
         places: u32,
     },
-    /// The silence timer: sent by the pool to itself. Marks each live node not heard from for the silence time as
-    /// silent, queues an `Alert` for each, and arms the next check at the earliest end of a live node's silence.
+    /// The silence timer: sent by the pool to itself, and counted only when it is the armed one (`armedId`). Marks each
+    /// live node not heard from for the silence time as silent, queues an `Alert` for each, and arms the next check at
+    /// the earliest end of a live node's silence. Run early (made due by an operator) it arms itself again at `armed`;
+    /// any other `Check` the pool sent itself changes nothing, and one from another sender is refused for good.
     Check,
-    /// Arms the check again at its unchanged time, at once when that has passed: the recovery of a check that was
-    /// purged, cancelled or failed for good. Nothing when no node is live.
+    /// Cancels the armed check and arms a new one at its unchanged time, at once when that has passed: the recovery of a
+    /// check that was purged, cancelled or failed for good. Nothing when no node is live.
     Rearm,
     /// Sends the alert target a notice about `node`, in a turn of its own so that a failing target fails only this
     /// alert; nothing without a target. Sent by the pool to itself.
@@ -204,11 +206,11 @@ pub struct PlacementNode {
 pub struct InvalidPlacement(String);
 
 /// The state of a [`Placement`] pool: its silence time and node limit, fixed at its create, where its notices go, the
-/// nodes it knows by node id, and the time of its armed check. Build it with `PlacementState::new`; a decoded state is
+/// nodes it knows by node id, and the time and id of its armed check. Build it with `PlacementState::new`; a decoded state is
 /// checked the same way.
 ///
-/// On the wire: `{"silence":"PT1M","maxNodes":1000,"alerts":null,"nodes":{},"armed":null}`; `alerts`, `nodes` and
-/// `armed` may be left out of a create.
+/// On the wire: `{"silence":"PT1M","maxNodes":1000,"alerts":null,"nodes":{},"armed":null,"armedId":null}`; `alerts`,
+/// `nodes`, `armed` and `armedId` may be left out of a create.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", try_from = "RawState")]
 pub struct PlacementState {
@@ -223,6 +225,8 @@ pub struct PlacementState {
     pub nodes: BTreeMap<String, PlacementNode>,
     /// The time of the armed `Check`, set exactly while a node is live.
     pub armed: Option<Timestamp>,
+    /// The id of the armed `Check`, set exactly with `armed`. It stays set when the check goes without running.
+    pub armed_id: Option<MessageId>,
 }
 
 /// The wire form of a [`PlacementState`], unchecked: its schema is the contract's.
@@ -246,6 +250,9 @@ struct RawState {
     /// The time of the armed `Check`: present exactly while a node is live.
     #[serde(default)]
     armed: Option<Timestamp>,
+    /// The id of the armed `Check`: present exactly with `armed`.
+    #[serde(default)]
+    armed_id: Option<MessageId>,
 }
 
 impl TryFrom<RawState> for PlacementState {
@@ -258,6 +265,7 @@ impl TryFrom<RawState> for PlacementState {
             alerts: raw.alerts,
             nodes: raw.nodes,
             armed: raw.armed,
+            armed_id: raw.armed_id,
         };
         state.check()?;
         Ok(state)
@@ -275,12 +283,12 @@ impl PlacementState {
     ///
     /// let state = PlacementState::new(Duration::from_secs(60), 1000)?;
     /// assert_eq!(serde_json::to_value(&state)?, serde_json::json!({
-    ///     "silence": "PT1M", "maxNodes": 1000, "alerts": null, "nodes": {}, "armed": null}));
+    ///     "silence": "PT1M", "maxNodes": 1000, "alerts": null, "nodes": {}, "armed": null, "armedId": null}));
     /// assert!(PlacementState::new(Duration::from_secs(60), 1001).is_err());
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn new(silence: Duration, max_nodes: u32) -> Result<Self, InvalidPlacement> {
-        let state = Self { silence, max_nodes, alerts: None, nodes: BTreeMap::new(), armed: None };
+        let state = Self { silence, max_nodes, alerts: None, nodes: BTreeMap::new(), armed: None, armed_id: None };
         state.check()?;
         Ok(state)
     }
@@ -318,8 +326,8 @@ impl PlacementState {
             self.deadline(entry.heard_at).map_err(InvalidPlacement)?;
         }
         let live = self.nodes.values().any(|n| n.status == PlacementNodeStatus::Live);
-        if live != self.armed.is_some() {
-            return Err(InvalidPlacement("armed is set exactly while a node is live".to_owned()));
+        if live != self.armed.is_some() || live != self.armed_id.is_some() {
+            return Err(InvalidPlacement("armed and armedId are set exactly while a node is live".to_owned()));
         }
         Ok(())
     }
@@ -404,12 +412,13 @@ fn check_message_type(message_type: &str) -> Result<(), InvalidPlacement> {
 ///
 /// Each `Offer` replaces the node's entry and records the store time of its turn as `heardAt`. While a node is live the
 /// pool has one `Check` armed, with the crate's shared retry policy, at the earliest `heardAt` plus the silence of a
-/// live node, and keeps its time in `armed`. A check marks each live node whose silence ended as `silent` and queues
-/// one `Alert` to itself for each; its next offer makes the node live and queues a `back` alert. Each `Alert` sends a
-/// [`PlacementNotice`] to the target of the last `Alerts`, so a target that is gone or refuses the notice fails that
-/// alert and nothing else; the node stays silent. A check that runs while the armed time is still ahead (one of a
-/// pair after a `Rearm`, or one an operator made due early) marks what is due and arms nothing; a check that is lost
-/// leaves the pool without a timer until `Rearm`.
+/// live node, and keeps its time in `armed` and its id in `armedId`. The armed check marks each live node whose silence
+/// ended as `silent` and queues one `Alert` to itself for each; its next offer makes the node live and queues a `back`
+/// alert. Each `Alert` sends a [`PlacementNotice`] to the target of the last `Alerts`, so a target that is gone or
+/// refuses the notice fails that alert and nothing else; the node stays silent. The armed check run early, made due by
+/// an operator, marks nothing and arms itself again at `armed`; any other `Check` the pool sent itself changes nothing,
+/// and one from another sender (an operator's retry or redrive comes without one) is refused. A check that is purged, cancelled or failed for good leaves the pool
+/// with a stale `armedId` and no timer until `Rearm`, which cancels it and arms a new one at `armed`.
 ///
 /// Silence is counted from the store time an offer was handled; due times are not run times, so a paused or slow pool
 /// marks a node late, never before its silence ended. A pool hosted only on its member nodes runs no check once they
@@ -435,7 +444,7 @@ impl Actor for PlacementActor {
             }
             PlacementMsg::Rearm => {
                 if let Some(at) = turn.state().armed {
-                    turn.send_self_with(PlacementMsg::Check, SendOptions::new().at(at).retry(retry_policy()))?;
+                    arm(turn, at)?;
                 }
                 Ok(())
             }
@@ -475,19 +484,25 @@ fn offer(
         queue_alert(turn, node.clone(), PlacementNoticeKind::Back)?;
     }
     if turn.state().armed.is_none() {
-        turn.send_self_with(PlacementMsg::Check, SendOptions::new().at(due).retry(retry_policy()))?;
-        turn.state_mut().armed = Some(due);
+        arm(turn, due)?;
     }
     let entry = PlacementNode { instance, labels, places, heard_at: now, status: PlacementNodeStatus::Live };
     turn.state_mut().nodes.insert(node, entry);
     Ok(())
 }
 
-/// Marks each live node whose silence ended as silent with an alert for each, and arms the next check unless the armed
-/// one is still ahead.
+/// Marks each live node whose silence ended as silent with an alert for each, and arms the next check; for the armed
+/// check run early, arms it again at `armed`; for any other check, nothing.
 fn check(turn: &mut Turn<PlacementActor>) -> HandlerResult {
-    let now = turn.now();
     let state = turn.state();
+    let (Some(armed), Some(armed_id)) = (state.armed, state.armed_id.as_ref()) else { return Ok(()) };
+    if *armed_id != turn.message().id {
+        return Ok(());
+    }
+    let now = turn.now();
+    if now < armed {
+        return Ok(arm(turn, armed)?);
+    }
     let ended: Vec<String> = state
         .nodes
         .iter()
@@ -500,13 +515,29 @@ fn check(turn: &mut Turn<PlacementActor>) -> HandlerResult {
         }
         queue_alert(turn, node, PlacementNoticeKind::Silent)?;
     }
-    if turn.state().armed.is_none_or(|at| at <= now) {
-        let next = turn.state().next_check();
-        if let Some(at) = next {
-            turn.send_self_with(PlacementMsg::Check, SendOptions::new().at(at).retry(retry_policy()))?;
+    match turn.state().next_check() {
+        Some(at) => arm(turn, at)?,
+        None => {
+            let state = turn.state_mut();
+            state.armed = None;
+            state.armed_id = None;
         }
-        turn.state_mut().armed = next;
     }
+    Ok(())
+}
+
+/// Cancels the armed check, unless it is the message of this turn, and arms a `Check` at `at` with the shared retry
+/// policy, keeping its time and id.
+fn arm(turn: &mut Turn<PlacementActor>, at: Timestamp) -> Result<(), TurnError> {
+    if let Some(armed) = turn.state().armed_id.clone()
+        && armed != turn.message().id
+    {
+        turn.cancel(&armed)?;
+    }
+    let id = turn.send_self_with(PlacementMsg::Check, SendOptions::new().at(at).retry(retry_policy()))?;
+    let state = turn.state_mut();
+    state.armed = Some(at);
+    state.armed_id = Some(id);
     Ok(())
 }
 
@@ -587,7 +618,7 @@ mod tests {
         let decoded = decode(state(serde_json::json!({"other": 1}))).unwrap();
         assert_eq!(decoded, PlacementState::new(Duration::from_secs(60), 2).unwrap(), "unknown fields are ignored");
         let full = state(serde_json::json!({"alerts": {"to": "ops/_", "messageType": "Placement"},
-            "nodes": {"a": node("live"), "b": node("silent")}, "armed": AT}));
+            "nodes": {"a": node("live"), "b": node("silent")}, "armed": AT, "armedId": "c1"}));
         assert!(decode(full).is_ok());
         assert!(decode(state(serde_json::json!({"nodes": {"b": node("silent")}}))).is_ok(), "no live node, no armed");
         let mut unsorted = node("live");
@@ -618,16 +649,21 @@ mod tests {
             (serde_json::json!({"nodes": {"": node("silent")}}), "a node id must be"),
             (serde_json::json!({"nodes": {"  ": node("silent")}}), "a node id must be"),
             (serde_json::json!({"nodes": {long_node: node("silent")}}), "a node id must be"),
-            (serde_json::json!({"nodes": {"a": instance}, "armed": AT}), "an instance id must be"),
-            (serde_json::json!({"nodes": {"a": unsorted}, "armed": AT}), "sorted, each once"),
-            (serde_json::json!({"nodes": {"a": twice}, "armed": AT}), "sorted, each once"),
-            (serde_json::json!({"nodes": {"a": many}, "armed": AT}), "at most 32 labels"),
-            (serde_json::json!({"nodes": {"a": long_label}, "armed": AT}), "a label must be"),
-            (serde_json::json!({"nodes": {"a": places}, "armed": AT}), "places must be"),
+            (serde_json::json!({"nodes": {"a": instance}, "armed": AT, "armedId": "c1"}), "an instance id must be"),
+            (serde_json::json!({"nodes": {"a": unsorted}, "armed": AT, "armedId": "c1"}), "sorted, each once"),
+            (serde_json::json!({"nodes": {"a": twice}, "armed": AT, "armedId": "c1"}), "sorted, each once"),
+            (serde_json::json!({"nodes": {"a": many}, "armed": AT, "armedId": "c1"}), "at most 32 labels"),
+            (serde_json::json!({"nodes": {"a": long_label}, "armed": AT, "armedId": "c1"}), "a label must be"),
+            (serde_json::json!({"nodes": {"a": places}, "armed": AT, "armedId": "c1"}), "places must be"),
             (serde_json::json!({"nodes": {"a": late}}), "after 9999-12-31"),
-            (serde_json::json!({"nodes": {"a": node("live")}}), "armed is set exactly"),
-            (serde_json::json!({"nodes": {"a": node("silent")}, "armed": AT}), "armed is set exactly"),
-            (serde_json::json!({"armed": AT}), "armed is set exactly"),
+            (serde_json::json!({"nodes": {"a": node("live")}}), "armed and armedId are set exactly"),
+            (
+                serde_json::json!({"nodes": {"a": node("silent")}, "armed": AT, "armedId": "c1"}),
+                "armed and armedId are set exactly",
+            ),
+            (serde_json::json!({"armed": AT, "armedId": "c1"}), "armed and armedId are set exactly"),
+            (serde_json::json!({"nodes": {"a": node("live")}, "armed": AT}), "armed and armedId are set exactly"),
+            (serde_json::json!({"nodes": {"a": node("live")}, "armedId": "c1"}), "armed and armedId are set exactly"),
         ] {
             let json = state(extra);
             let decoded = decode(json.clone());

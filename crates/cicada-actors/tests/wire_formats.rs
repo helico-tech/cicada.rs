@@ -667,7 +667,7 @@ fn a_placement_state_is_written_in_camel_case_passes_its_samples_and_refuses_inv
         json.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
         json
     };
-    assert_eq!(written, with(json!({"alerts": null, "nodes": {}, "armed": null})));
+    assert_eq!(written, with(json!({"alerts": null, "nodes": {}, "armed": null, "armedId": null})));
     assert_state_sample::<PlacementState>(&written);
     assert_state_sample::<PlacementState>(&settings);
     let node = |status: &str| {
@@ -675,7 +675,8 @@ fn a_placement_state_is_written_in_camel_case_passes_its_samples_and_refuses_inv
         "heardAt": "2026-01-01T00:00:00Z", "status": status})
     };
     let books = with(json!({"alerts": {"to": "pager/ops", "messageType": "Placement"},
-        "nodes": {"mac-1": node("live"), "mac-2": node("silent")}, "armed": "2026-01-01T00:01:00Z"}));
+        "nodes": {"mac-1": node("live"), "mac-2": node("silent")}, "armed": "2026-01-01T00:01:00Z",
+        "armedId": "c1"}));
     assert_state_sample::<PlacementState>(&books);
     assert_eq!(json_of(serde_json::from_value::<PlacementState>(books.clone()).unwrap()), books);
     for invalid in [
@@ -686,7 +687,9 @@ fn a_placement_state_is_written_in_camel_case_passes_its_samples_and_refuses_inv
         with(json!({"maxNodes": 1001})),
         with(json!({"nodes": {"mac-1": node("live")}})),
         with(json!({"nodes": {"mac-1": node("asleep")}})),
-        with(json!({"nodes": {"mac-1": node("silent")}, "armed": "2026-01-01T00:01:00Z"})),
+        with(json!({"nodes": {"mac-1": node("silent")}, "armed": "2026-01-01T00:01:00Z", "armedId": "c1"})),
+        with(json!({"nodes": {"mac-1": node("live")}, "armed": "2026-01-01T00:01:00Z"})),
+        with(json!({"nodes": {"mac-1": node("live")}, "armedId": "c1"})),
         with(json!({"alerts": {"to": "pager/ops", "messageType": ""}})),
         json!({"silence": "PT1M", "maxNodes": 1, "nodes": {"a": node("silent"), "b": node("silent")}}),
         json!({"silence": "PT1M"}),

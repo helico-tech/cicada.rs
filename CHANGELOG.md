@@ -23,9 +23,9 @@ guarantees are those of 0.23.1.
   `PlacementMsg::offer(node, instance, labels, places)` at an interval shorter than the silence: up to 32 labels,
   sorted and kept once, and 0 through 1,000 places; each offer replaces the node's entry and records the store time of
   its turn as `heardAt`. The pool's own `Check`, armed at the earliest end of a live node's silence (its time in
-  `armed`), marks a node not heard from for the silence as `silent`; each change is sent as a `PlacementNotice`
+  `armed`, its id in `armedId`; made due early, it arms itself again at the same time), marks a node not heard from for the silence as `silent`; each change is sent as a `PlacementNotice`
   (`silent` once per silence, `back` at the next offer) to the target of the last `Alerts`, in an `Alert` turn of its
-  own, so a failing target fails only that alert. `Rearm` brings back a lost check. Out-of-bounds messages, a new node
+  own, so a failing target fails only that alert. `Rearm` replaces a lost check at its time. Out-of-bounds messages, a new node
   past `maxNodes`, and a `Check` or `Alert` from another sender are refused for good. Its contract is in
   `docs/reference/contracts/cicada.placement.json`. Covered by `crates/cicada-actors/tests/placement.rs` and
   `tests/wire_formats.rs`.

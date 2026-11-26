@@ -8,6 +8,7 @@ mod common;
 use std::time::Duration;
 
 use cicada::prelude::*;
+use cicada::runtime::RetryResult;
 use cicada::store::{Message, OutcomeStatus};
 use cicada::time::{self, Timestamp};
 use cicada::{Failed, FailureCause};
@@ -258,16 +259,29 @@ async fn a_rearm_brings_back_a_purged_check() {
     assert!(checks(&test, start).await.is_empty(), "nothing to arm without a live node");
 }
 
-/// A `Rearm` while the check is still there makes two checks at one time; the first arms the next, the second nothing.
+/// The one pending check, which is the armed one.
+async fn armed_check(test: &TestActors) -> Message {
+    let pending: Vec<Message> = test.pending(&pool()).await.into_iter().filter(|m| m.message_type == "Check").collect();
+    assert_eq!(pending.len(), 1, "{pending:?}");
+    assert_eq!(held(test).await.armed_id.as_ref(), Some(&pending[0].id), "the pending check is the armed one");
+    pending.into_iter().next().unwrap()
+}
+
+/// Repeated `Rearm`s while the check is still there each replace it, at the same time: one chain stays.
 #[tokio::test(start_paused = true)]
-async fn a_rearm_beside_a_live_check_leaves_one_chain() {
+async fn a_rearm_beside_a_live_check_replaces_it() {
     let test = node().await;
     let start = test.now();
     offer(&test, "mac-1", &[], 1).await;
+    let first = armed_check(&test).await;
     test.advance_time_by(secs(30)).await;
     offer(&test, "mac-2", &[], 1).await;
-    send(&test, PlacementMsg::Rearm).await;
-    assert_eq!(checks(&test, start).await, [secs(60), secs(60)]);
+    for _ in 0..3 {
+        send(&test, PlacementMsg::Rearm).await;
+    }
+    assert_eq!(status(&test, &first).await, Some(OutcomeStatus::Cancelled), "the check before it");
+    assert_eq!(checks(&test, start).await, [secs(60)]);
+    armed_check(&test).await;
     test.advance_time_by(secs(30)).await;
     assert_eq!(status_of(&held(&test).await, "mac-1"), PlacementNodeStatus::Silent);
     assert_eq!(checks(&test, start).await, [secs(90)], "one check armed for mac-2");
@@ -275,6 +289,50 @@ async fn a_rearm_beside_a_live_check_leaves_one_chain() {
     assert!(checks(&test, start).await.is_empty());
     let silent = |n: &str| (n.to_owned(), PlacementNoticeKind::Silent);
     assert_eq!(notices(&test).await, [silent("mac-1"), silent("mac-2")]);
+}
+
+/// The armed check made due early by an operator marks nothing and arms itself again at the unchanged time, so a quiet
+/// node is still found.
+#[tokio::test(start_paused = true)]
+async fn a_check_made_due_early_arms_itself_again_at_the_same_time() {
+    let test = node().await;
+    let start = test.now();
+    offer(&test, "mac-1", &[], 1).await;
+    let early = armed_check(&test).await;
+    test.advance_time_by(secs(10)).await;
+    test.system().deliver_now(&early.id).await.unwrap();
+    test.run_until_idle().await;
+    assert_eq!(status(&test, &early).await, Some(OutcomeStatus::Done));
+    assert_eq!(status_of(&held(&test).await, "mac-1"), PlacementNodeStatus::Live, "nothing is due yet");
+    let again = armed_check(&test).await;
+    assert_ne!(again.id, early.id);
+    assert_eq!(checks(&test, start).await, [secs(60)], "the same time");
+    test.advance_time_by(secs(600)).await;
+    let state = held(&test).await;
+    assert_eq!((status_of(&state, "mac-1"), state.armed, state.armed_id), (PlacementNodeStatus::Silent, None, None));
+    assert_eq!(notices(&test).await, [("mac-1".to_owned(), PlacementNoticeKind::Silent)]);
+}
+
+/// An operator's retry of a cancelled check comes under a new id and without a sender: it is refused for good and
+/// changes nothing.
+#[tokio::test(start_paused = true)]
+async fn a_retried_check_is_refused_and_changes_nothing() {
+    let test = node().await;
+    offer(&test, "mac-1", &[], 1).await;
+    let cancelled = armed_check(&test).await;
+    send(&test, PlacementMsg::Rearm).await;
+    assert_eq!(status(&test, &cancelled).await, Some(OutcomeStatus::Cancelled));
+    test.advance_time_by(secs(70)).await;
+    offer(&test, "mac-1", &[], 1).await;
+    let (before, version, pending) = (held(&test).await, test.version(&pool()).await, test.pending(&pool()).await);
+    let RetryResult::Accepted(copy) = test.system().retry_message(&cancelled.id).await.unwrap() else {
+        panic!("not retried")
+    };
+    test.run_until_idle().await;
+    assert_eq!(status(&test, &copy).await, Some(OutcomeStatus::Failed));
+    assert_eq!((held(&test).await, test.version(&pool()).await), (before, version));
+    assert_eq!(test.pending(&pool()).await, pending, "no check armed or cancelled");
+    assert_eq!(failed(&test).await, [("Check".to_owned(), FailureCause::Refused)]);
 }
 
 /// A `Check` or an `Alert` from a client or another actor is refused for good and changes nothing.

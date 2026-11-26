@@ -11,9 +11,9 @@ checked constructors `PlacementMsg::offer(node, instance, labels, places)` and `
 message_type)`), `PlacementState::new(silence, max_nodes)`, `PlacementNode` (`instance`, `labels`, `places`, `heardAt`,
 `status`), `PlacementNodeStatus` (`live`, `silent`), `PlacementAlerts` (`to`, `messageType`), `PlacementNotice` (`pool`,
 `node`, `kind`), `PlacementNoticeKind` (`silent`, `back`) and `InvalidPlacement`. Its contract is generated into
-`docs/reference/contracts/cicada.placement.json`. Proved by `crates/cicada-actors/tests/placement.rs` (nine tests: a
-renewed offer, silence and return, no check without a live node, a purged check and `Rearm`, a `Rearm` beside a live
-check, a foreign `Check` or `Alert`, a failing alert target, a pool without a target, the bounds), the unit tests and
+`docs/reference/contracts/cicada.placement.json`. Proved by `crates/cicada-actors/tests/placement.rs` (eleven tests: a
+renewed offer, silence and return, no check without a live node, a purged check and `Rearm`, `Rearm`s beside a live
+check, a check made due early, a retried check, a foreign `Check` or `Alert`, a failing alert target, a pool without a target, the bounds), the unit tests and
 rustdoc examples in `crates/cicada-actors/src/placement.rs`, and the samples in `crates/cicada-actors/tests/wire_formats.rs`.
 
 ## 1. A placement pool section in the actors guide
@@ -48,14 +48,18 @@ the test `an_offer_replaces_the_last_one_and_records_when_the_node_was_heard` in
   node's entry and records the store time of its turn as `heardAt`. Send one at an interval well below the silence
   (for example every 15 s for a silence of 60 s).
 - **Silence.** The pool arms one `Check` to itself at the earliest end of a live node's silence (`heardAt` plus the
-  silence), and keeps its time in `armed`. At the check each node past it becomes `silent`. A silent node's next offer
+  silence), and keeps its time in `armed` and its message id in `armedId`. At the check each node past it becomes
+  `silent`. Only the armed check counts: made due early by an operator (`deliver-now`), it marks nothing and arms itself
+  again at the same time, so asking for an early check never stops the timer. A silent node's next offer
   makes it `live` again.
 - **Alerts.** `PlacementMsg::alerts(&target, message_type)` sets where notices go; the last one stands, and without one
   no notices are sent. The target's family takes a variant such as `Placement(PlacementNotice)`. Kinds: `silent` once per
   silence, `back` when a silent node offers again. Each notice is sent in a turn of its own (`Alert`), so a target that is
   gone or does not take the message fails only that alert: the node is still silent.
-- **A lost check.** A purged or failed `Check` leaves the pool without a timer; anyone may send `Rearm`, which arms it at
-  the old time, at once when that passed. A `Check` or `Alert` from anyone but the pool is refused for good.
+- **A lost check.** A purged, cancelled or failed `Check` leaves the pool without a timer; anyone may send `Rearm`, which
+  cancels the armed check (if it is still there) and arms a new one at the old time, at once when that passed, so
+  repeated `Rearm`s leave one check. A `Check` or `Alert` from anyone but the pool is refused for good, an operator's
+  retry or redrive of a `Check` included (it comes without a sender).
 - **Reading it.** The pool answers no query: read its state like any actor's (`ActorSystem::get_actor`, the operator
   commands, the terminal UI); its contract is `docs/reference/contracts/cicada.placement.json`.
 - **Bounds.** A message out of bounds, and an offer from a new node when the pool knows `maxNodes` nodes, is refused for
@@ -74,7 +78,8 @@ the test `an_offer_replaces_the_last_one_and_records_when_the_node_was_heard` in
 
 **Where.** `docs/architecture.md`, the `cicada-actors` row of the crates table.
 **Text.** Add: a placement pool (`cicada.placement`, ADR 0067) to which nodes offer instance, labels and places, renewed;
-its own self-only `Check`, armed at the earliest end of a live node's silence (re-armed by `Rearm`), marks a quiet node
+its own self-only `Check`, armed at the earliest end of a live node's silence and kept by time and id (an early run
+re-arms at the same time; `Rearm` replaces a lost one), marks a quiet node
 silent, and each change (`silent` once per silence, `back` at the next offer) is sent to the pool's alert target in an
 `Alert` turn of its own.
 
@@ -96,5 +101,5 @@ None.
 ## Status
 
 `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` clean; `cargo test --workspace`
-with PostgreSQL: 3646 passed, 0 failed (`cicada-examples` `--test docs`, `--doc` and `--test skill` included);
+with PostgreSQL: 3648 passed, 0 failed (after code review round 1) (`cicada-examples` `--test docs`, `--doc` and `--test skill` included);
 `openspec validate placement-offers --strict` valid. The text above is proposed; no protected prose is written.
