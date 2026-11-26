@@ -1,5 +1,7 @@
 //! Controls a Cicada worker over HTTP in the host process. The model can drive a menu bar or other UI.
 
+mod turns;
+
 use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex};
@@ -7,6 +9,9 @@ use std::sync::{Arc, Mutex};
 use cicada_app::{App, Env, WorkerReady};
 use tokio::sync::{oneshot, watch};
 use tokio::time::Instant;
+
+use turns::TurnHistory;
+pub use turns::{FinishedTurn, RunningTurn, TurnResult, TurnSnapshot};
 
 /// State of the tray's worker connection.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -46,6 +51,7 @@ pub struct Tray {
     factory: Box<dyn Fn() -> App + Send + Sync>,
     env: Option<Env>,
     control: Arc<Control>,
+    turns: TurnHistory,
 }
 
 struct Control {
@@ -68,6 +74,7 @@ impl Tray {
             factory: Box::new(factory),
             env: None,
             control: Arc::new(Control { connection: Mutex::new(None), state: watch::channel(TrayState::Offline).0 }),
+            turns: TurnHistory::default(),
         }
     }
 
@@ -81,6 +88,16 @@ impl Tray {
     /// borrow before calling [`Self::connect`] or [`Self::disconnect`].
     pub fn state(&self) -> watch::Receiver<TrayState> {
         self.control.state.subscribe()
+    }
+
+    /// Returns a snapshot of running and recently finished turns across this tray's connections.
+    pub fn turns(&self) -> TurnSnapshot {
+        self.turns.snapshot()
+    }
+
+    /// Watches a counter that advances at each turn start and finish. Read [`Self::turns`] to redraw.
+    pub fn turn_changes(&self) -> watch::Receiver<u64> {
+        self.turns.changes()
     }
 
     /// Starts a worker using the named context on the caller's Tokio runtime. Calls while starting, online or
@@ -113,7 +130,7 @@ impl Tray {
         };
         let control = self.control.clone();
         let ready = control.clone();
-        let app = app.on_worker_ready(move |settings| ready.worker_ready(settings));
+        let app = app.observe(self.turns.clone()).on_worker_ready(move |settings| ready.worker_ready(settings));
         let args = vec![
             std::env::args_os().next().unwrap_or_else(|| "cicada-tray".into()),
             "worker".into(),

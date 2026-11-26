@@ -6,11 +6,11 @@ use std::time::Duration;
 
 use axum::Router;
 use cicada::prelude::*;
-use cicada::store::{MessageStatus, OutcomeStatus};
+use cicada::store::{MessageStatus, OutcomeStatus, TurnOutcome};
 use cicada_app::{App, Env};
 use cicada_axum::actor_api;
 use cicada_test::TestActors;
-use cicada_tray::{Tray, TrayState};
+use cicada_tray::{RunningTurn, Tray, TrayState, TurnResult};
 use serde::{Deserialize, Serialize};
 use tokio::net::{TcpListener, TcpSocket};
 use tokio::sync::{Notify, watch};
@@ -33,6 +33,7 @@ impl ActorRef for Work {
 #[serde(tag = "type")]
 enum WorkMsg {
     Wait,
+    Finish,
 }
 
 #[derive(Clone)]
@@ -51,9 +52,11 @@ impl Actor for WorkActor {
     type Ref = Work;
     type State = NoState;
 
-    async fn handle(&self, _: &mut Turn<Self>, _: WorkMsg) -> HandlerResult {
-        self.began.notify_one();
-        self.finish.subscribe().wait_for(|open| *open).await.unwrap();
+    async fn handle(&self, _: &mut Turn<Self>, msg: WorkMsg) -> HandlerResult {
+        if matches!(msg, WorkMsg::Wait) {
+            self.began.notify_one();
+            self.finish.subscribe().wait_for(|open| *open).await.unwrap();
+        }
         Ok(())
     }
 }
@@ -180,19 +183,103 @@ async fn disconnect_uses_the_settled_settings_and_drains_a_running_turn() {
     let host_actor = actor.clone();
     let tray = Tray::new(move || App::new().host(host_actor.clone()).node_config(host.clone())).with_env(env);
     let mut state = tray.state();
+    let mut changes = tray.turn_changes();
+    assert_eq!(*changes.borrow(), 0);
     tray.connect("prod");
     wait_for(&mut state, online()).await;
     timeout(TEST_TIMEOUT, actor.began.notified()).await.unwrap();
+    assert_eq!(*changes.borrow_and_update(), 1);
+    let turns = tray.turns();
+    let running = RunningTurn {
+        actor: work.address().unwrap(),
+        message_type: "Wait".into(),
+        attempt: 1,
+        claimed_at: server.actors.now(),
+    };
+    assert_eq!(turns.running, std::slice::from_ref(&running));
+    assert!(turns.finished.is_empty());
 
     let until = Instant::now() + Duration::from_secs(10);
     tray.disconnect();
     assert_eq!(*state.borrow(), TrayState::Stopping { context: "prod".into(), until });
+    tokio::time::advance(Duration::from_secs(2)).await;
+    assert_eq!(*state.borrow(), TrayState::Stopping { context: "prod".into(), until });
+    assert_eq!(tray.turns().running, std::slice::from_ref(&running));
     actor.finish.send_replace(true);
     wait_for(&mut state, TrayState::Offline).await;
+    assert!(changes.has_changed().unwrap());
+    assert_eq!(*changes.borrow(), 2);
+    let turns = tray.turns();
+    assert!(turns.running.is_empty());
+    assert_eq!(turns.finished.len(), 1);
+    assert_eq!(turns.finished[0].turn, running);
+    assert_eq!(turns.finished[0].outcome, TurnResult::Committed(TurnOutcome::Done));
     let Some(MessageStatus::Finished(outcome)) = server.actors.system().status(&message.id).await.unwrap() else {
         panic!("the turn did not finish");
     };
     assert_eq!(outcome.status, OutcomeStatus::Done);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_turn_cancelled_at_shutdown_is_abandoned() {
+    let actor = WorkActor::new();
+    let server = Server::start(actor.clone()).await;
+    let work = Work { id: "gated".into() };
+    server.actors.create(&work, &NoState {}).await;
+    let message = server.actors.send(&work, WorkMsg::Wait).await;
+    let host_actor = actor.clone();
+    let tray = Tray::new(move || {
+        App::new()
+            .host(host_actor.clone())
+            .node_config(cicada::runtime::NodeConfig { shutdown_grace_period: Duration::ZERO, ..Default::default() })
+    })
+    .with_env(server.config.env());
+    let mut state = tray.state();
+    let mut changes = tray.turn_changes();
+    tray.connect("prod");
+    timeout(TEST_TIMEOUT, actor.began.notified()).await.unwrap();
+    let running = tray.turns().running.pop().unwrap();
+    tray.disconnect();
+    for _ in 0..10 {
+        tokio::time::advance(Duration::from_millis(1)).await;
+    }
+    wait_for(&mut state, TrayState::Offline).await;
+    changes.changed().await.unwrap();
+    assert_eq!(*changes.borrow(), 2);
+    let turns = tray.turns();
+    assert!(turns.running.is_empty());
+    assert_eq!(turns.finished.len(), 1);
+    assert_eq!(turns.finished[0].turn, running);
+    assert_eq!(turns.finished[0].outcome, TurnResult::Abandoned);
+    assert!(matches!(server.actors.system().status(&message.id).await.unwrap(), Some(MessageStatus::Pending(_))));
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_history_evicts_the_oldest_finished_turns() {
+    let actor = WorkActor::new();
+    actor.finish.send_replace(true);
+    let server = Server::start(actor.clone()).await;
+    let work = Work { id: "ring".into() };
+    server.actors.create(&work, &NoState {}).await;
+    for msg in [WorkMsg::Wait, WorkMsg::Wait].into_iter().chain((0..50).map(|_| WorkMsg::Finish)) {
+        server.actors.send(&work, msg).await;
+    }
+    let tray = Tray::new(move || App::new().host(actor.clone())).with_env(server.config.env());
+    let mut state = tray.state();
+    let mut changes = tray.turn_changes();
+    tray.connect("prod");
+    timeout(TEST_TIMEOUT, changes.wait_for(|count| *count == 104)).await.unwrap().unwrap();
+    let turns = tray.turns();
+    assert!(turns.running.is_empty());
+    assert_eq!(turns.finished.len(), 50);
+    assert!(
+        turns
+            .finished
+            .iter()
+            .all(|turn| turn.turn.message_type == "Finish" && turn.outcome == TurnResult::Committed(TurnOutcome::Done))
+    );
+    tray.disconnect();
+    wait_for(&mut state, TrayState::Offline).await;
 }
 
 #[tokio::test(start_paused = true)]
