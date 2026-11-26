@@ -76,6 +76,7 @@ accepted ADR is not rewritten: a later one supersedes it. A change that makes a 
 | [0069](0069-a-second-machine-under-one-node-id.md) | An offer from another instance under a live node's id changes nothing, marks the node in conflict and sends one `conflict` alert; the mark ends at silence or after one quiet silence time; extends ADR 0067. |
 | [0070](0070-openspec-files-reuse-a-full-pass.md) | Any non-executable regular file under `openspec/` may reuse a full pass of the gate, so an archive commit needs no second full run; review markers are written as plain files; partly supersedes ADR 0046. |
 | [0071](0071-a-duplicate-node-reported-by-its-member.md) | A placement member that sees its node row written by another host skips its offer and reports `Duplicate`; the pool marks the node (ADR 0069's mark with a host), alerts once and places nothing there while marked; `NodeConfig::hostname` sets the name a node writes; the identity folder is locked; extends ADR 0069. |
+| [0072](0072-one-live-holder-per-resource.md) | An offer may name a resource key (Docker's daemon id from `RuntimeInfo::id`); one live node holds a key, a second live node offering it is ignored and alerted once; extends ADRs 0069 and 0071. |
 
 ## Design questions
 
