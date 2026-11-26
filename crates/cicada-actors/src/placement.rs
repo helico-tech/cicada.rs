@@ -40,6 +40,8 @@ const MAX_PLACES: u32 = 1_000;
 const MAX_BOOKS: u32 = 1_000;
 /// The longest holder id, in characters.
 const MAX_HOLDER_LENGTH: usize = 200;
+/// The longest resource key, in characters.
+const MAX_RESOURCE_LENGTH: usize = 200;
 
 /// A placement pool, `cicada.placement/<pool>`: one for each set of nodes that offer places.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -86,6 +88,12 @@ pub enum PlacementMsg {
         /// How many places the node offers, 0 through 1,000; 0 keeps the node known but full.
         #[schemars(range(max = 1000))]
         places: u32,
+        /// The resource whose places these are, such as the Docker daemon's id (`RuntimeInfo::id` of
+        /// `cicada-containers`): 1 through 200 characters without NUL. One live node holds a key (ADR 0072). Absent:
+        /// none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(length(min = 1, max = 200))]
+        resource: Option<String>,
     },
     /// A report, from anyone, such as a [`PlacementMember`] that found another host name in its node's row: another
     /// machine, `host`, runs under the id of `node` (ADR 0071). For a live node it marks the node in `conflict` with
@@ -242,10 +250,19 @@ impl PlacementMsg {
         labels: impl IntoIterator<Item = L>,
         places: u32,
     ) -> Result<Self, InvalidPlacement> {
-        let (node, instance) = (node.into(), instance.into());
-        let labels = labels.into_iter().map(Into::into).collect();
-        let labels = check_offer(&node, &instance, labels, places)?;
-        Ok(PlacementMsg::Offer { node, instance, labels, places })
+        Self::offer_of(node.into(), instance.into(), labels.into_iter().map(Into::into).collect(), places, None)
+    }
+
+    /// An `Offer` as [`offer`](Self::offer) with the resource key `resource`, checked too.
+    pub(crate) fn offer_of(
+        node: String,
+        instance: String,
+        labels: Vec<String>,
+        places: u32,
+        resource: Option<String>,
+    ) -> Result<Self, InvalidPlacement> {
+        let labels = check_offer(&node, &instance, labels, places, resource.as_deref())?;
+        Ok(PlacementMsg::Offer { node, instance, labels, places, resource })
     }
 
     /// An `Alerts` that sends the pool's notices to `target` as `message_type`. Fails for a ref without an address and
@@ -502,6 +519,11 @@ pub struct PlacementNode {
     /// Whether an operator drained it: it gets no new places until `Undrain`. Absent: false.
     #[serde(default)]
     pub draining: bool,
+    /// The resource key of its last offer; 1 through 200 characters without NUL. While it is live no other live node
+    /// has this key. Absent: none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = 200))]
+    pub resource: Option<String>,
     /// The last offer of another instance, ignored, or the last report of another machine, while it was live; set only
     /// while it is live. Absent: none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -719,6 +741,9 @@ impl PlacementState {
                 return Err(InvalidPlacement(format!("the labels of '{node}' must be sorted, each once")));
             }
             check_places(entry.places)?;
+            if let Some(resource) = &entry.resource {
+                check_resource(resource)?;
+            }
             self.deadline(entry.heard_at).map_err(InvalidPlacement)?;
             if let Some(conflict) = &entry.conflict {
                 if entry.status != PlacementNodeStatus::Live {
@@ -814,11 +839,15 @@ fn check_offer(
     instance: &str,
     mut labels: Vec<String>,
     places: u32,
+    resource: Option<&str>,
 ) -> Result<Vec<String>, InvalidPlacement> {
     check_id("a node", node)?;
     check_id("an instance", instance)?;
     check_labels(&labels, "labels", "label")?;
     check_places(places)?;
+    if let Some(resource) = resource {
+        check_resource(resource)?;
+    }
     labels.sort();
     labels.dedup();
     Ok(labels)
@@ -875,6 +904,16 @@ fn check_labels(labels: &[String], plural: &str, one: &str) -> Result<(), Invali
                 "a {one} must be 1 through {MAX_LABEL_LENGTH} characters without NUL, had {length}"
             )));
         }
+    }
+    Ok(())
+}
+
+fn check_resource(resource: &str) -> Result<(), InvalidPlacement> {
+    let length = resource.chars().count();
+    if length == 0 || length > MAX_RESOURCE_LENGTH || resource.contains('\0') {
+        return Err(InvalidPlacement(format!(
+            "a resource key must be 1 through {MAX_RESOURCE_LENGTH} characters without NUL, had {length}"
+        )));
     }
     Ok(())
 }
@@ -969,9 +1008,10 @@ impl Actor for PlacementActor {
         let before = targets(turn.state());
         end_reports(turn);
         match message {
-            PlacementMsg::Offer { node, instance, labels, places } => {
-                let labels = check_offer(&node, &instance, labels, places).map_err(HandlerError::permanent)?;
-                offer(turn, node, instance, labels, places)?;
+            PlacementMsg::Offer { node, instance, labels, places, resource } => {
+                let labels = check_offer(&node, &instance, labels, places, resource.as_deref())
+                    .map_err(HandlerError::permanent)?;
+                offer(turn, node, instance, labels, places, resource)?;
             }
             PlacementMsg::Duplicate { node, host } => {
                 check_id("a node", &node).map_err(HandlerError::permanent)?;
@@ -1320,6 +1360,7 @@ fn offer(
     instance: String,
     labels: Vec<String>,
     places: u32,
+    resource: Option<String>,
 ) -> HandlerResult {
     let now = turn.now();
     let state = turn.state();
@@ -1353,7 +1394,7 @@ fn offer(
         arm(turn, due)?;
     }
     let status = PlacementNodeStatus::Live;
-    let entry = PlacementNode { instance, labels, places, heard_at: now, status, draining, conflict };
+    let entry = PlacementNode { instance, labels, places, heard_at: now, status, draining, resource, conflict };
     turn.state_mut().nodes.insert(node, entry);
     Ok(())
 }
@@ -1549,6 +1590,10 @@ mod tests {
         instance["instance"] = serde_json::json!(" ");
         let mut late = node("silent");
         late["heardAt"] = serde_json::json!("9999-12-31T23:59:30Z");
+        let mut empty_key = node("silent");
+        empty_key["resource"] = serde_json::json!("");
+        let mut long_key = node("silent");
+        long_key["resource"] = serde_json::json!("k".repeat(201));
         let long_node = "n".repeat(201);
         for (extra, why) in [
             (serde_json::json!({"silence": "PT0.5S"}), "silence must be"),
@@ -1570,6 +1615,8 @@ mod tests {
             (serde_json::json!({"nodes": {"a": long_label}, "armed": AT, "armedId": "c1"}), "a label must be"),
             (serde_json::json!({"nodes": {"a": places}, "armed": AT, "armedId": "c1"}), "places must be"),
             (serde_json::json!({"nodes": {"a": late}}), "after 9999-12-31"),
+            (serde_json::json!({"nodes": {"a": empty_key}}), "a resource key must be"),
+            (serde_json::json!({"nodes": {"a": long_key}}), "a resource key must be"),
             (serde_json::json!({"nodes": {"a": node("live")}}), "armed and armedId are set exactly"),
             (
                 serde_json::json!({"nodes": {"a": node("silent")}, "armed": AT, "armedId": "c1"}),
@@ -1741,7 +1788,8 @@ mod tests {
                 node: "n".into(),
                 instance: "i".into(),
                 labels: vec!["a".into(), "b".into()],
-                places: 0
+                places: 0,
+                resource: None
             }
         );
         let max_labels: Vec<String> = (0..MAX_LABELS).map(|n| format!("l{n}")).collect();
@@ -1762,6 +1810,12 @@ mod tests {
         ] {
             let built = PlacementMsg::offer(&node, &instance, labels, places);
             assert!(built.as_ref().is_err_and(|e| e.to_string().contains(why)), "{built:?} for {why}");
+        }
+        let keyed = |key: &str| PlacementMsg::offer_of("n".into(), "i".into(), vec![], 1, Some(key.into()));
+        assert!(keyed(" ").is_ok() && keyed(&"k".repeat(200)).is_ok(), "a blank key is allowed");
+        for key in ["".to_owned(), "k".repeat(201), "a\0".to_owned()] {
+            let built = keyed(&key);
+            assert!(built.as_ref().is_err_and(|e| e.to_string().contains("a resource key must be")), "{built:?}");
         }
     }
 

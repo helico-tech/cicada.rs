@@ -272,12 +272,23 @@ pub struct Capacity {
     pub labels: Vec<String>,
     /// How many places the node offers.
     pub places: u32,
+    /// The resource whose places these are, such as the Docker daemon's id: the pool counts a key on one live node at
+    /// a time (ADR 0072). None: the places are the node's own.
+    pub resource: Option<String>,
 }
 
 impl Capacity {
-    /// `places` places with `labels`.
+    /// `places` places with `labels`, without a resource key.
     pub fn new<L: Into<String>>(labels: impl IntoIterator<Item = L>, places: u32) -> Self {
-        Self { labels: labels.into_iter().map(Into::into).collect(), places }
+        Self { labels: labels.into_iter().map(Into::into).collect(), places, resource: None }
+    }
+
+    /// The same capacity counted against the resource `key`, such as the Docker daemon's id from `RuntimeInfo::id` of
+    /// `cicada-containers`, so that two nodes that share one daemon do not offer its places twice: while one live node
+    /// holds the key, the pool ignores the other's offers (ADR 0072). 1 through 200 characters without NUL, or the
+    /// member sends no offer and warns.
+    pub fn resource(self, key: impl Into<String>) -> Self {
+        Self { resource: Some(key.into()), ..self }
     }
 }
 
@@ -286,7 +297,7 @@ impl Capacity {
 ///
 /// **Rounds.** A round runs at the start of `run` and then every [`interval`](MemberSettings::interval); a round that
 /// takes longer delays the next one. It calls the probe: a [`Capacity`] sends
-/// `Offer { node, instance, labels, places }` to the pool, with the node's own id ([`ActorSystem::node_id`], the one its
+/// `Offer { node, instance, labels, places, resource }` to the pool, with the node's own id ([`ActorSystem::node_id`], the one its
 /// claims and pins use, also when `--node-id` overrides the identity's) and the identity's instance; `None` sends
 /// nothing, so a node whose runtime does not answer goes silent at the pool by itself.
 ///
@@ -410,10 +421,11 @@ where
     /// Calls the probe and sends its offer.
     async fn offer(&mut self, system: &ActorSystem) {
         let pool = self.pool.pool.as_str();
-        let Some(Capacity { labels, places }) = (self.probe)().await else {
+        let Some(Capacity { labels, places, resource }) = (self.probe)().await else {
             return;
         };
-        let offer = match PlacementMsg::offer(system.node_id().as_str(), &self.identity.instance, labels, places) {
+        let (node, instance) = (system.node_id().as_str().to_owned(), self.identity.instance.clone());
+        let offer = match PlacementMsg::offer_of(node, instance, labels, places, resource) {
             Ok(offer) => offer,
             Err(e) => {
                 tracing::warn!(pool, "placement member: no offer: {e}");

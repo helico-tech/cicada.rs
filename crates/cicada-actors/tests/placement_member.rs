@@ -288,3 +288,31 @@ async fn the_stop_ends_the_member_also_while_the_probe_hangs() {
     stop.send(()).unwrap();
     tokio::time::timeout(secs(1), run).await.expect("ended while the probe hangs").unwrap();
 }
+
+/// A capacity with a resource key offers it, and the pool records it on the node; a key out of bounds sends no offer.
+#[tokio::test(start_paused = true)]
+async fn a_capacity_with_a_resource_key_offers_it() {
+    let test = node(true).await;
+    let temp = TempDir::new().unwrap();
+    let key = Arc::new(Mutex::new("daemon-1".to_owned()));
+    let probed = key.clone();
+    let member = PlacementMember::new(pool(), identity(&temp), MemberSettings::new(), move || {
+        let key = probed.lock().unwrap().clone();
+        std::future::ready(Some(Capacity::new(["arm64"], 2).resource(key)))
+    });
+    assert_eq!(Capacity::new(["arm64"], 2).resource("daemon-1").resource.as_deref(), Some("daemon-1"));
+    assert_eq!(Capacity::new(["arm64"], 2).resource, None);
+    let (stop, run) = spawn(&test, member);
+    tokio::task::yield_now().await;
+    test.run_until_idle().await;
+    let state: PlacementState = test.state(&pool()).await;
+    assert_eq!(state.nodes["from-flag"].resource.as_deref(), Some("daemon-1"));
+    *key.lock().unwrap() = String::new();
+    test.advance_time_by(secs(15)).await;
+    tokio::task::yield_now().await;
+    test.run_until_idle().await;
+    let later: PlacementState = test.state(&pool()).await;
+    assert_eq!(later.nodes["from-flag"].heard_at, state.nodes["from-flag"].heard_at, "an empty key: no offer");
+    stop.send(()).unwrap();
+    run.await.unwrap();
+}

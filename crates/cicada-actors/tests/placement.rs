@@ -227,6 +227,7 @@ async fn an_offer_replaces_the_last_one_and_records_when_the_node_was_heard() {
         instance: "i1".into(),
         labels: vec!["docker".into(), "arm64".into(), "docker".into()],
         places: 2,
+        resource: None,
     };
     send(&test, renewal).await;
     let state = held(&test).await;
@@ -459,8 +460,18 @@ async fn offers_out_of_bounds_and_a_node_past_the_limit_are_refused() {
         instance: instance.into(),
         labels,
         places,
+        resource: None,
+    };
+    let keyed = |resource: String| PlacementMsg::Offer {
+        node: "mac-1".into(),
+        instance: "i1".into(),
+        labels: vec![],
+        places: 1,
+        resource: Some(resource),
     };
     let invalid = [
+        keyed(String::new()),
+        keyed("k".repeat(201)),
         raw("mac-3", "i1", vec![], 1),
         raw("", "i1", vec![], 1),
         raw(" ", "i1", vec![], 1),

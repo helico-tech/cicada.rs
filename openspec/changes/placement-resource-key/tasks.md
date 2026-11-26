@@ -8,7 +8,7 @@ Builds on `placement-identity-lock` (lands first). Follow `design.md` and ADR 00
 - [x] 1. **The daemon's id.** `RuntimeInfo::id: Option<String>`, `RuntimeInfo::with_id`; `DockerRuntime::info` reads
   `/info`'s `ID` (empty: `None`) next to `/version`; the fake reports `None` until `set_info` sets one; the rustdoc
   names the cost of `/info` (decision 1). Verify: map and fake tests; `cargo test -p cicada-containers --all-features`.
-- [ ] 2. **The key on offers.** `Capacity::resource(key)`, `Offer::resource` (1 to 200 characters, no NUL), the node's key
+- [x] 2. **The key on offers.** `Capacity::resource(key)`, `Offer::resource` (1 to 200 characters, no NUL), the node's key
   in the pool state (decision 2). Verify: wire and bounds tests.
 - [ ] 3. **One live holder.** The `contested` list, one alert per added entry, removal by the check timer one silence time
   after `at`, the key taken from a silent or gone holder, the decode refusing two live holders; contract reference and

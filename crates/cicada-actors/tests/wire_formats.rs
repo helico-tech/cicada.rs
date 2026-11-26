@@ -623,6 +623,17 @@ fn the_placement_messages_and_notices_are_written_in_camel_case_and_pass_their_s
             json!({"type": "Offer", "node": "mac-1", "instance": "3f9c", "labels": ["arm64", "docker"], "places": 4}),
         ),
         (
+            PlacementMsg::Offer {
+                node: "mac-1".into(),
+                instance: "3f9c".into(),
+                labels: vec!["arm64".into()],
+                places: 4,
+                resource: Some("4f2a:ZQ7Y".into()),
+            },
+            json!({"type": "Offer", "node": "mac-1", "instance": "3f9c", "labels": ["arm64"], "places": 4,
+                "resource": "4f2a:ZQ7Y"}),
+        ),
+        (
             PlacementMsg::Duplicate { node: "mac-1".into(), host: "mac-b".into() },
             json!({"type": "Duplicate", "node": "mac-1", "host": "mac-b"}),
         ),
@@ -671,6 +682,7 @@ fn the_placement_messages_and_notices_are_written_in_camel_case_and_pass_their_s
         ("Offer", json!({"node": "mac-1", "instance": "3f9c", "places": 1})),
         ("Offer", json!({"node": "mac-1", "labels": [], "places": 1})),
         ("Offer", json!({"node": "mac-1", "instance": "3f9c", "labels": [], "places": -1})),
+        ("Offer", json!({"node": "mac-1", "instance": "3f9c", "labels": [], "places": 1, "resource": 7})),
         ("Duplicate", json!({"node": "mac-1"})),
         ("Duplicate", json!({"host": "mac-b"})),
         ("Alert", json!({"node": "mac-1", "kind": "gone"})),
@@ -783,6 +795,7 @@ fn a_placement_state_is_written_in_camel_case_passes_its_samples_and_refuses_inv
     let waiter = |holder: &str| json!({"holder": holder, "needs": ["gpu"], "to": "pager/ops", "messageType": "Placed"});
     let mut marked = node("live");
     marked["conflict"] = json!({"instance": "b2c4", "at": "2026-01-01T00:00:10Z"});
+    marked["resource"] = json!("4f2a:ZQ7Y");
     let books = with(json!({"alerts": {"to": "pager/ops", "messageType": "Placement"},
         "nodes": {"mac-1": marked, "mac-2": node("silent")}, "nextGrant": 6,
         "holders": [holder("r1", 3, true), holder("r2", 5, false)], "waiting": [waiter("r3")],

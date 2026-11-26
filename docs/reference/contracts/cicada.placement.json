@@ -343,6 +343,15 @@
           "maximum": 1000,
           "minimum": 0,
           "type": "integer"
+        },
+        "resource": {
+          "description": "The resource whose places these are, such as the Docker daemon's id (`RuntimeInfo::id` of\n`cicada-containers`): 1 through 200 characters without NUL. One live node holds a key (ADR 0072). Absent:\nnone.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -691,6 +700,15 @@
             "maximum": 1000,
             "minimum": 0,
             "type": "integer"
+          },
+          "resource": {
+            "description": "The resource key of its last offer; 1 through 200 characters without NUL. While it is live no other live node\nhas this key. Absent: none.",
+            "maxLength": 200,
+            "minLength": 1,
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "status": {
             "$ref": "#/$defs/PlacementNodeStatus",
