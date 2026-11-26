@@ -168,6 +168,29 @@ impl Stopping {
     }
 }
 
+/// Stop Now for a worker over HTTP, from [`WorkerReady`](crate::WorkerReady): [`Self::now`] ends the grace period of the
+/// worker's stop, so its running turns are cancelled at once and give their leases back, and the stop ends within the
+/// cancel timeout. Cheap to clone; it holds no reference to the worker.
+#[derive(Debug, Clone)]
+pub struct StopNow(CancellationToken);
+
+impl StopNow {
+    fn new() -> Self {
+        Self(CancellationToken::new())
+    }
+
+    /// Ends the grace period of the worker's stop. Called before the stop has begun, the request is kept and applies
+    /// as soon as it does (it does not stop the worker by itself); called after the worker stopped, it does nothing. A
+    /// plain call: it does not wait for the stop.
+    pub fn now(&self) {
+        self.0.cancel()
+    }
+
+    async fn requested(&self) {
+        self.0.cancelled().await
+    }
+}
+
 /// What the tasks of `App::task` record of their ends, shared with [`Tasks`].
 #[derive(Default)]
 struct TaskBook {
@@ -416,10 +439,12 @@ pub(crate) async fn http_worker(
         }
         Some(Ok(())) => {}
     }
+    let stop_now = StopNow::new();
     let ready = WorkerReady {
         types: settings.types,
         grace_period: worker.config().shutdown_grace_period,
         cancel_timeout: worker.config().shutdown_cancel_timeout,
+        stop_now: stop_now.clone(),
     };
     for f in parts.on_worker_ready {
         let ready = ready.clone();
@@ -428,15 +453,27 @@ pub(crate) async fn http_worker(
             return Err(AppError::Failed(anyhow!("App::on_worker_ready panicked: {}", panic_text(panic.as_ref()))));
         }
     }
-    run_until_stopped(&worker, &stop).await
+    run_until_stopped(&worker, &stop, &stop_now).await
 }
 
 /// Runs a started `worker` until the stop, which stops it with its grace period and cancel timeout, or until it stops
-/// by itself; then its end (see [`stopped`]).
-async fn run_until_stopped(worker: &Worker, stop: &Stop) -> Result<(), AppError> {
+/// by itself; then its end (see [`stopped`]). `stop_now`, set before or during the stop, ends its grace period.
+async fn run_until_stopped(worker: &Worker, stop: &Stop, stop_now: &StopNow) -> Result<(), AppError> {
     tokio::select! {
         biased;
-        () = stop.wait() => worker.stop().await,
+        () = stop.wait() => {
+            let stopping = worker.stop();
+            tokio::pin!(stopping);
+            // The stop is polled first: it sets `Stopping` before `end_grace` is called, which before then is lost.
+            tokio::select! {
+                biased;
+                () = &mut stopping => {}
+                () = stop_now.requested() => {
+                    worker.end_grace();
+                    stopping.await;
+                }
+            }
+        }
         _ = worker.stopped() => {}
     }
     stopped(worker).await
@@ -1196,13 +1233,10 @@ mod worker_tests {
         let mut settings = settings();
         settings.worker.shutdown_cancel_timeout = Duration::from_secs(3);
         let worker = tokio::spawn(http_worker(parts, settings, fake, stopped));
+        let ready: WorkerReady = rx.await.unwrap();
         assert_eq!(
-            rx.await.unwrap(),
-            WorkerReady {
-                types: vec!["tick"],
-                grace_period: Duration::from_secs(1),
-                cancel_timeout: Duration::from_secs(3),
-            }
+            (ready.types, ready.grace_period, ready.cancel_timeout),
+            (vec!["tick"], Duration::from_secs(1), Duration::from_secs(3))
         );
         stop.send(()).unwrap();
         worker.await.unwrap().unwrap();
@@ -1259,7 +1293,7 @@ mod worker_tests {
             tokio::task::yield_now().await;
         }
         // Both are ready; the stop is taken first.
-        let error = run_until_stopped(&worker, &stop).await.unwrap_err();
+        let error = run_until_stopped(&worker, &stop, &StopNow::new()).await.unwrap_err();
         assert_eq!(error.exit_code(), 1);
         assert!(error.to_string().contains("refused"), "{error}");
     }
@@ -1535,5 +1569,74 @@ mod worker_tests {
         assert_eq!(signalled.elapsed(), Duration::from_secs(10), "it ended when the handler did");
         assert_eq!(server.finished(&id).await, Some(cicada::store::OutcomeStatus::Done));
         assert_eq!(server.count("POST", "/leases/release"), 0);
+    }
+    /// A worker over HTTP of `gated` with a grace period of 30 s, running the turn `Wait` until the gate opens: the
+    /// server, the gate, the stop signal, the worker's task, its [`StopNow`] and the message.
+    async fn worker_in_a_long_turn() -> (
+        Server,
+        Gate,
+        tokio::sync::oneshot::Sender<()>,
+        tokio::task::JoinHandle<Result<(), AppError>>,
+        StopNow,
+        MessageId,
+    ) {
+        let server = Server::start().await;
+        let gate = gate();
+        let (stop, stopped) = signal();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let parts = App::new()
+            .host(GatedActor(gate.clone()))
+            .on_worker_ready(move |ready| tx.send(ready.stop_now).unwrap())
+            .into_parts();
+        let worker = tokio::spawn(http_worker(parts, gated_settings(), server.source("s3cret"), stopped));
+        let stop_now = rx.await.unwrap();
+        let id = server.send_wait().await;
+        gate.began.notified().await;
+        (server, gate, stop, worker, stop_now, id)
+    }
+
+    /// The cancel timeout of [`gated_settings`].
+    const CANCEL_TIMEOUT: Duration = Duration::from_secs(5);
+
+    /// Scenario: Stop Now during the drain: the running turn is cancelled and released, and the worker ends within the
+    /// cancel timeout, not the grace period of 30 s.
+    #[tokio::test(start_paused = true)]
+    async fn over_http_stop_now_ends_the_drain_early_and_releases_the_running_turn() {
+        let (server, _gate, stop, worker, stop_now, id) = worker_in_a_long_turn().await;
+        stop.send(()).unwrap();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let asked = Instant::now();
+        stop_now.now();
+        worker.await.unwrap().expect("exit code 0");
+        assert!(asked.elapsed() < CANCEL_TIMEOUT, "ended after {:?}", asked.elapsed());
+        assert_eq!(server.count("POST", "/leases/release"), 1);
+        assert_eq!(server.finished(&id).await, None, "released, not finished");
+        stop_now.now(); // after the stop: nothing
+    }
+
+    /// Scenario: Stop Now right after the stop signal, before the worker has begun stopping: it is kept.
+    #[tokio::test(start_paused = true)]
+    async fn over_http_stop_now_right_after_the_stop_signal_is_kept() {
+        let (server, _gate, stop, worker, stop_now, _id) = worker_in_a_long_turn().await;
+        let signalled = Instant::now();
+        stop.send(()).unwrap();
+        stop_now.now();
+        worker.await.unwrap().expect("exit code 0");
+        assert!(signalled.elapsed() < CANCEL_TIMEOUT, "ended after {:?}", signalled.elapsed());
+        assert_eq!(server.count("POST", "/leases/release"), 1);
+    }
+
+    /// Stop Now before the stop signal does not stop the worker, and ends the grace period as soon as the stop begins.
+    #[tokio::test(start_paused = true)]
+    async fn over_http_stop_now_before_the_stop_signal_applies_when_the_stop_begins() {
+        let (server, _gate, stop, mut worker, stop_now, id) = worker_in_a_long_turn().await;
+        stop_now.now();
+        assert!(tokio::time::timeout(Duration::from_secs(2), &mut worker).await.is_err(), "still running");
+        assert_eq!((server.count("POST", "/leases/release"), server.finished(&id).await), (0, None));
+        let signalled = Instant::now();
+        stop.send(()).unwrap();
+        worker.await.unwrap().expect("exit code 0");
+        assert!(signalled.elapsed() < CANCEL_TIMEOUT, "ended after {:?}", signalled.elapsed());
+        assert_eq!(server.count("POST", "/leases/release"), 1);
     }
 }

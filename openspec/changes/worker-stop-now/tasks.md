@@ -6,7 +6,7 @@ Normal lane, version 0.26.0 (unreleased; it already breaks `WorkerReady`). Build
 - [x] 1. **`Worker::end_grace()`.** A token set only while `Stopping`, under the lifecycle lock; `stop_with_grace`
   races the polling-loop wait and the grace wait against it; a plain call; rustdoc next to `stop_with_grace`
   (decision 1). Verify: the core tests of the design on virtual time; `cargo test -p cicada --lib`.
-- [ ] 2. **`StopNow` in `WorkerReady`.** The handle (a `CancellationToken`), `WorkerReady` without `PartialEq`/`Eq`,
+- [x] 2. **`StopNow` in `WorkerReady`.** The handle (a `CancellationToken`), `WorkerReady` without `PartialEq`/`Eq`,
   the worker over HTTP applying it once its stop has set `Stopping`, the `node.rs` test comparing fields (decision 2).
   Verify: the app tests of the design; `cargo test -p cicada-app`.
 - [ ] 3. **`Tray::stop_now()` and the menu row.** `until` only moves earlier and `stop_now` never calls

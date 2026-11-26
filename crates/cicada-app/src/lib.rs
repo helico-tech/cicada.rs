@@ -79,15 +79,15 @@ use cicada::{Actor, ActorSystem, ActorType};
 
 use crate::command::Parsed;
 pub use crate::config::Contexts;
-pub use crate::node::Stopping;
 use crate::node::{HostTask, HostedType, HttpFn, OnStartFn, OnWorkerReadyFn, Parts, Stop};
+pub use crate::node::{StopNow, Stopping};
 use crate::settings::{Kind, ParsedSettings, Settings, WorkerMode};
 
 /// Environment variables, by name: the process environment in [`App::run`], a literal map in tests.
 pub type Env = BTreeMap<String, String>;
 
-/// The selected types and settled shutdown settings of a started worker over HTTP.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// The selected types and settled shutdown settings of a started worker over HTTP, and its [`StopNow`].
+#[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct WorkerReady {
     /// The names of the types the worker runs, in the order the app hosts them.
@@ -96,6 +96,8 @@ pub struct WorkerReady {
     pub grace_period: Duration,
     /// How long the worker waits for its polling loop and cancelled turns to end.
     pub cancel_timeout: Duration,
+    /// Ends the grace period of the worker's stop: a request before the stop begins is kept until it does.
+    pub stop_now: StopNow,
 }
 
 /// A binary: the types it hosts, what the host adds to a node, and what `--version` prints. [`Self::run`] runs it.
