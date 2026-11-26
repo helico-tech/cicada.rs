@@ -3,9 +3,9 @@
 //! second machine offering under a live node's id is ignored and reported once (ADR 0069), as is a second machine its
 //! member reports under the node's id and instance (ADR 0071), and a node offering a resource key that another live
 //! node holds, such as one Docker daemon's id (ADR 0072). A full pool ignores a new node's offer and says so once
-//! (ADR 0075). Work asks it for a place with its needs and gets a node to pin a child to (ADR 0068). An operator drains a node, and declares a silent node
-//! gone, whose holders are told. A [`PlacementMember`] offers a node's places while the host's probe answers, under a
-//! [`NodeIdentity`] kept across restarts.
+//! (ADR 0075). Work asks it for a place with its needs and gets a node to pin a child to (ADR 0068). An operator drains
+//! a node, and declares a silent node gone, whose holders are told. A [`PlacementMember`] offers a node's places while
+//! the host's probe answers, under a [`NodeIdentity`] kept across restarts.
 
 use std::collections::{BTreeMap, HashSet};
 use std::time::Duration;
@@ -139,10 +139,10 @@ pub enum PlacementMsg {
     /// waiting asks and contests stay, and new ones are ignored, refused or queued until the count is below it. A
     /// larger `maxHolders` grants waiting asks in this turn. A silence other than the current one, with a check armed,
     /// arms the check at the new earliest end of a live node's silence, of a contest or of the `full` mark, at once
-    /// when that has passed, so a shorter one marks the quiet nodes silent in the next turn. Refused for good with the state unchanged when no field is set, a value is
-    /// out of bounds, or the silence of a node, a contest or the `full` mark would end after the last representable
-    /// instant. Unknown fields are ignored, as in every message of the pool, so a misspelled field next to a valid one
-    /// changes nothing.
+    /// when that has passed, so a shorter one marks the quiet nodes silent in the next turn. Refused for good with the
+    /// state unchanged when no field is set, a value is out of bounds, or the silence of a node, a contest or the
+    /// `full` mark would end after the last representable instant. Unknown fields are ignored, as in every message of
+    /// the pool, so a misspelled field next to a valid one changes nothing.
     Configure {
         /// How long a node may go without an offer before it is silent, as an ISO-8601 duration; 1 second through 1
         /// day. Keep it above the members' offer interval. Absent: kept.
@@ -1094,13 +1094,14 @@ fn check_message_type(message_type: &str) -> Result<(), InvalidPlacement> {
 /// and answers no query: read its state.
 ///
 /// A `Configure` replaces the settings it names, within the bounds of the create. A limit lowered below what the pool
-/// has removes nothing: the known nodes, the holders, the waiting asks and the contests stay, and new ones are refused
-/// or queued as at the limit until the count is below it; the pool only serves under its limits. A larger holder
+/// has removes nothing: the known nodes, the holders, the waiting asks and the contests stay, and new ones are kept
+/// out as at the limit until the count is below it (a new node's offer is ignored under the `full` mark, an ask is
+/// queued or refused, a new contest is refused); the pool only serves under its limits. A larger holder
 /// limit grants waiting asks in the same turn, and a larger node limit admits a new node at its next offer. A new
 /// silence, with a check armed, arms the check at the new earliest end of a live node's silence, of a contest or of
-/// the `full` mark, due at once when that has passed: a shorter silence marks the quiet nodes silent in the next turn, and conflict marks
-/// contests and the `full` mark end one new silence time after their last offer or report. A silence at or below the members' offer
-/// interval makes nodes flip between silent and back.
+/// the `full` mark, due at once when that has passed: a shorter silence marks the quiet nodes silent in the next turn,
+/// and conflict marks contests and the `full` mark end one new silence time after their last offer or report. A silence
+/// at or below the members' offer interval makes nodes flip between silent and back.
 ///
 /// Each `Offer` replaces the node's entry and records the store time of its turn as `heardAt`, except an offer of
 /// another instance than the recorded one while the node is live (ADR 0069): that turn changes no entry field, sets the
@@ -1607,8 +1608,8 @@ fn offer(
     Ok(())
 }
 
-/// Sets or moves the `full` mark to `node` at the store time, ignoring its offer, with an alert for a new mark, and arms
-/// the check at `due`, the mark's end, when none is armed.
+/// Sets or moves the `full` mark to `node` at the store time, ignoring its offer, with an alert for a new mark, and
+/// arms the check at `due`, the mark's end, when none is armed.
 fn full(turn: &mut Turn<PlacementActor>, node: String, due: Timestamp) -> HandlerResult {
     let at = turn.now();
     let new = turn.state().full.is_none();
@@ -1680,8 +1681,8 @@ fn end_reports(turn: &mut Turn<PlacementActor>) {
 }
 
 /// Marks each live node whose silence ended as silent with an alert for each, removes each contest and the `full` mark
-/// one silence time after its last offer, and arms the next check or clears `armed` when nothing is left; for the armed check run early, arms it again at `armed`; for any
-/// other check, nothing.
+/// one silence time after its last offer, and arms the next check or clears `armed` when nothing is left; for the armed
+/// check run early, arms it again at `armed`; for any other check, nothing.
 fn check(turn: &mut Turn<PlacementActor>) -> HandlerResult {
     let state = turn.state();
     let (Some(armed), Some(armed_id)) = (state.armed, state.armed_id.as_ref()) else { return Ok(()) };

@@ -58,7 +58,9 @@ move the mark. The mark ends one silence time after the last ignored offer, or a
 pool that fills up again is told again. To let the node in, raise `maxNodes` with `Configure`
 (`cicada send cicada.placement/runners --type Configure --payload '{"maxNodes": 20}'`) or declare silent nodes `Gone`;
 the node is added at its next offer. A new node offering a resource key another live node holds is a contest first,
-with its `conflict` alert, and not counted as a full-pool offer. A known node always renews.
+with its `conflict` alert, and not counted as a full-pool offer. A known node renews as before, also in a full pool,
+unless it offers a resource key another live node holds (a contest, as always). An ignored offer's turn still does
+the pool's usual work of a turn, such as ending a report mark whose time is up.
 **Caveats.** One mark per pool, not per node: the notice names only the first ignored node of the period; read `full`
 in the state for the latest. The pool cannot say how many nodes were turned away.
 
