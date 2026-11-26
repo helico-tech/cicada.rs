@@ -68,6 +68,7 @@ use std::io::Write;
 use std::pin::Pin;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
 use cicada::observer::TurnObserver;
@@ -76,11 +77,20 @@ use cicada::{Actor, ActorSystem, ActorType};
 
 use crate::command::Parsed;
 pub use crate::node::Stopping;
-use crate::node::{HostTask, HostedType, HttpFn, OnStartFn, Parts, Stop};
+use crate::node::{HostTask, HostedType, HttpFn, OnStartFn, OnWorkerReadyFn, Parts, Stop};
 use crate::settings::{Kind, WorkerMode};
 
 /// Environment variables, by name: the process environment in [`App::run`], a literal map in tests.
 pub type Env = BTreeMap<String, String>;
+
+/// The settled shutdown settings of a started worker over HTTP.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WorkerReady {
+    /// How long running turns may finish before the worker cancels them at a stop.
+    pub grace_period: Duration,
+    /// How long the worker waits for its polling loop and cancelled turns to end.
+    pub cancel_timeout: Duration,
+}
 
 /// A binary: the types it hosts, what the host adds to a node, and what `--version` prints. [`Self::run`] runs it.
 pub struct App {
@@ -89,6 +99,7 @@ pub struct App {
     node_config: Option<NodeConfig>,
     http: Vec<HttpFn>,
     on_start: Vec<OnStartFn>,
+    on_worker_ready: Vec<OnWorkerReadyFn>,
     tasks: Vec<HostTask>,
     version: Option<String>,
 }
@@ -96,11 +107,12 @@ pub struct App {
 impl fmt::Debug for App {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("App")
-            .field("types", &self.types.iter().map(|t| t.name).collect::<Vec<_>>())
+            .field("types", &self.type_names())
             .field("observers", &self.observers.len())
             .field("node_config", &self.node_config)
             .field("http", &self.http.len())
             .field("on_start", &self.on_start.len())
+            .field("on_worker_ready", &self.on_worker_ready.len())
             .field("tasks", &self.tasks.iter().map(|t| t.name.as_str()).collect::<Vec<_>>())
             .field("version", &self.version)
             .finish()
@@ -122,6 +134,7 @@ impl App {
             node_config: None,
             http: Vec::new(),
             on_start: Vec::new(),
+            on_worker_ready: Vec::new(),
             tasks: Vec::new(),
             version: None,
         }
@@ -135,6 +148,11 @@ impl App {
         let name = actor.type_name();
         self.types.push(HostedType { name, host: Box::new(move |hosting| hosting.host(actor)) });
         self
+    }
+
+    /// Returns the hosted type names in the order of the calls to [`Self::host`].
+    pub fn type_names(&self) -> Vec<&'static str> {
+        self.types.iter().map(|t| t.name).collect()
     }
 
     /// Adds an observer of the turns of the node or of a worker over HTTP, as
@@ -176,6 +194,14 @@ impl App {
         Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
     {
         self.on_start.push(Box::new(move |system| Box::pin(f(system))));
+        self
+    }
+
+    /// Calls `f` once a worker over HTTP has started, after the server check and contract registration succeed.
+    /// Functions run in the order they were added and should return promptly. Other commands leave them unused.
+    /// A panic stops the worker and fails the command.
+    pub fn on_worker_ready(mut self, f: impl FnOnce(WorkerReady) + Send + 'static) -> Self {
+        self.on_worker_ready.push(Box::new(f));
         self
     }
 
@@ -273,7 +299,7 @@ impl App {
         async move {
             let mut out = out;
             let name = command::program_name(&args);
-            let names: Vec<&'static str> = self.types.iter().map(|t| t.name).collect();
+            let names = self.type_names();
             match command::parse(&args, !names.is_empty()).map_err(AppError::usage)? {
                 Parsed::Help(help) => write!(out, "{help}").map_err(|e| AppError::Failed(e.into())),
                 Parsed::Version => {
@@ -342,6 +368,7 @@ impl App {
             observers: self.observers,
             http: self.http,
             on_start: self.on_start,
+            on_worker_ready: self.on_worker_ready,
             tasks: self.tasks,
         }
     }

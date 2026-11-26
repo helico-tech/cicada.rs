@@ -30,6 +30,12 @@ fn counter_app() -> App {
     App::new().host(CounterActor)
 }
 
+#[test]
+fn type_names_follow_host_call_order() {
+    assert!(App::new().type_names().is_empty());
+    assert_eq!(App::new().host(RegistryActor).host(CounterActor).type_names(), ["registry", "counter"]);
+}
+
 const LOOPBACK_ANY: [&str; 4] = ["myapp", "serve", "--listen", "127.0.0.1:0"];
 
 async fn status(client: &ActorClient, id: &cicada::store::MessageId) -> Option<MessageState> {

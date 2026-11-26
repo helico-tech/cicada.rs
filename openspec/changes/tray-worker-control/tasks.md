@@ -4,7 +4,7 @@ Normal lane, additive: in the 0.25.0 batch (check the `release:` line of `python
 Version). Follow `design.md` and ADR 0074 (`docs/adr/0074-a-tray-crate-next-to-the-app.md`); the spec is
 `specs/tray/spec.md` (a new capability). Crates: `cicada-tray` (new), `cicada-app`.
 
-- [ ] 1. **cicada-app.** `App::type_names()` (decision 5) and `App::on_worker_ready(f)` with `WorkerReady {
+- [x] 1. **cicada-app.** `App::type_names()` (decision 5) and `App::on_worker_ready(f)` with `WorkerReady {
   grace_period,
   cancel_timeout }`, called once a worker over HTTP has started (decision 3). Verify: tests in `cicada-app`.
 - [ ] 2. **The crate and the state.** `crates/cicada-tray` in the workspace (portable), `Tray::new(factory)`,

@@ -27,9 +27,9 @@ use tokio::net::TcpListener;
 use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 
-use crate::AppError;
 use crate::config::Target;
 use crate::settings::{HttpSettings, Settings, StoreSpec, check_built_in};
+use crate::{AppError, WorkerReady};
 
 /// How long `serve` and `worker` wait for a PostgreSQL store that answers "unavailable", and how often they try.
 #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
@@ -94,6 +94,8 @@ impl Hosting {
 pub(crate) type HttpFn = Box<dyn FnOnce(Router, &ActorSystem) -> Router + Send>;
 /// A function of `App::on_start`.
 pub(crate) type OnStartFn = Box<dyn FnOnce(ActorSystem) -> BoxFuture<'static, anyhow::Result<()>> + Send>;
+/// A function of `App::on_worker_ready`.
+pub(crate) type OnWorkerReadyFn = Box<dyn FnOnce(WorkerReady) + Send>;
 
 /// A task of `App::task`: its name and its function.
 pub(crate) struct HostTask {
@@ -107,6 +109,7 @@ pub(crate) struct Parts {
     pub observers: Vec<Arc<dyn TurnObserver>>,
     pub http: Vec<HttpFn>,
     pub on_start: Vec<OnStartFn>,
+    pub on_worker_ready: Vec<OnWorkerReadyFn>,
     pub tasks: Vec<HostTask>,
 }
 
@@ -424,6 +427,16 @@ async fn run_worker(
             return Err(AppError::Failed(anyhow!(e).context("the worker cannot start")));
         }
         Some(Ok(())) => {}
+    }
+    let ready = WorkerReady {
+        grace_period: worker.config().shutdown_grace_period,
+        cancel_timeout: worker.config().shutdown_cancel_timeout,
+    };
+    for f in parts.on_worker_ready {
+        if let Err(panic) = std::panic::catch_unwind(AssertUnwindSafe(|| f(ready))) {
+            worker.stop().await;
+            return Err(AppError::Failed(anyhow!("App::on_worker_ready panicked: {}", panic_text(panic.as_ref()))));
+        }
     }
     run_until_stopped(&worker, &stop).await
 }
@@ -875,6 +888,7 @@ mod worker_tests {
     use tokio::time::Instant;
 
     use super::*;
+    use crate::App;
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     struct Tick {
@@ -1044,9 +1058,7 @@ mod worker_tests {
     }
 
     fn parts() -> Parts {
-        let actor = ActorType::from(TickActor);
-        let tick = HostedType { name: "tick", host: Box::new(move |hosting| hosting.host(actor)) };
-        Parts { types: vec![tick], observers: Vec::new(), http: Vec::new(), on_start: Vec::new(), tasks: Vec::new() }
+        App::new().host(TickActor).into_parts()
     }
 
     fn settings() -> HttpSettings {
@@ -1175,6 +1187,39 @@ mod worker_tests {
         let fake = Arc::new(Fake::new());
         run_worker(parts(), settings(), fake.clone(), stop_after(Duration::from_secs(2))).await.expect("exit 0");
         assert!(fake.count("lease") >= 2, "it leased until the stop");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn worker_ready_runs_once_after_a_retry_and_registration_with_the_settled_settings() {
+        let fake = Arc::new(Fake::new().listing(|call| if call == 0 { unavailable() } else { listed() }));
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (stop, stopped) = signal();
+        let source = fake.clone();
+        let parts = App::new()
+            .host(TickActor)
+            .on_worker_ready(move |ready| {
+                assert_eq!(source.count("list"), 2);
+                assert_eq!(source.count("register"), 1);
+                tx.send(ready).unwrap();
+            })
+            .into_parts();
+        let mut settings = settings();
+        settings.worker.shutdown_cancel_timeout = Duration::from_secs(3);
+        let worker = tokio::spawn(run_worker(parts, settings, fake, stopped));
+        assert_eq!(
+            rx.await.unwrap(),
+            WorkerReady { grace_period: Duration::from_secs(1), cancel_timeout: Duration::from_secs(3) }
+        );
+        stop.send(()).unwrap();
+        worker.await.unwrap().unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_worker_ready_hook_is_skipped_when_registration_fails() {
+        let parts = App::new().host(TickActor).on_worker_ready(|_| panic!("the worker did not start")).into_parts();
+        let fake = Arc::new(Fake::new().registering(unavailable));
+        let error = run_worker(parts, settings(), fake, never()).await.unwrap_err();
+        assert!(error.to_string().starts_with("the worker cannot start"), "{error}");
     }
 
     /// Scenario: A stopped worker and a failed worker: a worker that stops by itself fails the command.
@@ -1376,9 +1421,7 @@ mod worker_tests {
     }
 
     fn gated_parts(gate: &Gate) -> Parts {
-        let actor = ActorType::from(GatedActor(gate.clone()));
-        let gated = HostedType { name: "gated", host: Box::new(move |hosting| hosting.host(actor)) };
-        Parts { types: vec![gated], observers: Vec::new(), http: Vec::new(), on_start: Vec::new(), tasks: Vec::new() }
+        App::new().host(GatedActor(gate.clone())).into_parts()
     }
 
     fn gated_settings() -> HttpSettings {
