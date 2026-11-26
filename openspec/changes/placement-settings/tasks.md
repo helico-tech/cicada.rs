@@ -12,7 +12,7 @@ Builds on `placement-resource-key` (landed). Follow `design.md`; the spec is `sp
 - [x] 3. **The silence.** A different silence with a check armed re-arms at the new earliest end; an equal one does
   nothing (decision 3). Verify: a shorter silence marks a quiet node silent with an alert in the next turn; a longer
   one moves the armed check later.
-- [ ] 4. **Contract, changelog and docs handoff.** `CICADA_UPDATE_CONTRACTS=true` regenerates the contract reference and
+- [x] 4. **Contract, changelog and docs handoff.** `CICADA_UPDATE_CONTRACTS=true` regenerates the contract reference and
   samples; the 0.25.0 section names the message under Added; `docs-handoff.md` carries the design's Docs section. No
   edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify: `cargo test -p cicada-examples --test docs` and
   `--doc`.

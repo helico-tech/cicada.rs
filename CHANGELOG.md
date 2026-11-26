@@ -14,9 +14,10 @@ folder write one node row in turn, so a member that finds another host name ther
 `Duplicate` to the pool, which marks the node with that host, alerts once and gives it no new places. A node can set the
 host name it writes to its row (`NodeConfig::hostname`), and `NodeIdentity` locks its folder, so one machine runs one
 process per identity. An offer can name a resource key, such as the Docker daemon's id that `RuntimeInfo::id` now
-reports, and one live node holds a key (ADR 0072), so two nodes on one daemon count its places once. **BREAKING** for
-placement pools: the contract of `cicada.placement` changes (a new message, optional fields of the offer, the node and
-the conflict mark, and the state's `contested`), so hosts of 0.24.0 pools follow Upgrading below; `NodeConfig`,
+reports, and one live node holds a key (ADR 0072), so two nodes on one daemon count its places once. An operator changes
+a live pool's silence and limits with `Configure` instead of deleting the pool. **BREAKING** for placement pools: the
+contract of `cicada.placement` changes (two new messages, optional fields of the offer, the node and the conflict mark,
+and the state's `contested`), so hosts of 0.24.0 pools follow Upgrading below; `NodeConfig`,
 `PlacementConflict`, `PlacementMsg`, `PlacementNode`, `PlacementState` and `Capacity` gain a field or a variant. The
 store schema, the HTTP API, the other actors' contracts and the guarantees are those of 0.24.0.
 
@@ -72,12 +73,26 @@ store schema, the HTTP API, the other actors' contracts and the guarantees are t
   gone, the next offer of the key takes it. A decoded state with two live holders of one key is refused. Covered by
   the resource-key tests of `crates/cicada-actors/tests/placement.rs`,
   `a_capacity_with_a_resource_key_offers_it` and `tests/wire_formats.rs`.
+- `cicada-actors`: the pool's `Configure { silence, max_nodes, max_waiting, max_holders }`, from anyone, each field
+  optional (on the wire `silence` an ISO-8601 duration, `maxNodes`, `maxWaiting`, `maxHolders`): it changes the
+  settings it names within the bounds of the create and keeps the others. A message without a setting (a misspelled
+  name reads as absent), a value out of bounds, or a silence after which a node's or contest's silence would end past
+  the last representable instant, is refused for good and changes nothing; a misspelled field next to a valid one is
+  ignored. A limit below what the pool has removes nothing: the nodes, holders, waiting asks and contests stay, and new
+  ones are refused or queued until the count is below it; a decoded state may now hold more than its limits, up to
+  1,000 each. A larger `maxHolders` grants waiting asks in the same turn; a larger `maxNodes` admits a new node at its
+  next offer. A new silence with a check armed arms the check at the new earliest end, due at once when that passed, so
+  a shorter one marks the quiet nodes silent in the next turn; an equal one arms nothing. Recipe:
+  `cicada send cicada.placement/runners --type Configure --payload '{"maxHolders": 8, "silence": "PT2M"}'`. Covered
+  by the `Configure` tests of `crates/cicada-actors/tests/placement.rs`, the unit test
+  `configured_replaces_the_given_settings_within_the_bounds_of_the_create` and `tests/wire_formats.rs`.
 
 ### Changed (breaking)
 
 - The contract of `cicada.placement` changes: `PlacementMsg` gains `Duplicate` and `PlacementConflict` the optional
   `host`, so its hash differs from 0.24.0's. Rust code that matches `PlacementMsg` exhaustively gains `Duplicate`, and
-  code that builds `PlacementConflict` gains `host: None`. The resource keys add the optional `resource` to `Offer` and
+  code that builds `PlacementConflict` gains `host: None`. `PlacementMsg` also gains `Configure`, which an exhaustive
+  match gains too. The resource keys add the optional `resource` to `Offer` and
   to the node entry and the state field `contested`: code that builds or matches `PlacementMsg::Offer` without `..`
   or builds `PlacementNode` or `PlacementState` gains them (`resource: None`, `contested: vec![]`).
 - `Capacity` gains the public field `resource`: a struct literal or a pattern without `..` no longer compiles; use
