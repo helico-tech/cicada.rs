@@ -12,7 +12,7 @@ moves: a correction is a new version.
 The first parts of the placement pool (ADR 0067, ADR 0068): nodes offer places with labels to a pool, a node that stops
 offering is marked silent, with one notice, and work asks for a place with its needs and gets a node to pin its actors
 to; a holder that is deleted frees its place; an operator drains a node and declares a silent node gone, whose holders
-are told. The member follows in this version. Additive: a new
+are told; a second machine under a live node's id is ignored and reported once (ADR 0069). The member follows in this version. Additive: a new
 ready-made actor with its own contract; the contracts of the other actors, the store schema, the HTTP API and the
 guarantees are those of 0.23.1.
 
@@ -63,6 +63,17 @@ guarantees are those of 0.23.1.
   `Gone` of an unknown node, and a `TellGone` from another sender are refused for good. A `gone` answer means the place
   is no longer counted; what ran there may still run. Covered by `crates/cicada-actors/tests/placement.rs` and
   `tests/wire_formats.rs`.
+- `cicada-actors`: the conflict alert of the placement pool (ADR 0069; `PlacementConflict`). An offer whose instance
+  differs from the recorded one while the node is `live` changes no entry field; its turn succeeds and sets the node
+  field `conflict` to `{instance, at}`, the other instance and the store time of its turn. A new mark sends one
+  `PlacementNotice` of the new kind `conflict` in an `Alert` turn of its own; later conflicting offers, from any other
+  instance, only update the mark. The mark ends when the node goes `silent`, or when the recorded instance offers one
+  silence time or more after the mark's time; a later conflict alerts again. A silent node's entry is taken over by the
+  next offer, whatever its instance. A decoded `conflict` on a node that is not live, or naming the recorded instance,
+  is refused. The pool only reports: two machines under one node id also share leases and the node row in the store,
+  and a cloned disk with the identity copied looks like one machine. Until the member keeps its instance across
+  restarts, a restart within the silence time counts as a conflict. Covered by
+  `crates/cicada-actors/tests/placement.rs` and `tests/wire_formats.rs`.
 
 ## 0.23.1 — 2026-11-26
 

@@ -12,7 +12,7 @@ Normal lane, additive inside the unreleased 0.24.0 placement batch (check the `r
 - [x] 2. **The end of the mark.** Cleared when the node goes silent, or when the recorded instance offers after no
   conflicting offer for one silence time; a silent node's entry taken over by any instance (decision 2). Verify: the
   replaced-machine and second-machine-stops tests, and a later conflict alerting again.
-- [ ] 3. **Contract, changelog and docs handoff.** The contract reference and samples regenerated
+- [x] 3. **Contract, changelog and docs handoff.** The contract reference and samples regenerated
   (`CICADA_UPDATE_CONTRACTS=true`); the 0.24.0 section names the conflict alert under Added; the handoff carries the
   design's Docs section and the limits. No edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify:
   `cargo test -p cicada-actors`, `cargo test -p cicada-examples --test docs` and `--doc`.
