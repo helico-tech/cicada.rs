@@ -12,7 +12,7 @@ Version). Follow `design.md` and ADR 0074 (`docs/adr/0074-a-tray-crate-next-to-t
   virtual time against an in-process server.
 - [x] 3. **Turns.** The tray's `TurnObserver`: running turns, a ring of the last 50 finished ones, `abandoned` through
   `Drop` without `turn_ended`, a redraw counter (decision 4). Verify: the turn tests of the design.
-- [ ] 4. **Changelog and docs handoff.** The 0.25.0 section names the crate, `type_names` and `on_worker_ready` under
+- [x] 4. **Changelog and docs handoff.** The 0.25.0 section names the crate, `type_names` and `on_worker_ready` under
   Added; the handoff gives the app guide "A menu bar worker". No edit to `README.md`, `AGENTS.md` or the handwritten
   docs. Verify: `cargo test -p cicada-examples --test docs` and `--doc`.
 - [ ] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
