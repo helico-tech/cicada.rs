@@ -97,7 +97,8 @@ fn app_name() -> String {
 
 fn run_app(mtm: MainThreadMarker, tray: Tray, interrupted: Arc<AtomicBool>) -> Result<(), String> {
     let app = NSApplication::sharedApplication(mtm);
-    if !app.setActivationPolicy(NSApplicationActivationPolicy::Accessory) {
+    let accessory = NSApplicationActivationPolicy::Accessory;
+    if app.activationPolicy() != accessory && !app.setActivationPolicy(accessory) {
         return Err("cannot run the Cicada tray as an accessory application".into());
     }
 

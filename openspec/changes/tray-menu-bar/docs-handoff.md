@@ -47,3 +47,6 @@ None.
 
 Proposed guide and upgrade prose. App and tray tests, the tray build and Clippy, and the advisory check passed.
 The docs checks passed (11 link and guarantee tests and 51 doctests). The OpenAPI version was regenerated.
+The example started from a terminal and exited successfully on Ctrl-C. A temporary bundle with `LSUIElement`
+also started and shut down on SIGINT. The GUI automation session could not observe the status menu, so the
+remaining manual checks in task 3 are open.

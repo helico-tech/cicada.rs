@@ -127,7 +127,10 @@ pub(crate) fn menu(input: &MenuInput<'_>) -> MenuModel {
         registered_types: input
             .registered_types
             .iter()
-            .map(|&name| Choice { name, marked: input.worker_types.contains(&name) })
+            .map(|&name| Choice {
+                name,
+                marked: input.state.connection().is_some() && input.worker_types.contains(&name),
+            })
             .collect(),
         recent,
         failures,
@@ -317,6 +320,7 @@ mod tests {
         assert_eq!(menu.registered_types.iter().map(|row| row.marked).collect::<Vec<_>>(), [true, false, true]);
         let offline = model(&TrayState::Offline, now, &turns, Some("test"));
         assert_eq!(offline.contexts.iter().map(|row| row.marked).collect::<Vec<_>>(), [false, true]);
+        assert!(offline.registered_types.iter().all(|row| !row.marked));
     }
 
     #[test]
