@@ -232,7 +232,8 @@ pub trait ContainerJob: Send + Sync + 'static {
     /// once with the error in the report; the end keeps its outcome.
     ///
     /// The copy holds the files in memory, at most [`max_bytes`](CopyLimits::max_bytes) per collecting container:
-    /// size the limits against the node's concurrency.
+    /// size the limits against the node's concurrency. It reads at most [`max_read`](CopyLimits::max_read) bytes,
+    /// skipped files included, so a huge file stops it there.
     ///
     /// ```
     /// # use cicada::prelude::*;
@@ -257,6 +258,7 @@ pub trait ContainerJob: Send + Sync + 'static {
     ///
     /// let outputs = Tests.outputs(&Test {}).unwrap();
     /// assert_eq!((outputs.limits.max_files, outputs.limits.max_bytes), (1000, 64 * 1024 * 1024));
+    /// assert_eq!(outputs.limits.max_read, 256 * 1024 * 1024);
     /// ```
     fn outputs(&self, request: &Self::Request) -> Option<Outputs> {
         let _ = request;
@@ -271,12 +273,12 @@ pub trait ContainerJob: Send + Sync + 'static {
 pub struct Outputs {
     /// The absolute path of the folder, or of one file, in the container.
     pub path: String,
-    /// The limits of the copy: 1000 entries and 64 MiB by default.
+    /// The limits of the copy: 1000 entries and 64 MiB kept, 256 MiB read, by default.
     pub limits: CopyLimits,
 }
 
 impl Outputs {
-    /// The folder `path`, with at most 1000 entries and 64 MiB.
+    /// The folder `path`, with at most 1000 entries and 64 MiB kept, reading at most 256 MiB.
     pub fn new(path: impl Into<String>) -> Self {
         Self { path: path.into(), limits: CopyLimits::new(1000, 64 * 1024 * 1024) }
     }

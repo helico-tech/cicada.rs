@@ -136,7 +136,7 @@ mod tests {
         Collector::new("job-1", path, limits).unwrap()
     }
 
-    const ROOMY: CopyLimits = CopyLimits { max_files: 100, max_bytes: 1 << 20 };
+    const ROOMY: CopyLimits = CopyLimits::new(100, 1 << 20);
 
     #[tokio::test]
     async fn files_links_and_long_names_are_read_from_a_tar() {
@@ -174,30 +174,50 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_big_skipped_entry_streams_past_and_the_next_file_is_kept() {
-        const BIG: u64 = 64 << 20;
+    const BIG: u64 = 64 << 20;
+
+    /// An archive of `out/first` (5 bytes), `out/big` (`BIG` bytes of data made in 1 MiB chunks only when the reader
+    /// asks, at most a few at once) and `out/small`, with the count of chunks made.
+    fn lazy_big_archive() -> (impl Stream<Item = Result<Bytes, DockerError>> + Send + Unpin + 'static, Arc<AtomicUsize>)
+    {
+        let mut head = tar::Builder::new(Vec::new());
+        add(&mut head, "out/first", b"first", 0o644);
+        let mut head = head.into_inner().unwrap();
+        head.truncate(head.len() - 1024); // without the two zero blocks that end an archive
         // The header of `out/big`, written by hand so its data can come lazily.
-        let big = raw(EntryType::Regular, BIG, 0o644, "out/big");
+        head.extend_from_slice(raw(EntryType::Regular, BIG, 0o644, "out/big").as_bytes());
         let mut tail = tar::Builder::new(Vec::new());
         add(&mut tail, "out/small", b"small", 0o644);
         let tail = tail.into_inner().unwrap();
 
-        // The data of `out/big` in 1 MiB chunks, made only when the reader asks; at most a few exist at once.
         let made = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&made);
         let data = stream::iter(0..(BIG >> 20)).map(move |_| {
             counter.fetch_add(1, Ordering::Relaxed);
             Ok(Bytes::from(vec![0u8; 1 << 20]))
         });
-        let stream = stream::iter(vec![Ok(Bytes::copy_from_slice(big.as_bytes()))])
-            .chain(data)
-            .chain(stream::iter(vec![Ok(Bytes::from(tail))]));
+        let stream =
+            stream::iter(vec![Ok(Bytes::from(head))]).chain(data).chain(stream::iter(vec![Ok(Bytes::from(tail))]));
+        (Box::pin(stream), made)
+    }
 
-        let out = read_archive(Box::pin(stream), collector("/out", CopyLimits::new(10, 1000))).await.unwrap();
-        assert_eq!(out.files, [CopyFile::new("/out/small", "small")]);
-        assert_eq!(out.skipped, [SkippedFile::new("/out/big", format!("{BIG} bytes, more than the 1000 left"))]);
+    #[tokio::test]
+    async fn a_big_skipped_entry_streams_past_and_the_next_file_is_kept() {
+        let (stream, made) = lazy_big_archive();
+        let limits = CopyLimits::new(10, 1000).with_max_read(BIG + 1000);
+        let out = read_archive(stream, collector("/out", limits)).await.unwrap();
+        assert_eq!(out.files, [CopyFile::new("/out/first", "first"), CopyFile::new("/out/small", "small")]);
+        assert_eq!(out.skipped, [SkippedFile::new("/out/big", format!("{BIG} bytes, more than the 995 left"))]);
         assert_eq!(made.load(Ordering::Relaxed), 64, "streamed through, chunk by chunk");
+    }
+
+    #[tokio::test]
+    async fn an_entry_past_the_read_limit_ends_the_stream_before_its_data() {
+        let (stream, made) = lazy_big_archive();
+        let out = read_archive(stream, collector("/out", CopyLimits::new(10, 1000))).await.unwrap();
+        assert_eq!(out.files, [CopyFile::new("/out/first", "first")]);
+        assert_eq!(out.skipped, [SkippedFile::new("/out", "the rest was not read: over the read limit of 4000 bytes")]);
+        assert!(made.load(Ordering::Relaxed) <= 2, "not read: {} chunks", made.load(Ordering::Relaxed));
     }
 
     #[tokio::test]

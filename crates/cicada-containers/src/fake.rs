@@ -1063,7 +1063,7 @@ mod tests {
         assert_eq!(fake.calls().iter().filter(|c| **c == call).count(), 2);
     }
 
-    const ROOMY: CopyLimits = CopyLimits { max_files: 100, max_bytes: 1 << 20 };
+    const ROOMY: CopyLimits = CopyLimits::new(100, 1 << 20);
 
     fn with_mode(path: &str, contents: &str, mode: u32) -> CopyFile {
         CopyFile { mode, ..CopyFile::new(path, contents) }
@@ -1111,18 +1111,35 @@ mod tests {
         for (path, size) in [("/out/a", 10), ("/out/b", 5000), ("/out/c", 20)] {
             fake.put_file("job-1", CopyFile::new(path, vec![b'x'; size]));
         }
-        let out = now(fake.copy_out("job-1", "/out", CopyLimits::new(10, 100))).unwrap();
+        let roomy_read = |limits: CopyLimits| limits.with_max_read(1 << 20);
+        let out = now(fake.copy_out("job-1", "/out", roomy_read(CopyLimits::new(10, 100)))).unwrap();
         assert_eq!(out.files.iter().map(|f| f.contents.len()).collect::<Vec<_>>(), [10, 20]);
         assert_eq!(skipped(&out), [("/out/b", "5000 bytes, more than the 90 left")]);
 
-        let out = now(fake.copy_out("job-1", "/out", CopyLimits::new(2, 100))).unwrap();
+        let out = now(fake.copy_out("job-1", "/out", roomy_read(CopyLimits::new(2, 100)))).unwrap();
         assert_eq!(out.files.len(), 1);
         assert_eq!(
             skipped(&out),
             [("/out/b", "5000 bytes, more than the 90 left"), ("/out", "more than 2 files; the rest was not read")]
         );
-        let out = now(fake.copy_out("job-1", "/out", CopyLimits::new(3, 100))).unwrap();
+        let out = now(fake.copy_out("job-1", "/out", roomy_read(CopyLimits::new(3, 100)))).unwrap();
         assert_eq!((out.files.len(), out.skipped.len()), (2, 1), "exactly at the limit: no last entry");
+    }
+
+    #[test]
+    fn copy_out_stops_in_a_file_over_the_read_limit() {
+        let fake = FakeRuntime::new();
+        started(&fake, "job-1");
+        for (path, size) in [("/out/a", 10), ("/out/b", 500), ("/out/c", 20)] {
+            fake.put_file("job-1", CopyFile::new(path, vec![b'x'; size]));
+        }
+        let out = now(fake.copy_out("job-1", "/out", CopyLimits::new(10, 100))).unwrap();
+        assert_eq!(out.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), ["/out/a"]);
+        assert_eq!(skipped(&out), [("/out", "the rest was not read: over the read limit of 400 bytes")]);
+
+        let out = now(fake.copy_out("job-1", "/out", CopyLimits::new(10, 100).with_max_read(510))).unwrap();
+        assert_eq!(out.files.len(), 1, "/out/c is past the read limit");
+        assert_eq!(skipped(&out).last(), Some(&("/out", "the rest was not read: over the read limit of 510 bytes")));
     }
 
     #[test]
@@ -1136,7 +1153,7 @@ mod tests {
         for bad in ["out", "/", "/out/../etc"] {
             assert_eq!(kind(now(fake.copy_out("job-1", bad, ROOMY))), ErrorKind::InvalidSpec, "{bad}");
         }
-        for zero in [CopyLimits::new(0, 100), CopyLimits::new(10, 0)] {
+        for zero in [CopyLimits::new(0, 100), CopyLimits::new(10, 0), CopyLimits::new(10, 100).with_max_read(0)] {
             assert_eq!(kind(now(fake.copy_out("job-1", "/out", zero))), ErrorKind::InvalidSpec, "{zero:?}");
             assert_eq!(kind(now(fake.copy_out("gone", "/out", zero))), ErrorKind::InvalidSpec, "before the lookup");
         }

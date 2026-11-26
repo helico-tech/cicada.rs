@@ -5,7 +5,7 @@ Normal lane, additive: in the unreleased batch after 0.23.0 (0.23.1; check the `
 and `specs/container-runtime/spec.md`. Run the crate's tests with every feature:
 `cargo test -p cicada-containers --all-features`.
 
-- [ ] 1. **The read cap.** `CopyLimits::max_read` (default 4 × `max_bytes`, saturating), `with_max_read` (zero refused),
+- [x] 1. **The read cap.** `CopyLimits::max_read` (default 4 × `max_bytes`, saturating), `with_max_read` (zero refused),
   counted over the content bytes of regular files, kept and skipped, in the shared collector of `copy.rs`, so Docker
   and the fake stop at the same point with one skipped entry for the rest (decision 2). Verify: collector and fake
   tests; `cargo test -p cicada-containers --all-features`.

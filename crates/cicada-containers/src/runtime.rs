@@ -127,10 +127,13 @@ pub trait ContainerRuntime: Send + Sync + 'static {
     ///
     /// **Limits.** A file goes into [`files`](CopyOut::files) when its size fits what is left of
     /// [`max_bytes`](CopyLimits::max_bytes); else it is in [`skipped`](CopyOut::skipped) with its size, and the copy
-    /// goes on, so one huge file costs only itself. A file is whole or skipped, never cut. Once `files` and `skipped`
-    /// together hold [`max_files`](CopyLimits::max_files) entries, the next entry that would go into either stops the
-    /// copy, and one last skipped entry for `path` says the rest was not read; with exactly `max_files` entries there
-    /// is no such entry. So memory is at most `max_bytes`, plus `max_files + 1` paths, whatever the folder holds.
+    /// goes on. A file is whole or skipped, never cut. Once `files` and `skipped` together hold
+    /// [`max_files`](CopyLimits::max_files) entries, the next entry that would go into either stops the copy, and one
+    /// last skipped entry for `path` says the rest was not read; with exactly `max_files` entries there is no such
+    /// entry. The regular files read, kept and skipped alike, add up to at most [`max_read`](CopyLimits::max_read)
+    /// bytes: a file that would take them past it stops the copy the same way, with one last entry for `path` that
+    /// says so, so a huge file ends the copy where its data starts. So memory is at most `max_bytes`, plus
+    /// `max_files + 1` paths, and the copy reads at most `max_read` bytes, whatever the folder holds.
     ///
     /// **Links.** Only regular files are copied, and no link is followed: a symbolic link, inside the folder or out
     /// of it, a hard link, a device, a pipe and a socket are skipped with a reason, and so is an entry whose name is

@@ -289,7 +289,9 @@ async fn a_file_the_store_refuses_is_skipped_with_its_reason_and_the_others_are_
 #[tokio::test(start_paused = true)]
 async fn more_than_ten_skipped_are_counted_and_ten_are_listed() {
     let (fake, store) = (FakeRuntime::new(), MemoryOutputStore::new());
-    let test = harness(&fake, &store, Job::bytes(1)).await;
+    let mut outputs = Outputs::new("/work/out");
+    outputs.limits = CopyLimits::new(1000, 1).with_max_read(1000); // each skipped file is read too
+    let test = harness(&fake, &store, Job { outputs: Some(outputs) }).await;
     started(&test, "j1").await;
     for i in 10..22 {
         write(&fake, &format!("/work/out/f{i}"), "xx");

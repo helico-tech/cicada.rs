@@ -8,7 +8,7 @@ use crate::paths::path_parts;
 use crate::{ContainerError, CopyFile, ErrorKind};
 
 /// The limits of one [`copy_out`](crate::ContainerRuntime::copy_out): how many entries its result holds, kept and
-/// skipped files together, and how many bytes of contents it keeps. Neither may be zero.
+/// skipped files together, how many bytes of contents it keeps, and how many it reads. None may be zero.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CopyLimits {
@@ -17,12 +17,22 @@ pub struct CopyLimits {
     pub max_files: u32,
     /// The most bytes of contents of all kept files together.
     pub max_bytes: u64,
+    /// The most bytes of contents of regular files the copy reads, kept and skipped alike: a skipped file's data
+    /// passes through Docker's archive all the same. A file that would take the count past it stops the copy, as
+    /// the file limit does.
+    pub max_read: u64,
 }
 
 impl CopyLimits {
-    /// At most `max_files` entries and `max_bytes` bytes of contents.
-    pub fn new(max_files: u32, max_bytes: u64) -> Self {
-        Self { max_files, max_bytes }
+    /// At most `max_files` entries and `max_bytes` bytes of contents, reading at most four times `max_bytes`
+    /// (saturating).
+    pub const fn new(max_files: u32, max_bytes: u64) -> Self {
+        Self { max_files, max_bytes, max_read: max_bytes.saturating_mul(4) }
+    }
+
+    /// These limits reading at most `bytes` bytes of contents.
+    pub const fn with_max_read(self, bytes: u64) -> Self {
+        Self { max_read: bytes, ..self }
     }
 }
 
@@ -91,6 +101,9 @@ pub(crate) struct Collector {
     root: String,
     max_files: u32,
     left: u64,
+    max_read: u64,
+    /// What is left of `max_read`.
+    read_left: u64,
     out: CopyOut,
     stopped: bool,
 }
@@ -100,12 +113,12 @@ impl Collector {
     /// limit.
     pub(crate) fn new(name: &str, path: &str, limits: CopyLimits) -> Result<Self, ContainerError> {
         let mut parts = path_parts("copy out of", name, path)?;
-        if limits.max_files == 0 || limits.max_bytes == 0 {
+        if limits.max_files == 0 || limits.max_bytes == 0 || limits.max_read == 0 {
             return Err(ContainerError::new(
                 ErrorKind::InvalidSpec,
                 format!(
-                    "copy out of {name}: limits of {} files and {} bytes; neither may be zero",
-                    limits.max_files, limits.max_bytes
+                    "copy out of {name}: limits of {} files, {} bytes and {} bytes read; none may be zero",
+                    limits.max_files, limits.max_bytes, limits.max_read
                 ),
             ));
         }
@@ -117,6 +130,8 @@ impl Collector {
             root,
             max_files: limits.max_files,
             left: limits.max_bytes,
+            max_read: limits.max_read,
+            read_left: limits.max_read,
             out: CopyOut::default(),
             stopped: false,
         })
@@ -128,8 +143,9 @@ impl Collector {
     }
 
     /// The entry `name` of `kind`: kept, skipped or passed over. A regular file of `size` bytes is kept when it fits
-    /// the bytes left: `read` then fills a buffer of exactly that size. Returns `false` once the file limit stops the
-    /// copy: the caller reads no more entries. An error of `read` is returned as it is.
+    /// the bytes left: `read` then fills a buffer of exactly that size. Every regular file, kept or skipped, counts
+    /// against the read limit. Returns `false` once the file limit or the read limit stops the copy: the caller reads
+    /// no more entries. An error of `read` is returned as it is.
     pub(crate) fn offer<E>(
         &mut self,
         name: &str,
@@ -149,6 +165,15 @@ impl Collector {
             self.out.skipped.push(SkippedFile::new(self.root.clone(), reason));
             self.stopped = true;
             return Ok(false);
+        }
+        if kind == EntryKind::File {
+            if size > self.read_left {
+                let reason = format!("the rest was not read: over the read limit of {} bytes", self.max_read);
+                self.out.skipped.push(SkippedFile::new(self.root.clone(), reason));
+                self.stopped = true;
+                return Ok(false);
+            }
+            self.read_left -= size;
         }
         let Some(path) = self.absolute(name) else {
             self.out.skipped.push(SkippedFile::new(name, "outside the folder"));
@@ -232,7 +257,7 @@ mod tests {
 
     #[test]
     fn a_file_over_the_bytes_left_is_skipped_and_the_copy_goes_on() {
-        let mut c = collector("/out", 10, 100);
+        let mut c = Collector::new("c", "/out", CopyLimits::new(10, 100).with_max_read(10_000)).unwrap();
         assert!(other(&mut c, "out/", EntryKind::Folder));
         assert!(file(&mut c, "out/a", 10, b'a'));
         assert!(file(&mut c, "out/big", 5000, b'x'));
@@ -275,10 +300,44 @@ mod tests {
     }
 
     #[test]
+    fn the_read_limit_counts_skipped_files_and_stops_at_the_file_past_it() {
+        let limits = CopyLimits::new(10, 20).with_max_read(100);
+        let mut c = Collector::new("c", "/out", limits).unwrap();
+        assert!(file(&mut c, "out/a", 10, b'a'));
+        assert!(file(&mut c, "out/big", 60, b'x'), "skipped over the bytes left, but read");
+        assert!(other(&mut c, "out/l", EntryKind::Symlink("a".into())), "no contents, not counted");
+        assert!(file(&mut c, "out/b", 30, b'b'), "exactly at the read limit");
+        assert!(file(&mut c, "out/empty", 0, b'e'), "an empty file reads nothing");
+        assert!(!file(&mut c, "out/c", 1, b'c'), "one byte past it");
+        assert!(!file(&mut c, "out/d", 1, b'd'), "stopped");
+        let out = c.finish();
+        assert_eq!(
+            paths(&out),
+            (
+                vec!["/out/a", "/out/empty"],
+                vec![
+                    ("/out/big", "60 bytes, more than the 10 left"),
+                    ("/out/l", "a symbolic link to a, not followed"),
+                    ("/out/b", "30 bytes, more than the 10 left"),
+                    ("/out", "the rest was not read: over the read limit of 100 bytes"),
+                ]
+            )
+        );
+    }
+
+    #[test]
+    fn the_read_limit_is_four_times_the_bytes_kept_by_default() {
+        assert_eq!(CopyLimits::new(1, 100).max_read, 400);
+        assert_eq!(CopyLimits::new(1, u64::MAX).max_read, u64::MAX, "saturating");
+        assert_eq!(CopyLimits::new(1, 100).with_max_read(7).max_read, 7);
+    }
+
+    #[test]
     fn a_zero_limit_or_a_bad_path_is_invalid() {
         for (limits, path) in [
             (CopyLimits::new(0, 1), "/out"),
             (CopyLimits::new(1, 0), "/out"),
+            (CopyLimits::new(1, 1).with_max_read(0), "/out"),
             (CopyLimits::new(1, 1), "out"),
             (CopyLimits::new(1, 1), "/"),
         ] {
