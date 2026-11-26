@@ -64,15 +64,16 @@ fn main() -> std::process::ExitCode {
    so this is **BREAKING** for code that builds, copies or matches it without `..`: the change goes into 0.26.0. And
    `cicada_app::Contexts::load(&Env) -> anyhow::Result<Contexts>` with `names()` and `current()` reads the context names
    and the current context from the config file through the existing private config code (no tokens or servers leave
-   it). The tray re-reads it each time the menu opens. `tray-settings` widens this later. 9. **Connect from the menu.**
-   The tray starts `Offline`; the header switch connects to the current context (or, with none, the switch is disabled
-   and the subtitle says to run `cicada config`), and off disconnects. Picking another context disconnects, waits until
-   the tray holds no connection (`Offline` or `Failed`), and connects to it; the pending pick is kept in the main
-   thread's state, which the timer acts on, and a later pick replaces it; picking the connected one does nothing. From
-   `Failed` a pick connects at once. Not taken: connecting at launch (a setting for later). 10. **Dependencies.**
-   `objc2`, `objc2-foundation` and `objc2-app-kit` (with only the features used), under `[target.'cfg(target_os =
-   "macos")'.dependencies]`; `cargo deny check advisories` passes. A worked example `examples/menu-bar-worker.rs` (macOS
-   only, `no_run` in the docs) shows `run`.
+   it). The tray re-reads it each time the menu opens. `tray-settings` widens this later.
+9. **Connect from the menu.** The tray starts `Offline`; the header switch connects to the current context (or, with
+   none, the switch is disabled and the subtitle says to run `cicada config`), and off disconnects. Picking another
+   context disconnects, waits until the tray holds no connection (`Offline` or `Failed`), and connects to it; the
+   pending pick is kept in the main thread's state, which the timer acts on, and a later pick replaces it; picking the
+   connected one does nothing. From `Failed` a pick connects at once. Not taken: connecting at launch (a setting for
+   later).
+10. **Dependencies.** `objc2`, `objc2-foundation` and `objc2-app-kit` (with only the features used), under
+    `[target.'cfg(target_os = "macos")'.dependencies]`; `cargo deny check advisories` passes. A worked example
+    `examples/menu-bar-worker.rs` (macOS only, `no_run` in the docs) shows `run`.
 
 ## Tests
 
