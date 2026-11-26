@@ -114,7 +114,7 @@
     },
     "Rearm": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "Cancels the armed check and arms a new one at its unchanged time, at once when that has passed: the recovery of a\ncheck that was purged, cancelled or failed for good. Nothing when no node is live.",
+      "description": "Cancels the armed check and arms a new one at its unchanged time, at once when that has passed: the recovery of\na check that was purged, cancelled or failed for good. Nothing when no node is live.",
       "properties": {},
       "title": "Rearm",
       "type": "object"
@@ -206,7 +206,7 @@
       }
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "description": "The state of a [`Placement`] pool: its silence time and node limit, fixed at its create, where its notices go, the\nnodes it knows by node id, and the time and id of its armed check. Build it with `PlacementState::new`; a decoded state is\nchecked the same way.\n\nOn the wire: `{\"silence\":\"PT1M\",\"maxNodes\":1000,\"alerts\":null,\"nodes\":{},\"armed\":null,\"armedId\":null}`; `alerts`,\n`nodes`, `armed` and `armedId` may be left out of a create.",
+    "description": "The state of a [`Placement`] pool: its silence time and node limit, fixed at its create, where its notices go, the\nnodes it knows by node id, and the time and id of its armed check. Build it with `PlacementState::new`; a decoded\nstate is checked the same way.\n\nOn the wire: `{\"silence\":\"PT1M\",\"maxNodes\":1000,\"alerts\":null,\"nodes\":{},\"armed\":null,\"armedId\":null}`; `alerts`,\n`nodes`, `armed` and `armedId` may be left out of a create.",
     "properties": {
       "alerts": {
         "anyOf": [

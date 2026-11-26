@@ -75,8 +75,8 @@ pub enum PlacementMsg {
     /// the earliest end of a live node's silence. Run early (made due by an operator) it arms itself again at `armed`;
     /// any other `Check` the pool sent itself changes nothing, and one from another sender is refused for good.
     Check,
-    /// Cancels the armed check and arms a new one at its unchanged time, at once when that has passed: the recovery of a
-    /// check that was purged, cancelled or failed for good. Nothing when no node is live.
+    /// Cancels the armed check and arms a new one at its unchanged time, at once when that has passed: the recovery of
+    /// a check that was purged, cancelled or failed for good. Nothing when no node is live.
     Rearm,
     /// Sends the alert target a notice about `node`, in a turn of its own so that a failing target fails only this
     /// alert; nothing without a target. Sent by the pool to itself.
@@ -206,8 +206,8 @@ pub struct PlacementNode {
 pub struct InvalidPlacement(String);
 
 /// The state of a [`Placement`] pool: its silence time and node limit, fixed at its create, where its notices go, the
-/// nodes it knows by node id, and the time and id of its armed check. Build it with `PlacementState::new`; a decoded state is
-/// checked the same way.
+/// nodes it knows by node id, and the time and id of its armed check. Build it with `PlacementState::new`; a decoded
+/// state is checked the same way.
 ///
 /// On the wire: `{"silence":"PT1M","maxNodes":1000,"alerts":null,"nodes":{},"armed":null,"armedId":null}`; `alerts`,
 /// `nodes`, `armed` and `armedId` may be left out of a create.
@@ -417,8 +417,9 @@ fn check_message_type(message_type: &str) -> Result<(), InvalidPlacement> {
 /// alert. Each `Alert` sends a [`PlacementNotice`] to the target of the last `Alerts`, so a target that is gone or
 /// refuses the notice fails that alert and nothing else; the node stays silent. The armed check run early, made due by
 /// an operator, marks nothing and arms itself again at `armed`; any other `Check` the pool sent itself changes nothing,
-/// and one from another sender (an operator's retry or redrive comes without one) is refused. A check that is purged, cancelled or failed for good leaves the pool
-/// with a stale `armedId` and no timer until `Rearm`, which cancels it and arms a new one at `armed`.
+/// and one from another sender (an operator's retry or redrive comes without one) is refused. A check that is purged,
+/// cancelled or failed for good leaves the pool with a stale `armedId` and no timer until `Rearm`, which cancels it and
+/// arms a new one at `armed`.
 ///
 /// Silence is counted from the store time an offer was handled; due times are not run times, so a paused or slow pool
 /// marks a node late, never before its silence ended. A pool hosted only on its member nodes runs no check once they
