@@ -7,7 +7,7 @@ it when it landed first). Follow `design.md`; the spec is `specs/menu-bar-tray/s
 - [x] 1. **What the model needs from `cicada-app`.** `WorkerReady::types` (`#[non_exhaustive]`, no `Copy`), filled
   from the worker's picked types; `cicada_app::Contexts::load(&Env)` with `names()` and `current()`, no servers or
   tokens (decision 8). Verify: `cargo test -p cicada-app` with tests for both.
-- [ ] 2. **The menu model.** Module `menu`, every platform: `MenuInput`, `MenuModel` and `menu()`, with elapsed times
+- [x] 2. **The menu model.** Module `menu`, every platform: `MenuInput`, `MenuModel` and `menu()`, with elapsed times
   clamped at zero and the badge; the quit and pending-pick state machine beside it (decisions 1, 3, 9). Verify: the
   unit tests of the design.
 - [ ] 3. **The AppKit view.** Module `appkit` (`cfg(target_os = "macos")`): `Tray::run`, the runtime and its shutdown

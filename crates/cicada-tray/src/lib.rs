@@ -1,5 +1,7 @@
 //! Controls a Cicada worker over HTTP in the host process. The model can drive a menu bar or other UI.
 
+#[allow(dead_code)] // AppKit uses the menu model in the next task.
+mod menu;
 mod turns;
 
 use std::io;
