@@ -22,21 +22,21 @@ server and token, choose the types this worker runs, and how many turns run at o
    `set-context`) and the tray use it, so neither loses the other's change. Readers do not lock.
 3. **The tray's own file.** `tray.toml` in the directory of the config path as given (a relative `CICADA_CONFIG` is
    taken against the working directory; a symlinked config file keeps `tray.toml` next to the link). A config path whose
-   name, or whose resolved target, is that `tray.toml` is refused. `[contexts.<name>]` holds `types = [...]` and
-   `concurrency = N`, written atomically, mode 0644 (no secrets), under its own lock (`tray.toml.lock`, by the tray
-   file's path), since two config files in one directory share one `tray.toml`. A context without an entry inherits: no
-   `--types`, no `--concurrency`.
+   name, or whose resolved target, is that `tray.toml` or its lock file `tray.toml.lock` is refused, so no config write
+   can replace either. `[contexts.<name>]` holds `types = [...]` and `concurrency = N`, written atomically, mode 0644
+   (no secrets), under its own lock (`tray.toml.lock`, by the tray file's path), since two config files in one directory
+   share one `tray.toml`. A context without an entry inherits: no `--types`, no `--concurrency`.
 4. **The worker's arguments.** With a saved entry, `connect(context)` always passes `--types` with the saved names still
    registered and `--concurrency N`, so a choice made in Settings, all types included, overrides `CICADA_TYPES` and
    `CICADA_CONCURRENCY`. The saved names are first filtered to the registered ones. If what is left is every registered
-   type, the tray passes `--types all`; if it is a single type literally named `all` or `none` while other types are
-   registered (the keywords of `--types` would read it as all, or as none), `connect` ends `Failed` with "the saved type
-   selection of <context> cannot be passed to --types; open Settings", and validation refuses picking that selection in
-   the first place; otherwise it passes the comma-separated names, which `--types` reads literally. Saved types of which
-   none is registered any more, or no type registered at all: `connect` ends `Failed` with "no registered type selected
-   for <context>; open Settings". The server and token follow the command line's order (`CICADA_SERVER` and
-   `CICADA_TOKEN` in the tray's environment win over the context); the window says so under the server field when either
-   is set.
+   type, the tray passes `--types all` (also when the only registered type is literally named `all` or `none`: `all`
+   then runs exactly that type); if it is a single type literally named `all` or `none` while other types are registered
+   (the keywords of `--types` would read it as all, or as none), `connect` ends `Failed` with "the saved type selection
+   of <context> cannot be passed to --types; open Settings", and validation refuses picking that selection in the first
+   place; otherwise it passes the comma-separated names, which `--types` reads literally. Saved types of which none is
+   registered any more, or no type registered at all: `connect` ends `Failed` with "no registered type selected for
+   <context>; open Settings". The server and token follow the command line's order (`CICADA_SERVER` and `CICADA_TOKEN`
+   in the tray's environment win over the context); the window says so under the server field when either is set.
 5. **A portable form model.** Module `settings` (every platform): `SettingsForm` loads both files for a context, holds
    the edited values, validates them (the server by the URL check the worker over HTTP uses, moved to one shared
    function; at least one type; a concurrency from 1 through 1,000; a new context's name of 1 to 64 characters from `A-Z
