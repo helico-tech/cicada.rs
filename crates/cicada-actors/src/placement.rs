@@ -2,7 +2,8 @@
 //! interval; a node not heard from for the pool's silence time is marked silent, and its alert target is told once. A
 //! second machine offering under a live node's id is ignored and reported once (ADR 0069). Work asks it for a place
 //! with its needs and gets a node to pin a child to (ADR 0068). An operator drains a node, and declares a silent node
-//! gone, whose holders are told.
+//! gone, whose holders are told. A [`PlacementMember`] offers a node's places while the host's probe answers, under a
+//! [`NodeIdentity`] kept across restarts.
 
 use std::collections::{BTreeMap, HashSet};
 use std::time::Duration;
@@ -15,6 +16,10 @@ use cicada::{Failed, Stopped};
 use serde::{Deserialize, Serialize};
 
 use crate::supervisor::retry_policy;
+
+mod member;
+
+pub use member::{Capacity, InvalidIdentity, MemberSettings, NodeIdentity, PlacementMember};
 
 /// The shortest silence time of a pool.
 const MIN_SILENCE: Duration = Duration::from_secs(1);
@@ -69,8 +74,9 @@ pub enum PlacementMsg {
         /// The node id the member's node pins its actors under.
         #[schemars(length(min = 1, max = 200))]
         node: String,
-        /// An id that tells two machines offering under one node id apart. One drawn at each process start makes a
-        /// restart within the silence time look like a second machine.
+        /// An id that tells two machines offering under one node id apart, kept across restarts, such as
+        /// `NodeIdentity::instance`. One drawn at each process start makes a restart within the silence time look
+        /// like a second machine.
         #[schemars(length(min = 1, max = 200))]
         instance: String,
         /// What the node offers, such as its processor kind: at most 32, each 1 through 100 characters without NUL.

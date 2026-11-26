@@ -292,7 +292,7 @@
       "description": "A node offers its places: replaces the node's entry with this instance, these labels (sorted, each once) and\nplaces, heard at the store time of this turn, and live. A silent node that offers is told `back` to the alert\ntarget, whatever its instance. An offer of another instance than the recorded one while the node is live\nchanges no entry field: it marks the node in `conflict`, and a new mark is told `conflict`. A node new to a pool\nthat knows `maxNodes` nodes is refused for good. Send one at an interval shorter than the silence time.",
       "properties": {
         "instance": {
-          "description": "An id that tells two machines offering under one node id apart. One drawn at each process start makes a\nrestart within the silence time look like a second machine.",
+          "description": "An id that tells two machines offering under one node id apart, kept across restarts, such as\n`NodeIdentity::instance`. One drawn at each process start makes a restart within the silence time look\nlike a second machine.",
           "maxLength": 200,
           "minLength": 1,
           "type": "string"

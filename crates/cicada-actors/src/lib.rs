@@ -68,9 +68,10 @@ pub use permits::{
     WaitingRequest,
 };
 pub use placement::{
-    InvalidPlacement, Placement, PlacementActor, PlacementAlerts, PlacementAnswer, PlacementAnswerKind, PlacementAsk,
-    PlacementConflict, PlacementHolder, PlacementMsg, PlacementNode, PlacementNodeStatus, PlacementNotice,
-    PlacementNoticeKind, PlacementRefusal, PlacementState,
+    Capacity, InvalidIdentity, InvalidPlacement, MemberSettings, NodeIdentity, Placement, PlacementActor,
+    PlacementAlerts, PlacementAnswer, PlacementAnswerKind, PlacementAsk, PlacementConflict, PlacementHolder,
+    PlacementMember, PlacementMsg, PlacementNode, PlacementNodeStatus, PlacementNotice, PlacementNoticeKind,
+    PlacementRefusal, PlacementState,
 };
 pub use rate_limiter::{InvalidRate, RateLimiter, RateLimiterActor, RateLimiterMsg, RateLimiterState};
 pub use schedule::{Schedule, ScheduleError};
