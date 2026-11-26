@@ -44,3 +44,10 @@ tracing-subscriber.workspace = true
 
 [lints]
 workspace = true
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+cicada-tray.workspace = true
+
+[[example]]
+name = "menu-bar-worker"
+path = "menu-bar-worker.rs"

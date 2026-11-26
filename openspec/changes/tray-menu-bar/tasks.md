@@ -17,7 +17,7 @@ it when it landed first). Follow `design.md`; the spec is `specs/menu-bar-tray/s
   `run` returns an error (decisions 2–6, 10). Verify: `cargo build -p cicada-tray`, `cargo clippy -p cicada-tray
   --all-targets`, `cargo deny check advisories`, and the manual check list below on this Mac, each item noted as done
   or not done in the report.
-- [ ] 4. **Example, changelog and docs handoff.** `examples/menu-bar-worker.rs` (macOS only); the changelog's
+- [x] 4. **Example, changelog and docs handoff.** `examples/menu-bar-worker.rs` (macOS only); the changelog's
   unreleased section names `Tray::run`, `WorkerReady::types` and `Contexts`; `docs-handoff.md` carries the design's
   Docs section. No edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify: `cargo test -p cicada-examples
   --test docs` and `--doc`.

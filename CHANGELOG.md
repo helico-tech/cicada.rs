@@ -7,6 +7,16 @@ Each section is headed `## X.Y.Z — YYYY-MM-DD`; the next version is `## X.Y.Z 
 the version is 0.x, a breaking change raises the minor number and anything else the patch number. A published tag never
 moves: a correction is a new version.
 
+## 0.26.0 — unreleased
+
+`Tray::run` opens a native menu bar app on macOS 14 or later. Use the switch or pick a configured context to
+connect, watch running and recent turns, and let the worker drain when you disconnect or quit.
+`cicada_app::Contexts` reads the configured names and current selection for the menu.
+
+**BREAKING** for `cicada_app::WorkerReady`: it reports the selected actor types in `types`, loses `Copy`, and is
+now non-exhaustive. Read its fields directly or match with `..`. Use `clone()` when another owned value is needed.
+Only `App::on_worker_ready` supplies the value.
+
 ## 0.25.0 — 2026-11-27
 
 A placement member notices a second machine under its node id (ADR 0071): two machines started from a copied identity
