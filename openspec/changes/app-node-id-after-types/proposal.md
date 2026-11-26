@@ -15,7 +15,7 @@ To decide in the design: the hook's shape, how it combines with `--node-id`, wor
 
 ## Order
 
-After `placement-full-notice`. No following change.
+After `placement-full-notice`, before `tray-menu-bar`.
 
 ## Impact
 

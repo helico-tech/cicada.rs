@@ -16,7 +16,7 @@ ADR 0069's mark), and the `RuntimeInfo` field on the fake.
 
 ## Order
 
-After `placement-identity-lock`, before `placement-settings`.
+After `placement-identity-lock`, before `change-loop-two-builders`.
 
 ## Impact
 
