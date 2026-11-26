@@ -21,12 +21,18 @@ stays current while it is open.
 - **WHEN** the worker started with two of three registered types
 - **THEN** the Registered Types submenu marks those two
 
-### Requirement: Stop Now
+### Requirement: Quit waits for the worker
 
-While the worker is stopping, `Tray::stop_now` SHALL end it at once: the running turns SHALL be listed as abandoned and
-the state SHALL become `Offline`. In any other state it SHALL do nothing.
+Quitting SHALL disconnect the worker and end the app only once the tray is `Offline`, without blocking the main thread,
+whether it comes from the Quit item, Ctrl-C or a system terminate; on macOS before 14.0 `run` SHALL refuse with an
+error.
 
-#### Scenario: Stop Now during the grace period
+#### Scenario: Quit while a turn runs
 
-- **WHEN** a turn is running, the tray disconnects, and `stop_now` is called before the grace period ends
-- **THEN** the state is `Offline` and the turn is listed as abandoned
+- **WHEN** a turn is running and the user picks Quit
+- **THEN** the tray goes `Stopping`, the menu stays responsive, and the app ends once the tray is `Offline`
+
+#### Scenario: A system terminate
+
+- **WHEN** the system asks the app to terminate while the worker is online
+- **THEN** the app answers that it terminates later, and confirms once the tray is `Offline`

@@ -24,7 +24,8 @@ dark mode and VoiceOver.
     badge with the number of failures).
   - Settings… and Quit, with their key equivalents.
 - The menu is rebuilt from the state while it is open, so the running turns and the times stay current.
-- While disconnecting, the header shows the time left in the grace period and the menu offers Stop Now.
+- While disconnecting, the header shows the time left in the grace period. Stop Now needs a core API and moved to
+  `worker-stop-now` (design review, 2026-11-26).
 - Icons are SF Symbols, through `NSImage`'s system symbol names.
 - The crate builds on macOS 14 or later (`cfg(target_os = "macos")`, a deployment target of 14.0). Elsewhere it is
   empty.
@@ -42,7 +43,7 @@ need model support this change adds or names.
 
 ## Order
 
-After `app-node-id-after-types`, before `tray-settings`.
+After `app-node-id-after-types`, before `worker-stop-now`.
 
 ## Impact
 

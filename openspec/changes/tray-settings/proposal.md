@@ -26,7 +26,7 @@ window, like the menu (owner's choice, 2026-11-26).
 
 ## Order
 
-After `tray-menu-bar`, before `stats-failed-count`.
+After `worker-stop-now`, before `stats-failed-count`.
 
 ## Impact
 
