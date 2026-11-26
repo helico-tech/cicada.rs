@@ -779,8 +779,8 @@ fn a_placement_state_is_written_in_camel_case_passes_its_samples_and_refuses_inv
     };
     assert_eq!(
         written,
-        with(json!({"alerts": null, "nodes": {}, "nextGrant": 1, "holders": [], "waiting": [], "armed": null,
-            "armedId": null}))
+        with(json!({"alerts": null, "nodes": {}, "nextGrant": 1, "holders": [], "waiting": [], "contested": [],
+            "armed": null, "armedId": null}))
     );
     assert_state_sample::<PlacementState>(&written);
     assert_state_sample::<PlacementState>(&settings);
@@ -799,6 +799,7 @@ fn a_placement_state_is_written_in_camel_case_passes_its_samples_and_refuses_inv
     let books = with(json!({"alerts": {"to": "pager/ops", "messageType": "Placement"},
         "nodes": {"mac-1": marked, "mac-2": node("silent")}, "nextGrant": 6,
         "holders": [holder("r1", 3, true), holder("r2", 5, false)], "waiting": [waiter("r3")],
+        "contested": [{"resource": "4f2a:ZQ7Y", "node": "mac-3", "at": "2026-01-01T00:00:20Z"}],
         "armed": "2026-01-01T00:01:00Z", "armedId": "c1"}));
     assert_state_sample::<PlacementState>(&books);
     assert_eq!(json_of(serde_json::from_value::<PlacementState>(books.clone()).unwrap()), books);
@@ -816,7 +817,13 @@ fn a_placement_state_is_written_in_camel_case_passes_its_samples_and_refuses_inv
     no_time["conflict"] = json!({"instance": "b2c4"});
     let live =
         |entry: Value| with(json!({"nodes": {"mac-1": entry}, "armed": "2026-01-01T00:01:00Z", "armedId": "c1"}));
+    let mut holds = node("live");
+    holds["resource"] = json!("4f2a:ZQ7Y");
     for invalid in [
+        with(json!({"nodes": {"mac-1": holds.clone(), "mac-2": holds}, "armed": "2026-01-01T00:01:00Z",
+            "armedId": "c1"})),
+        with(json!({"contested": [{"resource": "4f2a:ZQ7Y", "node": "mac-3"}], "armed": "2026-01-01T00:01:00Z",
+            "armedId": "c1"})),
         with(json!({"nodes": {"mac-1": silent_marked}})),
         live(self_marked),
         live(no_time),
@@ -851,7 +858,8 @@ fn a_placement_state_is_written_in_camel_case_passes_its_samples_and_refuses_inv
 }
 
 /// The state a pool writes with a live node, a silent one, an alert target, holders, one told and one not yet, and a
-/// waiting ask; then a draining node, a node in conflict, and that node reported duplicate.
+/// waiting ask; then a draining node, a node in conflict, that node reported duplicate, a node holding a resource key
+/// and another contesting it.
 #[tokio::test(start_paused = true)]
 async fn the_state_a_placement_pool_writes_passes_its_sample() {
     let test = TestActors::builder().with(|node| node.host(PlacementActor).host(PagerActor)).build().await.unwrap();
@@ -907,6 +915,21 @@ async fn the_state_a_placement_pool_writes_passes_its_sample() {
     test.run_until_idle().await;
     let written = test.state_json(&pool).await.unwrap();
     assert_eq!(written["nodes"]["mac-2"]["conflict"]["host"], "mac-b", "{written}");
+    assert_state_sample::<PlacementState>(&written);
+    for node in ["mac-3", "mac-4"] {
+        let offer = PlacementMsg::Offer {
+            node: node.into(),
+            instance: "c5d6".into(),
+            labels: vec!["arm64".into()],
+            places: 2,
+            resource: Some("4f2a:ZQ7Y".into()),
+        };
+        test.send(&pool, offer).await;
+        test.run_until_idle().await;
+    }
+    let written = test.state_json(&pool).await.unwrap();
+    assert_eq!(written["nodes"]["mac-3"]["resource"], "4f2a:ZQ7Y", "{written}");
+    assert_eq!(written["contested"][0]["node"], "mac-4", "{written}");
     assert_state_sample::<PlacementState>(&written);
 }
 

@@ -10,6 +10,9 @@
 //! alert, and the mark ends when the node goes silent or the other machine stops. And a member's `Duplicate` report
 //! (ADR 0071): the mark with the other host, one alert, no new places while marked, and the end one silence time after
 //! the last report; a report of a silent node changes nothing and one of an unknown node is refused.
+//! And resource keys (ADR 0072): one live node holds a key, an offer of a held key changes nothing for its node and is
+//! listed in `contested` with one alert, the contest ends one silence time after its last offer, the next node takes
+//! the key once the holder is silent, offers without a key are not checked, and the list's limit.
 //! And the operator's `cicada send` recipes for `Drain`, `Undrain`, `Gone` and `Release`, over the HTTP send route.
 
 mod common;
@@ -1502,4 +1505,166 @@ async fn the_documented_cicada_send_payloads_drain_undrain_release_and_declare_g
     assert_eq!(answers(&test, "r2").await, [granted(2, "mac-1"), gone(2, "mac-1")]);
     assert_eq!(answers(&test, "r4").await, [QUEUED, granted(4, "mac-1"), gone(4, "mac-1")]);
     assert!(failed(&test).await.is_empty());
+}
+
+/// Sends an offer of `places` places with `arm64` from instance `i1` of `node`, with the resource key `key`.
+async fn keyed(test: &TestActors, node: &str, key: &str, places: u32) -> Message {
+    let offer = PlacementMsg::Offer {
+        node: node.into(),
+        instance: "i1".into(),
+        labels: vec!["arm64".into()],
+        places,
+        resource: Some(key.into()),
+    };
+    send(test, offer).await
+}
+
+/// The pool's contests, as key, node and seconds after `start`.
+async fn contests(test: &TestActors, start: Timestamp) -> Vec<(String, String, u64)> {
+    let contested = held(test).await.contested;
+    contested.into_iter().map(|c| (c.resource, c.node, time::between(start, c.at).as_secs())).collect()
+}
+
+/// Scenario: A new node offering a held daemon. Three offers change nothing for it, one `conflict` alert goes out, and
+/// the contest follows its last offer.
+#[tokio::test(start_paused = true)]
+async fn a_new_node_offering_a_held_key_is_not_added_and_alerted_once() {
+    let test = node().await;
+    let start = test.now();
+    keyed(&test, "mac-1", "daemon-1", 2).await;
+    for after in [10, 20, 30] {
+        test.advance_time_by(secs(10)).await;
+        let m = keyed(&test, "mac-2", "daemon-1", 4).await;
+        assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done), "an accepted turn");
+        assert_eq!(contests(&test, start).await, [("daemon-1".into(), "mac-2".into(), after)]);
+    }
+    let state = held(&test).await;
+    assert_eq!(state.nodes.keys().collect::<Vec<_>>(), ["mac-1"], "not added");
+    assert_eq!(state.nodes["mac-1"].resource.as_deref(), Some("daemon-1"));
+    assert_eq!(notices(&test).await, [told_conflict("mac-2")], "one alert, about the offering node");
+    for holder in ["r1", "r2", "r3"] {
+        ask(&test, holder, &["arm64"]).await;
+    }
+    assert_eq!(holders(&test).await, [holder("r1", 1, "mac-1"), holder("r2", 2, "mac-1")], "the daemon counts once");
+    assert!(failed(&test).await.is_empty());
+}
+
+/// Scenario: A known node offering a held daemon. Its offers change nothing, it goes silent, its offer within one
+/// silence time of the last one changes nothing again, and only one `conflict` alert goes out.
+#[tokio::test(start_paused = true)]
+async fn a_known_node_offering_a_held_key_is_ignored_and_alerted_once_even_after_it_goes_silent() {
+    let test = node().await;
+    let start = test.now();
+    keyed(&test, "mac-1", "daemon-1", 2).await;
+    offer(&test, "mac-2", &["arm64"], 3).await;
+    let entry = held(&test).await.nodes["mac-2"].clone();
+    for _ in 0..3 {
+        test.advance_time_by(secs(15)).await;
+        keyed(&test, "mac-1", "daemon-1", 2).await;
+        keyed(&test, "mac-2", "daemon-1", 4).await;
+        assert_eq!(held(&test).await.nodes["mac-2"], entry, "it keeps its last entry");
+    }
+    test.advance_time_by(secs(15)).await;
+    keyed(&test, "mac-1", "daemon-1", 2).await;
+    assert_eq!(status_of(&held(&test).await, "mac-2"), PlacementNodeStatus::Silent, "silent from its last own offer");
+    test.advance_time_by(secs(10)).await;
+    keyed(&test, "mac-2", "daemon-1", 4).await;
+    let state = held(&test).await;
+    assert_eq!(status_of(&state, "mac-2"), PlacementNodeStatus::Silent, "a held key does not bring it back");
+    assert_eq!(contests(&test, start).await, [("daemon-1".into(), "mac-2".into(), 70)]);
+    let kinds = [PlacementNoticeKind::Conflict, PlacementNoticeKind::Silent];
+    assert_eq!(notices(&test).await, kinds.map(|kind| ("mac-2".to_owned(), kind)), "one conflict alert, no back");
+    assert!(failed(&test).await.is_empty());
+}
+
+/// The contest ends one silence time after the last conflicting offer, at the check, also when no node is live by then;
+/// a later conflicting offer is recorded and alerted again.
+#[tokio::test(start_paused = true)]
+async fn a_contest_ends_one_silence_time_after_its_last_offer_and_a_later_one_alerts_again() {
+    let test = node().await;
+    let start = test.now();
+    keyed(&test, "mac-1", "daemon-1", 2).await;
+    test.advance_time_by(secs(30)).await;
+    keyed(&test, "mac-2", "daemon-1", 4).await;
+    assert_eq!(checks(&test, start).await, [secs(60)], "the holder's silence comes first");
+    test.advance_time_by(secs(30)).await;
+    let state = held(&test).await;
+    assert_eq!(status_of(&state, "mac-1"), PlacementNodeStatus::Silent);
+    assert_eq!(contests(&test, start).await, [("daemon-1".into(), "mac-2".into(), 30)], "kept: no node is live");
+    assert_eq!((state.armed, checks(&test, start).await), (time::add(start, secs(90)).ok(), vec![secs(90)]));
+    test.advance_time_by(secs(30)).await;
+    let state = held(&test).await;
+    assert!(state.contested.is_empty(), "removed one silence time after its last offer");
+    assert_eq!((state.armed, state.armed_id), (None, None), "nothing left to check");
+
+    keyed(&test, "mac-1", "daemon-1", 2).await;
+    keyed(&test, "mac-2", "daemon-1", 4).await;
+    assert_eq!(contests(&test, start).await, [("daemon-1".into(), "mac-2".into(), 90)]);
+    let told = [told_conflict("mac-2"), ("mac-1".into(), PlacementNoticeKind::Silent)];
+    let back = [("mac-1".into(), PlacementNoticeKind::Back), told_conflict("mac-2")];
+    assert_eq!(notices(&test).await, [&told[..], &back[..]].concat(), "the later contest is told again");
+    assert!(failed(&test).await.is_empty());
+}
+
+/// Scenario: The holder stops. The first node goes silent and the second keeps offering the key: its next offer takes
+/// the key, and its places count.
+#[tokio::test(start_paused = true)]
+async fn the_second_node_takes_the_key_after_the_holder_goes_silent() {
+    let test = node().await;
+    keyed(&test, "mac-1", "daemon-1", 2).await;
+    for _ in 0..4 {
+        test.advance_time_by(secs(15)).await;
+        keyed(&test, "mac-2", "daemon-1", 4).await;
+    }
+    let state = held(&test).await;
+    assert_eq!(status_of(&state, "mac-1"), PlacementNodeStatus::Silent);
+    let entry = &state.nodes["mac-2"];
+    assert_eq!(
+        (entry.status, entry.places, entry.resource.as_deref()),
+        (PlacementNodeStatus::Live, 4, Some("daemon-1"))
+    );
+    ask(&test, "r1", &["arm64"]).await;
+    assert_eq!(answers(&test, "r1").await, [granted(1, "mac-2")]);
+    test.advance_time_by(secs(15)).await;
+    keyed(&test, "mac-1", "daemon-1", 2).await;
+    assert_eq!(status_of(&held(&test).await, "mac-1"), PlacementNodeStatus::Silent, "now the first is contested");
+    assert!(failed(&test).await.is_empty());
+}
+
+/// Offers without a key, and a key on one node only, are not checked: every node counts.
+#[tokio::test(start_paused = true)]
+async fn offers_without_a_key_are_unaffected() {
+    let test = node().await;
+    keyed(&test, "mac-1", "daemon-1", 1).await;
+    offer(&test, "mac-2", &["arm64"], 1).await;
+    offer(&test, "mac-3", &["arm64"], 1).await;
+    keyed(&test, "mac-4", "daemon-2", 1).await;
+    keyed(&test, "mac-1", "daemon-1", 1).await;
+    let state = held(&test).await;
+    assert!(state.contested.is_empty());
+    assert!(state.nodes.values().all(|n| n.status == PlacementNodeStatus::Live) && state.nodes.len() == 4);
+    for holder in ["r1", "r2", "r3", "r4"] {
+        ask(&test, holder, &["arm64"]).await;
+    }
+    assert_eq!(holders(&test).await.len(), 4);
+    assert!(notices(&test).await.is_empty());
+}
+
+/// A new contest in a pool that lists `maxNodes` contests is refused for good, and a known one still renews.
+#[tokio::test(start_paused = true)]
+async fn a_contest_past_max_nodes_is_refused() {
+    let test = node_with(60, 2).await;
+    let start = test.now();
+    keyed(&test, "mac-1", "daemon-1", 1).await;
+    keyed(&test, "mac-2", "daemon-1", 1).await;
+    keyed(&test, "mac-3", "daemon-1", 1).await;
+    let (before, version) = (held(&test).await, test.version(&pool()).await);
+    let m = keyed(&test, "mac-4", "daemon-1", 1).await;
+    assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Failed));
+    assert_eq!((held(&test).await, test.version(&pool()).await), (before, version), "nothing recorded");
+    test.advance_time_by(secs(5)).await;
+    keyed(&test, "mac-3", "daemon-1", 1).await;
+    let renewed = [("daemon-1".into(), "mac-2".into(), 0), ("daemon-1".into(), "mac-3".into(), 5)];
+    assert_eq!(contests(&test, start).await, renewed);
+    assert_eq!(failed(&test).await, [("Offer".to_owned(), FailureCause::Refused)]);
 }

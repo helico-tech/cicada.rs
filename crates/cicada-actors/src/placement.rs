@@ -1,7 +1,8 @@
 //! The placement pool (ADR 0067): an actor to which nodes offer places, each with a set of labels, renewed at an
 //! interval; a node not heard from for the pool's silence time is marked silent, and its alert target is told once. A
 //! second machine offering under a live node's id is ignored and reported once (ADR 0069), as is a second machine its
-//! member reports under the node's id and instance (ADR 0071). Work asks it for a place
+//! member reports under the node's id and instance (ADR 0071), and a node offering a resource key that another live
+//! node holds, such as one Docker daemon's id (ADR 0072). Work asks it for a place
 //! with its needs and gets a node to pin a child to (ADR 0068). An operator drains a node, and declares a silent node
 //! gone, whose holders are told. A [`PlacementMember`] offers a node's places while the host's probe answers, under a
 //! [`NodeIdentity`] kept across restarts.
@@ -68,11 +69,14 @@ impl ActorRef for Placement {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all_fields = "camelCase")]
 pub enum PlacementMsg {
-    /// A node offers its places: replaces the node's entry with this instance, these labels (sorted, each once) and
-    /// places, heard at the store time of this turn, and live. A silent node that offers is told `back` to the alert
-    /// target, whatever its instance. An offer of another instance than the recorded one while the node is live
-    /// changes no entry field: it marks the node in `conflict`, and a new mark is told `conflict`. A node new to a pool
-    /// that knows `maxNodes` nodes is refused for good. Send one at an interval shorter than the silence time.
+    /// A node offers its places: replaces the node's entry with this instance, these labels (sorted, each once),
+    /// places and resource key, heard at the store time of this turn, and live. A silent node that offers is told
+    /// `back` to the alert target, whatever its instance. An offer of another instance than the recorded one while the
+    /// node is live changes no entry field: it marks the node in `conflict`, and a new mark is told `conflict`. An
+    /// offer of a resource key that another live node holds changes nothing for the node: it is recorded in
+    /// `contested`, and a new entry there is told `conflict` (ADR 0072). A node new to a pool that knows `maxNodes`
+    /// nodes is refused for good, as is a new contest in a pool that lists `maxNodes`. Send one at an interval shorter
+    /// than the silence time.
     Offer {
         /// The node id the member's node pins its actors under.
         #[schemars(length(min = 1, max = 200))]
@@ -110,12 +114,13 @@ pub enum PlacementMsg {
         host: String,
     },
     /// The silence timer: sent by the pool to itself, and counted only when it is the armed one (`armedId`). Marks each
-    /// live node not heard from for the silence time as silent, queues an `Alert` for each, and arms the next check at
-    /// the earliest end of a live node's silence. Run early (made due by an operator) it arms itself again at `armed`;
+    /// live node not heard from for the silence time as silent, queues an `Alert` for each, removes each contest one
+    /// silence time after its last offer, and arms the next check at the earliest end of a live node's silence or of a
+    /// contest. Run early (made due by an operator) it arms itself again at `armed`;
     /// any other `Check` the pool sent itself changes nothing, and one from another sender is refused for good.
     Check,
     /// Cancels the armed check and arms a new one at its unchanged time, at once when that has passed: the recovery of
-    /// a check that was purged, cancelled or failed for good. Nothing when no node is live.
+    /// a check that was purged, cancelled or failed for good. Nothing when no node is live and no contest is listed.
     Rearm,
     /// Sends the alert target a notice about `node`, in a turn of its own so that a failing target fails only this
     /// alert; nothing without a target. Sent by the pool to itself.
@@ -459,7 +464,8 @@ pub enum PlacementNoticeKind {
     Back,
     /// Another instance offered under the live node's id, whose offers are ignored, or a member reported another
     /// machine under it (`Duplicate`). Sent once while the mark lasts; the node's `conflict` names the instance and,
-    /// for a report, the host.
+    /// for a report, the host. Or the node offered a resource key another live node holds, whose offers are ignored:
+    /// sent once while its entry in the pool's `contested` lasts, which names the key.
     Conflict,
 }
 
@@ -548,6 +554,22 @@ pub struct PlacementConflict {
     pub host: Option<String>,
 }
 
+/// An offer of a resource key that another live node held, which the pool ignored (ADR 0072): one per key and
+/// offering node, kept for one silence time after the last such offer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PlacementContest {
+    /// The resource key; 1 through 200 characters without NUL.
+    #[schemars(length(min = 1, max = 200))]
+    pub resource: String,
+    /// The node that offered it; 1 through 200 characters, not blank, without NUL. It may be one the pool does not
+    /// know.
+    #[schemars(length(min = 1, max = 200))]
+    pub node: String,
+    /// The store time of its last offer of the key while another live node held it.
+    pub at: Timestamp,
+}
+
 /// A state or a message of a pool out of its bounds; it prints why.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{0}")]
@@ -555,12 +577,12 @@ pub struct InvalidPlacement(String);
 
 /// The state of a [`Placement`] pool: its silence time, node limit, line limit and holder limit, fixed at its create,
 /// where its notices go, the nodes it knows by node id, the next grant number, its holders in the order they were
-/// granted, its waiting asks in line order, and the time and id of its armed check. Build it with
-/// `PlacementState::new`; a decoded state is checked the same way.
+/// granted, its waiting asks in line order, the contests of resource keys, and the time and id of its armed check.
+/// Build it with `PlacementState::new`; a decoded state is checked the same way.
 ///
 /// On the wire: `{"silence":"PT1M","maxNodes":1000,"maxWaiting":100,"maxHolders":1000,"alerts":null,"nodes":{},
-/// "nextGrant":1,"holders":[],"waiting":[],"armed":null,"armedId":null}`; `alerts`, `nodes`, `nextGrant`, `holders`,
-/// `waiting`, `armed` and `armedId` may be left out of a create.
+/// "nextGrant":1,"holders":[],"waiting":[],"contested":[],"armed":null,"armedId":null}`; `alerts`, `nodes`,
+/// `nextGrant`, `holders`, `waiting`, `contested`, `armed` and `armedId` may be left out of a create.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", try_from = "RawState")]
 pub struct PlacementState {
@@ -583,7 +605,10 @@ pub struct PlacementState {
     pub holders: Vec<PlacementHolder>,
     /// The waiting asks, in line order.
     pub waiting: Vec<PlacementAsk>,
-    /// The time of the armed `Check`, set exactly while a node is live.
+    /// The offers of resource keys that another live node held, ignored (ADR 0072), in the order they were first
+    /// recorded.
+    pub contested: Vec<PlacementContest>,
+    /// The time of the armed `Check`, set exactly while a node is live or a contest is listed.
     pub armed: Option<Timestamp>,
     /// The id of the armed `Check`, set exactly with `armed`. It stays set when the check goes without running.
     pub armed_id: Option<MessageId>,
@@ -625,7 +650,11 @@ struct RawState {
     /// absent: none.
     #[serde(default)]
     waiting: Vec<PlacementAsk>,
-    /// The time of the armed `Check`: present exactly while a node is live.
+    /// The offers of resource keys that another live node held, at most `maxNodes`, each key and node once; absent:
+    /// none.
+    #[serde(default)]
+    contested: Vec<PlacementContest>,
+    /// The time of the armed `Check`: present exactly while a node is live or a contest is listed.
     #[serde(default)]
     armed: Option<Timestamp>,
     /// The id of the armed `Check`: present exactly with `armed`.
@@ -651,6 +680,7 @@ impl TryFrom<RawState> for PlacementState {
             next_grant: raw.next_grant,
             holders: raw.holders,
             waiting: raw.waiting,
+            contested: raw.contested,
             armed: raw.armed,
             armed_id: raw.armed_id,
         };
@@ -672,7 +702,7 @@ impl PlacementState {
     /// let state = PlacementState::new(Duration::from_secs(60), 1000, 100, 1000)?;
     /// assert_eq!(serde_json::to_value(&state)?, serde_json::json!({
     ///     "silence": "PT1M", "maxNodes": 1000, "maxWaiting": 100, "maxHolders": 1000, "alerts": null, "nodes": {},
-    ///     "nextGrant": 1, "holders": [], "waiting": [], "armed": null, "armedId": null}));
+    ///     "nextGrant": 1, "holders": [], "waiting": [], "contested": [], "armed": null, "armedId": null}));
     /// assert!(PlacementState::new(Duration::from_secs(60), 1001, 100, 1000).is_err());
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
@@ -692,6 +722,7 @@ impl PlacementState {
             next_grant: 1,
             holders: Vec::new(),
             waiting: Vec::new(),
+            contested: Vec::new(),
             armed: None,
             armed_id: None,
         };
@@ -761,11 +792,52 @@ impl PlacementState {
             }
         }
         self.check_books()?;
-        let live = self.nodes.values().any(|n| n.status == PlacementNodeStatus::Live);
+        self.check_resources()?;
+        let live = self.nodes.values().any(|n| n.status == PlacementNodeStatus::Live) || !self.contested.is_empty();
         if live != self.armed.is_some() || live != self.armed_id.is_some() {
-            return Err(InvalidPlacement("armed and armedId are set exactly while a node is live".to_owned()));
+            return Err(InvalidPlacement(
+                "armed and armedId are set exactly while a node is live or a contest is listed".to_owned(),
+            ));
         }
         Ok(())
+    }
+
+    /// Checks the resource keys: at most one live node holds each, and the contests are at most `maxNodes`, each key and
+    /// node once, in bounds.
+    fn check_resources(&self) -> Result<(), InvalidPlacement> {
+        let mut held = HashSet::new();
+        let live = self.nodes.values().filter(|n| n.status == PlacementNodeStatus::Live);
+        for resource in live.filter_map(|n| n.resource.as_deref()) {
+            if !held.insert(resource) {
+                return Err(InvalidPlacement(format!("two live nodes hold the resource key '{resource}'")));
+            }
+        }
+        if self.contested.len() > self.max_nodes as usize {
+            return Err(InvalidPlacement(format!(
+                "at most maxNodes ({}) contests are listed, had {}",
+                self.max_nodes,
+                self.contested.len()
+            )));
+        }
+        let mut seen = HashSet::new();
+        for contest in &self.contested {
+            check_resource(&contest.resource)?;
+            check_id("a contest's node", &contest.node)?;
+            self.deadline(contest.at).map_err(InvalidPlacement)?;
+            if !seen.insert((contest.resource.as_str(), contest.node.as_str())) {
+                return Err(InvalidPlacement(format!(
+                    "the contest of '{}' by '{}' is listed twice",
+                    contest.resource, contest.node
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// The live node other than `node` that holds `resource`.
+    fn holder_of(&self, resource: &str, node: &str) -> Option<&str> {
+        let mut live = self.nodes.iter().filter(|(_, n)| n.status == PlacementNodeStatus::Live);
+        live.find(|(id, n)| id.as_str() != node && n.resource.as_deref() == Some(resource)).map(|(id, _)| id.as_str())
     }
 
     /// Checks the holders and the line: their limits, each holder id once, needs and message types in bounds, each
@@ -826,10 +898,10 @@ impl PlacementState {
         }
     }
 
-    /// The earliest end of a live node's silence; none when no node is live.
+    /// The earliest end of a live node's silence or of a contest; none when no node is live and no contest listed.
     fn next_check(&self) -> Option<Timestamp> {
-        let live = self.nodes.values().filter(|n| n.status == PlacementNodeStatus::Live);
-        live.filter_map(|n| self.deadline(n.heard_at).ok()).min()
+        let live = self.nodes.values().filter(|n| n.status == PlacementNodeStatus::Live).map(|n| n.heard_at);
+        live.chain(self.contested.iter().map(|c| c.at)).filter_map(|at| self.deadline(at).ok()).min()
     }
 }
 
@@ -955,8 +1027,18 @@ fn check_message_type(message_type: &str) -> Result<(), InvalidPlacement> {
 /// mark set only by reports ends at the first turn one silence time after the last report; one set by offers and
 /// reports ends as an offer's mark does, counted from the later of the two. Going silent ends every mark.
 ///
-/// While a node is live the pool has one `Check` armed, with the crate's shared retry policy, at the earliest `heardAt`
-/// plus the silence of a live node, and keeps its time in `armed` and its id in `armedId`. The armed check marks each
+/// An offer may name a resource key, such as a Docker daemon's id (ADR 0072), and one live node holds a key: the node
+/// whose offer recorded it while no other live node had it. An offer whose key a different live node holds changes
+/// nothing for the offering node: a new node is not added, and a known one keeps its last entry, so it goes silent if
+/// it keeps offering only the held key. The pool lists the contest in `contested`, one entry per key and offering node
+/// with the store time of the last such offer, and queues one `conflict` alert about the offering node when an entry is
+/// added; the check removes an entry one silence time after its time, so a later contest is told again. The check runs
+/// while a contest is listed, also when no node is live. When the holder goes silent or is gone, the next offer of the
+/// key takes it, while the runs on the old holder may still use the resource for a while: a brief overbooking. Offers
+/// without a key are not checked; the pool cannot tell that two different keys name one resource.
+///
+/// While a node is live or a contest is listed the pool has one `Check` armed, with the crate's shared retry policy, at
+/// the earliest `heardAt` of a live node or `at` of a contest plus the silence, and keeps its time in `armed` and its id in `armedId`. The armed check marks each
 /// live node whose silence ended as `silent` and queues one `Alert` to itself for each; its next offer makes the node
 /// live and queues a `back` alert. Each `Alert` sends a [`PlacementNotice`] to the target of the last `Alerts`, so a
 /// target that is gone or refuses the notice fails that alert and nothing else; the node stays silent. The armed check
@@ -1379,6 +1461,11 @@ fn offer(
         }
         return Ok(());
     }
+    if let Some(resource) = resource.as_deref()
+        && state.holder_of(resource, &node).is_some()
+    {
+        return contest(turn, resource, node);
+    }
     // The mark lasts until the other instance was not heard from for one silence time.
     let conflict = live.and_then(|n| n.conflict.clone()).filter(|c| state.deadline(c.at).is_ok_and(|end| now < end));
     if previous.is_none() && state.nodes.len() >= state.max_nodes as usize {
@@ -1397,6 +1484,25 @@ fn offer(
     let entry = PlacementNode { instance, labels, places, heard_at: now, status, draining, resource, conflict };
     turn.state_mut().nodes.insert(node, entry);
     Ok(())
+}
+
+/// Records that `node` offered `resource`, which another live node holds, at the store time, with an alert for a new
+/// entry; refused for good when a new entry would pass `maxNodes`.
+fn contest(turn: &mut Turn<PlacementActor>, resource: &str, node: String) -> HandlerResult {
+    let now = turn.now();
+    let state = turn.state_mut();
+    if let Some(contest) = state.contested.iter_mut().find(|c| c.resource == resource && c.node == node) {
+        contest.at = now;
+        return Ok(());
+    }
+    if state.contested.len() >= state.max_nodes as usize {
+        return Err(HandlerError::permanent(format!(
+            "the pool lists maxNodes ({}) contests: the contest of '{resource}' by '{node}' is refused",
+            state.max_nodes
+        )));
+    }
+    state.contested.push(PlacementContest { resource: resource.to_owned(), node: node.clone(), at: now });
+    Ok(queue_alert(turn, node, PlacementNoticeKind::Conflict)?)
 }
 
 /// Marks a live `node` in conflict with `host`, with an alert for a new mark; nothing for a silent node, and refused for
@@ -1437,8 +1543,9 @@ fn end_reports(turn: &mut Turn<PlacementActor>) {
     }
 }
 
-/// Marks each live node whose silence ended as silent with an alert for each, and arms the next check; for the armed
-/// check run early, arms it again at `armed`; for any other check, nothing.
+/// Marks each live node whose silence ended as silent with an alert for each, removes each contest one silence time
+/// after its last offer, and arms the next check; for the armed check run early, arms it again at `armed`; for any
+/// other check, nothing.
 fn check(turn: &mut Turn<PlacementActor>) -> HandlerResult {
     let state = turn.state();
     let (Some(armed), Some(armed_id)) = (state.armed, state.armed_id.as_ref()) else { return Ok(()) };
@@ -1462,6 +1569,9 @@ fn check(turn: &mut Turn<PlacementActor>) -> HandlerResult {
         }
         queue_alert(turn, node, PlacementNoticeKind::Silent)?;
     }
+    let state = turn.state_mut();
+    let silence = state.silence;
+    state.contested.retain(|c| time::add(c.at, silence).is_ok_and(|end| now < end));
     match turn.state().next_check() {
         Some(at) => arm(turn, at)?,
         None => {
@@ -1673,6 +1783,55 @@ mod tests {
         ] {
             let decoded = decode(with(status, conflict.clone()));
             assert!(decoded.as_ref().is_err_and(|e| e.to_string().contains(why)), "{decoded:?} for {conflict}");
+        }
+    }
+
+    #[test]
+    fn a_decoded_state_with_two_live_holders_of_one_key_or_a_bad_contest_is_refused() {
+        let keyed = |status: &str, key: &str| {
+            let mut entry = node(status);
+            entry["resource"] = serde_json::json!(key);
+            entry
+        };
+        let contest = |key: &str, node: &str| serde_json::json!({"resource": key, "node": node, "at": AT});
+        let armed = serde_json::json!({"armed": AT, "armedId": "c1"});
+        let with = |extra: serde_json::Value| {
+            let mut json = state(armed.clone());
+            json.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            json
+        };
+        let held = decode(with(serde_json::json!({"nodes": {"a": keyed("live", "d1"), "b": keyed("silent", "d1")},
+            "contested": [contest("d1", "b"), contest("d1", "c")]})))
+        .unwrap();
+        let at: Timestamp = AT.parse().unwrap();
+        let first = PlacementContest { resource: "d1".into(), node: "b".into(), at };
+        assert_eq!(held.contested[0], first);
+        assert_eq!(held.nodes["a"].resource.as_deref(), Some("d1"));
+        let only = decode(state(serde_json::json!({"contested": [contest("d1", "c")], "armed": AT, "armedId": "c1"})));
+        assert!(only.is_ok(), "a contest keeps the check armed without a live node");
+        let two_keys = with(serde_json::json!({"nodes": {"a": keyed("live", "d1"), "b": keyed("live", "d2")}}));
+        assert!(decode(two_keys).is_ok());
+        let three = [contest("d1", "a"), contest("d1", "b"), contest("d1", "c")];
+        let mut late = contest("d1", "c");
+        late["at"] = serde_json::json!("9999-12-31T23:59:30Z");
+        for (extra, why) in [
+            (
+                serde_json::json!({"nodes": {"a": keyed("live", "d1"), "b": keyed("live", "d1")}}),
+                "two live nodes hold the resource key 'd1'",
+            ),
+            (serde_json::json!({"contested": three}), "at most maxNodes (2) contests"),
+            (serde_json::json!({"contested": [contest("d1", "c"), contest("d1", "c")]}), "listed twice"),
+            (serde_json::json!({"contested": [contest("", "c")]}), "a resource key must be"),
+            (serde_json::json!({"contested": [contest("d1", " ")]}), "a contest's node id must be"),
+            (serde_json::json!({"contested": [late]}), "after 9999-12-31"),
+            (
+                serde_json::json!({"contested": [contest("d1", "c")], "armed": null, "armedId": null}),
+                "armed and armedId",
+            ),
+        ] {
+            let json = with(extra);
+            let decoded = decode(json.clone());
+            assert!(decoded.as_ref().is_err_and(|e| e.to_string().contains(why)), "{decoded:?} for {json}");
         }
     }
 
