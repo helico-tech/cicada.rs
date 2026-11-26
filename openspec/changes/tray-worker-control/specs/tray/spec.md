@@ -14,12 +14,17 @@ its grace period.
 #### Scenario: A server that does not answer
 
 - **WHEN** a tray connects to a context whose server is unreachable
-- **THEN** its state ends `Failed` with the error
+- **THEN** its state stays `Connecting` during the worker's retries and then ends `Failed` with the error
+
+#### Scenario: An idle worker
+
+- **WHEN** a tray connects and no message arrives
+- **THEN** its state turns `Online` once the worker has started
 
 ### Requirement: A tray shows the turns that run
 
 The tray SHALL record each running turn (actor, message type, attempt, claim time) and keep the last 50 finished turns
-with their outcome.
+with their outcome, a turn that ends without a reported end counting as `abandoned`.
 
 #### Scenario: A turn that runs
 
@@ -34,3 +39,13 @@ with their outcome.
 
 - **WHEN** an `App` hosts `orders` and then `invoices`
 - **THEN** `type_names()` returns `["orders", "invoices"]`
+
+### Requirement: An App tells when its worker is ready
+
+`App::on_worker_ready(f)` SHALL call `f` once a worker over HTTP has started, with its settled grace period and cancel
+timeout.
+
+#### Scenario: A worker that starts
+
+- **WHEN** an `App` with `on_worker_ready` runs a worker over HTTP against a running server
+- **THEN** `f` is called once with the worker's grace period and cancel timeout

@@ -36,6 +36,10 @@ dark mode and VoiceOver.
   has no Dock icon); the user's build does them.
 - Older macOS versions, Windows and Linux.
 
+From the design review of `tray-worker-control` (2026-11-26): the tray's model is portable (not empty outside macOS);
+only the menu is macOS-only. "Stop Now" (cancel running turns at once) and a checkmark for the types this worker runs
+need model support this change adds or names.
+
 ## Order
 
 After `app-node-id-after-types`, before `tray-settings`.
