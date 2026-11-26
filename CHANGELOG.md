@@ -29,7 +29,9 @@ API, the other actors' contracts and the guarantees are those of 0.24.0.
 - `cicada-app`: `App::type_names()` returns the hosted names in registration order, and `App::on_worker_ready`
   reports the settled grace period and cancel timeout once an HTTP worker starts.
 - `cicada-app`: `App::node_config_for` chooses a host's node config from the types selected for `serve` or
-  `worker`. Flags and environment variables still override the returned config.
+  `worker`. Flags and environment variables still override the returned config. A worker over HTTP now checks its
+  server URL before that call: a malformed one fails with `invalid server URL` or `the server URL must use http or
+  https` instead of `the server is not ready: …`, still with exit code 1.
 - `cicada`: `NodeConfig::hostname`, the host name a node writes to its row in the node table, such as a container's
   stable name; `None` (the default) keeps the machine's own, looked up once when the node is built. A set value is
   checked like `label` (not blank, no NUL, at most 200 characters) at the start. `ActorSystem::hostname()` returns the

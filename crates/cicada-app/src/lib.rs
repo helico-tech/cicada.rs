@@ -190,8 +190,8 @@ impl App {
     }
 
     /// Chooses the host's `NodeConfig` from the types selected for this run, in [`Self::host`] order. `serve` and
-    /// `worker` call `f` synchronously once, after checking the command line, environment, HTTP target or store feature,
-    /// and before waiting for the store or server. Operator commands, help and version skip it.
+    /// `worker` call `f` synchronously once, after checking the command line, environment, HTTP target or store
+    /// feature, and before waiting for the store or server. Operator commands, help and version skip it.
     ///
     /// A returned error fails the command with exit code 1. A panic propagates. Flags and their `CICADA_…` variables
     /// still override fields, and a worker over HTTP uses the same fields as [`Self::node_config`]. The last call to
