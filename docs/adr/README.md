@@ -72,6 +72,7 @@ accepted ADR is not rewritten: a later one supersedes it. A change that makes a 
 | [0065](0065-container-progress-through-a-file.md) | With `progressType` on `Start`, the container actor sets `CICADA_PROGRESS_FILE`, reads the file at each running poll and before the end, and sends `ContainerProgress { key, seq, text }` when it changed; best effort; late progress is dropped by `seq`; a contract change (0.23.0). |
 | [0066](0066-container-outputs-at-the-end.md) | With a store on the actor, the container actor holds an end the container ran for as pending in the phase `Collecting`, drains the rest of the log and copies the job's output folder into the store, then records and delivers the end with an `outputs` report; a refused file is skipped; errors in a row keep the recorded outcome; a contract change (0.23.0). |
 | [0067](0067-a-placement-pool.md) | A ready-made placement pool `cicada.placement/<pool>`, created with its settings in its state: nodes renew `Offer`s of instance, labels and places; the pool's own timer marks a quiet node silent (no new places, one notice in its own turn) until it offers again; the line ships as one release. |
+| [0068](0068-asks-in-the-placement-pool.md) | Asks in the placement pool follow the permit pool's protocol with `PlacementAnswer`; a grant goes to a live node with every need, most free places first; the line is served in order but skips asks that cannot be placed now; holders are capped per pool. |
 
 ## Design questions
 
