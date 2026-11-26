@@ -148,12 +148,15 @@ async fn docker_inspect(format: &str, target: &str) -> Option<String> {
     output.ok().then(|| output.text.trim().to_owned())
 }
 
-/// Scenario: The local daemon. The CLI reaches the same daemon as [`runtime`].
+/// Scenarios: The local daemon, and The Docker daemon's id. The CLI reaches the same daemon as [`runtime`].
 async fn info_gives_linux_and_the_arch_the_cli_prints() {
     let output = docker(&["version", "--format", "{{.Server.Arch}}"], secs(60), true).await.unwrap();
     let arch = output.text.trim();
     assert!(!arch.is_empty(), "docker version prints the server's Arch");
-    assert_eq!(runtime().info().await.unwrap(), RuntimeInfo::new(arch, "linux"));
+    let output = docker(&["info", "--format", "{{.ID}}"], secs(60), true).await.unwrap();
+    let id = output.text.trim();
+    assert!(!id.is_empty(), "docker info prints the daemon's ID");
+    assert_eq!(runtime().info().await.unwrap(), RuntimeInfo::new(arch, "linux").with_id(id));
 }
 
 async fn a_repeated_create_keeps_the_first_spec() {

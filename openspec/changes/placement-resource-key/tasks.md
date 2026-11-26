@@ -13,7 +13,7 @@ Builds on `placement-identity-lock` (lands first). Follow `design.md` and ADR 00
 - [x] 3. **One live holder.** The `contested` list, one alert per added entry, removal by the check timer one silence time
   after `at`, the key taken from a silent or gone holder, the decode refusing two live holders; contract reference and
   samples regenerated (decision 3). Verify: the pool tests of the design.
-- [ ] 4. **E2E, changelog and docs handoff.** The container E2E class checks `info()`'s `id` is set. The 0.25.0 section
+- [x] 4. **E2E, changelog and docs handoff.** The container E2E class checks `info()`'s `id` is set. The 0.25.0 section
   names the id, the key and the rule under Added; the handoff carries the design's Docs section. No edit to
   `README.md`, `AGENTS.md` or the handwritten docs. Verify: `cargo test -p cicada-examples --test docs` and `--doc`.
 - [ ] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,

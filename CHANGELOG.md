@@ -13,9 +13,11 @@ A placement member notices a second machine under its node id (ADR 0071): two ma
 folder write one node row in turn, so a member that finds another host name there sends no offers and reports
 `Duplicate` to the pool, which marks the node with that host, alerts once and gives it no new places. A node can set the
 host name it writes to its row (`NodeConfig::hostname`), and `NodeIdentity` locks its folder, so one machine runs one
-process per identity. **BREAKING** for placement pools: the contract of `cicada.placement` changes (a new message and an
-optional field of the conflict mark), so hosts of 0.24.0 pools follow Upgrading below; `NodeConfig`,
-`PlacementConflict` and `PlacementMsg` gain a field or a variant. The store schema, the HTTP API, the other actors'
+process per identity. An offer can name a resource key, such as the Docker daemon's id that `RuntimeInfo::id` now
+reports, and one live node holds a key (ADR 0072), so two nodes on one daemon count its places once. **BREAKING** for
+placement pools: the contract of `cicada.placement` changes (a new message, optional fields of the offer, the node and
+the conflict mark, and the state's `contested`), so hosts of 0.24.0 pools follow Upgrading below; `NodeConfig`,
+`PlacementConflict`, `PlacementMsg`, `PlacementNode`, `PlacementState` and `Capacity` gain a field or a variant. The store schema, the HTTP API, the other actors'
 contracts and the guarantees are those of 0.24.0.
 
 ### Added
@@ -50,12 +52,36 @@ contracts and the guarantees are those of 0.24.0.
   (the lock file cannot be created or opened for writing), it logs a warning and goes on without one. Covered by
   `a_second_load_fails_while_the_identity_lives_and_succeeds_after_all_are_dropped` and
   `a_read_only_folder_loads_the_identity_without_a_lock`.
+- `cicada-containers`: `RuntimeInfo::id`, the id of the runtime instance, and `RuntimeInfo::with_id`. `DockerRuntime::info`
+  fills it from the `ID` of Docker's `/info` (empty: `None`), the same for every node on that daemon, in a second call
+  next to `/version`; an error of either fails `info()`. `/info` gathers the daemon's whole state and can take seconds
+  on a busy daemon, at every probe. The fake reports no id until `set_info` sets one. Covered by
+  `runtime_info_takes_the_daemon_id_of_info_and_an_empty_one_is_none`,
+  `info_answers_amd64_on_linux_until_a_test_sets_another_machine` and the E2E step
+  `info_gives_linux_and_the_arch_the_cli_prints`.
+- `cicada-actors`: resource keys in the placement pool (ADR 0072). `Capacity::resource(key)` makes the member send it
+  as the new optional `resource` of `Offer` (1 through 200 characters without NUL; out of bounds the member sends no
+  offer and warns, the pool refuses it for good), and the pool records it on the node (`PlacementNode::resource`). One
+  live node holds a key: an offer whose key a different live node holds changes nothing for the offering node (a new
+  node is not added, a known one keeps its last entry and goes silent if it keeps offering only that key). The pool
+  lists the contest in the state's new `contested` (`PlacementContest { resource, node, at }`, one per key and offering
+  node, `at` the store time of its last such offer, at most `maxNodes`; a new one past that is refused for good) and
+  sends one `conflict` notice about the offering node when an entry is added; the check removes an entry one silence
+  time after its `at` and now runs while a contest is listed, also without a live node. When the holder is silent or
+  gone, the next offer of the key takes it. A decoded state with two live holders of one key is refused. Covered by
+  the resource-key tests of `crates/cicada-actors/tests/placement.rs`,
+  `a_capacity_with_a_resource_key_offers_it` and `tests/wire_formats.rs`.
 
 ### Changed (breaking)
 
 - The contract of `cicada.placement` changes: `PlacementMsg` gains `Duplicate` and `PlacementConflict` the optional
   `host`, so its hash differs from 0.24.0's. Rust code that matches `PlacementMsg` exhaustively gains `Duplicate`, and
-  code that builds `PlacementConflict` gains `host: None`.
+  code that builds `PlacementConflict` gains `host: None`. The resource keys add the optional `resource` to `Offer` and
+  to the node entry and the state field `contested`: code that builds or matches `PlacementMsg::Offer` without `..`
+  or builds `PlacementNode` or `PlacementState` gains them (`resource: None`, `contested: vec![]`).
+- `Capacity` gains the public field `resource`: a struct literal or a pattern without `..` no longer compiles; use
+  `Capacity::new` and `Capacity::resource`.
+- A state of a placement pool is now written with `contested` (`[]` when empty).
 - `NodeConfig` gains the public field `hostname`: a struct literal without `..NodeConfig::default()` no longer
   compiles; add `hostname: None`.
 - `NodeIdentity` no longer derives `Debug`, `PartialEq` and `Eq` but implements them: equality compares the node id
