@@ -275,7 +275,7 @@ impl FakeRuntime {
         });
     }
 
-    /// Sets what [`info`](ContainerRuntime::info) answers from now on, in place of `amd64` on `linux`.
+    /// Sets what [`info`](ContainerRuntime::info) answers from now on, in place of `amd64` on `linux` without an id.
     pub fn set_info(&self, info: RuntimeInfo) {
         self.lock().info = Some(info);
     }
@@ -856,8 +856,11 @@ mod tests {
     fn info_answers_amd64_on_linux_until_a_test_sets_another_machine() {
         let fake = FakeRuntime::new();
         assert_eq!(now(fake.info()).unwrap(), RuntimeInfo::new("amd64", "linux"));
+        assert_eq!(now(fake.info()).unwrap().id, None);
         fake.set_info(RuntimeInfo::new("arm64", "linux"));
         assert_eq!(now(fake.info()).unwrap(), RuntimeInfo::new("arm64", "linux"));
+        fake.set_info(RuntimeInfo::new("arm64", "linux").with_id("daemon-1"));
+        assert_eq!(now(fake.info()).unwrap().id.as_deref(), Some("daemon-1"));
     }
 
     /// Scenario: A scripted machine and a daemon that stops answering.

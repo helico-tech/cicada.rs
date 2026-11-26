@@ -592,7 +592,8 @@ impl ContainerRuntime for DockerRuntime {
     async fn info(&self) -> Result<RuntimeInfo, ContainerError> {
         let docker = self.docker().await?;
         let version = docker.version().await.map_err(|e| fail("read", "docker /version", &e))?;
-        map::runtime_info(&version)
+        let system = docker.info().await.map_err(|e| fail("read", "docker /info", &e))?;
+        map::runtime_info(&version, &system)
     }
 }
 

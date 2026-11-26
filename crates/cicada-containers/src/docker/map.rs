@@ -8,7 +8,7 @@ use bollard::container::LogOutput;
 use bollard::errors::Error as DockerError;
 use bollard::models::{
     ContainerCreateBody, ContainerInspectResponse, ContainerState, ContainerStateStatusEnum, EndpointSettings,
-    HostConfig, Mount as DockerMount, MountPoint, MountType, NetworkingConfig, SystemVersion,
+    HostConfig, Mount as DockerMount, MountPoint, MountType, NetworkingConfig, SystemInfo, SystemVersion,
 };
 
 use crate::dirs::{Make, Stat};
@@ -393,13 +393,18 @@ pub(super) fn log_line(name: &str, frame: LogOutput) -> Result<LogLine, Containe
     Ok(LogLine::new(time, stream, String::from_utf8_lossy(&bytes[space + 1..])))
 }
 
-/// The `Arch` and `Os` of Docker's `/version`, as they are; a missing or empty one is `Other`.
-pub(super) fn runtime_info(version: &SystemVersion) -> Result<RuntimeInfo, ContainerError> {
+/// The `Arch` and `Os` of Docker's `/version`, as they are, and the `ID` of its `/info`; a missing or empty `Arch` or
+/// `Os` is `Other`, a missing or empty `ID` is no id.
+pub(super) fn runtime_info(version: &SystemVersion, system: &SystemInfo) -> Result<RuntimeInfo, ContainerError> {
     let field = |value: &Option<String>, name: &str| match value.as_deref() {
         Some(value) if !value.is_empty() => Ok(value.to_owned()),
         _ => Err(ContainerError::new(ErrorKind::Other, format!("docker /version gave no {name}"))),
     };
-    Ok(RuntimeInfo::new(field(&version.arch, "Arch")?, field(&version.os, "Os")?))
+    let info = RuntimeInfo::new(field(&version.arch, "Arch")?, field(&version.os, "Os")?);
+    Ok(match system.id.as_deref() {
+        Some(id) if !id.is_empty() => info.with_id(id),
+        _ => info,
+    })
 }
 
 #[cfg(test)]
@@ -831,7 +836,18 @@ mod tests {
     #[test]
     fn runtime_info_takes_arch_and_os_as_docker_gives_them() {
         let version = SystemVersion { arch: Some("arm64".into()), os: Some("linux".into()), ..Default::default() };
-        assert_eq!(runtime_info(&version).unwrap(), RuntimeInfo::new("arm64", "linux"));
+        assert_eq!(runtime_info(&version, &SystemInfo::default()).unwrap(), RuntimeInfo::new("arm64", "linux"));
+    }
+
+    #[test]
+    fn runtime_info_takes_the_daemon_id_of_info_and_an_empty_one_is_none() {
+        let version = SystemVersion { arch: Some("arm64".into()), os: Some("linux".into()), ..Default::default() };
+        let system = SystemInfo { id: Some("4f2a:ZQ7Y".into()), ..Default::default() };
+        let info = runtime_info(&version, &system).unwrap();
+        assert_eq!(info, RuntimeInfo::new("arm64", "linux").with_id("4f2a:ZQ7Y"));
+        assert_eq!(info.id.as_deref(), Some("4f2a:ZQ7Y"));
+        let empty = SystemInfo { id: Some(String::new()), ..Default::default() };
+        assert_eq!(runtime_info(&version, &empty).unwrap().id, None);
     }
 
     #[test]
@@ -844,7 +860,7 @@ mod tests {
         ];
         for (arch, os, name) in cases {
             let version = SystemVersion { arch: arch.map(Into::into), os: os.map(Into::into), ..Default::default() };
-            let error = runtime_info(&version).unwrap_err();
+            let error = runtime_info(&version, &SystemInfo::default()).unwrap_err();
             assert_eq!(error.kind, ErrorKind::Other, "{error}");
             assert_eq!(error.message, format!("docker /version gave no {name}"));
         }

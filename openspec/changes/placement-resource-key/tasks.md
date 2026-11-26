@@ -5,7 +5,7 @@ Builds on `placement-identity-lock` (lands first). Follow `design.md` and ADR 00
 (`docs/adr/0072-one-live-holder-per-resource.md`); the specs are `specs/placement-pool/spec.md` and
 `specs/container-runtime/spec.md`.
 
-- [ ] 1. **The daemon's id.** `RuntimeInfo::id: Option<String>`, `RuntimeInfo::with_id`; `DockerRuntime::info` reads
+- [x] 1. **The daemon's id.** `RuntimeInfo::id: Option<String>`, `RuntimeInfo::with_id`; `DockerRuntime::info` reads
   `/info`'s `ID` (empty: `None`) next to `/version`; the fake reports `None` until `set_info` sets one; the rustdoc
   names the cost of `/info` (decision 1). Verify: map and fake tests; `cargo test -p cicada-containers --all-features`.
 - [ ] 2. **The key on offers.** `Capacity::resource(key)`, `Offer::resource` (1 to 200 characters, no NUL), the node's key

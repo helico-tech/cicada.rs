@@ -200,6 +200,10 @@ pub trait ContainerRuntime: Send + Sync + 'static {
     /// as for every call: a 5xx, such as a Docker Desktop engine that is starting, and a Docker below the API floor
     /// (Docker 25). So a liveness check treats every error but `Unsupported` as "not here this round".
     ///
+    /// The Docker backend also reads Docker's `/info` for the daemon's [`id`](RuntimeInfo::id), a second call next to
+    /// `/version`; an error of either fails the call. `/info` gathers the daemon's whole state and can take seconds on a
+    /// busy daemon, so a host that probes often pays it at every probe.
+    ///
     /// The default fails with `Unsupported`, so a runtime written before this method compiles unchanged; the fake and
     /// the Docker backend implement it.
     async fn info(&self) -> Result<RuntimeInfo, ContainerError> {
@@ -208,7 +212,7 @@ pub trait ContainerRuntime: Send + Sync + 'static {
 }
 
 /// What [`info`](ContainerRuntime::info) reports: the runtime's processor kind and operating system, in the spelling
-/// of image platforms.
+/// of image platforms, and the id of the runtime instance when it has one.
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuntimeInfo {
@@ -216,12 +220,21 @@ pub struct RuntimeInfo {
     pub arch: String,
     /// The operating system, such as `linux`.
     pub os: String,
+    /// The id of the runtime instance: for Docker the daemon's `ID` of `/info`, the same for every node that talks to
+    /// that daemon, so a placement offer can name it as its resource key (ADR 0072). `None` when the runtime gives
+    /// none or an empty one. Docker does not promise the format of the id, only that it names the daemon.
+    pub id: Option<String>,
 }
 
 impl RuntimeInfo {
-    /// A runtime on the processor kind `arch` and the operating system `os`.
+    /// A runtime on the processor kind `arch` and the operating system `os`, without an id.
     pub fn new(arch: impl Into<String>, os: impl Into<String>) -> Self {
-        Self { arch: arch.into(), os: os.into() }
+        Self { arch: arch.into(), os: os.into(), id: None }
+    }
+
+    /// The same info with the runtime instance's id `id`.
+    pub fn with_id(self, id: impl Into<String>) -> Self {
+        Self { id: Some(id.into()), ..self }
     }
 }
 
