@@ -15,7 +15,7 @@ recipe (`cicada send`).
 
 ## Order
 
-After `placement-resource-key`, before `placement-full-notice`.
+After `tray-worker-control`, before `placement-full-notice`.
 
 ## Impact
 

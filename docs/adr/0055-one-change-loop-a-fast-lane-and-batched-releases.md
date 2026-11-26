@@ -7,6 +7,7 @@ Date: 2026-11-22
 Accepted for lighter-loops. Supersedes three parts of [ADR 0030](0030-three-loops.md): design, build and review in
 three sessions of their own; every landed change a release; and the full loop for every change. Its lighter-work
 rules stand: small changes, targeted checks, reviews that read, and one design review.
+Partly superseded by [ADR 0073](0073-two-builders-in-the-change-loop.md): two builders when their changes share no crate.
 
 ## Context
 
