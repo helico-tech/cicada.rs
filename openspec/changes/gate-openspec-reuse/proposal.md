@@ -17,7 +17,7 @@ folders changed. Under load the second run costs 10 to 20 minutes per change (ow
 
 ## Order
 
-First in the line. No following change.
+First in the line, before `placement-identity-lock`.
 
 ## Impact
 
