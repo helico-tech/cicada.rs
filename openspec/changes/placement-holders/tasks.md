@@ -13,7 +13,7 @@ builder.md, Version). Builds on `placement-asks` (holders and the line; lands fi
   the line is scanned; for the pool itself or an actor that holds nothing, nothing; a `Failed` about another actor,
   nothing (decision 4). Verify: the deleted-before and deleted-after tests, two holders of one target, a holder's
   failed message.
-- [ ] 3. **Changelog and docs handoff.** The 0.24.0 section names freed places of deleted holders under Added; the
+- [x] 3. **Changelog and docs handoff.** The 0.24.0 section names freed places of deleted holders under Added; the
   handoff
   carries the design's Docs section and the turn a holder's `Failed` costs. No edit to `README.md`, `AGENTS.md` or the
   handwritten docs. Verify: `cargo test -p cicada-actors`, `cargo test -p cicada-examples --test docs`.

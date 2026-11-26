@@ -11,7 +11,7 @@ moves: a correction is a new version.
 
 The first parts of the placement pool (ADR 0067, ADR 0068): nodes offer places with labels to a pool, a node that stops
 offering is marked silent, with one notice, and work asks for a place with its needs and gets a node to pin its actors
-to. Holders, drain and the member follow in this version. Additive: a new
+to; a holder that is deleted frees its place. Drain and the member follow in this version. Additive: a new
 ready-made actor with its own contract; the contracts of the other actors, the store schema, the HTTP API and the
 guarantees are those of 0.23.1.
 
@@ -44,6 +44,14 @@ guarantees are those of 0.23.1.
   grant; `PlacementMsg::cancel(holder)` withdraws a waiting ask. A repeated ask is answered again with the first ask's
   grant, node and target. Fewer offered places or a silent node keep their holders. Covered by
   `crates/cicada-actors/tests/placement.rs` and `tests/wire_formats.rs`.
+- `cicada-actors`: a deleted holder frees its place in the placement pool. The pool watches the target of each holder
+  and waiting ask with `Turn::watch_existing`, from the commit that first records the ask, and unwatches a target
+  that holds and waits for nothing at the end of the turn. When a target is deleted, before or after that commit, its
+  one `Stopped` frees every place held for it, once, and takes its waiting asks out of the line; freed places go to the
+  line as after a `Release`. So a holder need not release before it stops. A `Stopped` from a client, for the pool
+  itself or for a target that holds nothing changes nothing; a `Failed` of a watched target's message costs the pool a
+  turn and changes nothing. An ask whose target is the pool itself is refused for good. No new message or state field.
+  Covered by `crates/cicada-actors/tests/placement.rs`.
 
 ## 0.23.1 — 2026-11-26
 
