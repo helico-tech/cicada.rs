@@ -3,9 +3,9 @@
 ### Requirement: The tray's settings
 
 The tray SHALL keep, per context, the types its worker runs and its concurrency in `tray.toml` next to the config file,
-and SHALL pass them to the worker as `--types` and `--concurrency` only when they differ from the defaults. Settings
-SHALL change the context's server and token through the same code as `cicada config`, keeping other contexts as they
-are on disk.
+and SHALL pass them to the worker as `--types` and `--concurrency` whenever the context has saved settings. Settings
+SHALL change the context's server and token through the same locked code as `cicada config`, keeping other contexts
+as they are on disk.
 
 #### Scenario: Fewer types
 
@@ -27,3 +27,8 @@ are on disk.
 
 - **WHEN** the server field holds `ftp://x` and the user applies
 - **THEN** nothing is written and the window shows the error under the server field
+
+#### Scenario: All types over the environment
+
+- **WHEN** `CICADA_TYPES` names one type and the settings of `prod` pick all types
+- **THEN** the worker starts with `--types` naming all types
