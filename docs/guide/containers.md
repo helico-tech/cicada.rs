@@ -745,6 +745,66 @@ checks its store backends. Call it in a `#[tokio::test]`. It uses container name
 (`cicada-output-check-a` and `-b`) and removes them before and after, so it can run on a store that holds other data.
 It does not check atomicity after a crash, the guard under parallel writers, or a file at `/a` next to one at `/a/b`.
 
+## Find containers without their actor
+
+A container that carries a job's prefix label but has no container actor (left by a lost store, a test, an actor
+deleted by hand) runs on unnoticed. `OrphanWatch` (from 0.23.1) lists the job's containers every `interval` (5 minutes)
+and reads the actor of each one, `J::TYPE` keyed by the name without the prefix. A container whose actor is missing in
+two rounds in a row is reported once: a warning in the log and one call of your `on_orphan` with its name. It never
+removes a container: decide with `sweep` or by hand.
+
+<!-- doctest
+# use std::sync::{Arc, Mutex};
+# use std::time::Duration;
+# use cicada::prelude::*;
+# use cicada_containers::{ContainerJob, ContainerSpec};
+# use serde::{Deserialize, Serialize};
+# #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+# struct Test {}
+# struct Tests;
+# impl ContainerJob for Tests {
+#     const TYPE: &'static str = "ci.tests";
+#     type Request = Test;
+#     fn spec(&self, name: &str, _: &Test) -> Result<ContainerSpec, String> { Ok(ContainerSpec::new(name, "rust:1")) }
+# }
+# #[tokio::main(flavor = "current_thread", start_paused = true)]
+# async fn main() -> Result<(), Box<dyn std::error::Error>> {
+@@17
+# Ok(())
+# }
+-->
+```rust
+use cicada_containers::{ContainerRuntime, FakeRuntime, OrphanSettings, OrphanWatch, PREFIX_LABEL};
+use cicada_test::TestActors;
+
+let runtime = FakeRuntime::new();
+let mut spec = ContainerSpec::new("ci-left", "rust:1");
+spec.labels.insert(PREFIX_LABEL.into(), "ci-".into()); // as the container actor does
+runtime.create(&spec).await?; // but no actor ci.tests/left exists
+
+let orphans = Arc::new(Mutex::new(Vec::new()));
+let seen = orphans.clone();
+let watch = OrphanWatch::<Tests>::new(Arc::new(runtime.clone()), "ci-", OrphanSettings::new(), move |name: &str| {
+    seen.lock().unwrap().push(name.to_owned()); // or your own alert
+})?;
+let test = TestActors::builder().build().await?;
+watch.run(test.system().clone(), tokio::time::sleep(Duration::from_secs(6 * 60))).await;
+assert_eq!(*orphans.lock().unwrap(), ["ci-left"]); // at the second round, 5 minutes in
+assert!(runtime.inspect("ci-left").await.is_ok()); // and not removed
+```
+
+In a host, run it as an [app task](app.md#run-it-as-a-binary) like the [log archiver](#archive-the-logs), with the node's
+`ActorSystem` and `stopping.wait()` as the stop, once per Docker daemon. `on_orphan` is a plain function: to send a
+message, spawn a task or push into a channel from it. `OrphanWatch::new` refuses a zero `interval`. Mind these limits:
+
+- What it reported is kept in memory: after a restart each orphan is reported once more. An orphan whose actor
+  appears is dropped, and reported again only after its actor is gone for two rounds again; a removed one is forgotten.
+- A failed `list` or actor read is logged and does not count as a round.
+- Two stores on one Docker daemon with the same prefix (staging and production) see each other's containers as
+  orphans: give each its own prefix.
+- Containers made before 0.22.1 carry no label and are never seen. A labelled name without the prefix is skipped with
+  one warning.
+
 ## Write or wrap a runtime
 
 Implement `ContainerRuntime` for another engine. `logs_since`, `copy_out`, `make_dirs` and `info` have defaults that

@@ -200,7 +200,8 @@ An image pull and the stop grace run inside one turn: set the job's `ContainerJo
 one, the node's `--max-turn` does not change that type's limit. Keep the log target
 `bollard` at `info` or above, as it logs request bodies with secret environment at `debug`. A container actor that
 ends `runtimeErrors` met `max_errors` runtime errors in a row: check that Docker answers on that node. Send `Remove`
-before deleting a container actor; leftovers carry the spec's labels, so `sweep` with a label removes them.
+before deleting a container actor; leftovers carry the spec's labels, so `sweep` with a label removes them, and an
+[`OrphanWatch`](guide/containers.md#find-containers-without-their-actor) reports containers whose actor is gone.
 
 ### Destructive controls
 
