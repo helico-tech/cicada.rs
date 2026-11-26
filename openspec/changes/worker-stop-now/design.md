@@ -24,13 +24,14 @@ tray.stop_now();     // the grace period ends now: running turns are cancelled a
 2. **A handle in `WorkerReady` that remembers.** `WorkerReady` gains `stop_now: StopNow`, a new public
    `Clone + Debug` handle that holds only a `CancellationToken`, not the worker; `now()` is a plain call that sets it.
    The worker over HTTP in `cicada-app` watches that token next to its stop: once the stop has begun (`worker.stop()`
-   started) and the token is set, before or after, it calls `worker.end_grace()`. So a Stop Now that comes between the
-   host's stop signal and the worker's own `Stopping` is kept, not lost (design review). Set before the stop signal,
+   started) and the token is set, before or after, it calls `worker.end_grace()`. It must not poll the token branch
+   before `worker.stop()` has set `Stopping` (as `join!` could), or the call is lost. So a Stop Now that comes between
+   the host's stop signal and the worker's own `Stopping` is kept, not lost (design review). Set before the stop signal,
    it applies when the stop begins. A call after the stop does nothing. `WorkerReady` drops `PartialEq` and `Eq` (a
-   handle has no meaningful equality); against 0.25.0 that, the new field and the earlier `types` change are all in
-   the 0.26.0 **BREAKING** line; the `node.rs` test that compares whole `WorkerReady` values compares fields instead.
-   Only a worker over HTTP reports `WorkerReady`; `serve` and a worker on the store keep their signal-driven stop. Not
-   taken: a second shutdown future on `run_with` (a signature change for every caller).
+   handle has no meaningful equality); against 0.25.0 that, the new field and the earlier `types` change are all in the
+   0.26.0 **BREAKING** line; the `node.rs` test that compares whole `WorkerReady` values compares fields instead. Only a
+   worker over HTTP reports `WorkerReady`; `serve` and a worker on the store keep their signal-driven stop. Not taken: a
+   second shutdown future on `run_with` (a signature change for every caller).
 3. **`Tray::stop_now()`.** While `Stopping` with a ready worker, it calls the kept `StopNow` and sets `until` to the
    earlier of the current `until` and now plus the cancel timeout, so the menu's countdown follows and a second Stop
    Now never moves it later; the state stays `Stopping` until `run_with` returns and then
@@ -48,7 +49,9 @@ stop, does nothing. App: `WorkerReady::stop_now` ends a worker over HTTP's drain
 a ready worker ends `Offline` well before the grace period, its running turn listed as abandoned, and `until` moves to
 now plus the cancel timeout; `stop_now` while online, offline or failed does nothing; `disconnect` then `stop_now` at
 once (before the worker's own `Stopping`) still ends within the cancel timeout; a second `stop_now` keeps the earlier
-`until`. Menu model: the Stop Now row only while stopping a ready worker.
+`until`. (`stop_now` never calls `Connection::stopping`, which recomputes it); a `StopNow::now` set before the stop
+signal ends the grace period as soon as the stop begins. Menu model: the Stop Now row only while stopping a ready
+worker.
 
 ## Docs
 
