@@ -4,7 +4,7 @@ Normal lane, in the 0.25.0 batch (check the `release:` line of `python3 scripts/
 Builds after `tray-worker-control` (also changes `App`: `type_names`, `on_worker_ready`; rebase onto it when it landed
 first). Follow `design.md`; the spec is `specs/app/spec.md`. No ADR.
 
-- [ ] 1. **Parse, then apply.** Split `settings::resolve` and `resolve_http` into a parse step (every flag and variable
+- [x] 1. **Parse, then apply.** Split `settings::resolve` and `resolve_http` into a parse step (every flag and variable
   read and checked, with the types) and an apply step that lays the parsed values over a `NodeConfig`; behaviour
   unchanged (decision 4). Verify: the existing settings tests and `cargo test -p cicada-app`.
 - [ ] 2. **The built-in store check moves.** `check_built_in` is called from `lib.rs` on the parsed store, before the

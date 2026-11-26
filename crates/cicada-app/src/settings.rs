@@ -1,8 +1,8 @@
 //! The settings of `serve` and `worker`: the store, the address, the types and the node. Each comes from its flag, else
 //! its variable `CICADA_…` (a blank one counts as unset), else for the node the host's `NodeConfig`, else the default.
 //! `CICADA_NODE_LABEL` alone is read as given: an empty one counts as unset and a blank one is an error.
-//! [`resolve`] is a function of the flags, the variables and the host's values, so it is tested without a process.
-//! A worker first picks its mode ([`worker_mode`]): on the store it resolves as above, over HTTP ([`resolve_http`]) it
+//! Parsing the flags and variables is separate from applying them to the host's config.
+//! A worker first picks its mode ([`worker_mode`]): on the store it resolves as above, over HTTP ([`parse_http`]) it
 //! takes only the settings a [`WorkerConfig`] has and refuses those the server owns (ADR 0042).
 
 use std::fmt;
@@ -215,7 +215,7 @@ pub(crate) fn check_built_in(store: &StoreSpec, built: &[Backend]) -> Result<(),
 
 /// What `serve` or `worker` runs with.
 #[derive(Debug, Clone)]
-pub(crate) struct Settings {
+pub(crate) struct Settings<N = NodeConfig> {
     /// The store.
     pub store: StoreSpec,
     /// The schema, on PostgreSQL.
@@ -229,8 +229,8 @@ pub(crate) struct Settings {
     pub retention: Option<Duration>,
     /// The names of the types to host, in the order the binary hosts them.
     pub types: Vec<&'static str>,
-    /// The node.
-    pub node: NodeConfig,
+    /// The parsed overrides or the settled configuration of the node.
+    pub node: N,
     /// Where `serve` listens.
     pub listen: SocketAddr,
 }
@@ -246,17 +246,26 @@ impl Settings {
     }
 }
 
-/// The settings of `kind` from its flags `args`, `listen` (`serve` only), the variables `env`, the host's `NodeConfig`
-/// and the names of the types the binary hosts. An error is a command line that cannot be used: it names the flag or
-/// the variable.
-pub(crate) fn resolve(
+/// Settings for a node on the store, before its host config is known.
+pub(crate) type ParsedSettings = Settings<NodeOverrides>;
+
+impl ParsedSettings {
+    /// Lays the parsed settings over the host's config or the default config of a node.
+    pub(crate) fn apply(self, host: Option<NodeConfig>) -> Settings {
+        let Self { store, schema, pool_size, retention, types, node, listen } = self;
+        Settings { store, schema, pool_size, retention, types, node: node.apply_to_node(host), listen }
+    }
+}
+
+/// Parses the flags and variables of `kind` and selects the types it will host.
+/// An error names the flag or the variable that cannot be used.
+pub(crate) fn parse(
     kind: Kind,
     args: &NodeArgs,
     listen: Option<SocketAddr>,
     env: &Env,
-    host: Option<&NodeConfig>,
     hosted: &[&'static str],
-) -> Result<Settings, String> {
+) -> Result<ParsedSettings, String> {
     let store = match (&args.store, variable(env, "CICADA_STORE")) {
         (Some(value), _) => StoreSpec::parse(value).map_err(|e| format!("--store: {e}"))?,
         (None, Some(value)) => StoreSpec::parse(value).map_err(|e| format!("CICADA_STORE: {e}"))?,
@@ -264,46 +273,8 @@ pub(crate) fn resolve(
             return Err(format!("{} needs a store: pass --store or set CICADA_STORE", kind.name()));
         }
     };
-    let types = match (&args.types, variable(env, "CICADA_TYPES")) {
-        (Some(value), _) => pick_types(kind, value, hosted).map_err(|e| format!("--types: {e}"))?,
-        (None, Some(value)) => pick_types(kind, value, hosted).map_err(|e| format!("CICADA_TYPES: {e}"))?,
-        (None, None) => hosted.to_vec(),
-    };
-
-    let mut node = host.cloned().unwrap_or_default();
-    if let Some(id) = setting(args.node_id.clone(), env, "CICADA_NODE_ID", node_id)? {
-        node.node_id = id;
-    }
-    if let Some(concurrency) = setting(args.concurrency, env, "CICADA_CONCURRENCY", number)? {
-        node.concurrency = concurrency;
-    }
-    if let Some(ttl) = setting(args.lease_ttl, env, "CICADA_LEASE_TTL", duration)? {
-        node.lease_ttl = ttl;
-    }
-    if let Some(heartbeat) = setting(args.heartbeat_interval, env, "CICADA_HEARTBEAT_INTERVAL", duration)? {
-        node.heartbeat_interval = Some(heartbeat);
-    }
-    if let Some(poll) = setting(args.poll_interval, env, "CICADA_POLL_INTERVAL", duration)? {
-        node.poll_interval = poll;
-    }
-    if let Some(grace) = setting(args.shutdown_grace_period, env, "CICADA_SHUTDOWN_GRACE_PERIOD", duration)? {
-        node.shutdown_grace_period = grace;
-    }
-    if let Some(max_turn) = setting(args.max_turn, env, "CICADA_MAX_TURN", duration)? {
-        node.default_max_turn = max_turn;
-    }
-    if let Some(LostClaims(limit)) = setting(args.max_lost_claims, env, "CICADA_MAX_LOST_CLAIMS", lost_claims)? {
-        node.max_lost_claims = limit;
-    }
-    // Read raw, not with `variable`: an empty value is unset, a blank one is an error and outer spaces are kept.
-    match (&args.node_label, env.get("CICADA_NODE_LABEL").filter(|value| !value.is_empty())) {
-        (Some(label), _) => node.label = Some(label.clone()),
-        (None, Some(value)) => {
-            node.label = Some(node_label(value).map_err(|e| format!("CICADA_NODE_LABEL: invalid value: {e}"))?);
-        }
-        (None, None) => {}
-    }
-
+    let types = parse_types(kind, args, env, hosted)?;
+    let node = NodeOverrides::parse(args, env, WorkerMode::Store)?;
     let default_listen = DEFAULT_LISTEN.parse().expect("a socket address");
     Ok(Settings {
         store,
@@ -366,24 +337,26 @@ pub(crate) fn worker_mode(args: &WorkerArgs, env: &Env) -> Result<WorkerMode, St
 /// What a worker over HTTP runs with: the types and the configuration of its `Worker`. The server comes from
 /// [`http_target`].
 #[derive(Debug, Clone)]
-pub(crate) struct HttpSettings {
+pub(crate) struct HttpSettings<W = WorkerConfig> {
     /// The names of the types to host, in the order the binary hosts them.
     pub types: Vec<&'static str>,
-    /// The worker.
-    pub worker: WorkerConfig,
+    /// The parsed overrides or the settled configuration of the worker.
+    pub worker: W,
 }
 
-/// The settings of a worker over HTTP from its flags `args`, the variables `env`, the host's `NodeConfig` and the names
-/// of the types the binary hosts. The id, the concurrency, the poll interval, the longest turn and the grace period
-/// come from the flag, else the variable, else the host, else the default of `WorkerConfig`; the host's cancel timeout
-/// is kept. The settings the server owns are refused as flags, and neither their variables, the host's values of them
-/// nor `CICADA_LISTEN` are read. An error is a command line that cannot be used.
-pub(crate) fn resolve_http(
-    args: &NodeArgs,
-    env: &Env,
-    host: Option<&NodeConfig>,
-    hosted: &[&'static str],
-) -> Result<HttpSettings, String> {
+/// Settings for a worker over HTTP, before its host config is known.
+pub(crate) type ParsedHttpSettings = HttpSettings<NodeOverrides>;
+
+impl ParsedHttpSettings {
+    /// Lays the parsed settings over the worker fields of the host config or the default config of a worker.
+    pub(crate) fn apply(self, host: Option<NodeConfig>) -> HttpSettings {
+        HttpSettings { types: self.types, worker: self.worker.apply_to_worker(host) }
+    }
+}
+
+/// Parses the flags and variables for a worker over HTTP and selects the types it will host.
+/// It refuses flags for settings the server owns and skips their variables and `CICADA_LISTEN`.
+pub(crate) fn parse_http(args: &NodeArgs, env: &Env, hosted: &[&'static str]) -> Result<ParsedHttpSettings, String> {
     let refused: Vec<&str> = [
         (args.store_schema.is_some(), "--store-schema"),
         (args.store_pool_size.is_some(), "--store-pool-size"),
@@ -404,36 +377,110 @@ pub(crate) fn resolve_http(
     if args.node_label.is_some() {
         return Err("a worker over HTTP does not take --node-label: it has no row in the node table".to_owned());
     }
-    let types = match (&args.types, variable(env, "CICADA_TYPES")) {
-        (Some(value), _) => pick_types(Kind::Worker, value, hosted).map_err(|e| format!("--types: {e}"))?,
-        (None, Some(value)) => pick_types(Kind::Worker, value, hosted).map_err(|e| format!("CICADA_TYPES: {e}"))?,
-        (None, None) => hosted.to_vec(),
-    };
-    let mut worker = WorkerConfig::default();
-    if let Some(host) = host {
-        worker.worker_id = host.node_id.clone();
-        worker.concurrency = host.concurrency;
-        worker.poll_interval = host.poll_interval;
-        worker.default_max_turn = host.default_max_turn;
-        worker.shutdown_grace_period = host.shutdown_grace_period;
-        worker.shutdown_cancel_timeout = host.shutdown_cancel_timeout;
-    }
-    if let Some(id) = setting(args.node_id.clone(), env, "CICADA_NODE_ID", node_id)? {
-        worker.worker_id = id;
-    }
-    if let Some(concurrency) = setting(args.concurrency, env, "CICADA_CONCURRENCY", number)? {
-        worker.concurrency = concurrency;
-    }
-    if let Some(poll) = setting(args.poll_interval, env, "CICADA_POLL_INTERVAL", duration)? {
-        worker.poll_interval = poll;
-    }
-    if let Some(grace) = setting(args.shutdown_grace_period, env, "CICADA_SHUTDOWN_GRACE_PERIOD", duration)? {
-        worker.shutdown_grace_period = grace;
-    }
-    if let Some(max_turn) = setting(args.max_turn, env, "CICADA_MAX_TURN", duration)? {
-        worker.default_max_turn = max_turn;
-    }
+    let types = parse_types(Kind::Worker, args, env, hosted)?;
+    let worker = NodeOverrides::parse(args, env, WorkerMode::Http)?;
     Ok(HttpSettings { types, worker })
+}
+
+/// The node fields supplied by flags or variables, before falling back to a host config.
+#[derive(Debug, Clone)]
+pub(crate) struct NodeOverrides {
+    id: Option<NodeId>,
+    concurrency: Option<usize>,
+    lease_ttl: Option<Duration>,
+    heartbeat_interval: Option<Duration>,
+    poll_interval: Option<Duration>,
+    grace_period: Option<Duration>,
+    max_turn: Option<Duration>,
+    max_lost_claims: Option<LostClaims>,
+    label: Option<String>,
+}
+
+impl NodeOverrides {
+    fn parse(args: &NodeArgs, env: &Env, mode: WorkerMode) -> Result<Self, String> {
+        let id = setting(args.node_id.clone(), env, "CICADA_NODE_ID", node_id)?;
+        let concurrency = setting(args.concurrency, env, "CICADA_CONCURRENCY", number)?;
+        let (lease_ttl, heartbeat_interval) = if mode == WorkerMode::Store {
+            (
+                setting(args.lease_ttl, env, "CICADA_LEASE_TTL", duration)?,
+                setting(args.heartbeat_interval, env, "CICADA_HEARTBEAT_INTERVAL", duration)?,
+            )
+        } else {
+            (None, None)
+        };
+        let poll_interval = setting(args.poll_interval, env, "CICADA_POLL_INTERVAL", duration)?;
+        let grace_period = setting(args.shutdown_grace_period, env, "CICADA_SHUTDOWN_GRACE_PERIOD", duration)?;
+        let max_turn = setting(args.max_turn, env, "CICADA_MAX_TURN", duration)?;
+        let (max_lost_claims, label) = if mode == WorkerMode::Store {
+            let max_lost_claims = setting(args.max_lost_claims, env, "CICADA_MAX_LOST_CLAIMS", lost_claims)?;
+            // An empty label is unset, a blank one is an error and outer spaces are kept.
+            let label = match (&args.node_label, env.get("CICADA_NODE_LABEL").filter(|value| !value.is_empty())) {
+                (Some(label), _) => Some(label.clone()),
+                (None, Some(value)) => {
+                    Some(node_label(value).map_err(|e| format!("CICADA_NODE_LABEL: invalid value: {e}"))?)
+                }
+                (None, None) => None,
+            };
+            (max_lost_claims, label)
+        } else {
+            (None, None)
+        };
+        Ok(Self {
+            id,
+            concurrency,
+            lease_ttl,
+            heartbeat_interval,
+            poll_interval,
+            grace_period,
+            max_turn,
+            max_lost_claims,
+            label,
+        })
+    }
+
+    fn apply_to_node(self, host: Option<NodeConfig>) -> NodeConfig {
+        let node = host.unwrap_or_default();
+        NodeConfig {
+            node_id: self.id.unwrap_or(node.node_id),
+            concurrency: self.concurrency.unwrap_or(node.concurrency),
+            lease_ttl: self.lease_ttl.unwrap_or(node.lease_ttl),
+            heartbeat_interval: self.heartbeat_interval.or(node.heartbeat_interval),
+            poll_interval: self.poll_interval.unwrap_or(node.poll_interval),
+            shutdown_grace_period: self.grace_period.unwrap_or(node.shutdown_grace_period),
+            default_max_turn: self.max_turn.unwrap_or(node.default_max_turn),
+            max_lost_claims: self.max_lost_claims.map_or(node.max_lost_claims, |limit| limit.0),
+            label: self.label.or(node.label),
+            ..node
+        }
+    }
+
+    fn apply_to_worker(self, host: Option<NodeConfig>) -> WorkerConfig {
+        let worker = host.map_or_else(WorkerConfig::default, |host| WorkerConfig {
+            worker_id: host.node_id,
+            concurrency: host.concurrency,
+            poll_interval: host.poll_interval,
+            default_max_turn: host.default_max_turn,
+            shutdown_grace_period: host.shutdown_grace_period,
+            shutdown_cancel_timeout: host.shutdown_cancel_timeout,
+        });
+        WorkerConfig {
+            worker_id: self.id.unwrap_or(worker.worker_id),
+            concurrency: self.concurrency.unwrap_or(worker.concurrency),
+            poll_interval: self.poll_interval.unwrap_or(worker.poll_interval),
+            shutdown_grace_period: self.grace_period.unwrap_or(worker.shutdown_grace_period),
+            default_max_turn: self.max_turn.unwrap_or(worker.default_max_turn),
+            ..worker
+        }
+    }
+}
+
+/// Selects the types by flag, then environment variable, with all the binary's types as the default.
+fn parse_types(kind: Kind, args: &NodeArgs, env: &Env, hosted: &[&'static str]) -> Result<Vec<&'static str>, String> {
+    match (&args.types, variable(env, "CICADA_TYPES")) {
+        (Some(value), _) => pick_types(kind, value, hosted).map_err(|e| format!("--types: {e}")),
+        (None, Some(value)) => pick_types(kind, value, hosted).map_err(|e| format!("CICADA_TYPES: {e}")),
+        (None, None) => Ok(hosted.to_vec()),
+    }
 }
 
 /// The server of a worker over HTTP, with its token and headers, as the operator commands resolve them: each from its
@@ -579,7 +626,7 @@ mod tests {
                 (worker.node, None)
             }
         };
-        resolve(kind, &args, listen, env, host, hosted)
+        Ok(parse(kind, &args, listen, env, hosted)?.apply(host.cloned()))
     }
 
     fn serve(flags: &[&str]) -> Settings {
@@ -909,7 +956,7 @@ mod tests {
     }
 
     fn http(flags: &[&str], env: &Env, host: Option<&NodeConfig>) -> Result<HttpSettings, String> {
-        resolve_http(&worker_args(flags).node, env, host, &HOSTED)
+        Ok(parse_http(&worker_args(flags).node, env, &HOSTED)?.apply(host.cloned()))
     }
 
     /// Scenario: Explicit selection overrides ambient settings.

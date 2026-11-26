@@ -311,15 +311,9 @@ impl App {
                 Parsed::Serve(args) => {
                     self.check_task_names()?;
                     let stop = Stop::watch(shutdown);
-                    let settings = settings::resolve(
-                        Kind::Serve,
-                        &args.node,
-                        args.listen,
-                        &env,
-                        self.node_config.as_ref(),
-                        &names,
-                    )
-                    .map_err(AppError::usage)?;
+                    let settings = settings::parse(Kind::Serve, &args.node, args.listen, &env, &names)
+                        .map_err(AppError::usage)?
+                        .apply(self.node_config.clone());
                     node::serve(self.into_parts(), settings, &mut out, stop).await
                 }
                 Parsed::Worker(args) => {
@@ -327,9 +321,9 @@ impl App {
                     let stop = Stop::watch(shutdown);
                     match settings::worker_mode(&args, &env).map_err(AppError::usage)? {
                         WorkerMode::Store => {
-                            let host = self.node_config.as_ref();
-                            let settings = settings::resolve(Kind::Worker, &args.node, None, &env, host, &names)
-                                .map_err(AppError::usage)?;
+                            let settings = settings::parse(Kind::Worker, &args.node, None, &env, &names)
+                                .map_err(AppError::usage)?
+                                .apply(self.node_config.clone());
                             node::worker(self.into_parts(), settings, stop).await
                         }
                         WorkerMode::Http => {
@@ -341,8 +335,9 @@ impl App {
                                         .to_owned(),
                                 ));
                             }
-                            let settings = settings::resolve_http(&args.node, &env, self.node_config.as_ref(), &names)
-                                .map_err(AppError::usage)?;
+                            let settings = settings::parse_http(&args.node, &env, &names)
+                                .map_err(AppError::usage)?
+                                .apply(self.node_config.clone());
                             let target = settings::http_target(&args, &env, &name).map_err(AppError::Failed)?;
                             node::http_worker(self.into_parts(), settings, target, stop).await
                         }
