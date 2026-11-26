@@ -13,7 +13,7 @@ and `specs/container-runtime/spec.md`. Run the crate's tests with every feature:
   pending end without a copy, log read or progress read, with `outputs.error` naming the failures and the last error
   (decision 1); the rustdoc of `MAX_TURN` updated. Verify: a test runtime whose `copy_out` sleeps past `MAX_TURN`;
   after three timed-out tries the end is sent and no fourth copy is made.
-- [ ] 3. **Warnings.** A warning once store errors in a row reach `max_errors` while collecting and while deleting
+- [x] 3. **Warnings.** A warning once store errors in a row reach `max_errors` while collecting and while deleting
   outputs; the rustdoc of `max_errors` (decision 3). Verify: a test that one warning is logged.
 - [ ] 4. **Changelog and docs handoff.** The unreleased section names `max_read` and the three-tries rule under Added
   and

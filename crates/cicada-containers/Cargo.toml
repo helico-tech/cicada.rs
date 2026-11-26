@@ -43,6 +43,8 @@ cicada-test.workspace = true
 # The config folders and credential helper scripts of the Docker backend's tests.
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+# The warnings test reads what the actor logs.
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

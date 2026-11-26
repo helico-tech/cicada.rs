@@ -395,7 +395,8 @@ pub struct ContainerSettings {
     /// The longest wait between polls after errors; 60 s.
     pub max_backoff: Duration,
     /// The runtime errors in a row that end a container without an end `failed`; 10. A removal keeps trying. While the
-    /// outputs are collected, they send the pending end with its outcome and the error in its report.
+    /// outputs are collected, they send the pending end with its outcome and the error in its report, with a warning
+    /// in the log. The deletion of stored outputs keeps trying past it, with one warning when the errors reach it.
     pub max_errors: u32,
     /// How long a container may run before it is stopped and ends `timedOut`; none. The default of
     /// [`ContainerJob::timeout`], which can change it per request.
@@ -896,7 +897,12 @@ impl<J: ContainerJob> ContainerActor<J> {
                     let state = turn.state_mut();
                     state.errors = state.errors.saturating_add(1);
                     let errors = state.errors;
-                    tracing::debug!(container = name, errors, error = %e, "the stored outputs were not deleted yet");
+                    if errors == self.settings.max_errors {
+                        let message = "the stored outputs were not deleted; the deletion keeps trying";
+                        tracing::warn!(container = name, errors, error = %e, "{message}");
+                    } else {
+                        tracing::debug!(container = name, errors, error = %e, "the stored outputs were not deleted yet");
+                    }
                     return arm_after(turn, self.settings.backoff(errors));
                 }
             },
@@ -1100,9 +1106,12 @@ impl<J: ContainerJob> ContainerActor<J> {
                 state.errors = state.errors.saturating_add(1);
                 let errors = state.errors;
                 if errors >= self.settings.max_errors {
+                    let message = "the outputs were not collected; the end goes out without them";
+                    tracing::warn!(container = name, errors, error, "{message}");
                     let error = format!("failed {errors} times in a row: {error}");
                     return self.finish(turn, name, OutputsReport::failed(&error)).await;
                 }
+                tracing::debug!(container = name, errors, error, "the outputs were not collected yet");
                 arm_after(turn, self.settings.backoff(errors))
             }
         }
