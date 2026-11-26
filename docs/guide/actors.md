@@ -609,9 +609,20 @@ needs any more, as a node may come back; there is no time limit, so send `Cancel
 
 **Releasing.** `PlacementMsg::release(holder, grant)` frees the place only when holder and grant match, so a late
 release of an older grant frees nothing. `PlacementMsg::cancel(holder)` withdraws a waiting ask and does nothing for a
-holder. A holder that is gone without a `Release` keeps its place: release in every path that ends the work. An offer
-with fewer places than holders keeps every holder, and new grants wait until holders release; a silent node keeps its
-holders too.
+holder.
+
+**A deleted holder.** The pool watches the target of each holder and waiting ask with
+[`watch_existing`](core.md#watches) while it holds or waits. When that actor is deleted, also before the pool recorded
+its ask, every place held for it is freed and its waiting asks leave the line, once; freed places go to the line as
+after a `Release`. So a holder actor need not release before it stops, but one that ends its work and lives on still
+releases: only the target's delete frees its places. Places are freed per target, so two holders whose answers go to
+one actor are both freed when it goes. The watch also tells the pool of every failed message of a target, each one an
+ignored turn, so a target with many failing messages adds load. An ask whose target is the pool itself is refused for
+good. The pool keeps at most one watch per distinct target, and only a `Stopped` the store wrote counts: one a client
+sends changes nothing.
+
+**Fewer places.** An offer with fewer places than holders keeps every holder, and new grants wait until holders
+release; a silent node keeps its holders too.
 
 **A lost check.** A purged, cancelled or failed `Check` leaves the pool without a timer. Anyone may send `Rearm`, which
 replaces the armed check at the old time, at once when that passed, so repeated `Rearm`s leave one check. A `Check` or
