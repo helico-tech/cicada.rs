@@ -115,7 +115,7 @@ def claim(review, by):
     if state(review) != "open":
         return False
     try:
-        handle = os.open(DIR / f"{review}.taken", os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        handle = os.open(DIR / f"{review}.taken", os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
     except FileExistsError:
         return False
     with os.fdopen(handle, "w") as taken:

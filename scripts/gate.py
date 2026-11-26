@@ -208,8 +208,8 @@ def parse_policy(data: bytes) -> dict:
             strings(command.get("env", {}), f"{kind}/{name} env")
             names.add(name)
     allow = policy.get("docs_allowlist")
-    if not isinstance(allow, dict) or set(allow) != {"files", "markdown_under", "except_under"}:
-        raise GateError("policy: docs_allowlist needs files, markdown_under and except_under")
+    if not isinstance(allow, dict) or set(allow) != {"files", "markdown_under", "any_under", "except_under"}:
+        raise GateError("policy: docs_allowlist needs files, markdown_under, any_under and except_under")
     for key, value in allow.items():
         if not isinstance(value, list) or not all(isinstance(v, str) and v for v in value):
             raise GateError(f"policy: docs_allowlist.{key} must be a list of paths")
@@ -344,11 +344,15 @@ def check_record(repo: Repo, kind: str, commit: str, policy_blob: str, policy: d
 
 
 def allowed_path(path: str, allow: dict) -> bool:
+    """Whether a regular file at path may change after a full pass: a listed file, Markdown under markdown_under, or any
+    file under any_under, and never under except_under."""
     if path in allow["files"]:
         return True
-    if not path.endswith(".md") or any(path.startswith(p) for p in allow["except_under"]):
+    if any(path.startswith(p) for p in allow["except_under"]):
         return False
-    return any(path.startswith(p) for p in allow["markdown_under"])
+    if any(path.startswith(p) for p in allow["any_under"]):
+        return True
+    return path.endswith(".md") and any(path.startswith(p) for p in allow["markdown_under"])
 
 
 def classify(repo: Repo, base: str, target: str, allow: dict) -> list[str]:
@@ -374,7 +378,7 @@ def classify(repo: Repo, base: str, target: str, allow: dict) -> list[str]:
 
 
 def docs_base(repo: Repo, commit: str, policy_blob: str, policy: dict, runner_blob: str) -> tuple[str | None, str]:
-    """The nearest first-parent ancestor with a direct full pass, if only allowed Markdown changed since."""
+    """The nearest first-parent ancestor with a direct full pass, if only allowed files changed since."""
     for base in repo.first_parents(commit):
         try:
             base_blob, base_policy = load_policy(repo, base)

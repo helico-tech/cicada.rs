@@ -29,7 +29,8 @@
   },
   "docs_allowlist": {
     "files": ["README.md", "CHANGELOG.md", "AGENTS.md"],
-    "markdown_under": ["docs/", "skills/cicada/", ".claude/skills/", "openspec/"],
+    "markdown_under": ["docs/", "skills/cicada/", ".claude/skills/"],
+    "any_under": ["openspec/"],
     "except_under": ["docs/reference/"]
   }
 }

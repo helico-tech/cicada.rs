@@ -189,6 +189,7 @@ class ClassifierTests(unittest.TestCase):
         self.sandbox = Sandbox(self, files={
             "docs/guide.md": "g\n", "docs/reference/cli.md": "c\n", "crates/x/README.md": "r\n",
             "openspec/config.yaml": "a: 1\n", "openspec/changes/x/proposal.md": "p\n", "src/lib.rs": "\n",
+            "openspec/changes/x/.openspec.yaml": "schema: spec-driven\n",
             "skills/cicada/SKILL.md": "s\n", ".claude/skills/change-loop/SKILL.md": "b\n", "CHANGELOG.md": "c\n",
         })
         self.repo = gate.Repo(self.sandbox.root)
@@ -209,9 +210,25 @@ class ClassifierTests(unittest.TestCase):
                 self.assertEqual(self.refused({path: "changed\n"}), [])
         self.assertEqual(self.refused(prepare=lambda: self.sandbox.git("rm", "-q", "docs/guide.md")), [])
 
+    def test_regular_files_under_openspec_qualify(self):
+        for path in ("openspec/config.yaml", "openspec/changes/x/.openspec.yaml", "openspec/changes/y/notes.txt"):
+            with self.subTest(path):
+                self.assertEqual(self.refused({path: "changed\n"}), [])
+
+        def archive():
+            (self.sandbox.root / "openspec/changes/archive").mkdir()
+            self.sandbox.git("mv", "openspec/changes/x", "openspec/changes/archive/2026-11-26-x")
+            reviews = "openspec/changes/archive/2026-11-26-x/reviews"
+            self.sandbox.write(f"{reviews}/x.code.1.md", "request\n")
+            self.sandbox.write(f"{reviews}/x.code.1.taken", "by: reviewer\n", 0o644)
+            self.sandbox.write("openspec/specs/x/spec.md", "spec\n")
+            return self.sandbox.commit("archive")
+
+        self.assertEqual(self.refused(prepare=archive), [])
+
     def test_other_inputs_force_full_checks(self):
-        for path in ("docs/reference/cli.md", "crates/x/README.md", "openspec/config.yaml", "src/lib.rs",
-                     "docs/openapi.json", "notes.txt", "docs/other.MD", ".reviews/x.taken"):
+        for path in ("docs/reference/cli.md", "crates/x/README.md", "src/lib.rs", "docs/openapi.json", "notes.txt",
+                     "docs/other.MD", ".reviews/x.taken", "skills/cicada/scripts/x.py", ".claude/skills/x/y.json"):
             with self.subTest(path):
                 self.assertNotEqual(self.refused({path: "changed\n"}), [])
 
@@ -231,13 +248,24 @@ class ClassifierTests(unittest.TestCase):
         def rename_in():
             self.sandbox.git("mv", "src/lib.rs", "docs/lib.md")
 
+        def openspec_executable():
+            self.sandbox.write("openspec/changes/x/0001.taken", "x\n", 0o755)
+
+        def openspec_mode_change():
+            (self.sandbox.root / "openspec/config.yaml").chmod(0o755)
+
+        def openspec_symlink():
+            (self.sandbox.root / "openspec/link.yaml").symlink_to("config.yaml")
+
         def submodule():
             self.sandbox.git("update-index", "--add", "--cacheinfo", f"160000,{self.base},docs/sub.md")
             self.sandbox.git("commit", "-q", "-m", "submodule")
             return self.sandbox.git("rev-parse", "HEAD")
 
         for name, prepare in (("executable", executable), ("mode", mode_change), ("symlink", symlink),
-                              ("rename out", rename_out), ("rename in", rename_in), ("submodule", submodule)):
+                              ("rename out", rename_out), ("rename in", rename_in), ("submodule", submodule),
+                              ("openspec executable", openspec_executable),
+                              ("openspec mode", openspec_mode_change), ("openspec symlink", openspec_symlink)):
             with self.subTest(name):
                 self.assertNotEqual(self.refused(prepare=prepare), [])
 

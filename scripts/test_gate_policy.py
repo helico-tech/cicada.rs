@@ -64,6 +64,11 @@ class PolicyTests(unittest.TestCase):
     def test_the_real_policy_parses(self):
         gate.parse_policy((SCRIPTS / "gate-policy.json").read_bytes())
 
+    def test_any_file_under_openspec_and_only_markdown_elsewhere_may_reuse_a_full_pass(self):
+        allow = gate.parse_policy((SCRIPTS / "gate-policy.json").read_bytes())["docs_allowlist"]
+        self.assertEqual(allow["any_under"], ["openspec/"])
+        self.assertNotIn("openspec/", allow["markdown_under"])
+
     def test_unsupported_or_malformed_policies_are_refused(self):
         cases = {
             "schema": dict(policy(), schema=2),
@@ -71,6 +76,9 @@ class PolicyTests(unittest.TestCase):
             "argv": policy(full=[{"name": "x", "argv": "cargo test"}]),
             "names": policy(full=[{"name": "x", "argv": ["a"]}, {"name": "x", "argv": ["b"]}]),
             "allowlist": {**policy(), "docs_allowlist": {"files": []}},
+            "any_under": {**policy(), "docs_allowlist": {
+                k: v for k, v in policy()["docs_allowlist"].items() if k != "any_under"}},
+            "any_under paths": {**policy(), "docs_allowlist": {**policy()["docs_allowlist"], "any_under": "openspec/"}},
             "pg": {k: v for k, v in policy().items() if k != "pg_url_variable"},
         }
         for name, value in cases.items():

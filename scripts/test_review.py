@@ -39,6 +39,15 @@ class TakeTest(unittest.TestCase):
         self.assertIn(f"{first}  open", listing)
         self.assertIn(f"{second}  taken  tester", listing)
 
+    def test_markers_are_plain_files(self):
+        review = self.request("one")
+        self.assertEqual(self.review("take", review, "--by", "tester").returncode, 0)
+        markers = sorted((self.root / ".reviews").iterdir())
+        self.assertIn(self.root / ".reviews" / f"{review}.taken", markers)
+        for marker in markers:
+            with self.subTest(marker.name):
+                self.assertEqual(marker.stat().st_mode & 0o111, 0)
+
     def test_take_of_a_taken_id_fails(self):
         review = self.request("one")
         self.assertEqual(self.review("take", review).returncode, 0)
