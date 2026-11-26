@@ -2,8 +2,9 @@
 
 ### Requirement: The host chooses the node config after the types are known
 
-`App::node_config_for` SHALL take a function that `serve` and `worker` call once, after the command line is read and
-before the store opens or a request is sent, with the names of the types the run hosts; its `NodeConfig` SHALL take the
+`App::node_config_for` SHALL take a function that `serve` and `worker` call once, after every check of the flags, the
+variables and the config file and before the wait for the store or the server, with the names of the types the run
+hosts; its `NodeConfig` SHALL take the
 place of the host's config, and the flags and their variables SHALL still override its fields. An error from the
 function SHALL fail the command with exit code 1. The operator commands SHALL NOT call it.
 
@@ -22,3 +23,13 @@ function SHALL fail the command with exit code 1. The operator commands SHALL NO
 
 - **WHEN** the function returns an error
 - **THEN** the command exits with code 1 and prints the error, and the store is not opened
+
+#### Scenario: A bad flag
+
+- **WHEN** the node starts with a flag that cannot be used
+- **THEN** the command exits with code 2 and the function is not called
+
+#### Scenario: An operator command
+
+- **WHEN** the binary runs `get actors`
+- **THEN** the function is not called
