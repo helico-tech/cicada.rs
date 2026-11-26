@@ -226,8 +226,9 @@ through that change's own `Order`, so the open changes stay one line.
    `git push origin main`. One gate run at a time: while a builder's run holds the lock, `gate.py run` ends at once
    with `busy`. Retry in short tries for at most 50 minutes; each try is a background Bash command with
    `timeout: 7200000`, as the try that gets the lock is the run. Never stop a run once it started. The pre-push hook
-   asks E2E only for a version tag. An abandoned gate run (`python3 scripts/gate.py status` says so) goes to the owner before `recover`. The
-   pre-push hook is installed once per repository, with the owner's yes: `python3 scripts/gate.py install-hook`.
+   asks E2E only for a version tag. An abandoned gate run (`python3 scripts/gate.py status` says so) goes to the
+   owner before `recover`. The pre-push hook is installed once per repository, with the owner's yes:
+   `python3 scripts/gate.py install-hook`.
 6. Clean up: `git worktree remove` the builder's worktree, `git branch -d feat/<change>`, delete the leftover
    `worktree-agent-…` branches, `git worktree prune`.
 7. Tell the owner in two lines, with the path of the archived handoff
