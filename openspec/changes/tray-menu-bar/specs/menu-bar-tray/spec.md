@@ -46,3 +46,13 @@ without blocking the main thread, whether it comes from the Quit item, Ctrl-C or
 
 - **WHEN** `run` starts on macOS 13
 - **THEN** it returns exit code 1 with an error that the menu needs macOS 14
+
+#### Scenario: A running turn before macOS 14.4
+
+- **WHEN** a turn runs and the app runs on macOS 14.2
+- **THEN** the turn's item shows the actor, message type and attempt in its title, with no subtitle
+
+#### Scenario: A context pick after a failure
+
+- **WHEN** the tray is `Failed` and the user picks a context
+- **THEN** the tray connects to it at once

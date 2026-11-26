@@ -80,11 +80,11 @@ fn main() -> std::process::ExitCode {
 abandoned turns; the checkmarks from `WorkerReady::types`; the marked context; Stop Now with its seconds only while
 stopping; no current context; a claim time after now shows zero. The quit and pending-pick logic as a plain state
 machine with unit tests (quit while online, while stopping, twice, and from `Failed`; a stop that ends `Failed`; a
-system terminate; a pick while stopping, replaced by a later pick; a pick from `Failed`). Model tests on virtual time:
-`WorkerReady::types` follows `--types`/`CICADA_TYPES`; `Contexts::load` reads names and the current context and treats a
-missing file as none. The AppKit view gets a manual check list in the tasks (status item, light and dark, keyboard,
-VoiceOver, the menu updating while open with a submenu open, Quit while a turn runs, logout, Ctrl-C, macOS 14.0 without
-subtitles if a machine is at hand).
+system terminate; a pick while stopping, replaced by a later pick; a pick from `Failed`; Quit clears a pending pick).
+Model tests on virtual time: `WorkerReady::types` follows `--types`/`CICADA_TYPES`; `Contexts::load` reads names and the
+current context and treats a missing file as none. The AppKit view gets a manual check list in the tasks (status item,
+light and dark, keyboard, VoiceOver, the menu updating while open with a submenu open, Quit while a turn runs, logout,
+Ctrl-C, Ctrl-C while the menu is open, macOS 14.0 without subtitles if a machine is at hand).
 
 ## Docs
 
