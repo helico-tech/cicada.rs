@@ -143,12 +143,17 @@ an advisory published afterward is caught by the next full run, not necessarily 
 
 For an identical tree, passing evidence can be reused. Otherwise the nearest eligible direct full pass within
 100 first-parent ancestors can support fresh docs checks: Python tests plus examples doctests, links/guarantees and
-skill tests. Only regular non-executable Markdown changes qualify:
+skill tests. Only regular non-executable files qualify: README.md, CHANGELOG.md and AGENTS.md, Markdown in the
+folders below, and any file under openspec/ (ADR 0070):
 
 | Eligible paths | Full checks required |
 | --- | --- |
 | README.md, CHANGELOG.md, AGENTS.md | Crate READMEs and unknown paths |
-| Markdown under docs/, skills/cicada/, .claude/skills/, openspec/ | docs/reference/, non-Markdown files, symlinks and mode changes |
+| Markdown under docs/, skills/cicada/, .claude/skills/ | docs/reference/, non-Markdown files, symlinks and mode changes |
+| Any file under openspec/ | Symlinks, executable files and mode changes |
+
+So the commit that archives a change, which moves its `.openspec.yaml` and review markers, reuses the merged change's
+full pass. A test or build step that reads non-Markdown files under openspec/ must move them out of this rule.
 
 The cumulative diff is checked, including both sides of renames. A changed policy/runner or missing eligible full
 base needs full checks; derived docs records never form a chain. E2E can reuse that same eligible full base's direct
