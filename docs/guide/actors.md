@@ -596,6 +596,7 @@ ask whose target is gone fails and records nothing. A node fits when it is live,
 | `granted` | With `grant` and `node`: pin the work's actors to that node and keep the grant number |
 | `queued` | The ask waits in the line |
 | `refused` | With `reason`: `noNode` (no node of the pool, live or silent, has every need), `lineFull` (it must wait and the line is full) or `poolFull` (a place fits, but the pool holds `maxHolders` and the line is full) |
+| `gone` | Later, with `grant` and `node`: an operator declared the holder's node gone; see below. Match it too if you match the kinds exhaustively |
 
 A repeated ask of a holder answers `granted` again with the same grant and node, one of a waiting ask `queued`; both
 keep the first ask's needs and target.
@@ -621,13 +622,31 @@ ignored turn, so a target with many failing messages adds load. An ask whose tar
 good. The pool keeps at most one watch per distinct target, and only a `Stopped` the store wrote counts: one a client
 sends changes nothing.
 
+**Taking a node out of service.** Send `PlacementMsg::drain("factory-mac-1")?` to stop new places on a node while its
+running work finishes. A draining node keeps its holders and its offers, and its own offers do not clear the drain, so
+it outlives a restart of the member. Asks that only that node could meet wait in the line.
+`PlacementMsg::undrain("factory-mac-1")?` gives it places again and grants the waiting asks that fit.
+
+When a node's machine will not come back, declare it gone once its status is `silent`:
+`PlacementMsg::gone("factory-mac-2")?`. The pool removes the node, frees its places and tells each of its holders a
+`gone` answer with its `grant` and `node`, each in a turn of its own, so a holder whose target is gone fails only its
+own answer. The holder decides: start the work again elsewhere with a fresh holder id, or fail it. A later `Release` of
+that grant frees nothing, and waiting asks stay in the line. `Gone` of a live node is refused, also one past its silence
+whose check has not run yet: drain it instead. The node offering again is a new node, not draining and without holders.
+Drain, undrain or gone of an unknown node is refused for good.
+
+- `gone` means "your place is no longer counted": what ran there may still run, for example when the machine was only
+  cut off. A holder that starts again elsewhere must cope with two copies of the work.
+- A holder granted from the line but not yet told can hear `gone` for a grant it never saw, and its `granted` answer
+  then never comes: handle a `gone` for an unknown grant.
+
 **Fewer places.** An offer with fewer places than holders keeps every holder, and new grants wait until holders
 release; a silent node keeps its holders too.
 
 **A lost check.** A purged, cancelled or failed `Check` leaves the pool without a timer. Anyone may send `Rearm`, which
 replaces the armed check at the old time, at once when that passed, so repeated `Rearm`s leave one check. A `Check` or
 `Alert` from anyone but the pool is refused for good, an operator's retry or redrive of a `Check` included, and so
-is a `Notify`.
+are a `Notify` and a `TellGone`.
 
 The pool answers no query: read its state like any actor's, with `ActorSystem::get_actor`, the operator commands or
 the terminal UI. A message out of bounds, and an offer from a new node when the pool knows `maxNodes` nodes, is refused
