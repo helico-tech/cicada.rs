@@ -1,7 +1,9 @@
 //! The placement pool, on virtual time with `TestActors`: offers that renew and replace, labels sorted and each once,
 //! silence with one notice and the return with `back`, the check armed at the earliest end of a silence, a lost check
 //! and `Rearm`, a `Check` or `Alert` from another sender, a failing alert target, a pool without a target, and the
-//! bounds of an offer and of the pool.
+//! bounds of an offer and of the pool. And asks (ADR 0068): placement by needs and free places, refusals, the line that
+//! skips asks it cannot place, the holder limit, releases and cancels, repeated asks, grants from the line and the
+//! grant nobody received.
 
 mod common;
 
@@ -13,7 +15,8 @@ use cicada::store::{Message, OutcomeStatus};
 use cicada::time::{self, Timestamp};
 use cicada::{Failed, FailureCause};
 use cicada_actors::{
-    Placement, PlacementActor, PlacementMsg, PlacementNodeStatus, PlacementNotice, PlacementNoticeKind, PlacementState,
+    Placement, PlacementActor, PlacementAnswer, PlacementAnswerKind, PlacementMsg, PlacementNodeStatus,
+    PlacementNotice, PlacementNoticeKind, PlacementRefusal, PlacementState,
 };
 use cicada_test::TestActors;
 use common::*;
@@ -95,21 +98,67 @@ impl Actor for ForgerActor {
     }
 }
 
-/// A node with the pool type, `ops/pager`, the forger and the witness, which watches the pools, and the pool `runners`
-/// created with a silence of `silence` seconds, at most `max_nodes` nodes, and its notices going to `ops/pager`.
-async fn node_with(silence: u64, max_nodes: u32) -> TestActors {
+/// `run/{id}`: keeps the answers of the pool to its asks.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Run {
+    id: String,
+}
+
+impl ActorRef for Run {
+    const TYPE: &'static str = "run";
+    type Message = RunMsg;
+}
+
+fn run(id: &str) -> Run {
+    Run { id: id.into() }
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type")]
+enum RunMsg {
+    /// An answer of a placement pool.
+    Placed(PlacementAnswer),
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
+struct Answers {
+    answers: Vec<PlacementAnswer>,
+}
+
+struct RunActor;
+
+impl Actor for RunActor {
+    type Ref = Run;
+    type State = Answers;
+
+    async fn handle(&self, turn: &mut Turn<Self>, message: RunMsg) -> HandlerResult {
+        let RunMsg::Placed(answer) = message;
+        turn.state_mut().answers.push(answer);
+        Ok(())
+    }
+}
+
+/// A node with the pool type, `ops/pager`, the run type, the forger and the witness, which watches the pools, and the
+/// pool `runners` created with a silence of `silence` seconds, at most `max_nodes` nodes, at most `max_waiting` waiting
+/// asks and `max_holders` holders, and its notices going to `ops/pager`.
+async fn node_limits(silence: u64, max_nodes: u32, max_waiting: u32, max_holders: u32) -> TestActors {
     let test = TestActors::builder()
         .start_at("2026-01-01T00:00:00Z".parse().unwrap())
-        .with(|node| node.host(PlacementActor).host(OpsActor).host(ForgerActor).host(WitnessActor))
+        .with(|node| node.host(PlacementActor).host(OpsActor).host(ForgerActor).host(WitnessActor).host(RunActor))
         .build()
         .await
         .unwrap();
     test.create(&ops(), &Notices::default()).await;
     test.create(&Forger, &NoState {}).await;
     witness(&test, "cicada.placement").await;
-    test.create(&pool(), &PlacementState::new(secs(silence), max_nodes).unwrap()).await;
+    let state = PlacementState::new(secs(silence), max_nodes, max_waiting, max_holders).unwrap();
+    test.create(&pool(), &state).await;
     send(&test, PlacementMsg::alerts(&ops(), "Placement").unwrap()).await;
     test
+}
+
+async fn node_with(silence: u64, max_nodes: u32) -> TestActors {
+    node_limits(silence, max_nodes, 10, 10).await
 }
 
 async fn node() -> TestActors {
@@ -375,7 +424,7 @@ async fn a_failing_alert_target_fails_only_its_alert() {
 async fn a_pool_without_a_target_marks_silence_and_tells_nobody() {
     let test = node().await;
     let quiet = Placement::named("quiet");
-    test.create(&quiet, &PlacementState::new(secs(10), 1).unwrap()).await;
+    test.create(&quiet, &PlacementState::new(secs(10), 1, 0, 1).unwrap()).await;
     test.send(&quiet, PlacementMsg::offer("mac-1", "i1", ["arm64"], 1).unwrap()).await;
     test.run_until_idle().await;
     test.advance_time_by(secs(10)).await;
@@ -427,4 +476,359 @@ async fn offers_out_of_bounds_and_a_node_past_the_limit_are_refused() {
         let m = send(&test, message).await;
         assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Failed), "{why}");
     }
+}
+
+/// Creates `run/{holder}` when it does not exist and asks the pool a place for `holder` with `needs`, its answers going
+/// to `run/{holder}`.
+async fn ask(test: &TestActors, holder: &str, needs: &[&str]) -> Message {
+    if test.state_json(&run(holder)).await.is_none() {
+        test.create(&run(holder), &Answers::default()).await;
+    }
+    send(test, PlacementMsg::ask(holder, needs.iter().copied(), &run(holder), "Placed").unwrap()).await
+}
+
+async fn release(test: &TestActors, holder: &str, grant: u64) -> Message {
+    send(test, PlacementMsg::release(holder, grant).unwrap()).await
+}
+
+/// What `run/{holder}` was told: kind, grant, node and reason.
+async fn answers(test: &TestActors, holder: &str) -> Vec<(PlacementAnswerKind, Option<u64>, Option<String>)> {
+    let answers = test.state::<_, Answers>(&run(holder)).await.answers;
+    assert!(answers.iter().all(|a| a.pool == "runners" && a.holder == holder), "{answers:?}");
+    answers
+        .into_iter()
+        .map(|a| {
+            assert_eq!(a.reason.is_some(), a.kind == PlacementAnswerKind::Refused, "{a:?}");
+            (a.kind, a.grant, a.node)
+        })
+        .collect()
+}
+
+/// The reasons of the refusals `run/{holder}` was told.
+async fn reasons(test: &TestActors, holder: &str) -> Vec<PlacementRefusal> {
+    test.state::<_, Answers>(&run(holder)).await.answers.into_iter().filter_map(|a| a.reason).collect()
+}
+
+fn granted(grant: u64, node: &str) -> (PlacementAnswerKind, Option<u64>, Option<String>) {
+    (PlacementAnswerKind::Granted, Some(grant), Some(node.to_owned()))
+}
+
+const QUEUED: (PlacementAnswerKind, Option<u64>, Option<String>) = (PlacementAnswerKind::Queued, None, None);
+const REFUSED: (PlacementAnswerKind, Option<u64>, Option<String>) = (PlacementAnswerKind::Refused, None, None);
+
+/// The holders of the pool as holder, grant and node.
+async fn holders(test: &TestActors) -> Vec<(String, u64, String)> {
+    held(test).await.holders.into_iter().map(|h| (h.holder, h.grant, h.node)).collect()
+}
+
+/// The holder ids waiting in the line, in order.
+async fn line(test: &TestActors) -> Vec<String> {
+    held(test).await.waiting.into_iter().map(|w| w.holder).collect()
+}
+
+fn holder(holder: &str, grant: u64, node: &str) -> (String, u64, String) {
+    (holder.to_owned(), grant, node.to_owned())
+}
+
+/// Scenario: Most free places first. Ties go to the smaller node id; grant numbers go up.
+#[tokio::test(start_paused = true)]
+async fn a_grant_goes_to_the_node_with_the_most_free_places_then_the_smaller_id() {
+    let test = node().await;
+    offer(&test, "mac-1", &["arm64"], 1).await;
+    offer(&test, "mac-3", &["arm64", "docker"], 3).await;
+    offer(&test, "mac-2", &["arm64"], 3).await;
+    offer(&test, "x86-1", &["x86_64"], 9).await;
+    ask(&test, "r1", &["arm64"]).await;
+    ask(&test, "r2", &["arm64"]).await;
+    ask(&test, "r3", &["docker", "arm64", "docker"]).await;
+    assert_eq!(answers(&test, "r1").await, [granted(1, "mac-2")], "3 free on mac-2 and mac-3: the smaller id");
+    assert_eq!(answers(&test, "r2").await, [granted(2, "mac-3")], "mac-2 has 2 free now");
+    assert_eq!(answers(&test, "r3").await, [granted(3, "mac-3")], "only mac-3 has docker");
+    assert_eq!(holders(&test).await, [holder("r1", 1, "mac-2"), holder("r2", 2, "mac-3"), holder("r3", 3, "mac-3")]);
+    let state = held(&test).await;
+    assert_eq!(state.next_grant, 4);
+    assert_eq!(state.holders[2].needs, ["arm64", "docker"], "needs sorted, each once");
+    assert!(state.holders.iter().all(|h| h.notified), "told in the ask's commit");
+    assert!(failed(&test).await.is_empty());
+}
+
+/// Scenario: No node has the needs. Nothing is recorded, also when no node is known at all.
+#[tokio::test(start_paused = true)]
+async fn an_ask_no_node_could_meet_is_refused_with_no_node() {
+    let test = node().await;
+    ask(&test, "r0", &["arm64"]).await;
+    offer(&test, "mac-1", &["arm64"], 1).await;
+    let (before, version) = (held(&test).await, test.version(&pool()).await);
+    let m = ask(&test, "r1", &["arm64", "gpu"]).await;
+    assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done));
+    assert_eq!(
+        (answers(&test, "r0").await, reasons(&test, "r0").await),
+        (vec![REFUSED], vec![PlacementRefusal::NoNode])
+    );
+    assert_eq!(
+        (answers(&test, "r1").await, reasons(&test, "r1").await),
+        (vec![REFUSED], vec![PlacementRefusal::NoNode])
+    );
+    assert_eq!((held(&test).await, test.version(&pool()).await), (before, version), "nothing recorded");
+}
+
+/// Scenario: A full line. A place frees and the next in line is granted, told in a turn of its own.
+#[tokio::test(start_paused = true)]
+async fn a_full_line_refuses_and_a_release_grants_the_next() {
+    let test = node_limits(60, 10, 1, 10).await;
+    offer(&test, "mac-1", &["arm64"], 1).await;
+    ask(&test, "r1", &["arm64"]).await;
+    ask(&test, "r2", &["arm64"]).await;
+    let (before, version) = (held(&test).await, test.version(&pool()).await);
+    ask(&test, "r3", &["arm64"]).await;
+    assert_eq!(
+        (answers(&test, "r3").await, reasons(&test, "r3").await),
+        (vec![REFUSED], vec![PlacementRefusal::LineFull])
+    );
+    assert_eq!((held(&test).await, test.version(&pool()).await), (before, version), "nothing recorded");
+    assert_eq!(answers(&test, "r2").await, [QUEUED]);
+    test.send(&pool(), PlacementMsg::release("r1", 1).unwrap()).await;
+    assert_eq!(test.system().run_due_turns(1).await.unwrap(), 1);
+    let state = held(&test).await;
+    assert_eq!(holders(&test).await, [holder("r2", 2, "mac-1")], "granted in the release's commit");
+    assert!(!state.holders[0].notified && state.waiting.is_empty());
+    test.run_until_idle().await;
+    assert_eq!(answers(&test, "r2").await, [QUEUED, granted(2, "mac-1")]);
+    assert!(held(&test).await.holders[0].notified);
+}
+
+/// A pool that holds `maxHolders` queues an ask that fits, and refuses it with `poolFull` when the line is full.
+#[tokio::test(start_paused = true)]
+async fn a_pool_at_its_holder_limit_queues_and_then_refuses_with_pool_full() {
+    let test = node_limits(60, 10, 1, 1).await;
+    offer(&test, "mac-1", &["arm64"], 3).await;
+    ask(&test, "r1", &["arm64"]).await;
+    ask(&test, "r2", &["arm64"]).await;
+    ask(&test, "r3", &["arm64"]).await;
+    assert_eq!(answers(&test, "r2").await, [QUEUED], "a place fits but the pool holds maxHolders");
+    assert_eq!(
+        (answers(&test, "r3").await, reasons(&test, "r3").await),
+        (vec![REFUSED], vec![PlacementRefusal::PoolFull])
+    );
+    assert_eq!((holders(&test).await, line(&test).await), (vec![holder("r1", 1, "mac-1")], vec!["r2".to_owned()]));
+    release(&test, "r1", 1).await;
+    assert_eq!(answers(&test, "r2").await, [QUEUED, granted(2, "mac-1")]);
+}
+
+/// Scenario: An ask to a gone target. With a self-watch in place, its `Failed` changes nothing either.
+#[tokio::test(start_paused = true)]
+async fn an_ask_to_a_gone_target_fails_and_records_nothing() {
+    let test = node().await;
+    offer(&test, "mac-1", &["arm64"], 1).await;
+    ask(&test, "r1", &["arm64"]).await;
+    ask(&test, "r2", &["arm64"]).await;
+    release(&test, "r1", 1).await;
+    let watches = test.system().watches(Some(&addr(&pool())), None, None, 10).await.unwrap().items;
+    let targets: Vec<String> = watches.iter().map(|w| w.target.to_string()).collect();
+    assert_eq!(targets, ["cicada.placement/runners"], "the pool watches itself once it sent a Notify");
+    for (ghost, needs) in [("ghost-1", vec!["arm64"]), ("ghost-2", vec!["arm64"]), ("ghost-3", vec!["gpu"])] {
+        let (before, version) = (held(&test).await, test.version(&pool()).await);
+        let m = send(&test, PlacementMsg::ask(ghost, needs, &run(ghost), "Placed").unwrap()).await;
+        assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Failed), "{ghost}");
+        assert_eq!(failed(&test).await.last(), Some(&("Ask".to_owned(), FailureCause::Commit)));
+        assert_eq!(held(&test).await, before, "{ghost}: nothing recorded");
+        assert_eq!(test.version(&pool()).await, version, "{ghost}");
+    }
+    assert_eq!(holders(&test).await, [holder("r2", 2, "mac-1")]);
+    assert!(line(&test).await.is_empty());
+}
+
+/// Out-of-bounds asks, releases and cancels, and a `Notify` from a client or another actor, are refused for good with
+/// the state unchanged.
+#[tokio::test(start_paused = true)]
+async fn asks_releases_and_cancels_out_of_bounds_and_a_foreign_notify_are_refused() {
+    let test = node().await;
+    offer(&test, "mac-1", &["arm64"], 1).await;
+    ask(&test, "r1", &["arm64"]).await;
+    ask(&test, "r2", &["arm64"]).await;
+    let (before, version) = (held(&test).await, test.version(&pool()).await);
+    let raw = |holder: &str, needs: Vec<String>, message_type: &str| PlacementMsg::Ask {
+        holder: holder.into(),
+        needs,
+        to: addr(&run("r1")),
+        message_type: message_type.into(),
+    };
+    let invalid = [
+        raw("", vec![], "Placed"),
+        raw(&"h".repeat(201), vec![], "Placed"),
+        raw("r9", (0..33).map(|n| format!("l{n}")).collect(), "Placed"),
+        raw("r9", vec!["".into()], "Placed"),
+        raw("r9", vec!["l".repeat(101)], "Placed"),
+        raw("r9", vec![], ""),
+        raw("r9", vec!["arm64".into()], "Unknown"),
+        PlacementMsg::Release { holder: String::new(), grant: 1 },
+        PlacementMsg::Cancel { holder: "h".repeat(201) },
+        PlacementMsg::Notify { holder: String::new() },
+        PlacementMsg::Notify { holder: "r2".into() },
+        PlacementMsg::Notify { holder: "r1".into() },
+    ];
+    let count = invalid.len();
+    for message in invalid {
+        let m = send(&test, message.clone()).await;
+        assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Failed), "{message:?}");
+    }
+    test.send(&Forger, ForgerMsg::Forward { message: PlacementMsg::Notify { holder: "r2".into() } }).await;
+    test.run_until_idle().await;
+    let told = failed(&test).await;
+    assert_eq!(told.len(), count + 1, "{told:?}");
+    assert!(told.iter().all(|(_, cause)| *cause == FailureCause::Refused), "{told:?}");
+    assert_eq!((held(&test).await, test.version(&pool()).await), (before, version), "nothing recorded");
+    assert_eq!(answers(&test, "r1").await, [granted(1, "mac-1")]);
+    assert_eq!(answers(&test, "r2").await, [QUEUED]);
+}
+
+/// A new node, or an offer with a new label, grants a waiting ask that a full node could meet.
+#[tokio::test(start_paused = true)]
+async fn a_new_node_or_a_new_label_grants_a_waiting_ask() {
+    let test = node().await;
+    offer(&test, "gpu-1", &["gpu"], 0).await;
+    offer(&test, "mac-1", &["arm64"], 1).await;
+    ask(&test, "r1", &["gpu"]).await;
+    ask(&test, "r2", &["gpu"]).await;
+    assert_eq!((answers(&test, "r1").await, line(&test).await), (vec![QUEUED], vec!["r1".to_owned(), "r2".to_owned()]));
+    offer(&test, "gpu-2", &["gpu"], 1).await;
+    assert_eq!(answers(&test, "r1").await, [QUEUED, granted(1, "gpu-2")], "a new node");
+    offer(&test, "mac-1", &["arm64", "gpu"], 1).await;
+    assert_eq!(answers(&test, "r2").await, [QUEUED, granted(2, "mac-1")], "a new label");
+    assert!(line(&test).await.is_empty());
+}
+
+/// Scenario: Waiting for a node to come back.
+#[tokio::test(start_paused = true)]
+async fn an_ask_only_a_silent_node_could_meet_waits_until_it_offers_again() {
+    let test = node().await;
+    offer(&test, "gpu-1", &["gpu"], 1).await;
+    test.advance_time_by(secs(60)).await;
+    assert_eq!(status_of(&held(&test).await, "gpu-1"), PlacementNodeStatus::Silent);
+    ask(&test, "r1", &["gpu"]).await;
+    assert_eq!((answers(&test, "r1").await, line(&test).await), (vec![QUEUED], vec!["r1".to_owned()]));
+    offer(&test, "gpu-1", &["gpu"], 1).await;
+    assert_eq!(answers(&test, "r1").await, [QUEUED, granted(1, "gpu-1")]);
+    test.advance_time_by(secs(60)).await;
+    assert_eq!(holders(&test).await, [holder("r1", 1, "gpu-1")], "a silent node keeps its holders");
+}
+
+/// Scenario: A rare label does not block. Neither at the ask nor when a place frees.
+#[tokio::test(start_paused = true)]
+async fn an_ask_for_a_rare_label_does_not_hold_up_the_asks_behind_it() {
+    let test = node().await;
+    offer(&test, "gpu-1", &["gpu"], 0).await;
+    offer(&test, "mac-1", &["arm64"], 1).await;
+    ask(&test, "g1", &["gpu"]).await;
+    ask(&test, "r1", &["arm64"]).await;
+    assert_eq!(answers(&test, "r1").await, [granted(1, "mac-1")], "granted at once past the waiting gpu ask");
+    ask(&test, "r2", &["arm64"]).await;
+    assert_eq!(line(&test).await, ["g1", "r2"]);
+    release(&test, "r1", 1).await;
+    assert_eq!(answers(&test, "r2").await, [QUEUED, granted(2, "mac-1")]);
+    assert_eq!(line(&test).await, ["g1"], "the gpu ask keeps its place");
+    offer(&test, "gpu-1", &[], 1).await;
+    assert_eq!(line(&test).await, ["g1"], "a waiting ask whose needs no node has stays");
+    let m = send(&test, PlacementMsg::cancel("g1").unwrap()).await;
+    assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done));
+    assert!(line(&test).await.is_empty());
+    assert_eq!(answers(&test, "g1").await, [QUEUED]);
+}
+
+/// Scenario: A late release. A release with another grant, or of a holder id not in the books, frees nothing.
+#[tokio::test(start_paused = true)]
+async fn a_release_with_an_older_grant_frees_nothing() {
+    let test = node().await;
+    offer(&test, "mac-1", &["arm64"], 2).await;
+    ask(&test, "r1", &["arm64"]).await;
+    release(&test, "r1", 1).await;
+    ask(&test, "r1", &["arm64"]).await;
+    assert_eq!(answers(&test, "r1").await, [granted(1, "mac-1"), granted(2, "mac-1")]);
+    for (holder, grant) in [("r1", 1), ("r1", 3), ("r1", 0), ("r9", 2)] {
+        let m = release(&test, holder, grant).await;
+        assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done));
+    }
+    assert_eq!(holders(&test).await, [holder("r1", 2, "mac-1")]);
+}
+
+/// A repeated ask of a holder answers the same grant and node; of a waiting ask, `queued` with its place kept. Both keep
+/// the first ask's needs and target.
+#[tokio::test(start_paused = true)]
+async fn a_repeated_ask_is_answered_again_with_the_first_needs_and_target() {
+    let test = node().await;
+    offer(&test, "mac-1", &["arm64"], 1).await;
+    offer(&test, "gpu-1", &["gpu"], 0).await;
+    ask(&test, "r1", &["arm64"]).await;
+    ask(&test, "r2", &["arm64"]).await;
+    test.create(&run("other"), &Answers::default()).await;
+    for holder in ["r1", "r2"] {
+        send(&test, PlacementMsg::ask(holder, ["gpu"], &run("other"), "Placed").unwrap()).await;
+    }
+    assert_eq!(answers(&test, "r1").await, [granted(1, "mac-1"), granted(1, "mac-1")]);
+    assert_eq!(answers(&test, "r2").await, [QUEUED, QUEUED]);
+    assert!(test.state::<_, Answers>(&run("other")).await.answers.is_empty(), "the first target is kept");
+    let state = held(&test).await;
+    assert_eq!((state.holders.len(), state.waiting.len(), state.next_grant), (1, 1, 2));
+    assert_eq!(
+        (state.holders[0].needs.clone(), state.waiting[0].needs.clone()),
+        (vec!["arm64".into()], vec!["arm64".into()])
+    );
+}
+
+/// The `Notify` failures the witness was told of the pool.
+async fn failed_notifies(test: &TestActors) -> Vec<Failed> {
+    told(test).await.into_iter().filter(|f| f.actor == addr(&pool()) && f.message_type == "Notify").collect()
+}
+
+/// Scenario: A grant nobody received. The place goes to the next ask that fits.
+#[tokio::test(start_paused = true)]
+async fn a_grant_from_the_line_to_a_gone_target_is_freed() {
+    let test = node().await;
+    offer(&test, "mac-1", &["arm64"], 1).await;
+    for id in ["r1", "r2", "r3"] {
+        ask(&test, id, &["arm64"]).await;
+    }
+    test.system().delete_actor(&addr(&run("r2"))).await.unwrap();
+    let m = release(&test, "r1", 1).await;
+    assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done), "the release commits");
+    let failed = failed_notifies(&test).await;
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert_eq!((failed[0].cause, &failed[0].payload["holder"]), (FailureCause::Commit, &serde_json::json!("r2")));
+    assert_eq!(holders(&test).await, [holder("r3", 3, "mac-1")]);
+    assert!(line(&test).await.is_empty());
+    assert_eq!(answers(&test, "r3").await, [QUEUED, granted(3, "mac-1")]);
+}
+
+/// An offer with fewer places than holders keeps every holder; new grants wait until fewer hold than the places.
+#[tokio::test(start_paused = true)]
+async fn fewer_offered_places_keep_the_holders() {
+    let test = node().await;
+    offer(&test, "mac-1", &["arm64"], 2).await;
+    ask(&test, "r1", &["arm64"]).await;
+    ask(&test, "r2", &["arm64"]).await;
+    offer(&test, "mac-1", &["arm64"], 1).await;
+    ask(&test, "r3", &["arm64"]).await;
+    assert_eq!(holders(&test).await, [holder("r1", 1, "mac-1"), holder("r2", 2, "mac-1")]);
+    assert_eq!(answers(&test, "r3").await, [QUEUED]);
+    release(&test, "r1", 1).await;
+    assert_eq!(line(&test).await, ["r3"], "one holder on one place");
+    release(&test, "r2", 2).await;
+    assert_eq!(answers(&test, "r3").await, [QUEUED, granted(3, "mac-1")]);
+}
+
+/// `Cancel` takes a waiting ask out of the line, which is never granted; for a holder it does nothing.
+#[tokio::test(start_paused = true)]
+async fn a_cancel_withdraws_a_waiting_ask_and_keeps_a_holder() {
+    let test = node().await;
+    offer(&test, "mac-1", &["arm64"], 1).await;
+    ask(&test, "r1", &["arm64"]).await;
+    ask(&test, "r2", &["arm64"]).await;
+    for holder in ["r1", "r2", "r9"] {
+        let m = send(&test, PlacementMsg::cancel(holder).unwrap()).await;
+        assert_eq!(status(&test, &m).await, Some(OutcomeStatus::Done));
+    }
+    assert_eq!((holders(&test).await, line(&test).await), (vec![holder("r1", 1, "mac-1")], vec![]));
+    release(&test, "r1", 1).await;
+    assert!(holders(&test).await.is_empty());
+    assert_eq!(answers(&test, "r2").await, [QUEUED]);
 }

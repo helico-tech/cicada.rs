@@ -488,17 +488,23 @@ One permit per `Acquire`; there are no priorities, weights or expiry. See the
 Work that must run on a particular kind of machine needs to know which nodes offer room. A placement pool,
 `cicada.placement/<pool>` (from 0.24.0, [ADR 0067](../adr/0067-a-placement-pool.md)), keeps what each node offers:
 its labels, such as the processor kind or `docker`, and its number of places, renewed at an interval. A node that stops
-offering is marked silent and gets no new places, and the pool's alert target hears of it once.
+offering is marked silent and gets no new places, and the pool's alert target hears of it once. Work asks the pool for
+a place with its needs, labels a node must have, and gets the node to [pin](core.md#pin-an-actor-to-an-executor) its
+actors to; it releases the place with its grant number when done.
 
-1. Host `PlacementActor` (no settings) and create each pool with `PlacementState::new(silence, max_nodes)`: silence 1
-   second through 1 day, 1 through 1,000 nodes. The settings are fixed at the create; creating a pool that exists
-   changes nothing.
+1. Host `PlacementActor` (no settings) and create each pool with
+   `PlacementState::new(silence, max_nodes, max_waiting, max_holders)`: silence 1 second through 1 day, 1 through
+   1,000 nodes; the line holds 0 through 1,000 waiting asks, the pool 1 through 1,000 holders. The settings are fixed
+   at the create; creating a pool that exists changes nothing.
 2. Send `PlacementMsg::alerts(&target, message_type)` to say where notices go; the last one stands, and without one no
    notices are sent.
 3. From each member, send `PlacementMsg::offer(node, instance, labels, places)` at an interval well below the silence,
    such as every 15 s for a silence of 60 s, while its runtime answers.
+4. From the work, send `PlacementMsg::ask(holder, needs, &target, message_type)`, and when it is done
+   `PlacementMsg::release(holder, grant)`.
 
-This example hosts a pool and an operator actor on virtual time; one offer, then silence:
+This example hosts a pool and an operator actor on virtual time: one offer, an ask that is granted and released, then
+silence:
 
 <!-- doctest
 # use std::time::Duration;
@@ -508,43 +514,55 @@ This example hosts a pool and an operator actor on virtual time; one offer, then
 # #[derive(Debug, Clone, Serialize, Deserialize)]
 # struct Ops;
 # impl ActorRef for Ops { const TYPE: &'static str = "ops"; type Message = OpsMsg; }
-@@7
+@@11
 # #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
-# struct Notices { seen: Vec<PlacementNotice> }
+# struct Notices { seen: Vec<PlacementNotice>, answers: Vec<PlacementAnswer> }
 # struct OpsActor;
 # impl Actor for OpsActor {
 #     type Ref = Ops;
 #     type State = Notices;
 #     async fn handle(&self, turn: &mut Turn<Self>, message: OpsMsg) -> HandlerResult {
-#         let OpsMsg::Placement(notice) = message;
-#         turn.state_mut().seen.push(notice);
+#         match message {
+#             OpsMsg::Placement(notice) => turn.state_mut().seen.push(notice),
+#             OpsMsg::Placed(answer) => turn.state_mut().answers.push(answer),
+#         }
 #         Ok(())
 #     }
 # }
 # #[tokio::main(flavor = "current_thread", start_paused = true)]
 # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-@@14
+@@20
 # Ok(())
 # }
 -->
 ```rust
-use cicada_actors::{Placement, PlacementActor, PlacementMsg, PlacementNotice, PlacementNoticeKind, PlacementState};
+use cicada_actors::{
+    Placement, PlacementActor, PlacementAnswer, PlacementAnswerKind, PlacementMsg, PlacementNotice, PlacementNoticeKind,
+    PlacementState,
+};
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type")]
 enum OpsMsg {
     Placement(PlacementNotice),
+    Placed(PlacementAnswer),
 }
 
 let test = TestActors::builder().with(|node| node.host(PlacementActor).host(OpsActor)).build().await?;
 test.create(&Ops, &Notices::default()).await;
 let pool = Placement::named("runners"); // cicada.placement/runners
-test.create(&pool, &PlacementState::new(Duration::from_secs(60), 1000)?).await;
+test.create(&pool, &PlacementState::new(Duration::from_secs(60), 1000, 100, 1000)?).await;
 test.send(&pool, PlacementMsg::alerts(&Ops, "Placement")?).await;
 
 // A member offers; `instance` is drawn at each process start.
 test.send(&pool, PlacementMsg::offer("factory-mac-1", "3f9c", ["arm64", "docker"], 4)?).await;
+// Work asks for a node with both labels; the answer goes to the target as `Placed`.
+test.send(&pool, PlacementMsg::ask("run-17", ["arm64", "docker"], &Ops, "Placed")?).await;
 test.run_until_idle().await;
+let answer = test.state::<_, Notices>(&Ops).await.answers.remove(0);
+assert_eq!((answer.kind, answer.node.as_deref()), (PlacementAnswerKind::Granted, Some("factory-mac-1")));
+test.send(&pool, PlacementMsg::release("run-17", answer.grant.unwrap())?).await; // the work is done
+
 test.advance_time_by(Duration::from_secs(61)).await; // no offer within the silence
 
 let seen = test.state::<_, Notices>(&Ops).await.seen;
@@ -567,9 +585,38 @@ slow pool marks a node late, never early.
 silence and `back` when a silent node offers again. Each notice goes out in a turn of the pool's own (`Alert`), so a
 target that is gone or does not take the message fails only that alert; the node stays silent.
 
+**Asks.** `holder` names this attempt (1 through 200 characters, no NUL) and is unique among the pool's holders and
+waiting asks: use a fresh one per attempt. Up to 32 needs of 1 through 100 characters are kept sorted and once. The
+target's family takes the answer under the message type, such as `Placed(PlacementAnswer)`, in the ask's commit, so an
+ask whose target is gone fails and records nothing. A node fits when it is live, has every need and has a free place
+(its offered places minus its holders); the one with the most free places wins, ties going to the smaller node id.
+
+| Answer `kind` | Meaning |
+| --- | --- |
+| `granted` | With `grant` and `node`: pin the work's actors to that node and keep the grant number |
+| `queued` | The ask waits in the line |
+| `refused` | With `reason`: `noNode` (no node of the pool, live or silent, has every need), `lineFull` (it must wait and the line is full) or `poolFull` (a place fits, but the pool holds `maxHolders` and the line is full) |
+
+A repeated ask of a holder answers `granted` again with the same grant and node, one of a waiting ask `queued`; both
+keep the first ask's needs and target.
+
+**The line.** An ask that only silent or full nodes could meet, or one that comes while the pool holds `maxHolders`,
+waits. After every message the pool grants waiting asks in line order, but skips asks it cannot place now, so an ask
+for a rare label does not hold up the others ([ADR 0068](../adr/0068-asks-in-the-placement-pool.md)); fairness is
+therefore not strict. A grant from the line is told in a turn of the pool's own (`Notify`); if that answer cannot be
+delivered, the place is freed again. A waiting ask stays until it is granted or cancelled, also when no node has its
+needs any more, as a node may come back; there is no time limit, so send `Cancel` yourself when you need one.
+
+**Releasing.** `PlacementMsg::release(holder, grant)` frees the place only when holder and grant match, so a late
+release of an older grant frees nothing. `PlacementMsg::cancel(holder)` withdraws a waiting ask and does nothing for a
+holder. A holder that is gone without a `Release` keeps its place: release in every path that ends the work. An offer
+with fewer places than holders keeps every holder, and new grants wait until holders release; a silent node keeps its
+holders too.
+
 **A lost check.** A purged, cancelled or failed `Check` leaves the pool without a timer. Anyone may send `Rearm`, which
 replaces the armed check at the old time, at once when that passed, so repeated `Rearm`s leave one check. A `Check` or
-`Alert` from anyone but the pool is refused for good, an operator's retry or redrive of a `Check` included.
+`Alert` from anyone but the pool is refused for good, an operator's retry or redrive of a `Check` included, and so
+is a `Notify`.
 
 The pool answers no query: read its state like any actor's, with `ActorSystem::get_actor`, the operator commands or
 the terminal UI. A message out of bounds, and an offer from a new node when the pool knows `maxNodes` nodes, is refused

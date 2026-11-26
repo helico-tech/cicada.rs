@@ -62,11 +62,190 @@
       "title": "Alerts",
       "type": "object"
     },
+    "Ask": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Asks a place for `holder` on a node with every one of `needs` (sorted, each once), and names where its answer\ngoes. It is granted on the live node with a free place and every need that has the most free places, ties to\nthe smaller node id; queued when only silent or full nodes have the needs, or the pool holds `maxHolders`;\nrefused with `noNode` when no node of the pool has them, `lineFull` when it must wait and the line holds\n`maxWaiting` asks, and `poolFull` when a place fits but the pool holds `maxHolders` and the line is full. The\n[`PlacementAnswer`] goes to the target in this commit, so a target that is gone fails the ask and nothing is\nrecorded. A repeated `Ask` of a holder answers `granted` with the same grant and node, one of a waiting ask\n`queued`; both keep the first ask's needs and target. A holder id is forgotten at its release: use a fresh one\nper attempt.",
+      "properties": {
+        "holder": {
+          "description": "The holder: names this attempt, unique among the holders and waiting asks of the pool.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "messageType": {
+          "description": "The message type of the answer, whose payload is a [`PlacementAnswer`]; not empty, at most 200 characters,\nwithout NUL.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "needs": {
+          "description": "The labels a node must have: at most 32, each 1 through 100 characters without NUL.",
+          "items": {
+            "maxLength": 100,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 32,
+          "type": "array"
+        },
+        "to": {
+          "description": "The target of the answer.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "holder",
+        "needs",
+        "to",
+        "messageType"
+      ],
+      "title": "Ask",
+      "type": "object"
+    },
+    "Cancel": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Takes a waiting ask out of the line; ignored for a holder, which releases with its grant number instead.",
+      "properties": {
+        "holder": {
+          "description": "The holder of the waiting ask.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "holder"
+      ],
+      "title": "Cancel",
+      "type": "object"
+    },
     "Check": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "description": "The silence timer: sent by the pool to itself, and counted only when it is the armed one (`armedId`). Marks each\nlive node not heard from for the silence time as silent, queues an `Alert` for each, and arms the next check at\nthe earliest end of a live node's silence. Run early (made due by an operator) it arms itself again at `armed`;\nany other `Check` the pool sent itself changes nothing, and one from another sender is refused for good.",
       "properties": {},
       "title": "Check",
+      "type": "object"
+    },
+    "Failed": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The notification of a message to a watched actor that ended `failed`: what the failed message was and why it\nfailed. Its type name is `Failed`. A watcher's message family declares it as `Failed(cicada::Failed)`.\n\nIts schema is part of every watcher's contract; a snapshot test pins it.",
+      "properties": {
+        "actor": {
+          "description": "The actor the failed message was for: the actor of the event, not the target of the watch.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": "string"
+        },
+        "attempts": {
+          "description": "How often the message was claimed: its `attempt`.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cause": {
+          "description": "What failed, one of:\n- `handler`: the handler returned an error or panicked and no retry is left, or it returned a state that cannot\n  be stored;\n- `node`: a read of the store the node needed failed, also one the handler passed on, or a panic outside the\n  handler;\n- `refused`: the handler refused the message for good;\n- `timeout`: the turn ran past its maximum duration;\n- `message`: the message cannot be decoded;\n- `state`: the state or the address of the actor cannot be read by its type;\n- `commit`: the effects of the turn were refused, or its commit was rejected or refused;\n- `claim-limit`: the message reached the claim limit.",
+          "oneOf": [
+            {
+              "const": "handler",
+              "description": "The handler returned an error or panicked, and no retry is left; or it returned a new state that cannot be\nstored.",
+              "type": "string"
+            },
+            {
+              "const": "node",
+              "description": "The node or the store failed around the turn: a read the node needed failed, also one the handler passed on,\nor a panic outside the handler.",
+              "type": "string"
+            },
+            {
+              "const": "refused",
+              "description": "The handler refused the message for good (a permanent failure).",
+              "type": "string"
+            },
+            {
+              "const": "timeout",
+              "description": "The turn ran past its maximum duration.",
+              "type": "string"
+            },
+            {
+              "const": "message",
+              "description": "The message cannot be decoded.",
+              "type": "string"
+            },
+            {
+              "const": "state",
+              "description": "The state or the address of the actor cannot be read by its type.",
+              "type": "string"
+            },
+            {
+              "const": "commit",
+              "description": "The effects of the turn were refused, or its commit was rejected or refused.",
+              "type": "string"
+            },
+            {
+              "const": "claim-limit",
+              "description": "The message reached the claim limit (ADR 0025).",
+              "type": "string"
+            }
+          ]
+        },
+        "correlationId": {
+          "description": "The correlation id of the failed message; null when it has none.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "error": {
+          "description": "The error it failed with.",
+          "type": "string"
+        },
+        "from": {
+          "description": "The sender of the failed message; null for a message sent from outside a turn.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "messageId": {
+          "description": "The id of the failed message.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "messageType": {
+          "description": "The type name of the failed message.",
+          "type": "string"
+        },
+        "payload": {
+          "description": "The payload of the failed message."
+        }
+      },
+      "required": [
+        "actor",
+        "messageId",
+        "messageType",
+        "payload",
+        "error",
+        "attempts",
+        "cause"
+      ],
+      "title": "Failed",
+      "type": "object"
+    },
+    "Notify": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Sends `holder` its `granted` answer when it still holds a place, and marks it as told; nothing otherwise. Sent\nby the pool to itself for a grant from the line, in a turn of its own, with a retry policy.",
+      "properties": {
+        "holder": {
+          "description": "The holder.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "holder"
+      ],
+      "title": "Notify",
       "type": "object"
     },
     "Offer": {
@@ -118,6 +297,75 @@
       "properties": {},
       "title": "Rearm",
       "type": "object"
+    },
+    "Release": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Frees the place of `holder` when it holds `grant`; ignored otherwise, so a late release of an older grant frees\nnothing.",
+      "properties": {
+        "grant": {
+          "description": "The grant number it releases.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "holder": {
+          "description": "The holder.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "holder",
+        "grant"
+      ],
+      "title": "Release",
+      "type": "object"
+    },
+    "Stopped": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The notification of a watched actor that went away. Its type name is `Stopped`. A watcher's message family declares\nit as `Stopped(cicada::Stopped)`. Only a watch on the actor's own address tells of it.\n\nIts schema is part of every watcher's contract; a snapshot test pins it.",
+      "properties": {
+        "actor": {
+          "description": "The actor that went away.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": "string"
+        },
+        "by": {
+          "description": "The actor whose turn removed it: the actor itself when it stopped, the stopping ancestor when it went with it;\nnull for a removal from outside a turn.",
+          "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cause": {
+          "description": "Why it went away.",
+          "oneOf": [
+            {
+              "const": "stopped",
+              "description": "Its own turn stopped it.",
+              "type": "string"
+            },
+            {
+              "const": "deleted",
+              "description": "It was deleted from outside a turn.",
+              "type": "string"
+            },
+            {
+              "const": "parent",
+              "description": "It was removed with its parent (ADR 0019).",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "required": [
+        "actor",
+        "cause"
+      ],
+      "title": "Stopped",
+      "type": "object"
     }
   },
   "state": {
@@ -140,6 +388,105 @@
         "required": [
           "to",
           "messageType"
+        ],
+        "type": "object"
+      },
+      "PlacementAsk": {
+        "description": "An ask waiting in the line of a pool.",
+        "properties": {
+          "holder": {
+            "description": "The holder; 1 through 200 characters without NUL.",
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "messageType": {
+            "description": "The message type of its answers; not empty, at most 200 characters, without NUL.",
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "needs": {
+            "description": "The labels a node must have, sorted, each once; at most 32, each 1 through 100 characters without NUL.",
+            "items": {
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 32,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "to": {
+            "description": "The target of its answers.",
+            "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "holder",
+          "needs",
+          "to",
+          "messageType"
+        ],
+        "type": "object"
+      },
+      "PlacementHolder": {
+        "description": "A holder of a place on a node of a pool.",
+        "properties": {
+          "grant": {
+            "description": "Its grant number: at least 1, below the pool's `nextGrant`.",
+            "format": "uint64",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "holder": {
+            "description": "The holder; 1 through 200 characters without NUL.",
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "messageType": {
+            "description": "The message type of its answers; not empty, at most 200 characters, without NUL.",
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "needs": {
+            "description": "The needs of its ask, sorted, each once; at most 32, each 1 through 100 characters without NUL.",
+            "items": {
+              "maxLength": 100,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 32,
+            "type": "array",
+            "uniqueItems": true
+          },
+          "node": {
+            "description": "The node id of its place: a node the pool knows.",
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "notified": {
+            "description": "True once a `granted` answer to it committed; while false, a failed `Notify` frees the place.",
+            "type": "boolean"
+          },
+          "to": {
+            "description": "The target of its answers.",
+            "pattern": "^[a-z][a-z0-9._-]*/[^/]+$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "holder",
+          "needs",
+          "to",
+          "messageType",
+          "grant",
+          "node",
+          "notified"
         ],
         "type": "object"
       },
@@ -206,7 +553,7 @@
       }
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "description": "The state of a [`Placement`] pool: its silence time and node limit, fixed at its create, where its notices go, the\nnodes it knows by node id, and the time and id of its armed check. Build it with `PlacementState::new`; a decoded\nstate is checked the same way.\n\nOn the wire: `{\"silence\":\"PT1M\",\"maxNodes\":1000,\"alerts\":null,\"nodes\":{},\"armed\":null,\"armedId\":null}`; `alerts`,\n`nodes`, `armed` and `armedId` may be left out of a create.",
+    "description": "The state of a [`Placement`] pool: its silence time, node limit, line limit and holder limit, fixed at its create,\nwhere its notices go, the nodes it knows by node id, the next grant number, its holders in the order they were\ngranted, its waiting asks in line order, and the time and id of its armed check. Build it with\n`PlacementState::new`; a decoded state is checked the same way.\n\nOn the wire: `{\"silence\":\"PT1M\",\"maxNodes\":1000,\"maxWaiting\":100,\"maxHolders\":1000,\"alerts\":null,\"nodes\":{},\n\"nextGrant\":1,\"holders\":[],\"waiting\":[],\"armed\":null,\"armedId\":null}`; `alerts`, `nodes`, `nextGrant`, `holders`,\n`waiting`, `armed` and `armedId` may be left out of a create.",
     "properties": {
       "alerts": {
         "anyOf": [
@@ -235,10 +582,39 @@
           "null"
         ]
       },
+      "holders": {
+        "default": [],
+        "description": "The holders, in the order they were granted, at most `maxHolders`, each on a known node, each holder id once\namong the holders and waiting asks; absent: none.",
+        "items": {
+          "$ref": "#/$defs/PlacementHolder"
+        },
+        "type": "array"
+      },
+      "maxHolders": {
+        "description": "The most holders of the pool at once; 1 through 1000.",
+        "format": "uint32",
+        "maximum": 1000,
+        "minimum": 1,
+        "type": "integer"
+      },
       "maxNodes": {
         "description": "The most nodes the pool knows; 1 through 1000.",
         "format": "uint32",
         "maximum": 1000,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "maxWaiting": {
+        "description": "The most asks that wait in the line; 0 through 1000.",
+        "format": "uint32",
+        "maximum": 1000,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "nextGrant": {
+        "default": 1,
+        "description": "The number of the next grant, at least 1; it only goes up. Absent: 1.",
+        "format": "uint64",
         "minimum": 1,
         "type": "integer"
       },
@@ -253,11 +629,21 @@
       "silence": {
         "description": "How long a node may go without an offer before it is silent, as an ISO-8601 duration; 1 second through 1 day.",
         "type": "string"
+      },
+      "waiting": {
+        "default": [],
+        "description": "The waiting asks, in line order, at most `maxWaiting`, each holder id once among the holders and waiting asks;\nabsent: none.",
+        "items": {
+          "$ref": "#/$defs/PlacementAsk"
+        },
+        "type": "array"
       }
     },
     "required": [
       "silence",
-      "maxNodes"
+      "maxNodes",
+      "maxWaiting",
+      "maxHolders"
     ],
     "title": "PlacementState",
     "type": "object"
