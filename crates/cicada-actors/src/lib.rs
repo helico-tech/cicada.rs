@@ -12,6 +12,7 @@
 //! | [`BatcherActor`] | `cicada.batcher` | Collects items and sends them to its target as one batch on count or time |
 //! | [`PermitsActor`] | `cicada.permits` | Lets at most its capacity of requests hold a permit, queues the rest in FIFO order, fences each grant |
 //! | [`JobGraphActor`] | `cicada.job-graph` | Runs a graph of jobs given as data: starts each once its needs succeeded, up to a limit, takes a result per attempt, reports the end |
+//! | [`PlacementActor`] | `cicada.placement` | Keeps the places nodes offer, with their labels, and marks a node silent, with one notice, when its offers stop |
 //! | [`HeartbeatWatchActor`] | `cicada.heartbeat-watch` | Sends a stored alarm once when no `Beat` came within the allowed silence |
 //! | [`NodeDownMonitorActor`] | `cicada.node-down` | Publishes one `NodeDown` to a topic for each node row it sees silent for two minutes |
 //! | [`EventActor`] | `cicada.event` | Creates and starts one run of each subscribed flow for each publication, in one commit |
@@ -32,6 +33,7 @@ pub mod heartbeat_watch;
 pub mod job_graph;
 pub mod node_down;
 pub mod permits;
+pub mod placement;
 pub mod rate_limiter;
 mod schedule;
 pub mod scheduler;
@@ -64,6 +66,10 @@ pub use node_down::{
 pub use permits::{
     InvalidPermits, PermitHolder, PermitNotice, PermitNoticeKind, Permits, PermitsActor, PermitsMsg, PermitsState,
     WaitingRequest,
+};
+pub use placement::{
+    InvalidPlacement, Placement, PlacementActor, PlacementAlerts, PlacementMsg, PlacementNode, PlacementNodeStatus,
+    PlacementNotice, PlacementNoticeKind, PlacementState,
 };
 pub use rate_limiter::{InvalidRate, RateLimiter, RateLimiterActor, RateLimiterMsg, RateLimiterState};
 pub use schedule::{Schedule, ScheduleError};
