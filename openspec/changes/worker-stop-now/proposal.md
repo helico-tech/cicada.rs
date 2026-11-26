@@ -14,7 +14,7 @@ renewal run in tasks of their own, so they keep running and may still commit (de
   passed through `cicada-app`'s stop to a worker over HTTP.
 - `Tray::stop_now()` uses it while `Stopping`, and the menu offers Stop Now with the seconds left.
 
-To decide in the design: the core API, how `cicada-app` passes it, and the tray's state after it.
+Decided in the design: `Worker::end_grace()`, a `StopNow` handle in `WorkerReady`, and `Tray::stop_now()`.
 
 ## Order
 
