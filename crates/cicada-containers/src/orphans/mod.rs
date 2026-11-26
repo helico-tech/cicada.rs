@@ -58,7 +58,8 @@ pub struct InvalidOrphanWatch(String);
 /// deleted by hand. It runs as a task, not in actor turns: a host runs [`run`](Self::run) as an app task, once per
 /// Docker daemon. It never removes a container; [`sweep`](ContainerRuntime::sweep) and the host decide.
 ///
-/// **Rounds.** Each [`interval`](OrphanSettings::interval), from the start of `run`, a round lists the containers
+/// **Rounds.** A round runs at the start of `run` and then one [`interval`](OrphanSettings::interval) after the end of
+/// the round before (so rounds drift by the time a round takes); it lists the containers
 /// with the label [`PREFIX_LABEL`] and the job's prefix, which the container actor puts on every container it creates.
 /// The name without the prefix is the key of its actor, of the type [`ContainerJob::TYPE`], which the round reads with
 /// [`ActorSystem::get_actor`].
