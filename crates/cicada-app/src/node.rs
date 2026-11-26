@@ -417,10 +417,12 @@ pub(crate) async fn http_worker(
         Some(Ok(())) => {}
     }
     let ready = WorkerReady {
+        types: settings.types,
         grace_period: worker.config().shutdown_grace_period,
         cancel_timeout: worker.config().shutdown_cancel_timeout,
     };
     for f in parts.on_worker_ready {
+        let ready = ready.clone();
         if let Err(panic) = std::panic::catch_unwind(AssertUnwindSafe(|| f(ready))) {
             worker.stop().await;
             return Err(AppError::Failed(anyhow!("App::on_worker_ready panicked: {}", panic_text(panic.as_ref()))));
@@ -1196,10 +1198,36 @@ mod worker_tests {
         let worker = tokio::spawn(http_worker(parts, settings, fake, stopped));
         assert_eq!(
             rx.await.unwrap(),
-            WorkerReady { grace_period: Duration::from_secs(1), cancel_timeout: Duration::from_secs(3) }
+            WorkerReady {
+                types: vec!["tick"],
+                grace_period: Duration::from_secs(1),
+                cancel_timeout: Duration::from_secs(3),
+            }
         );
         stop.send(()).unwrap();
         worker.await.unwrap().unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn worker_ready_reports_the_types_selected_by_the_flag_or_environment() {
+        for (flags, expected) in [(&[][..], "gated"), (&["--types", "tick"][..], "tick")] {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let (stop, stopped) = signal();
+            let app = App::new().host(TickActor).host(GatedActor(gate())).on_worker_ready(move |ready| {
+                tx.send(ready.types).unwrap();
+            });
+            let args = ["test", "worker", "--server", "http://localhost"].into_iter().chain(flags.iter().copied());
+            let args = args.map(Into::into).collect::<Vec<_>>();
+            let crate::command::Parsed::Worker(args) = crate::command::parse(&args, true).unwrap() else {
+                panic!("expected worker command");
+            };
+            let env = crate::Env::from([("CICADA_TYPES".to_owned(), "gated".to_owned())]);
+            let settings = crate::settings::parse_http(&args.node, &env, &app.type_names()).unwrap().apply(None);
+            let worker = tokio::spawn(http_worker(app.into_parts(), settings, Arc::new(Fake::new()), stopped));
+            assert_eq!(rx.await.unwrap(), [expected]);
+            stop.send(()).unwrap();
+            worker.await.unwrap().unwrap();
+        }
     }
 
     #[tokio::test(start_paused = true)]

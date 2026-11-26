@@ -16,6 +16,31 @@ use serde::{Deserialize, Serialize};
 
 use crate::Env;
 
+/// The names and current selection of the app's configured contexts.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Contexts {
+    names: Vec<String>,
+    current: Option<String>,
+}
+
+impl Contexts {
+    /// Loads the config file at the path resolved from `env`. A missing file has no contexts.
+    pub fn load(env: &Env) -> anyhow::Result<Self> {
+        let Config { contexts, current_context } = Config::load(&path(env)?)?;
+        Ok(Self { names: contexts.into_keys().collect(), current: current_context })
+    }
+
+    /// Returns the configured context names in alphabetical order.
+    pub fn names(&self) -> &[String] {
+        &self.names
+    }
+
+    /// Returns the current context named by the config file, if set.
+    pub fn current(&self) -> Option<&str> {
+        self.current.as_deref()
+    }
+}
+
 /// The config file.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
@@ -366,6 +391,20 @@ mod tests {
         assert_eq!(Config::load(&file).unwrap(), Config::default());
         config().save(&file).unwrap();
         assert_eq!(Config::load(&file).unwrap(), config());
+    }
+
+    #[test]
+    fn contexts_load_names_and_the_current_context_from_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        let env = env(&[("CICADA_CONFIG", file.to_str().unwrap()), ("CICADA_CONTEXT", "b")]);
+        let contexts = Contexts::load(&env).unwrap();
+        assert!(contexts.names().is_empty());
+        assert_eq!(contexts.current(), None);
+        config().save(&file).unwrap();
+        let contexts = Contexts::load(&env).unwrap();
+        assert_eq!(contexts.names(), ["a", "b"]);
+        assert_eq!(contexts.current(), Some("a"));
     }
 
     #[cfg(unix)]

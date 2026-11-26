@@ -4,7 +4,7 @@ Normal lane, version 0.26.0: 0.25.0 is released before this lands, and the `Work
 (design decision 8; builder.md, Version). Builds after `app-node-id-after-types` (also changes `cicada-app`; rebase onto
 it when it landed first). Follow `design.md`; the spec is `specs/menu-bar-tray/spec.md`. No ADR.
 
-- [ ] 1. **What the model needs from `cicada-app`.** `WorkerReady::types` (`#[non_exhaustive]`, no `Copy`), filled
+- [x] 1. **What the model needs from `cicada-app`.** `WorkerReady::types` (`#[non_exhaustive]`, no `Copy`), filled
   from the worker's picked types; `cicada_app::Contexts::load(&Env)` with `names()` and `current()`, no servers or
   tokens (decision 8). Verify: `cargo test -p cicada-app` with tests for both.
 - [ ] 2. **The menu model.** Module `menu`, every platform: `MenuInput`, `MenuModel` and `menu()`, with elapsed times

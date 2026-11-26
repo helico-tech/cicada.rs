@@ -217,7 +217,7 @@ impl Drop for WorkerTaskGuard {
 
 impl Connection {
     fn stopping(&self, at: Instant) -> TrayState {
-        let until = self.ready.map_or(at, |ready| {
+        let until = self.ready.as_ref().map_or(at, |ready| {
             at.checked_add(ready.grace_period.saturating_add(ready.cancel_timeout))
                 .or_else(|| at.checked_add(ready.grace_period.max(ready.cancel_timeout)))
                 .unwrap_or(at)
