@@ -9,8 +9,9 @@ moves: a correction is a new version.
 
 ## 0.24.0 — unreleased
 
-The first part of the placement pool (ADR 0067): nodes offer places with labels to a pool, and a node that stops
-offering is marked silent, with one notice. Asks, holders, drain and the member follow in this version. Additive: a new
+The first parts of the placement pool (ADR 0067, ADR 0068): nodes offer places with labels to a pool, a node that stops
+offering is marked silent, with one notice, and work asks for a place with its needs and gets a node to pin its actors
+to. Holders, drain and the member follow in this version. Additive: a new
 ready-made actor with its own contract; the contracts of the other actors, the store schema, the HTTP API and the
 guarantees are those of 0.23.1.
 
@@ -19,7 +20,8 @@ guarantees are those of 0.23.1.
 - `cicada-actors`: the placement pool `cicada.placement/<pool>` (`Placement`, `PlacementActor`, `PlacementMsg`,
   `PlacementState`, `PlacementNode`, `PlacementNodeStatus`, `PlacementAlerts`, `PlacementNotice`,
   `PlacementNoticeKind`, `InvalidPlacement`). The host creates each pool with `PlacementState::new(silence,
-  max_nodes)` (silence 1 second through 1 day, 1 through 1,000 nodes). A member sends
+  max_nodes, max_waiting, max_holders)` (silence 1 second through 1 day, 1 through 1,000 nodes; the line and holder
+  limits are asks, below). A member sends
   `PlacementMsg::offer(node, instance, labels, places)` at an interval shorter than the silence: up to 32 labels,
   sorted and kept once, and 0 through 1,000 places; each offer replaces the node's entry and records the store time of
   its turn as `heardAt`. The pool's own `Check`, armed at the earliest end of a live node's silence (its time in
@@ -29,6 +31,19 @@ guarantees are those of 0.23.1.
   past `maxNodes`, and a `Check` or `Alert` from another sender are refused for good. Its contract is in
   `docs/reference/contracts/cicada.placement.json`. Covered by `crates/cicada-actors/tests/placement.rs` and
   `tests/wire_formats.rs`.
+- `cicada-actors`: asks in the placement pool (ADR 0068; `PlacementAnswer`, `PlacementAnswerKind`, `PlacementRefusal`,
+  `PlacementHolder`, `PlacementAsk`). `PlacementMsg::ask(holder, needs, &target, message_type)` asks a place on a node
+  with every one of up to 32 needs; the `PlacementAnswer` goes to the target in the ask's commit: `granted` with a
+  grant number that only goes up and the node (the live node with every need and a free place that has the most free
+  places, ties to the smaller node id), `queued`, or `refused` with `noNode` (no node of the pool has the needs),
+  `lineFull` (the line holds `maxWaiting`, 0 through 1,000) or `poolFull` (a place fits, but the pool holds
+  `maxHolders`, 1 through 1,000, and the line is full). An ask only silent or full nodes could meet, or one past the
+  holder limit, waits in the line; after every message the pool grants waiting asks in line order, skipping those it
+  cannot place now, and tells each in a `Notify` turn of its own; a grant whose answer never reached its holder is
+  freed through the pool's watch on itself. `PlacementMsg::release(holder, grant)` frees a place only for the matching
+  grant; `PlacementMsg::cancel(holder)` withdraws a waiting ask. A repeated ask is answered again with the first ask's
+  grant, node and target. Fewer offered places or a silent node keep their holders. Covered by
+  `crates/cicada-actors/tests/placement.rs` and `tests/wire_formats.rs`.
 
 ## 0.23.1 — 2026-11-26
 
