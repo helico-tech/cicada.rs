@@ -6,7 +6,7 @@ use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex};
 
-use cicada_app::{App, Env, WorkerReady};
+use cicada_app::{App, AppError, Env, WorkerReady};
 use tokio::sync::{oneshot, watch};
 use tokio::time::Instant;
 
@@ -37,11 +37,11 @@ pub enum TrayState {
         /// interrupted before the worker was ready, this is the stop time.
         until: Instant,
     },
-    /// The command failed. A new connection can be started.
+    /// The command failed or its task ended unexpectedly. A new connection can be started.
     Failed {
         /// Name of the selected app context.
         context: String,
-        /// The error shown by the worker command.
+        /// Why the connection failed.
         error: String,
     },
 }
@@ -65,6 +65,11 @@ struct Connection {
     stop: Option<oneshot::Sender<()>>,
     ready: Option<WorkerReady>,
     stopping_at: Option<Instant>,
+}
+
+struct WorkerTaskGuard {
+    control: Arc<Control>,
+    context: Option<String>,
 }
 
 impl Tray {
@@ -128,8 +133,7 @@ impl Tray {
             self.control.finish(TrayState::Failed { context, error: "the App factory panicked".to_owned() });
             return;
         };
-        let control = self.control.clone();
-        let ready = control.clone();
+        let ready = self.control.clone();
         let app = app.observe(self.turns.clone()).on_worker_ready(move |settings| ready.worker_ready(settings));
         let args = vec![
             std::env::args_os().next().unwrap_or_else(|| "cicada-tray".into()),
@@ -141,16 +145,15 @@ impl Tray {
                 .filter_map(|(name, value)| Some((name.into_string().ok()?, value.into_string().ok()?)))
                 .collect()
         });
+        // Capture the guard before spawning so even a task dropped before its first poll clears the connection.
+        let task = WorkerTaskGuard { control: self.control.clone(), context: Some(context) };
         runtime.spawn(async move {
             let result = app
                 .run_with(args, env, io::sink(), async {
                     let _ = stopped.await;
                 })
                 .await;
-            control.finish(match result {
-                Ok(()) => TrayState::Offline,
-                Err(error) => TrayState::Failed { context, error: error.to_string() },
-            });
+            task.complete(result);
         });
     }
 
@@ -187,6 +190,28 @@ impl Control {
         let mut connection = self.connection.lock().expect("tray connection");
         *connection = None;
         self.state.send_replace(state);
+    }
+}
+
+impl WorkerTaskGuard {
+    fn complete(mut self, result: Result<(), AppError>) {
+        let context = self.context.take().expect("the worker task has a context");
+        self.control.finish(match result {
+            Ok(()) => TrayState::Offline,
+            Err(error) => TrayState::Failed { context, error: error.to_string() },
+        });
+    }
+}
+
+impl Drop for WorkerTaskGuard {
+    fn drop(&mut self) {
+        let Some(context) = self.context.take() else { return };
+        let error = if std::thread::panicking() {
+            "the HTTP worker task panicked"
+        } else {
+            "the HTTP worker task was cancelled before it returned"
+        };
+        self.control.finish(TrayState::Failed { context, error: error.to_owned() });
     }
 }
 

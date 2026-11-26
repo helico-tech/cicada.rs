@@ -297,6 +297,69 @@ async fn disconnect_before_readiness_interrupts_startup() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn shutting_down_the_worker_runtime_before_its_first_poll_allows_reconnect() {
+    let actor = WorkActor::new();
+    let server = Server::start(actor.clone()).await;
+    let tray = Arc::new(Tray::new(move || App::new().host(actor.clone())).with_env(server.config.env()));
+    let mut state = tray.state();
+    let worker_tray = tray.clone();
+    tokio::task::spawn_blocking(move || {
+        // This runtime never drives its queue. Shutting it down drops the unpolled worker task.
+        let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+        let _entered = runtime.enter();
+        worker_tray.connect("prod");
+        assert_eq!(*worker_tray.state().borrow(), connecting("prod"));
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        *state.borrow(),
+        TrayState::Failed {
+            context: "prod".into(),
+            error: "the HTTP worker task was cancelled before it returned".into()
+        }
+    );
+
+    tray.connect("prod");
+    wait_for(&mut state, online()).await;
+    tray.disconnect();
+    wait_for(&mut state, TrayState::Offline).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_panicking_worker_task_reports_failure() {
+    #[derive(Deserialize, Serialize)]
+    struct BrokenState;
+
+    impl JsonSchema for BrokenState {
+        fn schema_name() -> std::borrow::Cow<'static, str> {
+            "BrokenState".into()
+        }
+
+        fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+            panic!("cannot build the actor's schema");
+        }
+    }
+
+    struct BrokenActor;
+
+    impl Actor for BrokenActor {
+        type Ref = Work;
+        type State = BrokenState;
+
+        async fn handle(&self, _: &mut Turn<Self>, _: WorkMsg) -> HandlerResult {
+            unreachable!("the actor never starts");
+        }
+    }
+
+    let server = Server::start(WorkActor::new()).await;
+    let tray = Tray::new(|| App::new().host(BrokenActor)).with_env(server.config.env());
+    let mut state = tray.state();
+    tray.connect("prod");
+    assert_eq!(failed(&mut state, "prod", TEST_TIMEOUT).await, "the HTTP worker task panicked");
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_bad_context_fails_and_can_be_followed_by_a_new_connection() {
     let actor = WorkActor::new();
     let server = Server::start(actor.clone()).await;
