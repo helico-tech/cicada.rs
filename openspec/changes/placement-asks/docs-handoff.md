@@ -77,25 +77,27 @@ is told in a `Notify` turn of its own and freed when never received.
 
 ## 3. The consumer skill's route
 
-**Where.** `skills/cicada/SKILL.md`, the `Ready-made actors` route.
-**Text.** The owner asked the change loop to add `docs/guide/actors.md#placement-pool` and
-`docs/reference/contracts/cicada.placement.json` to the route once the heading is on `main`. It is not on `main` at
-this head (only on the docs branch, `da95a4c8`), so the route is not changed here.
+Done in this change (the change loop owns the skill): `skills/cicada/SKILL.md`, the `Ready-made actors` route, now
+names `docs/guide/actors.md#placement-pool` and `docs/reference/contracts/cicada.placement.json`. No prose needed.
 
 ## Blocking
 
-None on this head: its `main` (`b94bae4f`) has no `Placement pool` section yet. **It will block once the docs branch's
-`da95a4c8` (Document the placement pool) is on `main`:** this change makes `PlacementState::new` take four arguments,
-so after a rebase onto it, `cargo test -p cicada-examples --doc` fails in `ActorsGuideDoctests`.
+Rebased onto `main` `8c59a8e8`, which carries the guide's `Placement pool` section (docs commit `da95a4c8`). This
+change makes `PlacementState::new` take four arguments, so `cargo test -p cicada-examples --doc` fails:
+`ActorsGuideDoctests (line 569)`, `error[E0061]: this function takes 4 arguments but 2 arguments were supplied`.
 
 - **File and block.** `docs/guide/actors.md`, `Placement pool`, the Rust block after "This example hosts a pool and an
   operator actor on virtual time", line
   `test.create(&pool, &PlacementState::new(Duration::from_secs(60), 1000)?).await;`.
   **Replacement.** `test.create(&pool, &PlacementState::new(Duration::from_secs(60), 1000, 100, 1000)?).await;`
 - **Same section, step 1 (prose, not a check).** `PlacementState::new(silence, max_nodes)` becomes
-  `PlacementState::new(silence, max_nodes, max_waiting, max_holders)`, adding "the line 0 through 1,000 waiting asks,
-  1 through 1,000 holders" (section 1 above).
+  `PlacementState::new(silence, max_nodes, max_waiting, max_holders)`, adding "the line holds 0 through 1,000 waiting
+  asks, the pool 1 through 1,000 holders" (section 1 above).
 
 ## Status
 
-See the builder's report for the checks and their results. The text above is proposed; no protected prose is written.
+Before the rebase (head `62317fd5`, on `main` `b94bae4f`): `cargo fmt --all --check` and
+`cargo clippy --workspace --all-targets -- -D warnings` clean; `cargo test --workspace` with PostgreSQL 3666 passed,
+0 failed; `openspec validate placement-asks --strict` valid; `python3 scripts/gate.py run` full pass of `62317fd5`.
+After the rebase onto `8c59a8e8`: `cargo test -p cicada-examples --doc` 49 passed, 1 failed (the block above);
+`--test docs` 11 passed; `--test skill` 18 passed. The text above is proposed; no protected prose is written.
