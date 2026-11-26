@@ -123,6 +123,8 @@ Version 0.20.0's schema 8 requires draining every old direct-store node and work
 ignore pins. Follow the [0.20.0 procedure](how-to/upgrading.md#upgrade-to-0200).
 Version 0.21.0 changes the contract of every container job type and of every type that takes a `ContainerEnded`;
 follow the [0.21.0 procedure](how-to/upgrading.md#upgrade-to-0210).
+Version 0.25.0 changes the contract of `cicada.placement`, whose fixed type name needs a maintenance window; follow
+the [0.25.0 procedure](how-to/upgrading.md#upgrade-to-0250).
 
 ## Releasing
 
@@ -241,8 +243,9 @@ fence turns; node status gates neither. Started systems, including send-only nod
 have rows. Initialize-only systems and workers over HTTP do not.
 
 `cicada get nodes` shows `HOSTNAME`; `-o wide` adds `HOSTED`, `VERSION` and `LABEL`, as does the TUI's wide nodes view.
-The host name is looked up once at start; an unavailable, non-UTF-8, blank, NUL-containing or over-200-character name
-is omitted without preventing startup. `VERSION` is the compiled `cicada` crate's version. Set a label such as your
+The host name is the machine's, looked up once when the node is built, or `NodeConfig::hostname` when set. A lookup that
+is unavailable, non-UTF-8, blank, NUL-containing or over 200 characters is omitted without preventing startup; an
+invalid set value fails the start. `VERSION` is the compiled `cicada` crate's version. Set a label such as your
 application and its version with `NodeConfig::label`, `--node-label` or `CICADA_NODE_LABEL`
 ([settings](guide/app.md#settings)). JSON/YAML use `hostname`, `cicadaVersion` and `label`, omitted when absent;
 tables show `-`. Table/TUI metadata cells escape newline, carriage return and tab as `\n`, `\r` and `\t`, and other

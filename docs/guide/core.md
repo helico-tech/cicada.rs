@@ -336,6 +336,7 @@ Pass a `NodeConfig` to `.config(..)`, or use the [App flags](app.md#run-it-as-a-
 | --- | --- | --- |
 | `node_id` | random | Claim owner, shown in running messages and `/health`; choose a stable, unique id for [pinned work](#pin-an-actor-to-an-executor). |
 | `label` | `None` | Free text shown in the [node table](../operations.md#node-table) and [node-down alerts](actors.md#node-down-alerts). Not blank, no NUL, at most 200 Unicode scalar values; kept as given. An invalid label fails initialization/start. |
+| `hostname` | `None` | The host name written to the node table, such as a container's stable name; `None` looks up the machine's own once when the node is built. Checked like `label`; read back with `ActorSystem::hostname()`. No app flag sets it. |
 | `lease_ttl` | 30 s | A turn's lease; after expiry an eligible owner can claim it again. |
 | `heartbeat_interval` | `lease_ttl / 3` | Lease renewal; must be in `(0, lease_ttl / 2]`. |
 | `poll_interval` | 500 ms | Longest sleep of the dispatch loop (wake-ups usually come sooner: own sends, PostgreSQL `NOTIFY`). |

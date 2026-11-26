@@ -584,13 +584,27 @@ when the node goes silent, as the first machine stopped (the next offer, of any 
 for a replaced machine), or when the first machine offers one silence time after the last conflicting offer, as the
 second stopped. A new conflict after that is told again. Fix it by giving each machine its own node id.
 
+Two machines started from a copied identity folder (a copied file, a cloned disk, a restored backup) share the node id
+and the instance, so their offers look like one machine. They also write one node row in turn, so each member reads its
+node's row before every round (from 0.25.0, [ADR 0071](../adr/0071-a-duplicate-node-reported-by-its-member.md)): when
+its host name differs from the one the node writes (`ActorSystem::hostname()`), the member skips that round's offer,
+logs an error once and sends the pool `Duplicate { node, host }`. The pool marks the node
+`conflict: {instance, at, host}` and tells the alert target once with the kind `conflict`; while the mark has a host,
+the node gets no new places and keeps its holders. A mark set only by reports ends one silence time after the last
+report; one set by both an offer and a report is cleared when both would be, and going silent ends every mark. A report
+of a silent node changes nothing, and one of an unknown node is refused for good. An operator can report by hand:
+`cicada send cicada.placement/runners --type Duplicate --payload '{"node": "mac-1", "host": "mac-b"}'`.
+
 - The pool only reports. Two machines under one node id also share that node's leases and its node row in the store:
   fix the hosts.
-- A cloned disk with the member's identity copied looks like one machine; the pool cannot tell.
+- A cloned disk with the identity copied is found by the member only when the two machines have different host names;
+  clones that keep one host name are not told apart. Set `NodeConfig::hostname` to give a container a stable name.
+- A redeploy under a new host name does not trip the check, as the old node removes its row when it stops; a crashed
+  node's row lingers for at most one heartbeat of the new node (10 s).
 - A member that draws a new instance at each start, rather than using `NodeIdentity`, makes a restart within the
   silence time a conflict: its offers are ignored until its old entry goes silent (alerts `conflict`, `silent`, then
   `back`).
-- The notice does not name the other instance; read the node's `conflict` in the pool's state.
+- The notice does not name the other instance or host; read the node's `conflict` in the pool's state.
 
 **The member.** Each node keeps its identity in a folder of its own with `NodeIdentity::load_or_create(dir)`: the first
 start writes `placement-identity.json` with a node id (`node-` and 16 hex digits) and an instance, and later starts
@@ -634,10 +648,14 @@ refused), and a slow round delays the next. An offer out of bounds and a send th
 yet, are logged and tried at the next round; only `stop` ends `run`, also while a probe or send hangs.
 
 - Keep the identity folder per machine. A copied file, or a cloned disk that holds it, makes two machines one to the
-  pool, which then cannot report the conflict.
-- A corrupt or unreadable identity file stops the start with `InvalidIdentity`, which names the path; delete the file
-  to take a new identity on purpose (a conflict until the old entry goes silent). Start one process at a time on a
-  missing file.
+  pool; the member's duplicate check above finds them only by their host names.
+- `NodeIdentity` locks its folder (`placement-identity.lock`) while it or a clone lives; give it to the member, which
+  keeps it while it runs. A second process on the same folder fails to start with `InvalidIdentity` whose `kind()` is
+  `IdentityErrorKind::Locked`, and loading the folder twice in one process fails too while the first identity lives.
+  The lock covers one machine only: on one host with a shared volume, a rolling deploy's new container fails with
+  `Locked` until the old one stops. On a file system without locks it logs a warning and runs without one.
+- A corrupt or unreadable identity file stops the start with `InvalidIdentity` (`IdentityErrorKind::Invalid`), which
+  names the path; delete the file to take a new identity on purpose (a conflict until the old entry goes silent).
 - The member cannot read the pool's silence: keep the interval below it. Bound a probe that may hang with a timeout of
   your own, as it holds back the rounds.
 
