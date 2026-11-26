@@ -16,7 +16,7 @@ first). Follow `design.md`; the spec is `specs/app/spec.md`. No ADR.
   with the run's types; flags override its fields; an `Err` fails with exit code 1; the worker over HTTP takes its id
   and the other fields it takes today. Rustdoc of the method, the module (the order of the settings) and `App`'s
   `Debug` updated (decisions 1–4). Verify: the design's tests.
-- [ ] 4. **Changelog and docs handoff.** The 0.25.0 section names the method under Added; `docs-handoff.md` carries the
+- [x] 4. **Changelog and docs handoff.** The 0.25.0 section names the method under Added; `docs-handoff.md` carries the
   design's Docs section with decision 5's notes. No edit to `README.md`, `AGENTS.md` or the handwritten docs. Verify:
   `cargo test -p cicada-examples --test docs` and `--doc`.
 - [ ] 5. **Finishing checks.** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,

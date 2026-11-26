@@ -28,6 +28,8 @@ API, the other actors' contracts and the guarantees are those of 0.24.0.
   and shows its running turns and the last 50 finished turns, including turns abandoned without a confirmed commit.
 - `cicada-app`: `App::type_names()` returns the hosted names in registration order, and `App::on_worker_ready`
   reports the settled grace period and cancel timeout once an HTTP worker starts.
+- `cicada-app`: `App::node_config_for` chooses a host's node config from the types selected for `serve` or
+  `worker`. Flags and environment variables still override the returned config.
 - `cicada`: `NodeConfig::hostname`, the host name a node writes to its row in the node table, such as a container's
   stable name; `None` (the default) keeps the machine's own, looked up once when the node is built. A set value is
   checked like `label` (not blank, no NUL, at most 200 characters) at the start. `ActorSystem::hostname()` returns the
