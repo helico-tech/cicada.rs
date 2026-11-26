@@ -3,7 +3,7 @@
 Normal lane, process only: version `none` (no crate change, no release). Follow `design.md` and ADR 0073
 (`docs/adr/0073-two-builders-in-the-change-loop.md`); the spec is `specs/change-loop/spec.md` (a new capability).
 
-- [ ] 1. **status.py.** Reads the `Crates:` line of each proposal's Impact; the build rule of decision 1 (slots filled
+- [x] 1. **status.py.** Reads the `Crates:` line of each proposal's Impact; the build rule of decision 1 (slots filled
   by
   changes in build, a free slot to the first ready change whose crates meet none in build, a change without the line
   only alone); up to two names on `build:`; a problem for two changes in build sharing a crate; `Order` resolved through

@@ -3,9 +3,14 @@
 
 The order comes from the `## Order` section of each proposal ("After `x`", "before `y`"). The state comes from the
 files of the change: only a proposal, described (design or spec), ready (a `tasks.md`), in build (some tasks ticked),
-built (all ticked). While a change is being built, its `tasks.md` is read from its worktree. The change loop builds the
-first change when it is ready, and describes the first change without a `tasks.md`, unless two ready changes already
-wait to be built.
+built (all ticked). While a change is being built, its `tasks.md` is read from its worktree. An `Order` that names an
+archived change is resolved through that change's own `Order`, so changes may land out of order.
+
+The `build:` line names up to two changes (ADR 0073): those in build (in build, built, or ready with a worktree), and
+for each free slot the first ready change in the order whose crates meet none of the others'. The crates come from the
+`Crates:` line in the `## Impact` section of the proposal (`Crates: none` meets nothing); a change without that line is
+built only when no other build runs. Two changes in build that share a crate are a problem. The change loop describes
+the first change without a `tasks.md`, unless two ready changes already wait to be built.
 
 The `release:` line names the version of an `unreleased` top heading of `CHANGELOG.md` and the changes archived since
 the last version tag, with the lane of each from the `## Lane` section of its proposal (`Lane: fast`, `Release: now`);
@@ -25,6 +30,7 @@ import time
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 WAITING = 2
+BUILDERS = 2
 CHANGES = ROOT / "openspec" / "changes"
 TASK = re.compile(r"^\s*- \[( |x|X)\]", re.M)
 ARCHIVE = CHANGES / "archive"
@@ -121,6 +127,36 @@ def order_of(proposal):
     return (after.group(1) if after else None, before.group(1) if before else None)
 
 
+def crates_of(proposal):
+    """The crates named on the `Crates:` line of the Impact section, as a set (empty for `none`); None without one."""
+    match = re.search(r"^## Impact\n(.*?)(?=\n## |\Z)", proposal, re.S | re.M)
+    line = re.search(r"^Crates:(.*)$", match.group(1), re.M) if match else None
+    if line is None:
+        return None
+    value = line.group(1).replace("`", "").strip().rstrip(".").strip()
+    return set() if value.lower() == "none" else set(re.findall(r"[A-Za-z0-9_-]+", value)) - {"and"}
+
+
+def archived_orders():
+    """The (after, before) of each archived change, by name without its date."""
+    folders = (d for d in ARCHIVE.iterdir() if d.is_dir()) if ARCHIVE.is_dir() else ()
+    return {
+        re.sub(r"^\d{4}-\d{2}-\d{2}-", "", d.name): order_of((d / "proposal.md").read_text())
+        for d in folders
+        if (d / "proposal.md").exists()
+    }
+
+
+def through_archive(name, archived, side):
+    """An Order neighbour resolved through archived changes: an archived name is replaced by its own neighbour on the
+    same side (0 after, 1 before) until an open change or nothing is left."""
+    seen = set()
+    while name in archived and name not in seen:
+        seen.add(name)
+        name = archived[name][side] if archived[name] else None
+    return name
+
+
 def read(name, trees):
     folder = CHANGES / name
     tree = trees.get(f"feat/{name}")
@@ -146,6 +182,7 @@ def read(name, trees):
         "tasks": f"{done}/{total}" if tasks_file.exists() else "-",
         "tree": str(tree.relative_to(ROOT)) if tree and tree.is_relative_to(ROOT) else (str(tree) if tree else "-"),
         "order": order_of(proposal.read_text()) if proposal.exists() else None,
+        "crates": crates_of(proposal.read_text()) if proposal.exists() else None,
     }
 
 
@@ -154,6 +191,11 @@ def order():
     trees = worktrees()
     names = sorted(d.name for d in CHANGES.iterdir() if d.is_dir() and d.name != "archive")
     changes = {name: read(name, trees) for name in names}
+    archived = archived_orders()
+    for change in changes.values():
+        if change["order"] is not None:
+            after, before = change["order"]
+            change["order"] = (through_archive(after, archived, 0), through_archive(before, archived, 1))
     problems = []
 
     # The queue: start at the change whose predecessor is not open (none, or archived), then follow "after".
@@ -182,7 +224,42 @@ def order():
         before = changes[earlier]["order"][1]
         if before is not None and before != later:
             problems.append(f"{earlier} says it comes before {before}, but {later} comes after it")
+    building = in_build(changes, queue)
+    for i, first in enumerate(building):
+        for second in building[i + 1 :]:
+            shared = (changes[first]["crates"] or set()) & (changes[second]["crates"] or set())
+            if shared:
+                problems.append(f"{first} and {second} are both in build and share {', '.join(sorted(shared))}")
     return names, changes, queue, problems
+
+
+def in_build(changes, queue):
+    """The changes that hold a builder: in build, built, or ready with a worktree."""
+    return [
+        name
+        for name in queue
+        if changes[name]["state"] in ("in build", "built")
+        or (changes[name]["state"] == "ready" and changes[name]["tree"] != "-")
+    ]
+
+
+def to_build(changes, queue):
+    """The changes in build, then for each free slot the first ready change whose crates meet none of the others'; a
+    change without a `Crates:` line goes only alone (ADR 0073)."""
+    chosen = in_build(changes, queue)
+    for name in queue:
+        if len(chosen) >= BUILDERS:
+            break
+        if name in chosen or changes[name]["state"] != "ready":
+            continue
+        crates = changes[name]["crates"]
+        others = [changes[other]["crates"] for other in chosen]
+        if chosen and (crates is None or any(other is None or other & crates for other in others)):
+            continue
+        chosen.append(name)
+        if crates is None:
+            break
+    return chosen
 
 
 def main():
@@ -208,12 +285,12 @@ def main():
         print("build:    nothing; no open change has a place in the order")
         print("describe: nothing")
     else:
-        head = changes[queue[0]]
-        if head["state"] in ("ready", "in build", "built"):
-            tree = f"worktree {head['tree']}" if head["tree"] != "-" else "no worktree yet"
-            print(f"build:    {head['name']} ({head['state']}, tasks {head['tasks']}, {tree})")
-        else:
-            print(f"build:    nothing; {head['name']}, the first change, is not ready ({head['state']})")
+        builds = []
+        for name in to_build(changes, queue):
+            c = changes[name]
+            tree = f"worktree {c['tree']}" if c["tree"] != "-" else "no worktree yet"
+            builds.append(f"{name} ({c['state']}, tasks {c['tasks']}, {tree})")
+        print(f"build:    {' and '.join(builds) if builds else 'nothing; no open change is ready'}")
         waiting = [n for n in queue if changes[n]["state"] == "ready" and changes[n]["tree"] == "-"]
         first_open = next((n for n in queue if changes[n]["tasks"] == "-"), None)
         if first_open is None:

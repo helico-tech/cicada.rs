@@ -1,4 +1,4 @@
-"""Tests of the `release:` line of `status.py`, in a temporary repository."""
+"""Tests of the `release:`, `build:` and `problems:` lines of `status.py`, in a temporary repository."""
 
 import pathlib
 import shutil
@@ -107,6 +107,112 @@ class ReleaseLineTest(unittest.TestCase):
             self.release_line(),
             "release:  0.1.1 unreleased, 1 change landed; release now: security-fix says Release: now",
         )
+
+
+class BuildLineTest(unittest.TestCase):
+    """Two builders when their changes share no crate (ADR 0073)."""
+
+    def setUp(self):
+        self.root = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root)
+        (self.root / "scripts").mkdir()
+        shutil.copy(SCRIPT, self.root / "scripts" / "status.py")
+        (self.root / "openspec" / "changes" / "archive").mkdir(parents=True)
+        subprocess.run([*GIT, "init", "-q"], cwd=self.root, check=True, capture_output=True)
+
+    def change(self, name, after, crates=None, tasks="- [ ] 1. A task.\n", folder=None):
+        folder = folder or self.root / "openspec" / "changes" / name
+        folder.mkdir(parents=True)
+        impact = f"## Impact\n\nCrates: {crates}\n\nMore.\n" if crates is not None else "## Impact\n\nSome crates.\n"
+        after = f"After `{after}`." if after else "First."
+        (folder / "proposal.md").write_text(f"# Proposal\n\n## Order\n\n{after}\n\n{impact}")
+        if tasks is not None:
+            (folder / "tasks.md").write_text(tasks)
+
+    def building(self, name, after, crates=None):
+        self.change(name, after, crates, tasks="- [x] 1. Done.\n- [ ] 2. Open.\n")
+
+    def archived(self, name, after):
+        self.change(name, after, "none", folder=self.root / "openspec" / "changes" / "archive" / f"2026-11-20-{name}")
+
+    def status(self):
+        result = subprocess.run(
+            [sys.executable, str(self.root / "scripts" / "status.py")], capture_output=True, text=True
+        )
+        return result
+
+    def build_line(self):
+        lines = [line for line in self.status().stdout.splitlines() if line.startswith("build:")]
+        self.assertEqual(len(lines), 1)
+        return lines[0]
+
+    def names(self):
+        line = self.build_line()
+        return [part.split(" (")[0] for part in line[len("build:    ") :].split(" and ")]
+
+    def test_disjoint_crates_build_together(self):
+        self.building("placement", None, "cicada-actors")
+        self.change("tray", "placement", "cicada-tray")
+        self.assertEqual(self.names(), ["placement", "tray"])
+
+    def test_a_shared_crate_is_passed_over_by_a_later_disjoint_change(self):
+        self.building("placement", None, "`cicada-actors`, `cicada-containers`.")
+        self.change("settings", "placement", "cicada-actors")
+        self.change("process", "settings", "none")
+        self.assertEqual(self.names(), ["placement", "process"])
+
+    def test_a_change_without_a_crates_line_is_built_only_alone(self):
+        self.building("placement", None, "cicada-actors")
+        self.change("unknown", "placement")
+        self.assertEqual(self.names(), ["placement"])
+
+    def test_a_change_without_a_crates_line_goes_alone_when_nothing_is_in_build(self):
+        self.change("unknown", None)
+        self.change("tray", "unknown", "cicada-tray")
+        self.assertEqual(self.names(), ["unknown"])
+
+    def test_a_change_in_build_without_a_crates_line_takes_both_slots(self):
+        self.building("unknown", None)
+        self.change("process", "unknown", "none")
+        self.assertEqual(self.names(), ["unknown"])
+
+    def test_crates_none_pairs_with_anything(self):
+        self.building("process", None, "none")
+        self.change("placement", "process", "cicada-actors and cicada-app")
+        self.change("tray", "placement", "cicada-tray")
+        self.assertEqual(self.names(), ["process", "placement"])
+
+    def test_two_ready_changes_fill_both_slots(self):
+        self.change("placement", None, "cicada-actors")
+        self.change("tray", "placement", "cicada-tray")
+        self.change("process", "tray", "none")
+        self.assertEqual(self.names(), ["placement", "tray"])
+
+    def test_nothing_ready(self):
+        self.change("idea", None, "none", tasks=None)
+        self.assertEqual(self.build_line(), "build:    nothing; no open change is ready")
+
+    def test_two_changes_in_build_sharing_a_crate_are_a_problem(self):
+        self.building("placement", None, "cicada-actors, cicada-app")
+        self.building("settings", "placement", "cicada-actors")
+        result = self.status()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("  - placement and settings are both in build and share cicada-actors", result.stdout)
+
+    def test_an_order_naming_an_archived_change_resolves_through_it(self):
+        # first <- second <- third; second landed before first.
+        self.building("first", "landed", "cicada-actors")
+        self.archived("second", "first")
+        self.change("third", "second", "cicada-tray")
+        (self.root / "openspec" / "changes" / "first" / "proposal.md").write_text(
+            "# Proposal\n\n## Order\n\nAfter `landed`, before `second`.\n\n## Impact\n\nCrates: cicada-actors\n"
+        )
+        result = self.status()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("problems: none", result.stdout)
+        self.assertEqual(self.names(), ["first", "third"])
+        rows = [line.split()[1] for line in result.stdout.splitlines()[1:3]]
+        self.assertEqual(rows, ["first", "third"])
 
 
 if __name__ == "__main__":
