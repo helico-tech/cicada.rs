@@ -8,6 +8,7 @@
 //! a draining node gets no new places and keeps its holders, and a silent node declared gone tells each holder once.
 //! And a second machine under one node id (ADR 0069): its offers are ignored, the node is marked in conflict with one
 //! alert, and the mark ends when the node goes silent or the other machine stops.
+//! And the operator's `cicada send` recipes for `Drain`, `Undrain`, `Gone` and `Release`, over the HTTP send route.
 
 mod common;
 
@@ -25,6 +26,7 @@ use cicada_actors::{
 use cicada_test::TestActors;
 use common::*;
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
 fn secs(n: u64) -> Duration {
     Duration::from_secs(n)
@@ -1313,5 +1315,81 @@ async fn after_the_second_machine_stops_for_one_silence_time_the_mark_clears_and
     offer_from(&test, "mac-1", "i2", &["arm64"], 2).await;
     assert_eq!(held(&test).await.nodes["mac-1"].conflict, conflict("i2", start, 75));
     assert_eq!(notices(&test).await, [told_conflict("mac-1"), told_conflict("mac-1")], "a new mark, a new alert");
+    assert!(failed(&test).await.is_empty());
+}
+
+/// `POST /actors/cicada.placement/runners/messages` on `api` with the type and payload that
+/// `cicada send cicada.placement/runners --type {message_type} --payload '{payload}'` sends, then runs what is due: the
+/// status of the answer.
+async fn send_over_http(test: &TestActors, api: &axum::Router, message_type: &str, payload: Value) -> u16 {
+    use tower::ServiceExt;
+    let request = axum::http::Request::post("/actors/cicada.placement/runners/messages")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(json!({ "type": message_type, "payload": payload }).to_string()))
+        .unwrap();
+    let status = api.clone().oneshot(request).await.unwrap().status().as_u16();
+    test.run_until_idle().await;
+    status
+}
+
+/// `GET /actors/cicada.placement/runners` on `api`, which `cicada describe actor cicada.placement/runners -o json`
+/// prints: the pool's state.
+async fn state_over_http(api: &axum::Router) -> Value {
+    use tower::ServiceExt;
+    let request = axum::http::Request::get("/actors/cicada.placement/runners").body(axum::body::Body::empty()).unwrap();
+    let response = api.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    serde_json::from_slice::<Value>(&body).unwrap()["state"].clone()
+}
+
+/// The holders in a state read over HTTP, as holder, grant and node.
+fn holders_in(state: &Value) -> Vec<(String, u64, String)> {
+    let holders = state["holders"].as_array().unwrap();
+    holders
+        .iter()
+        .map(|h| holder(h["holder"].as_str().unwrap(), h["grant"].as_u64().unwrap(), h["node"].as_str().unwrap()))
+        .collect()
+}
+
+/// The operator's recipes: the documented `cicada send` payloads of `Drain`, `Undrain`, `Gone` and `Release`, posted to
+/// the send route the command uses, act on the pool, and its state read over HTTP shows the nodes, holders and line.
+#[tokio::test(start_paused = true)]
+async fn the_documented_cicada_send_payloads_drain_undrain_release_and_declare_gone() {
+    let test = node().await;
+    let api = cicada_axum::actor_api(test.system().clone());
+    offer(&test, "mac-1", &["arm64"], 2).await;
+    offer(&test, "mac-2", &["arm64"], 1).await;
+    ask(&test, "r1", &["arm64"]).await;
+    ask(&test, "r2", &["arm64"]).await;
+
+    assert_eq!(send_over_http(&test, &api, "Drain", json!({"node": "mac-1"})).await, 202);
+    let state = state_over_http(&api).await;
+    assert_eq!(state["nodes"]["mac-1"]["draining"], json!(true));
+    ask(&test, "r3", &["arm64"]).await;
+    ask(&test, "r4", &["arm64"]).await;
+    assert_eq!(answers(&test, "r4").await, [QUEUED], "mac-2 is full and mac-1 drains");
+
+    assert_eq!(send_over_http(&test, &api, "Release", json!({"holder": "r1", "grant": 1})).await, 202);
+    let state = state_over_http(&api).await;
+    assert_eq!(holders_in(&state), [holder("r2", 2, "mac-1"), holder("r3", 3, "mac-2")]);
+    assert_eq!(state["waiting"][0]["holder"], json!("r4"), "a freed place on a draining node grants nothing");
+
+    assert_eq!(send_over_http(&test, &api, "Undrain", json!({"node": "mac-1"})).await, 202);
+    let state = state_over_http(&api).await;
+    assert_eq!(state["nodes"]["mac-1"]["draining"], json!(false));
+    assert_eq!(state["waiting"], json!([]));
+    assert_eq!(answers(&test, "r4").await, [QUEUED, granted(4, "mac-1")]);
+
+    test.advance_time_by(secs(30)).await;
+    offer(&test, "mac-2", &["arm64"], 1).await;
+    test.advance_time_by(secs(30)).await;
+    assert_eq!(state_over_http(&api).await["nodes"]["mac-1"]["status"], json!("silent"));
+    assert_eq!(send_over_http(&test, &api, "Gone", json!({"node": "mac-1"})).await, 202);
+    let state = state_over_http(&api).await;
+    assert!(state["nodes"].get("mac-1").is_none(), "{state}");
+    assert_eq!(holders_in(&state), [holder("r3", 3, "mac-2")]);
+    assert_eq!(answers(&test, "r2").await, [granted(2, "mac-1"), gone(2, "mac-1")]);
+    assert_eq!(answers(&test, "r4").await, [QUEUED, granted(4, "mac-1"), gone(4, "mac-1")]);
     assert!(failed(&test).await.is_empty());
 }

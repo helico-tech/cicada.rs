@@ -2,7 +2,7 @@
 
 Fast lane, tests only: no version change (the 0.24.0 placement release carries it).
 
-- [ ] 1. **The recipes, tested.** A test that hosts a placement pool behind the HTTP API (`cicada-axum`) and posts the
+- [x] 1. **The recipes, tested.** A test that hosts a placement pool behind the HTTP API (`cicada-axum`) and posts the
   documented payloads to the send route the `cicada send` command uses: `Drain` and `Undrain` of a node, `Gone` of a
   silent node, `Release` of a holder's grant; it checks the pool's state after each. Verify: `cargo test -p
   cicada-actors`.
