@@ -19,7 +19,7 @@ Normal lane, process only: version `none` (no crate change, no release). Follow 
   of
   `docs/how-to/releasing.md` the new rules; nothing blocks. No edit to `README.md`, `AGENTS.md` or the handwritten
   docs.
-- [ ] 5. **Finishing checks.** `python3 -m unittest discover -s scripts -p 'test_*.py'`,
+- [x] 5. **Finishing checks.** `python3 -m unittest discover -s scripts -p 'test_*.py'`,
   `openspec validate change-loop-two-builders --strict`, commit, then `python3 scripts/gate.py run` (wait for the lock
-  in
-  short tries; the run as its own background command with a 2-hour timeout).
+  in short tries; the run as its own background command with a 2-hour timeout). The gate ran at landing, on the
+  merged tip.
