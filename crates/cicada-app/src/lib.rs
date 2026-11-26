@@ -78,7 +78,7 @@ use cicada::{Actor, ActorSystem, ActorType};
 use crate::command::Parsed;
 pub use crate::node::Stopping;
 use crate::node::{HostTask, HostedType, HttpFn, OnStartFn, OnWorkerReadyFn, Parts, Stop};
-use crate::settings::{Kind, WorkerMode};
+use crate::settings::{Kind, ParsedSettings, Settings, WorkerMode};
 
 /// Environment variables, by name: the process environment in [`App::run`], a literal map in tests.
 pub type Env = BTreeMap<String, String>;
@@ -311,9 +311,9 @@ impl App {
                 Parsed::Serve(args) => {
                     self.check_task_names()?;
                     let stop = Stop::watch(shutdown);
-                    let settings = settings::parse(Kind::Serve, &args.node, args.listen, &env, &names)
-                        .map_err(AppError::usage)?
-                        .apply(self.node_config.clone());
+                    let parsed =
+                        settings::parse(Kind::Serve, &args.node, args.listen, &env, &names).map_err(AppError::usage)?;
+                    let settings = self.store_settings(parsed, &settings::built_in())?;
                     node::serve(self.into_parts(), settings, &mut out, stop).await
                 }
                 Parsed::Worker(args) => {
@@ -321,9 +321,9 @@ impl App {
                     let stop = Stop::watch(shutdown);
                     match settings::worker_mode(&args, &env).map_err(AppError::usage)? {
                         WorkerMode::Store => {
-                            let settings = settings::parse(Kind::Worker, &args.node, None, &env, &names)
-                                .map_err(AppError::usage)?
-                                .apply(self.node_config.clone());
+                            let parsed = settings::parse(Kind::Worker, &args.node, None, &env, &names)
+                                .map_err(AppError::usage)?;
+                            let settings = self.store_settings(parsed, &settings::built_in())?;
                             node::worker(self.into_parts(), settings, stop).await
                         }
                         WorkerMode::Http => {
@@ -345,6 +345,12 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Checks the selected store before applying the host's config.
+    fn store_settings(&self, parsed: ParsedSettings, built: &[settings::Backend]) -> Result<Settings, AppError> {
+        settings::check_built_in(&parsed.store, built).map_err(|e| AppError::Failed(anyhow::anyhow!(e)))?;
+        Ok(parsed.apply(self.node_config.clone()))
     }
 
     /// Refuses two tasks with one name.

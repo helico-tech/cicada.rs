@@ -28,7 +28,7 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
 
 use crate::config::Target;
-use crate::settings::{HttpSettings, Settings, StoreSpec, check_built_in};
+use crate::settings::{HttpSettings, Settings, StoreSpec};
 use crate::{AppError, WorkerReady};
 
 /// How long `serve` and `worker` wait for a PostgreSQL store that answers "unavailable", and how often they try.
@@ -511,7 +511,6 @@ async fn wait_for_server(source: &dyn TurnSource, stop: &Stop) -> Result<bool, S
 
 /// The store of `settings`, or `None` when the stop came while it was waited for.
 async fn open_unless_stopped(settings: &Settings, stop: &Stop) -> Result<Option<Store>, AppError> {
-    check_built_in(&settings.store, &crate::settings::built_in()).map_err(|e| AppError::Failed(anyhow!(e)))?;
     tokio::select! {
         biased;
         () = stop.wait() => Ok(None),
@@ -519,7 +518,7 @@ async fn open_unless_stopped(settings: &Settings, stop: &Stop) -> Result<Option<
     }
 }
 
-/// Opens the store of `settings`; PostgreSQL is waited for while it answers "unavailable".
+/// Opens the store already checked by `App`. Waits for PostgreSQL while it answers "unavailable".
 async fn open(settings: &Settings) -> anyhow::Result<Store> {
     match &settings.store {
         StoreSpec::Sqlite(path) => {
@@ -536,7 +535,7 @@ async fn open(settings: &Settings) -> anyhow::Result<Store> {
             #[cfg(not(feature = "sqlite"))]
             {
                 let _ = path;
-                Err(anyhow!(check_built_in(&settings.store, &[]).unwrap_err()))
+                unreachable!("App checks the SQLite feature before opening the store")
             }
         }
         StoreSpec::Postgres(url) => {
@@ -550,7 +549,7 @@ async fn open(settings: &Settings) -> anyhow::Result<Store> {
             #[cfg(not(feature = "postgres"))]
             {
                 let _ = url;
-                Err(anyhow!(check_built_in(&settings.store, &[]).unwrap_err()))
+                unreachable!("App checks the PostgreSQL feature before opening the store")
             }
         }
     }

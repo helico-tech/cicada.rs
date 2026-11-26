@@ -7,7 +7,7 @@ first). Follow `design.md`; the spec is `specs/app/spec.md`. No ADR.
 - [x] 1. **Parse, then apply.** Split `settings::resolve` and `resolve_http` into a parse step (every flag and variable
   read and checked, with the types) and an apply step that lays the parsed values over a `NodeConfig`; behaviour
   unchanged (decision 4). Verify: the existing settings tests and `cargo test -p cicada-app`.
-- [ ] 2. **The built-in store check moves.** `check_built_in` is called from `lib.rs` on the parsed store, before the
+- [x] 2. **The built-in store check moves.** `check_built_in` is called from `lib.rs` on the parsed store, before the
   point where the hook will run, instead of inside `open_unless_stopped`; one path; a worker over HTTP skips it
   (decision 4). Verify: the existing test of a store whose feature is not built.
 - [ ] 3. **`App::node_config_for`.** The method (synchronous, `FnOnce(&[&'static str]) -> anyhow::Result<NodeConfig>`),
