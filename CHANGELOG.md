@@ -29,7 +29,7 @@ contracts and the guarantees are those of 0.24.0.
 - `cicada-actors`: the duplicate check of `PlacementMember` (ADR 0071). Each round first reads the node's own row
   (`ActorSystem::node`); a host name there that is set and differs from `ActorSystem::hostname()` makes the round skip
   its probe and offer, send the pool `Duplicate { node, host }` and log an error, once for each other host name in a
-  row. No host name of its own or in the row, or a failed read (a warning), checks nothing. A redeploy under a new host
+  row; a round that finds no other host ends that run, so a later one is logged again. No host name of its own or in the row, or a failed read (a warning), checks nothing. A redeploy under a new host
   name trips nothing, as the old node removes its row when it stops. Covered by
   `crates/cicada-actors/tests/placement_duplicate.rs`.
 - `cicada-actors`: the pool's `Duplicate { node, host }`, from anyone. For a live node it sets the conflict mark of
@@ -46,8 +46,10 @@ contracts and the guarantees are those of 0.24.0.
   folder and keeps it while the identity or a clone of it lives; `PlacementMember` keeps the identity, so the lock
   lasts as long as the member. A second load fails with `InvalidIdentity::kind()` `IdentityErrorKind::Locked`; the
   other errors are `IdentityErrorKind::Invalid` (`#[non_exhaustive]`). Two processes starting at once on a missing file
-  can no longer both write one. On a file system without locks it logs a warning and goes on without one. Covered by
-  `a_second_load_fails_while_the_identity_lives_and_succeeds_after_all_are_dropped`.
+  can no longer both write one. On a file system without locks, and in a read-only folder that holds the identity file
+  (the lock file cannot be created or opened for writing), it logs a warning and goes on without one. Covered by
+  `a_second_load_fails_while_the_identity_lives_and_succeeds_after_all_are_dropped` and
+  `a_read_only_folder_loads_the_identity_without_a_lock`.
 
 ### Changed (breaking)
 

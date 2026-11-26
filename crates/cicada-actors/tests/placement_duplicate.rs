@@ -186,6 +186,49 @@ async fn the_member_that_finds_another_host_skips_its_offers_logs_once_and_repor
     b.stop().await;
 }
 
+/// A second episode with the same other host is logged again: B stops, which removes the shared row, so A's next round
+/// finds no other host and offers; B starts again, and A logs a second error.
+#[tokio::test(start_paused = true)]
+async fn a_second_duplicate_with_the_same_host_is_logged_again() {
+    let log = Log::default();
+    let writer = log.clone();
+    let subscriber = tracing_subscriber::fmt().with_ansi(false).with_writer(move || writer.clone()).finish();
+    let _logging = tracing::subscriber::set_default(subscriber);
+
+    let test = pool_node().await;
+    let (first, copy) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+    let a_identity = NodeIdentity::load_or_create(first.path()).unwrap();
+    fs::copy(first.path().join("placement-identity.json"), copy.path().join("placement-identity.json")).unwrap();
+    let a = machine(&test, "mac-a").await;
+    settle().await;
+    let b = machine(&test, "mac-b").await;
+    settle().await;
+    let (stop_a, run_a) = member(&a, a_identity);
+    settle().await;
+    test.advance_time_by(secs(15)).await;
+    settle().await;
+    let text = "another machine, 'mac-b', runs under this node id (shared)";
+    assert_eq!(log.errors(text), 1, "the first episode");
+    let offers = handled(&test, "Offer").await;
+    b.stop().await;
+    test.advance_time_by(secs(15)).await;
+    settle().await;
+    test.run_until_idle().await;
+    assert_eq!(handled(&test, "Offer").await, offers + 1, "no other host: A offers");
+
+    let b = machine(&test, "mac-b").await;
+    settle().await;
+    for _ in 0..2 {
+        test.advance_time_by(secs(15)).await;
+        settle().await;
+    }
+    assert_eq!(log.errors(text), 2, "the second episode is logged again, once");
+    stop_a.send(()).unwrap();
+    run_a.await.unwrap();
+    a.stop().await;
+    b.stop().await;
+}
+
 /// Scenario: A redeploy. The old node stops and removes its row; the new one, under a new host name, offers and
 /// reports nothing.
 #[tokio::test(start_paused = true)]

@@ -33,7 +33,9 @@ const LOCK_FILE: &str = "placement-identity.lock";
 /// [`PlacementMember`], which keeps it while it runs. The lock covers one machine only: a copied folder on another
 /// machine is caught by the member's duplicate check, and only when the two machines' host names differ. On one host
 /// with a shared volume, a rolling deploy's new process fails with `Locked` until the old one stops. On a file system
-/// without locks it logs a warning and goes on without one. Equality compares the node id and the instance.
+/// without locks, and in a folder where the lock file cannot be created or opened for writing for lack of permission
+/// (a read-only folder that holds the identity file), it logs a warning and goes on without one. Equality compares
+/// the node id and the instance.
 #[derive(Clone)]
 pub struct NodeIdentity {
     node_id: NodeId,
@@ -148,18 +150,20 @@ impl NodeIdentity {
 }
 
 /// Creates `dir` when missing and takes the exclusive lock on its lock file: `Locked` when another holds it, none with
-/// a warning on a file system without locks.
+/// a warning on a file system without locks or when the lock file cannot be opened for writing for lack of permission.
 fn lock(dir: &Path) -> Result<Option<Arc<fs::File>>, InvalidIdentity> {
     let path = dir.join(LOCK_FILE);
     let fail =
         |what: &str, e: &dyn std::fmt::Display| InvalidIdentity::invalid(format!("{}: {what}: {e}", path.display()));
     fs::create_dir_all(dir).map_err(|e| fail("its folder cannot be created", &e))?;
-    let file = fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(&path)
-        .map_err(|e| fail("cannot be opened", &e))?;
+    let file = match fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path) {
+        Ok(file) => file,
+        Err(e) if matches!(e.kind(), ErrorKind::PermissionDenied | ErrorKind::ReadOnlyFilesystem) => {
+            tracing::warn!("placement identity {}: no lock, as the lock file cannot be opened: {e}", path.display());
+            return Ok(None);
+        }
+        Err(e) => return Err(fail("cannot be opened", &e)),
+    };
     match file.try_lock() {
         Ok(()) => Ok(Some(Arc::new(file))),
         Err(TryLockError::WouldBlock) => Err(InvalidIdentity {
@@ -291,7 +295,8 @@ impl Capacity {
 /// and differs from the one this node writes ([`ActorSystem::hostname`], see
 /// [`NodeConfig::hostname`](cicada::runtime::NodeConfig::hostname)) means another machine runs under this id, such as
 /// one started from a copied identity folder. That round then skips the probe and the offer, sends the pool
-/// `Duplicate { node, host }`, and logs an error, once for each other host name in a row. A round without a host name of
+/// `Duplicate { node, host }`, and logs an error, once for each other host name in a row; a round that finds no other
+/// host ends that run, so a later one is logged again. A round without a host name of
 /// its own or in the row, or whose read fails (a warning), checks nothing. A redeploy under a new host name does not
 /// trip it, as the old node removes its row when it stops; a node that crashed leaves its row for one more heartbeat of
 /// the new one at most. Two machines that keep one host name are not told apart.
@@ -377,27 +382,34 @@ where
     /// Reports another machine under the node's id, or calls the probe and sends its offer.
     async fn round(&mut self, system: &ActorSystem) {
         let pool = self.pool.pool.as_str();
-        if let Some(host) = other_host(system, pool).await {
-            let node = system.node_id().as_str();
-            if self.logged.as_deref() != Some(host.as_str()) {
-                let own = system.hostname().unwrap_or_default();
-                tracing::error!(
-                    pool,
-                    node,
-                    host,
-                    "placement member: another machine, '{host}', runs under this node id ({node}) on this host \
-                     ('{own}'): no offers while it does; give each machine an identity folder of its own"
-                );
-                self.logged = Some(host.clone());
-            }
-            let report = PlacementMsg::Duplicate { node: node.to_owned(), host };
-            match system.send(&self.pool, report).await {
-                Ok(SendResult::Accepted(_)) => {}
-                Ok(other) => tracing::warn!(pool, "placement member: the duplicate report was not accepted: {other:?}"),
-                Err(e) => tracing::warn!(pool, "placement member: the duplicate report failed: {e}"),
-            }
-            return;
+        let Some(host) = other_host(system, pool).await else {
+            // A later duplicate with the same host is a new one, logged again.
+            self.logged = None;
+            return self.offer(system).await;
+        };
+        let node = system.node_id().as_str();
+        if self.logged.as_deref() != Some(host.as_str()) {
+            let own = system.hostname().unwrap_or_default();
+            tracing::error!(
+                pool,
+                node,
+                host,
+                "placement member: another machine, '{host}', runs under this node id ({node}) on this host \
+                 ('{own}'): no offers while it does; give each machine an identity folder of its own"
+            );
+            self.logged = Some(host.clone());
         }
+        let report = PlacementMsg::Duplicate { node: node.to_owned(), host };
+        match system.send(&self.pool, report).await {
+            Ok(SendResult::Accepted(_)) => {}
+            Ok(other) => tracing::warn!(pool, "placement member: the duplicate report was not accepted: {other:?}"),
+            Err(e) => tracing::warn!(pool, "placement member: the duplicate report failed: {e}"),
+        }
+    }
+
+    /// Calls the probe and sends its offer.
+    async fn offer(&mut self, system: &ActorSystem) {
+        let pool = self.pool.pool.as_str();
         let Some(Capacity { labels, places }) = (self.probe)().await else {
             return;
         };

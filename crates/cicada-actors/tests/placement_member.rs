@@ -113,6 +113,40 @@ fn an_unreadable_identity_file_is_refused() {
     assert!(temp.path().join("placement-identity.json").is_dir());
 }
 
+/// A read-only folder that holds the identity file loads without a lock, with a warning, whether the lock file is
+/// missing (it cannot be created) or there but read-only (it cannot be opened for writing).
+#[cfg(unix)]
+#[test]
+fn a_read_only_folder_loads_the_identity_without_a_lock() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = TempDir::new().unwrap();
+    let dir = temp.path().join("placement");
+    let made = NodeIdentity::load_or_create(&dir).unwrap();
+    drop(made.clone());
+    let (node, instance) = (made.node_id(), made.instance().to_owned());
+    drop(made);
+    let lock = dir.join("placement-identity.lock");
+    let mode = |path: &std::path::Path, mode: u32| fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+    for missing in [true, false] {
+        if missing {
+            fs::remove_file(&lock).unwrap();
+        } else {
+            mode(&dir, 0o755);
+            fs::write(&lock, "").unwrap();
+            mode(&lock, 0o444);
+        }
+        mode(&dir, 0o555);
+        let (read, created) = (NodeIdentity::load_or_create(&dir), lock.exists() && missing);
+        let again = NodeIdentity::load_or_create(&dir);
+        mode(&dir, 0o755);
+        let read = read.unwrap_or_else(|e| panic!("missing lock file {missing}: {e}"));
+        assert_eq!((read.node_id(), read.instance()), (node.clone(), instance.as_str()), "{missing}");
+        assert!(format!("{read:?}").contains("locked: false"), "{read:?}");
+        assert!(again.is_ok(), "no lock held, so a second load is not refused: {again:?}");
+        assert!(!created, "nothing created");
+    }
+}
+
 /// Scenario: A zero interval.
 #[test]
 fn a_zero_interval_is_refused() {
