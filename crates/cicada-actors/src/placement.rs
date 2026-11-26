@@ -2,8 +2,8 @@
 //! interval; a node not heard from for the pool's silence time is marked silent, and its alert target is told once. A
 //! second machine offering under a live node's id is ignored and reported once (ADR 0069), as is a second machine its
 //! member reports under the node's id and instance (ADR 0071), and a node offering a resource key that another live
-//! node holds, such as one Docker daemon's id (ADR 0072). Work asks it for a place
-//! with its needs and gets a node to pin a child to (ADR 0068). An operator drains a node, and declares a silent node
+//! node holds, such as one Docker daemon's id (ADR 0072). A full pool ignores a new node's offer and says so once
+//! (ADR 0075). Work asks it for a place with its needs and gets a node to pin a child to (ADR 0068). An operator drains a node, and declares a silent node
 //! gone, whose holders are told. A [`PlacementMember`] offers a node's places while the host's probe answers, under a
 //! [`NodeIdentity`] kept across restarts.
 
@@ -74,8 +74,9 @@ pub enum PlacementMsg {
     /// `back` to the alert target, whatever its instance. An offer of another instance than the recorded one while the
     /// node is live changes no entry field: it marks the node in `conflict`, and a new mark is told `conflict`. An
     /// offer of a resource key that another live node holds changes nothing for the node: it is recorded in
-    /// `contested`, and a new entry there is told `conflict` (ADR 0072). A node new to a pool that knows `maxNodes`
-    /// nodes or more is refused for good, as is a new contest in a pool that lists `maxNodes` or more. Send one at an
+    /// `contested`, and a new entry there is told `conflict` (ADR 0072). An offer of a node new to a pool that knows
+    /// `maxNodes` nodes or more changes no entry: it sets or moves the pool's `full` mark, and a new mark is told
+    /// `full` (ADR 0075). A new contest in a pool that lists `maxNodes` or more is refused for good. Send one at an
     /// interval shorter than the silence time.
     Offer {
         /// The node id the member's node pins its actors under.
@@ -114,13 +115,15 @@ pub enum PlacementMsg {
         host: String,
     },
     /// The silence timer: sent by the pool to itself, and counted only when it is the armed one (`armedId`). Marks each
-    /// live node not heard from for the silence time as silent, queues an `Alert` for each, removes each contest one
-    /// silence time after its last offer, and arms the next check at the earliest end of a live node's silence or of a
-    /// contest. Run early (made due by an operator) it arms itself again at `armed`;
+    /// live node not heard from for the silence time as silent, queues an `Alert` for each, removes each contest and
+    /// the `full` mark one silence time after its last offer, and arms the next check at the earliest end of a live
+    /// node's silence, of a contest or of the `full` mark, or clears `armed` when none is left. Run early (made due by
+    /// an operator) it arms itself again at `armed`;
     /// any other `Check` the pool sent itself changes nothing, and one from another sender is refused for good.
     Check,
     /// Cancels the armed check and arms a new one at its unchanged time, at once when that has passed: the recovery of
-    /// a check that was purged, cancelled or failed for good. Nothing when no node is live and no contest is listed.
+    /// a check that was purged, cancelled or failed for good. Nothing when no node is live, no contest is listed and
+    /// the pool is not marked `full`.
     Rearm,
     /// Sends the alert target a notice about `node`, in a turn of its own so that a failing target fails only this
     /// alert; nothing without a target. Sent by the pool to itself.
@@ -133,10 +136,10 @@ pub enum PlacementMsg {
     },
     /// Changes the pool's settings, from anyone: each field set replaces its value, each absent one keeps it, within
     /// the bounds of [`PlacementState::new`]. A limit below what the pool has removes nothing: the nodes, holders,
-    /// waiting asks and contests stay, and new ones are refused or queued until the count is below it. A larger `maxHolders` grants
-    /// waiting asks in this turn. A silence other than the current one, with a check armed, arms the check at the new
-    /// earliest end of a live node's silence or of a contest, at once when that has passed, so a shorter one marks the
-    /// quiet nodes silent in the next turn. Refused for good with the state unchanged when no field is set, a value is
+    /// waiting asks and contests stay, and new ones are ignored, refused or queued until the count is below it. A
+    /// larger `maxHolders` grants waiting asks in this turn. A silence other than the current one, with a check armed,
+    /// arms the check at the new earliest end of a live node's silence, of a contest or of the `full` mark, at once
+    /// when that has passed, so a shorter one marks the quiet nodes silent in the next turn. Refused for good with the state unchanged when no field is set, a value is
     /// out of bounds, or a node's or contest's silence would end after the last representable instant. Unknown fields
     /// are ignored, as in every message of the pool, so a misspelled field next to a valid one changes nothing.
     Configure {
@@ -482,9 +485,10 @@ pub struct PlacementAsk {
     pub message_type: String,
 }
 
-/// What a notice of a pool says about a node.
+/// What a notice of a pool says about a node. More kinds may come: a match on it needs a wildcard arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum PlacementNoticeKind {
     /// The node was not heard from for the silence time: it gets no new places. Sent once per silence.
     Silent,
@@ -495,6 +499,10 @@ pub enum PlacementNoticeKind {
     /// for a report, the host. Or the node offered a resource key another live node holds, whose offers are ignored:
     /// sent once while its entry in the pool's `contested` lasts, which names the key.
     Conflict,
+    /// The pool knows `maxNodes` nodes or more and ignored an offer of the node, which it does not know (ADR 0075).
+    /// Sent once while the pool's `full` mark lasts, about the first node it ignored then; raise `maxNodes` with
+    /// `Configure`, or declare silent nodes `Gone`.
+    Full,
 }
 
 /// A notice of a pool to its alert target, sent as the message type of its `Alerts`. A host's family takes it as a
@@ -506,7 +514,7 @@ pub enum PlacementNoticeKind {
 pub struct PlacementNotice {
     /// The pool: the key of its address.
     pub pool: String,
-    /// The node it is about.
+    /// The node it is about; for `full`, the first node the pool ignored while it was marked full.
     pub node: String,
     /// What happened to it.
     pub kind: PlacementNoticeKind,
@@ -598,6 +606,19 @@ pub struct PlacementContest {
     pub at: Timestamp,
 }
 
+/// The mark of a full pool (ADR 0075): an offer of a node the pool did not know, ignored because the pool knew
+/// `maxNodes` nodes or more. One per pool, kept for one silence time after the last such offer, or until an offer adds
+/// a node.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PlacementFull {
+    /// The node of the last ignored offer; 1 through 200 characters, not blank, without NUL.
+    #[schemars(length(min = 1, max = 200))]
+    pub node: String,
+    /// The store time of the last ignored offer.
+    pub at: Timestamp,
+}
+
 /// A state or a message of a pool out of its bounds; it prints why.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{0}")]
@@ -605,13 +626,14 @@ pub struct InvalidPlacement(String);
 
 /// The state of a [`Placement`] pool: its silence time, node limit, line limit and holder limit, given at its create
 /// and changed by `Configure`, where its notices go, the nodes it knows by node id, the next grant number, its holders
-/// in the order they were granted, its waiting asks in line order, the contests of resource keys, and the time and id
-/// of its armed check.
+/// in the order they were granted, its waiting asks in line order, the contests of resource keys, the `full` mark, and
+/// the time and id of its armed check.
 /// Build it with `PlacementState::new`; a decoded state is checked the same way.
 ///
 /// On the wire: `{"silence":"PT1M","maxNodes":1000,"maxWaiting":100,"maxHolders":1000,"alerts":null,"nodes":{},
-/// "nextGrant":1,"holders":[],"waiting":[],"contested":[],"armed":null,"armedId":null}`; `alerts`, `nodes`,
-/// `nextGrant`, `holders`, `waiting`, `contested`, `armed` and `armedId` may be left out of a create.
+/// "nextGrant":1,"holders":[],"waiting":[],"contested":[],"armed":null,"armedId":null}`; `full` is written only while
+/// it is set, and `alerts`, `nodes`, `nextGrant`, `holders`, `waiting`, `contested`, `full`, `armed` and `armedId` may
+/// be left out of a create.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", try_from = "RawState")]
 pub struct PlacementState {
@@ -637,7 +659,10 @@ pub struct PlacementState {
     /// The offers of resource keys that another live node held, ignored (ADR 0072), in the order they were first
     /// recorded.
     pub contested: Vec<PlacementContest>,
-    /// The time of the armed `Check`, set exactly while a node is live or a contest is listed.
+    /// The last offer of a new node that the pool ignored because it was full, while the mark lasts (ADR 0075).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub full: Option<PlacementFull>,
+    /// The time of the armed `Check`, set exactly while a node is live, a contest is listed or the pool is marked full.
     pub armed: Option<Timestamp>,
     /// The id of the armed `Check`, set exactly with `armed`. It stays set when the check goes without running.
     pub armed_id: Option<MessageId>,
@@ -683,7 +708,11 @@ struct RawState {
     /// limit), each key and node once; absent: none.
     #[serde(default)]
     contested: Vec<PlacementContest>,
-    /// The time of the armed `Check`: present exactly while a node is live or a contest is listed.
+    /// The last offer of a new node ignored because the pool knew `maxNodes` nodes or more, kept for one silence time
+    /// after its `at` or until an offer adds a node; absent or null: none.
+    #[serde(default)]
+    full: Option<PlacementFull>,
+    /// The time of the armed `Check`: present exactly while a node is live, a contest is listed or `full` is set.
     #[serde(default)]
     armed: Option<Timestamp>,
     /// The id of the armed `Check`: present exactly with `armed`.
@@ -710,6 +739,7 @@ impl TryFrom<RawState> for PlacementState {
             holders: raw.holders,
             waiting: raw.waiting,
             contested: raw.contested,
+            full: raw.full,
             armed: raw.armed,
             armed_id: raw.armed_id,
         };
@@ -752,6 +782,7 @@ impl PlacementState {
             holders: Vec::new(),
             waiting: Vec::new(),
             contested: Vec::new(),
+            full: None,
             armed: None,
             armed_id: None,
         };
@@ -843,10 +874,17 @@ impl PlacementState {
         }
         self.check_books()?;
         self.check_resources()?;
-        let live = self.nodes.values().any(|n| n.status == PlacementNodeStatus::Live) || !self.contested.is_empty();
+        if let Some(full) = &self.full {
+            check_id("a full mark's node", &full.node)?;
+            self.deadline(full.at).map_err(InvalidPlacement)?;
+        }
+        let live = self.nodes.values().any(|n| n.status == PlacementNodeStatus::Live)
+            || !self.contested.is_empty()
+            || self.full.is_some();
         if live != self.armed.is_some() || live != self.armed_id.is_some() {
             return Err(InvalidPlacement(
-                "armed and armedId are set exactly while a node is live or a contest is listed".to_owned(),
+                "armed and armedId are set exactly while a node is live, a contest is listed or the pool is full"
+                    .to_owned(),
             ));
         }
         Ok(())
@@ -939,10 +977,12 @@ impl PlacementState {
         }
     }
 
-    /// The earliest end of a live node's silence or of a contest; none when no node is live and no contest listed.
+    /// The earliest end of a live node's silence, of a contest or of the `full` mark; none when no node is live, no
+    /// contest listed and the pool not marked full.
     fn next_check(&self) -> Option<Timestamp> {
         let live = self.nodes.values().filter(|n| n.status == PlacementNodeStatus::Live).map(|n| n.heard_at);
-        live.chain(self.contested.iter().map(|c| c.at)).filter_map(|at| self.deadline(at).ok()).min()
+        let marks = self.contested.iter().map(|c| c.at).chain(self.full.as_ref().map(|f| f.at));
+        live.chain(marks).filter_map(|at| self.deadline(at).ok()).min()
     }
 }
 
@@ -1056,9 +1096,9 @@ fn check_message_type(message_type: &str) -> Result<(), InvalidPlacement> {
 /// has removes nothing: the known nodes, the holders, the waiting asks and the contests stay, and new ones are refused
 /// or queued as at the limit until the count is below it; the pool only serves under its limits. A larger holder
 /// limit grants waiting asks in the same turn, and a larger node limit admits a new node at its next offer. A new
-/// silence, with a check armed, arms the check at the new earliest end of a live node's silence or of a contest, due
-/// at once when that has passed: a shorter silence marks the quiet nodes silent in the next turn, and conflict marks
-/// and contests end one new silence time after their last offer or report. A silence at or below the members' offer
+/// silence, with a check armed, arms the check at the new earliest end of a live node's silence, of a contest or of
+/// the `full` mark, due at once when that has passed: a shorter silence marks the quiet nodes silent in the next turn, and conflict marks
+/// contests and the `full` mark end one new silence time after their last offer or report. A silence at or below the members' offer
 /// interval makes nodes flip between silent and back.
 ///
 /// Each `Offer` replaces the node's entry and records the store time of its turn as `heardAt`, except an offer of
@@ -1087,9 +1127,18 @@ fn check_message_type(message_type: &str) -> Result<(), InvalidPlacement> {
 /// key takes it, while the runs on the old holder may still use the resource for a while: a brief overbooking. Offers
 /// without a key are not checked; the pool cannot tell that two different keys name one resource.
 ///
-/// While a node is live or a contest is listed the pool has one `Check` armed, with the crate's shared retry policy, at
-/// the earliest `heardAt` of a live node or `at` of a contest plus the silence, and keeps its time in `armed` and its
-/// id in `armedId`. The armed check marks each live node whose silence ended as `silent` and queues one `Alert` to
+/// A pool that knows `maxNodes` nodes or more ignores the offer of a node it does not know (ADR 0075), after the
+/// resource check, so a held key is still a contest: the turn commits and changes no entry. The pool keeps one `full`
+/// mark, the node of the last ignored offer and its store time, and queues one `full` alert, about that node, when the
+/// mark is set; later ignored offers, from any new node, only move it. The check removes the mark one silence time
+/// after its time, and an offer that adds a node, after a larger `maxNodes` or a `Gone`, removes it at once, so a pool
+/// that fills up again is told again. An ignored offer arms the check when none is armed, as when every known node is
+/// silent. A known node offers as before.
+///
+/// While a node is live, a contest is listed or the pool is marked full, the pool has one `Check` armed, with the
+/// crate's shared retry policy, at the earliest `heardAt` of a live node or `at` of a contest or of the `full` mark
+/// plus the silence, and keeps its time in `armed` and its id in `armedId`; the check that finds nothing left clears
+/// them. The armed check marks each live node whose silence ended as `silent` and queues one `Alert` to
 /// itself for each; its next offer makes the node live and queues a `back` alert. Each `Alert` sends a
 /// [`PlacementNotice`] to the target of the last `Alerts`, so a target that is gone or refuses the notice fails that
 /// alert and nothing else; the node stays silent. The armed check run early, made due by an operator, marks nothing and
@@ -1125,7 +1174,7 @@ fn check_message_type(message_type: &str) -> Result<(), InvalidPlacement> {
 ///
 /// Silence is counted from the store time an offer was handled; due times are not run times, so a paused or slow pool
 /// marks a node late, never before its silence ended. A pool hosted only on its member nodes runs no check once they
-/// all go quiet. Bad input is refused for good with the state unchanged: a message out of bounds, a new node past
+/// all go quiet. Bad input is refused for good with the state unchanged: a message out of bounds, a new contest past
 /// `maxNodes`, a `Configure` without a setting, a `Drain`, `Undrain` or `Gone` of an unknown node, a `Gone` of a live
 /// node, a `Check`, `Alert`, `Notify` or `TellGone` from another sender, and a notice or answer the send refuses; a
 /// read of the store that fails is tried again.
@@ -1504,8 +1553,9 @@ async fn tell(
     }
 }
 
-/// Replaces the entry of `node`, tells the target of a node that is back, and arms the check when none is armed; for
-/// another instance under a live node, marks the conflict instead, with an alert for a new mark.
+/// Replaces the entry of `node`, tells the target of a node that is back, ends the `full` mark when it adds a node, and
+/// arms the check when none is armed; for another instance under a live node, marks the conflict instead, with an
+/// alert for a new mark; for a new node in a full pool, marks the pool full.
 fn offer(
     turn: &mut Turn<PlacementActor>,
     node: String,
@@ -1539,10 +1589,10 @@ fn offer(
     // The mark lasts until the other instance was not heard from for one silence time.
     let conflict = live.and_then(|n| n.conflict.clone()).filter(|c| state.deadline(c.at).is_ok_and(|end| now < end));
     if previous.is_none() && state.nodes.len() >= state.max_nodes as usize {
-        return Err(HandlerError::permanent(format!(
-            "the pool knows maxNodes ({}) nodes: '{node}' is refused",
-            state.max_nodes
-        )));
+        return full(turn, node, due);
+    }
+    if previous.is_none() {
+        turn.state_mut().full = None;
     }
     if previous == Some(PlacementNodeStatus::Silent) {
         queue_alert(turn, node.clone(), PlacementNoticeKind::Back)?;
@@ -1553,6 +1603,21 @@ fn offer(
     let status = PlacementNodeStatus::Live;
     let entry = PlacementNode { instance, labels, places, heard_at: now, status, draining, resource, conflict };
     turn.state_mut().nodes.insert(node, entry);
+    Ok(())
+}
+
+/// Sets or moves the `full` mark to `node` at the store time, ignoring its offer, with an alert for a new mark, and arms
+/// the check at `due`, the mark's end, when none is armed.
+fn full(turn: &mut Turn<PlacementActor>, node: String, due: Timestamp) -> HandlerResult {
+    let at = turn.now();
+    let new = turn.state().full.is_none();
+    turn.state_mut().full = Some(PlacementFull { node: node.clone(), at });
+    if turn.state().armed.is_none() {
+        arm(turn, due)?;
+    }
+    if new {
+        queue_alert(turn, node, PlacementNoticeKind::Full)?;
+    }
     Ok(())
 }
 
@@ -1613,8 +1678,8 @@ fn end_reports(turn: &mut Turn<PlacementActor>) {
     }
 }
 
-/// Marks each live node whose silence ended as silent with an alert for each, removes each contest one silence time
-/// after its last offer, and arms the next check; for the armed check run early, arms it again at `armed`; for any
+/// Marks each live node whose silence ended as silent with an alert for each, removes each contest and the `full` mark
+/// one silence time after its last offer, and arms the next check or clears `armed` when nothing is left; for the armed check run early, arms it again at `armed`; for any
 /// other check, nothing.
 fn check(turn: &mut Turn<PlacementActor>) -> HandlerResult {
     let state = turn.state();
@@ -1642,6 +1707,7 @@ fn check(turn: &mut Turn<PlacementActor>) -> HandlerResult {
     let state = turn.state_mut();
     let silence = state.silence;
     state.contested.retain(|c| time::add(c.at, silence).is_ok_and(|end| now < end));
+    state.full = state.full.take().filter(|f| time::add(f.at, silence).is_ok_and(|end| now < end));
     match turn.state().next_check() {
         Some(at) => arm(turn, at)?,
         None => {
@@ -1908,6 +1974,38 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_decoded_full_mark_is_checked_and_keeps_the_check_armed() {
+        let mark = |node: &str, at: &str| serde_json::json!({"node": node, "at": at});
+        let armed = serde_json::json!({"armed": AT, "armedId": "c1"});
+        let with = |extra: serde_json::Value| {
+            let mut json = state(armed.clone());
+            json.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            json
+        };
+        let at: Timestamp = AT.parse().unwrap();
+        let marked = decode(with(serde_json::json!({"full": mark("mac-3", AT)}))).unwrap();
+        assert_eq!(marked.full, Some(PlacementFull { node: "mac-3".into(), at }), "a mark keeps the check armed alone");
+        assert_eq!(serde_json::to_value(&marked).unwrap()["full"], mark("mac-3", AT));
+        assert_eq!(marked.next_check(), time::add(at, Duration::from_secs(60)).ok(), "the mark's end");
+        let plain = decode(state(serde_json::json!({}))).unwrap();
+        assert_eq!(plain.full, None, "a state without the field decodes");
+        assert!(serde_json::to_value(&plain).unwrap().get("full").is_none(), "no mark: not written");
+        assert_eq!(decode(state(serde_json::json!({"full": null}))).unwrap().full, None);
+        for (extra, why) in [
+            (serde_json::json!({"full": mark("mac-3", AT), "armed": null, "armedId": null}), "armed and armedId"),
+            (serde_json::json!({"full": mark("mac-3", AT), "armedId": null}), "armed and armedId"),
+            (serde_json::json!({"full": mark(" ", AT)}), "a full mark's node id must be"),
+            (serde_json::json!({"full": mark(&"n".repeat(201), AT)}), "a full mark's node id must be"),
+            (serde_json::json!({"full": mark("mac-3", "9999-12-31T23:59:30Z")}), "after 9999-12-31"),
+            (serde_json::json!({"full": {"node": "mac-3"}}), "missing field"),
+        ] {
+            let json = with(extra);
+            let decoded = decode(json.clone());
+            assert!(decoded.as_ref().is_err_and(|e| e.to_string().contains(why)), "{decoded:?} for {json}");
+        }
+    }
+
     fn holder(holder: &str, grant: u64, node: &str) -> serde_json::Value {
         serde_json::json!({"holder": holder, "needs": ["arm64"], "to": "run/r", "messageType": "Placed",
             "grant": grant, "node": node, "notified": true})
@@ -2037,6 +2135,10 @@ mod tests {
         assert!(late.configured(None, None, None, Some(1)).is_ok());
         let longer = late.configured(Some(Duration::from_secs(120)), None, None, None);
         assert!(longer.is_err_and(|e| e.to_string().contains("after 9999-12-31")), "a silence must stay representable");
+        let late_mark = serde_json::json!({"node": "mac-3", "at": "9999-12-31T23:58:30Z"});
+        let full = decode(state(serde_json::json!({"full": late_mark, "armed": AT, "armedId": "c1"}))).unwrap();
+        let longer = full.configured(Some(Duration::from_secs(120)), None, None, None);
+        assert!(longer.is_err_and(|e| e.to_string().contains("after 9999-12-31")), "the mark's end too");
     }
 
     #[test]
