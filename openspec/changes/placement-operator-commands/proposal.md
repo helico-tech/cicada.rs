@@ -3,18 +3,26 @@
 ## Why
 
 An operator drains, undrains, declares gone and releases from the command line (request from the Factory session,
-2026-11-25; the owner accepted the split (CO-SPLIT, PL-SPLIT, AB-ORDER: container outputs first)).
+2026-11-25; the owner accepted the split (PL-SPLIT)).
 
 ## What Changes
 
-- Operator commands of `cicada-app` (or a documented way through the existing send command) for drain, undrain, gone
-  and release, over HTTP like the other operator commands, with `docs/reference/cli.md` regenerated.
+- **No new commands.** `cicada-app` does not depend on `cicada-actors` (the app layer below the ready-made actors), and
+  the other ready-made actors are operated through the generic `cicada send <actor> --type <Message> --payload <json>`
+  and read through the actor read commands. A placement command would add that dependency for four messages that
+  `send` already carries. So the operator path is documented recipes:
+  `cicada send cicada.placement/runners --type Drain --payload '{"node": "mac-1"}'`, `Undrain`, `Gone`, and
+  `Release` with `{"holder": …, "grant": …}`; the pool's state shows nodes, holders and the line.
+- A test proves those exact payloads work over the HTTP send route the command uses, so the recipes cannot rot.
 
-To decide in the design: dedicated commands or the generic send, how the pool is named.
+## Lane
+
+Lane: fast
 
 ## Out of scope
 
-A terminal UI page.
+A terminal UI page. Dedicated `cicada placement …` commands (a later change if operators ask; it needs the layering
+question answered first).
 
 ## Order
 
@@ -22,4 +30,4 @@ After `placement-member`. No following change.
 
 ## Impact
 
-`crates/cicada-app`, `docs/reference/cli.md`. Additive.
+A test in `crates/cicada-actors/tests` (or the HTTP tests) and a docs handoff with the recipes. No public API change.
