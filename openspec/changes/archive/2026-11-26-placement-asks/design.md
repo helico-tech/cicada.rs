@@ -44,7 +44,7 @@ system.send(&pool, PlacementMsg::release("run-17", 4)?).await?;
    holders release); a silent node keeps its holders (only `placement-drain-and-gone` decides what a gone node's
    holders learn). `Cancel` withdraws a waiting ask; for a holder it does nothing (`Release` frees a place).
 6. **One contract change inside the line; ADR 0068.** The state gains `maxWaiting`, `maxHolders`, `nextGrant`, the
-   line and the holders per node; `PlacementState::new` takes `max_waiting` and `max_holders`; the messages gain
+   line and one holder list whose records name their node; `PlacementState::new` takes `max_waiting` and `max_holders`; the messages gain
    `Ask`, `Release`, `Cancel`, `Notify`, `Failed`, `Stopped` and the answer type `PlacementAnswer`. The pool is
    unreleased (ADR 0067: the line ships as one minor
    version), so this changes nothing for hosts.
