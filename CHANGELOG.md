@@ -17,9 +17,9 @@ process per identity. An offer can name a resource key, such as the Docker daemo
 reports, and one live node holds a key (ADR 0072), so two nodes on one daemon count its places once. An operator changes
 a live pool's silence and limits with `Configure` instead of deleting the pool. **BREAKING** for placement pools: the
 contract of `cicada.placement` changes (two new messages, optional fields of the offer, the node and the conflict mark,
-and the state's `contested`), so hosts of 0.24.0 pools follow Upgrading below; `NodeConfig`,
-`PlacementConflict`, `PlacementMsg`, `PlacementNode`, `PlacementState` and `Capacity` gain a field or a variant. The
-store schema, the HTTP API, the other actors' contracts and the guarantees are those of 0.24.0.
+and the state's `contested`), so hosts of 0.24.0 pools follow Upgrading below; `NodeConfig`, `PlacementConflict`,
+`PlacementMsg`, `PlacementNode`, `PlacementState` and `Capacity` gain a field or a variant. The store schema, the HTTP
+API, the other actors' contracts and the guarantees are those of 0.24.0.
 
 ### Added
 
@@ -92,9 +92,9 @@ store schema, the HTTP API, the other actors' contracts and the guarantees are t
 - The contract of `cicada.placement` changes: `PlacementMsg` gains `Duplicate` and `PlacementConflict` the optional
   `host`, so its hash differs from 0.24.0's. Rust code that matches `PlacementMsg` exhaustively gains `Duplicate`, and
   code that builds `PlacementConflict` gains `host: None`. `PlacementMsg` also gains `Configure`, which an exhaustive
-  match gains too. The resource keys add the optional `resource` to `Offer` and
-  to the node entry and the state field `contested`: code that builds or matches `PlacementMsg::Offer` without `..`
-  or builds `PlacementNode` or `PlacementState` gains them (`resource: None`, `contested: vec![]`).
+  match gains too. The resource keys add the optional `resource` to `Offer` and to the node entry and the state field
+  `contested`: code that builds or matches `PlacementMsg::Offer` without `..` or builds `PlacementNode` or
+  `PlacementState` gains them (`resource: None`, `contested: vec![]`).
 - `Capacity` gains the public field `resource`: a struct literal or a pattern without `..` no longer compiles; use
   `Capacity::new` and `Capacity::resource`.
 - A state of a placement pool is now written with `contested` (`[]` when empty).

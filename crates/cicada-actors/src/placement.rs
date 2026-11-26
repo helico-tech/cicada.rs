@@ -132,8 +132,8 @@ pub enum PlacementMsg {
         kind: PlacementNoticeKind,
     },
     /// Changes the pool's settings, from anyone: each field set replaces its value, each absent one keeps it, within
-    /// the bounds of [`PlacementState::new`]. A limit below what the pool has removes nothing: the nodes, holders and
-    /// waiting asks stay, and new ones are refused or queued until the count is below it. A larger `maxHolders` grants
+    /// the bounds of [`PlacementState::new`]. A limit below what the pool has removes nothing: the nodes, holders,
+    /// waiting asks and contests stay, and new ones are refused or queued until the count is below it. A larger `maxHolders` grants
     /// waiting asks in this turn. A silence other than the current one, with a check armed, arms the check at the new
     /// earliest end of a live node's silence or of a contest, at once when that has passed, so a shorter one marks the
     /// quiet nodes silent in the next turn. Refused for good with the state unchanged when no field is set, a value is
@@ -171,8 +171,8 @@ pub enum PlacementMsg {
     /// goes. It is granted on the live node with a free place and every need that has the most free places, ties to
     /// the smaller node id; queued when only silent or full nodes have the needs, or the pool holds `maxHolders` or
     /// more; refused with `noNode` when no node of the pool has them, `lineFull` when it must wait and the line holds
-    /// `maxWaiting` asks or more, and `poolFull` when a place fits but the pool holds `maxHolders` and the line is
-    /// full. The [`PlacementAnswer`] goes to the target in this commit, so a target that is gone fails the ask and
+    /// `maxWaiting` asks or more, and `poolFull` when a place fits but the pool holds `maxHolders` or more and the line
+    /// is full. The [`PlacementAnswer`] goes to the target in this commit, so a target that is gone fails the ask and
     /// nothing is recorded. A repeated `Ask` of a holder answers `granted` with the same grant and node, one of a
     /// waiting ask `queued`; both keep the first ask's needs and target. A holder id is forgotten at its release: use a
     /// fresh one per attempt. The pool watches the target from the commit that records the ask, and when it is deleted
@@ -411,7 +411,7 @@ pub enum PlacementRefusal {
     NoNode,
     /// The ask must wait for a place and the line holds `maxWaiting` asks.
     LineFull,
-    /// A place fits, but the pool holds `maxHolders` holders and the line holds `maxWaiting` asks.
+    /// A place fits, but the pool holds `maxHolders` holders or more and the line holds `maxWaiting` asks or more.
     PoolFull,
 }
 
